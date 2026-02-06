@@ -1,0 +1,30 @@
+# Temporal Memory Graph 依赖包
+
+# 数据库
+# SQLite3 是Python标准库，无需安装
+
+# LLM客户端（可选，根据需要选择）
+openai>=1.0.0
+
+# 如果需要使用其他LLM服务，可以添加：
+# anthropic>=0.3.0  # Claude
+# google-generativeai>=0.3.0  # Gemini
+
+# Embedding模型（可选，用于改进实体搜索）
+# 如果使用embedding进行相似度搜索，需要安装：
+sentence-transformers>=2.2.0
+# 如果需要GPU加速，可以安装：
+# torch>=2.0.0  # PyTorch（通常sentence-transformers会自动安装）
+
+# 向量搜索（可选，用于大规模相似度搜索）
+# 如果需要更高效的向量搜索，可以添加：
+# faiss-cpu>=1.7.4  # 或 faiss-gpu
+
+# 工具库
+python-dateutil>=2.8.0
+numpy>=1.21.0  # 用于embedding计算
+
+# 可视化库（可选，用于图谱可视化）
+pyvis>=0.3.0  # 交互式 HTML 可视化
+networkx>=3.0.0  # 图结构处理和静态可视化
+matplotlib>=3.5.0  # 静态图片可视化
