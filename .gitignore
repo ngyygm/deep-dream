@@ -1,0 +1,3 @@
+# 排除 docs 和 graph 目录
+docs/
+graph/
