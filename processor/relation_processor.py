@@ -370,7 +370,9 @@ class RelationProcessor:
                     merged_content,
                     memory_cache_id,
                     verbose_relation,
-                    doc_name
+                    doc_name,
+                    entity1_name,
+                    entity2_name
                 )
                 
                 if verbose_relation:
@@ -417,7 +419,12 @@ class RelationProcessor:
         entity2 = self.storage.get_entity_by_id(entity2_id)
         
         if not entity1 or not entity2:
-            raise ValueError(f"无法找到实体: entity1_id={entity1_id}, entity2_id={entity2_id}")
+            missing_info = []
+            if not entity1:
+                missing_info.append(f"entity1: {entity1_name or '(未提供名称)'} (entity_id: {entity1_id})")
+            if not entity2:
+                missing_info.append(f"entity2: {entity2_name or '(未提供名称)'} (entity_id: {entity2_id})")
+            raise ValueError(f"无法找到实体: {', '.join(missing_info)}")
         
         relation_id = f"rel_{uuid.uuid4().hex[:12]}"
         relation_record_id = f"relation_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
@@ -459,7 +466,9 @@ class RelationProcessor:
                                  entity2_id: str, content: str,
                                  memory_cache_id: str,
                                  verbose_relation: bool = True,
-                                 doc_name: str = "") -> Relation:
+                                 doc_name: str = "",
+                                 entity1_name: str = "",
+                                 entity2_name: str = "") -> Relation:
         """
         创建关系的新版本
         
@@ -473,7 +482,12 @@ class RelationProcessor:
         entity2 = self.storage.get_entity_by_id(entity2_id)
         
         if not entity1 or not entity2:
-            raise ValueError(f"无法找到实体: entity1_id={entity1_id}, entity2_id={entity2_id}")
+            missing_info = []
+            if not entity1:
+                missing_info.append(f"entity1: {entity1_name or '(未提供名称)'} (entity_id: {entity1_id})")
+            if not entity2:
+                missing_info.append(f"entity2: {entity2_name or '(未提供名称)'} (entity_id: {entity2_id})")
+            raise ValueError(f"无法找到实体: {', '.join(missing_info)}")
         
         relation_record_id = f"relation_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
         

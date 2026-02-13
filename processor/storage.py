@@ -1150,7 +1150,7 @@ class StorageManager:
         
         # 获取每个 entity_id 的最新版本
         query = """
-            SELECT e1.id, e1.entity_id, e1.name, e1.content, e1.physical_time, e1.memory_cache_id, e1.embedding
+            SELECT e1.id, e1.entity_id, e1.name, e1.content, e1.physical_time, e1.memory_cache_id, e1.doc_name, e1.embedding
             FROM entities e1
             INNER JOIN (
                 SELECT entity_id, MAX(physical_time) as max_time
@@ -1176,7 +1176,8 @@ class StorageManager:
                 content=row[3],
                 physical_time=datetime.fromisoformat(row[4]),
                 memory_cache_id=row[5],
-                embedding=row[6]
+                doc_name=row[6] if len(row) > 6 and row[6] is not None else "",  # 向后兼容
+                embedding=row[7] if len(row) > 7 else None
             )
             for row in rows
         ]
@@ -1193,7 +1194,7 @@ class StorageManager:
         
         # 获取每个 entity_id 在指定时间点之前或等于该时间点的最新版本
         query = """
-            SELECT e1.id, e1.entity_id, e1.name, e1.content, e1.physical_time, e1.memory_cache_id, e1.embedding
+            SELECT e1.id, e1.entity_id, e1.name, e1.content, e1.physical_time, e1.memory_cache_id, e1.doc_name, e1.embedding
             FROM entities e1
             INNER JOIN (
                 SELECT entity_id, MAX(physical_time) as max_time
@@ -1220,7 +1221,8 @@ class StorageManager:
                 content=row[3],
                 physical_time=datetime.fromisoformat(row[4]),
                 memory_cache_id=row[5],
-                embedding=row[6]
+                doc_name=row[6] if len(row) > 6 and row[6] is not None else "",  # 向后兼容
+                embedding=row[7] if len(row) > 7 else None
             )
             for row in rows
         ]

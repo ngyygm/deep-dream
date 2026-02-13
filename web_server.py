@@ -1864,54 +1864,85 @@ class GraphWebServer:
                 # 构建初始节点数据
                 nodes = []
                 for entity in entities:
-                    entity_id_to_name[entity.entity_id] = entity.name
-                    entity_id_to_absolute_id[entity.entity_id] = entity.id
-                    # focus实体是第0跳
-                    if focus_entity_id and focus_entity_id == entity.entity_id:
-                        entity_id_to_hop_level[entity.entity_id] = 0
-                    
-                    # 获取版本数量
-                    versions = self.storage.get_entity_versions(entity.entity_id)
-                    version_count = len(versions)
-                    
-                    # 在focus模式下，显示当前版本索引（如 "实体名 (3/5版本)"）
-                    # 否则显示总版本数（如 "实体名 (5版本)"）
-                    if focus_entity_id and focus_entity_id == entity.entity_id and focus_absolute_id:
-                        # 找到当前版本在版本列表中的索引（从1开始）
-                        # 版本列表按时间倒序排列（最新版本在前），需要反转后计算索引
-                        versions_sorted = sorted(versions, key=lambda v: v.physical_time)
-                        current_version_index = None
-                        for idx, v in enumerate(versions_sorted, 1):
-                            if v.id == focus_absolute_id:
-                                current_version_index = idx
-                                break
+                    try:
+                        # 防御性检查：确保实体有必要的属性
+                        if not entity or not hasattr(entity, 'entity_id') or not hasattr(entity, 'id'):
+                            print(f"⚠️  跳过无效实体: {entity}")
+                            continue
                         
-                        if current_version_index:
-                            label = f"{entity.name} ({current_version_index}/{version_count}版本)" if version_count > 1 else entity.name
+                        entity_id_to_name[entity.entity_id] = entity.name
+                        entity_id_to_absolute_id[entity.entity_id] = entity.id
+                        # focus实体是第0跳
+                        if focus_entity_id and focus_entity_id == entity.entity_id:
+                            entity_id_to_hop_level[entity.entity_id] = 0
+                        
+                        # 获取版本数量
+                        try:
+                            versions = self.storage.get_entity_versions(entity.entity_id)
+                            version_count = len(versions) if versions else 0
+                        except Exception as e:
+                            print(f"⚠️  获取实体版本失败 (entity_id={entity.entity_id}): {str(e)}")
+                            versions = []
+                            version_count = 1  # 默认值
+                        
+                        # 在focus模式下，显示当前版本索引（如 "实体名 (3/5版本)"）
+                        # 否则显示总版本数（如 "实体名 (5版本)"）
+                        if focus_entity_id and focus_entity_id == entity.entity_id and focus_absolute_id:
+                            # 找到当前版本在版本列表中的索引（从1开始）
+                            # 版本列表按时间倒序排列（最新版本在前），需要反转后计算索引
+                            try:
+                                versions_sorted = sorted(versions, key=lambda v: v.physical_time)
+                                current_version_index = None
+                                for idx, v in enumerate(versions_sorted, 1):
+                                    if v.id == focus_absolute_id:
+                                        current_version_index = idx
+                                        break
+                                
+                                if current_version_index:
+                                    label = f"{entity.name} ({current_version_index}/{version_count}版本)" if version_count > 1 else entity.name
+                                else:
+                                    label = f"{entity.name} ({version_count}版本)" if version_count > 1 else entity.name
+                            except Exception as e:
+                                print(f"⚠️  处理版本索引时出错 (entity_id={entity.entity_id}): {str(e)}")
+                                label = f"{entity.name} ({version_count}版本)" if version_count > 1 else entity.name
                         else:
+                            # 在标签中显示版本数量
                             label = f"{entity.name} ({version_count}版本)" if version_count > 1 else entity.name
-                    else:
-                        # 在标签中显示版本数量
-                        label = f"{entity.name} ({version_count}版本)" if version_count > 1 else entity.name
-                    
-                    # 根据跳数设置颜色
-                    hop_level = entity_id_to_hop_level.get(entity.entity_id, 0)
-                    node_color = get_hop_color(hop_level)
-                    
-                    nodes.append({
-                        'id': entity.entity_id,
-                        'entity_id': entity.entity_id,
-                        'absolute_id': entity.id,
-                        'label': label,
-                        'title': f"{entity.name}\n\n{entity.content[:100]}..." if len(entity.content) > 100 else f"{entity.name}\n\n{entity.content}",
-                        'content': entity.content,
-                        'physical_time': entity.physical_time.isoformat(),
-                        'version_count': version_count,
-                        'color': node_color,
-                        'shape': 'dot',
-                        'size': 20,
-                        'font': {'color': 'white'}
-                    })
+                        
+                        # 根据跳数设置颜色
+                        hop_level = entity_id_to_hop_level.get(entity.entity_id, 0)
+                        node_color = get_hop_color(hop_level)
+                        
+                        # 安全地处理physical_time
+                        try:
+                            physical_time_str = entity.physical_time.isoformat() if entity.physical_time else None
+                        except Exception as e:
+                            print(f"⚠️  实体时间格式错误 (entity_id={entity.entity_id}): {str(e)}")
+                            physical_time_str = None
+                        
+                        # 安全地处理content
+                        content = entity.content if hasattr(entity, 'content') and entity.content else ''
+                        name = entity.name if hasattr(entity, 'name') and entity.name else '未知实体'
+                        
+                        nodes.append({
+                            'id': entity.entity_id,
+                            'entity_id': entity.entity_id,
+                            'absolute_id': entity.id,
+                            'label': label,
+                            'title': f"{name}\n\n{content[:100]}..." if len(content) > 100 else f"{name}\n\n{content}",
+                            'content': content,
+                            'physical_time': physical_time_str,
+                            'version_count': version_count,
+                            'color': node_color,
+                            'shape': 'dot',
+                            'size': 20,
+                            'font': {'color': 'white'}
+                        })
+                    except Exception as e:
+                        import traceback
+                        print(f"⚠️  处理实体时发生错误 (entity={entity}): {str(e)}")
+                        print(traceback.format_exc())
+                        continue  # 跳过有问题的实体，继续处理其他实体
                 
                 # 为每个实体获取关系边（限制数量）
                 edges = []
@@ -2298,9 +2329,16 @@ class GraphWebServer:
                     }
                 })
             except Exception as e:
+                import traceback
+                error_traceback = traceback.format_exc()
+                print(f"❌ [API错误] /api/graph/data 发生异常:")
+                print(f"   错误类型: {type(e).__name__}")
+                print(f"   错误消息: {str(e)}")
+                print(f"   错误堆栈:\n{error_traceback}")
                 return jsonify({
                     'success': False,
-                    'error': str(e)
+                    'error': str(e),
+                    'error_type': type(e).__name__
                 }), 500
         
         @self.app.route('/api/graph/config')
