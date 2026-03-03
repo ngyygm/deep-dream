@@ -107,11 +107,11 @@ if __name__ == "__main__":
 
     # 初始化处理器
     processor = TemporalMemoryGraphProcessor(
-        storage_path="./graph/santi",  # 存储路径
+        storage_path="./graph/测试",  # 存储路径
         window_size=800,  # 窗口大小：500字符
         overlap=200,  # 重叠大小：200字符
         llm_api_key="ollama",  # LLM API密钥（可选）
-        llm_model="qwen3:14b",  # LLM模型名称（可选）
+        llm_model="gemma3:27b",  # LLM模型名称（可选）
         llm_base_url="http://127.0.0.1:11434/v1",  # LLM API基础URL（可选）
         llm_think_mode=False,  # LLM是否开启think模式（默认True）。如果为False，会在prompt结尾添加/no_think
         # Embedding模型配置（可选）
@@ -124,7 +124,7 @@ if __name__ == "__main__":
     print("\n1. 基本使用示例（模拟LLM）:")
     example_basic_usage(processor)
     
-    print("\n2. 知识图谱整理示例:")
-    example_consolidate_knowledge_graph(processor)
+    # print("\n2. 知识图谱整理示例:")
+    # example_consolidate_knowledge_graph(processor)
     
     

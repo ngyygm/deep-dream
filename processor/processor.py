@@ -237,9 +237,10 @@ class TemporalMemoryGraphProcessor:
             if self.load_cache_memory:
                 if verbose:
                     print("正在加载最新的缓存记忆...")
-                
+
                 # 获取最新缓存的元数据（包含 text 和 document_path）
-                latest_metadata = self.storage.get_latest_memory_cache_metadata()
+                # 只查找"文档处理"类型的缓存，避免使用知识图谱整理产生的缓存（其text字段是整理后的实体信息，不是原始文档文本）
+                latest_metadata = self.storage.get_latest_memory_cache_metadata(activity_type="文档处理")
                 
                 if latest_metadata:
                     # 加载缓存记忆
@@ -2874,7 +2875,8 @@ class TemporalMemoryGraphProcessor:
                 name=entity.name,
                 content=summarized_content,
                 physical_time=datetime.now(),
-                memory_cache_id=entity.memory_cache_id
+                memory_cache_id=entity.memory_cache_id,
+                doc_name=entity.doc_name
             )
             self.storage.save_entity(new_entity)
             

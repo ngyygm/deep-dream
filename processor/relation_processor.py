@@ -405,7 +405,7 @@ class RelationProcessor:
     def _create_new_relation(self, entity1_id: str, entity2_id: str,
                             content: str, memory_cache_id: str,
                             entity1_name: str = "", entity2_name: str = "",
-                            verbose_relation: bool = True, doc_name: str = "") -> Relation:
+                            verbose_relation: bool = True, doc_name: str = "") -> Optional[Relation]:
         """
         创建新关系
         
@@ -413,6 +413,9 @@ class RelationProcessor:
         - 参数 entity1_id 和 entity2_id 是实体的 entity_id（不是绝对ID）
         - 通过 entity_id 获取实体的最新版本，然后使用绝对ID（entity.id）存储到关系中
         - 这确保了关系始终指向实体的最新版本
+        
+        Returns:
+            Relation对象，如果实体不存在则返回None
         """
         # 通过 entity_id 获取实体的最新版本
         entity1 = self.storage.get_entity_by_id(entity1_id)
@@ -424,7 +427,10 @@ class RelationProcessor:
                 missing_info.append(f"entity1: {entity1_name or '(未提供名称)'} (entity_id: {entity1_id})")
             if not entity2:
                 missing_info.append(f"entity2: {entity2_name or '(未提供名称)'} (entity_id: {entity2_id})")
-            raise ValueError(f"无法找到实体: {', '.join(missing_info)}")
+            
+            if verbose_relation:
+                print(f"[关系操作] ⚠️  警告: 无法找到实体: {', '.join(missing_info)}，跳过关系创建")
+            return None
         
         relation_id = f"rel_{uuid.uuid4().hex[:12]}"
         relation_record_id = f"relation_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
@@ -468,7 +474,7 @@ class RelationProcessor:
                                  verbose_relation: bool = True,
                                  doc_name: str = "",
                                  entity1_name: str = "",
-                                 entity2_name: str = "") -> Relation:
+                                 entity2_name: str = "") -> Optional[Relation]:
         """
         创建关系的新版本
         
@@ -476,6 +482,9 @@ class RelationProcessor:
         - 参数 entity1_id 和 entity2_id 是实体的 entity_id（不是绝对ID）
         - 通过 entity_id 获取实体的最新版本，然后使用绝对ID（entity.id）存储到关系中
         - 这确保了关系的新版本始终指向实体的最新版本
+        
+        Returns:
+            Relation对象，如果实体不存在则返回None
         """
         # 通过 entity_id 获取实体的最新版本
         entity1 = self.storage.get_entity_by_id(entity1_id)
@@ -487,7 +496,10 @@ class RelationProcessor:
                 missing_info.append(f"entity1: {entity1_name or '(未提供名称)'} (entity_id: {entity1_id})")
             if not entity2:
                 missing_info.append(f"entity2: {entity2_name or '(未提供名称)'} (entity_id: {entity2_id})")
-            raise ValueError(f"无法找到实体: {', '.join(missing_info)}")
+            
+            if verbose_relation:
+                print(f"[关系操作] ⚠️  警告: 无法找到实体: {', '.join(missing_info)}，跳过关系版本创建")
+            return None
         
         relation_record_id = f"relation_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
         
