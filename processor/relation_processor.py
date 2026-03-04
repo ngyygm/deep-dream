@@ -315,7 +315,12 @@ class RelationProcessor:
             extracted_relation,
             existing_relations_info
         )
-        
+        # LLM 有时返回 list 而非 dict，统一取第一个元素
+        if isinstance(match_result, list) and len(match_result) > 0:
+            match_result = match_result[0] if isinstance(match_result[0], dict) else None
+        elif not isinstance(match_result, dict):
+            match_result = None
+
         if match_result and match_result.get('relation_id'):
             # 匹配到已有关系
             relation_id = match_result['relation_id']

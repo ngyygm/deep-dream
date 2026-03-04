@@ -1,12 +1,17 @@
 """
-LLM客户端：封装LLM调用，实现三个核心任务
+LLM客户端：封装LLM调用，实现三个核心任务。
+
+请求方式：统一使用 Ollama 原生 /api/chat 接口（见 ollama_chat_api），由 ollama_chat 发起请求；
+think 模式由初始化参数 think_mode 控制，在 example_usage 中通过 llm_think_mode 选择是否开启。
 """
 from typing import Dict, List, Optional, Any, Union
 from datetime import datetime
 import json
 import uuid
+import time
 
 from .models import MemoryCache, Entity
+from .ollama_chat_api import ollama_chat
 
 
 class LLMClient:
@@ -195,7 +200,7 @@ content要求：
         return entity_name
     
     def __init__(self, api_key: Optional[str] = None, model_name: str = "gpt-4", base_url: Optional[str] = None,
-                 content_snippet_length: int = 50, think_mode: bool = True):
+                 content_snippet_length: int = 50, think_mode: bool = False):
         """
         初始化LLM客户端
         
@@ -204,62 +209,25 @@ content要求：
             model_name: 模型名称
             base_url: API基础URL（可选，用于自定义API端点）
             content_snippet_length: 传入LLM prompt的实体content最大长度（默认50字符）
-            think_mode: 是否开启think模式（默认True）。如果为False，会在prompt结尾添加/no_think
+            think_mode: 是否开启思维链/think 模式（默认 False）。仅 Ollama 下通过 API 参数 think 控制；其他后端忽略
         """
         self.api_key = api_key
         self.model_name = model_name
         self.base_url = base_url
         self.content_snippet_length = content_snippet_length
         self.think_mode = think_mode
-        
-        # 这里可以根据实际情况选择不同的LLM客户端
-        # 支持新旧版本的 OpenAI API
-        self.client = None
-        self.use_legacy_api = False  # 标记是否使用旧版本 API
-        self.openai_module = None
-        self._legacy_base_url = None  # 旧版本 API 的 base_url
-        
-        try:
-            import openai
-            self.openai_module = openai
-            
-            if api_key:
-                # 检查 openai 版本
-                if hasattr(openai, 'OpenAI'):
-                    # 新版本 (>= 1.0.0) - 使用 OpenAI 类
-                    try:
-                        # 设置默认超时时间（300秒 = 5分钟）
-                        self.client = openai.OpenAI(api_key=api_key, base_url=base_url, timeout=300.0)
-                        self.use_legacy_api = False
-                    except Exception as e:
-                        print(f"警告：初始化新版本 OpenAI 客户端失败: {e}")
-                        self.client = None
-                else:
-                    # 旧版本 (< 1.0.0) - 使用旧 API
-                    try:
-                        # 设置旧版本 API 的配置
-                        openai.api_key = api_key
-                        if base_url:
-                            # 旧版本可能使用 api_base 或 organization
-                            if hasattr(openai, 'api_base'):
-                                openai.api_base = base_url
-                            # 保存 base_url 以便在调用时使用
-                            self._legacy_base_url = base_url
-                        else:
-                            self._legacy_base_url = None
-                        self.use_legacy_api = True
-                        self.client = openai  # 使用模块本身作为客户端
-                        version = getattr(openai, '__version__', 'unknown')
-                        print(f"使用旧版本 openai API (版本: {version})")
-                    except Exception as e:
-                        print(f"警告：初始化旧版本 OpenAI API 失败: {e}")
-                        self.client = None
-            else:
-                print("提示：未提供 API key，将使用模拟响应模式")
-        except ImportError:
-            print("警告：未安装openai库，将使用模拟响应模式")
-            print("      要使用真实LLM，请安装: pip install openai")
-    
+        # 使用 curl 风格 HTTP 调用，不依赖 openai 库；无 api_key 且无 base_url 时为模拟模式
+        self._endpoint_available = bool(api_key or base_url)
+        if not self._endpoint_available:
+            print("提示：未提供 API key 或 base_url，将使用模拟响应模式")
+
+    def _get_ollama_base_url(self) -> str:
+        """将配置的 base_url 规范化为 Ollama 根地址（不含 /v1），供 /api/chat 使用。"""
+        base = (self.base_url or "http://localhost:11434").rstrip("/")
+        if base.endswith("/v1"):
+            base = base[:-3]
+        return base
+
     def _is_valid_utf8(self, text: str) -> bool:
         """
         检测文本是否是有效的UTF-8编码
@@ -296,138 +264,94 @@ content要求：
             # 其他异常，保守起见返回True（避免误判）
             return True
     
-    def _is_garbled_text(self, text: str) -> bool:
+    def _call_llm(self, prompt: str, system_prompt: Optional[str] = None, max_retries: int = 3, timeout: int = 300) -> str:
         """
-        检测文本是否包含乱码
-        
-        只检测明确的乱码特征：
-        - 包含 \\x 转义序列（如 \\x00, \\xff 等）
-        - 包含 \\ufffd Unicode替换字符
-        
-        Args:
-            text: 待检测的文本
-        
-        Returns:
-            True表示包含乱码，False表示正常
-        """
-        if not text or len(text.strip()) == 0:
-            return False
-        
-        import re
-        
-        # 1. 检测 \ufffd Unicode替换字符（编码错误的明确标志）
-        if '\ufffd' in text:
-            return True
-        
-        # 2. 检测 \x 转义序列（在字符串表示中）
-        # 检查文本中是否包含字面的 "\x" 后跟十六进制数字
-        if re.search(r'\\x[0-9a-fA-F]{2}', text):
-            return True
-        
-        # 3. 检测实际的 \x 控制字符（在字符串内容中）
-        # 检查是否包含 \x00-\x1f 和 \x7f-\xff 范围内的控制字符
-        # 使用原始字符串避免转义问题
-        if re.search(r'[\x00-\x1f\x7f-\xff]', text):
-            # 但排除常见的空白字符（\n, \r, \t）
-            control_chars = re.findall(r'[\x00-\x08\x0b-\x0c\x0e-\x1f\x7f-\xff]', text)
-            if len(control_chars) > 0:
-                return True
-        
-        return False
-    
-    def _call_llm(self, prompt: str, system_prompt: Optional[str] = None, max_retries: int = 3, timeout: int = 30) -> str:
-        """
-        调用LLM的通用方法（带乱码检测和重试机制）
+        调用LLM的通用方法（带重试机制）
         
         Args:
             prompt: 用户提示
             system_prompt: 系统提示（可选）
             max_retries: 最大重试次数（默认3次）
-            timeout: 超时时间（秒），默认300秒（5分钟）
+            timeout: 超时时间（秒），默认300秒（5分钟），本地 Ollama 等可适当调大
         
         Returns:
             LLM的响应文本
         """
-        if self.client is None:
-            # 如果没有配置LLM客户端，返回示例响应（用于测试）
+        if not self._endpoint_available:
             return self._mock_llm_response(prompt)
         
         messages = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
-        
-        # 如果think_mode为False，在prompt结尾添加/no_think
-        final_prompt = prompt
-        if not self.think_mode:
-            final_prompt = prompt.rstrip() + "\n/no_think"
-        
-        messages.append({"role": "user", "content": final_prompt})
+        messages.append({"role": "user", "content": prompt})
         
         last_error = None
-        for attempt in range(max_retries):
+        attempt = 0
+        while True:
             try:
-                if self.use_legacy_api:
-                    # 旧版本 API (0.28.x)
-                    import openai
-                    # 构建调用参数
-                    call_params = {
-                        "model": self.model_name,
-                        "messages": messages,
-                        "temperature": 0.3
-                    }
-                    # 旧版本API可能不支持timeout参数，但可以通过设置全局超时
-                    # 如果设置了 base_url，可能需要通过其他方式传递
-                    # 旧版本可能不支持直接传递 base_url，需要在初始化时设置
-                    # 注意：旧版本API可能不支持timeout，这里先不设置
-                    response = openai.ChatCompletion.create(**call_params)
-                    response_text = response.choices[0].message.content
-                else:
-                    # 新版本 API (>= 1.0.0)
-                    response = self.client.chat.completions.create(
-                        model=self.model_name,
-                        messages=messages,
-                        temperature=0.3,
-                        timeout=timeout
-                    )
-                    response_text = response.choices[0].message.content
+                resp = ollama_chat(
+                    messages,
+                    model=self.model_name,
+                    base_url=self._get_ollama_base_url(),
+                    think=self.think_mode,
+                    timeout=timeout,
+                )
+                response_text = resp.content or ""
                 
                 # 检测是否是有效的UTF-8编码
                 if not self._is_valid_utf8(response_text):
                     if attempt < max_retries - 1:
                         print(f"检测到非UTF-8编码的文本，正在重新生成（第 {attempt + 1}/{max_retries} 次尝试）...")
-                        print(f"问题内容预览: {response_text[:100]}...")
+                        print(f"问题内容预览:\n{response_text}")
                         continue
                     else:
                         print(f"警告：检测到非UTF-8编码但已达到最大重试次数，返回原始响应")
-                        print(f"问题内容预览: {response_text[:100]}...")
+                        print(f"问题内容预览:\n{response_text}")
                 
-                # 检测是否包含乱码
-                if self._is_garbled_text(response_text):
-                    if attempt < max_retries - 1:
-                        print(f"检测到乱码，正在重试（第 {attempt + 1}/{max_retries} 次尝试）...")
-                        print(f"乱码内容预览: {response_text[:100]}...")
-                        continue
-                    else:
-                        print(f"警告：检测到乱码但已达到最大重试次数，返回原始响应")
-                        print(f"乱码内容预览: {response_text[:100]}...")
-                
-                # 如果编码有效且没有乱码，或已达到最大重试次数，返回响应
+                # 编码有效则返回响应（已取消乱码检测）
                 return response_text
                 
             except Exception as e:
-                
-                print(f"LLM调用错误（第 {attempt + 1}/{max_retries} 次尝试）: {e}")
+                # 统一处理错误，包括连接错误、超时等
+                error_str = str(e).lower()
                 last_error = e
-                error_str = str(e)
                 # 检查是否是超时错误
-                is_timeout = "timeout" in error_str.lower() or "timed out" in error_str.lower()
-                
+                is_timeout = "timeout" in error_str or "timed out" in error_str
+                # 检查是否是连接类错误（如 connection refused）
+                is_connection_error = any(
+                    kw in error_str
+                    for kw in [
+                        "connection refused",
+                        "connectionerror",
+                        "failed to establish a new connection",
+                        "newconnectionerror",
+                        "temporarily unreachable",
+                        "temporary failure in name resolution",
+                        "name or service not known",
+                        "connection aborted",
+                        "connection reset",
+                        "errno 111",
+                    ]
+                )
+
+                # 对于连接错误：不退出、不降级为 mock，一直重试
+                if is_connection_error:
+                    wait_seconds = 5
+                    print(f"LLM连接错误（第 {attempt + 1} 次尝试）: {e}")
+                    print(f"{wait_seconds} 秒后重试，直到连接恢复为止（不会跳过本次任务）...")
+                    time.sleep(wait_seconds)
+                    attempt += 1
+                    continue
+
+                # 非连接错误：按照原有 max_retries 策略处理
+                print(f"LLM调用错误（第 {attempt + 1}/{max_retries} 次尝试）: {e}")
                 if attempt < max_retries - 1:
                     if is_timeout:
                         print(f"LLM调用超时（第 {attempt + 1}/{max_retries} 次尝试，超时时间: {timeout}秒）: {e}")
                     else:
                         print(f"LLM调用错误（第 {attempt + 1}/{max_retries} 次尝试）: {e}")
                     print(f"正在重试...")
+                    attempt += 1
                     continue
                 else:
                     if is_timeout:
@@ -435,8 +359,8 @@ content要求：
                     else:
                         print(f"LLM调用错误（已达最大重试次数）: {e}")
                     return self._mock_llm_response(prompt)
-        
-        # 如果所有重试都失败，返回模拟响应
+
+        # 理论上不会到达这里，但为了稳妥保留兜底
         if last_error:
             print(f"所有重试都失败，使用模拟响应")
         return self._mock_llm_response(prompt)
@@ -2243,7 +2167,12 @@ content要求：
             result = json.loads(response)
             if result is None or result == "null":
                 return None
-            return result
+            # LLM 有时返回 list，统一转为单个 dict
+            if isinstance(result, list) and len(result) > 0 and isinstance(result[0], dict):
+                return result[0]
+            if isinstance(result, dict):
+                return result
+            return None
         except json.JSONDecodeError:
             return None
     

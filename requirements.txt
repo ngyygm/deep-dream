@@ -3,7 +3,7 @@
 # 数据库
 # SQLite3 是Python标准库，无需安装
 
-# LLM客户端（可选，根据需要选择）
+# LLM 客户端（Ollama 兼容需 >=1.0，以便 extra_body 传 think，见 https://docs.ollama.com/api/openai-compatibility）
 openai>=1.0.0
 
 # 如果需要使用其他LLM服务，可以添加：

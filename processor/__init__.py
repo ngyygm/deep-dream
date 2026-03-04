@@ -10,6 +10,7 @@ from .llm_client import LLMClient
 from .embedding_client import EmbeddingClient
 from .entity_processor import EntityProcessor
 from .relation_processor import RelationProcessor
+from .ollama_chat_api import ollama_chat, ollama_chat_stream, ollama_chat_stream_content, OllamaChatResponse
 
 __version__ = "0.1.0"
 
@@ -24,4 +25,8 @@ __all__ = [
     "EmbeddingClient",
     "EntityProcessor",
     "RelationProcessor",
+    "ollama_chat",
+    "ollama_chat_stream",
+    "ollama_chat_stream_content",
+    "OllamaChatResponse",
 ]

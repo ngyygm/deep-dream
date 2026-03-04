@@ -24,7 +24,7 @@ class TemporalMemoryGraphProcessor:
                  embedding_model_path: Optional[str] = None,
                  embedding_model_name: Optional[str] = None,
                  embedding_device: str = "cpu",
-                 llm_think_mode: bool = True):
+                 llm_think_mode: bool = False):
         """
         初始化处理器
         
@@ -38,7 +38,7 @@ class TemporalMemoryGraphProcessor:
             embedding_model_path: Embedding模型本地路径（优先使用）
             embedding_model_name: Embedding模型名称（HuggingFace模型名）
             embedding_device: Embedding计算设备 ("cpu" 或 "cuda")
-            llm_think_mode: LLM是否开启think模式（默认True）。如果为False，会在prompt结尾添加/no_think
+            llm_think_mode: LLM 是否开启思维链/think 模式（默认 False）。Ollama 下用 API 参数 think；非 Ollama 用 enable_thinking
         """
         # 初始化Embedding客户端
         self.embedding_client = EmbeddingClient(
@@ -2974,7 +2974,11 @@ class TemporalMemoryGraphProcessor:
                         preliminary_extracted_relation,
                         existing_relations_info
                     )
-                    
+                    if isinstance(match_result, list) and len(match_result) > 0:
+                        match_result = match_result[0] if isinstance(match_result[0], dict) else None
+                    elif not isinstance(match_result, dict):
+                        match_result = None
+
                     if match_result and match_result.get('relation_id'):
                         # 匹配到已有关系，判断是否需要更新
                         relation_id = match_result['relation_id']
@@ -3111,7 +3115,11 @@ class TemporalMemoryGraphProcessor:
                     extracted_relation,
                     existing_relations_info
                 )
-                
+                if isinstance(match_result, list) and len(match_result) > 0:
+                    match_result = match_result[0] if isinstance(match_result[0], dict) else None
+                elif not isinstance(match_result, dict):
+                    match_result = None
+
                 if match_result and match_result.get('relation_id'):
                     # 匹配到已有关系，判断是否需要更新
                     relation_id = match_result['relation_id']

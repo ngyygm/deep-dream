@@ -107,17 +107,17 @@ if __name__ == "__main__":
 
     # 初始化处理器
     processor = TemporalMemoryGraphProcessor(
-        storage_path="./graph/测试",  # 存储路径
+        storage_path="./graph/qwen3.5-4b-santi",  # 存储路径
         window_size=800,  # 窗口大小：500字符
         overlap=200,  # 重叠大小：200字符
         llm_api_key="ollama",  # LLM API密钥（可选）
-        llm_model="gemma3:27b",  # LLM模型名称（可选）
+        llm_model="qwen3.5:4b",  # LLM模型名称（可选）
         llm_base_url="http://127.0.0.1:11434/v1",  # LLM API基础URL（可选）
-        llm_think_mode=False,  # LLM是否开启think模式（默认True）。如果为False，会在prompt结尾添加/no_think
+        llm_think_mode=False,  # 是否开启 think 思维链：True=开启，False=关闭（默认）
         # Embedding模型配置（可选）
         embedding_model_path="/home/linkco/exa/models/Qwen3-Embedding-0.6B",  # Embedding模型本地文件路径（优先使用）
         # embedding_model_name="sentence-transformers/all-MiniLM-L6-v2",  # 或使用HuggingFace模型名称
-        embedding_device="cuda:2"  # Embedding计算设备 ("cpu" 或 "cuda")
+        embedding_device="cuda:0"  # Embedding计算设备 ("cpu" 或 "cuda")
     )
 
 
