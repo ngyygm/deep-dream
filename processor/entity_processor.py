@@ -28,7 +28,8 @@ class EntityProcessor:
                         jaccard_search_threshold: Optional[float] = None,
                         embedding_name_search_threshold: Optional[float] = None,
                         embedding_full_search_threshold: Optional[float] = None,
-                        on_entity_processed: Optional[callable] = None) -> Tuple[List[Entity], List[Dict], Dict[str, str]]:
+                        on_entity_processed: Optional[callable] = None,
+                        base_time: Optional[datetime] = None) -> Tuple[List[Entity], List[Dict], Dict[str, str]]:
         """
         处理抽取的实体：搜索、对齐、更新/新建
         
@@ -94,7 +95,8 @@ class EntityProcessor:
                 extracted_relation_pairs=extracted_relation_pairs,
                 jaccard_search_threshold=jaccard_search_threshold,
                 embedding_name_search_threshold=embedding_name_search_threshold,
-                embedding_full_search_threshold=embedding_full_search_threshold
+                embedding_full_search_threshold=embedding_full_search_threshold,
+                base_time=base_time,
             )
             if entity:
                 processed_entities.append(entity)
@@ -150,7 +152,8 @@ class EntityProcessor:
                                extracted_relation_pairs: Optional[set] = None,
                                jaccard_search_threshold: Optional[float] = None,
                                embedding_name_search_threshold: Optional[float] = None,
-                               embedding_full_search_threshold: Optional[float] = None) -> Tuple[Optional[Entity], List[Dict], Dict[str, str]]:
+                               embedding_full_search_threshold: Optional[float] = None,
+                               base_time: Optional[datetime] = None) -> Tuple[Optional[Entity], List[Dict], Dict[str, str]]:
         """
         处理单个实体
         
@@ -277,7 +280,7 @@ class EntityProcessor:
         
         if not similar_entities:
             # 没有找到相似实体，直接新建
-            new_entity = self._create_new_entity(entity_name, entity_content, memory_cache_id, doc_name)
+            new_entity = self._create_new_entity(entity_name, entity_content, memory_cache_id, doc_name, base_time=base_time)
             print(f"  │  未找到相似实体，创建新实体: {new_entity.entity_id}")
             # 返回实体、空关系列表、实体名称到ID的映射
             entity_name_to_id = {
@@ -613,7 +616,8 @@ class EntityProcessor:
                             merged_name,
                             merged_content,
                             memory_cache_id,
-                            doc_name
+                            doc_name,
+                            base_time=base_time,
                         )
                         print(f"  │  ├─ 合并到: {target_name} (已更新)")
                     else:
@@ -652,7 +656,7 @@ class EntityProcessor:
             
             if not matched:
                 # 没有匹配，创建新实体
-                final_entity = self._create_new_entity(entity_name, entity_content, memory_cache_id, doc_name)
+                final_entity = self._create_new_entity(entity_name, entity_content, memory_cache_id, doc_name, base_time=base_time)
                 print(f"  │  ├─ 创建新实体: {final_entity.entity_id}")
                 # 更新映射：新创建的实体
                 entity_name_to_id[entity_name] = final_entity.entity_id
@@ -683,12 +687,13 @@ class EntityProcessor:
         
         return final_entity, updated_relations, entity_name_to_id
     
-    def _create_new_entity(self, name: str, content: str, memory_cache_id: str, doc_name: str = "") -> Entity:
+    def _create_new_entity(self, name: str, content: str, memory_cache_id: str,
+                           doc_name: str = "", base_time: Optional[datetime] = None) -> Entity:
         """创建新实体"""
+        ts = base_time if base_time is not None else datetime.now()
         entity_id = f"ent_{uuid.uuid4().hex[:12]}"
-        entity_record_id = f"entity_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+        entity_record_id = f"entity_{ts.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
         
-        # 只保存文档名，不包含路径
         doc_name_only = doc_name.split('/')[-1] if doc_name else ""
         
         entity = Entity(
@@ -696,7 +701,7 @@ class EntityProcessor:
             entity_id=entity_id,
             name=name,
             content=content,
-            physical_time=datetime.now(),
+            physical_time=ts,
             memory_cache_id=memory_cache_id,
             doc_name=doc_name_only
         )
@@ -705,11 +710,12 @@ class EntityProcessor:
         return entity
     
     def _create_entity_version(self, entity_id: str, name: str, content: str, 
-                              memory_cache_id: str, doc_name: str = "") -> Entity:
+                              memory_cache_id: str, doc_name: str = "",
+                              base_time: Optional[datetime] = None) -> Entity:
         """创建实体的新版本"""
-        entity_record_id = f"entity_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+        ts = base_time if base_time is not None else datetime.now()
+        entity_record_id = f"entity_{ts.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
         
-        # 只保存文档名，不包含路径
         doc_name_only = doc_name.split('/')[-1] if doc_name else ""
         
         entity = Entity(
@@ -717,7 +723,7 @@ class EntityProcessor:
             entity_id=entity_id,
             name=name,
             content=content,
-            physical_time=datetime.now(),
+            physical_time=ts,
             memory_cache_id=memory_cache_id,
             doc_name=doc_name_only
         )

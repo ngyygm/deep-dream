@@ -13,7 +13,6 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-import tempfile
 import threading
 import time
 import uuid
@@ -364,55 +363,43 @@ def create_app(processor: TemporalMemoryGraphProcessor, config: Optional[Dict[st
 
     @app.route("/api/remember", methods=["POST"])
     def remember():
-        """记忆写入：接收自然语言文本或文档，自动构建记忆图。
+        """记忆写入：接收自然语言文本，自动构建记忆图。
 
-        三种输入方式：
-        1. JSON {"text": "..."} — 直接传文本
-        2. JSON {"file_path": "/path/to/file"} — 服务端本地文件
-        3. multipart/form-data 上传文件（字段名 file）
-
-        可选字段：source_name / doc_name, load_cache_memory
+        JSON body：
+          - text (必填): 自然语言文本
+          - source_name (可选): 来源名称，默认 "api_input"
+          - load_cache_memory (可选): 是否加载最新缓存继续追加
+          - event_time (可选): 事件实际发生时间 (ISO 8601)，不传则使用当前时间
         """
         try:
-            content_type = request.content_type or ""
-            text: Optional[str] = None
-            source_name: str = "api_input"
+            body = request.get_json(silent=True) or {}
+            text = (body.get("text") or "").strip() or None
+            if not text:
+                return err("text 为必填字段", 400)
 
-            if "multipart/form-data" in content_type:
-                uploaded = request.files.get("file")
-                if not uploaded or not uploaded.filename:
-                    return err("multipart 请求需包含 file 字段", 400)
-                source_name = request.form.get("source_name") or uploaded.filename or "upload"
-                tmp_dir = tempfile.mkdtemp()
-                tmp_path = os.path.join(tmp_dir, uploaded.filename)
-                try:
-                    uploaded.save(tmp_path)
-                    text = _read_file_content(tmp_path)
-                finally:
-                    try:
-                        os.remove(tmp_path)
-                        os.rmdir(tmp_dir)
-                    except OSError:
-                        pass
-            else:
-                body = request.get_json(silent=True) or {}
-                text = (body.get("text") or "").strip() or None
-                file_path = (body.get("file_path") or "").strip() or None
-                source_name = (
-                    (body.get("source_name") or body.get("doc_name") or "").strip()
-                    or (Path(file_path).name if file_path else "api_input")
-                )
-
-                if not text and file_path:
-                    text = _read_file_content(file_path)
-                elif not text:
-                    return err("请提供 text、file_path 或上传文件", 400)
+            source_name = (body.get("source_name") or body.get("doc_name") or "").strip() or "api_input"
 
             load_cache = None
-            if "multipart/form-data" not in content_type:
-                lc = (request.get_json(silent=True) or {}).get("load_cache_memory")
-                if lc is not None:
-                    load_cache = bool(lc)
+            lc = body.get("load_cache_memory")
+            if lc is not None:
+                load_cache = bool(lc)
+
+            event_time: Optional[datetime] = None
+            et_str = (body.get("event_time") or "").strip() or None
+            if et_str:
+                try:
+                    event_time = datetime.fromisoformat(et_str.replace("Z", "+00:00"))
+                except ValueError:
+                    return err("event_time 需为 ISO 8601 格式", 400)
+
+            originals_dir = Path(processor.storage.storage_path) / "originals"
+            originals_dir.mkdir(parents=True, exist_ok=True)
+            safe_name = "".join(c if c.isalnum() or c in "-_." else "_" for c in source_name)
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            short_id = uuid.uuid4().hex[:8]
+            original_filename = f"{safe_name}_{ts}_{short_id}.txt"
+            original_path = str((originals_dir / original_filename).resolve())
+            Path(original_path).write_text(text, encoding="utf-8")
 
             with remember_lock:
                 result = processor.remember_text(
@@ -420,12 +407,11 @@ def create_app(processor: TemporalMemoryGraphProcessor, config: Optional[Dict[st
                     doc_name=source_name,
                     verbose=False,
                     load_cache_memory=load_cache,
+                    event_time=event_time,
+                    document_path=original_path,
                 )
+            result["original_path"] = original_path
             return ok(result)
-        except FileNotFoundError as e:
-            return err(str(e), 404)
-        except ImportError as e:
-            return err(str(e), 501)
         except Exception as e:
             return err(str(e), 500)
 

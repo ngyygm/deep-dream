@@ -295,7 +295,9 @@ class TemporalMemoryGraphProcessor:
                 setattr(self, key, value)
 
     def remember_text(self, text: str, doc_name: str = "api_input", verbose: bool = False,
-                      load_cache_memory: Optional[bool] = None) -> Dict:
+                      load_cache_memory: Optional[bool] = None,
+                      event_time: Optional[datetime] = None,
+                      document_path: str = "") -> Dict:
         """
         将一段文本作为记忆入库：内存内滑窗分块后逐块执行更新缓存、抽取实体/关系、对齐并写入存储。
         默认追加到同一条全局 current_memory_cache 链（进程内）；可选加载已有最新缓存再追加。
@@ -305,6 +307,8 @@ class TemporalMemoryGraphProcessor:
             doc_name: 文档/来源名称，用于窗口提示与审计
             verbose: 是否打印处理日志
             load_cache_memory: 是否在开始前加载最新缓存记忆再追加；None 时使用实例默认 self.load_cache_memory
+            event_time: 事件实际发生时间；若提供，本批所有实体/关系/缓存的 physical_time 以此为准
+            document_path: 原文文件路径，由 API 层负责保存后传入
 
         Returns:
             dict: memory_cache_id（最后一块的缓存ID）, chunks_processed（处理的块数）, storage_path
@@ -321,7 +325,8 @@ class TemporalMemoryGraphProcessor:
         else:
             self.current_memory_cache = None
 
-        document_path = f"api://{uuid.uuid4().hex}"
+        if not document_path:
+            document_path = f"api://{uuid.uuid4().hex}"
         window_size = self.document_processor.window_size
         overlap = self.document_processor.overlap
         total_length = len(text)
@@ -344,6 +349,7 @@ class TemporalMemoryGraphProcessor:
                 total_text_length=total_length,
                 verbose=verbose,
                 document_path=document_path,
+                event_time=event_time,
             )
             last_memory_cache_id = self.current_memory_cache.id if self.current_memory_cache else None
             chunk_idx += 1
@@ -361,7 +367,8 @@ class TemporalMemoryGraphProcessor:
     def _process_window(self, input_text: str, document_name: str, 
                        is_new_document: bool, text_start_pos: int = 0,
                        text_end_pos: int = 0, total_text_length: int = 0,
-                       verbose: bool = True, document_path: str = ""):
+                       verbose: bool = True, document_path: str = "",
+                       event_time: Optional[datetime] = None):
         """
         处理单个窗口
         
@@ -383,6 +390,7 @@ class TemporalMemoryGraphProcessor:
             total_text_length: 文档总长度（字符数）
             verbose: 是否输出详细信息
             document_path: 文档完整路径（用于断点续传）
+            event_time: 事件实际发生时间；传入后作为 physical_time 的基准
         """
         if verbose:
             print(f"\n{'='*60}")
@@ -400,7 +408,8 @@ class TemporalMemoryGraphProcessor:
             document_name=document_name,
             text_start_pos=text_start_pos,
             text_end_pos=text_end_pos,
-            total_text_length=total_text_length
+            total_text_length=total_text_length,
+            event_time=event_time,
         )
         
         # 保存新的memory_cache（传递当前处理的文本内容和文档路径，用于断点续传）
@@ -742,7 +751,8 @@ class TemporalMemoryGraphProcessor:
                             entity1_name=entity1_name,
                             entity2_name=entity2_name,
                             verbose_relation=verbose,
-                            doc_name=document_name
+                            doc_name=document_name,
+                            base_time=new_memory_cache.physical_time,
                         )
                     except ValueError as e:
                         # 捕获实体未找到的错误，记录警告并继续处理其他关系
@@ -764,12 +774,13 @@ class TemporalMemoryGraphProcessor:
             self.similarity_threshold,
             memory_cache=new_memory_cache,
             doc_name=document_name,
-            context_text=input_text,  # 传入当前处理的文本作为上下文
-            extracted_relations=extracted_relations,  # 传入步骤3抽取的关系，用于判断是否已存在关系
+            context_text=input_text,
+            extracted_relations=extracted_relations,
             jaccard_search_threshold=self.jaccard_search_threshold,
             embedding_name_search_threshold=self.embedding_name_search_threshold,
             embedding_full_search_threshold=self.embedding_full_search_threshold,
-            on_entity_processed=on_entity_processed_callback
+            on_entity_processed=on_entity_processed_callback,
+            base_time=new_memory_cache.physical_time,
         )
         
         # 合并最终的映射（回调函数中可能已经更新了部分映射）
@@ -990,7 +1001,6 @@ class TemporalMemoryGraphProcessor:
                 #     print(f"    跳过已处理关系: {entity1_name} <-> {entity2_name}")
                 continue
             
-            # 使用 relation_processor 创建关系
             relation = self.relation_processor._process_single_relation(
                 extracted_relation={
                     'entity1_name': entity1_name,
@@ -1003,7 +1013,8 @@ class TemporalMemoryGraphProcessor:
                 entity1_name=entity1_name,
                 entity2_name=entity2_name,
                 verbose_relation=verbose,
-                doc_name=document_name
+                doc_name=document_name,
+                base_time=new_memory_cache.physical_time,
             )
             
             if relation:
@@ -3252,7 +3263,6 @@ class TemporalMemoryGraphProcessor:
                 if verbose:
                     print(f"        保存关系memory_cache: {relation_memory_cache.id}")
                 
-                # 使用保存的memory_cache_id处理关系
                 relation = self.relation_processor._process_single_relation(
                     extracted_relation,
                     actual_entity1_id,
@@ -3260,8 +3270,9 @@ class TemporalMemoryGraphProcessor:
                     relation_memory_cache.id,
                     entity1.name,
                     entity2.name,
-                    verbose_relation=verbose,  # 传递verbose参数控制是否显示关系操作详情
-                    doc_name=doc_name_from_entity
+                    verbose_relation=verbose,
+                    doc_name=doc_name_from_entity,
+                    base_time=relation_memory_cache.physical_time,
                 )
             
             if relation:

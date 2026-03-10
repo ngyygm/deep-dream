@@ -99,32 +99,28 @@ GET /health
 
 ## Remember
 
-### Text input
+Only JSON body with `text` is accepted. Batch your content — avoid one-sentence calls.
+
+### Request
 
 ```json
 POST /api/remember
 {
-  "text": "罗辑是一名社会学教授，他被选为面壁者之一。",
-  "source_name": "三体测试-文本"
+  "text": "罗辑是一名社会学教授，他被选为面壁者之一。面壁计划是人类为了对抗三体入侵而制定的战略防御计划...",
+  "source_name": "三体测试-文本",
+  "event_time": "2026-03-09T14:00:00",
+  "load_cache_memory": false
 }
 ```
 
-### Local file path
+| Field | Required | Description |
+|-------|----------|-------------|
+| `text` | Yes | Natural-language content to remember |
+| `source_name` | No | Human-readable source label (default `api_input`) |
+| `event_time` | No | ISO 8601 — when the events actually happened; used as `physical_time` for all entities/relations/caches in this batch |
+| `load_cache_memory` | No | Whether to continue from latest memory cache chain |
 
-```json
-POST /api/remember
-{
-  "file_path": "/home/linkco/exa/datas/docs/三体2黑暗森林.txt",
-  "source_name": "三体2黑暗森林"
-}
-```
-
-### Multipart upload
-
-Use form-data:
-
-- `file`: uploaded file
-- `source_name`: optional
+The service saves the full `text` to `storage_path/originals/` and returns the path in `original_path`.
 
 ## Unified Find
 
@@ -253,7 +249,7 @@ Typical error envelope:
 ```json
 {
   "success": false,
-  "error": "请提供 text、file_path 或上传文件",
+  "error": "text 为必填字段",
   "elapsed_ms": 4.52
 }
 ```
@@ -261,7 +257,9 @@ Typical error envelope:
 ## Notes For Agents
 
 - TMG is one unified graph. Do not assume per-library routing.
-- `remember` accepts natural-language text or documents. Avoid tag-heavy payloads.
+- `remember` accepts only JSON `text`. No file_path or multipart upload.
+- Batch content in remember calls — do not send one or two sentences at a time.
+- Use `event_time` when the content describes events that happened earlier than the request time.
 - `find` returns candidates and local graph context. Final selection belongs to the caller.
 - If the user asks for performance or latency, report `elapsed_ms`.
 - If the user has not started the service yet, help them configure and start it before using the endpoints.
