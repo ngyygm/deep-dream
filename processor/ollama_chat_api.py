@@ -171,3 +171,53 @@ def ollama_chat_stream_content(
         delta = msg.get("content") or ""
         if delta:
             yield delta
+
+
+# ---------------------------------------------------------------------------
+# OpenAI 兼容接口（智谱 GLM、OpenAI 等）
+# ---------------------------------------------------------------------------
+
+
+def openai_compatible_chat(
+    messages: List[Dict[str, str]],
+    *,
+    model: str,
+    base_url: str,
+    api_key: str,
+    timeout: int = 300,
+) -> OllamaChatResponse:
+    """
+    调用 OpenAI 兼容的 /chat/completions 接口（如智谱 open.bigmodel.cn、OpenAI）。
+
+    Args:
+        messages: 对话消息列表，每项为 {"role": "user"|"system"|"assistant", "content": "..."}。
+        model: 模型名称（如 glm-4-flash、glm-4.7-flash、gpt-4）。
+        base_url: API 基础 URL，如 https://open.bigmodel.cn/api/paas/v4 或 .../api/coding/paas/v4。
+        api_key: API Key，请求头为 Authorization: Bearer <api_key>。
+        timeout: 请求超时秒数。
+
+    Returns:
+        OllamaChatResponse: content 为助手回复正文，与 ollama_chat 返回结构一致。
+    """
+    url = base_url.rstrip("/")
+    if not url.endswith("/chat/completions"):
+        url = url + "/chat/completions"
+    body = {
+        "model": model,
+        "messages": messages,
+        "stream": False,
+    }
+    data = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(url, data=data, method="POST")
+    req.add_header("Content-Type", "application/json")
+    req.add_header("Authorization", "Bearer " + api_key)
+
+    with urllib.request.urlopen(req, timeout=timeout) as f:
+        resp = json.loads(f.read().decode("utf-8"))
+
+    choices = resp.get("choices") or []
+    content = ""
+    if choices:
+        msg = choices[0].get("message") or {}
+        content = msg.get("content") or ""
+    return OllamaChatResponse(content=content, raw=resp)

@@ -2,6 +2,7 @@
 Embedding客户端：支持自定义embedding模型
 """
 from typing import List, Optional, Union
+import threading
 import numpy as np
 
 
@@ -24,6 +25,7 @@ class EmbeddingClient:
         self.device = device
         self.use_local = use_local
         self.model = None
+        self._encode_lock = threading.Lock()
         self._init_model()
     
     def _init_model(self):
@@ -78,12 +80,13 @@ class EmbeddingClient:
             texts = [texts]
         
         try:
-            embeddings = self.model.encode(
-                texts,
-                batch_size=batch_size,
-                show_progress_bar=False,
-                convert_to_numpy=True
-            )
+            with self._encode_lock:
+                embeddings = self.model.encode(
+                    texts,
+                    batch_size=batch_size,
+                    show_progress_bar=False,
+                    convert_to_numpy=True
+                )
             return embeddings
         except Exception as e:
             print(f"Embedding编码错误: {e}")

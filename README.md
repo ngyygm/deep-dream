@@ -98,12 +98,16 @@ cp service_config.example.json service_config.json
 python service_api.py --config service_config.json
 ```
 
-**写入记忆（仅 text）：**
+**写入记忆（默认异步，立即返回 task_id）：**
 
 ```bash
 curl -s -X POST http://localhost:16200/api/remember \
   -H "Content-Type: application/json" \
   -d '{"text": "林嘿嘿是考古学博士，在山洞遇见了会说话的白狐。白狐说已守护山洞三百年。", "event_time": "2026-03-09T14:00:00"}' | jq
+# → {"success": true, "data": {"task_id": "abc123", "status": "queued", ...}}
+
+# 查询状态
+curl -s http://localhost:16200/api/remember/status/abc123 | jq
 ```
 
 **检索记忆：**
@@ -137,7 +141,7 @@ TMG 提供 **Skill**，使 Cursor、Claude 等 Agent 能够按文档完成部署
 
 3. **Agent 将执行的操作**  
    - 若服务未就绪：克隆仓库 → 配置 `service_config.json` → 启动 `python service_api.py` → 使用 `GET /health` 确认。  
-   - 写入：`POST /api/remember`，JSON body 传入 `text`（仅支持文本），可选 `event_time` 指定事件实际发生时间。  
+   - 写入：`POST /api/remember`，JSON body 传入 `text`（仅支持文本），可选 `event_time` 指定事件实际发生时间。默认异步返回 `task_id`，通过 `/api/remember/status/<task_id>` 轮询进度。  
    - 检索：`POST /api/find` 传入自然语言 `query`；需要时可使用实体/关系/版本/子图等原子接口。  
    - 集成到 Agent 身份：在 SOUL.md 中声明记忆能力，在 HEARTBEAT.md 中加入定期记忆同步，在 AGENTS.md 中配置会话启动/结束的记忆流程。详见 `SKILL.md` 中的集成指南。
 
@@ -145,7 +149,7 @@ TMG 提供 **Skill**，使 Cursor、Claude 等 Agent 能够按文档完成部署
 
 ## API 概览
 
-### Remember — 记忆写入
+### Remember — 记忆写入（默认异步）
 
 仅接受 JSON body，`text` 为必填。建议批量、整段传入，避免一两句一调。
 
@@ -155,6 +159,9 @@ TMG 提供 **Skill**，使 Cursor、Claude 等 Agent 能够按文档完成部署
 | `source_name` | 否 | 来源名称 |
 | `event_time` | 否 | ISO 8601，事件实际发生时间（不传则用处理时间） |
 | `load_cache_memory` | 否 | 是否接着上一段记忆链写 |
+| `async` | 否 | 默认 `true`——异步返回 `task_id`（HTTP 202）；`false` 同步等待 |
+
+**异步模式**（默认）：请求立即返回 `task_id`，后台流水线并行处理。可通过 `GET /api/remember/status/<task_id>` 查询进度，`GET /api/remember/queue` 查看队列。多个 remember 请求可并发——记忆缓存更新串行保序，抽取/处理阶段并行加速。
 
 服务端自动保存原文到 `storage_path/originals/`，返回 `original_path`。内部完成切片、记忆缓存更新、实体/关系抽取、图谱对齐与版本化写入。
 
@@ -191,6 +198,8 @@ TMG 提供 **Skill**，使 Cursor、Claude 等 Agent 能够按文档完成部署
 - **Embedding**：`embedding.model`（本地路径或 HuggingFace 模型名）、`embedding.device`  
 - **分块**：`chunking.window_size`、`chunking.overlap`  
 - **子图**：`subgraph_max_count`、`subgraph_ttl_seconds`  
+
+**使用智谱 GLM（OpenAI 兼容）**：将 `llm` 设为 `"api_key": "你的智谱 API Key"`、`"model": "glm-4.7-flash"`、`"base_url": "https://open.bigmodel.cn/api/coding/paas/v4"` 即可，服务会自动走 OpenAI 兼容的 `/chat/completions` 接口。
 
 ---
 

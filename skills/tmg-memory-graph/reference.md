@@ -101,6 +101,8 @@ GET /health
 
 Only JSON body with `text` is accepted. Batch your content — avoid one-sentence calls.
 
+**默认异步** — 请求立即返回 `task_id`，后台流水线并行处理。设 `"async": false` 可同步等待。
+
 ### Request
 
 ```json
@@ -109,7 +111,8 @@ POST /api/remember
   "text": "罗辑是一名社会学教授，他被选为面壁者之一。面壁计划是人类为了对抗三体入侵而制定的战略防御计划...",
   "source_name": "三体测试-文本",
   "event_time": "2026-03-09T14:00:00",
-  "load_cache_memory": false
+  "load_cache_memory": false,
+  "async": true
 }
 ```
 
@@ -119,6 +122,27 @@ POST /api/remember
 | `source_name` | No | Human-readable source label (default `api_input`) |
 | `event_time` | No | ISO 8601 — when the events actually happened; used as `physical_time` for all entities/relations/caches in this batch |
 | `load_cache_memory` | No | Whether to continue from latest memory cache chain |
+| `async` | No | `true`（默认）异步返回 task_id；`false` 同步等待处理完成 |
+
+### Async Response (202)
+
+```json
+{ "success": true, "data": { "task_id": "abc123", "status": "queued", "original_path": "..." } }
+```
+
+### 查询任务状态
+
+```http
+GET /api/remember/status/<task_id>
+```
+
+返回 `status`（`queued` / `running` / `completed` / `failed`）、`result`（完成时）、`error`（失败时）。
+
+### 查看任务队列
+
+```http
+GET /api/remember/queue?limit=50
+```
 
 The service saves the full `text` to `storage_path/originals/` and returns the path in `original_path`.
 
@@ -258,6 +282,7 @@ Typical error envelope:
 
 - TMG is one unified graph. Do not assume per-library routing.
 - `remember` accepts only JSON `text`. No file_path or multipart upload.
+- `remember` defaults to **async** — returns `task_id` immediately; poll `/api/remember/status/<task_id>` for progress. Pass `"async": false` for synchronous mode.
 - Batch content in remember calls — do not send one or two sentences at a time.
 - Use `event_time` when the content describes events that happened earlier than the request time.
 - `find` returns candidates and local graph context. Final selection belongs to the caller.

@@ -11,7 +11,7 @@ import uuid
 import time
 
 from .models import MemoryCache, Entity
-from .ollama_chat_api import ollama_chat
+from .ollama_chat_api import ollama_chat, openai_compatible_chat
 
 
 class LLMClient:
@@ -228,6 +228,22 @@ content要求：
             base = base[:-3]
         return base
 
+    def _use_openai_compatible(self) -> bool:
+        """是否为 OpenAI 兼容接口（智谱 GLM、OpenAI 等）：需同时有 api_key 与 base_url，且 base_url 为 v4/v1 或已知域名。本地 Ollama 地址即使带 /v1 也按 Ollama 处理。"""
+        if not self.api_key or not self.base_url:
+            return False
+        u = (self.base_url or "").rstrip("/").lower()
+        # 本地 Ollama 默认端口：一律走 Ollama /api/chat，不走 /v1/chat/completions
+        if ":11434" in u and ("127.0.0.1" in u or "localhost" in u):
+            return False
+        if "open.bigmodel.cn" in u or "bigmodel.cn" in u:
+            return True
+        if "openai.com" in u or "api.openai.com" in u:
+            return True
+        if u.endswith("/v4") or u.endswith("/v1"):
+            return True
+        return False
+
     def _is_valid_utf8(self, text: str) -> bool:
         """
         检测文本是否是有效的UTF-8编码
@@ -289,13 +305,22 @@ content要求：
         attempt = 0
         while True:
             try:
-                resp = ollama_chat(
-                    messages,
-                    model=self.model_name,
-                    base_url=self._get_ollama_base_url(),
-                    think=self.think_mode,
-                    timeout=timeout,
-                )
+                if self._use_openai_compatible():
+                    resp = openai_compatible_chat(
+                        messages,
+                        model=self.model_name,
+                        base_url=self.base_url.rstrip("/"),
+                        api_key=self.api_key,
+                        timeout=timeout,
+                    )
+                else:
+                    resp = ollama_chat(
+                        messages,
+                        model=self.model_name,
+                        base_url=self._get_ollama_base_url(),
+                        think=self.think_mode,
+                        timeout=timeout,
+                    )
                 response_text = resp.content or ""
                 
                 # 检测是否是有效的UTF-8编码
