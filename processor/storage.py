@@ -441,6 +441,31 @@ class StorageManager:
             doc_name=row[6] if len(row) > 6 and row[6] is not None else "",  # 向后兼容
             embedding=row[7] if len(row) > 7 else None
         )
+
+    def get_relation_by_absolute_id(self, relation_absolute_id: str) -> Optional[Relation]:
+        """根据关系行的主键 id（绝对ID）获取单条关系"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, relation_id, entity1_absolute_id, entity2_absolute_id, content, physical_time, memory_cache_id, doc_name, embedding
+            FROM relations
+            WHERE id = ?
+        """, (relation_absolute_id,))
+        row = cursor.fetchone()
+        conn.close()
+        if row is None:
+            return None
+        return Relation(
+            id=row[0],
+            relation_id=row[1],
+            entity1_absolute_id=row[2] or "",
+            entity2_absolute_id=row[3] or "",
+            content=row[4],
+            physical_time=datetime.fromisoformat(row[5]),
+            memory_cache_id=row[6],
+            doc_name=row[7] if len(row) > 7 and row[7] is not None else "",
+            embedding=row[8] if len(row) > 8 else None
+        )
     
     def get_entity_version_at_time(self, entity_id: str, time_point: datetime) -> Optional[Entity]:
         """获取实体在指定时间点的版本（该时间点之前或等于该时间点的最新版本）"""

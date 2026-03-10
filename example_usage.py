@@ -1,130 +1,196 @@
 """
-使用示例：展示如何使用 Temporal Memory Graph 处理文档
+使用示例：通过 HTTP API 操作 Temporal Memory Graph
+
+前置条件：
+  1. 启动 API 服务：python service_api.py --config service_config.json
+  2. 确保测试文档存在：../datas/docs/三体2黑暗森林.txt
+
+本脚本演示三个核心场景：
+  1. Remember — 传文本记忆
+  2. Remember — 传文件记忆
+  3. Find — 语义检索唤醒局部记忆
 """
-from pathlib import Path
-from processor import TemporalMemoryGraphProcessor
+import json
+import sys
+import time
+
+import requests
+
+API_BASE = "http://127.0.0.1:16200"
 
 
-def example_basic_usage(processor):
-    """基本使用示例"""
-    
-    # 自动读取 data 文件夹下的所有 .txt 文件
-    data_dir = Path(__file__).parent / "data"
-    document_paths = [
-        str(data_dir / f.name) 
-        for f in data_dir.glob("*.txt")
-        if f.is_file()
+def pp(label: str, resp: requests.Response):
+    """格式化打印 API 响应"""
+    print(f"\n{'=' * 60}")
+    print(f"  {label}")
+    print(f"  {resp.request.method} {resp.request.url}")
+    print(f"  Status: {resp.status_code}")
+    print(f"{'=' * 60}")
+    try:
+        data = resp.json()
+        print(json.dumps(data, ensure_ascii=False, indent=2))
+    except Exception:
+        print(resp.text[:500])
+    print()
+
+
+# ------------------------------------------------------------------
+# 0. 健康检查
+# ------------------------------------------------------------------
+def check_health():
+    print("\n>>> 健康检查")
+    resp = requests.get(f"{API_BASE}/health")
+    pp("Health", resp)
+    if resp.status_code != 200 or not resp.json().get("success"):
+        print("服务不可用，请先启动 service_api.py")
+        sys.exit(1)
+
+
+# ------------------------------------------------------------------
+# 1. Remember — 传文本
+# ------------------------------------------------------------------
+def example_remember_text():
+    print("\n>>> Remember: 传文本记忆")
+
+    text = (
+        "罗辑是一名社会学教授，他被选为面壁者之一。"
+        "面壁计划是人类为了对抗三体入侵而制定的战略防御计划，"
+        "允许面壁者在不向任何人解释的情况下调动大量资源。"
+        "罗辑最初对自己被选为面壁者感到困惑，因为他既不是科学家也不是军事家。"
+        "后来他意识到，叶文洁曾经告诉他宇宙社会学的两条公理和两个重要概念，"
+        "这可能是他被选中的真正原因。"
+    )
+
+    resp = requests.post(
+        f"{API_BASE}/api/remember",
+        json={"text": text, "source_name": "三体测试-文本"},
+    )
+    pp("Remember Text", resp)
+    return resp.json()
+
+
+# ------------------------------------------------------------------
+# 2. Remember — 传本地文件路径
+# ------------------------------------------------------------------
+def example_remember_file():
+    print("\n>>> Remember: 传本地文件路径")
+
+    file_path = "/home/linkco/exa/datas/docs/三体2黑暗森林.txt"
+    resp = requests.post(
+        f"{API_BASE}/api/remember",
+        json={"file_path": file_path, "source_name": "三体2黑暗森林"},
+    )
+    pp("Remember File", resp)
+    return resp.json()
+
+
+# ------------------------------------------------------------------
+# 3. Remember — 上传文件
+# ------------------------------------------------------------------
+def example_remember_upload():
+    print("\n>>> Remember: 上传文件")
+
+    file_path = "/home/linkco/exa/datas/docs/三体2黑暗森林.txt"
+    with open(file_path, "rb") as f:
+        # 只取前 2000 字符作为演示，避免处理时间过长
+        content = f.read(2000)
+
+    resp = requests.post(
+        f"{API_BASE}/api/remember",
+        files={"file": ("三体2片段.txt", content, "text/plain")},
+        data={"source_name": "三体2黑暗森林-上传片段"},
+    )
+    pp("Remember Upload", resp)
+    return resp.json()
+
+
+# ------------------------------------------------------------------
+# 4. Find — 统一语义检索
+# ------------------------------------------------------------------
+def example_find():
+    print("\n>>> Find: 语义检索")
+
+    queries = [
+        "罗辑为什么被选为面壁者",
+        "面壁计划是什么",
+        "叶文洁和罗辑的关系",
     ]
-    
-    if not document_paths:
-        print("警告：data 文件夹下没有找到 .txt 文件")
-        return
-    
-    print(f"找到 {len(document_paths)} 个文档文件")
-    
-    processor.process_documents(
-        document_paths, 
-        verbose=True,
-        similarity_threshold=0.5,  # 实体搜索相似度阈值（默认值，如果未指定下面的三个独立阈值则使用此值）
-        max_similar_entities=5,  # 语义向量初筛后返回的最大相似实体数量（默认10）
-        content_snippet_length=100,  # 用于相似度搜索的实体content截取长度（默认50字符）
-        relation_content_snippet_length=256,  # 用于embedding计算的关系content截取长度（默认50字符）
-        # 三种搜索方法的独立阈值配置（可选，如果未指定则使用similarity_threshold）
-        jaccard_search_threshold=0.3,  # Jaccard搜索（name_only）的相似度阈值
-        embedding_name_search_threshold=0.7,  # Embedding搜索（name_only）的相似度阈值
-        embedding_full_search_threshold=0.3,  # Embedding搜索（name+content）的相似度阈值
-        # 实体抽取配置
-        entity_extraction_max_iterations=1,  # 实体抽取最大迭代次数（默认3次）后强制停止，防止无限循环
-        entity_extraction_iterative=True,    # 是否启用迭代实体抽取（默认True）
-        entity_post_enhancement=False,       # 是否启用实体后验增强（默认False，启用后会结合缓存记忆和当前text对实体content进行更细致的补全挖掘）
-        # 关系抽取配置
-        relation_extraction_max_iterations=1,  # 关系抽取最大迭代次数（默认3次）
-        relation_extraction_absolute_max_iterations=5,  # 关系抽取绝对最大迭代次数（默认10次），超过
-        relation_extraction_iterative=True,      # 是否启用迭代关系抽取（默认True）
-        # LLM并行配置
-        llm_threads=1,  # LLM并行访问线程数量（默认1，用于实体增强等可并行处理的阶段）
-        # 缓存记忆配置
-        load_cache_memory=True  # 是否加载缓存记忆（默认False，如果为True，会从storage_path下的memory_caches/json目录查找最新的cache并加载）
+
+    for q in queries:
+        resp = requests.post(
+            f"{API_BASE}/api/find",
+            json={
+                "query": q,
+                "max_entities": 10,
+                "max_relations": 20,
+                "expand": True,
+            },
+        )
+        pp(f"Find: {q}", resp)
+        time.sleep(0.5)
+
+
+# ------------------------------------------------------------------
+# 5. Find — 原子接口示例
+# ------------------------------------------------------------------
+def example_find_atomic():
+    print("\n>>> Find: 原子接口")
+
+    # 统计
+    resp = requests.get(f"{API_BASE}/api/find/stats")
+    pp("Stats", resp)
+
+    # 搜索实体
+    resp = requests.get(
+        f"{API_BASE}/api/find/entities/search",
+        params={"query_name": "罗辑", "max_results": 5, "threshold": 0.3},
     )
-    
-    # 获取统计信息
-    stats = processor.get_statistics()
-    print(f"\n处理完成！统计信息: {stats}")
+    pp("Entity Search: 罗辑", resp)
 
-
-def example_consolidate_knowledge_graph(processor):
-    """知识图谱整理示例
-    
-    用于整理已有的知识库，识别并合并重复实体，创建别名关系。
-    适合在处理完文档后运行，用于优化知识图谱质量。
-    """
-    # 运行知识图谱整理
-    # 该方法会：
-    # 1. 获取所有实体
-    # 2. 对每个实体，按name搜索相似实体（前max_candidates个）
-    # 3. 对每个实体，按name+content搜索相似实体（前max_candidates个）
-    # 4. 使用LLM分析候选实体，判断是否为同一实体或存在别名关系
-    # 5. 执行实体合并（将重复的entity_id合并为一个）
-    # 6. 创建别名关系边（如"雷政委"是"雷志成"的别名）
-    # 7. 记录整理过程的缓存记忆
-    result = processor.consolidate_knowledge_graph_entity(
-        verbose=True,  # 输出详细信息
-        similarity_threshold=0.4,  # 相似度搜索阈值
-        max_candidates=20,  # 每次搜索返回的最大候选实体数
-        batch_candidates=10,  # 每次批量处理的候选实体数（如果设置了且小于max_candidates，则分批处理）
-        content_snippet_length=128,  # 传入LLM的实体content最大长度
-        parallel=False,  # 启用多线程并行处理（需要llm_threads > 1）
-        enable_name_match_step=False,  # 是否启用步骤1.5（按名称完全匹配进行初步整理）
-        enable_pre_search=False  # 是否启用预搜索（步骤2）
+    # 搜索关系
+    resp = requests.get(
+        f"{API_BASE}/api/find/relations/search",
+        params={"query_text": "面壁者", "max_results": 5, "threshold": 0.3},
     )
-    
-    # 输出整理结果
-    print("\n整理结果详情:")
-    print(f"  - 分析的实体数: {result['entities_analyzed']}")
-    print(f"  - 合并的实体记录数: {result['entities_merged']}")
-    print(f"  - 创建的别名关系数: {result['alias_relations_created']}")
-    
-    if result['merge_details']:
-        print("\n合并操作详情:")
-        for merge in result['merge_details']:
-            print(f"  - {merge.get('merged_source_ids', [])} -> {merge.get('target_entity_id', '')}")
-            if merge.get('reason'):
-                print(f"    原因: {merge.get('reason')}")
-    
-    if result['alias_details']:
-        print("\n别名关系详情:")
-        for alias in result['alias_details']:
-            print(f"  - {alias.get('from_name', '')} -> {alias.get('to_name', '')}")
-            print(f"    描述: {alias.get('content', '')}")
+    pp("Relation Search: 面壁者", resp)
 
 
+# ------------------------------------------------------------------
+# 主入口
+# ------------------------------------------------------------------
 if __name__ == "__main__":
-    print("Temporal Memory Graph 使用示例")
-    print("=" * 50)
-    
+    print("Temporal Memory Graph — API 使用示例")
+    print("=" * 60)
+
+    check_health()
+
     # 选择要运行的示例
-    import sys
+    mode = sys.argv[1] if len(sys.argv) > 1 else "all"
 
-    # 初始化处理器
-    processor = TemporalMemoryGraphProcessor(
-        storage_path="./graph/qwen3.5-4b-santi",  # 存储路径
-        window_size=800,  # 窗口大小：500字符
-        overlap=200,  # 重叠大小：200字符
-        llm_api_key="ollama",  # LLM API密钥（可选）
-        llm_model="qwen3.5:4b",  # LLM模型名称（可选）
-        llm_base_url="http://127.0.0.1:11434/v1",  # LLM API基础URL（可选）
-        llm_think_mode=False,  # 是否开启 think 思维链：True=开启，False=关闭（默认）
-        # Embedding模型配置（可选）
-        embedding_model_path="/home/linkco/exa/models/Qwen3-Embedding-0.6B",  # Embedding模型本地文件路径（优先使用）
-        # embedding_model_name="sentence-transformers/all-MiniLM-L6-v2",  # 或使用HuggingFace模型名称
-        embedding_device="cuda:0"  # Embedding计算设备 ("cpu" 或 "cuda")
-    )
+    if mode in ("text", "all"):
+        example_remember_text()
 
+    if mode in ("file", "all"):
+        example_remember_file()
 
-    print("\n1. 基本使用示例（模拟LLM）:")
-    example_basic_usage(processor)
-    
-    # print("\n2. 知识图谱整理示例:")
-    # example_consolidate_knowledge_graph(processor)
-    
-    
+    if mode in ("upload", "all"):
+        example_remember_upload()
+
+    if mode in ("find", "all"):
+        example_find()
+
+    if mode in ("atomic", "all"):
+        example_find_atomic()
+
+    if mode not in ("text", "file", "upload", "find", "atomic", "all"):
+        print(f"""
+用法: python example_usage.py [mode]
+
+mode 可选值:
+  text    — 仅测试文本记忆
+  file    — 仅测试文件路径记忆（三体2黑暗森林.txt）
+  upload  — 仅测试文件上传记忆
+  find    — 仅测试语义检索
+  atomic  — 仅测试原子接口
+  all     — 运行全部示例（默认）
+""")

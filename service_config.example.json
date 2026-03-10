@@ -1,0 +1,21 @@
+{
+  "host": "0.0.0.0",
+  "port": 16200,
+  "storage_path": "./graph/tmg_storage",
+  "llm": {
+    "api_key": "ollama",
+    "model": "qwen3.5:4b",
+    "base_url": "http://127.0.0.1:11434/v1",
+    "think": false
+  },
+  "embedding": {
+    "model": "Qwen/Qwen3-Embedding-0.6B",
+    "device": "cpu"
+  },
+  "chunking": {
+    "window_size": 1000,
+    "overlap": 200
+  },
+  "subgraph_max_count": 100,
+  "subgraph_ttl_seconds": 3600
+}

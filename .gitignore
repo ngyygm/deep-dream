@@ -1,6 +1,13 @@
-# 排除 docs 和 graph 目录
+# 排除 docs、graph、data 目录（含书籍等本地数据）
 docs/
 graph/
+data/
+
+# 本地配置（含路径、API 等），不提交；仅提交 service_config.example.json
+service_config.json
+*.local.json
+.env
+.env.*
 
 # 排除 Python 缓存文件
 __pycache__/

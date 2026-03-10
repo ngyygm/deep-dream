@@ -20,14 +20,15 @@ class TemporalMemoryGraphProcessor:
     
     def __init__(self, storage_path: str, window_size: int = 1000, overlap: int = 200,
                  llm_api_key: Optional[str] = None, llm_model: str = "gpt-4",
-                 llm_base_url: Optional[str] = None, 
+                 llm_base_url: Optional[str] = None,
                  embedding_model_path: Optional[str] = None,
                  embedding_model_name: Optional[str] = None,
                  embedding_device: str = "cpu",
+                 embedding_use_local: bool = True,
                  llm_think_mode: bool = False):
         """
         初始化处理器
-        
+
         Args:
             storage_path: 存储路径
             window_size: 窗口大小（字符数）
@@ -38,13 +39,14 @@ class TemporalMemoryGraphProcessor:
             embedding_model_path: Embedding模型本地路径（优先使用）
             embedding_model_name: Embedding模型名称（HuggingFace模型名）
             embedding_device: Embedding计算设备 ("cpu" 或 "cuda")
+            embedding_use_local: 是否优先使用本地 embedding 模型
             llm_think_mode: LLM 是否开启思维链/think 模式（默认 False）。Ollama 下用 API 参数 think；非 Ollama 用 enable_thinking
         """
-        # 初始化Embedding客户端
         self.embedding_client = EmbeddingClient(
             model_path=embedding_model_path,
             model_name=embedding_model_name,
-            device=embedding_device
+            device=embedding_device,
+            use_local=embedding_use_local
         )
         
         # 使用默认值初始化各个组件
@@ -291,7 +293,71 @@ class TemporalMemoryGraphProcessor:
             # 恢复原始组件
             for key, value in original_components.items():
                 setattr(self, key, value)
-    
+
+    def remember_text(self, text: str, doc_name: str = "api_input", verbose: bool = False,
+                      load_cache_memory: Optional[bool] = None) -> Dict:
+        """
+        将一段文本作为记忆入库：内存内滑窗分块后逐块执行更新缓存、抽取实体/关系、对齐并写入存储。
+        默认追加到同一条全局 current_memory_cache 链（进程内）；可选加载已有最新缓存再追加。
+
+        Args:
+            text: 原始文本内容
+            doc_name: 文档/来源名称，用于窗口提示与审计
+            verbose: 是否打印处理日志
+            load_cache_memory: 是否在开始前加载最新缓存记忆再追加；None 时使用实例默认 self.load_cache_memory
+
+        Returns:
+            dict: memory_cache_id（最后一块的缓存ID）, chunks_processed（处理的块数）, storage_path
+        """
+        use_load_cache = load_cache_memory if load_cache_memory is not None else self.load_cache_memory
+        if use_load_cache:
+            latest_metadata = self.storage.get_latest_memory_cache_metadata(activity_type="文档处理")
+            if latest_metadata:
+                self.current_memory_cache = self.storage.load_memory_cache(latest_metadata["id"])
+                if verbose and self.current_memory_cache:
+                    print(f"已加载缓存记忆: {self.current_memory_cache.id}，将在此链上追加")
+            else:
+                self.current_memory_cache = None
+        else:
+            self.current_memory_cache = None
+
+        document_path = f"api://{uuid.uuid4().hex}"
+        window_size = self.document_processor.window_size
+        overlap = self.document_processor.overlap
+        total_length = len(text)
+        start = 0
+        chunk_idx = 0
+        last_memory_cache_id = None
+
+        while start < total_length:
+            end = min(start + window_size, total_length)
+            chunk = text[start:end]
+            if start == 0:
+                chunk = f"开始阅读新的文档，文件名是：{doc_name}\n\n{chunk}"
+            is_new_document = start == 0
+            self._process_window(
+                chunk,
+                doc_name,
+                is_new_document,
+                text_start_pos=start,
+                text_end_pos=end,
+                total_text_length=total_length,
+                verbose=verbose,
+                document_path=document_path,
+            )
+            last_memory_cache_id = self.current_memory_cache.id if self.current_memory_cache else None
+            chunk_idx += 1
+            if end >= total_length:
+                break
+            start = end - overlap
+
+        storage_path = str(self.storage.storage_path)
+        return {
+            "memory_cache_id": last_memory_cache_id,
+            "chunks_processed": chunk_idx,
+            "storage_path": storage_path,
+        }
+
     def _process_window(self, input_text: str, document_name: str, 
                        is_new_document: bool, text_start_pos: int = 0,
                        text_end_pos: int = 0, total_text_length: int = 0,

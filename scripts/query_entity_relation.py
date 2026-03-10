@@ -22,15 +22,26 @@ import re
 from pathlib import Path
 from datetime import datetime
 
-# 添加Temporal_Memory_Graph到路径
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# 添加Temporal_Memory_Graph到路径（支持多种路径）
+import os
+from pathlib import Path
+
+# 方法1: 从scripts目录向上找
+script_dir = Path(__file__).parent
+tmg_dir = script_dir.parent.parent.parent
+if (tmg_dir / "processor").exists():
+    sys.path.insert(0, str(tmg_dir))
+else:
+    # 方法2: 使用绝对路径
+    sys.path.insert(0, str(Path("/home/linkco/exa/Temporal_Memory_Graph")))
 
 try:
     from processor.storage import StorageManager
 except ImportError:
     print("错误: 无法导入 StorageManager")
-    print("请确保在正确的目录下运行此脚本")
+    print("请确保 Temporal_Memory_Graph 在正确的位置")
     sys.exit(1)
+
 
 
 # 称谓-关键词映射表

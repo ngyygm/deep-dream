@@ -1,221 +1,197 @@
-# Temporal Memory Graph (TMG) - 时序记忆图谱
+<p align="center">
+  <img src="https://img.shields.io/github/stars/ngyygm/Temporal_Memory_Graph?style=for-the-badge&logo=github" alt="GitHub stars"/>
+  <img src="https://img.shields.io/github/forks/ngyygm/Temporal_Memory_Graph?style=for-the-badge&logo=github" alt="GitHub forks"/>
+  <img src="https://img.shields.io/github/license/ngyygm/Temporal_Memory_Graph?style=for-the-badge" alt="License"/>
+  <img src="https://img.shields.io/badge/python-3.8+-blue?style=for-the-badge&logo=python" alt="Python"/>
+</p>
 
-> 以时间为核心轴的知识图谱系统，采用 Git-style 版本管理机制，支持概念边描述和双时间轴查询。
+<p align="center">
+  <strong>Temporal Memory Graph (TMG)</strong>
+</p>
+<p align="center">
+  <b>为 Agent 设计的长期记忆系统</b> —— 像人类一样存、取、回溯。
+</p>
 
-## 📌 核心设计理念
-
-### 1. 设计哲学
-- **时间即版本**：所有知识变更都有时间戳，可回溯任意时间点的知识状态
-- **概念边取代标签边**：关系不再是简单的"位于"、"亲属"等标签，而是完整的自然语言描述
-- **双时间轴**：物理时间（When it was recorded）+ 虚拟世界线时间（When it happened in context）
-- **极简底层**：核心数据结构尽可能简单，复杂逻辑由大模型处理
-- **记忆缓存驱动**：通过临时记忆缓存文档维护上下文，避免实体错配
-
-### 2. 与传统知识图谱的区别
-
-| 特性 | 传统知识图谱 | TMG |
-|------|-------------|-----|
-| 关系表示 | 固定标签 (is_a, located_in) | 概念边（自然语言描述） |
-| 时间处理 | 静态或简单时间戳 | Git-style 版本控制 + 双时间轴 |
-| 知识更新 | 覆盖式更新 | 追加式更新，保留历史 |
-| 查询方式 | 结构化查询 | 支持时间点查询、范围查询、语义查询 |
-| 实体对齐 | 基于规则 | 基于记忆缓存 + LLM 智能判断 |
+<p align="center">
+  <a href="README.md">中文</a> · <a href="README.en.md">English</a> · <a href="README.ja.md">日本語</a>
+</p>
 
 ---
 
-## 🏗️ 系统架构
+## 简介
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        Input Layer                               │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐        │
-│  │  小说    │  │  对话    │  │  网页    │  │  文档    │        │
-│  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘        │
-└───────┼─────────────┼─────────────┼─────────────┼───────────────┘
-        │             │             │             │
-        └─────────────┴──────┬──────┴─────────────┘
-                             ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                   Sliding Window Processor                       │
-│  ┌─────────────────────────────────────────────────────────┐    │
-│  │  [overlap]──[current window 1000]──[overlap]            │    │
-│  └─────────────────────────────────────────────────────────┘    │
-└────────────────────────────┬────────────────────────────────────┘
-                             ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                    Memory Agent (LLM-based)                      │
-│                                                                  │
-│  ┌────────────────────────────────────────────────────────────┐ │
-│  │  处理流程:                                                  │ │
-│  │  1. 更新记忆缓存 ──► 2. 实体抽取+对齐 ──► 3. 关系抽取      │ │
-│  │       │              │                    │                 │ │
-│  │       ▼              ▼                    ▼                 │ │
-│  │  4. 图谱搜索 ──► 5. 更新判断 ──► 6. 事件时间推断           │ │
-│  │       │              │                    │                 │ │
-│  │       └─────────────► 7. Commit ◄─────────┘                 │ │
-│  └────────────────────────────────────────────────────────────┘ │
-│                              ▲                                   │
-│                              │                                   │
-│                     ┌────────┴────────┐                         │
-│                     │  Memory Cache   │ (实时状态 + 版本保存)    │
-│                     └─────────────────┘                         │
-└────────────────────────────┬────────────────────────────────────┘
-                             │
-              ┌──────────────┼──────────────┐
-              │ 查询已有知识 │              │ 提交变更
-              ▼              │              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                   Git-Style Graph Manager                        │
-│  ┌─────────────────────────────────────────────────────────┐    │
-│  │  Commit History:  c1 ──► c2 ──► c3 ──► c4 ──► HEAD      │    │
-│  │                   │            │                        │    │
-│  │                   └── 每个commit引用memory_cache_id ─────┘    │
-│  └─────────────────────────────────────────────────────────┘    │
-│                                                                  │
-│  ┌────────────────────────────────────────────────────────────┐ │
-│  │  Entity Versions        Relation Versions                  │ │
-│  │  ┌─────┐               ┌─────┐                             │ │
-│  │  │ v1  │──►│ v2 │      │ v1  │──►│ v2 │──►│ v3 │          │ │
-│  │  └─────┘   └────┘      └─────┘   └────┘   └────┘          │ │
-│  │  每个实体/关系都有独立的版本链（通过entity_id/relation_id）│ │
-│  └────────────────────────────────────────────────────────────┘ │
-└────────────────────────────┬────────────────────────────────────┘
-                             ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                      Storage Layer                               │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐           │
-│  │   SQLite     │  │    Markdown  │  │   向量DB     │           │
-│  │  (结构数据)  │  │  (缓存文档)  │  │  (语义检索)  │           │
-│  └──────────────┘  └──────────────┘  └──────────────┘           │
-└─────────────────────────────────────────────────────────────────┘
-```
+TMG 让 AI Agent 拥有**带时间的自然语言记忆**：专门为 Agent 提供**长期存取记忆**能力，**像人类一样**用自然语言记忆与回忆，并**将时间作为一等公民**——每条记忆可追溯，实体与关系带版本链。经历被写入一张统一知识图，用自然语言提问即可唤醒相关片段，并支持「那时发生了什么」式的时间回溯。
+
+| 定位 | 说明 |
+|------|------|
+| **面向 Agent** | 为智能体提供长期记忆存储与检索，而非面向人类的笔记或知识库。 |
+| **像人类一样** | 以自然语言写入与查询，不依赖预定义标签；由系统完成概念抽取与关系构建。 |
+| **时间是一等公民** | 记忆带时间戳，实体/关系具备版本链，支持按时间范围或时间点回溯。 |
+| **统一记忆图** | 所有记忆写入同一张图，通过语义检索与图谱扩展召回「一片相关记忆」。 |
+
+系统职责边界：仅提供 **Remember**（写入）与 **Find**（检索）；**Select**（筛选与决策）由调用方完成。
+
+### 与传统知识图谱的对比
+
+| 维度 | 传统知识图谱 | TMG |
+|------|--------------|-----|
+| 关系表示 | 固定关系类型（如 is_a, located_in） | 自然语言描述（概念边） |
+| 写入方式 | 需结构化输入与 schema | 直接输入文本/文档，系统自动抽取与对齐 |
+| 时间模型 | 多为静态或简单时间戳 | 版本链 + 时间戳，支持按时间回溯 |
+| 更新策略 | 多为覆盖更新 | 追加式更新，保留完整历史 |
+| 检索方式 | 结构化查询、标签过滤 | 语义检索 + 图谱邻域扩展 |
 
 ---
 
-## 📊 核心数据结构
+## 系统架构
 
-### 1. MemoryCache（临时记忆缓存）- 文档化设计
+```mermaid
+flowchart TB
+    subgraph Input["输入层"]
+        T[文本 / 文档]
+        F[文件上传]
+    end
 
-**MemoryCache 字段：**
+    subgraph Pipeline["记忆流水线"]
+        W[滑窗切片]
+        M[Memory Agent]
+        M --> M1[更新记忆缓存]
+        M --> M2[概念实体抽取]
+        M --> M3[概念关系抽取]
+        M --> M4[图谱语义对齐]
+        M --> M5[版本化写入]
+    end
 
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| id | str | 缓存唯一ID（主键），每次处理新的text输入，都会创建一个全新的id |
-| content | str | 简短的摘要总结缓存内容（文本形式，Markdown格式），记录当前的已有记忆、虚拟时间线、主要实体介绍、在阅读的文本文件名等一系列状态信息 |
-| physical_time | datetime | 更新时间（物理时间） |
+    subgraph Storage["统一记忆图"]
+        E[(Entity 版本链)]
+        R[(Relation 版本链)]
+        C[(MemoryCache)]
+    end
 
-**content 示例格式：**
-```markdown
-当前摘要：主角林嘿嘿正在探索神秘山洞，遇到了会说话的白狐。这是在林嘿嘿根据古地图找到山洞后，进入山洞深处时发生的情况。重要细节包括：白狐的毛色是纯白色，眼睛闪烁着智慧的光芒；白狐主动开口说话，似乎对林嘿嘿的到来并不意外；白狐提到了一些关于古地图和山洞的秘密，暗示这些都与某个古老的传说有关。
+    subgraph Find["检索层"]
+        Q[自然语言查询]
+        S[语义召回]
+        G[图谱扩展]
+        Tf[时间过滤]
+        Out[局部记忆区域]
+    end
 
-自我思考：
-- 应该关注：白狐的身份和来历、它提到的古老传说、古地图与山洞的关系、这些秘密可能对后续情节的影响
-- 预判重点：白狐可能是关键角色，它掌握的信息可能推动故事发展；古地图和山洞可能隐藏着重要的线索或宝藏；后续可能会揭示更多关于这个传说的内容
-- 疑虑：白狐为什么会说话？它提到的秘密是什么？古地图的来源和真实性需要进一步验证
-
-系统状态：
-- 已处理文本范围：处理到"白狐似乎知道一些秘密"结束
-- 当前文档名：三体.txt
+    T --> W
+    F --> W
+    W --> M
+    M --> E
+    M --> R
+    M --> C
+    Q --> S
+    S --> G
+    G --> Tf
+    Tf --> Out
+    E -.-> S
+    R -.-> S
 ```
 
-**设计说明：**
+---
 
-1. **MemoryCache 本质是文档**：`content` 字段是完整的自然语言描述，保存为 Markdown 文件
-2. **实时更新**：每个文本窗口处理时都会更新，保持当前上下文状态
-3. **版本管理**：每次更新创建新的 id，旧的版本保留用于历史查询
-4. **长度控制**：通过 LLM 自动维护，删除用不到的内容，加入新内容，保持合理长度
+## 快速开始
 
-**MemoryCacheManager 方法：**
+```bash
+cp service_config.example.json service_config.json
+# 编辑 service_config.json：配置 LLM 与 embedding
+python service_api.py --config service_config.json
+```
 
-| 方法 | 输入 | 输出 | 说明 |
-|------|------|------|------|
-| `__init__` | storage_path: str | - | 初始化管理器，创建缓存目录 |
-| `save_cache` | cache: MemoryCache | cache_id: str | 保存 cache，命名规则：cache_{timestamp}_{hash}.md |
-| `load_cache` | cache_id: str | MemoryCache | 加载指定 ID 的 cache |
-| `get_latest_cache` | activity_type: Optional[str] | Optional[MemoryCache] | 获取最新的 cache（可选按活动类型过滤） |
+**写入记忆：**
+
+```bash
+curl -s -X POST http://localhost:16200/api/remember \
+  -H "Content-Type: application/json" \
+  -d '{"text": "林嘿嘿是考古学博士，在山洞遇见了会说话的白狐。白狐说已守护山洞三百年。"}' | jq
+```
+
+**检索记忆：**
+
+```bash
+curl -s -X POST http://localhost:16200/api/find \
+  -H "Content-Type: application/json" \
+  -d '{"query": "林嘿嘿和白狐之间发生了什么"}' | jq
+```
 
 ---
 
-### 2. Entity（实体）- 带版本链的极简设计
+## 使用 Skill（Agent 集成）
 
-**Entity 字段：**
+TMG 提供 **Skill**，使 Cursor、Claude 等 Agent 能够按文档完成部署、配置、启动及 API 调用，无需手写 HTTP 客户端。
 
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| id | str | 主键，唯一标识符 |
-| entity_id | str | 实体的唯一ID，同一实体的不同版本具有相同的entity_id |
-| name | str | 实体名称 |
-| content | str | 实体的自然语言描述（包含所有信息） |
-| physical_time | datetime | 物理时间，记录该版本创建的实际时间 |
-| memory_cache_id | str | 记录当前更新是基于什么记忆环境下的判断 |
+### Skill 位置与内容
 
-**设计说明：**
+- **路径**：`Temporal_Memory_Graph/skills/tmg-memory-graph/`
+- **文件**：`SKILL.md`（Agent 行为说明）、`reference.md`（接口速查）
+- **作用**：支持「按文档执行」的 Agent 在阅读 SKILL 后即可完成何时调用 TMG、如何部署、如何调用 API。
 
-1. **版本管理**：
-   - 同一实体的不同版本共享相同的 `entity_id`
-   - 每次更新创建新的记录（新的 `id`），但 `entity_id` 保持不变
-   - 查询历史时，按 `physical_time` 排序即可得到完整的版本链
+### 三步让 Agent 使用 TMG
 
-2. **实体对齐**：
-   - 同名但不同的实体有不同的 `entity_id` 和不同的 `content`
-   - Memory Agent 通过 `name` + `content` 判断是否同一实体
-   - 如果两个实体的 `name` 相同但 `content` 描述不同，则视为不同实体
+1. **暴露 Skill 给 Agent**  
+   - **Cursor**：在规则中注明「使用 TMG 记忆时，请阅读并遵循 `Temporal_Memory_Graph/skills/tmg-memory-graph/SKILL.md`」，或将要点写入 `.cursor/rules`。  
+   - **Claude / 其他**：将 `skills/tmg-memory-graph/` 加入该 Agent 的技能目录或知识库。
 
-3. **信息存储**：
-   - 所有信息（类型、属性、上下文等）都写在 `content` 中
-   - 格式自由，由 LLM 生成和理解
+2. **通过自然语言触发**  
+   当用户表达「把这件事记下来」「查一下之前关于某某的记忆」「对接 TMG 记忆服务」时，Agent 会读取 SKILL 并执行相应流程（检查服务状态 → 执行 remember/find）。
 
-4. **别名处理**：
-   - "林嘿嘿" 和 "林博士" 是两个独立的实体（不同的 `entity_id`）
-   - 它们之间通过概念边连接：`(林嘿嘿) --["林嘿嘿是一名考古学博士，他的同事都叫他林博士。"]--> (林博士)`
-
-**示例：**
-- 实体版本1: `{id: "id_001", entity_id: "ent_001", name: "主角A", content: "男性，30岁", physical_time: "2025-01-30 10:00:00", memory_cache_id: "cache_001"}`
-- 实体版本2: `{id: "id_002", entity_id: "ent_001", name: "主角A", content: "女性，30岁，经历了变性手术", physical_time: "2025-01-30 10:30:00", memory_cache_id: "cache_015"}`
+3. **Agent 将执行的操作**  
+   - 若服务未就绪：克隆仓库 → 配置 `service_config.json` → 启动 `python service_api.py` → 使用 `GET /health` 确认。  
+   - 写入：`POST /api/remember`（文本用 `text`，文件用 `file_path` 或 multipart 上传）。  
+   - 检索：`POST /api/find` 传入自然语言 `query`；需要时可使用实体/关系/版本/子图等原子接口。
 
 ---
 
-### 3. Relation（关系）- 带版本链的概念边（无向关系）
+## API 概览
 
-**Relation 字段：**
+### Remember — 记忆写入
 
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| id | str | 主键 |
-| relation_id | str | 关系的唯一ID，同一关系的不同版本具有相同的relation_id |
-| entity1_absolute_id | str | 第一个实体的绝对ID（版本唯一ID，可以通过此ID找到entity_id） |
-| entity2_absolute_id | str | 第二个实体的绝对ID（版本唯一ID，可以通过此ID找到entity_id） |
-| content | str | 关系的自然语言描述 |
-| physical_time | datetime | 物理时间 |
-| memory_cache_id | str | 记录当前更新是基于什么记忆环境下的判断 |
+| 方式 | 说明 |
+|------|------|
+| 文本 | JSON body：`{"text": "..."}` |
+| 本地文件 | JSON body：`{"file_path": "/path/to/file"}`（服务端路径） |
+| 上传文件 | multipart：`file=@/path/to/file`（支持 txt / md / pdf / docx） |
 
-**设计说明：**
+可选参数：`source_name`、`load_cache_memory`。内部完成切片、记忆缓存更新、实体/关系抽取、图谱对齐与版本化写入。
 
-1. **无向关系设计**：
-   - 关系是无向的，不区分方向，只表示两个实体之间的关联
-   - `entity1_absolute_id` 和 `entity2_absolute_id` 只是用来标识关系涉及的两个实体，没有方向性
-   - 存储时，实体对按字母顺序排序（entity1 < entity2），确保 (A,B) 和 (B,A) 被视为同一个关系
+### Find — 语义检索
 
-2. **版本管理**：
-   - 同一关系的不同版本共享相同的 `relation_id`
-   - 每次更新创建新的记录（新的 `id`），但 `relation_id` 保持不变
-   - 查询历史时，按 `physical_time` 排序即可得到完整的版本链
+- **推荐**：`POST /api/find`，单请求完成语义召回、图谱扩展与时间过滤；必填参数为 `query`，其余可选。  
+- **原子接口**：实体检索（`/api/find/entities/search` 等）、关系检索、记忆缓存、子图创建/扩展/过滤、统计（`/api/find/stats`）等。  
 
-3. **概念边设计**：
-   - 关系不再是简单的标签（如"位于"、"亲属"），而是完整的自然语言描述
-   - 例如：`(林嘿嘿) --["林嘿嘿是一名考古学博士，他的同事都叫他林博士。"]-- (林博士)`
-   - 保留完整语义信息，无需预定义关系类型
+完整路径与参数见 `skills/tmg-memory-graph/reference.md` 及 `service_api.py`。
 
-4. **关系更新判断**：
-   - 通过比较 `content` 判断是否需要更新
-   - 如果 `content` 完全相同或非常相似，可能不需要更新
-   - 如果 `content` 有变化，创建新版本
+### 响应格式
 
-**示例：**
-- 关系版本1: `{id: "rel_001", relation_id: "rel_001", entity1_absolute_id: "entity_20250130_100000_abc12345", entity2_absolute_id: "entity_20250130_100000_def67890", content: "主角A是男性", physical_time: "2025-01-30 10:00:00", memory_cache_id: "cache_001"}`
-- 关系版本2: `{id: "rel_002", relation_id: "rel_001", entity1_absolute_id: "entity_20250130_103000_abc12345", entity2_absolute_id: "entity_20250130_103000_def67890", content: "主角A是女性，经历了变性手术", physical_time: "2025-01-30 10:30:00", memory_cache_id: "cache_015"}`
-
-**注意：** `entity1_absolute_id` 和 `entity2_absolute_id` 是实体的绝对ID（`entity.id`），而不是 `entity_id`。每个实体版本都有唯一的绝对ID，通过绝对ID可以找到对应的 `entity_id`。关系是无向的，`entity1` 和 `entity2` 只是标识符，不表示方向。
+- 成功：`{"success": true, "data": ..., "elapsed_ms": 123.45}`
+- 失败：`{"success": false, "error": "错误信息", "elapsed_ms": 12.34}`
 
 ---
-# Temporal_Memory_Graph
+
+## 数据模型简述
+
+- **Entity**：概念实体；含 `entity_id`（逻辑 ID）、`id`（版本绝对 ID）、`name`、`content`（自然语言）、`physical_time`；多版本形成版本链。  
+- **Relation**：概念关系；以自然语言描述（非固定关系类型），含 `entity1/2_absolute_id`、`physical_time` 及版本链。  
+- **MemoryCache**：系统内部上下文摘要链，用于对齐与推理。  
+
+全量内容为自然语言 + 时间；无预定义标签体系。
+
+---
+
+## 配置
+
+参考 `service_config.example.json` 配置 `service_config.json`：
+
+- **服务**：`host`、`port`、`storage_path`  
+- **LLM**：`api_key`、`model`、`base_url`、`think`  
+- **Embedding**：`embedding.model`（本地路径或 HuggingFace 模型名）、`embedding.device`  
+- **分块**：`chunking.window_size`、`chunking.overlap`  
+- **子图**：`subgraph_max_count`、`subgraph_ttl_seconds`  
+
+---
+
+## License
+
+见仓库根目录 [LICENSE](LICENSE) 文件（如有）。
