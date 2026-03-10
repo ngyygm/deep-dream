@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import queue
 import sys
 import threading
 import time
@@ -180,6 +181,18 @@ class SubgraphStore:
                 return True
             return False
 
+    def update(self, subgraph_id: str, modifier_fn) -> Optional[SubgraphEntry]:
+        """在锁内对 entry 执行修改操作，确保线程安全。"""
+        with self._lock:
+            entry = self._store.get(subgraph_id)
+            if entry is None or entry.is_expired():
+                if entry and entry.is_expired():
+                    del self._store[subgraph_id]
+                return None
+            modifier_fn(entry)
+            entry.touch()
+            return entry
+
     def _evict_if_needed(self) -> None:
         while len(self._store) >= self._max_count:
             expired = [k for k, v in self._store.items() if v.is_expired()]
@@ -188,6 +201,109 @@ class SubgraphStore:
             if len(self._store) >= self._max_count:
                 oldest = min(self._store.items(), key=lambda x: x[1].last_accessed_at)
                 del self._store[oldest[0]]
+
+
+@dataclass
+class RememberTask:
+    task_id: str
+    text: str
+    source_name: str
+    load_cache: Optional[bool]
+    event_time: Optional[datetime]
+    original_path: str
+    status: str = "queued"          # queued | running | completed | failed
+    result: Optional[Dict] = None
+    error: Optional[str] = None
+    created_at: float = field(default_factory=time.time)
+    started_at: Optional[float] = None
+    finished_at: Optional[float] = None
+
+
+class RememberTaskQueue:
+    """异步记忆写入任务队列。Worker 线程消费队列，调用 processor.remember_text。"""
+
+    def __init__(self, processor, max_workers: int = 2, max_history: int = 200):
+        self._processor = processor
+        self._queue: "queue.Queue[RememberTask]" = queue.Queue()
+        self._tasks: Dict[str, RememberTask] = {}
+        self._lock = threading.Lock()
+        self._max_history = max_history
+        self._workers: List[threading.Thread] = []
+        for i in range(max_workers):
+            t = threading.Thread(target=self._worker, name=f"remember-worker-{i}", daemon=True)
+            t.start()
+            self._workers.append(t)
+
+    def submit(self, task: RememberTask) -> str:
+        with self._lock:
+            self._tasks[task.task_id] = task
+            self._trim_history()
+        self._queue.put(task)
+        print(f"[Remember] 任务入队: task_id={task.task_id[:8]}…, source_name={task.source_name!r}")
+        return task.task_id
+
+    def get_status(self, task_id: str) -> Optional[RememberTask]:
+        with self._lock:
+            return self._tasks.get(task_id)
+
+    def list_tasks(self, limit: int = 50) -> List[Dict]:
+        with self._lock:
+            items = sorted(self._tasks.values(), key=lambda t: t.created_at, reverse=True)
+        out = []
+        for t in items[:limit]:
+            out.append({
+                "task_id": t.task_id,
+                "source_name": t.source_name,
+                "status": t.status,
+                "created_at": t.created_at,
+                "started_at": t.started_at,
+                "finished_at": t.finished_at,
+                "error": t.error,
+            })
+        return out
+
+    def _worker(self):
+        while True:
+            task = self._queue.get()
+            try:
+                with self._lock:
+                    task.status = "running"
+                    task.started_at = time.time()
+                print(f"[Remember] 开始处理: task_id={task.task_id[:8]}…, source_name={task.source_name!r}, 文本长度={len(task.text)} 字符")
+                result = self._processor.remember_text(
+                    text=task.text,
+                    doc_name=task.source_name,
+                    verbose=True,
+                    load_cache_memory=task.load_cache,
+                    event_time=task.event_time,
+                    document_path=task.original_path,
+                )
+                result["original_path"] = task.original_path
+                with self._lock:
+                    task.status = "completed"
+                    task.result = result
+                    task.finished_at = time.time()
+                elapsed = (task.finished_at or 0) - (task.started_at or 0)
+                print(f"[Remember] 完成: task_id={task.task_id[:8]}…, chunks_processed={result.get('chunks_processed')}, memory_cache_id={result.get('memory_cache_id')}, 耗时={elapsed:.1f}s")
+            except Exception as exc:
+                with self._lock:
+                    task.status = "failed"
+                    task.error = str(exc)
+                    task.finished_at = time.time()
+                print(f"[Remember] 失败: task_id={task.task_id[:8]}…, error={exc!r}")
+            finally:
+                self._queue.task_done()
+
+    def _trim_history(self):
+        if len(self._tasks) <= self._max_history:
+            return
+        items = sorted(self._tasks.values(), key=lambda t: t.created_at)
+        to_remove = len(self._tasks) - self._max_history
+        removed = 0
+        for t in items:
+            if t.status in ("completed", "failed") and removed < to_remove:
+                del self._tasks[t.task_id]
+                removed += 1
 
 
 def _extract_subgraph(
@@ -332,8 +448,8 @@ def create_app(processor: TemporalMemoryGraphProcessor, config: Optional[Dict[st
     def _record_start():
         request.start_time = time.time()
 
-    remember_lock = threading.Lock()
     config = config or {}
+    remember_queue = RememberTaskQueue(processor, max_workers=config.get("remember_workers", 2))
     subgraph_store = SubgraphStore(
         max_count=config.get("subgraph_max_count", 100),
         default_ttl_seconds=config.get("subgraph_ttl_seconds", 3600),
@@ -361,6 +477,27 @@ def create_app(processor: TemporalMemoryGraphProcessor, config: Optional[Dict[st
         except Exception as e:
             return err(str(e), 500)
 
+    @app.route("/health/llm")
+    def health_llm():
+        """检查大模型是否可访问：做一次极简调用，成功才返回 200。"""
+        try:
+            # 极简提示、短超时、单次重试，仅用于连通性检查
+            response = processor.llm_client._call_llm(
+                "请只回复一个词：OK",
+                max_retries=1,
+                timeout=15,
+            )
+            ok_result = (
+                response is not None
+                and isinstance(response, str)
+                and len(response.strip()) > 0
+            )
+            if ok_result:
+                return ok({"llm_available": True, "message": "大模型访问正常"})
+            return err("大模型未返回有效结果", 503)
+        except Exception as e:
+            return err(f"大模型不可用: {e}", 503)
+
     @app.route("/api/remember", methods=["POST"])
     def remember():
         """记忆写入：接收自然语言文本，自动构建记忆图。
@@ -370,6 +507,7 @@ def create_app(processor: TemporalMemoryGraphProcessor, config: Optional[Dict[st
           - source_name (可选): 来源名称，默认 "api_input"
           - load_cache_memory (可选): 是否加载最新缓存继续追加
           - event_time (可选): 事件实际发生时间 (ISO 8601)，不传则使用当前时间
+          - async (可选): 是否异步执行，默认 true。设为 false 则同步等待完成后返回
         """
         try:
             body = request.get_json(silent=True) or {}
@@ -401,17 +539,84 @@ def create_app(processor: TemporalMemoryGraphProcessor, config: Optional[Dict[st
             original_path = str((originals_dir / original_filename).resolve())
             Path(original_path).write_text(text, encoding="utf-8")
 
-            with remember_lock:
-                result = processor.remember_text(
-                    text=text,
-                    doc_name=source_name,
-                    verbose=False,
-                    load_cache_memory=load_cache,
-                    event_time=event_time,
-                    document_path=original_path,
-                )
-            result["original_path"] = original_path
-            return ok(result)
+            # 控制台：收到内容摘要
+            preview = (text[:80] + "…") if len(text) > 80 else text
+            print(f"[Remember] 收到: source_name={source_name!r}, 文本长度={len(text)} 字符, event_time={et_str or '未指定'}")
+            print(f"[Remember] 内容预览: {preview!r}")
+
+            task_id = uuid.uuid4().hex
+            task = RememberTask(
+                task_id=task_id,
+                text=text,
+                source_name=source_name,
+                load_cache=load_cache,
+                event_time=event_time,
+                original_path=original_path,
+            )
+
+            is_async = body.get("async", True)
+            if isinstance(is_async, str):
+                is_async = is_async.lower() not in ("false", "0", "no")
+
+            if is_async:
+                remember_queue.submit(task)
+                return make_response(jsonify({
+                    "success": True,
+                    "data": {
+                        "task_id": task_id,
+                        "status": "queued",
+                        "original_path": original_path,
+                    },
+                }), 202)
+            else:
+                remember_queue.submit(task)
+                deadline = time.time() + 3600
+                while time.time() < deadline:
+                    t = remember_queue.get_status(task_id)
+                    if t and t.status in ("completed", "failed"):
+                        break
+                    time.sleep(0.2)
+                t = remember_queue.get_status(task_id)
+                if t and t.status == "completed":
+                    return ok(t.result)
+                elif t and t.status == "failed":
+                    return err(t.error or "处理失败", 500)
+                else:
+                    return err("处理超时", 504)
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/remember/status/<task_id>")
+    def remember_status(task_id: str):
+        """查询异步记忆写入任务的状态。"""
+        try:
+            t = remember_queue.get_status(task_id)
+            if t is None:
+                return err("任务不存在", 404)
+            data: Dict[str, Any] = {
+                "task_id": t.task_id,
+                "status": t.status,
+                "source_name": t.source_name,
+                "original_path": t.original_path,
+                "created_at": t.created_at,
+                "started_at": t.started_at,
+                "finished_at": t.finished_at,
+            }
+            if t.status == "completed" and t.result:
+                data["result"] = t.result
+            if t.status == "failed" and t.error:
+                data["error"] = t.error
+            return ok(data)
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/remember/queue")
+    def remember_queue_list():
+        """查看记忆写入任务队列。"""
+        try:
+            limit = request.args.get("limit", 50, type=int)
+            tasks = remember_queue.list_tasks(limit=limit)
+            return ok({"tasks": tasks, "count": len(tasks)})
         except Exception as e:
             return err(str(e), 500)
 
@@ -644,9 +849,6 @@ def create_app(processor: TemporalMemoryGraphProcessor, config: Optional[Dict[st
     @app.route("/api/find/subgraph/<subgraph_id>/expand", methods=["POST"])
     def find_subgraph_expand(subgraph_id: str):
         try:
-            entry = subgraph_store.get(subgraph_id)
-            if entry is None:
-                return err("子图不存在或已过期", 404)
             body = request.get_json(silent=True) or {}
             try:
                 new_entity_ids, new_relation_ids = _extract_subgraph(
@@ -654,9 +856,14 @@ def create_app(processor: TemporalMemoryGraphProcessor, config: Optional[Dict[st
                 )
             except ValueError as ve:
                 return err(str(ve), 400)
-            entry.entity_absolute_ids |= new_entity_ids
-            entry.relation_absolute_ids |= new_relation_ids
-            entry.touch()
+
+            def _do_expand(entry):
+                entry.entity_absolute_ids |= new_entity_ids
+                entry.relation_absolute_ids |= new_relation_ids
+
+            entry = subgraph_store.update(subgraph_id, _do_expand)
+            if entry is None:
+                return err("子图不存在或已过期", 404)
             return ok({
                 "subgraph_id": subgraph_id,
                 "entity_count": len(entry.entity_absolute_ids),
@@ -668,20 +875,24 @@ def create_app(processor: TemporalMemoryGraphProcessor, config: Optional[Dict[st
     @app.route("/api/find/subgraph/<subgraph_id>/filter", methods=["POST"])
     def find_subgraph_filter(subgraph_id: str):
         try:
-            entry = subgraph_store.get(subgraph_id)
+            body = request.get_json(silent=True) or {}
+
+            def _do_filter(entry):
+                try:
+                    _apply_filter(processor.storage, entry, body, parse_time_point)
+                except ValueError:
+                    raise
+
+            entry = subgraph_store.update(subgraph_id, _do_filter)
             if entry is None:
                 return err("子图不存在或已过期", 404)
-            body = request.get_json(silent=True) or {}
-            try:
-                _apply_filter(processor.storage, entry, body, parse_time_point)
-            except ValueError as ve:
-                return err(str(ve), 400)
-            entry.touch()
             return ok({
                 "subgraph_id": subgraph_id,
                 "entity_count": len(entry.entity_absolute_ids),
                 "relation_count": len(entry.relation_absolute_ids),
             })
+        except ValueError as ve:
+            return err(str(ve), 400)
         except Exception as e:
             return err(str(e), 500)
 

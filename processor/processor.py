@@ -3,7 +3,8 @@
 """
 from typing import List, Optional, Dict
 from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, Future
+import threading
 import uuid
 
 from .document_processor import DocumentProcessor
@@ -101,6 +102,10 @@ class TemporalMemoryGraphProcessor:
         
         # 当前状态
         self.current_memory_cache: Optional[MemoryCache] = None
+        
+        # 流水线并行：cache 更新串行锁 + 抽取/处理线程池
+        self._cache_lock = threading.Lock()
+        self._extraction_executor = ThreadPoolExecutor(max_workers=4)
     
     def process_documents(self, document_paths: List[str], verbose: bool = True,
                          similarity_threshold: Optional[float] = None,
@@ -334,28 +339,43 @@ class TemporalMemoryGraphProcessor:
         chunk_idx = 0
         last_memory_cache_id = None
 
+        futures: List[Future] = []
+
         while start < total_length:
             end = min(start + window_size, total_length)
             chunk = text[start:end]
             if start == 0:
                 chunk = f"开始阅读新的文档，文件名是：{doc_name}\n\n{chunk}"
-            is_new_document = start == 0
-            self._process_window(
-                chunk,
-                doc_name,
-                is_new_document,
-                text_start_pos=start,
-                text_end_pos=end,
-                total_text_length=total_length,
-                verbose=verbose,
-                document_path=document_path,
-                event_time=event_time,
+
+            if verbose:
+                print(f"\n{'='*60}")
+                print(f"处理窗口 (文档: {doc_name}, 位置: {start}-{end}/{total_length})")
+                print(f"输入文本长度: {len(chunk)} 字符")
+                print(f"{'='*60}\n")
+
+            with self._cache_lock:
+                new_mc = self._update_cache(
+                    chunk, doc_name,
+                    text_start_pos=start, text_end_pos=end,
+                    total_text_length=total_length, verbose=verbose,
+                    document_path=document_path, event_time=event_time,
+                )
+
+            fut = self._extraction_executor.submit(
+                self._process_extraction,
+                new_mc, chunk, doc_name,
+                verbose=verbose, event_time=event_time,
             )
-            last_memory_cache_id = self.current_memory_cache.id if self.current_memory_cache else None
+            futures.append(fut)
+
+            last_memory_cache_id = new_mc.id
             chunk_idx += 1
             if end >= total_length:
                 break
             start = end - overlap
+
+        for fut in futures:
+            fut.result()
 
         storage_path = str(self.storage.storage_path)
         return {
@@ -364,41 +384,12 @@ class TemporalMemoryGraphProcessor:
             "storage_path": storage_path,
         }
 
-    def _process_window(self, input_text: str, document_name: str, 
-                       is_new_document: bool, text_start_pos: int = 0,
-                       text_end_pos: int = 0, total_text_length: int = 0,
-                       verbose: bool = True, document_path: str = "",
-                       event_time: Optional[datetime] = None):
-        """
-        处理单个窗口
-        
-        流程：
-        1. 更新记忆缓存
-        2. 抽取实体（每轮包含去重）
-        3. 抽取关系（每轮包含去重）
-        4. 检查补全实体（根据关系中的缺失实体）
-        5. 实体增强
-        6. 处理实体（搜索、对齐、更新/新建）
-        7. 处理关系（搜索、对齐、更新/新建）
-        
-        Args:
-            input_text: 当前窗口的输入文本
-            document_name: 文档名称
-            is_new_document: 是否是新的文档
-            text_start_pos: 当前窗口在文档中的起始位置（字符位置）
-            text_end_pos: 当前窗口在文档中的结束位置（字符位置）
-            total_text_length: 文档总长度（字符数）
-            verbose: 是否输出详细信息
-            document_path: 文档完整路径（用于断点续传）
-            event_time: 事件实际发生时间；传入后作为 physical_time 的基准
-        """
-        if verbose:
-            print(f"\n{'='*60}")
-            print(f"处理窗口 (文档: {document_name}, 位置: {text_start_pos}-{text_end_pos}/{total_text_length})")
-            print(f"输入文本长度: {len(input_text)} 字符")
-            print(f"{'='*60}\n")
-        
-        # ========== 步骤1：更新记忆缓存 ==========
+    def _update_cache(self, input_text: str, document_name: str,
+                      text_start_pos: int = 0, text_end_pos: int = 0,
+                      total_text_length: int = 0, verbose: bool = True,
+                      document_path: str = "",
+                      event_time: Optional[datetime] = None) -> MemoryCache:
+        """步骤1：更新记忆缓存。必须在 _cache_lock 下调用，保证 cache 链串行。"""
         if verbose:
             print("## 步骤1: 更新记忆缓存")
         
@@ -412,13 +403,18 @@ class TemporalMemoryGraphProcessor:
             event_time=event_time,
         )
         
-        # 保存新的memory_cache（传递当前处理的文本内容和文档路径，用于断点续传）
         self.storage.save_memory_cache(new_memory_cache, text=input_text, document_path=document_path)
         self.current_memory_cache = new_memory_cache
         
         if verbose:
             print(f"  └─ 缓存ID: {new_memory_cache.id}\n")
         
+        return new_memory_cache
+
+    def _process_extraction(self, new_memory_cache: MemoryCache, input_text: str,
+                            document_name: str, verbose: bool = True,
+                            event_time: Optional[datetime] = None):
+        """步骤2-7：抽取实体/关系 + 对齐写入。可在线程池中并行执行。"""
         # ========== 步骤2：抽取实体 ==========
         if verbose:
             print("## 步骤2: 抽取实体")
@@ -1043,7 +1039,29 @@ class TemporalMemoryGraphProcessor:
         
         if verbose:
             print("  窗口处理完成！\n")
-    
+
+    def _process_window(self, input_text: str, document_name: str,
+                       is_new_document: bool, text_start_pos: int = 0,
+                       text_end_pos: int = 0, total_text_length: int = 0,
+                       verbose: bool = True, document_path: str = "",
+                       event_time: Optional[datetime] = None):
+        """兼容入口：串行执行 cache 更新 + 抽取处理（process_documents 等旧路径使用）。"""
+        if verbose:
+            print(f"\n{'='*60}")
+            print(f"处理窗口 (文档: {document_name}, 位置: {text_start_pos}-{text_end_pos}/{total_text_length})")
+            print(f"输入文本长度: {len(input_text)} 字符")
+            print(f"{'='*60}\n")
+
+        with self._cache_lock:
+            new_mc = self._update_cache(
+                input_text, document_name,
+                text_start_pos=text_start_pos, text_end_pos=text_end_pos,
+                total_text_length=total_text_length, verbose=verbose,
+                document_path=document_path, event_time=event_time,
+            )
+        self._process_extraction(new_mc, input_text, document_name,
+                                 verbose=verbose, event_time=event_time)
+
     def get_statistics(self) -> dict:
         """获取处理统计信息"""
         # 这里可以添加统计逻辑
