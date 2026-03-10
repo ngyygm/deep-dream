@@ -163,6 +163,8 @@ TMG 提供 **Skill**，使 Cursor、Claude 等 Agent 能够按文档完成部署
 
 **异步模式**（默认）：请求立即返回 `task_id`，后台流水线并行处理。可通过 `GET /api/remember/status/<task_id>` 查询进度，`GET /api/remember/queue` 查看队列。多个 remember 请求可并发——记忆缓存更新串行保序，抽取/处理阶段并行加速。
 
+**时间轴约定**：存入记忆库的「真实时间」以请求中的 `event_time` 为准；实体/关系的版本顺序也按该时间。因此即使后发的请求先完成（例如并发时短任务 B 先完成、长任务 A 后完成），时间轴仍按 `event_time` 正确——A 的 event_time 早则 A 的版本在前，与任务完成先后无关。
+
 服务端自动保存原文到 `storage_path/originals/`，返回 `original_path`。内部完成切片、记忆缓存更新、实体/关系抽取、图谱对齐与版本化写入。
 
 ### Find — 语义检索

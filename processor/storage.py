@@ -5,7 +5,7 @@ import sqlite3
 import os
 import json
 from datetime import datetime
-from typing import Optional, List, Dict, Any, Literal
+from typing import Optional, List, Dict, Any, Literal, Tuple
 from pathlib import Path
 import hashlib
 import numpy as np
@@ -383,6 +383,48 @@ class StorageManager:
         
         conn.commit()
         conn.close()
+
+    def bulk_save_entities(self, entities: List[Entity]):
+        """批量保存实体，使用批量 embedding 与单事务写入。"""
+        if not entities:
+            return
+
+        embeddings = None
+        if self.embedding_client and self.embedding_client.is_available():
+            texts = [
+                f"{entity.name} {entity.content[:self.entity_content_snippet_length]}"
+                for entity in entities
+            ]
+            embeddings = self.embedding_client.encode(texts)
+
+        rows = []
+        for idx, entity in enumerate(entities):
+            embedding_blob = None
+            if embeddings is not None:
+                try:
+                    embedding_blob = np.array(embeddings[idx], dtype=np.float32).tobytes()
+                except Exception:
+                    embedding_blob = None
+            entity.embedding = embedding_blob
+            rows.append((
+                entity.id,
+                entity.entity_id,
+                entity.name,
+                entity.content,
+                entity.physical_time.isoformat(),
+                entity.memory_cache_id,
+                entity.doc_name,
+                embedding_blob,
+            ))
+
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.executemany("""
+            INSERT INTO entities (id, entity_id, name, content, physical_time, memory_cache_id, doc_name, embedding)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, rows)
+        conn.commit()
+        conn.close()
     
     def get_entity_by_id(self, entity_id: str) -> Optional[Entity]:
         """根据entity_id获取最新版本的实体"""
@@ -615,6 +657,25 @@ class StorageManager:
             results.append((entity, embedding_array))
         
         conn.close()
+        return results
+
+    def get_latest_entities_projection(self, content_snippet_length: Optional[int] = None) -> List[Dict[str, Any]]:
+        """获取最新实体投影，供窗口级批量候选生成使用。"""
+        snippet_length = content_snippet_length or self.entity_content_snippet_length
+        version_counts = self.get_entity_version_counts([
+            entity.entity_id for entity, _ in self._get_entities_with_embeddings()
+        ])
+        results: List[Dict[str, Any]] = []
+        for entity, embedding_array in self._get_entities_with_embeddings():
+            results.append({
+                "entity": entity,
+                "entity_id": entity.entity_id,
+                "name": entity.name,
+                "content": entity.content,
+                "content_snippet": entity.content[:snippet_length],
+                "version_count": version_counts.get(entity.entity_id, 1),
+                "embedding_array": embedding_array,
+            })
         return results
     
     def search_entities_by_similarity(self, query_name: str, query_content: Optional[str] = None, 
@@ -895,6 +956,46 @@ class StorageManager:
         
         conn.commit()
         conn.close()
+
+    def bulk_save_relations(self, relations: List[Relation]):
+        """批量保存关系，使用批量 embedding 与单事务写入。"""
+        if not relations:
+            return
+
+        embeddings = None
+        if self.embedding_client and self.embedding_client.is_available():
+            texts = [relation.content[:self.relation_content_snippet_length] for relation in relations]
+            embeddings = self.embedding_client.encode(texts)
+
+        rows = []
+        for idx, relation in enumerate(relations):
+            embedding_blob = None
+            if embeddings is not None:
+                try:
+                    embedding_blob = np.array(embeddings[idx], dtype=np.float32).tobytes()
+                except Exception:
+                    embedding_blob = None
+            relation.embedding = embedding_blob
+            rows.append((
+                relation.id,
+                relation.relation_id,
+                relation.entity1_absolute_id,
+                relation.entity2_absolute_id,
+                relation.content,
+                relation.physical_time.isoformat(),
+                relation.memory_cache_id,
+                relation.doc_name,
+                embedding_blob,
+            ))
+
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.executemany("""
+            INSERT INTO relations (id, relation_id, entity1_absolute_id, entity2_absolute_id, content, physical_time, memory_cache_id, doc_name, embedding)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, rows)
+        conn.commit()
+        conn.close()
     
     def get_relations_by_entities(self, from_entity_id: str, to_entity_id: str) -> List[Relation]:
         """根据两个实体ID获取所有关系（通过entity_id查找，内部转换为绝对ID查询）"""
@@ -955,6 +1056,31 @@ class StorageManager:
             )
             for row in rows
         ]
+
+    def get_relations_by_entity_pairs(self, entity_pairs: List[Tuple[str, str]]) -> Dict[Tuple[str, str], List[Relation]]:
+        """批量获取多个实体对的关系，按无向 pair 返回。"""
+        results: Dict[Tuple[str, str], List[Relation]] = {}
+        for entity1_id, entity2_id in entity_pairs:
+            pair_key = tuple(sorted((entity1_id, entity2_id)))
+            if pair_key in results:
+                continue
+            results[pair_key] = self.get_relations_by_entities(pair_key[0], pair_key[1])
+        return results
+
+    def get_latest_relations_projection(self, content_snippet_length: Optional[int] = None) -> List[Dict[str, Any]]:
+        """获取最新关系投影，供关系批量 upsert 使用。"""
+        snippet_length = content_snippet_length or self.relation_content_snippet_length
+        results: List[Dict[str, Any]] = []
+        for relation, embedding_array in self._get_relations_with_embeddings():
+            results.append({
+                "relation": relation,
+                "relation_id": relation.relation_id,
+                "pair": tuple(sorted((relation.entity1_absolute_id, relation.entity2_absolute_id))),
+                "content": relation.content,
+                "content_snippet": relation.content[:snippet_length],
+                "embedding_array": embedding_array,
+            })
+        return results
     
     def get_relation_versions(self, relation_id: str) -> List[Relation]:
         """获取关系的所有版本"""

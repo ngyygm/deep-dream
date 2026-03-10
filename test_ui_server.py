@@ -114,7 +114,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
       <button type="button" id="btnRemember" onclick="submitRemember()">入库 (Remember)</button>
       <span id="rememberStatus"></span>
     </div>
-    <p class="hint">请求体: { "text": "…", "doc_name": "…", "load_cache_memory": 可选 }。入库会调 LLM，可能需 1～3 分钟，请耐心等待。</p>
+    <p class="hint">默认异步：先返回 task_id，再轮询状态。下方会显示提交耗时、排队耗时、处理耗时、总耗时与任务日志。</p>
+    <pre id="rememberMetrics">尚未提交 remember 任务。</pre>
+    <pre id="rememberLog">任务日志会显示在这里。</pre>
   </div>
 
   <div class="card">
@@ -287,11 +289,84 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
   <script>
     function base() { return (document.getElementById('apiBase').value || '').replace(/\/$/, ''); }
+    function rememberLogEl() { return document.getElementById('rememberLog'); }
+    function rememberMetricsEl() { return document.getElementById('rememberMetrics'); }
 
     function setRememberStatus(msg, isErr) {
       var el = document.getElementById('rememberStatus');
       el.textContent = msg;
       el.className = isErr ? 'error' : 'success';
+    }
+
+    function appendRememberLog(msg) {
+      var el = rememberLogEl();
+      if (!el) return;
+      var ts = new Date().toLocaleTimeString();
+      el.textContent += '[' + ts + '] ' + msg + '\n';
+      el.scrollTop = el.scrollHeight;
+    }
+
+    function resetRememberLog() {
+      var logEl = rememberLogEl();
+      var metricsEl = rememberMetricsEl();
+      if (logEl) logEl.textContent = '';
+      if (metricsEl) metricsEl.textContent = '等待任务开始...';
+    }
+
+    function fmtSec(value) {
+      if (value === null || value === undefined || value === '') return '-';
+      return Number(value).toFixed(2) + 's';
+    }
+
+    function fmtTs(ts) {
+      if (!ts) return '-';
+      try {
+        return new Date(ts * 1000).toLocaleString();
+      } catch (_) {
+        return String(ts);
+      }
+    }
+
+    function renderRememberMetrics(taskData, clientElapsedMs, submitElapsedMs) {
+      var createdAt = taskData && taskData.created_at;
+      var startedAt = taskData && taskData.started_at;
+      var finishedAt = taskData && taskData.finished_at;
+      var queueWait = (createdAt && startedAt) ? (startedAt - createdAt) : null;
+      var processElapsed = (startedAt && finishedAt) ? (finishedAt - startedAt) : null;
+      var serviceElapsed = (createdAt && finishedAt) ? (finishedAt - createdAt) : null;
+      var lines = [
+        'task_id      : ' + ((taskData && taskData.task_id) || '-'),
+        'status       : ' + ((taskData && taskData.status) || '-'),
+        'created_at   : ' + fmtTs(createdAt),
+        'started_at   : ' + fmtTs(startedAt),
+        'finished_at  : ' + fmtTs(finishedAt),
+        '提交耗时      : ' + fmtSec(submitElapsedMs / 1000),
+        '排队耗时      : ' + fmtSec(queueWait),
+        '处理耗时      : ' + fmtSec(processElapsed),
+        '服务总耗时    : ' + fmtSec(serviceElapsed),
+        '客户端总耗时  : ' + fmtSec(clientElapsedMs / 1000)
+      ];
+      var metricsEl = rememberMetricsEl();
+      if (metricsEl) metricsEl.textContent = lines.join('\n');
+    }
+
+    async function pollRememberTask(taskId, submitElapsedMs, wallStartMs) {
+      var intervalMs = 1000;
+      var pollCount = 0;
+      while (true) {
+        pollCount += 1;
+        var resp = await fetch(base() + '/api/remember/status/' + encodeURIComponent(taskId));
+        var data = await resp.json();
+        var taskData = data.data || {};
+        var status = taskData.status || 'unknown';
+        renderRememberMetrics(taskData, Date.now() - wallStartMs, submitElapsedMs);
+        appendRememberLog('轮询 #' + pollCount + ' -> status=' + status);
+        if (status === 'completed' || status === 'failed') {
+          return { response: data, taskData: taskData };
+        }
+        await new Promise(function(resolve) { setTimeout(resolve, intervalMs); });
+        intervalMs = Math.min(intervalMs * 1.5, 5000);
+      }
     }
 
     var REMEMBER_TIMEOUT_MS = 300000;
@@ -302,16 +377,21 @@ INDEX_HTML = r"""<!DOCTYPE html>
       var docName = (document.getElementById('docName').value || 'test_ui').trim() || 'test_ui';
       var btn = document.getElementById('btnRemember');
       if (btn) btn.disabled = true;
-      setRememberStatus('处理中…（会调 LLM，可能 1～3 分钟，请勿关闭页面）', false);
+      resetRememberLog();
+      setRememberStatus('提交中…', false);
+      appendRememberLog('准备提交 remember 请求');
       var controller = new AbortController();
       var toId = setTimeout(function() { controller.abort(); }, REMEMBER_TIMEOUT_MS);
+      var wallStartMs = Date.now();
       try {
+        var submitStartMs = Date.now();
         var r = await fetch(base() + '/api/remember', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text: text, doc_name: docName }),
+          body: JSON.stringify({ text: text, doc_name: docName, async: true }),
           signal: controller.signal
         });
+        var submitElapsedMs = Date.now() - submitStartMs;
         clearTimeout(toId);
         var j;
         try {
@@ -319,21 +399,42 @@ INDEX_HTML = r"""<!DOCTYPE html>
         } catch (_) {
           var t = await r.text();
           setRememberStatus('服务返回非 JSON: ' + r.status + ' ' + (t.slice(0, 100) || ''), true);
+          appendRememberLog('服务返回非 JSON: HTTP ' + r.status);
           if (btn) btn.disabled = false;
           return;
         }
-        if (j.success) {
+        if (j.success && r.status === 202) {
+          var taskId = j.data && j.data.task_id;
+          appendRememberLog('提交成功: HTTP 202, task_id=' + taskId);
+          renderRememberMetrics({ task_id: taskId, status: 'queued' }, Date.now() - wallStartMs, submitElapsedMs);
+          setRememberStatus('已入队，轮询任务状态中…', false);
+          var finalResult = await pollRememberTask(taskId, submitElapsedMs, wallStartMs);
+          if (finalResult.taskData && finalResult.taskData.status === 'completed') {
+            appendRememberLog('任务完成，刷新图谱');
+            setRememberStatus('任务完成，正在刷新图谱…', false);
+            await refreshGraph();
+            setRememberStatus('完成', false);
+          } else {
+            appendRememberLog('任务失败: ' + ((finalResult.taskData && finalResult.taskData.error) || 'unknown'));
+            setRememberStatus('失败: ' + ((finalResult.taskData && finalResult.taskData.error) || 'unknown'), true);
+          }
+        } else if (j.success) {
+          appendRememberLog('同步完成: HTTP ' + r.status);
+          renderRememberMetrics({ status: 'completed' }, Date.now() - wallStartMs, submitElapsedMs);
           setRememberStatus('入库成功，正在刷新图谱…', false);
           await refreshGraph();
           setRememberStatus('完成', false);
         } else {
+          appendRememberLog('请求失败: ' + (j.error || r.status));
           setRememberStatus('失败: ' + (j.error || r.status), true);
         }
       } catch (e) {
         clearTimeout(toId);
         if (e.name === 'AbortError') {
+          appendRememberLog('请求超时（客户端 5 分钟超时）');
           setRememberStatus('请求超时（5 分钟）。请检查 TMG 服务与 LLM 是否正常、或缩短文本再试。', true);
         } else {
+          appendRememberLog('请求错误: ' + (e.message || String(e)));
           setRememberStatus('请求错误: ' + (e.message || String(e)), true);
         }
       }

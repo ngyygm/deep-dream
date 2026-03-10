@@ -1,9 +1,10 @@
 """
 实体处理模块：实体搜索、对齐、更新/新建
 """
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Any
 from datetime import datetime
 import uuid
+import numpy as np
 
 from .models import Entity, MemoryCache
 from .storage import StorageManager
@@ -19,6 +20,8 @@ class EntityProcessor:
         self.llm_client = llm_client
         self.max_similar_entities = max_similar_entities
         self.content_snippet_length = content_snippet_length
+        self.batch_resolution_enabled = True
+        self.batch_resolution_confidence_threshold = 0.55
     
     def process_entities(self, extracted_entities: List[Dict[str, str]], 
                         memory_cache_id: str, similarity_threshold: float = 0.7,
@@ -50,23 +53,12 @@ class EntityProcessor:
             关系信息格式：{"entity1_name": "...", "entity2_name": "...", "content": "...", "relation_type": "alias|normal"}
             注意：关系中的实体使用名称而不是ID，因为新实体在创建前还没有ID
         """
-        processed_entities = []
-        pending_relations = []  # 待处理的关系（使用实体名称）
-        entity_name_to_id = {}  # 实体名称到ID的映射（包括新创建的实体）
-        
-        # 检测同名实体（在同一批处理中）
-        name_to_entities = {}  # 用于检测同名实体
-        for extracted_entity in extracted_entities:
-            entity_name = extracted_entity['name']
-            if entity_name not in name_to_entities:
-                name_to_entities[entity_name] = []
-            name_to_entities[entity_name].append(extracted_entity)
-        
-        # 构建当前抽取的实体名称集合（用于过滤候选实体）
+        processed_entities: List[Entity] = []
+        pending_relations: List[Dict] = []
+        entity_name_to_id: Dict[str, str] = {}
+        entities_to_persist: List[Entity] = []
+
         extracted_entity_names = {e['name'] for e in extracted_entities}
-        
-        # 构建步骤3抽取的关系集合（用于判断是否已存在关系）
-        # 使用实体对（名称）和内容哈希作为键
         extracted_relation_pairs = set()
         if extracted_relations:
             for rel in extracted_relations:
@@ -74,21 +66,28 @@ class EntityProcessor:
                 entity2_name = rel.get('entity2_name') or rel.get('to_entity_name', '').strip()
                 content = rel.get('content', '').strip()
                 if entity1_name and entity2_name:
-                    # 使用排序后的实体对作为键（关系是无向的）
                     pair_key = tuple(sorted([entity1_name, entity2_name]))
-                    content_hash = hash(content.lower())
-                    extracted_relation_pairs.add((pair_key, content_hash))
-        
-        # 处理每个实体
+                    extracted_relation_pairs.add((pair_key, hash(content.lower())))
+
+        candidate_table = self._build_entity_candidate_table(
+            extracted_entities,
+            similarity_threshold=similarity_threshold,
+            jaccard_search_threshold=jaccard_search_threshold,
+            embedding_name_search_threshold=embedding_name_search_threshold,
+            embedding_full_search_threshold=embedding_full_search_threshold,
+        )
+
         total_entities = len(extracted_entities)
         for idx, extracted_entity in enumerate(extracted_entities, 1):
-            entity, relations, name_mapping = self._process_single_entity(
-                extracted_entity, 
-                memory_cache_id, 
-                similarity_threshold,
-                memory_cache,
-                doc_name,
-                context_text,
+            candidates = candidate_table.get(idx - 1, [])
+            entity, relations, name_mapping, to_persist = self._process_single_entity_batch(
+                extracted_entity=extracted_entity,
+                candidates=candidates,
+                memory_cache_id=memory_cache_id,
+                similarity_threshold=similarity_threshold,
+                memory_cache=memory_cache,
+                doc_name=doc_name,
+                context_text=context_text,
                 entity_index=idx,
                 total_entities=total_entities,
                 extracted_entity_names=extracted_entity_names,
@@ -98,48 +97,235 @@ class EntityProcessor:
                 embedding_full_search_threshold=embedding_full_search_threshold,
                 base_time=base_time,
             )
+
             if entity:
                 processed_entities.append(entity)
-                # 更新实体名称到ID的映射（包括原始名称和最终名称）
-                # 检查是否已存在同名实体
-                if entity.name in entity_name_to_id:
-                    existing_id = entity_name_to_id[entity.name]
-                    if existing_id != entity.entity_id:
-                        print(f"    ⚠️  警告: 发现同名实体 '{entity.name}'，已有ID: {existing_id}，新ID: {entity.entity_id}")
-                        # 保留第一个（或使用版本数更多的，但这里简化处理，保留第一个）
-                        # 实际应该通过LLM判断是否应该合并
-                else:
-                    entity_name_to_id[entity.name] = entity.entity_id
-                
-                # 原始名称映射
-                original_name = extracted_entity['name']
-                if original_name in entity_name_to_id:
-                    existing_id = entity_name_to_id[original_name]
-                    if existing_id != entity.entity_id:
-                        print(f"    ⚠️  警告: 原始名称 '{original_name}' 已映射到不同ID: {existing_id} vs {entity.entity_id}")
-                else:
-                    entity_name_to_id[original_name] = entity.entity_id
-            
+                entity_name_to_id[entity.name] = entity.entity_id
+                entity_name_to_id[extracted_entity['name']] = entity.entity_id
             if relations:
                 pending_relations.extend(relations)
-            
-            # 更新映射（合并已有的映射，但检查冲突）
             if name_mapping:
-                for name, eid in name_mapping.items():
-                    if name in entity_name_to_id:
-                        existing_id = entity_name_to_id[name]
-                        if existing_id != eid:
-                            print(f"    ⚠️  警告: 映射冲突，名称 '{name}' 已有ID: {existing_id}，新ID: {eid}，保留已有ID")
-                        # 保留已有ID，不覆盖
-                    else:
-                        entity_name_to_id[name] = eid
-            
-            # 如果提供了回调函数，在处理完每个实体后调用
+                entity_name_to_id.update(name_mapping)
+            if to_persist:
+                entities_to_persist.append(to_persist)
             if on_entity_processed and entity:
-                on_entity_processed(entity, entity_name_to_id, pending_relations)
-        
+                on_entity_processed(entity, entity_name_to_id, relations or [])
+
+        if entities_to_persist:
+            self.storage.bulk_save_entities(entities_to_persist)
+
         return processed_entities, pending_relations, entity_name_to_id
     
+    def _calculate_jaccard_similarity(self, text1: str, text2: str) -> float:
+        set1 = set((text1 or "").lower())
+        set2 = set((text2 or "").lower())
+        union = len(set1 | set2)
+        if union == 0:
+            return 0.0
+        return len(set1 & set2) / union
+
+    def _cosine_similarity(self, embedding1: Optional[np.ndarray], embedding2: Optional[np.ndarray]) -> float:
+        if embedding1 is None or embedding2 is None:
+            return 0.0
+        norm1 = np.linalg.norm(embedding1)
+        norm2 = np.linalg.norm(embedding2)
+        if norm1 == 0 or norm2 == 0:
+            return 0.0
+        return float(np.dot(embedding1, embedding2) / (norm1 * norm2 + 1e-9))
+
+    def _build_entity_candidate_table(self,
+                                      extracted_entities: List[Dict[str, str]],
+                                      similarity_threshold: float,
+                                      jaccard_search_threshold: Optional[float] = None,
+                                      embedding_name_search_threshold: Optional[float] = None,
+                                      embedding_full_search_threshold: Optional[float] = None) -> Dict[int, List[Dict[str, Any]]]:
+        """窗口级批量候选生成，替代逐实体三次全库搜索。"""
+        projections = self.storage.get_latest_entities_projection(self.content_snippet_length)
+        if not projections:
+            return {}
+
+        jaccard_threshold = jaccard_search_threshold if jaccard_search_threshold is not None else min(similarity_threshold, 0.6)
+        embedding_name_threshold = embedding_name_search_threshold if embedding_name_search_threshold is not None else min(similarity_threshold, 0.6)
+        embedding_full_threshold = embedding_full_search_threshold if embedding_full_search_threshold is not None else min(similarity_threshold, 0.6)
+
+        name_embeddings = None
+        full_embeddings = None
+        if self.storage.embedding_client and self.storage.embedding_client.is_available():
+            name_embeddings = self.storage.embedding_client.encode([entity["name"] for entity in extracted_entities])
+            full_embeddings = self.storage.embedding_client.encode([
+                f"{entity['name']} {entity['content'][:self.content_snippet_length]}"
+                for entity in extracted_entities
+            ])
+
+        candidate_table: Dict[int, List[Dict[str, Any]]] = {}
+        for idx, extracted_entity in enumerate(extracted_entities):
+            candidate_rows: List[Dict[str, Any]] = []
+            for projection in projections:
+                lexical_score = self._calculate_jaccard_similarity(extracted_entity["name"], projection["name"])
+                dense_name_score = 0.0
+                dense_full_score = 0.0
+                if name_embeddings is not None:
+                    dense_name_score = self._cosine_similarity(
+                        np.array(name_embeddings[idx], dtype=np.float32),
+                        projection.get("embedding_array"),
+                    )
+                if full_embeddings is not None:
+                    dense_full_score = self._cosine_similarity(
+                        np.array(full_embeddings[idx], dtype=np.float32),
+                        projection.get("embedding_array"),
+                    )
+
+                if (
+                    lexical_score >= jaccard_threshold
+                    or dense_name_score >= embedding_name_threshold
+                    or dense_full_score >= embedding_full_threshold
+                ):
+                    candidate_rows.append({
+                        "entity_id": projection["entity_id"],
+                        "name": projection["name"],
+                        "content": projection["content"],
+                        "version_count": projection["version_count"],
+                        "lexical_score": lexical_score,
+                        "dense_score": max(dense_name_score, dense_full_score),
+                        "combined_score": max(lexical_score, dense_name_score, dense_full_score),
+                    })
+
+            candidate_rows.sort(key=lambda row: row["combined_score"], reverse=True)
+            candidate_table[idx] = candidate_rows[:self.max_similar_entities]
+        return candidate_table
+
+    def _process_single_entity_batch(self,
+                                     extracted_entity: Dict[str, str],
+                                     candidates: List[Dict[str, Any]],
+                                     memory_cache_id: str,
+                                     similarity_threshold: float,
+                                     memory_cache: Optional[MemoryCache] = None,
+                                     doc_name: str = "",
+                                     context_text: Optional[str] = None,
+                                     entity_index: int = 0,
+                                     total_entities: int = 0,
+                                     extracted_entity_names: Optional[set] = None,
+                                     extracted_relation_pairs: Optional[set] = None,
+                                     jaccard_search_threshold: Optional[float] = None,
+                                     embedding_name_search_threshold: Optional[float] = None,
+                                     embedding_full_search_threshold: Optional[float] = None,
+                                     base_time: Optional[datetime] = None) -> Tuple[Optional[Entity], List[Dict], Dict[str, str], Optional[Entity]]:
+        """批量候选 + 批量裁决主路径，低置信度时回退旧逻辑。"""
+        entity_name = extracted_entity["name"]
+        entity_content = extracted_entity["content"]
+        if total_entities > 0:
+            print(f"  ├─ 处理实体 [{entity_index}/{total_entities}]: {entity_name}")
+
+        if not candidates:
+            new_entity = self._build_new_entity(entity_name, entity_content, memory_cache_id, doc_name, base_time=base_time)
+            print(f"  │  未找到候选实体，批量路径创建新实体: {new_entity.entity_id}")
+            return new_entity, [], {entity_name: new_entity.entity_id, new_entity.name: new_entity.entity_id}, new_entity
+
+        print(f"  │  批量候选生成: {len(candidates)} 个")
+        batch_result = self.llm_client.resolve_entity_candidates_batch(
+            {
+                "entity_id": "NEW_ENTITY",
+                "name": entity_name,
+                "content": entity_content,
+                "version_count": 0,
+            },
+            candidates,
+            context_text=context_text,
+        )
+        confidence = float(batch_result.get("confidence", 0.0) or 0.0)
+        if (not self.batch_resolution_enabled) or batch_result.get("update_mode") == "fallback" or confidence < self.batch_resolution_confidence_threshold:
+            print(f"  │  批量裁决置信度不足，回退到旧逻辑 (confidence={confidence:.2f})")
+            entity, relations, name_mapping = self._process_single_entity(
+                extracted_entity,
+                memory_cache_id,
+                similarity_threshold,
+                memory_cache,
+                doc_name,
+                context_text,
+                entity_index=entity_index,
+                total_entities=total_entities,
+                extracted_entity_names=extracted_entity_names,
+                extracted_relation_pairs=extracted_relation_pairs,
+                jaccard_search_threshold=jaccard_search_threshold,
+                embedding_name_search_threshold=embedding_name_search_threshold,
+                embedding_full_search_threshold=embedding_full_search_threshold,
+                base_time=base_time,
+            )
+            return entity, relations, name_mapping, None
+
+        relations_to_create: List[Dict] = []
+        for relation in batch_result.get("relations_to_create", []) or []:
+            candidate = next((item for item in candidates if item.get("entity_id") == relation.get("entity_id")), None)
+            if not candidate:
+                continue
+            relation_content = (relation.get("relation_content") or "").strip()
+            if not relation_content:
+                continue
+            relations_to_create.append({
+                "entity1_name": entity_name,
+                "entity2_name": candidate.get("name", ""),
+                "content": relation_content,
+                "relation_type": "alias" if ("别名" in relation_content or "简称" in relation_content or "称呼" in relation_content) else "normal",
+            })
+
+        match_existing_id = (batch_result.get("match_existing_id") or "").strip()
+        if match_existing_id:
+            latest_entity = self.storage.get_entity_by_id(match_existing_id)
+            if not latest_entity:
+                print(f"  │  批量裁决命中的实体不存在，回退旧逻辑: {match_existing_id}")
+                entity, relations, name_mapping = self._process_single_entity(
+                    extracted_entity,
+                    memory_cache_id,
+                    similarity_threshold,
+                    memory_cache,
+                    doc_name,
+                    context_text,
+                    entity_index=entity_index,
+                    total_entities=total_entities,
+                    extracted_entity_names=extracted_entity_names,
+                    extracted_relation_pairs=extracted_relation_pairs,
+                    jaccard_search_threshold=jaccard_search_threshold,
+                    embedding_name_search_threshold=embedding_name_search_threshold,
+                    embedding_full_search_threshold=embedding_full_search_threshold,
+                    base_time=base_time,
+                )
+                return entity, relations, name_mapping, None
+
+            update_mode = batch_result.get("update_mode") or "reuse_existing"
+            if update_mode == "merge_into_latest":
+                merged_name = (batch_result.get("merged_name") or latest_entity.name).strip()
+                merged_content = (batch_result.get("merged_content") or "").strip()
+                if not merged_content:
+                    merged_content = self.llm_client.merge_multiple_entity_contents([latest_entity.content, entity_content])
+                entity_version = self._build_entity_version(
+                    latest_entity.entity_id,
+                    merged_name,
+                    merged_content,
+                    memory_cache_id,
+                    doc_name,
+                    base_time=base_time,
+                )
+                print(f"  │  批量裁决: 合并到已有实体 {latest_entity.entity_id} 并生成新版本")
+                return entity_version, relations_to_create, {
+                    entity_name: latest_entity.entity_id,
+                    entity_version.name: latest_entity.entity_id,
+                }, entity_version
+
+            print(f"  │  批量裁决: 复用已有实体 {latest_entity.entity_id}")
+            return latest_entity, relations_to_create, {
+                entity_name: latest_entity.entity_id,
+                latest_entity.name: latest_entity.entity_id,
+            }, None
+
+        merged_name = (batch_result.get("merged_name") or entity_name).strip() or entity_name
+        merged_content = (batch_result.get("merged_content") or entity_content).strip() or entity_content
+        new_entity = self._build_new_entity(merged_name, merged_content, memory_cache_id, doc_name, base_time=base_time)
+        print(f"  │  批量裁决: 创建新实体 {new_entity.entity_id}")
+        return new_entity, relations_to_create, {
+            entity_name: new_entity.entity_id,
+            new_entity.name: new_entity.entity_id,
+        }, new_entity
+
     def _process_single_entity(self, extracted_entity: Dict[str, str], 
                                memory_cache_id: str, 
                                similarity_threshold: float,
@@ -687,9 +873,9 @@ class EntityProcessor:
         
         return final_entity, updated_relations, entity_name_to_id
     
-    def _create_new_entity(self, name: str, content: str, memory_cache_id: str,
-                           doc_name: str = "", base_time: Optional[datetime] = None) -> Entity:
-        """创建新实体"""
+    def _build_new_entity(self, name: str, content: str, memory_cache_id: str,
+                          doc_name: str = "", base_time: Optional[datetime] = None) -> Entity:
+        """构建新实体对象，但不立即写库。"""
         ts = base_time if base_time is not None else datetime.now()
         entity_id = f"ent_{uuid.uuid4().hex[:12]}"
         entity_record_id = f"entity_{ts.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
@@ -705,14 +891,19 @@ class EntityProcessor:
             memory_cache_id=memory_cache_id,
             doc_name=doc_name_only
         )
-        
+        return entity
+
+    def _create_new_entity(self, name: str, content: str, memory_cache_id: str,
+                           doc_name: str = "", base_time: Optional[datetime] = None) -> Entity:
+        """创建新实体"""
+        entity = self._build_new_entity(name, content, memory_cache_id, doc_name, base_time=base_time)
         self.storage.save_entity(entity)
         return entity
-    
-    def _create_entity_version(self, entity_id: str, name: str, content: str, 
+
+    def _build_entity_version(self, entity_id: str, name: str, content: str, 
                               memory_cache_id: str, doc_name: str = "",
                               base_time: Optional[datetime] = None) -> Entity:
-        """创建实体的新版本"""
+        """构建实体新版本对象，但不立即写库。"""
         ts = base_time if base_time is not None else datetime.now()
         entity_record_id = f"entity_{ts.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
         
@@ -727,7 +918,13 @@ class EntityProcessor:
             memory_cache_id=memory_cache_id,
             doc_name=doc_name_only
         )
-        
+        return entity
+
+    def _create_entity_version(self, entity_id: str, name: str, content: str, 
+                              memory_cache_id: str, doc_name: str = "",
+                              base_time: Optional[datetime] = None) -> Entity:
+        """创建实体的新版本"""
+        entity = self._build_entity_version(entity_id, name, content, memory_cache_id, doc_name, base_time=base_time)
         self.storage.save_entity(entity)
         return entity
     

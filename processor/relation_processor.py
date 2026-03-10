@@ -1,7 +1,7 @@
 """
 关系处理模块：关系搜索、对齐、更新/新建
 """
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any, Tuple
 from datetime import datetime
 import uuid
 
@@ -16,6 +16,8 @@ class RelationProcessor:
     def __init__(self, storage: StorageManager, llm_client: LLMClient):
         self.storage = storage
         self.llm_client = llm_client
+        self.batch_resolution_enabled = True
+        self.batch_resolution_confidence_threshold = 0.55
     
     def process_relations(self, extracted_relations: List[Dict[str, str]], 
                          entity_name_to_id: Dict[str, str],
@@ -33,55 +35,135 @@ class RelationProcessor:
         Returns:
             处理后的关系列表（已保存到数据库）
         """
-        # 步骤1：对相同实体对的关系进行去重和合并
-        merged_relations = self._dedupe_and_merge_relations(
-            extracted_relations, entity_name_to_id
+        return self.process_relations_batch(
+            extracted_relations,
+            entity_name_to_id,
+            memory_cache_id,
+            doc_name=doc_name,
+            base_time=base_time,
         )
-        
-        # 步骤2：处理合并后的关系（搜索、对齐、更新/新建）
-        processed_relations = []
-        
+
+    def process_relations_batch(self,
+                                extracted_relations: List[Dict[str, str]],
+                                entity_name_to_id: Dict[str, str],
+                                memory_cache_id: str,
+                                doc_name: str = "",
+                                base_time: Optional[datetime] = None,
+                                fallback_to_single: bool = True) -> List[Relation]:
+        """按实体对批量 upsert 关系，低置信度时回退单条逻辑。"""
+        merged_relations = self._dedupe_and_merge_relations(extracted_relations, entity_name_to_id)
+        if not merged_relations:
+            return []
+
+        relations_by_pair: Dict[Tuple[str, str], List[Dict[str, str]]] = {}
         for merged_relation in merged_relations:
-            # 检查关系格式是否正确
-            if not isinstance(merged_relation, dict):
-                print(f"警告：关系格式不正确，跳过: {merged_relation}")
-                continue
-            
-            # 检查必需的字段（支持新旧格式）
             entity1_name = merged_relation.get('entity1_name') or merged_relation.get('from_entity_name', '')
             entity2_name = merged_relation.get('entity2_name') or merged_relation.get('to_entity_name', '')
-            
             if not entity1_name or not entity2_name:
-                print(f"警告：关系缺少必需字段，跳过: {merged_relation}")
                 continue
-            
-            # 获取实体ID
             entity1_id = entity_name_to_id.get(entity1_name)
             entity2_id = entity_name_to_id.get(entity2_name)
-            
-            if not entity1_id or not entity2_id:
-                print(f"警告：无法找到实体ID - entity1: {entity1_name}, entity2: {entity2_name}")
+            if not entity1_id or not entity2_id or entity1_id == entity2_id:
                 continue
-            
-            # 检查两个实体是否是同一个实体（跳过自关系）
-            if entity1_id == entity2_id:
-                print(f"警告：跳过自关系（两个实体是同一个） - {entity1_name} ({entity1_id})")
-                continue
-            
-            relation = self._process_single_relation(
-                merged_relation,
-                entity1_id,
-                entity2_id,
-                memory_cache_id,
-                entity1_name,
-                entity2_name,
-                doc_name=doc_name,
-                base_time=base_time,
+            pair_key = tuple(sorted((entity1_id, entity2_id)))
+            relations_by_pair.setdefault(pair_key, []).append(merged_relation)
+
+        existing_relations_by_pair = self.storage.get_relations_by_entity_pairs(list(relations_by_pair.keys()))
+        processed_relations: List[Relation] = []
+        relations_to_persist: List[Relation] = []
+
+        for pair_key, pair_relations in relations_by_pair.items():
+            entity1_id, entity2_id = pair_key
+            entity1_name = pair_relations[0].get('entity1_name') or pair_relations[0].get('from_entity_name', '')
+            entity2_name = pair_relations[0].get('entity2_name') or pair_relations[0].get('to_entity_name', '')
+            new_contents = [rel.get("content", "") for rel in pair_relations if rel.get("content", "")]
+            existing_relations = existing_relations_by_pair.get(pair_key, [])
+            existing_relations_info = [
+                {"relation_id": relation.relation_id, "content": relation.content}
+                for relation in existing_relations
+            ]
+
+            batch_result = self.llm_client.resolve_relation_pair_batch(
+                entity1_name=entity1_name,
+                entity2_name=entity2_name,
+                new_relation_contents=new_contents,
+                existing_relations=existing_relations_info,
             )
-            
-            if relation:
-                processed_relations.append(relation)
-        
+
+            confidence = float(batch_result.get("confidence", 0.0) or 0.0)
+            if (not self.batch_resolution_enabled) or batch_result.get("action") == "fallback" or (confidence < self.batch_resolution_confidence_threshold and fallback_to_single):
+                for merged_relation in pair_relations:
+                    relation = self._process_single_relation(
+                        merged_relation,
+                        entity1_id,
+                        entity2_id,
+                        memory_cache_id,
+                        entity1_name,
+                        entity2_name,
+                        doc_name=doc_name,
+                        base_time=base_time,
+                    )
+                    if relation:
+                        processed_relations.append(relation)
+                continue
+
+            if batch_result.get("action") == "match_existing":
+                matched_relation_id = batch_result.get("matched_relation_id") or ""
+                latest_relation = next((rel for rel in existing_relations if rel.relation_id == matched_relation_id), None)
+                if latest_relation and batch_result.get("need_update"):
+                    merged_content = (batch_result.get("merged_content") or "").strip()
+                    if not merged_content:
+                        merged_content = self.llm_client.merge_multiple_relation_contents(
+                            [latest_relation.content] + new_contents
+                        )
+                    new_relation = self._build_relation_version(
+                        matched_relation_id,
+                        entity1_id,
+                        entity2_id,
+                        merged_content,
+                        memory_cache_id,
+                        doc_name=doc_name,
+                        entity1_name=entity1_name,
+                        entity2_name=entity2_name,
+                        base_time=base_time,
+                    )
+                    relations_to_persist.append(new_relation)
+                    processed_relations.append(new_relation)
+                elif latest_relation:
+                    processed_relations.append(latest_relation)
+                else:
+                    fallback_content = batch_result.get("merged_content") or self.llm_client.merge_multiple_relation_contents(new_contents)
+                    new_relation = self._build_new_relation(
+                        entity1_id,
+                        entity2_id,
+                        fallback_content,
+                        memory_cache_id,
+                        entity1_name=entity1_name,
+                        entity2_name=entity2_name,
+                        doc_name=doc_name,
+                        base_time=base_time,
+                    )
+                    relations_to_persist.append(new_relation)
+                    processed_relations.append(new_relation)
+            else:
+                merged_content = (batch_result.get("merged_content") or "").strip()
+                if not merged_content:
+                    merged_content = self.llm_client.merge_multiple_relation_contents(new_contents)
+                new_relation = self._build_new_relation(
+                    entity1_id,
+                    entity2_id,
+                    merged_content,
+                    memory_cache_id,
+                    entity1_name=entity1_name,
+                    entity2_name=entity2_name,
+                    doc_name=doc_name,
+                    base_time=base_time,
+                )
+                relations_to_persist.append(new_relation)
+                processed_relations.append(new_relation)
+
+        if relations_to_persist:
+            self.storage.bulk_save_relations(relations_to_persist)
         return processed_relations
     
     def _dedupe_and_merge_relations(self, extracted_relations: List[Dict[str, str]],
@@ -411,22 +493,12 @@ class RelationProcessor:
                 base_time=base_time,
             )
     
-    def _create_new_relation(self, entity1_id: str, entity2_id: str,
+    def _build_new_relation(self, entity1_id: str, entity2_id: str,
                             content: str, memory_cache_id: str,
                             entity1_name: str = "", entity2_name: str = "",
                             verbose_relation: bool = True, doc_name: str = "",
                             base_time: Optional[datetime] = None) -> Optional[Relation]:
-        """
-        创建新关系
-        
-        注意：
-        - 参数 entity1_id 和 entity2_id 是实体的 entity_id（不是绝对ID）
-        - 通过 entity_id 获取实体的最新版本，然后使用绝对ID（entity.id）存储到关系中
-        - 这确保了关系始终指向实体的最新版本
-        
-        Returns:
-            Relation对象，如果实体不存在则返回None
-        """
+        """构建新关系对象，但不立即写库。"""
         # 通过 entity_id 获取实体的最新版本
         entity1 = self.storage.get_entity_by_id(entity1_id)
         entity2 = self.storage.get_entity_by_id(entity2_id)
@@ -465,17 +537,28 @@ class RelationProcessor:
             memory_cache_id=memory_cache_id,
             doc_name=doc_name_only
         )
-        
-        self.storage.save_relation(relation)
-        
-        if verbose_relation:
-            relation_versions = self.storage.get_relation_versions(relation_id)
-            version_count = len(relation_versions)
-            print(f"[关系操作] ✅ 创建新关系: {entity1_name} <-> {entity2_name} (relation_id: {relation_id}, 数据库中有 {version_count} 个版本)")
-        
         return relation
-    
-    def _create_relation_version(self, relation_id: str, entity1_id: str,
+
+    def _create_new_relation(self, entity1_id: str, entity2_id: str,
+                            content: str, memory_cache_id: str,
+                            entity1_name: str = "", entity2_name: str = "",
+                            verbose_relation: bool = True, doc_name: str = "",
+                            base_time: Optional[datetime] = None) -> Optional[Relation]:
+        """创建新关系"""
+        relation = self._build_new_relation(
+            entity1_id, entity2_id, content, memory_cache_id,
+            entity1_name=entity1_name, entity2_name=entity2_name,
+            verbose_relation=verbose_relation, doc_name=doc_name, base_time=base_time,
+        )
+        if relation:
+            self.storage.save_relation(relation)
+            if verbose_relation:
+                relation_versions = self.storage.get_relation_versions(relation.relation_id)
+                version_count = len(relation_versions)
+                print(f"[关系操作] ✅ 创建新关系: {entity1_name} <-> {entity2_name} (relation_id: {relation.relation_id}, 数据库中有 {version_count} 个版本)")
+        return relation
+
+    def _build_relation_version(self, relation_id: str, entity1_id: str,
                                  entity2_id: str, content: str,
                                  memory_cache_id: str,
                                  verbose_relation: bool = True,
@@ -483,17 +566,8 @@ class RelationProcessor:
                                  entity1_name: str = "",
                                  entity2_name: str = "",
                                  base_time: Optional[datetime] = None) -> Optional[Relation]:
-        """
-        创建关系的新版本
+        """构建关系新版本对象，但不立即写库。"""
         
-        注意：
-        - 参数 entity1_id 和 entity2_id 是实体的 entity_id（不是绝对ID）
-        - 通过 entity_id 获取实体的最新版本，然后使用绝对ID（entity.id）存储到关系中
-        - 这确保了关系的新版本始终指向实体的最新版本
-        
-        Returns:
-            Relation对象，如果实体不存在则返回None
-        """
         # 通过 entity_id 获取实体的最新版本
         entity1 = self.storage.get_entity_by_id(entity1_id)
         entity2 = self.storage.get_entity_by_id(entity2_id)
@@ -531,6 +605,22 @@ class RelationProcessor:
             memory_cache_id=memory_cache_id,
             doc_name=doc_name_only
         )
-        
-        self.storage.save_relation(relation)
+        return relation
+
+    def _create_relation_version(self, relation_id: str, entity1_id: str,
+                                 entity2_id: str, content: str,
+                                 memory_cache_id: str,
+                                 verbose_relation: bool = True,
+                                 doc_name: str = "",
+                                 entity1_name: str = "",
+                                 entity2_name: str = "",
+                                 base_time: Optional[datetime] = None) -> Optional[Relation]:
+        """创建关系的新版本"""
+        relation = self._build_relation_version(
+            relation_id, entity1_id, entity2_id, content, memory_cache_id,
+            verbose_relation=verbose_relation, doc_name=doc_name,
+            entity1_name=entity1_name, entity2_name=entity2_name, base_time=base_time,
+        )
+        if relation:
+            self.storage.save_relation(relation)
         return relation

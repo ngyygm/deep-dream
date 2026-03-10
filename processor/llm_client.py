@@ -467,6 +467,25 @@ content要求：
         # 由于这比较复杂，我们只在明显需要的地方进行修复
         
         return json_str
+
+    def _parse_json_response(self, response: str) -> Any:
+        """从 LLM 响应中提取并解析 JSON。"""
+        json_str = response or ""
+        if "```json" in json_str:
+            json_start = json_str.find("```json") + 7
+            json_end = json_str.find("```", json_start)
+            json_str = json_str[json_start:json_end].strip()
+        elif "```" in json_str:
+            json_start = json_str.find("```") + 3
+            json_end = json_str.find("```", json_start)
+            json_str = json_str[json_start:json_end].strip()
+
+        json_str = self._clean_json_string(json_str)
+        try:
+            return json.loads(json_str)
+        except json.JSONDecodeError:
+            fixed = self._fix_json_errors(json_str)
+            return json.loads(fixed)
     
     def _clean_markdown_code_blocks(self, text: str) -> str:
         """
@@ -2874,6 +2893,166 @@ content增强重点：
                 "relation_content": "",
                 "merge_target": "",
                 "error": str(e)
+            }
+
+    def resolve_entity_candidates_batch(self,
+                                        current_entity: Dict[str, Any],
+                                        candidates: List[Dict[str, Any]],
+                                        context_text: Optional[str] = None) -> Dict[str, Any]:
+        """一次性判断当前实体与多个候选的关系，减少逐候选 detailed 调用。"""
+        if not candidates:
+            return {
+                "match_existing_id": "",
+                "update_mode": "create_new",
+                "merged_name": current_entity.get("name", ""),
+                "merged_content": current_entity.get("content", ""),
+                "relations_to_create": [],
+                "confidence": 1.0,
+            }
+
+        system_prompt = """你是一个知识图谱批量裁决系统。你需要一次性判断“当前实体”与多个候选实体的关系。
+输出严格 JSON，不要输出任何其他文字。
+优先目标：
+1. 如果当前实体与某个候选其实是同一对象，返回 match_existing_id。
+2. 如果只是相关但不是同一对象，放入 relations_to_create。
+3. 如果都不合适，则 create_new。
+4. 给出 confidence（0到1）。"""
+
+        context_note = ""
+        if context_text:
+            context_snippet = context_text[:1200] + ("..." if len(context_text) > 1200 else "")
+            context_note = f"\n上下文：\n{context_snippet}\n"
+
+        candidates_str = []
+        for idx, candidate in enumerate(candidates, 1):
+            candidates_str.append(
+                f"""候选{idx}:
+- entity_id: {candidate.get('entity_id', '')}
+- name: {candidate.get('name', '')}
+- version_count: {candidate.get('version_count', 1)}
+- lexical_score: {candidate.get('lexical_score', 0):.4f}
+- dense_score: {candidate.get('dense_score', 0):.4f}
+- content: {candidate.get('content', '')}"""
+            )
+
+        prompt = f"""当前实体：
+- entity_id: {current_entity.get('entity_id', 'NEW_ENTITY')}
+- name: {current_entity.get('name', '')}
+- content: {current_entity.get('content', '')}
+{context_note}
+候选实体列表：
+{chr(10).join(candidates_str)}
+
+请输出 JSON：
+{{
+  "match_existing_id": "若应合并到已有实体则填写 entity_id，否则为空字符串",
+  "update_mode": "reuse_existing | merge_into_latest | create_new",
+  "merged_name": "若需要，给出最终名称，否则为空字符串",
+  "merged_content": "若需要更新/合并，给出最终内容，否则为空字符串",
+  "relations_to_create": [
+    {{"entity_id": "候选entity_id", "relation_content": "与当前实体的自然语言关系"}}
+  ],
+  "confidence": 0.0
+}}
+
+要求：
+- 只能选一个 match_existing_id
+- 若不合并，但与若干候选存在明确关系，可放入 relations_to_create
+- 若信息不足，confidence 降低
+- 只输出 JSON"""
+
+        try:
+            result = self._parse_json_response(self._call_llm(prompt, system_prompt))
+            if not isinstance(result, dict):
+                raise ValueError("响应格式不正确")
+            result.setdefault("match_existing_id", "")
+            result.setdefault("update_mode", "create_new")
+            result.setdefault("merged_name", "")
+            result.setdefault("merged_content", "")
+            result.setdefault("relations_to_create", [])
+            result.setdefault("confidence", 0.0)
+            return result
+        except Exception as e:
+            return {
+                "match_existing_id": "",
+                "update_mode": "fallback",
+                "merged_name": "",
+                "merged_content": "",
+                "relations_to_create": [],
+                "confidence": 0.0,
+                "error": str(e),
+            }
+
+    def resolve_relation_pair_batch(self,
+                                    entity1_name: str,
+                                    entity2_name: str,
+                                    new_relation_contents: List[str],
+                                    existing_relations: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """对同一实体对的一批候选关系做一次性 match/update/create 判定。"""
+        if not new_relation_contents:
+            return {"action": "skip", "confidence": 1.0}
+
+        if not existing_relations:
+            merged_content = self.merge_multiple_relation_contents(new_relation_contents)
+            return {
+                "action": "create_new",
+                "matched_relation_id": "",
+                "merged_content": merged_content,
+                "confidence": 1.0,
+            }
+
+        system_prompt = """你是一个关系批量裁决系统。你需要判断同一实体对的一批新关系描述，与已有关系中是否匹配。
+输出严格 JSON，不要输出其他文字。"""
+
+        new_relations_text = "\n".join(
+            f"- 新关系{i+1}: {content}" for i, content in enumerate(new_relation_contents)
+        )
+        existing_text = "\n".join(
+            f"- relation_id={rel.get('relation_id', '')}: {rel.get('content', '')}"
+            for rel in existing_relations
+        )
+        prompt = f"""实体对：
+- entity1: {entity1_name}
+- entity2: {entity2_name}
+
+新关系描述：
+{new_relations_text}
+
+已有关系：
+{existing_text}
+
+请输出 JSON：
+{{
+  "action": "match_existing | create_new",
+  "matched_relation_id": "若命中已有关系则填写 relation_id，否则为空字符串",
+  "need_update": true,
+  "merged_content": "若需要创建或更新，请给出最终关系内容；否则为空字符串",
+  "confidence": 0.0
+}}
+
+要求：
+- 若新关系只是已有关系的补充，action 选 match_existing
+- 若与所有已有关系明显不同，action 选 create_new
+- 只输出 JSON"""
+
+        try:
+            result = self._parse_json_response(self._call_llm(prompt, system_prompt))
+            if not isinstance(result, dict):
+                raise ValueError("响应格式不正确")
+            result.setdefault("action", "create_new")
+            result.setdefault("matched_relation_id", "")
+            result.setdefault("need_update", result.get("action") == "create_new")
+            result.setdefault("merged_content", "")
+            result.setdefault("confidence", 0.0)
+            return result
+        except Exception as e:
+            return {
+                "action": "fallback",
+                "matched_relation_id": "",
+                "need_update": False,
+                "merged_content": "",
+                "confidence": 0.0,
+                "error": str(e),
             }
     
     def analyze_entity_duplicates(self, entities_group: List[Dict[str, Any]], 

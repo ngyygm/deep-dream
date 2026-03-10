@@ -312,7 +312,9 @@ class TemporalMemoryGraphProcessor:
             doc_name: 文档/来源名称，用于窗口提示与审计
             verbose: 是否打印处理日志
             load_cache_memory: 是否在开始前加载最新缓存记忆再追加；None 时使用实例默认 self.load_cache_memory
-            event_time: 事件实际发生时间；若提供，本批所有实体/关系/缓存的 physical_time 以此为准
+            event_time: 事件实际发生时间；若提供，本批所有实体/关系/缓存的 physical_time 以此为准。
+                时间轴一律以「用户传入的 event_time」为准，与任务完成先后无关（例如并发时 B 先完成、
+                A 后完成，只要 A 的 event_time 早于 B，则实体/关系版本顺序仍是 A 早 B 晚）。
             document_path: 原文文件路径，由 API 层负责保存后传入
 
         Returns:
@@ -582,187 +584,16 @@ class TemporalMemoryGraphProcessor:
         
         # 用于存储实体名称到ID的映射（逐步构建）
         entity_name_to_id_from_entities = {}
-        # 用于记录已处理的关系（使用实体ID对和内容哈希作为唯一标识）
-        processed_relations_set = set()
-        
         # 定义回调函数：在每个实体处理完后，检查并处理满足条件的关系
         def on_entity_processed_callback(entity, current_entity_name_to_id, current_pending_relations):
-            """在每个实体处理完后调用，检查并处理满足条件的关系"""
-            nonlocal all_pending_relations_by_name, entity_name_to_id_from_entities, processed_relations_set
+            """在每个实体处理完后调用，增量更新映射与待处理关系。"""
+            nonlocal all_pending_relations_by_name, entity_name_to_id_from_entities
             
             # 更新全局映射
             entity_name_to_id_from_entities.update(current_entity_name_to_id)
             
             # 添加新的关系到待处理列表（从当前实体处理中产生的关系）
             all_pending_relations_by_name.extend(current_pending_relations)
-            
-            # 检查整个关系队列：是否有关系已经满足条件（两个实体都已经在映射中）
-            ready_relations = []
-            remaining_relations = []
-            
-            for rel_info in all_pending_relations_by_name:
-                entity1_name = rel_info.get("entity1_name", "")
-                entity2_name = rel_info.get("entity2_name", "")
-                
-                entity1_id = entity_name_to_id_from_entities.get(entity1_name)
-                entity2_id = entity_name_to_id_from_entities.get(entity2_name)
-                
-                # 验证实体ID是否仍然有效（实体可能已被合并，ID可能已失效）
-                # 如果ID无效，尝试从数据库查找正确的ID
-                if entity1_id:
-                    entity1_db = self.storage.get_entity_by_id(entity1_id)
-                    if not entity1_db:
-                        # ID无效，尝试通过名称查找正确的实体ID
-                        if entity1_name:
-                            # 通过名称搜索实体（使用相似度搜索）
-                            similar_entities = self.storage.search_entities_by_similarity(
-                                entity1_name,
-                                text_mode="name_only",
-                                similarity_method="embedding"
-                            )
-                            if similar_entities:
-                                # 找到实体，更新映射
-                                correct_entity_id = similar_entities[0].entity_id
-                                entity_name_to_id_from_entities[entity1_name] = correct_entity_id
-                                entity1_id = correct_entity_id
-                                if verbose:
-                                    print(f"  │  ├─ 🔄 修复映射: {entity1_name} 的ID从无效ID更新为 {correct_entity_id}")
-                            else:
-                                # 找不到实体，清除无效ID
-                                entity1_id = None
-                                if verbose:
-                                    print(f"  │  ├─ ⚠️  警告: 无法找到实体 {entity1_name}，清除无效ID映射")
-                        else:
-                            entity1_id = None
-                
-                if entity2_id:
-                    entity2_db = self.storage.get_entity_by_id(entity2_id)
-                    if not entity2_db:
-                        # ID无效，尝试通过名称查找正确的实体ID
-                        if entity2_name:
-                            # 通过名称搜索实体（使用相似度搜索）
-                            similar_entities = self.storage.search_entities_by_similarity(
-                                entity2_name,
-                                text_mode="name_only",
-                                similarity_method="embedding"
-                            )
-                            if similar_entities:
-                                # 找到实体，更新映射
-                                correct_entity_id = similar_entities[0].entity_id
-                                entity_name_to_id_from_entities[entity2_name] = correct_entity_id
-                                entity2_id = correct_entity_id
-                                if verbose:
-                                    print(f"  │  ├─ 🔄 修复映射: {entity2_name} 的ID从无效ID更新为 {correct_entity_id}")
-                            else:
-                                # 找不到实体，清除无效ID
-                                entity2_id = None
-                                if verbose:
-                                    print(f"  │  ├─ ⚠️  警告: 无法找到实体 {entity2_name}，清除无效ID映射")
-                        else:
-                            entity2_id = None
-                
-                # 如果两个实体都已经在映射中，则可以处理这个关系
-                if entity1_id and entity2_id and entity1_id != entity2_id:
-                    ready_relations.append({
-                        "entity1_id": entity1_id,
-                        "entity2_id": entity2_id,
-                        "entity1_name": entity1_name,
-                        "entity2_name": entity2_name,
-                        "content": rel_info.get("content", ""),
-                        "relation_type": rel_info.get("relation_type", "normal")
-                    })
-                else:
-                    remaining_relations.append(rel_info)
-            
-            # 更新待处理关系列表（移除已满足条件的关系）
-            all_pending_relations_by_name[:] = remaining_relations
-            
-            # 如果有满足条件的关系，立即处理
-            if ready_relations:
-                if verbose:
-                    print(f"  ├─ 检测到 {len(ready_relations)} 个关系已满足条件，立即处理...")
-                
-                # 去重：通过实体对和内容判断重复
-                seen_relations = set()
-                unique_ready_relations = []
-                for rel in ready_relations:
-                    entity1_id = rel.get("entity1_id")
-                    entity2_id = rel.get("entity2_id")
-                    content = rel.get("content", "")
-                    if entity1_id and entity2_id:
-                        pair_key = tuple(sorted([entity1_id, entity2_id]))
-                        content_hash = hash(content.strip().lower())
-                        relation_key = (pair_key, content_hash)
-                        if relation_key not in seen_relations:
-                            seen_relations.add(relation_key)
-                            unique_ready_relations.append(rel)
-                
-                # 处理满足条件的关系
-                for rel_info in unique_ready_relations:
-                    entity1_id = rel_info.get("entity1_id")
-                    entity2_id = rel_info.get("entity2_id")
-                    entity1_name = rel_info.get("entity1_name", "")
-                    entity2_name = rel_info.get("entity2_name", "")
-                    content = rel_info.get("content", "")
-                    
-                    # 生成关系唯一标识（用于标记已处理）
-                    pair_key = tuple(sorted([entity1_id, entity2_id]))
-                    content_hash = hash(content.strip().lower())
-                    relation_key = (pair_key, content_hash)
-                    
-                    # 检查是否已经处理过
-                    if relation_key in processed_relations_set:
-                        # if verbose:
-                        #     print(f"  │  ├─ 跳过已处理关系: {entity1_name} <-> {entity2_name}")
-                        continue
-                    
-                    # 验证实体是否存在于数据库中
-                    entity1_db = self.storage.get_entity_by_id(entity1_id)
-                    entity2_db = self.storage.get_entity_by_id(entity2_id)
-                    
-                    if not entity1_db or not entity2_db:
-                        # 实体不存在，记录警告并跳过
-                        missing_entities = []
-                        if not entity1_db:
-                            missing_entities.append(f"{entity1_name} (entity_id: {entity1_id})")
-                        if not entity2_db:
-                            missing_entities.append(f"{entity2_name} (entity_id: {entity2_id})")
-                        
-                        if verbose:
-                            print(f"  │  ├─ ⚠️  警告: 跳过关系处理，实体不存在于数据库: {', '.join(missing_entities)}")
-                            print(f"  │  │   关系内容: {content[:100]}{'...' if len(content) > 100 else ''}")
-                        continue
-                    
-                    # 使用 relation_processor 创建关系
-                    try:
-                        relation = self.relation_processor._process_single_relation(
-                            extracted_relation={
-                                'entity1_name': entity1_name,
-                                'entity2_name': entity2_name,
-                                'content': content
-                            },
-                            entity1_id=entity1_id,
-                            entity2_id=entity2_id,
-                            memory_cache_id=new_memory_cache.id,
-                            entity1_name=entity1_name,
-                            entity2_name=entity2_name,
-                            verbose_relation=verbose,
-                            doc_name=document_name,
-                            base_time=new_memory_cache.physical_time,
-                        )
-                    except ValueError as e:
-                        # 捕获实体未找到的错误，记录警告并继续处理其他关系
-                        if verbose:
-                            print(f"  │  ├─ ⚠️  警告: 处理关系时出错: {e}")
-                            print(f"  │  │   关系: {entity1_name} <-> {entity2_name}")
-                            print(f"  │  │   关系内容: {content[:100]}{'...' if len(content) > 100 else ''}")
-                        continue
-                    
-                    if relation:
-                        # 标记为已处理
-                        processed_relations_set.add(relation_key)
-                        if verbose:
-                            print(f"  │  ├─ 已处理关系: {entity1_name} <-> {entity2_name}")
         
         processed_entities, pending_relations_from_entities, entity_name_to_id_from_entities_final = self.entity_processor.process_entities(
             extracted_entities,
@@ -977,48 +808,22 @@ class TemporalMemoryGraphProcessor:
             else:
                 print(f"  ├─ 待处理关系: {len(unique_pending_relations)} 个")
         
-        # 处理所有关系
-        processed_relations = []
-        for rel_info in unique_pending_relations:
-            entity1_id = rel_info.get("entity1_id")
-            entity2_id = rel_info.get("entity2_id")
-            entity1_name = rel_info.get("entity1_name", "")
-            entity2_name = rel_info.get("entity2_name", "")
-            content = rel_info.get("content", "")
-            
-            # 生成关系唯一标识（用于检查是否已处理）
-            pair_key = tuple(sorted([entity1_id, entity2_id]))
-            content_hash = hash(content.strip().lower())
-            relation_key = (pair_key, content_hash)
-            
-            # 检查是否已经在步骤6中处理过
-            if relation_key in processed_relations_set:
-                # if verbose:
-                #     print(f"    跳过已处理关系: {entity1_name} <-> {entity2_name}")
-                continue
-            
-            relation = self.relation_processor._process_single_relation(
-                extracted_relation={
-                    'entity1_name': entity1_name,
-                    'entity2_name': entity2_name,
-                    'content': content
-                },
-                entity1_id=entity1_id,
-                entity2_id=entity2_id,
-                memory_cache_id=new_memory_cache.id,
-                entity1_name=entity1_name,
-                entity2_name=entity2_name,
-                verbose_relation=verbose,
-                doc_name=document_name,
-                base_time=new_memory_cache.physical_time,
-            )
-            
-            if relation:
-                # 标记为已处理
-                processed_relations_set.add(relation_key)
-                processed_relations.append(relation)
-        
-        all_processed_relations = processed_relations
+        relation_inputs = [
+            {
+                "entity1_name": rel_info.get("entity1_name", ""),
+                "entity2_name": rel_info.get("entity2_name", ""),
+                "content": rel_info.get("content", ""),
+            }
+            for rel_info in unique_pending_relations
+        ]
+
+        all_processed_relations = self.relation_processor.process_relations_batch(
+            relation_inputs,
+            entity_name_to_id,
+            new_memory_cache.id,
+            doc_name=document_name,
+            base_time=new_memory_cache.physical_time,
+        )
         
         if verbose:
             print(f"  └─ 处理完成: {len(all_processed_relations)} 个关系\n")
