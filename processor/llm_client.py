@@ -523,7 +523,8 @@ content要求：
     
     def update_memory_cache(self, current_cache: Optional[MemoryCache], input_text: str,
                            document_name: str = "", text_start_pos: int = 0, 
-                           text_end_pos: int = 0, total_text_length: int = 0) -> MemoryCache:
+                           text_end_pos: int = 0, total_text_length: int = 0,
+                           event_time: Optional[datetime] = None) -> MemoryCache:
         """
         任务1：更新记忆缓存
         
@@ -531,6 +532,7 @@ content要求：
             current_cache: 当前的记忆缓存（如果存在）
             input_text: 当前窗口的输入文本
             document_name: 当前文档名称
+            event_time: 事件实际发生时间；若提供则用于 physical_time，否则 datetime.now()
             text_start_pos: 当前文本在文档中的起始位置（字符位置）
             text_end_pos: 当前文本在文档中的结束位置（字符位置）
             total_text_length: 文档总长度（字符数）
@@ -628,16 +630,15 @@ content要求：
         # 清理 markdown 代码块标识符
         new_content = self._clean_markdown_code_blocks(new_content)
         
-        # 创建新的MemoryCache
-        new_cache_id = f"cache_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+        base_time = event_time if event_time is not None else datetime.now()
+        new_cache_id = f"cache_{base_time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
         
-        # 只保存文档名，不包含路径
         doc_name_only = document_name.split('/')[-1] if document_name else ""
         
         return MemoryCache(
             id=new_cache_id,
             content=new_content,
-            physical_time=datetime.now(),
+            physical_time=base_time,
             doc_name=doc_name_only,
             activity_type="文档处理"
         )

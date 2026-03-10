@@ -19,7 +19,8 @@ class RelationProcessor:
     
     def process_relations(self, extracted_relations: List[Dict[str, str]], 
                          entity_name_to_id: Dict[str, str],
-                         memory_cache_id: str, doc_name: str = "") -> List[Relation]:
+                         memory_cache_id: str, doc_name: str = "",
+                         base_time: Optional[datetime] = None) -> List[Relation]:
         """
         处理抽取的关系：去重合并、搜索、对齐、更新/新建
         
@@ -74,7 +75,8 @@ class RelationProcessor:
                 memory_cache_id,
                 entity1_name,
                 entity2_name,
-                doc_name=doc_name
+                doc_name=doc_name,
+                base_time=base_time,
             )
             
             if relation:
@@ -253,7 +255,8 @@ class RelationProcessor:
                                  entity1_name: str = "",
                                  entity2_name: str = "",
                                  verbose_relation: bool = True,
-                                 doc_name: str = "") -> Optional[Relation]:
+                                 doc_name: str = "",
+                                 base_time: Optional[datetime] = None) -> Optional[Relation]:
         """
         处理单个关系
         
@@ -277,7 +280,6 @@ class RelationProcessor:
         )
         
         if not existing_relations:
-            # 没有找到已有关系，直接新建
             return self._create_new_relation(
                 entity1_id,
                 entity2_id,
@@ -286,7 +288,8 @@ class RelationProcessor:
                 entity1_name,
                 entity2_name,
                 verbose_relation,
-                doc_name
+                doc_name,
+                base_time=base_time,
             )
         
         # 步骤2：准备已有关系信息供LLM判断
@@ -328,7 +331,6 @@ class RelationProcessor:
             # 获取最新版本的content
             latest_relation = unique_relations[0]  # 已经是最新的
             if not latest_relation:
-                # 如果找不到最新版本，直接新建
                 return self._create_new_relation(
                     entity1_id,
                     entity2_id,
@@ -337,7 +339,8 @@ class RelationProcessor:
                     entity1_name,
                     entity2_name,
                     verbose_relation,
-                    doc_name
+                    doc_name,
+                    base_time=base_time,
                 )
             
             # 判断是否需要更新：比较最新版本的content和当前抽取的content
@@ -377,7 +380,8 @@ class RelationProcessor:
                     verbose_relation,
                     doc_name,
                     entity1_name,
-                    entity2_name
+                    entity2_name,
+                    base_time=base_time,
                 )
                 
                 if verbose_relation:
@@ -396,7 +400,6 @@ class RelationProcessor:
                     print(f"[关系操作] ⏭️  匹配但无需更新: {entity1_name} <-> {entity2_name} (relation_id: {relation_id}, 数据库中有 {version_count} 个版本)")
                 return latest_relation
         else:
-            # 没有匹配到，新建关系
             return self._create_new_relation(
                 entity1_id,
                 entity2_id,
@@ -404,13 +407,15 @@ class RelationProcessor:
                 memory_cache_id,
                 entity1_name,
                 entity2_name,
-                verbose_relation
+                verbose_relation,
+                base_time=base_time,
             )
     
     def _create_new_relation(self, entity1_id: str, entity2_id: str,
                             content: str, memory_cache_id: str,
                             entity1_name: str = "", entity2_name: str = "",
-                            verbose_relation: bool = True, doc_name: str = "") -> Optional[Relation]:
+                            verbose_relation: bool = True, doc_name: str = "",
+                            base_time: Optional[datetime] = None) -> Optional[Relation]:
         """
         创建新关系
         
@@ -437,11 +442,10 @@ class RelationProcessor:
                 print(f"[关系操作] ⚠️  警告: 无法找到实体: {', '.join(missing_info)}，跳过关系创建")
             return None
         
+        ts = base_time if base_time is not None else datetime.now()
         relation_id = f"rel_{uuid.uuid4().hex[:12]}"
-        relation_record_id = f"relation_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+        relation_record_id = f"relation_{ts.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
         
-        # 标准化实体对（按字母顺序排序，使关系无向化）
-        # 通过实体名称来排序，确保 entity1 < entity2
         if entity1.name <= entity2.name:
             entity1_absolute_id = entity1.id
             entity2_absolute_id = entity2.id
@@ -449,16 +453,15 @@ class RelationProcessor:
             entity1_absolute_id = entity2.id
             entity2_absolute_id = entity1.id
         
-        # 只保存文档名，不包含路径
         doc_name_only = doc_name.split('/')[-1] if doc_name else ""
         
         relation = Relation(
             id=relation_record_id,
             relation_id=relation_id,
-            entity1_absolute_id=entity1_absolute_id,  # 使用标准化后的实体对（按名称排序）
-            entity2_absolute_id=entity2_absolute_id,  # 使用标准化后的实体对（按名称排序）
+            entity1_absolute_id=entity1_absolute_id,
+            entity2_absolute_id=entity2_absolute_id,
             content=content,
-            physical_time=datetime.now(),
+            physical_time=ts,
             memory_cache_id=memory_cache_id,
             doc_name=doc_name_only
         )
@@ -466,7 +469,6 @@ class RelationProcessor:
         self.storage.save_relation(relation)
         
         if verbose_relation:
-            # 查询数据库中该relation_id的版本数量（创建后应该有1个版本）
             relation_versions = self.storage.get_relation_versions(relation_id)
             version_count = len(relation_versions)
             print(f"[关系操作] ✅ 创建新关系: {entity1_name} <-> {entity2_name} (relation_id: {relation_id}, 数据库中有 {version_count} 个版本)")
@@ -479,7 +481,8 @@ class RelationProcessor:
                                  verbose_relation: bool = True,
                                  doc_name: str = "",
                                  entity1_name: str = "",
-                                 entity2_name: str = "") -> Optional[Relation]:
+                                 entity2_name: str = "",
+                                 base_time: Optional[datetime] = None) -> Optional[Relation]:
         """
         创建关系的新版本
         
@@ -506,10 +509,9 @@ class RelationProcessor:
                 print(f"[关系操作] ⚠️  警告: 无法找到实体: {', '.join(missing_info)}，跳过关系版本创建")
             return None
         
-        relation_record_id = f"relation_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+        ts = base_time if base_time is not None else datetime.now()
+        relation_record_id = f"relation_{ts.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
         
-        # 标准化实体对（按字母顺序排序，使关系无向化）
-        # 通过实体名称来排序，确保 entity1 < entity2
         if entity1.name <= entity2.name:
             entity1_absolute_id = entity1.id
             entity2_absolute_id = entity2.id
@@ -517,16 +519,15 @@ class RelationProcessor:
             entity1_absolute_id = entity2.id
             entity2_absolute_id = entity1.id
         
-        # 只保存文档名，不包含路径
         doc_name_only = doc_name.split('/')[-1] if doc_name else ""
         
         relation = Relation(
             id=relation_record_id,
             relation_id=relation_id,
-            entity1_absolute_id=entity1_absolute_id,  # 使用标准化后的实体对（按名称排序）
-            entity2_absolute_id=entity2_absolute_id,  # 使用标准化后的实体对（按名称排序）
+            entity1_absolute_id=entity1_absolute_id,
+            entity2_absolute_id=entity2_absolute_id,
             content=content,
-            physical_time=datetime.now(),
+            physical_time=ts,
             memory_cache_id=memory_cache_id,
             doc_name=doc_name_only
         )

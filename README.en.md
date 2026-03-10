@@ -100,12 +100,12 @@ cp service_config.example.json service_config.json
 python service_api.py --config service_config.json
 ```
 
-**Remember:**
+**Remember (text only):**
 
 ```bash
 curl -s -X POST http://localhost:16200/api/remember \
   -H "Content-Type: application/json" \
-  -d '{"text": "Lin Heihei is an archaeology PhD who met a talking white fox in a cave. The fox said it had guarded the cave for three hundred years."}' | jq
+  -d '{"text": "Lin Heihei is an archaeology PhD who met a talking white fox in a cave. The fox said it had guarded the cave for three hundred years.", "event_time": "2026-03-09T14:00:00"}' | jq
 ```
 
 **Find:**
@@ -139,7 +139,7 @@ TMG ships a **Skill** so that Cursor, Claude, and similar agents can deploy, con
 
 3. **What the agent will do**  
    - If the service is not running: clone repo → configure `service_config.json` → run `python service_api.py` → verify with `GET /health`.  
-   - Remember: `POST /api/remember` (body `text` or `file_path`, or multipart upload).  
+   - Remember: `POST /api/remember` with JSON `text` (batch substantial content; avoid one-sentence calls).  
    - Find: `POST /api/find` with natural-language `query`; use entity/relation/version/subgraph endpoints when needed.
 
 ---
@@ -148,13 +148,16 @@ TMG ships a **Skill** so that Cursor, Claude, and similar agents can deploy, con
 
 ### Remember — write
 
-| Mode | Description |
-|------|-------------|
-| Text | JSON body: `{"text": "..."}` |
-| Local file | JSON body: `{"file_path": "/path/to/file"}` (server path) |
-| Upload | Multipart: `file=@/path/to/file` (txt / md / pdf / docx) |
+JSON body only; `text` is required. Batch substantial content — avoid one-sentence calls.
 
-Optional: `source_name`, `load_cache_memory`. Internally: chunking, memory cache update, entity/relation extraction, graph alignment, versioned write.
+| Field | Required | Description |
+|-------|----------|-------------|
+| `text` | Yes | Natural-language text |
+| `source_name` | No | Source label |
+| `event_time` | No | ISO 8601 — when events actually happened (defaults to processing time) |
+| `load_cache_memory` | No | Whether to continue from latest memory cache chain |
+
+The service saves the full text to `storage_path/originals/` and returns `original_path`. Internally: chunking, memory cache update, entity/relation extraction, graph alignment, versioned write.
 
 ### Find — retrieve
 
