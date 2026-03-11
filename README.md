@@ -161,7 +161,9 @@ TMG 提供 **Skill**，使 Cursor、Claude 等 Agent 能够按文档完成部署
 | `load_cache_memory` | 否 | 是否接着上一段记忆链写 |
 | `async` | 否 | 默认 `true`——异步返回 `task_id`（HTTP 202）；`false` 同步等待 |
 
-**异步模式**（默认）：请求立即返回 `task_id`，后台流水线并行处理。可通过 `GET /api/remember/status/<task_id>` 查询进度，`GET /api/remember/queue` 查看队列。多个 remember 请求可并发——记忆缓存更新串行保序，抽取/处理阶段并行加速。
+**异步模式**（默认）：请求立即返回 `task_id`，后台流水线并行处理。可通过 `GET /api/remember/status/<task_id>` 查询进度，`GET /api/remember/queue` 查看队列。
+
+**两阶段线程模型**：每个 text 先生成「文档整体记忆」再跑滑窗链；A 的整体记忆生成后即可启动 B（B 以 A 的整体记忆为初始），无需等 A 最后一窗。并行度由配置 **`remember_workers`** 控制（同时进行 phase1 的线程数；phase2 串行以保证 cache 链一致）。
 
 **时间轴约定**：存入记忆库的「真实时间」以请求中的 `event_time` 为准；实体/关系的版本顺序也按该时间。因此即使后发的请求先完成（例如并发时短任务 B 先完成、长任务 A 后完成），时间轴仍按 `event_time` 正确——A 的 event_time 早则 A 的版本在前，与任务完成先后无关。
 
@@ -200,6 +202,14 @@ TMG 提供 **Skill**，使 Cursor、Claude 等 Agent 能够按文档完成部署
 - **Embedding**：`embedding.model`（本地路径或 HuggingFace 模型名）、`embedding.device`  
 - **分块**：`chunking.window_size`、`chunking.overlap`  
 - **子图**：`subgraph_max_count`、`subgraph_ttl_seconds`  
+- **Remember 队列**：`remember_workers`、`remember_max_retries`、`remember_retry_delay_seconds`  
+- **总线程数上限**：`max_total_worker_threads`（可选）。设后会对三层线程做统一封顶，避免线程爆炸；超出时按**优先级从低到高**缩小：先缩 `pipeline.llm_threads`，再缩 `pipeline.max_concurrent_windows`，最后缩 `remember_workers`。
+
+**三层线程（优先级从高到低）**  
+1. **remember_workers** — 队列 worker 数（最高优先级，保证接活能力）  
+2. **pipeline.max_concurrent_windows** — 单任务内并行滑窗数  
+3. **pipeline.llm_threads** — 单窗口内实体/关系并行数（最低优先级）  
+峰值估算：`remember_workers + max_concurrent_windows + max_concurrent_windows * llm_threads`。
 
 **使用智谱 GLM（OpenAI 兼容）**：将 `llm` 设为 `"api_key": "你的智谱 API Key"`、`"model": "glm-4.7-flash"`、`"base_url": "https://open.bigmodel.cn/api/coding/paas/v4"` 即可，服务会自动走 OpenAI 兼容的 `/chat/completions` 接口。
 

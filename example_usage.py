@@ -279,66 +279,270 @@ def example_remember_ultralong():
 
 
 # ------------------------------------------------------------------
-# 2b. Remember — 并发测试：第一个在处理时第二个到来
+# 2b. Remember — 并发测试：列表驱动，隔几秒提交一个，再轮询全部
 # ------------------------------------------------------------------
-def example_remember_concurrent():
-    """先提交长任务 A，间隔几秒后提交短任务 B，轮询两者直到都完成，验证排队与并行行为。
-    时间轴说明：存入记忆库的时间以请求中的 event_time 为准，与任务完成先后无关——
-    即使 B 先完成、A 后完成，实体/关系版本顺序仍按 event_time（A 16:00，B 16:01）正确排列。"""
-    print("\n>>> Remember 并发测试：第一个在处理时第二个到来")
-
-    long_text = """今天下午14点到16点，我阅读了《三体2：黑暗森林》的前三章。
+# 并发测试数据：每项提交一次 remember，项数可变；相邻两次提交间隔 delay_between_submit_seconds 秒
+CONCURRENT_TASKS = [
+    {
+        "label": "任务1-长",
+        "text": """今天下午14点到16点，我阅读了《三体2：黑暗森林》的前三章。
 第一章"面壁者"：联合国特别会议上宣布了面壁计划，四位面壁者被选出。罗辑作为一个普通的社会学教授，意外地成为了面壁者之一。
 第二章"咒语"：罗辑回忆起多年前与叶文洁的一次深夜谈话。叶文洁向他提到了宇宙社会学的两条基本公理。
-第三章"破壁人"：三体世界为每位面壁者指派了一个破壁人，负责分析和破解面壁者的真实计划。"""
-    short_text = "罗辑是面壁者之一。叶文洁向他提到过宇宙社会学公理。"
+第三章"破壁人"：三体世界为每位面壁者指派了一个破壁人，负责分析和破解面壁者的真实计划。""",
+        "source_name": "并发测试-长",
+        "event_time": "2026-03-09T16:00:00",
+    },
+    {
+        "label": "任务2-短",
+        "text": """# TMG Memory Graph — Agent 长期记忆技能
 
-    # 1) 提交任务 A（长文本）
-    t0 = time.time()
-    resp_a = requests.post(
-        f"{API_BASE}/api/remember",
-        json={
-            "text": long_text,
-            "source_name": "并发测试-长",
-            "event_time": "2026-03-09T16:00:00",
-        },
-    )
-    submit_a = time.time() - t0
-    pp("任务 A (长文本) 提交", resp_a)
-    print(f"  任务 A 提交耗时: {_fmt_sec(submit_a)}")
-    data_a = resp_a.json().get("data", {})
-    task_id_a = data_a.get("task_id")
-    if not task_id_a:
-        print("任务 A 未返回 task_id，跳过并发测试。")
+> TMG 是一个为 Agent 设计的时序自然语言记忆图。
+> 你不是在调用一个工具——你是在使用自己的长期记忆。
+
+## 技能目录结构（按需加载）
+
+```
+skills/tmg-memory-graph/
+├── SKILL.md           # 本文件：核心指令 + 元数据
+├── reference.md       # 接口路径、请求/响应、原子端点
+├── templates/         # 格式模板（按需读取）
+│   └── remember-format.md
+└── examples/          # 优秀示例（按需读取）
+    ├── work-session.md
+    ├── read-document.md
+    ├── daily-reflection.md
+    └── before-reading.md
+```
+
+需要具体格式或示例时再读对应文件，避免一次性塞满上下文。
+
+## 使用场景
+
+在以下情况触发此技能：
+
+```""",
+        "source_name": "并发测试-短",
+        "event_time": "2026-03-09T16:01:00",
+    },
+    {
+        "label": "任务3-长",
+        "text": """# TMG Memory Graph — Agent 长期记忆技能
+
+> TMG 是一个为 Agent 设计的时序自然语言记忆图。
+> 你不是在调用一个工具——你是在使用自己的长期记忆。
+
+## 技能目录结构（按需加载）
+
+```
+skills/tmg-memory-graph/
+├── SKILL.md           # 本文件：核心指令 + 元数据
+├── reference.md       # 接口路径、请求/响应、原子端点
+├── templates/         # 格式模板（按需读取）
+│   └── remember-format.md
+└── examples/          # 优秀示例（按需读取）
+    ├── work-session.md
+    ├── read-document.md
+    ├── daily-reflection.md
+    └── before-reading.md
+```
+
+需要具体格式或示例时再读对应文件，避免一次性塞满上下文。
+
+## 使用场景
+
+在以下情况触发此技能：
+
+| 场景 | 示例 |
+|------|------|
+| 记忆写入 | 「把今天做的事情记下来」「读完这篇论文后存入记忆」 |
+| 记忆检索 | 「之前关于 XX 的讨论内容是什么」「上周我在做什么」 |
+| 服务部署 | 「启动 TMG」「帮我配置记忆服务」 |
+| 身份集成 | 「把记忆能力写进 SOUL.md」「配置心跳记忆同步」 |
+
+## 系统简介
+
+- TMG 是**统一的自然语言记忆图**，不是多库/多标签系统
+- 所有记忆写入同一张图，系统自动完成概念抽取、关系构建、语义对齐
+- 系统只负责 **Remember**（写入）和 **Find**（检索）
+- **Select**（筛选与决策）由调用方（你）完成
+- 每条记忆带时间戳，实体/关系有版本链，支持时间回溯
+
+## 项目信息
+
+| 项 | 值 |
+|----|-----|
+| 仓库 | `https://github.com/ngyygm/Temporal_Memory_Graph` |
+| 项目根目录 | `Temporal_Memory_Graph/` |
+| 依赖文件 | `requirements.txt` |
+| 配置文件 | `service_config.json`（模板：`service_config.example.json`） |
+| 默认地址 | `http://127.0.0.1:16200` |
+| 健康检查 | `GET /health` |
+| 启动命令 | `python service_api.py --config service_config.json` |
+
+## 部署与启动
+
+按顺序执行，已完成的步骤可跳过。
+
+### 1. 克隆仓库（如本地不存在）
+
+```bash
+git clone https://github.com/ngyygm/Temporal_Memory_Graph
+cd Temporal_Memory_Graph
+```""",
+        "source_name": "并发测试-短",
+        "event_time": "2026-03-09T16:01:00",
+    },
+    {
+        "label": "任务4-长",
+        "text": """今天下午14点到16点，我阅读了《三体2：黑暗森林》的前三章。
+第一章"面壁者"：联合国特别会议上宣布了面壁计划，四位面壁者被选出。罗辑作为一个普通的社会学教授，意外地成为了面壁者之一。
+第二章"咒语"：罗辑回忆起多年前与叶文洁的一次深夜谈话。叶文洁向他提到了宇宙社会学的两条基本公理。
+第三章"破壁人"：三体世界为每位面壁者指派了一个破壁人，负责分析和破解面壁者的真实计划。""",
+        "source_name": "并发测试-长",
+        "event_time": "2026-03-09T16:00:00",
+    },
+    {
+        "label": "任务5-短",
+        "text": """# TMG Memory Graph — Agent 长期记忆技能
+
+> TMG 是一个为 Agent 设计的时序自然语言记忆图。
+> 你不是在调用一个工具——你是在使用自己的长期记忆。
+
+## 技能目录结构（按需加载）
+
+```
+skills/tmg-memory-graph/
+├── SKILL.md           # 本文件：核心指令 + 元数据
+├── reference.md       # 接口路径、请求/响应、原子端点
+├── templates/         # 格式模板（按需读取）
+│   └── remember-format.md
+└── examples/          # 优秀示例（按需读取）
+    ├── work-session.md
+    ├── read-document.md
+    ├── daily-reflection.md
+    └── before-reading.md
+```
+
+需要具体格式或示例时再读对应文件，避免一次性塞满上下文。
+
+## 使用场景
+
+在以下情况触发此技能：
+
+```""",
+        "source_name": "并发测试-短",
+        "event_time": "2026-03-09T16:01:00",
+    },
+    {
+        "label": "任务6-长",
+        "text": """# TMG Memory Graph — Agent 长期记忆技能
+
+> TMG 是一个为 Agent 设计的时序自然语言记忆图。
+> 你不是在调用一个工具——你是在使用自己的长期记忆。
+
+## 技能目录结构（按需加载）
+
+```
+skills/tmg-memory-graph/
+├── SKILL.md           # 本文件：核心指令 + 元数据
+├── reference.md       # 接口路径、请求/响应、原子端点
+├── templates/         # 格式模板（按需读取）
+│   └── remember-format.md
+└── examples/          # 优秀示例（按需读取）
+    ├── work-session.md
+    ├── read-document.md
+    ├── daily-reflection.md
+    └── before-reading.md
+```
+
+需要具体格式或示例时再读对应文件，避免一次性塞满上下文。
+
+## 使用场景
+
+在以下情况触发此技能：
+
+| 场景 | 示例 |
+|------|------|
+| 记忆写入 | 「把今天做的事情记下来」「读完这篇论文后存入记忆」 |
+| 记忆检索 | 「之前关于 XX 的讨论内容是什么」「上周我在做什么」 |
+| 服务部署 | 「启动 TMG」「帮我配置记忆服务」 |
+| 身份集成 | 「把记忆能力写进 SOUL.md」「配置心跳记忆同步」 |
+
+## 系统简介
+
+- TMG 是**统一的自然语言记忆图**，不是多库/多标签系统
+- 所有记忆写入同一张图，系统自动完成概念抽取、关系构建、语义对齐
+- 系统只负责 **Remember**（写入）和 **Find**（检索）
+- **Select**（筛选与决策）由调用方（你）完成
+- 每条记忆带时间戳，实体/关系有版本链，支持时间回溯
+
+## 项目信息
+
+| 项 | 值 |
+|----|-----|
+| 仓库 | `https://github.com/ngyygm/Temporal_Memory_Graph` |
+| 项目根目录 | `Temporal_Memory_Graph/` |
+| 依赖文件 | `requirements.txt` |
+| 配置文件 | `service_config.json`（模板：`service_config.example.json`） |
+| 默认地址 | `http://127.0.0.1:16200` |
+| 健康检查 | `GET /health` |
+| 启动命令 | `python service_api.py --config service_config.json` |
+
+## 部署与启动
+
+按顺序执行，已完成的步骤可跳过。
+
+### 1. 克隆仓库（如本地不存在）
+
+```bash
+git clone https://github.com/ngyygm/Temporal_Memory_Graph
+cd Temporal_Memory_Graph
+```""",
+        "source_name": "并发测试-短",
+        "event_time": "2026-03-09T16:01:00",
+    },
+]
+delay_between_submit_seconds = 3
+
+
+def example_remember_concurrent():
+    """按列表 CONCURRENT_TASKS 依次提交：每项间隔 delay_between_submit_seconds 秒，再轮询全部直到完成。
+    时间轴以请求中的 event_time 为准，与完成先后无关。"""
+    print("\n>>> Remember 并发测试：列表驱动，隔几秒唤起一个")
+    n = len(CONCURRENT_TASKS)
+    print(f"  共 {n} 条数据，每条间隔 {delay_between_submit_seconds}s 提交")
+
+    # 1) 按列表顺序提交，每条隔几秒
+    submitted = []
+    for i, spec in enumerate(CONCURRENT_TASKS):
+        if i > 0:
+            print(f"\n  等待 {delay_between_submit_seconds}s 后提交第 {i + 1} 条…")
+            time.sleep(delay_between_submit_seconds)
+        label = spec.get("label", f"任务{i+1}")
+        t0 = time.time()
+        resp = requests.post(
+            f"{API_BASE}/api/remember",
+            json={
+                "text": spec["text"],
+                "source_name": spec["source_name"],
+                "event_time": spec["event_time"],
+            },
+        )
+        elapsed = time.time() - t0
+        pp(f"{label} 提交", resp)
+        print(f"  {label} 提交耗时: {_fmt_sec(elapsed)}")
+        data = resp.json().get("data", {})
+        task_id = data.get("task_id")
+        if task_id:
+            submitted.append((label, task_id))
+        else:
+            print(f"  {label} 未返回 task_id，跳过")
+    if not submitted:
+        print("没有成功提交任何任务，跳过并发测试。")
         return
-
     _print_queue_snapshot()
 
-    # 2) 间隔几秒，让 A 进入处理中，再提交任务 B（短文本）
-    delay_b = 30
-    print(f"\n  等待 {delay_b}s 后提交任务 B（模拟：第一个在处理时第二个到来）…")
-    time.sleep(delay_b)
-
-    t1 = time.time()
-    resp_b = requests.post(
-        f"{API_BASE}/api/remember",
-        json={
-            "text": short_text,
-            "source_name": "并发测试-短",
-            "event_time": "2026-03-09T16:01:00",
-        },
-    )
-    submit_b = time.time() - t1
-    pp("任务 B (短文本) 提交", resp_b)
-    print(f"  任务 B 提交耗时: {_fmt_sec(submit_b)}")
-    data_b = resp_b.json().get("data", {})
-    task_id_b = data_b.get("task_id")
-    if not task_id_b:
-        print("任务 B 未返回 task_id，仅轮询任务 A。")
-
-    _print_queue_snapshot()
-
-    # 3) 同时轮询 A、B 直到都结束
+    # 2) 轮询全部直到都结束
     def get_status(tid):
         r = requests.get(f"{API_BASE}/api/remember/status/{tid}")
         return r.json().get("data", {})
@@ -346,49 +550,40 @@ def example_remember_concurrent():
     deadline = time.time() + 600
     interval = 1
     poll_count = 0
-    done_a, done_b = False, not task_id_b  # 无 B 时视为 B 已“完成”
-    results = {"a": None, "b": None}
+    results = {tid: None for _, tid in submitted}
+    done = {tid: False for _, tid in submitted}
 
     while time.time() < deadline:
         poll_count += 1
-        if not done_a:
-            data_a = get_status(task_id_a)
-            sa = data_a.get("status", "unknown")
-            done_a = sa in ("completed", "failed")
-            results["a"] = data_a
-        if task_id_b and not done_b:
-            data_b = get_status(task_id_b)
-            sb = data_b.get("status", "unknown")
-            done_b = sb in ("completed", "failed")
-            results["b"] = data_b
-
-        print(
-            f"  … 轮询[{poll_count}] "
-            f"A={results['a'].get('status', '?')} "
-            + (f" B={results['b'].get('status', '?')}" if task_id_b else "")
-        )
-        if done_a and done_b:
+        for _, tid in submitted:
+            if not done[tid]:
+                data = get_status(tid)
+                results[tid] = data
+                if data.get("status") in ("completed", "failed"):
+                    done[tid] = True
+        statuses = " ".join(f"{label}={results[tid].get('status', '?')}" for label, tid in submitted)
+        print(f"  … 轮询[{poll_count}] {statuses}")
+        if all(done.values()):
             break
         time.sleep(interval)
         interval = min(interval * 2, 10)
 
-    # 4) 打印两个任务的最终状态与时间统计
+    # 3) 汇总
     print("\n" + "=" * 60)
     print("  并发测试结果汇总")
     print("=" * 60)
-    _print_task_timing("任务 A (长)", results["a"])
-    if results["b"]:
-        _print_task_timing("任务 B (短)", results["b"])
+    for label, tid in submitted:
+        _print_task_timing(label, results.get(tid))
     _print_queue_snapshot()
 
-    # 简单断言：两个都应完成
-    if results["a"] and results["a"].get("status") != "completed":
-        print("  ⚠ 任务 A 未 completed:", results["a"].get("status"))
-    if results["b"] and results["b"].get("status") != "completed":
-        print("  ⚠ 任务 B 未 completed:", results["b"].get("status"))
-    if (results["a"] or {}).get("status") == "completed" and (not results["b"] or results["b"].get("status") == "completed"):
-        print("  ✓ 两个任务均按预期完成（或仅 A 完成）。")
-    # 时间轴按 event_time：A=16:00、B=16:01，与完成先后无关；实体/关系版本顺序以 physical_time 为准。
+    completed = sum(1 for _, tid in submitted if (results.get(tid) or {}).get("status") == "completed")
+    failed = sum(1 for _, tid in submitted if (results.get(tid) or {}).get("status") == "failed")
+    if failed:
+        print(f"  ⚠ {failed} 个任务失败")
+    if completed == len(submitted):
+        print(f"  ✓ 全部 {len(submitted)} 个任务已完成。")
+    else:
+        print(f"  完成 {completed}/{len(submitted)} 个任务。")
 
 
 # ------------------------------------------------------------------
