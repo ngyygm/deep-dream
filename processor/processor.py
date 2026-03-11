@@ -26,7 +26,24 @@ class TemporalMemoryGraphProcessor:
                  embedding_model_name: Optional[str] = None,
                  embedding_device: str = "cpu",
                  embedding_use_local: bool = True,
-                 llm_think_mode: bool = False):
+                 llm_think_mode: bool = False,
+                 llm_threads: int = 1,
+                 # pipeline 可选配置（可从 config.pipeline 传入）
+                 similarity_threshold: Optional[float] = None,
+                 max_similar_entities: Optional[int] = None,
+                 content_snippet_length: Optional[int] = None,
+                 relation_content_snippet_length: Optional[int] = None,
+                 entity_extraction_max_iterations: Optional[int] = None,
+                 entity_extraction_iterative: Optional[bool] = None,
+                 entity_post_enhancement: Optional[bool] = None,
+                 relation_extraction_max_iterations: Optional[int] = None,
+                 relation_extraction_absolute_max_iterations: Optional[int] = None,
+                 relation_extraction_iterative: Optional[bool] = None,
+                 load_cache_memory: Optional[bool] = None,
+                 jaccard_search_threshold: Optional[float] = None,
+                 embedding_name_search_threshold: Optional[float] = None,
+                 embedding_full_search_threshold: Optional[float] = None,
+                 max_concurrent_windows: Optional[int] = None):
         """
         初始化处理器
 
@@ -42,7 +59,27 @@ class TemporalMemoryGraphProcessor:
             embedding_device: Embedding计算设备 ("cpu" 或 "cuda")
             embedding_use_local: 是否优先使用本地 embedding 模型
             llm_think_mode: LLM 是否开启思维链/think 模式（默认 False）。Ollama 下用 API 参数 think；非 Ollama 用 enable_thinking
+            llm_threads: 步骤6实体处理等 LLM 调用的并行线程数（默认 1；>1 时启用多线程）
+            similarity_threshold: 实体相似度阈值（默认 0.7）
+            max_similar_entities: 语义搜索返回的最大相似实体数（默认 10）
+            content_snippet_length: 实体 content 截取长度（默认 50）
+            relation_content_snippet_length: 关系 content 截取长度（默认 50）
+            entity_extraction_max_iterations: 实体抽取最大轮次（默认 3）
+            entity_extraction_iterative: 是否迭代实体抽取（默认 True）
+            entity_post_enhancement: 是否实体后验增强（默认 False）
+            relation_extraction_max_iterations: 关系抽取最大轮次（默认 3）
+            relation_extraction_absolute_max_iterations: 关系抽取绝对最大轮次（默认 10）
+            relation_extraction_iterative: 是否迭代关系抽取（默认 True）
+            load_cache_memory: 是否加载缓存记忆续写（默认 False）
+            jaccard_search_threshold: Jaccard 搜索阈值（可选，不设则用 similarity_threshold）
+            embedding_name_search_threshold: Embedding 名称搜索阈值（可选）
+            embedding_full_search_threshold: Embedding 全文搜索阈值（可选）
+            max_concurrent_windows: 同时处理的滑窗数上限（默认 1）；满员时不唤醒下一窗口，避免窗口内实体/关系并行导致线程爆炸
         """
+        _content_snippet_length = content_snippet_length if content_snippet_length is not None else 50
+        _relation_content_snippet_length = relation_content_snippet_length if relation_content_snippet_length is not None else 50
+        _max_similar_entities = max_similar_entities if max_similar_entities is not None else 10
+
         self.embedding_client = EmbeddingClient(
             model_path=embedding_model_path,
             model_name=embedding_model_name,
@@ -50,62 +87,54 @@ class TemporalMemoryGraphProcessor:
             use_local=embedding_use_local
         )
         
-        # 使用默认值初始化各个组件
-        default_content_snippet_length = 50
-        default_relation_content_snippet_length = 50
-        default_max_similar_entities = 10
-        
         self.storage = StorageManager(
             storage_path, 
             embedding_client=self.embedding_client,
-            entity_content_snippet_length=default_content_snippet_length,
-            relation_content_snippet_length=default_relation_content_snippet_length
+            entity_content_snippet_length=_content_snippet_length,
+            relation_content_snippet_length=_relation_content_snippet_length
         )
         self.document_processor = DocumentProcessor(window_size, overlap)
         self.llm_client = LLMClient(llm_api_key, llm_model, llm_base_url, 
-                                   content_snippet_length=default_content_snippet_length,
+                                   content_snippet_length=_content_snippet_length,
                                    think_mode=llm_think_mode)
         self.entity_processor = EntityProcessor(
             self.storage, 
             self.llm_client,
-            max_similar_entities=default_max_similar_entities,
-            content_snippet_length=default_content_snippet_length
+            max_similar_entities=_max_similar_entities,
+            content_snippet_length=_content_snippet_length
         )
         self.relation_processor = RelationProcessor(self.storage, self.llm_client)
         
-        # 使用默认值初始化配置属性
-        self.similarity_threshold = 0.7
-        self.max_similar_entities = default_max_similar_entities
-        self.content_snippet_length = default_content_snippet_length
-        self.relation_content_snippet_length = default_relation_content_snippet_length
+        self.similarity_threshold = similarity_threshold if similarity_threshold is not None else 0.7
+        self.max_similar_entities = _max_similar_entities
+        self.content_snippet_length = _content_snippet_length
+        self.relation_content_snippet_length = _relation_content_snippet_length
         
-        # 关系抽取配置
-        self.relation_extraction_max_iterations = 3
-        self.relation_extraction_absolute_max_iterations = 10
-        self.relation_extraction_iterative = True
+        self.relation_extraction_max_iterations = relation_extraction_max_iterations if relation_extraction_max_iterations is not None else 3
+        self.relation_extraction_absolute_max_iterations = relation_extraction_absolute_max_iterations if relation_extraction_absolute_max_iterations is not None else 10
+        self.relation_extraction_iterative = relation_extraction_iterative if relation_extraction_iterative is not None else True
         
-        # 实体抽取配置
-        self.entity_extraction_max_iterations = 3
-        self.entity_extraction_iterative = True
-        self.entity_post_enhancement = False
+        self.entity_extraction_max_iterations = entity_extraction_max_iterations if entity_extraction_max_iterations is not None else 3
+        self.entity_extraction_iterative = entity_extraction_iterative if entity_extraction_iterative is not None else True
+        self.entity_post_enhancement = entity_post_enhancement if entity_post_enhancement is not None else False
         
-        # LLM并行配置
-        self.llm_threads = 1
+        self.llm_threads = llm_threads
+        self.load_cache_memory = load_cache_memory if load_cache_memory is not None else False
         
-        # 缓存记忆加载配置
-        self.load_cache_memory = False
+        self.jaccard_search_threshold = jaccard_search_threshold
+        self.embedding_name_search_threshold = embedding_name_search_threshold
+        self.embedding_full_search_threshold = embedding_full_search_threshold
         
-        # 搜索阈值配置（用于三种不同的搜索方法）
-        self.jaccard_search_threshold: Optional[float] = None
-        self.embedding_name_search_threshold: Optional[float] = None
-        self.embedding_full_search_threshold: Optional[float] = None
+        # 同时处理的滑窗数上限（满员时不唤醒下一窗口，避免窗口内实体/关系并行导致线程爆炸）
+        _max_concurrent_windows = max_concurrent_windows if max_concurrent_windows is not None else 1
+        _max_concurrent_windows = max(1, min(_max_concurrent_windows, 64))  # 合理范围 [1, 64]
         
         # 当前状态
         self.current_memory_cache: Optional[MemoryCache] = None
         
-        # 流水线并行：cache 更新串行锁 + 抽取/处理线程池
+        # 流水线并行：cache 更新串行锁 + 抽取/处理线程池（max_workers 限制同时处理的窗口数）
         self._cache_lock = threading.Lock()
-        self._extraction_executor = ThreadPoolExecutor(max_workers=4)
+        self._extraction_executor = ThreadPoolExecutor(max_workers=_max_concurrent_windows)
     
     def process_documents(self, document_paths: List[str], verbose: bool = True,
                          similarity_threshold: Optional[float] = None,
@@ -608,6 +637,7 @@ class TemporalMemoryGraphProcessor:
             embedding_full_search_threshold=self.embedding_full_search_threshold,
             on_entity_processed=on_entity_processed_callback,
             base_time=new_memory_cache.physical_time,
+            max_workers=self.llm_threads,
         )
         
         # 合并最终的映射（回调函数中可能已经更新了部分映射）
@@ -823,6 +853,7 @@ class TemporalMemoryGraphProcessor:
             new_memory_cache.id,
             doc_name=document_name,
             base_time=new_memory_cache.physical_time,
+            max_workers=self.llm_threads,
         )
         
         if verbose:

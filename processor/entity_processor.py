@@ -3,6 +3,7 @@
 """
 from typing import List, Dict, Optional, Tuple, Any
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import uuid
 import numpy as np
 
@@ -32,9 +33,11 @@ class EntityProcessor:
                         embedding_name_search_threshold: Optional[float] = None,
                         embedding_full_search_threshold: Optional[float] = None,
                         on_entity_processed: Optional[callable] = None,
-                        base_time: Optional[datetime] = None) -> Tuple[List[Entity], List[Dict], Dict[str, str]]:
+                        base_time: Optional[datetime] = None,
+                        max_workers: Optional[int] = None) -> Tuple[List[Entity], List[Dict], Dict[str, str]]:
         """
-        处理抽取的实体：搜索、对齐、更新/新建
+        处理抽取的实体：搜索、对齐、更新/新建。
+        当 max_workers > 1 且实体数 > 1 时使用多线程并行；合并冲突时以数据库中已存在的 entity_id 为准。
         
         Args:
             extracted_entities: 抽取的实体列表（每个包含name和content）
@@ -47,12 +50,58 @@ class EntityProcessor:
             jaccard_search_threshold: Jaccard搜索（name_only）的相似度阈值（可选，默认使用similarity_threshold）
             embedding_name_search_threshold: Embedding搜索（name_only）的相似度阈值（可选，默认使用similarity_threshold）
             embedding_full_search_threshold: Embedding搜索（name+content）的相似度阈值（可选，默认使用similarity_threshold）
+            on_entity_processed: 每个实体处理完的回调（可选）
+            base_time: 基准时间（可选）
+            max_workers: 并行线程数；>1 且实体数>1 时启用多线程，合并冲突时以数据库已有 id 为准
         
         Returns:
             Tuple[处理后的实体列表, 待处理的关系列表, 实体名称到ID的映射]
             关系信息格式：{"entity1_name": "...", "entity2_name": "...", "content": "...", "relation_type": "alias|normal"}
             注意：关系中的实体使用名称而不是ID，因为新实体在创建前还没有ID
         """
+        use_parallel = (max_workers is not None and max_workers > 1 and len(extracted_entities) > 1)
+        if use_parallel:
+            return self._process_entities_parallel(
+                extracted_entities=extracted_entities,
+                memory_cache_id=memory_cache_id,
+                similarity_threshold=similarity_threshold,
+                memory_cache=memory_cache,
+                doc_name=doc_name,
+                context_text=context_text,
+                extracted_relations=extracted_relations,
+                jaccard_search_threshold=jaccard_search_threshold,
+                embedding_name_search_threshold=embedding_name_search_threshold,
+                embedding_full_search_threshold=embedding_full_search_threshold,
+                on_entity_processed=on_entity_processed,
+                base_time=base_time,
+                max_workers=max_workers,
+            )
+        return self._process_entities_sequential(
+            extracted_entities=extracted_entities,
+            memory_cache_id=memory_cache_id,
+            similarity_threshold=similarity_threshold,
+            memory_cache=memory_cache,
+            doc_name=doc_name,
+            context_text=context_text,
+            extracted_relations=extracted_relations,
+            jaccard_search_threshold=jaccard_search_threshold,
+            embedding_name_search_threshold=embedding_name_search_threshold,
+            embedding_full_search_threshold=embedding_full_search_threshold,
+            on_entity_processed=on_entity_processed,
+            base_time=base_time,
+        )
+
+    def _process_entities_sequential(self, extracted_entities: List[Dict[str, str]],
+                        memory_cache_id: str, similarity_threshold: float = 0.7,
+                        memory_cache: Optional[MemoryCache] = None, doc_name: str = "",
+                        context_text: Optional[str] = None,
+                        extracted_relations: Optional[List[Dict[str, str]]] = None,
+                        jaccard_search_threshold: Optional[float] = None,
+                        embedding_name_search_threshold: Optional[float] = None,
+                        embedding_full_search_threshold: Optional[float] = None,
+                        on_entity_processed: Optional[callable] = None,
+                        base_time: Optional[datetime] = None) -> Tuple[List[Entity], List[Dict], Dict[str, str]]:
+        """串行处理实体（原逻辑）。"""
         processed_entities: List[Entity] = []
         pending_relations: List[Dict] = []
         entity_name_to_id: Dict[str, str] = {}
@@ -113,6 +162,102 @@ class EntityProcessor:
 
         if entities_to_persist:
             self.storage.bulk_save_entities(entities_to_persist)
+
+        return processed_entities, pending_relations, entity_name_to_id
+
+    def _process_entities_parallel(self, extracted_entities: List[Dict[str, str]],
+                        memory_cache_id: str, similarity_threshold: float = 0.7,
+                        memory_cache: Optional[MemoryCache] = None, doc_name: str = "",
+                        context_text: Optional[str] = None,
+                        extracted_relations: Optional[List[Dict[str, str]]] = None,
+                        jaccard_search_threshold: Optional[float] = None,
+                        embedding_name_search_threshold: Optional[float] = None,
+                        embedding_full_search_threshold: Optional[float] = None,
+                        on_entity_processed: Optional[callable] = None,
+                        base_time: Optional[datetime] = None,
+                        max_workers: int = 2) -> Tuple[List[Entity], List[Dict], Dict[str, str]]:
+        """多线程处理实体；合并冲突时以数据库中已存在的 entity_id 为准。"""
+        extracted_entity_names = {e['name'] for e in extracted_entities}
+        extracted_relation_pairs = set()
+        if extracted_relations:
+            for rel in extracted_relations:
+                entity1_name = rel.get('entity1_name') or rel.get('from_entity_name', '').strip()
+                entity2_name = rel.get('entity2_name') or rel.get('to_entity_name', '').strip()
+                content = rel.get('content', '').strip()
+                if entity1_name and entity2_name:
+                    pair_key = tuple(sorted([entity1_name, entity2_name]))
+                    extracted_relation_pairs.add((pair_key, hash(content.lower())))
+
+        candidate_table = self._build_entity_candidate_table(
+            extracted_entities,
+            similarity_threshold=similarity_threshold,
+            jaccard_search_threshold=jaccard_search_threshold,
+            embedding_name_search_threshold=embedding_name_search_threshold,
+            embedding_full_search_threshold=embedding_full_search_threshold,
+        )
+        total_entities = len(extracted_entities)
+
+        def task(idx: int, extracted_entity: Dict[str, str]):
+            candidates = candidate_table.get(idx - 1, [])
+            entity, relations, name_mapping, to_persist = self._process_single_entity_batch(
+                extracted_entity=extracted_entity,
+                candidates=candidates,
+                memory_cache_id=memory_cache_id,
+                similarity_threshold=similarity_threshold,
+                memory_cache=memory_cache,
+                doc_name=doc_name,
+                context_text=context_text,
+                entity_index=idx,
+                total_entities=total_entities,
+                extracted_entity_names=extracted_entity_names,
+                extracted_relation_pairs=extracted_relation_pairs,
+                jaccard_search_threshold=jaccard_search_threshold,
+                embedding_name_search_threshold=embedding_name_search_threshold,
+                embedding_full_search_threshold=embedding_full_search_threshold,
+                base_time=base_time,
+            )
+            return (idx, entity, relations, name_mapping, to_persist)
+
+        results: List[Tuple[int, Optional[Entity], List[Dict], Dict[str, str], Optional[Entity]]] = []
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(task, idx, extracted_entity): idx
+                for idx, extracted_entity in enumerate(extracted_entities, 1)
+            }
+            for future in as_completed(futures):
+                results.append(future.result())
+        results.sort(key=lambda r: r[0])
+
+        name_to_ids: Dict[str, set] = {}
+        for idx, entity, relations, name_mapping, to_persist in results:
+            if name_mapping:
+                for name, eid in name_mapping.items():
+                    if name and eid:
+                        name_to_ids.setdefault(name, set()).add(eid)
+
+        entity_name_to_id: Dict[str, str] = {}
+        for name, ids in name_to_ids.items():
+            in_storage = [eid for eid in ids if self.storage.get_entity_by_id(eid) is not None]
+            if in_storage:
+                entity_name_to_id[name] = in_storage[0]
+            else:
+                entity_name_to_id[name] = sorted(ids)[0]
+
+        canonical_ids = set(entity_name_to_id.values())
+        all_to_persist: List[Entity] = [r[4] for r in results if r[4] is not None]
+        entities_to_persist_final = [e for e in all_to_persist if e.entity_id in canonical_ids]
+        if entities_to_persist_final:
+            self.storage.bulk_save_entities(entities_to_persist_final)
+
+        processed_entities = [r[1] for r in results if r[1] is not None]
+        pending_relations: List[Dict] = []
+        for r in results:
+            if r[2]:
+                pending_relations.extend(r[2])
+        if on_entity_processed:
+            for r in results:
+                if r[1]:
+                    on_entity_processed(r[1], entity_name_to_id, r[2] or [])
 
         return processed_entities, pending_relations, entity_name_to_id
     

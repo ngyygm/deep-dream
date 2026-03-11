@@ -16,6 +16,24 @@
     "window_size": 1000,
     "overlap": 200
   },
+  "pipeline": {
+    "llm_threads": 4,
+    "similarity_threshold": 0.7,
+    "max_similar_entities": 10,
+    "content_snippet_length": 50,
+    "relation_content_snippet_length": 50,
+    "entity_extraction_max_iterations": 3,
+    "entity_extraction_iterative": true,
+    "entity_post_enhancement": false,
+    "relation_extraction_max_iterations": 3,
+    "relation_extraction_absolute_max_iterations": 10,
+    "relation_extraction_iterative": true,
+    "load_cache_memory": false,
+    "max_concurrent_windows": 1
+  },
   "subgraph_max_count": 100,
-  "subgraph_ttl_seconds": 3600
+  "subgraph_ttl_seconds": 3600,
+  "remember_workers": 1,
+  "remember_max_retries": 2,
+  "remember_retry_delay_seconds": 2
 }

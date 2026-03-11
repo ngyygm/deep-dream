@@ -203,6 +203,8 @@ TMG 提供 **Skill**，使 Cursor、Claude 等 Agent 能够按文档完成部署
 
 **使用智谱 GLM（OpenAI 兼容）**：将 `llm` 设为 `"api_key": "你的智谱 API Key"`、`"model": "glm-4.7-flash"`、`"base_url": "https://open.bigmodel.cn/api/coding/paas/v4"` 即可，服务会自动走 OpenAI 兼容的 `/chat/completions` 接口。
 
+**使用 LM Studio（OpenAI 兼容）**：在 LM Studio 中加载模型并启动「Local Server」后，将 `llm` 设为 `"api_key": "lmstudio"`（或任意非空字符串）、`"model": "模型 ID"`（与 LM Studio 中显示的模型名完全一致，如 `qwen3.5-4b`）、`"base_url": "http://127.0.0.1:1234/v1"`。LM Studio 默认端口为 **1234**，若你改过端口则用对应端口。
+
 ---
 
 ## License

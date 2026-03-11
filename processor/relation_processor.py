@@ -3,6 +3,7 @@
 """
 from typing import List, Dict, Optional, Any, Tuple
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import uuid
 
 from .models import Relation
@@ -49,8 +50,9 @@ class RelationProcessor:
                                 memory_cache_id: str,
                                 doc_name: str = "",
                                 base_time: Optional[datetime] = None,
-                                fallback_to_single: bool = True) -> List[Relation]:
-        """按实体对批量 upsert 关系，低置信度时回退单条逻辑。"""
+                                fallback_to_single: bool = True,
+                                max_workers: Optional[int] = None) -> List[Relation]:
+        """按实体对批量 upsert 关系，低置信度时回退单条逻辑。max_workers>1 且实体对数量>1 时并行处理。"""
         merged_relations = self._dedupe_and_merge_relations(extracted_relations, entity_name_to_id)
         if not merged_relations:
             return []
@@ -72,87 +74,143 @@ class RelationProcessor:
         processed_relations: List[Relation] = []
         relations_to_persist: List[Relation] = []
 
-        for pair_key, pair_relations in relations_by_pair.items():
-            entity1_id, entity2_id = pair_key
-            entity1_name = pair_relations[0].get('entity1_name') or pair_relations[0].get('from_entity_name', '')
-            entity2_name = pair_relations[0].get('entity2_name') or pair_relations[0].get('to_entity_name', '')
-            new_contents = [rel.get("content", "") for rel in pair_relations if rel.get("content", "")]
-            existing_relations = existing_relations_by_pair.get(pair_key, [])
-            existing_relations_info = [
-                {"relation_id": relation.relation_id, "content": relation.content}
-                for relation in existing_relations
-            ]
+        use_parallel = max_workers is not None and max_workers > 1 and len(relations_by_pair) > 1
+        if use_parallel:
+            pair_items = list(relations_by_pair.items())
+            results: List[Optional[Tuple[List[Relation], List[Relation]]]] = [None] * len(pair_items)
 
-            batch_result = self.llm_client.resolve_relation_pair_batch(
-                entity1_name=entity1_name,
-                entity2_name=entity2_name,
-                new_relation_contents=new_contents,
-                existing_relations=existing_relations_info,
-            )
+            def task(idx: int, pair_key: Tuple[str, str], pair_relations: List[Dict[str, str]]):
+                existing_relations = existing_relations_by_pair.get(pair_key, [])
+                entity1_name = pair_relations[0].get('entity1_name') or pair_relations[0].get('from_entity_name', '')
+                entity2_name = pair_relations[0].get('entity2_name') or pair_relations[0].get('to_entity_name', '')
+                return idx, self._process_one_relation_pair(
+                    pair_key=pair_key,
+                    pair_relations=pair_relations,
+                    existing_relations=existing_relations,
+                    entity1_name=entity1_name,
+                    entity2_name=entity2_name,
+                    memory_cache_id=memory_cache_id,
+                    doc_name=doc_name,
+                    base_time=base_time,
+                    fallback_to_single=fallback_to_single,
+                )
 
-            confidence = float(batch_result.get("confidence", 0.0) or 0.0)
-            if (not self.batch_resolution_enabled) or batch_result.get("action") == "fallback" or (confidence < self.batch_resolution_confidence_threshold and fallback_to_single):
-                for merged_relation in pair_relations:
-                    relation = self._process_single_relation(
-                        merged_relation,
-                        entity1_id,
-                        entity2_id,
-                        memory_cache_id,
-                        entity1_name,
-                        entity2_name,
-                        doc_name=doc_name,
-                        base_time=base_time,
-                    )
-                    if relation:
-                        processed_relations.append(relation)
-                continue
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {
+                    executor.submit(task, idx, pair_key, pair_relations): idx
+                    for idx, (pair_key, pair_relations) in enumerate(pair_items)
+                }
+                for future in as_completed(futures):
+                    idx, pair_result = future.result()
+                    results[idx] = pair_result
+            for res in results:
+                if res is None:
+                    continue
+                proc, to_persist = res
+                if proc:
+                    processed_relations.extend(proc)
+                if to_persist:
+                    relations_to_persist.extend(to_persist)
+        else:
+            for pair_key, pair_relations in relations_by_pair.items():
+                entity1_id, entity2_id = pair_key
+                entity1_name = pair_relations[0].get('entity1_name') or pair_relations[0].get('from_entity_name', '')
+                entity2_name = pair_relations[0].get('entity2_name') or pair_relations[0].get('to_entity_name', '')
+                existing_relations = existing_relations_by_pair.get(pair_key, [])
+                proc, to_persist = self._process_one_relation_pair(
+                    pair_key=pair_key,
+                    pair_relations=pair_relations,
+                    existing_relations=existing_relations,
+                    entity1_name=entity1_name,
+                    entity2_name=entity2_name,
+                    memory_cache_id=memory_cache_id,
+                    doc_name=doc_name,
+                    base_time=base_time,
+                    fallback_to_single=fallback_to_single,
+                )
+                if proc:
+                    processed_relations.extend(proc)
+                if to_persist:
+                    relations_to_persist.extend(to_persist)
 
-            if batch_result.get("action") == "match_existing":
-                matched_relation_id = batch_result.get("matched_relation_id") or ""
-                latest_relation = next((rel for rel in existing_relations if rel.relation_id == matched_relation_id), None)
-                if latest_relation and batch_result.get("need_update"):
-                    merged_content = (batch_result.get("merged_content") or "").strip()
-                    if not merged_content:
-                        merged_content = self.llm_client.merge_multiple_relation_contents(
-                            [latest_relation.content] + new_contents
-                        )
-                    new_relation = self._build_relation_version(
-                        matched_relation_id,
-                        entity1_id,
-                        entity2_id,
-                        merged_content,
-                        memory_cache_id,
-                        doc_name=doc_name,
-                        entity1_name=entity1_name,
-                        entity2_name=entity2_name,
-                        base_time=base_time,
-                    )
-                    relations_to_persist.append(new_relation)
-                    processed_relations.append(new_relation)
-                elif latest_relation:
-                    processed_relations.append(latest_relation)
-                else:
-                    fallback_content = batch_result.get("merged_content") or self.llm_client.merge_multiple_relation_contents(new_contents)
-                    new_relation = self._build_new_relation(
-                        entity1_id,
-                        entity2_id,
-                        fallback_content,
-                        memory_cache_id,
-                        entity1_name=entity1_name,
-                        entity2_name=entity2_name,
-                        doc_name=doc_name,
-                        base_time=base_time,
-                    )
-                    relations_to_persist.append(new_relation)
-                    processed_relations.append(new_relation)
-            else:
+        if relations_to_persist:
+            self.storage.bulk_save_relations(relations_to_persist)
+        return processed_relations
+
+    def _process_one_relation_pair(self,
+                                   pair_key: Tuple[str, str],
+                                   pair_relations: List[Dict[str, str]],
+                                   existing_relations: List[Relation],
+                                   entity1_name: str,
+                                   entity2_name: str,
+                                   memory_cache_id: str,
+                                   doc_name: str = "",
+                                   base_time: Optional[datetime] = None,
+                                   fallback_to_single: bool = True) -> Tuple[List[Relation], List[Relation]]:
+        """处理单个实体对的关系，返回 (processed_relations, relations_to_persist)。"""
+        entity1_id, entity2_id = pair_key
+        processed_relations: List[Relation] = []
+        relations_to_persist: List[Relation] = []
+        new_contents = [rel.get("content", "") for rel in pair_relations if rel.get("content", "")]
+        existing_relations_info = [
+            {"relation_id": relation.relation_id, "content": relation.content}
+            for relation in existing_relations
+        ]
+
+        batch_result = self.llm_client.resolve_relation_pair_batch(
+            entity1_name=entity1_name,
+            entity2_name=entity2_name,
+            new_relation_contents=new_contents,
+            existing_relations=existing_relations_info,
+        )
+
+        confidence = float(batch_result.get("confidence", 0.0) or 0.0)
+        if (not self.batch_resolution_enabled) or batch_result.get("action") == "fallback" or (confidence < self.batch_resolution_confidence_threshold and fallback_to_single):
+            for merged_relation in pair_relations:
+                relation = self._process_single_relation(
+                    merged_relation,
+                    entity1_id,
+                    entity2_id,
+                    memory_cache_id,
+                    entity1_name,
+                    entity2_name,
+                    doc_name=doc_name,
+                    base_time=base_time,
+                )
+                if relation:
+                    processed_relations.append(relation)
+            return processed_relations, relations_to_persist
+
+        if batch_result.get("action") == "match_existing":
+            matched_relation_id = batch_result.get("matched_relation_id") or ""
+            latest_relation = next((rel for rel in existing_relations if rel.relation_id == matched_relation_id), None)
+            if latest_relation and batch_result.get("need_update"):
                 merged_content = (batch_result.get("merged_content") or "").strip()
                 if not merged_content:
-                    merged_content = self.llm_client.merge_multiple_relation_contents(new_contents)
-                new_relation = self._build_new_relation(
+                    merged_content = self.llm_client.merge_multiple_relation_contents(
+                        [latest_relation.content] + new_contents
+                    )
+                new_relation = self._build_relation_version(
+                    matched_relation_id,
                     entity1_id,
                     entity2_id,
                     merged_content,
+                    memory_cache_id,
+                    doc_name=doc_name,
+                    entity1_name=entity1_name,
+                    entity2_name=entity2_name,
+                    base_time=base_time,
+                )
+                relations_to_persist.append(new_relation)
+                processed_relations.append(new_relation)
+            elif latest_relation:
+                processed_relations.append(latest_relation)
+            else:
+                fallback_content = batch_result.get("merged_content") or self.llm_client.merge_multiple_relation_contents(new_contents)
+                new_relation = self._build_new_relation(
+                    entity1_id,
+                    entity2_id,
+                    fallback_content,
                     memory_cache_id,
                     entity1_name=entity1_name,
                     entity2_name=entity2_name,
@@ -161,10 +219,23 @@ class RelationProcessor:
                 )
                 relations_to_persist.append(new_relation)
                 processed_relations.append(new_relation)
-
-        if relations_to_persist:
-            self.storage.bulk_save_relations(relations_to_persist)
-        return processed_relations
+        else:
+            merged_content = (batch_result.get("merged_content") or "").strip()
+            if not merged_content:
+                merged_content = self.llm_client.merge_multiple_relation_contents(new_contents)
+            new_relation = self._build_new_relation(
+                entity1_id,
+                entity2_id,
+                merged_content,
+                memory_cache_id,
+                entity1_name=entity1_name,
+                entity2_name=entity2_name,
+                doc_name=doc_name,
+                base_time=base_time,
+            )
+            relations_to_persist.append(new_relation)
+            processed_relations.append(new_relation)
+        return processed_relations, relations_to_persist
     
     def _dedupe_and_merge_relations(self, extracted_relations: List[Dict[str, str]],
                                     entity_name_to_id: Dict[str, str]) -> List[Dict[str, str]]:
