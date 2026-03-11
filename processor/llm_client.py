@@ -686,6 +686,62 @@ content要求：
             doc_name=doc_name_only,
             activity_type="文档处理"
         )
+
+    def create_document_overall_memory(self, text_preview: str, document_name: str = "",
+                                       event_time: Optional[datetime] = None,
+                                       previous_overall_content: Optional[str] = None) -> MemoryCache:
+        """
+        生成文档整体记忆：描述「即将处理的内容」是什么，供下一文档作为初始背景。
+        与窗口链分离，生成后即可作为 B 的初始记忆，无需等 A 的最后一窗。
+
+        Args:
+            text_preview: 文档开头预览（如前 2000 字符）
+            document_name: 文档/来源名称
+            event_time: 事件时间
+            previous_overall_content: 上一文档的整体记忆（Markdown），可选，用于衔接
+
+        Returns:
+            MemoryCache，activity_type="文档整体"
+        """
+        system_prompt = """你是一个记忆管理系统。你的任务是为「即将处理的文档」生成一段简短的整体记忆描述（文档整体记忆），用于：
+1. 概括这份文档的主题、类型和将要涉及的主要内容；
+2. 供后续另一份文档处理时作为上下文衔接。
+
+要求：用 Markdown 格式，简洁（一段到两段），包含：文档名、主题/类型、关键内容预告。不要写成长篇摘要。"""
+        if previous_overall_content:
+            prompt = f"""上一份文档的整体记忆（供衔接参考）：
+
+{previous_overall_content[:1500]}
+
+---
+
+当前即将处理的文档名：{document_name}
+
+文档内容预览：
+
+{text_preview[:2000]}
+
+请为当前这份文档生成「文档整体记忆」：简要说明即将处理的是什么内容（主题、类型、关键点），便于后续文档衔接。输出 Markdown（一段即可）："""
+        else:
+            prompt = f"""当前即将处理的文档名：{document_name}
+
+文档内容预览：
+
+{text_preview[:2000]}
+
+请为这份文档生成「文档整体记忆」：简要说明即将处理的是什么内容（主题、类型、关键点）。输出 Markdown（一段即可）："""
+        new_content = self._call_llm(prompt, system_prompt)
+        new_content = self._clean_markdown_code_blocks(new_content or "")
+        base_time = event_time if event_time is not None else datetime.now()
+        new_cache_id = f"overall_{base_time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+        doc_name_only = document_name.split("/")[-1] if document_name else ""
+        return MemoryCache(
+            id=new_cache_id,
+            content=new_content,
+            physical_time=base_time,
+            doc_name=doc_name_only,
+            activity_type="文档整体",
+        )
     
     def extract_entities(self, memory_cache: MemoryCache, input_text: str,
                          max_iterations: int = 3,

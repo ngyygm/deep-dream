@@ -220,17 +220,25 @@ class RememberTask:
 
 
 class RememberTaskQueue:
-    """异步记忆写入任务队列。单 worker 串行处理（可配置）：A 处理完再处理 B；请求只需「入队即成功」，无需保持连接。"""
+    """异步记忆写入任务队列（两阶段线程模型）。
+    每个任务：phase1 生成文档整体记忆，phase2 跑滑窗链。
+    A 的 phase1 完成后即可启动 B 的 phase1（B 以 A 的整体记忆为初始）；phase2 串行执行以保持 cache 链一致。
+    并行度由 remember_workers 控制（同时进行 phase1 的线程数）。"""
 
     def __init__(self, processor, max_workers: int = 1, max_history: int = 200,
                  max_retries: int = 2, retry_delay_seconds: float = 2):
         self._processor = processor
         self._queue: "queue.Queue[RememberTask]" = queue.Queue()
+        self._phase2_queue: "queue.Queue[Tuple[RememberTask, Any]]" = queue.Queue()
         self._tasks: Dict[str, RememberTask] = {}
         self._lock = threading.Lock()
+        self._cond = threading.Condition(self._lock)
         self._max_history = max_history
         self._max_retries = max(0, max_retries)
         self._retry_delay = max(0.0, retry_delay_seconds)
+        self._shared_last_overall = None
+        self._phase1_done_count = 0
+        self._phase2_lock = threading.Lock()
         self._workers: List[threading.Thread] = []
         for i in range(max(1, max_workers)):
             t = threading.Thread(target=self._worker, name=f"remember-worker-{i}", daemon=True)
@@ -266,6 +274,7 @@ class RememberTaskQueue:
         return out
 
     def _worker(self):
+        """两阶段：phase1 生成整体记忆（可多线程并行），phase2 滑窗串行（单锁）。"""
         while True:
             task = self._queue.get()
             try:
@@ -273,31 +282,57 @@ class RememberTaskQueue:
                     task.status = "running"
                     task.started_at = time.time()
                 print(f"[Remember] 开始处理: task_id={task.task_id[:8]}…, source_name={task.source_name!r}, 文本长度={len(task.text)} 字符")
+
+                # 若非首个任务，等待上一任务 phase1 完成（拿到 previous_overall）
+                with self._cond:
+                    while self._phase1_done_count > 0 and self._shared_last_overall is None:
+                        self._cond.wait()
+                previous_overall = self._shared_last_overall
+
                 last_exc = None
                 for attempt in range(self._max_retries + 1):
                     try:
-                        result = self._processor.remember_text(
+                        # Phase1: 仅生成文档整体记忆
+                        overall = self._processor.remember_phase1_overall(
                             text=task.text,
                             doc_name=task.source_name,
-                            verbose=True,
-                            load_cache_memory=task.load_cache,
                             event_time=task.event_time,
                             document_path=task.original_path,
+                            previous_overall_cache=previous_overall,
+                            verbose=True,
                         )
-                        result["original_path"] = task.original_path
+                        with self._cond:
+                            self._shared_last_overall = overall
+                            self._phase1_done_count += 1
+                            self._cond.notify_all()
+
+                        self._phase2_queue.put((task, overall))
+
+                        # Phase2: 串行执行（processor 的 current_memory_cache 单链，不能多任务并行写）
+                        with self._phase2_lock:
+                            task2, overall2 = self._phase2_queue.get()
+                            result = self._processor.remember_phase2_windows(
+                                text=task2.text,
+                                doc_name=task2.source_name,
+                                verbose=True,
+                                event_time=task2.event_time,
+                                document_path=task2.original_path,
+                                overall_cache=overall2,
+                            )
+                        result["original_path"] = task2.original_path
                         with self._lock:
-                            task.status = "completed"
-                            task.result = result
-                            task.finished_at = time.time()
-                        elapsed = (task.finished_at or 0) - (task.started_at or 0)
-                        print(f"[Remember] 完成: task_id={task.task_id[:8]}…, chunks_processed={result.get('chunks_processed')}, memory_cache_id={result.get('memory_cache_id')}, 耗时={elapsed:.1f}s")
+                            task2.status = "completed"
+                            task2.result = result
+                            task2.finished_at = time.time()
+                        elapsed = (task2.finished_at or 0) - (task2.started_at or 0)
+                        print(f"[Remember] 完成: task_id={task2.task_id[:8]}…, chunks_processed={result.get('chunks_processed')}, 耗时={elapsed:.1f}s")
                         last_exc = None
                         break
                     except Exception as exc:
                         last_exc = exc
                         if attempt < self._max_retries:
                             delay = self._retry_delay
-                            print(f"[Remember] 失败将重试: task_id={task.task_id[:8]}…, attempt={attempt + 1}/{self._max_retries + 1}, error={exc!r}, {delay}s 后重试")
+                            print(f"[Remember] 失败将重试: task_id={task.task_id[:8]}…, attempt={attempt + 1}, error={exc!r}, {delay}s 后重试")
                             time.sleep(delay)
                         else:
                             with self._lock:
@@ -1229,6 +1264,49 @@ def create_app(processor: TemporalMemoryGraphProcessor, config: Optional[Dict[st
     return app
 
 
+def _apply_thread_cap(config: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    按 max_total_worker_threads 限制总线程数，避免线程爆炸。
+    三层线程（优先级从高到低，超出时优先缩小低优先级）：
+      1. remember_workers — 队列 worker 数（最高优先级，保证接活能力）
+      2. pipeline.max_concurrent_windows — 单任务内并行滑窗数
+      3. pipeline.llm_threads — 单窗口内实体/关系并行数（最低优先级，最先被缩小）
+    峰值估算：remember_workers + max_concurrent_windows + max_concurrent_windows * llm_threads
+    """
+    cap = config.get("max_total_worker_threads")
+    if cap is None or cap < 1:
+        return config
+    pipeline = config.get("pipeline") or {}
+    rw = max(1, config.get("remember_workers", 1))
+    mcw = max(1, pipeline.get("max_concurrent_windows", 1))
+    lt = max(1, pipeline.get("llm_threads", 1))
+    rw_orig, mcw_orig, lt_orig = rw, mcw, lt
+
+    def peak():
+        return rw + mcw + mcw * lt
+
+    while peak() > cap:
+        if lt > 1:
+            lt -= 1
+        elif mcw > 1:
+            mcw -= 1
+        elif rw > 1:
+            rw -= 1
+        else:
+            break
+
+    config = dict(config)
+    config["remember_workers"] = rw
+    if "pipeline" not in config or config["pipeline"] is None:
+        config["pipeline"] = {}
+    config["pipeline"] = dict(config["pipeline"])
+    config["pipeline"]["max_concurrent_windows"] = mcw
+    config["pipeline"]["llm_threads"] = lt
+    if (rw, mcw, lt) != (rw_orig, mcw_orig, lt_orig):
+        print(f"[线程上限] max_total_worker_threads={cap} 已收紧: remember_workers {rw_orig}→{rw}, max_concurrent_windows {mcw_orig}→{mcw}, llm_threads {lt_orig}→{lt} (峰值≈{peak()})")
+    return config
+
+
 def build_processor(config: Dict[str, Any]) -> TemporalMemoryGraphProcessor:
     storage_path = config.get("storage_path", "./graph/tmg_storage")
     chunking = config.get("chunking") or {}
@@ -1303,6 +1381,7 @@ def main() -> int:
         return 1
 
     config = load_config(config_path)
+    config = _apply_thread_cap(config)
     host = args.host if args.host is not None else config.get("host", "0.0.0.0")
     port = args.port if args.port is not None else config.get("port", 5001)
     storage_path = config.get("storage_path", "./graph/tmg_storage")

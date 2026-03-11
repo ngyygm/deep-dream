@@ -415,6 +415,86 @@ class TemporalMemoryGraphProcessor:
             "storage_path": storage_path,
         }
 
+    def remember_phase1_overall(self, text: str, doc_name: str = "api_input",
+                                event_time: Optional[datetime] = None,
+                                document_path: str = "",
+                                previous_overall_cache: Optional[MemoryCache] = None,
+                                verbose: bool = False) -> MemoryCache:
+        """
+        阶段1：仅生成文档整体记忆（描述即将处理的内容）。
+        生成后即可作为下一文档 B 的初始记忆，无需等本文档最后一窗。
+        """
+        text_preview = (text[:2000] + "…") if len(text) > 2000 else text
+        prev_content = previous_overall_cache.content if previous_overall_cache else None
+        overall = self.llm_client.create_document_overall_memory(
+            text_preview=text_preview,
+            document_name=doc_name,
+            event_time=event_time,
+            previous_overall_content=prev_content,
+        )
+        if verbose:
+            print(f"[Phase1] 文档整体记忆已生成: {overall.id[:20]}…, doc_name={doc_name!r}")
+        return overall
+
+    def remember_phase2_windows(self, text: str, doc_name: str = "api_input", verbose: bool = False,
+                                event_time: Optional[datetime] = None, document_path: str = "",
+                                overall_cache: Optional[MemoryCache] = None) -> Dict:
+        """
+        阶段2：以整体记忆为起点，跑完所有滑窗（更新缓存 + 抽取实体/关系并写入）。
+        overall_cache 即 phase1 返回的文档整体记忆，作为第一窗的 current_cache。
+        """
+        if not document_path:
+            document_path = f"api://{uuid.uuid4().hex}"
+        self.current_memory_cache = overall_cache  # 第一窗的 _update_cache 会在此基础上续写
+        window_size = self.document_processor.window_size
+        overlap = self.document_processor.overlap
+        total_length = len(text)
+        start = 0
+        chunk_idx = 0
+        last_memory_cache_id = None
+        futures: List[Future] = []
+
+        while start < total_length:
+            end = min(start + window_size, total_length)
+            chunk = text[start:end]
+            if start == 0:
+                chunk = f"开始阅读新的文档，文件名是：{doc_name}\n\n{chunk}"
+
+            if verbose:
+                print(f"\n{'='*60}")
+                print(f"处理窗口 (文档: {doc_name}, 位置: {start}-{end}/{total_length})")
+                print(f"输入文本长度: {len(chunk)} 字符")
+                print(f"{'='*60}\n")
+
+            with self._cache_lock:
+                new_mc = self._update_cache(
+                    chunk, doc_name,
+                    text_start_pos=start, text_end_pos=end,
+                    total_text_length=total_length, verbose=verbose,
+                    document_path=document_path, event_time=event_time,
+                )
+
+            fut = self._extraction_executor.submit(
+                self._process_extraction,
+                new_mc, chunk, doc_name,
+                verbose=verbose, event_time=event_time,
+            )
+            futures.append(fut)
+            last_memory_cache_id = new_mc.id
+            chunk_idx += 1
+            if end >= total_length:
+                break
+            start = end - overlap
+
+        for fut in futures:
+            fut.result()
+
+        return {
+            "memory_cache_id": last_memory_cache_id,
+            "chunks_processed": chunk_idx,
+            "storage_path": str(self.storage.storage_path),
+        }
+
     def _update_cache(self, input_text: str, document_name: str,
                       text_start_pos: int = 0, text_end_pos: int = 0,
                       total_text_length: int = 0, verbose: bool = True,
