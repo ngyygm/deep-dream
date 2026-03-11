@@ -2076,6 +2076,24 @@ class GraphWebServer:
     def _setup_routes(self):
         """设置 Flask 路由"""
         
+        @self.app.route('/health')
+        def health():
+            """健康检查，与 service_api 响应格式一致。"""
+            try:
+                embedding_available = (
+                    self.embedding_client is not None
+                    and getattr(self.embedding_client, 'is_available', lambda: True)()
+                )
+                return jsonify({
+                    'success': True,
+                    'data': {
+                        'storage_path': str(self._current_storage_path),
+                        'embedding_available': embedding_available,
+                    },
+                })
+            except Exception as e:
+                return jsonify({'success': False, 'error': str(e)}), 500
+
         @self.app.route('/')
         def index():
             """主页"""
@@ -3321,51 +3339,67 @@ API地址:  http://localhost:{self.port}/api/graph/data
 
 
 def main():
-    """主函数"""
+    """主函数。支持 --config 与 service_api 共用 service_config.json。"""
     import argparse
-    
+    from config_loader import load_config, resolve_embedding_model
+
     parser = argparse.ArgumentParser(description='时序记忆图谱可视化 Web 服务')
-    parser.add_argument('--storage', type=str, default='./graph/santi',
-                       help='存储路径 (默认: ./graph/santi)')
+    parser.add_argument('--config', type=str, default=None,
+                       help='配置文件路径（与 service_api 共用 service_config.json 时，将使用其中 storage_path 与 embedding）')
+    parser.add_argument('--storage', type=str, default='./graph/tmg_storage',
+                       help='存储路径 (默认: ./graph/tmg_storage，未使用 --config 时生效)')
     parser.add_argument('--port', type=int, default=5000,
-                       help='服务器端口 (默认: 5000)')
+                       help='服务器端口 (默认: 5000，与 service_api 不同端口可同时运行)')
     parser.add_argument('--host', type=str, default='0.0.0.0',
                        help='监听地址 (默认: 0.0.0.0)')
     parser.add_argument('--debug', action='store_true',
                        help='开启调试模式')
-    parser.add_argument('--embedding-model-path', type=str, default="/home/linkco/exa/models/Qwen3-Embedding-0.6B",
-                       help='本地embedding模型路径（优先使用）')
+    parser.add_argument('--embedding-model-path', type=str, default=None,
+                       help='本地 embedding 模型路径（未使用 --config 时生效）')
     parser.add_argument('--embedding-model-name', type=str, default=None,
-                       help='HuggingFace embedding模型名称（例如: all-MiniLM-L6-v2）')
-    parser.add_argument('--embedding-device', type=str, default='cuda:1',
-                       choices=['cpu', 'cuda'],
-                       help='计算设备 (默认: cpu)')
+                       help='HuggingFace embedding 模型名称（例如: all-MiniLM-L6-v2）')
+    parser.add_argument('--embedding-device', type=str, default='cpu',
+                       help='计算设备 (默认: cpu，可为 cuda 或 cuda:0)')
     parser.add_argument('--embedding-use-local', action='store_true', default=True,
                        help='优先使用本地模型（默认: True）')
     parser.add_argument('--embedding-use-hf', action='store_true', default=False,
-                       help='优先使用HuggingFace模型（与--embedding-use-local互斥）')
-    
+                       help='优先使用 HuggingFace 模型（与 --embedding-use-local 互斥）')
+
     args = parser.parse_args()
-    
-    # 检查存储路径
-    if not Path(args.storage).exists():
-        print(f"错误：存储路径不存在: {args.storage}")
+
+    if args.config:
+        if not Path(args.config).exists():
+            print(f"错误：配置文件不存在: {args.config}")
+            return 1
+        config = load_config(args.config)
+        storage_path = config.get('storage_path', args.storage)
+        emb_cfg = config.get('embedding') or {}
+        emb_path, emb_name, emb_use_local = resolve_embedding_model(emb_cfg)
+        embedding_device = emb_cfg.get('device') or 'cpu'
+        embedding_model_path = emb_path
+        embedding_model_name = emb_name
+        embedding_use_local = emb_use_local
+    else:
+        storage_path = args.storage
+        embedding_model_path = args.embedding_model_path
+        embedding_model_name = args.embedding_model_name
+        embedding_device = args.embedding_device
+        embedding_use_local = args.embedding_use_local and not args.embedding_use_hf
+
+    if not Path(storage_path).exists():
+        print(f"错误：存储路径不存在: {storage_path}")
         return 1
-    
-    # 处理embedding模型参数
-    embedding_use_local = args.embedding_use_local and not args.embedding_use_hf
-    
-    # 创建并启动服务器
+
     server = GraphWebServer(
-        storage_path=args.storage,
+        storage_path=storage_path,
         port=args.port,
-        embedding_model_path=args.embedding_model_path,
-        embedding_model_name=args.embedding_model_name,
-        embedding_device=args.embedding_device,
+        embedding_model_path=embedding_model_path,
+        embedding_model_name=embedding_model_name,
+        embedding_device=embedding_device,
         embedding_use_local=embedding_use_local
     )
     server.run(debug=args.debug, host=args.host)
-    
+
     return 0
 
 

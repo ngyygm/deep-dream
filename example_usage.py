@@ -9,9 +9,11 @@
   2. Find — 语义检索唤醒局部记忆
 """
 import json
+import os
 import sys
 import time
 from datetime import datetime
+from pathlib import Path
 
 import requests
 
@@ -94,10 +96,19 @@ def check_health():
 
 
 def check_llm():
-    """检查大模型是否可访问，不可用则退出，不执行后续示例。"""
+    """检查大模型是否可访问；若服务端无 /health/llm（404）则跳过预检并继续执行。"""
     print("\n>>> 大模型可用性检查")
-    resp = requests.get(f"{API_BASE}/health/llm", timeout=20)
+    try:
+        resp = requests.get(f"{API_BASE}/health/llm", timeout=20)
+    except Exception as e:
+        print(f"请求 /health/llm 失败: {e}")
+        print("跳过 LLM 预检，继续执行（若后续 remember 失败请检查服务端 LLM 配置与网络）。")
+        return
     pp("LLM Health", resp)
+    if resp.status_code == 404:
+        print("当前服务未提供 /health/llm 接口（404），可能为旧版或其它入口启动。")
+        print("跳过 LLM 预检，继续执行（若后续 remember 失败请用最新 service_api.py 启动并检查 LLM 配置）。")
+        return
     if resp.status_code != 200:
         # 优先从 JSON 取服务端返回的 error/message
         try:
@@ -106,19 +117,16 @@ def check_llm():
         except Exception:
             server_msg = ""
         # 根据状态码给出明确原因
-        if resp.status_code == 404:
-            reason = "接口不存在 (404)。请重启 service_api.py 以加载 /health/llm 路由后再运行示例。"
-        elif resp.status_code == 503:
+        if resp.status_code == 503:
             reason = server_msg or "服务端返回 503，大模型或网络不可用。"
         else:
             reason = server_msg or f"HTTP {resp.status_code}"
-        # 报错信息：原因 + 若有原始内容则简要给出
         print("大模型不可用原因:", reason)
         if server_msg and server_msg != reason:
             print("服务端报错:", server_msg)
         elif not server_msg and resp.text and len(resp.text) < 500:
             print("原始响应:", resp.text.strip()[:300])
-        print("建议: 检查 service_config.json 中的 llm.api_key / llm.base_url / llm.model，确认网络与配置无误；若为 404 请重启 API 服务。")
+        print("建议: 检查 service_config.json 中的 llm.api_key / llm.base_url / llm.model，确认网络与配置无误。")
         sys.exit(1)
     data = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
     if not data.get("data", {}).get("llm_available", True):
@@ -229,6 +237,48 @@ def example_remember_long():
 
 
 # ------------------------------------------------------------------
+# 2c. Remember — 超长文本：直接读取《三体2黑暗森林》全文
+# ------------------------------------------------------------------
+# 默认路径：项目根下 datas/docs/三体2黑暗森林.txt（可被环境变量 OVERRIDE_ULTRALONG_PATH 覆盖）
+_ULTRALONG_FILE = Path(__file__).resolve().parent.parent / "datas" / "docs" / "三体2黑暗森林.txt"
+
+
+def example_remember_ultralong():
+    """读取本地《三体2黑暗森林》全文，提交 remember，入队即返回后轮询直到完成。"""
+    print("\n>>> Remember: 超长文本（三体2黑暗森林.txt 全文）")
+
+    file_path = Path(os.environ.get("OVERRIDE_ULTRALONG_PATH", str(_ULTRALONG_FILE)))
+    if not file_path.exists():
+        print(f"  跳过：文件不存在 {file_path}")
+        print("  可设置环境变量 OVERRIDE_ULTRALONG_PATH 指定其它路径。")
+        return
+
+    text = file_path.read_text(encoding="utf-8")
+    char_count = len(text)
+    print(f"  文件: {file_path}")
+    print(f"  字符数: {char_count}")
+
+    submit_start = time.time()
+    resp = requests.post(
+        f"{API_BASE}/api/remember",
+        json={
+            "text": text,
+            "source_name": "三体2黑暗森林-全文",
+            "event_time": datetime.now().isoformat(),
+        },
+    )
+    submit_elapsed = time.time() - submit_start
+    pp("Remember 超长文本 (提交)", resp)
+    print(f"  提交请求耗时: {_fmt_sec(submit_elapsed)}")
+    data = resp.json().get("data", {})
+    task_id = data.get("task_id")
+    if task_id:
+        _print_queue_snapshot()
+        _poll_task(task_id, "Remember 超长文本", timeout=3600)
+    return resp.json()
+
+
+# ------------------------------------------------------------------
 # 2b. Remember — 并发测试：第一个在处理时第二个到来
 # ------------------------------------------------------------------
 def example_remember_concurrent():
@@ -265,7 +315,7 @@ def example_remember_concurrent():
     _print_queue_snapshot()
 
     # 2) 间隔几秒，让 A 进入处理中，再提交任务 B（短文本）
-    delay_b = 3
+    delay_b = 30
     print(f"\n  等待 {delay_b}s 后提交任务 B（模拟：第一个在处理时第二个到来）…")
     time.sleep(delay_b)
 
@@ -407,6 +457,9 @@ if __name__ == "__main__":
     if mode in ("long", "all"):
         example_remember_long()
 
+    if mode == "ultralong":
+        example_remember_ultralong()
+
     if mode == "concurrent":
         example_remember_concurrent()
 
@@ -416,13 +469,14 @@ if __name__ == "__main__":
     if mode in ("atomic", "all"):
         example_find_atomic()
 
-    if mode not in ("text", "long", "concurrent", "find", "atomic", "all"):
+    if mode not in ("text", "long", "ultralong", "concurrent", "find", "atomic", "all"):
         print(f"""
 用法: python example_usage.py [mode]
 
 mode 可选值:
   text       — 测试文本记忆（含 event_time）
   long       — 测试长文本记忆（模拟阅读日志）
+  ultralong  — 超长文本：读取 datas/docs/三体2黑暗森林.txt 全文并 remember
   concurrent — 并发测试：第一个 remember 在处理时第二个到来（排队/并行）
   find       — 测试语义检索
   atomic     — 测试原子接口

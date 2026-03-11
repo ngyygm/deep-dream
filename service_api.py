@@ -220,16 +220,19 @@ class RememberTask:
 
 
 class RememberTaskQueue:
-    """异步记忆写入任务队列。Worker 线程消费队列，调用 processor.remember_text。"""
+    """异步记忆写入任务队列。单 worker 串行处理（可配置）：A 处理完再处理 B；请求只需「入队即成功」，无需保持连接。"""
 
-    def __init__(self, processor, max_workers: int = 2, max_history: int = 200):
+    def __init__(self, processor, max_workers: int = 1, max_history: int = 200,
+                 max_retries: int = 2, retry_delay_seconds: float = 2):
         self._processor = processor
         self._queue: "queue.Queue[RememberTask]" = queue.Queue()
         self._tasks: Dict[str, RememberTask] = {}
         self._lock = threading.Lock()
         self._max_history = max_history
+        self._max_retries = max(0, max_retries)
+        self._retry_delay = max(0.0, retry_delay_seconds)
         self._workers: List[threading.Thread] = []
-        for i in range(max_workers):
+        for i in range(max(1, max_workers)):
             t = threading.Thread(target=self._worker, name=f"remember-worker-{i}", daemon=True)
             t.start()
             self._workers.append(t)
@@ -270,21 +273,38 @@ class RememberTaskQueue:
                     task.status = "running"
                     task.started_at = time.time()
                 print(f"[Remember] 开始处理: task_id={task.task_id[:8]}…, source_name={task.source_name!r}, 文本长度={len(task.text)} 字符")
-                result = self._processor.remember_text(
-                    text=task.text,
-                    doc_name=task.source_name,
-                    verbose=True,
-                    load_cache_memory=task.load_cache,
-                    event_time=task.event_time,
-                    document_path=task.original_path,
-                )
-                result["original_path"] = task.original_path
-                with self._lock:
-                    task.status = "completed"
-                    task.result = result
-                    task.finished_at = time.time()
-                elapsed = (task.finished_at or 0) - (task.started_at or 0)
-                print(f"[Remember] 完成: task_id={task.task_id[:8]}…, chunks_processed={result.get('chunks_processed')}, memory_cache_id={result.get('memory_cache_id')}, 耗时={elapsed:.1f}s")
+                last_exc = None
+                for attempt in range(self._max_retries + 1):
+                    try:
+                        result = self._processor.remember_text(
+                            text=task.text,
+                            doc_name=task.source_name,
+                            verbose=True,
+                            load_cache_memory=task.load_cache,
+                            event_time=task.event_time,
+                            document_path=task.original_path,
+                        )
+                        result["original_path"] = task.original_path
+                        with self._lock:
+                            task.status = "completed"
+                            task.result = result
+                            task.finished_at = time.time()
+                        elapsed = (task.finished_at or 0) - (task.started_at or 0)
+                        print(f"[Remember] 完成: task_id={task.task_id[:8]}…, chunks_processed={result.get('chunks_processed')}, memory_cache_id={result.get('memory_cache_id')}, 耗时={elapsed:.1f}s")
+                        last_exc = None
+                        break
+                    except Exception as exc:
+                        last_exc = exc
+                        if attempt < self._max_retries:
+                            delay = self._retry_delay
+                            print(f"[Remember] 失败将重试: task_id={task.task_id[:8]}…, attempt={attempt + 1}/{self._max_retries + 1}, error={exc!r}, {delay}s 后重试")
+                            time.sleep(delay)
+                        else:
+                            with self._lock:
+                                task.status = "failed"
+                                task.error = str(exc)
+                                task.finished_at = time.time()
+                            print(f"[Remember] 失败: task_id={task.task_id[:8]}…, error={exc!r}")
             except Exception as exc:
                 with self._lock:
                     task.status = "failed"
@@ -449,7 +469,12 @@ def create_app(processor: TemporalMemoryGraphProcessor, config: Optional[Dict[st
         request.start_time = time.time()
 
     config = config or {}
-    remember_queue = RememberTaskQueue(processor, max_workers=config.get("remember_workers", 2))
+    remember_queue = RememberTaskQueue(
+        processor,
+        max_workers=config.get("remember_workers", 1),
+        max_retries=config.get("remember_max_retries", 2),
+        retry_delay_seconds=config.get("remember_retry_delay_seconds", 2),
+    )
     subgraph_store = SubgraphStore(
         max_count=config.get("subgraph_max_count", 100),
         default_ttl_seconds=config.get("subgraph_ttl_seconds", 3600),
@@ -500,14 +525,16 @@ def create_app(processor: TemporalMemoryGraphProcessor, config: Optional[Dict[st
 
     @app.route("/api/remember", methods=["POST"])
     def remember():
-        """记忆写入：接收自然语言文本，自动构建记忆图。
+        """记忆写入：接收自然语言文本，入队后立即返回，无需保持连接。任务串行处理（A 处理完再处理 B）。
 
         JSON body：
           - text (必填): 自然语言文本
           - source_name (可选): 来源名称，默认 "api_input"
           - load_cache_memory (可选): 是否加载最新缓存继续追加
           - event_time (可选): 事件实际发生时间 (ISO 8601)，不传则使用当前时间
-          - async (可选): 是否异步执行，默认 true。设为 false 则同步等待完成后返回
+          - async (可选): 已废弃，始终异步；保留仅为兼容，不影响行为。
+
+        返回：HTTP 202，body 含 task_id、status=queued 表示已加入队列。可通过 GET /api/remember/status/<task_id> 查询进度。
         """
         try:
             body = request.get_json(silent=True) or {}
@@ -539,7 +566,6 @@ def create_app(processor: TemporalMemoryGraphProcessor, config: Optional[Dict[st
             original_path = str((originals_dir / original_filename).resolve())
             Path(original_path).write_text(text, encoding="utf-8")
 
-            # 控制台：收到内容摘要
             preview = (text[:80] + "…") if len(text) > 80 else text
             print(f"[Remember] 收到: source_name={source_name!r}, 文本长度={len(text)} 字符, event_time={et_str or '未指定'}")
             print(f"[Remember] 内容预览: {preview!r}")
@@ -554,35 +580,16 @@ def create_app(processor: TemporalMemoryGraphProcessor, config: Optional[Dict[st
                 original_path=original_path,
             )
 
-            is_async = body.get("async", True)
-            if isinstance(is_async, str):
-                is_async = is_async.lower() not in ("false", "0", "no")
-
-            if is_async:
-                remember_queue.submit(task)
-                return make_response(jsonify({
-                    "success": True,
-                    "data": {
-                        "task_id": task_id,
-                        "status": "queued",
-                        "original_path": original_path,
-                    },
-                }), 202)
-            else:
-                remember_queue.submit(task)
-                deadline = time.time() + 3600
-                while time.time() < deadline:
-                    t = remember_queue.get_status(task_id)
-                    if t and t.status in ("completed", "failed"):
-                        break
-                    time.sleep(0.2)
-                t = remember_queue.get_status(task_id)
-                if t and t.status == "completed":
-                    return ok(t.result)
-                elif t and t.status == "failed":
-                    return err(t.error or "处理失败", 500)
-                else:
-                    return err("处理超时", 504)
+            remember_queue.submit(task)
+            return make_response(jsonify({
+                "success": True,
+                "data": {
+                    "task_id": task_id,
+                    "status": "queued",
+                    "message": "已加入队列，系统将按序处理；无需保持连接，可通过 GET /api/remember/status/<task_id> 查询进度",
+                    "original_path": original_path,
+                },
+            }), 202)
         except Exception as e:
             return err(str(e), 500)
 
@@ -1229,20 +1236,57 @@ def build_processor(config: Dict[str, Any]) -> TemporalMemoryGraphProcessor:
     overlap = chunking.get("overlap", 200)
     llm = config.get("llm") or {}
     embedding = config.get("embedding") or {}
+    pipeline = config.get("pipeline") or {}
+    # llm_threads 支持写在顶层或 pipeline 下，优先 pipeline
+    llm_threads = pipeline.get("llm_threads", config.get("llm_threads", 1))
     model_path, model_name, use_local = resolve_embedding_model(embedding)
-    return TemporalMemoryGraphProcessor(
-        storage_path=storage_path,
-        window_size=window_size,
-        overlap=overlap,
-        llm_api_key=llm.get("api_key"),
-        llm_model=llm.get("model", "gpt-4"),
-        llm_base_url=llm.get("base_url"),
-        llm_think_mode=bool(llm.get("think", llm.get("think_mode", False))),
-        embedding_model_path=model_path,
-        embedding_model_name=model_name,
-        embedding_device=embedding.get("device", "cpu"),
-        embedding_use_local=use_local,
-    )
+    kwargs: Dict[str, Any] = {
+        "storage_path": storage_path,
+        "window_size": window_size,
+        "overlap": overlap,
+        "llm_api_key": llm.get("api_key"),
+        "llm_model": llm.get("model", "gpt-4"),
+        "llm_base_url": llm.get("base_url"),
+        "llm_think_mode": bool(llm.get("think", llm.get("think_mode", False))),
+        "embedding_model_path": model_path,
+        "embedding_model_name": model_name,
+        "embedding_device": embedding.get("device", "cpu"),
+        "embedding_use_local": use_local,
+        "llm_threads": llm_threads,
+    }
+    # pipeline 下其余参数（仅传入有写的键，避免覆盖为 None）
+    for key in (
+        "similarity_threshold", "max_similar_entities", "content_snippet_length",
+        "relation_content_snippet_length", "entity_extraction_max_iterations",
+        "entity_extraction_iterative", "entity_post_enhancement",
+        "relation_extraction_max_iterations", "relation_extraction_absolute_max_iterations",
+        "relation_extraction_iterative", "load_cache_memory",
+        "jaccard_search_threshold", "embedding_name_search_threshold", "embedding_full_search_threshold",
+        "max_concurrent_windows",
+    ):
+        if key in pipeline:
+            kwargs[key] = pipeline[key]
+    return TemporalMemoryGraphProcessor(**kwargs)
+
+
+def _check_llm_available(processor) -> tuple[bool, str | None]:
+    """启动前握手：检查配置的 LLM 是否可用。返回 (成功, 错误信息)，失败时错误信息非空。"""
+    try:
+        response = processor.llm_client._call_llm(
+            "请只回复一个词：OK",
+            max_retries=1,
+            timeout=15,
+        )
+        ok_result = (
+            response is not None
+            and isinstance(response, str)
+            and len(response.strip()) > 0
+        )
+        if ok_result:
+            return True, None
+        return False, "大模型未返回有效结果"
+    except Exception as e:
+        return False, f"大模型不可用: {e}"
 
 
 def main() -> int:
@@ -1265,6 +1309,16 @@ def main() -> int:
     Path(storage_path).mkdir(parents=True, exist_ok=True)
 
     processor = build_processor(config)
+
+    # 启动前对配置的 LLM 做握手，不可用则报错退出
+    print("正在检查配置的 LLM 是否可用…")
+    ok_llm, err_msg = _check_llm_available(processor)
+    if not ok_llm:
+        print(f"错误：{err_msg}")
+        print("请检查 service_config 中 llm.api_key / llm.base_url / llm.model 及网络。")
+        return 1
+    print("LLM 握手成功，模型可用。")
+
     app = create_app(processor, config)
 
     # 启动时加载当前大脑记忆库统计并输出
