@@ -130,6 +130,22 @@ TMG 提供 **Skill**，使 Cursor、Claude 等 Agent 能够按文档完成部署
 - **文件**：`SKILL.md`（Agent 行为说明）、`reference.md`（接口速查）
 - **作用**：支持「按文档执行」的 Agent 在阅读 SKILL 后即可完成何时调用 TMG、如何部署、如何调用 API。
 
+### `skills/` 子目录怎么用（通用规则）
+- `skills/` 下每个子文件夹都代表一个独立的 skill 包（例如本项目的 `skills/tmg-memory-graph/`）。
+- Agent 执行时主要依赖该 skill 包里的 `SKILL.md`；其余文件如 `reference.md`、`templates/`、`examples/` 用于补充细节，通常按需读取。
+- 不建议只拷贝/移动 `SKILL.md` 单文件；尽量把整个 `tmg-memory-graph/` 文件夹作为一个整体保留，避免相对引用或按需读取时找不到补充材料。
+
+### 如果是 OpenClaw：要拷贝到你的 skills 空间
+OpenClaw 会从以下优先级加载 skills：
+`<workspace>/skills`（工作区） → `~/.openclaw/skills`（本机托管） → 内置（bundled）。
+
+因此你可以把本 skill 整个目录拷贝到：
+- **推荐（按你的 agent 私有 workspace 生效）**：`<你的 OpenClaw workspace>/skills/tmg-memory-graph/`
+  - 默认 workspace 通常是 `~/.openclaw/workspace`，目标路径一般就是 `~/.openclaw/workspace/skills/tmg-memory-graph/`
+- **需要所有 agent 共享时**：`~/.openclaw/skills/tmg-memory-graph/`
+
+拷贝完成后，重新开始一次新的 OpenClaw 会话即可（或用 OpenClaw 的 `openclaw skills list` / `openclaw doctor` 检查加载情况）。
+
 ### 三步让 Agent 使用 TMG
 
 1. **暴露 Skill 给 Agent**  
