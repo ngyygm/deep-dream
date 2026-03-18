@@ -1,7 +1,7 @@
 """
 LLM客户端：封装LLM调用，实现三个核心任务。
 
-请求方式：统一使用 Ollama 原生 /api/chat 接口（见 ollama_chat_api），由 ollama_chat 发起请求；
+请求方式：统一通过 Python SDK 访问（见 ollama_chat_api），Ollama 走 OpenAI 兼容 /v1 接口；
 think 模式由初始化参数 think_mode 控制，在 example_usage 中通过 llm_think_mode 选择是否开启。
 """
 from typing import Dict, List, Optional, Any, Union
@@ -216,7 +216,7 @@ content要求：
         self.base_url = base_url
         self.content_snippet_length = content_snippet_length
         self.think_mode = think_mode
-        # 使用 curl 风格 HTTP 调用，不依赖 openai 库；无 api_key 且无 base_url 时为模拟模式
+        # 统一使用 Python SDK（openai>=1.0）访问；无 api_key 且无 base_url 时为模拟模式
         self._endpoint_available = bool(api_key or base_url)
         if not self._endpoint_available:
             print("提示：未提供 API key 或 base_url，将使用模拟响应模式")
@@ -233,6 +233,9 @@ content要求：
         if not self.api_key or not self.base_url:
             return False
         u = (self.base_url or "").rstrip("/").lower()
+        # 约定：api_key=ollama 表示使用 Ollama（即使是远端 /v1）
+        if (self.api_key or "").strip().lower() == "ollama":
+            return False
         # 本地 Ollama 默认端口：一律走 Ollama /api/chat，不走 /v1/chat/completions
         if ":11434" in u and ("127.0.0.1" in u or "localhost" in u):
             return False
