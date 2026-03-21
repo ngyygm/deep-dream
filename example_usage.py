@@ -5,19 +5,43 @@
   1. 启动 API 服务：python service_api.py --config service_config.json
 
 本脚本演示两个核心场景：
-  1. Remember — 批量传文本记忆（含 event_time）
+  1. Remember — 通过 GET /api/remember 批量传文本记忆（含 event_time）
   2. Find — 语义检索唤醒局部记忆
 """
+import base64
 import json
 import os
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 import requests
 
 API_BASE = "http://127.0.0.1:16200"
+
+# 超过该长度改用 text_b64，减轻 URL 编码体积与部分代理限制
+_REMEMBER_TEXT_B64_THRESHOLD = 4000
+
+
+def _remember_get(
+    text: str,
+    source_name: str = "api_input",
+    event_time: Optional[str] = None,
+    load_cache_memory: Optional[bool] = None,
+) -> requests.Response:
+    """调用 GET /api/remember（仅 GET，不再使用 POST）。"""
+    params: dict = {"source_name": source_name}
+    if event_time:
+        params["event_time"] = event_time
+    if load_cache_memory is not None:
+        params["load_cache_memory"] = "true" if load_cache_memory else "false"
+    if len(text) > _REMEMBER_TEXT_B64_THRESHOLD:
+        params["text_b64"] = base64.b64encode(text.encode("utf-8")).decode("ascii")
+    else:
+        params["text"] = text
+    return requests.get(f"{API_BASE}/api/remember", params=params, timeout=300)
 
 
 def pp(label: str, resp: requests.Response):
@@ -183,13 +207,10 @@ def example_remember_text():
     )
 
     submit_start = time.time()
-    resp = requests.post(
-        f"{API_BASE}/api/remember",
-        json={
-            "text": text,
-            "source_name": "三体测试-文本",
-            "event_time": "2026-03-09T14:00:00",
-        },
+    resp = _remember_get(
+        text,
+        source_name="三体测试-文本",
+        event_time="2026-03-09T14:00:00",
     )
     submit_elapsed = time.time() - submit_start
     pp("Remember Text (提交)", resp)
@@ -217,13 +238,10 @@ def example_remember_long():
 第三章"破壁人"：三体世界为每位面壁者指派了一个破壁人，负责分析和破解面壁者的真实计划。罗辑的破壁人是一个看起来很普通的年轻人。"""
 
     submit_start = time.time()
-    resp = requests.post(
-        f"{API_BASE}/api/remember",
-        json={
-            "text": long_text,
-            "source_name": "阅读日志-三体2",
-            "event_time": "2026-03-09T16:00:00",
-        },
+    resp = _remember_get(
+        long_text,
+        source_name="阅读日志-三体2",
+        event_time="2026-03-09T16:00:00",
     )
     submit_elapsed = time.time() - submit_start
     pp("Remember Long Text (提交)", resp)
@@ -259,13 +277,10 @@ def example_remember_ultralong():
     print(f"  字符数: {char_count}")
 
     submit_start = time.time()
-    resp = requests.post(
-        f"{API_BASE}/api/remember",
-        json={
-            "text": text,
-            "source_name": "三体2黑暗森林-全文",
-            "event_time": datetime.now().isoformat(),
-        },
+    resp = _remember_get(
+        text,
+        source_name="三体2黑暗森林-全文",
+        event_time=datetime.now().isoformat(),
     )
     submit_elapsed = time.time() - submit_start
     pp("Remember 超长文本 (提交)", resp)
@@ -520,13 +535,10 @@ def example_remember_concurrent():
             time.sleep(delay_between_submit_seconds)
         label = spec.get("label", f"任务{i+1}")
         t0 = time.time()
-        resp = requests.post(
-            f"{API_BASE}/api/remember",
-            json={
-                "text": spec["text"],
-                "source_name": spec["source_name"],
-                "event_time": spec["event_time"],
-            },
+        resp = _remember_get(
+            spec["text"],
+            source_name=spec["source_name"],
+            event_time=spec["event_time"],
         )
         elapsed = time.time() - t0
         pp(f"{label} 提交", resp)

@@ -2,14 +2,26 @@
 
 找到一篇文档要读时：先读取全部文字内容，再带上下文前缀一起存入记忆。全文放入 `text`，服务会切片并保存原文到 `originals/`。
 
-## 请求体（POST /api/remember）
+## 查询参数（GET /api/remember）
 
-```json
-{
-  "text": "[2026-03-10 10:30] Kael — 阅读论文\n\n我找到了一篇关于 Graph RAG 的论文《From Local to Global: A Graph RAG Approach》，准备仔细阅读。\n\n以下是论文全文：\n\n---\n{论文的完整文字内容，一字不漏}\n---\n\n阅读完毕。核心贡献：用社区检测对知识图谱分层摘要，与传统逐块检索不同。这个思路可以借鉴到 TMG 的 find 流程中。",
-  "source_name": "论文-Graph-RAG",
-  "event_time": "2026-03-10T10:30:00"
-}
+长文档请把下面整段叙事（含全文）先做 UTF-8 编码再 **Base64**，作为 `text_b64` 传入；短内容可直接 `text=` URL 编码。
+
+叙事模板（放入 Base64 前的明文）：
+
 ```
+[2026-03-10 10:30] Kael — 阅读论文
+
+我找到了一篇关于 Graph RAG 的论文《From Local to Global: A Graph RAG Approach》，准备仔细阅读。
+
+以下是论文全文：
+
+---
+{论文的完整文字内容，一字不漏}
+---
+
+阅读完毕。核心贡献：……
+```
+
+示例调用形态：`GET /api/remember?text_b64=...&source_name=论文-Graph-RAG&event_time=2026-03-10T10:30:00`
 
 要点：前缀说明「谁在何时读什么」；`---` 内是完整原文；结尾可加阅读后的简要总结或想法。

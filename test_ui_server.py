@@ -109,7 +109,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
       <label>文档名</label>
       <input type="text" id="docName" value="test_ui" placeholder="doc_name" style="width: 12rem;" />
     </div>
-    <textarea id="rememberText" placeholder="输入任意文本，点击「入库」后会调用 POST /api/remember，处理完成后自动刷新下方图谱。"></textarea>
+    <textarea id="rememberText" placeholder="输入任意文本，点击「入库」后会调用 GET /api/remember（长文自动使用 text_b64），处理完成后自动刷新下方图谱。"></textarea>
     <div class="row" style="margin-top: 0.5rem;">
       <button type="button" id="btnRemember" onclick="submitRemember()">入库 (Remember)</button>
       <span id="rememberStatus"></span>
@@ -385,10 +385,21 @@ INDEX_HTML = r"""<!DOCTYPE html>
       var wallStartMs = Date.now();
       try {
         var submitStartMs = Date.now();
-        var r = await fetch(base() + '/api/remember', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text: text, doc_name: docName, async: true }),
+        var q = new URLSearchParams();
+        if (text.length > 4000) {
+          try {
+            q.set('text_b64', btoa(unescape(encodeURIComponent(text))));
+          } catch (e) {
+            setRememberStatus('文本转 Base64 失败: ' + e, true);
+            if (btn) btn.disabled = false;
+            return;
+          }
+        } else {
+          q.set('text', text);
+        }
+        q.set('doc_name', docName);
+        var r = await fetch(base() + '/api/remember?' + q.toString(), {
+          method: 'GET',
           signal: controller.signal
         });
         var submitElapsedMs = Date.now() - submitStartMs;
@@ -418,12 +429,6 @@ INDEX_HTML = r"""<!DOCTYPE html>
             appendRememberLog('任务失败: ' + ((finalResult.taskData && finalResult.taskData.error) || 'unknown'));
             setRememberStatus('失败: ' + ((finalResult.taskData && finalResult.taskData.error) || 'unknown'), true);
           }
-        } else if (j.success) {
-          appendRememberLog('同步完成: HTTP ' + r.status);
-          renderRememberMetrics({ status: 'completed' }, Date.now() - wallStartMs, submitElapsedMs);
-          setRememberStatus('入库成功，正在刷新图谱…', false);
-          await refreshGraph();
-          setRememberStatus('完成', false);
         } else {
           appendRememberLog('请求失败: ' + (j.error || r.status));
           setRememberStatus('失败: ' + (j.error || r.status), true);

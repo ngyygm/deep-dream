@@ -11,8 +11,12 @@ Temporal_Memory_Graph 自然语言记忆图 API
 from __future__ import annotations
 
 import argparse
+import base64
+import errno
+import json
 import os
 import queue
+import socket
 import sys
 import threading
 import time
@@ -132,78 +136,6 @@ def err(message: str, status: int = 400) -> tuple:
 
 
 @dataclass
-class SubgraphEntry:
-    entity_absolute_ids: Set[str] = field(default_factory=set)
-    relation_absolute_ids: Set[str] = field(default_factory=set)
-    created_at: float = field(default_factory=time.time)
-    last_accessed_at: float = field(default_factory=time.time)
-    ttl_seconds: int = 3600
-
-    def is_expired(self) -> bool:
-        return (time.time() - self.created_at) > self.ttl_seconds
-
-    def touch(self) -> None:
-        self.last_accessed_at = time.time()
-
-
-class SubgraphStore:
-    def __init__(self, max_count: int = 100, default_ttl_seconds: int = 3600):
-        self._store: Dict[str, SubgraphEntry] = {}
-        self._max_count = max_count
-        self._default_ttl = default_ttl_seconds
-        self._lock = threading.Lock()
-
-    def create(self, entity_ids: Set[str], relation_ids: Set[str], ttl_seconds: Optional[int] = None) -> str:
-        with self._lock:
-            self._evict_if_needed()
-            sid = str(uuid.uuid4())
-            self._store[sid] = SubgraphEntry(
-                entity_absolute_ids=set(entity_ids),
-                relation_absolute_ids=set(relation_ids),
-                ttl_seconds=ttl_seconds or self._default_ttl,
-            )
-            return sid
-
-    def get(self, subgraph_id: str) -> Optional[SubgraphEntry]:
-        with self._lock:
-            entry = self._store.get(subgraph_id)
-            if entry is None or entry.is_expired():
-                if entry and entry.is_expired():
-                    del self._store[subgraph_id]
-                return None
-            entry.touch()
-            return entry
-
-    def delete(self, subgraph_id: str) -> bool:
-        with self._lock:
-            if subgraph_id in self._store:
-                del self._store[subgraph_id]
-                return True
-            return False
-
-    def update(self, subgraph_id: str, modifier_fn) -> Optional[SubgraphEntry]:
-        """在锁内对 entry 执行修改操作，确保线程安全。"""
-        with self._lock:
-            entry = self._store.get(subgraph_id)
-            if entry is None or entry.is_expired():
-                if entry and entry.is_expired():
-                    del self._store[subgraph_id]
-                return None
-            modifier_fn(entry)
-            entry.touch()
-            return entry
-
-    def _evict_if_needed(self) -> None:
-        while len(self._store) >= self._max_count:
-            expired = [k for k, v in self._store.items() if v.is_expired()]
-            for k in expired:
-                del self._store[k]
-            if len(self._store) >= self._max_count:
-                oldest = min(self._store.items(), key=lambda x: x[1].last_accessed_at)
-                del self._store[oldest[0]]
-
-
-@dataclass
 class RememberTask:
     task_id: str
     text: str
@@ -219,15 +151,114 @@ class RememberTask:
     finished_at: Optional[float] = None
 
 
+class RememberJournal:
+    """将 remember 任务落盘到 storage_path/remember_journal，进程崩溃重启后可恢复未完成任务。"""
+
+    def __init__(self, storage_root: Path):
+        self.dir = Path(storage_root) / "remember_journal"
+        self.dir.mkdir(parents=True, exist_ok=True)
+
+    def _path(self, task_id: str) -> Path:
+        return self.dir / f"{task_id}.json"
+
+    def write(self, task: RememberTask) -> None:
+        d: Dict[str, Any] = {
+            "task_id": task.task_id,
+            "source_name": task.source_name,
+            "original_path": task.original_path,
+            "status": task.status,
+            "event_time": task.event_time.isoformat() if task.event_time else None,
+            "load_cache": task.load_cache,
+            "created_at": task.created_at,
+            "started_at": task.started_at,
+            "finished_at": task.finished_at,
+            "error": task.error,
+            "result": task.result,
+        }
+        p = self._path(task.task_id)
+        tmp = p.with_suffix(".json.tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(d, f, ensure_ascii=False, indent=2)
+        tmp.replace(p)
+
+    def read_record(self, task_id: str) -> Optional[Dict[str, Any]]:
+        p = self._path(task_id)
+        if not p.exists():
+            return None
+        try:
+            with open(p, encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return None
+
+    def iter_records(self) -> List[Dict[str, Any]]:
+        out: List[Dict[str, Any]] = []
+        corrupt_dir = self.dir / "corrupt"
+        for p in sorted(self.dir.glob("*.json")):
+            if p.name.endswith(".tmp"):
+                continue
+            try:
+                with open(p, encoding="utf-8") as f:
+                    out.append(json.load(f))
+            except Exception as exc:
+                try:
+                    corrupt_dir.mkdir(parents=True, exist_ok=True)
+                    dest = corrupt_dir / f"{p.stem}.bad.json"
+                    if dest.exists():
+                        dest = corrupt_dir / f"{p.stem}_{int(time.time())}.bad.json"
+                    p.rename(dest)
+                    print(
+                        f"[remember_journal] 已隔离无法解析的文件: {p.name} -> {dest.name} ({exc})",
+                        file=sys.stderr,
+                    )
+                except Exception:
+                    pass
+                continue
+        return out
+
+
+def _remember_task_from_record(rec: Dict[str, Any], text: str) -> RememberTask:
+    et_raw = rec.get("event_time")
+    event_time: Optional[datetime] = None
+    if et_raw:
+        try:
+            event_time = datetime.fromisoformat(str(et_raw).replace("Z", "+00:00"))
+        except ValueError:
+            event_time = None
+    return RememberTask(
+        task_id=str(rec["task_id"]),
+        text=text,
+        source_name=str(rec.get("source_name") or "api_input"),
+        load_cache=rec.get("load_cache"),
+        event_time=event_time,
+        original_path=str(rec.get("original_path") or ""),
+        status=str(rec.get("status") or "queued"),
+        result=rec.get("result"),
+        error=rec.get("error"),
+        created_at=float(rec.get("created_at") or time.time()),
+        started_at=rec.get("started_at"),
+        finished_at=rec.get("finished_at"),
+    )
+
+
 class RememberTaskQueue:
     """异步记忆写入任务队列（两阶段线程模型）。
     每个任务：phase1 生成文档整体记忆，phase2 跑滑窗链。
     A 的 phase1 完成后即可启动 B 的 phase1（B 以 A 的整体记忆为初始）；phase2 串行执行以保持 cache 链一致。
-    并行度由 remember_workers 控制（同时进行 phase1 的线程数）。"""
+    并行度由 remember_workers 控制（同时进行 phase1 的线程数）。
+    任务状态写入 remember_journal，异常退出后重启会重新入队未完成任务（从 originals 原文重跑完整流水线）。"""
 
-    def __init__(self, processor, max_workers: int = 1, max_history: int = 200,
-                 max_retries: int = 2, retry_delay_seconds: float = 2):
+    def __init__(
+        self,
+        processor,
+        storage_path: Path,
+        max_workers: int = 1,
+        max_history: int = 200,
+        max_retries: int = 2,
+        retry_delay_seconds: float = 2,
+    ):
         self._processor = processor
+        self._journal = RememberJournal(storage_path)
         self._queue: "queue.Queue[RememberTask]" = queue.Queue()
         self._phase2_queue: "queue.Queue[Tuple[RememberTask, Any]]" = queue.Queue()
         self._tasks: Dict[str, RememberTask] = {}
@@ -240,22 +271,94 @@ class RememberTaskQueue:
         self._phase1_done_count = 0
         self._phase2_lock = threading.Lock()
         self._workers: List[threading.Thread] = []
+        self._recover_from_disk()
         for i in range(max(1, max_workers)):
             t = threading.Thread(target=self._worker, name=f"remember-worker-{i}", daemon=True)
             t.start()
             self._workers.append(t)
 
+    def _persist(self, task: RememberTask) -> None:
+        try:
+            self._journal.write(task)
+        except Exception as e:
+            print(f"[Remember] 警告：journal 写入失败 task_id={task.task_id[:8]}…: {e}")
+
+    def _recover_from_disk(self) -> None:
+        n_resume = 0
+        for rec in self._journal.iter_records():
+            tid = rec.get("task_id")
+            if not tid:
+                continue
+            st = rec.get("status")
+            if st in ("completed", "failed"):
+                continue
+            if st in ("queued", "running"):
+                op = rec.get("original_path")
+                if not op or not Path(op).exists():
+                    rec2 = dict(rec)
+                    rec2["status"] = "failed"
+                    rec2["error"] = "重启恢复失败：originals 中原文文件不存在"
+                    rec2["finished_at"] = time.time()
+                    try:
+                        tdead = _remember_task_from_record(rec2, text="")
+                        self._journal.write(tdead)
+                    except Exception:
+                        pass
+                    print(f"[Remember] 恢复跳过 task_id={str(tid)[:8]}…：原文缺失")
+                    continue
+                try:
+                    text = Path(op).read_text(encoding="utf-8")
+                except Exception as e:
+                    rec2 = dict(rec)
+                    rec2["status"] = "failed"
+                    rec2["error"] = f"重启恢复失败：无法读取原文: {e}"
+                    rec2["finished_at"] = time.time()
+                    try:
+                        tdead = _remember_task_from_record(rec2, text="")
+                        self._journal.write(tdead)
+                    except Exception:
+                        pass
+                    continue
+                task = _remember_task_from_record(rec, text=text)
+                task.status = "queued"
+                task.started_at = None
+                task.finished_at = None
+                task.error = None
+                task.result = None
+                with self._lock:
+                    self._tasks[tid] = task
+                self._queue.put(task)
+                self._persist(task)
+                n_resume += 1
+                print(f"[Remember] 恢复未完成任务并入队: task_id={tid[:8]}…, source_name={task.source_name!r}")
+        if n_resume:
+            print(f"[Remember] 启动恢复：重新入队 {n_resume} 个未完成任务（已完成/失败仅保留在 journal，按需通过 status 查询）")
+
     def submit(self, task: RememberTask) -> str:
         with self._lock:
             self._tasks[task.task_id] = task
             self._trim_history()
+        self._persist(task)
         self._queue.put(task)
         print(f"[Remember] 任务入队: task_id={task.task_id[:8]}…, source_name={task.source_name!r}")
         return task.task_id
 
     def get_status(self, task_id: str) -> Optional[RememberTask]:
         with self._lock:
-            return self._tasks.get(task_id)
+            t = self._tasks.get(task_id)
+        if t is not None:
+            return t
+        rec = self._journal.read_record(task_id)
+        if rec is None:
+            return None
+        text = ""
+        op = rec.get("original_path")
+        if op and Path(op).exists():
+            try:
+                text = Path(op).read_text(encoding="utf-8")
+            except Exception:
+                pass
+        return _remember_task_from_record(rec, text=text)
 
     def list_tasks(self, limit: int = 50) -> List[Dict]:
         with self._lock:
@@ -281,6 +384,7 @@ class RememberTaskQueue:
                 with self._lock:
                     task.status = "running"
                     task.started_at = time.time()
+                self._persist(task)
                 print(f"[Remember] 开始处理: task_id={task.task_id[:8]}…, source_name={task.source_name!r}, 文本长度={len(task.text)} 字符")
 
                 # 若非首个任务，等待上一任务 phase1 完成（拿到 previous_overall）
@@ -324,6 +428,7 @@ class RememberTaskQueue:
                             task2.status = "completed"
                             task2.result = result
                             task2.finished_at = time.time()
+                        self._persist(task2)
                         elapsed = (task2.finished_at or 0) - (task2.started_at or 0)
                         print(f"[Remember] 完成: task_id={task2.task_id[:8]}…, chunks_processed={result.get('chunks_processed')}, 耗时={elapsed:.1f}s")
                         last_exc = None
@@ -339,12 +444,14 @@ class RememberTaskQueue:
                                 task.status = "failed"
                                 task.error = str(exc)
                                 task.finished_at = time.time()
+                            self._persist(task)
                             print(f"[Remember] 失败: task_id={task.task_id[:8]}…, error={exc!r}")
             except Exception as exc:
                 with self._lock:
                     task.status = "failed"
                     task.error = str(exc)
                     task.finished_at = time.time()
+                self._persist(task)
                 print(f"[Remember] 失败: task_id={task.task_id[:8]}…, error={exc!r}")
             finally:
                 self._queue.task_done()
@@ -361,12 +468,12 @@ class RememberTaskQueue:
                 removed += 1
 
 
-def _extract_subgraph(
+def _extract_candidate_ids(
     storage: Any,
     body: Dict[str, Any],
     parse_time_point: Any,
 ) -> Tuple[Set[str], Set[str]]:
-    """从主图按条件抽取实体与关系的 absolute id 集合。"""
+    """按 query_text / 时间等条件从主图抽取实体与关系的 absolute id 集合（供 query-one 等接口使用）。"""
     entity_absolute_ids: Set[str] = set()
     relation_absolute_ids: Set[str] = set()
     time_before = body.get("time_before")
@@ -425,60 +532,6 @@ def _extract_subgraph(
     return entity_absolute_ids, relation_absolute_ids
 
 
-def _apply_filter(
-    storage: Any,
-    entry: SubgraphEntry,
-    body: Dict[str, Any],
-    parse_time_point: Any,
-) -> None:
-    """在子图 entry 上按 time_before/time_after/entity_ids 缩小集合（原地更新）。"""
-    time_before = body.get("time_before")
-    time_after = body.get("time_after")
-    entity_ids_filter = body.get("entity_ids")
-    if isinstance(entity_ids_filter, list):
-        keep_entity_ids = set(entity_ids_filter)
-    else:
-        keep_entity_ids = None
-
-    if time_before or time_after:
-        time_before_dt = parse_time_point(time_before) if time_before else None
-        time_after_dt = parse_time_point(time_after) if time_after else None
-        to_drop_entity = set()
-        for eid in entry.entity_absolute_ids:
-            e = storage.get_entity_by_absolute_id(eid)
-            if not e or not e.physical_time:
-                continue
-            if time_before_dt and e.physical_time > time_before_dt:
-                to_drop_entity.add(eid)
-            elif time_after_dt and e.physical_time < time_after_dt:
-                to_drop_entity.add(eid)
-        entry.entity_absolute_ids -= to_drop_entity
-        to_drop_relation = set()
-        for rid in entry.relation_absolute_ids:
-            r = storage.get_relation_by_absolute_id(rid)
-            if not r or not r.physical_time:
-                continue
-            if time_before_dt and r.physical_time > time_before_dt:
-                to_drop_relation.add(rid)
-            elif time_after_dt and r.physical_time < time_after_dt:
-                to_drop_relation.add(rid)
-        entry.relation_absolute_ids -= to_drop_relation
-
-    if keep_entity_ids is not None:
-        keep_absolute = set()
-        for eid in entry.entity_absolute_ids:
-            e = storage.get_entity_by_absolute_id(eid)
-            if e and e.entity_id in keep_entity_ids:
-                keep_absolute.add(eid)
-        entry.entity_absolute_ids = keep_absolute
-        keep_relations = set()
-        for rid in entry.relation_absolute_ids:
-            r = storage.get_relation_by_absolute_id(rid)
-            if r and r.entity1_absolute_id in keep_absolute and r.entity2_absolute_id in keep_absolute:
-                keep_relations.add(rid)
-        entry.relation_absolute_ids = keep_relations
-
-
 def create_app(processor: TemporalMemoryGraphProcessor, config: Optional[Dict[str, Any]] = None) -> Flask:
     app = Flask(__name__)
 
@@ -506,13 +559,10 @@ def create_app(processor: TemporalMemoryGraphProcessor, config: Optional[Dict[st
     config = config or {}
     remember_queue = RememberTaskQueue(
         processor,
+        Path(processor.storage.storage_path),
         max_workers=config.get("remember_workers", 1),
         max_retries=config.get("remember_max_retries", 2),
         retry_delay_seconds=config.get("remember_retry_delay_seconds", 2),
-    )
-    subgraph_store = SubgraphStore(
-        max_count=config.get("subgraph_max_count", 100),
-        default_ttl_seconds=config.get("subgraph_ttl_seconds", 3600),
     )
 
     def parse_time_point(value: Optional[str]) -> Optional[datetime]:
@@ -545,7 +595,8 @@ def create_app(processor: TemporalMemoryGraphProcessor, config: Optional[Dict[st
             response = processor.llm_client._call_llm(
                 "请只回复一个词：OK",
                 max_retries=1,
-                timeout=15,
+                timeout=60,
+                allow_mock_fallback=False,
             )
             ok_result = (
                 response is not None
@@ -558,34 +609,50 @@ def create_app(processor: TemporalMemoryGraphProcessor, config: Optional[Dict[st
         except Exception as e:
             return err(f"大模型不可用: {e}", 503)
 
-    @app.route("/api/remember", methods=["POST"])
+    def _parse_bool_query(name: str) -> Optional[bool]:
+        v = request.args.get(name)
+        if v is None or v == "":
+            return None
+        s = v.strip().lower()
+        if s in ("1", "true", "yes", "on"):
+            return True
+        if s in ("0", "false", "no", "off"):
+            return False
+        return None
+
+    @app.route("/api/remember", methods=["GET"])
     def remember():
-        """记忆写入：接收自然语言文本，入队后立即返回，无需保持连接。任务串行处理（A 处理完再处理 B）。
+        """记忆写入（仅 GET）：查询参数入队，立即返回 task_id。原文写入 originals/ 与 remember_journal/，进程崩溃重启后会自动恢复未完成任务并重跑。
 
-        JSON body：
-          - text (必填): 自然语言文本
-          - source_name (可选): 来源名称，默认 "api_input"
-          - load_cache_memory (可选): 是否加载最新缓存继续追加
-          - event_time (可选): 事件实际发生时间 (ISO 8601)，不传则使用当前时间
-          - async (可选): 已废弃，始终异步；保留仅为兼容，不影响行为。
+        查询参数：
+          - text 或 text_b64（二选一必填）：正文；长文本建议用标准 Base64 的 text_b64，避免 URL 长度限制
+          - source_name / doc_name（可选）：来源，默认 api_input
+          - load_cache_memory（可选）：1/true/0/false
+          - event_time（可选）：ISO 8601 事件时间
 
-        返回：HTTP 202，body 含 task_id、status=queued 表示已加入队列。可通过 GET /api/remember/status/<task_id> 查询进度。
+        返回：HTTP 202。查询进度：GET /api/remember/status/<task_id>
         """
         try:
-            body = request.get_json(silent=True) or {}
-            text = (body.get("text") or "").strip() or None
+            text = (request.args.get("text") or "").strip()
+            b64 = (request.args.get("text_b64") or "").strip()
+            if b64:
+                try:
+                    pad = (-len(b64)) % 4
+                    if pad:
+                        b64 += "=" * pad
+                    text = base64.b64decode(b64).decode("utf-8")
+                except Exception:
+                    return err("text_b64 不是有效的 UTF-8 Base64 内容", 400)
             if not text:
-                return err("text 为必填字段", 400)
+                return err("缺少 text 或 text_b64（必填其一）", 400)
 
-            source_name = (body.get("source_name") or body.get("doc_name") or "").strip() or "api_input"
-
-            load_cache = None
-            lc = body.get("load_cache_memory")
-            if lc is not None:
-                load_cache = bool(lc)
+            source_name = (
+                (request.args.get("source_name") or request.args.get("doc_name") or "").strip() or "api_input"
+            )
+            load_cache = _parse_bool_query("load_cache_memory")
 
             event_time: Optional[datetime] = None
-            et_str = (body.get("event_time") or "").strip() or None
+            et_str = (request.args.get("event_time") or "").strip() or None
             if et_str:
                 try:
                     event_time = datetime.fromisoformat(et_str.replace("Z", "+00:00"))
@@ -602,7 +669,7 @@ def create_app(processor: TemporalMemoryGraphProcessor, config: Optional[Dict[st
             Path(original_path).write_text(text, encoding="utf-8")
 
             preview = (text[:80] + "…") if len(text) > 80 else text
-            print(f"[Remember] 收到: source_name={source_name!r}, 文本长度={len(text)} 字符, event_time={et_str or '未指定'}")
+            print(f"[Remember] 收到(GET): source_name={source_name!r}, 文本长度={len(text)} 字符, event_time={et_str or '未指定'}")
             print(f"[Remember] 内容预览: {preview!r}")
 
             task_id = uuid.uuid4().hex
@@ -621,7 +688,7 @@ def create_app(processor: TemporalMemoryGraphProcessor, config: Optional[Dict[st
                 "data": {
                     "task_id": task_id,
                     "status": "queued",
-                    "message": "已加入队列，系统将按序处理；无需保持连接，可通过 GET /api/remember/status/<task_id> 查询进度",
+                    "message": "已加入队列；Find 与 Remember 可并发。崩溃重启后未完成任务会从 journal 恢复。GET /api/remember/status/<task_id> 查询进度",
                     "original_path": original_path,
                 },
             }), 202)
@@ -702,12 +769,10 @@ def create_app(processor: TemporalMemoryGraphProcessor, config: Optional[Dict[st
             expand (bool): 是否从命中实体向外扩展邻域，默认 true
             time_before (str, ISO): 只返回此时间之前的记忆
             time_after (str, ISO): 只返回此时间之后的记忆
-            create_subgraph (bool): 是否创建持久化子图以便后续操作，默认 false
 
         返回:
             entities: 命中的概念实体列表
             relations: 命中的概念关系列表
-            subgraph_id: 若 create_subgraph=true，返回子图 ID
         """
         try:
             body = request.get_json(silent=True) or {}
@@ -719,7 +784,6 @@ def create_app(processor: TemporalMemoryGraphProcessor, config: Optional[Dict[st
             max_entities = int(body.get("max_entities", 20))
             max_relations = int(body.get("max_relations", 50))
             expand = body.get("expand", True)
-            do_create_subgraph = body.get("create_subgraph", False)
             time_before = body.get("time_before")
             time_after = body.get("time_after")
 
@@ -785,7 +849,6 @@ def create_app(processor: TemporalMemoryGraphProcessor, config: Optional[Dict[st
                 if time_after_dt and e.physical_time and e.physical_time < time_after_dt:
                     continue
                 final_entities.append(e)
-            final_entity_abs_ids = {e.id for e in final_entities}
 
             final_relations: List[Relation] = []
             seen_rel_ids: Set[str] = set()
@@ -807,179 +870,37 @@ def create_app(processor: TemporalMemoryGraphProcessor, config: Optional[Dict[st
                 "relation_count": len(final_relations),
             }
 
-            if do_create_subgraph:
-                sid = subgraph_store.create(
-                    final_entity_abs_ids,
-                    seen_rel_ids,
-                )
-                result["subgraph_id"] = sid
-
             return ok(result)
-        except Exception as e:
-            return err(str(e), 500)
-
-    # =========================================================
-    # Find: 状态化子图（高级，用于多步检索）
-    # =========================================================
-    @app.route("/api/find/subgraph", methods=["POST"])
-    def find_subgraph_create():
-        try:
-            body = request.get_json(silent=True) or {}
-            try:
-                entity_ids, relation_ids = _extract_subgraph(
-                    processor.storage, body, parse_time_point
-                )
-            except ValueError as ve:
-                return err(str(ve), 400)
-            ttl = body.get("ttl_seconds")
-            ttl = int(ttl) if ttl is not None else None
-            sid = subgraph_store.create(entity_ids, relation_ids, ttl_seconds=ttl)
-            return ok({
-                "subgraph_id": sid,
-                "entity_count": len(entity_ids),
-                "relation_count": len(relation_ids),
-            }), 201
-        except Exception as e:
-            return err(str(e), 500)
-
-    @app.route("/api/find/subgraph/<subgraph_id>")
-    def find_subgraph_get(subgraph_id: str):
-        try:
-            entry = subgraph_store.get(subgraph_id)
-            if entry is None:
-                return err("子图不存在或已过期", 404)
-            return ok({
-                "subgraph_id": subgraph_id,
-                "entity_count": len(entry.entity_absolute_ids),
-                "relation_count": len(entry.relation_absolute_ids),
-                "created_at": entry.created_at,
-                "ttl_seconds": entry.ttl_seconds,
-            })
-        except Exception as e:
-            return err(str(e), 500)
-
-    @app.route("/api/find/subgraph/<subgraph_id>/entities")
-    def find_subgraph_entities(subgraph_id: str):
-        try:
-            entry = subgraph_store.get(subgraph_id)
-            if entry is None:
-                return err("子图不存在或已过期", 404)
-            entities = []
-            for eid in entry.entity_absolute_ids:
-                e = processor.storage.get_entity_by_absolute_id(eid)
-                if e:
-                    entities.append(entity_to_dict(e))
-            return ok(entities)
-        except Exception as e:
-            return err(str(e), 500)
-
-    @app.route("/api/find/subgraph/<subgraph_id>/relations")
-    def find_subgraph_relations(subgraph_id: str):
-        try:
-            entry = subgraph_store.get(subgraph_id)
-            if entry is None:
-                return err("子图不存在或已过期", 404)
-            relations = []
-            for rid in entry.relation_absolute_ids:
-                r = processor.storage.get_relation_by_absolute_id(rid)
-                if r:
-                    relations.append(relation_to_dict(r))
-            return ok(relations)
-        except Exception as e:
-            return err(str(e), 500)
-
-    @app.route("/api/find/subgraph/<subgraph_id>/expand", methods=["POST"])
-    def find_subgraph_expand(subgraph_id: str):
-        try:
-            body = request.get_json(silent=True) or {}
-            try:
-                new_entity_ids, new_relation_ids = _extract_subgraph(
-                    processor.storage, body, parse_time_point
-                )
-            except ValueError as ve:
-                return err(str(ve), 400)
-
-            def _do_expand(entry):
-                entry.entity_absolute_ids |= new_entity_ids
-                entry.relation_absolute_ids |= new_relation_ids
-
-            entry = subgraph_store.update(subgraph_id, _do_expand)
-            if entry is None:
-                return err("子图不存在或已过期", 404)
-            return ok({
-                "subgraph_id": subgraph_id,
-                "entity_count": len(entry.entity_absolute_ids),
-                "relation_count": len(entry.relation_absolute_ids),
-            })
-        except Exception as e:
-            return err(str(e), 500)
-
-    @app.route("/api/find/subgraph/<subgraph_id>/filter", methods=["POST"])
-    def find_subgraph_filter(subgraph_id: str):
-        try:
-            body = request.get_json(silent=True) or {}
-
-            def _do_filter(entry):
-                try:
-                    _apply_filter(processor.storage, entry, body, parse_time_point)
-                except ValueError:
-                    raise
-
-            entry = subgraph_store.update(subgraph_id, _do_filter)
-            if entry is None:
-                return err("子图不存在或已过期", 404)
-            return ok({
-                "subgraph_id": subgraph_id,
-                "entity_count": len(entry.entity_absolute_ids),
-                "relation_count": len(entry.relation_absolute_ids),
-            })
-        except ValueError as ve:
-            return err(str(ve), 400)
-        except Exception as e:
-            return err(str(e), 500)
-
-    @app.route("/api/find/subgraph/<subgraph_id>", methods=["DELETE"])
-    def find_subgraph_release(subgraph_id: str):
-        try:
-            if subgraph_store.delete(subgraph_id):
-                return "", 204
-            return err("子图不存在或已过期", 404)
         except Exception as e:
             return err(str(e), 500)
 
     @app.route("/api/find/query-one", methods=["POST"])
     def find_query_one():
+        """按请求体中的 query_text / similarity_threshold 等条件从主图抽取一批实体与关系（一次性返回，无额外状态）。"""
         try:
             body = request.get_json(silent=True) or {}
             include_entities = body.get("include_entities", True)
             include_relations = body.get("include_relations", True)
             try:
-                entity_ids, relation_ids = _extract_subgraph(
+                entity_ids, relation_ids = _extract_candidate_ids(
                     processor.storage, body, parse_time_point
                 )
             except ValueError as ve:
                 return err(str(ve), 400)
-            sid = subgraph_store.create(entity_ids, relation_ids)
-            try:
-                entities_data: List[Dict[str, Any]] = []
-                relations_data: List[Dict[str, Any]] = []
-                if include_entities:
-                    entry = subgraph_store.get(sid)
-                    if entry:
-                        for eid in entry.entity_absolute_ids:
-                            e = processor.storage.get_entity_by_absolute_id(eid)
-                            if e:
-                                entities_data.append(entity_to_dict(e))
-                if include_relations:
-                    entry = subgraph_store.get(sid)
-                    if entry:
-                        for rid in entry.relation_absolute_ids:
-                            r = processor.storage.get_relation_by_absolute_id(rid)
-                            if r:
-                                relations_data.append(relation_to_dict(r))
-                return ok({"entities": entities_data, "relations": relations_data})
-            finally:
-                subgraph_store.delete(sid)
+            storage = processor.storage
+            entities_data: List[Dict[str, Any]] = []
+            relations_data: List[Dict[str, Any]] = []
+            if include_entities:
+                for eid in entity_ids:
+                    e = storage.get_entity_by_absolute_id(eid)
+                    if e:
+                        entities_data.append(entity_to_dict(e))
+            if include_relations:
+                for rid in relation_ids:
+                    r = storage.get_relation_by_absolute_id(rid)
+                    if r:
+                        relations_data.append(relation_to_dict(r))
+            return ok({"entities": entities_data, "relations": relations_data})
         except Exception as e:
             return err(str(e), 500)
 
@@ -1353,7 +1274,8 @@ def _check_llm_available(processor) -> tuple[bool, str | None]:
         response = processor.llm_client._call_llm(
             "请只回复一个词：OK",
             max_retries=1,
-            timeout=15,
+            timeout=60,
+            allow_mock_fallback=False,
         )
         ok_result = (
             response is not None
@@ -1362,9 +1284,65 @@ def _check_llm_available(processor) -> tuple[bool, str | None]:
         )
         if ok_result:
             return True, None
-        return False, "大模型未返回有效结果"
+        return False, "大模型未返回有效结果（可能超时或网络不可达）"
     except Exception as e:
         return False, f"大模型不可用: {e}"
+
+
+def _tcp_bind_probe(host: str, port: int) -> Tuple[bool, Optional[str]]:
+    """尝试在 host:port 上独占 bind，用于启动前检测端口是否可用。"""
+    bind_addr = host if host not in ("", "0.0.0.0") else "0.0.0.0"
+    sock: Optional[socket.socket] = None
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind((bind_addr, int(port)))
+        return True, None
+    except OSError as e:
+        if e.errno == errno.EADDRINUSE:
+            return False, "端口已被占用 (EADDRINUSE)"
+        return False, str(e)
+    finally:
+        if sock is not None:
+            try:
+                sock.close()
+            except OSError:
+                pass
+
+
+def _resolve_listen_port(
+    host: str,
+    preferred_port: int,
+    auto_fallback: bool,
+    max_extra: int = 10,
+) -> Tuple[int, bool]:
+    """
+    若 preferred_port 可 bind 则用之；否则在 auto_fallback 时尝试 preferred_port+1 … +max_extra。
+    返回 (实际端口, 是否发生了端口切换)。
+    """
+    ok, _ = _tcp_bind_probe(host, preferred_port)
+    if ok:
+        return preferred_port, False
+    if not auto_fallback:
+        return preferred_port, False
+    for delta in range(1, max_extra + 1):
+        p = preferred_port + delta
+        ok2, _ = _tcp_bind_probe(host, p)
+        if ok2:
+            return p, True
+    return preferred_port, False
+
+
+def _check_storage_writable(storage_root: Path) -> Optional[str]:
+    """在 storage_path 下尝试创建/删除测试文件，不可写则返回错误说明。"""
+    probe = storage_root / ".tmg_write_probe"
+    try:
+        storage_root.mkdir(parents=True, exist_ok=True)
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+        return None
+    except OSError as e:
+        return f"存储路径不可写或无法创建: {storage_root} ({e})"
 
 
 def main() -> int:
@@ -1372,6 +1350,16 @@ def main() -> int:
     parser.add_argument("--config", type=str, required=True, help="配置文件路径（如 service_config.json）")
     parser.add_argument("--host", type=str, default=None, help="覆盖配置中的 host")
     parser.add_argument("--port", type=int, default=None, help="覆盖配置中的 port")
+    parser.add_argument(
+        "--skip-llm-check",
+        action="store_true",
+        help="跳过启动前 LLM 握手（仅适合调试 Find；Remember 仍可能在运行时失败）",
+    )
+    parser.add_argument(
+        "--auto-port",
+        action="store_true",
+        help="若配置端口被占用，自动尝试后续连续端口（最多 +10）",
+    )
     parser.add_argument("--debug", action="store_true", help="开启 Flask 调试模式")
     args = parser.parse_args()
 
@@ -1385,18 +1373,27 @@ def main() -> int:
     host = args.host if args.host is not None else config.get("host", "0.0.0.0")
     port = args.port if args.port is not None else config.get("port", 5001)
     storage_path = config.get("storage_path", "./graph/tmg_storage")
+    storage_root = Path(storage_path)
     Path(storage_path).mkdir(parents=True, exist_ok=True)
+    wr_err = _check_storage_writable(storage_root)
+    if wr_err:
+        print(f"错误：{wr_err}")
+        return 1
 
     processor = build_processor(config)
 
-    # 启动前对配置的 LLM 做握手，不可用则报错退出
-    print("正在检查配置的 LLM 是否可用…")
-    ok_llm, err_msg = _check_llm_available(processor)
-    if not ok_llm:
-        print(f"错误：{err_msg}")
-        print("请检查 service_config 中 llm.api_key / llm.base_url / llm.model 及网络。")
-        return 1
-    print("LLM 握手成功，模型可用。")
+    # 启动前对配置的 LLM 做握手，不可用则报错退出（可用 --skip-llm-check 跳过）
+    if args.skip_llm_check:
+        print("已跳过 LLM 握手（--skip-llm-check）。Remember 与 /health/llm 可能在运行时失败。")
+    else:
+        print("正在检查配置的 LLM 是否可用…")
+        ok_llm, err_msg = _check_llm_available(processor)
+        if not ok_llm:
+            print(f"错误：{err_msg}")
+            print("请检查 service_config 中 llm.api_key / llm.base_url / llm.model 及网络。")
+            print("若仅需测试 Find，可加参数: --skip-llm-check")
+            return 1
+        print("LLM 握手成功，模型可用。")
 
     app = create_app(processor, config)
 
@@ -1411,6 +1408,24 @@ def main() -> int:
     except Exception:
         total_entities = total_relations = total_memory_caches = 0
 
+    auto_fb = bool(args.auto_port or config.get("auto_port_fallback", False))
+    listen_port, port_switched = _resolve_listen_port(host, port, auto_fb)
+    ok_bind, bind_err = _tcp_bind_probe(host, listen_port)
+    if not ok_bind:
+        print(f"错误：无法在 {host}:{listen_port} 上绑定: {bind_err}")
+        print(f"  配置的端口为 {port}。")
+        if not auto_fb:
+            print("  解决：结束占用该端口的进程，或改用 --port <其他端口>，或在配置中设置 auto_port_fallback: true 并加 --auto-port。")
+            try:
+                print(f"  排查示例: ss -tlnp | grep ':{port} ' 或 lsof -i :{port}")
+            except Exception:
+                pass
+        else:
+            print("  已尝试自动换端口但仍失败，请检查系统权限或防火墙设置。")
+        return 1
+    if port_switched:
+        print(f"注意：端口 {port} 已被占用，已自动改用 {listen_port}。")
+
     print(f"""
 ╔══════════════════════════════════════════════════════════╗
 ║     Temporal_Memory_Graph — 自然语言记忆图 API           ║
@@ -1419,17 +1434,25 @@ def main() -> int:
   当前大脑记忆库:
     实体: {total_entities}  关系: {total_relations}  记忆缓存: {total_memory_caches}
 
-  服务地址: http://{host}:{port}
-  健康检查: GET  http://{host}:{port}/health
-  记忆写入: POST http://{host}:{port}/api/remember
-  语义检索: POST http://{host}:{port}/api/find
-  原子查询: GET  http://{host}:{port}/api/find/...
+  服务地址: http://{host}:{listen_port}
+  健康检查: GET  http://{host}:{listen_port}/health
+  记忆写入: GET  http://{host}:{listen_port}/api/remember?text=...（或 text_b64=...）
+  语义检索: POST http://{host}:{listen_port}/api/find
+  原子查询: GET  http://{host}:{listen_port}/api/find/...
 
   存储路径: {storage_path}
+  HTTP 多线程: 处理中 Find 与 Remember 可并行（Flask threaded）
 
   按 Ctrl+C 停止服务
 """)
-    app.run(host=host, port=port, debug=args.debug)
+    threaded = bool(config.get("flask_threaded", True))
+    try:
+        app.run(host=host, port=listen_port, debug=args.debug, threaded=threaded)
+    except OSError as e:
+        print(f"错误：HTTP 服务启动失败: {e}", file=sys.stderr)
+        if e.errno == errno.EADDRINUSE:
+            print("  端口在探测后仍被占用（竞态），请重试或更换端口。", file=sys.stderr)
+        return 1
     return 0
 
 

@@ -100,13 +100,15 @@ cp service_config.example.json service_config.json
 python service_api.py --config service_config.json
 ```
 
-**Remember (text only):**
+**Remember (GET query params only; use `text_b64` for long text):**
 
 ```bash
-curl -s -X POST http://localhost:16200/api/remember \
-  -H "Content-Type: application/json" \
-  -d '{"text": "Lin Heihei is an archaeology PhD who met a talking white fox in a cave. The fox said it had guarded the cave for three hundred years.", "event_time": "2026-03-09T14:00:00"}' | jq
+curl -s -G http://localhost:16200/api/remember \
+  --data-urlencode "text=Lin Heihei is an archaeology PhD who met a talking white fox in a cave." \
+  --data-urlencode "event_time=2026-03-09T14:00:00" | jq
 ```
+
+Unfinished tasks are persisted under `storage_path/remember_journal/` and re-queued after restart. With `flask_threaded: true` (default), Find stays responsive while Remember runs.
 
 **Find:**
 
@@ -139,30 +141,31 @@ TMG ships a **Skill** so that Cursor, Claude, and similar agents can deploy, con
 
 3. **What the agent will do**  
    - If the service is not running: clone repo → configure `service_config.json` → run `python service_api.py` → verify with `GET /health`.  
-   - Remember: `POST /api/remember` with JSON `text` (batch substantial content; avoid one-sentence calls).  
-   - Find: `POST /api/find` with natural-language `query`; use entity/relation/version/subgraph endpoints when needed.
+   - Remember: `GET /api/remember` with `text` or `text_b64` query params (batch substantial content; avoid one-sentence calls).  
+   - Find: `POST /api/find` with natural-language `query`; use entity/relation/version atomic endpoints when needed.
 
 ---
 
 ## API summary
 
-### Remember — write
+### Remember — write (GET only)
 
-JSON body only; `text` is required. Batch substantial content — avoid one-sentence calls.
+GET query parameters; `text` or `text_b64` is required. Batch substantial content — avoid one-sentence calls.
 
-| Field | Required | Description |
+| Param | Required | Description |
 |-------|----------|-------------|
-| `text` | Yes | Natural-language text |
-| `source_name` | No | Source label |
-| `event_time` | No | ISO 8601 — when events actually happened (defaults to processing time) |
-| `load_cache_memory` | No | Whether to continue from latest memory cache chain |
+| `text` | One of `text` / `text_b64` | Natural-language text (URL-encoded) |
+| `text_b64` | One of `text` / `text_b64` | UTF-8 text as standard Base64 |
+| `source_name` / `doc_name` | No | Source label |
+| `event_time` | No | ISO 8601 — when events actually happened |
+| `load_cache_memory` | No | `true`/`false` |
 
-The service saves the full text to `storage_path/originals/` and returns `original_path`. Internally: chunking, memory cache update, entity/relation extraction, graph alignment, versioned write.
+The service saves the full text to `storage_path/originals/` and journals task state under `remember_journal/`. After a crash, queued/running tasks are re-queued. Internally: chunking, memory cache update, entity/relation extraction, graph alignment, versioned write.
 
 ### Find — retrieve
 
 - **Recommended:** `POST /api/find` — semantic recall, graph expansion, and time filtering in one call; required: `query`; rest optional.  
-- **Atomic endpoints:** Entity search (`/api/find/entities/search`, etc.), relations, memory cache, subgraph create/expand/filter, stats (`/api/find/stats`).  
+- **Atomic endpoints:** Entity search (`/api/find/entities/search`, etc.), relations, memory cache, stats (`/api/find/stats`), batch fetch (`POST /api/find/query-one`).  
 
 Full paths and parameters: see `skills/tmg-memory-graph/reference.md` and `service_api.py`.
 
@@ -188,10 +191,12 @@ All content is natural language + time; no predefined tag schema.
 See `service_config.example.json`; configure `service_config.json` with:
 
 - **Service:** `host`, `port`, `storage_path`  
+- **Concurrency:** `flask_threaded` (default `true` — Find while Remember runs)  
 - **LLM:** `api_key`, `model`, `base_url`, `think`  
 - **Embedding:** `embedding.model` (local path or HuggingFace id), `embedding.device`  
 - **Chunking:** `chunking.window_size`, `chunking.overlap`  
-- **Subgraph:** `subgraph_max_count`, `subgraph_ttl_seconds`  
+
+For Ollama, set `llm.base_url` to `http://127.0.0.1:11434` and use the native `POST /api/chat` endpoint. Only the native Ollama protocol supports `think: true/false`; do not use the `/v1` OpenAI-compatible URL when you need to disable thinking.
 
 ---
 

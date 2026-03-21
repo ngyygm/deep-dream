@@ -24,8 +24,6 @@ DEFAULTS = {
         "window_size": 1000,
         "overlap": 200,
     },
-    "subgraph_max_count": 100,
-    "subgraph_ttl_seconds": 3600,
 }
 
 
