@@ -1,8 +1,11 @@
 """
 LLM客户端：封装LLM调用，实现三个核心任务。
 
-请求方式：统一通过 Python SDK 访问（见 ollama_chat_api），Ollama 走 OpenAI 兼容 /v1 接口；
-think 模式由初始化参数 think_mode 控制，在 example_usage 中通过 llm_think_mode 选择是否开启。
+请求方式：统一通过 `processor/ollama_chat_api.py` 访问：
+- Ollama 走原生 `POST /api/chat`；
+- OpenAI/GLM/LM Studio 等走 OpenAI 兼容接口。
+
+think 模式由初始化参数 think_mode 控制；只有 Ollama 原生协议支持通过 `think: true/false` 显式开关思考模式。
 """
 from typing import Dict, List, Optional, Any, Union
 from datetime import datetime
@@ -209,7 +212,7 @@ content要求：
             model_name: 模型名称
             base_url: API基础URL（可选，用于自定义API端点）
             content_snippet_length: 传入LLM prompt的实体content最大长度（默认50字符）
-            think_mode: 是否开启思维链/think 模式（默认 False）。仅 Ollama 下通过 API 参数 think 控制；其他后端忽略
+            think_mode: 是否开启思维链/think 模式（默认 False）。仅 Ollama 原生 `/api/chat` 下通过 API 参数 think 控制；其他后端忽略
         """
         self.api_key = api_key
         self.model_name = model_name
@@ -283,7 +286,14 @@ content要求：
             # 其他异常，保守起见返回True（避免误判）
             return True
     
-    def _call_llm(self, prompt: str, system_prompt: Optional[str] = None, max_retries: int = 3, timeout: int = 300) -> str:
+    def _call_llm(
+        self,
+        prompt: str,
+        system_prompt: Optional[str] = None,
+        max_retries: int = 3,
+        timeout: int = 300,
+        allow_mock_fallback: bool = True,
+    ) -> str:
         """
         调用LLM的通用方法（带重试机制）
         
@@ -292,12 +302,15 @@ content要求：
             system_prompt: 系统提示（可选）
             max_retries: 最大重试次数（默认3次）
             timeout: 超时时间（秒），默认300秒（5分钟），本地 Ollama 等可适当调大
+            allow_mock_fallback: 失败时是否降级为模拟响应；启动握手等场景应传 False，避免误判为可用
         
         Returns:
-            LLM的响应文本
+            LLM的响应文本；allow_mock_fallback=False 且失败时返回空字符串
         """
         if not self._endpoint_available:
-            return self._mock_llm_response(prompt)
+            if allow_mock_fallback:
+                return self._mock_llm_response(prompt)
+            return ""
         
         messages = []
         if system_prompt:
@@ -386,12 +399,16 @@ content要求：
                         print(f"LLM调用超时（已达最大重试次数，超时时间: {timeout}秒）: {e}")
                     else:
                         print(f"LLM调用错误（已达最大重试次数）: {e}")
-                    return self._mock_llm_response(prompt)
+                    if allow_mock_fallback:
+                        return self._mock_llm_response(prompt)
+                    return ""
 
         # 理论上不会到达这里，但为了稳妥保留兜底
         if last_error:
             print(f"所有重试都失败，使用模拟响应")
-        return self._mock_llm_response(prompt)
+        if allow_mock_fallback:
+            return self._mock_llm_response(prompt)
+        return ""
     
     def _clean_json_string(self, json_str: str) -> str:
         """

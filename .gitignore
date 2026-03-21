@@ -6,6 +6,9 @@ data/
 # 本地配置（含路径、API 等），不提交；仅提交 service_config.example.json
 service_config.json
 *.local.json
+# 冒烟测试本地配置，不提交
+service_config.smoke.json
+*.smoke.json
 .env
 .env.*
 

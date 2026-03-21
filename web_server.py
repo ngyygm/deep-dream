@@ -2225,7 +2225,10 @@ class GraphWebServer:
                             # 找到当前版本在版本列表中的索引（从1开始）
                             # 版本列表按时间倒序排列（最新版本在前），需要反转后计算索引
                             try:
-                                versions_sorted = sorted(versions, key=lambda v: v.physical_time)
+                                versions_sorted = sorted(
+                                    versions,
+                                    key=lambda v: self.storage._normalize_datetime_for_compare(v.physical_time)
+                                )
                                 current_version_index = None
                                 for idx, v in enumerate(versions_sorted, 1):
                                     if v.id == focus_absolute_id:
@@ -2618,7 +2621,10 @@ class GraphWebServer:
                             
                             # 在focus模式下，显示该实体版本的索引
                             if focus_entity_id and absolute_id:
-                                versions_sorted = sorted(versions, key=lambda v: v.physical_time)
+                                versions_sorted = sorted(
+                                    versions,
+                                    key=lambda v: self.storage._normalize_datetime_for_compare(v.physical_time)
+                                )
                                 current_version_index = None
                                 for idx, v in enumerate(versions_sorted, 1):
                                     if v.id == related_entity.id:

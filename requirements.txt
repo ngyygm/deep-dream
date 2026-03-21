@@ -3,7 +3,7 @@
 # 数据库
 # SQLite3 是Python标准库，无需安装
 
-# LLM 客户端（Ollama 兼容需 >=1.0，以便 extra_body 传 think，见 https://docs.ollama.com/api/openai-compatibility）
+# LLM 客户端（OpenAI/GLM 等兼容接口使用 openai SDK；Ollama 原生 /api/chat 由项目内代码直接调用）
 openai>=1.0.0
 
 # 如果需要使用其他LLM服务，可以添加：
@@ -13,6 +13,9 @@ openai>=1.0.0
 # Embedding模型（可选，用于改进实体搜索）
 # 如果使用embedding进行相似度搜索，需要安装：
 sentence-transformers>=2.2.0
+# Qwen3-Embedding 等需 transformers>=4.51；与 sentence-transformers 兼容请保持 <5
+transformers>=4.51.0,<5.0.0
+pillow>=9.1.0
 # 如果需要GPU加速，可以安装：
 # torch>=2.0.0  # PyTorch（通常sentence-transformers会自动安装）
 

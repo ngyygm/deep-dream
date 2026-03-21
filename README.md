@@ -98,17 +98,19 @@ cp service_config.example.json service_config.json
 python service_api.py --config service_config.json
 ```
 
-**写入记忆（默认异步，立即返回 task_id）：**
+**写入记忆（仅 GET 查询参数，立即返回 task_id；长文请用 `text_b64`）：**
 
 ```bash
-curl -s -X POST http://localhost:16200/api/remember \
-  -H "Content-Type: application/json" \
-  -d '{"text": "林嘿嘿是考古学博士，在山洞遇见了会说话的白狐。白狐说已守护山洞三百年。", "event_time": "2026-03-09T14:00:00"}' | jq
+curl -s -G http://localhost:16200/api/remember \
+  --data-urlencode "text=林嘿嘿是考古学博士，在山洞遇见了会说话的白狐。白狐说已守护山洞三百年。" \
+  --data-urlencode "event_time=2026-03-09T14:00:00" | jq
 # → {"success": true, "data": {"task_id": "abc123", "status": "queued", ...}}
 
 # 查询状态
 curl -s http://localhost:16200/api/remember/status/abc123 | jq
 ```
+
+服务在 `storage_path/remember_journal/` 持久化未完成任务；进程异常退出后重启会自动将 `queued`/`running` 任务重新入队（从 `originals/` 原文完整重跑）。`flask_threaded: true`（默认）时，Remember 处理期间仍可响应 Find。
 
 **检索记忆：**
 
@@ -157,27 +159,27 @@ OpenClaw 会从以下优先级加载 skills：
 
 3. **Agent 将执行的操作**  
    - 若服务未就绪：克隆仓库 → 配置 `service_config.json` → 启动 `python service_api.py` → 使用 `GET /health` 确认。  
-   - 写入：`POST /api/remember`，JSON body 传入 `text`（仅支持文本），可选 `event_time` 指定事件实际发生时间。默认异步返回 `task_id`，通过 `/api/remember/status/<task_id>` 轮询进度。  
-   - 检索：`POST /api/find` 传入自然语言 `query`；需要时可使用实体/关系/版本/子图等原子接口。  
+   - 写入：`GET /api/remember` 查询参数传入 `text` 或 `text_b64`、可选 `source_name`/`event_time`/`load_cache_memory`。默认异步返回 `task_id`（HTTP 202），通过 `/api/remember/status/<task_id>` 轮询；崩溃重启后未完成任务可从 journal 恢复。  
+   - 检索：`POST /api/find` 传入自然语言 `query`；需要时可使用实体/关系/版本等原子接口。  
    - 集成到 Agent 身份：在 SOUL.md 中声明记忆能力，在 HEARTBEAT.md 中加入定期记忆同步，在 AGENTS.md 中配置会话启动/结束的记忆流程。详见 `SKILL.md` 中的集成指南。
 
 ---
 
 ## API 概览
 
-### Remember — 记忆写入（默认异步）
+### Remember — 记忆写入（仅 GET，默认异步）
 
-仅接受 JSON body，`text` 为必填。建议批量、整段传入，避免一两句一调。
+仅支持 **GET** 查询参数（不再使用 POST JSON）。`text` 与 `text_b64` 二选一必填。建议批量、整段传入，避免一两句一调。
 
-| 字段 | 必填 | 说明 |
+| 参数 | 必填 | 说明 |
 |------|------|------|
-| `text` | 是 | 自然语言文本 |
-| `source_name` | 否 | 来源名称 |
-| `event_time` | 否 | ISO 8601，事件实际发生时间（不传则用处理时间） |
-| `load_cache_memory` | 否 | 是否接着上一段记忆链写 |
-| `async` | 否 | 默认 `true`——异步返回 `task_id`（HTTP 202）；`false` 同步等待 |
+| `text` | 与 `text_b64` 二选一 | 自然语言正文（URL 编码） |
+| `text_b64` | 与 `text` 二选一 | 正文 UTF-8 经标准 Base64（适合长文本） |
+| `source_name` / `doc_name` | 否 | 来源名称 |
+| `event_time` | 否 | ISO 8601，事件实际发生时间 |
+| `load_cache_memory` | 否 | `true`/`false`/`1`/`0` |
 
-**异步模式**（默认）：请求立即返回 `task_id`，后台流水线并行处理。可通过 `GET /api/remember/status/<task_id>` 查询进度，`GET /api/remember/queue` 查看队列。
+**异步**：请求立即返回 `task_id`（HTTP 202），后台线程处理。可通过 `GET /api/remember/status/<task_id>` 查询进度，`GET /api/remember/queue` 查看队列。任务状态写入 `remember_journal/`，异常退出重启后会恢复未完成任务并重新入队。
 
 **两阶段线程模型**：每个 text 先生成「文档整体记忆」再跑滑窗链；A 的整体记忆生成后即可启动 B（B 以 A 的整体记忆为初始），无需等 A 最后一窗。并行度由配置 **`remember_workers`** 控制（同时进行 phase1 的线程数；phase2 串行以保证 cache 链一致）。
 
@@ -188,7 +190,7 @@ OpenClaw 会从以下优先级加载 skills：
 ### Find — 语义检索
 
 - **推荐**：`POST /api/find`，单请求完成语义召回、图谱扩展与时间过滤；必填参数为 `query`，其余可选。  
-- **原子接口**：实体检索（`/api/find/entities/search` 等）、关系检索、记忆缓存、子图创建/扩展/过滤、统计（`/api/find/stats`）等。  
+- **原子接口**：实体检索（`/api/find/entities/search` 等）、关系检索、记忆缓存、统计（`/api/find/stats`）、按条件批量拉取（`POST /api/find/query-one`）等。  
 
 完整路径与参数见 `skills/tmg-memory-graph/reference.md` 及 `service_api.py`。
 
@@ -213,11 +215,11 @@ OpenClaw 会从以下优先级加载 skills：
 
 参考 `service_config.example.json` 配置 `service_config.json`：
 
-- **服务**：`host`、`port`、`storage_path`  
+- **服务**：`host`、`port`、`storage_path`（联调/示例可使用仓库内 **`graph/tmg_storage`**，目录结构为当前推荐格式；`originals/` 与 `remember_journal/` 与 API 的对应关系见 `skills/tmg-memory-graph/reference.md`）  
+- **并发**：`flask_threaded`（默认 `true`，Remember 处理时仍可响应 Find）  
 - **LLM**：`api_key`、`model`、`base_url`、`think`  
 - **Embedding**：`embedding.model`（本地路径或 HuggingFace 模型名）、`embedding.device`  
 - **分块**：`chunking.window_size`、`chunking.overlap`  
-- **子图**：`subgraph_max_count`、`subgraph_ttl_seconds`  
 - **Remember 队列**：`remember_workers`、`remember_max_retries`、`remember_retry_delay_seconds`  
 - **总线程数上限**：`max_total_worker_threads`（可选）。设后会对三层线程做统一封顶，避免线程爆炸；超出时按**优先级从低到高**缩小：先缩 `pipeline.llm_threads`，再缩 `pipeline.max_concurrent_windows`，最后缩 `remember_workers`。
 
@@ -226,6 +228,8 @@ OpenClaw 会从以下优先级加载 skills：
 2. **pipeline.max_concurrent_windows** — 单任务内并行滑窗数  
 3. **pipeline.llm_threads** — 单窗口内实体/关系并行数（最低优先级）  
 峰值估算：`remember_workers + max_concurrent_windows + max_concurrent_windows * llm_threads`。
+
+**使用 Ollama（原生协议）**：将 `llm.base_url` 设为 `http://127.0.0.1:11434`，服务会调用原生 `POST /api/chat`。只有原生协议支持通过 `think: true/false` 控制 Qwen3.5 等模型的思考模式，不要使用 `/v1` 的 OpenAI 兼容地址。
 
 **使用智谱 GLM（OpenAI 兼容）**：将 `llm` 设为 `"api_key": "你的智谱 API Key"`、`"model": "glm-4.7-flash"`、`"base_url": "https://open.bigmodel.cn/api/coding/paas/v4"` 即可，服务会自动走 OpenAI 兼容的 `/chat/completions` 接口。
 

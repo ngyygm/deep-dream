@@ -1,15 +1,18 @@
 """
-统一的 LLM Chat 调用封装（Python SDK 版本）。
+统一的 LLM Chat 调用封装。
 
-- Ollama：通过 OpenAI 兼容接口（`<ollama>/v1/chat/completions`）访问；
+- Ollama：通过原生接口 `POST <ollama>/api/chat` 访问；
 - OpenAI/智谱等：通过 OpenAI 兼容接口访问。
 
-项目内统一走 `openai>=1.0` 的 Python SDK，不再依赖 curl 或手写 urllib 请求。
+关键约束：`think` 仅在 Ollama 原生协议下生效，不能走 `/v1/chat/completions`。
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from typing import Any, Dict, Iterator, List, Optional
+from urllib import request
+from urllib.error import HTTPError, URLError
 
 from openai import OpenAI
 
@@ -47,11 +50,44 @@ def _as_dict(obj: Any) -> Dict[str, Any]:
         return {}
 
 
-def _ollama_v1_base_url(base_url: str) -> str:
+def _ollama_native_base_url(base_url: str) -> str:
     base = (base_url or "http://localhost:11434").rstrip("/")
+    if base.endswith("/api/chat"):
+        base = base[:-9]
     if base.endswith("/v1"):
-        return base
-    return base + "/v1"
+        base = base[:-3]
+    return base
+
+
+def _ollama_chat_url(base_url: str) -> str:
+    return _ollama_native_base_url(base_url) + "/api/chat"
+
+
+def _read_json_response(resp: Any) -> Dict[str, Any]:
+    raw = resp.read()
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8")
+    return json.loads(raw)
+
+
+def _extract_ollama_message_content(message: Any) -> str:
+    if isinstance(message, dict):
+        content = message.get("content")
+        if isinstance(content, list):
+            return "".join(
+                part.get("text", "") if isinstance(part, dict) else str(part)
+                for part in content
+            )
+        return content or ""
+    return ""
+
+
+def _extract_ollama_thinking(data: Dict[str, Any]) -> Optional[str]:
+    message = data.get("message") or {}
+    thinking = None
+    if isinstance(message, dict):
+        thinking = message.get("thinking") or message.get("reasoning")
+    return thinking or data.get("thinking") or data.get("reasoning")
 
 
 def ollama_chat(
@@ -62,24 +98,40 @@ def ollama_chat(
     think: bool = False,
     timeout: int = 300,
 ) -> OllamaChatResponse:
-    """Ollama 非流式 chat（OpenAI 兼容接口）。"""
-    client = OpenAI(base_url=_ollama_v1_base_url(base_url), api_key="ollama")
-    resp = client.chat.completions.create(
-        model=model,
-        messages=messages,
-        timeout=timeout,
-        extra_body={"think": think},
+    """Ollama 非流式 chat（原生 /api/chat 接口）。"""
+    payload = {
+        "model": model,
+        "messages": messages,
+        "stream": False,
+        "think": think,
+    }
+    req = request.Request(
+        _ollama_chat_url(base_url),
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
     )
-    data = _as_dict(resp)
-    choices = data.get("choices") or []
-    content = ""
-    thinking_out: Optional[str] = None
-    if choices:
-        c0 = choices[0] if isinstance(choices[0], dict) else _as_dict(choices[0])
-        msg = c0.get("message") or {}
-        content = msg.get("content") or ""
-        thinking_out = msg.get("thinking") or msg.get("reasoning")
-    return OllamaChatResponse(content=content, thinking=thinking_out, raw=data)
+    try:
+        with request.urlopen(req, timeout=timeout) as resp:
+            data = _read_json_response(resp)
+    except HTTPError as e:
+        detail = e.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Ollama /api/chat HTTP {e.code}: {detail}") from e
+    except URLError as e:
+        raise RuntimeError(f"Ollama /api/chat 连接失败: {e}") from e
+
+    message = data.get("message") or {}
+    return OllamaChatResponse(
+        content=_extract_ollama_message_content(message),
+        thinking=_extract_ollama_thinking(data),
+        model=data.get("model"),
+        done=data.get("done"),
+        done_reason=data.get("done_reason"),
+        total_duration=data.get("total_duration"),
+        prompt_eval_count=data.get("prompt_eval_count"),
+        eval_count=data.get("eval_count"),
+        raw=data,
+    )
 
 
 def ollama_chat_stream(
@@ -90,17 +142,33 @@ def ollama_chat_stream(
     think: bool = False,
     timeout: int = 300,
 ) -> Iterator[Dict[str, Any]]:
-    """Ollama 流式 chat（OpenAI 兼容接口），逐块产出 chunk 字典。"""
-    client = OpenAI(base_url=_ollama_v1_base_url(base_url), api_key="ollama")
-    stream = client.chat.completions.create(
-        model=model,
-        messages=messages,
-        stream=True,
-        timeout=timeout,
-        extra_body={"think": think},
+    """Ollama 流式 chat（原生 /api/chat 接口），逐块产出 chunk 字典。"""
+    payload = {
+        "model": model,
+        "messages": messages,
+        "stream": True,
+        "think": think,
+    }
+    req = request.Request(
+        _ollama_chat_url(base_url),
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
     )
-    for chunk in stream:
-        yield _as_dict(chunk)
+    try:
+        with request.urlopen(req, timeout=timeout) as resp:
+            for line in resp:
+                if not line:
+                    continue
+                text = line.decode("utf-8").strip()
+                if not text:
+                    continue
+                yield json.loads(text)
+    except HTTPError as e:
+        detail = e.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Ollama /api/chat HTTP {e.code}: {detail}") from e
+    except URLError as e:
+        raise RuntimeError(f"Ollama /api/chat 连接失败: {e}") from e
 
 
 def ollama_chat_stream_content(
@@ -115,11 +183,7 @@ def ollama_chat_stream_content(
     for chunk in ollama_chat_stream(
         messages, model=model, base_url=base_url, think=think, timeout=timeout
     ):
-        choices = chunk.get("choices") or []
-        if not choices:
-            continue
-        c0 = choices[0] if isinstance(choices[0], dict) else _as_dict(choices[0])
-        delta = (c0.get("delta") or {}).get("content") or ""
+        delta = _extract_ollama_message_content(chunk.get("message") or {})
         if delta:
             yield delta
 

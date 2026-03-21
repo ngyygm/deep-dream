@@ -58,7 +58,7 @@ class TemporalMemoryGraphProcessor:
             embedding_model_name: Embedding模型名称（HuggingFace模型名）
             embedding_device: Embedding计算设备 ("cpu" 或 "cuda")
             embedding_use_local: 是否优先使用本地 embedding 模型
-            llm_think_mode: LLM 是否开启思维链/think 模式（默认 False）。Ollama 下用 API 参数 think；非 Ollama 用 enable_thinking
+            llm_think_mode: LLM 是否开启思维链/think 模式（默认 False）。仅 Ollama 原生 `/api/chat` 支持通过 API 参数 think 控制；非 Ollama 后端忽略
             llm_threads: 步骤6实体处理等 LLM 调用的并行线程数（默认 1；>1 时启用多线程）
             similarity_threshold: 实体相似度阈值（默认 0.7）
             max_similar_entities: 语义搜索返回的最大相似实体数（默认 10）

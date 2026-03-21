@@ -60,6 +60,9 @@ class EmbeddingClient:
             self.model = None
             print("警告：未安装sentence-transformers库，将使用文本相似度搜索")
             print("安装命令: pip install sentence-transformers")
+        except Exception as e:
+            self.model = None
+            print(f"警告：embedding 模型加载失败，将使用文本相似度搜索: {e}")
     
     def encode(self, texts: Union[str, List[str]], batch_size: int = 32) -> np.ndarray:
         """
