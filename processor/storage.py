@@ -1478,7 +1478,10 @@ class StorageManager:
         # 如果指定了max_version_absolute_id，只取到该版本为止的所有版本
         if max_version_absolute_id:
             # 按时间排序，找到max_version_absolute_id对应的版本
-            versions_sorted = sorted(versions, key=lambda v: v.physical_time)
+            versions_sorted = sorted(
+                versions,
+                key=lambda v: self._normalize_datetime_for_compare(v.physical_time),
+            )
             max_version = None
             for v in versions_sorted:
                 if v.id == max_version_absolute_id:
@@ -1486,14 +1489,22 @@ class StorageManager:
                     break
             
             if max_version:
+                t_max = self._normalize_datetime_for_compare(max_version.physical_time)
                 # 只取到该版本（包含）为止的所有版本
-                entity_absolute_ids = [v.id for v in versions_sorted if v.physical_time <= max_version.physical_time]
+                entity_absolute_ids = [
+                    v.id for v in versions_sorted
+                    if self._normalize_datetime_for_compare(v.physical_time) <= t_max
+                ]
                 # 同时设置time_point为该版本的时间点
                 if not time_point:
                     time_point = max_version.physical_time
                 else:
-                    # 如果已经设置了time_point，取较小值
-                    time_point = min(time_point, max_version.physical_time)
+                    # 如果已经设置了time_point，取较小值（避免 naive/aware 无法比较）
+                    nt = self._normalize_datetime_for_compare(time_point)
+                    if nt <= t_max:
+                        pass  # 保持 time_point
+                    else:
+                        time_point = max_version.physical_time
             else:
                 # 如果找不到指定的版本，使用所有版本
                 entity_absolute_ids = [v.id for v in versions]
@@ -1641,8 +1652,11 @@ class StorageManager:
         if not versions:
             return []
         
-        # 按时间排序
-        versions_sorted = sorted(versions, key=lambda v: v.physical_time)
+        # 按时间排序（统一 naive/aware，避免混排报错）
+        versions_sorted = sorted(
+            versions,
+            key=lambda v: self._normalize_datetime_for_compare(v.physical_time),
+        )
         
         # 找到 max_absolute_id 对应的版本
         max_version = None
