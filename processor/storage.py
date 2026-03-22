@@ -4,7 +4,7 @@
 import sqlite3
 import os
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any, Literal, Tuple
 from pathlib import Path
 import hashlib
@@ -50,6 +50,16 @@ class StorageManager:
         
         # 初始化数据库
         self._init_database()
+
+    def _normalize_datetime_for_compare(self, t: Optional[Any]) -> datetime:
+        """将时间归一为可比较的 naive datetime，供版本按时间排序（处理 None / 字符串 / 时区）。"""
+        if t is None:
+            return datetime.min
+        if isinstance(t, str):
+            t = datetime.fromisoformat(t.replace('Z', '+00:00'))
+        if getattr(t, 'tzinfo', None) is not None and t.tzinfo is not None:
+            return t.astimezone(timezone.utc).replace(tzinfo=None)
+        return t
     
     def _init_database(self):
         """初始化SQLite数据库"""
