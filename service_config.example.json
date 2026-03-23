@@ -17,8 +17,19 @@
     "window_size": 1000,
     "overlap": 200
   },
+  "runtime": {
+    "concurrency": {
+      "queue_workers": 1,
+      "window_workers": 1,
+      "llm_call_workers": 1,
+      "max_total_workers": 1
+    },
+    "retry": {
+      "queue_max_retries": 2,
+      "queue_retry_delay_seconds": 2
+    }
+  },
   "pipeline": {
-    "llm_threads": 1,
     "similarity_threshold": 0.7,
     "max_similar_entities": 10,
     "content_snippet_length": 50,
@@ -29,12 +40,7 @@
     "relation_extraction_max_iterations": 2,
     "relation_extraction_absolute_max_iterations": 5,
     "relation_extraction_iterative": true,
-    "load_cache_memory": false,
-    "max_concurrent_windows": 1
+    "load_cache_memory": false
   },
-  "max_total_worker_threads": 1,
-  "remember_workers": 1,
-  "remember_max_retries": 2,
-  "remember_retry_delay_seconds": 2,
   "flask_threaded": true
 }

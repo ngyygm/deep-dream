@@ -610,21 +610,12 @@ def create_app(processor: TemporalMemoryGraphProcessor, config: Optional[Dict[st
     def health_llm():
         """检查大模型是否可访问；推荐使用 /api/health/llm。"""
         try:
-            # 极简提示、短超时、单次重试，仅用于连通性检查
-            response = processor.llm_client._call_llm(
+            response = _call_llm_with_backoff(
+                processor,
                 "请只回复一个词：OK",
-                max_retries=1,
                 timeout=60,
-                allow_mock_fallback=False,
             )
-            ok_result = (
-                response is not None
-                and isinstance(response, str)
-                and len(response.strip()) > 0
-            )
-            if ok_result:
-                return ok({"llm_available": True, "message": "大模型访问正常"})
-            return err("大模型未返回有效结果", 503)
+            return ok({"llm_available": True, "message": "大模型访问正常", "response_preview": response.strip()[:80]})
         except Exception as e:
             return err(f"大模型不可用: {e}", 503)
 
@@ -1624,22 +1615,49 @@ def build_processor(config: Dict[str, Any]) -> TemporalMemoryGraphProcessor:
 def _check_llm_available(processor) -> tuple[bool, str | None]:
     """启动前握手：检查配置的 LLM 是否可用。返回 (成功, 错误信息)，失败时错误信息非空。"""
     try:
-        response = processor.llm_client._call_llm(
+        _ = _call_llm_with_backoff(
+            processor,
             "请只回复一个词：OK",
-            max_retries=1,
             timeout=60,
-            allow_mock_fallback=False,
         )
-        ok_result = (
-            response is not None
-            and isinstance(response, str)
-            and len(response.strip()) > 0
-        )
-        if ok_result:
-            return True, None
-        return False, "大模型未返回有效结果（可能超时或网络不可达）"
+        return True, None
     except Exception as e:
         return False, f"大模型不可用: {e}"
+
+
+def _call_llm_with_backoff(
+    processor,
+    prompt: str,
+    timeout: int = 60,
+    max_waits: int = 5,
+    backoff_base_seconds: int = 3,
+) -> str:
+    """
+    调用 LLM（指数退避重试）。
+    等待序列：3, 9, 27, 81, 243 秒（最多等待 max_waits 次）。
+    """
+    last_error: Optional[str] = None
+    max_attempts = max_waits + 1
+    for attempt in range(1, max_attempts + 1):
+        try:
+            response = processor.llm_client._call_llm(
+                prompt,
+                max_retries=0,
+                timeout=timeout,
+                allow_mock_fallback=False,
+            )
+            if response is not None and isinstance(response, str) and len(response.strip()) > 0:
+                return response
+            last_error = "大模型未返回有效结果"
+        except Exception as e:
+            last_error = str(e)
+
+        if attempt <= max_waits:
+            wait_seconds = backoff_base_seconds ** attempt
+            print(f"[LLM] 访问失败，第 {attempt} 次重试前等待 {wait_seconds}s；错误: {last_error}")
+            time.sleep(wait_seconds)
+
+    raise RuntimeError(f"重试 {max_attempts} 次仍失败: {last_error or '未知错误'}")
 
 
 def _tcp_bind_probe(host: str, port: int) -> Tuple[bool, Optional[str]]:
