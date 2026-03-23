@@ -7,7 +7,7 @@ TMG 技能文档（SKILL.md + reference.md）与 service_api 对齐的冒烟测�
 
 可选：
   --skip-remember       不跑写入与队列相关步骤
-  --strict-llm          要求 GET /health/llm 必须 200（默认允许 503）
+  --strict-llm          要求 GET /api/health/llm 必须 200（默认允许 503）
 """
 from __future__ import annotations
 
@@ -73,7 +73,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="TMG API smoke test (SKILL + reference)")
     ap.add_argument("--base-url", default="http://127.0.0.1:16200", help="TMG base URL")
     ap.add_argument("--skip-remember", action="store_true", help="Skip remember + queue tests")
-    ap.add_argument("--strict-llm", action="store_true", help="Require /health/llm 200")
+    ap.add_argument("--strict-llm", action="store_true", help="Require /api/health/llm 200")
     args = ap.parse_args()
     base = args.base_url.rstrip("/")
 
@@ -88,17 +88,17 @@ def main() -> int:
         return 1
     _ok("/health")
 
-    st_llm, j_llm = _get(base, "/health/llm", timeout=90.0)
+    st_llm, j_llm = _get(base, "/api/health/llm", timeout=90.0)
     if args.strict_llm:
         if st_llm != 200 or not j_llm.get("success"):
-            _fail(f"/health/llm -> {st_llm} {j_llm}")
+            _fail(f"/api/health/llm -> {st_llm} {j_llm}")
             return 1
-        _ok("/health/llm (strict)")
+        _ok("/api/health/llm (strict)")
     else:
         if st_llm == 200 and j_llm.get("success"):
-            _ok("/health/llm")
+            _ok("/api/health/llm")
         else:
-            print(f"[WARN] /health/llm -> {st_llm} (continuing)")
+            print(f"[WARN] /api/health/llm -> {st_llm} (continuing)")
 
     body_find = {
         "query": "我最近在做什么",
@@ -134,11 +134,11 @@ def main() -> int:
         return 1
     _ok("/api/find/stats")
 
-    st, j = _get(base, "/api/remember/queue?limit=10")
+    st, j = _get(base, "/api/remember/tasks?limit=10")
     if st >= 500 or not j.get("success"):
-        _fail(f"/api/remember/queue -> {st} {j}")
+        _fail(f"/api/remember/tasks -> {st} {j}")
         return 1
-    _ok("/api/remember/queue")
+    _ok("/api/remember/tasks")
 
     qn = urllib.parse.quote("测试", safe="")
     st, j = _get(base, f"/api/find/entities/search?query_name={qn}&max_results=3&threshold=0.35")
@@ -169,12 +169,12 @@ def main() -> int:
 
         st, j = _get(
             base,
-            f"/api/find/entities/{eid_enc}/at-time?time_point=2099-12-31T23:59:59",
+            f"/api/find/entities/{eid_enc}/as-of-time?time_point=2099-12-31T23:59:59",
         )
         if st not in (200, 404) or (st == 200 and not j.get("success")):
-            _fail(f"/api/find/entities/at-time -> {st} {j}")
+            _fail(f"/api/find/entities/as-of-time -> {st} {j}")
             return 1
-        _ok("/api/find/entities/<id>/at-time")
+        _ok("/api/find/entities/<id>/as-of-time")
 
         st, j = _get(base, f"/api/find/entities/{eid_enc}/version-count")
         if st not in (200, 404) or (st == 200 and not j.get("success")):
@@ -182,15 +182,15 @@ def main() -> int:
             return 1
         _ok("/api/find/entities/<id>/version-count")
 
-        st, j = _get(base, f"/api/find/relations/by-entity/{eid_enc}?limit=5")
+        st, j = _get(base, f"/api/find/relations/by-entity-id/{eid_enc}?limit=5")
         if st >= 500 or not j.get("success"):
-            _fail(f"/api/find/relations/by-entity -> {st} {j}")
+            _fail(f"/api/find/relations/by-entity-id -> {st} {j}")
             return 1
-        _ok("/api/find/relations/by-entity/<entity_id>")
+        _ok("/api/find/relations/by-entity-id/<entity_id>")
 
     st, j = _request(
         "POST",
-        base + "/api/find/query-one",
+        base + "/api/find/candidates",
         {
             "query_text": "测试",
             "similarity_threshold": 0.35,
@@ -201,22 +201,22 @@ def main() -> int:
         },
     )
     if st >= 500 or not j.get("success"):
-        _fail(f"/api/find/query-one -> {st} {j}")
+        _fail(f"/api/find/candidates -> {st} {j}")
         return 1
-    _ok("/api/find/query-one")
+    _ok("/api/find/candidates")
 
     # --- Tier 3: extended ---
-    st, j = _get(base, "/api/find/entities/all?limit=3")
+    st, j = _get(base, "/api/find/entities?limit=3")
     if st >= 500 or not j.get("success"):
-        _fail(f"/api/find/entities/all -> {st} {j}")
+        _fail(f"/api/find/entities -> {st} {j}")
         return 1
-    _ok("/api/find/entities/all?limit=3")
+    _ok("/api/find/entities?limit=3")
 
-    st, j = _get(base, "/api/find/entities/all-before-time?time_point=2099-12-31T23:59:59&limit=3")
+    st, j = _get(base, "/api/find/entities/as-of-time?time_point=2099-12-31T23:59:59&limit=3")
     if st >= 500 or not j.get("success"):
-        _fail(f"/api/find/entities/all-before-time -> {st} {j}")
+        _fail(f"/api/find/entities/as-of-time -> {st} {j}")
         return 1
-    _ok("/api/find/entities/all-before-time")
+    _ok("/api/find/entities/as-of-time")
 
     if logical_eid:
         st, j = _request(
@@ -231,23 +231,23 @@ def main() -> int:
 
     if abs_eid:
         ae = urllib.parse.quote(abs_eid, safe="")
-        st, j = _get(base, f"/api/find/entities/by-absolute-id/{ae}")
+        st, j = _get(base, f"/api/find/entities/absolute/{ae}")
         if st not in (200, 404) or (st == 200 and not j.get("success")):
-            _fail(f"/api/find/entities/by-absolute-id -> {st} {j}")
+            _fail(f"/api/find/entities/absolute -> {st} {j}")
             return 1
-        _ok("/api/find/entities/by-absolute-id/<absolute_id>")
+        _ok("/api/find/entities/absolute/<absolute_id>")
 
-        st, j = _get(base, f"/api/find/entities/by-absolute-id/{ae}/embedding-preview?num_values=4")
+        st, j = _get(base, f"/api/find/entities/absolute/{ae}/embedding-preview?num_values=4")
         if st not in (200, 404) or (st == 200 and not j.get("success")):
             _fail(f"/api/find/entities/embedding-preview -> {st} {j}")
             return 1
-        _ok("/api/find/entities/by-absolute-id/.../embedding-preview")
+        _ok("/api/find/entities/absolute/.../embedding-preview")
 
-    st, j = _get(base, "/api/find/relations/all")
+    st, j = _get(base, "/api/find/relations")
     if st >= 500 or not j.get("success"):
-        _fail(f"/api/find/relations/all -> {st} {j}")
+        _fail(f"/api/find/relations -> {st} {j}")
         return 1
-    _ok("/api/find/relations/all")
+    _ok("/api/find/relations")
 
     if logical_eid and logical_eid_2:
         st, j = _get(
@@ -270,102 +270,98 @@ def main() -> int:
             return 1
         _ok("/api/find/relations/<relation_id>/versions")
 
-        st, j = _get(base, f"/api/find/relations/by-absolute-id/{urllib.parse.quote(abs_rid, safe='')}")
+        st, j = _get(base, f"/api/find/relations/absolute/{urllib.parse.quote(abs_rid, safe='')}")
         if st not in (200, 404) or (st == 200 and not j.get("success")):
-            _fail(f"/api/find/relations/by-absolute-id -> {st} {j}")
+            _fail(f"/api/find/relations/absolute -> {st} {j}")
             return 1
-        _ok("/api/find/relations/by-absolute-id/<entity_absolute_id>")
+        _ok("/api/find/relations/absolute/<absolute_id>")
 
         st, j = _get(
             base,
-            f"/api/find/relations/by-absolute-id/{urllib.parse.quote(abs_rid, safe='')}/embedding-preview",
+            f"/api/find/relations/absolute/{urllib.parse.quote(abs_rid, safe='')}/embedding-preview",
         )
         if st not in (200, 404) or (st == 200 and not j.get("success")):
             _fail(f"/api/find/relations/embedding-preview -> {st} {j}")
             return 1
-        _ok("/api/find/relations/by-absolute-id/.../embedding-preview")
+        _ok("/api/find/relations/absolute/.../embedding-preview")
 
-    st, j = _get(base, "/api/find/memory-cache/latest/metadata")
+    st, j = _get(base, "/api/find/memory-caches/latest/metadata")
     if st >= 500 or (st == 200 and not j.get("success")):
-        _fail(f"/api/find/memory-cache/latest/metadata -> {st} {j}")
+        _fail(f"/api/find/memory-caches/latest/metadata -> {st} {j}")
         return 1
     if st not in (200, 404):
-        _fail(f"/api/find/memory-cache/latest/metadata -> {st} {j}")
+        _fail(f"/api/find/memory-caches/latest/metadata -> {st} {j}")
         return 1
-    _ok("/api/find/memory-cache/latest/metadata")
+    _ok("/api/find/memory-caches/latest/metadata")
 
-    st, j = _get(base, "/api/find/memory-cache/latest")
+    st, j = _get(base, "/api/find/memory-caches/latest")
     if st not in (200, 404) or (st == 200 and not j.get("success")):
-        _fail(f"/api/find/memory-cache/latest -> {st} {j}")
+        _fail(f"/api/find/memory-caches/latest -> {st} {j}")
         return 1
-    _ok("/api/find/memory-cache/latest")
+    _ok("/api/find/memory-caches/latest")
 
     # memory-cache by id: use latest id if present
     mcd = j.get("data") if st == 200 else {}
     if isinstance(mcd, dict) and mcd.get("id"):
         cid = mcd["id"]
-        st, j = _get(base, f"/api/find/memory-cache/{urllib.parse.quote(cid, safe='')}")
+        st, j = _get(base, f"/api/find/memory-caches/{urllib.parse.quote(cid, safe='')}")
         if st not in (200, 404) or (st == 200 and not j.get("success")):
-            _fail(f"/api/find/memory-cache/<id> -> {st} {j}")
+            _fail(f"/api/find/memory-caches/<id> -> {st} {j}")
             return 1
-        _ok("/api/find/memory-cache/<cache_id>")
+        _ok("/api/find/memory-caches/<cache_id>")
 
-        st, j = _get(base, f"/api/find/memory-cache/{urllib.parse.quote(cid, safe='')}/text")
+        st, j = _get(base, f"/api/find/memory-caches/{urllib.parse.quote(cid, safe='')}/text")
         if st not in (200, 404) or (st == 200 and not j.get("success")):
-            _fail(f"/api/find/memory-cache/<id>/text -> {st} {j}")
+            _fail(f"/api/find/memory-caches/<id>/text -> {st} {j}")
             return 1
-        _ok("/api/find/memory-cache/<cache_id>/text")
+        _ok("/api/find/memory-caches/<cache_id>/text")
 
     if not args.skip_remember:
         q = urllib.parse.urlencode(
             {
-                "text": "冒烟测试写入：这是一条用于验证 GET /api/remember 与状态轮询的短叙事。时间：测试会话。",
+                "text": "冒烟测试写入：这是一条用于验证 POST /api/remember 与状态轮询的短叙事。时间：测试会话。",
                 "source_name": "tmg_skill_api_smoke",
                 "event_time": "2026-03-22T12:00:00",
-                "load_cache_memory": "false",
+                "load_cache_memory": False,
             },
-            encoding="utf-8",
         )
-        st, j = _get(base, "/api/remember?" + q, timeout=120.0)
+        st, j = _request("POST", base + "/api/remember", q, timeout=120.0)
         if st not in (200, 202) or not j.get("success"):
-            _fail(f"/api/remember GET -> {st} {j}")
+            _fail(f"/api/remember POST -> {st} {j}")
             return 1
         task_id = (j.get("data") or {}).get("task_id")
         if not task_id:
             _fail("remember response missing task_id")
             return 1
-        _ok(f"/api/remember GET task_id={task_id[:8]}…")
+        _ok(f"/api/remember POST task_id={task_id[:8]}…")
 
         deadline = time.time() + 600.0
         status = ""
         while time.time() < deadline:
-            st2, j2 = _get(base, f"/api/remember/status/{urllib.parse.quote(task_id, safe='')}")
+            st2, j2 = _get(base, f"/api/remember/tasks/{urllib.parse.quote(task_id, safe='')}")
             if st2 >= 500:
-                _fail(f"/api/remember/status -> {st2} {j2}")
+                _fail(f"/api/remember/tasks -> {st2} {j2}")
                 return 1
             if j2.get("success"):
                 status = (j2.get("data") or {}).get("status", "")
                 if status in ("completed", "failed"):
-                    _ok(f"/api/remember/status -> {status}")
+                    _ok(f"/api/remember/tasks -> {status}")
                     break
             time.sleep(1.0)
         else:
-            _fail("/api/remember/status poll timeout")
+            _fail("/api/remember/tasks poll timeout")
             return 1
 
-        q2 = urllib.parse.urlencode(
-            {
-                "text": "冒烟第二段：更短的文本。",
-                "source_name": "tmg_smoke_second",
-                "event_time": "2026-03-22T12:01:00",
-            },
-            encoding="utf-8",
-        )
-        st, j = _get(base, "/api/remember?" + q2, timeout=120.0)
+        q2 = {
+            "text": "冒烟第二段：更短的文本。",
+            "source_name": "tmg_smoke_second",
+            "event_time": "2026-03-22T12:01:00",
+        }
+        st, j = _request("POST", base + "/api/remember", q2, timeout=120.0)
         if st not in (200, 202) or not j.get("success"):
-            _fail(f"/api/remember GET (2nd) -> {st} {j}")
+            _fail(f"/api/remember POST (2nd) -> {st} {j}")
             return 1
-        _ok("/api/remember GET (second enqueue)")
+        _ok("/api/remember POST (second enqueue)")
 
     print("\nAll smoke checks passed.")
     return 0

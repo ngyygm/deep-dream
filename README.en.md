@@ -140,21 +140,21 @@ TMG ships a **Skill** so that Cursor, Claude, and similar agents can deploy, con
    When the user says “remember this,” “look up what we knew about X,” or “connect to TMG memory,” the agent reads the Skill and runs the flow (check service → remember/find).
 
 3. **What the agent will do**  
-   - If the service is not running: clone repo → configure `service_config.json` → run `python service_api.py` → verify with `GET /health`.  
-   - Remember: `GET /api/remember` with `text` or `text_b64` query params (batch substantial content; avoid one-sentence calls).  
+   - If the service is not running: clone repo → configure `service_config.json` → run `python service_api.py` → verify with `GET /api/health`.  
+   - Remember: `POST /api/remember` with JSON fields `text` or `text_b64` (batch substantial content; avoid one-sentence calls).  
    - Find: `POST /api/find` with natural-language `query`; use entity/relation/version atomic endpoints when needed.
 
 ---
 
 ## API summary
 
-### Remember — write (GET only)
+### Remember — write (POST)
 
-GET query parameters; `text` or `text_b64` is required. Batch substantial content — avoid one-sentence calls.
+POST JSON body (form is also accepted); `text` or `text_b64` is required. Batch substantial content — avoid one-sentence calls.
 
 | Param | Required | Description |
 |-------|----------|-------------|
-| `text` | One of `text` / `text_b64` | Natural-language text (URL-encoded) |
+| `text` | One of `text` / `text_b64` | Natural-language text |
 | `text_b64` | One of `text` / `text_b64` | UTF-8 text as standard Base64 |
 | `source_name` / `doc_name` | No | Source label |
 | `event_time` | No | ISO 8601 — when events actually happened |
@@ -165,7 +165,7 @@ The service saves the full text to `storage_path/originals/` and journals task s
 ### Find — retrieve
 
 - **Recommended:** `POST /api/find` — semantic recall, graph expansion, and time filtering in one call; required: `query`; rest optional.  
-- **Atomic endpoints:** Entity search (`/api/find/entities/search`, etc.), relations, memory cache, stats (`/api/find/stats`), batch fetch (`POST /api/find/query-one`).  
+- **Atomic endpoints:** Entity search (`/api/find/entities/search`, etc.), relations, memory cache, stats (`/api/find/stats`), batch fetch (`POST /api/find/candidates`).
 
 Full paths and parameters: see `skills/tmg-memory-graph/reference.md` and `service_api.py`.
 
