@@ -5,7 +5,7 @@
   1. 启动 API 服务：python service_api.py --config service_config.json
 
 本脚本演示两个核心场景：
-  1. Remember — 通过 GET /api/remember 批量传文本记忆（含 event_time）
+  1. Remember — 通过 POST /api/remember 批量传文本记忆（含 event_time）
   2. Find — 语义检索唤醒局部记忆
 """
 import base64
@@ -21,27 +21,27 @@ import requests
 
 API_BASE = "http://127.0.0.1:16200"
 
-# 超过该长度改用 text_b64，减轻 URL 编码体积与部分代理限制
+# 超过该长度改用 text_b64，减轻长文本 JSON 直传时的编码与转义负担
 _REMEMBER_TEXT_B64_THRESHOLD = 4000
 
 
-def _remember_get(
+def _remember_post(
     text: str,
     source_name: str = "api_input",
     event_time: Optional[str] = None,
     load_cache_memory: Optional[bool] = None,
 ) -> requests.Response:
-    """调用 GET /api/remember（仅 GET，不再使用 POST）。"""
-    params: dict = {"source_name": source_name}
+    """调用 POST /api/remember。"""
+    payload: dict = {"source_name": source_name}
     if event_time:
-        params["event_time"] = event_time
+        payload["event_time"] = event_time
     if load_cache_memory is not None:
-        params["load_cache_memory"] = "true" if load_cache_memory else "false"
+        payload["load_cache_memory"] = load_cache_memory
     if len(text) > _REMEMBER_TEXT_B64_THRESHOLD:
-        params["text_b64"] = base64.b64encode(text.encode("utf-8")).decode("ascii")
+        payload["text_b64"] = base64.b64encode(text.encode("utf-8")).decode("ascii")
     else:
-        params["text"] = text
-    return requests.get(f"{API_BASE}/api/remember", params=params, timeout=300)
+        payload["text"] = text
+    return requests.post(f"{API_BASE}/api/remember", json=payload, timeout=300)
 
 
 def pp(label: str, resp: requests.Response):
@@ -102,7 +102,7 @@ def _print_task_timing(label: str, task_data: dict, wall_elapsed: float | None =
 
 def _print_queue_snapshot(limit: int = 5):
     """打印队列快照，便于观察 remember 并发/排队情况。"""
-    resp = requests.get(f"{API_BASE}/api/remember/queue", params={"limit": limit})
+    resp = requests.get(f"{API_BASE}/api/remember/tasks", params={"limit": limit})
     pp("Remember Queue", resp)
     return resp.json()
 
@@ -120,17 +120,17 @@ def check_health():
 
 
 def check_llm():
-    """检查大模型是否可访问；若服务端无 /health/llm（404）则跳过预检并继续执行。"""
+    """检查大模型是否可访问；若服务端无 /api/health/llm（404）则跳过预检并继续执行。"""
     print("\n>>> 大模型可用性检查")
     try:
-        resp = requests.get(f"{API_BASE}/health/llm", timeout=20)
+        resp = requests.get(f"{API_BASE}/api/health/llm", timeout=20)
     except Exception as e:
-        print(f"请求 /health/llm 失败: {e}")
+        print(f"请求 /api/health/llm 失败: {e}")
         print("跳过 LLM 预检，继续执行（若后续 remember 失败请检查服务端 LLM 配置与网络）。")
         return
     pp("LLM Health", resp)
     if resp.status_code == 404:
-        print("当前服务未提供 /health/llm 接口（404），可能为旧版或其它入口启动。")
+        print("当前服务未提供 /api/health/llm 接口（404），可能为旧版或其它入口启动。")
         print("跳过 LLM 预检，继续执行（若后续 remember 失败请用最新 service_api.py 启动并检查 LLM 配置）。")
         return
     if resp.status_code != 200:
@@ -169,7 +169,7 @@ def _poll_task(task_id: str, label: str, timeout: int = 600):
     interval = 1
     poll_count = 0
     while time.time() < deadline:
-        resp = requests.get(f"{API_BASE}/api/remember/status/{task_id}")
+        resp = requests.get(f"{API_BASE}/api/remember/tasks/{task_id}")
         data = resp.json().get("data", {})
         status = data.get("status", "unknown")
         poll_count += 1
@@ -207,7 +207,7 @@ def example_remember_text():
     )
 
     submit_start = time.time()
-    resp = _remember_get(
+    resp = _remember_post(
         text,
         source_name="三体测试-文本",
         event_time="2026-03-09T14:00:00",
@@ -238,7 +238,7 @@ def example_remember_long():
 第三章"破壁人"：三体世界为每位面壁者指派了一个破壁人，负责分析和破解面壁者的真实计划。罗辑的破壁人是一个看起来很普通的年轻人。"""
 
     submit_start = time.time()
-    resp = _remember_get(
+    resp = _remember_post(
         long_text,
         source_name="阅读日志-三体2",
         event_time="2026-03-09T16:00:00",
@@ -277,7 +277,7 @@ def example_remember_ultralong():
     print(f"  字符数: {char_count}")
 
     submit_start = time.time()
-    resp = _remember_get(
+    resp = _remember_post(
         text,
         source_name="三体2黑暗森林-全文",
         event_time=datetime.now().isoformat(),
@@ -535,7 +535,7 @@ def example_remember_concurrent():
             time.sleep(delay_between_submit_seconds)
         label = spec.get("label", f"任务{i+1}")
         t0 = time.time()
-        resp = _remember_get(
+        resp = _remember_post(
             spec["text"],
             source_name=spec["source_name"],
             event_time=spec["event_time"],
@@ -556,7 +556,7 @@ def example_remember_concurrent():
 
     # 2) 轮询全部直到都结束
     def get_status(tid):
-        r = requests.get(f"{API_BASE}/api/remember/status/{tid}")
+        r = requests.get(f"{API_BASE}/api/remember/tasks/{tid}")
         return r.json().get("data", {})
 
     deadline = time.time() + 600

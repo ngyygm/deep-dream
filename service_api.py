@@ -22,7 +22,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -46,7 +46,7 @@ _TEXT_EXTENSIONS = {".txt", ".md", ".text", ".log", ".csv", ".json", ".xml",
 
 
 def _read_file_content(path: str) -> str:
-    """读取文件内容为纯文本。支持 txt/md 等纯文本，以及 pdf/docx（需对应依赖）。"""
+    """读取文件内容为纯文本。"""
     p = Path(path)
     if not p.exists():
         raise FileNotFoundError(f"文件不存在: {path}")
@@ -54,28 +54,6 @@ def _read_file_content(path: str) -> str:
 
     if ext in _TEXT_EXTENSIONS or ext == "":
         return p.read_text(encoding="utf-8")
-
-    if ext == ".pdf":
-        try:
-            import PyPDF2
-        except ImportError:
-            raise ImportError("读取 PDF 需要安装 PyPDF2: pip install PyPDF2")
-        text_parts: list[str] = []
-        with open(path, "rb") as f:
-            reader = PyPDF2.PdfReader(f)
-            for page in reader.pages:
-                t = page.extract_text()
-                if t:
-                    text_parts.append(t)
-        return "\n".join(text_parts)
-
-    if ext in (".docx", ".doc"):
-        try:
-            import docx
-        except ImportError:
-            raise ImportError("读取 DOCX 需要安装 python-docx: pip install python-docx")
-        doc = docx.Document(path)
-        return "\n".join(p.text for p in doc.paragraphs if p.text)
 
     return p.read_text(encoding="utf-8")
 
@@ -285,7 +263,16 @@ class RememberTaskQueue:
 
     def _recover_from_disk(self) -> None:
         n_resume = 0
-        for rec in self._journal.iter_records():
+        records = self._journal.iter_records()
+        # 保证恢复顺序与首次接收顺序一致（created_at 越早越先恢复入队）
+        records = sorted(
+            records,
+            key=lambda rec: (
+                float(rec.get("created_at") or 0.0),
+                str(rec.get("task_id") or ""),
+            ),
+        )
+        for rec in records:
             tid = rec.get("task_id")
             if not tid:
                 continue
@@ -573,8 +560,40 @@ def create_app(processor: TemporalMemoryGraphProcessor, config: Optional[Dict[st
         except ValueError:
             raise ValueError("time_point 需为 ISO 格式")
 
-    @app.route("/health")
+    def _normalize_time_for_compare(value: datetime) -> datetime:
+        if value.tzinfo is None or value.tzinfo.utcoffset(value) is None:
+            return value
+        return value.astimezone(timezone.utc).replace(tzinfo=None)
+
+    def _parse_non_negative_seconds(name: str) -> Optional[float]:
+        raw = (request.args.get(name) or "").strip()
+        if not raw:
+            return None
+        try:
+            seconds = float(raw)
+        except ValueError:
+            raise ValueError(f"{name} 需为非负数字（秒）")
+        if seconds < 0:
+            raise ValueError(f"{name} 需为非负数字（秒）")
+        return seconds
+
+    def _score_entity_versions_against_time(entity_id: str, time_point: datetime) -> List[Tuple[float, int, Entity]]:
+        target = _normalize_time_for_compare(time_point)
+        scored: List[Tuple[float, int, Entity]] = []
+        for version in processor.storage.get_entity_versions(entity_id):
+            if not version.physical_time:
+                continue
+            vt = _normalize_time_for_compare(version.physical_time)
+            delta_seconds = abs((vt - target).total_seconds())
+            direction_bias = 0 if vt <= target else 1
+            scored.append((delta_seconds, direction_bias, version))
+        scored.sort(key=lambda item: (item[0], item[1], -_normalize_time_for_compare(item[2].physical_time).timestamp()))
+        return scored
+
+    @app.route("/health", methods=["GET"])
+    @app.route("/api/health", methods=["GET"])
     def health():
+        """健康检查；推荐使用 /api/health。"""
         try:
             embedding_available = (
                 processor.embedding_client is not None
@@ -587,9 +606,9 @@ def create_app(processor: TemporalMemoryGraphProcessor, config: Optional[Dict[st
         except Exception as e:
             return err(str(e), 500)
 
-    @app.route("/health/llm")
+    @app.route("/api/health/llm", methods=["GET"])
     def health_llm():
-        """检查大模型是否可访问：做一次极简调用，成功才返回 200。"""
+        """检查大模型是否可访问；推荐使用 /api/health/llm。"""
         try:
             # 极简提示、短超时、单次重试，仅用于连通性检查
             response = processor.llm_client._call_llm(
@@ -620,21 +639,50 @@ def create_app(processor: TemporalMemoryGraphProcessor, config: Optional[Dict[st
             return False
         return None
 
-    @app.route("/api/remember", methods=["GET"])
+    @app.route("/api/remember", methods=["POST"])
     def remember():
-        """记忆写入（仅 GET）：查询参数入队，立即返回 task_id。原文写入 originals/ 与 remember_journal/，进程崩溃重启后会自动恢复未完成任务并重跑。
+        """记忆写入：使用 POST（JSON 请求体或 form）发起异步任务，入队后立即返回 task_id。
 
-        查询参数：
-          - text 或 text_b64（二选一必填）：正文；长文本建议用标准 Base64 的 text_b64，避免 URL 长度限制
+        参数（POST 优先 JSON 字段，缺省再读 form / query）：
+          - text 或 text_b64（二选一必填）：正文；长文本建议 Base64 的 text_b64
           - source_name / doc_name（可选）：来源，默认 api_input
-          - load_cache_memory（可选）：1/true/0/false
+          - load_cache_memory（可选）：布尔或 1/0/true/false
           - event_time（可选）：ISO 8601 事件时间
 
-        返回：HTTP 202。查询进度：GET /api/remember/status/<task_id>
+        返回：HTTP 202。查询进度：GET /api/remember/tasks/<task_id>
         """
         try:
-            text = (request.args.get("text") or "").strip()
-            b64 = (request.args.get("text_b64") or "").strip()
+            post_json: Dict[str, Any] = {}
+            if request.method == "POST":
+                pj = request.get_json(silent=True)
+                if isinstance(pj, dict):
+                    post_json = pj
+
+            def _remember_get_str(name: str) -> str:
+                if name in post_json and post_json[name] is not None:
+                    v = post_json[name]
+                    return (v if isinstance(v, str) else str(v)).strip()
+                if request.method == "POST" and request.form and name in request.form:
+                    return (request.form.get(name) or "").strip()
+                return (request.args.get(name) or "").strip()
+
+            def _remember_get_bool(name: str) -> Optional[bool]:
+                if name in post_json:
+                    v = post_json[name]
+                    if isinstance(v, bool):
+                        return v
+                    if isinstance(v, int) and v in (0, 1):
+                        return bool(v)
+                    if isinstance(v, str):
+                        s = v.strip().lower()
+                        if s in ("1", "true", "yes", "on"):
+                            return True
+                        if s in ("0", "false", "no", "off"):
+                            return False
+                return _parse_bool_query(name)
+
+            text = _remember_get_str("text")
+            b64 = _remember_get_str("text_b64")
             if b64:
                 try:
                     pad = (-len(b64)) % 4
@@ -646,13 +694,15 @@ def create_app(processor: TemporalMemoryGraphProcessor, config: Optional[Dict[st
             if not text:
                 return err("缺少 text 或 text_b64（必填其一）", 400)
 
-            source_name = (
-                (request.args.get("source_name") or request.args.get("doc_name") or "").strip() or "api_input"
-            )
-            load_cache = _parse_bool_query("load_cache_memory")
+            sn = _remember_get_str("source_name")
+            dn = _remember_get_str("doc_name")
+            source_name = (sn or dn or "api_input")
+            load_cache = _remember_get_bool("load_cache_memory")
 
-            event_time: Optional[datetime] = None
-            et_str = (request.args.get("event_time") or "").strip() or None
+            # 以“首次接收请求的时间”为基准：若未传 event_time，则使用当前接收时间并持久化到 journal。
+            receive_time = datetime.now()
+            event_time: Optional[datetime] = receive_time
+            et_str = _remember_get_str("event_time") or None
             if et_str:
                 try:
                     event_time = datetime.fromisoformat(et_str.replace("Z", "+00:00"))
@@ -669,7 +719,8 @@ def create_app(processor: TemporalMemoryGraphProcessor, config: Optional[Dict[st
             Path(original_path).write_text(text, encoding="utf-8")
 
             preview = (text[:80] + "…") if len(text) > 80 else text
-            print(f"[Remember] 收到(GET): source_name={source_name!r}, 文本长度={len(text)} 字符, event_time={et_str or '未指定'}")
+            event_time_display = event_time.isoformat() if event_time else "未指定"
+            print(f"[Remember] 收到({request.method}): source_name={source_name!r}, 文本长度={len(text)} 字符, event_time={event_time_display}")
             print(f"[Remember] 内容预览: {preview!r}")
 
             task_id = uuid.uuid4().hex
@@ -688,16 +739,16 @@ def create_app(processor: TemporalMemoryGraphProcessor, config: Optional[Dict[st
                 "data": {
                     "task_id": task_id,
                     "status": "queued",
-                    "message": "已加入队列；Find 与 Remember 可并发。崩溃重启后未完成任务会从 journal 恢复。GET /api/remember/status/<task_id> 查询进度",
+                    "message": "已加入队列；Find 与 Remember 可并发。崩溃重启后未完成任务会从 journal 恢复。GET /api/remember/tasks/<task_id> 查询进度",
                     "original_path": original_path,
                 },
             }), 202)
         except Exception as e:
             return err(str(e), 500)
 
-    @app.route("/api/remember/status/<task_id>")
+    @app.route("/api/remember/tasks/<task_id>", methods=["GET"])
     def remember_status(task_id: str):
-        """查询异步记忆写入任务的状态。"""
+        """查询异步记忆写入任务状态；推荐使用 /api/remember/tasks/<task_id>。"""
         try:
             t = remember_queue.get_status(task_id)
             if t is None:
@@ -719,9 +770,9 @@ def create_app(processor: TemporalMemoryGraphProcessor, config: Optional[Dict[st
         except Exception as e:
             return err(str(e), 500)
 
-    @app.route("/api/remember/queue")
+    @app.route("/api/remember/tasks", methods=["GET"])
     def remember_queue_list():
-        """查看记忆写入任务队列。"""
+        """查看记忆写入任务队列；推荐使用 /api/remember/tasks。"""
         try:
             limit = request.args.get("limit", 50, type=int)
             tasks = remember_queue.list_tasks(limit=limit)
@@ -729,10 +780,209 @@ def create_app(processor: TemporalMemoryGraphProcessor, config: Optional[Dict[st
         except Exception as e:
             return err(str(e), 500)
 
+    @app.route("/api/routes", methods=["GET"])
+    def api_routes():
+        """返回推荐接口索引，帮助客户端快速理解推荐路径、方法与参数。"""
+        return ok({
+            "health": [
+                {
+                    "path": "/api/health",
+                    "methods": ["GET"],
+                    "summary": "服务健康检查",
+                    "aliases": ["/health"],
+                },
+                {
+                    "path": "/api/health/llm",
+                    "methods": ["GET"],
+                    "summary": "LLM 连通性检查",
+                },
+            ],
+            "remember": [
+                {
+                    "path": "/api/remember",
+                    "methods": ["POST"],
+                    "summary": "提交异步记忆写入任务",
+                    "body": {
+                        "text": "string，可与 text_b64 二选一",
+                        "text_b64": "string，UTF-8 Base64",
+                        "source_name": "string，可选",
+                        "doc_name": "string，可选，兼容旧字段",
+                        "load_cache_memory": "bool，可选",
+                        "event_time": "ISO 8601 string，可选",
+                    },
+                },
+                {
+                    "path": "/api/remember/tasks/<task_id>",
+                    "methods": ["GET"],
+                    "summary": "查询 remember 任务状态",
+                },
+                {
+                    "path": "/api/remember/tasks",
+                    "methods": ["GET"],
+                    "summary": "查看 remember 任务队列",
+                    "query": {"limit": "int，可选，默认 50"},
+                },
+            ],
+            "find": [
+                {
+                    "path": "/api/find",
+                    "methods": ["POST"],
+                    "summary": "统一语义检索入口",
+                    "body": {
+                        "query": "string，必填",
+                        "similarity_threshold": "float，可选，默认 0.5",
+                        "max_entities": "int，可选，默认 20",
+                        "max_relations": "int，可选，默认 50",
+                        "expand": "bool，可选，默认 true",
+                        "time_before": "ISO 8601 string，可选",
+                        "time_after": "ISO 8601 string，可选",
+                    },
+                },
+                {
+                    "path": "/api/find/candidates",
+                    "methods": ["POST"],
+                    "summary": "一次性按条件返回候选实体与关系",
+                },
+                {
+                    "path": "/api/find/entities/search",
+                    "methods": ["GET", "POST"],
+                    "summary": "按文本搜索实体；POST 推荐 JSON body，GET 适合简单调试",
+                    "body_or_query": {
+                        "query_name": "string，必填",
+                        "query_content": "string，可选",
+                        "threshold": "float，可选",
+                        "max_results": "int，可选",
+                        "text_mode": "name_only | content_only | name_and_content",
+                        "similarity_method": "embedding | text | jaccard | bleu",
+                    },
+                },
+                {
+                    "path": "/api/find/relations/search",
+                    "methods": ["GET", "POST"],
+                    "summary": "按文本搜索关系；POST 推荐 JSON body，GET 适合简单调试",
+                    "body_or_query": {
+                        "query_text": "string，必填",
+                        "threshold": "float，可选",
+                        "max_results": "int，可选",
+                    },
+                },
+            ],
+            "entity": [
+                {
+                    "path": "/api/find/entities",
+                    "methods": ["GET"],
+                    "summary": "列出实体",
+                    "query": {"limit": "int，可选"},
+                },
+                {
+                    "path": "/api/find/entities/as-of-time",
+                    "methods": ["GET"],
+                    "summary": "列出每个实体在指定时间点的最新版本",
+                    "query": {
+                        "time_point": "ISO 8601 string，必填",
+                        "limit": "int，可选",
+                    },
+                },
+                {
+                    "path": "/api/find/entities/absolute/<absolute_id>",
+                    "methods": ["GET"],
+                    "summary": "按实体 absolute_id 读取单个实体版本",
+                },
+                {
+                    "path": "/api/find/entities/<entity_id>/as-of-time",
+                    "methods": ["GET"],
+                    "summary": "返回该实体在指定时间点的最近过去版本",
+                    "query": {"time_point": "ISO 8601 string，必填"},
+                },
+                {
+                    "path": "/api/find/entities/<entity_id>/nearest-to-time",
+                    "methods": ["GET"],
+                    "summary": "返回该实体距离指定时间点最近的版本",
+                    "query": {
+                        "time_point": "ISO 8601 string，必填",
+                        "max_delta_seconds": "float，可选；超出该误差则返回 404",
+                    },
+                },
+                {
+                    "path": "/api/find/entities/<entity_id>/around-time",
+                    "methods": ["GET"],
+                    "summary": "返回该实体在指定时间点附近窗口内的所有版本",
+                    "query": {
+                        "time_point": "ISO 8601 string，必填",
+                        "within_seconds": "float，必填",
+                    },
+                },
+                {
+                    "path": "/api/find/entities/absolute/<absolute_id>/relations",
+                    "methods": ["GET"],
+                    "summary": "按实体 absolute_id 查询相关关系",
+                },
+                {
+                    "path": "/api/find/entities/<entity_id>/relations",
+                    "methods": ["GET"],
+                    "summary": "按实体业务 ID 查询相关关系",
+                },
+            ],
+            "relation": [
+                {
+                    "path": "/api/find/relations",
+                    "methods": ["GET"],
+                    "summary": "列出关系",
+                    "query": {
+                        "limit": "int，可选",
+                        "offset": "int，可选，默认 0",
+                    },
+                },
+                {
+                    "path": "/api/find/relations/absolute/<absolute_id>",
+                    "methods": ["GET"],
+                    "summary": "按关系 absolute_id 读取单条关系版本",
+                },
+                {
+                    "path": "/api/find/relations/by-entity-absolute-id/<entity_absolute_id>",
+                    "methods": ["GET"],
+                    "summary": "按实体 absolute_id 查询相关关系",
+                    "aliases": ["/api/find/entities/absolute/<absolute_id>/relations"],
+                },
+                {
+                    "path": "/api/find/relations/by-entity-id/<entity_id>",
+                    "methods": ["GET"],
+                    "summary": "按实体业务 ID 查询相关关系",
+                    "aliases": ["/api/find/entities/<entity_id>/relations"],
+                },
+                {
+                    "path": "/api/find/relations/between",
+                    "methods": ["GET", "POST"],
+                    "summary": "查询两个实体之间的关系",
+                    "body_or_query": {
+                        "from_entity_id": "string，必填",
+                        "to_entity_id": "string，必填",
+                    },
+                },
+            ],
+            "memory_cache": [
+                {
+                    "path": "/api/find/memory-caches/latest",
+                    "methods": ["GET"],
+                    "summary": "读取最新记忆缓存",
+                },
+                {
+                    "path": "/api/find/memory-caches/latest/metadata",
+                    "methods": ["GET"],
+                    "summary": "读取最新记忆缓存元数据",
+                },
+                {
+                    "path": "/api/find/memory-caches/<cache_id>",
+                    "methods": ["GET"],
+                    "summary": "按 cache_id 读取记忆缓存",
+                },
+            ],
+        })
+
     # =========================================================
     # Find: 统计
     # =========================================================
-    @app.route("/api/find/stats")
+    @app.route("/api/find/stats", methods=["GET"])
     def find_stats():
         try:
             total_entities = len(processor.storage.get_all_entities(limit=None))
@@ -874,9 +1124,9 @@ def create_app(processor: TemporalMemoryGraphProcessor, config: Optional[Dict[st
         except Exception as e:
             return err(str(e), 500)
 
-    @app.route("/api/find/query-one", methods=["POST"])
+    @app.route("/api/find/candidates", methods=["POST"])
     def find_query_one():
-        """按请求体中的 query_text / similarity_threshold 等条件从主图抽取一批实体与关系（一次性返回，无额外状态）。"""
+        """按请求体条件一次性返回候选实体与关系；推荐路径 /api/find/candidates。"""
         try:
             body = request.get_json(silent=True) or {}
             include_entities = body.get("include_entities", True)
@@ -907,7 +1157,7 @@ def create_app(processor: TemporalMemoryGraphProcessor, config: Optional[Dict[st
     # =========================================================
     # Find: 实体原子接口
     # =========================================================
-    @app.route("/api/find/entities/all")
+    @app.route("/api/find/entities", methods=["GET"])
     def find_entities_all():
         try:
             limit = request.args.get("limit", type=int)
@@ -916,7 +1166,7 @@ def create_app(processor: TemporalMemoryGraphProcessor, config: Optional[Dict[st
         except Exception as e:
             return err(str(e), 500)
 
-    @app.route("/api/find/entities/all-before-time")
+    @app.route("/api/find/entities/as-of-time", methods=["GET"])
     def find_entities_all_before_time():
         try:
             time_point_str = request.args.get("time_point")
@@ -944,7 +1194,7 @@ def create_app(processor: TemporalMemoryGraphProcessor, config: Optional[Dict[st
         except Exception as e:
             return err(str(e), 500)
 
-    @app.route("/api/find/entities/by-absolute-id/<absolute_id>/embedding-preview")
+    @app.route("/api/find/entities/absolute/<absolute_id>/embedding-preview", methods=["GET"])
     def find_entity_embedding_preview(absolute_id: str):
         try:
             num_values = request.args.get("num_values", type=int, default=5)
@@ -955,7 +1205,7 @@ def create_app(processor: TemporalMemoryGraphProcessor, config: Optional[Dict[st
         except Exception as e:
             return err(str(e), 500)
 
-    @app.route("/api/find/entities/by-absolute-id/<absolute_id>")
+    @app.route("/api/find/entities/absolute/<absolute_id>", methods=["GET"])
     def find_entity_by_absolute_id(absolute_id: str):
         try:
             entity = processor.storage.get_entity_by_absolute_id(absolute_id)
@@ -965,22 +1215,30 @@ def create_app(processor: TemporalMemoryGraphProcessor, config: Optional[Dict[st
         except Exception as e:
             return err(str(e), 500)
 
-    @app.route("/api/find/entities/search")
+    @app.route("/api/find/entities/search", methods=["GET", "POST"])
     def find_entities_search():
         try:
-            query_name = (request.args.get("query_name") or "").strip()
+            body = request.get_json(silent=True) if request.method == "POST" else None
+            body = body if isinstance(body, dict) else {}
+
+            def _get_value(name: str, default: Any = None) -> Any:
+                if name in body and body[name] is not None:
+                    return body[name]
+                return request.args.get(name, default)
+
+            query_name = str(_get_value("query_name", "") or "").strip()
             if not query_name:
                 return err("query_name 为必填参数", 400)
-            query_content = request.args.get("query_content") or None
-            threshold = request.args.get("threshold", type=float, default=0.7)
-            max_results = request.args.get("max_results", type=int, default=10)
-            text_mode = request.args.get("text_mode") or "name_and_content"
+            query_content = _get_value("query_content") or None
+            threshold = float(_get_value("threshold", 0.7))
+            max_results = int(_get_value("max_results", 10))
+            text_mode = str(_get_value("text_mode", "name_and_content") or "name_and_content")
             if text_mode not in ("name_only", "content_only", "name_and_content"):
                 text_mode = "name_and_content"
-            similarity_method = request.args.get("similarity_method") or "embedding"
+            similarity_method = str(_get_value("similarity_method", "embedding") or "embedding")
             if similarity_method not in ("embedding", "text", "jaccard", "bleu"):
                 similarity_method = "embedding"
-            content_snippet_length = request.args.get("content_snippet_length", type=int, default=50)
+            content_snippet_length = int(_get_value("content_snippet_length", 50))
 
             entities = processor.storage.search_entities_by_similarity(
                 query_name=query_name,
@@ -995,7 +1253,7 @@ def create_app(processor: TemporalMemoryGraphProcessor, config: Optional[Dict[st
         except Exception as e:
             return err(str(e), 500)
 
-    @app.route("/api/find/entities/<entity_id>/versions")
+    @app.route("/api/find/entities/<entity_id>/versions", methods=["GET"])
     def find_entity_versions(entity_id: str):
         try:
             versions = processor.storage.get_entity_versions(entity_id)
@@ -1003,7 +1261,7 @@ def create_app(processor: TemporalMemoryGraphProcessor, config: Optional[Dict[st
         except Exception as e:
             return err(str(e), 500)
 
-    @app.route("/api/find/entities/<entity_id>/at-time")
+    @app.route("/api/find/entities/<entity_id>/as-of-time", methods=["GET"])
     def find_entity_at_time(entity_id: str):
         try:
             time_point_str = request.args.get("time_point")
@@ -1020,7 +1278,74 @@ def create_app(processor: TemporalMemoryGraphProcessor, config: Optional[Dict[st
         except Exception as e:
             return err(str(e), 500)
 
-    @app.route("/api/find/entities/<entity_id>/version-count")
+    @app.route("/api/find/entities/<entity_id>/nearest-to-time", methods=["GET"])
+    def find_entity_nearest_to_time(entity_id: str):
+        try:
+            time_point_str = request.args.get("time_point")
+            if not time_point_str:
+                return err("time_point 为必填参数（ISO 格式）", 400)
+            try:
+                time_point = parse_time_point(time_point_str)
+                max_delta_seconds = _parse_non_negative_seconds("max_delta_seconds")
+            except ValueError as ve:
+                return err(str(ve), 400)
+
+            scored = _score_entity_versions_against_time(entity_id, time_point)
+            if not scored:
+                return err(f"未找到实体: {entity_id}", 404)
+
+            delta_seconds, _, entity = scored[0]
+            if max_delta_seconds is not None and delta_seconds > max_delta_seconds:
+                return err(f"最近版本超出允许误差: {delta_seconds:.3f}s > {max_delta_seconds:.3f}s", 404)
+
+            return ok({
+                "entity_id": entity_id,
+                "query_time": time_point.isoformat(),
+                "matched": entity_to_dict(entity),
+                "delta_seconds": round(delta_seconds, 6),
+            })
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/find/entities/<entity_id>/around-time", methods=["GET"])
+    def find_entity_around_time(entity_id: str):
+        try:
+            time_point_str = request.args.get("time_point")
+            if not time_point_str:
+                return err("time_point 为必填参数（ISO 格式）", 400)
+            try:
+                time_point = parse_time_point(time_point_str)
+                within_seconds = _parse_non_negative_seconds("within_seconds")
+            except ValueError as ve:
+                return err(str(ve), 400)
+            if within_seconds is None:
+                return err("within_seconds 为必填参数（秒）", 400)
+
+            target = _normalize_time_for_compare(time_point)
+            matches: List[Dict[str, Any]] = []
+            for delta_seconds, _, entity in _score_entity_versions_against_time(entity_id, time_point):
+                if delta_seconds > within_seconds:
+                    continue
+                item = entity_to_dict(entity)
+                item["delta_seconds"] = round(delta_seconds, 6)
+                direction = _normalize_time_for_compare(entity.physical_time) - target
+                item["relative_position"] = "before_or_exact" if direction.total_seconds() <= 0 else "after"
+                matches.append(item)
+
+            if not matches:
+                return err(f"未找到 {within_seconds:.3f} 秒范围内的实体版本: {entity_id}", 404)
+
+            return ok({
+                "entity_id": entity_id,
+                "query_time": time_point.isoformat(),
+                "within_seconds": within_seconds,
+                "count": len(matches),
+                "matches": matches,
+            })
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/find/entities/<entity_id>/version-count", methods=["GET"])
     def find_entity_version_count(entity_id: str):
         try:
             count = processor.storage.get_entity_version_count(entity_id)
@@ -1030,7 +1355,7 @@ def create_app(processor: TemporalMemoryGraphProcessor, config: Optional[Dict[st
         except Exception as e:
             return err(str(e), 500)
 
-    @app.route("/api/find/entities/<entity_id>")
+    @app.route("/api/find/entities/<entity_id>", methods=["GET"])
     def find_entity_by_id(entity_id: str):
         try:
             entity = processor.storage.get_entity_by_id(entity_id)
@@ -1043,22 +1368,36 @@ def create_app(processor: TemporalMemoryGraphProcessor, config: Optional[Dict[st
     # =========================================================
     # Find: 关系原子接口
     # =========================================================
-    @app.route("/api/find/relations/all")
+    @app.route("/api/find/relations", methods=["GET"])
     def find_relations_all():
         try:
+            limit = request.args.get("limit", type=int)
+            offset = request.args.get("offset", type=int, default=0) or 0
             relations = processor.storage.get_all_relations()
+            if offset > 0:
+                relations = relations[offset:]
+            if limit is not None:
+                relations = relations[:limit]
             return ok([relation_to_dict(r) for r in relations])
         except Exception as e:
             return err(str(e), 500)
 
-    @app.route("/api/find/relations/search")
+    @app.route("/api/find/relations/search", methods=["GET", "POST"])
     def find_relations_search():
         try:
-            query_text = (request.args.get("query_text") or "").strip()
+            body = request.get_json(silent=True) if request.method == "POST" else None
+            body = body if isinstance(body, dict) else {}
+
+            def _get_value(name: str, default: Any = None) -> Any:
+                if name in body and body[name] is not None:
+                    return body[name]
+                return request.args.get(name, default)
+
+            query_text = str(_get_value("query_text", "") or "").strip()
             if not query_text:
                 return err("query_text 为必填参数", 400)
-            threshold = request.args.get("threshold", type=float, default=0.3)
-            max_results = request.args.get("max_results", type=int, default=10)
+            threshold = float(_get_value("threshold", 0.3))
+            max_results = int(_get_value("max_results", 10))
             relations = processor.storage.search_relations_by_similarity(
                 query_text=query_text,
                 threshold=threshold,
@@ -1068,11 +1407,13 @@ def create_app(processor: TemporalMemoryGraphProcessor, config: Optional[Dict[st
         except Exception as e:
             return err(str(e), 500)
 
-    @app.route("/api/find/relations/between")
+    @app.route("/api/find/relations/between", methods=["GET", "POST"])
     def find_relations_between():
         try:
-            from_entity_id = (request.args.get("from_entity_id") or "").strip()
-            to_entity_id = (request.args.get("to_entity_id") or "").strip()
+            body = request.get_json(silent=True) if request.method == "POST" else None
+            body = body if isinstance(body, dict) else {}
+            from_entity_id = str(body.get("from_entity_id") or request.args.get("from_entity_id") or "").strip()
+            to_entity_id = str(body.get("to_entity_id") or request.args.get("to_entity_id") or "").strip()
             if not from_entity_id or not to_entity_id:
                 return err("from_entity_id 与 to_entity_id 为必填参数", 400)
             relations = processor.storage.get_relations_by_entities(from_entity_id, to_entity_id)
@@ -1080,7 +1421,7 @@ def create_app(processor: TemporalMemoryGraphProcessor, config: Optional[Dict[st
         except Exception as e:
             return err(str(e), 500)
 
-    @app.route("/api/find/relations/by-absolute-id/<absolute_id>/embedding-preview")
+    @app.route("/api/find/relations/absolute/<absolute_id>/embedding-preview", methods=["GET"])
     def find_relation_embedding_preview(absolute_id: str):
         try:
             num_values = request.args.get("num_values", type=int, default=5)
@@ -1091,7 +1432,18 @@ def create_app(processor: TemporalMemoryGraphProcessor, config: Optional[Dict[st
         except Exception as e:
             return err(str(e), 500)
 
-    @app.route("/api/find/relations/by-absolute-id/<entity_absolute_id>")
+    @app.route("/api/find/relations/absolute/<absolute_id>", methods=["GET"])
+    def find_relation_by_absolute_id(absolute_id: str):
+        try:
+            relation = processor.storage.get_relation_by_absolute_id(absolute_id)
+            if relation is None:
+                return err(f"未找到关系版本: {absolute_id}", 404)
+            return ok(relation_to_dict(relation))
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/find/relations/by-entity-absolute-id/<entity_absolute_id>", methods=["GET"])
+    @app.route("/api/find/entities/absolute/<entity_absolute_id>/relations", methods=["GET"])
     def find_relations_by_entity_absolute_id(entity_absolute_id: str):
         try:
             limit = request.args.get("limit", type=int)
@@ -1109,7 +1461,7 @@ def create_app(processor: TemporalMemoryGraphProcessor, config: Optional[Dict[st
         except Exception as e:
             return err(str(e), 500)
 
-    @app.route("/api/find/relations/<relation_id>/versions")
+    @app.route("/api/find/relations/<relation_id>/versions", methods=["GET"])
     def find_relation_versions(relation_id: str):
         try:
             versions = processor.storage.get_relation_versions(relation_id)
@@ -1117,7 +1469,8 @@ def create_app(processor: TemporalMemoryGraphProcessor, config: Optional[Dict[st
         except Exception as e:
             return err(str(e), 500)
 
-    @app.route("/api/find/relations/by-entity/<entity_id>")
+    @app.route("/api/find/relations/by-entity-id/<entity_id>", methods=["GET"])
+    @app.route("/api/find/entities/<entity_id>/relations", methods=["GET"])
     def find_relations_by_entity(entity_id: str):
         try:
             limit = request.args.get("limit", type=int)
@@ -1140,7 +1493,7 @@ def create_app(processor: TemporalMemoryGraphProcessor, config: Optional[Dict[st
     # =========================================================
     # Find: 记忆缓存原子接口
     # =========================================================
-    @app.route("/api/find/memory-cache/latest/metadata")
+    @app.route("/api/find/memory-caches/latest/metadata", methods=["GET"])
     def find_latest_memory_cache_metadata():
         try:
             activity_type = request.args.get("activity_type")
@@ -1151,7 +1504,7 @@ def create_app(processor: TemporalMemoryGraphProcessor, config: Optional[Dict[st
         except Exception as e:
             return err(str(e), 500)
 
-    @app.route("/api/find/memory-cache/latest")
+    @app.route("/api/find/memory-caches/latest", methods=["GET"])
     def find_latest_memory_cache():
         try:
             activity_type = request.args.get("activity_type")
@@ -1162,7 +1515,7 @@ def create_app(processor: TemporalMemoryGraphProcessor, config: Optional[Dict[st
         except Exception as e:
             return err(str(e), 500)
 
-    @app.route("/api/find/memory-cache/<cache_id>/text")
+    @app.route("/api/find/memory-caches/<cache_id>/text", methods=["GET"])
     def find_memory_cache_text(cache_id: str):
         try:
             text = processor.storage.get_memory_cache_text(cache_id)
@@ -1172,7 +1525,7 @@ def create_app(processor: TemporalMemoryGraphProcessor, config: Optional[Dict[st
         except Exception as e:
             return err(str(e), 500)
 
-    @app.route("/api/find/memory-cache/<cache_id>")
+    @app.route("/api/find/memory-caches/<cache_id>", methods=["GET"])
     def find_memory_cache(cache_id: str):
         try:
             cache = processor.storage.load_memory_cache(cache_id)
@@ -1384,7 +1737,7 @@ def main() -> int:
 
     # 启动前对配置的 LLM 做握手，不可用则报错退出（可用 --skip-llm-check 跳过）
     if args.skip_llm_check:
-        print("已跳过 LLM 握手（--skip-llm-check）。Remember 与 /health/llm 可能在运行时失败。")
+        print("已跳过 LLM 握手（--skip-llm-check）。Remember 与 /api/health/llm 可能在运行时失败。")
     else:
         print("正在检查配置的 LLM 是否可用…")
         ok_llm, err_msg = _check_llm_available(processor)
@@ -1435,9 +1788,12 @@ def main() -> int:
     实体: {total_entities}  关系: {total_relations}  记忆缓存: {total_memory_caches}
 
   服务地址: http://{host}:{listen_port}
-  健康检查: GET  http://{host}:{listen_port}/health
-  记忆写入: GET  http://{host}:{listen_port}/api/remember?text=...（或 text_b64=...）
+  健康检查: GET  http://{host}:{listen_port}/api/health
+  LLM 健康: GET  http://{host}:{listen_port}/api/health/llm
+  记忆写入: POST http://{host}:{listen_port}/api/remember （JSON 含 text / text_b64 等）
+  任务状态: GET  http://{host}:{listen_port}/api/remember/tasks/<task_id>
   语义检索: POST http://{host}:{listen_port}/api/find
+  接口索引: GET  http://{host}:{listen_port}/api/routes
   原子查询: GET  http://{host}:{listen_port}/api/find/...
 
   存储路径: {storage_path}

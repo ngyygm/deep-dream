@@ -2077,8 +2077,9 @@ class GraphWebServer:
         """设置 Flask 路由"""
         
         @self.app.route('/health')
+        @self.app.route('/api/status')
         def health():
-            """健康检查，与 service_api 响应格式一致。"""
+            """健康检查，与 service_api 响应格式一致。/api/status 为常见监控/前端探测路径别名。"""
             try:
                 embedding_available = (
                     self.embedding_client is not None

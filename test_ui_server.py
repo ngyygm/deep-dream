@@ -109,7 +109,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
       <label>文档名</label>
       <input type="text" id="docName" value="test_ui" placeholder="doc_name" style="width: 12rem;" />
     </div>
-    <textarea id="rememberText" placeholder="输入任意文本，点击「入库」后会调用 GET /api/remember（长文自动使用 text_b64），处理完成后自动刷新下方图谱。"></textarea>
+    <textarea id="rememberText" placeholder="输入任意文本，点击「入库」后会调用 POST /api/remember（长文自动使用 text_b64），处理完成后自动刷新下方图谱。"></textarea>
     <div class="row" style="margin-top: 0.5rem;">
       <button type="button" id="btnRemember" onclick="submitRemember()">入库 (Remember)</button>
       <span id="rememberStatus"></span>
@@ -148,7 +148,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
     <div class="find-section">
       <details>
-        <summary><strong>GET /api/find/entities/all</strong></summary>
+        <summary><strong>GET /api/find/entities</strong></summary>
         <div class="find-item">
           <div class="row"><label>limit</label><input type="number" id="find-entities-all-limit" placeholder="可选，如 50" /></div>
           <p class="hint">可选: limit (数量上限)</p>
@@ -197,20 +197,20 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
     <div class="find-section">
       <details>
-        <summary><strong>GET /api/find/entities/all-before-time</strong></summary>
+        <summary><strong>GET /api/find/entities/as-of-time</strong></summary>
         <div class="find-item">
           <div class="row"><label>time_point</label><input type="text" id="find-all-before-time_point" placeholder="ISO 如 2025-03-06T12:00:00" /></div>
           <div class="row"><label>limit</label><input type="number" id="find-all-before-limit" placeholder="可选" /></div>
           <p class="hint">必填: time_point (ISO 格式)。可选: limit</p>
-          <button type="button" onclick="callFind('entities-all-before-time')">调用</button>
-          <pre id="res-entities-all-before-time"></pre>
+          <button type="button" onclick="callFind('entities-as-of-time')">调用</button>
+          <pre id="res-entities-as-of-time"></pre>
         </div>
       </details>
     </div>
 
     <div class="find-section">
       <details>
-        <summary><strong>GET /api/find/relations/all</strong></summary>
+        <summary><strong>GET /api/find/relations</strong></summary>
         <div class="find-item">
           <p class="hint">无需参数。</p>
           <button type="button" onclick="callFind('relations-all')">调用</button>
@@ -248,7 +248,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
     <div class="find-section">
       <details>
-        <summary><strong>POST /api/find/query-one</strong> — 按条件查子图（一次性）</summary>
+        <summary><strong>POST /api/find/candidates</strong> — 按条件查子图（一次性）</summary>
         <div class="find-item">
           <div class="row"><label>entity_name / query_text</label><input type="text" id="find-query-one-entity_name" placeholder="可选，语义筛选实体" /></div>
           <div class="row"><label>time_before</label><input type="text" id="find-query-one-time_before" placeholder="ISO 可选" /></div>
@@ -264,7 +264,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
     <div class="find-section">
       <details>
-        <summary><strong>GET /api/find/memory-cache/latest</strong></summary>
+        <summary><strong>GET /api/find/memory-caches/latest</strong></summary>
         <div class="find-item">
           <div class="row"><label>activity_type</label><input type="text" id="find-memory-latest-activity_type" placeholder="可选" /></div>
           <p class="hint">可选: activity_type</p>
@@ -276,7 +276,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
     <div class="find-section">
       <details>
-        <summary><strong>GET /api/find/memory-cache/&lt;cache_id&gt;/text</strong></summary>
+        <summary><strong>GET /api/find/memory-caches/&lt;cache_id&gt;/text</strong></summary>
         <div class="find-item">
           <div class="row"><label>cache_id</label><input type="text" id="find-memory-cache-id" placeholder="如 cache_20260306_152611_xxx" /></div>
           <p class="hint">路径参数: cache_id</p>
@@ -355,7 +355,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
       var pollCount = 0;
       while (true) {
         pollCount += 1;
-        var resp = await fetch(base() + '/api/remember/status/' + encodeURIComponent(taskId));
+        var resp = await fetch(base() + '/api/remember/tasks/' + encodeURIComponent(taskId));
         var data = await resp.json();
         var taskData = data.data || {};
         var status = taskData.status || 'unknown';
@@ -385,21 +385,23 @@ INDEX_HTML = r"""<!DOCTYPE html>
       var wallStartMs = Date.now();
       try {
         var submitStartMs = Date.now();
-        var q = new URLSearchParams();
+        var payload = {};
         if (text.length > 4000) {
           try {
-            q.set('text_b64', btoa(unescape(encodeURIComponent(text))));
+            payload.text_b64 = btoa(unescape(encodeURIComponent(text)));
           } catch (e) {
             setRememberStatus('文本转 Base64 失败: ' + e, true);
             if (btn) btn.disabled = false;
             return;
           }
         } else {
-          q.set('text', text);
+          payload.text = text;
         }
-        q.set('doc_name', docName);
-        var r = await fetch(base() + '/api/remember?' + q.toString(), {
-          method: 'GET',
+        payload.doc_name = docName;
+        var r = await fetch(base() + '/api/remember', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
           signal: controller.signal
         });
         var submitElapsedMs = Date.now() - submitStartMs;
@@ -456,8 +458,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
       try {
         var [statsRes, entitiesRes, relationsRes] = await Promise.all([
           fetch(base() + '/api/find/stats'),
-          fetch(base() + '/api/find/entities/all?limit=200'),
-          fetch(base() + '/api/find/relations/all')
+          fetch(base() + '/api/find/entities?limit=200'),
+          fetch(base() + '/api/find/relations')
         ]);
         var stats = statsRes.ok ? (await statsRes.json()) : null;
         var entities = entitiesRes.ok ? (await entitiesRes.json()) : null;
@@ -510,7 +512,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
             url = baseUrl + '/api/find/stats';
             break;
           case 'entities-all':
-            url = baseUrl + '/api/find/entities/all';
+            url = baseUrl + '/api/find/entities';
             var lim = getVal('find-entities-all-limit');
             if (lim) url += '?limit=' + encodeURIComponent(lim);
             break;
@@ -533,15 +535,15 @@ INDEX_HTML = r"""<!DOCTYPE html>
             if (!evId) { setRes(resId, '请填写 entity_id'); return; }
             url = baseUrl + '/api/find/entities/' + encodeURIComponent(evId) + '/versions';
             break;
-          case 'entities-all-before-time':
+          case 'entities-as-of-time':
             var tp = getVal('find-all-before-time_point');
             if (!tp) { setRes(resId, '请填写 time_point (ISO)'); return; }
-            url = baseUrl + '/api/find/entities/all-before-time?time_point=' + encodeURIComponent(tp);
+            url = baseUrl + '/api/find/entities/as-of-time?time_point=' + encodeURIComponent(tp);
             var lim2 = getVal('find-all-before-limit');
             if (lim2) url += '&limit=' + encodeURIComponent(lim2);
             break;
           case 'relations-all':
-            url = baseUrl + '/api/find/relations/all';
+            url = baseUrl + '/api/find/relations';
             break;
           case 'relations-search':
             var qt = getVal('find-relations-search-query_text');
@@ -555,7 +557,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
             url = baseUrl + '/api/find/relations/between?from_entity_id=' + encodeURIComponent(fromId) + '&to_entity_id=' + encodeURIComponent(toId);
             break;
           case 'query-one':
-            url = baseUrl + '/api/find/query-one';
+            url = baseUrl + '/api/find/candidates';
             opts = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' };
             var body = {
               max_entities: parseInt(getVal('find-query-one-max_entities') || '100', 10) || 100,
@@ -572,14 +574,14 @@ INDEX_HTML = r"""<!DOCTYPE html>
             opts.body = JSON.stringify(body);
             break;
           case 'memory-cache-latest':
-            url = baseUrl + '/api/find/memory-cache/latest';
+            url = baseUrl + '/api/find/memory-caches/latest';
             var at = getVal('find-memory-latest-activity_type');
             if (at) url += '?activity_type=' + encodeURIComponent(at);
             break;
           case 'memory-cache-text':
             var cid = getVal('find-memory-cache-id');
             if (!cid) { setRes(resId, '请填写 cache_id'); return; }
-            url = baseUrl + '/api/find/memory-cache/' + encodeURIComponent(cid) + '/text';
+            url = baseUrl + '/api/find/memory-caches/' + encodeURIComponent(cid) + '/text';
             break;
           default:
             setRes(resId, '未知: ' + kind);
