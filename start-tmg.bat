@@ -13,8 +13,8 @@ for /f "tokens=5" %%a in ('netstat -aon ^| findstr ":%PORT% " ^| findstr "LISTEN
 
 timeout /t 2 /nobreak >nul
 
-:: Start TMG API service
-echo Starting TMG API on http://127.0.0.1:%PORT%...
+:: Start TMG API service in monitor mode
+echo Starting TMG API in monitor mode on http://127.0.0.1:%PORT%...
 cd /d "%~dp0"
-.venv\Scripts\python.exe service_api.py --config service_config.json --host 127.0.0.1 --port %PORT%
+.venv\Scripts\python.exe service_api.py --config service_config.json --host 127.0.0.1 --port %PORT% --log-mode monitor
 pause

@@ -96,6 +96,12 @@ flowchart TB
 cp service_config.example.json service_config.json
 # 编辑 service_config.json：配置 LLM 与 embedding
 python service_api.py --config service_config.json
+
+# 细节日志模式：保留当前逐步输出
+python service_api.py --config service_config.json --log-mode detail
+
+# 监控模式：固定窗口实时刷新总览
+python service_api.py --config service_config.json --log-mode monitor
 ```
 
 **写入记忆（使用 POST JSON，立即返回 task_id；长文可用 `text_b64`）：**
@@ -111,6 +117,8 @@ curl -s http://localhost:16200/api/remember/tasks/abc123 | jq
 ```
 
 服务在 `storage_path/remember_journal/` 持久化未完成任务；进程异常退出后重启会自动将 `queued`/`running` 任务重新入队（从 `originals/` 原文完整重跑）。`flask_threaded: true`（默认）时，Remember 处理期间仍可响应 Find。
+
+`--log-mode detail` 会像现在一样输出内部处理细节；`--log-mode monitor` 会将终端切换成固定刷新面板，展示实体数、关系数、记忆缓存数、队列长度，以及当前任务的阶段/进度条/耗时。外部脚本也可轮询 `GET /api/remember/monitor` 获得相同监控快照。
 
 **检索记忆：**
 

@@ -95,7 +95,7 @@ class RelationProcessor:
                     fallback_to_single=fallback_to_single,
                 )
 
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="tmg-llm") as executor:
                 futures = {
                     executor.submit(task, idx, pair_key, pair_relations): idx
                     for idx, (pair_key, pair_relations) in enumerate(pair_items)

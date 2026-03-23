@@ -219,7 +219,7 @@ class EntityProcessor:
             return (idx, entity, relations, name_mapping, to_persist)
 
         results: List[Tuple[int, Optional[Entity], List[Dict], Dict[str, str], Optional[Entity]]] = []
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="tmg-llm") as executor:
             futures = {
                 executor.submit(task, idx, extracted_entity): idx
                 for idx, extracted_entity in enumerate(extracted_entities, 1)

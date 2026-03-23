@@ -10,21 +10,25 @@ Temporal_Memory_Graph 自然语言记忆图 API
 """
 from __future__ import annotations
 
+import atexit
 import argparse
 import base64
 import errno
 import json
+import logging
 import os
 import queue
+import shutil
 import socket
 import sys
 import threading
 import time
 import uuid
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Deque, Dict, List, Optional, Set, Tuple
 
 _here = Path(__file__).resolve().parent
 if str(_here) not in sys.path:
@@ -113,6 +117,275 @@ def err(message: str, status: int = 400) -> tuple:
     return jsonify(out), status
 
 
+LOG_MODE_DETAIL = "detail"
+LOG_MODE_MONITOR = "monitor"
+
+
+def _estimate_chunk_count(text_length: int, window_size: int, overlap: int) -> int:
+    if text_length <= 0:
+        return 1
+    stride = max(1, window_size - overlap)
+    if text_length <= window_size:
+        return 1
+    return 1 + (max(text_length - window_size, 0) + stride - 1) // stride
+
+
+def _format_seconds(seconds: Optional[float]) -> str:
+    if seconds is None:
+        return "-"
+    total = max(0, int(seconds))
+    if total < 60:
+        return f"{total}s"
+    minutes, sec = divmod(total, 60)
+    if minutes < 60:
+        return f"{minutes}m{sec:02d}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h{minutes:02d}m"
+
+
+def _make_progress_bar(progress: float, width: int = 20) -> str:
+    clamped = max(0.0, min(1.0, progress))
+    filled = int(round(clamped * width))
+    return "█" * filled + "░" * max(0, width - filled)
+
+
+def _short_task_id(task_id: str) -> str:
+    return task_id[:8]
+
+
+def _collect_storage_stats(processor) -> Dict[str, int]:
+    try:
+        total_entities = len(processor.storage.get_all_entities(limit=None))
+        total_relations = len(processor.storage.get_all_relations())
+        cache_json_dir = processor.storage.cache_json_dir
+        cache_dir = processor.storage.cache_dir
+        json_files = list(cache_json_dir.glob("*.json"))
+        total_memory_caches = len(json_files) if json_files else len(list(cache_dir.glob("*.json")))
+        return {
+            "entities": total_entities,
+            "relations": total_relations,
+            "memory_caches": total_memory_caches,
+        }
+    except Exception:
+        return {
+            "entities": 0,
+            "relations": 0,
+            "memory_caches": 0,
+        }
+
+
+def _collect_thread_stats(processor, remember_queue) -> Dict[str, Any]:
+    threads = list(threading.enumerate())
+    names = [t.name for t in threads]
+    processor_stats = {}
+    if hasattr(processor, "get_runtime_stats"):
+        try:
+            processor_stats = processor.get_runtime_stats()
+        except Exception:
+            processor_stats = {}
+    remember_alive = sum(1 for name in names if name.startswith("remember-worker-"))
+    window_alive = sum(1 for name in names if name.startswith("tmg-window"))
+    llm_alive = sum(1 for name in names if name.startswith("tmg-llm"))
+    queue_snapshot = remember_queue.get_monitor_snapshot(limit=0)
+    return {
+        "python_threads_total": len(threads),
+        "remember_worker_threads_alive": remember_alive,
+        "remember_worker_threads_busy": queue_snapshot["running_count"],
+        "window_threads_alive": window_alive,
+        "window_threads_busy": int(processor_stats.get("active_window_extractions", 0)),
+        "window_threads_peak": int(processor_stats.get("peak_window_extractions", 0)),
+        "llm_threads_alive": llm_alive,
+        "thread_names_sample": names[:20],
+    }
+
+
+def _collect_runtime_config(config: Dict[str, Any], processor) -> Dict[str, Any]:
+    runtime = dict(config.get("runtime") or {})
+    conc = dict(runtime.get("concurrency") or {})
+    chunking = dict(config.get("chunking") or {})
+    llm = dict(config.get("llm") or {})
+    embedding = dict(config.get("embedding") or {})
+    pipeline = dict(config.get("pipeline") or {})
+    llm_threads = int(pipeline.get("llm_threads", config.get("llm_threads", getattr(processor, "llm_threads", 1)) or 1))
+    window_workers = int(
+        pipeline.get(
+            "max_concurrent_windows",
+            conc.get("window_workers", getattr(processor, "_max_concurrent_windows", 1)),
+        ) or 1
+    )
+    queue_workers = int(config.get("remember_workers", conc.get("queue_workers", 1)) or 1)
+    max_total = conc.get("max_total_workers", config.get("max_total_worker_threads"))
+    peak_estimate = queue_workers + window_workers + window_workers * llm_threads
+    return {
+        "log_mode": str(config.get("log_mode", LOG_MODE_DETAIL)),
+        "monitor_refresh_seconds": float(config.get("monitor_refresh_seconds", 1.0)),
+        "host": str(config.get("host", "0.0.0.0")),
+        "port": int(config.get("port", 5001)),
+        "queue_workers": queue_workers,
+        "window_workers": window_workers,
+        "llm_call_workers": llm_threads,
+        "max_total_workers": max_total,
+        "estimated_peak_workers": peak_estimate,
+        "window_size": int(chunking.get("window_size", getattr(processor.document_processor, "window_size", 1000)) or 1000),
+        "overlap": int(chunking.get("overlap", getattr(processor.document_processor, "overlap", 200)) or 200),
+        "llm_model": llm.get("model"),
+        "llm_base_url": llm.get("base_url"),
+        "embedding_model": embedding.get("model"),
+        "embedding_device": embedding.get("device", "cpu"),
+    }
+
+
+class ConsoleReporter:
+    """统一管理详细日志与实时监控面板两种终端输出模式。"""
+
+    def __init__(self, mode: str = LOG_MODE_DETAIL, refresh_interval: float = 1.0, event_limit: int = 8):
+        self.mode = mode if mode in (LOG_MODE_DETAIL, LOG_MODE_MONITOR) else LOG_MODE_DETAIL
+        self.refresh_interval = max(0.2, float(refresh_interval))
+        self._events: Deque[str] = deque(maxlen=max(4, event_limit))
+        self._lock = threading.Lock()
+        self._thread: Optional[threading.Thread] = None
+        self._stop = threading.Event()
+        self._processor = None
+        self._remember_queue = None
+        self._service_config: Dict[str, Any] = {}
+        self._host = ""
+        self._port = 0
+        self._storage_path = ""
+        self._cursor_hidden = False
+        atexit.register(self.stop)
+
+    def attach_runtime(self, *, processor, remember_queue, host: str, port: int, storage_path: str, service_config: Dict[str, Any]) -> None:
+        self._processor = processor
+        self._remember_queue = remember_queue
+        self._service_config = dict(service_config or {})
+        self._host = host
+        self._port = int(port)
+        self._storage_path = storage_path
+
+    def start(self) -> None:
+        if self.mode != LOG_MODE_MONITOR or self._thread is not None:
+            return
+        self._thread = threading.Thread(target=self._run_monitor, name="tmg-console-monitor", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._cursor_hidden:
+            try:
+                print("\033[?25h", end="", flush=True)
+            except Exception:
+                pass
+            self._cursor_hidden = False
+
+    def info(self, message: str, *, force_print: bool = False) -> None:
+        self._emit(message, force_print=force_print)
+
+    def warn(self, message: str, *, force_print: bool = False) -> None:
+        self._emit(f"[WARN] {message}", force_print=force_print)
+
+    def error(self, message: str, *, force_print: bool = False) -> None:
+        self._emit(f"[ERROR] {message}", force_print=force_print, stderr=True)
+
+    def _emit(self, message: str, *, force_print: bool = False, stderr: bool = False) -> None:
+        if self.mode == LOG_MODE_DETAIL or force_print:
+            stream = sys.stderr if stderr else sys.stdout
+            print(message, file=stream)
+            return
+        with self._lock:
+            ts = datetime.now().strftime("%H:%M:%S")
+            self._events.appendleft(f"{ts} {message}")
+
+    def _run_monitor(self) -> None:
+        while not self._stop.is_set():
+            self.render_once()
+            self._stop.wait(self.refresh_interval)
+
+    def render_once(self) -> None:
+        if self.mode != LOG_MODE_MONITOR:
+            return
+        width = shutil.get_terminal_size((120, 36)).columns
+        lines = self._build_monitor_lines(width=width)
+        try:
+            if not self._cursor_hidden:
+                print("\033[?25l", end="")
+                self._cursor_hidden = True
+            print("\033[2J\033[H" + "\n".join(lines), end="", flush=True)
+        except Exception:
+            pass
+
+    def _build_monitor_lines(self, width: int) -> List[str]:
+        header = "Temporal_Memory_Graph 实时监控"
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        divider = "═" * max(40, min(width, 100))
+        lines = [divider, f"{header}  {now_str}", divider]
+        if self._host and self._port:
+            lines.append(f"服务: http://{self._host}:{self._port}    存储: {self._storage_path}")
+        if self._processor is not None:
+            stats = _collect_storage_stats(self._processor)
+            lines.append(
+                "总览: "
+                f"实体 {stats['entities']} | 关系 {stats['relations']} | 记忆缓存 {stats['memory_caches']}"
+            )
+        if self._processor is not None and self._remember_queue is not None:
+            runtime_cfg = _collect_runtime_config(self._service_config, self._processor)
+            thread_stats = _collect_thread_stats(self._processor, self._remember_queue)
+            lines.append("")
+            lines.append("配置与线程:")
+            lines.append(
+                "  配置上限: "
+                f"queue_workers={runtime_cfg['queue_workers']} | "
+                f"window_workers={runtime_cfg['window_workers']} | "
+                f"llm_call_workers={runtime_cfg['llm_call_workers']} | "
+                f"max_total={runtime_cfg['max_total_workers']} | "
+                f"估算峰值≈{runtime_cfg['estimated_peak_workers']}"
+            )
+            lines.append(
+                "  当前线程: "
+                f"Python总线程={thread_stats['python_threads_total']} | "
+                f"remember 活着/忙={thread_stats['remember_worker_threads_alive']}/{thread_stats['remember_worker_threads_busy']} | "
+                f"window 活着/忙={thread_stats['window_threads_alive']}/{thread_stats['window_threads_busy']} | "
+                f"llm 活着={thread_stats['llm_threads_alive']}"
+            )
+            lines.append(
+                "  处理参数: "
+                f"window_size={runtime_cfg['window_size']} | overlap={runtime_cfg['overlap']} | "
+                f"LLM={runtime_cfg['llm_model']} | embedding_device={runtime_cfg['embedding_device']}"
+            )
+        if self._remember_queue is not None:
+            snapshot = self._remember_queue.get_monitor_snapshot(limit=6)
+            lines.append(
+                "队列: "
+                f"排队 {snapshot['queued_count']} | 运行中 {snapshot['running_count']} | "
+                f"phase2待执行 {snapshot['phase2_backlog']} | 近期待保留 {snapshot['tracked_count']}"
+            )
+            lines.append("")
+            lines.append("当前任务:")
+            active_tasks = snapshot["active_tasks"]
+            if not active_tasks:
+                lines.append("  暂无运行中或排队任务")
+            for task in active_tasks:
+                elapsed = _format_seconds(task["elapsed_seconds"])
+                pct = f"{task['progress'] * 100:5.1f}%"
+                bar = _make_progress_bar(task["progress"], width=18)
+                lines.append(
+                    f"  {_short_task_id(task['task_id'])} {task['source_name'][:24]:24} "
+                    f"[{task['phase_label']}] [{bar}] {pct}  {elapsed}"
+                )
+                if task.get("message"):
+                    lines.append(f"    {task['message']}")
+        with self._lock:
+            events = list(self._events)[:6]
+        lines.append("")
+        lines.append("最近事件:")
+        if not events:
+            lines.append("  暂无")
+        else:
+            lines.extend(f"  {event}" for event in events)
+        lines.append("")
+        lines.append("按 Ctrl+C 停止服务")
+        return lines
+
+
 @dataclass
 class RememberTask:
     task_id: str
@@ -127,6 +400,15 @@ class RememberTask:
     created_at: float = field(default_factory=time.time)
     started_at: Optional[float] = None
     finished_at: Optional[float] = None
+    phase: str = "queued"
+    phase_label: str = "等待处理"
+    phase_current: int = 0
+    phase_total: int = 0
+    processed_chunks: int = 0
+    total_chunks: int = 0
+    progress: float = 0.0
+    message: str = "等待进入处理队列"
+    last_update: float = field(default_factory=time.time)
 
 
 class RememberJournal:
@@ -152,6 +434,15 @@ class RememberJournal:
             "finished_at": task.finished_at,
             "error": task.error,
             "result": task.result,
+            "phase": task.phase,
+            "phase_label": task.phase_label,
+            "phase_current": task.phase_current,
+            "phase_total": task.phase_total,
+            "processed_chunks": task.processed_chunks,
+            "total_chunks": task.total_chunks,
+            "progress": task.progress,
+            "message": task.message,
+            "last_update": task.last_update,
         }
         p = self._path(task.task_id)
         tmp = p.with_suffix(".json.tmp")
@@ -216,6 +507,15 @@ def _remember_task_from_record(rec: Dict[str, Any], text: str) -> RememberTask:
         created_at=float(rec.get("created_at") or time.time()),
         started_at=rec.get("started_at"),
         finished_at=rec.get("finished_at"),
+        phase=str(rec.get("phase") or "queued"),
+        phase_label=str(rec.get("phase_label") or "等待处理"),
+        phase_current=int(rec.get("phase_current") or 0),
+        phase_total=int(rec.get("phase_total") or 0),
+        processed_chunks=int(rec.get("processed_chunks") or 0),
+        total_chunks=int(rec.get("total_chunks") or 0),
+        progress=float(rec.get("progress") or 0.0),
+        message=str(rec.get("message") or "等待进入处理队列"),
+        last_update=float(rec.get("last_update") or time.time()),
     )
 
 
@@ -234,6 +534,8 @@ class RememberTaskQueue:
         max_history: int = 200,
         max_retries: int = 2,
         retry_delay_seconds: float = 2,
+        reporter: Optional[ConsoleReporter] = None,
+        log_mode: str = LOG_MODE_DETAIL,
     ):
         self._processor = processor
         self._journal = RememberJournal(storage_path)
@@ -249,17 +551,110 @@ class RememberTaskQueue:
         self._phase1_done_count = 0
         self._phase2_lock = threading.Lock()
         self._workers: List[threading.Thread] = []
+        self._reporter = reporter
+        self._log_mode = log_mode if log_mode in (LOG_MODE_DETAIL, LOG_MODE_MONITOR) else LOG_MODE_DETAIL
+        self._detail_logs = self._log_mode == LOG_MODE_DETAIL
+        self._window_size = max(1, int(getattr(self._processor.document_processor, "window_size", 1000)))
+        self._overlap = max(0, int(getattr(self._processor.document_processor, "overlap", 200)))
         self._recover_from_disk()
         for i in range(max(1, max_workers)):
             t = threading.Thread(target=self._worker, name=f"remember-worker-{i}", daemon=True)
             t.start()
             self._workers.append(t)
 
+    def _log_info(self, message: str) -> None:
+        if self._reporter is not None:
+            self._reporter.info(message)
+        else:
+            print(message)
+
+    def _log_warn(self, message: str) -> None:
+        if self._reporter is not None:
+            self._reporter.warn(message)
+        else:
+            print(f"[WARN] {message}")
+
+    def _log_error(self, message: str) -> None:
+        if self._reporter is not None:
+            self._reporter.error(message)
+        else:
+            print(f"[ERROR] {message}", file=sys.stderr)
+
+    def _update_task_progress(
+        self,
+        task: RememberTask,
+        *,
+        status: Optional[str] = None,
+        phase: Optional[str] = None,
+        phase_label: Optional[str] = None,
+        phase_current: Optional[int] = None,
+        phase_total: Optional[int] = None,
+        processed_chunks: Optional[int] = None,
+        total_chunks: Optional[int] = None,
+        progress: Optional[float] = None,
+        message: Optional[str] = None,
+        started_at: Optional[float] = None,
+        finished_at: Optional[float] = None,
+        error: Optional[str] = None,
+        result: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        with self._lock:
+            if status is not None:
+                task.status = status
+            if phase is not None:
+                task.phase = phase
+            if phase_label is not None:
+                task.phase_label = phase_label
+            if phase_current is not None:
+                task.phase_current = max(0, int(phase_current))
+            if phase_total is not None:
+                task.phase_total = max(0, int(phase_total))
+            if processed_chunks is not None:
+                task.processed_chunks = max(0, int(processed_chunks))
+            if total_chunks is not None:
+                task.total_chunks = max(0, int(total_chunks))
+            if progress is not None:
+                task.progress = max(0.0, min(1.0, float(progress)))
+            if message is not None:
+                task.message = message
+            if started_at is not None:
+                task.started_at = started_at
+            if finished_at is not None:
+                task.finished_at = finished_at
+            if error is not None:
+                task.error = error
+            if result is not None:
+                task.result = result
+            task.last_update = time.time()
+
+    def _task_to_dict(self, t: RememberTask) -> Dict[str, Any]:
+        now = time.time()
+        anchor = t.started_at or t.created_at or now
+        return {
+            "task_id": t.task_id,
+            "source_name": t.source_name,
+            "status": t.status,
+            "phase": t.phase,
+            "phase_label": t.phase_label,
+            "phase_current": t.phase_current,
+            "phase_total": t.phase_total,
+            "processed_chunks": t.processed_chunks,
+            "total_chunks": t.total_chunks,
+            "progress": t.progress,
+            "message": t.message,
+            "created_at": t.created_at,
+            "started_at": t.started_at,
+            "finished_at": t.finished_at,
+            "last_update": t.last_update,
+            "error": t.error,
+            "elapsed_seconds": max(0.0, (t.finished_at or now) - anchor),
+        }
+
     def _persist(self, task: RememberTask) -> None:
         try:
             self._journal.write(task)
         except Exception as e:
-            print(f"[Remember] 警告：journal 写入失败 task_id={task.task_id[:8]}…: {e}")
+            self._log_warn(f"[Remember] journal 写入失败 task_id={_short_task_id(task.task_id)}: {e}")
 
     def _recover_from_disk(self) -> None:
         n_resume = 0
@@ -291,7 +686,7 @@ class RememberTaskQueue:
                         self._journal.write(tdead)
                     except Exception:
                         pass
-                    print(f"[Remember] 恢复跳过 task_id={str(tid)[:8]}…：原文缺失")
+                    self._log_warn(f"[Remember] 恢复跳过 task_id={_short_task_id(str(tid))}: 原文缺失")
                     continue
                 try:
                     text = Path(op).read_text(encoding="utf-8")
@@ -312,22 +707,52 @@ class RememberTaskQueue:
                 task.finished_at = None
                 task.error = None
                 task.result = None
+                task.phase = "queued"
+                task.phase_label = "恢复后等待处理"
+                task.phase_current = 0
+                task.phase_total = 0
+                task.processed_chunks = 0
+                task.total_chunks = max(
+                    task.total_chunks,
+                    _estimate_chunk_count(len(task.text), self._window_size, self._overlap),
+                )
+                task.progress = 0.0
+                task.message = "服务重启后已恢复入队"
+                task.last_update = time.time()
                 with self._lock:
                     self._tasks[tid] = task
                 self._queue.put(task)
                 self._persist(task)
                 n_resume += 1
-                print(f"[Remember] 恢复未完成任务并入队: task_id={tid[:8]}…, source_name={task.source_name!r}")
+                self._log_info(
+                    f"[Remember] 恢复未完成任务并入队: task_id={_short_task_id(tid)}, "
+                    f"source_name={task.source_name!r}"
+                )
         if n_resume:
-            print(f"[Remember] 启动恢复：重新入队 {n_resume} 个未完成任务（已完成/失败仅保留在 journal，按需通过 status 查询）")
+            self._log_info(
+                f"[Remember] 启动恢复：重新入队 {n_resume} 个未完成任务"
+                "（已完成/失败仅保留在 journal，按需通过 status 查询）"
+            )
 
     def submit(self, task: RememberTask) -> str:
+        task.total_chunks = max(
+            task.total_chunks,
+            _estimate_chunk_count(len(task.text), self._window_size, self._overlap),
+        )
+        task.phase = "queued"
+        task.phase_label = "等待处理"
+        task.phase_current = 0
+        task.phase_total = 0
+        task.processed_chunks = 0
+        task.progress = 0.0
+        task.message = f"已入队，预计 {task.total_chunks} 个窗口"
+        task.last_update = time.time()
         with self._lock:
             self._tasks[task.task_id] = task
             self._trim_history()
         self._persist(task)
         self._queue.put(task)
-        print(f"[Remember] 任务入队: task_id={task.task_id[:8]}…, source_name={task.source_name!r}")
+        self._log_info(f"[Remember] 任务入队: task_id={_short_task_id(task.task_id)}, source_name={task.source_name!r}")
         return task.task_id
 
     def get_status(self, task_id: str) -> Optional[RememberTask]:
@@ -352,27 +777,52 @@ class RememberTaskQueue:
             items = sorted(self._tasks.values(), key=lambda t: t.created_at, reverse=True)
         out = []
         for t in items[:limit]:
-            out.append({
-                "task_id": t.task_id,
-                "source_name": t.source_name,
-                "status": t.status,
-                "created_at": t.created_at,
-                "started_at": t.started_at,
-                "finished_at": t.finished_at,
-                "error": t.error,
-            })
+            out.append(self._task_to_dict(t))
         return out
+
+    def get_monitor_snapshot(self, limit: int = 6) -> Dict[str, Any]:
+        with self._lock:
+            items = list(self._tasks.values())
+        queued = [t for t in items if t.status == "queued"]
+        running = [t for t in items if t.status == "running"]
+        active = sorted(
+            queued + running,
+            key=lambda t: (0 if t.status == "running" else 1, t.created_at),
+        )
+        return {
+            "queued_count": len(queued),
+            "running_count": len(running),
+            "phase2_backlog": self._phase2_queue.qsize(),
+            "tracked_count": len(items),
+            "active_tasks": [self._task_to_dict(t) for t in active[:limit]],
+        }
 
     def _worker(self):
         """两阶段：phase1 生成整体记忆（可多线程并行），phase2 滑窗串行（单锁）。"""
         while True:
             task = self._queue.get()
             try:
-                with self._lock:
-                    task.status = "running"
-                    task.started_at = time.time()
+                started_at = time.time()
+                total_units = max(1, task.total_chunks + 1)
+                self._update_task_progress(
+                    task,
+                    status="running",
+                    phase="phase1",
+                    phase_label="生成整体记忆",
+                    phase_current=0,
+                    phase_total=1,
+                    processed_chunks=0,
+                    progress=0.0,
+                    message="开始生成文档整体记忆",
+                    started_at=started_at,
+                    finished_at=None,
+                    error=None,
+                )
                 self._persist(task)
-                print(f"[Remember] 开始处理: task_id={task.task_id[:8]}…, source_name={task.source_name!r}, 文本长度={len(task.text)} 字符")
+                self._log_info(
+                    f"[Remember] 开始处理: task_id={_short_task_id(task.task_id)}, "
+                    f"source_name={task.source_name!r}, 文本长度={len(task.text)} 字符"
+                )
 
                 # 若非首个任务，等待上一任务 phase1 完成（拿到 previous_overall）
                 with self._cond:
@@ -383,6 +833,39 @@ class RememberTaskQueue:
                 last_exc = None
                 for attempt in range(self._max_retries + 1):
                     try:
+                        def phase1_progress(payload: Dict[str, Any]) -> None:
+                            completed = int(payload.get("completed") or 0)
+                            phase_progress = min(1.0, completed / max(1, int(payload.get("total") or 1)))
+                            self._update_task_progress(
+                                task,
+                                status="running",
+                                phase="phase1",
+                                phase_label=str(payload.get("phase_label") or "生成整体记忆"),
+                                phase_current=completed,
+                                phase_total=int(payload.get("total") or 1),
+                                progress=min(0.99, phase_progress / total_units),
+                                message=str(payload.get("message") or "整体记忆生成中"),
+                            )
+                            self._persist(task)
+
+                        def phase2_progress(payload: Dict[str, Any]) -> None:
+                            completed = int(payload.get("completed") or 0)
+                            total = int(payload.get("total") or task.total_chunks or 1)
+                            overall_progress = min(0.99, (1 + completed) / total_units)
+                            self._update_task_progress(
+                                task,
+                                status="running",
+                                phase="phase2",
+                                phase_label=str(payload.get("phase_label") or "滑窗处理"),
+                                phase_current=completed,
+                                phase_total=total,
+                                processed_chunks=completed,
+                                total_chunks=total,
+                                progress=overall_progress,
+                                message=str(payload.get("message") or f"窗口 {completed}/{total}"),
+                            )
+                            self._persist(task)
+
                         # Phase1: 仅生成文档整体记忆
                         overall = self._processor.remember_phase1_overall(
                             text=task.text,
@@ -390,56 +873,118 @@ class RememberTaskQueue:
                             event_time=task.event_time,
                             document_path=task.original_path,
                             previous_overall_cache=previous_overall,
-                            verbose=True,
+                            verbose=self._detail_logs,
+                            progress_callback=phase1_progress,
                         )
                         with self._cond:
                             self._shared_last_overall = overall
                             self._phase1_done_count += 1
                             self._cond.notify_all()
 
+                        self._update_task_progress(
+                            task,
+                            status="running",
+                            phase="phase2",
+                            phase_label="等待 phase2 执行",
+                            phase_current=0,
+                            phase_total=max(1, task.total_chunks),
+                            processed_chunks=0,
+                            progress=min(0.99, 1 / total_units),
+                            message=f"phase1 完成，等待滑窗处理（共 {task.total_chunks} 个窗口）",
+                        )
+                        self._persist(task)
                         self._phase2_queue.put((task, overall))
 
                         # Phase2: 串行执行（processor 的 current_memory_cache 单链，不能多任务并行写）
                         with self._phase2_lock:
                             task2, overall2 = self._phase2_queue.get()
+                            self._update_task_progress(
+                                task2,
+                                status="running",
+                                phase="phase2",
+                                phase_label="滑窗处理中",
+                                message="已进入 phase2 串行执行",
+                            )
+                            self._persist(task2)
                             result = self._processor.remember_phase2_windows(
                                 text=task2.text,
                                 doc_name=task2.source_name,
-                                verbose=True,
+                                verbose=self._detail_logs,
                                 event_time=task2.event_time,
                                 document_path=task2.original_path,
                                 overall_cache=overall2,
+                                progress_callback=phase2_progress,
                             )
                         result["original_path"] = task2.original_path
-                        with self._lock:
-                            task2.status = "completed"
-                            task2.result = result
-                            task2.finished_at = time.time()
+                        finished_at = time.time()
+                        self._update_task_progress(
+                            task2,
+                            status="completed",
+                            phase="completed",
+                            phase_label="已完成",
+                            phase_current=max(1, task2.total_chunks),
+                            phase_total=max(1, task2.total_chunks),
+                            processed_chunks=max(1, int(result.get("chunks_processed") or task2.total_chunks)),
+                            progress=1.0,
+                            message="处理完成",
+                            result=result,
+                            finished_at=finished_at,
+                        )
                         self._persist(task2)
                         elapsed = (task2.finished_at or 0) - (task2.started_at or 0)
-                        print(f"[Remember] 完成: task_id={task2.task_id[:8]}…, chunks_processed={result.get('chunks_processed')}, 耗时={elapsed:.1f}s")
+                        self._log_info(
+                            f"[Remember] 完成: task_id={_short_task_id(task2.task_id)}, "
+                            f"chunks_processed={result.get('chunks_processed')}, 耗时={elapsed:.1f}s"
+                        )
                         last_exc = None
                         break
                     except Exception as exc:
                         last_exc = exc
                         if attempt < self._max_retries:
                             delay = self._retry_delay
-                            print(f"[Remember] 失败将重试: task_id={task.task_id[:8]}…, attempt={attempt + 1}, error={exc!r}, {delay}s 后重试")
+                            self._update_task_progress(
+                                task,
+                                status="running",
+                                phase=task.phase,
+                                phase_label=task.phase_label,
+                                progress=task.progress,
+                                message=f"失败后重试中，第 {attempt + 1} 次，{delay}s 后继续",
+                                error=str(exc),
+                            )
+                            self._persist(task)
+                            self._log_warn(
+                                f"[Remember] 失败将重试: task_id={_short_task_id(task.task_id)}, "
+                                f"attempt={attempt + 1}, error={exc!r}, {delay}s 后重试"
+                            )
                             time.sleep(delay)
                         else:
-                            with self._lock:
-                                task.status = "failed"
-                                task.error = str(exc)
-                                task.finished_at = time.time()
+                            self._update_task_progress(
+                                task,
+                                status="failed",
+                                phase="failed",
+                                phase_label="失败",
+                                progress=task.progress,
+                                message="处理失败",
+                                error=str(exc),
+                                finished_at=time.time(),
+                            )
                             self._persist(task)
-                            print(f"[Remember] 失败: task_id={task.task_id[:8]}…, error={exc!r}")
+                            self._log_error(
+                                f"[Remember] 失败: task_id={_short_task_id(task.task_id)}, error={exc!r}"
+                            )
             except Exception as exc:
-                with self._lock:
-                    task.status = "failed"
-                    task.error = str(exc)
-                    task.finished_at = time.time()
+                self._update_task_progress(
+                    task,
+                    status="failed",
+                    phase="failed",
+                    phase_label="失败",
+                    progress=task.progress,
+                    message="处理失败",
+                    error=str(exc),
+                    finished_at=time.time(),
+                )
                 self._persist(task)
-                print(f"[Remember] 失败: task_id={task.task_id[:8]}…, error={exc!r}")
+                self._log_error(f"[Remember] 失败: task_id={_short_task_id(task.task_id)}, error={exc!r}")
             finally:
                 self._queue.task_done()
 
@@ -519,7 +1064,12 @@ def _extract_candidate_ids(
     return entity_absolute_ids, relation_absolute_ids
 
 
-def create_app(processor: TemporalMemoryGraphProcessor, config: Optional[Dict[str, Any]] = None) -> Flask:
+def create_app(
+    processor: TemporalMemoryGraphProcessor,
+    config: Optional[Dict[str, Any]] = None,
+    reporter: Optional[ConsoleReporter] = None,
+    log_mode: str = LOG_MODE_DETAIL,
+) -> Flask:
     app = Flask(__name__)
 
     # 允许测试页（不同端口）跨域调用 API，避免浏览器报 Failed to fetch
@@ -550,7 +1100,10 @@ def create_app(processor: TemporalMemoryGraphProcessor, config: Optional[Dict[st
         max_workers=config.get("remember_workers", 1),
         max_retries=config.get("remember_max_retries", 2),
         retry_delay_seconds=config.get("remember_retry_delay_seconds", 2),
+        reporter=reporter,
+        log_mode=log_mode,
     )
+    app.config["remember_queue"] = remember_queue
 
     def parse_time_point(value: Optional[str]) -> Optional[datetime]:
         if not value:
@@ -711,8 +1264,20 @@ def create_app(processor: TemporalMemoryGraphProcessor, config: Optional[Dict[st
 
             preview = (text[:80] + "…") if len(text) > 80 else text
             event_time_display = event_time.isoformat() if event_time else "未指定"
-            print(f"[Remember] 收到({request.method}): source_name={source_name!r}, 文本长度={len(text)} 字符, event_time={event_time_display}")
-            print(f"[Remember] 内容预览: {preview!r}")
+            if reporter is not None:
+                reporter.info(
+                    f"[Remember] 收到({request.method}): source_name={source_name!r}, "
+                    f"文本长度={len(text)} 字符, event_time={event_time_display}"
+                )
+                if log_mode == LOG_MODE_DETAIL:
+                    reporter.info(f"[Remember] 内容预览: {preview!r}")
+            else:
+                print(
+                    f"[Remember] 收到({request.method}): source_name={source_name!r}, "
+                    f"文本长度={len(text)} 字符, event_time={event_time_display}"
+                )
+                if log_mode == LOG_MODE_DETAIL:
+                    print(f"[Remember] 内容预览: {preview!r}")
 
             task_id = uuid.uuid4().hex
             task = RememberTask(
@@ -744,15 +1309,8 @@ def create_app(processor: TemporalMemoryGraphProcessor, config: Optional[Dict[st
             t = remember_queue.get_status(task_id)
             if t is None:
                 return err("任务不存在", 404)
-            data: Dict[str, Any] = {
-                "task_id": t.task_id,
-                "status": t.status,
-                "source_name": t.source_name,
-                "original_path": t.original_path,
-                "created_at": t.created_at,
-                "started_at": t.started_at,
-                "finished_at": t.finished_at,
-            }
+            data: Dict[str, Any] = remember_queue._task_to_dict(t)
+            data["original_path"] = t.original_path
             if t.status == "completed" and t.result:
                 data["result"] = t.result
             if t.status == "failed" and t.error:
@@ -768,6 +1326,21 @@ def create_app(processor: TemporalMemoryGraphProcessor, config: Optional[Dict[st
             limit = request.args.get("limit", 50, type=int)
             tasks = remember_queue.list_tasks(limit=limit)
             return ok({"tasks": tasks, "count": len(tasks)})
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/remember/monitor", methods=["GET"])
+    def remember_monitor():
+        """返回 remember 的实时监控快照，适合 watch 或外部面板轮询。"""
+        try:
+            limit = request.args.get("limit", 6, type=int)
+            return ok({
+                "storage": _collect_storage_stats(processor),
+                "queue": remember_queue.get_monitor_snapshot(limit=limit),
+                "config": _collect_runtime_config(config, processor),
+                "threads": _collect_thread_stats(processor, remember_queue),
+                "log_mode": log_mode,
+            })
         except Exception as e:
             return err(str(e), 500)
 
@@ -812,6 +1385,12 @@ def create_app(processor: TemporalMemoryGraphProcessor, config: Optional[Dict[st
                     "methods": ["GET"],
                     "summary": "查看 remember 任务队列",
                     "query": {"limit": "int，可选，默认 50"},
+                },
+                {
+                    "path": "/api/remember/monitor",
+                    "methods": ["GET"],
+                    "summary": "获取 remember 实时监控快照",
+                    "query": {"limit": "int，可选，默认 6"},
                 },
             ],
             "find": [
@@ -1722,6 +2301,19 @@ def main() -> int:
     parser.add_argument("--host", type=str, default=None, help="覆盖配置中的 host")
     parser.add_argument("--port", type=int, default=None, help="覆盖配置中的 port")
     parser.add_argument(
+        "--log-mode",
+        type=str,
+        choices=[LOG_MODE_DETAIL, LOG_MODE_MONITOR],
+        default=None,
+        help="日志模式：detail 输出细节；monitor 固定刷新监控面板",
+    )
+    parser.add_argument(
+        "--monitor-refresh",
+        type=float,
+        default=None,
+        help="monitor 模式下面板刷新周期（秒，默认 1.0）",
+    )
+    parser.add_argument(
         "--skip-llm-check",
         action="store_true",
         help="跳过启动前 LLM 握手（仅适合调试 Find；Remember 仍可能在运行时失败）",
@@ -1741,81 +2333,102 @@ def main() -> int:
 
     config = load_config(config_path)
     config = _apply_thread_cap(config)
+    log_mode = args.log_mode if args.log_mode is not None else config.get("log_mode", LOG_MODE_DETAIL)
+    monitor_refresh = args.monitor_refresh if args.monitor_refresh is not None else config.get("monitor_refresh_seconds", 1.0)
+    config["log_mode"] = log_mode
+    config["monitor_refresh_seconds"] = monitor_refresh
+    reporter = ConsoleReporter(mode=log_mode, refresh_interval=monitor_refresh)
     host = args.host if args.host is not None else config.get("host", "0.0.0.0")
     port = args.port if args.port is not None else config.get("port", 5001)
+    config["host"] = host
+    config["port"] = port
     storage_path = config.get("storage_path", "./graph/tmg_storage")
     storage_root = Path(storage_path)
     Path(storage_path).mkdir(parents=True, exist_ok=True)
     wr_err = _check_storage_writable(storage_root)
     if wr_err:
-        print(f"错误：{wr_err}")
+        reporter.error(f"错误：{wr_err}", force_print=True)
         return 1
 
     processor = build_processor(config)
 
     # 启动前对配置的 LLM 做握手，不可用则报错退出（可用 --skip-llm-check 跳过）
     if args.skip_llm_check:
-        print("已跳过 LLM 握手（--skip-llm-check）。Remember 与 /api/health/llm 可能在运行时失败。")
+        reporter.warn("已跳过 LLM 握手（--skip-llm-check）。Remember 与 /api/health/llm 可能在运行时失败。", force_print=(log_mode == LOG_MODE_DETAIL))
     else:
-        print("正在检查配置的 LLM 是否可用…")
+        reporter.info("正在检查配置的 LLM 是否可用…", force_print=(log_mode == LOG_MODE_DETAIL))
         ok_llm, err_msg = _check_llm_available(processor)
         if not ok_llm:
-            print(f"错误：{err_msg}")
-            print("请检查 service_config 中 llm.api_key / llm.base_url / llm.model 及网络。")
-            print("若仅需测试 Find，可加参数: --skip-llm-check")
+            reporter.error(f"错误：{err_msg}", force_print=True)
+            reporter.error("请检查 service_config 中 llm.api_key / llm.base_url / llm.model 及网络。", force_print=True)
+            reporter.error("若仅需测试 Find，可加参数: --skip-llm-check", force_print=True)
             return 1
-        print("LLM 握手成功，模型可用。")
+        reporter.info("LLM 握手成功，模型可用。", force_print=(log_mode == LOG_MODE_DETAIL))
 
-    app = create_app(processor, config)
+    app = create_app(processor, config, reporter=reporter, log_mode=log_mode)
 
     # 启动时加载当前大脑记忆库统计并输出
-    try:
-        total_entities = len(processor.storage.get_all_entities(limit=None))
-        total_relations = len(processor.storage.get_all_relations())
-        cache_json_dir = processor.storage.cache_json_dir
-        cache_dir = processor.storage.cache_dir
-        json_files = list(cache_json_dir.glob("*.json"))
-        total_memory_caches = len(json_files) if json_files else len(list(cache_dir.glob("*.json")))
-    except Exception:
-        total_entities = total_relations = total_memory_caches = 0
+    stats = _collect_storage_stats(processor)
 
     auto_fb = bool(args.auto_port or config.get("auto_port_fallback", False))
     listen_port, port_switched = _resolve_listen_port(host, port, auto_fb)
     ok_bind, bind_err = _tcp_bind_probe(host, listen_port)
     if not ok_bind:
-        print(f"错误：无法在 {host}:{listen_port} 上绑定: {bind_err}")
-        print(f"  配置的端口为 {port}。")
+        reporter.error(f"错误：无法在 {host}:{listen_port} 上绑定: {bind_err}", force_print=True)
+        reporter.error(f"  配置的端口为 {port}。", force_print=True)
         if not auto_fb:
-            print("  解决：结束占用该端口的进程，或改用 --port <其他端口>，或在配置中设置 auto_port_fallback: true 并加 --auto-port。")
+            reporter.error(
+                "  解决：结束占用该端口的进程，或改用 --port <其他端口>，"
+                "或在配置中设置 auto_port_fallback: true 并加 --auto-port。",
+                force_print=True,
+            )
             try:
-                print(f"  排查示例: ss -tlnp | grep ':{port} ' 或 lsof -i :{port}")
+                reporter.error(f"  排查示例: ss -tlnp | grep ':{port} ' 或 lsof -i :{port}", force_print=True)
             except Exception:
                 pass
         else:
-            print("  已尝试自动换端口但仍失败，请检查系统权限或防火墙设置。")
+            reporter.error("  已尝试自动换端口但仍失败，请检查系统权限或防火墙设置。", force_print=True)
         return 1
     if port_switched:
-        print(f"注意：端口 {port} 已被占用，已自动改用 {listen_port}。")
+        reporter.warn(f"注意：端口 {port} 已被占用，已自动改用 {listen_port}。", force_print=(log_mode == LOG_MODE_DETAIL))
 
-    print(f"""
+    remember_queue = app.config.get("remember_queue")
+    if remember_queue is not None:
+        reporter.attach_runtime(
+            processor=processor,
+            remember_queue=remember_queue,
+            host=host,
+            port=listen_port,
+            storage_path=storage_path,
+            service_config=config,
+        )
+    if log_mode == LOG_MODE_MONITOR:
+        logging.getLogger("werkzeug").setLevel(logging.ERROR)
+        reporter.info("监控面板已启用；任务细节日志已收敛为总览。")
+        reporter.start()
+        reporter.render_once()
+    else:
+        print(f"""
 ╔══════════════════════════════════════════════════════════╗
 ║     Temporal_Memory_Graph — 自然语言记忆图 API           ║
 ╚══════════════════════════════════════════════════════════╝
 
   当前大脑记忆库:
-    实体: {total_entities}  关系: {total_relations}  记忆缓存: {total_memory_caches}
+    实体: {stats['entities']}  关系: {stats['relations']}  记忆缓存: {stats['memory_caches']}
 
   服务地址: http://{host}:{listen_port}
   健康检查: GET  http://{host}:{listen_port}/api/health
   LLM 健康: GET  http://{host}:{listen_port}/api/health/llm
   记忆写入: POST http://{host}:{listen_port}/api/remember （JSON 含 text / text_b64 等）
   任务状态: GET  http://{host}:{listen_port}/api/remember/tasks/<task_id>
+  监控快照: GET  http://{host}:{listen_port}/api/remember/monitor
   语义检索: POST http://{host}:{listen_port}/api/find
   接口索引: GET  http://{host}:{listen_port}/api/routes
   原子查询: GET  http://{host}:{listen_port}/api/find/...
 
   存储路径: {storage_path}
   HTTP 多线程: 处理中 Find 与 Remember 可并行（Flask threaded）
+  日志模式: {log_mode}
 
   按 Ctrl+C 停止服务
 """)
@@ -1823,9 +2436,9 @@ def main() -> int:
     try:
         app.run(host=host, port=listen_port, debug=args.debug, threaded=threaded)
     except OSError as e:
-        print(f"错误：HTTP 服务启动失败: {e}", file=sys.stderr)
+        reporter.error(f"错误：HTTP 服务启动失败: {e}", force_print=True)
         if e.errno == errno.EADDRINUSE:
-            print("  端口在探测后仍被占用（竞态），请重试或更换端口。", file=sys.stderr)
+            reporter.error("  端口在探测后仍被占用（竞态），请重试或更换端口。", force_print=True)
         return 1
     return 0
 

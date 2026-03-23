@@ -1,7 +1,7 @@
 """
 主处理流程：整合所有模块，实现完整的文档处理pipeline
 """
-from typing import List, Optional, Dict
+from typing import Any, Callable, Dict, List, Optional
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed, Future
 import threading
@@ -134,7 +134,49 @@ class TemporalMemoryGraphProcessor:
         
         # 流水线并行：cache 更新串行锁 + 抽取/处理线程池（max_workers 限制同时处理的窗口数）
         self._cache_lock = threading.Lock()
-        self._extraction_executor = ThreadPoolExecutor(max_workers=_max_concurrent_windows)
+        self._max_concurrent_windows = _max_concurrent_windows
+        self._runtime_lock = threading.Lock()
+        self._active_window_extractions = 0
+        self._peak_window_extractions = 0
+        self._extraction_executor = ThreadPoolExecutor(
+            max_workers=_max_concurrent_windows,
+            thread_name_prefix="tmg-window",
+        )
+
+    def get_runtime_stats(self) -> Dict[str, int]:
+        with self._runtime_lock:
+            return {
+                "configured_window_workers": self._max_concurrent_windows,
+                "configured_llm_threads": self.llm_threads,
+                "active_window_extractions": self._active_window_extractions,
+                "peak_window_extractions": self._peak_window_extractions,
+            }
+
+    def _run_extraction_job(
+        self,
+        new_memory_cache: MemoryCache,
+        input_text: str,
+        document_name: str,
+        verbose: bool = True,
+        event_time: Optional[datetime] = None,
+    ):
+        with self._runtime_lock:
+            self._active_window_extractions += 1
+            self._peak_window_extractions = max(
+                self._peak_window_extractions,
+                self._active_window_extractions,
+            )
+        try:
+            return self._process_extraction(
+                new_memory_cache,
+                input_text,
+                document_name,
+                verbose=verbose,
+                event_time=event_time,
+            )
+        finally:
+            with self._runtime_lock:
+                self._active_window_extractions = max(0, self._active_window_extractions - 1)
     
     def process_documents(self, document_paths: List[str], verbose: bool = True,
                          similarity_threshold: Optional[float] = None,
@@ -393,7 +435,7 @@ class TemporalMemoryGraphProcessor:
                 )
 
             fut = self._extraction_executor.submit(
-                self._process_extraction,
+                self._run_extraction_job,
                 new_mc, chunk, doc_name,
                 verbose=verbose, event_time=event_time,
             )
@@ -419,7 +461,8 @@ class TemporalMemoryGraphProcessor:
                                 event_time: Optional[datetime] = None,
                                 document_path: str = "",
                                 previous_overall_cache: Optional[MemoryCache] = None,
-                                verbose: bool = False) -> MemoryCache:
+                                verbose: bool = False,
+                                progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None) -> MemoryCache:
         """
         阶段1：仅生成文档整体记忆（描述即将处理的内容）。
         生成后即可作为下一文档 B 的初始记忆，无需等本文档最后一窗。
@@ -432,13 +475,22 @@ class TemporalMemoryGraphProcessor:
             event_time=event_time,
             previous_overall_content=prev_content,
         )
+        if progress_callback is not None:
+            progress_callback({
+                "phase": "phase1",
+                "phase_label": "整体记忆已生成",
+                "completed": 1,
+                "total": 1,
+                "message": f"文档整体记忆已生成: {doc_name}",
+            })
         if verbose:
             print(f"[Phase1] 文档整体记忆已生成: {overall.id[:20]}…, doc_name={doc_name!r}")
         return overall
 
     def remember_phase2_windows(self, text: str, doc_name: str = "api_input", verbose: bool = False,
                                 event_time: Optional[datetime] = None, document_path: str = "",
-                                overall_cache: Optional[MemoryCache] = None) -> Dict:
+                                overall_cache: Optional[MemoryCache] = None,
+                                progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None) -> Dict:
         """
         阶段2：以整体记忆为起点，跑完所有滑窗（更新缓存 + 抽取实体/关系并写入）。
         overall_cache 即 phase1 返回的文档整体记忆，作为第一窗的 current_cache。
@@ -453,6 +505,18 @@ class TemporalMemoryGraphProcessor:
         chunk_idx = 0
         last_memory_cache_id = None
         futures: List[Future] = []
+        total_chunks = 1
+        if total_length > 0:
+            stride = max(1, window_size - overlap)
+            total_chunks = 1 + max(0, (max(total_length - window_size, 0) + stride - 1) // stride)
+        if progress_callback is not None:
+            progress_callback({
+                "phase": "phase2",
+                "phase_label": "准备滑窗处理",
+                "completed": 0,
+                "total": total_chunks,
+                "message": f"准备处理 {total_chunks} 个窗口",
+            })
 
         while start < total_length:
             end = min(start + window_size, total_length)
@@ -475,13 +539,24 @@ class TemporalMemoryGraphProcessor:
                 )
 
             fut = self._extraction_executor.submit(
-                self._process_extraction,
+                self._run_extraction_job,
                 new_mc, chunk, doc_name,
                 verbose=verbose, event_time=event_time,
             )
             futures.append(fut)
             last_memory_cache_id = new_mc.id
             chunk_idx += 1
+            if progress_callback is not None:
+                progress_callback({
+                    "phase": "phase2",
+                    "phase_label": "滑窗处理进行中",
+                    "completed": chunk_idx,
+                    "total": total_chunks,
+                    "message": f"窗口 {chunk_idx}/{total_chunks} ({start}-{end}/{total_length})",
+                    "window_start": start,
+                    "window_end": end,
+                    "text_length": total_length,
+                })
             if end >= total_length:
                 break
             start = end - overlap
@@ -608,7 +683,7 @@ class TemporalMemoryGraphProcessor:
             # 使用多线程并行处理实体增强
             if self.llm_threads > 1 and len(extracted_entities) > 1:
                 enhanced_entities = []
-                with ThreadPoolExecutor(max_workers=self.llm_threads) as executor:
+                with ThreadPoolExecutor(max_workers=self.llm_threads, thread_name_prefix="tmg-llm") as executor:
                     future_entity2 = {
                         executor.submit(
                             self.llm_client.enhance_entity_content,
@@ -1984,7 +2059,7 @@ class TemporalMemoryGraphProcessor:
                     # 使用多线程并行处理
                     if verbose:
                         print(f"      使用 {self.llm_threads} 个线程并行处理 {len(relations_to_process)} 个关系...")
-                    with ThreadPoolExecutor(max_workers=self.llm_threads) as executor:
+                    with ThreadPoolExecutor(max_workers=self.llm_threads, thread_name_prefix="tmg-llm") as executor:
                         # 提交所有任务（多线程模式下不显示每个关系的详细信息）
                         future_to_relation = {
                             executor.submit(
@@ -2542,7 +2617,7 @@ class TemporalMemoryGraphProcessor:
                 return task_result
         
         # 主调度循环
-        with ThreadPoolExecutor(max_workers=self.llm_threads) as executor:
+        with ThreadPoolExecutor(max_workers=self.llm_threads, thread_name_prefix="tmg-llm") as executor:
             futures = {}
             
             while True:
