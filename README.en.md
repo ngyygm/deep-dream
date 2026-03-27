@@ -97,23 +97,50 @@ flowchart TB
 ```bash
 cp service_config.example.json service_config.json
 # Edit service_config.json: LLM and embedding
-python service_api.py --config service_config.json
+python -m server.api --config service_config.json
 ```
 
-**Remember (GET query params only; use `text_b64` for long text):**
+Open **http://localhost:16200/** in your browser to access the Web Dashboard. The dashboard shares port 16200 with the API — no extra process needed.
+
+**Web Dashboard — 6 pages:**
+
+| Page | Features |
+|------|----------|
+| **Dashboard** | System overview: uptime, graph count, entity/relation stats, API success rate, task queue, system logs (5s auto-refresh) |
+| **Graph** | Interactive graph visualization (vis-network.js): force-directed layout, adjustable entity/relation limits, click nodes for detail & version history |
+| **Memory** | Memory management: text input or drag-and-drop file upload, event time & source settings, task queue viewer, document list |
+| **Search** | Semantic search: natural-language queries, similarity threshold, max results, time-range filter, graph expansion, multi-query batch mode |
+| **Entities** | Entity browser: list all entities, semantic search, click for detail & version timeline (expandable content, name-change diffs) |
+| **Relations** | Relation browser: list all relations, semantic search, query relations between two entities |
+
+Tech stack: Pure HTML/CSS/JS (no build tools), Tailwind CSS + vis-network.js + Lucide Icons, SPA hash routing.
+
+**Remember (POST JSON or multipart file upload; async, returns task_id):**
+
+> `graph_id` is optional — defaults to `"default"` when omitted. Specify explicitly only when you need multi-graph isolation.
 
 ```bash
-curl -s -G http://localhost:16200/api/remember \
-  --data-urlencode "text=Lin Heihei is an archaeology PhD who met a talking white fox in a cave." \
-  --data-urlencode "event_time=2026-03-09T14:00:00" | jq
+# JSON body
+curl -s -X POST http://localhost:16200/api/v1/remember \
+  -H "Content-Type: application/json" \
+  -d '{"text":"Lin Heihei is an archaeology PhD who met a talking white fox in a cave.","event_time":"2026-03-09T14:00:00"}' | jq
+# → {"success": true, "data": {"task_id": "abc123", "status": "queued", ...}}
+
+# File upload
+curl -s -X POST http://localhost:16200/api/v1/remember \
+  -F "file=@document.txt" \
+  -F "source_document=document.txt" | jq
+
+# Check task status
+curl -s "http://localhost:16200/api/v1/remember/tasks/abc123" | jq
 ```
 
-Unfinished tasks are persisted under `storage_path/remember_journal/` and re-queued after restart. With `flask_threaded: true` (default), Find stays responsive while Remember runs.
+Unfinished tasks are persisted under `storage_path/<graph_id>/tasks/` and re-queued after restart. Original text is saved as flat files `docs/{YYYYMMDD_HHMMSS}_{source_name}.txt`, sorted naturally by filename (i.e. chronologically). With `flask_threaded: true` (default), Find stays responsive while Remember runs.
 
 **Find:**
 
 ```bash
-curl -s -X POST http://localhost:16200/api/find \
+curl -s -X POST http://localhost:16200/api/v1/find \
   -H "Content-Type: application/json" \
   -d '{"query": "What happened between Lin Heihei and the white fox?"}' | jq
 ```
@@ -140,9 +167,9 @@ TMG ships a **Skill** so that Cursor, Claude, and similar agents can deploy, con
    When the user says “remember this,” “look up what we knew about X,” or “connect to TMG memory,” the agent reads the Skill and runs the flow (check service → remember/find).
 
 3. **What the agent will do**  
-   - If the service is not running: clone repo → configure `service_config.json` → run `python service_api.py` → verify with `GET /api/health`.  
-   - Remember: `POST /api/remember` with JSON fields `text` or `text_b64` (batch substantial content; avoid one-sentence calls).  
-   - Find: `POST /api/find` with natural-language `query`; use entity/relation/version atomic endpoints when needed.
+   - If the service is not running: clone repo → configure `service_config.json` → run `python -m server.api` → verify with `GET /api/v1/health`.
+   - Remember: `POST /api/v1/remember` with JSON field `text` (or multipart `file` upload), optional `graph_id` (defaults to `"default"`), optional `source_document`/`source_name`/`event_time`/`load_cache_memory`.
+   - Find: `POST /api/v1/find` with natural-language `query` (`graph_id` optional, defaults to `"default"`); use entity/relation/version atomic endpoints when needed.
 
 ---
 
@@ -150,24 +177,28 @@ TMG ships a **Skill** so that Cursor, Claude, and similar agents can deploy, con
 
 ### Remember — write (POST)
 
-POST JSON body (form is also accepted); `text` or `text_b64` is required. Batch substantial content — avoid one-sentence calls.
+POST JSON body (multipart file upload is also accepted); `text` or `file` is required. Batch substantial content — avoid one-sentence calls.
 
 | Param | Required | Description |
 |-------|----------|-------------|
-| `text` | One of `text` / `text_b64` | Natural-language text |
-| `text_b64` | One of `text` / `text_b64` | UTF-8 text as standard Base64 |
-| `source_name` / `doc_name` | No | Source label |
+| `graph_id` | No | Target graph ID (defaults to `"default"`) |
+| `text` | One of `text` / `file` | Natural-language text (JSON body) |
+| `file` | One of `text` / `file` | Uploaded file (multipart) |
+| `source_document` | No | Source document name (backward-compat: `doc_name`) |
+| `source_name` | No | Source label |
 | `event_time` | No | ISO 8601 — when events actually happened |
 | `load_cache_memory` | No | `true`/`false` |
 
-The service saves the full text to `storage_path/originals/` and journals task state under `remember_journal/`. After a crash, queued/running tasks are re-queued. Internally: chunking, memory cache update, entity/relation extraction, graph alignment, versioned write.
+The service saves the full text to `storage_path/<graph_id>/docs/{YYYYMMDD_HHMMSS}_{source_name}.txt` (flat files sorted naturally by filename, i.e. chronologically) and journals task state under `<graph_id>/tasks/`. After a crash, queued/running tasks are re-queued. Internally: chunking, memory cache update, entity/relation extraction, graph alignment, versioned write.
 
 ### Find — retrieve
 
-- **Recommended:** `POST /api/find` — semantic recall, graph expansion, and time filtering in one call; required: `query`; rest optional.  
-- **Atomic endpoints:** Entity search (`/api/find/entities/search`, etc.), relations, memory cache, stats (`/api/find/stats`), batch fetch (`POST /api/find/candidates`).
+All Find endpoints accept an optional `graph_id` (query string, JSON body, or form field) — defaults to `"default"` when omitted.
 
-Full paths and parameters: see `skills/tmg-memory-graph/reference.md` and `service_api.py`.
+- **Recommended:** `POST /api/v1/find` — semantic recall, graph expansion, and time filtering in one call; required: `query`; rest optional.
+- **Atomic endpoints:** Entity search (`/api/v1/find/entities/search`, etc.), relations, memory cache, stats (`/api/v1/find/stats`), batch fetch (`POST /api/v1/find/candidates`).
+
+Full paths and parameters: see `skills/tmg-memory-graph/reference.md` and `server/api.py`.
 
 ### Response format
 

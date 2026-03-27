@@ -9,7 +9,7 @@ from typing import Any, Dict, Tuple
 DEFAULTS = {
     "host": "0.0.0.0",
     "port": 5001,
-    "storage_path": "./graph/tmg_storage",
+    "storage_path": "./graph",
     "llm": {
         "api_key": None,
         "model": "gpt-4",
@@ -29,7 +29,6 @@ DEFAULTS = {
             "queue_workers": 1,
             "window_workers": 1,
             "llm_call_workers": 1,
-            "max_total_workers": None,
         },
         "retry": {
             "queue_max_retries": 2,
@@ -91,18 +90,8 @@ def _normalize_runtime_config(config: Dict[str, Any]) -> Dict[str, Any]:
         cfg.get("remember_workers"),
     )
     window_workers = _pick(
-        conc.get("window_workers"),
         pipeline.get("max_concurrent_windows"),
         cfg.get("max_concurrent_windows"),
-    )
-    llm_call_workers = _pick(
-        conc.get("llm_call_workers"),
-        pipeline.get("llm_threads"),
-        cfg.get("llm_threads"),
-    )
-    max_total_workers = _pick(
-        conc.get("max_total_workers"),
-        cfg.get("max_total_worker_threads"),
     )
     queue_max_retries = _pick(
         retry.get("queue_max_retries"),
@@ -116,8 +105,6 @@ def _normalize_runtime_config(config: Dict[str, Any]) -> Dict[str, Any]:
     # 回填新命名
     conc["queue_workers"] = int(queue_workers if queue_workers is not None else 1)
     conc["window_workers"] = int(window_workers if window_workers is not None else 1)
-    conc["llm_call_workers"] = int(llm_call_workers if llm_call_workers is not None else 1)
-    conc["max_total_workers"] = max_total_workers
     retry["queue_max_retries"] = int(queue_max_retries if queue_max_retries is not None else 2)
     retry["queue_retry_delay_seconds"] = float(
         queue_retry_delay_seconds if queue_retry_delay_seconds is not None else 2
@@ -130,32 +117,65 @@ def _normalize_runtime_config(config: Dict[str, Any]) -> Dict[str, Any]:
     cfg["remember_workers"] = conc["queue_workers"]
     cfg["remember_max_retries"] = retry["queue_max_retries"]
     cfg["remember_retry_delay_seconds"] = retry["queue_retry_delay_seconds"]
-    cfg["max_total_worker_threads"] = conc["max_total_workers"]
 
     pipeline["max_concurrent_windows"] = conc["window_workers"]
-    pipeline["llm_threads"] = conc["llm_call_workers"]
     cfg["pipeline"] = pipeline
-    cfg["llm_threads"] = conc["llm_call_workers"]
 
     return cfg
+
+
+def _validate_config(config: Dict[str, Any]) -> None:
+    """校验配置值合法性，不合法时抛出 ConfigError。"""
+    errors: list = []
+
+    port = config.get("port")
+    if port is not None and not (1 <= int(port) <= 65535):
+        errors.append(f"port 应在 1-65535 之间，当前值: {port}")
+
+    llm = config.get("llm") or {}
+    if not llm.get("api_key") and not llm.get("base_url"):
+        errors.append("llm.api_key 或 llm.base_url 至少需要配置一个")
+
+    chunking = config.get("chunking") or {}
+    ws = chunking.get("window_size", 1000)
+    ol = chunking.get("overlap", 200)
+    if ws is not None and ol is not None and int(ol) >= int(ws):
+        errors.append(f"chunking.overlap ({ol}) 必须小于 chunking.window_size ({ws})")
+
+    pipeline = config.get("pipeline") or {}
+    thresholds = [
+        ("pipeline.similarity_threshold", pipeline.get("similarity_threshold")),
+        ("pipeline.jaccard_search_threshold", pipeline.get("jaccard_search_threshold")),
+        ("pipeline.embedding_name_search_threshold", pipeline.get("embedding_name_search_threshold")),
+        ("pipeline.embedding_full_search_threshold", pipeline.get("embedding_full_search_threshold")),
+    ]
+    for name, val in thresholds:
+        if val is not None and not (0.0 <= float(val) <= 1.0):
+            errors.append(f"{name} 应在 0.0-1.0 之间，当前值: {val}")
+
+    if errors:
+        from processor.exceptions import ConfigError
+        raise ConfigError("配置校验失败:\n  " + "\n  ".join(errors))
 
 
 def load_config(config_path: str) -> Dict[str, Any]:
     """
     从 JSON 文件加载配置，与默认值合并。
-    
+
     Args:
         config_path: 配置文件路径（如 service_config.json）
-    
+
     Returns:
         合并后的配置字典，包含 host, port, storage_path, llm, embedding, chunking 等。
     """
     path = Path(config_path)
     if not path.exists():
         raise FileNotFoundError(f"配置文件不存在: {config_path}")
-    
+
     with open(path, "r", encoding="utf-8") as f:
         user = json.load(f)
-    
+
     merged = _deep_merge(DEFAULTS, user)
-    return _normalize_runtime_config(merged)
+    merged = _normalize_runtime_config(merged)
+    _validate_config(merged)
+    return merged

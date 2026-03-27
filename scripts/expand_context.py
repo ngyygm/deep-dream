@@ -120,7 +120,7 @@ def expand_from_entity(storage, entity_name, expand_depth=2):
     # 如果需要更深层的扩展
     if expand_depth > 1:
         for rel in relations[:20]:  # 限制数量避免过度扩展
-            other_id = rel.entity2_absolute_id if rel.entity1_absolute_id != entity.id else rel.entity1_absolute_id
+            other_id = rel.entity2_absolute_id if rel.entity1_absolute_id != entity.absolute_id else rel.entity1_absolute_id
             other_entity = storage.get_entity_by_absolute_id(other_id)
 
             if other_entity:
@@ -197,10 +197,10 @@ def print_expanded_caches(caches, center_cache_id=None):
     print(f"\n找到 {len(caches)} 个相关缓存:\n")
 
     for i, cache in enumerate(caches, 1):
-        is_center = cache.id == center_cache_id if center_cache_id else False
+        is_center = cache.absolute_id == center_cache_id if center_cache_id else False
         marker = "★ " if is_center else f"{i}. "
 
-        print(f"{marker}缓存: {cache.id}")
+        print(f"{marker}缓存: {cache.absolute_id}")
         print(f"   时间: {cache.physical_time}")
         print(f"   类型: {cache.activity_type}")
 

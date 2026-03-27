@@ -18,3 +18,28 @@ __pycache__/
 *.pyo
 *.pyd
 .Python
+
+# 虚拟环境
+.venv/
+venv/
+env/
+
+# 测试与类型检查缓存
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# 打包
+*.egg-info/
+dist/
+build/
+
+# 流水线蒸馏输出（与 service_config.pipeline.distill_data_dir 默认一致）
+distill_pipeline/
+
+# 日志与系统文件
+*.log
+.DS_Store

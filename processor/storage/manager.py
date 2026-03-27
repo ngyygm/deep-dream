@@ -2,6 +2,7 @@
 存储层：SQLite数据库 + Markdown文件存储
 """
 import sqlite3
+import threading
 import os
 import json
 from datetime import datetime, timezone
@@ -11,18 +12,19 @@ import hashlib
 import numpy as np
 import difflib
 
-from .models import MemoryCache, Entity, Relation
+from ..models import MemoryCache, Entity, Relation
+from ..utils import clean_markdown_code_blocks, wprint
 
 
 class StorageManager:
     """存储管理器"""
-    
-    def __init__(self, storage_path: str, embedding_client=None, 
+
+    def __init__(self, storage_path: str, embedding_client=None,
                  entity_content_snippet_length: int = 50,
                  relation_content_snippet_length: int = 50):
         """
         初始化存储管理器
-        
+
         Args:
             storage_path: 存储路径
             embedding_client: Embedding客户端（可选）
@@ -31,25 +33,227 @@ class StorageManager:
         """
         self.storage_path = Path(storage_path)
         self.storage_path.mkdir(parents=True, exist_ok=True)
-        
-        # 创建子目录
+
+        # 新目录结构
         self.db_path = self.storage_path / "graph.db"
+        self.docs_dir = self.storage_path / "docs"
+        self.docs_dir.mkdir(exist_ok=True)
+
+        # 保留旧目录引用（用于迁移和向后兼容读取）
         self.cache_dir = self.storage_path / "memory_caches"
-        self.cache_dir.mkdir(exist_ok=True)
-        
-        # 创建json和md子文件夹
         self.cache_json_dir = self.cache_dir / "json"
         self.cache_md_dir = self.cache_dir / "md"
-        self.cache_json_dir.mkdir(exist_ok=True)
-        self.cache_md_dir.mkdir(exist_ok=True)
-        
+
+        # 缓存 cache_id → doc_hash 映射（用于从 cache_id 反查文档目录）
+        self._id_to_doc_hash: Dict[str, str] = {}
+
+        # 线程局部连接（每个线程复用同一个连接）
+        self._local = threading.local()
+
         # Embedding客户端
         self.embedding_client = embedding_client
         self.entity_content_snippet_length = entity_content_snippet_length
         self.relation_content_snippet_length = relation_content_snippet_length
-        
+
         # 初始化数据库
         self._init_database()
+
+        # 自动迁移旧目录结构
+        self._migrate_storage()
+
+    # ------------------------------------------------------------------
+    # 连接管理
+    # ------------------------------------------------------------------
+
+    def _ensure_tables(self, conn):
+        """在已有连接上确保表结构存在（数据库文件被删除后重建场景）。
+        仅执行 CREATE TABLE IF NOT EXISTS，不重复做迁移。"""
+        c = conn.cursor()
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS entities (
+                id TEXT PRIMARY KEY,
+                entity_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                content TEXT NOT NULL,
+                physical_time TEXT NOT NULL,
+                memory_cache_id TEXT NOT NULL,
+                embedding BLOB
+            )
+        """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS relations (
+                id TEXT PRIMARY KEY,
+                relation_id TEXT NOT NULL,
+                entity1_absolute_id TEXT NOT NULL,
+                entity2_absolute_id TEXT NOT NULL,
+                content TEXT NOT NULL,
+                physical_time TEXT NOT NULL,
+                memory_cache_id TEXT NOT NULL,
+                embedding BLOB
+            )
+        """)
+        c.execute("CREATE INDEX IF NOT EXISTS idx_entity_id ON entities(entity_id)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_entity_name ON entities(name)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_entity_time ON entities(physical_time)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_relation_id ON relations(relation_id)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_relation_entities ON relations(entity1_absolute_id, entity2_absolute_id)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_relation_time ON relations(physical_time)")
+        conn.commit()
+
+    def _ensure_dirs(self):
+        """确保关键目录存在（运行中目录被删除时自动恢复）。"""
+        self.storage_path.mkdir(parents=True, exist_ok=True)
+        self.docs_dir.mkdir(exist_ok=True)
+
+    def _get_conn(self):
+        """获取当前线程的 SQLite 连接（线程局部复用，启用 WAL 模式）。
+        如果连接失效或目录/数据库丢失，自动重建表结构。"""
+        conn = getattr(self._local, 'conn', None)
+        if conn is not None:
+            try:
+                conn.execute("SELECT 1 FROM entities LIMIT 0")
+                return conn
+            except Exception:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                self._local.conn = None
+        # 确保目录存在
+        self._ensure_dirs()
+        conn = sqlite3.connect(str(self.db_path), check_same_thread=False, timeout=30)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA foreign_keys=ON")
+        # 确保表结构存在（数据库文件被删除后重建场景）
+        self._ensure_tables(conn)
+        self._local.conn = conn
+        return conn
+
+    def close(self):
+        """关闭当前线程的数据库连接。"""
+        conn = getattr(self._local, 'conn', None)
+        if conn is not None:
+            conn.close()
+            self._local.conn = None
+
+    def _migrate_storage(self):
+        """启动时自动将旧目录结构迁移到新结构（幂等，旧目录保留不删）。"""
+        # 1. 迁移 remember_journal/ → tasks/
+        old_journal = self.storage_path / "remember_journal"
+        new_journal = self.storage_path / "tasks"
+        if old_journal.is_dir() and not new_journal.exists():
+            try:
+                old_journal.rename(new_journal)
+                wprint(f"[迁移] {old_journal} → {new_journal}")
+            except OSError as e:
+                wprint(f"[迁移警告] remember_journal 重命名失败: {e}")
+
+        # 1.5 迁移旧的任务独立 JSON 文件 → queue.jsonl（仅保留未完成的任务）
+        tasks_dir = self.storage_path / "tasks"
+        queue_file = tasks_dir / "queue.jsonl"
+        if tasks_dir.is_dir() and not queue_file.exists():
+            old_json_files = list(tasks_dir.glob("*.json"))
+            if old_json_files:
+                try:
+                    migrated = 0
+                    lines: list = []
+                    for jf in old_json_files:
+                        if jf.name.endswith(".tmp") or jf.name.endswith(".bad.json"):
+                            continue
+                        try:
+                            rec = json.loads(jf.read_text(encoding="utf-8"))
+                            st = rec.get("status")
+                            if st in ("queued", "running"):
+                                lines.append(json.dumps(rec, ensure_ascii=False))
+                                migrated += 1
+                        except Exception:
+                            pass
+                    if lines:
+                        queue_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+                        wprint(f"[迁移] {len(old_json_files)} 个旧任务文件 → queue.jsonl（{migrated} 个未完成）")
+                    # 清理旧的独立 JSON 文件
+                    for jf in old_json_files:
+                        try:
+                            jf.unlink()
+                        except Exception:
+                            pass
+                except Exception as e:
+                    wprint(f"[迁移警告] 任务文件迁移失败: {e}")
+
+        # 2. 迁移 memory_caches/ → docs/
+        old_cache_json = self.storage_path / "memory_caches" / "json"
+        if old_cache_json.is_dir():
+            for json_file in old_cache_json.glob("*.json"):
+                try:
+                    meta = json.loads(json_file.read_text(encoding="utf-8"))
+                    text = meta.get("text", "")
+                    if not text:
+                        continue
+                    doc_hash = hashlib.md5(text.encode("utf-8")).hexdigest()[:12]
+                    doc_dir = self.docs_dir / doc_hash
+                    doc_dir.mkdir(parents=True, exist_ok=True)
+
+                    # 迁移原始文本
+                    original_path = doc_dir / "original.txt"
+                    if not original_path.exists():
+                        original_path.write_text(text, encoding="utf-8")
+
+                    # 迁移元数据
+                    new_meta = {
+                        "absolute_id": meta.get("id"),
+                        "physical_time": meta.get("physical_time"),
+                        "activity_type": meta.get("activity_type"),
+                        "source_document": meta.get("source_document") or meta.get("doc_name", ""),
+                        "text": text,
+                        "document_path": meta.get("document_path", ""),
+                        "doc_hash": doc_hash,
+                    }
+                    (doc_dir / "meta.json").write_text(
+                        json.dumps(new_meta, ensure_ascii=False, indent=2), encoding="utf-8"
+                    )
+
+                    # 迁移 cache.md
+                    cache_id = meta.get("id", "")
+                    md_file = (self.storage_path / "memory_caches" / "md" / f"{cache_id}.md")
+                    if md_file.exists():
+                        (doc_dir / "cache.md").write_text(md_file.read_text(encoding="utf-8"), encoding="utf-8")
+
+                    # 更新缓存映射
+                    if cache_id:
+                        self._id_to_doc_hash[cache_id] = doc_hash
+                except Exception as e:
+                    wprint(f"[迁移警告] 跳过文件 {json_file}: {e}")
+
+        # 3. 迁移 originals/ 中独立保存的文件（未被 memory_caches 引用的）
+        old_originals = self.storage_path / "originals"
+        if old_originals.is_dir():
+            for txt_file in old_originals.glob("*.txt"):
+                try:
+                    text = txt_file.read_text(encoding="utf-8")
+                    doc_hash = hashlib.md5(text.encode("utf-8")).hexdigest()[:12]
+                    doc_dir = self.docs_dir / doc_hash
+                    doc_dir.mkdir(parents=True, exist_ok=True)
+                    original_path = doc_dir / "original.txt"
+                    if not original_path.exists():
+                        original_path.write_text(text, encoding="utf-8")
+                except Exception as e:
+                    wprint(f"[迁移警告] 跳过文件 {txt_file}: {e}")
+
+        # 4. 构建新结构中已有的 id→doc_hash 映射
+        if self.docs_dir.is_dir():
+            for doc_dir in self.docs_dir.iterdir():
+                if not doc_dir.is_dir():
+                    continue
+                meta_path = doc_dir / "meta.json"
+                if meta_path.exists():
+                    try:
+                        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                        cache_id = meta.get("absolute_id") or meta.get("id")
+                        if cache_id:
+                            self._id_to_doc_hash[cache_id] = doc_dir.name
+                    except Exception:
+                        pass
 
     def _normalize_datetime_for_compare(self, t: Optional[Any]) -> datetime:
         """将时间归一为可比较的 naive datetime，供版本按时间排序（处理 None / 字符串 / 时区）。"""
@@ -62,8 +266,8 @@ class StorageManager:
         return t
     
     def _init_database(self):
-        """初始化SQLite数据库"""
-        conn = sqlite3.connect(self.db_path)
+        """初始化SQLite数据库（使用独立连接，此时线程池尚未启用）。"""
+        conn = sqlite3.connect(str(self.db_path))
         cursor = conn.cursor()
         
         # 创建实体表
@@ -107,14 +311,26 @@ class StorageManager:
         except sqlite3.OperationalError:
             pass  # 字段已存在
         
-        # 添加doc_name字段（如果不存在）
+        # 迁移 doc_name → source_document（必须先 rename，再 add）
+        # 步骤1：如果旧列 doc_name 存在，重命名为 source_document
         try:
-            cursor.execute("ALTER TABLE entities ADD COLUMN doc_name TEXT DEFAULT ''")
+            cursor.execute("ALTER TABLE entities RENAME COLUMN doc_name TO source_document")
+        except sqlite3.OperationalError:
+            pass  # 列不存在或已重命名
+
+        try:
+            cursor.execute("ALTER TABLE relations RENAME COLUMN doc_name TO source_document")
+        except sqlite3.OperationalError:
+            pass  # 列不存在或已重命名
+
+        # 步骤2：如果 source_document 仍不存在（全新数据库），添加它
+        try:
+            cursor.execute("ALTER TABLE entities ADD COLUMN source_document TEXT DEFAULT ''")
         except sqlite3.OperationalError:
             pass  # 字段已存在
-        
+
         try:
-            cursor.execute("ALTER TABLE relations ADD COLUMN doc_name TEXT DEFAULT ''")
+            cursor.execute("ALTER TABLE relations ADD COLUMN source_document TEXT DEFAULT ''")
         except sqlite3.OperationalError:
             pass  # 字段已存在
         
@@ -125,10 +341,16 @@ class StorageManager:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_relation_id ON relations(relation_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_relation_entities ON relations(entity1_absolute_id, entity2_absolute_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_relation_time ON relations(physical_time)")
-        
+
+        # 唯一索引：防止并行实体创建时产生重复（entity_id + physical_time 组合唯一）
+        try:
+            cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_entity_unique ON entities(entity_id, physical_time)")
+        except sqlite3.OperationalError:
+            pass  # 索引已存在或存在重复数据，忽略
+
         conn.commit()
         conn.close()
-    
+
     def _migrate_relation_schema(self, cursor):
         """
         迁移关系表 schema：从 from_entity_absolute_id/to_entity_absolute_id 迁移到 entity1_absolute_id/entity2_absolute_id
@@ -191,163 +413,269 @@ class StorageManager:
             # 注意：不删除旧字段，保留以支持向后兼容
             # SQLite 不支持直接删除列，需要重建表，这里暂时保留旧字段
     
-    def _clean_markdown_code_blocks(self, text: str) -> str:
-        """
-        清理文本中的 markdown 代码块标识符
-        
-        Args:
-            text: 原始文本
-            
-        Returns:
-            清理后的文本（移除 ```markdown 和 ``` 等代码块标识符）
-        """
-        import re
-        # 移除开头的 ```markdown 或 ``` 标识符
-        text = re.sub(r'^```\s*markdown\s*\n?', '', text, flags=re.MULTILINE | re.IGNORECASE)
-        text = re.sub(r'^```\s*\n?', '', text, flags=re.MULTILINE)
-        # 移除结尾的 ``` 标识符
-        text = re.sub(r'\n?```\s*$', '', text, flags=re.MULTILINE)
-        # 移除首尾空白
-        text = text.strip()
-        return text
-    
     # ========== MemoryCache 操作 ==========
     
-    def save_memory_cache(self, cache: MemoryCache, text: str = "", document_path: str = "") -> str:
-        """保存记忆缓存到Markdown文件
-        
+    def save_memory_cache(self, cache: MemoryCache, text: str = "", document_path: str = "", doc_hash: str = "") -> str:
+        """保存记忆缓存到 docs/{timestamp}_{doc_hash}/ 目录
+
         Args:
             cache: 记忆缓存对象
-            text: 当前处理的文本内容（可选）
+            text: 当前处理的文本内容（可选，用于生成 doc_hash）
             document_path: 当前处理的文档完整路径（可选，用于断点续传定位）
+            doc_hash: 文档 hash（可选，不传则从 text 自动计算）
         """
-        # 使用cache.id作为文件名基础，确保JSON和MD文件名一一对应
-        # cache.id格式：cache_{timestamp}_{uuid}
-        filename = f"{cache.id}.md"
-        filepath = self.cache_md_dir / filename
-        
-        # 清理 markdown 代码块标识符（双重保险）
-        content = self._clean_markdown_code_blocks(cache.content)
-        
-        with open(filepath, 'w', encoding='utf-8') as f:
-            f.write(content)
-        
-        # 保存元数据到JSON文件
-        metadata = {
-            'id': cache.id,
-            'physical_time': cache.physical_time.isoformat(),
-            'activity_type': cache.activity_type,
-            'doc_name': cache.doc_name,  # 文档名称
-            'filename': filename,
-            'text': text,  # 当前处理的文本内容
-            'document_path': document_path  # 当前处理的文档完整路径
+        if not doc_hash and text:
+            doc_hash = hashlib.md5(text.encode("utf-8")).hexdigest()[:12]
+        if not doc_hash:
+            doc_hash = "unknown"
+
+        # 目录命名：时间戳前缀 + hash 后缀，按文件名自然排序即时间排序
+        ts_prefix = cache.physical_time.strftime("%Y%m%d_%H%M%S") if cache.physical_time else datetime.now().strftime("%Y%m%d_%H%M%S")
+        dir_name = f"{ts_prefix}_{doc_hash}"
+        doc_dir = self.docs_dir / dir_name
+        self._ensure_dirs()
+        doc_dir.mkdir(parents=True, exist_ok=True)
+
+        # 保存原始文本（去重：已存在则跳过）
+        if text:
+            original_path = doc_dir / "original.txt"
+            if not original_path.exists():
+                original_path.write_text(text, encoding="utf-8")
+
+        # 保存 LLM 摘要
+        content = clean_markdown_code_blocks(cache.content)
+        (doc_dir / "cache.md").write_text(content, encoding="utf-8")
+
+        # 保存元数据
+        meta = {
+            "absolute_id": cache.absolute_id,
+            "physical_time": cache.physical_time.isoformat(),
+            "activity_type": cache.activity_type,
+            "source_document": cache.source_document,
+            "text": text,
+            "document_path": document_path,
+            "doc_hash": doc_hash,
         }
-        metadata_path = self.cache_json_dir / f"{cache.id}.json"
-        with open(metadata_path, 'w', encoding='utf-8') as f:
-            json.dump(metadata, f, ensure_ascii=False, indent=2)
-        
-        return cache.id
+        (doc_dir / "meta.json").write_text(
+            json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+
+        # 更新缓存映射（用目录名而非纯 hash，以支持新命名）
+        self._id_to_doc_hash[cache.absolute_id] = dir_name
+
+        return cache.absolute_id
     
     def load_memory_cache(self, cache_id: str) -> Optional[MemoryCache]:
-        """加载记忆缓存"""
-        # 先尝试从新的json文件夹加载
-        metadata_path = self.cache_json_dir / f"{cache_id}.json"
-        # 如果不存在，尝试从旧路径加载（向后兼容）
-        if not metadata_path.exists():
-            metadata_path = self.cache_dir / f"{cache_id}.json"
+        """加载记忆缓存（优先从 docs/ 新结构读取，兼容旧结构）"""
+        metadata = None
+        md_content = None
+
+        # 1. 尝试从 docs/ 新结构加载（通过缓存映射）
+        doc_hash = self._id_to_doc_hash.get(cache_id)
+        if doc_hash:
+            doc_dir = self.docs_dir / doc_hash
+            meta_path = doc_dir / "meta.json"
+            cache_md_path = doc_dir / "cache.md"
+            if meta_path.exists():
+                with open(meta_path, "r", encoding="utf-8") as f:
+                    metadata = json.load(f)
+                if cache_md_path.exists():
+                    with open(cache_md_path, "r", encoding="utf-8") as f:
+                        md_content = f.read()
+
+        # 2. 回退到旧结构 memory_caches/json/
+        if metadata is None:
+            metadata_path = self.cache_json_dir / f"{cache_id}.json"
             if not metadata_path.exists():
-                return None
-        
-        with open(metadata_path, 'r', encoding='utf-8') as f:
-            metadata = json.load(f)
-        
-        filename = metadata['filename']
-        # 先尝试从新的md文件夹加载
-        filepath = self.cache_md_dir / filename
-        # 如果不存在，尝试从旧路径加载（向后兼容）
-        if not filepath.exists():
-            filepath = self.cache_dir / filename
-            if not filepath.exists():
-                return None
-        
-        with open(filepath, 'r', encoding='utf-8') as f:
-            content = f.read()
-        
-        # 清理 markdown 代码块标识符（处理旧缓存文件）
-        content = self._clean_markdown_code_blocks(content)
-        
+                metadata_path = self.cache_dir / f"{cache_id}.json"
+            if metadata_path.exists():
+                with open(metadata_path, "r", encoding="utf-8") as f:
+                    metadata = json.load(f)
+                filename = metadata.get("filename", f"{cache_id}.md")
+                filepath = self.cache_md_dir / filename
+                if not filepath.exists():
+                    filepath = self.cache_dir / filename
+                if filepath.exists():
+                    with open(filepath, "r", encoding="utf-8") as f:
+                        md_content = f.read()
+
+        if metadata is None or md_content is None:
+            return None
+
+        # 清理 markdown 代码块标识符
+        md_content = clean_markdown_code_blocks(md_content)
+
         return MemoryCache(
-            id=metadata['id'],
-            content=content,
-            physical_time=datetime.fromisoformat(metadata['physical_time']),
-            doc_name=metadata.get('doc_name', ''),  # 向后兼容：如果旧数据没有doc_name，使用空字符串
-            activity_type=metadata.get('activity_type')
+            absolute_id=metadata.get("absolute_id") or metadata.get("id"),
+            content=md_content,
+            physical_time=datetime.fromisoformat(metadata["physical_time"]),
+            source_document=metadata.get("source_document") or metadata.get("doc_name", ""),
+            activity_type=metadata.get("activity_type"),
         )
     
+    def _iter_cache_meta_files(self) -> List[Path]:
+        """迭代所有 cache 元数据文件（优先 docs/ 子目录，回退旧结构）"""
+        files = []
+        if self.docs_dir.is_dir():
+            # 只匹配子目录中的 meta.json，排除扁平的 .txt 文件
+            files = sorted([
+                p for p in self.docs_dir.glob("*/meta.json")
+                if p.parent.is_dir()
+            ])
+        if not files:
+            files = list(self.cache_json_dir.glob("*.json"))
+            if not files:
+                files = list(self.cache_dir.glob("*.json"))
+        return files
+
     def get_latest_memory_cache(self, activity_type: Optional[str] = None) -> Optional[MemoryCache]:
         """获取最新的记忆缓存"""
-        # 先尝试从新的json文件夹查找
-        cache_files = list(self.cache_json_dir.glob("*.json"))
-        # 如果新文件夹为空，尝试从旧路径查找（向后兼容）
-        if not cache_files:
-            cache_files = list(self.cache_dir.glob("*.json"))
+        cache_files = self._iter_cache_meta_files()
         if not cache_files:
             return None
-        
+
         latest_cache = None
         latest_time = None
-        
+
         for cache_file in cache_files:
-            with open(cache_file, 'r', encoding='utf-8') as f:
-                metadata = json.load(f)
-            
-            if activity_type and metadata.get('activity_type') != activity_type:
+            try:
+                with open(cache_file, "r", encoding="utf-8") as f:
+                    metadata = json.load(f)
+            except Exception:
                 continue
-            
-            cache_time = datetime.fromisoformat(metadata['physical_time'])
+
+            if activity_type and metadata.get("activity_type") != activity_type:
+                continue
+
+            cache_id = metadata.get("absolute_id") or metadata.get("id")
+            if not cache_id:
+                continue
+
+            cache_time = datetime.fromisoformat(metadata["physical_time"])
             if latest_time is None or cache_time > latest_time:
                 latest_time = cache_time
-                latest_cache = self.load_memory_cache(metadata['id'])
-        
+                latest_cache = self.load_memory_cache(cache_id)
+
         return latest_cache
-    
+
     def get_latest_memory_cache_metadata(self, activity_type: Optional[str] = None) -> Optional[Dict]:
         """获取最新的记忆缓存元数据（用于断点续传）
-        
+
         Returns:
             包含以下字段的字典：
-            - id: 缓存ID
+            - absolute_id: 缓存ID
             - physical_time: 物理时间
             - activity_type: 活动类型
-            - filename: MD文件名
             - text: 当前处理的文本内容
             - document_path: 当前处理的文档完整路径
+            - doc_hash: 文档 hash
         """
-        # 先尝试从新的json文件夹查找
-        cache_files = list(self.cache_json_dir.glob("*.json"))
-        # 如果新文件夹为空，尝试从旧路径查找（向后兼容）
-        if not cache_files:
-            cache_files = list(self.cache_dir.glob("*.json"))
+        cache_files = self._iter_cache_meta_files()
         if not cache_files:
             return None
-        
+
         latest_metadata = None
         latest_time = None
-        
+
         for cache_file in cache_files:
-            with open(cache_file, 'r', encoding='utf-8') as f:
-                metadata = json.load(f)
-            
-            if activity_type and metadata.get('activity_type') != activity_type:
+            try:
+                with open(cache_file, "r", encoding="utf-8") as f:
+                    metadata = json.load(f)
+            except Exception:
                 continue
-            
-            cache_time = datetime.fromisoformat(metadata['physical_time'])
+
+            if activity_type and metadata.get("activity_type") != activity_type:
+                continue
+
+            cache_time = datetime.fromisoformat(metadata["physical_time"])
             if latest_time is None or cache_time > latest_time:
                 latest_time = cache_time
                 latest_metadata = metadata
-        
+
         return latest_metadata
-    
+
+    def find_cache_by_doc_hash(self, doc_hash: str, document_path: str = "") -> Optional[MemoryCache]:
+        """通过 doc_hash 查找已存在的缓存（断点续传复用）。
+
+        Args:
+            doc_hash: 12位 MD5 hash
+            document_path: 可选，用于精确匹配同一文档的缓存
+
+        Returns:
+            找到的 MemoryCache，未找到返回 None
+        """
+        if not doc_hash or not self.docs_dir.is_dir():
+            return None
+        matches = list(self.docs_dir.glob(f"*_{doc_hash}/meta.json"))
+        for meta_path in matches:
+            try:
+                with open(meta_path, "r", encoding="utf-8") as f:
+                    metadata = json.load(f)
+            except Exception:
+                continue
+            if document_path and metadata.get("document_path") != document_path:
+                continue
+            cache_id = metadata.get("absolute_id")
+            if cache_id:
+                return self.load_memory_cache(cache_id)
+        return None
+
+    def _get_cache_dir_by_doc_hash(self, doc_hash: str, document_path: str = "") -> Optional[Path]:
+        """根据 doc_hash 找到缓存目录路径（不加载缓存内容）。"""
+        if not doc_hash or not self.docs_dir.is_dir():
+            return None
+        matches = list(self.docs_dir.glob(f"*_{doc_hash}/meta.json"))
+        for meta_path in matches:
+            try:
+                with open(meta_path, "r", encoding="utf-8") as f:
+                    metadata = json.load(f)
+            except Exception:
+                continue
+            if document_path and metadata.get("document_path") != document_path:
+                continue
+            return meta_path.parent
+        return None
+
+    def save_extraction_result(self, doc_hash: str, entities: list, relations: list,
+                               document_path: str = "") -> bool:
+        """保存步骤2-5的抽取结果到缓存目录（断点续传复用）。
+
+        Returns:
+            True 保存成功，False 失败
+        """
+        cache_dir = self._get_cache_dir_by_doc_hash(doc_hash, document_path)
+        if not cache_dir:
+            return False
+        try:
+            data = {"entities": entities, "relations": relations}
+            (cache_dir / "extraction.json").write_text(
+                json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            return True
+        except Exception:
+            return False
+
+    def load_extraction_result(self, doc_hash: str,
+                               document_path: str = "") -> Optional[tuple]:
+        """加载步骤2-5的抽取结果。
+
+        Returns:
+            (entities, relations) 元组，未找到返回 None
+        """
+        cache_dir = self._get_cache_dir_by_doc_hash(doc_hash, document_path)
+        if not cache_dir:
+            return None
+        try:
+            raw = (cache_dir / "extraction.json").read_text(encoding="utf-8")
+            data = json.loads(raw)
+            entities = data.get("entities", [])
+            relations = data.get("relations", [])
+            if isinstance(entities, list) and isinstance(relations, list):
+                return (entities, relations)
+        except Exception:
+            pass
+        return None
+
     # ========== Entity 操作 ==========
     
     def _compute_entity_embedding(self, entity: Entity) -> Optional[bytes]:
@@ -368,7 +696,7 @@ class StorageManager:
     
     def save_entity(self, entity: Entity):
         """保存实体（包含预计算的embedding向量）"""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_conn()
         cursor = conn.cursor()
         
         # 计算embedding
@@ -378,21 +706,20 @@ class StorageManager:
         entity.embedding = embedding_blob
         
         cursor.execute("""
-            INSERT INTO entities (id, entity_id, name, content, physical_time, memory_cache_id, doc_name, embedding)
+            INSERT INTO entities (id, entity_id, name, content, physical_time, memory_cache_id, source_document, embedding)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """, (
-            entity.id,
+            entity.absolute_id,
             entity.entity_id,
             entity.name,
             entity.content,
             entity.physical_time.isoformat(),
             entity.memory_cache_id,
-            entity.doc_name,
+            entity.source_document,
             embedding_blob
         ))
         
         conn.commit()
-        conn.close()
 
     def bulk_save_entities(self, entities: List[Entity]):
         """批量保存实体，使用批量 embedding 与单事务写入。"""
@@ -417,32 +744,31 @@ class StorageManager:
                     embedding_blob = None
             entity.embedding = embedding_blob
             rows.append((
-                entity.id,
+                entity.absolute_id,
                 entity.entity_id,
                 entity.name,
                 entity.content,
                 entity.physical_time.isoformat(),
                 entity.memory_cache_id,
-                entity.doc_name,
+                entity.source_document,
                 embedding_blob,
             ))
 
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_conn()
         cursor = conn.cursor()
         cursor.executemany("""
-            INSERT INTO entities (id, entity_id, name, content, physical_time, memory_cache_id, doc_name, embedding)
+            INSERT OR IGNORE INTO entities (id, entity_id, name, content, physical_time, memory_cache_id, source_document, embedding)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """, rows)
         conn.commit()
-        conn.close()
     
-    def get_entity_by_id(self, entity_id: str) -> Optional[Entity]:
+    def get_entity_by_entity_id(self, entity_id: str) -> Optional[Entity]:
         """根据entity_id获取最新版本的实体"""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_conn()
         cursor = conn.cursor()
         
         cursor.execute("""
-            SELECT id, entity_id, name, content, physical_time, memory_cache_id, doc_name, embedding
+            SELECT id, entity_id, name, content, physical_time, memory_cache_id, source_document, embedding
             FROM entities
             WHERE entity_id = ?
             ORDER BY physical_time DESC
@@ -450,82 +776,108 @@ class StorageManager:
         """, (entity_id,))
         
         row = cursor.fetchone()
-        conn.close()
         
         if row is None:
             return None
         
         return Entity(
-            id=row[0],
+            absolute_id=row[0],
             entity_id=row[1],
             name=row[2],
             content=row[3],
             physical_time=datetime.fromisoformat(row[4]),
             memory_cache_id=row[5],
-            doc_name=row[6] if len(row) > 6 and row[6] is not None else "",  # 向后兼容
+            source_document=row[6] if len(row) > 6 and row[6] is not None else "",  # 向后兼容
             embedding=row[7] if len(row) > 7 else None
         )
     
+    # get_entity_by_id 是 get_entity_by_entity_id 的别名，兼容 pipeline 层调用
+    get_entity_by_id = get_entity_by_entity_id
+
     def get_entity_by_absolute_id(self, absolute_id: str) -> Optional[Entity]:
         """根据绝对ID获取实体"""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_conn()
         cursor = conn.cursor()
         
         cursor.execute("""
-            SELECT id, entity_id, name, content, physical_time, memory_cache_id, doc_name, embedding
+            SELECT id, entity_id, name, content, physical_time, memory_cache_id, source_document, embedding
             FROM entities
             WHERE id = ?
         """, (absolute_id,))
         
         row = cursor.fetchone()
-        conn.close()
         
         if row is None:
             return None
         
         return Entity(
-            id=row[0],
+            absolute_id=row[0],
             entity_id=row[1],
             name=row[2],
             content=row[3],
             physical_time=datetime.fromisoformat(row[4]),
             memory_cache_id=row[5],
-            doc_name=row[6] if len(row) > 6 and row[6] is not None else "",  # 向后兼容
+            source_document=row[6] if len(row) > 6 and row[6] is not None else "",  # 向后兼容
             embedding=row[7] if len(row) > 7 else None
         )
 
     def get_relation_by_absolute_id(self, relation_absolute_id: str) -> Optional[Relation]:
         """根据关系行的主键 id（绝对ID）获取单条关系"""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_conn()
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT id, relation_id, entity1_absolute_id, entity2_absolute_id, content, physical_time, memory_cache_id, doc_name, embedding
+            SELECT id, relation_id, entity1_absolute_id, entity2_absolute_id, content, physical_time, memory_cache_id, source_document, embedding
             FROM relations
             WHERE id = ?
         """, (relation_absolute_id,))
         row = cursor.fetchone()
-        conn.close()
         if row is None:
             return None
         return Relation(
-            id=row[0],
+            absolute_id=row[0],
             relation_id=row[1],
             entity1_absolute_id=row[2] or "",
             entity2_absolute_id=row[3] or "",
             content=row[4],
             physical_time=datetime.fromisoformat(row[5]),
             memory_cache_id=row[6],
-            doc_name=row[7] if len(row) > 7 and row[7] is not None else "",
+            source_document=row[7] if len(row) > 7 and row[7] is not None else "",
             embedding=row[8] if len(row) > 8 else None
         )
     
+    def get_relation_by_relation_id(self, relation_id: str) -> Optional[Relation]:
+        """根据relation_id获取最新版本的关系"""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, relation_id, entity1_absolute_id, entity2_absolute_id, content, physical_time, memory_cache_id, source_document, embedding
+            FROM relations
+            WHERE relation_id = ?
+            ORDER BY physical_time DESC
+            LIMIT 1
+        """, (relation_id,))
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        return Relation(
+            absolute_id=row[0],
+            relation_id=row[1],
+            entity1_absolute_id=row[2],
+            entity2_absolute_id=row[3],
+            content=row[4],
+            physical_time=datetime.fromisoformat(row[5]),
+            memory_cache_id=row[6],
+            source_document=row[7] if len(row) > 7 and row[7] is not None else "",
+            embedding=row[8] if len(row) > 8 else None
+        )
+
     def get_entity_version_at_time(self, entity_id: str, time_point: datetime) -> Optional[Entity]:
         """获取实体在指定时间点的版本（该时间点之前或等于该时间点的最新版本）"""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_conn()
         cursor = conn.cursor()
         
         cursor.execute("""
-            SELECT id, entity_id, name, content, physical_time, memory_cache_id, doc_name, embedding
+            SELECT id, entity_id, name, content, physical_time, memory_cache_id, source_document, embedding
             FROM entities
             WHERE entity_id = ? AND physical_time <= ?
             ORDER BY physical_time DESC
@@ -533,25 +885,24 @@ class StorageManager:
         """, (entity_id, time_point.isoformat()))
         
         row = cursor.fetchone()
-        conn.close()
         
         if row is None:
             return None
         
         return Entity(
-            id=row[0],
+            absolute_id=row[0],
             entity_id=row[1],
             name=row[2],
             content=row[3],
             physical_time=datetime.fromisoformat(row[4]),
             memory_cache_id=row[5],
-            doc_name=row[6] if len(row) > 6 and row[6] is not None else "",  # 向后兼容
+            source_document=row[6] if len(row) > 6 and row[6] is not None else "",  # 向后兼容
             embedding=row[7] if len(row) > 7 else None
         )
     
     def get_entity_embedding_preview(self, absolute_id: str, num_values: int = 5) -> Optional[List[float]]:
         """获取实体embedding向量的前N个值"""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_conn()
         cursor = conn.cursor()
         
         cursor.execute("""
@@ -561,7 +912,6 @@ class StorageManager:
         """, (absolute_id,))
         
         row = cursor.fetchone()
-        conn.close()
         
         if row is None or row[0] is None:
             return None
@@ -574,7 +924,7 @@ class StorageManager:
     
     def get_relation_embedding_preview(self, absolute_id: str, num_values: int = 5) -> Optional[List[float]]:
         """获取关系embedding向量的前N个值"""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_conn()
         cursor = conn.cursor()
         
         cursor.execute("""
@@ -584,7 +934,6 @@ class StorageManager:
         """, (absolute_id,))
         
         row = cursor.fetchone()
-        conn.close()
         
         if row is None or row[0] is None:
             return None
@@ -597,28 +946,27 @@ class StorageManager:
     
     def get_entity_versions(self, entity_id: str) -> List[Entity]:
         """获取实体的所有版本"""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_conn()
         cursor = conn.cursor()
         
         cursor.execute("""
-            SELECT id, entity_id, name, content, physical_time, memory_cache_id, doc_name, embedding
+            SELECT id, entity_id, name, content, physical_time, memory_cache_id, source_document, embedding
             FROM entities
             WHERE entity_id = ?
             ORDER BY physical_time DESC
         """, (entity_id,))
         
         rows = cursor.fetchall()
-        conn.close()
         
         return [
             Entity(
-                id=row[0],
+                absolute_id=row[0],
                 entity_id=row[1],
                 name=row[2],
                 content=row[3],
                 physical_time=datetime.fromisoformat(row[4]),
                 memory_cache_id=row[5],
-                doc_name=row[6] if len(row) > 6 and row[6] is not None else "",  # 向后兼容
+                source_document=row[6] if len(row) > 6 and row[6] is not None else "",  # 向后兼容
                 embedding=row[7] if len(row) > 7 else None
             )
             for row in rows
@@ -631,12 +979,12 @@ class StorageManager:
         Returns:
             List of (Entity, embedding_array) tuples, embedding_array为None表示没有embedding
         """
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_conn()
         cursor = conn.cursor()
         
         # 获取每个entity_id的最新版本及其embedding
         cursor.execute("""
-            SELECT id, entity_id, name, content, physical_time, memory_cache_id, doc_name, embedding
+            SELECT id, entity_id, name, content, physical_time, memory_cache_id, source_document, embedding
             FROM entities e1
             WHERE e1.physical_time = (
                 SELECT MAX(e2.physical_time)
@@ -652,31 +1000,31 @@ class StorageManager:
             if len(row) > 7 and row[7] is not None:
                 try:
                     embedding_array = np.frombuffer(row[7], dtype=np.float32)
-                except:
+                except (ValueError, TypeError):
                     embedding_array = None
             entity = Entity(
-                id=row[0],
+                absolute_id=row[0],
                 entity_id=row[1],
                 name=row[2],
                 content=row[3],
                 physical_time=datetime.fromisoformat(row[4]),
                 memory_cache_id=row[5],
-                doc_name=row[6] if len(row) > 6 and row[6] is not None else "",  # 向后兼容
+                source_document=row[6] if len(row) > 6 and row[6] is not None else "",  # 向后兼容
                 embedding=row[7] if len(row) > 7 else None
             )
             results.append((entity, embedding_array))
         
-        conn.close()
         return results
 
     def get_latest_entities_projection(self, content_snippet_length: Optional[int] = None) -> List[Dict[str, Any]]:
         """获取最新实体投影，供窗口级批量候选生成使用。"""
         snippet_length = content_snippet_length or self.entity_content_snippet_length
+        entities_with_emb = self._get_entities_with_embeddings()
         version_counts = self.get_entity_version_counts([
-            entity.entity_id for entity, _ in self._get_entities_with_embeddings()
+            e.entity_id for e, _ in entities_with_emb
         ])
         results: List[Dict[str, Any]] = []
-        for entity, embedding_array in self._get_entities_with_embeddings():
+        for entity, embedding_array in entities_with_emb:
             results.append({
                 "entity": entity,
                 "entity_id": entity.entity_id,
@@ -940,7 +1288,7 @@ class StorageManager:
     
     def save_relation(self, relation: Relation):
         """保存关系（包含预计算的embedding向量）"""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_conn()
         cursor = conn.cursor()
         
         # 计算embedding
@@ -950,22 +1298,21 @@ class StorageManager:
         relation.embedding = embedding_blob
         
         cursor.execute("""
-            INSERT INTO relations (id, relation_id, entity1_absolute_id, entity2_absolute_id, content, physical_time, memory_cache_id, doc_name, embedding)
+            INSERT INTO relations (id, relation_id, entity1_absolute_id, entity2_absolute_id, content, physical_time, memory_cache_id, source_document, embedding)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
-            relation.id,
+            relation.absolute_id,
             relation.relation_id,
             relation.entity1_absolute_id,
             relation.entity2_absolute_id,
             relation.content,
             relation.physical_time.isoformat(),
             relation.memory_cache_id,
-            relation.doc_name,
+            relation.source_document,
             embedding_blob
         ))
         
         conn.commit()
-        conn.close()
 
     def bulk_save_relations(self, relations: List[Relation]):
         """批量保存关系，使用批量 embedding 与单事务写入。"""
@@ -987,38 +1334,37 @@ class StorageManager:
                     embedding_blob = None
             relation.embedding = embedding_blob
             rows.append((
-                relation.id,
+                relation.absolute_id,
                 relation.relation_id,
                 relation.entity1_absolute_id,
                 relation.entity2_absolute_id,
                 relation.content,
                 relation.physical_time.isoformat(),
                 relation.memory_cache_id,
-                relation.doc_name,
+                relation.source_document,
                 embedding_blob,
             ))
 
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_conn()
         cursor = conn.cursor()
         cursor.executemany("""
-            INSERT INTO relations (id, relation_id, entity1_absolute_id, entity2_absolute_id, content, physical_time, memory_cache_id, doc_name, embedding)
+            INSERT INTO relations (id, relation_id, entity1_absolute_id, entity2_absolute_id, content, physical_time, memory_cache_id, source_document, embedding)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, rows)
         conn.commit()
-        conn.close()
     
     def get_relations_by_entities(self, from_entity_id: str, to_entity_id: str) -> List[Relation]:
         """根据两个实体ID获取所有关系（通过entity_id查找，内部转换为绝对ID查询）"""
         # 先通过entity_id获取最新版本的绝对ID
-        from_entity = self.get_entity_by_id(from_entity_id)
-        to_entity = self.get_entity_by_id(to_entity_id)
+        from_entity = self.get_entity_by_entity_id(from_entity_id)
+        to_entity = self.get_entity_by_entity_id(to_entity_id)
         
         if not from_entity or not to_entity:
             return []
         
         # 通过绝对ID查询关系（查询所有包含这些实体的关系，不管版本）
         # 需要查询所有以这些entity_id开头的绝对ID的关系
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_conn()
         cursor = conn.cursor()
         
         # 获取所有具有相同entity_id的实体的绝对ID
@@ -1033,7 +1379,6 @@ class StorageManager:
         to_absolute_ids = [row[0] for row in cursor.fetchall()]
         
         if not from_absolute_ids or not to_absolute_ids:
-            conn.close()
             return []
         
         # 查询关系（无向关系，考虑两个方向）
@@ -1042,7 +1387,7 @@ class StorageManager:
         placeholders_to = ','.join(['?'] * len(to_absolute_ids))
         
         cursor.execute(f"""
-            SELECT id, relation_id, entity1_absolute_id, entity2_absolute_id, content, physical_time, memory_cache_id, doc_name, embedding
+            SELECT id, relation_id, entity1_absolute_id, entity2_absolute_id, content, physical_time, memory_cache_id, source_document, embedding
             FROM relations
             WHERE (entity1_absolute_id IN ({placeholders_from}) AND entity2_absolute_id IN ({placeholders_to}))
                OR (entity1_absolute_id IN ({placeholders_to}) AND entity2_absolute_id IN ({placeholders_from}))
@@ -1050,18 +1395,17 @@ class StorageManager:
         """, from_absolute_ids + to_absolute_ids + to_absolute_ids + from_absolute_ids)
         
         rows = cursor.fetchall()
-        conn.close()
         
         return [
             Relation(
-                id=row[0],
+                absolute_id=row[0],
                 relation_id=row[1],
                 entity1_absolute_id=row[2] or "",
                 entity2_absolute_id=row[3] or "",
                 content=row[4],
                 physical_time=datetime.fromisoformat(row[5]),
                 memory_cache_id=row[6],
-                doc_name=row[7] if len(row) > 7 and row[7] is not None else "",  # 向后兼容
+                source_document=row[7] if len(row) > 7 and row[7] is not None else "",  # 向后兼容
                 embedding=row[8] if len(row) > 8 else None
             )
             for row in rows
@@ -1094,29 +1438,28 @@ class StorageManager:
     
     def get_relation_versions(self, relation_id: str) -> List[Relation]:
         """获取关系的所有版本"""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_conn()
         cursor = conn.cursor()
         
         cursor.execute("""
-            SELECT id, relation_id, entity1_absolute_id, entity2_absolute_id, content, physical_time, memory_cache_id, doc_name, embedding
+            SELECT id, relation_id, entity1_absolute_id, entity2_absolute_id, content, physical_time, memory_cache_id, source_document, embedding
             FROM relations
             WHERE relation_id = ?
             ORDER BY physical_time DESC
         """, (relation_id,))
         
         rows = cursor.fetchall()
-        conn.close()
         
         return [
             Relation(
-                id=row[0],
+                absolute_id=row[0],
                 relation_id=row[1],
                 entity1_absolute_id=row[2] or "",
                 entity2_absolute_id=row[3] or "",
                 content=row[4],
                 physical_time=datetime.fromisoformat(row[5]),
                 memory_cache_id=row[6],
-                doc_name=row[7] if len(row) > 7 and row[7] is not None else "",  # 向后兼容
+                source_document=row[7] if len(row) > 7 and row[7] is not None else "",  # 向后兼容
                 embedding=row[8] if len(row) > 8 else None
             )
             for row in rows
@@ -1124,7 +1467,7 @@ class StorageManager:
     
     def update_relation_memory_cache_id(self, relation_id: str, memory_cache_id: str):
         """更新关系最新版本的 memory_cache_id"""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_conn()
         cursor = conn.cursor()
         
         # 获取最新版本的id
@@ -1145,7 +1488,6 @@ class StorageManager:
             """, (memory_cache_id, latest_id))
             conn.commit()
         
-        conn.close()
     
     def get_self_referential_relations(self) -> Dict[str, List[Dict]]:
         """获取所有自指向的关系（两端指向同一个entity_id），按entity_id分组
@@ -1159,7 +1501,7 @@ class StorageManager:
             字典，key为entity_id，value为该实体的所有自指向关系列表
             每个关系包含：id, relation_id, content, physical_time
         """
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_conn()
         cursor = conn.cursor()
         
         # 查找所有自指向的关系（两端entity_id相同）
@@ -1173,7 +1515,6 @@ class StorageManager:
         """)
         
         rows = cursor.fetchall()
-        conn.close()
         
         # 按entity_id分组
         result = {}
@@ -1196,7 +1537,7 @@ class StorageManager:
         Returns:
             删除的关系数量
         """
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_conn()
         cursor = conn.cursor()
         
         # 查找所有自指向的关系（两端entity_id相同）
@@ -1223,7 +1564,6 @@ class StorageManager:
             deleted_count = cursor.rowcount
             conn.commit()
         
-        conn.close()
         return deleted_count
     
     def get_self_referential_relations_for_entity(self, entity_id: str) -> List[Dict]:
@@ -1235,7 +1575,7 @@ class StorageManager:
         Returns:
             自指向关系列表，每个关系包含：id, relation_id, content, physical_time
         """
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_conn()
         cursor = conn.cursor()
         
         # 查找该entity_id的自指向关系
@@ -1249,7 +1589,6 @@ class StorageManager:
         """, (entity_id, entity_id))
         
         rows = cursor.fetchall()
-        conn.close()
         
         result = []
         for row in rows:
@@ -1272,7 +1611,7 @@ class StorageManager:
         Returns:
             删除的关系数量
         """
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_conn()
         cursor = conn.cursor()
         
         # 查找该entity_id的自指向关系
@@ -1297,7 +1636,6 @@ class StorageManager:
             deleted_count = cursor.rowcount
             conn.commit()
         
-        conn.close()
         return deleted_count
     
     def get_all_entities(self, limit: Optional[int] = None) -> List[Entity]:
@@ -1306,12 +1644,12 @@ class StorageManager:
         Args:
             limit: 限制返回的实体数量（按时间倒序），None表示不限制
         """
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_conn()
         cursor = conn.cursor()
         
         # 获取每个 entity_id 的最新版本
         query = """
-            SELECT e1.id, e1.entity_id, e1.name, e1.content, e1.physical_time, e1.memory_cache_id, e1.doc_name, e1.embedding
+            SELECT e1.id, e1.entity_id, e1.name, e1.content, e1.physical_time, e1.memory_cache_id, e1.source_document, e1.embedding
             FROM entities e1
             INNER JOIN (
                 SELECT entity_id, MAX(physical_time) as max_time
@@ -1327,17 +1665,16 @@ class StorageManager:
         cursor.execute(query)
         
         rows = cursor.fetchall()
-        conn.close()
         
         return [
             Entity(
-                id=row[0],
+                absolute_id=row[0],
                 entity_id=row[1],
                 name=row[2],
                 content=row[3],
                 physical_time=datetime.fromisoformat(row[4]),
                 memory_cache_id=row[5],
-                doc_name=row[6] if len(row) > 6 and row[6] is not None else "",  # 向后兼容
+                source_document=row[6] if len(row) > 6 and row[6] is not None else "",  # 向后兼容
                 embedding=row[7] if len(row) > 7 else None
             )
             for row in rows
@@ -1350,12 +1687,12 @@ class StorageManager:
             time_point: 时间点
             limit: 限制返回的实体数量（按时间倒序），None表示不限制
         """
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_conn()
         cursor = conn.cursor()
         
         # 获取每个 entity_id 在指定时间点之前或等于该时间点的最新版本
         query = """
-            SELECT e1.id, e1.entity_id, e1.name, e1.content, e1.physical_time, e1.memory_cache_id, e1.doc_name, e1.embedding
+            SELECT e1.id, e1.entity_id, e1.name, e1.content, e1.physical_time, e1.memory_cache_id, e1.source_document, e1.embedding
             FROM entities e1
             INNER JOIN (
                 SELECT entity_id, MAX(physical_time) as max_time
@@ -1372,17 +1709,16 @@ class StorageManager:
         cursor.execute(query, (time_point.isoformat(),))
         
         rows = cursor.fetchall()
-        conn.close()
         
         return [
             Entity(
-                id=row[0],
+                absolute_id=row[0],
                 entity_id=row[1],
                 name=row[2],
                 content=row[3],
                 physical_time=datetime.fromisoformat(row[4]),
                 memory_cache_id=row[5],
-                doc_name=row[6] if len(row) > 6 and row[6] is not None else "",  # 向后兼容
+                source_document=row[6] if len(row) > 6 and row[6] is not None else "",  # 向后兼容
                 embedding=row[7] if len(row) > 7 else None
             )
             for row in rows
@@ -1396,14 +1732,14 @@ class StorageManager:
             limit: 限制返回的关系数量（按时间倒序），None表示不限制
             time_point: 时间点（可选），如果提供，只返回该时间点之前或等于该时间点的关系，且每个relation_id只返回最新版本
         """
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_conn()
         cursor = conn.cursor()
         
         if time_point:
             # 获取每个relation_id在该时间点之前或等于该时间点的最新版本
             query = """
                 SELECT r1.id, r1.relation_id, r1.entity1_absolute_id, r1.entity2_absolute_id, 
-                       r1.content, r1.physical_time, r1.memory_cache_id, r1.doc_name, r1.embedding
+                       r1.content, r1.physical_time, r1.memory_cache_id, r1.source_document, r1.embedding
                 FROM relations r1
                 INNER JOIN (
                     SELECT relation_id, MAX(physical_time) as max_time
@@ -1421,7 +1757,7 @@ class StorageManager:
             # 获取每个relation_id的最新版本
             query = """
                 SELECT r1.id, r1.relation_id, r1.entity1_absolute_id, r1.entity2_absolute_id, 
-                       r1.content, r1.physical_time, r1.memory_cache_id, r1.doc_name, r1.embedding
+                       r1.content, r1.physical_time, r1.memory_cache_id, r1.source_document, r1.embedding
                 FROM relations r1
                 INNER JOIN (
                     SELECT relation_id, MAX(physical_time) as max_time
@@ -1441,18 +1777,17 @@ class StorageManager:
         cursor.execute(query, params)
         
         rows = cursor.fetchall()
-        conn.close()
         
         return [
             Relation(
-                id=row[0],
+                absolute_id=row[0],
                 relation_id=row[1],
                 entity1_absolute_id=row[2] or "",
                 entity2_absolute_id=row[3] or "",
                 content=row[4],
                 physical_time=datetime.fromisoformat(row[5]),
                 memory_cache_id=row[6],
-                doc_name=row[7] if len(row) > 7 and row[7] is not None else "",  # 向后兼容
+                source_document=row[7] if len(row) > 7 and row[7] is not None else "",  # 向后兼容
                 embedding=row[8] if len(row) > 8 else None
             )
             for row in rows
@@ -1484,7 +1819,7 @@ class StorageManager:
             )
             max_version = None
             for v in versions_sorted:
-                if v.id == max_version_absolute_id:
+                if v.absolute_id == max_version_absolute_id:
                     max_version = v
                     break
             
@@ -1492,7 +1827,7 @@ class StorageManager:
                 t_max = self._normalize_datetime_for_compare(max_version.physical_time)
                 # 只取到该版本（包含）为止的所有版本
                 entity_absolute_ids = [
-                    v.id for v in versions_sorted
+                    v.absolute_id for v in versions_sorted
                     if self._normalize_datetime_for_compare(v.physical_time) <= t_max
                 ]
                 # 同时设置time_point为该版本的时间点
@@ -1507,12 +1842,12 @@ class StorageManager:
                         time_point = max_version.physical_time
             else:
                 # 如果找不到指定的版本，使用所有版本
-                entity_absolute_ids = [v.id for v in versions]
+                entity_absolute_ids = [v.absolute_id for v in versions]
         else:
             # 收集所有版本的absolute_id
-            entity_absolute_ids = [v.id for v in versions]
+            entity_absolute_ids = [v.absolute_id for v in versions]
         
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_conn()
         cursor = conn.cursor()
         
         # 构建查询：查找所有版本的关系，按relation_id去重
@@ -1522,7 +1857,7 @@ class StorageManager:
             # 获取每个relation_id在该时间点之前或等于该时间点的最新版本
             query = f"""
                 SELECT r1.id, r1.relation_id, r1.entity1_absolute_id, r1.entity2_absolute_id, 
-                       r1.content, r1.physical_time, r1.memory_cache_id, r1.doc_name, r1.embedding
+                       r1.content, r1.physical_time, r1.memory_cache_id, r1.source_document, r1.embedding
                 FROM relations r1
                 INNER JOIN (
                     SELECT relation_id, MAX(physical_time) as max_time
@@ -1540,7 +1875,7 @@ class StorageManager:
             # 获取每个relation_id的最新版本
             query = f"""
             SELECT r1.id, r1.relation_id, r1.entity1_absolute_id, r1.entity2_absolute_id, 
-                   r1.content, r1.physical_time, r1.memory_cache_id, r1.doc_name, r1.embedding
+                   r1.content, r1.physical_time, r1.memory_cache_id, r1.source_document, r1.embedding
             FROM relations r1
             INNER JOIN (
                 SELECT relation_id, MAX(physical_time) as max_time
@@ -1560,18 +1895,17 @@ class StorageManager:
         cursor.execute(query, params)
         
         rows = cursor.fetchall()
-        conn.close()
         
         return [
             Relation(
-                id=row[0],
+                absolute_id=row[0],
                 relation_id=row[1],
                 entity1_absolute_id=row[2] or "",
                 entity2_absolute_id=row[3] or "",
                 content=row[4],
                 physical_time=datetime.fromisoformat(row[5]),
                 memory_cache_id=row[6],
-                doc_name=row[7] if len(row) > 7 and row[7] is not None else "",  # 向后兼容
+                source_document=row[7] if len(row) > 7 and row[7] is not None else "",  # 向后兼容
                 embedding=row[8] if len(row) > 8 else None
             )
             for row in rows
@@ -1594,14 +1928,14 @@ class StorageManager:
         if not entity_absolute_ids:
             return []
         
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_conn()
         cursor = conn.cursor()
         
         # 构建查询：查找直接引用这些 entity_absolute_id 的关系边
         placeholders = ','.join(['?'] * len(entity_absolute_ids))
         query = f"""
             SELECT id, relation_id, entity1_absolute_id, entity2_absolute_id, 
-                   content, physical_time, memory_cache_id, doc_name, embedding
+                   content, physical_time, memory_cache_id, source_document, embedding
             FROM relations
             WHERE entity1_absolute_id IN ({placeholders}) OR entity2_absolute_id IN ({placeholders})
             ORDER BY physical_time DESC
@@ -1611,7 +1945,6 @@ class StorageManager:
         cursor.execute(query, params)
         
         rows = cursor.fetchall()
-        conn.close()
         
         # 按 relation_id 去重，保留第一个（最新的）
         seen_relation_ids = set()
@@ -1622,14 +1955,14 @@ class StorageManager:
                 seen_relation_ids.add(relation_id)
                 result.append(
                     Relation(
-                        id=row[0],
+                        absolute_id=row[0],
                         relation_id=row[1],
                         entity1_absolute_id=row[2] or "",
                         entity2_absolute_id=row[3] or "",
                         content=row[4],
                         physical_time=datetime.fromisoformat(row[5]),
                         memory_cache_id=row[6],
-                        doc_name=row[7] if len(row) > 7 and row[7] is not None else "",  # 向后兼容
+                        source_document=row[7] if len(row) > 7 and row[7] is not None else "",  # 向后兼容
                         embedding=row[8] if len(row) > 8 else None
                     )
                 )
@@ -1661,32 +1994,32 @@ class StorageManager:
         # 找到 max_absolute_id 对应的版本
         max_version = None
         for v in versions_sorted:
-            if v.id == max_absolute_id:
+            if v.absolute_id == max_absolute_id:
                 max_version = v
                 break
-        
+
         if not max_version:
             # 如果找不到指定的版本，返回空列表
             return []
-        
+
         # 返回从最早版本到该版本（包含）的所有 absolute_id
         result = []
         for v in versions_sorted:
-            result.append(v.id)
-            if v.id == max_absolute_id:
+            result.append(v.absolute_id)
+            if v.absolute_id == max_absolute_id:
                 break
         
         return result
     
     def get_all_relations(self) -> List[Relation]:
         """获取所有关系的最新版本"""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_conn()
         cursor = conn.cursor()
         
         # 获取每个 relation_id 的最新版本
         cursor.execute("""
             SELECT r1.id, r1.relation_id, r1.entity1_absolute_id, r1.entity2_absolute_id,
-                   r1.content, r1.physical_time, r1.memory_cache_id, r1.doc_name, r1.embedding
+                   r1.content, r1.physical_time, r1.memory_cache_id, r1.source_document, r1.embedding
             FROM relations r1
             INNER JOIN (
                 SELECT relation_id, MAX(physical_time) as max_time
@@ -1697,18 +2030,17 @@ class StorageManager:
         """)
         
         rows = cursor.fetchall()
-        conn.close()
         
         return [
             Relation(
-                id=row[0],
+                absolute_id=row[0],
                 relation_id=row[1],
                 entity1_absolute_id=row[2] or "",
                 entity2_absolute_id=row[3] or "",
                 content=row[4],
                 physical_time=datetime.fromisoformat(row[5]),
                 memory_cache_id=row[6],
-                doc_name=row[7] if len(row) > 7 and row[7] is not None else "",  # 向后兼容
+                source_document=row[7] if len(row) > 7 and row[7] is not None else "",  # 向后兼容
                 embedding=row[8] if len(row) > 8 else None
             )
             for row in rows
@@ -1721,13 +2053,13 @@ class StorageManager:
         Returns:
             List of (Relation, embedding_array) tuples, embedding_array为None表示没有embedding
         """
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_conn()
         cursor = conn.cursor()
         
         # 获取每个relation_id的最新版本及其embedding
         cursor.execute("""
             SELECT id, relation_id, entity1_absolute_id, entity2_absolute_id,
-                   content, physical_time, memory_cache_id, doc_name, embedding
+                   content, physical_time, memory_cache_id, source_document, embedding
             FROM relations r1
             WHERE r1.physical_time = (
                 SELECT MAX(r2.physical_time)
@@ -1743,22 +2075,21 @@ class StorageManager:
             if len(row) > 8 and row[8] is not None:
                 try:
                     embedding_array = np.frombuffer(row[8], dtype=np.float32)
-                except:
+                except (ValueError, TypeError):
                     embedding_array = None
             relation = Relation(
-                id=row[0],
+                absolute_id=row[0],
                 relation_id=row[1],
                 entity1_absolute_id=row[2] or "",
                 entity2_absolute_id=row[3] or "",
                 content=row[4],
                 physical_time=datetime.fromisoformat(row[5]),
                 memory_cache_id=row[6],
-                doc_name=row[7] if len(row) > 7 and row[7] is not None else "",  # 向后兼容
+                source_document=row[7] if len(row) > 7 and row[7] is not None else "",  # 向后兼容
                 embedding=row[8] if len(row) > 8 else None
             )
             results.append((relation, embedding_array))
         
-        conn.close()
         return results
     
     def search_relations_by_similarity(self, query_text: str, 
@@ -1872,28 +2203,95 @@ class StorageManager:
     # ========== 知识图谱整理操作 ==========
     
     def get_memory_cache_text(self, cache_id: str) -> Optional[str]:
-        """获取记忆缓存对应的原始文本内容
-        
-        Args:
-            cache_id: 缓存记忆的ID
-            
-        Returns:
-            原始文本内容，如果不存在则返回None
-        """
-        # 先尝试从新的json文件夹加载
+        """获取记忆缓存对应的原始文本内容（优先从 docs/ 读取，回退旧结构）"""
+        # 1. 尝试从 docs/ 新结构读取
+        doc_hash = self._id_to_doc_hash.get(cache_id)
+        if doc_hash:
+            doc_dir = self.docs_dir / doc_hash
+            # 优先从 original.txt 读取
+            original_path = doc_dir / "original.txt"
+            if original_path.exists():
+                return original_path.read_text(encoding="utf-8")
+            # 回退到 meta.json 中的 text 字段
+            meta_path = doc_dir / "meta.json"
+            if meta_path.exists():
+                try:
+                    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                    return meta.get("text")
+                except Exception:
+                    pass
+
+        # 2. 回退到旧结构
         metadata_path = self.cache_json_dir / f"{cache_id}.json"
-        # 如果不存在，尝试从旧路径加载（向后兼容）
         if not metadata_path.exists():
             metadata_path = self.cache_dir / f"{cache_id}.json"
-            if not metadata_path.exists():
-                return None
-        
-        with open(metadata_path, 'r', encoding='utf-8') as f:
-            metadata = json.load(f)
-        
-        return metadata.get('text', None)
-    
-    def find_related_entities_by_embedding(self, similarity_threshold: float = 0.7, 
+        if metadata_path.exists():
+            try:
+                with open(metadata_path, "r", encoding="utf-8") as f:
+                    metadata = json.load(f)
+                return metadata.get("text")
+            except Exception:
+                pass
+
+        return None
+
+    def get_doc_dir(self, doc_hash: str) -> Optional[Path]:
+        """获取文档目录路径，不存在则返回 None。支持 hash 或时间戳+hash 格式。"""
+        doc_dir = self.docs_dir / doc_hash
+        if doc_dir.is_dir():
+            return doc_dir
+        # 回退：可能是旧纯 hash 格式，搜索匹配的目录
+        if self.docs_dir.is_dir():
+            for d in self.docs_dir.iterdir():
+                if d.is_dir() and d.name.endswith(f"_{doc_hash}"):
+                    return d
+        return None
+
+    def list_docs(self) -> List[Dict[str, Any]]:
+        """列出所有文档的元数据摘要。
+
+        文件格式：docs/{YYYYMMDD_HHMMSS}_{hash}/ 目录（按目录名自然排序即时间排序）。
+        每个目录包含 original.txt、cache.md、meta.json。
+        """
+        docs = []
+        if not self.docs_dir.is_dir():
+            return docs
+
+        for doc_dir in sorted(self.docs_dir.iterdir()):
+            if not doc_dir.is_dir():
+                continue
+            meta_path = doc_dir / "meta.json"
+            if not meta_path.exists():
+                continue
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+
+            source_name = meta.get("source_document") or ""
+            event_time_str = meta.get("physical_time", "")
+
+            # 读取 original.txt 大小作为文本长度
+            text_len = 0
+            original_path = doc_dir / "original.txt"
+            if original_path.exists():
+                try:
+                    text_len = original_path.stat().st_size
+                except Exception:
+                    pass
+
+            docs.append({
+                "source_name": source_name,
+                "source_document": source_name,
+                "doc_name": source_name,
+                "event_time": event_time_str or None,
+                "physical_time": event_time_str or None,
+                "text_length": text_len,
+                "filename": doc_dir.name,
+            })
+        return docs
+
+    def find_related_entities_by_embedding(self, similarity_threshold: float = 0.7,
                                            max_candidates: int = 5,
                                            use_mixed_search: bool = True,
                                            content_snippet_length: int = 50,
@@ -2137,7 +2535,7 @@ class StorageManager:
         if not source_entity_ids:
             return {"entities_updated": 0, "relations_updated": 0}
         
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_conn()
         cursor = conn.cursor()
         
         entities_updated = 0
@@ -2207,8 +2605,6 @@ class StorageManager:
         except Exception as e:
             conn.rollback()
             raise e
-        finally:
-            conn.close()
         
         return {
             "entities_updated": entities_updated,
@@ -2226,7 +2622,7 @@ class StorageManager:
         Returns:
             版本数量
         """
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_conn()
         cursor = conn.cursor()
         
         cursor.execute("""
@@ -2234,7 +2630,6 @@ class StorageManager:
         """, (entity_id,))
         
         count = cursor.fetchone()[0]
-        conn.close()
         
         return count
     
@@ -2250,7 +2645,7 @@ class StorageManager:
         if not entity_ids:
             return {}
         
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_conn()
         cursor = conn.cursor()
         
         # 使用IN子句批量查询
@@ -2263,6 +2658,88 @@ class StorageManager:
         """, entity_ids)
         
         rows = cursor.fetchall()
-        conn.close()
         
         return {row[0]: row[1] for row in rows}
+
+    def entity_has_any_relation(self, entity_id: str) -> bool:
+        """检查实体是否在关系表中作为任一端出现（轻量查询，只查 COUNT）。"""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT COUNT(*) FROM relations
+            WHERE entity1_absolute_id IN (SELECT id FROM entities WHERE entity_id = ?)
+               OR entity2_absolute_id IN (SELECT id FROM entities WHERE entity_id = ?)
+        """, (entity_id, entity_id))
+        return cursor.fetchone()[0] > 0
+
+    def delete_orphan_entities(self, candidate_entity_ids: list) -> list:
+        """批量检查并删除没有关系的实体。
+
+        一条 SQL 找出候选列表中确实无关系的 entity_id，然后删除。
+
+        Args:
+            candidate_entity_ids: 待检查的 entity_id 列表
+
+        Returns:
+            被删除的 entity_id 列表
+        """
+        if not candidate_entity_ids:
+            return []
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        placeholders = ','.join(['?'] * len(candidate_entity_ids))
+        # 找出候选中没有任何关系的 entity_id
+        cursor.execute(f"""
+            SELECT e.entity_id FROM entities e
+            WHERE e.entity_id IN ({placeholders})
+              AND e.id NOT IN (
+                  SELECT entity1_absolute_id FROM relations
+                  UNION
+                  SELECT entity2_absolute_id FROM relations
+              )
+            GROUP BY e.entity_id
+        """, candidate_entity_ids)
+        orphan_ids = [row[0] for row in cursor.fetchall()]
+        if orphan_ids:
+            ph2 = ','.join(['?'] * len(orphan_ids))
+            cursor.execute(f"DELETE FROM entities WHERE entity_id IN ({ph2})", orphan_ids)
+        return orphan_ids
+
+    def delete_entity_by_id(self, entity_id: str) -> int:
+        """删除实体的所有版本。返回删除的行数。"""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM entities WHERE entity_id = ?", (entity_id,))
+        return cursor.rowcount
+
+    def get_entity_ids_by_names(self, names: list) -> dict:
+        """按名称批量查询实 entity_id（每个 name 取最新版本）。
+
+        Returns:
+            {name: entity_id} 仅包含能找到的名称。
+        """
+        if not names:
+            return {}
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        placeholders = ','.join(['?'] * len(names))
+        cursor.execute(f"""
+            SELECT name, entity_id FROM entities
+            WHERE name IN ({placeholders})
+            ORDER BY physical_time DESC
+        """, names)
+        result = {}
+        for name, eid in cursor.fetchall():
+            if name not in result:
+                result[name] = eid
+        return result
+
+    def get_total_entity_count(self) -> int:
+        """获取数据库中的实体总数（去重 entity_id 后的数量）。"""
+        try:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(DISTINCT entity_id) FROM entities")
+            return cursor.fetchone()[0]
+        except Exception:
+            return 0

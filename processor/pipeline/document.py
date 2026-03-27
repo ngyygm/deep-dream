@@ -4,6 +4,8 @@
 from typing import List, Iterator, Tuple, Optional
 from pathlib import Path
 
+from ..utils import wprint
+
 
 class DocumentProcessor:
     """文档处理器 - 支持滑动窗口读取"""
@@ -49,7 +51,7 @@ class DocumentProcessor:
         for doc_path in ordered_paths:
             doc_path_obj = Path(doc_path)
             if not doc_path_obj.exists():
-                print(f"警告：文档不存在: {doc_path}")
+                wprint(f"警告：文档不存在: {doc_path}")
                 continue
             
             document_name = doc_path_obj.name
@@ -59,7 +61,7 @@ class DocumentProcessor:
                 with open(doc_path_obj, 'r', encoding='utf-8') as f:
                     content = f.read()
             except Exception as e:
-                print(f"错误：无法读取文档 {doc_path}: {e}")
+                wprint(f"错误：无法读取文档 {doc_path}: {e}")
                 continue
             
             total_length = len(content)
@@ -68,7 +70,7 @@ class DocumentProcessor:
             if is_first_doc and resume_start_pos is not None and resume_start_pos > 0:
                 start = resume_start_pos
                 is_first_doc = False
-                print(f"[断点续传] 从文档 {document_name} 的位置 {start} 继续处理")
+                wprint(f"[断点续传] 从文档 {document_name} 的位置 {start} 继续处理")
             else:
                 start = 0
                 is_first_doc = False
@@ -120,14 +122,14 @@ class DocumentProcessor:
             # 尝试精确匹配
             if resume_document_path in document_paths:
                 matched_doc_path = resume_document_path
-                print(f"[断点续传] 根据文档路径找到匹配: {resume_document_path}")
+                wprint(f"[断点续传] 根据文档路径找到匹配: {resume_document_path}")
             else:
                 # 尝试按文件名匹配
                 resume_doc_name = Path(resume_document_path).name
                 for doc_path in document_paths:
                     if Path(doc_path).name == resume_doc_name:
                         matched_doc_path = doc_path
-                        print(f"[断点续传] 根据文件名找到匹配: {resume_doc_name} -> {doc_path}")
+                        wprint(f"[断点续传] 根据文件名找到匹配: {resume_doc_name} -> {doc_path}")
                         break
         
         # 方法2：如果根据文档路径没找到，或者需要定位具体位置，通过文本搜索
@@ -157,11 +159,11 @@ class DocumentProcessor:
                         # 从找到的文本片段位置开始继续处理
                         # 这个位置就是上次处理到的位置，应该从这里重新开始
                         resume_start_pos = text_pos
-                        print(f"[断点续传] 在文档 {doc_path} 中找到匹配文本，位置: {text_pos}")
-                        print(f"[断点续传] 将从位置 {resume_start_pos} 继续处理")
+                        wprint(f"[断点续传] 在文档 {doc_path} 中找到匹配文本，位置: {text_pos}")
+                        wprint(f"[断点续传] 将从位置 {resume_start_pos} 继续处理")
                         break
                 except Exception as e:
-                    print(f"警告：无法读取文档 {doc_path}: {e}")
+                    wprint(f"警告：无法读取文档 {doc_path}: {e}")
                     continue
         
         if matched_doc_path:
@@ -173,7 +175,7 @@ class DocumentProcessor:
             return reordered_paths, resume_start_pos
         else:
             if resume_document_path or resume_text:
-                print(f"[断点续传] 警告：未找到匹配的断点位置，将从头开始处理")
+                wprint(f"[断点续传] 警告：未找到匹配的断点位置，将从头开始处理")
             return document_paths, None
     
     def get_document_chunks(self, document_path: str) -> List[str]:

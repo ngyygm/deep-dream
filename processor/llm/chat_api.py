@@ -97,6 +97,7 @@ def ollama_chat(
     base_url: str = "http://localhost:11434",
     think: bool = False,
     timeout: int = 300,
+    num_predict: Optional[int] = None,
 ) -> OllamaChatResponse:
     """Ollama 非流式 chat（原生 /api/chat 接口）。"""
     payload = {
@@ -105,6 +106,8 @@ def ollama_chat(
         "stream": False,
         "think": think,
     }
+    if num_predict is not None:
+        payload["num_predict"] = num_predict
     req = request.Request(
         _ollama_chat_url(base_url),
         data=json.dumps(payload).encode("utf-8"),
@@ -195,19 +198,21 @@ def openai_compatible_chat(
     base_url: str,
     api_key: str,
     timeout: int = 300,
+    max_tokens: Optional[int] = None,
 ) -> OllamaChatResponse:
     """OpenAI 兼容 chat（非流式）。"""
     client = OpenAI(base_url=base_url.rstrip("/"), api_key=api_key)
-    resp = client.chat.completions.create(
-        model=model,
-        messages=messages,
-        timeout=timeout,
-    )
+    kwargs: Dict[str, Any] = dict(model=model, messages=messages, timeout=timeout)
+    if max_tokens is not None:
+        kwargs["max_tokens"] = max_tokens
+    resp = client.chat.completions.create(**kwargs)
     data = _as_dict(resp)
     choices = data.get("choices") or []
     content = ""
+    finish_reason = None
     if choices:
         c0 = choices[0] if isinstance(choices[0], dict) else _as_dict(choices[0])
         msg = c0.get("message") or {}
         content = msg.get("content") or ""
-    return OllamaChatResponse(content=content, raw=data)
+        finish_reason = c0.get("finish_reason")
+    return OllamaChatResponse(content=content, done_reason=finish_reason, raw=data)
