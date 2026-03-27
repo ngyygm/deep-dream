@@ -189,7 +189,7 @@ OpenClaw 会从以下优先级加载 skills：
 
 **异步**：请求立即返回 `task_id`（HTTP 202），后台线程处理。可通过 `GET /api/remember/tasks/<task_id>` 查询进度，`GET /api/remember/tasks` 查看队列。任务状态写入 `remember_journal/`，异常退出重启后会恢复未完成任务并重新入队。
 
-**两阶段线程模型**：每个 text 先生成「文档整体记忆」再跑滑窗链；A 的整体记忆生成后即可启动 B（B 以 A 的整体记忆为初始），无需等 A 最后一窗。并行度由配置 **`runtime.concurrency.queue_workers`** 控制（同时进行 phase1 的线程数；phase2 串行以保证 cache 链一致）。
+**两阶段处理模型**：每个 text 先生成「文档整体记忆」再跑滑窗链；队列与滑窗层固定串行，以保证 cache 链一致。并发仅保留在实体处理与关系处理阶段（由 `runtime.concurrency.llm_call_workers` 控制）。
 
 **时间轴约定**：存入记忆库的「真实时间」以请求中的 `event_time` 为准；实体/关系的版本顺序也按该时间。因此即使后发的请求先完成（例如并发时短任务 B 先完成、长任务 A 后完成），时间轴仍按 `event_time` 正确——A 的 event_time 早则 A 的版本在前，与任务完成先后无关。
 
@@ -229,15 +229,9 @@ OpenClaw 会从以下优先级加载 skills：
 - **Embedding**：`embedding.model`（本地路径或 HuggingFace 模型名）、`embedding.device`  
 - **分块**：`chunking.window_size`、`chunking.overlap`  
 - **Remember 队列**：`runtime.retry.queue_max_retries`、`runtime.retry.queue_retry_delay_seconds`  
-- **并发控制**：`runtime.concurrency.queue_workers`、`runtime.concurrency.window_workers`、`runtime.concurrency.llm_call_workers`  
-- **总线程数上限**：`runtime.concurrency.max_total_workers`（可选）。设后会对三层线程做统一封顶，避免线程爆炸；超出时按**优先级从低到高**缩小：先缩 `llm_call_workers`，再缩 `window_workers`，最后缩 `queue_workers`。  
-- **兼容性**：旧键（`remember_workers`、`pipeline.max_concurrent_windows`、`pipeline.llm_threads`、`max_total_worker_threads` 等）仍可用，加载时会自动映射到新命名。
-
-**三层线程（优先级从高到低）**  
-1. **runtime.concurrency.queue_workers** — 队列 worker 数（最高优先级，保证接活能力）  
-2. **runtime.concurrency.window_workers** — 单任务内并行滑窗数  
-3. **runtime.concurrency.llm_call_workers** — 单窗口内实体/关系并行数（最低优先级）  
-峰值估算：`queue_workers + window_workers + window_workers * llm_call_workers`。
+- **并发控制**：`runtime.concurrency.llm_call_workers`（仅用于实体/关系阶段并发）  
+- **并发策略**：Remember 队列与滑窗层固定串行，仅保留实体处理和关系处理阶段并发。  
+- **兼容性**：旧键（`pipeline.llm_threads`、`llm_threads`）仍可用，加载时会自动映射到新命名。
 
 **使用 Ollama（原生协议）**：将 `llm.base_url` 设为 `http://127.0.0.1:11434`，服务会调用原生 `POST /api/chat`。只有原生协议支持通过 `think: true/false` 控制 Qwen3.5 等模型的思考模式，不要使用 `/v1` 的 OpenAI 兼容地址。
 

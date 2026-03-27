@@ -207,13 +207,9 @@ def _collect_runtime_config(config: Dict[str, Any], processor) -> Dict[str, Any]
     embedding = dict(config.get("embedding") or {})
     pipeline = dict(config.get("pipeline") or {})
     llm_threads = int(pipeline.get("llm_threads", config.get("llm_threads", getattr(processor, "llm_threads", 1)) or 1))
-    window_workers = int(
-        pipeline.get(
-            "max_concurrent_windows",
-            conc.get("window_workers", getattr(processor, "_max_concurrent_windows", 1)),
-        ) or 1
-    )
-    queue_workers = int(config.get("remember_workers", conc.get("queue_workers", 1)) or 1)
+    # 并发简化策略：仅保留实体/关系阶段并发，队列与窗口层固定串行。
+    window_workers = 1
+    queue_workers = 1
     max_total = conc.get("max_total_workers", config.get("max_total_worker_threads"))
     peak_estimate = queue_workers + window_workers + window_workers * llm_threads
     return {
@@ -1097,7 +1093,7 @@ def create_app(
     remember_queue = RememberTaskQueue(
         processor,
         Path(processor.storage.storage_path),
-        max_workers=config.get("remember_workers", 1),
+        max_workers=1,
         max_retries=config.get("remember_max_retries", 2),
         retry_delay_seconds=config.get("remember_retry_delay_seconds", 2),
         reporter=reporter,
@@ -2110,34 +2106,29 @@ def create_app(
 
 def _apply_thread_cap(config: Dict[str, Any]) -> Dict[str, Any]:
     """
-    按 max_total_worker_threads 限制总线程数，避免线程爆炸。
-    三层线程（优先级从高到低，超出时优先缩小低优先级）：
-      1. remember_workers — 队列 worker 数（最高优先级，保证接活能力）
-      2. pipeline.max_concurrent_windows — 单任务内并行滑窗数
-      3. pipeline.llm_threads — 单窗口内实体/关系并行数（最低优先级，最先被缩小）
-    峰值估算：remember_workers + max_concurrent_windows + max_concurrent_windows * llm_threads
+    并发简化策略下，仅保留实体/关系阶段并发：
+      - remember_workers 固定为 1
+      - pipeline.max_concurrent_windows 固定为 1
+      - pipeline.llm_threads 可并行，并受 max_total_worker_threads 约束
+    峰值估算：1 + 1 + llm_threads
     """
     cap = config.get("max_total_worker_threads")
     if cap is None or cap < 1:
-        return config
+        cap = None
     pipeline = config.get("pipeline") or {}
-    rw = max(1, config.get("remember_workers", 1))
-    mcw = max(1, pipeline.get("max_concurrent_windows", 1))
+    rw = 1
+    mcw = 1
     lt = max(1, pipeline.get("llm_threads", 1))
-    rw_orig, mcw_orig, lt_orig = rw, mcw, lt
+    rw_orig = max(1, config.get("remember_workers", 1))
+    mcw_orig = max(1, pipeline.get("max_concurrent_windows", 1))
+    lt_orig = lt
 
     def peak():
-        return rw + mcw + mcw * lt
+        return 2 + lt
 
-    while peak() > cap:
-        if lt > 1:
+    if cap is not None:
+        while peak() > cap and lt > 1:
             lt -= 1
-        elif mcw > 1:
-            mcw -= 1
-        elif rw > 1:
-            rw -= 1
-        else:
-            break
 
     config = dict(config)
     config["remember_workers"] = rw
@@ -2147,7 +2138,10 @@ def _apply_thread_cap(config: Dict[str, Any]) -> Dict[str, Any]:
     config["pipeline"]["max_concurrent_windows"] = mcw
     config["pipeline"]["llm_threads"] = lt
     if (rw, mcw, lt) != (rw_orig, mcw_orig, lt_orig):
-        print(f"[线程上限] max_total_worker_threads={cap} 已收紧: remember_workers {rw_orig}→{rw}, max_concurrent_windows {mcw_orig}→{mcw}, llm_threads {lt_orig}→{lt} (峰值≈{peak()})")
+        if cap is not None:
+            print(f"[并发简化] 已固定串行层: remember_workers {rw_orig}→{rw}, max_concurrent_windows {mcw_orig}→{mcw}; llm_threads {lt_orig}→{lt} (受 max_total_worker_threads={cap} 约束, 峰值≈{peak()})")
+        else:
+            print(f"[并发简化] 已固定串行层: remember_workers {rw_orig}→{rw}, max_concurrent_windows {mcw_orig}→{mcw}; llm_threads={lt}")
     return config
 
 
@@ -2175,6 +2169,8 @@ def build_processor(config: Dict[str, Any]) -> TemporalMemoryGraphProcessor:
         "embedding_device": embedding.get("device", "cpu"),
         "embedding_use_local": use_local,
         "llm_threads": llm_threads,
+        # 并发简化策略：窗口层固定串行，仅保留实体/关系阶段并发。
+        "max_concurrent_windows": 1,
     }
     # pipeline 下其余参数（仅传入有写的键，避免覆盖为 None）
     for key in (
@@ -2184,7 +2180,6 @@ def build_processor(config: Dict[str, Any]) -> TemporalMemoryGraphProcessor:
         "relation_extraction_max_iterations", "relation_extraction_absolute_max_iterations",
         "relation_extraction_iterative", "load_cache_memory",
         "jaccard_search_threshold", "embedding_name_search_threshold", "embedding_full_search_threshold",
-        "max_concurrent_windows",
     ):
         if key in pipeline:
             kwargs[key] = pipeline[key]
@@ -2353,17 +2348,25 @@ def main() -> int:
     processor = build_processor(config)
 
     # 启动前对配置的 LLM 做握手，不可用则报错退出（可用 --skip-llm-check 跳过）
+    # monitor 模式下默认不把普通 info 打到终端，但握手可能耗时很长（单次 timeout 60s + 指数退避），
+    # 若不强制打印，用户会误以为卡在 embedding 加载之后。
     if args.skip_llm_check:
-        reporter.warn("已跳过 LLM 握手（--skip-llm-check）。Remember 与 /api/health/llm 可能在运行时失败。", force_print=(log_mode == LOG_MODE_DETAIL))
+        reporter.warn(
+            "已跳过 LLM 握手（--skip-llm-check）。Remember 与 /api/health/llm 可能在运行时失败。",
+            force_print=True,
+        )
     else:
-        reporter.info("正在检查配置的 LLM 是否可用…", force_print=(log_mode == LOG_MODE_DETAIL))
+        reporter.info(
+            "正在检查配置的 LLM 是否可用（单次最多约 60s；失败将按 3/9/27… 秒退避重试，请稍候）…",
+            force_print=True,
+        )
         ok_llm, err_msg = _check_llm_available(processor)
         if not ok_llm:
             reporter.error(f"错误：{err_msg}", force_print=True)
             reporter.error("请检查 service_config 中 llm.api_key / llm.base_url / llm.model 及网络。", force_print=True)
-            reporter.error("若仅需测试 Find，可加参数: --skip-llm-check", force_print=True)
+            reporter.error("若仅需先起服务再排查 LLM，可在启动命令加: --skip-llm-check", force_print=True)
             return 1
-        reporter.info("LLM 握手成功，模型可用。", force_print=(log_mode == LOG_MODE_DETAIL))
+        reporter.info("LLM 握手成功，模型可用。", force_print=True)
 
     app = create_app(processor, config, reporter=reporter, log_mode=log_mode)
 

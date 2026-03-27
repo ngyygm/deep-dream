@@ -21,10 +21,7 @@
   },
   "runtime": {
     "concurrency": {
-      "queue_workers": 1,
-      "window_workers": 1,
-      "llm_call_workers": 1,
-      "max_total_workers": 1
+      "llm_call_workers": 1
     },
     "retry": {
       "queue_max_retries": 2,
