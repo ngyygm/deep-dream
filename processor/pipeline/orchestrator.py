@@ -7,16 +7,22 @@ from concurrent.futures import ThreadPoolExecutor, as_completed, Future
 import threading
 import uuid
 
-from .document_processor import DocumentProcessor
-from .llm_client import LLMClient
-from .embedding_client import EmbeddingClient
-from .storage import StorageManager
-from .entity_processor import EntityProcessor
-from .relation_processor import RelationProcessor
-from .models import MemoryCache, Entity
+from .document import DocumentProcessor
+from ..llm.client import (
+    LLMClient,
+    LLM_PRIORITY_STEP1, LLM_PRIORITY_STEP2, LLM_PRIORITY_STEP3,
+    LLM_PRIORITY_STEP4, LLM_PRIORITY_STEP5, LLM_PRIORITY_STEP6, LLM_PRIORITY_STEP7,
+)
+from ..storage.embedding import EmbeddingClient
+from ..storage.manager import StorageManager
+from .entity import EntityProcessor
+from .relation import RelationProcessor
+from ..models import MemoryCache, Entity
+from ..utils import compute_doc_hash, set_window_label, wprint
+from .extraction import _ExtractionMixin, _AlignResult
 
 
-class TemporalMemoryGraphProcessor:
+class TemporalMemoryGraphProcessor(_ExtractionMixin):
     """时序记忆图谱处理器 - 主处理流程"""
     
     def __init__(self, storage_path: str, window_size: int = 1000, overlap: int = 200,
@@ -26,8 +32,10 @@ class TemporalMemoryGraphProcessor:
                  embedding_model_name: Optional[str] = None,
                  embedding_device: str = "cpu",
                  embedding_use_local: bool = True,
+                 embedding_client: Optional[EmbeddingClient] = None,
                  llm_think_mode: bool = False,
-                 llm_threads: int = 1,
+                 llm_max_tokens: Optional[int] = None,
+                 max_llm_concurrency: Optional[int] = None,
                  # pipeline 可选配置（可从 config.pipeline 传入）
                  similarity_threshold: Optional[float] = None,
                  max_similar_entities: Optional[int] = None,
@@ -43,7 +51,12 @@ class TemporalMemoryGraphProcessor:
                  jaccard_search_threshold: Optional[float] = None,
                  embedding_name_search_threshold: Optional[float] = None,
                  embedding_full_search_threshold: Optional[float] = None,
-                 max_concurrent_windows: Optional[int] = None):
+                 max_concurrent_windows: Optional[int] = None,
+                 max_alignment_candidates: Optional[int] = None,
+                 distill_data_dir: Optional[str] = None,
+                 extraction_rounds: Optional[int] = None,
+                 entity_extraction_rounds: Optional[int] = None,
+                 relation_extraction_rounds: Optional[int] = None):
         """
         初始化处理器
 
@@ -59,7 +72,6 @@ class TemporalMemoryGraphProcessor:
             embedding_device: Embedding计算设备 ("cpu" 或 "cuda")
             embedding_use_local: 是否优先使用本地 embedding 模型
             llm_think_mode: LLM 是否开启思维链/think 模式（默认 False）。仅 Ollama 原生 `/api/chat` 支持通过 API 参数 think 控制；非 Ollama 后端忽略
-            llm_threads: 步骤6实体处理等 LLM 调用的并行线程数（默认 1；>1 时启用多线程）
             similarity_threshold: 实体相似度阈值（默认 0.7）
             max_similar_entities: 语义搜索返回的最大相似实体数（默认 10）
             content_snippet_length: 实体 content 截取长度（默认 50）
@@ -80,7 +92,7 @@ class TemporalMemoryGraphProcessor:
         _relation_content_snippet_length = relation_content_snippet_length if relation_content_snippet_length is not None else 50
         _max_similar_entities = max_similar_entities if max_similar_entities is not None else 10
 
-        self.embedding_client = EmbeddingClient(
+        self.embedding_client = embedding_client or EmbeddingClient(
             model_path=embedding_model_path,
             model_name=embedding_model_name,
             device=embedding_device,
@@ -94,9 +106,12 @@ class TemporalMemoryGraphProcessor:
             relation_content_snippet_length=_relation_content_snippet_length
         )
         self.document_processor = DocumentProcessor(window_size, overlap)
-        self.llm_client = LLMClient(llm_api_key, llm_model, llm_base_url, 
+        self.llm_client = LLMClient(llm_api_key, llm_model, llm_base_url,
                                    content_snippet_length=_content_snippet_length,
-                                   think_mode=llm_think_mode)
+                                   think_mode=llm_think_mode,
+                                   max_tokens=llm_max_tokens,
+                                   max_llm_concurrency=max_llm_concurrency,
+                                   distill_data_dir=distill_data_dir)
         self.entity_processor = EntityProcessor(
             self.storage, 
             self.llm_client,
@@ -110,20 +125,28 @@ class TemporalMemoryGraphProcessor:
         self.content_snippet_length = _content_snippet_length
         self.relation_content_snippet_length = _relation_content_snippet_length
         
-        self.relation_extraction_max_iterations = relation_extraction_max_iterations if relation_extraction_max_iterations is not None else 3
+        # extraction_rounds / *_rounds / *_max_iterations 三种命名都支持
+        _entity_rounds = entity_extraction_max_iterations or entity_extraction_rounds or extraction_rounds or 3
+        _relation_rounds = relation_extraction_max_iterations or relation_extraction_rounds or extraction_rounds or 3
+        self.relation_extraction_max_iterations = _relation_rounds
         self.relation_extraction_absolute_max_iterations = relation_extraction_absolute_max_iterations if relation_extraction_absolute_max_iterations is not None else 10
         self.relation_extraction_iterative = relation_extraction_iterative if relation_extraction_iterative is not None else True
-        
-        self.entity_extraction_max_iterations = entity_extraction_max_iterations if entity_extraction_max_iterations is not None else 3
+
+        self.entity_extraction_max_iterations = _entity_rounds
         self.entity_extraction_iterative = entity_extraction_iterative if entity_extraction_iterative is not None else True
         self.entity_post_enhancement = entity_post_enhancement if entity_post_enhancement is not None else False
         
-        self.llm_threads = llm_threads
+        self.llm_threads = max_llm_concurrency if max_llm_concurrency else 1
         self.load_cache_memory = load_cache_memory if load_cache_memory is not None else False
+
+        # 别名：mixin 的 _extract_only 使用 rounds 参数名
+        self.entity_extraction_rounds = self.entity_extraction_max_iterations
+        self.relation_extraction_rounds = self.relation_extraction_max_iterations
         
         self.jaccard_search_threshold = jaccard_search_threshold
         self.embedding_name_search_threshold = embedding_name_search_threshold
         self.embedding_full_search_threshold = embedding_full_search_threshold
+        self.max_alignment_candidates = max_alignment_candidates
         
         # 同时处理的滑窗数上限（满员时不唤醒下一窗口，避免窗口内实体/关系并行导致线程爆炸）
         _max_concurrent_windows = max_concurrent_windows if max_concurrent_windows is not None else 1
@@ -135,9 +158,12 @@ class TemporalMemoryGraphProcessor:
         # 流水线并行：cache 更新串行锁 + 抽取/处理线程池（max_workers 限制同时处理的窗口数）
         self._cache_lock = threading.Lock()
         self._max_concurrent_windows = _max_concurrent_windows
+        self._window_slot = threading.Semaphore(_max_concurrent_windows)
         self._runtime_lock = threading.Lock()
         self._active_window_extractions = 0
         self._peak_window_extractions = 0
+        self._active_step6 = 0
+        self._active_step7 = 0
         self._extraction_executor = ThreadPoolExecutor(
             max_workers=_max_concurrent_windows,
             thread_name_prefix="tmg-window",
@@ -145,12 +171,20 @@ class TemporalMemoryGraphProcessor:
 
     def get_runtime_stats(self) -> Dict[str, int]:
         with self._runtime_lock:
-            return {
+            stats = {
                 "configured_window_workers": self._max_concurrent_windows,
                 "configured_llm_threads": self.llm_threads,
                 "active_window_extractions": self._active_window_extractions,
                 "peak_window_extractions": self._peak_window_extractions,
+                "active_step6": self._active_step6,
+                "active_step7": self._active_step7,
             }
+        # LLM 信号量活跃数（不需要 runtime_lock）
+        if self.llm_client and hasattr(self.llm_client, '_llm_semaphore') and self.llm_client._llm_semaphore:
+            sem = self.llm_client._llm_semaphore
+            stats["llm_semaphore_active"] = sem.active_count
+            stats["llm_semaphore_max"] = sem.max_value
+        return stats
 
     def _run_extraction_job(
         self,
@@ -177,7 +211,8 @@ class TemporalMemoryGraphProcessor:
         finally:
             with self._runtime_lock:
                 self._active_window_extractions = max(0, self._active_window_extractions - 1)
-    
+            self._window_slot.release()
+
     def process_documents(self, document_paths: List[str], verbose: bool = True,
                          similarity_threshold: Optional[float] = None,
                          max_similar_entities: Optional[int] = None,
@@ -189,7 +224,6 @@ class TemporalMemoryGraphProcessor:
                          entity_post_enhancement: Optional[bool] = None,
                          relation_extraction_max_iterations: Optional[int] = None,
                          relation_extraction_iterative: Optional[bool] = None,
-                         llm_threads: Optional[int] = None,
                          load_cache_memory: Optional[bool] = None,
                          jaccard_search_threshold: Optional[float] = None,
                          embedding_name_search_threshold: Optional[float] = None,
@@ -210,7 +244,6 @@ class TemporalMemoryGraphProcessor:
             entity_post_enhancement: 是否启用实体后验增强（可选，覆盖初始化时的设置）
             relation_extraction_max_iterations: 关系抽取最大迭代次数（可选，覆盖初始化时的设置）
             relation_extraction_iterative: 是否启用迭代关系抽取（可选，覆盖初始化时的设置）
-            llm_threads: LLM并行访问线程数量（可选，覆盖初始化时的设置）
             load_cache_memory: 是否加载缓存记忆（可选，覆盖初始化时的设置）
             jaccard_search_threshold: Jaccard搜索（name_only）的相似度阈值（可选，默认使用similarity_threshold）
             embedding_name_search_threshold: Embedding搜索（name_only）的相似度阈值（可选，默认使用similarity_threshold）
@@ -296,16 +329,13 @@ class TemporalMemoryGraphProcessor:
         if relation_extraction_iterative is not None:
             original_values['relation_extraction_iterative'] = self.relation_extraction_iterative
             self.relation_extraction_iterative = relation_extraction_iterative
-        if llm_threads is not None:
-            original_values['llm_threads'] = self.llm_threads
-            self.llm_threads = llm_threads
         if load_cache_memory is not None:
             original_values['load_cache_memory'] = self.load_cache_memory
             self.load_cache_memory = load_cache_memory
         
         try:
             if verbose:
-                print(f"开始处理 {len(document_paths)} 个文档...")
+                wprint(f"开始处理 {len(document_paths)} 个文档...")
             
             # 断点续传相关变量
             resume_document_path = None
@@ -314,7 +344,7 @@ class TemporalMemoryGraphProcessor:
             # 根据配置决定是否加载最新的记忆缓存并支持断点续传
             if self.load_cache_memory:
                 if verbose:
-                    print("正在加载最新的缓存记忆...")
+                    wprint("正在加载最新的缓存记忆...")
 
                 # 获取最新缓存的元数据（包含 text 和 document_path）
                 # 只查找"文档处理"类型的缓存，避免使用知识图谱整理产生的缓存（其text字段是整理后的实体信息，不是原始文档文本）
@@ -322,11 +352,11 @@ class TemporalMemoryGraphProcessor:
                 
                 if latest_metadata:
                     # 加载缓存记忆
-                    self.current_memory_cache = self.storage.load_memory_cache(latest_metadata['id'])
+                    self.current_memory_cache = self.storage.load_memory_cache(latest_metadata['absolute_id'])
                     
                     if self.current_memory_cache:
                         if verbose:
-                            print(f"已加载缓存记忆: {self.current_memory_cache.id} (时间: {self.current_memory_cache.physical_time})")
+                            wprint(f"已加载缓存记忆: {self.current_memory_cache.absolute_id} (时间: {self.current_memory_cache.physical_time})")
                         
                         # 提取断点续传信息
                         resume_document_path = latest_metadata.get('document_path', '')
@@ -334,17 +364,17 @@ class TemporalMemoryGraphProcessor:
                         
                         if verbose:
                             if resume_document_path:
-                                print(f"[断点续传] 上次处理的文档: {resume_document_path}")
+                                wprint(f"[断点续传] 上次处理的文档: {resume_document_path}")
                             if resume_text:
                                 text_preview = resume_text[:100].replace('\n', ' ')
-                                print(f"[断点续传] 上次处理的文本片段: {text_preview}...")
+                                wprint(f"[断点续传] 上次处理的文本片段: {text_preview}...")
                 else:
                     if verbose:
-                        print("未找到缓存记忆，将从头开始处理")
+                        wprint("未找到缓存记忆，将从头开始处理")
                     self.current_memory_cache = None
             else:
                 if verbose:
-                    print("不加载缓存记忆，将从头开始处理")
+                    wprint("不加载缓存记忆，将从头开始处理")
                 self.current_memory_cache = None
             
             # 遍历所有文档的滑动窗口（支持断点续传）
@@ -356,7 +386,7 @@ class TemporalMemoryGraphProcessor:
                 )
             ):
                 if verbose:
-                    print(f"\n处理窗口 {chunk_idx + 1} (文档: {document_name}, 位置: {text_start_pos}-{text_end_pos}/{total_text_length})")
+                    wprint(f"\n处理窗口 {chunk_idx + 1} (文档: {document_name}, 位置: {text_start_pos}-{text_end_pos}/{total_text_length})")
                 
                 # 处理当前窗口
                 self._process_window(input_text, document_name, is_new_document, 
@@ -373,87 +403,297 @@ class TemporalMemoryGraphProcessor:
     def remember_text(self, text: str, doc_name: str = "api_input", verbose: bool = False,
                       load_cache_memory: Optional[bool] = None,
                       event_time: Optional[datetime] = None,
-                      document_path: str = "") -> Dict:
+                      document_path: str = "",
+                      progress_callback: Optional[Callable] = None,
+                      start_chunk: int = 0,
+                      chunk_done_callback: Optional[Callable] = None,
+                      source_document: Optional[str] = None) -> Dict:
         """
-        将一段文本作为记忆入库：内存内滑窗分块后逐块执行更新缓存、抽取实体/关系、对齐并写入存储。
-        默认追加到同一条全局 current_memory_cache 链（进程内）；可选加载已有最新缓存再追加。
+        将一段文本作为记忆入库：流水线式并行处理 step6（实体对齐）和 step7（关系对齐）。
+
+        流水线架构：
+        - 主线程：Phase A（step1 串行更新缓存）+ 提交 Phase B（step2-5 并行抽取）
+        - step6 线程：等待当前窗口 step2-5 完成 + 前一窗口 step6 完成 → 实体对齐
+        - step7 线程：等待当前窗口 step6 完成 + 前一窗口 step7 完成 → 关系对齐
+        - step6 W(i+1) 可与 step7 W(i) 并行执行
 
         Args:
             text: 原始文本内容
-            doc_name: 文档/来源名称，用于窗口提示与审计
+            doc_name: 文档/来源名称
             verbose: 是否打印处理日志
-            load_cache_memory: 是否在开始前加载最新缓存记忆再追加；None 时使用实例默认 self.load_cache_memory
-            event_time: 事件实际发生时间；若提供，本批所有实体/关系/缓存的 physical_time 以此为准。
-                时间轴一律以「用户传入的 event_time」为准，与任务完成先后无关（例如并发时 B 先完成、
-                A 后完成，只要 A 的 event_time 早于 B，则实体/关系版本顺序仍是 A 早 B 晚）。
-            document_path: 原文文件路径，由 API 层负责保存后传入
+            load_cache_memory: 是否在开始前加载最新缓存记忆再追加
+            event_time: 事件实际发生时间
+            document_path: 原文文件路径
+            progress_callback: 进度回调 fn(progress, phase_label, message, chain_id)
+            start_chunk: 从第几个窗口开始（断点续传）
+            chunk_done_callback: 窗口完成回调 fn(processed_count)
+            source_document: 来源文档名称（优先于 doc_name）
 
         Returns:
-            dict: memory_cache_id（最后一块的缓存ID）, chunks_processed（处理的块数）, storage_path
+            dict: memory_cache_id, chunks_processed, storage_path
         """
+        doc_name = source_document or doc_name
         use_load_cache = load_cache_memory if load_cache_memory is not None else self.load_cache_memory
-        if use_load_cache:
+        # 仅在真正的断点续传（start_chunk > 0）时加载已有缓存链；
+        # start_chunk == 0 表示从头开始，加载旧缓存会导致 step1 重复处理已有内容
+        if use_load_cache and start_chunk > 0:
             latest_metadata = self.storage.get_latest_memory_cache_metadata(activity_type="文档处理")
             if latest_metadata:
-                self.current_memory_cache = self.storage.load_memory_cache(latest_metadata["id"])
+                self.current_memory_cache = self.storage.load_memory_cache(latest_metadata["absolute_id"])
                 if verbose and self.current_memory_cache:
-                    print(f"已加载缓存记忆: {self.current_memory_cache.id}，将在此链上追加")
+                    wprint(f"已加载缓存记忆: {self.current_memory_cache.absolute_id}，将在此链上追加（断点续传 start_chunk={start_chunk}）")
             else:
                 self.current_memory_cache = None
         else:
             self.current_memory_cache = None
+            if start_chunk == 0 and use_load_cache:
+                if verbose:
+                    wprint(f"[断点续传] start_chunk=0，从头开始处理，不加载旧缓存链")
 
         if not document_path:
             document_path = f"api://{uuid.uuid4().hex}"
         window_size = self.document_processor.window_size
         overlap = self.document_processor.overlap
         total_length = len(text)
-        start = 0
-        chunk_idx = 0
+
+        # 计算总窗口数
+        stride = max(1, window_size - overlap)
+        if total_length <= window_size:
+            total_chunks = 1
+        else:
+            total_chunks = 1 + (max(total_length - window_size, 0) + stride - 1) // stride
+
+        # 所有窗口已处理完毕（断点续传恢复后无需重跑）
+        if start_chunk >= total_chunks:
+            return {
+                "memory_cache_id": getattr(self.current_memory_cache, 'absolute_id', None),
+                "chunks_processed": total_chunks,
+                "storage_path": str(self.storage.storage_path),
+            }
+
+        N = total_chunks - start_chunk  # 待处理窗口数
         last_memory_cache_id = None
 
-        futures: List[Future] = []
+        # 预分配数组，用于线程间共享数据
+        memory_caches = [None] * N
+        input_texts = [None] * N
+        extract_results = [None] * N   # (entities, relations) 元组
+        align_results = [None] * N     # _AlignResult
 
-        while start < total_length:
-            end = min(start + window_size, total_length)
-            chunk = text[start:end]
-            if start == 0:
-                chunk = f"开始阅读新的文档，文件名是：{doc_name}\n\n{chunk}"
+        # 同步事件
+        extract_done = [threading.Event() for _ in range(N)]
+        step6_done_ev = [threading.Event() for _ in range(N)]
+        step7_done_ev = [threading.Event() for _ in range(N)]
 
-            if verbose:
-                print(f"\n{'='*60}")
-                print(f"处理窗口 (文档: {doc_name}, 位置: {start}-{end}/{total_length})")
-                print(f"输入文本长度: {len(chunk)} 字符")
-                print(f"{'='*60}\n")
+        # 错误收集
+        errors = []
+        errors_lock = threading.Lock()
 
-            with self._cache_lock:
-                new_mc = self._update_cache(
-                    chunk, doc_name,
-                    text_start_pos=start, text_end_pos=end,
-                    total_text_length=total_length, verbose=verbose,
-                    document_path=document_path, event_time=event_time,
+        # 进度回调包装
+        _progress_lock = threading.Lock()
+
+        def _safe_progress(progress, label, message, chain_id="step6"):
+            if not progress_callback:
+                return
+            with _progress_lock:
+                pass
+            progress_callback(progress, label, message, chain_id)
+
+        # ========== step6 工作线程 ==========
+        def step6_worker():
+            for i in range(N):
+                extract_done[i].wait()          # 等待当前窗口 step2-5 完成
+                set_window_label(f"W{start_chunk + i + 1}/{total_chunks}")
+                if i > 0:
+                    step6_done_ev[i - 1].wait() # 等待前一窗口 step6 完成
+                with self._runtime_lock:
+                    self._active_step6 += 1
+                try:
+                    mc = memory_caches[i]
+                    ents, rels = extract_results[i]
+                    ar = self._align_entities(
+                        ents, rels, mc, input_texts[i], doc_name,
+                        verbose=verbose, event_time=event_time,
+                        progress_callback=lambda p, l, m: _safe_progress(p, l, m, "step6"),
+                        progress_range=((start_chunk + i) / total_chunks, (start_chunk + i + 1) / total_chunks),
+                        window_index=start_chunk + i, total_windows=total_chunks,
+                    )
+                    align_results[i] = ar
+                except Exception as e:
+                    with errors_lock:
+                        errors.append(("step6", i, e))
+                    import traceback
+                    traceback.print_exc()
+                finally:
+                    with self._runtime_lock:
+                        self._active_step6 = max(0, self._active_step6 - 1)
+                    step6_done_ev[i].set()
+
+        # ========== step7 工作线程 ==========
+        def step7_worker():
+            for i in range(N):
+                step6_done_ev[i].wait()          # 等待当前窗口 step6 完成
+                set_window_label(f"W{start_chunk + i + 1}/{total_chunks}")
+                if i > 0:
+                    step7_done_ev[i - 1].wait()  # 等待前一窗口 step7 完成
+                with self._runtime_lock:
+                    self._active_step7 += 1
+                _success = False
+                _window_has_entities = False
+                try:
+                    ar = align_results[i]
+                    if ar is None:
+                        raise RuntimeError(
+                            f"step6 result for window {start_chunk + i} is None"
+                        )
+                    mc = memory_caches[i]
+                    self._align_relations(
+                        ar, mc, input_texts[i], doc_name,
+                        verbose=verbose, event_time=event_time,
+                        progress_callback=lambda p, l, m: _safe_progress(p, l, m, "step7"),
+                        progress_range=((start_chunk + i) / total_chunks, (start_chunk + i + 1) / total_chunks),
+                        window_index=start_chunk + i, total_windows=total_chunks,
+                    )
+                    _success = True
+                    _window_has_entities = bool(ar.unique_entities)
+                except Exception as e:
+                    with errors_lock:
+                        errors.append(("step7", i, e))
+                    import traceback
+                    traceback.print_exc()
+                finally:
+                    with self._runtime_lock:
+                        self._active_step7 = max(0, self._active_step7 - 1)
+                    step7_done_ev[i].set()
+                    # 仅在窗口处理成功且确实有实体时才标记为已完成
+                    if _success and _window_has_entities and chunk_done_callback:
+                        chunk_done_callback(start_chunk + i + 1)
+                    elif _success and not _window_has_entities and chunk_done_callback:
+                        wprint(f"[W{start_chunk + i + 1}/{total_chunks}] 警告: step7完成但窗口无实体，不标记为已完成（将重跑）")
+
+        # 启动 step6 / step7 线程
+        t6 = threading.Thread(target=step6_worker, name="tmg-step6-chain", daemon=True)
+        t7 = threading.Thread(target=step7_worker, name="tmg-step7-chain", daemon=True)
+        t6.start()
+        t7.start()
+
+        # ========== 主线程：Phase A（step1 串行）+ 提交 Phase B（step2-5）==========
+        try:
+            # 跳到 start_chunk 对应的文本位置
+            start = start_chunk * stride
+
+            for ci in range(N):
+                # 等待并发槽位：如果已有 max_concurrent_windows 个窗口在 step2+，暂缓 step1
+                self._window_slot.acquire()
+
+                end = min(start + window_size, total_length)
+                chunk = text[start:end]
+                if start == 0:
+                    chunk = f"开始阅读新的文档，文件名是：{doc_name}\n\n{chunk}"
+
+                if verbose:
+                    _wlabel = f"W{start_chunk + ci + 1}/{total_chunks}"
+                    set_window_label(_wlabel)
+                    wprint(f"\n处理窗口 {start_chunk + ci + 1}/{total_chunks}"
+                          f" (文档: {doc_name}, 位置: {start}-{end}/{total_length})")
+                    wprint(f"输入文本长度: {len(chunk)} 字符")
+
+                # Step1: 更新缓存（串行，需加锁）
+                # 断点续传优化：如果该窗口的缓存已存在，直接复用，跳过 LLM 调用
+                _chunk_hash = compute_doc_hash(chunk)
+                existing_mc = self.storage.find_cache_by_doc_hash(
+                    _chunk_hash, document_path=document_path,
                 )
+                if existing_mc:
+                    new_mc = existing_mc
+                    self.current_memory_cache = existing_mc
+                    if verbose:
+                        wprint("  └─ 步骤1: 缓存已存在，跳过生成")
+                else:
+                    with self._cache_lock:
+                        new_mc = self._update_cache(
+                            chunk, doc_name,
+                            text_start_pos=start, text_end_pos=end,
+                            total_text_length=total_length, verbose=verbose,
+                            document_path=document_path, event_time=event_time,
+                        )
+                memory_caches[ci] = new_mc
+                input_texts[ci] = chunk
+                last_memory_cache_id = new_mc.absolute_id
 
-            fut = self._extraction_executor.submit(
-                self._run_extraction_job,
-                new_mc, chunk, doc_name,
-                verbose=verbose, event_time=event_time,
-            )
-            futures.append(fut)
+                # 提交 step2-5 到线程池
+                # 断点续传优化：如果抽取结果已存在，直接加载，跳过 LLM 调用
+                _saved_extraction = self.storage.load_extraction_result(
+                    _chunk_hash, document_path=document_path,
+                ) if _chunk_hash else None
 
-            last_memory_cache_id = new_mc.id
-            chunk_idx += 1
-            if end >= total_length:
-                break
-            start = end - overlap
+                if _saved_extraction is not None:
+                    # 抽取结果已存在，跳过步骤2-5，立即释放槽位
+                    extract_results[ci] = _saved_extraction
+                    extract_done[ci].set()
+                    self._window_slot.release()
+                    if verbose:
+                        _ents_count = len(_saved_extraction[0])
+                        _rels_count = len(_saved_extraction[1])
+                        wprint(f"  └─ 步骤2-5: 抽取结果已存在，跳过（{_ents_count} 实体, {_rels_count} 关系）")
+                else:
+                    def _do_extract(idx=ci, mc=new_mc, chunk_text=chunk, __hash=_chunk_hash):
+                        _wlabel = f"W{start_chunk + idx + 1}/{total_chunks}"
+                        set_window_label(_wlabel)
+                        with self._runtime_lock:
+                            self._active_window_extractions += 1
+                            self._peak_window_extractions = max(
+                                self._peak_window_extractions,
+                                self._active_window_extractions,
+                            )
+                        try:
+                            ents, rels = self._extract_only(
+                                mc, chunk_text, doc_name,
+                                verbose=verbose, event_time=event_time,
+                                progress_callback=lambda p, l, m: _safe_progress(p, l, m, "phase_ab"),
+                                progress_range=((start_chunk + idx) / total_chunks, (start_chunk + idx + 1) / total_chunks),
+                                window_index=start_chunk + idx, total_windows=total_chunks,
+                            )
+                            extract_results[idx] = (ents, rels)
+                            # 保存抽取结果供断点续传复用
+                            self.storage.save_extraction_result(__hash, ents, rels, document_path=document_path)
+                        except Exception as e:
+                            with errors_lock:
+                                errors.append(("extract", idx, e))
+                            import traceback
+                            traceback.print_exc()
+                        finally:
+                            with self._runtime_lock:
+                                self._active_window_extractions = max(0, self._active_window_extractions - 1)
+                            extract_done[idx].set()
+                            self._window_slot.release()
 
-        for fut in futures:
-            fut.result()
+                    self._extraction_executor.submit(_do_extract)
+
+                if end >= total_length:
+                    break
+                start = end - overlap
+        except Exception as e:
+            with errors_lock:
+                errors.append(("main", 0, e))
+            import traceback
+            traceback.print_exc()
+
+        # 等待所有窗口 step7 完成
+        for i in range(N):
+            step7_done_ev[i].wait()
+
+        t6.join(timeout=10)
+        t7.join(timeout=10)
+
+        if errors:
+            _phase, _idx, exc = errors[0]
+            raise exc
 
         storage_path = str(self.storage.storage_path)
         return {
             "memory_cache_id": last_memory_cache_id,
-            "chunks_processed": chunk_idx,
+            "chunks_processed": total_chunks,
             "storage_path": storage_path,
         }
 
@@ -484,7 +724,7 @@ class TemporalMemoryGraphProcessor:
                 "message": f"文档整体记忆已生成: {doc_name}",
             })
         if verbose:
-            print(f"[Phase1] 文档整体记忆已生成: {overall.id[:20]}…, doc_name={doc_name!r}")
+            wprint(f"[Phase1] 文档整体记忆已生成: {overall.absolute_id[:20]}…, doc_name={doc_name!r}")
         return overall
 
     def remember_phase2_windows(self, text: str, doc_name: str = "api_input", verbose: bool = False,
@@ -519,16 +759,19 @@ class TemporalMemoryGraphProcessor:
             })
 
         while start < total_length:
+            # 等待并发槽位：如果已有 max_concurrent_windows 个窗口在 step2+，暂缓 step1
+            self._window_slot.acquire()
+
             end = min(start + window_size, total_length)
             chunk = text[start:end]
             if start == 0:
                 chunk = f"开始阅读新的文档，文件名是：{doc_name}\n\n{chunk}"
 
             if verbose:
-                print(f"\n{'='*60}")
-                print(f"处理窗口 (文档: {doc_name}, 位置: {start}-{end}/{total_length})")
-                print(f"输入文本长度: {len(chunk)} 字符")
-                print(f"{'='*60}\n")
+                wprint(f"\n{'='*60}")
+                wprint(f"处理窗口 (文档: {doc_name}, 位置: {start}-{end}/{total_length})")
+                wprint(f"输入文本长度: {len(chunk)} 字符")
+                wprint(f"{'='*60}\n")
 
             with self._cache_lock:
                 new_mc = self._update_cache(
@@ -544,7 +787,7 @@ class TemporalMemoryGraphProcessor:
                 verbose=verbose, event_time=event_time,
             )
             futures.append(fut)
-            last_memory_cache_id = new_mc.id
+            last_memory_cache_id = new_mc.absolute_id
             chunk_idx += 1
             if progress_callback is not None:
                 progress_callback({
@@ -569,489 +812,6 @@ class TemporalMemoryGraphProcessor:
             "chunks_processed": chunk_idx,
             "storage_path": str(self.storage.storage_path),
         }
-
-    def _update_cache(self, input_text: str, document_name: str,
-                      text_start_pos: int = 0, text_end_pos: int = 0,
-                      total_text_length: int = 0, verbose: bool = True,
-                      document_path: str = "",
-                      event_time: Optional[datetime] = None) -> MemoryCache:
-        """步骤1：更新记忆缓存。必须在 _cache_lock 下调用，保证 cache 链串行。"""
-        if verbose:
-            print("## 步骤1: 更新记忆缓存")
-        
-        new_memory_cache = self.llm_client.update_memory_cache(
-            self.current_memory_cache,
-            input_text,
-            document_name=document_name,
-            text_start_pos=text_start_pos,
-            text_end_pos=text_end_pos,
-            total_text_length=total_text_length,
-            event_time=event_time,
-        )
-        
-        self.storage.save_memory_cache(new_memory_cache, text=input_text, document_path=document_path)
-        self.current_memory_cache = new_memory_cache
-        
-        if verbose:
-            print(f"  └─ 缓存ID: {new_memory_cache.id}\n")
-        
-        return new_memory_cache
-
-    def _process_extraction(self, new_memory_cache: MemoryCache, input_text: str,
-                            document_name: str, verbose: bool = True,
-                            event_time: Optional[datetime] = None):
-        """步骤2-7：抽取实体/关系 + 对齐写入。可在线程池中并行执行。"""
-        # ========== 步骤2：抽取实体 ==========
-        if verbose:
-            print("## 步骤2: 抽取实体")
-        
-        extracted_entities = self.llm_client.extract_entities(
-            new_memory_cache,
-            input_text,
-            max_iterations=self.entity_extraction_max_iterations,
-            enable_iterative=self.entity_extraction_iterative,
-            verbose=verbose
-        )
-        
-        if verbose:
-            print(f"  └─ 抽取完成: {len(extracted_entities)} 个实体\n")
-        
-        # ========== 步骤3：抽取关系 ==========
-        if verbose:
-            print("## 步骤3: 抽取关系")
-        
-        # 基于抽取的实体进行关系抽取
-        extracted_relations = self.llm_client.extract_relations(
-            new_memory_cache,
-            input_text,
-            extracted_entities,
-            max_iterations=self.relation_extraction_max_iterations,
-            absolute_max_iterations=self.relation_extraction_absolute_max_iterations,
-            enable_iterative=self.relation_extraction_iterative,
-            verbose=verbose
-        )
-        
-        if verbose:
-            print(f"  └─ 抽取完成: {len(extracted_relations)} 个关系\n")
-        
-        # ========== 步骤4：检查补全实体 ==========
-        # 统计关系中的缺失实体（不在已抽取实体中的）
-        existing_entity_names = set(e['name'] for e in extracted_entities)
-        missing_entity_names = set()
-        
-        for relation in extracted_relations:
-            # 支持新旧格式（与 relation_processor.py 保持一致）
-            entity1_name = relation.get('entity1_name') or relation.get('entity1_name', '')
-            entity2_name = relation.get('entity2_name') or relation.get('entity2_name', '')
-            entity1_name = entity1_name.strip() if entity1_name else ''
-            entity2_name = entity2_name.strip() if entity2_name else ''
-            if entity1_name and entity1_name not in existing_entity_names:
-                missing_entity_names.add(entity1_name)
-            if entity2_name and entity2_name not in existing_entity_names:
-                missing_entity_names.add(entity2_name)
-        
-        if missing_entity_names:
-            if verbose:
-                print(f"## 步骤4: 补全缺失实体 ({len(missing_entity_names)} 个)")
-            
-            # 抽取缺失实体
-            missing_entities_extracted = self.llm_client.extract_entities_by_names(
-                new_memory_cache,
-                input_text,
-                list(missing_entity_names),
-                verbose=verbose
-            )
-            
-            # 合并到已抽取实体列表（去重）
-            for entity in missing_entities_extracted:
-                if entity['name'] not in existing_entity_names:
-                    extracted_entities.append(entity)
-                    existing_entity_names.add(entity['name'])
-            
-            if verbose:
-                print(f"  └─ 补全完成: {len(missing_entities_extracted)} 个，总计 {len(extracted_entities)} 个实体\n")
-        else:
-            if verbose:
-                print("## 步骤4: 补全缺失实体")
-                print("  └─ 无缺失实体，跳过\n")
-        
-        # ========== 步骤5：实体增强 ==========
-        if self.entity_post_enhancement:
-            if verbose:
-                print("## 步骤5: 实体增强")
-            
-            # 使用多线程并行处理实体增强
-            if self.llm_threads > 1 and len(extracted_entities) > 1:
-                enhanced_entities = []
-                with ThreadPoolExecutor(max_workers=self.llm_threads, thread_name_prefix="tmg-llm") as executor:
-                    future_entity2 = {
-                        executor.submit(
-                            self.llm_client.enhance_entity_content,
-                            new_memory_cache,
-                            input_text,
-                            entity
-                        ): entity
-                        for entity in extracted_entities
-                    }
-                    
-                    entity_results = {}
-                    for future in as_completed(future_entity2):
-                        entity = future_entity2[future]
-                        try:
-                            enhanced_content = future.result()
-                            entity_results[entity['name']] = {
-                                'name': entity['name'],
-                                'content': enhanced_content
-                            }
-                        except Exception as e:
-                            if verbose:
-                                print(f"      警告: {entity['name']} 增强失败: {e}")
-                            entity_results[entity['name']] = {
-                                'name': entity['name'],
-                                'content': entity['content']
-                            }
-                    
-                    for entity in extracted_entities:
-                        if entity['name'] in entity_results:
-                            enhanced_entities.append(entity_results[entity['name']])
-                        else:
-                            enhanced_entities.append({
-                                'name': entity['name'],
-                                'content': entity['content']
-                            })
-            else:
-                # 单线程处理
-                enhanced_entities = []
-                for entity in extracted_entities:
-                    enhanced_content = self.llm_client.enhance_entity_content(
-                        new_memory_cache,
-                        input_text,
-                        entity
-                    )
-                    enhanced_entities.append({
-                        'name': entity['name'],
-                        'content': enhanced_content
-                    })
-            
-            extracted_entities = enhanced_entities
-            
-            if verbose:
-                print(f"  └─ 增强完成: {len(extracted_entities)} 个实体\n")
-        else:
-            if verbose:
-                print("## 步骤5: 实体增强")
-                print("  └─ 已禁用，跳过\n")
-        
-        # ========== 步骤6：处理实体 ==========
-        if verbose:
-            print("## 步骤6: 处理实体（搜索、对齐、更新/新建）")
-        
-        # 记录原始实体名称列表（用于后续建立映射）
-        original_entity_names = [e['name'] for e in extracted_entities]
-        
-        # 用于存储待处理的关系（使用实体名称）
-        # 包括：步骤6中实体处理时产生的关系 + 步骤3抽取的关系
-        all_pending_relations_by_name = []
-        # 先将步骤3抽取的关系添加到待处理列表（使用实体名称）
-        if extracted_relations:
-            for rel in extracted_relations:
-                entity1_name = rel.get('entity1_name') or rel.get('from_entity_name', '').strip()
-                entity2_name = rel.get('entity2_name') or rel.get('to_entity_name', '').strip()
-                content = rel.get('content', '').strip()
-                if entity1_name and entity2_name:
-                    all_pending_relations_by_name.append({
-                        "entity1_name": entity1_name,
-                        "entity2_name": entity2_name,
-                        "content": content,
-                        "relation_type": "normal"  # 抽取的关系默认为普通关系
-                    })
-        
-        # 用于存储实体名称到ID的映射（逐步构建）
-        entity_name_to_id_from_entities = {}
-        # 定义回调函数：在每个实体处理完后，检查并处理满足条件的关系
-        def on_entity_processed_callback(entity, current_entity_name_to_id, current_pending_relations):
-            """在每个实体处理完后调用，增量更新映射与待处理关系。"""
-            nonlocal all_pending_relations_by_name, entity_name_to_id_from_entities
-            
-            # 更新全局映射
-            entity_name_to_id_from_entities.update(current_entity_name_to_id)
-            
-            # 添加新的关系到待处理列表（从当前实体处理中产生的关系）
-            all_pending_relations_by_name.extend(current_pending_relations)
-        
-        processed_entities, pending_relations_from_entities, entity_name_to_id_from_entities_final = self.entity_processor.process_entities(
-            extracted_entities,
-            new_memory_cache.id,
-            self.similarity_threshold,
-            memory_cache=new_memory_cache,
-            doc_name=document_name,
-            context_text=input_text,
-            extracted_relations=extracted_relations,
-            jaccard_search_threshold=self.jaccard_search_threshold,
-            embedding_name_search_threshold=self.embedding_name_search_threshold,
-            embedding_full_search_threshold=self.embedding_full_search_threshold,
-            on_entity_processed=on_entity_processed_callback,
-            base_time=new_memory_cache.physical_time,
-            max_workers=self.llm_threads,
-        )
-        
-        # 合并最终的映射（回调函数中可能已经更新了部分映射）
-        entity_name_to_id_from_entities.update(entity_name_to_id_from_entities_final)
-        
-        # 更新待处理关系列表（使用回调函数中维护的列表）
-        pending_relations_from_entities = all_pending_relations_by_name
-        
-        # 按entity_id去重，只保留最新版本
-        unique_entities_dict = {}
-        for entity in processed_entities:
-            if entity.entity_id not in unique_entities_dict:
-                unique_entities_dict[entity.entity_id] = entity
-            else:
-                if entity.physical_time > unique_entities_dict[entity.entity_id].physical_time:
-                    unique_entities_dict[entity.entity_id] = entity
-        
-        unique_entities = list(unique_entities_dict.values())
-        
-        # 构建完整的实体名称到entity_id的映射
-        # 使用列表存储同名实体，避免覆盖
-        entity_name_to_ids = {}  # name -> List[entity_id] 支持同名实体
-        
-        # 1. 首先添加处理后的实体名称（最终名称）
-        for entity in unique_entities:
-            if entity.name not in entity_name_to_ids:
-                entity_name_to_ids[entity.name] = []
-            if entity.entity_id not in entity_name_to_ids[entity.name]:
-                entity_name_to_ids[entity.name].append(entity.entity_id)
-        
-        # 2. 添加从实体处理阶段返回的映射（包括新创建的实体）
-        for name, entity_id in entity_name_to_id_from_entities.items():
-            if name not in entity_name_to_ids:
-                entity_name_to_ids[name] = []
-            if entity_id not in entity_name_to_ids[name]:
-                entity_name_to_ids[name].append(entity_id)
-        
-        # 3. 建立原始名称到entity_id的映射
-        # processed_entities 与 extracted_entities 顺序一致，可以一一对应
-        for i, entity in enumerate(processed_entities):
-            if i < len(original_entity_names):
-                original_name = original_entity_names[i]
-                # 将原始名称也映射到对应的entity_id
-                if original_name not in entity_name_to_ids:
-                    entity_name_to_ids[original_name] = []
-                if entity.entity_id not in entity_name_to_ids[original_name]:
-                    entity_name_to_ids[original_name].append(entity.entity_id)
-        
-        # 4. 检测和处理同名实体冲突
-        duplicate_names = {name: ids for name, ids in entity_name_to_ids.items() if len(ids) > 1}
-        entity_name_to_all_ids = {}  # 保留所有同名实体的ID列表（用于后续处理）
-        
-        if duplicate_names:
-            if verbose:
-                print(f"    ⚠️  发现 {len(duplicate_names)} 个同名实体（不同ID）:")
-                for name, ids in duplicate_names.items():
-                    print(f"      - {name}: {len(ids)} 个不同的entity_id {ids[:3]}{'...' if len(ids) > 3 else ''}")
-            
-            # 对于同名实体，选择版本数最多的作为主要映射
-            # 同时保留所有ID的映射，以便后续处理
-            entity_name_to_id = {}
-            
-            for name, ids in entity_name_to_ids.items():
-                if len(ids) > 1:
-                    # 同名实体：选择版本数最多的
-                    version_counts = {}
-                    for eid in ids:
-                        count = len(self.storage.get_entity_versions(eid))
-                        version_counts[eid] = count
-                    
-                    # 选择版本数最多的实体ID作为主要映射
-                    primary_id = max(ids, key=lambda eid: version_counts.get(eid, 0))
-                    entity_name_to_id[name] = primary_id
-                    entity_name_to_all_ids[name] = ids
-                    
-                    if verbose:
-                        print(f"      选择主要实体: {name} -> {primary_id} (版本数: {version_counts.get(primary_id, 0)})")
-                        other_ids = [eid for eid in ids if eid != primary_id]
-                        if other_ids:
-                            print(f"        其他同名实体: {', '.join(other_ids)}")
-                else:
-                    # 唯一名称：直接映射
-                    entity_name_to_id[name] = ids[0]
-        else:
-            # 没有同名实体，直接构建简单映射
-            entity_name_to_id = {name: ids[0] for name, ids in entity_name_to_ids.items()}
-        
-        # 4. 统计合并情况（原始名称与最终名称不同的）
-        merged_mappings = []
-        for i, entity in enumerate(processed_entities):
-            if i < len(original_entity_names):
-                original_name = original_entity_names[i]
-                if original_name != entity.name:
-                    merged_mappings.append((original_name, entity.name, entity.entity_id))
-        
-        if verbose:
-            print(f"  └─ 处理完成: {len(unique_entities)} 个唯一实体（原始 {len(original_entity_names)} 个）")
-            if merged_mappings:
-                print(f"     合并映射: {len(merged_mappings)} 个")
-            print()
-        
-        # 步骤6.3：更新待处理关系中的实体名称到ID映射
-        # 将pending_relations_from_entities中的实体名称转换为entity_id
-        updated_pending_relations = []
-        for rel_info in pending_relations_from_entities:
-            entity1_name = rel_info.get("entity1_name", "")
-            entity2_name = rel_info.get("entity2_name", "")
-            content = rel_info.get("content", "")
-            relation_type = rel_info.get("relation_type", "normal")
-            
-            # 获取实体ID（处理同名实体情况）
-            entity1_id = entity_name_to_id.get(entity1_name)
-            entity2_id = entity_name_to_id.get(entity2_name)
-            
-        
-            if entity1_id and entity2_id:
-                # 检查是否是自关系（同一个实体）
-                if entity1_id == entity2_id:
-                    # 静默跳过自关系
-                    continue
-                
-                updated_pending_relations.append({
-                    "entity1_id": entity1_id,
-                    "entity2_id": entity2_id,
-                    "entity1_name": entity1_name,
-                    "entity2_name": entity2_name,
-                    "content": content,
-                    "relation_type": relation_type
-                })
-            # 静默跳过，不输出警告
-        
-        # ========== 步骤7：处理关系 ==========
-        if verbose:
-            print("## 步骤7: 处理关系（搜索、对齐、更新/新建）")
-        
-        # 步骤7只处理剩余的关系（那些在步骤6中还不满足条件的关系）
-        # 步骤3抽取的关系已经在步骤6开始时添加到 all_pending_relations_by_name 中
-        # 并且在步骤6的回调函数中，已经处理了满足条件的关系
-        # 所以这里只需要处理 updated_pending_relations（步骤6中剩余的关系）
-        all_pending_relations = updated_pending_relations.copy()
-        
-        # 将步骤6中剩余的关系（all_pending_relations_by_name）也转换为ID格式并添加
-        # 这些关系可能包括步骤3抽取的关系，在步骤6中还没有满足条件的
-        for rel_info in all_pending_relations_by_name:
-            entity1_name = rel_info.get("entity1_name", "")
-            entity2_name = rel_info.get("entity2_name", "")
-            content = rel_info.get("content", "")
-            relation_type = rel_info.get("relation_type", "normal")
-            
-            # 获取实体ID（处理同名实体情况）
-            entity1_id = entity_name_to_id.get(entity1_name)
-            entity2_id = entity_name_to_id.get(entity2_name)
-            
-            # 如果存在同名实体，静默处理
-            if entity1_name in duplicate_names:
-                # 静默处理同名实体，使用主要ID
-                pass
-            
-            if entity2_name in duplicate_names:
-                # 静默处理同名实体，使用主要ID
-                pass
-            
-            if entity1_id and entity2_id:
-                # 检查是否是自关系（同一个实体）
-                if entity1_id == entity2_id:
-                    # 静默跳过自关系
-                    continue
-                
-                all_pending_relations.append({
-                    "entity1_id": entity1_id,
-                    "entity2_id": entity2_id,
-                    "entity1_name": entity1_name,
-                    "entity2_name": entity2_name,
-                    "content": content,
-                    "relation_type": relation_type
-                })
-            # 静默跳过，不输出警告
-        
-        # 去重：通过实体对和内容判断重复
-        seen_relations = set()
-        unique_pending_relations = []
-        for rel in all_pending_relations:
-            entity1_id = rel.get("entity1_id")
-            entity2_id = rel.get("entity2_id")
-            content = rel.get("content", "")
-            if entity1_id and entity2_id:
-                pair_key = tuple(sorted([entity1_id, entity2_id]))
-                content_hash = hash(content.strip().lower())
-                relation_key = (pair_key, content_hash)
-                if relation_key not in seen_relations:
-                    seen_relations.add(relation_key)
-                    unique_pending_relations.append(rel)
-        
-        if verbose:
-            duplicate_count = len(all_pending_relations) - len(unique_pending_relations)
-            if duplicate_count > 0:
-                print(f"  ├─ 待处理关系: {len(all_pending_relations)} 个（去重后: {len(unique_pending_relations)} 个）")
-            else:
-                print(f"  ├─ 待处理关系: {len(unique_pending_relations)} 个")
-        
-        relation_inputs = [
-            {
-                "entity1_name": rel_info.get("entity1_name", ""),
-                "entity2_name": rel_info.get("entity2_name", ""),
-                "content": rel_info.get("content", ""),
-            }
-            for rel_info in unique_pending_relations
-        ]
-
-        all_processed_relations = self.relation_processor.process_relations_batch(
-            relation_inputs,
-            entity_name_to_id,
-            new_memory_cache.id,
-            doc_name=document_name,
-            base_time=new_memory_cache.physical_time,
-            max_workers=self.llm_threads,
-        )
-        
-        if verbose:
-            print(f"  └─ 处理完成: {len(all_processed_relations)} 个关系\n")
-            for relation in all_processed_relations:
-                entity1 = self.storage.get_entity_by_absolute_id(relation.entity1_absolute_id)
-                entity2 = self.storage.get_entity_by_absolute_id(relation.entity2_absolute_id)
-                
-                if entity1 and entity2:
-                    entity1_name = entity1.name
-                    entity2_name = entity2.name
-                else:
-                    entity1_name = relation.entity1_absolute_id
-                    entity2_name = relation.entity2_absolute_id
-                
-                content_preview = relation.content[:80] + '...' if len(relation.content) > 80 else relation.content
-                print(f"      - {entity1_name} -- {entity2_name}")
-                print(f"        {content_preview}")
-        
-        if verbose:
-            print("  窗口处理完成！\n")
-
-    def _process_window(self, input_text: str, document_name: str,
-                       is_new_document: bool, text_start_pos: int = 0,
-                       text_end_pos: int = 0, total_text_length: int = 0,
-                       verbose: bool = True, document_path: str = "",
-                       event_time: Optional[datetime] = None):
-        """兼容入口：串行执行 cache 更新 + 抽取处理（process_documents 等旧路径使用）。"""
-        if verbose:
-            print(f"\n{'='*60}")
-            print(f"处理窗口 (文档: {document_name}, 位置: {text_start_pos}-{text_end_pos}/{total_text_length})")
-            print(f"输入文本长度: {len(input_text)} 字符")
-            print(f"{'='*60}\n")
-
-        with self._cache_lock:
-            new_mc = self._update_cache(
-                input_text, document_name,
-                text_start_pos=text_start_pos, text_end_pos=text_end_pos,
-                total_text_length=total_text_length, verbose=verbose,
-                document_path=document_path, event_time=event_time,
-            )
-        self._process_extraction(new_mc, input_text, document_name,
-                                 verbose=verbose, event_time=event_time)
 
     def get_statistics(self) -> dict:
         """获取处理统计信息"""
@@ -1114,24 +874,15 @@ class TemporalMemoryGraphProcessor:
             use_pre_search = True
         else:
             use_pre_search = enable_pre_search
-        
-        # 确定是否启用预搜索
-        # 如果parallel=True，必须启用预搜索（但这种情况应该已经进入上面的并行版本）
-        # 如果parallel=False，根据enable_pre_search参数决定
-        if enable_pre_search is None:
-            # 默认启用预搜索（批量计算更高效）
-            use_pre_search = True
-        else:
-            use_pre_search = enable_pre_search
-        
+
         if verbose:
-            print("=" * 60)
-            print("开始知识图谱整理...")
-            print("=" * 60)
+            wprint("=" * 60)
+            wprint("开始知识图谱整理...")
+            wprint("=" * 60)
         
         # 步骤0：处理自指向的关系，将其总结到实体的content中
         if verbose:
-            print(f"\n步骤0: 处理自指向的关系（总结到实体content）...")
+            wprint(f"\n步骤0: 处理自指向的关系（总结到实体content）...")
         
         self_ref_relations = self.storage.get_self_referential_relations()
         entities_updated_from_self_ref = 0
@@ -1139,7 +890,7 @@ class TemporalMemoryGraphProcessor:
         
         if self_ref_relations:
             if verbose:
-                print(f"  发现 {len(self_ref_relations)} 个实体有自指向关系，共 {sum(len(rels) for rels in self_ref_relations.values())} 个关系")
+                wprint(f"  发现 {len(self_ref_relations)} 个实体有自指向关系，共 {sum(len(rels) for rels in self_ref_relations.values())} 个关系")
             
             for entity_id, relations in self_ref_relations.items():
                 # 获取实体的最新版本
@@ -1151,7 +902,7 @@ class TemporalMemoryGraphProcessor:
                 self_ref_contents = [rel['content'] for rel in relations]
                 
                 if verbose:
-                    print(f"    处理实体 {entity.name} ({entity_id})，有 {len(relations)} 个自指向关系")
+                    wprint(f"    处理实体 {entity.name} ({entity_id})，有 {len(relations)} 个自指向关系")
                 
                 # 用LLM总结这些关系内容到实体的content中
                 # 将自指向关系的内容视为实体的属性信息
@@ -1164,13 +915,13 @@ class TemporalMemoryGraphProcessor:
                 from datetime import datetime
                 new_entity_id = f"entity_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
                 new_entity = Entity(
-                    id=new_entity_id,
+                    absolute_id=new_entity_id,
                     entity_id=entity.entity_id,
                     name=entity.name,
                     content=summarized_content,
                     physical_time=datetime.now(),
                     memory_cache_id=entity.memory_cache_id,
-                    doc_name=entity.doc_name if hasattr(entity, 'doc_name') else ""
+                    source_document=entity.source_document
                 )
                 self.storage.save_entity(new_entity)
                 
@@ -1178,15 +929,15 @@ class TemporalMemoryGraphProcessor:
                 deleted_self_ref_count += len(relations)
                 
                 if verbose:
-                    print(f"      已将 {len(relations)} 个自指向关系总结到实体content中")
+                    wprint(f"      已将 {len(relations)} 个自指向关系总结到实体content中")
             
             # 删除所有自指向的关系
             actual_deleted = self.storage.delete_self_referential_relations()
             if verbose:
-                print(f"  已删除 {actual_deleted} 个自指向的关系")
+                wprint(f"  已删除 {actual_deleted} 个自指向的关系")
         else:
             if verbose:
-                print(f"  未发现自指向的关系")
+                wprint(f"  未发现自指向的关系")
         
         # 结果统计
         result = {
@@ -1202,13 +953,13 @@ class TemporalMemoryGraphProcessor:
         
         # 步骤1：获取所有实体
         if verbose:
-            print(f"\n步骤1: 获取所有实体...")
+            wprint(f"\n步骤1: 获取所有实体...")
         
         all_entities = self.storage.get_all_entities()
         
         if not all_entities:
             if verbose:
-                print("  知识库中没有实体。")
+                wprint("  知识库中没有实体。")
             return result
         
         # 按版本数量从大到小排序
@@ -1219,7 +970,7 @@ class TemporalMemoryGraphProcessor:
         # 记录整理前的实体总数
         initial_entity_count = len(all_entities)
         if verbose:
-            print(f"  整理前共有 {initial_entity_count} 个实体")
+            wprint(f"  整理前共有 {initial_entity_count} 个实体")
         
         # 记录已合并的实体ID（用于后续embedding搜索时排除）
         merged_entity_ids = set()
@@ -1229,7 +980,7 @@ class TemporalMemoryGraphProcessor:
         # 步骤1.5：先按名称完全匹配进行整理
         if enable_name_match_step:
             if verbose:
-                print(f"\n步骤1.5: 按名称完全匹配进行初步整理...")
+                wprint(f"\n步骤1.5: 按名称完全匹配进行初步整理...")
             
             # 构建名称到实体列表的映射
             name_to_entities = {}
@@ -1265,7 +1016,7 @@ class TemporalMemoryGraphProcessor:
                 
                 name_match_count += 1
                 if verbose:
-                    print(f"  发现名称完全一致的实体组: {name} (共 {len(entities_with_same_name)} 个实体)")
+                    wprint(f"  发现名称完全一致的实体组: {name} (共 {len(entities_with_same_name)} 个实体)")
                 
                 # 准备实体信息用于LLM判断
                 entities_info = []
@@ -1308,7 +1059,7 @@ class TemporalMemoryGraphProcessor:
                 )
                 
                 if verbose and existing_relations_between:
-                    print(f"    发现 {len(existing_relations_between)} 对实体之间已有关系，将交由LLM判断是否应该合并")
+                    wprint(f"    发现 {len(existing_relations_between)} 对实体之间已有关系，将交由LLM判断是否应该合并")
                 
                 # 调用LLM分析：判断是合并还是关联关系
                 analysis_result = self.llm_client.analyze_entity_duplicates(
@@ -1320,7 +1071,7 @@ class TemporalMemoryGraphProcessor:
                 
                 if "error" in analysis_result:
                     if verbose:
-                        print(f"    分析失败，跳过该组")
+                        wprint(f"    分析失败，跳过该组")
                     continue
             
             # 处理合并（过滤掉已有关系的实体对）
@@ -1346,8 +1097,8 @@ class TemporalMemoryGraphProcessor:
                 
                 if verbose:
                     target_name = next((e.name for e in entities_with_same_name if e.entity_id == target_entity_id), target_entity_id)
-                    print(f"    合并实体: {target_name} ({target_entity_id}) <- {len(source_entity_ids)} 个源实体")
-                    print(f"      原因: {reason}")
+                    wprint(f"    合并实体: {target_name} ({target_entity_id}) <- {len(source_entity_ids)} 个源实体")
+                    wprint(f"      原因: {reason}")
                 
                 # 处理合并后产生的自指向关系
                 self._handle_self_referential_relations_after_merge(target_entity_id, verbose)
@@ -1380,7 +1131,7 @@ class TemporalMemoryGraphProcessor:
                 # 如果实体已被合并，跳过（因为合并后的实体可能不在当前名称组中）
                 if entity1_id in merged_entity_ids or entity2_id in merged_entity_ids:
                     if verbose:
-                        print(f"    跳过关系（实体已合并）: {entity1_name} -> {entity2_name}")
+                        wprint(f"    跳过关系（实体已合并）: {entity1_name} -> {entity2_name}")
                     continue
                 
                 # 处理关系
@@ -1403,10 +1154,10 @@ class TemporalMemoryGraphProcessor:
                         result["alias_relations_updated"] += 1
             
             if verbose:
-                print(f"  名称匹配完成，处理了 {name_match_count} 个名称组，合并了 {len(merged_entity_ids)} 个实体")
+                wprint(f"  名称匹配完成，处理了 {name_match_count} 个名称组，合并了 {len(merged_entity_ids)} 个实体")
         else:
             if verbose:
-                print(f"\n步骤1.5: 跳过（已禁用）")
+                wprint(f"\n步骤1.5: 跳过（已禁用）")
         
         # 步骤1.5之后，重新按版本数量从大到小排序（因为合并可能改变了版本数）
         entity_ids = [entity.entity_id for entity in all_entities]
@@ -1424,14 +1175,14 @@ class TemporalMemoryGraphProcessor:
         
         if use_pre_search:
             if verbose:
-                print(f"\n步骤2: 使用混合检索方式预搜索所有实体的关联实体（阈值: {similarity_threshold}, 最大候选数: {max_candidates}）...")
-                print(f"  使用多种检索模式：name_only(embedding) + name_and_content(embedding) + name_only(text/jaccard)")
+                wprint(f"\n步骤2: 使用混合检索方式预搜索所有实体的关联实体（阈值: {similarity_threshold}, 最大候选数: {max_candidates}）...")
+                wprint(f"  使用多种检索模式：name_only(embedding) + name_and_content(embedding) + name_only(text/jaccard)")
             
             # 定义进度回调函数
             def progress_callback(current: int, total: int, entity_name: str):
                 if verbose and current % max(1, total // 20) == 0 or current == total:  # 每5%或最后一个显示一次
                     percentage = (current / total) * 100
-                    print(f"  预搜索进度: [{current}/{total}] ({percentage:.1f}%) - 当前处理: {entity_name[:30]}...")
+                    wprint(f"  预搜索进度: [{current}/{total}] ({percentage:.1f}%) - 当前处理: {entity_name[:30]}...")
             
             # 使用混合检索方式一次性找到所有实体的关联实体
             entity_to_candidates = self.storage.find_related_entities_by_embedding(
@@ -1455,13 +1206,13 @@ class TemporalMemoryGraphProcessor:
             
             if verbose:
                 total_candidates = sum(len(candidates) for candidates in entity_to_candidates.values())
-                print(f"  预搜索完成，共 {len(entity_to_candidates)} 个实体，找到 {total_candidates} 个关联实体（已排除 {len(merged_entity_ids)} 个已合并实体）")
+                wprint(f"  预搜索完成，共 {len(entity_to_candidates)} 个实体，找到 {total_candidates} 个关联实体（已排除 {len(merged_entity_ids)} 个已合并实体）")
         else:
             if verbose:
-                print(f"\n步骤2: 跳过预搜索，将按需搜索每个实体的关联实体")
+                wprint(f"\n步骤2: 跳过预搜索，将按需搜索每个实体的关联实体")
         
         if verbose:
-            print(f"\n步骤3: 逐个实体分析并处理...")
+            wprint(f"\n步骤3: 逐个实体分析并处理...")
         
         for entity_idx, entity in enumerate(all_entities, 1):
             # 跳过已被合并的实体
@@ -1471,7 +1222,7 @@ class TemporalMemoryGraphProcessor:
             if verbose:
                 # 获取实体的版本数
                 entity_version_count = version_counts.get(entity.entity_id, 0)
-                print(f"\n  [{entity_idx}/{len(all_entities)}] 分析实体: {entity.name} (entity_id: {entity.entity_id}, 版本数: {entity_version_count})")
+                wprint(f"\n  [{entity_idx}/{len(all_entities)}] 分析实体: {entity.name} (entity_id: {entity.entity_id}, 版本数: {entity_version_count})")
             
             # 获取候选实体：如果启用了预搜索，从预搜索结果中获取；否则按需搜索
             if use_pre_search:
@@ -1537,7 +1288,7 @@ class TemporalMemoryGraphProcessor:
             
             if not candidate_entity_ids:
                 if verbose:
-                    print(f"    未找到相似实体候选")
+                    wprint(f"    未找到相似实体候选")
                 continue
             
             # 确定批量处理的大小
@@ -1552,7 +1303,7 @@ class TemporalMemoryGraphProcessor:
             total_batches = (total_candidates + batch_size - 1) // batch_size  # 向上取整
             
             if verbose:
-                print(f"    找到 {total_candidates} 个候选实体，将分 {total_batches} 批处理（每批 {batch_size} 个）")
+                wprint(f"    找到 {total_candidates} 个候选实体，将分 {total_batches} 批处理（每批 {batch_size} 个）")
             
             # 准备当前实体信息（所有批次共享）
             current_version_count = self.storage.get_entity_version_count(entity.entity_id)
@@ -1575,7 +1326,7 @@ class TemporalMemoryGraphProcessor:
                 batch_candidate_ids = candidate_entity_ids_list[start_idx:end_idx]
                 
                 if verbose:
-                    print(f"\n    [初步筛选] 第 {batch_idx + 1}/{total_batches} 批（{len(batch_candidate_ids)} 个候选实体）...")
+                    wprint(f"\n    [初步筛选] 第 {batch_idx + 1}/{total_batches} 批（{len(batch_candidate_ids)} 个候选实体）...")
                 
                 # 获取当前批次的候选实体完整信息
                 candidates_info = []
@@ -1605,9 +1356,9 @@ class TemporalMemoryGraphProcessor:
                 entities_for_analysis = [current_entity_info] + candidates_info
                 
                 if verbose:
-                    print(f"      当前批次候选实体:")
+                    wprint(f"      当前批次候选实体:")
                     for info in candidates_info:
-                        print(f"        - {info['name']} (entity_id: {info['entity_id']}, versions: {info['version_count']})")
+                        wprint(f"        - {info['name']} (entity_id: {info['entity_id']}, versions: {info['version_count']})")
                 
                 # 初步筛选（使用snippet）- 只收集候选，不执行任何操作
                 preliminary_result = self.llm_client.analyze_entity_candidates_preliminary(
@@ -1622,8 +1373,8 @@ class TemporalMemoryGraphProcessor:
                 
                 if verbose:
                     if preliminary_summary:
-                        print(f"      初步筛选结果: {preliminary_summary[:100]}..." if len(preliminary_summary) > 100 else f"      初步筛选结果: {preliminary_summary}")
-                    print(f"      可能需要合并: {len(possible_merges)} 个, 可能存在关系: {len(possible_relations)} 个, 不处理: {len(no_action)} 个")
+                        wprint(f"      初步筛选结果: {preliminary_summary[:100]}..." if len(preliminary_summary) > 100 else f"      初步筛选结果: {preliminary_summary}")
+                    wprint(f"      可能需要合并: {len(possible_merges)} 个, 可能存在关系: {len(possible_relations)} 个, 不处理: {len(no_action)} 个")
                 
                 # 收集候选（记录当前实体和候选实体的配对）
                 for item in possible_merges:
@@ -1669,16 +1420,16 @@ class TemporalMemoryGraphProcessor:
                             candidate_entity = self.storage.get_entity_by_id(cid)
                             if candidate_entity:
                                 candidate_name = candidate_entity.name
-                        print(f"      跳过已有关系: {entity.name} <-> {candidate_name} (已有 {len(existing_rels)} 个关系)")
+                        wprint(f"      跳过已有关系: {entity.name} <-> {candidate_name} (已有 {len(existing_rels)} 个关系)")
                 else:
                     # 没有关系，需要精细化判断
                     filtered_possible_relations.append(item)
             
             if verbose:
                 total_candidates_to_analyze = len(all_possible_merges) + len(filtered_possible_relations)
-                print(f"\n    [精细化判断] 共 {total_candidates_to_analyze} 个候选需要精细化判断...")
-                print(f"      可能合并: {len(all_possible_merges)} 个")
-                print(f"      可能关系: {len(filtered_possible_relations)} 个 (跳过已有关系: {skipped_relations_count} 个)")
+                wprint(f"\n    [精细化判断] 共 {total_candidates_to_analyze} 个候选需要精细化判断...")
+                wprint(f"      可能合并: {len(all_possible_merges)} 个")
+                wprint(f"      可能关系: {len(filtered_possible_relations)} 个 (跳过已有关系: {skipped_relations_count} 个)")
             
             # 合并可能合并和可能关系的候选（去重）
             all_candidates_to_analyze = {}
@@ -1729,9 +1480,9 @@ class TemporalMemoryGraphProcessor:
                         context_text = self.storage.get_memory_cache_text(candidate_entity.memory_cache_id)
                 
                 if verbose:
-                    print(f"      精细化判断: {entity.name} vs {candidate_info['name']}")
+                    wprint(f"      精细化判断: {entity.name} vs {candidate_info['name']}")
                     if existing_relations_list:
-                        print(f"        已有 {len(existing_relations_list)} 个关系")
+                        wprint(f"        已有 {len(existing_relations_list)} 个关系")
                 
                 # 调用精细化判断（传入上下文文本）
                 detailed_result = self.llm_client.analyze_entity_pair_detailed(
@@ -1745,8 +1496,8 @@ class TemporalMemoryGraphProcessor:
                 reason = detailed_result.get("reason", "")
                 
                 if verbose:
-                    print(f"        判断结果: {action}")
-                    print(f"        理由: {reason[:80]}..." if len(reason) > 80 else f"        理由: {reason}")
+                    wprint(f"        判断结果: {action}")
+                    wprint(f"        理由: {reason[:80]}..." if len(reason) > 80 else f"        理由: {reason}")
                 
                 if action == "merge":
                     merge_target = detailed_result.get("merge_target", "")
@@ -1784,13 +1535,13 @@ class TemporalMemoryGraphProcessor:
             all_analyzed_entities_text.append(entity_list_text)
             
             if verbose:
-                print(f"\n    [精细化判断完成]")
-                print(f"      确定需要合并: {len(merge_decisions)} 个")
-                print(f"      确定需要创建关系: {len(relation_decisions)} 个")
+                wprint(f"\n    [精细化判断完成]")
+                wprint(f"      确定需要合并: {len(merge_decisions)} 个")
+                wprint(f"      确定需要创建关系: {len(relation_decisions)} 个")
             
             # ========== 阶段3: 执行操作（精细化判断全部完成后） ==========
             if verbose and (merge_decisions or relation_decisions):
-                print(f"\n    [执行操作]...")
+                wprint(f"\n    [执行操作]...")
             
             final_target_id = None  # 用于后续创建关联关系时使用
             all_merged_in_this_round = set()  # 本次循环中被合并的实体ID
@@ -1822,7 +1573,7 @@ class TemporalMemoryGraphProcessor:
             
             if merge_groups:
                 if verbose:
-                    print(f"      执行合并操作...")
+                    wprint(f"      执行合并操作...")
                 
                 # 收集所有需要合并的实体ID（包括target和source）
                 all_merge_entity_ids = set()
@@ -1839,7 +1590,7 @@ class TemporalMemoryGraphProcessor:
                     # 检查是否已被合并
                     if any(sid in merged_entity_ids for sid in source_ids):
                         if verbose:
-                            print(f"        跳过已合并的实体: {source_ids}")
+                            wprint(f"        跳过已合并的实体: {source_ids}")
                         continue
                     
                     # 不再过滤已有关系的实体对，让LLM判断是否应该合并
@@ -1875,11 +1626,11 @@ class TemporalMemoryGraphProcessor:
                         combined_reason = "；".join(merge_reasons) if merge_reasons else "多个实体需要合并"
                         
                         if verbose:
-                            print(f"      合并多个实体到目标实体:")
-                            print(f"        目标: {target_name} ({final_target_id}, 版本数: {final_target_versions})")
+                            wprint(f"      合并多个实体到目标实体:")
+                            wprint(f"        目标: {target_name} ({final_target_id}, 版本数: {final_target_versions})")
                             merge_names = [f"{self.storage.get_entity_by_id(sid).name} ({sid})" if self.storage.get_entity_by_id(sid) else sid for sid in final_source_ids]
-                            print(f"        源实体: {', '.join(merge_names)}")
-                            print(f"        原因: {combined_reason}")
+                            wprint(f"        源实体: {', '.join(merge_names)}")
+                            wprint(f"        原因: {combined_reason}")
                         
                         # 执行合并（一次性合并所有source到target）
                         merge_result = self.storage.merge_entity_ids(final_target_id, final_source_ids)
@@ -1887,7 +1638,7 @@ class TemporalMemoryGraphProcessor:
                         merge_result["target_versions"] = final_target_versions
                         
                         if verbose:
-                            print(f"        结果: 更新了 {merge_result.get('entities_updated', 0)} 条实体记录")
+                            wprint(f"        结果: 更新了 {merge_result.get('entities_updated', 0)} 条实体记录")
                         
                         # 处理合并后产生的自指向关系
                         self._handle_self_referential_relations_after_merge(final_target_id, verbose)
@@ -1903,9 +1654,9 @@ class TemporalMemoryGraphProcessor:
                 # 立即创建关联关系（步骤4）
                 if alias_relations:
                     if verbose:
-                        print(f"      创建关联关系...")
+                        wprint(f"      创建关联关系...")
                         if self.llm_threads > 1 and len(alias_relations) > 1:
-                            print(f"      使用 {self.llm_threads} 个线程并行处理 {len(alias_relations)} 个关系...")
+                            wprint(f"      使用 {self.llm_threads} 个线程并行处理 {len(alias_relations)} 个关系...")
                     
                     # 构建有效的entity_id映射（用于验证LLM返回的ID是否有效）
                     valid_entity_ids = {e["entity_id"] for e in entities_for_analysis}
@@ -1922,17 +1673,17 @@ class TemporalMemoryGraphProcessor:
                         # 注意：现在alias_info中不再包含content，需要在后续步骤中生成
                         
                         if verbose:
-                            print(f"        处理关系: {entity1_name} ({entity1_id}) -> {entity2_name} ({entity2_id})")
+                            wprint(f"        处理关系: {entity1_name} ({entity1_id}) -> {entity2_name} ({entity2_id})")
                         
                         if not entity1_id or not entity2_id:
                             if verbose:
-                                print(f"          跳过：缺少entity_id (entity1: {entity1_id}, entity2: {entity2_id})")
+                                wprint(f"          跳过：缺少entity_id (entity1: {entity1_id}, entity2: {entity2_id})")
                             continue
                         
                         # 验证entity_id是否在传入的实体列表中
                         if entity1_id not in valid_entity_ids:
                             if verbose:
-                                print(f"          警告：entity1_id {entity1_id} 不在分析列表中，尝试通过名称查找...")
+                                wprint(f"          警告：entity1_id {entity1_id} 不在分析列表中，尝试通过名称查找...")
                             # 尝试通过名称查找实体
                             found_entity = None
                             for e in entities_for_analysis:
@@ -1942,15 +1693,15 @@ class TemporalMemoryGraphProcessor:
                             if found_entity:
                                 entity1_id = found_entity["entity_id"]
                                 if verbose:
-                                    print(f"            通过名称找到实体: {entity1_name} -> {entity1_id}")
+                                    wprint(f"            通过名称找到实体: {entity1_name} -> {entity1_id}")
                             else:
                                 if verbose:
-                                    print(f"            无法找到实体: {entity1_name} ({entity1_id})")
+                                    wprint(f"            无法找到实体: {entity1_name} ({entity1_id})")
                                 continue
                         
                         if entity2_id not in valid_entity_ids:
                             if verbose:
-                                print(f"          警告：entity2_id {entity2_id} 不在分析列表中，尝试通过名称查找...")
+                                wprint(f"          警告：entity2_id {entity2_id} 不在分析列表中，尝试通过名称查找...")
                             # 尝试通过名称查找实体
                             found_entity = None
                             for e in entities_for_analysis:
@@ -1960,10 +1711,10 @@ class TemporalMemoryGraphProcessor:
                             if found_entity:
                                 entity2_id = found_entity["entity_id"]
                                 if verbose:
-                                    print(f"            通过名称找到实体: {entity2_name} -> {entity2_id}")
+                                    wprint(f"            通过名称找到实体: {entity2_name} -> {entity2_id}")
                             else:
                                 if verbose:
-                                    print(f"            无法找到实体: {entity2_name} ({entity2_id})")
+                                    wprint(f"            无法找到实体: {entity2_name} ({entity2_id})")
                                 continue
                         
                         # 检查实体是否在本次循环中被合并（如果被合并，需要使用合并后的entity_id）
@@ -1990,7 +1741,7 @@ class TemporalMemoryGraphProcessor:
                             if found_target:
                                 actual_entity1_id = found_target
                                 if verbose:
-                                    print(f"            注意：entity1实体 {entity1_name} ({entity1_id}) 已被合并到 {found_target}")
+                                    wprint(f"            注意：entity1实体 {entity1_name} ({entity1_id}) 已被合并到 {found_target}")
                             else:
                                 # 如果找不到，尝试查询数据库（可能entity_id已经更新）
                                 entity1_db = self.storage.get_entity_by_id(entity1_id)
@@ -2007,7 +1758,7 @@ class TemporalMemoryGraphProcessor:
                             if found_target:
                                 actual_entity2_id = found_target
                                 if verbose:
-                                    print(f"            注意：entity2实体 {entity2_name} ({entity2_id}) 已被合并到 {found_target}")
+                                    wprint(f"            注意：entity2实体 {entity2_name} ({entity2_id}) 已被合并到 {found_target}")
                             else:
                                 # 如果找不到，尝试查询数据库（可能entity_id已经更新）
                                 entity2_db = self.storage.get_entity_by_id(entity2_id)
@@ -2020,24 +1771,24 @@ class TemporalMemoryGraphProcessor:
                         
                         if not entity1_check:
                             if verbose:
-                                print(f"          错误：无法找到entity1实体 (entity_id: {actual_entity1_id}, name: {entity1_name})")
+                                wprint(f"          错误：无法找到entity1实体 (entity_id: {actual_entity1_id}, name: {entity1_name})")
                             continue
                         
                         if not entity2_check:
                             if verbose:
-                                print(f"          错误：无法找到entity2实体 (entity_id: {actual_entity2_id}, name: {entity2_name})")
+                                wprint(f"          错误：无法找到entity2实体 (entity_id: {actual_entity2_id}, name: {entity2_name})")
                             continue
                         
                         # 如果合并后entity1和entity2是同一个实体，跳过创建关系
                         if actual_entity1_id == actual_entity2_id:
                             if verbose:
-                                print(f"          跳过：合并后entity1和entity2是同一实体")
+                                wprint(f"          跳过：合并后entity1和entity2是同一实体")
                             continue
                         
                         if verbose:
-                            print(f"          准备处理关系: {entity1_name} -> {entity2_name}")
+                            wprint(f"          准备处理关系: {entity1_name} -> {entity2_name}")
                             if actual_entity1_id != entity1_id or actual_entity2_id != entity2_id:
-                                print(f"            注意：使用了合并后的entity_id (entity1: {entity1_id}->{actual_entity1_id}, entity2: {entity2_id}->{actual_entity2_id})")
+                                wprint(f"            注意：使用了合并后的entity_id (entity1: {entity1_id}->{actual_entity1_id}, entity2: {entity2_id}->{actual_entity2_id})")
                         
                         # 收集关系信息，准备并行处理
                         # 从alias_info中获取初步的content（如果存在）
@@ -2054,11 +1805,11 @@ class TemporalMemoryGraphProcessor:
                 
                 # 并行处理关系
                 if verbose:
-                    print(f"      准备处理 {len(relations_to_process)} 个关系，llm_threads={self.llm_threads}")
+                    wprint(f"      准备处理 {len(relations_to_process)} 个关系，llm_threads={self.llm_threads}")
                 if self.llm_threads > 1 and len(relations_to_process) > 1:
                     # 使用多线程并行处理
                     if verbose:
-                        print(f"      使用 {self.llm_threads} 个线程并行处理 {len(relations_to_process)} 个关系...")
+                        wprint(f"      使用 {self.llm_threads} 个线程并行处理 {len(relations_to_process)} 个关系...")
                     with ThreadPoolExecutor(max_workers=self.llm_threads, thread_name_prefix="tmg-llm") as executor:
                         # 提交所有任务（多线程模式下不显示每个关系的详细信息）
                         future_to_relation = {
@@ -2084,14 +1835,14 @@ class TemporalMemoryGraphProcessor:
                                     result["alias_details"].append(result_data)
                             except Exception as e:
                                 if verbose:
-                                    print(f"      处理关系 {rel_info['entity1_name']} -> {rel_info['entity2_name']} 失败: {e}")
+                                    wprint(f"      处理关系 {rel_info['entity1_name']} -> {rel_info['entity2_name']} 失败: {e}")
                 else:
                     # 串行处理
                     if verbose:
                         if self.llm_threads <= 1:
-                            print(f"      串行处理 {len(relations_to_process)} 个关系（llm_threads={self.llm_threads}，未启用多线程）")
+                            wprint(f"      串行处理 {len(relations_to_process)} 个关系（llm_threads={self.llm_threads}，未启用多线程）")
                         elif len(relations_to_process) <= 1:
-                            print(f"      串行处理 {len(relations_to_process)} 个关系（关系数量 <= 1，无需并行）")
+                            wprint(f"      串行处理 {len(relations_to_process)} 个关系（关系数量 <= 1，无需并行）")
                     for rel_info in relations_to_process:
                         try:
                             result_data = self._process_single_alias_relation(rel_info, verbose)
@@ -2104,7 +1855,7 @@ class TemporalMemoryGraphProcessor:
                                 result["alias_details"].append(result_data)
                         except Exception as e:
                             if verbose:
-                                print(f"      处理关系 {rel_info['entity1_name']} -> {rel_info['entity2_name']} 失败: {e}")
+                                wprint(f"      处理关系 {rel_info['entity1_name']} -> {rel_info['entity2_name']} 失败: {e}")
     
     def _consolidate_knowledge_graph_parallel(self, verbose: bool = True, 
                                               similarity_threshold: float = 0.6,
@@ -2133,9 +1884,9 @@ class TemporalMemoryGraphProcessor:
         from queue import Queue
         
         if verbose:
-            print("=" * 60)
-            print(f"开始知识图谱整理（多线程模式，{self.llm_threads}个线程）...")
-            print("=" * 60)
+            wprint("=" * 60)
+            wprint(f"开始知识图谱整理（多线程模式，{self.llm_threads}个线程）...")
+            wprint("=" * 60)
         
         # 结果统计（线程安全）
         result = {
@@ -2150,13 +1901,13 @@ class TemporalMemoryGraphProcessor:
         
         # 步骤1：获取所有实体
         if verbose:
-            print(f"\n步骤1: 获取所有实体...")
+            wprint(f"\n步骤1: 获取所有实体...")
         
         all_entities = self.storage.get_all_entities()
         
         if not all_entities:
             if verbose:
-                print("  知识库中没有实体。")
+                wprint("  知识库中没有实体。")
             return result
         
         # 按版本数量从大到小排序
@@ -2166,11 +1917,11 @@ class TemporalMemoryGraphProcessor:
         
         initial_entity_count = len(all_entities)
         if verbose:
-            print(f"  整理前共有 {initial_entity_count} 个实体")
+            wprint(f"  整理前共有 {initial_entity_count} 个实体")
         
         # 步骤1.5：先按名称完全匹配进行整理
         if verbose:
-            print(f"\n步骤1.5: 按名称完全匹配进行初步整理...")
+            wprint(f"\n步骤1.5: 按名称完全匹配进行初步整理...")
         
         # 记录已合并的实体ID（用于后续embedding搜索时排除）
         merged_entity_ids = set()
@@ -2211,7 +1962,7 @@ class TemporalMemoryGraphProcessor:
             
             name_match_count += 1
             if verbose:
-                print(f"  发现名称完全一致的实体组: {name} (共 {len(entities_with_same_name)} 个实体)")
+                wprint(f"  发现名称完全一致的实体组: {name} (共 {len(entities_with_same_name)} 个实体)")
             
             # 准备实体信息用于LLM判断
             entities_info = []
@@ -2254,7 +2005,7 @@ class TemporalMemoryGraphProcessor:
             )
             
             if verbose and existing_relations_between:
-                print(f"    发现 {len(existing_relations_between)} 对实体之间已有关系（非同一实体关系），这些实体对不会被合并")
+                wprint(f"    发现 {len(existing_relations_between)} 对实体之间已有关系（非同一实体关系），这些实体对不会被合并")
             
             # 调用LLM分析：判断是合并还是关联关系
             analysis_result = self.llm_client.analyze_entity_duplicates(
@@ -2266,7 +2017,7 @@ class TemporalMemoryGraphProcessor:
             
             if "error" in analysis_result:
                 if verbose:
-                    print(f"    分析失败，跳过该组")
+                    wprint(f"    分析失败，跳过该组")
                 continue
             
             # 处理合并（过滤掉已有关系的实体对）
@@ -2292,8 +2043,8 @@ class TemporalMemoryGraphProcessor:
                 
                 if verbose:
                     target_name = next((e.name for e in entities_with_same_name if e.entity_id == target_entity_id), target_entity_id)
-                    print(f"    合并实体: {target_name} ({target_entity_id}) <- {len(source_entity_ids)} 个源实体")
-                    print(f"      原因: {reason}")
+                    wprint(f"    合并实体: {target_name} ({target_entity_id}) <- {len(source_entity_ids)} 个源实体")
+                    wprint(f"      原因: {reason}")
                 
                 # 处理合并后产生的自指向关系
                 self._handle_self_referential_relations_after_merge(target_entity_id, verbose)
@@ -2326,7 +2077,7 @@ class TemporalMemoryGraphProcessor:
                 # 如果实体已被合并，跳过（因为合并后的实体可能不在当前名称组中）
                 if entity1_id in merged_entity_ids or entity2_id in merged_entity_ids:
                     if verbose:
-                        print(f"    跳过关系（实体已合并）: {entity1_name} -> {entity2_name}")
+                        wprint(f"    跳过关系（实体已合并）: {entity1_name} -> {entity2_name}")
                     continue
                 
                 # 处理关系
@@ -2349,12 +2100,12 @@ class TemporalMemoryGraphProcessor:
                         result["alias_relations_updated"] += 1
         
         if verbose:
-            print(f"  名称匹配完成，处理了 {name_match_count} 个名称组，合并了 {len(merged_entity_ids)} 个实体")
+            wprint(f"  名称匹配完成，处理了 {name_match_count} 个名称组，合并了 {len(merged_entity_ids)} 个实体")
         
         # 步骤2：使用混合检索方式一次性找到所有实体的关联实体
         if verbose:
-            print(f"\n步骤2: 使用混合检索方式预搜索所有实体的关联实体...")
-            print(f"  使用多种检索模式：name_only(embedding) + name_and_content(embedding) + name_only(text/jaccard)")
+            wprint(f"\n步骤2: 使用混合检索方式预搜索所有实体的关联实体...")
+            wprint(f"  使用多种检索模式：name_only(embedding) + name_and_content(embedding) + name_only(text/jaccard)")
         
         # 使用混合检索方式一次性找到所有实体的关联实体
         entity_to_candidates = self.storage.find_related_entities_by_embedding(
@@ -2377,11 +2128,11 @@ class TemporalMemoryGraphProcessor:
         
         if verbose:
             total_candidates = sum(len(candidates) for candidates in entity_to_candidates.values())
-            print(f"  预搜索完成，共 {len(entity_to_candidates)} 个实体，找到 {total_candidates} 个关联实体（已排除 {len(merged_entity_ids)} 个已合并实体）")
+            wprint(f"  预搜索完成，共 {len(entity_to_candidates)} 个实体，找到 {total_candidates} 个关联实体（已排除 {len(merged_entity_ids)} 个已合并实体）")
         
         # 步骤3：并行处理实体
         if verbose:
-            print(f"\n步骤3: 并行处理实体（{self.llm_threads}个线程）...")
+            wprint(f"\n步骤3: 并行处理实体（{self.llm_threads}个线程）...")
         
         # 共享状态（需要加锁）
         # merged_entity_ids 已经在步骤1.5中初始化，这里只需要创建锁
@@ -2611,7 +2362,7 @@ class TemporalMemoryGraphProcessor:
                 
             except Exception as e:
                 if verbose:
-                    print(f"    处理实体 {entity.name} 失败: {e}")
+                    wprint(f"    处理实体 {entity.name} 失败: {e}")
                 import traceback
                 traceback.print_exc()
                 return task_result
@@ -2633,7 +2384,7 @@ class TemporalMemoryGraphProcessor:
                     with count_lock:
                         processed_count[0] += 1
                         if verbose:
-                            print(f"\n  [{processed_count[0]}/{initial_entity_count}] 开始处理: {entity.name}")
+                            wprint(f"\n  [{processed_count[0]}/{initial_entity_count}] 开始处理: {entity.name}")
                 
                 # 如果没有正在运行的任务且没有待处理的实体，退出
                 if not futures:
@@ -2676,7 +2427,7 @@ class TemporalMemoryGraphProcessor:
                                 all_analyzed_entities_text.append(task_result["analyzed_text"])
                         
                         if verbose and task_result["entities_analyzed"] > 0:
-                            print(f"    完成: {entity.name} "
+                            wprint(f"    完成: {entity.name} "
                                   f"(合并: {task_result['entities_merged']}, "
                                   f"新建关系: {task_result['alias_relations_created']}, "
                                   f"更新关系: {task_result['alias_relations_updated']})")
@@ -2694,23 +2445,23 @@ class TemporalMemoryGraphProcessor:
         
         # 输出最终统计总结
         if verbose:
-            print("\n" + "=" * 60)
-            print("知识图谱整理完成！（多线程模式）")
-            print("=" * 60)
-            print(f"📊 实体统计:")
-            print(f"  - 整理前实体数: {initial_entity_count}")
-            print(f"  - 整理后实体数: {final_entity_count}")
-            print(f"  - 减少的实体数: {initial_entity_count - final_entity_count}")
-            print(f"")
-            print(f"📈 整理操作统计:")
-            print(f"  - 分析的实体数: {result['entities_analyzed']}")
-            print(f"  - 合并的实体记录数: {result['entities_merged']}")
-            print(f"")
-            print(f"🔗 关系边统计:")
-            print(f"  - 新建的关系边数: {result['alias_relations_created']}")
-            print(f"  - 更新的关系边数: {result['alias_relations_updated']}")
-            print(f"  - 总处理的关系边数: {result['alias_relations_created'] + result['alias_relations_updated']}")
-            print("=" * 60)
+            wprint("\n" + "=" * 60)
+            wprint("知识图谱整理完成！（多线程模式）")
+            wprint("=" * 60)
+            wprint(f"📊 实体统计:")
+            wprint(f"  - 整理前实体数: {initial_entity_count}")
+            wprint(f"  - 整理后实体数: {final_entity_count}")
+            wprint(f"  - 减少的实体数: {initial_entity_count - final_entity_count}")
+            wprint(f"")
+            wprint(f"📈 整理操作统计:")
+            wprint(f"  - 分析的实体数: {result['entities_analyzed']}")
+            wprint(f"  - 合并的实体记录数: {result['entities_merged']}")
+            wprint(f"")
+            wprint(f"🔗 关系边统计:")
+            wprint(f"  - 新建的关系边数: {result['alias_relations_created']}")
+            wprint(f"  - 更新的关系边数: {result['alias_relations_updated']}")
+            wprint(f"  - 总处理的关系边数: {result['alias_relations_created'] + result['alias_relations_updated']}")
+            wprint("=" * 60)
         
         return result
     
@@ -2855,7 +2606,7 @@ class TemporalMemoryGraphProcessor:
         # 执行从关系判断出的合并
         if entities_to_merge_from_relations:
             if verbose:
-                print(f"    发现 {len(entities_to_merge_from_relations)} 对实体通过关系判断为同一实体，直接合并")
+                wprint(f"    发现 {len(entities_to_merge_from_relations)} 对实体通过关系判断为同一实体，直接合并")
             
             for merge_info in entities_to_merge_from_relations:
                 target_id = merge_info['target_id']
@@ -2869,8 +2620,8 @@ class TemporalMemoryGraphProcessor:
                 if verbose:
                     target_name = next((e.get('name', '') for e in entities_info if e.get('entity_id') == target_id), target_id)
                     source_name = next((e.get('name', '') for e in entities_info if e.get('entity_id') == source_id), source_id)
-                    print(f"      合并实体（基于关系）: {target_name} ({target_id}) <- {source_name} ({source_id})")
-                    print(f"        原因: {relation_content}")
+                    wprint(f"      合并实体（基于关系）: {target_name} ({target_id}) <- {source_name} ({source_id})")
+                    wprint(f"        原因: {relation_content}")
                 
                 # 处理合并后产生的自指向关系
                 self._handle_self_referential_relations_after_merge(target_id, verbose)
@@ -2934,13 +2685,13 @@ class TemporalMemoryGraphProcessor:
             return 0
         
         if verbose:
-            print(f"        检测到合并后产生 {len(self_ref_relations)} 个自指向关系，正在处理...")
+            wprint(f"        检测到合并后产生 {len(self_ref_relations)} 个自指向关系，正在处理...")
         
         # 获取实体的最新版本
         entity = self.storage.get_entity_by_id(target_entity_id)
         if not entity:
             if verbose:
-                print(f"        警告：无法获取实体 {target_entity_id}")
+                wprint(f"        警告：无法获取实体 {target_entity_id}")
             return 0
         
         # 收集所有自指向关系的content
@@ -2956,24 +2707,24 @@ class TemporalMemoryGraphProcessor:
             # 创建实体的新版本
             new_entity_id = f"entity_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
             new_entity = Entity(
-                id=new_entity_id,
+                absolute_id=new_entity_id,
                 entity_id=entity.entity_id,
                 name=entity.name,
                 content=summarized_content,
                 physical_time=datetime.now(),
                 memory_cache_id=entity.memory_cache_id,
-                doc_name=entity.doc_name
+                source_document=entity.source_document
             )
             self.storage.save_entity(new_entity)
             
             if verbose:
-                print(f"        已将 {len(self_ref_contents)} 个自指向关系的内容总结到实体content中")
+                wprint(f"        已将 {len(self_ref_contents)} 个自指向关系的内容总结到实体content中")
         
         # 删除这些自指向关系
         deleted_count = self.storage.delete_self_referential_relations_for_entity(target_entity_id)
         
         if verbose:
-            print(f"        已删除 {deleted_count} 个自指向关系")
+            wprint(f"        已删除 {deleted_count} 个自指向关系")
         
         return deleted_count
     
@@ -3006,7 +2757,7 @@ class TemporalMemoryGraphProcessor:
         preliminary_content = rel_info.get("content")  # 初步的content（从分析阶段生成）
         
         if verbose:
-            print(f"      处理关系: {entity1_name} -> {entity2_name}")
+            wprint(f"      处理关系: {entity1_name} -> {entity2_name}")
         
         try:
             # 获取两个实体的完整信息
@@ -3015,13 +2766,13 @@ class TemporalMemoryGraphProcessor:
             
             if not entity1 or not entity2:
                 if verbose:
-                    print(f"        错误：无法获取实体信息")
+                    wprint(f"        错误：无法获取实体信息")
                 return None
             
             # 步骤0：如果有初步content，先用它判断关系是否存在和是否需要更新
             if preliminary_content:
                 if verbose:
-                    print(f"        使用初步content进行预判断: {preliminary_content[:100]}...")
+                    wprint(f"        使用初步content进行预判断: {preliminary_content[:100]}...")
                 
                 # 检查是否存在关系
                 existing_relations_before = self.storage.get_relations_by_entities(
@@ -3079,7 +2830,7 @@ class TemporalMemoryGraphProcessor:
                             if not need_update:
                                 # 不需要更新，直接返回，跳过后续详细生成
                                 if verbose:
-                                    print(f"        关系已存在且无需更新（使用初步content判断），跳过详细生成: {relation_id}")
+                                    wprint(f"        关系已存在且无需更新（使用初步content判断），跳过详细生成: {relation_id}")
                                 return {
                                     "entity1_id": actual_entity1_id,
                                     "entity2_id": actual_entity2_id,
@@ -3092,7 +2843,7 @@ class TemporalMemoryGraphProcessor:
                                 }
                             else:
                                 if verbose:
-                                    print(f"        关系已存在但需要更新（使用初步content判断），继续生成详细content: {relation_id}")
+                                    wprint(f"        关系已存在但需要更新（使用初步content判断），继续生成详细content: {relation_id}")
             
             # 获取实体的memory_cache（只有在需要详细生成时才获取）
             entity1_memory_cache = None
@@ -3119,11 +2870,11 @@ class TemporalMemoryGraphProcessor:
             
             if not need_create_relation:
                 if verbose:
-                    print(f"        判断结果：两个实体之间没有明确的、有意义的关联，跳过创建关系边")
+                    wprint(f"        判断结果：两个实体之间没有明确的、有意义的关联，跳过创建关系边")
                 return None
             
             if verbose:
-                print(f"        判断结果：两个实体之间存在明确的、有意义的关联，需要创建关系边")
+                wprint(f"        判断结果：两个实体之间存在明确的、有意义的关联，需要创建关系边")
             
             # 步骤2：生成关系的memory_cache（临时，不保存）
             relation_memory_cache_content = self.llm_client.generate_relation_memory_cache(
@@ -3149,7 +2900,7 @@ class TemporalMemoryGraphProcessor:
             )
             
             if verbose:
-                print(f"        生成关系content: {relation_content}")
+                wprint(f"        生成关系content: {relation_content}")
             
             # 步骤4：检查是否存在关系
             existing_relations_before = self.storage.get_relations_by_entities(
@@ -3175,7 +2926,7 @@ class TemporalMemoryGraphProcessor:
                 need_create_or_update = True
                 is_new_relation = True
                 if verbose:
-                    print(f"        不存在关系，需要创建新关系")
+                    wprint(f"        不存在关系，需要创建新关系")
             else:
                 # 4b. 如果存在关系，判断是否需要更新
                 # 按relation_id分组，每个relation_id只保留最新版本
@@ -3222,24 +2973,24 @@ class TemporalMemoryGraphProcessor:
                             need_create_or_update = True
                             is_updated = True
                             if verbose:
-                                print(f"        关系已存在，需要更新: {relation_id}")
+                                wprint(f"        关系已存在，需要更新: {relation_id}")
                         else:
                             # 不需要更新
                             if verbose:
-                                print(f"        关系已存在，无需更新: {relation_id}")
+                                wprint(f"        关系已存在，无需更新: {relation_id}")
                             relation = latest_relation
                     else:
                         # 找不到匹配的关系，创建新关系
                         need_create_or_update = True
                         is_new_relation = True
                         if verbose:
-                            print(f"        未找到匹配的关系，创建新关系")
+                            wprint(f"        未找到匹配的关系，创建新关系")
                 else:
                     # 没有匹配到已有关系，创建新关系
                     need_create_or_update = True
                     is_new_relation = True
                     if verbose:
-                        print(f"        未匹配到已有关系，创建新关系")
+                        wprint(f"        未匹配到已有关系，创建新关系")
             
             # 只有在需要创建或更新时，才保存memory_cache并创建/更新关系
             if need_create_or_update:
@@ -3256,11 +3007,11 @@ class TemporalMemoryGraphProcessor:
 """
                 
                 # 保存memory_cache（md和json）
-                # 从实体中获取文档名（如果实体有doc_name，使用第一个实体的doc_name）
-                doc_name_from_entity = entity1.doc_name if hasattr(entity1, 'doc_name') and entity1.doc_name else ""
+                # 从实体中获取文档名
+                doc_name_from_entity = entity1.source_document if entity1.source_document else ""
                 
                 relation_memory_cache = MemoryCache(
-                    id=f"cache_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}",
+                    absolute_id=f"cache_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}",
                     content=relation_memory_cache_content,
                     physical_time=datetime.now(),
                     doc_name=doc_name_from_entity,
@@ -3270,13 +3021,13 @@ class TemporalMemoryGraphProcessor:
                 self.storage.save_memory_cache(relation_memory_cache, text=cache_text_content)
                 
                 if verbose:
-                    print(f"        保存关系memory_cache: {relation_memory_cache.id}")
+                    wprint(f"        保存关系memory_cache: {relation_memory_cache.absolute_id}")
                 
                 relation = self.relation_processor._process_single_relation(
                     extracted_relation,
                     actual_entity1_id,
                     actual_entity2_id,
-                    relation_memory_cache.id,
+                    relation_memory_cache.absolute_id,
                     entity1.name,
                     entity2.name,
                     verbose_relation=verbose,
@@ -3299,23 +3050,23 @@ class TemporalMemoryGraphProcessor:
                 
                 if is_new_relation:
                     if verbose:
-                        print(f"        成功创建新关系: {relation.relation_id}")
+                        wprint(f"        成功创建新关系: {relation.relation_id}")
                 elif is_updated:
                     if verbose:
-                        print(f"        关系已存在，已更新: {relation.relation_id}")
+                        wprint(f"        关系已存在，已更新: {relation.relation_id}")
                 else:
                     if verbose:
-                        print(f"        关系已存在，无需更新: {relation.relation_id}")
+                        wprint(f"        关系已存在，无需更新: {relation.relation_id}")
                 
                 return alias_detail
             else:
                 if verbose:
-                    print(f"        创建关系失败")
+                    wprint(f"        创建关系失败")
                 return None
                     
         except Exception as e:
             if verbose:
-                print(f"        处理失败: {e}")
+                wprint(f"        处理失败: {e}")
             import traceback
             if verbose:
                 traceback.print_exc()
@@ -3332,7 +3083,7 @@ class TemporalMemoryGraphProcessor:
         """
         # 步骤5：创建整理总结记忆缓存
         if verbose:
-            print(f"\n步骤5: 创建整理总结记忆缓存...")
+            wprint(f"\n步骤5: 创建整理总结记忆缓存...")
         
         consolidation_summary = self.llm_client.generate_consolidation_summary(
             result["merge_details"],
@@ -3374,7 +3125,7 @@ class TemporalMemoryGraphProcessor:
         
         # 创建总结性的记忆缓存
         summary_cache = MemoryCache(
-            id=f"cache_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}",
+            absolute_id=f"cache_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}",
             content=f"""# 知识图谱整理总结
 
 ## 整理总结
@@ -3393,7 +3144,7 @@ class TemporalMemoryGraphProcessor:
         )
         
         if verbose:
-            print(f"  已创建整理总结记忆缓存: {summary_cache.id}")
+            wprint(f"  已创建整理总结记忆缓存: {summary_cache.absolute_id}")
     
     def _build_entity_list_summary(self, entities_for_analysis: List[Dict]) -> str:
         """
@@ -3465,8 +3216,8 @@ def main():
     document_paths = sys.argv[1:] if len(sys.argv) > 1 else []
     
     if not document_paths:
-        print("用法: python -m Temporal_Memory_Graph.processor <文档路径1> [文档路径2] ...")
-        print("示例: python -m Temporal_Memory_Graph.processor doc1.txt doc2.txt")
+        wprint("用法: python -m Temporal_Memory_Graph.processor <文档路径1> [文档路径2] ...")
+        wprint("示例: python -m Temporal_Memory_Graph.processor doc1.txt doc2.txt")
         return
     
     # 创建处理器
@@ -3486,8 +3237,8 @@ def main():
     
     # 输出统计信息
     stats = processor.get_statistics()
-    print("\n处理完成！")
-    print(f"统计信息: {stats}")
+    wprint("\n处理完成！")
+    wprint(f"统计信息: {stats}")
 
 
 if __name__ == "__main__":

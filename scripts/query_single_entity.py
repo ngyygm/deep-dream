@@ -93,10 +93,10 @@ def print_basic_info(entity):
     print("-" * 80)
     print(f"名称: {entity.name}")
     print(f"Entity ID: {entity.entity_id}")
-    print(f"Absolute ID: {entity.id}")
+    print(f"Absolute ID: {entity.absolute_id}")
     print(f"描述: {entity.content}")
     print(f"时间: {entity.physical_time}")
-    print(f"文档: {entity.doc_name}")
+    print(f"文档: {entity.source_document}")
     print(f"缓存ID: {entity.memory_cache_id}")
 
 
@@ -153,7 +153,7 @@ def print_versions(versions):
         print(f"版本 {i}:")
         print(f"  时间: {version.physical_time}")
         print(f"  描述: {version.content[:150]}...")
-        print(f"  ID: {version.id}")
+        print(f"  ID: {version.absolute_id}")
         print()
 
 

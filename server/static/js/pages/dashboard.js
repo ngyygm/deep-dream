@@ -1,0 +1,658 @@
+// Module pattern - registers with app.js router
+(function() {
+  'use strict';
+
+  // ---------------------------------------------------------------------------
+  // Private state
+  // ---------------------------------------------------------------------------
+  let _logLevel = '';       // '' = all, 'INFO', 'WARN', 'ERROR'
+  let _autoScroll = true;
+
+  // ---------------------------------------------------------------------------
+  // Helpers
+  // ---------------------------------------------------------------------------
+
+  /** Sum a numeric field across all graph objects. */
+  function sumAcrossGraphs(graphs, field) {
+    return graphs.reduce((sum, g) => sum + (g.storage[field] || 0), 0);
+  }
+
+  /** Compute elapsed / estimated time from task timestamps and progress. */
+  function elapsedText(task) {
+    const toMs = v => { const n = Number(v); return (isNaN(n) || !n) ? 0 : (n < 4102444800000 ? n * 1000 : n); };
+    const now = Date.now();
+
+    // 已结束：总耗时
+    if (task.status === 'completed' || task.status === 'failed') {
+      const start = toMs(task.started_at || task.created_at);
+      const end = toMs(task.finished_at) || now;
+      return formatRelativeTime(Math.max(0, Math.round((end - start) / 1000)));
+    }
+
+    // 排队中：等待时长
+    if (task.status === 'queued') {
+      const created = toMs(task.created_at);
+      if (!created) return '-';
+      return t('dashboard.waiting') + ' ' + formatRelativeTime(Math.max(0, Math.round((now - created) / 1000)));
+    }
+
+    // 运行中：已耗时 + 预估剩余
+    const started = toMs(task.started_at);
+    if (!started) return '-';
+    const elapsed = Math.max(0, Math.round((now - started) / 1000));
+    const done = task.processed_chunks || 0;
+    const runStart = task.run_start_chunks || 0;
+    const total = task.total_chunks || 0;
+    const runDone = Math.max(0, done - runStart); // 本轮实际完成的 chunk 数
+    const remaining = total - done;                // 还剩多少 chunk
+
+    if (runDone > 0 && remaining > 0) {
+      // 有实际速率数据：用本轮完成数 / 本轮耗时
+      const avgPerChunk = elapsed / runDone;
+      const estRemaining = avgPerChunk * remaining;
+      return formatRelativeTime(elapsed) + ' / ~' + formatRelativeTime(Math.round(estRemaining));
+    }
+    // 还没跑完本轮第一个窗口，只显示已耗时
+    return formatRelativeTime(elapsed);
+  }
+
+  /** Pick a color class for a log level badge. */
+  function logLevelBadge(level) {
+    const m = { INFO: 'badge-info', WARN: 'badge-warning', ERROR: 'badge-error' };
+    return `<span class="badge ${m[level] || 'badge-primary'}">${escapeHtml(level)}</span>`;
+  }
+
+  /** Log row HTML. */
+  function logRow(entry) {
+    return `<div class="dashboard-log-row" style="padding:0.375rem 0.75rem;border-bottom:1px solid var(--border-color);font-size:0.8125rem;font-family:var(--font-mono);line-height:1.5;">
+      <span style="color:var(--text-muted);margin-right:0.5rem;flex-shrink:0;">${escapeHtml(entry.time)}</span>
+      ${logLevelBadge(entry.level)}
+      <span style="color:var(--text-secondary);margin:0 0.5rem;flex-shrink:0;">[${escapeHtml(entry.source)}]</span>
+      <span class="log-${entry.level.toLowerCase()}">${escapeHtml(entry.message)}</span>
+    </div>`;
+  }
+
+  /** Horizontal bar for top-endpoints display. */
+  function endpointBar(path, count, maxCount) {
+    const pct = maxCount > 0 ? (count / maxCount * 100) : 0;
+    return `<div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.375rem;">
+      <span class="mono truncate" style="flex:1;min-width:0;font-size:0.8125rem;color:var(--text-secondary);" title="${escapeHtml(path)}">${escapeHtml(path)}</span>
+      <div style="width:120px;flex-shrink:0;">
+        <div class="progress-bar"><div class="progress-bar-fill" style="width:${pct.toFixed(1)}%;background:var(--primary);"></div></div>
+      </div>
+      <span class="mono" style="width:40px;text-align:right;font-size:0.8125rem;color:var(--text-muted);">${formatNumber(count)}</span>
+    </div>`;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Render sections
+  // ---------------------------------------------------------------------------
+
+  /** Build the top 6 stat cards. */
+  function buildStatCards(overview, graphs, accessStats) {
+    const totalEntities = sumAcrossGraphs(graphs, 'entities');
+    const totalRelations = sumAcrossGraphs(graphs, 'relations');
+    const successRate = accessStats.success_rate ?? 0;
+    const avgLatency = accessStats.avg_duration_ms ?? 0;
+
+    // Color-code success rate
+    let srClass = 'text-success';
+    if (successRate < 90) srClass = 'text-error';
+    else if (successRate < 99) srClass = 'text-warning';
+
+    return `<div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-6">
+      <!-- Uptime -->
+      <div class="stat-card">
+        <div class="stat-label">${t('dashboard.uptime')}</div>
+        <div class="stat-value text-info">${escapeHtml(overview.uptime_display)}</div>
+        <div style="font-size:0.75rem;color:var(--text-muted);margin-top:0.25rem;">${t('dashboard.since', { time: overview.start_time })}</div>
+      </div>
+      <!-- Graph Count -->
+      <div class="stat-card">
+        <div class="stat-label">${t('dashboard.graphs')}</div>
+        <div class="stat-value text-primary">${formatNumber(overview.graph_count)}</div>
+        <div style="font-size:0.75rem;color:var(--text-muted);margin-top:0.25rem;">${t('dashboard.threads', { count: overview.python_threads_total ?? 0 })}</div>
+      </div>
+      <!-- Total Entities -->
+      <div class="stat-card">
+        <div class="stat-label">${t('dashboard.totalEntities')}</div>
+        <div class="stat-value">${formatNumber(totalEntities)}</div>
+      </div>
+      <!-- Total Relations -->
+      <div class="stat-card">
+        <div class="stat-label">${t('dashboard.totalRelations')}</div>
+        <div class="stat-value">${formatNumber(totalRelations)}</div>
+      </div>
+      <!-- API Success Rate -->
+      <div class="stat-card">
+        <div class="stat-label">${t('dashboard.successRate')}</div>
+        <div class="stat-value ${srClass}">${successRate.toFixed(1)}%</div>
+        <div style="font-size:0.75rem;color:var(--text-muted);margin-top:0.25rem;">${t('dashboard.errors', { count: formatNumber(accessStats.error_count) })}</div>
+      </div>
+      <!-- Avg Latency -->
+      <div class="stat-card">
+        <div class="stat-label">${t('dashboard.avgLatency')}</div>
+        <div class="stat-value">${avgLatency.toFixed(1)}<span style="font-size:0.875rem;color:var(--text-muted);"> ${t('dashboard.ms')}</span></div>
+        <div style="font-size:0.75rem;color:var(--text-muted);margin-top:0.25rem;">${t('dashboard.peakMs', { count: formatNumber(accessStats.max_duration_ms) })}</div>
+      </div>
+    </div>`;
+  }
+
+  /** Build graph list cards. */
+  function buildGraphList(graphs) {
+    if (!graphs.length) return emptyState(t('dashboard.noGraphs'));
+
+    const cards = graphs.map(g => {
+      const s = g.storage || {};
+      const q = g.queue || {};
+      const th = g.threads || {};
+      const isActive = (q.running_count || 0) > 0 || (q.queued_count || 0) > 0;
+
+      return `<div class="card mb-3">
+        <div class="card-header">
+          <div style="display:flex;align-items:center;gap:0.5rem;">
+            <i data-lucide="git-branch" style="width:16px;height:16px;color:var(--primary);"></i>
+            <span class="card-title" style="cursor:pointer;" onclick="setGraphId('${escapeHtml(g.graph_id)}');navigate('#graph');">${escapeHtml(g.graph_id)}</span>
+            ${isActive ? `<span class="badge badge-info" style="margin-left:0.25rem;">${t('dashboard.active')}</span>` : ''}
+          </div>
+          <span style="font-size:0.75rem;color:var(--text-muted);">${t('dashboard.queueRunning')}: ${q.running_count || 0} / ${t('dashboard.queueQueued')}: ${q.queued_count || 0}</span>
+        </div>
+        <div class="grid grid-cols-3 gap-4">
+          <div>
+            <div style="font-size:0.75rem;color:var(--text-muted);">${t('dashboard.totalEntities')}</div>
+            <div class="mono" style="font-size:1rem;font-weight:600;">${formatNumber(s.entities)}</div>
+          </div>
+          <div>
+            <div style="font-size:0.75rem;color:var(--text-muted);">${t('dashboard.totalRelations')}</div>
+            <div class="mono" style="font-size:1rem;font-weight:600;">${formatNumber(s.relations)}</div>
+          </div>
+          <div>
+            <div style="font-size:0.75rem;color:var(--text-muted);">${t('dashboard.memoryCache')}</div>
+            <div class="mono" style="font-size:1rem;font-weight:600;">${formatNumber(s.memory_caches)}</div>
+          </div>
+        </div>
+        ${q.backlog ? `<div style="margin-top:0.5rem;font-size:0.75rem;color:var(--warning);">${t('dashboard.backlog', { count: formatNumber(q.backlog) })}</div>` : ''}
+        ${(th.python_threads_total > 0) ? `<div style="margin-top:0.5rem;display:flex;flex-wrap:wrap;gap:0.5rem;font-size:0.7rem;">
+          <span style="color:var(--text-muted);">${t('dashboard.pythonThreads', { n: th.python_threads_total })}</span>
+          <span style="color:${(th.remember_worker_threads_busy || 0) > 0 ? 'var(--success)' : 'var(--text-muted)'};">${t('dashboard.taskThreads', { busy: th.remember_worker_threads_busy || 0, alive: th.remember_worker_threads_alive || 0 })}</span>
+          <span style="color:${(th.window_threads_busy || 0) > 0 ? 'var(--info)' : 'var(--text-muted)'};">${t('dashboard.windowThreads', { busy: th.window_threads_busy || 0, max: th.window_threads_configured || th.window_threads_alive || 0 })}</span>
+          <span style="color:${(th.step6_active || 0) > 0 ? 'var(--info)' : 'var(--text-muted)'};">${t('dashboard.step6Threads', { n: th.step6_active || 0 })}</span>
+          <span style="color:${(th.step7_active || 0) > 0 ? 'var(--warning)' : 'var(--text-muted)'};">${t('dashboard.step7Threads', { n: th.step7_active || 0 })}</span>
+          <span style="color:${(th.llm_threads_busy || 0) > 0 ? 'var(--warning)' : 'var(--text-muted)'};">${t('dashboard.llmThreads', { busy: th.llm_threads_busy || 0, max: th.llm_threads_max || th.llm_threads_alive || 0 })}</span>
+        </div>` : ''}
+      </div>`;
+    }).join('');
+
+    return cards;
+  }
+
+  /** Build the system logs section. */
+  function buildLogsSection(logs) {
+    const filterBtns = [
+      { label: t('dashboard.logAll'), val: '' },
+      { label: t('dashboard.logInfo'), val: 'INFO' },
+      { label: t('dashboard.logWarn'), val: 'WARN' },
+      { label: t('dashboard.logError'), val: 'ERROR' },
+    ].map(({ label, val }) => {
+      const isActive = _logLevel === val;
+      return `<button class="btn btn-sm ${isActive ? 'btn-secondary' : 'btn-ghost'}" data-log-filter="${val}">${label}</button>`;
+    }).join('');
+
+    const logBody = logs.length
+      ? logs.map(entry => logRow(entry)).join('')
+      : `<div class="empty-state" style="padding:2rem;"><p>${t('dashboard.noLogs')}</p></div>`;
+
+    return `<div class="card">
+      <div class="card-header">
+        <div class="card-title" style="display:flex;align-items:center;gap:0.5rem;">
+          <i data-lucide="scroll-text" style="width:16px;height:16px;"></i>
+          ${t('dashboard.systemLogs')}
+        </div>
+        <div style="display:flex;align-items:center;gap:0.25rem;" id="dashboard-log-filters">
+          ${filterBtns}
+        </div>
+      </div>
+      <div id="dashboard-log-body" style="max-height:320px;overflow-y:auto;background:var(--bg-input);border-radius:0.5rem;border:1px solid var(--border-color);">
+        ${logBody}
+      </div>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-top:0.5rem;">
+        <label style="display:flex;align-items:center;gap:0.375rem;font-size:0.8125rem;color:var(--text-muted);cursor:pointer;">
+          <input type="checkbox" id="dashboard-log-autoscroll" ${_autoScroll ? 'checked' : ''} style="accent-color:var(--primary);">
+          ${t('dashboard.autoScroll')}
+        </label>
+        <span style="font-size:0.75rem;color:var(--text-muted);" id="dashboard-log-count">${t('dashboard.logRecords', { count: logs.length })}</span>
+      </div>
+    </div>`;
+  }
+
+  /** Build the active tasks section (card layout). */
+  function buildTasksSection(tasks) {
+    // 状态优先级：running > queued > completed/failed，同组内按 created_at 倒序
+    const statusOrder = { running: 0, queued: 1, completed: 2, failed: 2 };
+    const sorted = [...tasks].sort((a, b) => {
+      const pa = statusOrder[a.status] ?? 3;
+      const pb = statusOrder[b.status] ?? 3;
+      if (pa !== pb) return pa - pb;
+      return (b.created_at || 0) - (a.created_at || 0);
+    });
+    // active 全部显示，completed/failed 最多 5 个
+    let doneCount = 0;
+    const display = sorted.filter(tk => {
+      if (tk.status === 'queued' || tk.status === 'running') return true;
+      if (doneCount < 5) { doneCount++; return true; }
+      return false;
+    });
+
+    if (!display.length) return emptyState(t('dashboard.noTasks'));
+
+    const cards = display.map(tk => {
+      const pct = tk.progress ?? 0;
+      const pctCls = tk.status === 'failed' ? 'error' : tk.status === 'completed' ? 'success' : '';
+      const isRunning = tk.status === 'running';
+      const s6p = Math.min(1, Math.max(0, tk.step6_progress ?? 0));
+      const s7p = Math.min(1, Math.max(0, tk.step7_progress ?? 0));
+
+      // 进度区域：running 时显示双链进度，其他状态显示单进度条
+      let progressHtml;
+      if (isRunning) {
+        const statusText = tk.phase_label || tk.message || '-';
+        progressHtml = `
+          <div style="font-size:0.7rem;color:var(--text-muted);margin-bottom:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(statusText)}">${escapeHtml(statusText)}</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;">
+            <div>
+              <div style="font-size:0.65rem;color:var(--info);margin-bottom:2px;">${t('dashboard.entityAlign')}</div>
+              <div class="progress-bar" style="height:3px;"><div class="progress-bar-fill" style="width:${(s6p * 100).toFixed(1)}%;background:var(--info);"></div></div>
+              <div style="font-size:0.6rem;color:var(--text-muted);margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(tk.step6_label || '-')}</div>
+            </div>
+            <div>
+              <div style="font-size:0.65rem;color:var(--warning);margin-bottom:2px;">${t('dashboard.relationAlign')}</div>
+              <div class="progress-bar" style="height:3px;"><div class="progress-bar-fill" style="width:${(s7p * 100).toFixed(1)}%;background:var(--warning);"></div></div>
+              <div style="font-size:0.6rem;color:var(--text-muted);margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(tk.step7_label || '-')}</div>
+            </div>
+          </div>`;
+      } else {
+        progressHtml = `
+          ${progressBar(pct, pctCls)}
+          <div style="font-size:0.7rem;color:var(--text-muted);margin-top:4px;">${escapeHtml(tk.phase_label || '-')}</div>`;
+      }
+
+      return `
+        <div class="dashboard-task-card" data-task-id="${escapeHtml(tk.task_id)}" style="padding:10px 12px;border-bottom:1px solid var(--border-color);cursor:pointer;transition:background 0.1s;"
+             onmouseenter="this.style.background='var(--bg-surface-hover)'" onmouseleave="this.style.background='transparent'">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+            <div style="display:flex;align-items:center;gap:6px;min-width:0;">
+              ${statusBadge(tk.status)}
+              <span class="mono" style="font-size:0.7rem;color:var(--text-muted);flex-shrink:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(tk.task_id)}">${escapeHtml(tk.task_id.slice(0, 10))}</span>
+            </div>
+            <span class="mono" style="font-size:0.75rem;color:var(--text-muted);flex-shrink:0;">${elapsedText(tk)}</span>
+          </div>
+          <div style="font-size:0.8rem;color:var(--text-secondary);margin-bottom:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(tk.source_name || '-')}">${escapeHtml(tk.source_name || '-')}</div>
+          ${progressHtml}
+        </div>
+      `;
+    }).join('');
+
+    return `<div style="max-height:400px;overflow-y:auto;">${cards}</div>`;
+  }
+
+  /** Build the API stats section. */
+  function buildApiStatsSection(stats) {
+    const topEndpoints = (stats.top_endpoints || []).slice(0, 5);
+    const maxCount = topEndpoints.length > 0 ? topEndpoints[0].count : 0;
+
+    const bars = topEndpoints.length > 0
+      ? topEndpoints.map(e => endpointBar(e.path, e.count, maxCount)).join('')
+      : `<div style="font-size:0.8125rem;color:var(--text-muted);">${t('dashboard.noEndpoints')}</div>`;
+
+    const recentErrors = (stats.recent_errors || []);
+    const errorList = recentErrors.length > 0
+      ? recentErrors.map(e => `<div style="display:flex;align-items:center;gap:0.5rem;padding:0.25rem 0;font-size:0.8125rem;">
+          <span class="mono" style="color:var(--text-muted);flex-shrink:0;">${escapeHtml(e.time)}</span>
+          <span class="badge badge-error">${e.status_code}</span>
+          <span class="mono truncate" style="color:var(--text-secondary);min-width:0;" title="${escapeHtml(e.method + ' ' + e.path)}">${escapeHtml(e.method + ' ' + e.path)}</span>
+        </div>`).join('')
+      : `<div style="font-size:0.8125rem;color:var(--text-muted);">${t('dashboard.noRecentErrors')}</div>`;
+
+    return `<div class="card">
+      <div class="card-header">
+        <div class="card-title" style="display:flex;align-items:center;gap:0.5rem;">
+          <i data-lucide="activity" style="width:16px;height:16px;"></i>
+          ${t('dashboard.apiStats')}
+        </div>
+      </div>
+
+      <!-- Summary numbers -->
+      <div class="grid grid-cols-2 gap-3 mb-4">
+        <div>
+          <div style="font-size:0.75rem;color:var(--text-muted);">${t('dashboard.requestsPerMin')}</div>
+          <div class="mono" style="font-size:1.125rem;font-weight:600;color:var(--primary);">${formatNumber(stats.requests_per_minute)}</div>
+        </div>
+        <div>
+          <div style="font-size:0.75rem;color:var(--text-muted);">${t('dashboard.totalRequests')}</div>
+          <div class="mono" style="font-size:1.125rem;font-weight:600;">${formatNumber(stats.total_requests)}</div>
+        </div>
+      </div>
+
+      <!-- Top endpoints -->
+      <div style="margin-bottom:1rem;">
+        <div style="font-size:0.8125rem;font-weight:600;color:var(--text-secondary);margin-bottom:0.5rem;">${t('dashboard.topEndpoints')}</div>
+        ${bars}
+      </div>
+
+      <div class="divider"></div>
+
+      <!-- Recent errors -->
+      <div>
+        <div style="font-size:0.8125rem;font-weight:600;color:var(--text-secondary);margin-bottom:0.5rem;">${t('dashboard.recentErrors')}</div>
+        ${errorList}
+      </div>
+    </div>`;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Data fetching
+  // ---------------------------------------------------------------------------
+
+  async function fetchDashboardData() {
+    const [overviewRes, graphsRes, tasksRes, logsRes, accessRes] = await Promise.all([
+      state.api.systemOverview(),
+      state.api.systemGraphs(),
+      state.api.systemTasks(50),
+      state.api.systemLogs(100, _logLevel || undefined),
+      state.api.systemAccessStats(300),
+    ]);
+
+    return {
+      overview: overviewRes.data,
+      graphs: graphsRes.data || [],
+      tasks: tasksRes.data || [],
+      logs: logsRes.data || [],
+      accessStats: accessRes.data || {},
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Main render
+  // ---------------------------------------------------------------------------
+
+  async function render(container, params) {
+    let data;
+
+    try {
+      data = await fetchDashboardData();
+    } catch (err) {
+      container.innerHTML = `<div class="page-enter"><div class="empty-state">
+        <i data-lucide="alert-triangle"></i>
+        <p>${t('dashboard.loadFailed')}: ${escapeHtml(err.message)}</p>
+        <button class="btn btn-secondary mt-3" onclick="handleRoute()">${t('common.retry')}</button>
+      </div></div>`;
+      if (window.lucide) lucide.createIcons();
+      return;
+    }
+
+    // Build the full dashboard layout
+    container.innerHTML = `<div class="page-enter">
+
+      <!-- Top stat cards -->
+      <div id="dashboard-stats">
+        ${buildStatCards(data.overview, data.graphs, data.accessStats)}
+      </div>
+
+      <!-- Two-column layout -->
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+        <!-- Left column: Tasks + Logs -->
+        <div class="lg:col-span-2 flex flex-col gap-6">
+
+          <!-- Active Tasks -->
+          <div class="card">
+            <div class="card-header">
+              <div class="card-title" style="display:flex;align-items:center;gap:0.5rem;">
+                <i data-lucide="list-checks" style="width:16px;height:16px;"></i>
+                ${t('dashboard.task')}
+              </div>
+              <span style="font-size:0.75rem;color:var(--text-muted);" id="dashboard-task-count">${data.tasks.length}</span>
+            </div>
+            <div id="dashboard-tasks">
+              ${buildTasksSection(data.tasks)}
+            </div>
+          </div>
+
+          <!-- System Logs -->
+          <div id="dashboard-logs">
+            ${buildLogsSection(data.logs)}
+          </div>
+
+        </div>
+
+        <!-- Right column: Graph List + API Stats -->
+        <div class="flex flex-col gap-6">
+
+          <!-- Graph List -->
+          <div class="card">
+            <div class="card-header">
+              <div class="card-title" style="display:flex;align-items:center;gap:0.5rem;">
+                <i data-lucide="git-branch" style="width:16px;height:16px;"></i>
+                ${t('dashboard.graphList')}
+              </div>
+              <div style="display:flex;align-items:center;gap:0.5rem;">
+                <span style="font-size:0.75rem;color:var(--text-muted);" id="dashboard-graph-count">${t('dashboard.graphCount', { count: data.graphs.length })}</span>
+                <button class="btn btn-primary" style="padding:0.25rem 0.75rem;font-size:0.75rem;" onclick="showCreateGraphModal()">
+                  <i data-lucide="plus" style="width:14px;height:14px;margin-right:0.25rem;"></i>${t('dashboard.createGraph')}
+                </button>
+              </div>
+            </div>
+            <div id="dashboard-graph-list">
+              ${buildGraphList(data.graphs)}
+            </div>
+          </div>
+
+          <!-- API Stats -->
+          <div id="dashboard-api-stats">
+            ${buildApiStatsSection(data.accessStats)}
+          </div>
+
+        </div>
+      </div>
+
+    </div>`;
+
+    // Re-render lucide icons for the new content
+    if (window.lucide) lucide.createIcons();
+
+    // Bind event: log level filter buttons
+    const logFilters = document.getElementById('dashboard-log-filters');
+    if (logFilters) {
+      logFilters.addEventListener('click', (e) => {
+        const btn = e.target.closest('[data-log-filter]');
+        if (!btn) return;
+        _logLevel = btn.dataset.logFilter;
+        // Re-fetch logs only
+        refreshLogs();
+      });
+    }
+
+    // Bind event: auto-scroll checkbox
+    const autoScrollCb = document.getElementById('dashboard-log-autoscroll');
+    if (autoScrollCb) {
+      autoScrollCb.addEventListener('change', () => {
+        _autoScroll = autoScrollCb.checked;
+      });
+    }
+
+    // Auto-scroll logs to top on initial load
+    const logBody = document.getElementById('dashboard-log-body');
+    if (logBody && _autoScroll) {
+      logBody.scrollTop = 0;
+    }
+
+    // Start auto-refresh every 2 seconds
+    state.refreshTimers.dashboard = setInterval(async () => {
+      try {
+        data = await fetchDashboardData();
+        updateDashboardDOM(data);
+      } catch (err) {
+        console.warn('Dashboard refresh failed:', err);
+      }
+    }, 2000);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Partial DOM updates (for auto-refresh without full re-render)
+  // ---------------------------------------------------------------------------
+
+  function updateDashboardDOM(data) {
+    // Update stat cards
+    const statsEl = document.getElementById('dashboard-stats');
+    if (statsEl) {
+      statsEl.innerHTML = buildStatCards(data.overview, data.graphs, data.accessStats);
+    }
+
+    // Update graph list
+    const graphListEl = document.getElementById('dashboard-graph-list');
+    if (graphListEl) {
+      graphListEl.innerHTML = buildGraphList(data.graphs);
+    }
+    const graphCountEl = document.getElementById('dashboard-graph-count');
+    if (graphCountEl) {
+      graphCountEl.textContent = t('dashboard.graphCount', { count: data.graphs.length });
+    }
+
+    // Update logs (only if level filter hasn't changed on the server side)
+    const logsEl = document.getElementById('dashboard-logs');
+    if (logsEl) {
+      logsEl.innerHTML = buildLogsSection(data.logs);
+      // Re-bind log filter listeners after innerHTML replacement
+      bindLogFilterListeners(logsEl);
+      // Re-bind auto-scroll
+      const cb = document.getElementById('dashboard-log-autoscroll');
+      if (cb) cb.checked = _autoScroll;
+      // Auto-scroll to top (newest first)
+      const logBody = document.getElementById('dashboard-log-body');
+      if (logBody && _autoScroll) {
+        logBody.scrollTop = 0;
+      }
+    }
+
+    // Update tasks
+    const tasksEl = document.getElementById('dashboard-tasks');
+    if (tasksEl) {
+      tasksEl.innerHTML = buildTasksSection(data.tasks);
+    }
+    const taskCountEl = document.getElementById('dashboard-task-count');
+    if (taskCountEl) {
+      taskCountEl.textContent = `${data.tasks.length}`;
+    }
+
+    // Update API stats
+    const apiStatsEl = document.getElementById('dashboard-api-stats');
+    if (apiStatsEl) {
+      apiStatsEl.innerHTML = buildApiStatsSection(data.accessStats);
+    }
+
+    // Re-render lucide icons for updated content
+    if (window.lucide) lucide.createIcons();
+  }
+
+  /** Re-bind log filter buttons after DOM update. */
+  function bindLogFilterListeners(parentEl) {
+    const logFilters = parentEl.querySelector('#dashboard-log-filters');
+    if (!logFilters) return;
+    logFilters.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-log-filter]');
+      if (!btn) return;
+      _logLevel = btn.dataset.logFilter;
+      refreshLogs();
+    });
+  }
+
+  /** Fetch and update only the logs section. */
+  async function refreshLogs() {
+    try {
+      const res = await state.api.systemLogs(100, _logLevel || undefined);
+      const logs = res.data || [];
+
+      const logsEl = document.getElementById('dashboard-logs');
+      if (logsEl) {
+        logsEl.innerHTML = buildLogsSection(logs);
+        bindLogFilterListeners(logsEl);
+        const cb = document.getElementById('dashboard-log-autoscroll');
+        if (cb) cb.checked = _autoScroll;
+        const logBody = document.getElementById('dashboard-log-body');
+        if (logBody && _autoScroll) {
+          logBody.scrollTop = 0;
+        }
+      }
+
+      if (window.lucide) lucide.createIcons();
+    } catch (err) {
+      console.warn('Log refresh failed:', err);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Create Graph
+  // ---------------------------------------------------------------------------
+
+  window.showCreateGraphModal = function() {
+    if (document.getElementById('create-graph-overlay')) return;
+    const overlay = document.createElement('div');
+    overlay.id = 'create-graph-overlay';
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:1000;';
+    overlay.innerHTML = `
+      <div class="card" style="width:380px;max-width:90vw;">
+        <div class="card-header">
+          <span class="card-title">${t('dashboard.createGraph')}</span>
+          <button onclick="document.getElementById('create-graph-overlay').remove()" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:1.2rem;">&times;</button>
+        </div>
+        <div style="padding:1rem;">
+          <label style="font-size:0.8rem;color:var(--text-muted);display:block;margin-bottom:0.35rem;">${t('dashboard.graphId')}</label>
+          <input id="create-graph-input" type="text" placeholder="${t('dashboard.graphIdPlaceholder')}"
+            style="width:100%;padding:0.5rem;border:1px solid var(--border);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:0.85rem;outline:none;"
+            onkeydown="if(event.key==='Enter')doCreateGraph()" />
+          <div id="create-graph-error" style="margin-top:0.35rem;font-size:0.75rem;color:var(--danger);min-height:1rem;"></div>
+          <div style="display:flex;gap:0.5rem;margin-top:1rem;justify-content:flex-end;">
+            <button class="btn btn-secondary" onclick="document.getElementById('create-graph-overlay').remove()" style="padding:0.4rem 1rem;font-size:0.8rem;">${t('common.cancel')}</button>
+            <button class="btn btn-primary" onclick="doCreateGraph()" style="padding:0.4rem 1rem;font-size:0.8rem;">${t('common.confirm')}</button>
+          </div>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+    setTimeout(() => document.getElementById('create-graph-input').focus(), 50);
+  };
+
+  window.doCreateGraph = async function() {
+    const input = document.getElementById('create-graph-input');
+    const errEl = document.getElementById('create-graph-error');
+    const graphId = (input.value || '').trim();
+    if (!graphId) { errEl.textContent = t('dashboard.graphIdRequired'); return; }
+    errEl.textContent = '';
+    try {
+      const res = await fetch('/api/v1/graphs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ graph_id: graphId }) });
+      const data = await res.json();
+      if (!res.ok) { errEl.textContent = data.error || data.message || 'Error'; return; }
+      document.getElementById('create-graph-overlay').remove();
+      setGraphId(graphId);
+      // 刷新 dashboard 数据
+      await refreshDashboard();
+      showToast(t('dashboard.graphCreated', { id: graphId }), 'success');
+    } catch (e) {
+      errEl.textContent = e.message;
+    }
+  };
+
+  // ---------------------------------------------------------------------------
+  // Cleanup
+  // ---------------------------------------------------------------------------
+
+  function destroy() {
+    _logLevel = '';
+    _autoScroll = true;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Register page
+  // ---------------------------------------------------------------------------
+  registerPage('dashboard', { render, destroy });
+})();

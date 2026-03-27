@@ -403,8 +403,8 @@ def main():
         seen_ids = set()
         unique_relations = []
         for rel in all_indirect:
-            if rel.id not in seen_ids:
-                seen_ids.add(rel.id)
+            if rel.absolute_id not in seen_ids:
+                seen_ids.add(rel.absolute_id)
                 unique_relations.append(rel)
 
         print(f"\n找到 {len(unique_relations)} 条包含对方名称的关系:\n")
@@ -464,7 +464,7 @@ def main():
     print(f"  实体2: {entities2[0].name} (ID: {entity2_id})")
     print(f"  直接关系数: {len(direct_relations)}")
     print(f"  间接关系数: {len(all_indirect)}")
-    print(f"  总关系数: {len(direct_relations) + len(set(rel.id for rel in all_indirect) - set(rel.id for rel in direct_relations))}")
+    print(f"  总关系数: {len(direct_relations) + len(set(rel.absolute_id for rel in all_indirect) - set(rel.absolute_id for rel in direct_relations))}")
 
     print("\n" + "=" * 80)
     print("查询完成")

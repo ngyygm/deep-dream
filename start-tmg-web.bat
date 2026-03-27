@@ -16,5 +16,5 @@ timeout /t 2 /nobreak >nul
 :: Start TMG Web visualization
 echo Starting TMG Web on http://localhost:%PORT%...
 cd /d "%~dp0"
-.venv\Scripts\python.exe web_server.py --config service_config.json --port %PORT% --host 127.0.0.1
+.venv\Scripts\python.exe -m server.web --config service_config.json --port %PORT% --host 127.0.0.1 --graph-id default
 pause

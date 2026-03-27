@@ -5,6 +5,8 @@ from typing import List, Optional, Union
 import threading
 import numpy as np
 
+from ..utils import wprint
+
 
 class EmbeddingClient:
     """Embedding客户端 - 支持多种embedding模型"""
@@ -35,7 +37,7 @@ class EmbeddingClient:
             
             if self.model_path and self.use_local:
                 # 使用本地模型路径
-                print(f"加载本地embedding模型: {self.model_path}")
+                wprint(f"加载本地embedding模型: {self.model_path}")
                 self.model = SentenceTransformer(
                     self.model_path,
                     device=self.device,
@@ -43,7 +45,7 @@ class EmbeddingClient:
                 )
             elif self.model_name:
                 # 使用HuggingFace模型名称
-                print(f"加载HuggingFace embedding模型: {self.model_name}")
+                wprint(f"加载HuggingFace embedding模型: {self.model_name}")
                 self.model = SentenceTransformer(
                     self.model_name,
                     device=self.device,
@@ -51,18 +53,18 @@ class EmbeddingClient:
                 )
             else:
                 # 使用默认模型
-                print("使用默认embedding模型: all-MiniLM-L6-v2")
+                wprint("使用默认embedding模型: all-MiniLM-L6-v2")
                 self.model = SentenceTransformer(
                     'all-MiniLM-L6-v2',
                     device=self.device
                 )
         except ImportError:
             self.model = None
-            print("警告：未安装sentence-transformers库，将使用文本相似度搜索")
-            print("安装命令: pip install sentence-transformers")
+            wprint("警告：未安装sentence-transformers库，将使用文本相似度搜索")
+            wprint("安装命令: pip install sentence-transformers")
         except Exception as e:
             self.model = None
-            print(f"警告：embedding 模型加载失败，将使用文本相似度搜索: {e}")
+            wprint(f"警告：embedding 模型加载失败，将使用文本相似度搜索: {e}")
     
     def encode(self, texts: Union[str, List[str]], batch_size: int = 32) -> np.ndarray:
         """
@@ -92,7 +94,7 @@ class EmbeddingClient:
                 )
             return embeddings
         except Exception as e:
-            print(f"Embedding编码错误: {e}")
+            wprint(f"Embedding编码错误: {e}")
             return None
     
     def compute_similarity(self, query_embedding: np.ndarray, 

@@ -3,9 +3,9 @@
 Temporal_Memory_Graph 查询工具
 
 使用示例：
-    python tmg_query_tool.py --storage_path ./data --query "林嘿嘿是谁？"
-    python tmg_query_tool.py --storage_path ./data --query "白狐和林嘿嘿的关系" --mode relation
-    python tmg_query_tool.py --storage_path ./data --entity "林嘿嘿" --time "2025-01-30 12:00"
+    python query_tool.py --storage_path ./data --query "林嘿嘿是谁？"
+    python query_tool.py --storage_path ./data --query "白狐和林嘿嘿的关系" --mode relation
+    python query_tool.py --storage_path ./data --entity "林嘿嘿" --time "2025-01-30 12:00"
 """
 
 import argparse

@@ -7,26 +7,29 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import uuid
 import numpy as np
 
-from .models import Entity, MemoryCache
-from .storage import StorageManager
-from .llm_client import LLMClient
+from ..models import Entity, MemoryCache
+from ..storage.manager import StorageManager
+from ..llm.client import LLMClient
+from ..utils import clean_markdown_code_blocks, clean_separator_tags, wprint
 
 
 class EntityProcessor:
     """实体处理器 - 负责实体的搜索、对齐、更新和新建"""
     
     def __init__(self, storage: StorageManager, llm_client: LLMClient,
-                 max_similar_entities: int = 10, content_snippet_length: int = 50):
+                 max_similar_entities: int = 10, content_snippet_length: int = 50,
+                 max_alignment_candidates: Optional[int] = None):
         self.storage = storage
         self.llm_client = llm_client
         self.max_similar_entities = max_similar_entities
         self.content_snippet_length = content_snippet_length
+        self.max_alignment_candidates = max_alignment_candidates  # None = 不限制
         self.batch_resolution_enabled = True
         self.batch_resolution_confidence_threshold = 0.55
     
     def process_entities(self, extracted_entities: List[Dict[str, str]], 
                         memory_cache_id: str, similarity_threshold: float = 0.7,
-                        memory_cache: Optional[MemoryCache] = None, doc_name: str = "",
+                        memory_cache: Optional[MemoryCache] = None, source_document: str = "",
                         context_text: Optional[str] = None,
                         extracted_relations: Optional[List[Dict[str, str]]] = None,
                         jaccard_search_threshold: Optional[float] = None,
@@ -44,7 +47,7 @@ class EntityProcessor:
             memory_cache_id: 当前记忆缓存的ID
             similarity_threshold: 相似度阈值（用于搜索，作为默认值）
             memory_cache: 当前记忆缓存对象（可选，用于LLM判断时提供上下文）
-            doc_name: 文档名称（只保存文档名，不包含路径）
+            source_document: 文档名称（只保存文档名，不包含路径）
             context_text: 可选的上下文文本（当前处理的文本片段），用于精细化判断时提供场景信息
             extracted_relations: 步骤3抽取的关系列表（用于判断是否已存在关系）
             jaccard_search_threshold: Jaccard搜索（name_only）的相似度阈值（可选，默认使用similarity_threshold）
@@ -66,7 +69,7 @@ class EntityProcessor:
                 memory_cache_id=memory_cache_id,
                 similarity_threshold=similarity_threshold,
                 memory_cache=memory_cache,
-                doc_name=doc_name,
+                source_document=source_document,
                 context_text=context_text,
                 extracted_relations=extracted_relations,
                 jaccard_search_threshold=jaccard_search_threshold,
@@ -81,7 +84,7 @@ class EntityProcessor:
             memory_cache_id=memory_cache_id,
             similarity_threshold=similarity_threshold,
             memory_cache=memory_cache,
-            doc_name=doc_name,
+            source_document=source_document,
             context_text=context_text,
             extracted_relations=extracted_relations,
             jaccard_search_threshold=jaccard_search_threshold,
@@ -93,7 +96,7 @@ class EntityProcessor:
 
     def _process_entities_sequential(self, extracted_entities: List[Dict[str, str]],
                         memory_cache_id: str, similarity_threshold: float = 0.7,
-                        memory_cache: Optional[MemoryCache] = None, doc_name: str = "",
+                        memory_cache: Optional[MemoryCache] = None, source_document: str = "",
                         context_text: Optional[str] = None,
                         extracted_relations: Optional[List[Dict[str, str]]] = None,
                         jaccard_search_threshold: Optional[float] = None,
@@ -109,6 +112,8 @@ class EntityProcessor:
 
         extracted_entity_names = {e['name'] for e in extracted_entities}
         extracted_relation_pairs = set()
+        # 收集所有有关系关联的实体名称（用于过滤孤立实体）
+        related_entity_names = set()
         if extracted_relations:
             for rel in extracted_relations:
                 entity1_name = rel.get('entity1_name') or rel.get('from_entity_name', '').strip()
@@ -117,6 +122,8 @@ class EntityProcessor:
                 if entity1_name and entity2_name:
                     pair_key = tuple(sorted([entity1_name, entity2_name]))
                     extracted_relation_pairs.add((pair_key, hash(content.lower())))
+                    related_entity_names.add(entity1_name)
+                    related_entity_names.add(entity2_name)
 
         candidate_table = self._build_entity_candidate_table(
             extracted_entities,
@@ -127,7 +134,12 @@ class EntityProcessor:
         )
 
         total_entities = len(extracted_entities)
+        _skipped_orphans = 0
         for idx, extracted_entity in enumerate(extracted_entities, 1):
+            # 跳过没有关系关联的孤立实体
+            if related_entity_names and extracted_entity['name'] not in related_entity_names:
+                _skipped_orphans += 1
+                continue
             candidates = candidate_table.get(idx - 1, [])
             entity, relations, name_mapping, to_persist = self._process_single_entity_batch(
                 extracted_entity=extracted_entity,
@@ -135,7 +147,7 @@ class EntityProcessor:
                 memory_cache_id=memory_cache_id,
                 similarity_threshold=similarity_threshold,
                 memory_cache=memory_cache,
-                doc_name=doc_name,
+                source_document=source_document,
                 context_text=context_text,
                 entity_index=idx,
                 total_entities=total_entities,
@@ -163,11 +175,14 @@ class EntityProcessor:
         if entities_to_persist:
             self.storage.bulk_save_entities(entities_to_persist)
 
+        if _skipped_orphans > 0:
+            wprint(f"  ⚠️ 跳过 {_skipped_orphans} 个孤立实体（无关系边关联）")
+
         return processed_entities, pending_relations, entity_name_to_id
 
     def _process_entities_parallel(self, extracted_entities: List[Dict[str, str]],
                         memory_cache_id: str, similarity_threshold: float = 0.7,
-                        memory_cache: Optional[MemoryCache] = None, doc_name: str = "",
+                        memory_cache: Optional[MemoryCache] = None, source_document: str = "",
                         context_text: Optional[str] = None,
                         extracted_relations: Optional[List[Dict[str, str]]] = None,
                         jaccard_search_threshold: Optional[float] = None,
@@ -179,6 +194,8 @@ class EntityProcessor:
         """多线程处理实体；合并冲突时以数据库中已存在的 entity_id 为准。"""
         extracted_entity_names = {e['name'] for e in extracted_entities}
         extracted_relation_pairs = set()
+        # 收集所有有关系关联的实体名称（用于过滤孤立实体）
+        related_entity_names = set()
         if extracted_relations:
             for rel in extracted_relations:
                 entity1_name = rel.get('entity1_name') or rel.get('from_entity_name', '').strip()
@@ -187,6 +204,25 @@ class EntityProcessor:
                 if entity1_name and entity2_name:
                     pair_key = tuple(sorted([entity1_name, entity2_name]))
                     extracted_relation_pairs.add((pair_key, hash(content.lower())))
+                    related_entity_names.add(entity1_name)
+                    related_entity_names.add(entity2_name)
+
+        # 过滤掉没有关系关联的孤立实体
+        if related_entity_names:
+            _filtered = [
+                (idx, e) for idx, e in enumerate(extracted_entities)
+                if e['name'] in related_entity_names
+            ]
+            _skipped_orphans = len(extracted_entities) - len(_filtered)
+            if _skipped_orphans > 0:
+                wprint(f"  ⚠️ 跳过 {_skipped_orphans} 个孤立实体（无关系边关联）")
+            # 重建索引映射：原索引 → 过滤后索引
+            _orig_indices = [orig_idx for orig_idx, _ in _filtered]
+            filtered_entities = [e for _, e in _filtered]
+        else:
+            _skipped_orphans = 0
+            _orig_indices = list(range(len(extracted_entities)))
+            filtered_entities = extracted_entities
 
         candidate_table = self._build_entity_candidate_table(
             extracted_entities,
@@ -196,16 +232,21 @@ class EntityProcessor:
             embedding_full_search_threshold=embedding_full_search_threshold,
         )
         total_entities = len(extracted_entities)
+        _distill_step = self.llm_client._current_distill_step
+        _priority = getattr(self.llm_client._priority_local, 'priority', 5)
 
-        def task(idx: int, extracted_entity: Dict[str, str]):
-            candidates = candidate_table.get(idx - 1, [])
+        def task(idx: int, extracted_entity: Dict[str, str], orig_idx: int):
+            # 将主线程的 distill step 和优先级传播到工作线程（threading.local）
+            self.llm_client._current_distill_step = _distill_step
+            self.llm_client._priority_local.priority = _priority
+            candidates = candidate_table.get(orig_idx, [])
             entity, relations, name_mapping, to_persist = self._process_single_entity_batch(
                 extracted_entity=extracted_entity,
                 candidates=candidates,
                 memory_cache_id=memory_cache_id,
                 similarity_threshold=similarity_threshold,
                 memory_cache=memory_cache,
-                doc_name=doc_name,
+                source_document=source_document,
                 context_text=context_text,
                 entity_index=idx,
                 total_entities=total_entities,
@@ -221,8 +262,10 @@ class EntityProcessor:
         results: List[Tuple[int, Optional[Entity], List[Dict], Dict[str, str], Optional[Entity]]] = []
         with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="tmg-llm") as executor:
             futures = {
-                executor.submit(task, idx, extracted_entity): idx
-                for idx, extracted_entity in enumerate(extracted_entities, 1)
+                executor.submit(task, idx, extracted_entity, orig_idx): idx
+                for idx, (extracted_entity, orig_idx) in enumerate(
+                    zip(filtered_entities, _orig_indices), 1
+                )
             }
             for future in as_completed(futures):
                 results.append(future.result())
@@ -336,7 +379,8 @@ class EntityProcessor:
                     })
 
             candidate_rows.sort(key=lambda row: row["combined_score"], reverse=True)
-            candidate_table[idx] = candidate_rows[:self.max_similar_entities]
+            limit = self.max_alignment_candidates or self.max_similar_entities
+            candidate_table[idx] = candidate_rows[:limit]
         return candidate_table
 
     def _process_single_entity_batch(self,
@@ -345,7 +389,7 @@ class EntityProcessor:
                                      memory_cache_id: str,
                                      similarity_threshold: float,
                                      memory_cache: Optional[MemoryCache] = None,
-                                     doc_name: str = "",
+                                     source_document: str = "",
                                      context_text: Optional[str] = None,
                                      entity_index: int = 0,
                                      total_entities: int = 0,
@@ -359,14 +403,14 @@ class EntityProcessor:
         entity_name = extracted_entity["name"]
         entity_content = extracted_entity["content"]
         if total_entities > 0:
-            print(f"  ├─ 处理实体 [{entity_index}/{total_entities}]: {entity_name}")
+            wprint(f"  ├─ 处理实体 [{entity_index}/{total_entities}]: {entity_name}")
 
         if not candidates:
-            new_entity = self._build_new_entity(entity_name, entity_content, memory_cache_id, doc_name, base_time=base_time)
-            print(f"  │  未找到候选实体，批量路径创建新实体: {new_entity.entity_id}")
+            new_entity = self._build_new_entity(entity_name, entity_content, memory_cache_id, source_document, base_time=base_time)
+            wprint(f"  │  未找到候选实体，批量路径创建新实体: {new_entity.entity_id}")
             return new_entity, [], {entity_name: new_entity.entity_id, new_entity.name: new_entity.entity_id}, new_entity
 
-        print(f"  │  批量候选生成: {len(candidates)} 个")
+        wprint(f"  │  批量候选生成: {len(candidates)} 个")
         batch_result = self.llm_client.resolve_entity_candidates_batch(
             {
                 "entity_id": "NEW_ENTITY",
@@ -379,13 +423,13 @@ class EntityProcessor:
         )
         confidence = float(batch_result.get("confidence", 0.0) or 0.0)
         if (not self.batch_resolution_enabled) or batch_result.get("update_mode") == "fallback" or confidence < self.batch_resolution_confidence_threshold:
-            print(f"  │  批量裁决置信度不足，回退到旧逻辑 (confidence={confidence:.2f})")
+            wprint(f"  │  批量裁决置信度不足，回退到旧逻辑 (confidence={confidence:.2f})")
             entity, relations, name_mapping = self._process_single_entity(
                 extracted_entity,
                 memory_cache_id,
                 similarity_threshold,
                 memory_cache,
-                doc_name,
+                source_document,
                 context_text,
                 entity_index=entity_index,
                 total_entities=total_entities,
@@ -417,13 +461,13 @@ class EntityProcessor:
         if match_existing_id:
             latest_entity = self.storage.get_entity_by_id(match_existing_id)
             if not latest_entity:
-                print(f"  │  批量裁决命中的实体不存在，回退旧逻辑: {match_existing_id}")
+                wprint(f"  │  批量裁决命中的实体不存在，回退旧逻辑: {match_existing_id}")
                 entity, relations, name_mapping = self._process_single_entity(
                     extracted_entity,
                     memory_cache_id,
                     similarity_threshold,
                     memory_cache,
-                    doc_name,
+                    source_document,
                     context_text,
                     entity_index=entity_index,
                     total_entities=total_entities,
@@ -447,16 +491,16 @@ class EntityProcessor:
                     merged_name,
                     merged_content,
                     memory_cache_id,
-                    doc_name,
+                    source_document,
                     base_time=base_time,
                 )
-                print(f"  │  批量裁决: 合并到已有实体 {latest_entity.entity_id} 并生成新版本")
+                wprint(f"  │  批量裁决: 合并到已有实体 {latest_entity.entity_id} 并生成新版本")
                 return entity_version, relations_to_create, {
                     entity_name: latest_entity.entity_id,
                     entity_version.name: latest_entity.entity_id,
                 }, entity_version
 
-            print(f"  │  批量裁决: 复用已有实体 {latest_entity.entity_id}")
+            wprint(f"  │  批量裁决: 复用已有实体 {latest_entity.entity_id}")
             return latest_entity, relations_to_create, {
                 entity_name: latest_entity.entity_id,
                 latest_entity.name: latest_entity.entity_id,
@@ -464,8 +508,8 @@ class EntityProcessor:
 
         merged_name = (batch_result.get("merged_name") or entity_name).strip() or entity_name
         merged_content = (batch_result.get("merged_content") or entity_content).strip() or entity_content
-        new_entity = self._build_new_entity(merged_name, merged_content, memory_cache_id, doc_name, base_time=base_time)
-        print(f"  │  批量裁决: 创建新实体 {new_entity.entity_id}")
+        new_entity = self._build_new_entity(merged_name, merged_content, memory_cache_id, source_document, base_time=base_time)
+        wprint(f"  │  批量裁决: 创建新实体 {new_entity.entity_id}")
         return new_entity, relations_to_create, {
             entity_name: new_entity.entity_id,
             new_entity.name: new_entity.entity_id,
@@ -475,7 +519,7 @@ class EntityProcessor:
                                memory_cache_id: str, 
                                similarity_threshold: float,
                                memory_cache: Optional[MemoryCache] = None,
-                               doc_name: str = "",
+                               source_document: str = "",
                                context_text: Optional[str] = None,
                                entity_index: int = 0,
                                total_entities: int = 0,
@@ -501,9 +545,9 @@ class EntityProcessor:
         
         # 显示进度信息
         if total_entities > 0:
-            print(f"  ├─ 处理实体 [{entity_index}/{total_entities}]: {entity_name}")
+            wprint(f"  ├─ 处理实体 [{entity_index}/{total_entities}]: {entity_name}")
         else:
-            print(f"  ├─ 处理实体: {entity_name}")
+            wprint(f"  ├─ 处理实体: {entity_name}")
         
         # 步骤1：使用混合搜索策略搜索相关实体并合并结果
         # 为三种搜索方法分别设置阈值（如果未指定，使用默认的similarity_threshold）
@@ -545,20 +589,11 @@ class EntityProcessor:
         )
         
         # 输出三种搜索方法的结果
-        print(f"  │  ├─ Jaccard搜索（name_only）: {len(candidates_jaccard)} 个")
-        if candidates_jaccard:
-            jaccard_names = [e.name for e in candidates_jaccard[:5]]
-            print(f"  │  │   {', '.join(jaccard_names)}{'...' if len(candidates_jaccard) > 5 else ''}")
-        
-        print(f"  │  ├─ Embedding搜索（name_only）: {len(candidates_name_embedding)} 个")
-        if candidates_name_embedding:
-            name_embedding_names = [e.name for e in candidates_name_embedding[:5]]
-            print(f"  │  │   {', '.join(name_embedding_names)}{'...' if len(candidates_name_embedding) > 5 else ''}")
-        
-        print(f"  │  ├─ Embedding搜索（name+content）: {len(candidates_full_embedding)} 个")
-        if candidates_full_embedding:
-            full_embedding_names = [e.name for e in candidates_full_embedding[:5]]
-            print(f"  │  │   {', '.join(full_embedding_names)}{'...' if len(candidates_full_embedding) > 5 else ''}")
+        wprint(f"  │  ├─ Jaccard搜索（name_only）: {len(candidates_jaccard)} 个")
+
+        wprint(f"  │  ├─ Embedding搜索（name_only）: {len(candidates_name_embedding)} 个")
+
+        wprint(f"  │  ├─ Embedding搜索（name+content）: {len(candidates_full_embedding)} 个")
         
         # 合并结果并去重（按entity_id去重，保留每个entity_id的最新版本）
         entity_dict = {}
@@ -595,14 +630,14 @@ class EntityProcessor:
                     if has_relation:
                         # 已经存在关系，跳过
                         skipped_count += 1
-                        print(f"  │  │  ├─ {candidate.name}: 跳过已有关系（步骤3已处理）")
+                        wprint(f"  │  │  ├─ {candidate.name}: 跳过已有关系（步骤3已处理）")
                     else:
                         # 虽然都在当前列表中，但还没有关系，需要判断
                         filtered_similar_entities.append(candidate)
             
             similar_entities = filtered_similar_entities
             if skipped_count > 0:
-                print(f"  │  跳过 {skipped_count} 个已在当前抽取列表且已存在关系的候选实体（步骤3已处理）")
+                wprint(f"  │  跳过 {skipped_count} 个已在当前抽取列表且已存在关系的候选实体（步骤3已处理）")
         
         # # 如果合并后超过最大数量，按物理时间排序，保留最新的
         # if len(similar_entities) > self.max_similar_entities:
@@ -611,8 +646,8 @@ class EntityProcessor:
         
         if not similar_entities:
             # 没有找到相似实体，直接新建
-            new_entity = self._create_new_entity(entity_name, entity_content, memory_cache_id, doc_name, base_time=base_time)
-            print(f"  │  未找到相似实体，创建新实体: {new_entity.entity_id}")
+            new_entity = self._create_new_entity(entity_name, entity_content, memory_cache_id, source_document, base_time=base_time)
+            wprint(f"  │  未找到相似实体，创建新实体: {new_entity.entity_id}")
             # 返回实体、空关系列表、实体名称到ID的映射
             entity_name_to_id = {
                 entity_name: new_entity.entity_id,
@@ -620,7 +655,7 @@ class EntityProcessor:
             }
             return new_entity, [], entity_name_to_id
         
-        print(f"  │  找到 {len(similar_entities)} 个候选实体")
+        wprint(f"  │  找到 {len(similar_entities)} 个候选实体")
         
         # 步骤2：找到同ID下最新的实体（去重）
         # 按entity_id分组，每个entity_id只保留最新版本
@@ -646,31 +681,37 @@ class EntityProcessor:
             }
         ]
         
-        # 添加候选实体信息
+        # 添加候选实体信息（批量获取版本数，避免 N+1 查询）
+        entity_ids = [e.entity_id for e in unique_entities]
+        version_counts = self.storage.get_entity_version_counts(entity_ids)
         for e in unique_entities:
-            version_count = len(self.storage.get_entity_versions(e.entity_id))
             entities_group.append({
                 'entity_id': e.entity_id,
                 'name': e.name,
                 'content': e.content,
-                'version_count': version_count
+                'version_count': version_counts.get(e.entity_id, 1)
             })
-        
-        # 步骤4：检查实体对之间是否已有关系（只检查已有实体之间，不包括新实体）
+
+        # 步骤4：检查实体对之间是否已有关系（批量查询，避免 N+1）
         existing_relations_between = {}
         existing_entity_ids = [e.entity_id for e in unique_entities]
-        for i, eid1 in enumerate(existing_entity_ids):
-            for eid2 in existing_entity_ids[i+1:]:
-                pair_key = "|".join(sorted([eid1, eid2]))
-                relations = self.storage.get_relations_by_entities(eid1, eid2)
+        entity_pairs = [
+            (existing_entity_ids[i], existing_entity_ids[j])
+            for i in range(len(existing_entity_ids))
+            for j in range(i + 1, len(existing_entity_ids))
+        ]
+        if entity_pairs:
+            batch_relations = self.storage.get_relations_by_entity_pairs(entity_pairs)
+            for pair_key_tuple, relations in batch_relations.items():
                 if relations:
+                    pair_key = "|".join(pair_key_tuple)
                     existing_relations_between[pair_key] = [
                         {'relation_id': r.relation_id, 'content': r.content}
                         for r in relations
                     ]
         
         # 步骤5：使用两步流程分析（初步筛选 + 精细化判断）
-        print(f"  │  调用LLM分析（候选数: {len(unique_entities)}）")
+        wprint(f"  │  调用LLM分析（候选数: {len(unique_entities)}）")
         
         # 阶段1：初步筛选（使用content snippet快速筛选）
         preliminary_result = self.llm_client.analyze_entity_candidates_preliminary(
@@ -718,9 +759,9 @@ class EntityProcessor:
         # 输出初步筛选结果（只统计需要精细化判断的候选）
         relation_count = len([c for c in candidates_to_analyze.values() if c['type'] == 'relation'])
         if skipped_relations_count > 0:
-            print(f"  │  ├─ 初步筛选: 合并 {len([c for c in candidates_to_analyze.values() if c['type'] == 'merge'])} 个, 关系 {relation_count} 个 (跳过已有关系: {skipped_relations_count} 个), 跳过 {len(no_action)} 个")
+            wprint(f"  │  ├─ 初步筛选: 合并 {len([c for c in candidates_to_analyze.values() if c['type'] == 'merge'])} 个, 关系 {relation_count} 个 (跳过已有关系: {skipped_relations_count} 个), 跳过 {len(no_action)} 个")
         else:
-            print(f"  │  ├─ 初步筛选: 合并 {len([c for c in candidates_to_analyze.values() if c['type'] == 'merge'])} 个, 关系 {relation_count} 个, 跳过 {len(no_action)} 个")
+            wprint(f"  │  ├─ 初步筛选: 合并 {len([c for c in candidates_to_analyze.values() if c['type'] == 'merge'])} 个, 关系 {relation_count} 个, 跳过 {len(no_action)} 个")
         
         # 准备当前实体信息（新实体）
         current_entity_info = {
@@ -739,7 +780,7 @@ class EntityProcessor:
             skipped_info = ""
             if skipped_entity_names:
                 skipped_info = f"，跳过已有关系: {', '.join(skipped_entity_names)}"
-            print(f"  │  ├─ 精细化判断开始（共 {len(candidates_to_analyze)} 个候选{skipped_info}）")
+            wprint(f"  │  ├─ 精细化判断开始（共 {len(candidates_to_analyze)} 个候选{skipped_info}）")
         
         for cid, info in candidates_to_analyze.items():
             candidate_entity = next((e for e in unique_entities if e.entity_id == cid), None)
@@ -772,13 +813,7 @@ class EntityProcessor:
             relation_content = detailed_result.get("relation_content", "")
             merge_target = detailed_result.get("merge_target", "")
             
-            if action != "no_action":
-                print(f"  │  │  ├─ {candidate_entity.name}: {action}", end="")
-                if action == "create_relation" and relation_content:
-                    print(f" - {relation_content[:50]}{'...' if len(relation_content) > 50 else ''}")
-                else:
-                    print()
-            
+
             if action == "merge":
                 merge_target_id = merge_target if merge_target and merge_target != "NEW_ENTITY" else cid
                 merge_decisions.append({
@@ -806,12 +841,11 @@ class EntityProcessor:
                     "reason": reason
                 })
             elif action == "no_action":
-                # 即使返回no_action，也记录一下，方便调试
-                print(f"        不处理: {entity_name} 与 {candidate_entity.name} 无明确关联")
-        
+                pass
+
         # 输出最终分析结果
         if merge_decisions or relation_decisions:
-            print(f"  │  └─ 精细化判断: 合并 {len(merge_decisions)} 个, 关系 {len(relation_decisions)} 个")
+            wprint(f"  │  └─ 精细化判断: 合并 {len(merge_decisions)} 个, 关系 {len(relation_decisions)} 个")
         
         # 步骤6.1和6.2：处理分析结果（合并决策和关系决策）
         final_entity = None
@@ -845,10 +879,7 @@ class EntityProcessor:
                     # 输出多个合并目标的信息
                     other_targets = [tid for tid in set(target_entity_ids) if tid != primary_target_id]
                     if other_targets:
-                        print(f"  │  ├─ 注意: 多个合并目标，选择版本数最多的实体作为主要目标")
-                        print(f"  │  │   主要目标: {primary_target_id} (版本数: {target_version_counts.get(primary_target_id, 0)})")
-                        for tid in other_targets:
-                            print(f"  │  │   其他目标: {tid} (版本数: {target_version_counts.get(tid, 0)})")
+                        wprint(f"  │  ├─ 多合并目标: 选择 {primary_target_id} 为主要目标（版本数最多）")
                         
                         # 在合并之前，先收集其他目标实体的信息（合并后这些ID就不存在了）
                         other_targets_entities.clear()  # 清空之前的数据
@@ -863,12 +894,7 @@ class EntityProcessor:
                         
                         # 如果有多个不同的目标实体ID，说明这些实体都是同一个实体
                         # 需要将其他目标实体ID合并到主要目标ID
-                        print(f"  │  ├─ 执行实体ID合并: 将 {len(other_targets)} 个实体ID合并到主要目标ID")
                         merge_result = self.storage.merge_entity_ids(primary_target_id, other_targets)
-                        if merge_result.get("entities_updated", 0) > 0:
-                            print(f"  │  │   已合并 {merge_result.get('entities_updated', 0)} 条实体记录")
-                        if merge_result.get("relations_updated", 0) > 0:
-                            print(f"  │  │   已更新 {merge_result.get('relations_updated', 0)} 条关系记录")
                         
                         # 更新映射：将所有指向旧实体ID的映射更新为新的 primary_target_id
                         # 这确保映射中不会保留指向已合并ID的失效映射
@@ -877,9 +903,6 @@ class EntityProcessor:
                             if eid in other_targets:
                                 entity_name_to_id[name] = primary_target_id
                                 updated_mapping_count += 1
-                        if updated_mapping_count > 0:
-                            print(f"  │  │   已更新 {updated_mapping_count} 个映射，将旧ID映射更新为 primary_target_id: {primary_target_id}")
-                        
                         # 处理合并后产生的自指向关系（暂时跳过，因为entity_processor中没有这个方法）
                         # 自指向关系会在后续的consolidate_knowledge_graph_entity中处理
                 
@@ -939,7 +962,7 @@ class EntityProcessor:
                         
                         # 合并内容：统一使用多实体合并方法（2个实体是多实体的特殊情况）
                         merged_content = self.llm_client.merge_multiple_entity_contents(contents_to_merge)
-                        print(f"  │  ├─ 合并 {len(contents_to_merge)} 个实体的content: {', '.join(entities_to_merge_names[:3])}{'...' if len(entities_to_merge_names) > 3 else ''}")
+                        wprint(f"  │  ├─ 合并 {len(contents_to_merge)} 个实体的content: {', '.join(entities_to_merge_names[:3])}{'...' if len(entities_to_merge_names) > 3 else ''}")
                         
                         # 创建新版本
                         final_entity = self._create_entity_version(
@@ -947,13 +970,11 @@ class EntityProcessor:
                             merged_name,
                             merged_content,
                             memory_cache_id,
-                            doc_name,
+                            source_document,
                             base_time=base_time,
                         )
-                        print(f"  │  ├─ 合并到: {target_name} (已更新)")
                     else:
                         final_entity = latest_entity
-                        print(f"  │  ├─ 合并到: {target_name} (无需更新)")
                     
                     # 更新映射：原始名称和目标实体名称都映射到目标实体ID
                     entity_name_to_id[entity_name] = primary_target_id
@@ -970,7 +991,7 @@ class EntityProcessor:
             if "别名" in content or "称呼" in content or "简称" in content:
                 relation_type = "alias"
             
-            print(f"  │  ├─ 关系: {entity1_name} <-> {entity2_name}")
+            wprint(f"  │  ├─ 关系: {entity1_name} <-> {entity2_name}")
             
             # 关系使用实体名称，ID将在步骤6.3中更新
             pending_relations.append({
@@ -987,8 +1008,7 @@ class EntityProcessor:
             
             if not matched:
                 # 没有匹配，创建新实体
-                final_entity = self._create_new_entity(entity_name, entity_content, memory_cache_id, doc_name, base_time=base_time)
-                print(f"  │  ├─ 创建新实体: {final_entity.entity_id}")
+                final_entity = self._create_new_entity(entity_name, entity_content, memory_cache_id, source_document, base_time=base_time)
                 # 更新映射：新创建的实体
                 entity_name_to_id[entity_name] = final_entity.entity_id
                 entity_name_to_id[final_entity.name] = final_entity.entity_id
@@ -1009,67 +1029,67 @@ class EntityProcessor:
         # 输出最终结果
         if final_entity:
             if updated_relations:
-                print(f"  └─ 完成: {final_entity.name} ({final_entity.entity_id}), 关系 {len(updated_relations)} 个")
+                wprint(f"  └─ 完成: {final_entity.name} ({final_entity.entity_id}), 关系 {len(updated_relations)} 个")
             else:
-                print(f"  └─ 完成: {final_entity.name} ({final_entity.entity_id})")
+                wprint(f"  └─ 完成: {final_entity.name} ({final_entity.entity_id})")
         else:
             if updated_relations:
-                print(f"  └─ 完成: 关系 {len(updated_relations)} 个")
+                wprint(f"  └─ 完成: 关系 {len(updated_relations)} 个")
         
         return final_entity, updated_relations, entity_name_to_id
     
     def _build_new_entity(self, name: str, content: str, memory_cache_id: str,
-                          doc_name: str = "", base_time: Optional[datetime] = None) -> Entity:
+                          source_document: str = "", base_time: Optional[datetime] = None) -> Entity:
         """构建新实体对象，但不立即写库。"""
         ts = base_time if base_time is not None else datetime.now()
         entity_id = f"ent_{uuid.uuid4().hex[:12]}"
         entity_record_id = f"entity_{ts.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
         
-        doc_name_only = doc_name.split('/')[-1] if doc_name else ""
+        source_document_only = source_document.split('/')[-1] if source_document else ""
         
         entity = Entity(
-            id=entity_record_id,
+            absolute_id=entity_record_id,
             entity_id=entity_id,
             name=name,
             content=content,
             physical_time=ts,
             memory_cache_id=memory_cache_id,
-            doc_name=doc_name_only
+            source_document=source_document_only
         )
         return entity
 
     def _create_new_entity(self, name: str, content: str, memory_cache_id: str,
-                           doc_name: str = "", base_time: Optional[datetime] = None) -> Entity:
+                           source_document: str = "", base_time: Optional[datetime] = None) -> Entity:
         """创建新实体"""
-        entity = self._build_new_entity(name, content, memory_cache_id, doc_name, base_time=base_time)
+        entity = self._build_new_entity(name, content, memory_cache_id, source_document, base_time=base_time)
         self.storage.save_entity(entity)
         return entity
 
     def _build_entity_version(self, entity_id: str, name: str, content: str, 
-                              memory_cache_id: str, doc_name: str = "",
+                              memory_cache_id: str, source_document: str = "",
                               base_time: Optional[datetime] = None) -> Entity:
         """构建实体新版本对象，但不立即写库。"""
         ts = base_time if base_time is not None else datetime.now()
         entity_record_id = f"entity_{ts.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
         
-        doc_name_only = doc_name.split('/')[-1] if doc_name else ""
+        source_document_only = source_document.split('/')[-1] if source_document else ""
         
         entity = Entity(
-            id=entity_record_id,
+            absolute_id=entity_record_id,
             entity_id=entity_id,
             name=name,
             content=content,
             physical_time=ts,
             memory_cache_id=memory_cache_id,
-            doc_name=doc_name_only
+            source_document=source_document_only
         )
         return entity
 
     def _create_entity_version(self, entity_id: str, name: str, content: str, 
-                              memory_cache_id: str, doc_name: str = "",
+                              memory_cache_id: str, source_document: str = "",
                               base_time: Optional[datetime] = None) -> Entity:
         """创建实体的新版本"""
-        entity = self._build_entity_version(entity_id, name, content, memory_cache_id, doc_name, base_time=base_time)
+        entity = self._build_entity_version(entity_id, name, content, memory_cache_id, source_document, base_time=base_time)
         self.storage.save_entity(entity)
         return entity
     

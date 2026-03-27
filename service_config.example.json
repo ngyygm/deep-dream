@@ -4,12 +4,14 @@
   "auto_port_fallback": false,
   "log_mode": "detail",
   "monitor_refresh_seconds": 1.0,
-  "storage_path": "./graph/tmg_storage",
+  "storage_path": "./graph",
   "llm": {
     "api_key": "ollama",
     "model": "model_name",
     "base_url": "http://127.0.0.1:11434",
-    "think": false
+    "think": false,
+    "max_tokens": 16384,
+    "max_concurrency": 3
   },
   "embedding": {
     "model": "Qwen/Qwen3-Embedding-0.6B",
@@ -21,7 +23,8 @@
   },
   "runtime": {
     "concurrency": {
-      "llm_call_workers": 1
+      "queue_workers": 1,
+      "max_total_workers": 1
     },
     "retry": {
       "queue_max_retries": 2,
@@ -29,17 +32,18 @@
     }
   },
   "pipeline": {
+    "max_concurrent_windows": 1,
     "similarity_threshold": 0.7,
     "max_similar_entities": 10,
     "content_snippet_length": 50,
     "relation_content_snippet_length": 50,
-    "entity_extraction_max_iterations": 2,
-    "entity_extraction_iterative": true,
+    "entity_extraction_rounds": 1,
+    "relation_extraction_rounds": 1,
+    "extraction_rounds": 1,
     "entity_post_enhancement": false,
-    "relation_extraction_max_iterations": 2,
-    "relation_extraction_absolute_max_iterations": 5,
-    "relation_extraction_iterative": true,
-    "load_cache_memory": false
+    "load_cache_memory": false,
+    "max_alignment_candidates": null,
+    "distill_data_dir": "distill_pipeline"
   },
   "flask_threaded": true
 }

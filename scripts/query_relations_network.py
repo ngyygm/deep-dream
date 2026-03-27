@@ -60,8 +60,8 @@ def build_network(storage, entity_id, max_depth=2):
     network['levels'][0].add(start_entity.entity_id)
 
     # BFS扩展
-    visited = set([start_entity.id])  # 使用absolute_id
-    queue = deque([(start_entity.id, 0)])
+    visited = set([start_entity.absolute_id])
+    queue = deque([(start_entity.absolute_id, 0)])
 
     while queue and queue[0][1] < max_depth:
         current_id, depth = queue.popleft()
