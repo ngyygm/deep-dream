@@ -47,7 +47,7 @@
       <tr data-entity-id="${escapeHtml(e.entity_id)}" data-absolute-id="${escapeHtml(e.absolute_id)}">
         <td style="max-width:180px;font-weight:500;">${escapeHtml(e.name || '-')}</td>
         <td style="max-width:300px;" class="truncate" title="${escapeHtml(e.content || '')}">${escapeHtml(truncate(e.content || '', 60))}</td>
-        <td style="white-space:nowrap;">${formatDate(e.physical_time)}</td>
+        <td style="white-space:nowrap;">${formatDate(e.event_time)}</td>
         <td style="max-width:120px;" class="truncate" title="${escapeHtml(e.doc_name || e.source_document || '')}">${escapeHtml(e.doc_name || e.source_document || '-')}</td>
         <td style="text-align:center;">
           <span class="badge badge-info">${escapeHtml(String(e.version_count || '?'))}</span>
@@ -63,7 +63,7 @@
               <tr>
                 <th>${t('entities.name')}</th>
                 <th>${t('entities.content')}</th>
-                <th>${t('entities.physicalTime')}</th>
+                <th>${t('entities.eventTime')}</th>
                 <th>${t('entities.source')}</th>
                 <th style="text-align:center;">${t('entities.version')}</th>
               </tr>
@@ -112,8 +112,12 @@
         </div>
         <div style="display:flex;gap:2rem;">
           <div>
-            <span style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;">${t('graph.physicalTime')}</span>
-            <div class="mono" style="margin-top:0.125rem;">${formatDate(entity.physical_time)}</div>
+            <span style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;">${t('graph.eventTime')}</span>
+            <div class="mono" style="margin-top:0.125rem;">${formatDate(entity.event_time)}</div>
+          </div>
+          <div>
+            <span style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;">${t('graph.processedTime')}</span>
+            <div class="mono" style="margin-top:0.125rem;">${formatDate(entity.processed_time)}</div>
           </div>
           <div>
             <span style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;">${t('graph.sourceDoc')}</span>
@@ -123,7 +127,7 @@
         ${entity.memory_cache_id ? `
         <div>
           <span style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;">${t('graph.memoryCacheId')}</span>
-          <div class="mono" style="margin-top:0.125rem;">${escapeHtml(entity.memory_cache_id)}</div>
+          <div class="mono doc-link" data-cache-id="${escapeHtml(entity.memory_cache_id)}" style="margin-top:0.125rem;">${escapeHtml(entity.memory_cache_id)}</div>
         </div>
         ` : ''}
       </div>
@@ -159,6 +163,14 @@
 
     if (window.lucide) lucide.createIcons({ nodes: [overlay] });
 
+    // Bind doc link clicks
+    overlay.querySelectorAll('.doc-link').forEach(el => {
+      el.addEventListener('click', () => {
+        const cacheId = el.getAttribute('data-cache-id');
+        if (cacheId) window.showDocContent(cacheId);
+      });
+    });
+
     // Fetch versions and relations in parallel
     const graphId = state.currentGraphId;
     const entityId = entity.entity_id;
@@ -180,7 +192,7 @@
       const versionsContainer = overlay.querySelector('#versions-container');
       if (versionsContainer) {
         versionsContainer.innerHTML = versions.length > 0
-          ? buildVersionTimeline(versions)
+          ? buildVersionTimeline(versions, overlay)
           : `<div style="color:var(--text-muted);font-size:0.8125rem;">${t('entities.noVersionHistory')}</div>`;
       }
 
@@ -203,11 +215,11 @@
 
   // ---- Version Timeline ----
 
-  function buildVersionTimeline(versions) {
-    // Sort versions by physical_time descending (newest first)
+  function buildVersionTimeline(versions, overlay) {
+    // Sort versions by processed_time descending (newest first)
     const sorted = [...versions].sort((a, b) => {
-      const ta = a.physical_time ? new Date(a.physical_time).getTime() : 0;
-      const tb = b.physical_time ? new Date(b.physical_time).getTime() : 0;
+      const ta = a.processed_time ? new Date(a.processed_time).getTime() : 0;
+      const tb = b.processed_time ? new Date(b.processed_time).getTime() : 0;
       return tb - ta;
     });
 
@@ -228,7 +240,7 @@
           <div style="position:absolute;left:0;top:4px;width:11px;height:11px;border-radius:50%;background:${i === 0 ? 'var(--primary)' : 'var(--border-color)'};border:2px solid ${i === 0 ? 'var(--primary-hover)' : 'var(--border-hover)'};"></div>
           <div style="cursor:pointer;" class="version-expand-toggle" data-version-idx="${i}">
             <div style="display:flex;align-items:center;gap:0.5rem;">
-              <span class="mono" style="font-size:0.75rem;color:var(--text-muted);">${formatDate(v.physical_time)}</span>
+              <span class="mono" style="font-size:0.75rem;color:var(--text-muted);">${formatDate(v.processed_time)}</span>
               ${i === 0 ? '<span class="badge badge-info" style="font-size:0.6875rem;">' + t('entities.latest') + '</span>' : ''}
             </div>
             <div style="margin-top:0.25rem;font-weight:500;font-size:0.875rem;">${escapeHtml(v.name || '-')}</div>
@@ -246,12 +258,13 @@
 
     // Attach expand/collapse behavior after render
     setTimeout(() => {
-      const container = document.getElementById('versions-container');
+      if (!overlay) return;
+      const container = overlay.querySelector('#versions-container');
       if (!container) return;
       container.querySelectorAll('.version-expand-toggle').forEach(toggle => {
         toggle.addEventListener('click', () => {
           const idx = toggle.getAttribute('data-version-idx');
-          const expanded = document.getElementById('version-expanded-' + idx);
+          const expanded = overlay.querySelector('#version-expanded-' + idx);
           if (expanded) {
             const isHidden = expanded.style.display === 'none';
             expanded.style.display = isHidden ? 'block' : 'none';
@@ -282,7 +295,7 @@
               <div style="margin-top:0.25rem;display:flex;align-items:center;gap:0.5rem;">
                 <span class="badge badge-primary" style="font-size:0.6875rem;">${escapeHtml(direction)}</span>
                 <span class="mono" style="font-size:0.75rem;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(otherId || t('entities.unknown'))}</span>
-                <span class="mono" style="font-size:0.6875rem;color:var(--text-muted);">${formatDate(r.physical_time)}</span>
+                <span class="mono" style="font-size:0.6875rem;color:var(--text-muted);">${formatDate(r.event_time)}</span>
               </div>
             </div>
           </div>
@@ -448,6 +461,9 @@
     isSearchMode = false;
     isSearchAllMode = false;
   }
+
+  // Expose globally for use by other pages (search, relations, path-finder)
+  window.showEntityDetail = openEntityDetail;
 
   registerPage('entities', { render, destroy });
 })();

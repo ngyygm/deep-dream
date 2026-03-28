@@ -408,11 +408,15 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
                         continue
                     # 已经很低了仍失败，走正常重试逻辑
 
-                # 对于连接错误：不退出、不降级为 mock，一直重试
+                # 对于连接错误：重试但设置上限（避免无限阻塞线程）
                 if is_connection_error:
-                    wait_seconds = 5
+                    _conn_max = max_retries * 3  # 连接错误允许更多次重试
+                    wait_seconds = min(5 * (attempt + 1), 60)  # 指数退避，上限60秒
                     wprint(f"LLM连接错误（第 {attempt + 1} 次尝试）: {e}")
-                    wprint(f"{wait_seconds} 秒后重试，直到连接恢复为止（不会跳过本次任务）...")
+                    if attempt >= _conn_max:
+                        wprint(f"连接错误已达上限 {_conn_max} 次，放弃重试")
+                        raise
+                    wprint(f"{wait_seconds} 秒后重试...")
                     if _sem is not None:
                         _sem.release()
                     _sem_held = False
@@ -585,16 +589,18 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
 系统状态：
 - 已处理文本范围：处理到"文档开始"结束
 - 当前文档名：示例文档.txt"""
-        elif ("抽取实体" in prompt or "entity" in prompt_lower or 
-              "从输入文本中抽取所有实体" in prompt or "实体抽取" in prompt):
+        elif ("抽取实体" in prompt or "抽取所有概念实体" in prompt or "entity" in prompt_lower or
+              "从输入文本中抽取所有实体" in prompt or "实体抽取" in prompt or
+              "概念实体" in prompt):
             return json.dumps([
                 {
                     "name": "示例实体1",
                     "content": "这是一个示例实体的描述"
                 }
             ], ensure_ascii=False)
-        elif ("抽取关系" in prompt or "relation" in prompt_lower or 
-              "从输入文本中抽取实体之间的关系" in prompt or "关系抽取" in prompt):
+        elif ("抽取关系" in prompt or "抽取所有概念实体间的关系" in prompt or
+              "relation" in prompt_lower or "从输入文本中抽取实体之间的关系" in prompt or
+              "关系抽取" in prompt or "实体间的关系" in prompt):
             # 检查实体列表是否为空
             if "已抽取的实体：" in prompt:
                 entities_section = prompt.split("已抽取的实体：")[1].split("</已抽取实体>")[0].strip()
@@ -627,4 +633,16 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
                 enhanced_content = "这是一个示例实体的描述\n\n[增强信息]：基于记忆缓存和当前文本的补充细节和上下文信息。"
             # 返回JSON格式
             return json.dumps({"content": enhanced_content}, ensure_ascii=False)
+        elif ("判断" in prompt and "合并" in prompt and "实体" in prompt) or "merge_entity_name" in prompt_lower:
+            return json.dumps({"merged_name": "示例实体1", "merged_content": "合并后的描述"}, ensure_ascii=False)
+        elif ("判断" in prompt and "更新" in prompt and ("content" in prompt_lower or "内容" in prompt)):
+            return json.dumps({"need_update": False}, ensure_ascii=False)
+        elif ("关系" in prompt and "匹配" in prompt) or "relation_match" in prompt_lower:
+            return json.dumps({"relation_id": None}, ensure_ascii=False)
+        elif ("生成关系" in prompt or "relation_content" in prompt_lower or "关系的content" in prompt):
+            return "这是一个示例关系描述"
+        elif "知识图谱整理" in prompt or "consolidation" in prompt_lower:
+            return "知识图谱整理完成，未发现需要处理的重复实体。"
+        elif ("整体记忆" in prompt or "document_overall" in prompt_lower or "文档整体" in prompt):
+            return "# 文档整体记忆\n\n这是一份示例文档的整体描述。"
         return "默认响应"

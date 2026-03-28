@@ -1,8 +1,21 @@
 """图谱可视化器：生成交互式/静态图谱可视化。"""
 import json
+import os
+from pathlib import Path
 from typing import List, Optional
 
 from processor import StorageManager
+
+
+def _validate_output_path(output_path: str) -> str:
+    """校验输出路径，确保在当前工作目录或其子目录下，防止任意文件写入。"""
+    resolved = Path(output_path).resolve()
+    cwd = Path.cwd().resolve()
+    try:
+        resolved.relative_to(cwd)
+    except ValueError:
+        raise ValueError(f"输出路径必须在当前工作目录下: {output_path}")
+    return str(resolved)
 
 
 # ---------------------------------------------------------------------------
@@ -115,6 +128,7 @@ class GraphVisualizer:
                     )
 
         # 保存为 HTML
+        output_path = _validate_output_path(output_path)
         net.save_graph(output_path)
         print(f"交互式可视化已保存到: {output_path}")
         print(f"实体数量: {len(entities)}, 关系数量: {len(relations)}")
@@ -222,9 +236,12 @@ class GraphVisualizer:
         )
 
         # 保存图片
+        output_path = _validate_output_path(output_path)
         plt.tight_layout()
-        plt.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='#222222')
-        plt.close()
+        try:
+            plt.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='#222222')
+        finally:
+            plt.close()
 
         print(f"静态可视化已保存到: {output_path}")
         print(f"实体数量: {len(entities)}, 关系数量: {len(relations)}")
@@ -246,7 +263,8 @@ class GraphVisualizer:
                     "entity_id": e.entity_id,
                     "name": e.name,
                     "content": e.content,
-                    "physical_time": e.physical_time.isoformat(),
+                    "event_time": e.event_time.isoformat() if e.event_time else None,
+                    "processed_time": e.processed_time.isoformat() if e.processed_time else None,
                     "memory_cache_id": e.memory_cache_id
                 }
                 for e in entities
@@ -256,10 +274,11 @@ class GraphVisualizer:
                     "relation_id": r.relation_id,
                     "entity1_absolute_id": r.entity1_absolute_id,
                     "entity2_absolute_id": r.entity2_absolute_id,
-                    "entity1_id": self.storage.get_entity_by_absolute_id(r.entity1_absolute_id).entity_id if self.storage.get_entity_by_absolute_id(r.entity1_absolute_id) else None,
-                    "entity2_id": self.storage.get_entity_by_absolute_id(r.entity2_absolute_id).entity_id if self.storage.get_entity_by_absolute_id(r.entity2_absolute_id) else None,
+                    "entity1_id": (_e1 := self.storage.get_entity_by_absolute_id(r.entity1_absolute_id)).entity_id if _e1 else None,
+                    "entity2_id": (_e2 := self.storage.get_entity_by_absolute_id(r.entity2_absolute_id)).entity_id if _e2 else None,
                     "content": r.content,
-                    "physical_time": r.physical_time.isoformat(),
+                    "event_time": r.event_time.isoformat() if r.event_time else None,
+                    "processed_time": r.processed_time.isoformat() if r.processed_time else None,
                     "memory_cache_id": r.memory_cache_id
                 }
                 for r in relations
@@ -270,7 +289,7 @@ class GraphVisualizer:
             }
         }
 
-        with open(output_path, 'w', encoding='utf-8') as f:
+        with open(_validate_output_path(output_path), 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
         print(f"图谱数据已导出到: {output_path}")

@@ -132,7 +132,7 @@ class _ExtractionMixin:
             if extracted_entities:
                 break  # 正常退出
             if _step2_attempt < _extraction_empty_retry:
-                wprint(f"  ⚠️ 步骤2 LLM返回空结果，重试 ({_step2_attempt + 1}/{_extraction_empty_retry})...")
+                wprint(f"  ⚠️ 步骤2 LLM返回空结果，重试 ({_step2_attempt + 1}/{1 + _extraction_empty_retry})...")
 
         self.llm_client._current_distill_step = None
 
@@ -372,7 +372,7 @@ class _ExtractionMixin:
             embedding_name_search_threshold=self.embedding_name_search_threshold,
             embedding_full_search_threshold=self.embedding_full_search_threshold,
             on_entity_processed=on_entity_processed_callback,
-            base_time=new_memory_cache.physical_time,
+            base_time=new_memory_cache.event_time,
             max_workers=self.llm_threads,
         )
 
@@ -385,7 +385,7 @@ class _ExtractionMixin:
             if entity.entity_id not in unique_entities_dict:
                 unique_entities_dict[entity.entity_id] = entity
             else:
-                if entity.physical_time > unique_entities_dict[entity.entity_id].physical_time:
+                if entity.processed_time > unique_entities_dict[entity.entity_id].processed_time:
                     unique_entities_dict[entity.entity_id] = entity
 
         unique_entities = list(unique_entities_dict.values())
@@ -667,7 +667,7 @@ class _ExtractionMixin:
             entity_name_to_id,
             new_memory_cache.absolute_id,
             source_document=document_name,
-            base_time=new_memory_cache.physical_time,
+            base_time=new_memory_cache.event_time,
             max_workers=self.llm_threads,
             on_relation_done=_on_relation_pair_done,
         )
@@ -677,20 +677,6 @@ class _ExtractionMixin:
                 wprint("  └─ 关系对齐完成: 无新关系\n")
             else:
                 wprint(f"  └─ 处理完成: {len(all_processed_relations)} 个关系\n")
-            for relation in all_processed_relations:
-                entity1 = self.storage.get_entity_by_absolute_id(relation.entity1_absolute_id)
-                entity2 = self.storage.get_entity_by_absolute_id(relation.entity2_absolute_id)
-
-                if entity1 and entity2:
-                    entity1_name = entity1.name
-                    entity2_name = entity2.name
-                else:
-                    entity1_name = relation.entity1_absolute_id
-                    entity2_name = relation.entity2_absolute_id
-
-                content_preview = relation.content[:80] + '...' if len(relation.content) > 80 else relation.content
-                wprint(f"      - {entity1_name} -- {entity2_name}")
-                wprint(f"        {content_preview}")
 
         if verbose:
             wprint("  窗口处理完成！\n")

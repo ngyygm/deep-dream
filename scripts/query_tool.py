@@ -47,7 +47,7 @@ class TMGQueryTool:
         for i, e in enumerate(entities, 1):
             print(f"   [{i}] {e.name} (ID: {e.entity_id})")
             print(f"       描述: {e.content[:80]}...")
-            print(f"       时间: {e.physical_time}")
+            print(f"       时间: {e.event_time}")
 
         return entities
 
@@ -69,7 +69,7 @@ class TMGQueryTool:
             if e1 and e2:
                 print(f"   [{i}] {e1.name} ↔ {e2.name}")
                 print(f"       描述: {rel.content}")
-                print(f"       时间: {rel.physical_time}")
+                print(f"       时间: {rel.event_time}")
 
         return relations
 
@@ -83,7 +83,7 @@ class TMGQueryTool:
             print(f"   ✓ 找到版本:")
             print(f"     名称: {entity.name}")
             print(f"     描述: {entity.content}")
-            print(f"     时间: {entity.physical_time}")
+            print(f"     时间: {entity.event_time}")
         else:
             print(f"   ✗ 未找到该时间点的版本")
 
@@ -107,7 +107,7 @@ class TMGQueryTool:
             info = {
                 "name": entity.name,
                 "content": entity.content,
-                "time": entity.physical_time,
+                "time": entity.event_time,
                 "entity_id": entity.entity_id
             }
             results["entities"].append(info)
@@ -117,7 +117,7 @@ class TMGQueryTool:
             for rel in relations:
                 info = {
                     "content": rel.content,
-                    "time": rel.physical_time
+                    "time": rel.event_time
                 }
                 results["relations"].append(info)
 
@@ -182,7 +182,7 @@ class TMGQueryTool:
             print(f"\n✅ Select阶段: 找到 {len(relations)} 条关系")
             results = {
                 "entities": [entities1[0], entities2[0]],
-                "relations": [{"content": r.content, "time": r.physical_time} for r in relations],
+                "relations": [{"content": r.content, "time": r.event_time} for r in relations],
                 "answer": f"找到 {len(relations)} 条关系:\n" + "\n".join([r.content for r in relations])
             }
         else:

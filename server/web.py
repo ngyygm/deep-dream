@@ -4,6 +4,8 @@
 """
 import sys
 import json
+import os
+from collections import deque
 from pathlib import Path
 from typing import List, Optional
 from flask import Flask, render_template, jsonify
@@ -39,6 +41,7 @@ class GraphWebServer:
             embedding_use_local: 是否优先使用本地模型
         """
         self.storage_path = storage_path
+        self._base_storage_path = os.path.dirname(storage_path) if os.path.isdir(storage_path) and not os.path.basename(storage_path) else storage_path
         self.port = port
         self.app = Flask(__name__)
         
@@ -63,17 +66,24 @@ class GraphWebServer:
     def _switch_storage_path(self, new_path: str):
         """
         切换存储路径
-        
+
         Args:
-            new_path: 新的存储路径
+            new_path: 新的存储路径（必须在 base_storage_path 目录下）
         """
         if new_path != self._current_storage_path:
+            # 安全校验：路径必须在存储根目录下
+            base = Path(self._base_storage_path).resolve()
+            target = (base / new_path).resolve() if not os.path.isabs(new_path) else Path(new_path).resolve()
+            try:
+                target.relative_to(base)
+            except ValueError:
+                raise ValueError(f"存储路径必须在 {base} 目录下: {new_path}")
             try:
                 # 重新初始化存储和可视化器
-                self.storage = StorageManager(new_path, embedding_client=self.embedding_client)
+                self.storage = StorageManager(str(target), embedding_client=self.embedding_client)
                 self.visualizer = GraphVisualizer(self.storage)
-                self._current_storage_path = new_path
-                print(f"✅ 已切换到新的存储路径: {new_path}")
+                self._current_storage_path = str(target)
+                print(f"✅ 已切换到新的存储路径: {target}")
             except Exception as e:
                 print(f"❌ 切换存储路径失败: {str(e)}")
                 raise
@@ -161,7 +171,7 @@ class GraphWebServer:
                     # 只显示该实体从最早版本到指定版本的所有关系
                     # 时间点自动从该版本获取，不需要单独传递time_point参数
                     entities = [focus_entity]
-                    focus_time_point = focus_entity.physical_time
+                    focus_time_point = focus_entity.event_time
                 else:
                     # 获取最近更新的实体（限制数量）
                     if time_point:
@@ -232,14 +242,14 @@ class GraphWebServer:
                             try:
                                 versions_sorted = sorted(
                                     versions,
-                                    key=lambda v: self.storage._normalize_datetime_for_compare(v.physical_time)
+                                    key=lambda v: self.storage._normalize_datetime_for_compare(v.processed_time)
                                 )
                                 current_version_index = None
                                 for idx, v in enumerate(versions_sorted, 1):
                                     if v.absolute_id == focus_absolute_id:
                                         current_version_index = idx
                                         break
-                                
+
                                 if current_version_index:
                                     label = f"{entity.name} ({current_version_index}/{version_count}版本)" if version_count > 1 else entity.name
                                 else:
@@ -255,17 +265,19 @@ class GraphWebServer:
                         hop_level = entity_id_to_hop_level.get(entity.entity_id, 0)
                         node_color = get_hop_color(hop_level)
                         
-                        # 安全地处理physical_time
+                        # 安全地处理event_time和processed_time
                         try:
-                            physical_time_str = entity.physical_time.isoformat() if entity.physical_time else None
+                            event_time_str = entity.event_time.isoformat() if entity.event_time else None
+                            processed_time_str = entity.processed_time.isoformat() if entity.processed_time else None
                         except Exception as e:
                             print(f"⚠️  实体时间格式错误 (entity_id={entity.entity_id}): {str(e)}")
-                            physical_time_str = None
-                        
+                            event_time_str = None
+                            processed_time_str = None
+
                         # 安全地处理content
                         content = entity.content if hasattr(entity, 'content') and entity.content else ''
                         name = entity.name if hasattr(entity, 'name') and entity.name else '未知实体'
-                        
+
                         nodes.append({
                             'id': entity.entity_id,
                             'entity_id': entity.entity_id,
@@ -273,7 +285,8 @@ class GraphWebServer:
                             'label': label,
                             'title': f"{name}\n\n{content[:100]}..." if len(content) > 100 else f"{name}\n\n{content}",
                             'content': content,
-                            'physical_time': physical_time_str,
+                            'event_time': event_time_str,
+                            'processed_time': processed_time_str,
                             'version_count': version_count,
                             'color': node_color,
                             'shape': 'dot',
@@ -425,7 +438,7 @@ class GraphWebServer:
                                     if other_entity_id in next_level_entities:
                                         existing_abs_id = next_level_entities[other_entity_id]
                                         existing_entity = self.storage.get_entity_by_absolute_id(existing_abs_id)
-                                        if existing_entity and other_entity.physical_time > existing_entity.physical_time:
+                                        if existing_entity and other_entity.event_time > existing_entity.event_time:
                                             next_level_entities[other_entity_id] = other_entity_abs_id
                                     else:
                                         next_level_entities[other_entity_id] = other_entity_abs_id
@@ -447,12 +460,12 @@ class GraphWebServer:
                             graph[u].append(v)
                             graph[v].append(u)
                         
-                        # BFS
+                        # BFS (使用 deque 实现 O(1) popleft)
                         distances = {start_node: 0}
-                        queue = [start_node]
-                        
+                        queue = deque([start_node])
+
                         while queue:
-                            current = queue.pop(0)
+                            current = queue.popleft()
                             if current not in graph:
                                 continue
                             
@@ -489,7 +502,8 @@ class GraphWebServer:
                             'label': edge_label,
                             'title': relation.content,
                             'content': relation.content,
-                            'physical_time': relation.physical_time.isoformat(),
+                            'event_time': relation.event_time.isoformat() if relation.event_time else None,
+                                    'processed_time': relation.processed_time.isoformat() if relation.processed_time else None,
                             'relation_id': relation.relation_id,
                             'absolute_id': relation.absolute_id,
                             'color': '#888888',
@@ -596,7 +610,8 @@ class GraphWebServer:
                                     'label': edge_label,
                                     'title': relation.content,
                                     'content': relation.content,
-                                    'physical_time': relation.physical_time.isoformat(),
+                                    'event_time': relation.event_time.isoformat() if relation.event_time else None,
+                                    'processed_time': relation.processed_time.isoformat() if relation.processed_time else None,
                                     'relation_id': relation.relation_id,
                                     'absolute_id': relation.absolute_id,
                                     'color': '#888888',
@@ -628,7 +643,7 @@ class GraphWebServer:
                             if focus_entity_id and absolute_id:
                                 versions_sorted = sorted(
                                     versions,
-                                    key=lambda v: self.storage._normalize_datetime_for_compare(v.physical_time)
+                                    key=lambda v: self.storage._normalize_datetime_for_compare(v.processed_time)
                                 )
                                 current_version_index = None
                                 for idx, v in enumerate(versions_sorted, 1):
@@ -654,7 +669,8 @@ class GraphWebServer:
                                 'label': label,
                                 'title': f"{related_entity.name}\n\n{related_entity.content[:100]}..." if len(related_entity.content) > 100 else f"{related_entity.name}\n\n{related_entity.content}",
                                 'content': related_entity.content,
-                                'physical_time': related_entity.physical_time.isoformat(),
+                                'event_time': related_entity.event_time.isoformat() if related_entity.event_time else None,
+                                'processed_time': related_entity.processed_time.isoformat() if related_entity.processed_time else None,
                                 'version_count': version_count,
                                 'color': node_color,  # 根据跳数层级设置颜色
                                 'shape': 'dot',
@@ -900,7 +916,7 @@ class GraphWebServer:
                         else:
                             # 比较时间，保留更新的版本
                             existing_entity = self.storage.get_entity_by_absolute_id(entity_id_to_latest_absolute_id[entity_id])
-                            if existing_entity and entity.physical_time > existing_entity.physical_time:
+                            if existing_entity and entity.event_time > existing_entity.event_time:
                                 entity_id_to_latest_absolute_id[entity_id] = entity_abs_id
                 
                 # 然后为每个唯一的entity_id创建一个节点
@@ -924,7 +940,8 @@ class GraphWebServer:
                             'label': label,
                             'title': f"{entity.name}\n\n{entity.content[:100]}..." if len(entity.content) > 100 else f"{entity.name}\n\n{entity.content}",
                             'content': entity.content,
-                            'physical_time': entity.physical_time.isoformat(),
+                            'event_time': entity.event_time.isoformat() if entity.event_time else None,
+                            'processed_time': entity.processed_time.isoformat() if entity.processed_time else None,
                             'version_count': version_count,
                             'color': '#FF6B6B' if is_matched else '#97C2FC',  # 匹配的实体用红色，其他用蓝色
                             'shape': 'dot',
@@ -959,7 +976,8 @@ class GraphWebServer:
                                 'label': edge_label,
                                 'title': relation.content,
                                 'content': relation.content,
-                                'physical_time': relation.physical_time.isoformat(),
+                                'event_time': relation.event_time.isoformat() if relation.event_time else None,
+                                    'processed_time': relation.processed_time.isoformat() if relation.processed_time else None,
                                 'relation_id': relation.relation_id,
                                 'absolute_id': relation.absolute_id,
                                 'color': '#FF6B6B',  # 匹配的关系边用红色，和匹配实体颜色一致
@@ -996,7 +1014,8 @@ class GraphWebServer:
                                     'label': edge_label,
                                     'title': relation.content,
                                     'content': relation.content,
-                                    'physical_time': relation.physical_time.isoformat(),
+                                    'event_time': relation.event_time.isoformat() if relation.event_time else None,
+                                    'processed_time': relation.processed_time.isoformat() if relation.processed_time else None,
                                     'relation_id': relation.relation_id,
                                     'absolute_id': relation.absolute_id,
                                     'color': '#FF6B6B' if is_matched else '#97C2FC',  # 匹配的关系边用红色（和匹配实体颜色一致），其他用蓝色
@@ -1043,7 +1062,8 @@ class GraphWebServer:
                         'entity_id': entity.entity_id,
                         'name': entity.name,
                         'content': entity.content,
-                        'physical_time': entity.physical_time.isoformat(),
+                        'event_time': entity.event_time.isoformat() if entity.event_time else None,
+                            'processed_time': entity.processed_time.isoformat() if entity.processed_time else None,
                         'memory_cache_id': entity.memory_cache_id
                     })
                 
@@ -1086,6 +1106,7 @@ class GraphWebServer:
                 # 获取memory_cache对应的md文档内容和json中的原文内容
                 memory_cache_content = None  # md文档内容
                 memory_cache_text = None  # json中的原文内容
+                source_document = None  # 文档名称（初始化，避免未绑定）
                 doc_name = None  # 文档名称
                 if entity.memory_cache_id:
                     # 获取md文档内容（MemoryCache的content字段）
@@ -1103,7 +1124,8 @@ class GraphWebServer:
                         'entity_id': entity.entity_id,
                         'name': entity.name,
                         'content': entity.content,
-                        'physical_time': entity.physical_time.isoformat(),
+                        'event_time': entity.event_time.isoformat() if entity.event_time else None,
+                            'processed_time': entity.processed_time.isoformat() if entity.processed_time else None,
                         'memory_cache_id': entity.memory_cache_id,
                         'memory_cache_content': memory_cache_content,  # md文档内容
                         'memory_cache_text': memory_cache_text,  # json中的原文内容
@@ -1144,7 +1166,8 @@ class GraphWebServer:
                         'absolute_id': relation.absolute_id,
                         'relation_id': relation.relation_id,
                         'content': relation.content,
-                        'physical_time': relation.physical_time.isoformat(),
+                        'event_time': relation.event_time.isoformat() if relation.event_time else None,
+                                    'processed_time': relation.processed_time.isoformat() if relation.processed_time else None,
                         'memory_cache_id': relation.memory_cache_id,
                         'entity1_absolute_id': relation.entity1_absolute_id,
                         'entity2_absolute_id': relation.entity2_absolute_id,
@@ -1210,7 +1233,8 @@ class GraphWebServer:
                             'label': label,
                             'name': entity.name,
                             'content': entity.content,
-                            'physical_time': entity.physical_time.isoformat(),
+                            'event_time': entity.event_time.isoformat() if entity.event_time else None,
+                            'processed_time': entity.processed_time.isoformat() if entity.processed_time else None,
                             'version_count': version_count
                         })
                 
@@ -1229,7 +1253,8 @@ class GraphWebServer:
                                 'from': entity1.entity_id,
                                 'to': entity2.entity_id,
                                 'content': relation.content,
-                                'physical_time': relation.physical_time.isoformat()
+                                'event_time': relation.event_time.isoformat() if relation.event_time else None,
+                                'processed_time': relation.processed_time.isoformat() if relation.processed_time else None
                             })
                 
                 return jsonify({
@@ -1279,7 +1304,8 @@ class GraphWebServer:
                         'absolute_id': relation.absolute_id,
                         'relation_id': relation.relation_id,
                         'content': relation.content,
-                        'physical_time': relation.physical_time.isoformat(),
+                        'event_time': relation.event_time.isoformat() if relation.event_time else None,
+                                    'processed_time': relation.processed_time.isoformat() if relation.processed_time else None,
                         'memory_cache_id': relation.memory_cache_id,
                         'entity1_absolute_id': relation.entity1_absolute_id,
                         'entity2_absolute_id': relation.entity2_absolute_id,

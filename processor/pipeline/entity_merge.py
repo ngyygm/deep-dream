@@ -42,7 +42,7 @@ class _EntityMergeMixin:
                         if rel.relation_id not in relation_dict:
                             relation_dict[rel.relation_id] = rel
                         else:
-                            if rel.physical_time > relation_dict[rel.relation_id].physical_time:
+                            if rel.processed_time > relation_dict[rel.relation_id].processed_time:
                                 relation_dict[rel.relation_id] = rel
 
                     # 提取关系信息
@@ -200,7 +200,16 @@ class _EntityMergeMixin:
             ]
 
             if filtered_relations:
-                filtered_existing_relations[pair_key] = filtered_relations
+                # 应用合并映射：如果关系中的实体ID已被合并，更新为新ID
+                resolved_e1 = merge_mapping.get(entity1_id, entity1_id)
+                resolved_e2 = merge_mapping.get(entity2_id, entity2_id)
+                if resolved_e1 == resolved_e2:
+                    continue  # 合并后变成自指向，跳过
+                new_pair_key = f"{resolved_e1}|{resolved_e2}" if resolved_e1 < resolved_e2 else f"{resolved_e2}|{resolved_e1}"
+                if new_pair_key in filtered_existing_relations:
+                    filtered_existing_relations[new_pair_key].extend(filtered_relations)
+                else:
+                    filtered_existing_relations[new_pair_key] = filtered_relations
 
         return filtered_existing_relations
 
@@ -256,7 +265,8 @@ class _EntityMergeMixin:
                 entity_id=entity.entity_id,
                 name=entity.name,
                 content=summarized_content,
-                physical_time=datetime.now(),
+                event_time=datetime.now(),
+                processed_time=datetime.now(),
                 memory_cache_id=entity.memory_cache_id,
                 source_document=entity.source_document
             )

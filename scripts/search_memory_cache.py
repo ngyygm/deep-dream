@@ -110,7 +110,7 @@ def print_search_results(caches, keywords, context_size=200):
     for i, cache in enumerate(caches, 1):
         print("=" * 80)
         print(f"缓存 {i}: {cache.absolute_id}")
-        print(f"时间: {cache.physical_time}")
+        print(f"时间: {cache.event_time}")
         print(f"活动类型: {cache.activity_type}")
         print("-" * 80)
 

@@ -572,6 +572,19 @@ select.input {
   border-radius: 10px;
   cursor: pointer;
   transition: background 0.15s ease;
+  display: inline-block;
+}
+
+.toggle input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+
+.toggle .toggle-slider {
+  display: none;
 }
 
 .toggle.active,
@@ -739,3 +752,7 @@ input[type="range"]::-webkit-slider-thumb {
 .json-bool { color: #f472b6; }
 .json-null { color: #94a3b8; font-style: italic; }
 .json-url { color: #38bdf8; text-decoration: underline; }
+.doc-link { color: var(--primary); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; transition: color 0.15s; }
+.doc-link:hover { color: var(--primary-hover); }
+.entity-link { color: var(--primary); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; transition: color 0.15s; }
+.entity-link:hover { color: var(--primary-hover); }

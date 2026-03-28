@@ -360,35 +360,6 @@ class RelationProcessor:
                 if merged_relation:
                     merged_relations.append(merged_relation)
         
-        # 输出过滤统计信息
-        if filtered_count > 0:
-            # 统计不同类型的过滤原因
-            missing_entity_count = sum(1 for f in filtered_relations if '实体不在当前窗口' in f['reason'])
-            self_relation_count = sum(1 for f in filtered_relations if '两个实体是同一个实体' in f['reason'])
-            empty_name_count = sum(1 for f in filtered_relations if '实体名称为空' in f['reason'])
-            
-            wprint(f"[关系过滤] ⚠️  共过滤了 {filtered_count} 个关系")
-            if missing_entity_count > 0:
-                wprint(f"  - 实体不在当前窗口的实体列表中: {missing_entity_count} 个")
-            if self_relation_count > 0:
-                wprint(f"  - 自关系（两个实体是同一个）: {self_relation_count} 个")
-            if empty_name_count > 0:
-                wprint(f"  - 实体名称为空: {empty_name_count} 个")
-            
-            if missing_entity_count > 0:
-                wprint(f"  当前窗口的实体列表包含 {len(entity_name_to_id)} 个实体: {', '.join(list(entity_name_to_id.keys())[:10])}{'...' if len(entity_name_to_id) > 10 else ''}")
-            
-            wprint(f"  被过滤的关系示例（前5个）:")
-            for i, filtered in enumerate(filtered_relations[:5], 1):
-                entity1 = filtered.get('entity1', filtered.get('from', ''))
-                entity2 = filtered.get('entity2', filtered.get('to', ''))
-                wprint(f"    {i}. {entity1} <-> {entity2} ({filtered['reason']})")
-            if len(filtered_relations) > 5:
-                wprint(f"    ... 还有 {len(filtered_relations) - 5} 个关系被过滤")
-        
-        if len(merged_relations) > 0:
-            wprint(f"[关系过滤] ✅ 通过过滤的关系: {len(merged_relations)} 个（去重合并后）")
-
         dbg(f"去重合并结果: 过滤 {filtered_count}, 合并后通过 {len(merged_relations)}")
         for _mr in merged_relations:
             dbg(f"  通过: '{_mr.get('entity1_name', '')}' <-> '{_mr.get('entity2_name', '')}'  content='{_mr.get('content', '')[:100]}'")
@@ -428,7 +399,8 @@ class RelationProcessor:
         )
         
         # 打印合并信息
-        wprint(f"[关系操作] 🔀 合并关系: {pair[0]} <-> {pair[1]} (共{len(relation_contents)}个关系)")
+        if verbose_relation:
+            wprint(f"[关系操作] 🔀 合并关系: {pair[0]} <-> {pair[1]} (共{len(relation_contents)}个关系)")
         
         # 构建合并后的关系
         merged_relation = {
@@ -484,24 +456,13 @@ class RelationProcessor:
             )
         
         # 步骤2：准备已有关系信息供LLM判断
-        # 按relation_id分组，每个relation_id只保留最新版本
-        relation_dict = {}
-        for relation in existing_relations:
-            if relation.relation_id not in relation_dict:
-                relation_dict[relation.relation_id] = relation
-            else:
-                # 保留物理时间最新的
-                if relation.physical_time > relation_dict[relation.relation_id].physical_time:
-                    relation_dict[relation.relation_id] = relation
-        
-        unique_relations = list(relation_dict.values())
-        
+        # get_relations_by_entities 已按 relation_id 去重，直接使用
         existing_relations_info = [
             {
                 'relation_id': r.relation_id,
                 'content': r.content
             }
-            for r in unique_relations
+            for r in existing_relations
         ]
         
         # 步骤3：用LLM判断是否匹配
@@ -520,7 +481,9 @@ class RelationProcessor:
             relation_id = match_result['relation_id']
             
             # 获取最新版本的content
-            latest_relation = unique_relations[0]  # 已经是最新的
+            latest_relation = next(
+                (r for r in existing_relations if r.relation_id == relation_id), None
+            )
             if not latest_relation:
                 return self._create_new_relation(
                     entity1_id,
@@ -587,6 +550,7 @@ class RelationProcessor:
                 entity1_name,
                 entity2_name,
                 verbose_relation,
+                source_document,
                 base_time=base_time,
             )
     
@@ -597,8 +561,8 @@ class RelationProcessor:
                             base_time: Optional[datetime] = None) -> Optional[Relation]:
         """构建新关系对象，但不立即写库。"""
         # 通过 entity_id 获取实体的最新版本
-        entity1 = self.storage.get_entity_by_id(entity1_id)
-        entity2 = self.storage.get_entity_by_id(entity2_id)
+        entity1 = self.storage.get_entity_by_entity_id(entity1_id)
+        entity2 = self.storage.get_entity_by_entity_id(entity2_id)
         
         if not entity1 or not entity2:
             missing_info = []
@@ -612,9 +576,10 @@ class RelationProcessor:
             return None
         
         ts = base_time if base_time is not None else datetime.now()
+        processed_time = datetime.now()
         relation_id = f"rel_{uuid.uuid4().hex[:12]}"
-        relation_record_id = f"relation_{ts.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
-        
+        relation_record_id = f"relation_{processed_time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+
         if entity1.name <= entity2.name:
             entity1_absolute_id = entity1.absolute_id
             entity2_absolute_id = entity2.absolute_id
@@ -630,7 +595,8 @@ class RelationProcessor:
             entity1_absolute_id=entity1_absolute_id,
             entity2_absolute_id=entity2_absolute_id,
             content=content,
-            physical_time=ts,
+            event_time=ts,
+            processed_time=processed_time,
             memory_cache_id=memory_cache_id,
             source_document=source_document_only
         )
@@ -666,8 +632,8 @@ class RelationProcessor:
         """构建关系新版本对象，但不立即写库。"""
         
         # 通过 entity_id 获取实体的最新版本
-        entity1 = self.storage.get_entity_by_id(entity1_id)
-        entity2 = self.storage.get_entity_by_id(entity2_id)
+        entity1 = self.storage.get_entity_by_entity_id(entity1_id)
+        entity2 = self.storage.get_entity_by_entity_id(entity2_id)
         
         if not entity1 or not entity2:
             missing_info = []
@@ -681,8 +647,9 @@ class RelationProcessor:
             return None
         
         ts = base_time if base_time is not None else datetime.now()
-        relation_record_id = f"relation_{ts.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
-        
+        processed_time = datetime.now()
+        relation_record_id = f"relation_{processed_time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+
         if entity1.name <= entity2.name:
             entity1_absolute_id = entity1.absolute_id
             entity2_absolute_id = entity2.absolute_id
@@ -698,7 +665,8 @@ class RelationProcessor:
             entity1_absolute_id=entity1_absolute_id,
             entity2_absolute_id=entity2_absolute_id,
             content=content,
-            physical_time=ts,
+            event_time=ts,
+            processed_time=processed_time,
             memory_cache_id=memory_cache_id,
             source_document=source_document_only
         )

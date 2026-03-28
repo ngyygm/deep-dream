@@ -402,3 +402,65 @@ class SystemMonitor:
     def access_stats(self, since_seconds: float = 300) -> dict:
         """API 访问统计。"""
         return self.access_tracker.get_stats(since_seconds=since_seconds)
+
+    def dashboard_snapshot(self, task_limit: int = 50, log_limit: int = 100,
+                           log_level: Optional[str] = None, log_source: Optional[str] = None,
+                           access_since: float = 300) -> dict:
+        """一次采集仪表盘所需的全部数据，避免多次遍历图谱。"""
+        import threading
+
+        # 1. overview
+        with self._lock:
+            graph_ids = list(self._graph_order)
+
+        overview = {
+            "graph_count": len(graph_ids),
+            "uptime_seconds": round(self.uptime_seconds, 1),
+            "uptime_display": _format_seconds(self.uptime_seconds),
+            "start_time": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(self._start_time)),
+            "python_threads_total": len(threading.enumerate()),
+            "mode": self.mode,
+        }
+
+        # 2. graphs + tasks 一次遍历
+        graphs = []
+        all_tasks = []
+        for gid in graph_ids:
+            with self._lock:
+                gm = self._graphs.get(gid)
+            if gm is None:
+                continue
+            snap = gm.snapshot()
+            graphs.append({
+                "graph_id": gid,
+                "storage": snap["storage"],
+                "queue": {
+                    "queued_count": snap["queue"]["queued_count"],
+                    "running_count": snap["queue"]["running_count"],
+                    "backlog": snap["queue"]["backlog"],
+                },
+                "threads": snap["threads"],
+            })
+            # 同时收集 tasks
+            try:
+                tasks = gm._queue.list_tasks(limit=task_limit)
+                for t in tasks:
+                    t["graph_id"] = gid
+                all_tasks.extend(tasks)
+            except Exception:
+                pass
+        all_tasks.sort(key=lambda t: t.get("created_at", 0), reverse=True)
+
+        # 3. logs
+        logs = self.event_log.get_recent(limit=log_limit, level=log_level, source=log_source)
+
+        # 4. access stats
+        access = self.access_tracker.get_stats(since_seconds=access_since)
+
+        return {
+            "overview": overview,
+            "graphs": graphs,
+            "tasks": all_tasks[:task_limit],
+            "logs": logs,
+            "access_stats": access,
+        }

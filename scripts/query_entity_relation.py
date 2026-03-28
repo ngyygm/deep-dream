@@ -222,7 +222,7 @@ def load_relevant_cache_content(storage, relations, entity1_name, entity2_name, 
         if cache and entity1_name in cache.content and entity2_name in cache.content:
             results.append({
                 'cache_id': cache_id,
-                'time': cache.physical_time,
+                'time': cache.event_time,
                 'activity_type': cache.activity_type,
                 'content': cache.content
             })
@@ -236,7 +236,7 @@ def print_entity_info(entity, query_name):
     print(f"  {match_indicator} 名称: {entity.name}")
     print(f"     Entity ID: {entity.entity_id}")
     print(f"     描述: {entity.content[:100]}...")
-    print(f"     时间: {entity.physical_time}")
+    print(f"     时间: {entity.event_time}")
     print()
 
 
@@ -251,7 +251,7 @@ def print_relation_info(rel, idx, storage):
     print(f"\n  【关系 {idx}】")
     print(f"  {name1} <-> {name2}")
     print(f"  内容: {rel.content}")
-    print(f"  时间: {rel.physical_time}")
+    print(f"  时间: {rel.event_time}")
     print(f"  缓存ID: {rel.memory_cache_id}")
 
 
@@ -260,7 +260,7 @@ def print_timeline(relations, storage):
     if not relations:
         return
 
-    sorted_relations = sorted(relations, key=lambda r: r.physical_time)
+    sorted_relations = sorted(relations, key=lambda r: r.processed_time)
 
     print("\n  【时间线】")
     print("  " + "-" * 76)
@@ -271,7 +271,7 @@ def print_timeline(relations, storage):
         name1 = entity1.name if entity1 else "?"
         name2 = entity2.name if entity2 else "?"
 
-        print(f"  {i}. [{rel.physical_time.strftime('%Y-%m-%d %H:%M')}] {name1} <-> {name2}")
+        print(f"  {i}. [{rel.event_time.strftime('%Y-%m-%d %H:%M')}] {name1} <-> {name2}")
         print(f"     {rel.content[:80]}...")
         print()
 

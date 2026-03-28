@@ -501,69 +501,185 @@
 
   // ---- Documents Section ----
 
-  function renderDocsSection(docs, count) {
-    const badge = `<span class="badge badge-primary" style="margin-left:0.5rem;">${escapeHtml(String(count ?? 0))}</span>`;
+  let _allDocs = [];
+  let _docsPage = 1;
+  let _docsPageSize = 10;
 
-    let tableHtml;
-    if (!docs || docs.length === 0) {
-      tableHtml = emptyState(t('memory.noDocs'));
-    } else {
-      const rows = docs.map(d => {
-        return `
-          <tr>
-            <td><span class="mono" title="${escapeHtml(d.doc_hash)}">${escapeHtml(truncate(d.doc_hash, 16))}</span></td>
-            <td>${escapeHtml(truncate(d.source_document || d.doc_name || '-', 32))}</td>
-            <td>${formatDate(d.physical_time)}</td>
-            <td class="mono">${d.text_length != null ? d.text_length.toLocaleString() : '-'}</td>
-            <td>${escapeHtml(d.activity_type || '-')}</td>
-          </tr>
-        `;
-      }).join('');
+  function renderDocsTableHtml() {
+    const total = _allDocs.length;
+    if (total === 0) return emptyState(t('memory.noDocs'));
 
-      tableHtml = `
-        <div class="table-container">
-          <table class="data-table">
-            <thead>
-              <tr>
-                <th>${t('memory.docHash')}</th>
-                <th>${t('memory.taskSource')}</th>
-                <th>${t('memory.docTime')}</th>
-                <th>${t('memory.docTextLength')}</th>
-                <th>${t('memory.docActivity')}</th>
-              </tr>
-            </thead>
-            <tbody>${rows}</tbody>
-          </table>
-        </div>
+    const totalPages = Math.max(1, Math.ceil(total / _docsPageSize));
+    if (_docsPage > totalPages) _docsPage = totalPages;
+    const start = (_docsPage - 1) * _docsPageSize;
+    const pageDocs = _allDocs.slice(start, start + _docsPageSize);
+
+    const rows = pageDocs.map(d => {
+      const filename = d.filename || d.doc_hash || '';
+      return `
+        <tr>
+          <td><span class="mono" title="${escapeHtml(d.doc_hash)}">${escapeHtml(d.doc_hash || '-')}</span></td>
+          <td>${escapeHtml(truncate(d.source_document || d.doc_name || '-', 32))}</td>
+          <td>${formatDate(d.event_time)}</td>
+          <td class="mono">${d.text_length != null ? d.text_length.toLocaleString() : '-'}</td>
+          <td><button class="btn btn-secondary btn-sm doc-detail-btn" data-filename="${escapeHtml(filename)}" ${!filename ? 'disabled' : ''}>${t('common.detail')}</button></td>
+        </tr>
       `;
-    }
+    }).join('');
 
+    const pageSizeOptions = [10, 20, 30, 50];
+    const pageSizeSelect = pageSizeOptions.map(n =>
+      `<option value="${n}" ${n === _docsPageSize ? 'selected' : ''}>${n}</option>`
+    ).join('');
+    const pageInfo = `${start + 1}-${Math.min(start + _docsPageSize, total)} / ${total}`;
+
+    return `
+      <div class="table-container">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>${t('memory.docHash')}</th>
+              <th>${t('memory.taskSource')}</th>
+              <th>${t('memory.docTime')}</th>
+              <th>${t('memory.docTextLength')}</th>
+              <th>${t('common.detail')}</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:0.75rem 0.5rem;font-size:0.85rem;flex-wrap:wrap;gap:0.5rem;">
+        <span style="color:var(--text-secondary);">${pageInfo}</span>
+        <div style="display:flex;align-items:center;gap:0.5rem;">
+          <button class="btn btn-secondary btn-sm" id="docs-prev" ${_docsPage <= 1 ? 'disabled' : ''}>&laquo;</button>
+          <span style="color:var(--text-secondary);">${_docsPage} / ${totalPages}</span>
+          <button class="btn btn-secondary btn-sm" id="docs-next" ${_docsPage >= totalPages ? 'disabled' : ''}>&raquo;</button>
+          <select id="docs-page-size" style="margin-left:0.5rem;">${pageSizeSelect}</select>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderDocsSection(count) {
+    const badge = `<span class="badge badge-primary" style="margin-left:0.5rem;">${escapeHtml(String(count ?? 0))}</span>`;
     return `
       <div class="card">
         <div class="card-header">
           <span class="card-title">${t('memory.docs')}${badge}</span>
         </div>
-        <div id="docs-list">${tableHtml}</div>
+        <div id="docs-list">${renderDocsTableHtml()}</div>
       </div>
     `;
+  }
+
+  function updateDocsTable() {
+    const el = document.getElementById('docs-list');
+    if (!el) return;
+    el.innerHTML = renderDocsTableHtml();
+    bindDocsEvents();
+  }
+
+  function bindDocsPagination() {
+    const prevBtn = document.getElementById('docs-prev');
+    const nextBtn = document.getElementById('docs-next');
+    const sizeSelect = document.getElementById('docs-page-size');
+
+    if (prevBtn) {
+      prevBtn.addEventListener('click', () => {
+        if (_docsPage > 1) { _docsPage--; updateDocsTable(); }
+      });
+    }
+    if (nextBtn) {
+      nextBtn.addEventListener('click', () => {
+        const totalPages = Math.ceil(_allDocs.length / _docsPageSize);
+        if (_docsPage < totalPages) { _docsPage++; updateDocsTable(); }
+      });
+    }
+    if (sizeSelect) {
+      sizeSelect.addEventListener('change', () => {
+        _docsPageSize = parseInt(sizeSelect.value, 10);
+        _docsPage = 1;
+        updateDocsTable();
+      });
+    }
+  }
+
+  function bindDocsEvents() {
+    if (window.lucide) lucide.createIcons({ nodes: [document.getElementById('docs-list-wrapper')] });
+    bindDocsPagination();
+    document.querySelectorAll('.doc-detail-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const filename = btn.getAttribute('data-filename');
+        if (filename) showDocContent(filename);
+      });
+    });
   }
 
   async function loadDocs() {
     try {
       const res = await state.api.listDocs(state.currentGraphId);
-      const docs = res.data?.docs || [];
-      const count = res.data?.count ?? docs.length;
+      _allDocs = res.data?.docs || [];
+      _docsPage = 1;
 
       const el = document.getElementById('docs-list-wrapper');
       if (!el) return;
 
-      el.innerHTML = renderDocsSection(docs, count);
-      if (window.lucide) lucide.createIcons({ nodes: [el] });
+      el.innerHTML = renderDocsSection(_allDocs.length);
+      bindDocsEvents();
     } catch (err) {
       const el = document.getElementById('docs-list-wrapper');
       if (el) {
         el.innerHTML = `<div class="card"><div class="empty-state"><p style="color:var(--error);">${t('memory.loadDocsFailed')}: ${escapeHtml(err.message)}</p></div></div>`;
       }
+    }
+  }
+
+  async function showDocContent(filename) {
+    try {
+      const res = await state.api.getDocContent(filename, state.currentGraphId);
+      const data = res.data || {};
+      const meta = data.meta || {};
+
+      const sourceName = meta.source_document || meta.doc_name || filename;
+      const eventTime = meta.event_time || '-';
+      const original = data.original || '';
+      const cache = data.cache || '';
+
+      let body = `
+        <div style="display:flex;flex-direction:column;gap:1rem;">
+          <div style="display:grid;grid-template-columns:auto 1fr;gap:0.25rem 0.75rem;font-size:0.85rem;">
+            <span style="color:var(--text-secondary);">${t('memory.taskSource')}:</span><span>${escapeHtml(sourceName)}</span>
+            <span style="color:var(--text-secondary);">${t('memory.docTime')}:</span><span>${formatDate(eventTime)}</span>
+          </div>
+      `;
+
+      if (cache) {
+        body += `
+          <div>
+            <h4 style="margin-bottom:0.5rem;">${t('memory.cacheSummary')}</h4>
+            <div style="max-height:400px;overflow-y:auto;background:var(--bg-secondary);padding:0.75rem;border-radius:0.5rem;font-size:0.85rem;line-height:1.6;white-space:pre-wrap;word-break:break-word;">${escapeHtml(cache)}</div>
+          </div>
+        `;
+      }
+
+      if (original) {
+        body += `
+          <div>
+            <h4 style="margin-bottom:0.5rem;">${t('memory.originalText')}</h4>
+            <div style="max-height:400px;overflow-y:auto;background:var(--bg-secondary);padding:0.75rem;border-radius:0.5rem;font-size:0.85rem;line-height:1.6;white-space:pre-wrap;word-break:break-word;">${escapeHtml(original)}</div>
+          </div>
+        `;
+      }
+
+      body += '</div>';
+
+      showModal({
+        title: t('memory.docContent') + ' - ' + escapeHtml(truncate(sourceName, 30)),
+        content: body,
+        size: 'lg',
+      });
+    } catch (err) {
+      showToast(t('memory.loadDocContentFailed') + ': ' + err.message, 'error');
     }
   }
 

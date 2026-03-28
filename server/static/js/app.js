@@ -30,7 +30,7 @@ class TMGApi {
       return data;
     } catch (err) {
       if (err.name === 'TypeError' && err.message === 'Failed to fetch') {
-        throw new Error('网络错误 - 服务可能不可达');
+        throw new Error(t('error.networkError'));
       }
       throw err;
     }
@@ -123,10 +123,31 @@ class TMGApi {
   entityVersions(entityId, graphId = 'default') {
     return this.get(`/api/v1/find/entities/${encodeURIComponent(entityId)}/versions?graph_id=${encodeURIComponent(graphId)}`);
   }
-  entityRelations(entityId, graphId = 'default', limit) {
+  entityRelations(entityId, graphId = 'default', options = {}) {
     let q = `graph_id=${encodeURIComponent(graphId)}`;
-    if (limit) q += `&limit=${limit}`;
+    if (options.limit) q += `&limit=${options.limit}`;
+    if (options.maxVersionAbsoluteId) q += `&max_version_absolute_id=${encodeURIComponent(options.maxVersionAbsoluteId)}`;
     return this.get(`/api/v1/find/entities/${encodeURIComponent(entityId)}/relations?${q}`);
+  }
+  entityVersionCounts(entityIds, graphId = 'default') {
+    return this.post('/api/v1/find/entities/version-counts', {
+      entity_ids: entityIds,
+      graph_id: graphId,
+    });
+  }
+  entityOneHop(absoluteId, graphId = 'default') {
+    return this.get(`/api/v1/find/entities/absolute/${encodeURIComponent(absoluteId)}/relations?graph_id=${encodeURIComponent(graphId)}`);
+  }
+  entityByAbsoluteId(absoluteId, graphId = 'default') {
+    return this.get(`/api/v1/find/entities/absolute/${encodeURIComponent(absoluteId)}?graph_id=${encodeURIComponent(graphId)}`);
+  }
+
+  // Relations
+  relationVersions(relationId, graphId = 'default') {
+    return this.get(`/api/v1/find/relations/${encodeURIComponent(relationId)}/versions?graph_id=${encodeURIComponent(graphId)}`);
+  }
+  relationByAbsoluteId(absoluteId, graphId = 'default') {
+    return this.get(`/api/v1/find/relations/absolute/${encodeURIComponent(absoluteId)}?graph_id=${encodeURIComponent(graphId)}`);
   }
 
   // Relations
@@ -151,10 +172,52 @@ class TMGApi {
       graph_id: graphId,
     });
   }
+  shortestPaths(entityA, entityB, graphId = 'default', options = {}) {
+    return this.post('/api/v1/find/paths/shortest', {
+      entity_id_a: entityA,
+      entity_id_b: entityB,
+      graph_id: graphId,
+      max_depth: options.maxDepth || 6,
+      max_paths: options.maxPaths || 10,
+    });
+  }
 
   // Docs
   listDocs(graphId = 'default') {
     return this.get(`/api/v1/docs?graph_id=${encodeURIComponent(graphId)}`);
+  }
+  getDocContent(filename, graphId = 'default') {
+    return this.get(`/api/v1/docs/${encodeURIComponent(filename)}?graph_id=${encodeURIComponent(graphId)}`);
+  }
+
+  memoryCacheDoc(cacheId) {
+    return this.get(`/api/v1/find/memory-caches/${encodeURIComponent(cacheId)}/doc`);
+  }
+
+  // System
+  systemOverview() {
+    return this.get('/api/v1/system/overview');
+  }
+  systemGraphs() {
+    return this.get('/api/v1/system/graphs');
+  }
+  systemTasks(limit = 50) {
+    return this.get(`/api/v1/system/tasks?limit=${limit}`);
+  }
+  systemLogs(limit = 100, level) {
+    let q = `limit=${limit}`;
+    if (level) q += `&level=${encodeURIComponent(level)}`;
+    return this.get(`/api/v1/system/logs?${q}`);
+  }
+  systemAccessStats(since = 300) {
+    return this.get(`/api/v1/system/access-stats?since_seconds=${since}`);
+  }
+  systemDashboard(opts = {}) {
+    let q = `task_limit=${opts.taskLimit || 50}&log_limit=${opts.logLimit || 100}`;
+    if (opts.logLevel) q += `&log_level=${encodeURIComponent(opts.logLevel)}`;
+    if (opts.logSource) q += `&log_source=${encodeURIComponent(opts.logSource)}`;
+    if (opts.accessSince) q += `&access_since=${opts.accessSince}`;
+    return this.get(`/api/v1/system/dashboard?${q}`);
   }
 }
 
@@ -391,3 +454,54 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 });
+
+// ---- Global: Show document content modal ----
+window.showDocContent = async function(cacheId) {
+  if (!cacheId) return;
+  try {
+    const res = await state.api.memoryCacheDoc(cacheId);
+    const data = res.data || {};
+    const meta = data.meta || {};
+
+    const sourceName = meta.source_document || meta.doc_name || cacheId;
+    const eventTime = meta.event_time || '-';
+    const original = data.original || '';
+    const cache = data.cache || '';
+
+    let body = `
+      <div style="display:flex;flex-direction:column;gap:1rem;">
+        <div style="display:grid;grid-template-columns:auto 1fr;gap:0.25rem 0.75rem;font-size:0.85rem;">
+          <span style="color:var(--text-secondary);">${t('memory.taskSource')}:</span><span>${escapeHtml(sourceName)}</span>
+          <span style="color:var(--text-secondary);">${t('memory.docTime')}:</span><span>${formatDate(eventTime)}</span>
+        </div>
+    `;
+
+    if (cache) {
+      body += `
+        <div>
+          <h4 style="margin-bottom:0.5rem;">${t('memory.cacheSummary')}</h4>
+          <div style="max-height:400px;overflow-y:auto;background:var(--bg-secondary);padding:0.75rem;border-radius:0.5rem;font-size:0.85rem;line-height:1.6;white-space:pre-wrap;word-break:break-word;">${escapeHtml(cache)}</div>
+        </div>
+      `;
+    }
+
+    if (original) {
+      body += `
+        <div>
+          <h4 style="margin-bottom:0.5rem;">${t('memory.originalText')}</h4>
+          <div style="max-height:400px;overflow-y:auto;background:var(--bg-secondary);padding:0.75rem;border-radius:0.5rem;font-size:0.85rem;line-height:1.6;white-space:pre-wrap;word-break:break-word;">${escapeHtml(original)}</div>
+        </div>
+      `;
+    }
+
+    body += '</div>';
+
+    showModal({
+      title: t('memory.docContent') + ' - ' + escapeHtml(truncate(sourceName, 30)),
+      content: body,
+      size: 'lg',
+    });
+  } catch (err) {
+    showToast(t('memory.loadDocContentFailed') + ': ' + err.message, 'error');
+  }
+};

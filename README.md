@@ -261,7 +261,7 @@ flowchart TB
 
 ## 数据模型
 
-- **Entity**：概念实体，含 `name`、`content`（自然语言）、`physical_time`，多版本形成版本链
+- **Entity**：概念实体，含 `name`、`content`（自然语言）、`event_time`、`processed_time`，多版本形成版本链
 - **Relation**：概念关系，以自然语言描述，含 `entity1/2_absolute_id` 及版本链
 - **MemoryCache**：系统内部上下文摘要链，用于对齐与推理
 

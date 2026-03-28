@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Any, Callable, Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed, Future
 import threading
+import uuid
 
 from ..models import MemoryCache, Entity
 from ..utils import wprint
@@ -117,7 +118,8 @@ class _ConsolidationMixin:
                     entity_id=entity.entity_id,
                     name=entity.name,
                     content=summarized_content,
-                    physical_time=datetime.now(),
+                    event_time=datetime.now(),
+                    processed_time=datetime.now(),
                     memory_cache_id=entity.memory_cache_id,
                     source_document=entity.source_document if hasattr(entity, 'source_document') else ""
                 )
@@ -326,10 +328,10 @@ class _ConsolidationMixin:
                 actual_entity1_id = merge_mapping.get(entity1_id, entity1_id)
                 actual_entity2_id = merge_mapping.get(entity2_id, entity2_id)
 
-                # 如果实体已被合并，跳过（因为合并后的实体可能不在当前名称组中）
-                if entity1_id in merged_entity_ids or entity2_id in merged_entity_ids:
+                # 如果两个实体合并后指向同一个目标实体，则跳过（自指向关系无意义）
+                if actual_entity1_id == actual_entity2_id:
                     if verbose:
-                        wprint(f"    跳过关系（实体已合并）: {entity1_name} -> {entity2_name}")
+                        wprint(f"    跳过关系（合并后为同一实体）: {entity1_name} -> {entity2_name}")
                     continue
 
                 # 处理关系
@@ -470,8 +472,8 @@ class _ConsolidationMixin:
                     if candidate.entity_id not in candidate_dict:
                         candidate_dict[candidate.entity_id] = candidate
                     else:
-                        # 保留物理时间最新的
-                        if candidate.physical_time > candidate_dict[candidate.entity_id].physical_time:
+                        # 保留处理时间最新的
+                        if candidate.processed_time > candidate_dict[candidate.entity_id].processed_time:
                             candidate_dict[candidate.entity_id] = candidate
 
                 # 提取entity_id到set中
@@ -660,7 +662,7 @@ class _ConsolidationMixin:
                     # 去重，每个relation_id只保留最新版本
                     rel_dict = {}
                     for rel in existing_rels:
-                        if rel.relation_id not in rel_dict or rel.physical_time > rel_dict[rel.relation_id].physical_time:
+                        if rel.relation_id not in rel_dict or rel.processed_time > rel_dict[rel.relation_id].processed_time:
                             rel_dict[rel.relation_id] = rel
                     for rel in rel_dict.values():
                         existing_relations_list.append({
@@ -1272,10 +1274,10 @@ class _ConsolidationMixin:
                 actual_entity1_id = merge_mapping.get(entity1_id, entity1_id)
                 actual_entity2_id = merge_mapping.get(entity2_id, entity2_id)
 
-                # 如果实体已被合并，跳过（因为合并后的实体可能不在当前名称组中）
-                if entity1_id in merged_entity_ids or entity2_id in merged_entity_ids:
+                # 如果两个实体合并后指向同一个目标实体，则跳过（自指向关系无意义）
+                if actual_entity1_id == actual_entity2_id:
                     if verbose:
-                        wprint(f"    跳过关系（实体已合并）: {entity1_name} -> {entity2_name}")
+                        wprint(f"    跳过关系（合并后为同一实体）: {entity1_name} -> {entity2_name}")
                     continue
 
                 # 处理关系
