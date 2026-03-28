@@ -68,22 +68,13 @@ class _RelationOpsMixin:
                 )
 
                 if existing_relations_before:
-                    # 按relation_id分组，每个relation_id只保留最新版本
-                    relation_dict = {}
-                    for rel in existing_relations_before:
-                        if rel.relation_id not in relation_dict:
-                            relation_dict[rel.relation_id] = rel
-                        else:
-                            if rel.physical_time > relation_dict[rel.relation_id].physical_time:
-                                relation_dict[rel.relation_id] = rel
-
-                    unique_relations = list(relation_dict.values())
+                    # get_relations_by_entities 已按 relation_id 去重，直接使用
                     existing_relations_info = [
                         {
                             'relation_id': r.relation_id,
                             'content': r.content
                         }
-                        for r in unique_relations
+                        for r in existing_relations_before
                     ]
 
                     # 构建初步的extracted_relation格式
@@ -106,7 +97,9 @@ class _RelationOpsMixin:
                     if match_result and match_result.get('relation_id'):
                         # 匹配到已有关系，判断是否需要更新
                         relation_id = match_result['relation_id']
-                        latest_relation = relation_dict.get(relation_id)
+                        latest_relation = next(
+                            (r for r in existing_relations_before if r.relation_id == relation_id), None
+                        )
 
                         if latest_relation:
                             need_update = self.llm_client.judge_content_need_update(
@@ -216,22 +209,13 @@ class _RelationOpsMixin:
                     wprint(f"        不存在关系，需要创建新关系")
             else:
                 # 4b. 如果存在关系，判断是否需要更新
-                # 按relation_id分组，每个relation_id只保留最新版本
-                relation_dict = {}
-                for rel in existing_relations_before:
-                    if rel.relation_id not in relation_dict:
-                        relation_dict[rel.relation_id] = rel
-                    else:
-                        if rel.physical_time > relation_dict[rel.relation_id].physical_time:
-                            relation_dict[rel.relation_id] = rel
-
-                unique_relations = list(relation_dict.values())
+                # get_relations_by_entities 已按 relation_id 去重，直接使用
                 existing_relations_info = [
                     {
                         'relation_id': r.relation_id,
                         'content': r.content
                     }
-                    for r in unique_relations
+                    for r in existing_relations_before
                 ]
 
                 # 用LLM判断是否匹配已有关系
@@ -247,7 +231,9 @@ class _RelationOpsMixin:
                 if match_result and match_result.get('relation_id'):
                     # 匹配到已有关系，判断是否需要更新
                     relation_id = match_result['relation_id']
-                    latest_relation = relation_dict.get(relation_id)
+                    latest_relation = next(
+                        (r for r in existing_relations_before if r.relation_id == relation_id), None
+                    )
 
                     if latest_relation:
                         need_update = self.llm_client.judge_content_need_update(
@@ -300,7 +286,7 @@ class _RelationOpsMixin:
                 relation_memory_cache = MemoryCache(
                     absolute_id=f"cache_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}",
                     content=relation_memory_cache_content,
-                    physical_time=datetime.now(),
+                    event_time=datetime.now(),
                     source_document=source_document_from_entity,
                     activity_type="知识图谱整理-关系生成"
                 )
@@ -320,7 +306,7 @@ class _RelationOpsMixin:
                     entity2.name,
                     verbose_relation=verbose,
                     source_document=source_document_from_entity,
-                    base_time=relation_memory_cache.physical_time,
+                    base_time=relation_memory_cache.event_time,
                 )
 
             if relation:
@@ -420,7 +406,7 @@ class _RelationOpsMixin:
 
 {consolidation_summary}
 """,
-            physical_time=datetime.now(),
+            event_time=datetime.now(),
             source_document="",  # 知识图谱整理总结不关联特定文档
             activity_type="知识图谱整理总结"
         )

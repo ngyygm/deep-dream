@@ -12,10 +12,11 @@
   let activeTab = 'all';
 
   // ---- Helpers ----
-  function entityName(absoluteId) {
+  function entityName(absoluteId, fallbackName) {
     if (!absoluteId) return '-';
+    if (fallbackName) return fallbackName;
     const e = entityMap[absoluteId];
-    return e ? e.name : absoluteId.slice(0, 8) + '...';
+    return e ? (e.name || e.entity_id || absoluteId.slice(0, 8) + '...') : absoluteId.slice(0, 8) + '...';
   }
 
   function entityId(absoluteId) {
@@ -46,9 +47,9 @@
     let rows = relations.map(r => {
       return `<tr data-relation='${escapeHtml(JSON.stringify(r))}'>
         <td title="${escapeHtml(r.content || '')}">${escapeHtml(truncate(r.content || '-', 60))}</td>
-        <td title="${escapeHtml(entityName(r.entity1_absolute_id))}">${escapeHtml(truncate(entityName(r.entity1_absolute_id), 24))}</td>
-        <td title="${escapeHtml(entityName(r.entity2_absolute_id))}">${escapeHtml(truncate(entityName(r.entity2_absolute_id), 24))}</td>
-        <td class="mono" style="white-space:nowrap;">${formatDate(r.physical_time)}</td>
+        <td title="${escapeHtml(entityName(r.entity1_absolute_id, r.entity1_name))}">${escapeHtml(truncate(entityName(r.entity1_absolute_id, r.entity1_name), 24))}</td>
+        <td title="${escapeHtml(entityName(r.entity2_absolute_id, r.entity2_name))}">${escapeHtml(truncate(entityName(r.entity2_absolute_id, r.entity2_name), 24))}</td>
+        <td class="mono" style="white-space:nowrap;">${formatDate(r.event_time)}</td>
         <td title="${escapeHtml(r.source_document || r.doc_name || '')}">${escapeHtml(truncate(r.source_document || r.doc_name || '-', 20))}</td>
       </tr>`;
     }).join('');
@@ -69,18 +70,22 @@
     </div>`;
   }
 
-  // ---- Detail modal ----
-  function showRelationDetail(r) {
-    const e1Name = entityName(r.entity1_absolute_id);
+  // ---- Detail modal with version history ----
+  async function showRelationDetail(r) {
+    const e1Name = entityName(r.entity1_absolute_id, r.entity1_name);
     const e1Id = entityId(r.entity1_absolute_id);
-    const e2Name = entityName(r.entity2_absolute_id);
+    const e2Name = entityName(r.entity2_absolute_id, r.entity2_name);
     const e2Id = entityId(r.entity2_absolute_id);
+    const needsE1Resolve = !r.entity1_name && !entityMap[r.entity1_absolute_id];
+    const needsE2Resolve = !r.entity2_name && !entityMap[r.entity2_absolute_id];
 
-    const content = `
+    // Build static summary content
+    const modalContent = document.createElement('div');
+    modalContent.innerHTML = `
       <div style="display:flex;flex-direction:column;gap:1rem;">
         <div>
           <div class="form-label">${t('relations.content')}</div>
-          <div style="font-size:0.875rem;color:var(--text-primary);line-height:1.6;">${escapeHtml(r.content || '-')}</div>
+          <div id="relation-detail-content" style="font-size:0.875rem;color:var(--text-primary);line-height:1.6;">${escapeHtml(r.content || '-')}</div>
         </div>
 
         <div class="divider"></div>
@@ -88,14 +93,14 @@
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;">
           <div class="card" style="padding:0.75rem 1rem;">
             <div class="form-label" style="margin-bottom:0.5rem;">${t('relations.entity1')}</div>
-            <div style="font-size:0.875rem;font-weight:600;color:var(--text-primary);">${escapeHtml(e1Name)}</div>
-            <div class="mono" style="font-size:0.75rem;color:var(--text-muted);margin-top:0.25rem;">${escapeHtml(e1Id)}</div>
+            <div class="entity-link" id="rel-e1-name" data-entity-abs="${escapeHtml(r.entity1_absolute_id || '')}" style="font-size:0.875rem;font-weight:600;" title="${escapeHtml(r.entity1_absolute_id || '')}">${escapeHtml(e1Name)}</div>
+            <div class="mono" id="rel-e1-id" style="font-size:0.75rem;color:var(--text-muted);margin-top:0.25rem;">${escapeHtml(e1Id)}</div>
             <div class="mono" style="font-size:0.7rem;color:var(--text-muted);margin-top:0.125rem;">${escapeHtml(r.entity1_absolute_id || '-')}</div>
           </div>
           <div class="card" style="padding:0.75rem 1rem;">
             <div class="form-label" style="margin-bottom:0.5rem;">${t('relations.entity2')}</div>
-            <div style="font-size:0.875rem;font-weight:600;color:var(--text-primary);">${escapeHtml(e2Name)}</div>
-            <div class="mono" style="font-size:0.75rem;color:var(--text-muted);margin-top:0.25rem;">${escapeHtml(e2Id)}</div>
+            <div class="entity-link" id="rel-e2-name" data-entity-abs="${escapeHtml(r.entity2_absolute_id || '')}" style="font-size:0.875rem;font-weight:600;" title="${escapeHtml(r.entity2_absolute_id || '')}">${escapeHtml(e2Name)}</div>
+            <div class="mono" id="rel-e2-id" style="font-size:0.75rem;color:var(--text-muted);margin-top:0.25rem;">${escapeHtml(e2Id)}</div>
             <div class="mono" style="font-size:0.7rem;color:var(--text-muted);margin-top:0.125rem;">${escapeHtml(r.entity2_absolute_id || '-')}</div>
           </div>
         </div>
@@ -109,11 +114,15 @@
           </div>
           <div>
             <div class="form-label">${t('relations.absoluteId')}</div>
-            <div class="mono" style="font-size:0.8125rem;color:var(--text-primary);">${escapeHtml(r.absolute_id || '-')}</div>
+            <div class="mono" id="relation-detail-abs-id" style="font-size:0.8125rem;color:var(--text-primary);">${escapeHtml(r.absolute_id || '-')}</div>
           </div>
           <div>
-            <div class="form-label">${t('relations.physicalTime')}</div>
-            <div class="mono" style="font-size:0.8125rem;color:var(--text-primary);">${formatDate(r.physical_time)}</div>
+            <div class="form-label">${t('relations.eventTime')}</div>
+            <div class="mono" id="relation-detail-event-time" style="font-size:0.8125rem;color:var(--text-primary);">${formatDate(r.event_time)}</div>
+          </div>
+          <div>
+            <div class="form-label">${t('relations.processedTime')}</div>
+            <div class="mono" id="relation-detail-processed-time" style="font-size:0.8125rem;color:var(--text-primary);">${formatDate(r.processed_time)}</div>
           </div>
           <div>
             <div class="form-label">${t('relations.sourceLabel')}</div>
@@ -121,17 +130,179 @@
           </div>
           <div>
             <div class="form-label">${t('relations.memoryCacheId')}</div>
-            <div class="mono" style="font-size:0.8125rem;color:var(--text-primary);">${escapeHtml(r.memory_cache_id || '-')}</div>
+            ${r.memory_cache_id ? `<div class="mono doc-link" data-cache-id="${escapeHtml(r.memory_cache_id)}" style="font-size:0.8125rem;">${escapeHtml(r.memory_cache_id)}</div>` : `<div style="font-size:0.8125rem;color:var(--text-primary);">-</div>`}
           </div>
+        </div>
+
+        <div class="divider"></div>
+
+        <div id="relation-versions-section">
+          <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.75rem;">
+            <i data-lucide="git-commit" style="width:16px;height:16px;color:var(--text-muted);"></i>
+            <span style="font-size:0.875rem;font-weight:600;">${t('relations.versionHistory')}</span>
+            <div class="spinner spinner-sm" id="relation-versions-spinner"></div>
+          </div>
+          <div id="relation-versions-container"></div>
         </div>
       </div>
     `;
 
-    showModal({
+    const { overlay } = showModal({
       title: t('relations.detail'),
-      content,
+      content: modalContent.innerHTML,
       size: 'lg',
     });
+
+    if (window.lucide) lucide.createIcons({ nodes: [overlay] });
+
+    // Bind doc link clicks
+    overlay.querySelectorAll('.doc-link').forEach(el => {
+      el.addEventListener('click', () => {
+        const cacheId = el.getAttribute('data-cache-id');
+        if (cacheId) window.showDocContent(cacheId);
+      });
+    });
+
+    // Bind entity link clicks
+    overlay.querySelectorAll('.entity-link').forEach(el => {
+      el.addEventListener('click', () => {
+        const absId = el.getAttribute('data-entity-abs');
+        if (!absId) return;
+        state.api.entityByAbsoluteId(absId, state.currentGraphId)
+          .then(res => { if (res.data) window.showEntityDetail(res.data); })
+          .catch(err => showToast(err.message, 'error'));
+      });
+    });
+
+    // Resolve missing entity names from backend
+    if (needsE1Resolve || needsE2Resolve) {
+      const promises = [];
+      if (needsE1Resolve && r.entity1_absolute_id) {
+        promises.push(
+          state.api.entityByAbsoluteId(r.entity1_absolute_id, state.currentGraphId)
+            .then(res => {
+              if (res.data) {
+                const el = overlay.querySelector('#rel-e1-name');
+                const idEl = overlay.querySelector('#rel-e1-id');
+                if (el) el.textContent = res.data.name || res.data.entity_id || el.textContent;
+                if (idEl) idEl.textContent = res.data.entity_id || idEl.textContent;
+                entityMap[r.entity1_absolute_id] = { name: res.data.name, entity_id: res.data.entity_id };
+              }
+            }).catch(() => {})
+        );
+      }
+      if (needsE2Resolve && r.entity2_absolute_id) {
+        promises.push(
+          state.api.entityByAbsoluteId(r.entity2_absolute_id, state.currentGraphId)
+            .then(res => {
+              if (res.data) {
+                const el = overlay.querySelector('#rel-e2-name');
+                const idEl = overlay.querySelector('#rel-e2-id');
+                if (el) el.textContent = res.data.name || res.data.entity_id || el.textContent;
+                if (idEl) idEl.textContent = res.data.entity_id || idEl.textContent;
+                entityMap[r.entity2_absolute_id] = { name: res.data.name, entity_id: res.data.entity_id };
+              }
+            }).catch(() => {})
+        );
+      }
+      if (promises.length) Promise.all(promises);
+    }
+
+    // Fetch versions
+    const graphId = state.currentGraphId;
+    const relationId = r.relation_id;
+
+    state.api.relationVersions(relationId, graphId)
+      .then(res => {
+        const spinner = overlay.querySelector('#relation-versions-spinner');
+        if (spinner) spinner.remove();
+
+        const versions = res.data || [];
+        const container = overlay.querySelector('#relation-versions-container');
+        if (!container) return;
+
+        if (versions.length <= 1) {
+          container.innerHTML = `<div style="color:var(--text-muted);font-size:0.8125rem;">${t('relations.noVersionHistory')}</div>`;
+          return;
+        }
+
+        container.innerHTML = buildRelationVersionTimeline(versions, overlay);
+
+        if (window.lucide) lucide.createIcons({ nodes: [overlay] });
+      })
+      .catch(err => {
+        const spinner = overlay.querySelector('#relation-versions-spinner');
+        if (spinner) spinner.remove();
+        const container = overlay.querySelector('#relation-versions-container');
+        if (container) container.innerHTML = `<div style="color:var(--error);font-size:0.8125rem;">${t('relations.loadVersionsFailed')}</div>`;
+      });
+  }
+
+  // ---- Relation Version Timeline ----
+
+  function buildRelationVersionTimeline(versions, overlay) {
+    // Sort by processed_time descending (newest first)
+    const sorted = [...versions].sort((a, b) => {
+      const ta = a.processed_time ? new Date(a.processed_time).getTime() : 0;
+      const tb = b.processed_time ? new Date(b.processed_time).getTime() : 0;
+      return tb - ta;
+    });
+
+    const items = sorted.map((v, i) => {
+      const prev = sorted[i + 1];
+      const contentChanged = prev && v.content !== prev.content;
+      const e1Changed = prev && v.entity1_absolute_id !== prev.entity1_absolute_id;
+      const e2Changed = prev && v.entity2_absolute_id !== prev.entity2_absolute_id;
+
+      const diffHtml = (contentChanged || e1Changed || e2Changed) ? `
+        <div style="margin-top:0.5rem;padding:0.375rem 0.5rem;background:var(--bg-input);border-radius:0.375rem;font-size:0.8125rem;">
+          ${contentChanged ? `<div style="margin-bottom:0.25rem;"><span style="color:var(--text-muted);font-size:0.75rem;">${t('relations.contentChanged')}</span></div>` : ''}
+          ${(e1Changed || e2Changed) ? `<div><span style="color:var(--text-muted);font-size:0.75rem;">${t('relations.entityChanged')}</span></div>` : ''}
+        </div>
+      ` : '';
+
+      const isActive = v.absolute_id === overlay.querySelector('#relation-detail-abs-id')?.textContent;
+
+      return `
+        <div style="position:relative;padding-left:1.5rem;padding-bottom:${i < sorted.length - 1 ? '1rem' : '0'};">
+          ${i < sorted.length - 1 ? '<div style="position:absolute;left:5px;top:12px;bottom:0;width:1px;background:var(--border-color);"></div>' : ''}
+          <div style="position:absolute;left:0;top:4px;width:11px;height:11px;border-radius:50%;background:${isActive ? 'var(--primary)' : 'var(--border-color)'};border:2px solid ${isActive ? 'var(--primary-hover)' : 'var(--border-hover)'};"></div>
+          <div style="cursor:pointer;" class="relation-version-toggle" data-version-idx="${i}">
+            <div style="display:flex;align-items:center;gap:0.5rem;">
+              <span class="mono" style="font-size:0.75rem;color:var(--text-muted);">${formatDate(v.processed_time)}</span>
+              ${i === 0 ? '<span class="badge badge-info" style="font-size:0.6875rem;">' + t('relations.latest') + '</span>' : ''}
+              ${isActive && i !== 0 ? '<span class="badge badge-primary" style="font-size:0.6875rem;">' + t('relations.current') + '</span>' : ''}
+            </div>
+            <div style="margin-top:0.125rem;color:var(--text-secondary);font-size:0.8125rem;" class="truncate">${escapeHtml(truncate(v.content || '', 100))}</div>
+            ${diffHtml}
+          </div>
+          <div class="relation-version-expanded" id="relation-version-expanded-${i}" style="display:none;margin-top:0.5rem;">
+            <div style="background:var(--bg-input);border:1px solid var(--border-color);border-radius:0.375rem;padding:0.75rem;font-size:0.8125rem;line-height:1.6;white-space:pre-wrap;word-break:break-word;">
+              ${escapeHtml(v.content || '')}
+            </div>
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    // Attach expand/collapse and version switch behavior
+    setTimeout(() => {
+      const container = overlay.querySelector('#relation-versions-container');
+      if (!container) return;
+
+      container.querySelectorAll('.relation-version-toggle').forEach(toggle => {
+        toggle.addEventListener('click', () => {
+          const idx = toggle.getAttribute('data-version-idx');
+          const expanded = overlay.querySelector('#relation-version-expanded-' + idx);
+          if (expanded) {
+            const isHidden = expanded.style.display === 'none';
+            expanded.style.display = isHidden ? 'block' : 'none';
+          }
+        });
+      });
+    }, 0);
+
+    return items;
   }
 
   function bindTableClicks(rootEl) {
@@ -204,10 +375,36 @@
       return;
     }
 
+    query = query.trim();
     resultsEl.innerHTML = `<div class="flex items-center justify-center p-8"><div class="spinner"></div></div>`;
 
+    // Relation ID direct lookup
+    if (query.startsWith('rel_') || query.startsWith('relation_')) {
+      try {
+        let relations;
+        if (query.startsWith('relation_')) {
+          // absolute_id lookup
+          const res = await state.api.relationByAbsoluteId(query, state.currentGraphId);
+          relations = res.data ? [res.data] : [];
+        } else {
+          // relation_id → get all versions
+          const res = await state.api.relationVersions(query, state.currentGraphId);
+          relations = res.data || [];
+        }
+        if (relations.length === 0) {
+          resultsEl.innerHTML = emptyState(t('relations.searchNoMatch'));
+        } else {
+          _renderSearchResults(resultsEl, relations);
+        }
+        return;
+      } catch (err) {
+        // ID lookup failed, fall through to semantic search
+      }
+    }
+
+    // Semantic search
     try {
-      const res = await state.api.searchRelations(query.trim(), state.currentGraphId, {
+      const res = await state.api.searchRelations(query, state.currentGraphId, {
         threshold: 0.3,
         maxResults: 50,
       });
@@ -215,16 +412,20 @@
       if (relations.length === 0) {
         resultsEl.innerHTML = emptyState(t('relations.searchNoMatch'));
       } else {
-        resultsEl.innerHTML = `<div style="margin-bottom:0.5rem;font-size:0.8125rem;color:var(--text-muted);">
-          <span class="badge badge-info">${relations.length}</span> ${t('relations.resultCount', { count: relations.length })}
-        </div>` + buildRelationTable(relations);
-        bindTableClicks(resultsEl);
+        _renderSearchResults(resultsEl, relations);
       }
     } catch (err) {
       console.error('Search failed:', err);
       showToast(t('relations.searchFailed') + '：' + err.message, 'error');
       resultsEl.innerHTML = emptyState(t('relations.searchFailed'));
     }
+  }
+
+  function _renderSearchResults(resultsEl, relations) {
+    resultsEl.innerHTML = `<div style="margin-bottom:0.5rem;font-size:0.8125rem;color:var(--text-muted);">
+      <span class="badge badge-info">${relations.length}</span> ${t('relations.resultCount', { count: relations.length })}
+    </div>` + buildRelationTable(relations);
+    bindTableClicks(resultsEl);
   }
 
   function initSearch() {
@@ -305,14 +506,12 @@
 
   function buildEntityDatalist() {
     const datalistA = document.getElementById('entity-datalist');
-    const datalistB = document.getElementById('entity-datalist');
     if (!datalistA) return;
 
     const options = Object.values(entityMap).map(e =>
       `<option value="${escapeHtml(e.entity_id)}">${escapeHtml(e.name)}</option>`
     ).join('');
 
-    // Both selectors share the same datalist
     document.querySelectorAll('datalist#entity-datalist').forEach(dl => {
       dl.innerHTML = options;
     });
@@ -332,6 +531,19 @@
     if (tabName === 'search') {
       const input = document.getElementById('relations-search-input');
       if (input && input.value.trim()) doSearch(input.value);
+    }
+
+    // Lazy-init PathFinder when path tab is activated
+    if (tabName === 'paths') {
+      const pfContainer = document.getElementById('path-finder-container');
+      if (pfContainer && pfContainer.children.length === 0) {
+        PathFinder.init(pfContainer, {
+          api: state.api,
+          graphId: state.currentGraphId,
+          t: t,
+          onShowRelationDetail: showRelationDetail,
+        });
+      }
     }
   }
 
@@ -360,6 +572,9 @@
             </div>
             <div class="tab" data-tab="between">
               <i data-lucide="git-branch" style="width:14px;height:14px;vertical-align:-2px;margin-right:4px;"></i>${t('relations.betweenEntities')}
+            </div>
+            <div class="tab" data-tab="paths">
+              <i data-lucide="route" style="width:14px;height:14px;vertical-align:-2px;margin-right:4px;"></i>${t('relations.pathQuery')}
             </div>
           </div>
 
@@ -406,6 +621,11 @@
               ${emptyState(t('relations.selectTwo'))}
             </div>
           </div>
+
+          <!-- Tab 4: Path Query -->
+          <div id="relations-tab-paths" style="display:none;">
+            <div id="path-finder-container" style="min-height:400px;"></div>
+          </div>
         </div>
       </div>
     `;
@@ -413,7 +633,7 @@
     // Re-render lucide icons for the newly injected HTML
     if (window.lucide) lucide.createIcons({ nodes: [container] });
 
-    // Build entity datalist for the "Between" tab
+    // Build entity datalist for the "Between" and "Paths" tabs
     buildEntityDatalist();
 
     // Bind tab clicks
@@ -453,7 +673,11 @@
       clearTimeout(searchTimer);
       searchTimer = null;
     }
+    if (typeof PathFinder !== 'undefined') PathFinder.destroy();
   }
+
+  // Expose globally for use by other pages (search, path-finder)
+  window.showRelationDetail = showRelationDetail;
 
   registerPage('relations', { render, destroy });
 })();

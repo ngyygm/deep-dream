@@ -969,7 +969,8 @@
                                 name: entity.name,
                                 label: entity.name,
                                 content: entity.content,
-                                physical_time: entity.physical_time,
+                                event_time: entity.event_time,
+                                processed_time: entity.processed_time,
                                 memory_cache_content: entity.memory_cache_content,
                                 memory_cache_text: entity.memory_cache_text,
                                 source_document: entity.source_document,
@@ -1044,16 +1045,30 @@
             html += '</div>';
             
             // 时间信息
-            if (entity.physical_time) {
+            if (entity.event_time) {
                 html += '<div class="detail-section">';
-                html += '<div class="detail-section-title">🕐 创建时间</div>';
+                html += '<div class="detail-section-title">🕐 事件时间</div>';
                 html += '<div class="detail-content">';
                 try {
-                    var time = new Date(entity.physical_time);
+                    var time = new Date(entity.event_time);
                     html += '<div>' + time.toLocaleString('zh-CN') + '</div>';
                     html += '<div style="color: #888888; font-size: 12px; margin-top: 5px;">' + time.toISOString() + '</div>';
                 } catch (e) {
-                    html += '<div>' + escapeHtml(entity.physical_time) + '</div>';
+                    html += '<div>' + escapeHtml(entity.event_time) + '</div>';
+                }
+                html += '</div>';
+                html += '</div>';
+            }
+            if (entity.processed_time) {
+                html += '<div class="detail-section">';
+                html += '<div class="detail-section-title">⏱️ 处理时间</div>';
+                html += '<div class="detail-content">';
+                try {
+                    var time = new Date(entity.processed_time);
+                    html += '<div>' + time.toLocaleString('zh-CN') + '</div>';
+                    html += '<div style="color: #888888; font-size: 12px; margin-top: 5px;">' + time.toISOString() + '</div>';
+                } catch (e) {
+                    html += '<div>' + escapeHtml(entity.processed_time) + '</div>';
                 }
                 html += '</div>';
                 html += '</div>';
@@ -1155,7 +1170,7 @@
             versions.forEach(function(version, index) {
                 var option = document.createElement('option');
                 option.value = version.absolute_id;
-                option.textContent = '版本 ' + version.index + '/' + version.total + ' (' + formatDateTime(version.physical_time) + ')';
+                option.textContent = '版本 ' + version.index + '/' + version.total + ' (' + formatDateTime(version.processed_time) + ')';
                 if (index === currentIndex) {
                     option.selected = true;
                 }
@@ -1215,7 +1230,8 @@
                             name: entity.name,
                             label: entity.name,
                             content: entity.content,
-                            physical_time: entity.physical_time,
+                            event_time: entity.event_time,
+                            processed_time: entity.processed_time,
                             memory_cache_content: entity.memory_cache_content,
                             memory_cache_text: entity.memory_cache_text,
                             source_document: entity.source_document,
@@ -1249,7 +1265,7 @@
                         }
                         
                         // 更新图谱中的节点和相关的边、实体
-                        updateGraphForEntityVersion(entityId, absoluteId, entity.physical_time);
+                        updateGraphForEntityVersion(entityId, absoluteId, entity.event_time);
                     } else {
                         console.error('切换实体版本失败:', data.error);
                         alert('切换版本失败: ' + data.error);
@@ -1457,16 +1473,30 @@
             html += '</div>';
             
             // 时间信息
-            if (edgeData.physical_time) {
+            if (edgeData.event_time) {
                 html += '<div class="detail-section">';
-                html += '<div class="detail-section-title">🕐 创建时间</div>';
+                html += '<div class="detail-section-title">🕐 事件时间</div>';
                 html += '<div class="detail-content">';
                 try {
-                    var time = new Date(edgeData.physical_time);
+                    var time = new Date(edgeData.event_time);
                     html += '<div>' + time.toLocaleString('zh-CN') + '</div>';
                     html += '<div style="color: #888888; font-size: 12px; margin-top: 5px;">' + time.toISOString() + '</div>';
                 } catch (e) {
-                    html += '<div>' + escapeHtml(edgeData.physical_time) + '</div>';
+                    html += '<div>' + escapeHtml(edgeData.event_time) + '</div>';
+                }
+                html += '</div>';
+                html += '</div>';
+            }
+            if (edgeData.processed_time) {
+                html += '<div class="detail-section">';
+                html += '<div class="detail-section-title">⏱️ 处理时间</div>';
+                html += '<div class="detail-content">';
+                try {
+                    var time = new Date(edgeData.processed_time);
+                    html += '<div>' + time.toLocaleString('zh-CN') + '</div>';
+                    html += '<div style="color: #888888; font-size: 12px; margin-top: 5px;">' + time.toISOString() + '</div>';
+                } catch (e) {
+                    html += '<div>' + escapeHtml(edgeData.processed_time) + '</div>';
                 }
                 html += '</div>';
                 html += '</div>';
@@ -1516,7 +1546,7 @@
                         var relation = data.relation;
                         
                         // 更新图谱中的关系边和连接的实体
-                        updateGraphForRelationVersion(relationId, absoluteId, relation.physical_time, relation.from_entity_id, relation.to_entity_id);
+                        updateGraphForRelationVersion(relationId, absoluteId, relation.event_time, relation.from_entity_id, relation.to_entity_id);
                         
                         // 获取实体信息 - 优先使用API返回的实体名称，如果没有则从当前图谱中获取
                         var fromNode = null;
@@ -1594,7 +1624,8 @@
                             // 更新详细信息显示
                             var detailHtml = renderRelationDetail({
                                 content: relation.content,
-                                physical_time: relation.physical_time,
+                                event_time: relation.event_time,
+                                processed_time: relation.processed_time,
                                 embedding_preview: relation.embedding_preview
                             }, virtualFromNode, virtualToNode, fromId, toId, fromName, toName);
                             

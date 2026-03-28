@@ -7,7 +7,7 @@
   const MAX_HISTORY = 10;
 
   // ---- Local state ----
-  let multiQueryMode = false;
+  let searchMode = 'normal';  // 'normal' | 'multi' | 'path'
   let multiQueries = [''];
   let batchResults = {};   // { queryIndex: { entities, relations } }
   let activeBatchTab = 0;
@@ -18,6 +18,8 @@
   let searchRelationMap = {};
   let hopLevel = 0;
   let lastSearchQuery = '';
+
+  // ---- Path finder (delegated to shared PathFinder component) ----
 
   // ---- History helpers ----
   function loadHistory() {
@@ -63,10 +65,10 @@
     return map;
   }
 
-  // ---- Render search bar section ----
-  function renderSearchBar() {
+  // ---- Render unified search card with mode tabs ----
+  function renderSearchCard() {
     const history = loadHistory();
-    const historyChips = history.length > 0
+    const historyChips = searchMode === 'normal' && history.length > 0
       ? `<div class="search-history" id="search-history" style="margin-top:10px;">
            <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
              <span style="font-size:0.75rem;color:var(--text-muted);white-space:nowrap;">${t('search.recent')}</span>
@@ -81,36 +83,85 @@
          </div>`
       : '';
 
+    let modeContent = '';
+    if (searchMode === 'normal') {
+      modeContent = `
+        <div style="display:flex;gap:10px;align-items:stretch;">
+          <div style="flex:1;position:relative;">
+            <i data-lucide="search" style="position:absolute;left:12px;top:50%;transform:translateY(-50%);width:18px;height:18px;color:var(--text-muted);pointer-events:none;"></i>
+            <input type="text" id="search-input" class="input" placeholder="${t('search.placeholder')}"
+                   style="padding-left:38px;font-size:0.95rem;height:42px;" value="">
+          </div>
+          <button class="btn btn-primary" id="search-btn" style="height:42px;white-space:nowrap;">
+            <i data-lucide="search" style="width:16px;height:16px;margin-right:6px;"></i>
+            ${t('search.searchBtn')}
+          </button>
+        </div>
+      `;
+    } else if (searchMode === 'multi') {
+      modeContent = `
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+          <span style="font-size:0.85rem;color:var(--text-muted);">${t('search.noQueryInput')}</span>
+          <button class="btn btn-primary btn-sm" id="batch-search-btn">
+            <i data-lucide="play" style="width:14px;height:14px;margin-right:4px;"></i>
+            ${t('search.batchSearch')}
+          </button>
+        </div>
+        <div id="multi-query-list" style="display:flex;flex-direction:column;gap:8px;">
+          ${multiQueries.map((q, i) => `
+            <div class="multi-query-row" data-index="${i}" style="display:flex;gap:8px;align-items:center;">
+              <span class="mono" style="font-size:0.75rem;color:var(--text-muted);min-width:20px;">${i + 1}.</span>
+              <input type="text" class="input multi-query-input" value="${escapeHtml(q)}"
+                     placeholder="${t('search.query')} ${i + 1}" style="flex:1;">
+              ${multiQueries.length > 1 ? `
+                <button class="btn btn-ghost btn-sm remove-query-btn" data-index="${i}" title="移除查询">
+                  <i data-lucide="x" style="width:14px;height:14px;"></i>
+                </button>
+              ` : ''}
+            </div>
+          `).join('')}
+        </div>
+        <button class="btn btn-secondary btn-sm" id="add-query-btn" style="margin-top:10px;">
+          <i data-lucide="plus" style="width:14px;height:14px;margin-right:4px;"></i>
+          ${t('search.addQuery')}
+        </button>
+      `;
+    } else if (searchMode === 'path') {
+      modeContent = `<div id="pf-container"></div>`;
+    }
+
     return `
-      <div class="card">
+      <div class="card" id="search-card">
         <div class="card-header">
           <h2 class="card-title" style="margin:0;">
             <i data-lucide="search" style="width:18px;height:18px;margin-right:6px;"></i>
             ${t('search.title')}
           </h2>
         </div>
-        <div style="padding:20px;">
-          <div style="display:flex;gap:10px;align-items:stretch;">
-            <div style="flex:1;position:relative;">
-              <i data-lucide="search" style="position:absolute;left:12px;top:50%;transform:translateY(-50%);width:18px;height:18px;color:var(--text-muted);pointer-events:none;"></i>
-              <input type="text" id="search-input" class="input" placeholder="${t('search.placeholder')}"
-                     style="padding-left:38px;font-size:0.95rem;height:42px;" value="">
-            </div>
-            <button class="btn btn-primary" id="search-btn" style="height:42px;white-space:nowrap;">
-              <i data-lucide="search" style="width:16px;height:16px;margin-right:6px;"></i>
-              ${t('search.searchBtn')}
-            </button>
-          </div>
-
-          <div style="margin-top:12px;">
-            <button class="btn btn-ghost btn-sm" id="toggle-advanced-btn" style="color:var(--text-muted);">
-              <i data-lucide="sliders-horizontal" style="width:14px;height:14px;margin-right:4px;"></i>
-              ${t('search.advancedFilters')}
-              <i data-lucide="chevron-down" style="width:14px;height:14px;margin-left:4px;" id="advanced-chevron"></i>
-            </button>
-          </div>
-
-          <div id="advanced-filters" style="display:none;margin-top:14px;padding:16px;background:var(--bg-secondary);border-radius:8px;border:1px solid var(--border-color);">
+        <div class="tabs" style="padding:0 20px;margin-bottom:0;">
+          <button class="tab ${searchMode === 'normal' ? 'active' : ''}" data-search-mode="normal">
+            <i data-lucide="search" style="width:14px;height:14px;margin-right:4px;"></i>
+            ${t('search.title')}
+          </button>
+          <button class="tab ${searchMode === 'multi' ? 'active' : ''}" data-search-mode="multi">
+            <i data-lucide="layers" style="width:14px;height:14px;margin-right:4px;"></i>
+            ${t('search.multiQuery')}
+          </button>
+          <button class="tab ${searchMode === 'path' ? 'active' : ''}" data-search-mode="path">
+            <i data-lucide="route" style="width:14px;height:14px;margin-right:4px;"></i>
+            ${t('search.pathFinder')}
+          </button>
+        </div>
+        <div style="padding:16px 20px;" id="mode-content">
+          ${modeContent}
+        </div>
+        <div style="padding:0 20px 16px;">
+          <button class="btn btn-ghost btn-sm" id="toggle-advanced-btn" style="color:var(--text-muted);">
+            <i data-lucide="sliders-horizontal" style="width:14px;height:14px;margin-right:4px;"></i>
+            ${t('search.advancedFilters')}
+            <i data-lucide="chevron-down" style="width:14px;height:14px;margin-left:4px;" id="advanced-chevron"></i>
+          </button>
+          <div id="advanced-filters" style="display:none;margin-top:10px;padding:16px;background:var(--bg-secondary);border-radius:8px;border:1px solid var(--border-color);">
             <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:16px;">
               <div>
                 <label class="form-label">${t('search.threshold')}</label>
@@ -141,60 +192,12 @@
                 <label class="toggle" style="margin-top:4px;">
                   <input type="checkbox" id="search-expand" checked>
                   <span class="toggle-slider"></span>
-                  <span style="margin-left:8px;font-size:0.85rem;">${t('search.enabled')}</span>
                 </label>
               </div>
             </div>
           </div>
-
           ${historyChips}
         </div>
-      </div>
-    `;
-  }
-
-  // ---- Render multi-query mode section ----
-  function renderMultiQuerySection() {
-    return `
-      <div class="card" style="margin-top:16px;" id="multi-query-card">
-        <div style="padding:16px 20px;display:flex;align-items:center;justify-content:space-between;">
-          <div style="display:flex;align-items:center;gap:10px;">
-            <label class="toggle">
-              <input type="checkbox" id="multi-query-toggle" ${multiQueryMode ? 'checked' : ''}>
-              <span class="toggle-slider"></span>
-            </label>
-            <span style="font-size:0.9rem;font-weight:500;">${t('search.multiQuery')}</span>
-          </div>
-          ${multiQueryMode ? `
-            <button class="btn btn-primary btn-sm" id="batch-search-btn">
-              <i data-lucide="play" style="width:14px;height:14px;margin-right:4px;"></i>
-              ${t('search.batchSearch')}
-            </button>
-          ` : ''}
-        </div>
-        ${multiQueryMode ? `
-          <div style="padding:0 20px 16px;">
-            <div class="divider"></div>
-            <div id="multi-query-list" style="margin-top:12px;display:flex;flex-direction:column;gap:8px;">
-              ${multiQueries.map((q, i) => `
-                <div class="multi-query-row" data-index="${i}" style="display:flex;gap:8px;align-items:center;">
-                  <span class="mono" style="font-size:0.75rem;color:var(--text-muted);min-width:20px;">${i + 1}.</span>
-                  <input type="text" class="input multi-query-input" value="${escapeHtml(q)}"
-                         placeholder="${t('search.query')} ${i + 1}" style="flex:1;">
-                  ${multiQueries.length > 1 ? `
-                    <button class="btn btn-ghost btn-sm remove-query-btn" data-index="${i}" title="移除查询">
-                      <i data-lucide="x" style="width:14px;height:14px;"></i>
-                    </button>
-                  ` : ''}
-                </div>
-              `).join('')}
-            </div>
-            <button class="btn btn-secondary btn-sm" id="add-query-btn" style="margin-top:10px;">
-              <i data-lucide="plus" style="width:14px;height:14px;margin-right:4px;"></i>
-              ${t('search.addQuery')}
-            </button>
-          </div>
-        ` : ''}
       </div>
     `;
   }
@@ -282,7 +285,7 @@
               <tr class="entity-row" data-entity-index="${i}" style="cursor:pointer;">
                 <td><strong>${escapeHtml(e.name || '-')}</strong></td>
                 <td class="truncate" title="${escapeHtml(e.content || '')}">${escapeHtml(truncate(e.content, 100))}</td>
-                <td class="mono" style="font-size:0.8rem;">${formatDate(e.physical_time)}</td>
+                <td class="mono" style="font-size:0.8rem;">${formatDate(e.event_time)}</td>
                 <td class="truncate" title="${escapeHtml(e.source_document || '')}">${escapeHtml(truncate(e.source_document, 40))}</td>
               </tr>
             `).join('')}
@@ -324,7 +327,7 @@
                     ${escapeHtml(entityLookup[r.entity2_absolute_id] || truncate(r.entity2_absolute_id || '-', 20))}
                   </span>
                 </td>
-                <td class="mono" style="font-size:0.8rem;">${formatDate(r.physical_time)}</td>
+                <td class="mono" style="font-size:0.8rem;">${formatDate(r.event_time)}</td>
                 <td class="truncate" title="${escapeHtml(r.source_document || '')}">${escapeHtml(truncate(r.source_document, 40))}</td>
               </tr>
             `).join('')}
@@ -424,10 +427,16 @@
             <span id="hop-level-value" class="mono" style="font-size:0.85rem;min-width:16px;text-align:center;">${hopLevel}</span>
           </div>
           <span style="font-size:0.75rem;color:var(--text-muted);">${t('search.hopDesc')}</span>
-          <div style="display:flex;align-items:center;gap:8px;margin-left:auto;">
-            <span style="width:10px;height:10px;border-radius:50%;background:#f59e0b;display:inline-block;"></span>
-            <span style="font-size:0.75rem;color:var(--text-muted);">${t('search.searchResult')}</span>
-            <span style="width:10px;height:10px;border-radius:50%;background:#6366f1;display:inline-block;margin-left:8px;"></span>
+          <div style="display:flex;align-items:center;gap:8px;margin-left:auto;flex-wrap:wrap;">
+            <span style="width:10px;height:10px;border-radius:50%;background:${GraphUtils.RANK_1.bg};display:inline-block;"></span>
+            <span style="font-size:0.75rem;color:var(--text-muted);">#1</span>
+            <span style="width:10px;height:10px;border-radius:50%;background:${GraphUtils.RANK_2_5.bg};display:inline-block;margin-left:6px;"></span>
+            <span style="font-size:0.75rem;color:var(--text-muted);">2~5</span>
+            <span style="width:10px;height:10px;border-radius:50%;background:${GraphUtils.RANK_6_10.bg};display:inline-block;margin-left:6px;"></span>
+            <span style="font-size:0.75rem;color:var(--text-muted);">6~10</span>
+            <span style="width:10px;height:10px;border-radius:50%;background:${GraphUtils.RANK_OTHER.bg};display:inline-block;margin-left:6px;"></span>
+            <span style="font-size:0.75rem;color:var(--text-muted);">11+</span>
+            <span style="width:10px;height:10px;border-radius:50%;background:${GraphUtils.SEARCH_EXPANDED_DARK.bg};display:inline-block;margin-left:8px;"></span>
             <span style="font-size:0.75rem;color:var(--text-muted);">${t('search.expandedNode')}</span>
           </div>
         </div>
@@ -436,7 +445,7 @@
     `;
   }
 
-  // ---- Build vis-network graph from search results ----
+  // ---- Build vis-network graph from search results (uses shared GraphUtils) ----
   function renderSearchGraph(entities, relations) {
     if (typeof vis === 'undefined') return;
 
@@ -452,81 +461,24 @@
     searchEntityMap = {};
     searchRelationMap = {};
 
-    // Track which entity IDs are direct search results
-    const directResultIds = new Set();
-    entities.forEach(e => directResultIds.add(e.absolute_id));
+    // Build rank map: entities are returned sorted by similarity from API
+    const rankMap = {};
+    entities.forEach((e, i) => { rankMap[e.absolute_id] = i + 1; });
 
-    const nodeIds = new Set();
+    // Use shared graph builder with rank-based coloring
+    const { nodes, entityMap: eMap, nodeIds } = GraphUtils.buildNodes(entities, {
+      colorMode: 'search',
+      rankMap: rankMap,
+      unnamedLabel: t('graph.unnamedEntity'),
+    });
+    searchEntityMap = eMap;
 
-    // Build nodes: search result entities in amber, others in indigo
-    const nodes = new vis.DataSet(
-      entities.map(e => {
-        searchEntityMap[e.absolute_id] = e;
-        nodeIds.add(e.absolute_id);
-        const isDirect = directResultIds.has(e.absolute_id);
-        return {
-          id: e.absolute_id,
-          label: e.name || e.entity_id || t('graph.unnamedEntity'),
-          title: escapeHtml(truncate(e.content || e.name || '', 80)),
-          color: isDirect ? {
-            background: '#f59e0b',
-            border: '#fbbf24',
-            highlight: { background: '#fbbf24', border: '#fcd34d' },
-            hover: { background: '#fbbf24', border: '#fcd34d' },
-          } : {
-            background: '#6366f1',
-            border: '#818cf8',
-            highlight: { background: '#818cf8', border: '#a5b4fc' },
-            hover: { background: '#818cf8', border: '#a5b4fc' },
-          },
-          size: isDirect ? 24 : 16,
-          shape: 'dot',
-          font: { color: '#e2e8f0', size: 11, face: 'Inter, sans-serif' },
-        };
-      })
-    );
-
-    // Build edges
-    const edges = new vis.DataSet(
-      relations
-        .filter(r => nodeIds.has(r.entity1_absolute_id) && nodeIds.has(r.entity2_absolute_id))
-        .map(r => {
-          searchRelationMap[r.absolute_id] = r;
-          return {
-            id: r.absolute_id,
-            from: r.entity1_absolute_id,
-            to: r.entity2_absolute_id,
-            label: truncate(r.content || '', 30),
-            color: { color: '#4b5563', highlight: '#9ca3af', hover: '#6b7280' },
-            font: { color: '#94a3b8', size: 9, face: 'Inter, sans-serif', strokeWidth: 3, strokeColor: '#141620' },
-            arrows: 'to',
-            smooth: { enabled: true, type: 'continuous', roundness: 0.2 },
-          };
-        })
-    );
+    const { edges, relationMap: rMap } = GraphUtils.buildEdges(relations, nodeIds);
+    searchRelationMap = rMap;
 
     const options = {
-      physics: {
-        enabled: true,
-        solver: 'forceAtlas2Based',
-        forceAtlas2Based: {
-          gravitationalConstant: -80,
-          centralGravity: 0.008,
-          springLength: 120,
-          springConstant: 0.04,
-          damping: 0.6,
-          avoidOverlap: 0.4,
-        },
-        stabilization: { enabled: true, iterations: 150, updateInterval: 25 },
-      },
-      interaction: {
-        hover: true,
-        tooltipDelay: 200,
-        zoomView: true,
-        dragView: true,
-        navigationButtons: false,
-        keyboard: false,
-      },
+      physics: GraphUtils.getPhysicsOptions(),
+      interaction: GraphUtils.getInteractionOptions(),
       layout: { improvedLayout: true },
     };
 
@@ -537,66 +489,11 @@
       const nodeId = params.nodes[0];
       const edgeId = params.edges[0];
       if (nodeId && searchEntityMap[nodeId]) {
-        showEntityDetail(searchEntityMap[nodeId]);
+        window.showEntityDetail(searchEntityMap[nodeId]);
       } else if (edgeId && searchRelationMap[edgeId]) {
-        const entityLookup = buildEntityLookup(entities);
-        showRelationDetail(searchRelationMap[edgeId], entityLookup);
+        window.showRelationDetail(searchRelationMap[edgeId]);
       }
     });
-  }
-
-  // ---- Show entity detail modal ----
-  function showEntityDetail(entity) {
-    const fields = [
-      [t('common.name'), entity.name],
-      [t('graph.entityId'), entity.entity_id],
-      [t('graph.absoluteId'), entity.absolute_id],
-      [t('common.content'), entity.content],
-      [t('graph.physicalTime'), formatDate(entity.physical_time)],
-      [t('graph.sourceDoc'), entity.source_document],
-    ].filter(([, v]) => v);
-
-    const content = `
-      <div style="display:flex;flex-direction:column;gap:12px;">
-        ${fields.map(([label, value]) => `
-          <div>
-            <div style="font-size:0.75rem;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:2px;">${escapeHtml(label)}</div>
-            <div style="font-size:0.9rem;color:var(--text-primary);word-break:break-word;white-space:pre-wrap;">${escapeHtml(value)}</div>
-          </div>
-        `).join('')}
-      </div>
-    `;
-
-    showModal({ title: t('search.entityDetail'), content, size: 'lg' });
-  }
-
-  // ---- Show relation detail modal ----
-  function showRelationDetail(relation, entityLookup) {
-    const e1Name = entityLookup[relation.entity1_absolute_id] || relation.entity1_absolute_id || '-';
-    const e2Name = entityLookup[relation.entity2_absolute_id] || relation.entity2_absolute_id || '-';
-
-    const fields = [
-      [t('common.content'), relation.content],
-      [t('graph.relationId'), relation.relation_id],
-      [t('graph.absoluteId'), relation.absolute_id],
-      [t('search.entity1'), `${e1Name} (${relation.entity1_absolute_id || '-'})`],
-      [t('search.entity2'), `${e2Name} (${relation.entity2_absolute_id || '-'})`],
-      [t('graph.physicalTime'), formatDate(relation.physical_time)],
-      [t('graph.sourceDoc'), relation.source_document],
-    ].filter(([, v]) => v);
-
-    const content = `
-      <div style="display:flex;flex-direction:column;gap:12px;">
-        ${fields.map(([label, value]) => `
-          <div>
-            <div style="font-size:0.75rem;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:2px;">${escapeHtml(label)}</div>
-            <div style="font-size:0.9rem;color:var(--text-primary);word-break:break-word;white-space:pre-wrap;">${escapeHtml(value)}</div>
-          </div>
-        `).join('')}
-      </div>
-    `;
-
-    showModal({ title: t('search.relationDetail'), content, size: 'lg' });
   }
 
   // ---- Execute single search ----
@@ -710,7 +607,7 @@
     const resultsContainer = document.getElementById('results-area');
     if (!resultsContainer) return;
 
-    if (multiQueryMode && Object.keys(batchResults).length > 0) {
+    if (searchMode === 'multi' && Object.keys(batchResults).length > 0) {
       resultsContainer.innerHTML = renderBatchResultsSection();
     } else {
       resultsContainer.innerHTML = renderResultsSection();
@@ -720,7 +617,7 @@
     bindResultEvents(resultsContainer);
 
     // If visualize tab is active, render the graph
-    if (activeTab === 'visualize' && currentResults && !multiQueryMode) {
+    if (activeTab === 'visualize' && currentResults && searchMode !== 'multi') {
       const { entities, relations } = currentResults;
       renderSearchGraph(entities || [], relations || []);
       bindHopSlider(resultsContainer);
@@ -814,9 +711,88 @@
     if (window.lucide) lucide.createIcons({ nodes: [historyEl] });
   }
 
+  // ---- Re-render search card preserving state ----
+  function rerenderSearchCard() {
+    const area = document.getElementById('search-card-area');
+    if (!area) return;
+
+    // Save current input values
+    const saved = {};
+    const searchInput = document.getElementById('search-input');
+    if (searchInput) saved.searchInput = searchInput.value;
+    const pfA = document.querySelector('#pf-query-a');
+    const pfB = document.querySelector('#pf-query-b');
+    if (pfA) saved.pathA = pfA.value;
+    if (pfB) saved.pathB = pfB.value;
+    const mqInputs = document.querySelectorAll('.multi-query-input');
+    if (mqInputs.length > 0) {
+      syncMultiQueryInputs(area);
+      saved.multiQueries = [...multiQueries];
+    }
+    const advOpen = document.getElementById('advanced-filters')?.style.display !== 'none';
+    const threshold = document.getElementById('search-threshold')?.value;
+
+    area.innerHTML = renderSearchCard();
+
+    // Restore input values
+    if (saved.searchInput) {
+      const el = area.querySelector('#search-input');
+      if (el) el.value = saved.searchInput;
+    }
+    if (threshold) {
+      const el = area.querySelector('#search-threshold');
+      if (el) el.value = threshold;
+    }
+    if (advOpen) {
+      const fp = area.querySelector('#advanced-filters');
+      if (fp) fp.style.display = 'block';
+      const ch = area.querySelector('#advanced-chevron');
+      if (ch) ch.style.transform = 'rotate(180deg)';
+    }
+
+    if (window.lucide) lucide.createIcons({ nodes: [area] });
+    bindEvents(area);
+    bindResultEvents(area);
+
+    // Init PathFinder component for path mode
+    if (searchMode === 'path') {
+      const pfContainer = document.getElementById('pf-container');
+      if (pfContainer) {
+        PathFinder.init(pfContainer, {
+          api: state.api,
+          graphId: state.currentGraphId,
+          t: t,
+          onShowEntityDetail: window.showEntityDetail,
+          onShowRelationDetail: window.showRelationDetail,
+        });
+        // Restore path query values
+        if (saved.pathA) {
+          const el = pfContainer.querySelector('#pf-query-a');
+          if (el) el.value = saved.pathA;
+        }
+        if (saved.pathB) {
+          const el = pfContainer.querySelector('#pf-query-b');
+          if (el) el.value = saved.pathB;
+        }
+      }
+    }
+  }
+
   // ---- Bind events on the main page ----
   function bindEvents(container) {
-    // Search button
+    // Mode tab switching
+    container.querySelectorAll('[data-search-mode]').forEach(tab => {
+      tab.addEventListener('click', () => {
+        const newMode = tab.dataset.searchMode;
+        if (newMode === searchMode) return;
+        // Save multi-query inputs before switching away
+        if (searchMode === 'multi') syncMultiQueryInputs(container);
+        searchMode = newMode;
+        rerenderSearchCard();
+      });
+    });
+
+    // Search button (normal mode)
     const searchBtn = container.querySelector('#search-btn');
     if (searchBtn) searchBtn.addEventListener('click', executeSearch);
 
@@ -826,7 +802,6 @@
       searchInput.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') executeSearch();
       });
-      // Auto-focus
       setTimeout(() => searchInput.focus(), 100);
     }
 
@@ -842,15 +817,6 @@
           chevron.style.transform = open ? '' : 'rotate(180deg)';
           chevron.style.transition = 'transform 0.2s ease';
         }
-      });
-    }
-
-    // Expand neighbors toggle label update
-    const expandToggle = container.querySelector('#search-expand');
-    if (expandToggle) {
-      expandToggle.addEventListener('change', () => {
-        const label = expandToggle.closest('label').querySelector('span:last-child');
-        if (label) label.textContent = expandToggle.checked ? t('search.enabled') : t('search.disabled');
       });
     }
 
@@ -877,36 +843,8 @@
       });
     }
 
-    // Multi-query toggle
-    const multiToggle = container.querySelector('#multi-query-toggle');
-    if (multiToggle) {
-      multiToggle.addEventListener('change', () => {
-        multiQueryMode = multiToggle.checked;
-        if (multiQueryMode && multiQueries.length === 0) {
-          multiQueries = [''];
-        }
-        const multiCard = container.querySelector('#multi-query-card');
-        if (multiCard) {
-          multiCard.outerHTML = renderMultiQuerySection();
-        } else {
-          const searchBarCard = container.querySelector('#multi-query-card') ||
-            container.querySelector('.card + .card');
-          // Re-render the multi-query area after search bar
-          const placeholder = document.createElement('div');
-          placeholder.id = 'multi-query-area';
-          const resultsArea = container.querySelector('#results-area');
-          if (resultsArea) {
-            container.insertBefore(placeholder, resultsArea);
-          }
-          placeholder.outerHTML = renderMultiQuerySection();
-        }
-        if (window.lucide) lucide.createIcons({ nodes: [container] });
-        bindMultiQueryEvents(container);
-      });
-    }
-
-    // Bind multi-query events initially (in case mode is on)
-    bindMultiQueryEvents(container);
+    // Multi-query events (when in multi mode)
+    if (searchMode === 'multi') bindMultiQueryEvents(container);
   }
 
   // ---- Bind multi-query specific events ----
@@ -941,15 +879,9 @@
     container.querySelectorAll('.remove-query-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         const idx = parseInt(btn.dataset.index);
-        multiQueries.splice(idx, 1);
-        // Re-read current values before re-rendering
         syncMultiQueryInputs(container);
-        const multiCard = container.querySelector('#multi-query-card');
-        if (multiCard) {
-          multiCard.outerHTML = renderMultiQuerySection();
-          if (window.lucide) lucide.createIcons({ nodes: [container] });
-          bindMultiQueryEvents(container);
-        }
+        multiQueries.splice(idx, 1);
+        rerenderSearchCard();
       });
     });
 
@@ -1039,17 +971,16 @@
           if (batchKeys.length > 0) {
             const batchRes = batchResults[batchKeys[activeBatchTab] || batchKeys[0]];
             if (batchRes && batchRes.entities[idx]) {
-              showEntityDetail(batchRes.entities[idx]);
+              window.showEntityDetail(batchRes.entities[idx]);
               return;
             }
           }
-          showEntityDetail(entities[idx]);
+          window.showEntityDetail(entities[idx]);
         }
       });
     });
 
     // Relation row clicks
-    const entityLookup = buildEntityLookup(entities);
     const relations = currentResults?.relations || [];
     container.querySelectorAll('.relation-row').forEach(row => {
       row.addEventListener('click', () => {
@@ -1059,12 +990,11 @@
           if (batchKeys.length > 0) {
             const batchRes = batchResults[batchKeys[activeBatchTab] || batchKeys[0]];
             if (batchRes && batchRes.relations[idx]) {
-              const batchLookup = buildEntityLookup(batchRes.entities || []);
-              showRelationDetail(batchRes.relations[idx], batchLookup);
+              window.showRelationDetail(batchRes.relations[idx]);
               return;
             }
           }
-          showRelationDetail(relations[idx], entityLookup);
+          window.showRelationDetail(relations[idx]);
         }
       });
     });
@@ -1076,10 +1006,15 @@
     batchResults = {};
     activeTab = 'entities';
     activeBatchTab = 0;
-    multiQueryMode = false;
+    searchMode = 'normal';
     multiQueries = [''];
     lastSearchQuery = '';
     hopLevel = 0;
+    pathLeftEntities = [];
+    pathRightEntities = [];
+    pathLeftSelected = 0;
+    pathRightSelected = 0;
+    pathResults = null;
     if (searchNetwork) {
       searchNetwork.destroy();
       searchNetwork = null;
@@ -1090,24 +1025,17 @@
     container.innerHTML = `
       <div class="page-enter">
         <div style="max-width:1200px;margin:0 auto;">
-          <div id="search-bar-area"></div>
-          <div id="multi-query-area"></div>
+          <div id="search-card-area"></div>
           <div id="results-area"></div>
         </div>
       </div>
     `;
 
-    // Render search bar
-    const searchBarArea = container.querySelector('#search-bar-area');
-    searchBarArea.innerHTML = renderSearchBar();
-
-    // Render multi-query section
-    const multiQueryArea = container.querySelector('#multi-query-area');
-    multiQueryArea.innerHTML = renderMultiQuerySection();
+    // Render search card
+    container.querySelector('#search-card-area').innerHTML = renderSearchCard();
 
     // Render results (empty state)
-    const resultsArea = container.querySelector('#results-area');
-    resultsArea.innerHTML = renderResultsSection();
+    container.querySelector('#results-area').innerHTML = renderResultsSection();
 
     // Initialize icons
     if (window.lucide) lucide.createIcons({ nodes: [container] });
@@ -1123,12 +1051,14 @@
     batchResults = {};
     lastSearchQuery = '';
     hopLevel = 0;
+    searchMode = 'normal';
     if (searchNetwork) {
       searchNetwork.destroy();
       searchNetwork = null;
     }
     searchEntityMap = {};
     searchRelationMap = {};
+    PathFinder.destroy();
   }
 
   registerPage('search', { render, destroy });

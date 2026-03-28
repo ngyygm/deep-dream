@@ -350,208 +350,99 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Data fetching
+  // Data fetching — per-section, independent
   // ---------------------------------------------------------------------------
 
-  async function fetchDashboardData() {
-    const [overviewRes, graphsRes, tasksRes, logsRes, accessRes] = await Promise.all([
-      state.api.systemOverview(),
-      state.api.systemGraphs(),
-      state.api.systemTasks(50),
-      state.api.systemLogs(100, _logLevel || undefined),
-      state.api.systemAccessStats(300),
-    ]);
+  // Cached data per section
+  let _overview = {};
+  let _graphs = [];
+  let _tasks = [];
+  let _logs = [];
+  let _accessStats = {};
 
-    return {
-      overview: overviewRes.data,
-      graphs: graphsRes.data || [],
-      tasks: tasksRes.data || [],
-      logs: logsRes.data || [],
-      accessStats: accessRes.data || {},
-    };
-  }
-
-  // ---------------------------------------------------------------------------
-  // Main render
-  // ---------------------------------------------------------------------------
-
-  async function render(container, params) {
-    let data;
-
+  async function fetchOverview() {
     try {
-      data = await fetchDashboardData();
-    } catch (err) {
-      container.innerHTML = `<div class="page-enter"><div class="empty-state">
-        <i data-lucide="alert-triangle"></i>
-        <p>${t('dashboard.loadFailed')}: ${escapeHtml(err.message)}</p>
-        <button class="btn btn-secondary mt-3" onclick="handleRoute()">${t('common.retry')}</button>
-      </div></div>`;
-      if (window.lucide) lucide.createIcons();
-      return;
-    }
+      const res = await state.api.systemOverview();
+      _overview = res.data || {};
+      updateStatCards();
+    } catch (err) { console.warn('fetchOverview failed:', err); }
+  }
 
-    // Build the full dashboard layout
-    container.innerHTML = `<div class="page-enter">
+  async function fetchGraphs() {
+    try {
+      const res = await state.api.systemGraphs();
+      _graphs = res.data || [];
+      updateGraphList();
+      updateStatCards(); // stat cards also depend on graph storage counts
+    } catch (err) { console.warn('fetchGraphs failed:', err); }
+  }
 
-      <!-- Top stat cards -->
-      <div id="dashboard-stats">
-        ${buildStatCards(data.overview, data.graphs, data.accessStats)}
-      </div>
+  async function fetchTasks() {
+    try {
+      const res = await state.api.systemTasks(50);
+      _tasks = res.data || [];
+      updateTasks();
+    } catch (err) { console.warn('fetchTasks failed:', err); }
+  }
 
-      <!-- Two-column layout -->
-      <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+  async function fetchLogs() {
+    try {
+      const res = await state.api.systemLogs(100, _logLevel || undefined);
+      _logs = res.data || [];
+      updateLogs();
+    } catch (err) { console.warn('fetchLogs failed:', err); }
+  }
 
-        <!-- Left column: Tasks + Logs -->
-        <div class="lg:col-span-2 flex flex-col gap-6">
-
-          <!-- Active Tasks -->
-          <div class="card">
-            <div class="card-header">
-              <div class="card-title" style="display:flex;align-items:center;gap:0.5rem;">
-                <i data-lucide="list-checks" style="width:16px;height:16px;"></i>
-                ${t('dashboard.task')}
-              </div>
-              <span style="font-size:0.75rem;color:var(--text-muted);" id="dashboard-task-count">${data.tasks.length}</span>
-            </div>
-            <div id="dashboard-tasks">
-              ${buildTasksSection(data.tasks)}
-            </div>
-          </div>
-
-          <!-- System Logs -->
-          <div id="dashboard-logs">
-            ${buildLogsSection(data.logs)}
-          </div>
-
-        </div>
-
-        <!-- Right column: Graph List + API Stats -->
-        <div class="flex flex-col gap-6">
-
-          <!-- Graph List -->
-          <div class="card">
-            <div class="card-header">
-              <div class="card-title" style="display:flex;align-items:center;gap:0.5rem;">
-                <i data-lucide="git-branch" style="width:16px;height:16px;"></i>
-                ${t('dashboard.graphList')}
-              </div>
-              <div style="display:flex;align-items:center;gap:0.5rem;">
-                <span style="font-size:0.75rem;color:var(--text-muted);" id="dashboard-graph-count">${t('dashboard.graphCount', { count: data.graphs.length })}</span>
-                <button class="btn btn-primary" style="padding:0.25rem 0.75rem;font-size:0.75rem;" onclick="showCreateGraphModal()">
-                  <i data-lucide="plus" style="width:14px;height:14px;margin-right:0.25rem;"></i>${t('dashboard.createGraph')}
-                </button>
-              </div>
-            </div>
-            <div id="dashboard-graph-list">
-              ${buildGraphList(data.graphs)}
-            </div>
-          </div>
-
-          <!-- API Stats -->
-          <div id="dashboard-api-stats">
-            ${buildApiStatsSection(data.accessStats)}
-          </div>
-
-        </div>
-      </div>
-
-    </div>`;
-
-    // Re-render lucide icons for the new content
-    if (window.lucide) lucide.createIcons();
-
-    // Bind event: log level filter buttons
-    const logFilters = document.getElementById('dashboard-log-filters');
-    if (logFilters) {
-      logFilters.addEventListener('click', (e) => {
-        const btn = e.target.closest('[data-log-filter]');
-        if (!btn) return;
-        _logLevel = btn.dataset.logFilter;
-        // Re-fetch logs only
-        refreshLogs();
-      });
-    }
-
-    // Bind event: auto-scroll checkbox
-    const autoScrollCb = document.getElementById('dashboard-log-autoscroll');
-    if (autoScrollCb) {
-      autoScrollCb.addEventListener('change', () => {
-        _autoScroll = autoScrollCb.checked;
-      });
-    }
-
-    // Auto-scroll logs to top on initial load
-    const logBody = document.getElementById('dashboard-log-body');
-    if (logBody && _autoScroll) {
-      logBody.scrollTop = 0;
-    }
-
-    // Start auto-refresh every 2 seconds
-    state.refreshTimers.dashboard = setInterval(async () => {
-      try {
-        data = await fetchDashboardData();
-        updateDashboardDOM(data);
-      } catch (err) {
-        console.warn('Dashboard refresh failed:', err);
-      }
-    }, 2000);
+  async function fetchAccessStats() {
+    try {
+      const res = await state.api.systemAccessStats(300);
+      _accessStats = res.data || {};
+      updateApiStats();
+      updateStatCards(); // stat cards also depend on access stats
+    } catch (err) { console.warn('fetchAccessStats failed:', err); }
   }
 
   // ---------------------------------------------------------------------------
-  // Partial DOM updates (for auto-refresh without full re-render)
+  // Partial DOM updates — each section updates only its own DOM
   // ---------------------------------------------------------------------------
 
-  function updateDashboardDOM(data) {
-    // Update stat cards
-    const statsEl = document.getElementById('dashboard-stats');
-    if (statsEl) {
-      statsEl.innerHTML = buildStatCards(data.overview, data.graphs, data.accessStats);
-    }
+  function updateStatCards() {
+    const el = document.getElementById('dashboard-stats');
+    if (el) el.innerHTML = buildStatCards(_overview, _graphs, _accessStats);
+    if (window.lucide) lucide.createIcons({ nodes: [el] });
+  }
 
-    // Update graph list
-    const graphListEl = document.getElementById('dashboard-graph-list');
-    if (graphListEl) {
-      graphListEl.innerHTML = buildGraphList(data.graphs);
-    }
-    const graphCountEl = document.getElementById('dashboard-graph-count');
-    if (graphCountEl) {
-      graphCountEl.textContent = t('dashboard.graphCount', { count: data.graphs.length });
-    }
+  function updateGraphList() {
+    const listEl = document.getElementById('dashboard-graph-list');
+    const countEl = document.getElementById('dashboard-graph-count');
+    if (listEl) listEl.innerHTML = buildGraphList(_graphs);
+    if (countEl) countEl.textContent = t('dashboard.graphCount', { count: _graphs.length });
+    if (window.lucide) lucide.createIcons({ nodes: [listEl] });
+  }
 
-    // Update logs (only if level filter hasn't changed on the server side)
-    const logsEl = document.getElementById('dashboard-logs');
-    if (logsEl) {
-      logsEl.innerHTML = buildLogsSection(data.logs);
-      // Re-bind log filter listeners after innerHTML replacement
-      bindLogFilterListeners(logsEl);
-      // Re-bind auto-scroll
-      const cb = document.getElementById('dashboard-log-autoscroll');
-      if (cb) cb.checked = _autoScroll;
-      // Auto-scroll to top (newest first)
-      const logBody = document.getElementById('dashboard-log-body');
-      if (logBody && _autoScroll) {
-        logBody.scrollTop = 0;
-      }
-    }
-
-    // Update tasks
+  function updateTasks() {
     const tasksEl = document.getElementById('dashboard-tasks');
-    if (tasksEl) {
-      tasksEl.innerHTML = buildTasksSection(data.tasks);
-    }
-    const taskCountEl = document.getElementById('dashboard-task-count');
-    if (taskCountEl) {
-      taskCountEl.textContent = `${data.tasks.length}`;
-    }
+    const countEl = document.getElementById('dashboard-task-count');
+    if (tasksEl) tasksEl.innerHTML = buildTasksSection(_tasks);
+    if (countEl) countEl.textContent = `${_tasks.length}`;
+  }
 
-    // Update API stats
-    const apiStatsEl = document.getElementById('dashboard-api-stats');
-    if (apiStatsEl) {
-      apiStatsEl.innerHTML = buildApiStatsSection(data.accessStats);
-    }
+  function updateLogs() {
+    const logsEl = document.getElementById('dashboard-logs');
+    if (!logsEl) return;
+    logsEl.innerHTML = buildLogsSection(_logs);
+    bindLogFilterListeners(logsEl);
+    const cb = document.getElementById('dashboard-log-autoscroll');
+    if (cb) cb.checked = _autoScroll;
+    const logBody = document.getElementById('dashboard-log-body');
+    if (logBody && _autoScroll) logBody.scrollTop = 0;
+    if (window.lucide) lucide.createIcons({ nodes: [logsEl] });
+  }
 
-    // Re-render lucide icons for updated content
-    if (window.lucide) lucide.createIcons();
+  function updateApiStats() {
+    const el = document.getElementById('dashboard-api-stats');
+    if (el) el.innerHTML = buildApiStatsSection(_accessStats);
+    if (window.lucide) lucide.createIcons({ nodes: [el] });
   }
 
   /** Re-bind log filter buttons after DOM update. */
@@ -562,32 +453,98 @@
       const btn = e.target.closest('[data-log-filter]');
       if (!btn) return;
       _logLevel = btn.dataset.logFilter;
-      refreshLogs();
+      fetchLogs(); // only fetch logs, not everything
     });
   }
 
-  /** Fetch and update only the logs section. */
-  async function refreshLogs() {
-    try {
-      const res = await state.api.systemLogs(100, _logLevel || undefined);
-      const logs = res.data || [];
+  // ---------------------------------------------------------------------------
+  // Main render
+  // ---------------------------------------------------------------------------
 
-      const logsEl = document.getElementById('dashboard-logs');
-      if (logsEl) {
-        logsEl.innerHTML = buildLogsSection(logs);
-        bindLogFilterListeners(logsEl);
-        const cb = document.getElementById('dashboard-log-autoscroll');
-        if (cb) cb.checked = _autoScroll;
-        const logBody = document.getElementById('dashboard-log-body');
-        if (logBody && _autoScroll) {
-          logBody.scrollTop = 0;
-        }
-      }
+  async function render(container, params) {
+    // Initial layout with loading placeholders
+    container.innerHTML = `<div class="page-enter">
 
-      if (window.lucide) lucide.createIcons();
-    } catch (err) {
-      console.warn('Log refresh failed:', err);
+      <!-- Top stat cards -->
+      <div id="dashboard-stats">
+        <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-6">${Array(6).fill('<div class="stat-card"><div class="stat-label" style="height:0.75rem;background:var(--bg-input);border-radius:4px;width:60%;"></div><div class="stat-value" style="height:1.5rem;background:var(--bg-input);border-radius:4px;width:40%;margin-top:0.5rem;"></div></div>').join('')}</div>
+      </div>
+
+      <!-- Two-column layout -->
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+        <!-- Left column: Tasks + Logs -->
+        <div class="lg:col-span-2 flex flex-col gap-6">
+          <div class="card">
+            <div class="card-header">
+              <div class="card-title" style="display:flex;align-items:center;gap:0.5rem;">
+                <i data-lucide="list-checks" style="width:16px;height:16px;"></i>
+                ${t('dashboard.task')}
+              </div>
+              <span style="font-size:0.75rem;color:var(--text-muted);" id="dashboard-task-count">-</span>
+            </div>
+            <div id="dashboard-tasks">${spinnerHtml()}</div>
+          </div>
+
+          <div id="dashboard-logs">${spinnerHtml()}</div>
+        </div>
+
+        <!-- Right column: Graph List + API Stats -->
+        <div class="flex flex-col gap-6">
+          <div class="card">
+            <div class="card-header">
+              <div class="card-title" style="display:flex;align-items:center;gap:0.5rem;">
+                <i data-lucide="git-branch" style="width:16px;height:16px;"></i>
+                ${t('dashboard.graphList')}
+              </div>
+              <div style="display:flex;align-items:center;gap:0.5rem;">
+                <span style="font-size:0.75rem;color:var(--text-muted);" id="dashboard-graph-count">-</span>
+                <button class="btn btn-primary" style="padding:0.25rem 0.75rem;font-size:0.75rem;" onclick="showCreateGraphModal()">
+                  <i data-lucide="plus" style="width:14px;height:14px;margin-right:0.25rem;"></i>${t('dashboard.createGraph')}
+                </button>
+              </div>
+            </div>
+            <div id="dashboard-graph-list">${spinnerHtml()}</div>
+          </div>
+
+          <div id="dashboard-api-stats">${spinnerHtml()}</div>
+        </div>
+      </div>
+    </div>`;
+
+    if (window.lucide) lucide.createIcons();
+
+    // Bind event: auto-scroll checkbox (after logs section renders)
+    const autoScrollCb = document.getElementById('dashboard-log-autoscroll');
+    if (autoScrollCb) {
+      autoScrollCb.addEventListener('change', () => { _autoScroll = autoScrollCb.checked; });
     }
+
+    // Initial load: fetch all 5 in parallel (one-time)
+    await Promise.all([
+      fetchOverview(),
+      fetchGraphs(),
+      fetchTasks(),
+      fetchLogs(),
+      fetchAccessStats(),
+    ]);
+
+    // --- Independent refresh timers per section ---
+
+    // Tasks: every 3s (progress tracking needs responsiveness)
+    state.refreshTimers.dash_tasks = setInterval(fetchTasks, 3000);
+
+    // Logs: every 10s
+    state.refreshTimers.dash_logs = setInterval(fetchLogs, 10000);
+
+    // Overview + Graphs: every 15s (graphs is expensive: scans filesystem + SQLite)
+    state.refreshTimers.dash_graphs = setInterval(async () => {
+      await fetchOverview();
+      await fetchGraphs();
+    }, 15000);
+
+    // Access stats: every 30s (analytics, changes slowly)
+    state.refreshTimers.dash_access = setInterval(fetchAccessStats, 30000);
   }
 
   // ---------------------------------------------------------------------------
@@ -634,8 +591,8 @@
       if (!res.ok) { errEl.textContent = data.error || data.message || 'Error'; return; }
       document.getElementById('create-graph-overlay').remove();
       setGraphId(graphId);
-      // 刷新 dashboard 数据
-      await refreshDashboard();
+      // 刷新 dashboard 图谱列表
+      await Promise.all([fetchOverview(), fetchGraphs()]);
       showToast(t('dashboard.graphCreated', { id: graphId }), 'success');
     } catch (e) {
       errEl.textContent = e.message;
@@ -649,6 +606,11 @@
   function destroy() {
     _logLevel = '';
     _autoScroll = true;
+    _overview = {};
+    _graphs = [];
+    _tasks = [];
+    _logs = [];
+    _accessStats = {};
   }
 
   // ---------------------------------------------------------------------------

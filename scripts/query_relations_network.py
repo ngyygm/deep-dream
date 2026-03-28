@@ -100,7 +100,7 @@ def build_network(storage, entity_id, max_depth=2):
                 'from': current_id,
                 'to': other_entity.entity_id,
                 'relation': rel.content[:100],
-                'time': rel.physical_time.isoformat()
+                'time': rel.event_time.isoformat()
             })
 
     return network

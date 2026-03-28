@@ -209,8 +209,8 @@ Full paths and parameters: see `skills/tmg-memory-graph/reference.md` and `serve
 
 ## Data model (brief)
 
-- **Entity:** Concept entity; `entity_id` (logical), `id` (version absolute ID), `name`, `content` (natural language), `physical_time`; versions form a chain.  
-- **Relation:** Concept relation; natural-language description (no fixed relation types); `entity1/2_absolute_id`, `physical_time`, version chain.  
+- **Entity:** Concept entity; `entity_id` (logical), `id` (version absolute ID), `name`, `content` (natural language), `event_time`, `processed_time`; versions form a chain.
+- **Relation:** Concept relation; natural-language description (no fixed relation types); `entity1/2_absolute_id`, `event_time`, `processed_time`, version chain.  
 - **MemoryCache:** Internal context summary chain for alignment and reasoning.  
 
 All content is natural language + time; no predefined tag schema.

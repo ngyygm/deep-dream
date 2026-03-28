@@ -50,7 +50,7 @@ def get_cache_list_sorted(storage):
         try:
             with open(cache_file, 'r', encoding='utf-8') as f:
                 metadata = json.load(f)
-                cache_time = datetime.fromisoformat(metadata['physical_time'])
+                cache_time = datetime.fromisoformat(metadata['event_time'])
                 cache_list.append({
                     'id': metadata['id'],
                     'time': cache_time,
@@ -140,7 +140,7 @@ def expand_from_entity(storage, entity_name, expand_depth=2):
             results.append(cache)
 
     # 按时间排序
-    results.sort(key=lambda c: c.physical_time)
+    results.sort(key=lambda c: c.event_time)
 
     return results
 
@@ -201,7 +201,7 @@ def print_expanded_caches(caches, center_cache_id=None):
         marker = "★ " if is_center else f"{i}. "
 
         print(f"{marker}缓存: {cache.absolute_id}")
-        print(f"   时间: {cache.physical_time}")
+        print(f"   时间: {cache.event_time}")
         print(f"   类型: {cache.activity_type}")
 
         # 评估完整度

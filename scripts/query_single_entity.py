@@ -95,7 +95,7 @@ def print_basic_info(entity):
     print(f"Entity ID: {entity.entity_id}")
     print(f"Absolute ID: {entity.absolute_id}")
     print(f"描述: {entity.content}")
-    print(f"时间: {entity.physical_time}")
+    print(f"时间: {entity.event_time}")
     print(f"文档: {entity.source_document}")
     print(f"缓存ID: {entity.memory_cache_id}")
 
@@ -128,7 +128,7 @@ def print_relations(relations, storage, show_all=False):
 
         print(f"{i}. {name}")
         print(f"   关系: {rel.content[:100]}...")
-        print(f"   时间: {rel.physical_time}")
+        print(f"   时间: {rel.event_time}")
         print(f"   实体ID: {other_entity.entity_id}")
         print()
 
@@ -147,11 +147,11 @@ def print_versions(versions):
     print(f"共找到 {len(versions)} 个版本\n")
 
     # 按时间排序
-    sorted_versions = sorted(versions, key=lambda v: v.physical_time)
+    sorted_versions = sorted(versions, key=lambda v: v.processed_time)
 
     for i, version in enumerate(sorted_versions, 1):
         print(f"版本 {i}:")
-        print(f"  时间: {version.physical_time}")
+        print(f"  时间: {version.event_time}")
         print(f"  描述: {version.content[:150]}...")
         print(f"  ID: {version.absolute_id}")
         print()
@@ -167,7 +167,7 @@ def print_memory_caches(cache_ids, storage, max_show=3):
         cache = storage.load_memory_cache(cache_id)
         if cache:
             print(f"\n缓存 {i}: {cache_id}")
-            print(f"时间: {cache.physical_time}")
+            print(f"时间: {cache.event_time}")
             print(f"活动类型: {cache.activity_type}")
             print(f"内容预览: {cache.content[:200]}...")
             print("-" * 40)

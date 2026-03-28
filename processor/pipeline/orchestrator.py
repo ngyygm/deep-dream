@@ -356,7 +356,7 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
                     
                     if self.current_memory_cache:
                         if verbose:
-                            wprint(f"已加载缓存记忆: {self.current_memory_cache.absolute_id} (时间: {self.current_memory_cache.physical_time})")
+                            wprint(f"已加载缓存记忆: {self.current_memory_cache.absolute_id} (时间: {self.current_memory_cache.event_time})")
                         
                         # 提取断点续传信息
                         resume_document_path = latest_metadata.get('document_path', '')
@@ -510,7 +510,13 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
                     self._active_step6 += 1
                 try:
                     mc = memory_caches[i]
-                    ents, rels = extract_results[i]
+                    _er = extract_results[i]
+                    if _er is None:
+                        # extract 阶段失败，结果为 None
+                        raise RuntimeError(
+                            f"step6 skipped for window {start_chunk + i}: extract result is None (extraction failed)"
+                        )
+                    ents, rels = _er
                     ar = self._align_entities(
                         ents, rels, mc, input_texts[i], doc_name,
                         verbose=verbose, event_time=event_time,
@@ -683,8 +689,13 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
         for i in range(N):
             step7_done_ev[i].wait()
 
-        t6.join(timeout=10)
-        t7.join(timeout=10)
+        if t6.is_alive():
+            wprint("[警告] step6 线程在 join 超时后仍在运行")
+        t6.join(timeout=60)
+
+        if t7.is_alive():
+            wprint("[警告] step7 线程在 join 超时后仍在运行")
+        t7.join(timeout=60)
 
         if errors:
             _phase, _idx, exc = errors[0]
@@ -821,7 +832,7 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
             "storage_path": str(self.storage.storage_path)
         }
     
-    def consolidate_knowledge_graph_entity(self, verbose: bool = True, 
+    def consolidate_knowledge_graph_entity(self, verbose: bool = True,
                                     similarity_threshold: float = 0.6,
                                     max_candidates: int = 5,
                                     batch_candidates: Optional[int] = None,
@@ -829,6 +840,8 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
                                     parallel: bool = False,
                                     enable_name_match_step: bool = True,
                                     enable_pre_search: Optional[bool] = None) -> dict:
+        # NOTE: 此方法与 consolidation.py _ConsolidationMixin 中为重复实现。
+        # 如需修改 consolidate 逻辑，两处均需同步更新。
         """
         整理知识图谱：识别并合并重复实体，创建关联关系
         
@@ -919,12 +932,13 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
                     entity_id=entity.entity_id,
                     name=entity.name,
                     content=summarized_content,
-                    physical_time=datetime.now(),
+                    event_time=datetime.now(),
+                    processed_time=datetime.now(),
                     memory_cache_id=entity.memory_cache_id,
                     source_document=entity.source_document
                 )
                 self.storage.save_entity(new_entity)
-                
+
                 entities_updated_from_self_ref += 1
                 deleted_self_ref_count += len(relations)
                 
@@ -1272,8 +1286,8 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
                     if candidate.entity_id not in candidate_dict:
                         candidate_dict[candidate.entity_id] = candidate
                     else:
-                        # 保留物理时间最新的
-                        if candidate.physical_time > candidate_dict[candidate.entity_id].physical_time:
+                        # 保留处理时间最新的
+                        if candidate.processed_time > candidate_dict[candidate.entity_id].processed_time:
                             candidate_dict[candidate.entity_id] = candidate
                 
                 # 提取entity_id到set中
@@ -1462,14 +1476,14 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
                     # 去重，每个relation_id只保留最新版本
                     rel_dict = {}
                     for rel in existing_rels:
-                        if rel.relation_id not in rel_dict or rel.physical_time > rel_dict[rel.relation_id].physical_time:
+                        if rel.relation_id not in rel_dict or rel.processed_time > rel_dict[rel.relation_id].processed_time:
                             rel_dict[rel.relation_id] = rel
                     for rel in rel_dict.values():
                         existing_relations_list.append({
                             "relation_id": rel.relation_id,
                             "content": rel.content
                         })
-                
+
                 # 获取上下文信息（优先使用当前实体的memory_cache，如果没有则使用候选实体的）
                 context_text = None
                 if entity.memory_cache_id:
@@ -2497,9 +2511,9 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
                         if rel.relation_id not in relation_dict:
                             relation_dict[rel.relation_id] = rel
                         else:
-                            if rel.physical_time > relation_dict[rel.relation_id].physical_time:
+                            if rel.processed_time > relation_dict[rel.relation_id].processed_time:
                                 relation_dict[rel.relation_id] = rel
-                    
+
                     # 提取关系信息
                     existing_relations[pair_key] = [
                         {
@@ -2711,7 +2725,8 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
                 entity_id=entity.entity_id,
                 name=entity.name,
                 content=summarized_content,
-                physical_time=datetime.now(),
+                event_time=datetime.now(),
+                processed_time=datetime.now(),
                 memory_cache_id=entity.memory_cache_id,
                 source_document=entity.source_document
             )
@@ -2787,9 +2802,9 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
                         if rel.relation_id not in relation_dict:
                             relation_dict[rel.relation_id] = rel
                         else:
-                            if rel.physical_time > relation_dict[rel.relation_id].physical_time:
+                            if rel.processed_time > relation_dict[rel.relation_id].processed_time:
                                 relation_dict[rel.relation_id] = rel
-                    
+
                     unique_relations = list(relation_dict.values())
                     existing_relations_info = [
                         {
@@ -2798,7 +2813,7 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
                         }
                         for r in unique_relations
                     ]
-                    
+
                     # 构建初步的extracted_relation格式
                     preliminary_extracted_relation = {
                         "entity1_name": entity1.name,
@@ -2935,7 +2950,7 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
                     if rel.relation_id not in relation_dict:
                         relation_dict[rel.relation_id] = rel
                     else:
-                        if rel.physical_time > relation_dict[rel.relation_id].physical_time:
+                        if rel.processed_time > relation_dict[rel.relation_id].processed_time:
                             relation_dict[rel.relation_id] = rel
                 
                 unique_relations = list(relation_dict.values())
@@ -3013,7 +3028,7 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
                 relation_memory_cache = MemoryCache(
                     absolute_id=f"cache_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}",
                     content=relation_memory_cache_content,
-                    physical_time=datetime.now(),
+                    event_time=datetime.now(),
                     doc_name=doc_name_from_entity,
                     activity_type="知识图谱整理-关系生成"
                 )
@@ -3032,7 +3047,7 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
                     entity2.name,
                     verbose_relation=verbose,
                     doc_name=doc_name_from_entity,
-                    base_time=relation_memory_cache.physical_time,
+                    base_time=relation_memory_cache.event_time,
                 )
             
             if relation:
@@ -3132,7 +3147,7 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
 
 {consolidation_summary}
 """,
-            physical_time=datetime.now(),
+            event_time=datetime.now(),
             doc_name="",  # 知识图谱整理总结不关联特定文档
             activity_type="知识图谱整理总结"
         )

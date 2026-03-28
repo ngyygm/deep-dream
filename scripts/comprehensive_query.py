@@ -211,7 +211,7 @@ class QueryOrchestrator:
             for i, rel in enumerate(relations, 1):
                 print(f"\n关系 {i}:")
                 print(f"  内容: {rel.content}")
-                print(f"  时间: {rel.physical_time}")
+                print(f"  时间: {rel.event_time}")
         else:
             print("未找到直接关系")
 

@@ -102,7 +102,7 @@ def print_entities(entities, show_numbered=False):
         print(f"名称: {entity.name}")
         print(f"Entity ID: {entity.entity_id}")
         print(f"描述: {entity.content[:100]}...")
-        print(f"时间: {entity.physical_time}")
+        print(f"时间: {entity.event_time}")
         print()
 
 

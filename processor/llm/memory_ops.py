@@ -29,7 +29,7 @@ class _MemoryOpsMixin:
             current_cache: 当前的记忆缓存（如果存在）
             input_text: 当前窗口的输入文本
             document_name: 当前文档名称
-            event_time: 事件实际发生时间；若提供则用于 physical_time，否则 datetime.now()
+            event_time: 事件实际发生时间；若提供则用于 event_time，否则 datetime.now()
             text_start_pos: 当前文本在文档中的起始位置（字符位置）
             text_end_pos: 当前文本在文档中的结束位置（字符位置）
             total_text_length: 文档总长度（字符数）
@@ -58,6 +58,13 @@ class _MemoryOpsMixin:
 
         new_content = self._call_llm(prompt, system_prompt)
 
+        if not new_content:
+            # LLM 返回空，使用已有缓存内容或原始输入作为兜底
+            if current_cache and current_cache.content:
+                new_content = current_cache.content
+            else:
+                new_content = input_text
+
         # 清理 markdown 代码块标识符
         new_content = clean_markdown_code_blocks(new_content)
         # XML 分隔符标签已在 _call_llm 中统一清理
@@ -70,7 +77,7 @@ class _MemoryOpsMixin:
         return MemoryCache(
             absolute_id=new_cache_id,
             content=new_content,
-            physical_time=base_time,
+            event_time=base_time,
             source_document=source_document_only,
             activity_type="文档处理"
         )
@@ -123,7 +130,7 @@ class _MemoryOpsMixin:
         return MemoryCache(
             absolute_id=new_cache_id,
             content=new_content,
-            physical_time=base_time,
+            event_time=base_time,
             source_document=source_document_only,
             activity_type="文档整体",
         )

@@ -68,7 +68,8 @@ def entity_to_dict(e: Entity) -> Dict[str, Any]:
         "entity_id": e.entity_id,
         "name": e.name,
         "content": e.content,
-        "physical_time": e.physical_time.isoformat() if e.physical_time else None,
+        "event_time": e.event_time.isoformat() if e.event_time else None,
+        "processed_time": e.processed_time.isoformat() if e.processed_time else None,
         "memory_cache_id": e.memory_cache_id,
         "source_document": getattr(e, "source_document", "") or getattr(e, "doc_name", "") or "",
         "doc_name": getattr(e, "source_document", "") or getattr(e, "doc_name", "") or "",
@@ -83,11 +84,29 @@ def relation_to_dict(r: Relation) -> Dict[str, Any]:
         "entity1_absolute_id": r.entity1_absolute_id,
         "entity2_absolute_id": r.entity2_absolute_id,
         "content": r.content,
-        "physical_time": r.physical_time.isoformat() if r.physical_time else None,
+        "event_time": r.event_time.isoformat() if r.event_time else None,
+        "processed_time": r.processed_time.isoformat() if r.processed_time else None,
         "memory_cache_id": r.memory_cache_id,
         "source_document": getattr(r, "source_document", "") or getattr(r, "doc_name", "") or "",
         "doc_name": getattr(r, "source_document", "") or getattr(r, "doc_name", "") or "",
     }
+
+
+def enrich_relations(relations_dicts, processor):
+    """为关系列表补充 entity1_name / entity2_name"""
+    abs_ids = set()
+    for rd in relations_dicts:
+        if rd.get('entity1_absolute_id'):
+            abs_ids.add(rd['entity1_absolute_id'])
+        if rd.get('entity2_absolute_id'):
+            abs_ids.add(rd['entity2_absolute_id'])
+    if not abs_ids:
+        return relations_dicts
+    name_map = processor.storage.get_entity_names_by_absolute_ids(list(abs_ids))
+    for rd in relations_dicts:
+        rd['entity1_name'] = name_map.get(rd.get('entity1_absolute_id'), '')
+        rd['entity2_name'] = name_map.get(rd.get('entity2_absolute_id'), '')
+    return relations_dicts
 
 
 def memory_cache_to_dict(c: MemoryCache) -> Dict[str, Any]:
@@ -95,7 +114,7 @@ def memory_cache_to_dict(c: MemoryCache) -> Dict[str, Any]:
         "id": c.absolute_id,  # 向后兼容
         "absolute_id": c.absolute_id,
         "content": c.content,
-        "physical_time": c.physical_time.isoformat() if c.physical_time else None,
+        "event_time": c.event_time.isoformat() if c.event_time else None,
         "source_document": getattr(c, "source_document", "") or getattr(c, "doc_name", "") or "",
         "doc_name": getattr(c, "source_document", "") or getattr(c, "doc_name", "") or "",
         "activity_type": getattr(c, "activity_type", None),
@@ -113,6 +132,11 @@ def ok(data: Any) -> tuple:
 
 
 def err(message: str, status: int = 400) -> tuple:
+    # 对 500 错误隐藏内部细节，只返回通用提示
+    if status >= 500:
+        import logging
+        logging.getLogger(__name__).error("API error: %s", message)
+        message = "服务器内部错误，请稍后重试"
     out: Dict[str, Any] = {"success": False, "error": message}
     try:
         if hasattr(request, "start_time"):
@@ -146,7 +170,7 @@ def _extract_candidate_ids(
         entities = storage.search_entities_by_similarity(
             query_name=entity_name,
             query_content=body.get("query_text") or entity_name,
-            threshold=float(body.get("similarity_threshold", 0.7)),
+            threshold=float(body.get("similarity_threshold", 0.5)),
             max_results=int(max_entities),
             text_mode=body.get("text_mode") or "name_and_content",
             similarity_method=body.get("similarity_method") or "embedding",
@@ -169,18 +193,18 @@ def _extract_candidate_ids(
         list(entity_absolute_ids), limit=max_relations
     )
     for r in relations:
-        if time_before_dt and r.physical_time and r.physical_time > time_before_dt:
+        if time_before_dt and r.event_time and r.event_time > time_before_dt:
             continue
-        if time_after_dt and r.physical_time and r.physical_time < time_after_dt:
+        if time_after_dt and r.event_time and r.event_time < time_after_dt:
             continue
         relation_absolute_ids.add(r.absolute_id)
     drop_entities = set()
     for eid in entity_absolute_ids:
         e = storage.get_entity_by_absolute_id(eid)
-        if e and e.physical_time:
-            if time_before_dt and e.physical_time > time_before_dt:
+        if e and e.event_time:
+            if time_before_dt and e.event_time > time_before_dt:
                 drop_entities.add(eid)
-            elif time_after_dt and e.physical_time < time_after_dt:
+            elif time_after_dt and e.event_time < time_after_dt:
                 drop_entities.add(eid)
     entity_absolute_ids -= drop_entities
     return entity_absolute_ids, relation_absolute_ids
@@ -196,14 +220,15 @@ def create_app(
     app.json.ensure_ascii = False
     app.config["system_monitor"] = system_monitor
 
-    # 允许测试页（不同端口）跨域调用 API，避免浏览器报 Failed to fetch
+    # CORS：仅允许同源和 localhost 跨域调用
+    _ALLOWED_ORIGINS = {"http://localhost", "http://127.0.0.1"}
     @app.after_request
     def _cors_headers(response):
         origin = request.environ.get("HTTP_ORIGIN")
-        if origin:
+        if origin and any(origin.startswith(allowed) for allowed in _ALLOWED_ORIGINS):
             response.headers["Access-Control-Allow-Origin"] = origin
         else:
-            response.headers["Access-Control-Allow-Origin"] = "*"
+            response.headers["Access-Control-Allow-Origin"] = ""
         response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
         response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
         return response
@@ -242,7 +267,7 @@ def create_app(
     # 简单内存限流（按 IP，滑动窗口）
     _rate_limit_store: Dict[str, List[float]] = {}
     _rate_limit_lock = threading.Lock()
-    _RATE_LIMIT = int(config.get("rate_limit_per_minute", 200))
+    _RATE_LIMIT = int(config.get("rate_limit_per_minute", 600))
     _RATE_WINDOW = 60.0  # 秒
 
     @app.before_request
@@ -285,6 +310,12 @@ def create_app(
             timestamps = [t for t in timestamps if t > cutoff]
             timestamps.append(now)
             _rate_limit_store[client_ip] = timestamps
+            # 定期清理长时间不活跃的 IP（超过窗口 2 倍时间未活跃则移除）
+            if len(_rate_limit_store) > 1000:
+                stale_ips = [ip for ip, ts in _rate_limit_store.items()
+                             if not ts or ts[-1] < cutoff]
+                for ip in stale_ips:
+                    del _rate_limit_store[ip]
             if len(timestamps) > _RATE_LIMIT:
                 return jsonify({"success": False, "error": "请求过于频繁，请稍后再试"}), 429
 
@@ -331,13 +362,13 @@ def create_app(
         target = _normalize_time_for_compare(time_point)
         scored: List[Tuple[float, int, Entity]] = []
         for version in proc.storage.get_entity_versions(entity_id):
-            if not version.physical_time:
+            if not version.event_time:
                 continue
-            vt = _normalize_time_for_compare(version.physical_time)
+            vt = _normalize_time_for_compare(version.event_time)
             delta_seconds = abs((vt - target).total_seconds())
             direction_bias = 0 if vt <= target else 1
             scored.append((delta_seconds, direction_bias, version))
-        scored.sort(key=lambda item: (item[0], item[1], -_normalize_time_for_compare(item[2].physical_time).timestamp()))
+        scored.sort(key=lambda item: (item[0], item[1], -_normalize_time_for_compare(item[2].processed_time).timestamp()))
         return scored
 
     # 向后兼容：/api/<path> → /api/v1/<path>（308 永久重定向）
@@ -760,6 +791,17 @@ def create_app(
                         "entity_id_b": "string，必填",
                     },
                 },
+                {
+                    "path": "/api/v1/find/paths/shortest",
+                    "methods": ["GET", "POST"],
+                    "summary": "查找两个实体之间的最短路径",
+                    "body_or_query": {
+                        "entity_id_a": "string，必填",
+                        "entity_id_b": "string，必填",
+                        "max_depth": "int，可选，默认6",
+                        "max_paths": "int，可选，默认10",
+                    },
+                },
             ],
             "memory_cache": [
                 {
@@ -818,6 +860,25 @@ def create_app(
     # =========================================================
     # System: 系统监控 API（无需 graph_id）
     # =========================================================
+    @app.route("/api/v1/system/dashboard", methods=["GET"])
+    def system_dashboard():
+        """仪表盘合并端点：一次返回 overview、graphs、tasks、logs、access-stats。"""
+        try:
+            if system_monitor is None:
+                return err("SystemMonitor 未启用", 503)
+            task_limit = request.args.get("task_limit", 50, type=int)
+            log_limit = request.args.get("log_limit", 100, type=int)
+            log_level = request.args.get("log_level")
+            log_source = request.args.get("log_source")
+            access_since = request.args.get("access_since", 300, type=float)
+            return ok(system_monitor.dashboard_snapshot(
+                task_limit=task_limit, log_limit=log_limit,
+                log_level=log_level, log_source=log_source,
+                access_since=access_since,
+            ))
+        except Exception as e:
+            return err(str(e), 500)
+
     @app.route("/api/v1/system/overview", methods=["GET"])
     def system_overview():
         """系统总览：图谱数量、运行时间、线程数。"""
@@ -1007,9 +1068,9 @@ def create_app(
             # --- 第五步：时间过滤 ---
             final_entities: List[Entity] = []
             for e in entities_by_abs.values():
-                if time_before_dt and e.physical_time and e.physical_time > time_before_dt:
+                if time_before_dt and e.event_time and e.event_time > time_before_dt:
                     continue
-                if time_after_dt and e.physical_time and e.physical_time < time_after_dt:
+                if time_after_dt and e.event_time and e.event_time < time_after_dt:
                     continue
                 final_entities.append(e)
 
@@ -1018,9 +1079,9 @@ def create_app(
             for r in matched_relations:
                 if r.absolute_id in seen_rel_ids:
                     continue
-                if time_before_dt and r.physical_time and r.physical_time > time_before_dt:
+                if time_before_dt and r.event_time and r.event_time > time_before_dt:
                     continue
-                if time_after_dt and r.physical_time and r.physical_time < time_after_dt:
+                if time_after_dt and r.event_time and r.event_time < time_after_dt:
                     continue
                 seen_rel_ids.add(r.absolute_id)
                 final_relations.append(r)
@@ -1032,7 +1093,7 @@ def create_app(
                 "entity_count": len(final_entities),
                 "relation_count": len(final_relations),
             }
-
+            enrich_relations(result["relations"], processor)
             return ok(result)
         except Exception as e:
             return err(str(e), 500)
@@ -1150,7 +1211,7 @@ def create_app(
             if not query_name:
                 return err("query_name 为必填参数", 400)
             query_content = _get_value("query_content") or None
-            threshold = float(_get_value("similarity_threshold") or _get_value("threshold", 0.7))
+            threshold = float(_get_value("similarity_threshold") or _get_value("threshold", 0.5))
             max_results = int(_get_value("max_results", 10))
             text_mode = str(_get_value("text_mode", "name_and_content") or "name_and_content")
             if text_mode not in ("name_only", "content_only", "name_and_content"):
@@ -1252,7 +1313,7 @@ def create_app(
                     continue
                 item = entity_to_dict(entity)
                 item["delta_seconds"] = round(delta_seconds, 6)
-                direction = _normalize_time_for_compare(entity.physical_time) - target
+                direction = _normalize_time_for_compare(entity.event_time) - target
                 item["relative_position"] = "before_or_exact" if direction.total_seconds() <= 0 else "after"
                 matches.append(item)
 
@@ -1305,7 +1366,9 @@ def create_app(
                 relations = relations[offset:]
             if limit is not None:
                 relations = relations[:limit]
-            return ok([relation_to_dict(r) for r in relations])
+            dicts = [relation_to_dict(r) for r in relations]
+            enrich_relations(dicts, processor)
+            return ok(dicts)
         except Exception as e:
             return err(str(e), 500)
 
@@ -1324,14 +1387,16 @@ def create_app(
             query_text = str(_get_value("query_text", "") or "").strip()
             if not query_text:
                 return err("query_text 为必填参数", 400)
-            threshold = float(_get_value("similarity_threshold") or _get_value("threshold", 0.3))
+            threshold = float(_get_value("similarity_threshold") or _get_value("threshold", 0.5))
             max_results = int(_get_value("max_results", 10))
             relations = processor.storage.search_relations_by_similarity(
                 query_text=query_text,
                 threshold=threshold,
                 max_results=max_results,
             )
-            return ok([relation_to_dict(r) for r in relations])
+            dicts = [relation_to_dict(r) for r in relations]
+            enrich_relations(dicts, processor)
+            return ok(dicts)
         except Exception as e:
             return err(str(e), 500)
 
@@ -1346,7 +1411,60 @@ def create_app(
             if not entity_id_a or not entity_id_b:
                 return err("entity_id_a 与 entity_id_b 为必填参数", 400)
             relations = processor.storage.get_relations_by_entities(entity_id_a, entity_id_b)
-            return ok([relation_to_dict(r) for r in relations])
+            dicts = [relation_to_dict(r) for r in relations]
+            enrich_relations(dicts, processor)
+            return ok(dicts)
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/v1/find/paths/shortest", methods=["GET", "POST"])
+    def find_shortest_paths():
+        """查找两个实体之间的最短路径"""
+        try:
+            processor = _get_processor()
+            body = request.get_json(silent=True) if request.method == "POST" else None
+            body = body if isinstance(body, dict) else {}
+            entity_id_a = str(body.get("entity_id_a") or body.get("from_entity_id")
+                             or request.args.get("entity_id_a")
+                             or request.args.get("from_entity_id") or "").strip()
+            entity_id_b = str(body.get("entity_id_b") or body.get("to_entity_id")
+                             or request.args.get("entity_id_b")
+                             or request.args.get("to_entity_id") or "").strip()
+            if not entity_id_a or not entity_id_b:
+                return err("entity_id_a 与 entity_id_b 为必填参数", 400)
+
+            max_depth = body.get("max_depth") if body else None
+            if max_depth is None:
+                max_depth = request.args.get("max_depth", type=int)
+            max_depth = max_depth or 6
+
+            max_paths = body.get("max_paths") if body else None
+            if max_paths is None:
+                max_paths = request.args.get("max_paths", type=int)
+            max_paths = max_paths or 10
+
+            result = processor.storage.find_shortest_paths(
+                source_entity_id=entity_id_a,
+                target_entity_id=entity_id_b,
+                max_depth=max_depth,
+                max_paths=max_paths,
+            )
+
+            serialized_paths = []
+            for p in result.get("paths", []):
+                serialized_paths.append({
+                    "entities": [entity_to_dict(e) for e in p.get("entities", [])],
+                    "relations": [relation_to_dict(r) for r in p.get("relations", [])],
+                    "length": p.get("length", 0),
+                })
+
+            return ok({
+                "source_entity": entity_to_dict(result["source_entity"]) if result.get("source_entity") else None,
+                "target_entity": entity_to_dict(result["target_entity"]) if result.get("target_entity") else None,
+                "path_length": result.get("path_length", -1),
+                "total_shortest_paths": result.get("total_shortest_paths", 0),
+                "paths": serialized_paths,
+            })
         except Exception as e:
             return err(str(e), 500)
 
@@ -1369,7 +1487,9 @@ def create_app(
             relation = processor.storage.get_relation_by_absolute_id(absolute_id)
             if relation is None:
                 return err(f"未找到关系版本: {absolute_id}", 404)
-            return ok(relation_to_dict(relation))
+            d = relation_to_dict(relation)
+            enrich_relations([d], processor)
+            return ok(d)
         except Exception as e:
             return err(str(e), 500)
 
@@ -1388,7 +1508,9 @@ def create_app(
                 limit=limit,
                 time_point=time_point,
             )
-            return ok([relation_to_dict(r) for r in relations])
+            dicts = [relation_to_dict(r) for r in relations]
+            enrich_relations(dicts, processor)
+            return ok(dicts)
         except Exception as e:
             return err(str(e), 500)
 
@@ -1397,7 +1519,9 @@ def create_app(
         try:
             processor = _get_processor()
             versions = processor.storage.get_relation_versions(relation_id)
-            return ok([relation_to_dict(r) for r in versions])
+            dicts = [relation_to_dict(r) for r in versions]
+            enrich_relations(dicts, processor)
+            return ok(dicts)
         except Exception as e:
             return err(str(e), 500)
 
@@ -1418,7 +1542,9 @@ def create_app(
                 time_point=time_point,
                 max_version_absolute_id=max_version_absolute_id,
             )
-            return ok([relation_to_dict(r) for r in relations])
+            dicts = [relation_to_dict(r) for r in relations]
+            enrich_relations(dicts, processor)
+            return ok(dicts)
         except Exception as e:
             return err(str(e), 500)
 
@@ -1471,6 +1597,28 @@ def create_app(
         except Exception as e:
             return err(str(e), 500)
 
+    @app.route("/api/v1/find/memory-caches/<cache_id>/doc", methods=["GET"])
+    def find_memory_cache_doc(cache_id: str):
+        """获取记忆缓存对应的完整文档内容（原文 + 缓存摘要）。"""
+        try:
+            processor = _get_processor()
+            doc_hash = processor.storage.get_doc_hash_by_cache_id(cache_id)
+            if not doc_hash:
+                return err(f"未找到文档: {cache_id}", 404)
+            content = processor.storage.get_doc_content(doc_hash)
+            if content is None:
+                return err("文档内容不存在", 404)
+            # 不返回 meta 中的大文本字段
+            meta = content.get("meta") or {}
+            meta_for_response = {k: v for k, v in meta.items() if k not in ("text", "document_path")}
+            return ok({
+                "meta": meta_for_response,
+                "original": content.get("original"),
+                "cache": content.get("cache"),
+            })
+        except Exception as e:
+            return err(str(e), 500)
+
     # =========================================================
     # 图谱管理
     # =========================================================
@@ -1512,15 +1660,36 @@ def create_app(
             result = []
             for d in docs:
                 result.append({
-                    "doc_hash": d.get("doc_hash"),
+                    "doc_hash": d.get("doc_hash", ""),
                     "source_document": d.get("source_document") or d.get("doc_name", ""),
                     "doc_name": d.get("source_document") or d.get("doc_name", ""),
                     "source_name": d.get("source_name", ""),
-                    "physical_time": d.get("physical_time"),
-                    "activity_type": d.get("activity_type"),
-                    "text_length": d.get("text_length", len(d.get("text", ""))),
+                    "event_time": d.get("event_time"),
+                    "processed_time": d.get("processed_time"),
+                    "activity_type": d.get("activity_type", ""),
+                    "text_length": d.get("text_length", 0),
+                    "filename": d.get("filename", ""),
                 })
             return ok({"docs": result, "count": len(result)})
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/v1/docs/<path:filename>", methods=["GET"])
+    def get_doc_content(filename):
+        """获取文档内容（原始文本和缓存摘要）。"""
+        try:
+            processor = _get_processor()
+            content = processor.storage.get_doc_content(filename)
+            if content is None:
+                return err("Document not found", 404)
+            # 不返回 meta 中的大文本字段
+            meta = content.get("meta") or {}
+            meta_for_response = {k: v for k, v in meta.items() if k not in ("text", "document_path")}
+            return ok({
+                "meta": meta_for_response,
+                "original": content.get("original"),
+                "cache": content.get("cache"),
+            })
         except Exception as e:
             return err(str(e), 500)
 

@@ -280,11 +280,21 @@ class EntityProcessor:
 
         entity_name_to_id: Dict[str, str] = {}
         for name, ids in name_to_ids.items():
-            in_storage = [eid for eid in ids if self.storage.get_entity_by_id(eid) is not None]
+            # 优先使用数据库中已存在的 entity_id（同名实体被多个线程分别匹配到不同候选）
+            in_storage = [eid for eid in ids if self.storage.get_entity_by_entity_id(eid) is not None]
             if in_storage:
                 entity_name_to_id[name] = in_storage[0]
             else:
                 entity_name_to_id[name] = sorted(ids)[0]
+
+        # 对于被合并到 canonical ID 的非 canonical 实体，需要从 results 中修正
+        for i, (idx, entity, relations, name_mapping, to_persist) in enumerate(results):
+            if entity and entity.entity_id != entity_name_to_id.get(entity.name):
+                canonical_id = entity_name_to_id.get(entity.name)
+                if canonical_id:
+                    canonical_entity = self.storage.get_entity_by_entity_id(canonical_id)
+                    if canonical_entity:
+                        results[i] = (idx, canonical_entity, relations, name_mapping, to_persist)
 
         canonical_ids = set(entity_name_to_id.values())
         all_to_persist: List[Entity] = [r[4] for r in results if r[4] is not None]
@@ -459,7 +469,7 @@ class EntityProcessor:
 
         match_existing_id = (batch_result.get("match_existing_id") or "").strip()
         if match_existing_id:
-            latest_entity = self.storage.get_entity_by_id(match_existing_id)
+            latest_entity = self.storage.get_entity_by_entity_id(match_existing_id)
             if not latest_entity:
                 wprint(f"  │  批量裁决命中的实体不存在，回退旧逻辑: {match_existing_id}")
                 entity, relations, name_mapping = self._process_single_entity(
@@ -602,11 +612,11 @@ class EntityProcessor:
                 entity_dict[entity.entity_id] = entity
             else:
                 # 保留物理时间最新的
-                if entity.physical_time > entity_dict[entity.entity_id].physical_time:
+                if entity.processed_time > entity_dict[entity.entity_id].processed_time:
                     entity_dict[entity.entity_id] = entity
-        
+
         similar_entities = list(entity_dict.values())
-        
+
         # 过滤候选实体：如果候选实体在当前抽取列表中，且与当前实体已经存在关系，则跳过
         # 因为步骤3（关系抽取）应该已经处理过这些实体之间的关系了
         if extracted_entity_names and extracted_relation_pairs:
@@ -641,7 +651,7 @@ class EntityProcessor:
         
         # # 如果合并后超过最大数量，按物理时间排序，保留最新的
         # if len(similar_entities) > self.max_similar_entities:
-        #     similar_entities.sort(key=lambda e: e.physical_time, reverse=True)
+        #     similar_entities.sort(key=lambda e: e.processed_time, reverse=True)
         #     similar_entities = similar_entities[:self.max_similar_entities]
         
         if not similar_entities:
@@ -665,7 +675,7 @@ class EntityProcessor:
                 entity_dict[entity.entity_id] = entity
             else:
                 # 保留物理时间最新的
-                if entity.physical_time > entity_dict[entity.entity_id].physical_time:
+                if entity.processed_time > entity_dict[entity.entity_id].processed_time:
                     entity_dict[entity.entity_id] = entity
         
         unique_entities = list(entity_dict.values())
@@ -884,7 +894,7 @@ class EntityProcessor:
                         # 在合并之前，先收集其他目标实体的信息（合并后这些ID就不存在了）
                         other_targets_entities.clear()  # 清空之前的数据
                         for other_target_id in other_targets:
-                            other_entity = self.storage.get_entity_by_id(other_target_id)
+                            other_entity = self.storage.get_entity_by_entity_id(other_target_id)
                             if other_entity:
                                 other_targets_entities[other_target_id] = {
                                     'entity': other_entity,
@@ -907,7 +917,7 @@ class EntityProcessor:
                         # 自指向关系会在后续的consolidate_knowledge_graph_entity中处理
                 
                 # 合并新实体到主要目标实体
-                latest_entity = self.storage.get_entity_by_id(primary_target_id)
+                latest_entity = self.storage.get_entity_by_entity_id(primary_target_id)
                 if latest_entity:
                     target_name = latest_entity.name
                     
@@ -1005,9 +1015,20 @@ class EntityProcessor:
         if not final_entity:
             # 检查是否有匹配的实体（通过分析结果判断）
             matched = len(merge_decisions) > 0
-            
-            if not matched:
-                # 没有匹配，创建新实体
+
+            if matched:
+                # 有合并决策但未成功生成 final_entity，尝试取第一个候选作为兜底
+                wprint(f"  │  ⚠️ 合并决策存在但未生成最终实体，使用兜底逻辑")
+                first_target_id = merge_decisions[0].get("target_entity_id", "")
+                if first_target_id:
+                    fallback_entity = self.storage.get_entity_by_entity_id(first_target_id)
+                    if fallback_entity:
+                        final_entity = fallback_entity
+                        entity_name_to_id[entity_name] = final_entity.entity_id
+                        entity_name_to_id[final_entity.name] = final_entity.entity_id
+
+            if not final_entity:
+                # 没有匹配或兜底失败，创建新实体
                 final_entity = self._create_new_entity(entity_name, entity_content, memory_cache_id, source_document, base_time=base_time)
                 # 更新映射：新创建的实体
                 entity_name_to_id[entity_name] = final_entity.entity_id
@@ -1041,18 +1062,20 @@ class EntityProcessor:
     def _build_new_entity(self, name: str, content: str, memory_cache_id: str,
                           source_document: str = "", base_time: Optional[datetime] = None) -> Entity:
         """构建新实体对象，但不立即写库。"""
-        ts = base_time if base_time is not None else datetime.now()
+        event_time = base_time if base_time is not None else datetime.now()
+        processed_time = datetime.now()
         entity_id = f"ent_{uuid.uuid4().hex[:12]}"
-        entity_record_id = f"entity_{ts.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
-        
+        entity_record_id = f"entity_{processed_time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+
         source_document_only = source_document.split('/')[-1] if source_document else ""
-        
+
         entity = Entity(
             absolute_id=entity_record_id,
             entity_id=entity_id,
             name=name,
             content=content,
-            physical_time=ts,
+            event_time=event_time,
+            processed_time=processed_time,
             memory_cache_id=memory_cache_id,
             source_document=source_document_only
         )
@@ -1065,27 +1088,29 @@ class EntityProcessor:
         self.storage.save_entity(entity)
         return entity
 
-    def _build_entity_version(self, entity_id: str, name: str, content: str, 
+    def _build_entity_version(self, entity_id: str, name: str, content: str,
                               memory_cache_id: str, source_document: str = "",
                               base_time: Optional[datetime] = None) -> Entity:
         """构建实体新版本对象，但不立即写库。"""
-        ts = base_time if base_time is not None else datetime.now()
-        entity_record_id = f"entity_{ts.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
-        
+        event_time = base_time if base_time is not None else datetime.now()
+        processed_time = datetime.now()
+        entity_record_id = f"entity_{processed_time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+
         source_document_only = source_document.split('/')[-1] if source_document else ""
-        
+
         entity = Entity(
             absolute_id=entity_record_id,
             entity_id=entity_id,
             name=name,
             content=content,
-            physical_time=ts,
+            event_time=event_time,
+            processed_time=processed_time,
             memory_cache_id=memory_cache_id,
             source_document=source_document_only
         )
         return entity
 
-    def _create_entity_version(self, entity_id: str, name: str, content: str, 
+    def _create_entity_version(self, entity_id: str, name: str, content: str,
                               memory_cache_id: str, source_document: str = "",
                               base_time: Optional[datetime] = None) -> Entity:
         """创建实体的新版本"""
