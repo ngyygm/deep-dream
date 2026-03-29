@@ -38,6 +38,24 @@ def _llm_client(**kwargs):
     return LLMClient(**kwargs)
 
 
+class TestRelationEntityCatalog:
+    """_build_relation_entity_catalog 与 relation_content_snippet_length 配置。"""
+
+    def test_name_only_when_relation_snippet_length_zero(self):
+        client = _llm_client(relation_content_snippet_length=0)
+        s, valid, order = client._build_relation_entity_catalog(
+            [
+                {"name": "A", "content": "should_not_appear_in_catalog"},
+                {"name": "B", "content": ""},
+            ],
+        )
+        assert "should_not_appear" not in s
+        assert "|" not in s
+        assert s.strip() == "- A\n- B"
+        assert valid == {"A", "B"}
+        assert order == ["A", "B"]
+
+
 # ---------------------------------------------------------------------------
 # PrioritySemaphore tests
 # ---------------------------------------------------------------------------
