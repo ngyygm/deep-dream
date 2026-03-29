@@ -5,18 +5,92 @@ import json
 from typing import Any, Dict, List, Optional
 
 from ..models import MemoryCache
-from ..utils import clean_markdown_code_blocks, wprint
+from ..utils import wprint
 from .prompts import (
     EXTRACT_ENTITIES_AND_RELATIONS_SYSTEM_PROMPT,
     EXTRACT_ENTITIES_SINGLE_PASS_SYSTEM_PROMPT,
     EXTRACT_ENTITIES_BY_NAMES_SYSTEM_PROMPT,
     ENHANCE_ENTITY_CONTENT_SYSTEM_PROMPT,
+    ENHANCE_ENTITY_JSON_RETRY_USER,
     DETAILED_JUDGMENT_PROCESS,
 )
 
 
+def _strip_yamlish_scalar(s: str) -> str:
+    s = (s or "").strip()
+    if len(s) >= 2 and s[0] == s[-1] and s[0] in "\"'":
+        return s[1:-1]
+    return s
+
+
+def _try_parse_bullet_name_content_entities(text: str) -> Optional[List[Dict[str, str]]]:
+    """
+    兼容模型误输出的 YAML 风格：交替的「- name: …」与「- content: …」行（非 JSON）。
+    若无法识别为该类格式则返回 None。
+    """
+    raw = (text or "").strip()
+    if not raw.startswith("-"):
+        return None
+    lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+    out: List[Dict[str, str]] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if not line.startswith("- name:"):
+            i += 1
+            continue
+        name_val = _strip_yamlish_scalar(line[len("- name:") :].strip())
+        if i + 1 >= len(lines):
+            break
+        line2 = lines[i + 1]
+        if not line2.startswith("- content:"):
+            i += 1
+            continue
+        content_val = _strip_yamlish_scalar(line2[len("- content:") :].strip())
+        if name_val:
+            out.append({"name": name_val, "content": content_val})
+        i += 2
+    return out if out else None
+
+
+def _json_code_block(payload: Any) -> str:
+    """将验收后的 JSON 结果重新包装为单个 json 代码块，供后续轮次复用。"""
+    return f"```json\n{json.dumps(payload, ensure_ascii=False)}\n```"
+
+
 class _EntityExtractionMixin:
     """实体抽取相关的 LLM 操作（mixin，通过 LLMClient 多继承使用）。"""
+
+    def _parse_entities_list_from_response(self, response: str) -> List[Dict[str, str]]:
+        """从 LLM 响应解析实体列表；JSON 非法时抛出 json.JSONDecodeError（供重试逻辑使用）。"""
+        stripped = (response or "").strip()
+        if stripped.startswith("-"):
+            bullet = _try_parse_bullet_name_content_entities(response)
+            if bullet is not None:
+                entities: Any = bullet
+            else:
+                entities = self._parse_json_response(response)
+        else:
+            try:
+                entities = self._parse_json_response(response)
+            except json.JSONDecodeError:
+                bullet = _try_parse_bullet_name_content_entities(response)
+                if bullet is not None:
+                    entities = bullet
+                else:
+                    raise
+        if not isinstance(entities, list):
+            entities = [entities]
+        cleaned: List[Dict[str, str]] = []
+        for entity in entities:
+            if isinstance(entity, dict) and "name" in entity and "content" in entity:
+                cleaned.append(
+                    {
+                        "name": str(entity["name"]).strip(),
+                        "content": str(entity["content"]).strip(),
+                    }
+                )
+        return cleaned
 
     def extract_entities_and_relations(self, memory_cache: MemoryCache, input_text: str,
                                         rounds: int = 1, verbose: bool = False) -> tuple:
@@ -61,44 +135,55 @@ class _EntityExtractionMixin:
 
         for round_idx in range(max(1, rounds)):
             if verbose:
-                wprint(f"      合并抽取第 {round_idx + 1}/{rounds} 轮...")
+                r, t = round_idx + 1, rounds
+                wprint(f"【合并】轮{r}/{t}｜进行｜")
 
-            response = self._call_llm("", messages=messages)
-            new_entities, new_relations = self._parse_merged_extraction_response(response)
-
-            # 把本轮的 user + assistant 追加到对话历史
-            if round_idx == 0:
-                # 第一轮：user 消息已在 messages 中，追加 assistant 回复
-                messages.append({"role": "assistant", "content": response})
-            else:
-                # 后续轮次：user 追问 + assistant 回复 都追加
-                pass  # user 消息在下面追加
+            (new_entities, new_relations), response = self.call_llm_until_json_parses(
+                messages,
+                parse_fn=lambda r: self._parse_merged_extraction_response(r),
+                json_parse_retries=2,
+            )
 
             # 按名称去重合并实体
+            accepted_entities: List[Dict[str, str]] = []
             new_entity_count = 0
             for e in new_entities:
                 if e['name'] not in seen_names:
                     all_entities.append(e)
                     seen_names.add(e['name'])
+                    accepted_entities.append(e)
                     new_entity_count += 1
 
             # 按 (entity1, entity2) 去重合并关系
+            accepted_relations: List[Dict[str, str]] = []
             new_rel_count = 0
             for r in new_relations:
                 key = (r['entity1_name'], r['entity2_name'])
                 if key not in seen_rel_keys:
                     all_relations.append(r)
                     seen_rel_keys.add(key)
+                    accepted_relations.append(r)
                     new_rel_count += 1
 
+            accepted_response = _json_code_block({
+                "entities": accepted_entities,
+                "relations": accepted_relations,
+            })
+
+            messages.append({"role": "assistant", "content": accepted_response})
+
             if verbose:
-                wprint(f"        第 {round_idx + 1} 轮完成：新增 {new_entity_count} 实体、{new_rel_count} 关系，"
-                      f"累计 {len(all_entities)} 实体、{len(all_relations)} 关系")
+                r, t = round_idx + 1, rounds
+                wprint(
+                    f"【合并】轮{r}/{t}｜完成｜新{new_entity_count}实体 {new_rel_count}关系 "
+                    f"累{len(all_entities)}实体 {len(all_relations)}关系"
+                )
 
             # 本轮无新增，提前退出
             if new_entity_count == 0 and new_rel_count == 0:
                 if verbose:
-                    wprint(f"        本轮无新增内容，停止抽取")
+                    r, t = round_idx + 1, rounds
+                    wprint(f"【合并】轮{r}/{t}｜停止｜无新增")
                 break
 
             # 还有下一轮，追加追问消息
@@ -175,7 +260,9 @@ class _EntityExtractionMixin:
 
             return entities, valid_relations
 
-        except (json.JSONDecodeError, Exception) as e:
+        except json.JSONDecodeError:
+            raise
+        except Exception as e:
             wprint(f"解析合并抽取JSON失败: {e}")
             wprint(f"响应内容: {response[:500]}...")
             return [], []
@@ -193,9 +280,35 @@ class _EntityExtractionMixin:
                 return vn
         return None
 
+    def _build_entity_compress_user_prompt(
+        self,
+        memory_cache: MemoryCache,
+        input_text: str,
+        seen_names: set,
+        round_idx: int,
+        rounds: int,
+    ) -> str:
+        """压缩多轮：每轮独立请求，仅附带已抽取名称列表（不累积 assistant JSON）。"""
+        names_block = "\n".join(sorted(seen_names)) if seen_names else "(无)"
+        return f"""<记忆缓存>
+{memory_cache.content}
+</记忆缓存>
+
+<输入文本>
+{input_text}
+</输入文本>
+
+<已抽取实体名称>
+{names_block}
+</已抽取实体名称>
+
+这是第 {round_idx + 1}/{rounds} 轮补充抽取。请只输出**本轮新增**的概念实体 JSON 数组（每项含 name、content），不要重复上面已列名称；若无可补充则输出空数组 []。
+"""
+
     def extract_entities(self, memory_cache: MemoryCache, input_text: str,
                          rounds: int = 1, verbose: bool = False,
-                         on_round_done=None) -> List[Dict[str, str]]:
+                         on_round_done=None,
+                         compress_multi_round: bool = False) -> List[Dict[str, str]]:
         """
         抽取实体，支持多轮次补充抽取（利用 LLM 对话历史）。
 
@@ -205,6 +318,7 @@ class _EntityExtractionMixin:
             rounds: 抽取轮次（默认 1）；>1 时利用对话历史要求 LLM 继续补充
             verbose: 是否输出详细信息
             on_round_done: 每轮完成后的回调 fn(round_idx, total_rounds, cumulative_count)
+            compress_multi_round: 为 True 且 rounds>1 时不累积各轮 assistant 全文，每轮重建请求并仅附带已抽取名称列表，降低上下文膨胀
 
         Returns:
             抽取的实体列表，每个实体包含 name 和 content
@@ -228,61 +342,78 @@ class _EntityExtractionMixin:
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": first_prompt},
         ]
+        # 压缩多轮：按轮追加 user/assistant，供蒸馏保存（无长 JSON 堆叠在单次请求外）
+        distill_flat: List[Dict[str, str]] = []
 
         for round_idx in range(max(1, rounds)):
             if verbose:
-                wprint(f"      实体抽取第 {round_idx + 1}/{rounds} 轮...")
+                r, t = round_idx + 1, rounds
+                wprint(f"【步骤2】轮{r}/{t}｜进行｜")
 
-            response = self._call_llm("", messages=messages)
+            if compress_multi_round and round_idx > 0:
+                uc = self._build_entity_compress_user_prompt(
+                    memory_cache, input_text, seen_names, round_idx, rounds
+                )
+                messages = [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": uc},
+                ]
 
-            # 解析
-            new_entities = self._parse_entities_response(response)
+            new_entities, response = self.call_llm_until_json_parses(
+                messages,
+                parse_fn=lambda r: self._parse_entities_list_from_response(r),
+                json_parse_retries=4,
+            )
 
-            # 追加 assistant 回复到对话历史
-            messages.append({"role": "assistant", "content": response})
-
-            # 去重合并
+            # 验收并去重：仅将本轮真正新增的实体作为“被系统接受”的 assistant 输出
+            accepted_entities: List[Dict[str, str]] = []
             new_count = 0
             for e in new_entities:
                 if e['name'] not in seen_names:
                     all_entities.append(e)
                     seen_names.add(e['name'])
+                    accepted_entities.append(e)
                     new_count += 1
 
+            accepted_response = _json_code_block(accepted_entities)
+
+            distill_flat.append({"role": "user", "content": messages[-1]["content"]})
+            distill_flat.append({"role": "assistant", "content": accepted_response})
+
+            if not compress_multi_round:
+                messages.append({"role": "assistant", "content": accepted_response})
+
             if verbose:
-                wprint(f"        第 {round_idx + 1} 轮完成：新增 {new_count} 实体，累计 {len(all_entities)} 实体")
+                r, t = round_idx + 1, rounds
+                wprint(
+                    f"【步骤2】轮{r}/{t}｜完成｜新{new_count} 累{len(all_entities)}实体"
+                )
 
             if on_round_done:
                 on_round_done(round_idx + 1, rounds, len(all_entities))
 
             if new_count == 0:
                 if verbose:
-                    wprint(f"        本轮无新增实体，停止抽取")
+                    r, t = round_idx + 1, rounds
+                    wprint(f"【步骤2】轮{r}/{t}｜停止｜无新增")
                 break
 
-            if round_idx + 1 < rounds:
+            if round_idx + 1 < rounds and not compress_multi_round:
                 messages.append({"role": "user", "content": "请继续从文本中补充更多概念实体，不要重复已提取的内容。"})
 
-        # 多轮次：保存最后一轮的完整 messages（含对话历史）
-        if self._distill_data_dir and self._current_distill_step and messages:
-            self._save_distill_conversation(messages)
+        if self._distill_data_dir and self._current_distill_step:
+            if compress_multi_round:
+                save_msgs = [{"role": "system", "content": system_prompt}] + distill_flat
+            else:
+                save_msgs = messages
+            self._save_distill_conversation(save_msgs)
 
         return all_entities
 
     def _parse_entities_response(self, response: str) -> List[Dict[str, str]]:
-        """解析实体抽取的 LLM 响应。"""
+        """解析实体抽取的 LLM 响应（兼容旧调用；JSON 非法时返回空列表）。"""
         try:
-            entities = self._parse_json_response(response)
-            if not isinstance(entities, list):
-                entities = [entities]
-            cleaned = []
-            for entity in entities:
-                if isinstance(entity, dict) and 'name' in entity and 'content' in entity:
-                    cleaned.append({
-                        'name': str(entity['name']).strip(),
-                        'content': str(entity['content']).strip(),
-                    })
-            return cleaned
+            return self._parse_entities_list_from_response(response)
         except Exception as e:
             wprint(f"解析实体JSON失败: {e}")
             wprint(f"响应内容: {response[:500]}...")
@@ -332,40 +463,25 @@ class _EntityExtractionMixin:
 
         if verbose:
             if existing_entities:
-                wprint(f"          正在调用LLM查漏补缺（已抽取 {len(existing_entities)} 个实体）...")
+                wprint(f"【步骤2】单次｜调用｜查漏·已抽{len(existing_entities)}实体")
             else:
-                wprint(f"          正在调用LLM进行实体抽取...")
+                wprint("【步骤2】单次｜调用｜抽取")
 
-        response = self._call_llm(prompt, system_prompt)
+        messages_sp = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt},
+        ]
+        cleaned_entities, response = self.call_llm_until_json_parses(
+            messages_sp,
+            parse_fn=lambda r: self._parse_entities_list_from_response(r),
+            json_parse_retries=2,
+        )
 
         if verbose:
-            wprint(f"          LLM调用完成，正在解析结果...")
+            wprint("【步骤2】单次｜解析｜")
+            wprint(f"【步骤2】单次｜结果｜{len(cleaned_entities)}实体")
 
-        # 解析JSON响应
-        try:
-            entities = self._parse_json_response(response)
-            if not isinstance(entities, list):
-                entities = [entities]
-
-            # 验证并清理实体数据，移除ID字段（如果存在）
-            cleaned_entities = []
-            for entity in entities:
-                if isinstance(entity, dict) and 'name' in entity and 'content' in entity:
-                    # 只保留name和content字段，移除其他字段（如entity_id）
-                    cleaned_entity = {
-                        'name': str(entity['name']).strip(),
-                        'content': str(entity['content']).strip()
-                    }
-                    cleaned_entities.append(cleaned_entity)
-
-            if verbose:
-                wprint(f"          解析完成，获得 {len(cleaned_entities)} 个实体")
-
-            return cleaned_entities
-        except (json.JSONDecodeError, Exception) as e:
-            wprint(f"解析实体JSON失败: {e}")
-            wprint(f"响应内容: {response[:500]}...")  # 只显示前500个字符
-            return []
+        return cleaned_entities
 
     def extract_entities_by_names(self, memory_cache: MemoryCache, input_text: str,
                                   entity_names: List[str],
@@ -401,41 +517,35 @@ class _EntityExtractionMixin:
 {entity_names_str}
 </指定实体名称>
 
-请从输入文本中抽取上述指定的实体："""
+请从输入文本中抽取上述指定的实体。只输出一个 ```json ... ``` 代码块；代码块内部必须是 JSON 数组，每个对象仅含 "name" 与 "content" 字符串字段；不要输出 YAML 或 `- name:` 格式。"""
 
         if verbose:
-            wprint(f"          正在调用LLM抽取指定实体（共 {len(entity_names)} 个）...")
+            wprint(f"【步骤4】补全｜调用｜{len(entity_names)}个名称")
 
-        response = self._call_llm(prompt, system_prompt)
+        messages_sp = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt},
+        ]
+
+        def _parse_and_filter(r: str) -> List[Dict[str, str]]:
+            raw = self._parse_entities_list_from_response(r)
+            out: List[Dict[str, str]] = []
+            for e in raw:
+                if e.get("name") in entity_names:
+                    out.append(e)
+            return out
+
+        cleaned_entities, response = self.call_llm_until_json_parses(
+            messages_sp,
+            parse_fn=_parse_and_filter,
+            json_parse_retries=2,
+        )
 
         if verbose:
-            wprint(f"          LLM调用完成，正在解析结果...")
+            wprint("【步骤4】补全｜解析｜")
+            wprint(f"【步骤4】补全｜结果｜{len(cleaned_entities)}实体")
 
-        # 解析JSON响应
-        try:
-            entities = self._parse_json_response(response)
-            if not isinstance(entities, list):
-                entities = [entities]
-
-            cleaned_entities = []
-            for entity in entities:
-                if isinstance(entity, dict) and 'name' in entity and 'content' in entity:
-                    cleaned_entity = {
-                        'name': str(entity['name']).strip(),
-                        'content': str(entity['content']).strip()
-                    }
-                    # 只保留在指定名称列表中的实体
-                    if cleaned_entity['name'] in entity_names:
-                        cleaned_entities.append(cleaned_entity)
-
-            if verbose:
-                wprint(f"          解析完成，获得 {len(cleaned_entities)} 个实体")
-
-            return cleaned_entities
-        except (json.JSONDecodeError, Exception) as e:
-            if verbose:
-                wprint(f"          解析实体JSON失败: {e}")
-            return []
+        return cleaned_entities
 
     def enhance_entity_content(self, memory_cache: MemoryCache, input_text: str,
                               entity: Dict[str, str]) -> str:
@@ -465,27 +575,30 @@ class _EntityExtractionMixin:
 - 当前content：{entity['content']}
 </已抽取实体>
 
-请对该实体的 content 进行增强，输出格式：{{"content": "增强后的完整实体content"}}"""
+请对该实体的 content 进行增强。只输出与系统说明一致的 ```json ... ``` 代码块；代码块内部是单个 JSON 对象，且仅含键 "content"（值为增强后的完整描述字符串）。"""
 
-        response = self._call_llm(prompt, system_prompt)
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt},
+        ]
 
-        # 尝试解析JSON响应
-        try:
+        def _parse_enhance_response(response: str) -> str:
             result = self._parse_json_response(response)
+            if not isinstance(result, dict) or "content" not in result:
+                raise json.JSONDecodeError("enhance: 需要含 content 的 JSON 对象", response, 0)
+            enhanced_content = str(result["content"]).strip()
+            if not enhanced_content:
+                raise json.JSONDecodeError("enhance: content 为空", response, 0)
+            return enhanced_content
 
-            # 提取content字段
-            if isinstance(result, dict) and 'content' in result:
-                enhanced_content = str(result['content']).strip()
-                # 如果content不为空，返回增强后的内容
-                if enhanced_content:
-                    return enhanced_content
-
-            # 如果JSON格式不正确或content为空，回退到原始响应
-            wprint(f"警告：实体后验增强返回的JSON格式不正确或content为空，使用原始响应")
-            return response.strip()
-
+        try:
+            enhanced, _ = self.call_llm_until_json_parses(
+                messages,
+                parse_fn=_parse_enhance_response,
+                json_parse_retries=3,
+                json_retry_user_message=ENHANCE_ENTITY_JSON_RETRY_USER,
+            )
+            return enhanced
         except (json.JSONDecodeError, Exception) as e:
-            # JSON解析失败
-            wprint(f"警告：实体后验增强JSON解析失败，使用原始响应: {e}")
-            cleaned_response = clean_markdown_code_blocks(response)
-            return cleaned_response.strip()
+            wprint(f"警告：实体后验增强 JSON 解析失败，保留原 content: {e}")
+            return (entity.get("content") or "").strip()

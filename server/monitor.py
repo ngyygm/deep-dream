@@ -250,7 +250,12 @@ class GraphMonitor:
             threads = list(_threading.enumerate())
             names = [t.name for t in threads]
             processor_stats = {}
-            if hasattr(self._processor, "get_runtime_stats"):
+            if hasattr(self._queue, "get_runtime_stats_snapshot"):
+                try:
+                    processor_stats = self._queue.get_runtime_stats_snapshot()
+                except Exception:
+                    processor_stats = {}
+            if not processor_stats and hasattr(self._processor, "get_runtime_stats"):
                 try:
                     processor_stats = self._processor.get_runtime_stats()
                 except Exception:
@@ -264,7 +269,9 @@ class GraphMonitor:
                 "remember_worker_threads_alive": remember_alive,
                 "remember_worker_threads_busy": queue_snapshot["running_count"],
                 "window_threads_alive": window_alive,
-                "window_threads_busy": int(processor_stats.get("active_window_extractions", 0)),
+                "window_threads_busy": int(
+                    processor_stats.get("active_main_pipeline_windows", processor_stats.get("active_window_extractions", 0))
+                ),
                 "window_threads_peak": int(processor_stats.get("peak_window_extractions", 0)),
                 "window_threads_configured": int(processor_stats.get("configured_window_workers", 0)),
                 "step6_active": int(processor_stats.get("active_step6", 0)),

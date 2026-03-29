@@ -9,7 +9,7 @@ import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, List, Optional
 
-from server.config import resolve_embedding_model
+from server.config import merge_llm_alignment, resolve_embedding_model
 from processor.storage.embedding import EmbeddingClient
 from processor.pipeline.orchestrator import TemporalMemoryGraphProcessor
 
@@ -71,6 +71,16 @@ class GraphRegistry:
                 self._processors[graph_id] = self._build_processor(storage_path)
             return self._processors[graph_id]
 
+    def create_task_processor(self, graph_id: str) -> TemporalMemoryGraphProcessor:
+        """为单个 remember task 创建独立 Processor 实例。
+
+        用于 load_cache_memory=False 的独立任务并行执行，避免共享
+        current_memory_cache 等运行时状态。
+        """
+        with self._lock:
+            storage_path = str(self._base_path / graph_id)
+        return self._build_processor(storage_path)
+
     def _build_processor(self, storage_path: str) -> TemporalMemoryGraphProcessor:
         """根据 config 构建一个 Processor 实例，使用共享的 EmbeddingClient。"""
         config = self._config
@@ -79,6 +89,13 @@ class GraphRegistry:
         overlap = chunking.get("overlap", 200)
         llm = config.get("llm") or {}
         pipeline = config.get("pipeline") or {}
+        runtime = config.get("runtime") or {}
+        runtime_concurrency = runtime.get("concurrency") or {}
+        runtime_task = runtime.get("task") or {}
+        pipeline_search = pipeline.get("search") or {}
+        pipeline_alignment = pipeline.get("alignment") or {}
+        pipeline_extraction = pipeline.get("extraction") or {}
+        pipeline_debug = pipeline.get("debug") or {}
         max_concurrency = llm.get("max_concurrency")
         kwargs: dict = {
             "storage_path": storage_path,
@@ -87,21 +104,34 @@ class GraphRegistry:
             "llm_api_key": llm.get("api_key"),
             "llm_model": llm.get("model", "gpt-4"),
             "llm_base_url": llm.get("base_url"),
+            "alignment_llm": merge_llm_alignment(llm),
             "llm_think_mode": bool(llm.get("think", llm.get("think_mode", False))),
             "embedding_client": self._get_embedding_client(),
             "llm_max_tokens": llm.get("max_tokens"),
+            "llm_context_window_tokens": llm.get("context_window_tokens"),
             "max_llm_concurrency": max_concurrency,
+            "load_cache_memory": runtime_task.get("load_cache_memory", pipeline.get("load_cache_memory")),
+            "max_concurrent_windows": runtime_concurrency.get("window_workers", pipeline.get("max_concurrent_windows")),
         }
         for key in (
             "similarity_threshold", "max_similar_entities", "content_snippet_length",
-            "relation_content_snippet_length", "entity_post_enhancement",
-            "extraction_rounds", "entity_extraction_rounds", "relation_extraction_rounds", "load_cache_memory",
-            "jaccard_search_threshold", "embedding_name_search_threshold", "embedding_full_search_threshold",
-            "max_concurrent_windows", "max_alignment_candidates",
-            "distill_data_dir",
+            "relation_content_snippet_length", "relation_endpoint_jaccard_threshold",
+            "relation_endpoint_embedding_threshold",
+            "jaccard_search_threshold",
+            "embedding_name_search_threshold", "embedding_full_search_threshold",
         ):
-            if key in pipeline:
-                kwargs[key] = pipeline[key]
+            if key in pipeline_search:
+                kwargs[key] = pipeline_search[key]
+        if "max_alignment_candidates" in pipeline_alignment:
+            kwargs["max_alignment_candidates"] = pipeline_alignment["max_alignment_candidates"]
+        for key in (
+            "extraction_rounds", "entity_extraction_rounds", "relation_extraction_rounds",
+            "entity_post_enhancement", "compress_multi_round_extraction",
+        ):
+            if key in pipeline_extraction:
+                kwargs[key] = pipeline_extraction[key]
+        if "distill_data_dir" in pipeline_debug:
+            kwargs["distill_data_dir"] = pipeline_debug["distill_data_dir"]
         return TemporalMemoryGraphProcessor(**kwargs)
 
     # ------------------------------------------------------------------
@@ -122,6 +152,7 @@ class GraphRegistry:
                 self._queues[graph_id] = RememberTaskQueue(
                     processor,
                     storage_path,
+                    processor_factory=lambda gid=graph_id: self.create_task_processor(gid),
                     max_workers=self._config.get("remember_workers", 1),
                     max_retries=self._config.get("remember_max_retries", 2),
                     retry_delay_seconds=self._config.get("remember_retry_delay_seconds", 2),

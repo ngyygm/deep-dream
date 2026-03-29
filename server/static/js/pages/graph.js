@@ -8,6 +8,7 @@
   let relationMap = {}; // absolute_id -> relation data
   let versionCounts = {}; // entity_id -> version count
   let isFirstRender = true;
+  let pinnedNodePositions = {}; // absolute_id -> { x, y }
 
   // Focus state
   let focusAbsoluteId = null;
@@ -411,6 +412,22 @@
       versionLabel: versionLabel,
       unnamedLabel: t('graph.unnamedEntity'),
     });
+    const visibleNodeIds = new Set();
+    nodes.forEach((node) => {
+      visibleNodeIds.add(node.id);
+      const pinned = pinnedNodePositions[node.id];
+      if (pinned) {
+        nodes.update({
+          id: node.id,
+          x: pinned.x,
+          y: pinned.y,
+          fixed: { x: true, y: true },
+        });
+      }
+    });
+    for (const nodeId of Object.keys(pinnedNodePositions)) {
+      if (!visibleNodeIds.has(nodeId)) delete pinnedNodePositions[nodeId];
+    }
     entityMap = eMap;
 
     const { edges, relationMap: rMap } = GraphUtils.buildEdges(relations, nodeIds, {
@@ -449,6 +466,22 @@
       } else if (edgeId) {
         showRelationDetail(edgeId);
       }
+    });
+
+    network.on('dragEnd', (params) => {
+      if (!params.nodes || params.nodes.length === 0) return;
+      const positions = network.getPositions(params.nodes);
+      params.nodes.forEach((nodeId) => {
+        const pos = positions[nodeId];
+        if (!pos) return;
+        pinnedNodePositions[nodeId] = { x: pos.x, y: pos.y };
+        nodes.update({
+          id: nodeId,
+          x: pos.x,
+          y: pos.y,
+          fixed: { x: true, y: true },
+        });
+      });
     });
   }
 

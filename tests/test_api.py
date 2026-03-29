@@ -26,10 +26,12 @@ from __future__ import annotations
 import json
 import shutil
 import time
+from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 import pytest
+from server.queue import RememberTask
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -492,6 +494,122 @@ class TestRememberEndpoint:
         assert data["success"] is True
         assert data["data"]["task_id"] == task_id
         assert data["data"]["status"] in ("queued", "running", "completed", "failed")
+
+    def test_remember_omitted_load_cache_uses_config_default(self, client, created_graph):
+        resp = client.post(
+            f"/api/v1/remember?graph_id={created_graph}",
+            data=json.dumps({"text": "Hello world"}),
+            content_type="application/json",
+        )
+        assert resp.status_code == 202
+        task_id = resp.get_json()["data"]["task_id"]
+
+        status = client.get(f"/api/v1/remember/tasks/{task_id}?graph_id={created_graph}")
+        assert status.status_code == 200
+        data = status.get_json()
+        assert data["success"] is True
+        assert data["data"]["load_cache_memory"] is False
+
+    def test_remember_explicit_load_cache_is_persisted(self, client, created_graph):
+        resp = client.post(
+            f"/api/v1/remember?graph_id={created_graph}",
+            data=json.dumps({"text": "Hello world", "load_cache_memory": True}),
+            content_type="application/json",
+        )
+        assert resp.status_code == 202
+        task_id = resp.get_json()["data"]["task_id"]
+
+        status = client.get(f"/api/v1/remember/tasks/{task_id}?graph_id={created_graph}")
+        assert status.status_code == 200
+        data = status.get_json()
+        assert data["success"] is True
+        assert data["data"]["load_cache_memory"] is True
+
+    def test_remember_file_upload_parses_load_cache_false(self, client, created_graph):
+        resp = client.post(
+            f"/api/v1/remember?graph_id={created_graph}",
+            data={
+                "file": (BytesIO(b"file upload content"), "upload.txt"),
+                "load_cache_memory": "false",
+            },
+            content_type="multipart/form-data",
+        )
+        assert resp.status_code == 202
+        task_id = resp.get_json()["data"]["task_id"]
+
+        status = client.get(f"/api/v1/remember/tasks/{task_id}?graph_id={created_graph}")
+        assert status.status_code == 200
+        data = status.get_json()
+        assert data["success"] is True
+        assert data["data"]["load_cache_memory"] is False
+
+    def test_remember_delete_queued_task(self, client, created_graph):
+        resp = client.post(
+            f"/api/v1/remember?graph_id={created_graph}",
+            data=json.dumps({"text": "Delete me"}),
+            content_type="application/json",
+        )
+        assert resp.status_code == 202
+        task_id = resp.get_json()["data"]["task_id"]
+
+        deleted = client.delete(f"/api/v1/remember/tasks/{task_id}?graph_id={created_graph}")
+        assert deleted.status_code == 200
+        payload = deleted.get_json()
+        assert payload["success"] is True
+        assert payload["data"]["status"] == "deleted"
+
+        status = client.get(f"/api/v1/remember/tasks/{task_id}?graph_id={created_graph}")
+        assert status.status_code == 404
+
+    def test_remember_delete_missing_task(self, client, created_graph):
+        resp = client.delete(
+            f"/api/v1/remember/tasks/nonexistent-task?graph_id={created_graph}"
+        )
+        assert resp.status_code == 404
+        data = resp.get_json()
+        assert data["success"] is False
+
+    def test_remember_pause_running_task(self, client, registry, created_graph):
+        resp = client.post(
+            f"/api/v1/remember?graph_id={created_graph}",
+            data=json.dumps({"text": "Pause me"}),
+            content_type="application/json",
+        )
+        assert resp.status_code == 202
+        task_id = resp.get_json()["data"]["task_id"]
+        queue = registry.get_queue(created_graph)
+        task = queue.get_status(task_id)
+        assert task is not None
+        task.status = "running"
+
+        paused = client.post(f"/api/v1/remember/tasks/{task_id}/pause?graph_id={created_graph}")
+        assert paused.status_code == 200
+        data = paused.get_json()
+        assert data["success"] is True
+        assert data["data"]["status"] == "pausing"
+
+    def test_remember_resume_paused_task(self, client, registry, created_graph):
+        queue = registry.get_queue(created_graph)
+        task = RememberTask(
+            task_id="paused-task",
+            text="Resume me",
+            source_name="resume.txt",
+            load_cache=False,
+            control_action=None,
+            event_time=None,
+            original_path="",
+            status="paused",
+            phase="paused",
+            phase_label="已暂停",
+            message="任务已暂停，可继续",
+        )
+        queue._tasks[task.task_id] = task
+
+        resumed = client.post(f"/api/v1/remember/tasks/{task.task_id}/resume?graph_id={created_graph}")
+        assert resumed.status_code == 200
+        data = resumed.get_json()
+        assert data["success"] is True
+        assert data["data"]["status"] == "queued"
 
     def test_remember_task_list(self, client, created_graph):
         resp = client.get(

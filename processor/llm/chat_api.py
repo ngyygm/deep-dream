@@ -8,13 +8,46 @@
 """
 from __future__ import annotations
 
+import atexit
 from dataclasses import dataclass
 import json
-from typing import Any, Dict, Iterator, List, Optional
+import threading
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 from urllib import request
 from urllib.error import HTTPError, URLError
 
 from openai import OpenAI
+
+# 每个 LLM 请求若都 new OpenAI()，会在高并发下为每个实例挂一套 httpx 连接池，迅速耗尽 fd（Errno 24）。
+_openai_singleton_lock = threading.Lock()
+_openai_singletons: Dict[Tuple[str, str], OpenAI] = {}
+
+
+def _openai_shared_client(base_url: str, api_key: str) -> OpenAI:
+    bu = (base_url or "").rstrip("/")
+    key = api_key if api_key is not None else ""
+    cache_key = (bu, key)
+    with _openai_singleton_lock:
+        client = _openai_singletons.get(cache_key)
+        if client is None:
+            client = OpenAI(base_url=bu, api_key=key or None)
+            _openai_singletons[cache_key] = client
+        return client
+
+
+def _close_all_openai_shared_clients() -> None:
+    with _openai_singleton_lock:
+        for c in list(_openai_singletons.values()):
+            try:
+                close = getattr(c, "close", None)
+                if callable(close):
+                    close()
+            except Exception:
+                pass
+        _openai_singletons.clear()
+
+
+atexit.register(_close_all_openai_shared_clients)
 
 
 @dataclass
@@ -201,7 +234,7 @@ def openai_compatible_chat(
     max_tokens: Optional[int] = None,
 ) -> OllamaChatResponse:
     """OpenAI 兼容 chat（非流式）。"""
-    client = OpenAI(base_url=base_url.rstrip("/"), api_key=api_key)
+    client = _openai_shared_client(base_url, api_key)
     kwargs: Dict[str, Any] = dict(model=model, messages=messages, timeout=timeout)
     if max_tokens is not None:
         kwargs["max_tokens"] = max_tokens

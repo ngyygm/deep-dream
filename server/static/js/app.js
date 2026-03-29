@@ -3,6 +3,21 @@
    ========================================== */
 
 // ---- API Client ----
+/** 浏览器对 fetch 失败的消息不一致：Chrome 多为 Failed to fetch，Firefox 多为 NetworkError when attempting... */
+function _isFetchNetworkFailure(err) {
+  if (!err) return false;
+  if (err.name === 'NetworkError') return true;
+  if (err.name !== 'TypeError') return false;
+  const m = String(err.message || '').toLowerCase();
+  return (
+    m === 'failed to fetch'
+    || m.includes('failed to fetch')
+    || m.includes('networkerror')
+    || m.includes('load failed')
+    || m.includes('network request failed')
+  );
+}
+
 class TMGApi {
   constructor() {
     this.baseUrl = '';
@@ -23,13 +38,24 @@ class TMGApi {
         headers,
         body: options.body || null,
       });
-      const data = await res.json();
+      let data;
+      const ct = (res.headers.get('content-type') || '').toLowerCase();
+      if (ct.includes('application/json')) {
+        data = await res.json();
+      } else {
+        const text = await res.text();
+        try {
+          data = text ? JSON.parse(text) : {};
+        } catch {
+          data = { error: text ? text.slice(0, 200) : `HTTP ${res.status}` };
+        }
+      }
       if (!res.ok) {
         throw new Error(data.error || `HTTP ${res.status}`);
       }
       return data;
     } catch (err) {
-      if (err.name === 'TypeError' && err.message === 'Failed to fetch') {
+      if (_isFetchNetworkFailure(err)) {
         throw new Error(t('error.networkError'));
       }
       throw err;
@@ -38,6 +64,7 @@ class TMGApi {
 
   get(path) { return this.request('GET', path); }
   post(path, json) { return this.request('POST', path, { json }); }
+  delete(path) { return this.request('DELETE', path); }
   postForm(path, formData) { return this.request('POST', path, { body: formData }); }
 
   // System
@@ -64,13 +91,16 @@ class TMGApi {
 
   // Remember
   rememberText(graphId, text, options = {}) {
-    return this.post('/api/v1/remember', {
+    const payload = {
       graph_id: graphId,
       text,
       source_name: options.source_name || '',
       event_time: options.event_time || '',
-      load_cache_memory: options.load_cache || false,
-    });
+    };
+    if (typeof options.load_cache === 'boolean') {
+      payload.load_cache_memory = options.load_cache;
+    }
+    return this.post('/api/v1/remember', payload);
   }
   rememberFile(graphId, file, options = {}) {
     const fd = new FormData();
@@ -78,7 +108,9 @@ class TMGApi {
     fd.append('file', file);
     if (options.source_name) fd.append('source_name', options.source_name);
     if (options.event_time) fd.append('event_time', options.event_time);
-    if (options.load_cache) fd.append('load_cache_memory', 'true');
+    if (typeof options.load_cache === 'boolean') {
+      fd.append('load_cache_memory', options.load_cache ? 'true' : 'false');
+    }
     return this.postForm('/api/v1/remember', fd);
   }
   rememberTasks(graphId = 'default', limit = 50) {
@@ -86,6 +118,15 @@ class TMGApi {
   }
   rememberStatus(taskId, graphId = 'default') {
     return this.get(`/api/v1/remember/tasks/${taskId}?graph_id=${encodeURIComponent(graphId)}`);
+  }
+  rememberDelete(taskId, graphId = 'default') {
+    return this.delete(`/api/v1/remember/tasks/${taskId}?graph_id=${encodeURIComponent(graphId)}`);
+  }
+  rememberPause(taskId, graphId = 'default') {
+    return this.post(`/api/v1/remember/tasks/${taskId}/pause?graph_id=${encodeURIComponent(graphId)}`, {});
+  }
+  rememberResume(taskId, graphId = 'default') {
+    return this.post(`/api/v1/remember/tasks/${taskId}/resume?graph_id=${encodeURIComponent(graphId)}`, {});
   }
 
   // Find
@@ -293,6 +334,7 @@ function statusBadge(status) {
   const map = {
     queued: 'badge-warning',
     running: 'badge-info',
+    paused: 'badge-warning',
     completed: 'badge-success',
     failed: 'badge-error',
   };

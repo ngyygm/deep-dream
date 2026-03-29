@@ -6,8 +6,12 @@ TMG 通用工具函数。
 from __future__ import annotations
 
 import hashlib
+import os
+import queue
 import re
+import sys
 import threading
+from datetime import datetime
 
 # prompt 中用作分隔符的所有 XML 标签名（不含尖括号）
 _SEPARATOR_TAG_NAMES = frozenset({
@@ -100,10 +104,54 @@ def clean_separator_tags(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 线程局部窗口标签（并发窗口日志前缀）
+# 线程局部窗口标签 + 流水线角色（并行 remember 时区分主线程 / 抽取 / 步骤6 / 7）
 # ---------------------------------------------------------------------------
 
 _window_local = threading.local()
+
+# 并行时日志：单行原子输出，避免多线程 print 交错；可用 TMG_LOG_SERIAL=0 关闭（直接 print）
+_log_serial: bool = os.environ.get("TMG_LOG_SERIAL", "1").strip().lower() not in ("0", "false", "no")
+_log_queue: queue.Queue[str] | None = None
+_log_writer_started = False
+_log_writer_lock = threading.Lock()
+
+_ROLE_ABBR = {
+    "主线程": "MAIN",
+    "抽取": "EXT",
+    "步骤6": "S6",
+    "步骤7": "S7",
+}
+
+
+def _abbr_role(role: str) -> str:
+    if not role:
+        return "----"
+    return _ROLE_ABBR.get(role, role[:4])
+
+
+def _emit_log_line(line: str) -> None:
+    global _log_queue, _log_writer_started
+    if not _log_serial:
+        print(line, flush=True)
+        return
+    with _log_writer_lock:
+        if _log_queue is None:
+            _log_queue = queue.Queue()
+        if not _log_writer_started:
+            _log_writer_started = True
+
+            def _writer() -> None:
+                assert _log_queue is not None
+                while True:
+                    item = _log_queue.get()
+                    if item is None:
+                        break
+                    sys.stdout.write(item + "\n")
+                    sys.stdout.flush()
+
+            threading.Thread(target=_writer, name="tmg-log-writer", daemon=True).start()
+    assert _log_queue is not None
+    _log_queue.put(line)
 
 
 def set_window_label(label: str | None) -> None:
@@ -116,10 +164,32 @@ def get_window_label() -> str:
     return getattr(_window_local, 'label', None) or ""
 
 
+def set_pipeline_role(role: str | None) -> None:
+    """设置当前线程的流水线角色（如「主线程」「抽取」「步骤6」「步骤7」），传 None 清除。"""
+    _window_local.pipeline_role = role
+
+
+def get_pipeline_role() -> str:
+    return getattr(_window_local, 'pipeline_role', None) or ""
+
+
+def clear_parallel_log_context() -> None:
+    """清除窗号与角色（进入非并行段或流程入口时调用）。"""
+    _window_local.label = None
+    _window_local.pipeline_role = None
+
+
+def remember_log(msg: str) -> None:
+    """无窗号时的 Remember 级说明（入口、断点、提示）。"""
+    ts = datetime.now().strftime("%H:%M:%S")
+    line = f"{ts} {'Remember':>10} ---- | {msg}"
+    _emit_log_line(line)
+
+
 def wprint(msg: str = "") -> None:
-    """带窗口标签前缀的 print。"""
-    label = get_window_label()
-    if label:
-        print(f"[{label}] {msg}")
-    else:
-        print(msg)
+    """并行友好：固定列「时间 窗号 角色 | 正文」，经队列串行写出避免行级交错。"""
+    label = get_window_label() or "----"
+    role = _abbr_role(get_pipeline_role())
+    ts = datetime.now().strftime("%H:%M:%S")
+    line = f"{ts} {label:>10} {role:4} | {msg}"
+    _emit_log_line(line)

@@ -20,11 +20,21 @@ import json
 import threading
 import time
 from datetime import datetime
+from types import SimpleNamespace
 
 import pytest
 
+import processor.llm.client as client_module
 from processor.llm.client import LLMClient, PrioritySemaphore
 from processor.models import MemoryCache
+
+# 与 service_config.llm.context_window_tokens / server.config.DEFAULTS 对齐
+_TEST_CONTEXT_WINDOW_TOKENS = 8000
+
+
+def _llm_client(**kwargs):
+    kwargs.setdefault("context_window_tokens", _TEST_CONTEXT_WINDOW_TOKENS)
+    return LLMClient(**kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -145,7 +155,7 @@ class TestMockLlmResponse:
     """Tests for _mock_llm_response matching various prompt patterns."""
 
     def setup_method(self):
-        self.client = LLMClient()
+        self.client = _llm_client()
 
     def test_update_memory_cache_prompt(self):
         result = self.client._mock_llm_response("请更新记忆缓存，根据新内容调整")
@@ -154,14 +164,14 @@ class TestMockLlmResponse:
 
     def test_extract_entity_prompt(self):
         result = self.client._mock_llm_response("请抽取实体：张三是一名工程师")
-        parsed = json.loads(result)
+        parsed = self.client._parse_json_response(result)
         assert isinstance(parsed, list)
         assert len(parsed) == 1
         assert "name" in parsed[0]
 
     def test_extract_relation_prompt(self):
         result = self.client._mock_llm_response("请抽取关系：张三和李四是同事")
-        parsed = json.loads(result)
+        parsed = self.client._parse_json_response(result)
         assert isinstance(parsed, list)
         assert len(parsed) == 1
         assert "entity1_name" in parsed[0]
@@ -169,7 +179,7 @@ class TestMockLlmResponse:
 
     def test_entity_enhance_prompt(self):
         result = self.client._mock_llm_response("对该实体的content进行更细致的补全和挖掘")
-        parsed = json.loads(result)
+        parsed = self.client._parse_json_response(result)
         assert "content" in parsed
         assert "增强信息" in parsed["content"]
 
@@ -179,18 +189,39 @@ class TestMockLlmResponse:
 
     def test_entity_extraction_by_name_keyword(self):
         result = self.client._mock_llm_response("实体抽取任务开始")
-        parsed = json.loads(result)
+        parsed = self.client._parse_json_response(result)
         assert isinstance(parsed, list)
 
     def test_relation_extraction_with_empty_entities(self):
         prompt = "抽取关系\n已抽取的实体：\n</已抽取实体>"
         result = self.client._mock_llm_response(prompt)
-        parsed = json.loads(result)
+        parsed = self.client._parse_json_response(result)
         assert isinstance(parsed, list)
 
     def test_memory_cache_keyword(self):
         result = self.client._mock_llm_response("请更新memory_cache内容")
         assert "当前摘要" in result
+
+
+# ---------------------------------------------------------------------------
+# Entity list parsing (JSON + YAML-ish fallback)
+# ---------------------------------------------------------------------------
+
+
+class TestParseEntitiesListFromResponse:
+    def test_yamlish_name_content_fallback(self):
+        client = _llm_client()
+        raw = '- name: "曹雪芹"\n- content: "《红楼梦》作者"'
+        out = client._parse_entities_list_from_response(raw)
+        assert out == [{"name": "曹雪芹", "content": "《红楼梦》作者"}]
+
+    def test_valid_json_still_preferred(self):
+        client = _llm_client()
+        raw = json.dumps(
+            [{"name": "曹雪芹", "content": "作者"}], ensure_ascii=False
+        )
+        out = client._parse_entities_list_from_response(raw)
+        assert out == [{"name": "曹雪芹", "content": "作者"}]
 
 
 # ---------------------------------------------------------------------------
@@ -202,7 +233,7 @@ class TestCallLlmMockMode:
     """Tests for _call_llm when the client is in mock mode."""
 
     def setup_method(self):
-        self.client = LLMClient()
+        self.client = _llm_client()
 
     def test_returns_nonempty_string(self):
         result = self.client._call_llm("请抽取实体：一些内容")
@@ -235,6 +266,51 @@ class TestCallLlmMockMode:
         result = self.client._parse_json_response(raw)
         assert result == {"key": "value"}
 
+    def test_resolve_request_max_tokens_clamped_by_context_budget(self):
+        messages = [{"role": "user", "content": "你" * 7900}]
+        resolved = self.client._resolve_request_max_tokens(messages, desired_max_tokens=6000)
+        assert 1 <= resolved < 6000
+        assert self.client._estimate_messages_token_count(messages) + resolved <= _TEST_CONTEXT_WINDOW_TOKENS
+
+    def test_resolve_request_max_tokens_raises_when_prompt_exceeds_budget(self):
+        messages = [{"role": "user", "content": "你" * 8100}]
+        with pytest.raises(RuntimeError, match="上下文预算超限"):
+            self.client._resolve_request_max_tokens(messages, desired_max_tokens=100)
+
+    def test_call_llm_does_not_retry_when_finish_reason_is_length(self, monkeypatch):
+        client = _llm_client(
+            api_key="test-key",
+            model_name="test-model",
+            base_url="https://open.bigmodel.cn/api/paas/v4",
+            max_tokens=6000,
+        )
+        calls = []
+
+        def fake_chat(messages, model, base_url, api_key, timeout=300, max_tokens=None):
+            calls.append({
+                "messages": messages,
+                "model": model,
+                "base_url": base_url,
+                "api_key": api_key,
+                "max_tokens": max_tokens,
+            })
+            return SimpleNamespace(
+                content='{"ok": true}',
+                done_reason="length",
+                raw={"choices": [{"finish_reason": "length"}]},
+            )
+
+        monkeypatch.setattr(client_module, "openai_compatible_chat", fake_chat)
+
+        result = client._call_llm(
+            "ignored",
+            messages=[{"role": "user", "content": "请只输出一个很短的 JSON"}],
+            allow_mock_fallback=False,
+        )
+
+        assert result == '{"ok": true}'
+        assert len(calls) == 1
+
 
 # ---------------------------------------------------------------------------
 # _clean_json_string
@@ -245,7 +321,7 @@ class TestCleanJsonString:
     """Tests for _clean_json_string."""
 
     def setup_method(self):
-        self.client = LLMClient()
+        self.client = _llm_client()
 
     def test_chinese_colon_to_english(self):
         result = self.client._clean_json_string('{"key"："value"}')
@@ -290,7 +366,7 @@ class TestFixJsonErrors:
     """Tests for _fix_json_errors."""
 
     def setup_method(self):
-        self.client = LLMClient()
+        self.client = _llm_client()
 
     def test_invalid_unicode_escape_padded(self):
         # \uAB (only 2 hex digits) should be padded to \uAB00
@@ -318,6 +394,12 @@ class TestFixJsonErrors:
         parsed = json.loads(result)
         assert parsed == {"a": 1, "b": 2}
 
+    def test_unescaped_control_chars_inside_string_are_escaped(self):
+        raw = '{"content": "第一行\n第二行\t第三列\r结束"}'
+        result = self.client._fix_json_errors(raw)
+        parsed = json.loads(result)
+        assert parsed["content"] == "第一行\n第二行\t第三列\r结束"
+
 
 # ---------------------------------------------------------------------------
 # _parse_json_response edge cases
@@ -328,7 +410,7 @@ class TestParseJsonResponse:
     """Tests for _parse_json_response with various input formats."""
 
     def setup_method(self):
-        self.client = LLMClient()
+        self.client = _llm_client()
 
     def test_plain_json_without_code_blocks(self):
         raw = '{"name": "test", "value": 42}'
@@ -358,6 +440,11 @@ class TestParseJsonResponse:
         with pytest.raises(json.JSONDecodeError):
             self.client._parse_json_response("")
 
+    def test_invalid_control_character_can_be_repaired(self):
+        raw = '[{"entity1_name":"甲","entity2_name":"乙","content":"第一行\n第二行"}]'
+        result = self.client._parse_json_response(raw)
+        assert result == [{"entity1_name": "甲", "entity2_name": "乙", "content": "第一行\n第二行"}]
+
 
 # ---------------------------------------------------------------------------
 # Concurrency with semaphore
@@ -368,7 +455,8 @@ class TestConcurrencyWithSemaphore:
     """Test that the semaphore limits concurrent LLM calls."""
 
     def test_max_concurrency_enforced(self):
-        client = LLMClient(max_llm_concurrency=2)
+        # max=1 时不拆分信号量，便于与旧版一样打桩 _llm_semaphore
+        client = _llm_client(max_llm_concurrency=1)
         max_observed = 0
         lock = threading.Lock()
         barrier = threading.Barrier(5, timeout=10)
@@ -401,12 +489,11 @@ class TestConcurrencyWithSemaphore:
         for t in threads:
             t.join(timeout=15)
 
-        # The semaphore limits to at most 2 concurrent calls
-        assert max_observed <= 2
+        assert max_observed <= 1
 
     def test_semaphore_released_on_exception(self):
         """Semaphore is released even when errors occur."""
-        client = LLMClient(max_llm_concurrency=1)
+        client = _llm_client(max_llm_concurrency=1)
         assert client._llm_semaphore.active_count == 0
         # In mock mode, no exceptions occur; just verify release after normal call
         client._call_llm("请抽取实体")
@@ -450,6 +537,432 @@ class TestNormalizeEntityPair:
         assert pair1 == pair2
 
 
+class TestRelationEntityNameFiltering:
+    def setup_method(self):
+        self.client = _llm_client()
+
+    def test_keeps_unknown_endpoints_for_step4_supplement(self):
+        relations = [
+            {
+                "entity1_name": "报复",
+                "entity2_name": "贾瑞（小说人物）",
+                "content": "报复与贾瑞有关",
+            },
+            {
+                "entity1_name": "贾瑞（小说人物）",
+                "entity2_name": "王熙凤（小说人物）",
+                "content": "二人存在互动",
+            },
+        ]
+
+        filtered, normalized_count, filtered_count = self.client._normalize_and_filter_relations_by_entities(
+            relations,
+            {"贾瑞（小说人物）", "王熙凤（小说人物）"},
+        )
+
+        assert normalized_count == 0
+        assert filtered_count == 0
+        assert len(filtered) == 2
+        revenge_edges = [
+            r for r in filtered
+            if "报复" in (r["entity1_name"], r["entity2_name"])
+        ]
+        assert len(revenge_edges) == 1
+        assert "贾瑞（小说人物）" in (
+            revenge_edges[0]["entity1_name"],
+            revenge_edges[0]["entity2_name"],
+        )
+
+    def test_normalizes_unique_base_name(self):
+        relations = [
+            {
+                "entity1_name": "贾瑞",
+                "entity2_name": "王熙凤（小说人物）",
+                "content": "二人存在互动",
+            }
+        ]
+
+        filtered, normalized_count, filtered_count = self.client._normalize_and_filter_relations_by_entities(
+            relations,
+            {"贾瑞（小说人物）", "王熙凤（小说人物）"},
+        )
+
+        assert normalized_count == 1
+        assert filtered_count == 0
+        assert len(filtered) == 1
+        assert filtered[0]["entity1_name"] == "贾瑞（小说人物）"
+        assert filtered[0]["entity2_name"] == "王熙凤（小说人物）"
+
+    def test_ambiguous_base_resolves_to_latest_bracketed_in_catalog_order(self):
+        """多個「贾瑞（…）」去括号后 Jaccard 并列时，按 catalog 顺序取较后者。"""
+        relations = [
+            {
+                "entity1_name": "贾瑞",
+                "entity2_name": "王熙凤（小说人物）",
+                "content": "二人存在互动",
+            }
+        ]
+
+        catalog = {"贾瑞（小说人物）", "贾瑞（另一版本）", "王熙凤（小说人物）"}
+        order = ["贾瑞（小说人物）", "王熙凤（小说人物）", "贾瑞（另一版本）"]
+        filtered, normalized_count, filtered_count = self.client._normalize_and_filter_relations_by_entities(
+            relations,
+            catalog,
+            catalog_name_order=order,
+        )
+
+        assert normalized_count == 1
+        assert filtered_count == 0
+        assert len(filtered) == 1
+        assert filtered[0]["entity1_name"] == "贾瑞（另一版本）"
+        assert filtered[0]["entity2_name"] == "王熙凤（小说人物）"
+
+
+class TestParseRelationsResponse:
+    def setup_method(self):
+        self.client = _llm_client()
+
+    def test_accepts_name_fields_maps_to_catalog(self):
+        raw = json.dumps([
+            {
+                "entity1_name": "贾宝玉（小说人物）",
+                "entity2_name": "林黛玉（小说人物）",
+                "content": "二人有明确互动",
+            }
+        ], ensure_ascii=False)
+
+        parsed = self.client._parse_relations_response(
+            raw,
+            {"贾宝玉（小说人物）", "林黛玉（小说人物）"},
+        )
+
+        assert len(parsed) == 1
+        assert {parsed[0]["entity1_name"], parsed[0]["entity2_name"]} == {"贾宝玉（小说人物）", "林黛玉（小说人物）"}
+
+    def test_accepts_unknown_second_endpoint_for_supplement(self):
+        raw = json.dumps([
+            {
+                "entity1_name": "贾宝玉（小说人物）",
+                "entity2_name": "薛宝钗（小说人物）",
+                "content": "二人有明确互动",
+            }
+        ], ensure_ascii=False)
+
+        parsed = self.client._parse_relations_response(
+            raw,
+            {"贾宝玉（小说人物）", "林黛玉（小说人物）"},
+        )
+
+        assert len(parsed) == 1
+        assert {parsed[0]["entity1_name"], parsed[0]["entity2_name"]} == {
+            "贾宝玉（小说人物）",
+            "薛宝钗（小说人物）",
+        }
+
+    def test_ambiguous_partial_name_keeps_raw_below_jaccard_threshold(self):
+        """Jaccard 未达阈值时不强行映射；保留简称供步骤4 补全，不再整条丢弃。"""
+        raw = json.dumps([
+            {
+                "entity1_name": "真人",
+                "entity2_name": "太尉",
+                "content": "二者有明确互动",
+            }
+        ], ensure_ascii=False)
+
+        parsed = self.client._parse_relations_response(
+            raw,
+            {"罗真人", "张真人", "洪太尉"},
+        )
+
+        assert len(parsed) == 1
+        assert {parsed[0]["entity1_name"], parsed[0]["entity2_name"]} == {"太尉", "真人"}
+
+    def test_accepts_name_only_relation_and_maps_to_closest_entity(self):
+        raw = json.dumps([
+            {
+                "entity1_name": "真人",
+                "entity2_name": "太尉",
+                "content": "二者有明确互动",
+            }
+        ], ensure_ascii=False)
+
+        # 默认阈值 0.9 时「真人/太尉」与全名 Jaccard 约 2/3；降低阈值以断言映射到目录全名
+        client = _llm_client(relation_endpoint_jaccard_threshold=0.65)
+        parsed = client._parse_relations_response(
+            raw,
+            {"罗真人", "洪太尉"},
+        )
+
+        assert len(parsed) == 1
+        assert {parsed[0]["entity1_name"], parsed[0]["entity2_name"]} == {"罗真人", "洪太尉"}
+
+    def test_jaccard_uses_stripped_names_maps_to_bracketed_catalog(self):
+        """比较时去掉括号；目录仅有带说明全名时，简称应对齐到该全名。"""
+        raw = json.dumps([
+            {
+                "entity1_name": "贾宝玉",
+                "entity2_name": "林黛玉",
+                "content": "二人有明确互动",
+            }
+        ], ensure_ascii=False)
+
+        catalog = {"贾宝玉（小说人物）", "林黛玉（小说人物）"}
+        order = ["贾宝玉（小说人物）", "林黛玉（小说人物）"]
+        parsed = self.client._parse_relations_response(
+            raw, catalog, catalog_name_order=order
+        )
+
+        assert len(parsed) == 1
+        assert {parsed[0]["entity1_name"], parsed[0]["entity2_name"]} == catalog
+
+    def test_tie_break_bracketed_prefers_later_catalog_name(self):
+        """同分且均带括号时，取 catalog_name_order 中较后者（新版本）。"""
+        raw = json.dumps([
+            {
+                "entity1_name": "贾宝玉",
+                "entity2_name": "薛宝钗",
+                "content": "互动",
+            }
+        ], ensure_ascii=False)
+
+        catalog = {"贾宝玉（旧）", "贾宝玉（新）", "薛宝钗"}
+        order = ["薛宝钗", "贾宝玉（旧）", "贾宝玉（新）"]
+        parsed = self.client._parse_relations_response(
+            raw, catalog, catalog_name_order=order
+        )
+
+        assert len(parsed) == 1
+        names = {parsed[0]["entity1_name"], parsed[0]["entity2_name"]}
+        assert "贾宝玉（新）" in names
+        assert "薛宝钗" in names
+
+
+class TestSourceDocumentPromptContext:
+    def setup_method(self):
+        self.client = _llm_client()
+
+    def test_judge_content_need_update_includes_source_document(self):
+        captured = {}
+
+        def fake_call_llm(prompt, system_prompt=None, *args, **kwargs):
+            captured["prompt"] = prompt
+            captured["system_prompt"] = system_prompt
+            return "false"
+
+        self.client._call_llm = fake_call_llm
+
+        result = self.client.judge_content_need_update(
+            "旧实体内容",
+            "新实体内容",
+            old_source_document="doc_old.txt",
+            new_source_document="doc_new.txt",
+            old_name="宝玉",
+            new_name="贾宝玉",
+            object_type="实体",
+        )
+
+        assert result is False
+        assert "source_document: doc_old.txt" in captured["prompt"]
+        assert "source_document: doc_new.txt" in captured["prompt"]
+        assert "<对象类型>\n实体\n</对象类型>" in captured["prompt"]
+
+    def test_resolve_relation_pair_batch_includes_source_documents(self):
+        captured = {}
+
+        def fake_call_llm(prompt, system_prompt=None, *args, **kwargs):
+            captured["prompt"] = prompt
+            return json.dumps({
+                "action": "create_new",
+                "matched_relation_id": "",
+                "need_update": True,
+                "merged_content": "合并后的关系",
+                "confidence": 0.9,
+            }, ensure_ascii=False)
+
+        self.client._call_llm = fake_call_llm
+
+        result = self.client.resolve_relation_pair_batch(
+            entity1_name="贾宝玉",
+            entity2_name="林黛玉",
+            new_relation_contents=["二人发生互动"],
+            existing_relations=[{
+                "relation_id": "rel_1",
+                "content": "二人曾经见面",
+                "source_document": "old_rel.txt",
+            }],
+            new_source_document="new_rel.txt",
+        )
+
+        assert result["action"] == "create_new"
+        assert "source_document=new_rel.txt" in captured["prompt"]
+        assert "source_document=old_rel.txt" in captured["prompt"]
+
+
+class TestMultiRoundAcceptedAssistantHistory:
+    def test_extract_entities_and_relations_uses_accepted_assistant_history_next_round(self):
+        client = _llm_client()
+        seen_messages = []
+        responses = [
+            (
+                (
+                    [
+                        {"name": "A", "content": "alpha"},
+                        {"name": "A", "content": "alpha duplicate"},
+                        {"name": "B", "content": "beta"},
+                    ],
+                    [
+                        {"entity1_name": "A", "entity2_name": "B", "content": "r1"},
+                        {"entity1_name": "A", "entity2_name": "B", "content": "r2 should be dropped by pair-only dedupe"},
+                    ],
+                ),
+                '```json\n{"entities":[{"name":"A","content":"alpha"},{"name":"A","content":"alpha duplicate"},{"name":"B","content":"beta"}],"relations":[{"entity1_name":"A","entity2_name":"B","content":"r1"},{"entity1_name":"A","entity2_name":"B","content":"r2 should be dropped by pair-only dedupe"}]}\n```',
+            ),
+            (
+                (
+                    [
+                        {"name": "B", "content": "beta again"},
+                        {"name": "C", "content": "gamma"},
+                    ],
+                    [
+                        {"entity1_name": "B", "entity2_name": "C", "content": "r3"},
+                    ],
+                ),
+                '```json\n{"entities":[{"name":"B","content":"beta again"},{"name":"C","content":"gamma"}],"relations":[{"entity1_name":"B","entity2_name":"C","content":"r3"}]}\n```',
+            ),
+        ]
+
+        def fake_call_llm_until_json_parses(messages, parse_fn=None, json_parse_retries=None):
+            seen_messages.append([dict(m) for m in messages])
+            return responses[len(seen_messages) - 1]
+
+        client.call_llm_until_json_parses = fake_call_llm_until_json_parses
+
+        cache = MemoryCache(
+            absolute_id="cache_test",
+            content="memory",
+            event_time=datetime(2025, 1, 1),
+            source_document="doc.txt",
+            activity_type="文档处理",
+        )
+        entities, relations = client.extract_entities_and_relations(cache, "body", rounds=2, verbose=False)
+
+        assert [e["name"] for e in entities] == ["A", "B", "C"]
+        assert relations == [
+            {"entity1_name": "A", "entity2_name": "B", "content": "r1"},
+            {"entity1_name": "B", "entity2_name": "C", "content": "r3"},
+        ]
+        assert len(seen_messages) == 2
+        assistant_payload = client._parse_json_response(seen_messages[1][2]["content"])
+        assert assistant_payload == {
+            "entities": [
+                {"name": "A", "content": "alpha"},
+                {"name": "B", "content": "beta"},
+            ],
+            "relations": [
+                {"entity1_name": "A", "entity2_name": "B", "content": "r1"},
+            ],
+        }
+
+    def test_extract_entities_uses_deduped_assistant_history_next_round(self):
+        client = _llm_client()
+        seen_messages = []
+        responses = [
+            (
+                [
+                    {"name": "A", "content": "alpha"},
+                    {"name": "A", "content": "alpha duplicate"},
+                    {"name": "B", "content": "beta"},
+                ],
+                '```json\n[{"name":"A","content":"alpha"},{"name":"A","content":"alpha duplicate"},{"name":"B","content":"beta"}]\n```',
+            ),
+            (
+                [
+                    {"name": "B", "content": "beta again"},
+                    {"name": "C", "content": "gamma"},
+                ],
+                '```json\n[{"name":"B","content":"beta again"},{"name":"C","content":"gamma"}]\n```',
+            ),
+        ]
+
+        def fake_call_llm_until_json_parses(messages, parse_fn=None, json_parse_retries=None):
+            seen_messages.append([dict(m) for m in messages])
+            return responses[len(seen_messages) - 1]
+
+        client.call_llm_until_json_parses = fake_call_llm_until_json_parses
+
+        cache = MemoryCache(
+            absolute_id="cache_test",
+            content="memory",
+            event_time=datetime(2025, 1, 1),
+            source_document="doc.txt",
+            activity_type="文档处理",
+        )
+        out = client.extract_entities(cache, "body", rounds=2, verbose=False, compress_multi_round=False)
+
+        assert [e["name"] for e in out] == ["A", "B", "C"]
+        assert len(seen_messages) == 2
+        assistant_payload = client._parse_json_response(seen_messages[1][2]["content"])
+        assert assistant_payload == [
+            {"name": "A", "content": "alpha"},
+            {"name": "B", "content": "beta"},
+        ]
+
+    def test_extract_relations_uses_accepted_assistant_history_next_round(self):
+        client = _llm_client()
+        seen_messages = []
+        responses = [
+            (
+                [
+                    {"entity1_name": "B", "entity2_name": "A", "content": "r1"},
+                    {"entity1_name": "A", "entity2_name": "B", "content": "r1"},
+                ],
+                '```json\n[{"entity1_name":"B","entity2_name":"A","content":"r1"},{"entity1_name":"A","entity2_name":"B","content":"r1"}]\n```',
+            ),
+            (
+                [
+                    {"entity1_name": "A", "entity2_name": "B", "content": "r1"},
+                    {"entity1_name": "A", "entity2_name": "B", "content": "r2"},
+                ],
+                '```json\n[{"entity1_name":"A","entity2_name":"B","content":"r1"},{"entity1_name":"A","entity2_name":"B","content":"r2"}]\n```',
+            ),
+        ]
+
+        def fake_call_llm_until_json_parses(messages, parse_fn=None, json_parse_retries=None):
+            seen_messages.append([dict(m) for m in messages])
+            return responses[len(seen_messages) - 1]
+
+        client.call_llm_until_json_parses = fake_call_llm_until_json_parses
+
+        cache = MemoryCache(
+            absolute_id="cache_test",
+            content="memory",
+            event_time=datetime(2025, 1, 1),
+            source_document="doc.txt",
+            activity_type="文档处理",
+        )
+        out = client.extract_relations(
+            cache,
+            "body",
+            entities=[
+                {"name": "A", "content": "alpha"},
+                {"name": "B", "content": "beta"},
+            ],
+            rounds=2,
+            verbose=False,
+            compress_multi_round=False,
+        )
+
+        assert out == [
+            {"entity1_name": "A", "entity2_name": "B", "content": "r1"},
+            {"entity1_name": "A", "entity2_name": "B", "content": "r2"},
+        ]
+        assert len(seen_messages) == 2
+        assistant_payload = client._parse_json_response(seen_messages[1][2]["content"])
+        assert assistant_payload == [
+            {"entity1_name": "A", "entity2_name": "B", "content": "r1"},
+        ]
+
+
 # ---------------------------------------------------------------------------
 # update_memory_cache in mock mode
 # ---------------------------------------------------------------------------
@@ -459,7 +972,7 @@ class TestUpdateMemoryCache:
     """Tests for update_memory_cache with mock LLM."""
 
     def setup_method(self):
-        self.client = LLMClient()
+        self.client = _llm_client()
 
     def test_with_none_cache_creates_initial(self):
         result = self.client.update_memory_cache(
@@ -521,7 +1034,7 @@ class TestCreateDocumentOverallMemory:
     """Tests for create_document_overall_memory with mock LLM."""
 
     def setup_method(self):
-        self.client = LLMClient()
+        self.client = _llm_client()
 
     def test_returns_memory_cache_with_correct_type(self):
         result = self.client.create_document_overall_memory(

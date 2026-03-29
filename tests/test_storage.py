@@ -500,6 +500,46 @@ class TestMergeOperations:
         # Source entity_ids should no longer exist as separate entities
         # All their versions now have entity_id = "eid_target"
         assert storage.get_entity_version_count("eid_target") == 3  # 1 target + 2 sources
+        assert storage.resolve_entity_id("eid_src1") == "eid_target"
+        assert storage.resolve_entity_id("eid_src2") == "eid_target"
+        assert storage.get_entity_by_id("eid_src1") is not None
+        assert storage.get_entity_by_id("eid_src1").entity_id == "eid_target"
+
+    def test_entity_redirect_chain_resolves_to_latest(self, storage):
+        t0 = datetime(2025, 1, 1, 12, 0, 0)
+        storage.save_entity(_make_entity(
+            absolute_id="abs_chain_c",
+            entity_id="eid_chain_c",
+            name="Chain Target",
+            processed_time=t0,
+        ))
+        storage.register_entity_redirect("eid_chain_a", "eid_chain_b")
+        storage.register_entity_redirect("eid_chain_b", "eid_chain_c")
+
+        assert storage.resolve_entity_id("eid_chain_a") == "eid_chain_c"
+        resolved = storage.get_entity_by_id("eid_chain_a")
+        assert resolved is not None
+        assert resolved.entity_id == "eid_chain_c"
+
+    def test_get_relations_by_entities_accepts_redirected_ids(self, storage):
+        t0 = datetime(2025, 1, 1, 12, 0, 0)
+        e1 = _make_entity(absolute_id="abs_old_a", entity_id="eid_new_a", name="A", processed_time=t0)
+        e2 = _make_entity(absolute_id="abs_old_b", entity_id="eid_new_b", name="B", processed_time=t0 + timedelta(seconds=1))
+        storage.save_entity(e1)
+        storage.save_entity(e2)
+        storage.register_entity_redirect("eid_old_a", "eid_new_a")
+        storage.register_entity_redirect("eid_old_b", "eid_new_b")
+        storage.save_relation(_make_relation(
+            absolute_id="rid_abs_redirect",
+            relation_id="rid_redirect",
+            entity1_absolute_id=e1.absolute_id,
+            entity2_absolute_id=e2.absolute_id,
+            content="redirect relation",
+            processed_time=t0 + timedelta(seconds=2),
+        ))
+
+        relations = storage.get_relations_by_entities("eid_old_a", "eid_old_b")
+        assert any(rel.content == "redirect relation" for rel in relations)
 
     def test_self_referential_relations_detection(self, storage):
         # Create one entity with 2 versions
