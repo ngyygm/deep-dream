@@ -1037,6 +1037,143 @@ class TestMultiRoundAcceptedAssistantHistory:
         assert out == [{"entity1_name": "A", "entity2_name": "B", "content": "r1"}]
         assert len(calls) == 2
 
+    def test_extract_entities_stops_before_second_round_when_precheck_fails(self):
+        client = _llm_client()
+        calls: list[int] = []
+
+        def fake_resolve_request_max_tokens(messages, desired_max_tokens):
+            if messages and messages[-1].get("content") == "继续生成":
+                raise LLMContextBudgetExceeded(
+                    "LLM 上下文预算超限：估算输入约 99999 tokens，已达到或超过模型总上限 8000。"
+                )
+            return desired_max_tokens
+
+        def fake_call_llm_until_json_parses(messages, parse_fn=None, json_parse_retries=None):
+            calls.append(len(messages))
+            raw = '```json\n[{"name":"A","content":"x"}]\n```'
+            return parse_fn(raw), raw
+
+        client._resolve_request_max_tokens = fake_resolve_request_max_tokens
+        client.call_llm_until_json_parses = fake_call_llm_until_json_parses
+        cache = MemoryCache(
+            absolute_id="cache_test",
+            content="memory",
+            event_time=datetime(2025, 1, 1),
+            source_document="doc.txt",
+            activity_type="文档处理",
+        )
+
+        out = client.extract_entities(cache, "body", rounds=2, verbose=False)
+
+        assert out == [{"name": "A", "content": "x"}]
+        assert len(calls) == 1
+
+    def test_extract_relations_stops_before_second_round_when_precheck_fails(self):
+        client = _llm_client()
+        calls: list[int] = []
+
+        def fake_resolve_request_max_tokens(messages, desired_max_tokens):
+            if messages and messages[-1].get("content") == "继续生成":
+                raise LLMContextBudgetExceeded(
+                    "LLM 上下文预算超限：估算输入约 99999 tokens，已达到或超过模型总上限 8000。"
+                )
+            return desired_max_tokens
+
+        def fake_call_llm_until_json_parses(messages, parse_fn=None, json_parse_retries=None):
+            calls.append(len(messages))
+            raw = '```json\n[{"entity1_name":"A","entity2_name":"B","content":"r1"}]\n```'
+            return parse_fn(raw), raw
+
+        client._resolve_request_max_tokens = fake_resolve_request_max_tokens
+        client.call_llm_until_json_parses = fake_call_llm_until_json_parses
+        cache = MemoryCache(
+            absolute_id="cache_test",
+            content="memory",
+            event_time=datetime(2025, 1, 1),
+            source_document="doc.txt",
+            activity_type="文档处理",
+        )
+
+        out = client.extract_relations(
+            cache,
+            "body",
+            entities=[{"name": "A", "content": "a"}, {"name": "B", "content": "b"}],
+            rounds=2,
+            verbose=False,
+        )
+
+        assert out == [{"entity1_name": "A", "entity2_name": "B", "content": "r1"}]
+        assert len(calls) == 1
+
+    def test_extract_relations_falls_back_to_single_pass_for_uncovered_entities(self):
+        client = _llm_client()
+        seen_messages = []
+
+        def fake_resolve_request_max_tokens(messages, desired_max_tokens):
+            if messages and messages[-1].get("content") == "继续生成":
+                raise LLMContextBudgetExceeded(
+                    "LLM 上下文预算超限：估算输入约 99999 tokens，已达到或超过模型总上限 8000。"
+                )
+            return desired_max_tokens
+
+        def fake_call_llm_until_json_parses(messages, parse_fn=None, json_parse_retries=None):
+            seen_messages.append([dict(m) for m in messages])
+            user_prompt = messages[-1]["content"]
+            if "<未覆盖实体>" in user_prompt:
+                raw = '```json\n[{"entity1_name":"A","entity2_name":"C","content":"r2"}]\n```'
+            else:
+                raw = '```json\n[{"entity1_name":"A","entity2_name":"B","content":"r1"}]\n```'
+            return parse_fn(raw), raw
+
+        client._resolve_request_max_tokens = fake_resolve_request_max_tokens
+        client.call_llm_until_json_parses = fake_call_llm_until_json_parses
+        cache = MemoryCache(
+            absolute_id="cache_test",
+            content="memory",
+            event_time=datetime(2025, 1, 1),
+            source_document="doc.txt",
+            activity_type="文档处理",
+        )
+
+        out = client.extract_relations(
+            cache,
+            "body",
+            entities=[
+                {"name": "A", "content": "a"},
+                {"name": "B", "content": "b"},
+                {"name": "C", "content": "c"},
+            ],
+            rounds=2,
+            verbose=False,
+        )
+
+        assert out == [
+            {"entity1_name": "A", "entity2_name": "B", "content": "r1"},
+            {"entity1_name": "A", "entity2_name": "C", "content": "r2"},
+        ]
+        assert len(seen_messages) == 2
+        assert seen_messages[1][-1]["role"] == "user"
+        assert "<未覆盖实体>" in seen_messages[1][-1]["content"]
+        assert "- C" in seen_messages[1][-1]["content"]
+        assert "继续生成" not in seen_messages[1][-1]["content"]
+
+    def test_prepare_memory_cache_for_prompt_truncates_long_cache(self):
+        client = _llm_client(prompt_memory_cache_max_chars=80)
+        cache = MemoryCache(
+            absolute_id="cache_test",
+            content=("A" * 60) + ("B" * 60) + ("C" * 60),
+            event_time=datetime(2025, 1, 1),
+            source_document="doc.txt",
+            activity_type="文档处理",
+        )
+
+        prepared = client._prepare_memory_cache_for_prompt(cache)
+
+        assert len(prepared) <= 80
+        assert "A" * 20 in prepared
+        assert prepared.endswith("C" * 18)
+        assert "记忆缓存过长，已截断" in prepared
+
 
 # ---------------------------------------------------------------------------
 # update_memory_cache in mock mode

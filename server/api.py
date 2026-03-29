@@ -1838,7 +1838,8 @@ def build_processor(config: Dict[str, Any]) -> TemporalMemoryGraphProcessor:
         kwargs["max_alignment_candidates"] = pipeline_alignment["max_alignment_candidates"]
     for key in (
         "extraction_rounds", "entity_extraction_rounds", "relation_extraction_rounds",
-        "entity_post_enhancement", "compress_multi_round_extraction",
+        "entity_post_enhancement", "prompt_memory_cache_max_chars",
+        "compress_multi_round_extraction",
     ):
         if key in pipeline_extraction:
             kwargs[key] = pipeline_extraction[key]

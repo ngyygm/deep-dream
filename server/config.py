@@ -59,6 +59,7 @@ DEFAULTS = {
             "entity_extraction_rounds": 1,
             "relation_extraction_rounds": 1,
             "entity_post_enhancement": False,
+            "prompt_memory_cache_max_chars": 2000,
             "compress_multi_round_extraction": False,
         },
         "debug": {
@@ -166,6 +167,7 @@ def _normalize_runtime_config(config: Dict[str, Any]) -> Dict[str, Any]:
         "entity_extraction_rounds",
         "relation_extraction_rounds",
         "entity_post_enhancement",
+        "prompt_memory_cache_max_chars",
         "compress_multi_round_extraction",
     )
     normalized_extraction = {
@@ -314,6 +316,21 @@ def _validate_config(config: Dict[str, Any]) -> None:
     for name, val in thresholds:
         if val is not None and not (0.0 <= float(val) <= 1.0):
             errors.append(f"{name} 应在 0.0-1.0 之间，当前值: {val}")
+
+    extraction = (pipeline.get("extraction") or {})
+    _pmcmc = extraction.get("prompt_memory_cache_max_chars", pipeline.get("prompt_memory_cache_max_chars"))
+    if _pmcmc is not None:
+        try:
+            _pmcmc_i = int(_pmcmc)
+            if _pmcmc_i < 0:
+                errors.append(
+                    f"pipeline.extraction.prompt_memory_cache_max_chars 应 >= 0，当前值: {_pmcmc}"
+                )
+        except (TypeError, ValueError):
+            errors.append(
+                "pipeline.extraction.prompt_memory_cache_max_chars 应为整数"
+                f"，当前值: {_pmcmc}"
+            )
 
     if errors:
         from processor.exceptions import ConfigError

@@ -530,6 +530,43 @@ class _RelationExtractionMixin:
         # 收集所有有效实体名称，用于规范化
         valid_entity_names = {e.get('name', '').strip() for e in entity_info_list if e.get('name', '').strip()}
 
+        def _accept_relations(candidates: List[Dict[str, str]]) -> tuple[List[Dict[str, str]], int]:
+            accepted_relations: List[Dict[str, str]] = []
+            new_count = 0
+            for rel in candidates:
+                e1 = rel.get('entity1_name', '').strip()
+                e2 = rel.get('entity2_name', '').strip()
+                content = rel.get('content', '').strip()
+                if not e1 or not e2 or not content:
+                    continue
+                # 标准化实体对
+                if e1 > e2:
+                    e1, e2 = e2, e1
+                content_hash = hash(content.strip().lower())
+                key = (e1, e2, content_hash)
+                if key not in seen_rel_keys:
+                    seen_rel_keys.add(key)
+                    accepted_rel = {
+                        'entity1_name': e1,
+                        'entity2_name': e2,
+                        'content': content,
+                    }
+                    all_relations.append(accepted_rel)
+                    accepted_relations.append(accepted_rel)
+                    new_count += 1
+            return accepted_relations, new_count
+
+        def _covered_entity_names(relations: List[Dict[str, str]]) -> set[str]:
+            covered: set[str] = set()
+            for rel in relations:
+                e1 = rel.get('entity1_name', '').strip()
+                e2 = rel.get('entity2_name', '').strip()
+                if e1:
+                    covered.add(e1)
+                if e2:
+                    covered.add(e2)
+            return covered
+
         for round_idx in range(max(1, rounds)):
             if verbose:
                 r, t = round_idx + 1, rounds
@@ -558,29 +595,7 @@ class _RelationExtractionMixin:
             )
 
             # 验收并去重：仅将本轮真正新增且合法的关系作为“被系统接受”的 assistant 输出
-            accepted_relations: List[Dict[str, str]] = []
-            new_count = 0
-            for rel in new_relations:
-                e1 = rel.get('entity1_name', '').strip()
-                e2 = rel.get('entity2_name', '').strip()
-                content = rel.get('content', '').strip()
-                if not e1 or not e2 or not content:
-                    continue
-                # 标准化实体对
-                if e1 > e2:
-                    e1, e2 = e2, e1
-                content_hash = hash(content.strip().lower())
-                key = (e1, e2, content_hash)
-                if key not in seen_rel_keys:
-                    seen_rel_keys.add(key)
-                    accepted_rel = {
-                        'entity1_name': e1,
-                        'entity2_name': e2,
-                        'content': content,
-                    }
-                    all_relations.append(accepted_rel)
-                    accepted_relations.append(accepted_rel)
-                    new_count += 1
+            accepted_relations, new_count = _accept_relations(new_relations)
 
             accepted_response = _json_code_block(accepted_relations)
 
@@ -605,6 +620,50 @@ class _RelationExtractionMixin:
                 break
 
             if round_idx + 1 < rounds:
+                if not self._can_continue_multi_round(
+                    messages,
+                    next_user_content=_MULTI_ROUND_CONTINUE_USER,
+                    stage_label="步骤3(关系抽取)",
+                ):
+                    covered_names = _covered_entity_names(all_relations)
+                    uncovered_names = [
+                        name for name in catalog_name_order
+                        if name in valid_entity_names and name not in covered_names
+                    ]
+                    if uncovered_names:
+                        if verbose:
+                            wprint(
+                                f"【步骤3】轮{round_idx + 2}/{rounds}｜退化补抽｜"
+                                f"续轮上下文过长，改为单轮补抽未覆盖实体 {len(uncovered_names)} 个"
+                            )
+                        try:
+                            fallback_relations = self._extract_relations_single_pass(
+                                memory_cache,
+                                input_text,
+                                entity_info_list,
+                                existing_relations=None,
+                                uncovered_entities=uncovered_names,
+                                verbose=verbose,
+                            )
+                        except LLMContextBudgetExceeded:
+                            if verbose:
+                                wprint(
+                                    f"【步骤3】轮{round_idx + 2}/{rounds}｜退化补抽失败｜"
+                                    "单轮补抽仍超出上下文预算，沿用当前关系结果"
+                                )
+                            break
+                        fallback_accepted, fallback_new_count = _accept_relations(fallback_relations)
+                        if verbose:
+                            wprint(
+                                f"【步骤3】轮{round_idx + 2}/{rounds}｜退化补抽完成｜"
+                                f"新{fallback_new_count} 累{len(all_relations)}关系"
+                            )
+                        if on_round_done:
+                            on_round_done(round_idx + 2, rounds, len(all_relations))
+                        accepted_response = _json_code_block(fallback_accepted)
+                        distill_flat.append({"role": "user", "content": first_prompt})
+                        distill_flat.append({"role": "assistant", "content": accepted_response})
+                    break
                 messages.append({"role": "user", "content": _MULTI_ROUND_CONTINUE_USER})
 
         if self._distill_data_dir and self._current_distill_step:

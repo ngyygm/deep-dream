@@ -227,6 +227,7 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
                  think_mode: bool = False,
                  distill_data_dir: Optional[str] = None, max_tokens: Optional[int] = None,
                  context_window_tokens: Optional[int] = None,
+                 prompt_memory_cache_max_chars: Optional[int] = None,
                  max_llm_concurrency: Optional[int] = None,
                  alignment_base_url: Optional[str] = None,
                  alignment_api_key: Optional[str] = None,
@@ -244,6 +245,8 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
             api_key / model_name / base_url / content_snippet_length / relation_content_snippet_length / think_mode / max_tokens / context_window_tokens:
                 步骤 1–5（上游滑窗与抽取）使用的配置；max_llm_concurrency 为步骤 1–5 的 LLM 并发上限。
                 context_window_tokens：模型总上下文 token 上限（输入+输出），与 service_config.llm.context_window_tokens 一致，须由 Processor 注入。
+            prompt_memory_cache_max_chars:
+                进入抽取类 prompt 的记忆缓存最大字符数；超长时自动截断，避免异常缓存拖爆上下文预算。
             alignment_enabled:
                 False 时忽略所有 alignment_*，步骤 6/7 与上游共用同一模型与（未拆分时）统一并发池。
             alignment_max_llm_concurrency:
@@ -273,6 +276,10 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
                 "并由 TemporalMemoryGraphProcessor 传入 LLMClient。"
             )
         self.context_window_tokens = max(256, int(context_window_tokens))
+        if prompt_memory_cache_max_chars is None:
+            self.prompt_memory_cache_max_chars = 2000
+        else:
+            self.prompt_memory_cache_max_chars = max(0, int(prompt_memory_cache_max_chars))
 
         self.alignment_base_url = self._strip_opt_str(alignment_base_url)
         if alignment_api_key is None:
@@ -437,6 +444,50 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
             else:
                 total += self._estimate_text_token_count(content)
         return total + 16  # 请求包尾部保留固定开销
+
+    def _prepare_memory_cache_for_prompt(self, memory_cache: Optional[MemoryCache]) -> str:
+        """将记忆缓存裁剪到 prompt 可接受长度，避免异常膨胀拖爆上下文。"""
+        content = ""
+        if memory_cache is not None:
+            content = getattr(memory_cache, "content", "") or ""
+        limit = self.prompt_memory_cache_max_chars
+        if limit is None or limit <= 0 or len(content) <= limit:
+            return content
+
+        marker = "\n\n...[记忆缓存过长，已截断]...\n\n"
+        if limit <= len(marker) + 32:
+            trimmed = content[:limit]
+        else:
+            head = int((limit - len(marker)) * 0.7)
+            tail = max(0, limit - len(marker) - head)
+            trimmed = content[:head] + marker
+            if tail > 0:
+                trimmed += content[-tail:]
+        wprint(
+            f"[TMG] 记忆缓存过长：{len(content)} 字符，"
+            f"已截断为 {len(trimmed)} 字符后再注入抽取 prompt"
+        )
+        return trimmed
+
+    def _can_continue_multi_round(
+        self,
+        messages: List[Dict[str, Any]],
+        *,
+        next_user_content: str,
+        stage_label: str,
+    ) -> bool:
+        """续轮前先做预算预检；若已无法容纳下一轮请求，则直接正常停止。"""
+        next_messages = list(messages) + [{"role": "user", "content": next_user_content}]
+        try:
+            self._resolve_request_max_tokens(next_messages, desired_max_tokens=1)
+            return True
+        except LLMContextBudgetExceeded:
+            prompt_tokens = self._estimate_messages_token_count(next_messages)
+            wprint(
+                f"[TMG] {stage_label} 多轮预检停止：下一轮估算输入约 {prompt_tokens} tokens，"
+                f"已触达总上限 {self.context_window_tokens}"
+            )
+            return False
 
     @staticmethod
     def _stringify_message_content(content: Any) -> str:

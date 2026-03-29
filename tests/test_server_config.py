@@ -38,6 +38,7 @@ def test_load_config_normalizes_new_grouped_schema(tmp_path: Path):
             "extraction": {
                 "extraction_rounds": 2,
                 "entity_post_enhancement": True,
+                "prompt_memory_cache_max_chars": 1234,
             },
             "debug": {
                 "distill_data_dir": "distill_out",
@@ -53,6 +54,7 @@ def test_load_config_normalizes_new_grouped_schema(tmp_path: Path):
     assert cfg["runtime"]["task"]["load_cache_memory"] is True
     assert cfg["pipeline"]["search"]["similarity_threshold"] == 0.6
     assert cfg["pipeline"]["extraction"]["entity_post_enhancement"] is True
+    assert cfg["pipeline"]["extraction"]["prompt_memory_cache_max_chars"] == 1234
     assert cfg["pipeline"]["debug"]["distill_data_dir"] == "distill_out"
 
     # backward-compatible flat keys
@@ -106,6 +108,7 @@ def test_load_config_normalizes_legacy_flat_schema(tmp_path: Path):
             "load_cache_memory": False,
             "similarity_threshold": 0.75,
             "entity_post_enhancement": True,
+            "prompt_memory_cache_max_chars": 1500,
             "distill_data_dir": "legacy_distill",
         },
     }, ensure_ascii=False), encoding="utf-8")
@@ -119,4 +122,5 @@ def test_load_config_normalizes_legacy_flat_schema(tmp_path: Path):
     assert cfg["runtime"]["task"]["load_cache_memory"] is False
     assert cfg["pipeline"]["search"]["similarity_threshold"] == 0.75
     assert cfg["pipeline"]["extraction"]["entity_post_enhancement"] is True
+    assert cfg["pipeline"]["extraction"]["prompt_memory_cache_max_chars"] == 1500
     assert cfg["pipeline"]["debug"]["distill_data_dir"] == "legacy_distill"

@@ -59,6 +59,7 @@
       "entity_extraction_rounds": 1,
       "relation_extraction_rounds": 1,
       "entity_post_enhancement": false,
+      "prompt_memory_cache_max_chars": 2000,
       "compress_multi_round_extraction": false
     },
     "debug": {

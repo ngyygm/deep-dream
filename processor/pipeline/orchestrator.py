@@ -52,6 +52,7 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
                  llm_think_mode: bool = False,
                  llm_max_tokens: Optional[int] = None,
                  llm_context_window_tokens: Optional[int] = None,
+                 prompt_memory_cache_max_chars: Optional[int] = None,
                  max_llm_concurrency: Optional[int] = None,
                  # pipeline 可选配置（可从 config.pipeline 传入）
                  similarity_threshold: Optional[float] = None,
@@ -110,6 +111,7 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
             max_concurrent_windows: 同时处理的滑窗数上限（默认 1）；满员时不唤醒下一窗口，避免窗口内实体/关系并行导致线程爆炸
             compress_multi_round_extraction: 多轮实体/关系抽取是否使用压缩对话（不累积各轮 assistant 全文，默认 False）
             llm_context_window_tokens: 模型总上下文 token 上限（输入+输出），与 service_config.llm.context_window_tokens 一致；未传时读 server 默认
+            prompt_memory_cache_max_chars: 注入抽取 prompt 的记忆缓存最大字符数；超长时自动截断，默认 2000
         """
         _content_snippet_length = content_snippet_length if content_snippet_length is not None else 50
         _relation_content_snippet_length = relation_content_snippet_length if relation_content_snippet_length is not None else 50
@@ -162,6 +164,7 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
             think_mode=llm_think_mode,
             max_tokens=llm_max_tokens,
             context_window_tokens=_ctx_win,
+            prompt_memory_cache_max_chars=prompt_memory_cache_max_chars,
             max_llm_concurrency=max_llm_concurrency,
             distill_data_dir=distill_data_dir,
             alignment_enabled=bool(_al.get("enabled", False)),

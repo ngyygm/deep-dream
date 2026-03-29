@@ -115,9 +115,10 @@ class _EntityExtractionMixin:
                                     relations: List[Dict{entity1_name, entity2_name, content}]
         """
         system_prompt = EXTRACT_ENTITIES_AND_RELATIONS_SYSTEM_PROMPT
+        prompt_memory_cache = self._prepare_memory_cache_for_prompt(memory_cache)
 
         first_prompt = f"""<记忆缓存>
-{memory_cache.content}
+{prompt_memory_cache}
 </记忆缓存>
 
 <输入文本>
@@ -201,6 +202,12 @@ class _EntityExtractionMixin:
 
             # 还有下一轮：只追加简短续写指令，上下文已在首轮与历史 assistant 中
             if round_idx + 1 < rounds:
+                if not self._can_continue_multi_round(
+                    messages,
+                    next_user_content=_MULTI_ROUND_CONTINUE_USER,
+                    stage_label="步骤2(合并抽取)",
+                ):
+                    break
                 messages.append({"role": "user", "content": _MULTI_ROUND_CONTINUE_USER})
 
         return all_entities, all_relations
@@ -312,9 +319,10 @@ class _EntityExtractionMixin:
             抽取的实体列表，每个实体包含 name 和 content
         """
         system_prompt = EXTRACT_ENTITIES_SINGLE_PASS_SYSTEM_PROMPT
+        prompt_memory_cache = self._prepare_memory_cache_for_prompt(memory_cache)
 
         first_prompt = f"""<记忆缓存>
-{memory_cache.content}
+{prompt_memory_cache}
 </记忆缓存>
 
 <输入文本>
@@ -386,6 +394,12 @@ class _EntityExtractionMixin:
                 break
 
             if round_idx + 1 < rounds:
+                if not self._can_continue_multi_round(
+                    messages,
+                    next_user_content=_MULTI_ROUND_CONTINUE_USER,
+                    stage_label="步骤2(实体抽取)",
+                ):
+                    break
                 messages.append({"role": "user", "content": _MULTI_ROUND_CONTINUE_USER})
 
         if self._distill_data_dir and self._current_distill_step:
@@ -419,6 +433,7 @@ class _EntityExtractionMixin:
             verbose: 是否输出详细信息
         """
         system_prompt = EXTRACT_ENTITIES_SINGLE_PASS_SYSTEM_PROMPT
+        prompt_memory_cache = self._prepare_memory_cache_for_prompt(memory_cache)
 
         # 简化已有实体提示
         existing_entities_str = ""
@@ -437,7 +452,7 @@ class _EntityExtractionMixin:
 - 只抽取新发现的实体"""
 
         prompt = f"""<记忆缓存>
-{memory_cache.content}
+{prompt_memory_cache}
 </记忆缓存>
 
 <输入文本>
@@ -489,11 +504,12 @@ class _EntityExtractionMixin:
             return []
 
         system_prompt = EXTRACT_ENTITIES_BY_NAMES_SYSTEM_PROMPT
+        prompt_memory_cache = self._prepare_memory_cache_for_prompt(memory_cache)
 
         entity_names_str = "\n".join([f"- {name}" for name in entity_names])
 
         prompt = f"""<记忆缓存>
-{memory_cache.content}
+{prompt_memory_cache}
 </记忆缓存>
 
 <输入文本>
@@ -548,9 +564,10 @@ class _EntityExtractionMixin:
             增强后的实体content
         """
         system_prompt = ENHANCE_ENTITY_CONTENT_SYSTEM_PROMPT
+        prompt_memory_cache = self._prepare_memory_cache_for_prompt(memory_cache)
 
         prompt = f"""<记忆缓存>
-{memory_cache.content}
+{prompt_memory_cache}
 </记忆缓存>
 
 <输入文本>
