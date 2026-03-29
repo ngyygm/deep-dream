@@ -7,7 +7,7 @@ LLM客户端：封装LLM调用，实现三个核心任务。
 
 think 模式由初始化参数 think_mode 控制；只有 Ollama 原生协议支持通过 `think: true/false` 显式开关思考模式。
 """
-from typing import Dict, List, Optional, Any, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 from datetime import datetime
 import heapq
 import json
@@ -44,6 +44,50 @@ from .entity_extraction import _EntityExtractionMixin
 from .relation_extraction import _RelationExtractionMixin
 from .content_merger import _ContentMergerMixin
 from .consolidation import _ConsolidationMixin
+
+try:
+    from openai import RateLimitError
+except ImportError:  # pragma: no cover
+    RateLimitError = None  # type: ignore[misc,assignment]
+
+# 非 TPM 类错误：失败后等待 3^1, 3^2, … 秒再重试，最多 5 轮（第 6 次失败则放弃）
+_LLM_BACKOFF_BASE = 3
+_LLM_MAX_FAILURE_ROUNDS = 5
+# 单次等待上限，避免 TPM 无限重试时指数爆炸占满进程
+_LLM_TPM_SLEEP_CAP_SECONDS = 3600
+
+# JSON 解析失败时追加给模型的纠错提示（配合 call_llm_until_json_parses）
+_JSON_RETRY_USER_MESSAGE = (
+    "【输出格式纠错】上一条输出无法被解析为合法 JSON。"
+    "请严格只输出一个 markdown `json` 代码块，不要任何解释文字；"
+    "若是数组，代码块内部必须是合法 JSON 数组；若是对象，代码块内部必须是合法 JSON 对象。"
+)
+# 疑似截断（未闭合字符串等）时追加：引导缩短字段，避免再次超长
+_JSON_RETRY_TRUNCATION_SUFFIX = (
+    " 若疑似因输出过长在字符串中间被截断：请缩小每条 content 的篇幅（建议单字段不超过约 200 字），"
+    "字符串内的换行必须写成转义 \\n；仍只输出一个合法的 ```json ... ``` 代码块。"
+)
+
+
+def _mock_json_fence(payload: Any) -> str:
+    """将可 JSON 序列化的值包在单个 ```json 代码块内，与线上 prompt 约定一致。"""
+    body = json.dumps(payload, ensure_ascii=False)
+    return f"```json\n{body}\n```"
+
+
+def _is_rate_limit_tpm_error(exc: BaseException) -> bool:
+    """429 / TPM / 速率限制：应长时间退避直至恢复，不计入普通重试上限。"""
+    if RateLimitError is not None and isinstance(exc, RateLimitError):
+        return True
+    code = getattr(exc, "status_code", None)
+    if code == 429:
+        return True
+    s = str(exc).lower()
+    if "429" not in str(exc):
+        return False
+    if "error code: 429" in s or "status code 429" in s:
+        return True
+    return any(k in s for k in ("rate", "limit", "tpm", "throttl"))
 
 
 class PrioritySemaphore:
@@ -122,57 +166,187 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
             return (entity2, entity1)
     
     @staticmethod
+    def _extract_entity_base_name(entity_name: str) -> str:
+        """提取实体的基础名称，去掉首个括号后的补充说明。"""
+        entity_name = entity_name.strip()
+        for bracket in ("（", "("):
+            idx = entity_name.find(bracket)
+            if idx != -1:
+                entity_name = entity_name[:idx]
+                break
+        return entity_name.strip()
+
+    @staticmethod
     def _normalize_entity_name_to_original(entity_name: str, valid_entity_names: set) -> str:
         """
-        将LLM返回的实体名称规范化为原始的完整名称（仅精确匹配）
+        将LLM返回的实体名称规范化为原始的完整名称。
         
         Args:
             entity_name: LLM返回的实体名称
             valid_entity_names: 有效的原始实体名称集合
         
         Returns:
-            如果找到精确匹配则返回规范化后的实体名称，否则返回原名称
+            如果找到精确匹配或唯一的基础名称匹配则返回规范化后的实体名称，否则返回原名称
         """
         entity_name = entity_name.strip()
         
         # 精确匹配：如果已经是完整名称，直接返回
         if entity_name in valid_entity_names:
             return entity_name
+
+        # 保守兜底：仅当基础名称唯一对应一个实体时，才自动补回完整名称
+        base_name = LLMClient._extract_entity_base_name(entity_name)
+        if not base_name:
+            return entity_name
+        base_name_matches = [
+            valid_name for valid_name in valid_entity_names
+            if LLMClient._extract_entity_base_name(valid_name) == base_name
+        ]
+        if len(base_name_matches) == 1:
+            return base_name_matches[0]
         
         # 没有找到精确匹配，返回原名称
         return entity_name
     
+    @staticmethod
+    def _strip_opt_str(v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        if isinstance(v, str):
+            t = v.strip()
+            return t if t else None
+        return None
+
     def __init__(self, api_key: Optional[str] = None, model_name: str = "gpt-4", base_url: Optional[str] = None,
-                 content_snippet_length: int = 50, think_mode: bool = False,
+                 content_snippet_length: int = 50,
+                 relation_content_snippet_length: int = 50,
+                 relation_endpoint_jaccard_threshold: float = 0.9,
+                 embedding_client: Any = None,
+                 relation_endpoint_embedding_threshold: Optional[float] = 0.72,
+                 think_mode: bool = False,
                  distill_data_dir: Optional[str] = None, max_tokens: Optional[int] = None,
-                 max_llm_concurrency: Optional[int] = None):
+                 context_window_tokens: Optional[int] = None,
+                 max_llm_concurrency: Optional[int] = None,
+                 alignment_base_url: Optional[str] = None,
+                 alignment_api_key: Optional[str] = None,
+                 alignment_model: Optional[str] = None,
+                 alignment_max_tokens: Optional[int] = None,
+                 alignment_think_mode: Optional[bool] = None,
+                 alignment_content_snippet_length: Optional[int] = None,
+                 alignment_relation_content_snippet_length: Optional[int] = None,
+                 alignment_enabled: bool = False,
+                 alignment_max_llm_concurrency: Optional[int] = None):
         """
         初始化LLM客户端
 
         Args:
-            api_key: API密钥
-            model_name: 模型名称
-            base_url: API基础URL（可选，用于自定义API端点）
-            content_snippet_length: 传入LLM prompt的实体content最大长度（默认50字符）
-            think_mode: 是否开启思维链/think 模式（默认 False）。仅 Ollama 原生 `/api/chat` 下通过 API 参数 think 控制；其他后端忽略
-            max_tokens: LLM 最大输出 token 数（可选）。Ollama 对应 num_predict，OpenAI 对应 max_tokens
-            max_llm_concurrency: 最大并发 LLM 请求数（可选）。None 表示不限制
+            api_key / model_name / base_url / content_snippet_length / relation_content_snippet_length / think_mode / max_tokens / context_window_tokens:
+                步骤 1–5（上游滑窗与抽取）使用的配置；max_llm_concurrency 为步骤 1–5 的 LLM 并发上限。
+                context_window_tokens：模型总上下文 token 上限（输入+输出），与 service_config.llm.context_window_tokens 一致，须由 Processor 注入。
+            alignment_enabled:
+                False 时忽略所有 alignment_*，步骤 6/7 与上游共用同一模型与（未拆分时）统一并发池。
+            alignment_max_llm_concurrency:
+                仅在 alignment_enabled 时生效：步骤 6/7 独立并发上限；未设时按原逻辑从 max_llm_concurrency 拆分下游槽位。
+            alignment_*:
+                步骤 6–7 可单独覆盖；未设置的项回退到上游对应项。
         """
         self.api_key = api_key
         self.model_name = model_name
         self.base_url = base_url
         self.content_snippet_length = content_snippet_length
+        self.relation_content_snippet_length = relation_content_snippet_length
+        _jet = float(relation_endpoint_jaccard_threshold)
+        self.relation_endpoint_jaccard_threshold = min(1.0, max(0.0, _jet))
+        self._relation_embedding_client = embedding_client
+        if relation_endpoint_embedding_threshold is None:
+            self.relation_endpoint_embedding_threshold = None
+        else:
+            self.relation_endpoint_embedding_threshold = min(
+                1.0, max(0.0, float(relation_endpoint_embedding_threshold))
+            )
         self.think_mode = think_mode
         self.max_tokens = max_tokens
-        # 统一使用 Python SDK（openai>=1.0）访问；无 api_key 且无 base_url 时为模拟模式
-        self._endpoint_available = bool(api_key or base_url)
-        if not self._endpoint_available:
-            wprint("提示：未提供 API key 或 base_url，将使用模拟响应模式")
+        if context_window_tokens is None:
+            raise ValueError(
+                "context_window_tokens 未设置。请在 service_config.json 的 llm 中配置 context_window_tokens，"
+                "并由 TemporalMemoryGraphProcessor 传入 LLMClient。"
+            )
+        self.context_window_tokens = max(256, int(context_window_tokens))
 
-        # LLM 并发控制：带优先级的信号量
-        self._llm_semaphore: Optional[PrioritySemaphore] = None
-        if max_llm_concurrency is not None and max_llm_concurrency >= 1:
-            self._llm_semaphore = PrioritySemaphore(max_llm_concurrency)
+        self.alignment_base_url = self._strip_opt_str(alignment_base_url)
+        if alignment_api_key is None:
+            self.alignment_api_key = None
+        elif isinstance(alignment_api_key, str):
+            self.alignment_api_key = alignment_api_key.strip()
+        else:
+            self.alignment_api_key = alignment_api_key
+        self.alignment_model = self._strip_opt_str(alignment_model)
+        self.alignment_max_tokens = alignment_max_tokens
+        self.alignment_think_mode = alignment_think_mode
+        self.alignment_content_snippet_length = (
+            int(alignment_content_snippet_length) if alignment_content_snippet_length is not None else None
+        )
+        self.alignment_relation_content_snippet_length = (
+            int(alignment_relation_content_snippet_length)
+            if alignment_relation_content_snippet_length is not None else None
+        )
+        self.alignment_enabled = bool(alignment_enabled)
+        self._alignment_max_llm_concurrency: Optional[int] = None
+        if alignment_max_llm_concurrency is not None:
+            self._alignment_max_llm_concurrency = max(1, int(alignment_max_llm_concurrency))
+
+        # 统一使用 Python SDK（openai>=1.0）访问；任一端点有 api/base 则非模拟模式
+        self._endpoint_available = bool(
+            api_key or base_url or self.alignment_base_url or (self.alignment_api_key is not None)
+        )
+        if not self._endpoint_available:
+            wprint("提示：未提供 API key 或任一 base_url，将使用模拟响应模式")
+
+        # LLM 并发：上游（步骤1–5）与下游（步骤6–7）两池
+        self._max_llm_concurrency: int = max_llm_concurrency or 0
+        self._llm_upstream_slot_max: int = 0
+        self._llm_downstream_slot_max: int = 0
+        self._llm_sem_upstream: Optional[PrioritySemaphore] = None
+        self._llm_sem_downstream: Optional[PrioritySemaphore] = None
+        self._llm_semaphore: Optional[PrioritySemaphore] = None  # 兼容旧代码/测试：与上游相同或总池
+        mc = max_llm_concurrency or 0
+        amc = self._alignment_max_llm_concurrency
+        if self.alignment_enabled and mc >= 1 and amc is not None:
+            # 对齐开启且单独指定下游并发：上游 = 步骤1–5，下游 = 步骤6–7
+            self._llm_upstream_slot_max = int(mc)
+            self._llm_downstream_slot_max = int(amc)
+            self._llm_sem_upstream = PrioritySemaphore(self._llm_upstream_slot_max)
+            self._llm_sem_downstream = PrioritySemaphore(self._llm_downstream_slot_max)
+            self._llm_semaphore = self._llm_sem_upstream
+        elif self.alignment_enabled and mc >= 1:
+            # 对齐开启但未指定 alignment_max_concurrency：从上游总数中拆分下游（与旧版比例一致）
+            if mc == 1:
+                self._llm_upstream_slot_max = 1
+                self._llm_downstream_slot_max = 1
+                self._llm_sem_upstream = PrioritySemaphore(1)
+                self._llm_sem_downstream = PrioritySemaphore(1)
+            else:
+                _r = max(1, min(mc // 4, mc - 1))
+                _up = mc - _r
+                self._llm_upstream_slot_max = _up
+                self._llm_downstream_slot_max = _r
+                self._llm_sem_upstream = PrioritySemaphore(_up)
+                self._llm_sem_downstream = PrioritySemaphore(_r)
+            self._llm_semaphore = self._llm_sem_upstream
+        elif mc >= 1:
+            # 未启用对齐专用通道：与旧版相同，从 max_llm_concurrency 总数拆分
+            if mc == 1:
+                self._llm_upstream_slot_max = 1
+                self._llm_sem_upstream = PrioritySemaphore(1)
+                self._llm_semaphore = self._llm_sem_upstream
+            else:
+                _r = max(1, min(mc // 4, mc - 1))
+                _up = mc - _r
+                self._llm_upstream_slot_max = _up
+                self._llm_downstream_slot_max = _r
+                self._llm_sem_upstream = PrioritySemaphore(_up)
+                self._llm_sem_downstream = PrioritySemaphore(_r)
+                self._llm_semaphore = self._llm_sem_upstream
         # 线程局部变量：当前 LLM 调用优先级
         self._priority_local = threading.local()
 
@@ -191,20 +365,209 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
     def _current_distill_step(self, value: Optional[str]):
         self._distill_local.step = value
 
-    def _get_ollama_base_url(self) -> str:
-        """将配置的 base_url 规范化为 Ollama 根地址（不含 /v1），供 /api/chat 使用。"""
-        base = (self.base_url or "http://localhost:11434").rstrip("/")
-        if base.endswith("/v1"):
-            base = base[:-3]
-        return base
+    @staticmethod
+    def _ollama_root_from(base: Optional[str]) -> str:
+        """将 base_url 规范化为 Ollama 根地址（不含 /v1），供 /api/chat 使用。"""
+        b = (base or "http://localhost:11434").rstrip("/")
+        if b.endswith("/v1"):
+            b = b[:-3]
+        return b
 
-    def _use_openai_compatible(self) -> bool:
-        """是否为 OpenAI 兼容接口（智谱 GLM、OpenAI 等）：需同时有 api_key 与 base_url，且 base_url 为 v4/v1 或已知域名。本地 Ollama 地址即使带 /v1 也按 Ollama 处理。"""
-        if not self.api_key or not self.base_url:
+    def _get_ollama_base_url(self) -> str:
+        """兼容旧代码：仅根据主 base_url 规范化 Ollama 根地址。"""
+        return self._ollama_root_from(self.base_url)
+
+    def _in_alignment_phase(self, priority: int) -> bool:
+        return priority >= LLM_PRIORITY_STEP6
+
+    def _use_alignment_llm_endpoint(self, priority: int) -> bool:
+        """是否对本次请求使用对齐专用 LLM 配置（需显式开启 alignment_enabled）。"""
+        return bool(self.alignment_enabled) and self._in_alignment_phase(priority)
+
+    def _effective_base_url(self, priority: int) -> Optional[str]:
+        if self._use_alignment_llm_endpoint(priority) and self.alignment_base_url:
+            return self.alignment_base_url
+        return self.base_url
+
+    def _effective_api_key(self, priority: int) -> Optional[str]:
+        if self._use_alignment_llm_endpoint(priority) and self.alignment_api_key is not None:
+            return self.alignment_api_key
+        return self.api_key
+
+    def _effective_model(self, priority: int) -> str:
+        if self._use_alignment_llm_endpoint(priority) and self.alignment_model:
+            return self.alignment_model
+        return self.model_name
+
+    def _effective_think_mode(self, priority: int) -> bool:
+        if self._use_alignment_llm_endpoint(priority) and self.alignment_think_mode is not None:
+            return bool(self.alignment_think_mode)
+        return bool(self.think_mode)
+
+    def _effective_max_tokens_base(self, priority: int) -> Optional[int]:
+        if self._use_alignment_llm_endpoint(priority) and self.alignment_max_tokens is not None:
+            return int(self.alignment_max_tokens)
+        if self.max_tokens is not None:
+            return int(self.max_tokens)
+        return None
+
+    @staticmethod
+    def _estimate_text_token_count(text: Any) -> int:
+        """保守估算 token 数。
+
+        这里不追求精确 tokenizer 一致性，只需要在请求前避免总预算超过 8K。
+        对中文与 JSON 来说，字符数近似 token 数，适合做服务保护上限。
+        """
+        if text is None:
+            return 0
+        if not isinstance(text, str):
+            text = str(text)
+        return len(text)
+
+    def _estimate_messages_token_count(self, messages: List[Dict[str, Any]]) -> int:
+        total = 0
+        for msg in messages:
+            total += 8  # role / 分隔符等固定开销
+            total += self._estimate_text_token_count(msg.get("role", ""))
+            content = msg.get("content", "")
+            if isinstance(content, list):
+                for part in content:
+                    total += self._estimate_text_token_count(json.dumps(part, ensure_ascii=False))
+            else:
+                total += self._estimate_text_token_count(content)
+        return total + 16  # 请求包尾部保留固定开销
+
+    @staticmethod
+    def _stringify_message_content(content: Any) -> str:
+        if isinstance(content, str):
+            return content
+        if isinstance(content, (dict, list)):
+            try:
+                return json.dumps(content, ensure_ascii=False, indent=2)
+            except Exception:
+                return str(content)
+        return str(content)
+
+    def _log_llm_messages_full(
+        self,
+        messages: List[Dict[str, Any]],
+        *,
+        title: str,
+        prompt_tokens: Optional[int] = None,
+        desired_max_tokens: Optional[int] = None,
+        resolved_max_tokens: Optional[int] = None,
+    ) -> None:
+        wprint(f"[TMG] {title}")
+        if prompt_tokens is not None:
+            extra = f"估算输入 tokens: {prompt_tokens}"
+            if desired_max_tokens is not None:
+                extra += f", 期望输出上限: {desired_max_tokens}"
+            if resolved_max_tokens is not None:
+                extra += f", 实际输出上限: {resolved_max_tokens}"
+            extra += f", 总上限: {self.context_window_tokens}"
+            wprint(f"[TMG] {extra}")
+        for idx, msg in enumerate(messages, start=1):
+            role = msg.get("role", "")
+            content = self._stringify_message_content(msg.get("content", ""))
+            wprint(f"[TMG] 上下文[{idx}] role={role} BEGIN")
+            wprint(content)
+            wprint(f"[TMG] 上下文[{idx}] role={role} END")
+
+    @staticmethod
+    def _log_llm_response_full(response_text: str, *, title: str) -> None:
+        wprint(f"[TMG] {title} BEGIN")
+        wprint(response_text or "")
+        wprint(f"[TMG] {title} END")
+
+    @staticmethod
+    def _log_llm_error_full(err: BaseException, *, title: str) -> None:
+        wprint(f"[TMG] {title} BEGIN")
+        wprint(f"type: {type(err).__name__}")
+        wprint(f"str: {err}")
+        wprint(f"repr: {err!r}")
+        status_code = getattr(err, "status_code", None)
+        if status_code is not None:
+            wprint(f"status_code: {status_code}")
+        body = getattr(err, "body", None)
+        if body is not None:
+            wprint("body:")
+            wprint(str(body))
+        response = getattr(err, "response", None)
+        if response is not None:
+            text = getattr(response, "text", None)
+            if text:
+                wprint("response.text:")
+                wprint(str(text))
+            else:
+                wprint(f"response: {response!r}")
+        wprint(f"[TMG] {title} END")
+
+    def _resolve_request_max_tokens(
+        self,
+        messages: List[Dict[str, Any]],
+        desired_max_tokens: int,
+    ) -> int:
+        """在配置的总上下文预算内，计算本次请求允许的最大输出 token。"""
+        context_cap = self.context_window_tokens
+        prompt_tokens = self._estimate_messages_token_count(messages)
+        remaining = context_cap - prompt_tokens
+        if remaining <= 0:
+            self._log_llm_messages_full(
+                messages,
+                title="上下文预算超限，完整输入如下",
+                prompt_tokens=prompt_tokens,
+                desired_max_tokens=desired_max_tokens,
+                resolved_max_tokens=0,
+            )
+            raise RuntimeError(
+                f"LLM 上下文预算超限：估算输入约 {prompt_tokens} tokens，"
+                f"已达到或超过模型总上限 {context_cap}。请缩短输入、减少多轮历史，"
+                "或下调窗口大小 / 提示长度。"
+            )
+
+        desired = max(1, min(int(desired_max_tokens), context_cap))
+        resolved = min(desired, remaining)
+        if resolved < desired:
+            wprint(
+                f"[TMG] 上下文预算限制：估算输入 {prompt_tokens} tokens，"
+                f"输出上限从 {desired} 收缩到 {resolved}（总上限 {context_cap}）"
+            )
+            self._log_llm_messages_full(
+                messages,
+                title="上下文预算详情，完整输入如下",
+                prompt_tokens=prompt_tokens,
+                desired_max_tokens=desired,
+                resolved_max_tokens=resolved,
+            )
+        return max(1, resolved)
+
+    def effective_entity_snippet_length(self) -> int:
+        """按当前线程优先级返回实体 content 截断长度（步骤6–7 可走 alignment 配置）。"""
+        p = getattr(self._priority_local, "priority", LLM_PRIORITY_STEP1)
+        if self._use_alignment_llm_endpoint(p) and self.alignment_content_snippet_length is not None:
+            return int(self.alignment_content_snippet_length)
+        return int(self.content_snippet_length or 50)
+
+    def effective_relation_snippet_length(self) -> int:
+        """按当前线程优先级返回关系 content 截断长度（步骤7 可走 alignment 配置）。"""
+        p = getattr(self._priority_local, "priority", LLM_PRIORITY_STEP1)
+        if (
+            self.alignment_enabled
+            and p >= LLM_PRIORITY_STEP7
+            and self.alignment_relation_content_snippet_length is not None
+        ):
+            return int(self.alignment_relation_content_snippet_length)
+        return int(self.relation_content_snippet_length or 50)
+
+    def _use_openai_compatible_url(self, url: Optional[str], api_key: Optional[str]) -> bool:
+        """是否为 OpenAI 兼容接口；url / api_key 为本次请求实际使用的值。"""
+        key = api_key
+        eff = url if url is not None else self.base_url
+        if not key or not eff:
             return False
-        u = (self.base_url or "").rstrip("/").lower()
+        u = (eff or "").rstrip("/").lower()
         # 约定：api_key=ollama 表示使用 Ollama（即使是远端 /v1）
-        if (self.api_key or "").strip().lower() == "ollama":
+        if (key or "").strip().lower() == "ollama":
             return False
         # 本地 Ollama 默认端口：一律走 Ollama /api/chat，不走 /v1/chat/completions
         if ":11434" in u and ("127.0.0.1" in u or "localhost" in u):
@@ -216,6 +579,10 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
         if u.endswith("/v4") or u.endswith("/v1"):
             return True
         return False
+
+    def _use_openai_compatible(self) -> bool:
+        """兼容旧代码：按主 base_url 判断。"""
+        return self._use_openai_compatible_url(self.base_url, self.api_key)
 
     def _is_valid_utf8(self, text: str) -> bool:
         """
@@ -253,6 +620,28 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
             # 其他异常，保守起见返回True（避免误判）
             return True
 
+    def _select_llm_semaphore(self, priority: int) -> Optional[PrioritySemaphore]:
+        """步骤1–5 用上游池，步骤6–7 用下游池；未拆分（单槽）时仅上游。"""
+        if self._llm_sem_upstream is None:
+            return None
+        if self._llm_sem_downstream is None:
+            return self._llm_sem_upstream
+        if priority >= LLM_PRIORITY_STEP6:
+            return self._llm_sem_downstream
+        return self._llm_sem_upstream
+
+    def get_llm_semaphore_active_count(self) -> int:
+        u = self._llm_sem_upstream.active_count if self._llm_sem_upstream else 0
+        d = self._llm_sem_downstream.active_count if self._llm_sem_downstream else 0
+        return u + d
+
+    def get_llm_semaphore_max(self) -> int:
+        u = self._llm_upstream_slot_max or 0
+        d = self._llm_downstream_slot_max or 0
+        if u or d:
+            return u + d
+        return self._max_llm_concurrency
+
     def _save_distill_conversation(self, messages: List[Dict[str, str]]):
         """保存一次 LLM 对话到 JSONL 文件（OpenAI fine-tuning 格式）。"""
         if not self._distill_data_dir or not self._current_distill_step or not self._distill_task_id:
@@ -265,6 +654,74 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
             with open(filepath, "a", encoding="utf-8") as f:
                 f.write(line + "\n")
 
+    def call_llm_until_json_parses(
+        self,
+        messages: List[Dict[str, str]],
+        *,
+        parse_fn: Callable[[str], Any],
+        json_parse_retries: int = 2,
+        timeout: int = 300,
+        allow_mock_fallback: bool = True,
+        json_retry_user_message: Optional[str] = None,
+    ) -> Tuple[Any, str]:
+        """
+        调用 LLM，若 parse_fn(response) 因非法 JSON 抛出 json.JSONDecodeError，则追加纠错提示后重试。
+
+        用于模型偶发输出非 JSON、截断残留、或夹杂说明文字等情况；不计入 _call_llm 的网络退避重试次数。
+
+        Args:
+            json_retry_user_message: 解析失败时追加的用户纠错句；默认使用通用「必须以 [ 或 { 开头结尾」提示。
+        """
+        max_attempts = 1 + max(0, int(json_parse_retries))
+        last_response = ""
+        last_err: Optional[BaseException] = None
+
+        def _looks_like_truncation_json_err(err: BaseException) -> bool:
+            s = str(err)
+            return any(
+                x in s
+                for x in (
+                    "Unterminated string",
+                    "Expecting value",
+                    "Expecting ',' delimiter",
+                    "Unterminated",
+                )
+            )
+
+        for attempt in range(max_attempts):
+            # 解析重试时若疑似截断，临时提高 max_tokens，减轻超大实体列表被截断
+            scale = 1.0
+            if attempt > 0 and last_err is not None and _looks_like_truncation_json_err(last_err):
+                scale = min(16.0, 2.0 ** attempt)
+
+            last_response = self._call_llm(
+                "",
+                messages=messages,
+                timeout=timeout,
+                allow_mock_fallback=allow_mock_fallback,
+                request_max_tokens_scale=scale,
+            )
+            try:
+                return parse_fn(last_response), last_response
+            except json.JSONDecodeError as e:
+                last_err = e
+                if attempt >= max_attempts - 1:
+                    wprint(
+                        f"[TMG] JSON 解析失败，已达最大重试次数（{max_attempts}）: {e}"
+                    )
+                    raise
+                wprint(
+                    f"[TMG] JSON 解析失败，将重试 LLM（{attempt + 2}/{max_attempts}）: {e}"
+                )
+                messages.append({"role": "assistant", "content": last_response})
+                base_retry = json_retry_user_message or _JSON_RETRY_USER_MESSAGE
+                retry_hint = base_retry
+                if _looks_like_truncation_json_err(e):
+                    retry_hint = base_retry + _JSON_RETRY_TRUNCATION_SUFFIX
+                messages.append({"role": "user", "content": retry_hint})
+                time.sleep(0.3)
+        raise last_err if last_err else RuntimeError("call_llm_until_json_parses: unreachable")
+
     def _call_llm(
         self,
         prompt: str,
@@ -273,6 +730,8 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
         timeout: int = 300,
         allow_mock_fallback: bool = True,
         messages: Optional[List[Dict[str, str]]] = None,
+        *,
+        request_max_tokens_scale: float = 1.0,
     ) -> str:
         """
         调用LLM的通用方法（带重试机制）
@@ -280,10 +739,11 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
         Args:
             prompt: 用户提示（messages 为 None 时使用）
             system_prompt: 系统提示（可选）
-            max_retries: 最大重试次数（默认3次）
+            max_retries: 兼容保留；普通 API 错误固定为最多 5 轮退避重试（3^1…3^5 秒等待）。
             timeout: 超时时间（秒），默认300秒（5分钟），本地 Ollama 等可适当调大
             allow_mock_fallback: 失败时是否降级为模拟响应；启动握手等场景应传 False，避免误判为可用
             messages: 完整对话列表（可选）；传入时直接使用，忽略 prompt 和 system_prompt
+            request_max_tokens_scale: 仅缩放本次请求的 max_tokens/num_predict（供 JSON 解析重试时临时放大上限）
 
         Returns:
             LLM的响应文本；allow_mock_fallback=False 且失败时返回空字符串
@@ -301,39 +761,55 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
             messages.append({"role": "user", "content": prompt})
         
         last_error = None
-        attempt = 0
-        _priority = getattr(self._priority_local, 'priority', LLM_PRIORITY_STEP7)
-        _sem = self._llm_semaphore
-        last_error = None
-        attempt = 0
-        _effective_max_tokens = self.max_tokens  # 允许运行时动态降低
-        _truncation_retries = 0  # 截断自动扩容重试计数（不计入 max_retries）
+        _utf8_round = 0
+        _normal_failures = 0
+        _conn_failures = 0
+        _tpm_round = 0
+        _detailed_error_logged = False
+        _priority_init = getattr(self._priority_local, "priority", LLM_PRIORITY_STEP7)
+        _mt0 = self._effective_max_tokens_base(_priority_init)
+        _effective_max_tokens = _mt0 if _mt0 is not None else 4096
         while True:
-            # 获取并发信号量（按优先级排队等待）
+            _priority = getattr(self._priority_local, 'priority', LLM_PRIORITY_STEP7)
+            _sem = self._select_llm_semaphore(_priority)
+            # 获取并发信号量（按优先级排队等待；上游/下游分池）
             _sem_held = False
             if _sem is not None:
                 _sem.acquire(_priority)
                 _sem_held = True
             try:
-                if self._use_openai_compatible():
+                _eff_base = self._effective_base_url(_priority)
+                _eff_key = self._effective_api_key(_priority)
+                _eff_model = self._effective_model(_priority)
+                _eff_think = self._effective_think_mode(_priority)
+                _scale = max(0.25, float(request_max_tokens_scale or 1.0))
+                _desired_max_tokens = max(1, int(_effective_max_tokens * _scale))
+                _api_max_tokens = self._resolve_request_max_tokens(messages, _desired_max_tokens)
+
+                if self._use_openai_compatible_url(_eff_base, _eff_key):
+                    _bu = (_eff_base or "").rstrip("/")
                     resp = openai_compatible_chat(
                         messages,
-                        model=self.model_name,
-                        base_url=self.base_url.rstrip("/"),
-                        api_key=self.api_key,
+                        model=_eff_model,
+                        base_url=_bu,
+                        api_key=_eff_key,
                         timeout=timeout,
-                        max_tokens=_effective_max_tokens,
+                        max_tokens=_api_max_tokens,
                     )
                 else:
                     resp = ollama_chat(
                         messages,
-                        model=self.model_name,
-                        base_url=self._get_ollama_base_url(),
-                        think=self.think_mode,
+                        model=_eff_model,
+                        base_url=self._ollama_root_from(_eff_base),
+                        think=_eff_think,
                         timeout=timeout,
-                        num_predict=_effective_max_tokens,
+                        num_predict=_api_max_tokens,
                     )
                 response_text = resp.content or ""
+                # 已成功完成一次上游 HTTP 调用：清零各类失败计数（UTF-8 轮次单独计）
+                _normal_failures = 0
+                _conn_failures = 0
+                _tpm_round = 0
 
                 # 检测 LLM 输出被 max_tokens 截断（finish_reason/done_reason == "length"）
                 _is_truncated = (
@@ -341,23 +817,30 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
                     or (resp.raw and resp.raw.get("choices") and
                         resp.raw["choices"][0].get("finish_reason") == "length")
                 )
-                _max_allowed = self.max_tokens * 2  # 扩容上限为配置值的2倍
-                if _is_truncated and _truncation_retries < 1 and _effective_max_tokens < _max_allowed:
-                    _truncation_retries += 1
-                    _effective_max_tokens = _max_allowed
-                    wprint(f"[TMG] LLM 输出被截断（max_tokens 不足），自动扩容至 {_effective_max_tokens} 后重试")
-                    if _sem is not None:
-                        _sem.release()
-                    _sem_held = False
-                    time.sleep(0.5)
-                    continue
+                if _is_truncated:
+                    wprint(
+                        f"[TMG] LLM 输出被截断（finish_reason=length）。"
+                        f"当前请求输出上限为 {_api_max_tokens}，已不再自动扩容重试；"
+                        "如需避免截断，请缩短输入上下文或减少输出体积。"
+                    )
+                    self._log_llm_messages_full(
+                        messages,
+                        title="长度截断时的完整输入如下",
+                        prompt_tokens=self._estimate_messages_token_count(messages),
+                        desired_max_tokens=_desired_max_tokens,
+                        resolved_max_tokens=_api_max_tokens,
+                    )
+                    self._log_llm_response_full(
+                        response_text,
+                        title="长度截断时的完整输出",
+                    )
 
                 # 检测是否是有效的UTF-8编码
                 if not self._is_valid_utf8(response_text):
-                    if attempt < max_retries - 1:
-                        wprint(f"检测到非UTF-8编码的文本，正在重新生成（第 {attempt + 1}/{max_retries} 次尝试）...")
+                    _utf8_round += 1
+                    if _utf8_round <= _LLM_MAX_FAILURE_ROUNDS:
+                        wprint(f"检测到非UTF-8编码的文本，正在重新生成（第 {_utf8_round}/{_LLM_MAX_FAILURE_ROUNDS} 次尝试）...")
                         wprint(f"问题内容预览:\n{response_text}")
-                        attempt += 1
                         continue
                     else:
                         wprint(f"警告：检测到非UTF-8编码但已达到最大重试次数，返回原始响应")
@@ -377,9 +860,7 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
                 # 统一处理错误，包括连接错误、超时等
                 error_str = str(e).lower()
                 last_error = e
-                # 检查是否是超时错误
                 is_timeout = "timeout" in error_str or "timed out" in error_str
-                # 检查是否是连接类错误（如 connection refused）
                 is_connection_error = any(
                     kw in error_str
                     for kw in [
@@ -395,10 +876,28 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
                         "errno 111",
                     ]
                 )
+                is_tpm_error = _is_rate_limit_tpm_error(e)
 
-                # max_tokens 超限：自动降低重试（不计入 max_retries）
+                if not _detailed_error_logged and not is_connection_error and not is_timeout and not is_tpm_error:
+                    self._log_llm_messages_full(
+                        messages,
+                        title="服务端报错时的完整输入如下",
+                        prompt_tokens=self._estimate_messages_token_count(messages),
+                        desired_max_tokens=_effective_max_tokens,
+                    )
+                    self._log_llm_error_full(
+                        e,
+                        title="服务端报错完整详情",
+                    )
+                    _detailed_error_logged = True
+
+                if "上下文预算超限" in error_str:
+                    wprint(str(e))
+                    raise
+
+                # max_tokens 超限：自动降低重试（不计入退避轮次）
                 if "max_tokens" in error_str or "max_completion_tokens" in error_str or "too large" in error_str:
-                    if _effective_max_tokens and _effective_max_tokens > 2048:
+                    if _effective_max_tokens and _effective_max_tokens > 1:
                         _effective_max_tokens = _effective_max_tokens // 2
                         wprint(f"[TMG] max_tokens 超限，自动降至 {_effective_max_tokens} 后重试")
                         if _sem is not None:
@@ -406,48 +905,66 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
                         _sem_held = False
                         time.sleep(0.5)
                         continue
-                    # 已经很低了仍失败，走正常重试逻辑
 
-                # 对于连接错误：重试但设置上限（避免无限阻塞线程）
+                # 429 / TPM / 速率限制：视为可恢复，指数退避直至成功，不限制重试次数
+                if is_tpm_error:
+                    _tpm_round += 1
+                    wait_seconds = min(
+                        _LLM_BACKOFF_BASE ** min(_tpm_round, 12),
+                        _LLM_TPM_SLEEP_CAP_SECONDS,
+                    )
+                    wprint(
+                        f"LLM 速率限制（TPM/429），{wait_seconds}s 后重试（不限制次数，第 {_tpm_round} 次等待）: {e}"
+                    )
+                    if _sem is not None:
+                        _sem.release()
+                    _sem_held = False
+                    time.sleep(wait_seconds)
+                    continue
+
+                # 连接错误：最多 5 轮，等待 3^n 秒
                 if is_connection_error:
-                    _conn_max = max_retries * 3  # 连接错误允许更多次重试
-                    wait_seconds = min(5 * (attempt + 1), 60)  # 指数退避，上限60秒
-                    wprint(f"LLM连接错误（第 {attempt + 1} 次尝试）: {e}")
-                    if attempt >= _conn_max:
-                        wprint(f"连接错误已达上限 {_conn_max} 次，放弃重试")
-                        raise
+                    _conn_failures += 1
+                    if _conn_failures <= _LLM_MAX_FAILURE_ROUNDS:
+                        wait_seconds = _LLM_BACKOFF_BASE ** _conn_failures
+                        wprint(f"LLM连接错误（第 {_conn_failures}/{_LLM_MAX_FAILURE_ROUNDS} 次失败）: {e}")
+                        wprint(f"{wait_seconds} 秒后重试...")
+                        if _sem is not None:
+                            _sem.release()
+                        _sem_held = False
+                        time.sleep(wait_seconds)
+                        continue
+                    wprint(f"LLM连接错误已达 {_LLM_MAX_FAILURE_ROUNDS} 轮，放弃重试: {e}")
+                    if _sem is not None:
+                        _sem.release()
+                    _sem_held = False
+                    raise
+
+                # 其它错误（含超时）：最多 5 轮，等待 3^n 秒
+                _normal_failures += 1
+                if _normal_failures <= _LLM_MAX_FAILURE_ROUNDS:
+                    wait_seconds = _LLM_BACKOFF_BASE ** _normal_failures
+                    if is_timeout:
+                        wprint(f"LLM调用超时（第 {_normal_failures}/{_LLM_MAX_FAILURE_ROUNDS} 次失败，超时: {timeout}s）: {e}")
+                    else:
+                        wprint(f"LLM调用错误（第 {_normal_failures}/{_LLM_MAX_FAILURE_ROUNDS} 次失败）: {e}")
                     wprint(f"{wait_seconds} 秒后重试...")
                     if _sem is not None:
                         _sem.release()
                     _sem_held = False
                     time.sleep(wait_seconds)
-                    attempt += 1
                     continue
 
-                # 非连接错误：按照原有 max_retries 策略处理
-                wprint(f"LLM调用错误（第 {attempt + 1}/{max_retries} 次尝试）: {e}")
-                if attempt < max_retries - 1:
-                    if is_timeout:
-                        wprint(f"LLM调用超时（第 {attempt + 1}/{max_retries} 次尝试，超时时间: {timeout}秒）: {e}")
-                    else:
-                        wprint(f"LLM调用错误（第 {attempt + 1}/{max_retries} 次尝试）: {e}")
-                    wprint(f"正在重试...")
-                    attempt += 1
-                    if _sem is not None:
-                        _sem.release()
-                    _sem_held = False
-                    continue
+                if is_timeout:
+                    wprint(f"LLM调用超时（已达 {_LLM_MAX_FAILURE_ROUNDS} 轮重试，超时时间: {timeout}秒）: {e}")
                 else:
-                    if is_timeout:
-                        wprint(f"LLM调用超时（已达最大重试次数，超时时间: {timeout}秒）: {e}")
-                    else:
-                        wprint(f"LLM调用错误（已达最大重试次数）: {e}")
-                    if _sem is not None:
-                        _sem.release()
-                    _sem_held = False
-                    if allow_mock_fallback:
-                        return self._mock_llm_response(prompt)
-                    return ""
+                    wprint(f"LLM调用错误（已达 {_LLM_MAX_FAILURE_ROUNDS} 轮重试）: {e}")
+                if _sem is not None:
+                    _sem.release()
+                _sem_held = False
+                if allow_mock_fallback:
+                    return self._mock_llm_response(prompt)
+                return ""
             finally:
                 if _sem is not None and _sem_held:
                     _sem.release()
@@ -533,7 +1050,48 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
         
         # 3. 修复未转义的换行符、回车符、制表符（在字符串值中）
         # 注意：这需要在字符串值内部进行，但要避免破坏已经转义的字符
-        # 由于这比较复杂，我们只在明显需要的地方进行修复
+        def escape_control_chars_in_json_strings(text: str) -> str:
+            """仅在 JSON 字符串内部转义裸控制字符，避免破坏结构字符。"""
+            result = []
+            in_string = False
+            escaped = False
+
+            for ch in text:
+                if in_string:
+                    if escaped:
+                        result.append(ch)
+                        escaped = False
+                        continue
+                    if ch == '\\':
+                        result.append(ch)
+                        escaped = True
+                        continue
+                    if ch == '"':
+                        result.append(ch)
+                        in_string = False
+                        continue
+                    if ch == '\n':
+                        result.append('\\n')
+                        continue
+                    if ch == '\r':
+                        result.append('\\r')
+                        continue
+                    if ch == '\t':
+                        result.append('\\t')
+                        continue
+                    if ord(ch) < 0x20:
+                        result.append(f'\\u{ord(ch):04x}')
+                        continue
+                    result.append(ch)
+                else:
+                    result.append(ch)
+                    if ch == '"':
+                        in_string = True
+                        escaped = False
+
+            return ''.join(result)
+
+        json_str = escape_control_chars_in_json_strings(json_str)
         
         return json_str
 
@@ -562,7 +1120,7 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
             close_char = ']' if open_char == '[' else '}'
             if not stripped.endswith(close_char):
                 wprint(f"[TMG] 警告: LLM 响应 JSON 被截断，以 {open_char} 开头但不以 {close_char} 结尾。"
-                      f"建议在配置中增大 llm.max_tokens 值。响应前200字符: {stripped[:200]}")
+                      f"请缩短输入上下文或输出内容。响应前200字符: {stripped[:200]}")
 
         try:
             return json.loads(json_str)
@@ -572,7 +1130,7 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
                 return json.loads(fixed)
             except json.JSONDecodeError:
                 wprint(f"[TMG] 警告: LLM 响应 JSON 解析失败（可能被截断）。"
-                      f"建议在配置中增大 llm.max_tokens 值。响应前300字符: {json_str[:300]}")
+                      f"响应: {json_str}")
                 raise
 
     def _mock_llm_response(self, prompt: str) -> str:
@@ -592,12 +1150,12 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
         elif ("抽取实体" in prompt or "抽取所有概念实体" in prompt or "entity" in prompt_lower or
               "从输入文本中抽取所有实体" in prompt or "实体抽取" in prompt or
               "概念实体" in prompt):
-            return json.dumps([
+            return _mock_json_fence([
                 {
                     "name": "示例实体1",
                     "content": "这是一个示例实体的描述"
                 }
-            ], ensure_ascii=False)
+            ])
         elif ("抽取关系" in prompt or "抽取所有概念实体间的关系" in prompt or
               "relation" in prompt_lower or "从输入文本中抽取实体之间的关系" in prompt or
               "关系抽取" in prompt or "实体间的关系" in prompt):
@@ -606,22 +1164,22 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
                 entities_section = prompt.split("已抽取的实体：")[1].split("</已抽取实体>")[0].strip()
                 # 如果实体部分为空或只有换行符，返回空关系列表
                 if not entities_section or entities_section == "\n" or entities_section == "":
-                    return json.dumps([], ensure_ascii=False)
+                    return _mock_json_fence([])
             # 如果有实体，返回示例关系（使用与实体抽取一致的实体名称）
-            return json.dumps([
+            return _mock_json_fence([
                 {
                     "entity1_name": "示例实体1",
                     "entity2_name": "示例实体2",
                     "content": "示例实体1与示例实体2之间的关系描述"
                 }
-            ], ensure_ascii=False)
+            ])
         elif ("判断.*实体.*匹配" in prompt or "judge.*entity.*match" in prompt_lower or
               "判断新抽取的实体是否与已有实体" in prompt):
             # 模拟实体匹配响应
-            return json.dumps({
+            return _mock_json_fence({
                 "entity_id": "ent_001",
                 "need_update": False
-            }, ensure_ascii=False)
+            })
         elif ("实体后验增强" in prompt or "enhance.*entity.*content" in prompt_lower or
               "对该实体的content进行更细致的补全和挖掘" in prompt or "增强后的完整实体content" in prompt):
             # 模拟实体后验增强响应（JSON格式）
@@ -631,16 +1189,15 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
                 enhanced_content = f"{original_content}\n\n[增强信息]：基于记忆缓存和当前文本的补充细节和上下文信息。"
             else:
                 enhanced_content = "这是一个示例实体的描述\n\n[增强信息]：基于记忆缓存和当前文本的补充细节和上下文信息。"
-            # 返回JSON格式
-            return json.dumps({"content": enhanced_content}, ensure_ascii=False)
+            return _mock_json_fence({"content": enhanced_content})
         elif ("判断" in prompt and "合并" in prompt and "实体" in prompt) or "merge_entity_name" in prompt_lower:
-            return json.dumps({"merged_name": "示例实体1", "merged_content": "合并后的描述"}, ensure_ascii=False)
+            return _mock_json_fence({"merged_name": "示例实体1", "merged_content": "合并后的描述"})
         elif ("判断" in prompt and "更新" in prompt and ("content" in prompt_lower or "内容" in prompt)):
-            return json.dumps({"need_update": False}, ensure_ascii=False)
+            return _mock_json_fence({"need_update": False})
         elif ("关系" in prompt and "匹配" in prompt) or "relation_match" in prompt_lower:
-            return json.dumps({"relation_id": None}, ensure_ascii=False)
+            return _mock_json_fence({"relation_id": None})
         elif ("生成关系" in prompt or "relation_content" in prompt_lower or "关系的content" in prompt):
-            return "这是一个示例关系描述"
+            return _mock_json_fence({"content": "这是一个示例关系描述"})
         elif "知识图谱整理" in prompt or "consolidation" in prompt_lower:
             return "知识图谱整理完成，未发现需要处理的重复实体。"
         elif ("整体记忆" in prompt or "document_overall" in prompt_lower or "文档整体" in prompt):

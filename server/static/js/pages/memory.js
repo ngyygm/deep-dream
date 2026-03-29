@@ -57,15 +57,17 @@
               <input class="input" type="datetime-local" id="text-event-time">
             </div>
             <div style="display:flex;align-items:center;gap:0.5rem;padding-bottom:2px;">
-              <div class="toggle active" id="text-load-cache-toggle"></div>
-              <label class="form-label" style="margin:0;cursor:pointer;" for="text-load-cache-toggle">${t('memory.loadCache')}</label>
+              <div class="toggle active" id="text-load-cache-toggle">
+                <input type="checkbox" id="text-load-cache-input" checked>
+              </div>
+              <label class="form-label" style="margin:0;cursor:pointer;" for="text-load-cache-input">${t('memory.loadCache')}</label>
             </div>
-          </div>
-          <div style="margin-top:1rem;display:flex;justify-content:flex-end;">
-            <button class="btn btn-primary" id="btn-submit-text">
-              <i data-lucide="send" style="width:16px;height:16px;"></i>
-              ${t('memory.submitMemory')}
-            </button>
+            <div style="display:flex;align-items:flex-end;">
+              <button class="btn btn-primary" id="btn-submit-text">
+                <i data-lucide="send" style="width:16px;height:16px;"></i>
+                ${t('memory.submitMemory')}
+              </button>
+            </div>
           </div>
         </div>
 
@@ -89,16 +91,15 @@
               <input class="input" type="datetime-local" id="file-event-time">
             </div>
             <div style="display:flex;align-items:center;gap:0.5rem;padding-bottom:2px;">
-              <div class="toggle active" id="file-load-cache-toggle"></div>
-              <label class="form-label" style="margin:0;cursor:pointer;" for="file-load-cache-toggle">${t('memory.loadCache')}</label>
+              <div class="toggle active" id="file-load-cache-toggle">
+                <input type="checkbox" id="file-load-cache-input" checked>
+              </div>
+              <label class="form-label" style="margin:0;cursor:pointer;" for="file-load-cache-input">${t('memory.loadCache')}</label>
             </div>
-          </div>
-          <div style="margin-top:1rem;display:flex;justify-content:space-between;align-items:center;">
             <button class="btn btn-secondary btn-sm" id="btn-clear-files" style="display:none;">
               <i data-lucide="x" style="width:14px;height:14px;"></i>
               ${t('memory.clearFiles')}
             </button>
-            <div style="flex:1;"></div>
             <button class="btn btn-primary" id="btn-submit-file" disabled>
               <i data-lucide="upload" style="width:16px;height:16px;"></i>
               ${t('memory.uploadProcess')}
@@ -110,6 +111,24 @@
   }
 
   function bindUploadEvents() {
+    function bindLoadCacheToggle(toggleId, inputId) {
+      const toggle = document.getElementById(toggleId);
+      const input = document.getElementById(inputId);
+      if (!toggle || !input) return;
+
+      const sync = () => {
+        toggle.classList.toggle('active', !!input.checked);
+      };
+
+      toggle.addEventListener('click', (e) => {
+        if (e.target === input) return;
+        input.checked = !input.checked;
+        sync();
+      });
+      input.addEventListener('change', sync);
+      sync();
+    }
+
     // Tab switching
     const tabs = document.querySelectorAll('#upload-tabs .tab');
     tabs.forEach(tab => {
@@ -123,12 +142,8 @@
     });
 
     // Toggle switches
-    document.getElementById('text-load-cache-toggle').addEventListener('click', function() {
-      this.classList.toggle('active');
-    });
-    document.getElementById('file-load-cache-toggle').addEventListener('click', function() {
-      this.classList.toggle('active');
-    });
+    bindLoadCacheToggle('text-load-cache-toggle', 'text-load-cache-input');
+    bindLoadCacheToggle('file-load-cache-toggle', 'file-load-cache-input');
 
     // Text submit
     document.getElementById('btn-submit-text').addEventListener('click', submitText);
@@ -234,7 +249,7 @@
       if (selectedFiles.length === 0) return;
       const sourceName = document.getElementById('file-source-name').value.trim();
       const eventTime = document.getElementById('file-event-time').value;
-      const loadCache = document.getElementById('file-load-cache-toggle').classList.contains('active');
+      const loadCache = !!document.getElementById('file-load-cache-input')?.checked;
 
       const filesToUpload = [...selectedFiles];
       const total = filesToUpload.length;
@@ -287,7 +302,7 @@
 
     const sourceName = document.getElementById('text-source-name').value.trim();
     const eventTime = document.getElementById('text-event-time').value;
-    const loadCache = document.getElementById('text-load-cache-toggle').classList.contains('active');
+    const loadCache = !!document.getElementById('text-load-cache-input')?.checked;
 
     const btn = document.getElementById('btn-submit-text');
     btn.disabled = true;
@@ -326,21 +341,39 @@
         const pCls = progressClass(task.status);
         const elapsed = getElapsed(task.started_at || task.created_at, task.finished_at);
         const isRunning = task.status === 'running';
-        const hasDual = isRunning && (task.step6_label || task.step7_label);
+        const isPaused = task.status === 'paused';
+        const isPausePending = task.phase === 'pausing';
+        const loadCacheLabel = task.load_cache_memory ? t('memory.loadCacheOn') : t('memory.loadCacheOff');
+        const canDelete = task.status === 'queued' || task.status === 'running' || task.status === 'paused';
+        const canPause = task.status === 'running' && !isPausePending;
+        const canResume = task.status === 'paused';
+        const hasTriple = isRunning;
         const s6p = Math.min(1, Math.max(0, task.step6_progress ?? 0));
         const s7p = Math.min(1, Math.max(0, task.step7_progress ?? 0));
+        const smp = Math.min(1, Math.max(0, task.main_progress ?? 0));
+        const overallP = Math.min(1, Math.max(0, task.step7_progress ?? task.progress ?? 0));
         let progressCell;
-        if (hasDual) {
+        if (hasTriple) {
           progressCell = `
-            <div style="min-width:140px;">
-              <div style="display:grid;grid-template-columns:1fr 1fr;gap:2px 6px;">
-                <div>
-                  <div style="font-size:0.6rem;color:var(--info);">${t('dashboard.entityAlign')}</div>
-                  <div class="progress-bar" style="height:2px;"><div class="progress-bar-fill" style="width:${(s6p*100).toFixed(1)}%;background:var(--info);"></div></div>
-                </div>
-                <div>
-                  <div style="font-size:0.6rem;color:var(--warning);">${t('dashboard.relationAlign')}</div>
-                  <div class="progress-bar" style="height:2px;"><div class="progress-bar-fill" style="width:${(s7p*100).toFixed(1)}%;background:var(--warning);"></div></div>
+            <div style="min-width:240px;">
+              <div style="font-size:0.6rem;color:var(--text-muted);margin-bottom:4px;">${t('memory.overallProgress')} ${(overallP * 100).toFixed(2)}%</div>
+              <div style="margin-bottom:4px;">
+                <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px 12px;">
+                  <div>
+                    <div style="font-size:0.65rem;color:var(--primary);margin-bottom:2px;">${t('dashboard.mainWindow')}</div>
+                    <div class="progress-bar" style="height:3px;"><div class="progress-bar-fill" style="width:${(smp*100).toFixed(2)}%;background:var(--primary);"></div></div>
+                    <div style="font-size:0.6rem;color:var(--text-muted);margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(task.main_label || '-')}</div>
+                  </div>
+                  <div>
+                    <div style="font-size:0.65rem;color:var(--info);margin-bottom:2px;">${t('dashboard.entityAlign')}</div>
+                    <div class="progress-bar" style="height:3px;"><div class="progress-bar-fill" style="width:${(s6p*100).toFixed(2)}%;background:var(--info);"></div></div>
+                    <div style="font-size:0.6rem;color:var(--text-muted);margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(task.step6_label || '-')}</div>
+                  </div>
+                  <div>
+                    <div style="font-size:0.65rem;color:var(--warning);margin-bottom:2px;">${t('dashboard.relationAlign')}</div>
+                    <div class="progress-bar" style="height:3px;"><div class="progress-bar-fill" style="width:${(s7p*100).toFixed(2)}%;background:var(--warning);"></div></div>
+                    <div style="font-size:0.6rem;color:var(--text-muted);margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(task.step7_label || '-')}</div>
+                  </div>
                 </div>
               </div>
             </div>`;
@@ -351,10 +384,37 @@
           <tr data-task-id="${escapeHtml(task.task_id)}" title="${t('memory.taskDetail')}">
             <td><span class="mono" title="${escapeHtml(task.task_id)}">${escapeHtml(truncate(task.task_id, 12))}</span></td>
             <td>${escapeHtml(truncate(task.source_name || '-', 24))}</td>
+            <td>${escapeHtml(loadCacheLabel)}</td>
             <td>${statusBadge(task.status)}</td>
             <td>${progressCell}</td>
             <td>${escapeHtml(task.phase_label || '-')}</td>
             <td>${elapsed}</td>
+            <td>
+              ${isPausePending ? `
+                <button class="btn btn-secondary btn-sm" disabled style="margin-right:0.35rem;opacity:0.75;cursor:not-allowed;">
+                  <i data-lucide="pause" style="width:14px;height:14px;"></i>
+                  ${t('memory.pausePending')}
+                </button>
+              ` : ''}
+              ${canPause ? `
+                <button class="btn btn-secondary btn-sm btn-pause-task" data-task-id="${escapeHtml(task.task_id)}" title="${t('memory.pauseTask')}" style="margin-right:0.35rem;">
+                  <i data-lucide="pause" style="width:14px;height:14px;"></i>
+                  ${t('memory.pauseTask')}
+                </button>
+              ` : ''}
+              ${canResume ? `
+                <button class="btn btn-secondary btn-sm btn-resume-task" data-task-id="${escapeHtml(task.task_id)}" title="${t('memory.startTask')}" style="margin-right:0.35rem;">
+                  <i data-lucide="play" style="width:14px;height:14px;"></i>
+                  ${t('memory.startTask')}
+                </button>
+              ` : ''}
+              ${canDelete ? `
+                <button class="btn btn-secondary btn-sm btn-delete-task" data-task-id="${escapeHtml(task.task_id)}" title="${t('memory.deleteTask')}">
+                  <i data-lucide="trash-2" style="width:14px;height:14px;"></i>
+                  ${t('memory.deleteTask')}
+                </button>
+              ` : '<span style="color:var(--text-muted);">-</span>'}
+            </td>
           </tr>
         `;
       }).join('');
@@ -366,10 +426,12 @@
               <tr>
                 <th>${t('memory.taskId')}</th>
                 <th>${t('memory.taskSource')}</th>
+                <th>${t('memory.taskLoadCache')}</th>
                 <th>${t('memory.taskStatus')}</th>
                 <th>${t('memory.taskProgress')}</th>
                 <th>${t('memory.taskPhase')}</th>
                 <th>${t('memory.taskElapsed')}</th>
+                <th>${t('memory.taskActions')}</th>
               </tr>
             </thead>
             <tbody>${rows}</tbody>
@@ -407,6 +469,28 @@
         });
       });
 
+      el.querySelectorAll('.btn-delete-task').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          const taskId = btn.getAttribute('data-task-id');
+          await deleteQueuedTask(taskId);
+        });
+      });
+      el.querySelectorAll('.btn-pause-task').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          const taskId = btn.getAttribute('data-task-id');
+          await pauseTask(taskId);
+        });
+      });
+      el.querySelectorAll('.btn-resume-task').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          const taskId = btn.getAttribute('data-task-id');
+          await resumeTask(taskId);
+        });
+      });
+
       if (window.lucide) lucide.createIcons({ nodes: [el] });
     } catch (err) {
       const el = document.getElementById('task-list-wrapper');
@@ -420,6 +504,41 @@
     loadTasks();
   }
 
+  async function deleteQueuedTask(taskId) {
+    if (!taskId) return;
+    const confirmed = window.confirm(t('memory.deleteTaskConfirm'));
+    if (!confirmed) return;
+    try {
+      const res = await state.api.rememberDelete(taskId, state.currentGraphId);
+      showToast(res.data?.message || t('memory.deleteTaskSuccess'), 'success');
+      refreshTasks();
+    } catch (err) {
+      showToast(t('memory.deleteTaskFailed') + ': ' + err.message, 'error');
+    }
+  }
+
+  async function pauseTask(taskId) {
+    if (!taskId) return;
+    try {
+      const res = await state.api.rememberPause(taskId, state.currentGraphId);
+      showToast(res.data?.message || t('memory.pauseTaskSuccess'), 'success');
+      refreshTasks();
+    } catch (err) {
+      showToast(t('memory.pauseTaskFailed') + ': ' + err.message, 'error');
+    }
+  }
+
+  async function resumeTask(taskId) {
+    if (!taskId) return;
+    try {
+      const res = await state.api.rememberResume(taskId, state.currentGraphId);
+      showToast(res.data?.message || t('memory.resumeTaskSuccess'), 'success');
+      refreshTasks();
+    } catch (err) {
+      showToast(t('memory.resumeTaskFailed') + ': ' + err.message, 'error');
+    }
+  }
+
   async function showTaskDetail(taskId) {
     try {
       const res = await state.api.rememberStatus(taskId, state.currentGraphId);
@@ -427,22 +546,32 @@
 
       const pCls = progressClass(task.status);
       const isRunning = task.status === 'running';
-      const hasDual = isRunning && (task.step6_label || task.step7_label);
+      const isPausePending = task.phase === 'pausing';
+      const hasTriple = isRunning;
+      const loadCacheLabel = task.load_cache_memory ? t('memory.loadCacheOn') : t('memory.loadCacheOff');
       const s6p = Math.min(1, Math.max(0, task.step6_progress ?? 0));
       const s7p = Math.min(1, Math.max(0, task.step7_progress ?? 0));
+      const smp = Math.min(1, Math.max(0, task.main_progress ?? 0));
+      const overallPd = Math.min(1, Math.max(0, task.step7_progress ?? task.progress ?? 0));
       let progressDetail;
-      if (hasDual) {
+      if (hasTriple) {
         progressDetail = `
-          <div style="min-width:200px;">
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;">
+          <div style="min-width:220px;">
+            <div style="font-size:0.7rem;color:var(--text-muted);margin-bottom:4px;">${t('memory.overallProgress')} ${(overallPd * 100).toFixed(2)}%</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px 12px;">
+              <div>
+                <div style="font-size:0.7rem;color:var(--primary);margin-bottom:2px;">${t('dashboard.mainWindow')}</div>
+                <div class="progress-bar" style="height:3px;"><div class="progress-bar-fill" style="width:${(smp*100).toFixed(2)}%;background:var(--primary);"></div></div>
+                <div style="font-size:0.65rem;color:var(--text-muted);margin-top:1px;">${escapeHtml(task.main_label || '-')}</div>
+              </div>
               <div>
                 <div style="font-size:0.7rem;color:var(--info);margin-bottom:2px;">${t('dashboard.entityAlign')}</div>
-                <div class="progress-bar" style="height:3px;"><div class="progress-bar-fill" style="width:${(s6p*100).toFixed(1)}%;background:var(--info);"></div></div>
+                <div class="progress-bar" style="height:3px;"><div class="progress-bar-fill" style="width:${(s6p*100).toFixed(2)}%;background:var(--info);"></div></div>
                 <div style="font-size:0.65rem;color:var(--text-muted);margin-top:1px;">${escapeHtml(task.step6_label || '-')}</div>
               </div>
               <div>
                 <div style="font-size:0.7rem;color:var(--warning);margin-bottom:2px;">${t('dashboard.relationAlign')}</div>
-                <div class="progress-bar" style="height:3px;"><div class="progress-bar-fill" style="width:${(s7p*100).toFixed(1)}%;background:var(--warning);"></div></div>
+                <div class="progress-bar" style="height:3px;"><div class="progress-bar-fill" style="width:${(s7p*100).toFixed(2)}%;background:var(--warning);"></div></div>
                 <div style="font-size:0.65rem;color:var(--text-muted);margin-top:1px;">${escapeHtml(task.step7_label || '-')}</div>
               </div>
             </div>
@@ -457,6 +586,8 @@
             <span class="mono">${escapeHtml(task.task_id)}</span>
             <span style="color:var(--text-muted);">${t('memory.taskStatus')}</span>
             <span>${statusBadge(task.status)}</span>
+            <span style="color:var(--text-muted);">${t('memory.taskLoadCache')}</span>
+            <span>${escapeHtml(loadCacheLabel)}</span>
             <span style="color:var(--text-muted);">${t('memory.taskProgress')}</span>
             ${progressDetail}
             <span style="color:var(--text-muted);">${t('memory.taskPhase')}</span>
@@ -489,11 +620,78 @@
         `;
       }
 
-      showModal({
+      const footerParts = [
+        `<button class="btn btn-secondary btn-sm task-detail-close">${t('common.close')}</button>`,
+      ];
+      if (isPausePending) {
+        footerParts.unshift(`
+          <button class="btn btn-secondary btn-sm" disabled style="opacity:0.75;cursor:not-allowed;">
+            <i data-lucide="pause" style="width:14px;height:14px;"></i>
+            ${t('memory.pausePending')}
+          </button>
+        `);
+      }
+      if (task.status === 'running' && !isPausePending) {
+        footerParts.unshift(`
+          <button class="btn btn-secondary btn-sm task-detail-pause">
+            <i data-lucide="pause" style="width:14px;height:14px;"></i>
+            ${t('memory.pauseTask')}
+          </button>
+        `);
+      }
+      if (task.status === 'paused') {
+        footerParts.unshift(`
+          <button class="btn btn-secondary btn-sm task-detail-resume">
+            <i data-lucide="play" style="width:14px;height:14px;"></i>
+            ${t('memory.startTask')}
+          </button>
+        `);
+      }
+      if (task.status === 'queued' || task.status === 'running' || task.status === 'paused') {
+        footerParts.unshift(`
+          <button class="btn btn-secondary btn-sm task-detail-delete">
+            <i data-lucide="trash-2" style="width:14px;height:14px;"></i>
+            ${t('memory.deleteTask')}
+          </button>
+        `);
+      }
+
+      const modal = showModal({
         title: t('memory.taskDetail'),
         content: body,
+        footer: `<div style="display:flex;justify-content:flex-end;gap:0.5rem;flex-wrap:wrap;">${footerParts.join('')}</div>`,
         size: 'lg',
       });
+
+      const { overlay, close } = modal;
+      const closeBtn = overlay.querySelector('.task-detail-close');
+      if (closeBtn) {
+        closeBtn.addEventListener('click', () => close());
+      }
+
+      const deleteBtn = overlay.querySelector('.task-detail-delete');
+      if (deleteBtn) {
+        deleteBtn.addEventListener('click', async () => {
+          close();
+          await deleteQueuedTask(task.task_id);
+        });
+      }
+
+      const pauseBtn = overlay.querySelector('.task-detail-pause');
+      if (pauseBtn) {
+        pauseBtn.addEventListener('click', async () => {
+          close();
+          await pauseTask(task.task_id);
+        });
+      }
+
+      const resumeBtn = overlay.querySelector('.task-detail-resume');
+      if (resumeBtn) {
+        resumeBtn.addEventListener('click', async () => {
+          close();
+          await resumeTask(task.task_id);
+        });
+      }
     } catch (err) {
       showToast(t('memory.taskDetailFailed') + ': ' + err.message, 'error');
     }

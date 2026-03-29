@@ -20,6 +20,56 @@ from ..llm.client import (
 )
 
 
+def _normalize_pair_for_relation(e1: str, e2: str) -> Tuple[str, str]:
+    """与 LLMClient._normalize_entity_pair 一致：无向边端点按字典序固定。"""
+    a, b = (e1 or "").strip(), (e2 or "").strip()
+    return (a, b) if a <= b else (b, a)
+
+
+def dedupe_extracted_entities(entities: Optional[List[Dict[str, Any]]]) -> List[Dict[str, str]]:
+    """按实体 name（strip 后）去重，保留首次出现的条目。"""
+    seen: set[str] = set()
+    out: List[Dict[str, str]] = []
+    for e in entities or []:
+        if not isinstance(e, dict):
+            continue
+        name = str(e.get("name") or "").strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        out.append({"name": name, "content": str(e.get("content") or "").strip()})
+    return out
+
+
+def dedupe_extracted_relations(relations: Optional[List[Dict[str, Any]]]) -> List[Dict[str, str]]:
+    """关系去重：无向 (entity1, entity2) 字典序 + content（忽略大小写）。"""
+    seen: set[Tuple[str, str, int]] = set()
+    out: List[Dict[str, str]] = []
+    for r in relations or []:
+        if not isinstance(r, dict):
+            continue
+        e1 = str(r.get("entity1_name") or "").strip()
+        e2 = str(r.get("entity2_name") or "").strip()
+        content = str(r.get("content") or "").strip()
+        if not e1 or not e2 or not content:
+            continue
+        n1, n2 = _normalize_pair_for_relation(e1, e2)
+        key = (n1, n2, hash(content.lower()))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"entity1_name": n1, "entity2_name": n2, "content": content})
+    return out
+
+
+def dedupe_extraction_lists(
+    entities: Optional[List[Dict[str, Any]]],
+    relations: Optional[List[Dict[str, Any]]],
+) -> Tuple[List[Dict[str, str]], List[Dict[str, str]]]:
+    """供缓存加载等场景：实体、关系各做一次列表级去重。"""
+    return dedupe_extracted_entities(entities), dedupe_extracted_relations(relations)
+
+
 @dataclass
 class _AlignResult:
     """步骤6（实体对齐）的输出，供步骤7使用。"""
@@ -35,12 +85,15 @@ class _ExtractionMixin:
     def _update_cache(self, input_text: str, document_name: str,
                       text_start_pos: int = 0, text_end_pos: int = 0,
                       total_text_length: int = 0, verbose: bool = True,
+                      verbose_steps: bool = True,
                       document_path: str = "",
                       event_time: Optional[datetime] = None) -> MemoryCache:
         """步骤1：更新记忆缓存。必须在 _cache_lock 下调用，保证 cache 链串行。"""
         self.llm_client._priority_local.priority = LLM_PRIORITY_STEP1
         if verbose:
-            wprint("## 步骤1: 更新记忆缓存")
+            wprint("【步骤1】缓存｜开始｜")
+        elif verbose_steps:
+            wprint("【步骤1】缓存｜开始｜")
 
         # 蒸馏数据准备：确保 task_id 在步骤1前生成
         if self.llm_client._distill_data_dir:
@@ -65,7 +118,9 @@ class _ExtractionMixin:
         self.current_memory_cache = new_memory_cache
 
         if verbose:
-            wprint(f"  └─ 缓存ID: {new_memory_cache.absolute_id}\n")
+            wprint(f"【步骤1】缓存｜写入｜ID {new_memory_cache.absolute_id}")
+        elif verbose_steps:
+            wprint("【步骤1】缓存｜完成｜已更新")
 
         return new_memory_cache
 
@@ -75,6 +130,7 @@ class _ExtractionMixin:
 
     def _extract_only(self, new_memory_cache: MemoryCache, input_text: str,
                       document_name: str, verbose: bool = True,
+                      verbose_steps: bool = True,
                       event_time: Optional[datetime] = None,
                       progress_callback=None,
                       progress_range: tuple = (0.1, 0.5),
@@ -109,7 +165,9 @@ class _ExtractionMixin:
         # ========== 步骤2：抽取实体 ==========
         self.llm_client._priority_local.priority = LLM_PRIORITY_STEP2
         if verbose:
-            wprint("## 步骤2: 抽取实体")
+            wprint("【步骤2】实体｜开始｜")
+        elif verbose_steps:
+            wprint("【步骤2】实体｜开始｜")
 
         self.llm_client._current_distill_step = "02_extract_entities"
 
@@ -127,31 +185,49 @@ class _ExtractionMixin:
                 rounds=self.entity_extraction_rounds,
                 verbose=verbose,
                 on_round_done=_on_entity_round,
+                compress_multi_round=self.compress_multi_round_extraction,
             )
 
             if extracted_entities:
                 break  # 正常退出
             if _step2_attempt < _extraction_empty_retry:
-                wprint(f"  ⚠️ 步骤2 LLM返回空结果，重试 ({_step2_attempt + 1}/{1 + _extraction_empty_retry})...")
+                wprint(
+                    f"【步骤2】警告｜重试｜空结果 {_step2_attempt + 1}/{1 + _extraction_empty_retry}"
+                )
 
         self.llm_client._current_distill_step = None
 
         _ent_count = len(extracted_entities)
-        wprint(f"[TMG] 步骤2完成: 抽取到 {_ent_count} 个实体")
+        if verbose:
+            wprint(f"【步骤2】实体｜完成｜{_ent_count}个")
+        elif verbose_steps:
+            wprint(f"【步骤2】实体｜完成｜{_ent_count}个")
         dbg(f"步骤2完成: 抽取到 {_ent_count} 个实体")
         for _ei, _e in enumerate(extracted_entities):
             dbg(f"  实体[{_ei}]: name='{_e.get('name', '')}'  content='{_e.get('content', '')[:80]}'")
         if verbose:
             if _ent_count == 0:
-                wprint(f"  └─ ⚠️ 重试 {_extraction_empty_retry} 次仍为空，跳过本窗口\n")
+                wprint(f"【步骤2】警告｜跳过｜重试{_extraction_empty_retry}次仍空")
             else:
-                wprint(f"  └─ 实体抽取完成: {_ent_count} 个实体\n")
+                wprint(f"【步骤2】实体｜小结｜共{_ent_count}个")
         _report_step(0, "抽取实体", f"抽取到 {len(extracted_entities)} 个实体")
+
+        _ents_before_dedup = len(extracted_entities)
+        extracted_entities = dedupe_extracted_entities(extracted_entities)
+        if verbose and len(extracted_entities) != _ents_before_dedup:
+            wprint(
+                f"【步骤2】去重｜实体｜{_ents_before_dedup}→{len(extracted_entities)}"
+            )
+        dbg(
+            f"步骤2后实体去重: {_ents_before_dedup} → {len(extracted_entities)}"
+        )
 
         # ========== 步骤3：抽取关系 ==========
         self.llm_client._priority_local.priority = LLM_PRIORITY_STEP3
         if verbose:
-            wprint("## 步骤3: 抽取关系")
+            wprint("【步骤3】关系｜开始｜")
+        elif verbose_steps:
+            wprint("【步骤3】关系｜开始｜")
 
         self.llm_client._current_distill_step = "03_extract_relations"
 
@@ -168,26 +244,70 @@ class _ExtractionMixin:
                 rounds=self.relation_extraction_rounds,
                 verbose=verbose,
                 on_round_done=_on_relation_round,
+                compress_multi_round=self.compress_multi_round_extraction,
             )
 
             if extracted_relations:
                 break  # 正常退出
             if _step3_attempt < _extraction_empty_retry:
-                wprint(f"  ⚠️ 步骤3 LLM返回空结果，重试 ({_step3_attempt + 1}/{_extraction_empty_retry})...")
+                wprint(
+                    f"【步骤3】警告｜重试｜空结果 {_step3_attempt + 1}/{1 + _extraction_empty_retry}"
+                )
 
         self.llm_client._current_distill_step = None
 
         _rel_count = len(extracted_relations)
-        wprint(f"[TMG] 步骤3完成: 抽取到 {_rel_count} 个关系")
+        if verbose:
+            wprint(f"【步骤3】关系｜完成｜{_rel_count}个")
+        elif verbose_steps:
+            wprint(f"【步骤3】关系｜完成｜{_rel_count}个")
         dbg(f"步骤3完成: 抽取到 {_rel_count} 个关系")
         for _ri, _r in enumerate(extracted_relations):
             dbg(f"  关系[{_ri}]: '{_r.get('entity1_name', '')}' <-> '{_r.get('entity2_name', '')}'  content='{_r.get('content', '')[:100]}'")
         if verbose:
             if _rel_count == 0:
-                wprint(f"  └─ ⚠️ 重试 {_extraction_empty_retry} 次仍为空，跳过\n")
+                wprint(f"【步骤3】警告｜跳过｜重试{_extraction_empty_retry}次仍空")
             else:
-                wprint(f"  └─ 关系抽取完成: {_rel_count} 个关系\n")
+                wprint(f"【步骤3】关系｜小结｜共{_rel_count}个")
         _report_step(1, "抽取关系", f"抽取到 {len(extracted_relations)} 个关系")
+
+        _rels_before_dedup = len(extracted_relations)
+        extracted_relations = dedupe_extracted_relations(extracted_relations)
+        if verbose and len(extracted_relations) != _rels_before_dedup:
+            wprint(
+                f"【步骤3】去重｜关系｜{_rels_before_dedup}→{len(extracted_relations)}"
+            )
+        dbg(
+            f"步骤3后关系去重: {_rels_before_dedup} → {len(extracted_relations)}"
+        )
+
+        # 步骤3 后：仅当有关系时，按关系端点裁剪步骤2实体（未出现在任一边的实体丢弃）
+        if extracted_relations:
+            _relation_endpoint_names: set[str] = set()
+            for _rel in extracted_relations:
+                _e1 = _rel.get('entity1_name', '').strip()
+                _e2 = _rel.get('entity2_name', '').strip()
+                if _e1:
+                    _relation_endpoint_names.add(_e1)
+                if _e2:
+                    _relation_endpoint_names.add(_e2)
+            _before_prune = len(extracted_entities)
+            extracted_entities = [
+                e for e in extracted_entities
+                if e.get('name', '').strip() in _relation_endpoint_names
+            ]
+            if verbose and _before_prune != len(extracted_entities):
+                wprint(
+                    f"【步骤3】裁剪｜实体｜{_before_prune}→{len(extracted_entities)}"
+                )
+            elif verbose_steps and _before_prune != len(extracted_entities):
+                wprint(
+                    f"【步骤3】裁剪｜实体｜{_before_prune}→{len(extracted_entities)}"
+                )
+            dbg(
+                f"步骤3后按关系裁剪实体: {_before_prune} → {len(extracted_entities)} "
+                f"（端点种类 {len(_relation_endpoint_names)}）"
+            )
 
         # ========== 步骤4：补全缺失实体 ==========
         extracted_entity_names = {e['name'] for e in extracted_entities}
@@ -203,7 +323,9 @@ class _ExtractionMixin:
         if missing_entity_names:
             self.llm_client._priority_local.priority = LLM_PRIORITY_STEP4
             if verbose:
-                wprint(f"## 步骤4: 补全缺失实体（{len(missing_entity_names)} 个）")
+                wprint(f"【步骤4】补全｜开始｜缺{len(missing_entity_names)}个")
+            elif verbose_steps:
+                wprint(f"【步骤4】补全｜开始｜{len(missing_entity_names)}个")
             _report_intermediate(2, 0.0, f"补全实体 (0/{len(missing_entity_names)})",
                     f"开始补全 {len(missing_entity_names)} 个缺失实体")
             self.llm_client._current_distill_step = "04_supplement_entities"
@@ -215,18 +337,30 @@ class _ExtractionMixin:
             self.llm_client._current_distill_step = None
             extracted_entities.extend(missing_entities)
             if verbose:
-                wprint(f"  └─ 补全完成: 新增 {len(missing_entities)} 个实体\n")
+                wprint(f"【步骤4】补全｜完成｜新{len(missing_entities)}个")
+            elif verbose_steps:
+                wprint("【步骤4】补全｜完成｜")
         else:
             if verbose:
-                wprint("## 步骤4: 补全缺失实体")
-                wprint("  └─ 无缺失实体，跳过\n")
+                wprint("【步骤4】补全｜跳过｜无缺失")
+            elif verbose_steps:
+                wprint("【步骤4】补全｜跳过｜无缺失")
         _report_step(2, "补全实体", f"补全完成")
+
+        _ents_post_supp = len(extracted_entities)
+        extracted_entities = dedupe_extracted_entities(extracted_entities)
+        if verbose and len(extracted_entities) != _ents_post_supp:
+            wprint(
+                f"【步骤4】去重｜实体｜{_ents_post_supp}→{len(extracted_entities)}"
+            )
 
         # ========== 步骤5：实体增强 ==========
         if self.entity_post_enhancement:
             self.llm_client._priority_local.priority = LLM_PRIORITY_STEP5
             if verbose:
-                wprint("## 步骤5: 实体增强")
+                wprint("【步骤5】增强｜开始｜")
+            elif verbose_steps:
+                wprint("【步骤5】增强｜开始｜")
 
             self.llm_client._current_distill_step = "05_entity_enhancement"
 
@@ -258,7 +392,7 @@ class _ExtractionMixin:
                             }
                         except Exception as e:
                             if verbose:
-                                wprint(f"      警告: {entity['name']} 增强失败: {e}")
+                                wprint(f"【步骤5】警告｜增强｜{entity['name']}: {e}")
                             entity_results[entity['name']] = {
                                 'name': entity['name'],
                                 'content': entity['content']
@@ -290,11 +424,14 @@ class _ExtractionMixin:
             self.llm_client._current_distill_step = None
 
             if verbose:
-                wprint(f"  └─ 增强完成: {len(extracted_entities)} 个实体\n")
+                wprint(f"【步骤5】增强｜完成｜共{len(extracted_entities)}个")
+            elif verbose_steps:
+                wprint("【步骤5】增强｜完成｜")
         else:
             if verbose:
-                wprint("## 步骤5: 实体增强")
-                wprint("  └─ 已禁用，跳过\n")
+                wprint("【步骤5】增强｜跳过｜已禁用")
+            elif verbose_steps:
+                wprint("【步骤5】增强｜跳过｜已禁用")
         _report_step(3, "实体增强", f"增强完成，共 {len(extracted_entities)} 个实体")
 
         return extracted_entities, extracted_relations
@@ -303,14 +440,88 @@ class _ExtractionMixin:
     # 步骤6：实体对齐（写存储，必须串行跨窗口）
     # =========================================================================
 
+    def _build_step7_relation_inputs_from_align_result(
+        self, align_result: _AlignResult
+    ) -> Tuple[List[Dict[str, str]], Dict[str, str], List[Dict], List[Dict]]:
+        """从步骤6输出构造步骤7批处理输入；与 _align_relations 内逻辑一致，供预取与步骤7共用。"""
+        entity_name_to_id = dict(align_result.entity_name_to_id)
+        pending_relations_from_entities = align_result.pending_relations
+        updated_pending_relations = align_result.unique_pending_relations
+
+        # 某些并行实体对齐分支可能留下只存在于内存中的临时 entity_id；
+        # Step7 开始前按名称刷新一次，避免关系写入时再命中“entity_id 不存在”。
+        for name, eid in list(entity_name_to_id.items()):
+            if eid:
+                entity_name_to_id[name] = self.storage.resolve_entity_id(eid)
+
+        invalid_names = [
+            name for name, eid in entity_name_to_id.items()
+            if eid and self.storage.get_entity_by_entity_id(eid) is None
+        ]
+        if invalid_names:
+            refreshed_map = self.storage.get_entity_ids_by_names(invalid_names)
+            for name, refreshed_id in refreshed_map.items():
+                if refreshed_id:
+                    entity_name_to_id[name] = refreshed_id
+
+        all_pending_relations = updated_pending_relations.copy()
+
+        for rel_info in pending_relations_from_entities:
+            entity1_name = rel_info.get("entity1_name", "")
+            entity2_name = rel_info.get("entity2_name", "")
+            content = rel_info.get("content", "")
+            relation_type = rel_info.get("relation_type", "normal")
+
+            entity1_id = entity_name_to_id.get(entity1_name)
+            entity2_id = entity_name_to_id.get(entity2_name)
+
+            if entity1_id and entity2_id:
+                if entity1_id == entity2_id:
+                    continue
+                all_pending_relations.append({
+                    "entity1_id": entity1_id,
+                    "entity2_id": entity2_id,
+                    "entity1_name": entity1_name,
+                    "entity2_name": entity2_name,
+                    "content": content,
+                    "relation_type": relation_type
+                })
+
+        seen_relations = set()
+        unique_pending_relations = []
+        for rel in all_pending_relations:
+            entity1_id = rel.get("entity1_id")
+            entity2_id = rel.get("entity2_id")
+            content = rel.get("content", "")
+            if entity1_id and entity2_id:
+                pair_key = tuple(sorted([entity1_id, entity2_id]))
+                content_hash = hash(content.strip().lower())
+                relation_key = (pair_key, content_hash)
+                if relation_key not in seen_relations:
+                    seen_relations.add(relation_key)
+                    unique_pending_relations.append(rel)
+
+        relation_inputs = [
+            {
+                "entity1_name": rel_info.get("entity1_name", ""),
+                "entity2_name": rel_info.get("entity2_name", ""),
+                "content": rel_info.get("content", ""),
+            }
+            for rel_info in unique_pending_relations
+        ]
+
+        return relation_inputs, entity_name_to_id, unique_pending_relations, all_pending_relations
+
     def _align_entities(self, extracted_entities: List[Dict], extracted_relations: List[Dict],
                         new_memory_cache: MemoryCache, input_text: str,
                         document_name: str, verbose: bool = True,
+                        verbose_steps: bool = True,
                         event_time: Optional[datetime] = None,
                         progress_callback=None,
                         progress_range: tuple = (0.5, 0.75),
                         window_index: int = 0,
-                        total_windows: int = 1) -> _AlignResult:
+                        total_windows: int = 1,
+                        entity_embedding_prefetch: Optional[Future] = None) -> _AlignResult:
         """步骤6：实体对齐（搜索、合并、写入存储）。必须串行跨窗口。
 
         Returns:
@@ -322,7 +533,9 @@ class _ExtractionMixin:
 
         self.llm_client._priority_local.priority = LLM_PRIORITY_STEP6
         if verbose:
-            wprint("## 步骤6: 处理实体（搜索、对齐、更新/新建）")
+            wprint("【步骤6】实体｜开始｜对齐写入")
+        elif verbose_steps:
+            wprint("【步骤6】实体｜开始｜")
 
         self.llm_client._current_distill_step = "06_entity_alignment"
 
@@ -374,6 +587,8 @@ class _ExtractionMixin:
             on_entity_processed=on_entity_processed_callback,
             base_time=new_memory_cache.event_time,
             max_workers=self.llm_threads,
+            verbose=verbose,
+            entity_embedding_prefetch=entity_embedding_prefetch,
         )
 
         entity_name_to_id_from_entities.update(entity_name_to_id_from_entities_final)
@@ -417,9 +632,11 @@ class _ExtractionMixin:
 
         if duplicate_names:
             if verbose:
-                wprint(f"    ⚠️  发现 {len(duplicate_names)} 个同名实体（不同ID）:")
+                wprint(f"【步骤6】警告｜同名｜{len(duplicate_names)}处")
                 for name, ids in duplicate_names.items():
-                    wprint(f"      - {name}: {len(ids)} 个不同的entity_id {ids[:3]}{'...' if len(ids) > 3 else ''}")
+                    wprint(
+                        f"【步骤6】冲突｜详情｜{name} {len(ids)}id {ids[:3]}{'...' if len(ids) > 3 else ''}"
+                    )
 
             entity_name_to_id = {}
             for name, ids in entity_name_to_ids.items():
@@ -430,8 +647,13 @@ class _ExtractionMixin:
                         version_counts[eid] = count
                     primary_id = max(ids, key=lambda eid: version_counts.get(eid, 0))
                     entity_name_to_id[name] = primary_id
+                    for eid in ids:
+                        if eid and eid != primary_id:
+                            self.storage.register_entity_redirect(eid, primary_id)
                     if verbose:
-                        wprint(f"      选择主要实体: {name} -> {primary_id} (版本数: {version_counts.get(primary_id, 0)})")
+                        wprint(
+                            f"【步骤6】冲突｜主实体｜{name}->{primary_id} v{version_counts.get(primary_id, 0)}"
+                        )
                 else:
                     entity_name_to_id[name] = ids[0]
         else:
@@ -446,12 +668,15 @@ class _ExtractionMixin:
 
         if verbose:
             if len(unique_entities) == 0:
-                wprint(f"  └─ 实体对齐完成: 无新实体（{len(original_entity_names)} 个抽取实体均已存在于记忆库）")
+                wprint(
+                    f"【步骤6】小结｜实体｜无新·抽{len(original_entity_names)}个已存在"
+                )
             else:
-                wprint(f"  └─ 处理完成: {len(unique_entities)} 个唯一实体（原始 {len(original_entity_names)} 个）")
+                wprint(
+                    f"【步骤6】小结｜实体｜唯一{len(unique_entities)}·原{len(original_entity_names)}"
+                )
             if merged_mappings:
-                wprint(f"     合并映射: {len(merged_mappings)} 个")
-            wprint("")
+                wprint(f"【步骤6】映射｜合并｜{len(merged_mappings)}个")
 
         # 步骤6.3：构建完整的实体名称→ID映射表，防止关系丢失
         # 收集关系中引用的所有实体名称
@@ -514,17 +739,28 @@ class _ExtractionMixin:
                 _parts.append(f"自关系 {_self_relations} 个")
             if _skipped_relations:
                 _parts.append(f"无法解析 {len(_skipped_relations)} 个")
-            wprint(f"[TMG] 步骤6.3: 待处理关系 {len(pending_relations_from_entities)} 个 → {', '.join(_parts)}")
-            if _skipped_relations:
-                wprint(f"[TMG]   实体名称映射表共 {len(entity_name_to_id)} 个实体: "
-                      f"{', '.join(list(entity_name_to_id.keys())[:15])}{'...' if len(entity_name_to_id) > 15 else ''}")
-                for _sr in _skipped_relations[:10]:
-                    wprint(f"[TMG]   跳过关系: {_sr}")
-                if len(_skipped_relations) > 10:
-                    wprint(f"[TMG]   ... 还有 {len(_skipped_relations) - 10} 个关系被跳过")
+            if verbose:
+                wprint(
+                    f"【步骤6】关系｜待处理｜{len(pending_relations_from_entities)}→{', '.join(_parts)}"
+                )
+                if _skipped_relations:
+                    wprint(
+                        f"【步骤6】映射｜表｜{len(entity_name_to_id)}名 "
+                        f"{', '.join(list(entity_name_to_id.keys())[:15])}{'...' if len(entity_name_to_id) > 15 else ''}"
+                    )
+                    for _sr in _skipped_relations[:10]:
+                        wprint(f"【步骤6】关系｜跳过｜{_sr}")
+                    if len(_skipped_relations) > 10:
+                        wprint(f"【步骤6】关系｜跳过｜余{len(_skipped_relations) - 10}条")
         else:
-            wprint(f"[TMG] 步骤6.3: 待处理关系 {len(pending_relations_from_entities)} 个 → 全部成功解析"
-                  + (f"（含数据库补全 {_db_matched} 个）" if _db_matched > 0 else ""))
+            if verbose:
+                wprint(
+                    f"【步骤6】关系｜待处理｜{len(pending_relations_from_entities)}→全解析"
+                    + (f"·库补{_db_matched}" if _db_matched > 0 else "")
+                )
+
+        if verbose_steps and not verbose:
+            wprint("【步骤6】实体｜完成｜映射")
 
         dbg_section("步骤6.3: 实体名称→ID映射")
         dbg(f"entity_name_to_id 映射 ({len(entity_name_to_id)} 个):")
@@ -555,15 +791,21 @@ class _ExtractionMixin:
     def _align_relations(self, align_result: _AlignResult,
                          new_memory_cache: MemoryCache, input_text: str,
                          document_name: str, verbose: bool = True,
+                         verbose_steps: bool = True,
                          event_time: Optional[datetime] = None,
                          progress_callback=None,
                          progress_range: tuple = (0.75, 1.0),
                          window_index: int = 0,
-                         total_windows: int = 1) -> List:
+                         total_windows: int = 1,
+                         prepared_relations_by_pair: Optional[Dict[Tuple[str, str], List[Dict[str, str]]]] = None,
+                         step7_inputs_cache: Optional[Tuple[List[Dict[str, str]], Dict[str, str], List[Dict], List[Dict]]] = None,
+                         ) -> List:
         """步骤7：关系对齐（搜索、合并、写入存储）。串行跨窗口。
 
         Args:
             align_result: 步骤6的输出，包含 entity_name_to_id 和 pending_relations。
+            prepared_relations_by_pair: 可选，跨窗预取的按实体对分组结果（须在上一窗 step7 完成后读库）。
+            step7_inputs_cache: 可选，与 _build_step7_relation_inputs_from_align_result 返回值一致，避免重复计算。
         """
 
         p_lo, p_hi = progress_range
@@ -572,85 +814,42 @@ class _ExtractionMixin:
 
         self.llm_client._priority_local.priority = LLM_PRIORITY_STEP7
         if verbose:
-            wprint("## 步骤7: 处理关系（搜索、对齐、更新/新建）")
+            wprint("【步骤7】关系｜开始｜对齐写入")
+        elif verbose_steps:
+            wprint("【步骤7】关系｜开始｜")
 
         self.llm_client._current_distill_step = "07_relation_alignment"
 
-        entity_name_to_id = align_result.entity_name_to_id
-        pending_relations_from_entities = align_result.pending_relations
-        updated_pending_relations = align_result.unique_pending_relations
         unique_entities = align_result.unique_entities
 
-        # 检测同名实体
-        duplicate_names = set()
-        for name, eid in entity_name_to_id.items():
-            # 简单检测：如果有多个实体同名会在步骤6中处理
-            pass
-
-        all_pending_relations = updated_pending_relations.copy()
-
-        # 将步骤6中剩余的关系也转换为ID格式
-        for rel_info in pending_relations_from_entities:
-            entity1_name = rel_info.get("entity1_name", "")
-            entity2_name = rel_info.get("entity2_name", "")
-            content = rel_info.get("content", "")
-            relation_type = rel_info.get("relation_type", "normal")
-
-            entity1_id = entity_name_to_id.get(entity1_name)
-            entity2_id = entity_name_to_id.get(entity2_name)
-
-            if entity1_id and entity2_id:
-                if entity1_id == entity2_id:
-                    continue
-                all_pending_relations.append({
-                    "entity1_id": entity1_id,
-                    "entity2_id": entity2_id,
-                    "entity1_name": entity1_name,
-                    "entity2_name": entity2_name,
-                    "content": content,
-                    "relation_type": relation_type
-                })
-
-        # 去重
-        seen_relations = set()
-        unique_pending_relations = []
-        for rel in all_pending_relations:
-            entity1_id = rel.get("entity1_id")
-            entity2_id = rel.get("entity2_id")
-            content = rel.get("content", "")
-            if entity1_id and entity2_id:
-                pair_key = tuple(sorted([entity1_id, entity2_id]))
-                content_hash = hash(content.strip().lower())
-                relation_key = (pair_key, content_hash)
-                if relation_key not in seen_relations:
-                    seen_relations.add(relation_key)
-                    unique_pending_relations.append(rel)
+        if step7_inputs_cache is not None:
+            relation_inputs, entity_name_to_id, unique_pending_relations, all_pending_relations = step7_inputs_cache
+        else:
+            relation_inputs, entity_name_to_id, unique_pending_relations, all_pending_relations = (
+                self._build_step7_relation_inputs_from_align_result(align_result)
+            )
 
         if verbose:
             duplicate_count = len(all_pending_relations) - len(unique_pending_relations)
             if duplicate_count > 0:
-                wprint(f"  ├─ 待处理关系: {len(all_pending_relations)} 个（去重后: {len(unique_pending_relations)} 个）")
+                wprint(
+                    f"【步骤7】关系｜待处理｜{len(all_pending_relations)}→去重{len(unique_pending_relations)}"
+                )
             else:
-                wprint(f"  ├─ 待处理关系: {len(unique_pending_relations)} 个")
+                wprint(f"【步骤7】关系｜待处理｜{len(unique_pending_relations)}个")
 
         _upr_count = len(unique_pending_relations)
         if _upr_count == 0:
-            wprint(f"[TMG] 步骤7: 无待处理关系，跳过")
+            if verbose:
+                wprint("【步骤7】关系｜跳过｜无待处理")
         else:
-            wprint(f"[TMG] 步骤7: 去重后待处理关系 {_upr_count} 个 "
-                  f"(去重前 {len(all_pending_relations)} 个)")
+            if verbose:
+                wprint(
+                    f"【步骤7】关系｜待处理｜去重{_upr_count}·原{len(all_pending_relations)}"
+                )
         dbg(f"步骤7: 去重后待处理关系 {len(unique_pending_relations)} 个 (去重前 {len(all_pending_relations)} 个)")
         for _upr in unique_pending_relations:
             dbg(f"  待处理: '{_upr.get('entity1_name', '')}' <-> '{_upr.get('entity2_name', '')}' (e1_id={_upr.get('entity1_id', '?')}, e2_id={_upr.get('entity2_id', '?')})  content='{_upr.get('content', '')[:100]}'")
-
-        relation_inputs = [
-            {
-                "entity1_name": rel_info.get("entity1_name", ""),
-                "entity2_name": rel_info.get("entity2_name", ""),
-                "content": rel_info.get("content", ""),
-            }
-            for rel_info in unique_pending_relations
-        ]
 
         _rel_done = [0]
 
@@ -670,23 +869,32 @@ class _ExtractionMixin:
             base_time=new_memory_cache.event_time,
             max_workers=self.llm_threads,
             on_relation_done=_on_relation_pair_done,
+            # detail 模式常开 verbose、关 verbose_steps：避免逐条 [关系操作] 刷屏
+            verbose_relation=bool(verbose and verbose_steps),
+            prepared_relations_by_pair=prepared_relations_by_pair,
         )
 
         if verbose:
             if len(all_processed_relations) == 0:
-                wprint("  └─ 关系对齐完成: 无新关系\n")
+                wprint("【步骤7】关系｜小结｜无新")
             else:
-                wprint(f"  └─ 处理完成: {len(all_processed_relations)} 个关系\n")
+                wprint(f"【步骤7】关系｜小结｜{len(all_processed_relations)}个")
+        elif verbose_steps:
+            wprint("【步骤7】关系｜完成｜")
 
         if verbose:
-            wprint("  窗口处理完成！\n")
+            wprint("【窗口】流水｜结束｜")
         _final_ents = len(unique_entities)
         _final_rels = len(all_processed_relations)
-        if _final_ents == 0 and _final_rels == 0:
-            wprint(f"[TMG] 窗口处理完成: 本窗口未产生新实体和关系")
-        else:
-            wprint(f"[TMG] 窗口处理完成: {_final_ents} 个实体, "
-                  f"{_final_rels} 个关系 (从 {len(unique_pending_relations)} 个待处理)")
+        if verbose:
+            if _final_ents == 0 and _final_rels == 0:
+                wprint("【窗口】汇总｜空｜无新实体关系")
+            else:
+                wprint(
+                    f"【窗口】汇总｜得｜实体{_final_ents} 关系{_final_rels}·待{len(unique_pending_relations)}"
+                )
+        elif verbose_steps:
+            wprint(f"【窗口】汇总｜得｜实体{_final_ents} 关系{_final_rels}")
         dbg(f"窗口处理完成: {len(unique_entities)} 个实体, {len(all_processed_relations)} 个关系 (从 {len(unique_pending_relations)} 个待处理)")
 
         if progress_callback:
@@ -705,6 +913,7 @@ class _ExtractionMixin:
 
     def _process_extraction(self, new_memory_cache: MemoryCache, input_text: str,
                             document_name: str, verbose: bool = True,
+                            verbose_steps: bool = True,
                             event_time: Optional[datetime] = None,
                             progress_callback=None,
                             progress_range: tuple = (0.1, 1.0),
@@ -719,7 +928,7 @@ class _ExtractionMixin:
 
         extracted_entities, extracted_relations = self._extract_only(
             new_memory_cache, input_text, document_name,
-            verbose=verbose, event_time=event_time,
+            verbose=verbose, verbose_steps=verbose_steps, event_time=event_time,
             progress_callback=progress_callback,
             progress_range=(progress_range[0], p1_end),
             window_index=window_index, total_windows=total_windows,
@@ -728,7 +937,7 @@ class _ExtractionMixin:
         align_result = self._align_entities(
             extracted_entities, extracted_relations,
             new_memory_cache, input_text, document_name,
-            verbose=verbose, event_time=event_time,
+            verbose=verbose, verbose_steps=verbose_steps, event_time=event_time,
             progress_callback=progress_callback,
             progress_range=(p1_end, p2_end),
             window_index=window_index, total_windows=total_windows,
@@ -737,7 +946,7 @@ class _ExtractionMixin:
         self._align_relations(
             align_result,
             new_memory_cache, input_text, document_name,
-            verbose=verbose, event_time=event_time,
+            verbose=verbose, verbose_steps=verbose_steps, event_time=event_time,
             progress_callback=progress_callback,
             progress_range=(p2_end, progress_range[1]),
             window_index=window_index, total_windows=total_windows,
@@ -746,7 +955,8 @@ class _ExtractionMixin:
     def _process_window(self, input_text: str, document_name: str,
                        is_new_document: bool, text_start_pos: int = 0,
                        text_end_pos: int = 0, total_text_length: int = 0,
-                       verbose: bool = True, document_path: str = "",
+                       verbose: bool = True, verbose_steps: bool = True,
+                       document_path: str = "",
                        event_time: Optional[datetime] = None):
         """兼容入口：串行执行 cache 更新 + 抽取处理（process_documents 等旧路径使用）。"""
         if verbose:
@@ -754,13 +964,16 @@ class _ExtractionMixin:
             wprint(f"处理窗口 (文档: {document_name}, 位置: {text_start_pos}-{text_end_pos}/{total_text_length})")
             wprint(f"输入文本长度: {len(input_text)} 字符")
             wprint(f"{'='*60}\n")
+        elif verbose_steps:
+            wprint(f"窗口开始 · {document_name}  [{text_start_pos}-{text_end_pos}/{total_text_length}]")
 
         with self._cache_lock:
             new_mc = self._update_cache(
                 input_text, document_name,
                 text_start_pos=text_start_pos, text_end_pos=text_end_pos,
                 total_text_length=total_text_length, verbose=verbose,
+                verbose_steps=verbose_steps,
                 document_path=document_path, event_time=event_time,
             )
         self._process_extraction(new_mc, input_text, document_name,
-                                 verbose=verbose, event_time=event_time)
+                                 verbose=verbose, verbose_steps=verbose_steps, event_time=event_time)

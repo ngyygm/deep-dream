@@ -56,6 +56,7 @@ class _ConsolidationMixin:
 - entity_id: {current_entity.get('entity_id', '')}
 - name: {current_entity.get('name', '')}
 - version_count: {current_entity.get('version_count', 1)}
+- source_document: {current_entity.get('source_document', '') or '(当前文档)'}
 - content: {current_entity.get('content', '')[:content_snippet_length]}{'...' if len(current_entity.get('content', '')) > content_snippet_length else ''}
 """
 
@@ -68,6 +69,7 @@ class _ConsolidationMixin:
 - entity_id: {entity.get('entity_id', '')}
 - name: {entity.get('name', '')}
 - version_count: {entity.get('version_count', 1)}
+- source_document: {entity.get('source_document', '') or '(未知文档)'}
 - content: {content_snippet}
 """
 
@@ -91,6 +93,7 @@ class _ConsolidationMixin:
 
 **重要提示**：
 - **必须基于content描述进行判断**，不能仅凭名称相似就判断为有关系
+- **必须参考 source_document**：不同文档中的实体默认要更谨慎，只有在明确是同一概念或明确存在直接关系时，才允许合并/建边
 - 仔细对比两个实体的content描述，判断是否为同一对象或存在明确关联
 - 如果两个实体是不同对象且没有明确的、直接的、有意义的关联，应该放入no_action
 - 如果关联模糊、间接或牵强，应该放入no_action，不要放入possible_relations
@@ -100,9 +103,9 @@ class _ConsolidationMixin:
 **输出要求**：
 - 只需要输出entity_id列表，不需要其他字段
 - 每个候选实体只能出现在一个列表中（possible_merges、possible_relations或no_action中的一个）
-- 只输出JSON格式，不要包含任何其他文字或说明
+- 只输出一个 ```json ... ``` 代码块，不要包含任何其他文字或说明
 
-只输出JSON，不要其他文字："""
+只输出一个 ```json ... ``` 代码块："""
 
         # 调用LLM
         try:
@@ -199,6 +202,7 @@ class _ConsolidationMixin:
 - entity_id: {current_entity.get('entity_id', '')}
 - name: {current_entity.get('name', '')}
 - version_count: {current_entity.get('version_count', 1)}
+- source_document: {current_entity.get('source_document', '') or '(当前文档)'}
 - content: {current_entity.get('content', '')}
 </当前实体>
 
@@ -206,12 +210,13 @@ class _ConsolidationMixin:
 - entity_id: {candidate_entity.get('entity_id', '')}
 - name: {candidate_entity.get('name', '')}
 - version_count: {candidate_entity.get('version_count', 1)}
+- source_document: {candidate_entity.get('source_document', '') or '(未知文档)'}
 - content: {candidate_entity.get('content', '')}
 </候选实体>
 {context_note}
 {DETAILED_JUDGMENT_PROCESS}
 
-只输出JSON，不要其他文字："""
+只输出一个 ```json ... ``` 代码块，不要其他文字："""
 
         try:
             response = self._call_llm(prompt, system_prompt)
@@ -273,6 +278,7 @@ class _ConsolidationMixin:
 - entity_id: {candidate.get('entity_id', '')}
 - name: {candidate.get('name', '')}
 - version_count: {candidate.get('version_count', 1)}
+- source_document: {candidate.get('source_document', '') or '(未知文档)'}
 - lexical_score: {candidate.get('lexical_score', 0):.4f}
 - dense_score: {candidate.get('dense_score', 0):.4f}
 - content: {candidate.get('content', '')}"""
@@ -281,6 +287,7 @@ class _ConsolidationMixin:
         prompt = f"""<当前实体>
 - entity_id: {current_entity.get('entity_id', 'NEW_ENTITY')}
 - name: {current_entity.get('name', '')}
+- source_document: {current_entity.get('source_document', '') or '(当前文档)'}
 - content: {current_entity.get('content', '')}
 </当前实体>
 {context_note}
@@ -288,7 +295,7 @@ class _ConsolidationMixin:
 {chr(10).join(candidates_str)}
 </候选实体列表>
 
-请输出 JSON：
+请输出一个 ```json ... ``` 代码块，代码块内部为：
 {{
   "match_existing_id": "若应合并到已有实体则填写 entity_id，否则为空字符串",
   "update_mode": "reuse_existing | merge_into_latest | create_new",
@@ -303,8 +310,9 @@ class _ConsolidationMixin:
 要求：
 - 只能选一个 match_existing_id
 - 若不合并，但与若干候选存在明确关系，可放入 relations_to_create
+- 必须参考 source_document；跨文档时只有在明确是同一概念实体时才允许合并或融合内容
 - 若信息不足，confidence 降低
-- 只输出 JSON"""
+- 只输出一个 ```json ... ``` 代码块"""
 
         try:
             result = self._parse_json_response(self._call_llm(prompt, system_prompt))
@@ -332,13 +340,18 @@ class _ConsolidationMixin:
                                     entity1_name: str,
                                     entity2_name: str,
                                     new_relation_contents: List[str],
-                                    existing_relations: List[Dict[str, Any]]) -> Dict[str, Any]:
+                                    existing_relations: List[Dict[str, Any]],
+                                    new_source_document: str = "") -> Dict[str, Any]:
         """对同一实体对的一批候选关系做一次性 match/update/create 判定。"""
         if not new_relation_contents:
             return {"action": "skip", "confidence": 1.0}
 
         if not existing_relations:
-            merged_content = self.merge_multiple_relation_contents(new_relation_contents)
+            merged_content = self.merge_multiple_relation_contents(
+                new_relation_contents,
+                relation_sources=[new_source_document] * len(new_relation_contents),
+                entity_pair=(entity1_name, entity2_name),
+            )
             return {
                 "action": "create_new",
                 "matched_relation_id": "",
@@ -349,10 +362,11 @@ class _ConsolidationMixin:
         system_prompt = RESOLVE_RELATION_PAIR_BATCH_SYSTEM_PROMPT
 
         new_relations_text = "\n".join(
-            f"- 新关系{i+1}: {content}" for i, content in enumerate(new_relation_contents)
+            f"- 新关系{i+1} [source_document={new_source_document or '(当前文档)'}]: {content}"
+            for i, content in enumerate(new_relation_contents)
         )
         existing_text = "\n".join(
-            f"- relation_id={rel.get('relation_id', '')}: {rel.get('content', '')}"
+            f"- relation_id={rel.get('relation_id', '')} [source_document={rel.get('source_document', '') or '(未知文档)'}]: {rel.get('content', '')}"
             for rel in existing_relations
         )
         prompt = f"""<实体对>
@@ -368,14 +382,17 @@ class _ConsolidationMixin:
 {existing_text}
 </已有关系>
 
-请输出 JSON（action 选 match_existing 或 create_new）：
+请输出一个 ```json ... ``` 代码块（action 选 match_existing 或 create_new），代码块内部为：
 {{
   "action": "match_existing | create_new",
   "matched_relation_id": "若命中已有关系则填写 relation_id，否则为空字符串",
   "need_update": true,
   "merged_content": "若需要创建或更新，给出最终关系内容；否则为空字符串",
   "confidence": 0.0
-}}"""
+}}
+
+要求：
+- 必须参考 source_document；跨文档时只有在明确表达的是同一对概念之间的同一关系时，才允许匹配/融合。"""
 
         try:
             result = self._parse_json_response(self._call_llm(prompt, system_prompt))
@@ -512,7 +529,7 @@ class _ConsolidationMixin:
 - **如果不确定是否为同一对象，宁可不合并，也不创建关系边**
 - 合并和别名关系可以同时存在（先合并，再创建别名关系）
 
-只输出JSON，不要其他文字："""
+只输出一个 ```json ... ``` 代码块，不要其他文字："""
 
         # 重试机制：最多重试3次
         max_retries = 3

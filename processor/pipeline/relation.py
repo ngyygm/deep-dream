@@ -46,6 +46,34 @@ class RelationProcessor:
             base_time=base_time,
         )
 
+    def build_relations_by_pair_from_inputs(
+        self,
+        extracted_relations: List[Dict[str, str]],
+        entity_name_to_id: Dict[str, str],
+    ) -> Tuple[Dict[Tuple[str, str], List[Dict[str, str]]], int]:
+        """去重合并后按实体对分组，不含读库。供步骤7跨窗预取，与 process_relations_batch 前半段一致。"""
+        merged_relations = self._dedupe_and_merge_relations(extracted_relations, entity_name_to_id)
+        if not merged_relations:
+            return {}, 0
+
+        relations_by_pair: Dict[Tuple[str, str], List[Dict[str, str]]] = {}
+        _batch_filtered = 0
+        for merged_relation in merged_relations:
+            entity1_name = merged_relation.get('entity1_name') or merged_relation.get('from_entity_name', '')
+            entity2_name = merged_relation.get('entity2_name') or merged_relation.get('to_entity_name', '')
+            if not entity1_name or not entity2_name:
+                _batch_filtered += 1
+                continue
+            entity1_id = entity_name_to_id.get(entity1_name)
+            entity2_id = entity_name_to_id.get(entity2_name)
+            if not entity1_id or not entity2_id or entity1_id == entity2_id:
+                _batch_filtered += 1
+                continue
+            pair_key = tuple(sorted((entity1_id, entity2_id)))
+            relations_by_pair.setdefault(pair_key, []).append(merged_relation)
+
+        return relations_by_pair, _batch_filtered
+
     def process_relations_batch(self,
                                 extracted_relations: List[Dict[str, str]],
                                 entity_name_to_id: Dict[str, str],
@@ -54,33 +82,40 @@ class RelationProcessor:
                                 base_time: Optional[datetime] = None,
                                 fallback_to_single: bool = True,
                                 max_workers: Optional[int] = None,
-                                on_relation_done: Optional[callable] = None) -> List[Relation]:
+                                on_relation_done: Optional[callable] = None,
+                                verbose_relation: bool = True,
+                                prepared_relations_by_pair: Optional[Dict[Tuple[str, str], List[Dict[str, str]]]] = None,
+                                ) -> List[Relation]:
         """按实体对批量 upsert 关系，低置信度时回退单条逻辑。max_workers>1 且实体对数量>1 时并行处理。"""
         dbg(f"process_relations_batch: 输入 {len(extracted_relations)} 个关系, entity_name_to_id 有 {len(entity_name_to_id)} 个映射")
-        merged_relations = self._dedupe_and_merge_relations(extracted_relations, entity_name_to_id)
-        dbg(f"process_relations_batch: 去重合并后 {len(merged_relations)} 个关系")
-        if not merged_relations:
-            return []
+        if prepared_relations_by_pair is not None:
+            relations_by_pair = prepared_relations_by_pair
+            dbg(f"process_relations_batch: 使用预分组实体对 {len(relations_by_pair)} 个")
+        else:
+            merged_relations = self._dedupe_and_merge_relations(extracted_relations, entity_name_to_id)
+            dbg(f"process_relations_batch: 去重合并后 {len(merged_relations)} 个关系")
+            if not merged_relations:
+                return []
 
-        relations_by_pair: Dict[Tuple[str, str], List[Dict[str, str]]] = {}
-        _batch_filtered = 0
-        for merged_relation in merged_relations:
-            entity1_name = merged_relation.get('entity1_name') or merged_relation.get('from_entity_name', '')
-            entity2_name = merged_relation.get('entity2_name') or merged_relation.get('to_entity_name', '')
-            if not entity1_name or not entity2_name:
-                dbg(f"  batch过滤(空名): e1='{entity1_name}' e2='{entity2_name}'")
-                _batch_filtered += 1
-                continue
-            entity1_id = entity_name_to_id.get(entity1_name)
-            entity2_id = entity_name_to_id.get(entity2_name)
-            if not entity1_id or not entity2_id or entity1_id == entity2_id:
-                dbg(f"  batch过滤(无ID/自关系): e1='{entity1_name}'(id={entity1_id}) e2='{entity2_name}'(id={entity2_id})")
-                _batch_filtered += 1
-                continue
-            pair_key = tuple(sorted((entity1_id, entity2_id)))
-            relations_by_pair.setdefault(pair_key, []).append(merged_relation)
+            relations_by_pair = {}
+            _batch_filtered = 0
+            for merged_relation in merged_relations:
+                entity1_name = merged_relation.get('entity1_name') or merged_relation.get('from_entity_name', '')
+                entity2_name = merged_relation.get('entity2_name') or merged_relation.get('to_entity_name', '')
+                if not entity1_name or not entity2_name:
+                    dbg(f"  batch过滤(空名): e1='{entity1_name}' e2='{entity2_name}'")
+                    _batch_filtered += 1
+                    continue
+                entity1_id = entity_name_to_id.get(entity1_name)
+                entity2_id = entity_name_to_id.get(entity2_name)
+                if not entity1_id or not entity2_id or entity1_id == entity2_id:
+                    dbg(f"  batch过滤(无ID/自关系): e1='{entity1_name}'(id={entity1_id}) e2='{entity2_name}'(id={entity2_id})")
+                    _batch_filtered += 1
+                    continue
+                pair_key = tuple(sorted((entity1_id, entity2_id)))
+                relations_by_pair.setdefault(pair_key, []).append(merged_relation)
 
-        dbg(f"process_relations_batch: 第二次过滤 {_batch_filtered} 个, 剩余 {len(relations_by_pair)} 个实体对")
+            dbg(f"process_relations_batch: 第二次过滤 {_batch_filtered} 个, 剩余 {len(relations_by_pair)} 个实体对")
 
         existing_relations_by_pair = self.storage.get_relations_by_entity_pairs(list(relations_by_pair.keys()))
         processed_relations: List[Relation] = []
@@ -113,6 +148,7 @@ class RelationProcessor:
                     source_document=source_document,
                     base_time=base_time,
                     fallback_to_single=fallback_to_single,
+                    verbose_relation=verbose_relation,
                 )
 
             with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="tmg-llm") as executor:
@@ -150,6 +186,7 @@ class RelationProcessor:
                     source_document=source_document,
                     base_time=base_time,
                     fallback_to_single=fallback_to_single,
+                    verbose_relation=verbose_relation,
                 )
                 if proc:
                     processed_relations.extend(proc)
@@ -172,14 +209,19 @@ class RelationProcessor:
                                    memory_cache_id: str,
                                    source_document: str = "",
                                    base_time: Optional[datetime] = None,
-                                   fallback_to_single: bool = True) -> Tuple[List[Relation], List[Relation]]:
+                                   fallback_to_single: bool = True,
+                                   verbose_relation: bool = True) -> Tuple[List[Relation], List[Relation]]:
         """处理单个实体对的关系，返回 (processed_relations, relations_to_persist)。"""
         entity1_id, entity2_id = pair_key
         processed_relations: List[Relation] = []
         relations_to_persist: List[Relation] = []
         new_contents = [rel.get("content", "") for rel in pair_relations if rel.get("content", "")]
         existing_relations_info = [
-            {"relation_id": relation.relation_id, "content": relation.content}
+            {
+                "relation_id": relation.relation_id,
+                "content": relation.content,
+                "source_document": relation.source_document,
+            }
             for relation in existing_relations
         ]
 
@@ -196,6 +238,7 @@ class RelationProcessor:
             entity2_name=entity2_name,
             new_relation_contents=new_contents,
             existing_relations=existing_relations_info,
+            new_source_document=source_document.split('/')[-1] if source_document else "",
         )
 
         confidence = float(batch_result.get("confidence", 0.0) or 0.0)
@@ -208,6 +251,7 @@ class RelationProcessor:
                     memory_cache_id,
                     entity1_name,
                     entity2_name,
+                    verbose_relation=verbose_relation,
                     source_document=source_document,
                     base_time=base_time,
                 )
@@ -222,7 +266,9 @@ class RelationProcessor:
                 merged_content = (batch_result.get("merged_content") or "").strip()
                 if not merged_content:
                     merged_content = self.llm_client.merge_multiple_relation_contents(
-                        [latest_relation.content] + new_contents
+                        [latest_relation.content] + new_contents,
+                        relation_sources=[latest_relation.source_document] + [source_document] * len(new_contents),
+                        entity_pair=(entity1_name, entity2_name),
                     )
                 new_relation = self._build_relation_version(
                     matched_relation_id,
@@ -235,12 +281,19 @@ class RelationProcessor:
                     entity2_name=entity2_name,
                     base_time=base_time,
                 )
-                relations_to_persist.append(new_relation)
-                processed_relations.append(new_relation)
+                if new_relation is not None:
+                    relations_to_persist.append(new_relation)
+                    processed_relations.append(new_relation)
             elif latest_relation:
                 processed_relations.append(latest_relation)
             else:
                 fallback_content = batch_result.get("merged_content") or self.llm_client.merge_multiple_relation_contents(new_contents)
+                if not batch_result.get("merged_content"):
+                    fallback_content = self.llm_client.merge_multiple_relation_contents(
+                        new_contents,
+                        relation_sources=[source_document] * len(new_contents),
+                        entity_pair=(entity1_name, entity2_name),
+                    )
                 new_relation = self._build_new_relation(
                     entity1_id,
                     entity2_id,
@@ -251,12 +304,17 @@ class RelationProcessor:
                     source_document=source_document,
                     base_time=base_time,
                 )
-                relations_to_persist.append(new_relation)
-                processed_relations.append(new_relation)
+                if new_relation is not None:
+                    relations_to_persist.append(new_relation)
+                    processed_relations.append(new_relation)
         else:
             merged_content = (batch_result.get("merged_content") or "").strip()
             if not merged_content:
-                merged_content = self.llm_client.merge_multiple_relation_contents(new_contents)
+                merged_content = self.llm_client.merge_multiple_relation_contents(
+                    new_contents,
+                    relation_sources=[source_document] * len(new_contents),
+                    entity_pair=(entity1_name, entity2_name),
+                )
             new_relation = self._build_new_relation(
                 entity1_id,
                 entity2_id,
@@ -267,8 +325,9 @@ class RelationProcessor:
                 source_document=source_document,
                 base_time=base_time,
             )
-            relations_to_persist.append(new_relation)
-            processed_relations.append(new_relation)
+            if new_relation is not None:
+                relations_to_persist.append(new_relation)
+                processed_relations.append(new_relation)
         return processed_relations, relations_to_persist
     
     def _dedupe_and_merge_relations(self, extracted_relations: List[Dict[str, str]],
@@ -398,10 +457,6 @@ class RelationProcessor:
             relation_contents
         )
         
-        # 打印合并信息
-        if verbose_relation:
-            wprint(f"[关系操作] 🔀 合并关系: {pair[0]} <-> {pair[1]} (共{len(relation_contents)}个关系)")
-        
         # 构建合并后的关系
         merged_relation = {
             'entity1_name': pair[0],
@@ -460,7 +515,8 @@ class RelationProcessor:
         existing_relations_info = [
             {
                 'relation_id': r.relation_id,
-                'content': r.content
+                'content': r.content,
+                'source_document': r.source_document,
             }
             for r in existing_relations
         ]
@@ -468,7 +524,8 @@ class RelationProcessor:
         # 步骤3：用LLM判断是否匹配
         match_result = self.llm_client.judge_relation_match(
             extracted_relation,
-            existing_relations_info
+            existing_relations_info,
+            new_source_document=source_document.split('/')[-1] if source_document else "",
         )
         # LLM 有时返回 list 而非 dict，统一取第一个元素
         if isinstance(match_result, list) and len(match_result) > 0:
@@ -500,7 +557,12 @@ class RelationProcessor:
             # 判断是否需要更新：比较最新版本的content和当前抽取的content
             need_update = self.llm_client.judge_content_need_update(
                 latest_relation.content,
-                relation_content
+                relation_content,
+                old_source_document=latest_relation.source_document,
+                new_source_document=source_document,
+                old_name=f"{entity1_name}<->{entity2_name}",
+                new_name=f"{entity1_name}<->{entity2_name}",
+                object_type="关系",
             )
             
             if need_update:
@@ -512,7 +574,11 @@ class RelationProcessor:
                 # 合并内容
                 merged_content = self.llm_client.merge_relation_content(
                     latest_relation.content,
-                    relation_content
+                    relation_content,
+                    old_source_document=latest_relation.source_document,
+                    new_source_document=source_document,
+                    entity1_name=entity1_name,
+                    entity2_name=entity2_name,
                 )
                 
                 # 创建新版本

@@ -18,7 +18,22 @@ from .prompts import (
 class _ContentMergerMixin:
     """内容判断与合并相关的 LLM 操作（mixin，通过 LLMClient 多继承使用）。"""
 
-    def judge_content_need_update(self, old_content: str, new_content: str) -> bool:
+    @staticmethod
+    def _source_doc_label(source_document: Optional[str]) -> str:
+        src = (source_document or "").strip()
+        return src if src else "(未知文档)"
+
+    def judge_content_need_update(
+        self,
+        old_content: str,
+        new_content: str,
+        *,
+        old_source_document: str = "",
+        new_source_document: str = "",
+        old_name: str = "",
+        new_name: str = "",
+        object_type: str = "实体",
+    ) -> bool:
         """
         判断内容是否需要更新
 
@@ -42,13 +57,23 @@ class _ContentMergerMixin:
         # 使用LLM判断新内容是否已经被旧内容包含
         system_prompt = JUDGE_CONTENT_NEED_UPDATE_SYSTEM_PROMPT
 
-        prompt = f"""<旧内容>
-{old_content}
-</旧内容>
+        prompt = f"""<对象类型>
+{object_type}
+</对象类型>
 
-<新内容>
+<旧版本>
+- name: {old_name or '(未提供名称)'}
+- source_document: {self._source_doc_label(old_source_document)}
+- content:
+{old_content}
+</旧版本>
+
+<新版本>
+- name: {new_name or old_name or '(未提供名称)'}
+- source_document: {self._source_doc_label(new_source_document)}
+- content:
 {new_content}
-</新内容>
+</新版本>
 
 请判断当前抽取的内容是否已被旧版本包含："""
 
@@ -64,7 +89,16 @@ class _ContentMergerMixin:
             # 如果LLM返回的不是true/false，默认返回True（保守策略，倾向于更新）
             return True
 
-    def merge_entity_content(self, old_content: str, new_content: str) -> str:
+    def merge_entity_content(
+        self,
+        old_content: str,
+        new_content: str,
+        *,
+        old_source_document: str = "",
+        new_source_document: str = "",
+        old_name: str = "",
+        new_name: str = "",
+    ) -> str:
         """
         合并实体内容（更新时使用）
 
@@ -77,15 +111,21 @@ class _ContentMergerMixin:
         """
         system_prompt = MERGE_ENTITY_CONTENT_SYSTEM_PROMPT
 
-        prompt = f"""<旧内容>
+        prompt = f"""<旧版本实体>
+- name: {old_name or '(未提供名称)'}
+- source_document: {self._source_doc_label(old_source_document)}
+- content:
 {old_content}
-</旧内容>
+</旧版本实体>
 
-<新内容>
+<新版本实体>
+- name: {new_name or old_name or '(未提供名称)'}
+- source_document: {self._source_doc_label(new_source_document)}
+- content:
 {new_content}
-</新内容>
+</新版本实体>
 
-请重新总结，输出格式：{{"content": "重新总结后的完整实体描述"}}"""
+请重新总结，只输出一个 ```json ... ``` 代码块；代码块内部格式为：{{"content": "重新总结后的完整实体描述"}}"""
 
         response = self._call_llm(prompt, system_prompt)
 
@@ -139,7 +179,7 @@ class _ContentMergerMixin:
         prompt = f"""旧名称：{old_name}
 新名称：{new_name}
 
-请将这两个名称合并为一个规范名称，输出格式：{{"name": "合并后的规范名称"}}"""
+请将这两个名称合并为一个规范名称，只输出一个 ```json ... ``` 代码块；代码块内部格式为：{{"name": "合并后的规范名称"}}"""
 
         response = self._call_llm(prompt, system_prompt)
 
@@ -164,7 +204,9 @@ class _ContentMergerMixin:
                 return f"{new_name}（{old_name}）"
 
     def judge_relation_match(self, extracted_relation: Dict[str, str],
-                            existing_relations: List[Dict[str, str]]) -> Optional[Dict[str, Any]]:
+                            existing_relations: List[Dict[str, str]],
+                            *,
+                            new_source_document: str = "") -> Optional[Dict[str, Any]]:
         """
         判断抽取的关系是否与已有关系匹配
 
@@ -182,7 +224,7 @@ class _ContentMergerMixin:
         system_prompt = JUDGE_RELATION_MATCH_SYSTEM_PROMPT
 
         existing_str = "\n\n".join([
-            f"relation_id: {r['relation_id']}\tcontent: {r['content']}"
+            f"relation_id: {r['relation_id']}\tsource_document: {self._source_doc_label(r.get('source_document', ''))}\tcontent: {r['content']}"
             for r in existing_relations
         ])
 
@@ -192,6 +234,7 @@ class _ContentMergerMixin:
         prompt = f"""<新关系>
 - entity1: {entity1_name}
 - entity2: {entity2_name}
+- source_document: {self._source_doc_label(new_source_document)}
 - content: {extracted_relation['content']}
 </新关系>
 
@@ -216,7 +259,16 @@ class _ContentMergerMixin:
         except Exception:
             return None
 
-    def merge_relation_content(self, old_content: str, new_content: str) -> str:
+    def merge_relation_content(
+        self,
+        old_content: str,
+        new_content: str,
+        *,
+        old_source_document: str = "",
+        new_source_document: str = "",
+        entity1_name: str = "",
+        entity2_name: str = "",
+    ) -> str:
         """
         合并关系内容（更新时使用）
 
@@ -229,15 +281,23 @@ class _ContentMergerMixin:
         """
         system_prompt = MERGE_RELATION_CONTENT_SYSTEM_PROMPT
 
-        prompt = f"""<旧内容>
+        prompt = f"""<旧版本关系>
+- entity1: {entity1_name or '(未提供实体1)'}
+- entity2: {entity2_name or '(未提供实体2)'}
+- source_document: {self._source_doc_label(old_source_document)}
+- content:
 {old_content}
-</旧内容>
+</旧版本关系>
 
-<新内容>
+<新版本关系>
+- entity1: {entity1_name or '(未提供实体1)'}
+- entity2: {entity2_name or '(未提供实体2)'}
+- source_document: {self._source_doc_label(new_source_document)}
+- content:
 {new_content}
-</新内容>
+</新版本关系>
 
-请重新总结，输出格式：{{"content": "重新总结后的完整关系描述"}}"""
+请重新总结，只输出一个 ```json ... ``` 代码块；代码块内部格式为：{{"content": "重新总结后的完整关系描述"}}"""
 
         response = self._call_llm(prompt, system_prompt)
 
@@ -262,7 +322,13 @@ class _ContentMergerMixin:
             cleaned_response = clean_markdown_code_blocks(response)
             return cleaned_response.strip()
 
-    def merge_multiple_relation_contents(self, contents: List[str]) -> str:
+    def merge_multiple_relation_contents(
+        self,
+        contents: List[str],
+        *,
+        relation_sources: Optional[List[str]] = None,
+        entity_pair: Optional[tuple[str, str]] = None,
+    ) -> str:
         """
         合并多个关系内容（用于去重合并）
 
@@ -281,11 +347,18 @@ class _ContentMergerMixin:
         system_prompt = MERGE_MULTIPLE_RELATION_CONTENTS_SYSTEM_PROMPT
 
         contents_str = "\n\n".join([
-            f"关系描述 {i+1}:\n{content}"
+            (
+                f"关系描述 {i+1}:\n"
+                f"- source_document: {self._source_doc_label(relation_sources[i] if relation_sources and i < len(relation_sources) else '')}\n"
+                f"- content: {content}"
+            )
             for i, content in enumerate(contents)
         ])
+        pair_note = ""
+        if entity_pair:
+            pair_note = f"\n<关系实体对>\n- entity1: {entity_pair[0]}\n- entity2: {entity_pair[1]}\n</关系实体对>\n"
 
-        prompt = f"""<关系描述列表>
+        prompt = f"""{pair_note}<关系描述列表>
 {contents_str}
 </关系描述列表>
 
@@ -293,7 +366,13 @@ class _ContentMergerMixin:
 
         return self._call_llm(prompt, system_prompt)
 
-    def merge_multiple_entity_contents(self, contents: List[str]) -> str:
+    def merge_multiple_entity_contents(
+        self,
+        contents: List[str],
+        *,
+        entity_sources: Optional[List[str]] = None,
+        entity_names: Optional[List[str]] = None,
+    ) -> str:
         """
         合并多个实体内容（用于多实体合并）
 
@@ -312,7 +391,12 @@ class _ContentMergerMixin:
         system_prompt = MERGE_MULTIPLE_ENTITY_CONTENTS_SYSTEM_PROMPT
 
         contents_str = "\n\n".join([
-            f"实体内容 {i+1}:\n{content}"
+            (
+                f"实体内容 {i+1}:\n"
+                f"- name: {entity_names[i] if entity_names and i < len(entity_names) else '(未提供名称)'}\n"
+                f"- source_document: {self._source_doc_label(entity_sources[i] if entity_sources and i < len(entity_sources) else '')}\n"
+                f"- content: {content}"
+            )
             for i, content in enumerate(contents)
         ])
 
@@ -320,7 +404,7 @@ class _ContentMergerMixin:
 {contents_str}
 </实体内容列表>
 
-请重新总结，确保保留所有独特信息，输出格式：{{"content": "重新总结后的完整实体描述"}}"""
+请重新总结，确保保留所有独特信息；只输出一个 ```json ... ``` 代码块；代码块内部格式为：{{"content": "重新总结后的完整实体描述"}}"""
 
         response = self._call_llm(prompt, system_prompt)
 

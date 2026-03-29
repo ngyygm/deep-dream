@@ -107,6 +107,13 @@ class StorageManager:
                 embedding BLOB
             )
         """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS entity_redirects (
+                source_entity_id TEXT PRIMARY KEY,
+                target_entity_id TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
         c.execute("CREATE INDEX IF NOT EXISTS idx_entity_id ON entities(entity_id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_entity_name ON entities(name)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_entity_event_time ON entities(event_time)")
@@ -115,6 +122,7 @@ class StorageManager:
         c.execute("CREATE INDEX IF NOT EXISTS idx_relation_entities ON relations(entity1_absolute_id, entity2_absolute_id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_relation_event_time ON relations(event_time)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_relation_processed_time ON relations(processed_time)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_entity_redirect_target ON entity_redirects(target_entity_id)")
         # 为旧库自动添加缺失的 source_document 列（幂等）
         self._ensure_column(c, "entities", "source_document", "TEXT DEFAULT ''")
         self._ensure_column(c, "relations", "source_document", "TEXT DEFAULT ''")
@@ -334,6 +342,13 @@ class StorageManager:
                 embedding BLOB
             )
         """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS entity_redirects (
+                source_entity_id TEXT PRIMARY KEY,
+                target_entity_id TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
 
         # 创建索引
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_entity_id ON entities(entity_id)")
@@ -344,6 +359,7 @@ class StorageManager:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_relation_entities ON relations(entity1_absolute_id, entity2_absolute_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_relation_event_time ON relations(event_time)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_relation_processed_time ON relations(processed_time)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_entity_redirect_target ON entity_redirects(target_entity_id)")
 
         # 唯一索引：防止并行创建时产生重复版本
         try:
@@ -361,6 +377,68 @@ class StorageManager:
 
         conn.commit()
         conn.close()
+
+    def _resolve_entity_id_with_cursor(self, cursor, entity_id: str) -> str:
+        """沿 redirect 链解析到当前 canonical entity_id。"""
+        current_id = (entity_id or "").strip()
+        if not current_id:
+            return ""
+        seen: Set[str] = set()
+        while current_id and current_id not in seen:
+            seen.add(current_id)
+            cursor.execute(
+                "SELECT target_entity_id FROM entity_redirects WHERE source_entity_id = ?",
+                (current_id,),
+            )
+            row = cursor.fetchone()
+            if not row or not row[0] or row[0] == current_id:
+                break
+            current_id = row[0]
+        return current_id
+
+    def resolve_entity_id(self, entity_id: str) -> str:
+        """解析 entity_id 到当前 canonical id；不存在映射时原样返回。"""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        return self._resolve_entity_id_with_cursor(cursor, entity_id)
+
+    def register_entity_redirect(self, source_entity_id: str, target_entity_id: str) -> str:
+        """登记旧 entity_id 到 canonical entity_id 的映射，支持链式合并。"""
+        source_id = (source_entity_id or "").strip()
+        target_id = (target_entity_id or "").strip()
+        if not source_id or not target_id:
+            return target_id
+        with self._write_lock:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            canonical_target = self._resolve_entity_id_with_cursor(cursor, target_id)
+            if not canonical_target:
+                canonical_target = target_id
+            canonical_source = self._resolve_entity_id_with_cursor(cursor, source_id)
+            if canonical_source == canonical_target:
+                return canonical_target
+            cursor.execute(
+                """
+                INSERT INTO entity_redirects (source_entity_id, target_entity_id, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(source_entity_id) DO UPDATE SET
+                    target_entity_id = excluded.target_entity_id,
+                    updated_at = excluded.updated_at
+                """,
+                (source_id, canonical_target, datetime.now().isoformat()),
+            )
+            conn.commit()
+            return canonical_target
+
+    def register_entity_redirects(self, target_entity_id: str, source_entity_ids: List[str]) -> str:
+        """批量登记多个旧 entity_id 指向同一 canonical id。"""
+        canonical_target = (target_entity_id or "").strip()
+        if not canonical_target:
+            return canonical_target
+        for source_id in source_entity_ids:
+            if source_id and source_id != canonical_target:
+                canonical_target = self.register_entity_redirect(source_id, canonical_target)
+        return canonical_target
 
     # ========== MemoryCache 操作 ==========
     
@@ -718,6 +796,9 @@ class StorageManager:
     
     def get_entity_by_entity_id(self, entity_id: str) -> Optional[Entity]:
         """根据entity_id获取最新版本的实体"""
+        entity_id = self.resolve_entity_id(entity_id)
+        if not entity_id:
+            return None
         conn = self._get_conn()
         cursor = conn.cursor()
         
@@ -846,6 +927,9 @@ class StorageManager:
 
     def get_entity_version_at_time(self, entity_id: str, time_point: datetime) -> Optional[Entity]:
         """获取实体在指定时间点的版本（该时间点之前或等于该时间点的最新版本）"""
+        entity_id = self.resolve_entity_id(entity_id)
+        if not entity_id:
+            return None
         conn = self._get_conn()
         cursor = conn.cursor()
         
@@ -920,6 +1004,9 @@ class StorageManager:
     
     def get_entity_versions(self, entity_id: str) -> List[Entity]:
         """获取实体的所有版本"""
+        entity_id = self.resolve_entity_id(entity_id)
+        if not entity_id:
+            return []
         conn = self._get_conn()
         cursor = conn.cursor()
         
@@ -1339,6 +1426,10 @@ class StorageManager:
 
         每个 relation_id 只返回最新版本（与 get_entity_relations 保持一致的去重逻辑）。
         """
+        from_entity_id = self.resolve_entity_id(from_entity_id)
+        to_entity_id = self.resolve_entity_id(to_entity_id)
+        if not from_entity_id or not to_entity_id:
+            return []
         # 先通过entity_id获取最新版本的绝对ID
         from_entity = self.get_entity_by_entity_id(from_entity_id)
         to_entity = self.get_entity_by_entity_id(to_entity_id)
@@ -1803,6 +1894,9 @@ class StorageManager:
             time_point: 时间点（可选），如果提供，只返回该时间点之前或等于该时间点的关系，且每个relation_id只返回最新版本
             max_version_absolute_id: 最大版本absolute_id（可选），如果提供，只查询从最早版本到该版本的所有关系
         """
+        entity_id = self.resolve_entity_id(entity_id)
+        if not entity_id:
+            return []
         # 先获取该实体的所有版本的absolute_id
         versions = self.get_entity_versions(entity_id)
         if not versions:
@@ -2594,7 +2688,8 @@ class StorageManager:
         Returns:
             合并结果统计，包含更新的实体数量和关系数量
         """
-        if not source_entity_ids:
+        target_entity_id = self.resolve_entity_id(target_entity_id)
+        if not target_entity_id or not source_entity_ids:
             return {"entities_updated": 0, "relations_updated": 0}
 
         with self._write_lock:
@@ -2607,7 +2702,12 @@ class StorageManager:
             try:
                 # 1. 先获取所有源实体的版本数量（在更新之前，用于验证）
                 source_version_counts = {}
+                canonical_source_ids: List[str] = []
                 for source_id in source_entity_ids:
+                    source_id = self._resolve_entity_id_with_cursor(cursor, source_id)
+                    if not source_id or source_id == target_entity_id or source_id in canonical_source_ids:
+                        continue
+                    canonical_source_ids.append(source_id)
                     cursor.execute("""
                         SELECT COUNT(*) FROM entities
                         WHERE entity_id = ?
@@ -2617,7 +2717,7 @@ class StorageManager:
 
                 # 2. 更新entities表中的所有entity_id记录
                 # 这会更新所有使用source_entity_id的记录，包括所有版本
-                for source_id in source_entity_ids:
+                for source_id in canonical_source_ids:
                     cursor.execute("""
                         UPDATE entities
                         SET entity_id = ?
@@ -2627,7 +2727,7 @@ class StorageManager:
 
                 # 2.5. 验证：确保所有源实体的版本都被更新了
                 # 检查是否还有任何源entity_id的记录残留
-                for source_id in source_entity_ids:
+                for source_id in canonical_source_ids:
                     cursor.execute("""
                         SELECT COUNT(*) FROM entities
                         WHERE entity_id = ?
@@ -2663,6 +2763,19 @@ class StorageManager:
                 # - 通过absolute_id查询实体时，会得到更新后的entity_id
                 # - 所有使用entity_id查询的地方（如get_relations_by_entities）都会自动使用新的entity_id
 
+                now_iso = datetime.now().isoformat()
+                for source_id in canonical_source_ids:
+                    cursor.execute(
+                        """
+                        INSERT INTO entity_redirects (source_entity_id, target_entity_id, updated_at)
+                        VALUES (?, ?, ?)
+                        ON CONFLICT(source_entity_id) DO UPDATE SET
+                            target_entity_id = excluded.target_entity_id,
+                            updated_at = excluded.updated_at
+                        """,
+                        (source_id, target_entity_id, now_iso),
+                    )
+
                 conn.commit()
 
             except Exception as e:
@@ -2673,7 +2786,7 @@ class StorageManager:
                 "entities_updated": entities_updated,
                 "relations_updated": relations_updated,
                 "target_entity_id": target_entity_id,
-                "merged_source_ids": source_entity_ids
+                "merged_source_ids": canonical_source_ids
             }
     
     def get_entity_version_count(self, entity_id: str) -> int:
@@ -2685,6 +2798,9 @@ class StorageManager:
         Returns:
             版本数量
         """
+        entity_id = self.resolve_entity_id(entity_id)
+        if not entity_id:
+            return 0
         conn = self._get_conn()
         cursor = conn.cursor()
         
@@ -2707,18 +2823,25 @@ class StorageManager:
         """
         if not entity_ids:
             return {}
+        canonical_ids = []
+        for entity_id in entity_ids:
+            canonical_id = self.resolve_entity_id(entity_id)
+            if canonical_id and canonical_id not in canonical_ids:
+                canonical_ids.append(canonical_id)
+        if not canonical_ids:
+            return {}
         
         conn = self._get_conn()
         cursor = conn.cursor()
         
         # 使用IN子句批量查询
-        placeholders = ','.join(['?'] * len(entity_ids))
+        placeholders = ','.join(['?'] * len(canonical_ids))
         cursor.execute(f"""
             SELECT entity_id, COUNT(*) as version_count
             FROM entities
             WHERE entity_id IN ({placeholders})
             GROUP BY entity_id
-        """, entity_ids)
+        """, canonical_ids)
         
         rows = cursor.fetchall()
         
@@ -2726,6 +2849,9 @@ class StorageManager:
 
     def entity_has_any_relation(self, entity_id: str) -> bool:
         """检查实体是否在关系表中作为任一端出现（轻量查询，只查 COUNT）。"""
+        entity_id = self.resolve_entity_id(entity_id)
+        if not entity_id:
+            return False
         conn = self._get_conn()
         cursor = conn.cursor()
         cursor.execute("""
@@ -2771,6 +2897,9 @@ class StorageManager:
 
     def delete_entity_by_id(self, entity_id: str) -> int:
         """删除实体的所有版本。返回删除的行数。"""
+        entity_id = self.resolve_entity_id(entity_id)
+        if not entity_id:
+            return 0
         with self._write_lock:
             conn = self._get_conn()
             cursor = conn.cursor()
@@ -2796,7 +2925,7 @@ class StorageManager:
         result = {}
         for name, eid in cursor.fetchall():
             if name not in result:
-                result[name] = eid
+                result[name] = self.resolve_entity_id(eid)
         return result
 
     def get_total_entity_count(self) -> int:

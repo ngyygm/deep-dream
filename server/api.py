@@ -32,11 +32,12 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from flask import Flask, abort, jsonify, make_response, request, send_from_directory
 from werkzeug.exceptions import NotFound
 
-from server.config import load_config, resolve_embedding_model
+from server.config import load_config, merge_llm_alignment, resolve_embedding_model
 from server.monitor import LOG_MODE_DETAIL, LOG_MODE_MONITOR, SystemMonitor
 from server.queue import RememberTask, RememberTaskQueue
 from server.registry import GraphRegistry
 from processor import TemporalMemoryGraphProcessor
+from processor.llm.client import LLM_PRIORITY_STEP6
 from processor.models import Entity, MemoryCache, Relation
 
 
@@ -439,7 +440,9 @@ def create_app(
           - file（可选）：上传文件（multipart）
           - file_path（可选）：服务端本地文件路径
           - source_name / doc_name（可选）：来源名称，默认 api_input
-          - load_cache_memory（可选）：是否加载缓存
+          - load_cache_memory（可选）：
+            true = 接续图谱中已有缓存链（同图任务需串行）
+            false = 不接续外部缓存链，但任务内部滑窗仍续写自己的 cache 链（可并行）
           - event_time（可选）：ISO 8601 事件时间
 
         返回：HTTP 202。查询进度：GET /api/v1/remember/tasks/<task_id>
@@ -462,8 +465,7 @@ def create_app(
                 return (request.args.get(name) or "").strip()
 
             def _remember_get_bool(name: str) -> Optional[bool]:
-                if name in post_json:
-                    v = post_json[name]
+                def _parse_bool_value(v: Any) -> Optional[bool]:
                     if isinstance(v, bool):
                         return v
                     if isinstance(v, int) and v in (0, 1):
@@ -474,6 +476,16 @@ def create_app(
                             return True
                         if s in ("0", "false", "no", "off"):
                             return False
+                    return None
+
+                if name in post_json:
+                    parsed = _parse_bool_value(post_json[name])
+                    if parsed is not None:
+                        return parsed
+                if request.method == "POST" and request.form and name in request.form:
+                    parsed = _parse_bool_value(request.form.get(name))
+                    if parsed is not None:
+                        return parsed
                 return _parse_bool_query(name)
 
             text = _remember_get_str("text")
@@ -496,6 +508,9 @@ def create_app(
                     sn = request.files["file"].filename
             source_name = (sn or sd or dn or "api_input")
             load_cache = _remember_get_bool("load_cache_memory")
+            if load_cache is None:
+                # 任务入队时就固化默认值，避免服务重启或配置变更后语义漂移。
+                load_cache = bool(getattr(processor, "load_cache_memory", False))
 
             # 以“首次接收请求的时间”为基准：若未传 event_time，则使用当前接收时间并持久化到 journal。
             receive_time = datetime.now()
@@ -533,6 +548,7 @@ def create_app(
                 text=text,
                 source_name=source_name,
                 load_cache=load_cache,
+                control_action=None,
                 event_time=event_time,
                 original_path=original_path,
             )
@@ -550,11 +566,22 @@ def create_app(
         except Exception as e:
             return err(str(e), 500)
 
-    @app.route("/api/v1/remember/tasks/<task_id>", methods=["GET"])
+    @app.route("/api/v1/remember/tasks/<task_id>", methods=["GET", "DELETE"])
     def remember_status(task_id: str):
-        """查询异步记忆写入任务状态；推荐使用 /api/v1/remember/tasks/<task_id>。"""
+        """查询或删除异步记忆写入任务；推荐使用 /api/v1/remember/tasks/<task_id>。"""
         try:
             remember_queue = _get_queue()
+            if request.method == "DELETE":
+                deleted, message, status = remember_queue.request_delete_task(task_id)
+                if not deleted:
+                    if message == "任务不存在":
+                        return err(message, 404)
+                    return err(message, 409)
+                return ok({
+                    "task_id": task_id,
+                    "status": status,
+                    "message": message,
+                })
             t = remember_queue.get_status(task_id)
             if t is None:
                 return err("任务不存在", 404)
@@ -565,6 +592,40 @@ def create_app(
             if t.status == "failed" and t.error:
                 data["error"] = t.error
             return ok(data)
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/v1/remember/tasks/<task_id>/pause", methods=["POST"])
+    def remember_pause(task_id: str):
+        try:
+            remember_queue = _get_queue()
+            ok_pause, message, status = remember_queue.request_pause_task(task_id)
+            if not ok_pause:
+                if message == "任务不存在":
+                    return err(message, 404)
+                return err(message, 409)
+            return ok({
+                "task_id": task_id,
+                "status": status,
+                "message": message,
+            })
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/v1/remember/tasks/<task_id>/resume", methods=["POST"])
+    def remember_resume(task_id: str):
+        try:
+            remember_queue = _get_queue()
+            ok_resume, message, status = remember_queue.resume_task(task_id)
+            if not ok_resume:
+                if message == "任务不存在":
+                    return err(message, 404)
+                return err(message, 409)
+            return ok({
+                "task_id": task_id,
+                "status": status,
+                "message": message,
+            })
         except Exception as e:
             return err(str(e), 500)
 
@@ -638,8 +699,18 @@ def create_app(
                 },
                 {
                     "path": "/api/v1/remember/tasks/<task_id>",
-                    "methods": ["GET"],
-                    "summary": "查询 remember 任务状态",
+                    "methods": ["GET", "DELETE"],
+                    "summary": "查询或删除 remember 任务",
+                },
+                {
+                    "path": "/api/v1/remember/tasks/<task_id>/pause",
+                    "methods": ["POST"],
+                    "summary": "暂停运行中的 remember 任务",
+                },
+                {
+                    "path": "/api/v1/remember/tasks/<task_id>/resume",
+                    "methods": ["POST"],
+                    "summary": "继续已暂停的 remember 任务",
                 },
                 {
                     "path": "/api/v1/remember/tasks",
@@ -1726,6 +1797,13 @@ def build_processor(config: Dict[str, Any]) -> TemporalMemoryGraphProcessor:
     llm = config.get("llm") or {}
     embedding = config.get("embedding") or {}
     pipeline = config.get("pipeline") or {}
+    runtime = config.get("runtime") or {}
+    runtime_concurrency = runtime.get("concurrency") or {}
+    runtime_task = runtime.get("task") or {}
+    pipeline_search = pipeline.get("search") or {}
+    pipeline_alignment = pipeline.get("alignment") or {}
+    pipeline_extraction = pipeline.get("extraction") or {}
+    pipeline_debug = pipeline.get("debug") or {}
     max_concurrency = llm.get("max_concurrency")
     model_path, model_name, use_local = resolve_embedding_model(embedding)
     kwargs: Dict[str, Any] = {
@@ -1735,36 +1813,66 @@ def build_processor(config: Dict[str, Any]) -> TemporalMemoryGraphProcessor:
         "llm_api_key": llm.get("api_key"),
         "llm_model": llm.get("model", "gpt-4"),
         "llm_base_url": llm.get("base_url"),
+        "alignment_llm": merge_llm_alignment(llm),
         "llm_think_mode": bool(llm.get("think", llm.get("think_mode", False))),
         "llm_max_tokens": llm.get("max_tokens") if llm.get("max_tokens") else None,
+        "llm_context_window_tokens": llm.get("context_window_tokens"),
         "max_llm_concurrency": max_concurrency,
         "embedding_model_path": model_path,
         "embedding_model_name": model_name,
         "embedding_device": embedding.get("device", "cpu"),
         "embedding_use_local": use_local,
+        "load_cache_memory": runtime_task.get("load_cache_memory", pipeline.get("load_cache_memory")),
+        "max_concurrent_windows": runtime_concurrency.get("window_workers", pipeline.get("max_concurrent_windows")),
     }
-    # pipeline 下其余参数（仅传入有写的键，避免覆盖为 None）
     for key in (
         "similarity_threshold", "max_similar_entities", "content_snippet_length",
-        "relation_content_snippet_length", "entity_post_enhancement",
-        "extraction_rounds", "entity_extraction_rounds", "relation_extraction_rounds", "load_cache_memory",
-        "jaccard_search_threshold", "embedding_name_search_threshold", "embedding_full_search_threshold",
-        "max_concurrent_windows", "max_alignment_candidates",
-        "distill_data_dir",
+        "relation_content_snippet_length", "relation_endpoint_jaccard_threshold",
+        "relation_endpoint_embedding_threshold",
+        "jaccard_search_threshold",
+        "embedding_name_search_threshold", "embedding_full_search_threshold",
     ):
-        if key in pipeline:
-            kwargs[key] = pipeline[key]
+        if key in pipeline_search:
+            kwargs[key] = pipeline_search[key]
+    if "max_alignment_candidates" in pipeline_alignment:
+        kwargs["max_alignment_candidates"] = pipeline_alignment["max_alignment_candidates"]
+    for key in (
+        "extraction_rounds", "entity_extraction_rounds", "relation_extraction_rounds",
+        "entity_post_enhancement", "compress_multi_round_extraction",
+    ):
+        if key in pipeline_extraction:
+            kwargs[key] = pipeline_extraction[key]
+    if "distill_data_dir" in pipeline_debug:
+        kwargs["distill_data_dir"] = pipeline_debug["distill_data_dir"]
     return TemporalMemoryGraphProcessor(**kwargs)
 
 
 def _check_llm_available(processor) -> tuple[bool, str | None]:
-    """启动前握手：检查配置的 LLM 是否可用。返回 (成功, 错误信息)，失败时错误信息非空。"""
+    """启动前握手：检查上游 LLM；若启用 alignment 专用通道，再按步骤 6/7 优先级检查对齐端点。"""
     try:
         _ = _call_llm_with_backoff(
             processor,
             "请只回复一个词：OK",
             timeout=60,
         )
+        lc = processor.llm_client
+        if getattr(lc, "alignment_enabled", False):
+            _old_pri = getattr(lc._priority_local, "priority", None)
+            lc._priority_local.priority = LLM_PRIORITY_STEP6
+            try:
+                _ = _call_llm_with_backoff(
+                    processor,
+                    "请只回复一个词：OK",
+                    timeout=60,
+                )
+            finally:
+                if _old_pri is not None:
+                    lc._priority_local.priority = _old_pri
+                else:
+                    try:
+                        del lc._priority_local.priority
+                    except AttributeError:
+                        pass
         return True, None
     except Exception as e:
         return False, f"大模型不可用: {e}"

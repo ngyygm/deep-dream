@@ -1,10 +1,12 @@
 """
 主处理流程：整合所有模块，实现完整的文档处理pipeline
 """
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed, Future
+import sys
 import threading
+import time
 import uuid
 
 from .document import DocumentProcessor
@@ -18,8 +20,21 @@ from ..storage.manager import StorageManager
 from .entity import EntityProcessor
 from .relation import RelationProcessor
 from ..models import MemoryCache, Entity
-from ..utils import compute_doc_hash, set_window_label, wprint
-from .extraction import _ExtractionMixin, _AlignResult
+from ..utils import (
+    clear_parallel_log_context,
+    compute_doc_hash,
+    remember_log,
+    set_pipeline_role,
+    set_window_label,
+    wprint,
+)
+from .extraction import _ExtractionMixin, _AlignResult, dedupe_extraction_lists
+
+
+class RememberControlFlow(Exception):
+    def __init__(self, action: str):
+        super().__init__(action)
+        self.remember_control_action = action
 
 
 class TemporalMemoryGraphProcessor(_ExtractionMixin):
@@ -28,6 +43,7 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
     def __init__(self, storage_path: str, window_size: int = 1000, overlap: int = 200,
                  llm_api_key: Optional[str] = None, llm_model: str = "gpt-4",
                  llm_base_url: Optional[str] = None,
+                 alignment_llm: Optional[Dict[str, Any]] = None,
                  embedding_model_path: Optional[str] = None,
                  embedding_model_name: Optional[str] = None,
                  embedding_device: str = "cpu",
@@ -35,12 +51,15 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
                  embedding_client: Optional[EmbeddingClient] = None,
                  llm_think_mode: bool = False,
                  llm_max_tokens: Optional[int] = None,
+                 llm_context_window_tokens: Optional[int] = None,
                  max_llm_concurrency: Optional[int] = None,
                  # pipeline 可选配置（可从 config.pipeline 传入）
                  similarity_threshold: Optional[float] = None,
                  max_similar_entities: Optional[int] = None,
                  content_snippet_length: Optional[int] = None,
                  relation_content_snippet_length: Optional[int] = None,
+                 relation_endpoint_jaccard_threshold: Optional[float] = None,
+                 relation_endpoint_embedding_threshold: Optional[float] = None,
                  entity_extraction_max_iterations: Optional[int] = None,
                  entity_extraction_iterative: Optional[bool] = None,
                  entity_post_enhancement: Optional[bool] = None,
@@ -56,7 +75,8 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
                  distill_data_dir: Optional[str] = None,
                  extraction_rounds: Optional[int] = None,
                  entity_extraction_rounds: Optional[int] = None,
-                 relation_extraction_rounds: Optional[int] = None):
+                 relation_extraction_rounds: Optional[int] = None,
+                 compress_multi_round_extraction: Optional[bool] = None):
         """
         初始化处理器
 
@@ -66,7 +86,8 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
             overlap: 重叠大小（字符数）
             llm_api_key: LLM API密钥
             llm_model: LLM模型名称
-            llm_base_url: LLM API基础URL（可自定义，如本地部署的模型服务）
+            llm_base_url: LLM API基础URL（步骤1–5）
+            alignment_llm: 可选 dict（由配置 merge_llm_alignment 生成）。含 enabled、max_concurrency（对齐阶段 LLM 并发，与 max_llm_concurrency 解耦）及 api_key、base_url、model 等；enabled 为 false 时不使用独立对齐模型
             embedding_model_path: Embedding模型本地路径（优先使用）
             embedding_model_name: Embedding模型名称（HuggingFace模型名）
             embedding_device: Embedding计算设备 ("cpu" 或 "cuda")
@@ -87,10 +108,32 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
             embedding_name_search_threshold: Embedding 名称搜索阈值（可选）
             embedding_full_search_threshold: Embedding 全文搜索阈值（可选）
             max_concurrent_windows: 同时处理的滑窗数上限（默认 1）；满员时不唤醒下一窗口，避免窗口内实体/关系并行导致线程爆炸
+            compress_multi_round_extraction: 多轮实体/关系抽取是否使用压缩对话（不累积各轮 assistant 全文，默认 False）
+            llm_context_window_tokens: 模型总上下文 token 上限（输入+输出），与 service_config.llm.context_window_tokens 一致；未传时读 server 默认
         """
         _content_snippet_length = content_snippet_length if content_snippet_length is not None else 50
         _relation_content_snippet_length = relation_content_snippet_length if relation_content_snippet_length is not None else 50
+        _relation_endpoint_jaccard_threshold = (
+            float(relation_endpoint_jaccard_threshold)
+            if relation_endpoint_jaccard_threshold is not None else 0.9
+        )
+        _rel_emb_thr = relation_endpoint_embedding_threshold
+        if _rel_emb_thr is None:
+            _relation_endpoint_embedding_threshold = 0.72
+        else:
+            v = float(_rel_emb_thr)
+            # ≤0：关闭关系端点向量对齐（仅用 Jaccard/精确匹配）
+            _relation_endpoint_embedding_threshold = None if v <= 0 else v
         _max_similar_entities = max_similar_entities if max_similar_entities is not None else 10
+
+        _ctx_win = llm_context_window_tokens
+        if _ctx_win is None:
+            from server.config import DEFAULTS
+            _llm_d = DEFAULTS.get("llm") or {}
+            if "context_window_tokens" not in _llm_d:
+                raise RuntimeError("server.config.DEFAULTS['llm'] 缺少 context_window_tokens")
+            _ctx_win = int(_llm_d["context_window_tokens"])
+        _ctx_win = max(256, int(_ctx_win))
 
         self.embedding_client = embedding_client or EmbeddingClient(
             model_path=embedding_model_path,
@@ -106,12 +149,31 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
             relation_content_snippet_length=_relation_content_snippet_length
         )
         self.document_processor = DocumentProcessor(window_size, overlap)
-        self.llm_client = LLMClient(llm_api_key, llm_model, llm_base_url,
-                                   content_snippet_length=_content_snippet_length,
-                                   think_mode=llm_think_mode,
-                                   max_tokens=llm_max_tokens,
-                                   max_llm_concurrency=max_llm_concurrency,
-                                   distill_data_dir=distill_data_dir)
+        _al = alignment_llm or {}
+        self.llm_client = LLMClient(
+            llm_api_key,
+            llm_model,
+            llm_base_url,
+            content_snippet_length=_content_snippet_length,
+            relation_content_snippet_length=_relation_content_snippet_length,
+            relation_endpoint_jaccard_threshold=_relation_endpoint_jaccard_threshold,
+            embedding_client=self.embedding_client,
+            relation_endpoint_embedding_threshold=_relation_endpoint_embedding_threshold,
+            think_mode=llm_think_mode,
+            max_tokens=llm_max_tokens,
+            context_window_tokens=_ctx_win,
+            max_llm_concurrency=max_llm_concurrency,
+            distill_data_dir=distill_data_dir,
+            alignment_enabled=bool(_al.get("enabled", False)),
+            alignment_max_llm_concurrency=_al.get("max_concurrency"),
+            alignment_base_url=_al.get("base_url"),
+            alignment_api_key=_al.get("api_key"),
+            alignment_model=_al.get("model"),
+            alignment_max_tokens=_al.get("max_tokens"),
+            alignment_think_mode=_al.get("think_mode"),
+            alignment_content_snippet_length=_al.get("content_snippet_length"),
+            alignment_relation_content_snippet_length=_al.get("relation_content_snippet_length"),
+        )
         self.entity_processor = EntityProcessor(
             self.storage, 
             self.llm_client,
@@ -135,7 +197,10 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
         self.entity_extraction_max_iterations = _entity_rounds
         self.entity_extraction_iterative = entity_extraction_iterative if entity_extraction_iterative is not None else True
         self.entity_post_enhancement = entity_post_enhancement if entity_post_enhancement is not None else False
-        
+        self.compress_multi_round_extraction = (
+            compress_multi_round_extraction if compress_multi_round_extraction is not None else False
+        )
+
         self.llm_threads = max_llm_concurrency if max_llm_concurrency else 1
         self.load_cache_memory = load_cache_memory if load_cache_memory is not None else False
 
@@ -149,7 +214,12 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
         self.max_alignment_candidates = max_alignment_candidates
         
         # 同时处理的滑窗数上限（满员时不唤醒下一窗口，避免窗口内实体/关系并行导致线程爆炸）
-        _max_concurrent_windows = max_concurrent_windows if max_concurrent_windows is not None else 1
+        if max_concurrent_windows is not None:
+            _max_concurrent_windows = max_concurrent_windows
+        else:
+            # 自动推导：step2-5 约 4 个 LLM 步骤，step6+7 约 2 个，比值约 2:1
+            # 至少 2 个窗口并行才能让 step6/7 不空闲；跟随 LLM 并发数，上限 8
+            _max_concurrent_windows = max(2, min(max_llm_concurrency or 1, 8))
         _max_concurrent_windows = max(1, min(_max_concurrent_windows, 64))  # 合理范围 [1, 64]
         
         # 当前状态
@@ -162,6 +232,8 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
         self._runtime_lock = threading.Lock()
         self._active_window_extractions = 0
         self._peak_window_extractions = 0
+        # 已占用滑窗槽位、尚未 release 的窗口数（含主线程步骤1 + 步骤2–5 抽取等，与 Semaphore 成对）
+        self._active_main_pipeline_windows = 0
         self._active_step6 = 0
         self._active_step7 = 0
         self._extraction_executor = ThreadPoolExecutor(
@@ -175,16 +247,31 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
                 "configured_window_workers": self._max_concurrent_windows,
                 "configured_llm_threads": self.llm_threads,
                 "active_window_extractions": self._active_window_extractions,
+                "active_main_pipeline_windows": self._active_main_pipeline_windows,
                 "peak_window_extractions": self._peak_window_extractions,
                 "active_step6": self._active_step6,
                 "active_step7": self._active_step7,
             }
-        # LLM 信号量活跃数（不需要 runtime_lock）
-        if self.llm_client and hasattr(self.llm_client, '_llm_semaphore') and self.llm_client._llm_semaphore:
+        # LLM 信号量活跃数（不需要 runtime_lock；支持上游/下游分池）
+        if self.llm_client and hasattr(self.llm_client, "get_llm_semaphore_active_count"):
+            stats["llm_semaphore_active"] = self.llm_client.get_llm_semaphore_active_count()
+            stats["llm_semaphore_max"] = self.llm_client.get_llm_semaphore_max()
+        elif self.llm_client and hasattr(self.llm_client, "_llm_semaphore") and self.llm_client._llm_semaphore:
             sem = self.llm_client._llm_semaphore
             stats["llm_semaphore_active"] = sem.active_count
             stats["llm_semaphore_max"] = sem.max_value
         return stats
+
+    def _acquire_window_slot(self) -> None:
+        """与 _release_window_slot 成对；占用槽即计入主链窗口（步骤1–5 阶段可见）。"""
+        self._window_slot.acquire()
+        with self._runtime_lock:
+            self._active_main_pipeline_windows += 1
+
+    def _release_window_slot(self) -> None:
+        self._window_slot.release()
+        with self._runtime_lock:
+            self._active_main_pipeline_windows = max(0, self._active_main_pipeline_windows - 1)
 
     def _run_extraction_job(
         self,
@@ -192,6 +279,7 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
         input_text: str,
         document_name: str,
         verbose: bool = True,
+        verbose_steps: bool = True,
         event_time: Optional[datetime] = None,
     ):
         with self._runtime_lock:
@@ -206,14 +294,16 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
                 input_text,
                 document_name,
                 verbose=verbose,
+                verbose_steps=verbose_steps,
                 event_time=event_time,
             )
         finally:
             with self._runtime_lock:
                 self._active_window_extractions = max(0, self._active_window_extractions - 1)
-            self._window_slot.release()
+            self._release_window_slot()
 
     def process_documents(self, document_paths: List[str], verbose: bool = True,
+                         entity_progress_verbose: Optional[bool] = None,
                          similarity_threshold: Optional[float] = None,
                          max_similar_entities: Optional[int] = None,
                          content_snippet_length: Optional[int] = None,
@@ -227,13 +317,15 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
                          load_cache_memory: Optional[bool] = None,
                          jaccard_search_threshold: Optional[float] = None,
                          embedding_name_search_threshold: Optional[float] = None,
-                         embedding_full_search_threshold: Optional[float] = None):
+                         embedding_full_search_threshold: Optional[float] = None,
+                         compress_multi_round_extraction: Optional[bool] = None):
         """
         处理多个文档
         
         Args:
             document_paths: 文档路径列表
             verbose: 是否输出详细信息
+            entity_progress_verbose: 是否输出实体对齐的逐条树状进度（默认与 verbose 相同；服务场景可传 False）
             similarity_threshold: 实体搜索相似度阈值（可选，覆盖初始化时的设置）
             max_similar_entities: 语义向量初筛后返回的最大相似实体数量（可选，覆盖初始化时的设置）
             content_snippet_length: 用于相似度搜索的实体content截取长度（可选，覆盖初始化时的设置）
@@ -248,6 +340,7 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
             jaccard_search_threshold: Jaccard搜索（name_only）的相似度阈值（可选，默认使用similarity_threshold）
             embedding_name_search_threshold: Embedding搜索（name_only）的相似度阈值（可选，默认使用similarity_threshold）
             embedding_full_search_threshold: Embedding搜索（name+content）的相似度阈值（可选，默认使用similarity_threshold）
+            compress_multi_round_extraction: 多轮实体/关系抽取是否使用压缩对话（可选，覆盖初始化时的设置）
         """
         # 保存原始值，以便在方法结束时恢复
         original_values = {}
@@ -332,8 +425,14 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
         if load_cache_memory is not None:
             original_values['load_cache_memory'] = self.load_cache_memory
             self.load_cache_memory = load_cache_memory
-        
+        if compress_multi_round_extraction is not None:
+            original_values['compress_multi_round_extraction'] = self.compress_multi_round_extraction
+            self.compress_multi_round_extraction = compress_multi_round_extraction
+
+        _saved_entity_progress_verbose = self.entity_processor.entity_progress_verbose
+        _epv = entity_progress_verbose if entity_progress_verbose is not None else verbose
         try:
+            self.entity_processor.entity_progress_verbose = _epv
             if verbose:
                 wprint(f"开始处理 {len(document_paths)} 个文档...")
             
@@ -387,11 +486,13 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
             ):
                 if verbose:
                     wprint(f"\n处理窗口 {chunk_idx + 1} (文档: {document_name}, 位置: {text_start_pos}-{text_end_pos}/{total_text_length})")
+                elif _epv:
+                    wprint(f"窗口 {chunk_idx + 1} 开始 · {document_name}")
                 
                 # 处理当前窗口
                 self._process_window(input_text, document_name, is_new_document, 
                                     text_start_pos, text_end_pos, total_text_length, verbose,
-                                    document_path=document_path)
+                                    verbose_steps=_epv, document_path=document_path)
         finally:
             # 恢复原始值
             for key, value in original_values.items():
@@ -399,13 +500,18 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
             # 恢复原始组件
             for key, value in original_components.items():
                 setattr(self, key, value)
+            self.entity_processor.entity_progress_verbose = _saved_entity_progress_verbose
 
     def remember_text(self, text: str, doc_name: str = "api_input", verbose: bool = False,
+                      verbose_steps: bool = True,
                       load_cache_memory: Optional[bool] = None,
                       event_time: Optional[datetime] = None,
                       document_path: str = "",
                       progress_callback: Optional[Callable] = None,
+                      control_callback: Optional[Callable[[], Optional[str]]] = None,
                       start_chunk: int = 0,
+                      main_chunk_done_callback: Optional[Callable] = None,
+                      step6_chunk_done_callback: Optional[Callable] = None,
                       chunk_done_callback: Optional[Callable] = None,
                       source_document: Optional[str] = None) -> Dict:
         """
@@ -420,13 +526,18 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
         Args:
             text: 原始文本内容
             doc_name: 文档/来源名称
-            verbose: 是否打印处理日志
+            verbose: 是否打印详细处理日志（步骤内细节、LLM 提示等）
+            verbose_steps: 是否在控制台输出步骤级「开始/结束」汇报（verbose=True 时仍生效，但以详细日志为准）
+                并行时控制台行格式为 [窗号][角色] 正文；角色为 主线程 / 抽取 / 步骤6 / 步骤7 之一。
             load_cache_memory: 是否在开始前加载最新缓存记忆再追加
             event_time: 事件实际发生时间
             document_path: 原文文件路径
             progress_callback: 进度回调 fn(progress, phase_label, message, chain_id)
-            start_chunk: 从第几个窗口开始（断点续传）
-            chunk_done_callback: 窗口完成回调 fn(processed_count)
+            control_callback: 控制回调 fn() -> {"pause","cancel",None}，在窗口级安全点生效
+            start_chunk: 从第几个窗口开始（关系链断点续传）
+            main_chunk_done_callback: 步骤1–5 完成一个窗口后的回调 fn(processed_count)
+            step6_chunk_done_callback: 步骤6 完成一个窗口后的回调 fn(processed_count)
+            chunk_done_callback: 步骤7 完成一个窗口后的回调 fn(processed_count)
             source_document: 来源文档名称（优先于 doc_name）
 
         Returns:
@@ -441,14 +552,21 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
             if latest_metadata:
                 self.current_memory_cache = self.storage.load_memory_cache(latest_metadata["absolute_id"])
                 if verbose and self.current_memory_cache:
-                    wprint(f"已加载缓存记忆: {self.current_memory_cache.absolute_id}，将在此链上追加（断点续传 start_chunk={start_chunk}）")
+                    remember_log(
+                        f"已加载缓存记忆: {self.current_memory_cache.absolute_id}，"
+                        f"将在此链上追加（断点续传 start_chunk={start_chunk}）"
+                    )
+                elif verbose_steps and self.current_memory_cache:
+                    remember_log("已加载缓存记忆（断点续传）")
             else:
                 self.current_memory_cache = None
         else:
             self.current_memory_cache = None
             if start_chunk == 0 and use_load_cache:
                 if verbose:
-                    wprint(f"[断点续传] start_chunk=0，从头开始处理，不加载旧缓存链")
+                    remember_log("start_chunk=0，从头开始处理，不加载旧缓存链")
+                elif verbose_steps:
+                    remember_log("从头开始处理（不加载旧缓存链）")
 
         if not document_path:
             document_path = f"api://{uuid.uuid4().hex}"
@@ -473,6 +591,7 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
 
         N = total_chunks - start_chunk  # 待处理窗口数
         last_memory_cache_id = None
+        clear_parallel_log_context()
 
         # 预分配数组，用于线程间共享数据
         memory_caches = [None] * N
@@ -488,6 +607,46 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
         # 错误收集
         errors = []
         errors_lock = threading.Lock()
+        window_failures = [None] * N
+        _control_lock = threading.Lock()
+        _control_state = {"action": None}
+
+        def _record_window_error(stage: str, idx: int, exc: Exception) -> bool:
+            """只记录每个窗口的首个真实错误，避免 step6/7 级联噪音覆盖根因。"""
+            with errors_lock:
+                if window_failures[idx] is None:
+                    window_failures[idx] = (stage, exc)
+                    errors.append((stage, idx, exc))
+                    return True
+            return False
+
+        def _signal_control_stop(action: str, from_index: int, *, set_extract: bool = True,
+                                 set_step6: bool = True, set_step7: bool = True) -> None:
+            with _control_lock:
+                if _control_state["action"] is None:
+                    _control_state["action"] = action
+                _from = max(0, min(from_index, N))
+                for j in range(_from, N):
+                    if set_extract:
+                        extract_done[j].set()
+                    if set_step6:
+                        step6_done_ev[j].set()
+                    if set_step7:
+                        step7_done_ev[j].set()
+
+        def _poll_control() -> Optional[str]:
+            action = _control_state["action"]
+            if action:
+                return action
+            if control_callback is None:
+                return None
+            action = control_callback()
+            if action in ("pause", "cancel"):
+                with _control_lock:
+                    if _control_state["action"] is None:
+                        _control_state["action"] = action
+                    return _control_state["action"]
+            return None
 
         # 进度回调包装
         _progress_lock = threading.Lock()
@@ -499,83 +658,226 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
                 pass
             progress_callback(progress, label, message, chain_id)
 
+        def _run_with_progress_heartbeat(
+            run_fn: Callable[[], Any],
+            *,
+            chain_id: str,
+            base_progress: float,
+            phase_label: str,
+            message: str,
+            window_label: str,
+            pipeline_role: str,
+            heartbeat_seconds: float = 5.0,
+            log_interval_seconds: float = 30.0,
+        ) -> Any:
+            """为长耗时步骤补充心跳，避免前端/日志长时间停在同一标签像“卡死”。
+
+            不伪造进度，仅重复上报当前 phase，并附加已等待秒数。
+            """
+            stop_ev = threading.Event()
+            started = time.time()
+
+            def _heartbeat() -> None:
+                last_log_elapsed = 0.0
+                set_window_label(window_label)
+                set_pipeline_role(pipeline_role)
+                try:
+                    while not stop_ev.wait(heartbeat_seconds):
+                        elapsed = max(1, int(time.time() - started))
+                        hb_label = f"{phase_label} · 已等待 {elapsed}s"
+                        hb_message = f"{message}（已等待 {elapsed}s）"
+                        _safe_progress(base_progress, hb_label, hb_message, chain_id)
+                        if elapsed - last_log_elapsed >= log_interval_seconds:
+                            wprint(f"{phase_label} · 长调用进行中（已等待 {elapsed}s）")
+                            last_log_elapsed = float(elapsed)
+                finally:
+                    clear_parallel_log_context()
+
+            hb = threading.Thread(
+                target=_heartbeat,
+                name=f"tmg-heartbeat-{chain_id}",
+                daemon=True,
+            )
+            hb.start()
+            try:
+                return run_fn()
+            finally:
+                stop_ev.set()
+                hb.join(timeout=0.2)
+
+        # 跨窗预取：单线程避免与 embedding 客户端并发冲突；在「等上一窗 step6/7」期间跑本窗可并行工作
+        _prefetch_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tmg-chain-prefetch")
+
+        def _safe_prefetch_submit(fn, *args, **kwargs):
+            """解释器收尾或 Executor 已 shutdown 时 submit 会失败；返回 None 表示跳过预取（现场编码）。"""
+            try:
+                if sys.is_finalizing():
+                    return None
+            except Exception:
+                pass
+            try:
+                return _prefetch_executor.submit(fn, *args, **kwargs)
+            except RuntimeError:
+                return None
+
         # ========== step6 工作线程 ==========
         def step6_worker():
             for i in range(N):
                 extract_done[i].wait()          # 等待当前窗口 step2-5 完成
+                _action = _poll_control()
+                if _action:
+                    _signal_control_stop(_action, i, set_extract=False, set_step6=True, set_step7=True)
+                    break
                 set_window_label(f"W{start_chunk + i + 1}/{total_chunks}")
+                set_pipeline_role("步骤6")
+                _er = extract_results[i]
+                emb_prefetch_future: Optional[Future] = None
+                if _er is not None:
+                    _ents, _ = _er
+                    if _ents and self.storage.embedding_client and self.storage.embedding_client.is_available():
+                        emb_prefetch_future = _safe_prefetch_submit(
+                            self.entity_processor.encode_entities_for_candidate_table,
+                            _ents,
+                        )
                 if i > 0:
                     step6_done_ev[i - 1].wait() # 等待前一窗口 step6 完成
+                _action = _poll_control()
+                if _action:
+                    _signal_control_stop(_action, i, set_extract=False, set_step6=True, set_step7=True)
+                    break
                 with self._runtime_lock:
                     self._active_step6 += 1
                 try:
                     mc = memory_caches[i]
-                    _er = extract_results[i]
+                    _success = False
                     if _er is None:
-                        # extract 阶段失败，结果为 None
+                        # 抽取阶段已经失败时，只跳过后续链路，保留首个真实异常。
+                        _upstream = window_failures[i]
+                        if _upstream is not None:
+                            _stage, _exc = _upstream
+                            if verbose or verbose_steps:
+                                wprint(f"【步骤6】跳过｜上游｜{_stage} {_exc}")
+                            continue
                         raise RuntimeError(
                             f"step6 skipped for window {start_chunk + i}: extract result is None (extraction failed)"
                         )
                     ents, rels = _er
+                    if verbose:
+                        wprint("【步骤6】实体｜就绪｜本窗1–5完成或缓存")
+                    elif verbose_steps:
+                        wprint("【步骤6】实体｜开始｜前置1–5已就绪")
+                    _wi = start_chunk + i
+                    _g_lo = _wi / total_chunks
+                    _g_hi = (_wi + 1) / total_chunks
+                    _span = _g_hi - _g_lo
+                    # 与 queue._wf_for_chain / 主链 7 分窗一致：步骤6、7 各占本窗的 1/7（非整窗 [g_lo,g_hi]）
+                    _pr_step6 = (_g_lo + _span * (5.0 / 7.0), _g_lo + _span * (6.0 / 7.0))
                     ar = self._align_entities(
                         ents, rels, mc, input_texts[i], doc_name,
-                        verbose=verbose, event_time=event_time,
+                        verbose=verbose, verbose_steps=verbose_steps, event_time=event_time,
                         progress_callback=lambda p, l, m: _safe_progress(p, l, m, "step6"),
-                        progress_range=((start_chunk + i) / total_chunks, (start_chunk + i + 1) / total_chunks),
+                        progress_range=_pr_step6,
                         window_index=start_chunk + i, total_windows=total_chunks,
+                        entity_embedding_prefetch=emb_prefetch_future,
                     )
                     align_results[i] = ar
+                    _success = True
                 except Exception as e:
-                    with errors_lock:
-                        errors.append(("step6", i, e))
-                    import traceback
-                    traceback.print_exc()
+                    if _record_window_error("step6", i, e):
+                        import traceback
+                        traceback.print_exc()
                 finally:
                     with self._runtime_lock:
                         self._active_step6 = max(0, self._active_step6 - 1)
                     step6_done_ev[i].set()
+                    if _success and step6_chunk_done_callback:
+                        step6_chunk_done_callback(start_chunk + i + 1)
+                    clear_parallel_log_context()
 
         # ========== step7 工作线程 ==========
         def step7_worker():
             for i in range(N):
                 step6_done_ev[i].wait()          # 等待当前窗口 step6 完成
+                _action = _poll_control()
+                if _action:
+                    _signal_control_stop(_action, i, set_extract=False, set_step6=False, set_step7=True)
+                    break
                 set_window_label(f"W{start_chunk + i + 1}/{total_chunks}")
+                set_pipeline_role("步骤7")
+                ar = align_results[i]
+                step7_inputs_cache: Optional[Tuple[List[Dict[str, str]], Dict[str, str], List[Dict], List[Dict]]] = None
+                rel_prefetch_future: Optional[Future] = None
+                if ar is not None:
+                    try:
+                        step7_inputs_cache = self._build_step7_relation_inputs_from_align_result(ar)
+                        _ri, _eid, _, _ = step7_inputs_cache
+                        if i > 0 and _ri:
+                            rel_prefetch_future = _safe_prefetch_submit(
+                                self.relation_processor.build_relations_by_pair_from_inputs,
+                                _ri,
+                                _eid,
+                            )
+                    except Exception:
+                        step7_inputs_cache = None
+                        rel_prefetch_future = None
                 if i > 0:
                     step7_done_ev[i - 1].wait()  # 等待前一窗口 step7 完成
+                _action = _poll_control()
+                if _action:
+                    _signal_control_stop(_action, i, set_extract=False, set_step6=False, set_step7=True)
+                    break
+                prepared_relations_by_pair = None
+                if rel_prefetch_future is not None:
+                    try:
+                        prepared_relations_by_pair, _ = rel_prefetch_future.result()
+                    except Exception:
+                        prepared_relations_by_pair = None
                 with self._runtime_lock:
                     self._active_step7 += 1
                 _success = False
                 _window_has_entities = False
                 try:
-                    ar = align_results[i]
                     if ar is None:
+                        _upstream = window_failures[i]
+                        if _upstream is not None:
+                            _stage, _exc = _upstream
+                            if verbose or verbose_steps:
+                                wprint(f"【步骤7】跳过｜上游｜{_stage} {_exc}")
+                            continue
                         raise RuntimeError(
                             f"step6 result for window {start_chunk + i} is None"
                         )
                     mc = memory_caches[i]
+                    _wi = start_chunk + i
+                    _g_lo = _wi / total_chunks
+                    _g_hi = (_wi + 1) / total_chunks
+                    _span = _g_hi - _g_lo
+                    _pr_step7 = (_g_lo + _span * (6.0 / 7.0), _g_hi)
                     self._align_relations(
                         ar, mc, input_texts[i], doc_name,
-                        verbose=verbose, event_time=event_time,
+                        verbose=verbose, verbose_steps=verbose_steps, event_time=event_time,
                         progress_callback=lambda p, l, m: _safe_progress(p, l, m, "step7"),
-                        progress_range=((start_chunk + i) / total_chunks, (start_chunk + i + 1) / total_chunks),
+                        progress_range=_pr_step7,
                         window_index=start_chunk + i, total_windows=total_chunks,
+                        prepared_relations_by_pair=prepared_relations_by_pair,
+                        step7_inputs_cache=step7_inputs_cache,
                     )
                     _success = True
                     _window_has_entities = bool(ar.unique_entities)
                 except Exception as e:
-                    with errors_lock:
-                        errors.append(("step7", i, e))
-                    import traceback
-                    traceback.print_exc()
+                    if _record_window_error("step7", i, e):
+                        import traceback
+                        traceback.print_exc()
                 finally:
                     with self._runtime_lock:
                         self._active_step7 = max(0, self._active_step7 - 1)
                     step7_done_ev[i].set()
-                    # 仅在窗口处理成功且确实有实体时才标记为已完成
-                    if _success and _window_has_entities and chunk_done_callback:
+                    # step7 成功即推进断点：无实体窗口也应计数，否则断点永不前进、重启后会反复重跑同一窗
+                    if _success and chunk_done_callback:
                         chunk_done_callback(start_chunk + i + 1)
-                    elif _success and not _window_has_entities and chunk_done_callback:
-                        wprint(f"[W{start_chunk + i + 1}/{total_chunks}] 警告: step7完成但窗口无实体，不标记为已完成（将重跑）")
+                    if _success and not _window_has_entities:
+                        wprint("提示: step7 完成但本窗无实体，仍已计入进度（避免断点卡死）")
+                    clear_parallel_log_context()
 
         # 启动 step6 / step7 线程
         t6 = threading.Thread(target=step6_worker, name="tmg-step6-chain", daemon=True)
@@ -583,119 +885,245 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
         t6.start()
         t7.start()
 
+        if verbose or verbose_steps:
+            remember_log(
+                "并行流水线 · 日志前缀 [窗号][角色]："
+                "主线程=步骤1+提交抽取；抽取=步骤2–5；步骤6/7=链式线程。"
+                "不同窗会交错，属正常。"
+            )
+
         # ========== 主线程：Phase A（step1 串行）+ 提交 Phase B（step2-5）==========
         try:
             # 跳到 start_chunk 对应的文本位置
             start = start_chunk * stride
 
             for ci in range(N):
-                # 等待并发槽位：如果已有 max_concurrent_windows 个窗口在 step2+，暂缓 step1
-                self._window_slot.acquire()
-
-                end = min(start + window_size, total_length)
-                chunk = text[start:end]
-                if start == 0:
-                    chunk = f"开始阅读新的文档，文件名是：{doc_name}\n\n{chunk}"
-
-                if verbose:
-                    _wlabel = f"W{start_chunk + ci + 1}/{total_chunks}"
-                    set_window_label(_wlabel)
-                    wprint(f"\n处理窗口 {start_chunk + ci + 1}/{total_chunks}"
-                          f" (文档: {doc_name}, 位置: {start}-{end}/{total_length})")
-                    wprint(f"输入文本长度: {len(chunk)} 字符")
-
-                # Step1: 更新缓存（串行，需加锁）
-                # 断点续传优化：如果该窗口的缓存已存在，直接复用，跳过 LLM 调用
-                _chunk_hash = compute_doc_hash(chunk)
-                existing_mc = self.storage.find_cache_by_doc_hash(
-                    _chunk_hash, document_path=document_path,
-                )
-                if existing_mc:
-                    new_mc = existing_mc
-                    self.current_memory_cache = existing_mc
-                    if verbose:
-                        wprint("  └─ 步骤1: 缓存已存在，跳过生成")
-                else:
-                    with self._cache_lock:
-                        new_mc = self._update_cache(
-                            chunk, doc_name,
-                            text_start_pos=start, text_end_pos=end,
-                            total_text_length=total_length, verbose=verbose,
-                            document_path=document_path, event_time=event_time,
-                        )
-                memory_caches[ci] = new_mc
-                input_texts[ci] = chunk
-                last_memory_cache_id = new_mc.absolute_id
-
-                # 提交 step2-5 到线程池
-                # 断点续传优化：如果抽取结果已存在，直接加载，跳过 LLM 调用
-                _saved_extraction = self.storage.load_extraction_result(
-                    _chunk_hash, document_path=document_path,
-                ) if _chunk_hash else None
-
-                if _saved_extraction is not None:
-                    # 抽取结果已存在，跳过步骤2-5，立即释放槽位
-                    extract_results[ci] = _saved_extraction
-                    extract_done[ci].set()
-                    self._window_slot.release()
-                    if verbose:
-                        _ents_count = len(_saved_extraction[0])
-                        _rels_count = len(_saved_extraction[1])
-                        wprint(f"  └─ 步骤2-5: 抽取结果已存在，跳过（{_ents_count} 实体, {_rels_count} 关系）")
-                else:
-                    def _do_extract(idx=ci, mc=new_mc, chunk_text=chunk, __hash=_chunk_hash):
-                        _wlabel = f"W{start_chunk + idx + 1}/{total_chunks}"
-                        set_window_label(_wlabel)
-                        with self._runtime_lock:
-                            self._active_window_extractions += 1
-                            self._peak_window_extractions = max(
-                                self._peak_window_extractions,
-                                self._active_window_extractions,
-                            )
-                        try:
-                            ents, rels = self._extract_only(
-                                mc, chunk_text, doc_name,
-                                verbose=verbose, event_time=event_time,
-                                progress_callback=lambda p, l, m: _safe_progress(p, l, m, "phase_ab"),
-                                progress_range=((start_chunk + idx) / total_chunks, (start_chunk + idx + 1) / total_chunks),
-                                window_index=start_chunk + idx, total_windows=total_chunks,
-                            )
-                            extract_results[idx] = (ents, rels)
-                            # 保存抽取结果供断点续传复用
-                            self.storage.save_extraction_result(__hash, ents, rels, document_path=document_path)
-                        except Exception as e:
-                            with errors_lock:
-                                errors.append(("extract", idx, e))
-                            import traceback
-                            traceback.print_exc()
-                        finally:
-                            with self._runtime_lock:
-                                self._active_window_extractions = max(0, self._active_window_extractions - 1)
-                            extract_done[idx].set()
-                            self._window_slot.release()
-
-                    self._extraction_executor.submit(_do_extract)
-
-                if end >= total_length:
+                _action = _poll_control()
+                if _action:
+                    _signal_control_stop(_action, ci, set_extract=True, set_step6=True, set_step7=True)
                     break
-                start = end - overlap
+                # 等待并发槽位：如果已有 max_concurrent_windows 个窗口在 step1–5，暂缓下一窗
+                self._acquire_window_slot()
+                _slot_acquired = True
+
+                try:
+                    _action = _poll_control()
+                    if _action:
+                        _signal_control_stop(_action, ci, set_extract=True, set_step6=True, set_step7=True)
+                        self._release_window_slot()
+                        _slot_acquired = False
+                        break
+
+                    end = min(start + window_size, total_length)
+                    chunk = text[start:end]
+                    if start == 0:
+                        chunk = f"开始阅读新的文档，文件名是：{doc_name}\n\n{chunk}"
+
+                    _wlabel = f"W{start_chunk + ci + 1}/{total_chunks}"
+                    if verbose:
+                        set_window_label(_wlabel)
+                        set_pipeline_role("主线程")
+                        wprint(
+                            f"【窗口】{_wlabel}｜{doc_name}｜[{start}-{end}/{total_length}] {len(chunk)}字"
+                        )
+                    elif verbose_steps:
+                        set_window_label(_wlabel)
+                        set_pipeline_role("主线程")
+                        wprint(
+                            f"【窗口】{_wlabel}｜{doc_name}｜[{start}-{end}/{total_length}]"
+                        )
+
+                    # 本窗全局区间（步骤1–5 占前 5/7）：一进入窗口就上报 main，避免长时间 step1(LLM) 无回调导致 Web/日志仍显示上一窗
+                    _wi = start_chunk + ci
+                    _g_lo = _wi / total_chunks
+                    _g_hi = (_wi + 1) / total_chunks
+                    _span = _g_hi - _g_lo
+                    _p_after_step1 = _g_lo + _span * (1.0 / 7.0)
+                    _p_end_main = _g_lo + _span * (5.0 / 7.0)
+                    if progress_callback:
+                        _safe_progress(
+                            _g_lo + _span * 0.02,
+                            f"窗口 {start_chunk + ci + 1}/{total_chunks} · 步骤1/7 进行中",
+                            "",
+                            "main",
+                        )
+
+                    # Step1: 更新缓存（串行，需加锁）
+                    # 断点续传优化：如果该窗口的缓存已存在，直接复用，跳过 LLM 调用
+                    _chunk_hash = compute_doc_hash(chunk)
+                    _saved_extraction = (
+                        self.storage.load_extraction_result(_chunk_hash, document_path=document_path)
+                        if _chunk_hash
+                        else None
+                    )
+                    existing_mc = self.storage.find_cache_by_doc_hash(
+                        _chunk_hash, document_path=document_path,
+                    )
+                    if existing_mc:
+                        new_mc = existing_mc
+                        self.current_memory_cache = existing_mc
+                        # 若步骤2–5 也有缓存，稍后在下方合并打印，避免看起来像「没跑步骤1–5 就直接步骤6」
+                        if _saved_extraction is None:
+                            if verbose:
+                                wprint("【步骤1】缓存｜命中｜跳过生成")
+                            elif verbose_steps:
+                                wprint("【步骤1】缓存｜命中｜跳过生成")
+                    else:
+                        with self._cache_lock:
+                            def _run_step1():
+                                return self._update_cache(
+                                    chunk, doc_name,
+                                    text_start_pos=start, text_end_pos=end,
+                                    total_text_length=total_length, verbose=verbose,
+                                    verbose_steps=verbose_steps,
+                                    document_path=document_path, event_time=event_time,
+                                )
+
+                            new_mc = _run_with_progress_heartbeat(
+                                _run_step1,
+                                chain_id="main",
+                                base_progress=_g_lo + _span * 0.02,
+                                phase_label=f"窗口 {_wi + 1}/{total_chunks} · 步骤1/7 进行中",
+                                message="步骤1 更新记忆缓存",
+                                window_label=_wlabel,
+                                pipeline_role="主线程",
+                            )
+                    memory_caches[ci] = new_mc
+                    input_texts[ci] = chunk
+                    last_memory_cache_id = new_mc.absolute_id
+
+                    _action = _poll_control()
+                    if _action:
+                        _signal_control_stop(_action, ci + 1, set_extract=True, set_step6=True, set_step7=True)
+                        extract_done[ci].set()
+                        step6_done_ev[ci].set()
+                        step7_done_ev[ci].set()
+                        self._release_window_slot()
+                        _slot_acquired = False
+                        break
+
+                    # 提交 step2-5 到线程池
+                    # 断点续传优化：如果抽取结果已存在，直接加载，跳过 LLM 调用
+                    if _saved_extraction is not None:
+                        # 抽取结果已存在，跳过步骤2-5，立即释放槽位（与在线抽取一致：实体/关系列表去重）
+                        _dedup_ents, _dedup_rels = dedupe_extraction_lists(
+                            _saved_extraction[0], _saved_extraction[1]
+                        )
+                        extract_results[ci] = (_dedup_ents, _dedup_rels)
+                        extract_done[ci].set()
+                        if main_chunk_done_callback:
+                            main_chunk_done_callback(start_chunk + ci + 1)
+                        self._release_window_slot()
+                        _slot_acquired = False
+                        if progress_callback:
+                            _safe_progress(
+                                _p_end_main,
+                                f"窗口 {_wi + 1}/{total_chunks} · 步骤1–5/7 已完成(缓存)",
+                                "",
+                                "main",
+                            )
+                        if verbose:
+                            _ents_count = len(_dedup_ents)
+                            _rels_count = len(_dedup_rels)
+                            if existing_mc:
+                                wprint(
+                                    f"【步骤1–5】缓存｜命中｜实体{_ents_count} 关系{_rels_count}→步骤6"
+                                )
+                            else:
+                                wprint(
+                                    f"【步骤2–5】缓存｜命中｜实体{_ents_count} 关系{_rels_count}"
+                                )
+                        elif verbose_steps:
+                            if existing_mc:
+                                wprint(
+                                    f"窗口 {start_chunk + ci + 1}/{total_chunks} · 步骤1–5 已缓存跳过 → 步骤6/7"
+                                )
+                            else:
+                                wprint("【步骤2–5】缓存｜跳过｜抽取已存在")
+                    else:
+                        if progress_callback:
+                            _safe_progress(
+                                _p_after_step1,
+                                f"窗口 {_wi + 1}/{total_chunks} · 步骤1/7 完成",
+                                "",
+                                "main",
+                            )
+
+                        def _do_extract(idx=ci, mc=new_mc, chunk_text=chunk, __hash=_chunk_hash):
+                            _wlabel = f"W{start_chunk + idx + 1}/{total_chunks}"
+                            set_window_label(_wlabel)
+                            set_pipeline_role("抽取")
+                            _success_main = False
+                            with self._runtime_lock:
+                                self._active_window_extractions += 1
+                                self._peak_window_extractions = max(
+                                    self._peak_window_extractions,
+                                    self._active_window_extractions,
+                                )
+                            try:
+                                _idx_lo = (start_chunk + idx) / total_chunks
+                                _idx_hi = (start_chunk + idx + 1) / total_chunks
+                                _idx_span = _idx_hi - _idx_lo
+                                ents, rels = self._extract_only(
+                                    mc, chunk_text, doc_name,
+                                    verbose=verbose, verbose_steps=verbose_steps, event_time=event_time,
+                                    progress_callback=lambda p, l, m: _safe_progress(p, l, m, "main"),
+                                    progress_range=(
+                                        _idx_lo + _idx_span * (1.0 / 7.0),
+                                        _idx_lo + _idx_span * (5.0 / 7.0),
+                                    ),
+                                    window_index=start_chunk + idx, total_windows=total_chunks,
+                                )
+                                extract_results[idx] = (ents, rels)
+                                # 保存抽取结果供断点续传复用
+                                self.storage.save_extraction_result(__hash, ents, rels, document_path=document_path)
+                                _success_main = True
+                            except Exception as e:
+                                if _record_window_error("extract", idx, e):
+                                    import traceback
+                                    traceback.print_exc()
+                            finally:
+                                with self._runtime_lock:
+                                    self._active_window_extractions = max(0, self._active_window_extractions - 1)
+                                extract_done[idx].set()
+                                if _success_main and main_chunk_done_callback:
+                                    main_chunk_done_callback(start_chunk + idx + 1)
+                                self._release_window_slot()
+                                clear_parallel_log_context()
+
+                        self._extraction_executor.submit(_do_extract)
+                        _slot_acquired = False
+
+                    if end >= total_length:
+                        break
+                    start = end - overlap
+                finally:
+                    if _slot_acquired:
+                        self._release_window_slot()
         except Exception as e:
             with errors_lock:
                 errors.append(("main", 0, e))
             import traceback
             traceback.print_exc()
+        finally:
+            clear_parallel_log_context()
 
         # 等待所有窗口 step7 完成
         for i in range(N):
             step7_done_ev[i].wait()
 
         if t6.is_alive():
-            wprint("[警告] step6 线程在 join 超时后仍在运行")
+            remember_log("警告: step6 线程在 join 超时后仍在运行")
         t6.join(timeout=60)
 
         if t7.is_alive():
-            wprint("[警告] step7 线程在 join 超时后仍在运行")
+            remember_log("警告: step7 线程在 join 超时后仍在运行")
         t7.join(timeout=60)
+
+        _prefetch_executor.shutdown(wait=False)
+
+        if _control_state["action"] is not None:
+            raise RememberControlFlow(_control_state["action"])
 
         if errors:
             _phase, _idx, exc = errors[0]
@@ -739,6 +1167,7 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
         return overall
 
     def remember_phase2_windows(self, text: str, doc_name: str = "api_input", verbose: bool = False,
+                                verbose_steps: bool = True,
                                 event_time: Optional[datetime] = None, document_path: str = "",
                                 overall_cache: Optional[MemoryCache] = None,
                                 progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None) -> Dict:
@@ -770,8 +1199,8 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
             })
 
         while start < total_length:
-            # 等待并发槽位：如果已有 max_concurrent_windows 个窗口在 step2+，暂缓 step1
-            self._window_slot.acquire()
+            # 等待并发槽位：与 remember_text 一致，占用即计入主链窗口直至抽取任务 release
+            self._acquire_window_slot()
 
             end = min(start + window_size, total_length)
             chunk = text[start:end]
@@ -783,19 +1212,22 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
                 wprint(f"处理窗口 (文档: {doc_name}, 位置: {start}-{end}/{total_length})")
                 wprint(f"输入文本长度: {len(chunk)} 字符")
                 wprint(f"{'='*60}\n")
+            elif verbose_steps:
+                wprint(f"窗口 {chunk_idx + 1}/{total_chunks} 开始 · {doc_name} [{start}-{end}/{total_length}]")
 
             with self._cache_lock:
                 new_mc = self._update_cache(
                     chunk, doc_name,
                     text_start_pos=start, text_end_pos=end,
                     total_text_length=total_length, verbose=verbose,
+                    verbose_steps=verbose_steps,
                     document_path=document_path, event_time=event_time,
                 )
 
             fut = self._extraction_executor.submit(
                 self._run_extraction_job,
                 new_mc, chunk, doc_name,
-                verbose=verbose, event_time=event_time,
+                verbose=verbose, verbose_steps=verbose_steps, event_time=event_time,
             )
             futures.append(fut)
             last_memory_cache_id = new_mc.absolute_id
@@ -3029,7 +3461,7 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
                     absolute_id=f"cache_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}",
                     content=relation_memory_cache_content,
                     event_time=datetime.now(),
-                    doc_name=doc_name_from_entity,
+                    source_document=doc_name_from_entity,
                     activity_type="知识图谱整理-关系生成"
                 )
                 # 保存memory_cache，json的text是两个实体的name+content+memory_cache
@@ -3046,7 +3478,7 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
                     entity1.name,
                     entity2.name,
                     verbose_relation=verbose,
-                    doc_name=doc_name_from_entity,
+                    source_document=doc_name_from_entity,
                     base_time=relation_memory_cache.event_time,
                 )
             
@@ -3148,7 +3580,7 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
 {consolidation_summary}
 """,
             event_time=datetime.now(),
-            doc_name="",  # 知识图谱整理总结不关联特定文档
+            source_document="",  # 知识图谱整理总结不关联特定文档
             activity_type="知识图谱整理总结"
         )
         

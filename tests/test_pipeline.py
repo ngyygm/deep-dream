@@ -73,6 +73,14 @@ class TestInitialization:
         proc = _make_processor(tmp_path)
         assert proc.load_cache_memory is False
 
+    def test_default_compress_multi_round_extraction(self, tmp_path):
+        proc = _make_processor(tmp_path)
+        assert proc.compress_multi_round_extraction is False
+
+    def test_compress_multi_round_extraction_override(self, tmp_path):
+        proc = _make_processor(tmp_path, compress_multi_round_extraction=True)
+        assert proc.compress_multi_round_extraction is True
+
     def test_default_max_alignment_candidates(self, tmp_path):
         proc = _make_processor(tmp_path)
         assert proc.max_alignment_candidates is None
@@ -149,6 +157,7 @@ class TestInitialization:
         proc = _make_processor(tmp_path)
         assert proc._active_window_extractions == 0
         assert proc._peak_window_extractions == 0
+        assert proc._active_main_pipeline_windows == 0
         assert proc._active_step6 == 0
         assert proc._active_step7 == 0
 
@@ -200,6 +209,7 @@ class TestGetRuntimeStats:
             "configured_window_workers",
             "configured_llm_threads",
             "active_window_extractions",
+            "active_main_pipeline_windows",
             "peak_window_extractions",
             "active_step6",
             "active_step7",
@@ -210,6 +220,11 @@ class TestGetRuntimeStats:
         proc = _make_processor(tmp_path)
         stats = proc.get_runtime_stats()
         assert stats["active_window_extractions"] == 0
+
+    def test_active_main_pipeline_windows_starts_at_zero(self, tmp_path):
+        proc = _make_processor(tmp_path)
+        stats = proc.get_runtime_stats()
+        assert stats["active_main_pipeline_windows"] == 0
 
     def test_peak_window_extractions_starts_at_zero(self, tmp_path):
         proc = _make_processor(tmp_path)
@@ -288,7 +303,7 @@ class TestRememberTextShort:
     def test_returns_dict_with_expected_keys(self, tmp_path):
         proc = _make_processor(tmp_path)
         text = "Alice went to the market to buy some fresh vegetables and fruits."
-        result = proc.remember_text(text, doc_name="test_short", verbose=False)
+        result = proc.remember_text(text, doc_name="test_short", verbose=False, verbose_steps=False)
         assert isinstance(result, dict)
         assert "memory_cache_id" in result
         assert "chunks_processed" in result
@@ -297,26 +312,26 @@ class TestRememberTextShort:
     def test_single_chunk_processed(self, tmp_path):
         proc = _make_processor(tmp_path)
         text = "Alice went to the market to buy some fresh vegetables and fruits."
-        result = proc.remember_text(text, doc_name="test_short", verbose=False)
+        result = proc.remember_text(text, doc_name="test_short", verbose=False, verbose_steps=False)
         assert result["chunks_processed"] == 1
 
     def test_memory_cache_id_is_string(self, tmp_path):
         proc = _make_processor(tmp_path)
         text = "Alice went to the market to buy some fresh vegetables and fruits."
-        result = proc.remember_text(text, doc_name="test_short", verbose=False)
+        result = proc.remember_text(text, doc_name="test_short", verbose=False, verbose_steps=False)
         assert isinstance(result["memory_cache_id"], str)
         assert len(result["memory_cache_id"]) > 0
 
     def test_storage_path_matches(self, tmp_path):
         proc = _make_processor(tmp_path)
         text = "Alice went to the market to buy some fresh vegetables and fruits."
-        result = proc.remember_text(text, doc_name="test_short", verbose=False)
+        result = proc.remember_text(text, doc_name="test_short", verbose=False, verbose_steps=False)
         assert result["storage_path"] == str(proc.storage.storage_path)
 
     def test_entities_query_works_after_processing(self, tmp_path):
         proc = _make_processor(tmp_path)
         text = "Alice went to the market to buy some fresh vegetables and fruits."
-        proc.remember_text(text, doc_name="test_short", verbose=False)
+        proc.remember_text(text, doc_name="test_short", verbose=False, verbose_steps=False)
         entities = proc.storage.get_all_entities()
         # In mock mode the prompt "请从文本中抽取所有概念实体（越多越好）："
         # does not match the _mock_llm_response pattern "抽取实体" (contiguous),
@@ -327,7 +342,7 @@ class TestRememberTextShort:
     def test_relations_query_works_after_processing(self, tmp_path):
         proc = _make_processor(tmp_path)
         text = "Alice went to the market to buy some fresh vegetables and fruits."
-        proc.remember_text(text, doc_name="test_short", verbose=False)
+        proc.remember_text(text, doc_name="test_short", verbose=False, verbose_steps=False)
         relations = proc.storage.get_all_relations()
         # Same mock mode limitation: 0 entities => 0 relations extracted.
         # Verify the query completes without error.
@@ -352,7 +367,7 @@ class TestRememberTextMultiWindow:
             "Bob recommended the local honey from the nearby beekeeper Charlie."
         )
         assert len(text) > 100
-        result = proc.remember_text(text, doc_name="test_multi", verbose=False)
+        result = proc.remember_text(text, doc_name="test_multi", verbose=False, verbose_steps=False)
         assert result["chunks_processed"] > 1
 
     def test_entities_query_after_multi_window(self, tmp_path):
@@ -364,11 +379,33 @@ class TestRememberTextMultiWindow:
             "Alice picked up some ripe tomatoes and a bag of green apples. "
             "Bob recommended the local honey from the nearby beekeeper Charlie."
         )
-        proc.remember_text(text, doc_name="test_multi", verbose=False)
+        proc.remember_text(text, doc_name="test_multi", verbose=False, verbose_steps=False)
         entities = proc.storage.get_all_entities()
         # Mock mode prompt mismatch yields 0 entities (see test_entities_query_works_after_processing).
         # Verify multi-window processing completes and storage is queryable.
         assert isinstance(entities, list)
+
+    def test_extract_failure_does_not_emit_secondary_step6_step7_errors(self, tmp_path, monkeypatch, capsys):
+        proc = _make_processor(tmp_path)
+        text = (
+            "Alice walked through the bustling market on a sunny morning. "
+            "She greeted Bob who was selling fresh oranges at his fruit stand. "
+            "The market was filled with colorful stalls and cheerful vendors. "
+            "Alice picked up some ripe tomatoes and a bag of green apples. "
+            "Bob recommended the local honey from the nearby beekeeper Charlie."
+        )
+
+        def _boom(*args, **kwargs):
+            raise ValueError("simulated extract failure")
+
+        monkeypatch.setattr(proc, "_extract_only", _boom)
+
+        with pytest.raises(ValueError, match="simulated extract failure"):
+            proc.remember_text(text, doc_name="test_extract_failure", verbose=False, verbose_steps=False)
+
+        captured = capsys.readouterr()
+        assert "step6 skipped for window" not in captured.err
+        assert "step6 result for window" not in captured.err
 
 
 # ===================================================================
@@ -382,7 +419,7 @@ class TestRememberTextStartChunk:
         text = "Short text."
         # total_chunks will be 1; start_chunk=10 >= 1 => early return
         result = proc.remember_text(
-            text, doc_name="test_skip", verbose=False, start_chunk=10,
+            text, doc_name="test_skip", verbose=False, verbose_steps=False, start_chunk=10,
         )
         assert result["chunks_processed"] == 1
         # memory_cache_id is None since current_memory_cache is still None
@@ -439,7 +476,7 @@ class TestEdgeCases:
 
     def test_empty_string(self, tmp_path):
         proc = _make_processor(tmp_path)
-        result = proc.remember_text("", doc_name="empty", verbose=False)
+        result = proc.remember_text("", doc_name="empty", verbose=False, verbose_steps=False)
         # Empty text: len=0 <= window_size=100 => total_chunks=1
         # The chunk will be the doc prefix only since text is empty.
         assert result["chunks_processed"] == 1
@@ -447,13 +484,13 @@ class TestEdgeCases:
     def test_whitespace_only(self, tmp_path):
         proc = _make_processor(tmp_path)
         text = "   \n\t  \n   "
-        result = proc.remember_text(text, doc_name="whitespace", verbose=False)
+        result = proc.remember_text(text, doc_name="whitespace", verbose=False, verbose_steps=False)
         assert result["chunks_processed"] >= 1
 
     def test_unicode_and_emoji(self, tmp_path):
         proc = _make_processor(tmp_path)
         text = "Hello world! This is a test with unicode characters."
-        result = proc.remember_text(text, doc_name="unicode", verbose=False)
+        result = proc.remember_text(text, doc_name="unicode", verbose=False, verbose_steps=False)
         assert result["chunks_processed"] >= 1
         assert isinstance(result["memory_cache_id"], str)
 

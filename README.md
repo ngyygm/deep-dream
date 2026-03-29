@@ -128,6 +128,25 @@ curl -s "http://localhost:16200/api/v1/remember/tasks?limit=10" | jq
 
 > 进程异常退出后重启会自动恢复未完成的任务。
 
+#### Remember 缓存与断点续传
+
+续跑起点由任务中的 **`step7_done_chunks`**（关系链步骤 7 已完成的窗口数）决定，**不是**仅看主链或 `docs/` 目录条数。各步骤落盘与行为如下：
+
+| 步骤 | 磁盘/状态 | 重启后 |
+|------|-----------|--------|
+| 任务断点 | `<storage_path>/<graph_id>/tasks/queue.jsonl` 中的 `main_done_chunks` / `step6_done_chunks` / `step7_done_chunks` | `start_chunk` = `step7_done_chunks` |
+| 步骤 1 | `docs/*_{doc_hash}/`（记忆缓存）+ 按块 hash / `document_path` 查找 | 同一块文本且同一 `document_path` 命中则跳过步骤 1 的 LLM |
+| 步骤 2–5（含实体增强） | 同一文档目录下 `extraction.json` | 命中则跳过步骤 2–5 全部 LLM；**实体增强结果已含在保存的 `entities` 中**（保存发生在步骤 5 完成之后） |
+| 步骤 6–7 | **无**单独「对齐结果」缓存文件 | 已记入 `step7_done_chunks` 的窗口**不再进入**本轮流水线；仍在断点之后的窗口每次处理时仍会执行实体/关系对齐 LLM |
+
+**易误解点：**
+
+1. **`queue.jsonl` 若未成功写入**（例如历史 `Too many open files`），`step7_done_chunks` 可能偏旧，可能重复跑步骤 6/7；步骤 1–5 仍可能因 `extraction.json` 命中而跳过。
+2. **先关闭 `entity_post_enhancement` 跑完并写入缓存，再开启增强**：仍会命中抽取缓存，**不会**自动补跑步骤 5（除非删除对应窗的抽取缓存或改代码逻辑）。
+3. **原文块或 `document_path` 变化**：块 hash 变化 → 步骤 1–5 缓存未命中，会重跑抽取链。
+
+步骤 6/7 的「按窗落盘只读缓存」当前**未实现**；避免重复主要依赖断点准确与存储健康。
+
 ### 7. 检索记忆
 
 ```bash
@@ -282,8 +301,11 @@ flowchart TB
 | `llm.think` | 是否开启思考模式（仅 Ollama 原生协议支持） |
 | `embedding.model` / `device` | Embedding 模型路径/HuggingFace 名称，`device` 可选 `cpu`/`cuda` |
 | `chunking.window_size` / `overlap` | 滑窗大小和重叠（字符数） |
+| `pipeline.compress_multi_round_extraction` | 默认 `false`；为 `true` 时多轮实体/关系抽取不累积各轮 assistant 全文，每轮独立请求并附带已抽名称/关系摘要，降低上下文 token（适合厂商长上下文限流场景） |
 | `runtime.concurrency.*` | 三层并发控制（queue_workers / window_workers / llm_call_workers） |
 | `runtime.retry.*` | 失败重试次数和延迟 |
+
+Remember 各步骤的**磁盘缓存与断点续传**（步骤 1–5 与步骤 6–7 的差异）见**快速开始**中的「Remember 缓存与断点续传」小节。
 
 **LLM 服务端选择**：
 

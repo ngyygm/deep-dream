@@ -171,13 +171,9 @@
             <div class="mono" style="font-size:1rem;font-weight:600;">${formatNumber(s.memory_caches)}</div>
           </div>
         </div>
-        ${q.backlog ? `<div style="margin-top:0.5rem;font-size:0.75rem;color:var(--warning);">${t('dashboard.backlog', { count: formatNumber(q.backlog) })}</div>` : ''}
         ${(th.python_threads_total > 0) ? `<div style="margin-top:0.5rem;display:flex;flex-wrap:wrap;gap:0.5rem;font-size:0.7rem;">
-          <span style="color:var(--text-muted);">${t('dashboard.pythonThreads', { n: th.python_threads_total })}</span>
           <span style="color:${(th.remember_worker_threads_busy || 0) > 0 ? 'var(--success)' : 'var(--text-muted)'};">${t('dashboard.taskThreads', { busy: th.remember_worker_threads_busy || 0, alive: th.remember_worker_threads_alive || 0 })}</span>
           <span style="color:${(th.window_threads_busy || 0) > 0 ? 'var(--info)' : 'var(--text-muted)'};">${t('dashboard.windowThreads', { busy: th.window_threads_busy || 0, max: th.window_threads_configured || th.window_threads_alive || 0 })}</span>
-          <span style="color:${(th.step6_active || 0) > 0 ? 'var(--info)' : 'var(--text-muted)'};">${t('dashboard.step6Threads', { n: th.step6_active || 0 })}</span>
-          <span style="color:${(th.step7_active || 0) > 0 ? 'var(--warning)' : 'var(--text-muted)'};">${t('dashboard.step7Threads', { n: th.step7_active || 0 })}</span>
           <span style="color:${(th.llm_threads_busy || 0) > 0 ? 'var(--warning)' : 'var(--text-muted)'};">${t('dashboard.llmThreads', { busy: th.llm_threads_busy || 0, max: th.llm_threads_max || th.llm_threads_alive || 0 })}</span>
         </div>` : ''}
       </div>`;
@@ -251,22 +247,27 @@
       const isRunning = tk.status === 'running';
       const s6p = Math.min(1, Math.max(0, tk.step6_progress ?? 0));
       const s7p = Math.min(1, Math.max(0, tk.step7_progress ?? 0));
+      const smp = Math.min(1, Math.max(0, tk.main_progress ?? 0));
+      const overallPct = Math.min(1, Math.max(0, tk.step7_progress ?? tk.progress ?? 0));
 
-      // 进度区域：running 时显示双链进度，其他状态显示单进度条
+      // 进度区域：running 时显示 总进度 + 滑窗(1–5) + 实体链 + 关系链
       let progressHtml;
       if (isRunning) {
-        const statusText = tk.phase_label || tk.message || '-';
         progressHtml = `
-          <div style="font-size:0.7rem;color:var(--text-muted);margin-bottom:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(statusText)}">${escapeHtml(statusText)}</div>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;">
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px 12px;">
+            <div>
+              <div style="font-size:0.65rem;color:var(--primary);margin-bottom:2px;">${t('dashboard.mainWindow')}</div>
+              <div class="progress-bar" style="height:3px;"><div class="progress-bar-fill" style="width:${(smp * 100).toFixed(2)}%;background:var(--primary);"></div></div>
+              <div style="font-size:0.6rem;color:var(--text-muted);margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(tk.main_label || '-')}</div>
+            </div>
             <div>
               <div style="font-size:0.65rem;color:var(--info);margin-bottom:2px;">${t('dashboard.entityAlign')}</div>
-              <div class="progress-bar" style="height:3px;"><div class="progress-bar-fill" style="width:${(s6p * 100).toFixed(1)}%;background:var(--info);"></div></div>
+              <div class="progress-bar" style="height:3px;"><div class="progress-bar-fill" style="width:${(s6p * 100).toFixed(2)}%;background:var(--info);"></div></div>
               <div style="font-size:0.6rem;color:var(--text-muted);margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(tk.step6_label || '-')}</div>
             </div>
             <div>
               <div style="font-size:0.65rem;color:var(--warning);margin-bottom:2px;">${t('dashboard.relationAlign')}</div>
-              <div class="progress-bar" style="height:3px;"><div class="progress-bar-fill" style="width:${(s7p * 100).toFixed(1)}%;background:var(--warning);"></div></div>
+              <div class="progress-bar" style="height:3px;"><div class="progress-bar-fill" style="width:${(s7p * 100).toFixed(2)}%;background:var(--warning);"></div></div>
               <div style="font-size:0.6rem;color:var(--text-muted);margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(tk.step7_label || '-')}</div>
             </div>
           </div>`;
@@ -280,13 +281,14 @@
         <div class="dashboard-task-card" data-task-id="${escapeHtml(tk.task_id)}" style="padding:10px 12px;border-bottom:1px solid var(--border-color);cursor:pointer;transition:background 0.1s;"
              onmouseenter="this.style.background='var(--bg-surface-hover)'" onmouseleave="this.style.background='transparent'">
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
-            <div style="display:flex;align-items:center;gap:6px;min-width:0;">
+            <div style="display:flex;align-items:center;gap:8px;min-width:0;flex:1;">
               ${statusBadge(tk.status)}
               <span class="mono" style="font-size:0.7rem;color:var(--text-muted);flex-shrink:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(tk.task_id)}">${escapeHtml(tk.task_id.slice(0, 10))}</span>
+              <span style="font-size:0.8rem;color:var(--text-secondary);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(tk.source_name || '-')}">${escapeHtml(tk.source_name || '-')}</span>
+              <span style="font-size:0.75rem;color:var(--text-muted);flex-shrink:0;white-space:nowrap;">${t('memory.overallProgress')} ${(overallPct * 100).toFixed(2)}%</span>
             </div>
             <span class="mono" style="font-size:0.75rem;color:var(--text-muted);flex-shrink:0;">${elapsedText(tk)}</span>
           </div>
-          <div style="font-size:0.8rem;color:var(--text-secondary);margin-bottom:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(tk.source_name || '-')}">${escapeHtml(tk.source_name || '-')}</div>
           ${progressHtml}
         </div>
       `;
