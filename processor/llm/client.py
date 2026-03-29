@@ -39,6 +39,7 @@ from .prompts import (
     ANALYZE_ENTITY_CANDIDATES_PRELIMINARY_SYSTEM_PROMPT,
     RESOLVE_ENTITY_CANDIDATES_BATCH_SYSTEM_PROMPT,
 )
+from .errors import LLMContextBudgetExceeded
 from .memory_ops import _MemoryOpsMixin
 from .entity_extraction import _EntityExtractionMixin
 from .relation_extraction import _RelationExtractionMixin
@@ -448,6 +449,47 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
                 return str(content)
         return str(content)
 
+    @staticmethod
+    def _error_suggests_context_overflow(err: BaseException) -> bool:
+        """服务端错误是否与上下文/token/长度相关（仅此类错误才转储完整 messages）。"""
+        chunks: List[str] = [str(err), repr(err)]
+        body = getattr(err, "body", None)
+        if body is not None:
+            chunks.append(str(body))
+        response = getattr(err, "response", None)
+        if response is not None:
+            text = getattr(response, "text", None)
+            if text:
+                chunks.append(str(text)[:4000])
+        s = "\n".join(chunks).lower()
+        sc = getattr(err, "status_code", None)
+        if sc == 413:
+            return True
+        needles = (
+            "context length",
+            "maximum context",
+            "max context",
+            "context window",
+            "token limit",
+            "too many tokens",
+            "maximum tokens",
+            "exceeds the maximum",
+            "prompt is too long",
+            "input is too long",
+            "input length",
+            "length limit",
+            "reduce the length",
+            "payload too large",
+            "请求过长",
+            "上下文长度",
+            "上下文超限",
+            "tokens 超",
+            "token 超",
+            "invalid prompt",
+            "context_limit",
+        )
+        return any(n in s for n in needles)
+
     def _log_llm_messages_full(
         self,
         messages: List[Dict[str, Any]],
@@ -519,7 +561,7 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
                 desired_max_tokens=desired_max_tokens,
                 resolved_max_tokens=0,
             )
-            raise RuntimeError(
+            raise LLMContextBudgetExceeded(
                 f"LLM 上下文预算超限：估算输入约 {prompt_tokens} tokens，"
                 f"已达到或超过模型总上限 {context_cap}。请缩短输入、减少多轮历史，"
                 "或下调窗口大小 / 提示长度。"
@@ -531,13 +573,6 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
             wprint(
                 f"[TMG] 上下文预算限制：估算输入 {prompt_tokens} tokens，"
                 f"输出上限从 {desired} 收缩到 {resolved}（总上限 {context_cap}）"
-            )
-            self._log_llm_messages_full(
-                messages,
-                title="上下文预算详情，完整输入如下",
-                prompt_tokens=prompt_tokens,
-                desired_max_tokens=desired,
-                resolved_max_tokens=resolved,
             )
         return max(1, resolved)
 
@@ -879,12 +914,13 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
                 is_tpm_error = _is_rate_limit_tpm_error(e)
 
                 if not _detailed_error_logged and not is_connection_error and not is_timeout and not is_tpm_error:
-                    self._log_llm_messages_full(
-                        messages,
-                        title="服务端报错时的完整输入如下",
-                        prompt_tokens=self._estimate_messages_token_count(messages),
-                        desired_max_tokens=_effective_max_tokens,
-                    )
+                    if self._error_suggests_context_overflow(e):
+                        self._log_llm_messages_full(
+                            messages,
+                            title="服务端报上下文/长度相关错误，完整输入如下",
+                            prompt_tokens=self._estimate_messages_token_count(messages),
+                            desired_max_tokens=_effective_max_tokens,
+                        )
                     self._log_llm_error_full(
                         e,
                         title="服务端报错完整详情",
