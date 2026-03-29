@@ -1,7 +1,6 @@
 """LLM客户端 - 关系抽取相关操作。"""
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
@@ -11,6 +10,7 @@ import numpy as np
 from ..models import MemoryCache, Entity
 from ..debug_log import log as dbg
 from ..utils import wprint
+from .errors import LLMContextBudgetExceeded
 from .prompts import (
     EXTRACT_RELATIONS_SINGLE_PASS_SYSTEM_PROMPT,
     JUDGE_NEED_CREATE_RELATION_SYSTEM_PROMPT,
@@ -21,6 +21,9 @@ from .prompts import (
 def _json_code_block(payload: Any) -> str:
     """将验收后的 JSON 结果重新包装为单个 json 代码块，供后续轮次复用。"""
     return f"```json\n{json.dumps(payload, ensure_ascii=False)}\n```"
+
+
+_MULTI_ROUND_CONTINUE_USER = "继续生成"
 
 
 class _RelationExtractionMixin:
@@ -450,43 +453,6 @@ class _RelationExtractionMixin:
 
         return normalized_relations, normalized_count, filtered_count
 
-    def _compact_relation_lines(self, relations: List[Dict[str, str]]) -> str:
-        """压缩多轮：已抽取关系一行一条，便于防重复且不堆叠完整 JSON。"""
-        lines: List[str] = []
-        for r in relations:
-            e1 = (r.get("entity1_name") or "").strip()
-            e2 = (r.get("entity2_name") or "").strip()
-            c = (r.get("content") or "").strip()
-            h = hashlib.md5(c.encode("utf-8")).hexdigest()[:8] if c else ""
-            lines.append(f"{e1} | {e2} | {h}")
-        return "\n".join(lines) if lines else "(无)"
-
-    def _build_relation_compress_user_prompt(
-        self,
-        input_text: str,
-        entities_str: str,
-        compact_rel_lines: str,
-        num_entities: int,
-        round_idx: int,
-        rounds: int,
-    ) -> str:
-        return f"""<输入文本>
-{input_text}
-</输入文本>
-
-<概念实体列表>
-{entities_str}
-</概念实体列表>
-
-<已有关系>
-{compact_rel_lines}
-</已有关系>
-
-这是第 {round_idx + 1}/{rounds} 轮补充关系抽取。请只输出**本轮新增**的关系 JSON 数组；
-每条关系仅包含 entity1_name、entity2_name、content（**不要**输出任何 ID 或编号字段）。
-端点名称尽量来自上表（当前共 {num_entities} 个实体）；若文本中有表中未列出的概念但与表中实体有明确关系，也可用其在文中的称呼作为端点名称。
-不要重复已有关系中的实体对与相同 content 指纹；若无可补充则输出 []。"""
-
     def extract_relations(self, memory_cache: MemoryCache, input_text: str,
                          entities: Union[List[Dict[str, str]], List[Entity]],
                          rounds: int = 1,
@@ -503,7 +469,7 @@ class _RelationExtractionMixin:
             rounds: 抽取轮次（默认 1）；>1 时利用对话历史要求 LLM 继续补充
             verbose: 是否输出详细日志
             on_round_done: 每轮完成后的回调 fn(round_idx, total_rounds, cumulative_count)
-            compress_multi_round: 为 True 且 rounds>1 时不累积各轮 assistant 全文，每轮重建请求并附带关系摘要，降低上下文膨胀
+            compress_multi_round: 兼容保留；多轮行为与 False 一致（首轮完整 user + 后续仅「继续生成」），为 True 时蒸馏保存仍用 system + distill_flat
 
         Returns:
             抽取的关系列表，每个关系包含 entity1_name, entity2_name, content
@@ -561,28 +527,22 @@ class _RelationExtractionMixin:
                 r, t = round_idx + 1, rounds
                 wprint(f"【步骤3】轮{r}/{t}｜进行｜")
 
-            if compress_multi_round and round_idx > 0:
-                compact = self._compact_relation_lines(all_relations)
-                uc = self._build_relation_compress_user_prompt(
-                    input_text,
-                    entities_str,
-                    compact,
-                    len(catalog_valid_names),
-                    round_idx,
-                    rounds,
+            try:
+                new_relations, response = self.call_llm_until_json_parses(
+                    messages,
+                    parse_fn=lambda r, vs=catalog_valid_names, co=catalog_name_order: self._parse_relations_response(
+                        r, vs, catalog_name_order=co
+                    ),
+                    json_parse_retries=2,
                 )
-                messages = [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": uc},
-                ]
-
-            new_relations, response = self.call_llm_until_json_parses(
-                messages,
-                parse_fn=lambda r, vs=catalog_valid_names, co=catalog_name_order: self._parse_relations_response(
-                    r, vs, catalog_name_order=co
-                ),
-                json_parse_retries=2,
-            )
+            except LLMContextBudgetExceeded:
+                if all_relations:
+                    wprint(
+                        f"【步骤3】轮{round_idx + 1}/{rounds}｜上下文预算超限｜"
+                        f"沿用已得 {len(all_relations)} 条关系，不再续轮"
+                    )
+                    break
+                raise
             dbg(f"关系抽取第{round_idx+1}轮 LLM原始响应 ({len(response)} 字符): {response[:800]}")
 
             new_relations, _normalized_count, _filtered_count = self._normalize_and_filter_relations_by_entities(
@@ -619,8 +579,7 @@ class _RelationExtractionMixin:
             distill_flat.append({"role": "user", "content": messages[-1]["content"]})
             distill_flat.append({"role": "assistant", "content": accepted_response})
 
-            if not compress_multi_round:
-                messages.append({"role": "assistant", "content": accepted_response})
+            messages.append({"role": "assistant", "content": accepted_response})
 
             if verbose:
                 r, t = round_idx + 1, rounds
@@ -637,17 +596,8 @@ class _RelationExtractionMixin:
                     wprint(f"【步骤3】轮{r}/{t}｜停止｜无新增")
                 break
 
-            if round_idx + 1 < rounds and not compress_multi_round:
-                _n_ent = len(catalog_valid_names)
-                messages.append({
-                    "role": "user",
-                    "content": (
-                        f"<概念实体列表>\n{entities_str}\n</概念实体列表>\n\n"
-                        "请继续从文本中补充更多概念实体间的关系，不要重复已提取的内容。\n"
-                        f"每条关系仅含 entity1_name、entity2_name、content；端点名称尽量来自上表（当前共 {_n_ent} 个实体），"
-                        "不要输出任何 ID 或编号字段；只输出一个 ```json ... ``` 代码块。"
-                    ),
-                })
+            if round_idx + 1 < rounds:
+                messages.append({"role": "user", "content": _MULTI_ROUND_CONTINUE_USER})
 
         if self._distill_data_dir and self._current_distill_step:
             if compress_multi_round:

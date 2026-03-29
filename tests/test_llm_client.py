@@ -26,6 +26,7 @@ import pytest
 
 import processor.llm.client as client_module
 from processor.llm.client import LLMClient, PrioritySemaphore
+from processor.llm.errors import LLMContextBudgetExceeded
 from processor.models import MemoryCache
 
 # 与 service_config.llm.context_window_tokens / server.config.DEFAULTS 对齐
@@ -274,7 +275,7 @@ class TestCallLlmMockMode:
 
     def test_resolve_request_max_tokens_raises_when_prompt_exceeds_budget(self):
         messages = [{"role": "user", "content": "你" * 8100}]
-        with pytest.raises(RuntimeError, match="上下文预算超限"):
+        with pytest.raises(LLMContextBudgetExceeded, match="上下文预算超限"):
             self.client._resolve_request_max_tokens(messages, desired_max_tokens=100)
 
     def test_call_llm_does_not_retry_when_finish_reason_is_length(self, monkeypatch):
@@ -961,6 +962,62 @@ class TestMultiRoundAcceptedAssistantHistory:
         assert assistant_payload == [
             {"entity1_name": "A", "entity2_name": "B", "content": "r1"},
         ]
+
+    def test_extract_entities_partial_on_context_budget_second_round(self):
+        client = _llm_client()
+        calls: list[int] = []
+
+        def fake_call_llm_until_json_parses(messages, parse_fn=None, json_parse_retries=None):
+            calls.append(len(messages))
+            if len(calls) == 1:
+                raw = '```json\n[{"name":"A","content":"x"}]\n```'
+                return parse_fn(raw), raw
+            raise LLMContextBudgetExceeded(
+                "LLM 上下文预算超限：估算输入约 99999 tokens，已达到或超过模型总上限 8000。"
+            )
+
+        client.call_llm_until_json_parses = fake_call_llm_until_json_parses
+        cache = MemoryCache(
+            absolute_id="cache_test",
+            content="memory",
+            event_time=datetime(2025, 1, 1),
+            source_document="doc.txt",
+            activity_type="文档处理",
+        )
+        out = client.extract_entities(cache, "body", rounds=2, verbose=False)
+        assert out == [{"name": "A", "content": "x"}]
+        assert len(calls) == 2
+
+    def test_extract_relations_partial_on_context_budget_second_round(self):
+        client = _llm_client()
+        calls: list[int] = []
+
+        def fake_call_llm_until_json_parses(messages, parse_fn=None, json_parse_retries=None):
+            calls.append(len(messages))
+            if len(calls) == 1:
+                raw = '```json\n[{"entity1_name":"A","entity2_name":"B","content":"r1"}]\n```'
+                return parse_fn(raw), raw
+            raise LLMContextBudgetExceeded(
+                "LLM 上下文预算超限：估算输入约 99999 tokens，已达到或超过模型总上限 8000。"
+            )
+
+        client.call_llm_until_json_parses = fake_call_llm_until_json_parses
+        cache = MemoryCache(
+            absolute_id="cache_test",
+            content="memory",
+            event_time=datetime(2025, 1, 1),
+            source_document="doc.txt",
+            activity_type="文档处理",
+        )
+        out = client.extract_relations(
+            cache,
+            "body",
+            entities=[{"name": "A", "content": "a"}, {"name": "B", "content": "b"}],
+            rounds=2,
+            verbose=False,
+        )
+        assert out == [{"entity1_name": "A", "entity2_name": "B", "content": "r1"}]
+        assert len(calls) == 2
 
 
 # ---------------------------------------------------------------------------
