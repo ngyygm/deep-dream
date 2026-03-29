@@ -60,12 +60,17 @@ class _RelationExtractionMixin:
         *,
         preferred_names: Optional[set] = None,
     ) -> tuple[str, Set[str], List[str]]:
-        """构建关系列表字符串、合法名称集合、以及目录顺序（先见先排，用于并列时选较新名称）。"""
+        """构建关系列表字符串、合法名称集合、以及目录顺序（先见先排，用于并列时选较新名称）。
+
+        relation_content_snippet_length <= 0 时目录中仅输出实体名（不附带 content 摘要）。
+        """
         entity_lines: List[str] = []
         valid_names: Set[str] = set()
         name_order: List[str] = []
         order_seen: Set[str] = set()
-        snippet_limit = max(20, min(self.relation_content_snippet_length, 60))
+        rc = int(self.relation_content_snippet_length or 0)
+        name_only_catalog = rc <= 0
+        snippet_limit = max(20, min(rc, 60)) if not name_only_catalog else 0
 
         ordered_entities = entities
         if preferred_names:
@@ -87,6 +92,9 @@ class _RelationExtractionMixin:
             if name not in order_seen:
                 order_seen.add(name)
                 name_order.append(name)
+            if name_only_catalog:
+                entity_lines.append(f"- {name}")
+                continue
             content = entity.get('content', '').strip()
             if content:
                 snippet = content[:snippet_limit] + ('...' if len(content) > snippet_limit else '')

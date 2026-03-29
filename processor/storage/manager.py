@@ -1338,8 +1338,9 @@ class StorageManager:
         if not self.embedding_client or not self.embedding_client.is_available():
             return None
         
-        # 构建文本：content[:snippet_length]
-        text = relation.content[:self.relation_content_snippet_length]
+        # 构建文本：content[:snippet_length]；snippet<=0 时用全文（与关系抽取「仅列实体名」配置一致，避免空串 embedding）
+        n = self.relation_content_snippet_length
+        text = relation.content if n is None or n <= 0 else relation.content[:n]
         embedding = self.embedding_client.encode(text)
         
         if embedding is None or len(embedding) == 0:
@@ -1387,7 +1388,11 @@ class StorageManager:
         # 批量计算 embedding（无需锁）
         embeddings = None
         if self.embedding_client and self.embedding_client.is_available():
-            texts = [relation.content[:self.relation_content_snippet_length] for relation in relations]
+            _n = self.relation_content_snippet_length
+            texts = [
+                relation.content if _n is None or _n <= 0 else relation.content[:_n]
+                for relation in relations
+            ]
             embeddings = self.embedding_client.encode(texts)
 
         rows = []
@@ -1507,15 +1512,23 @@ class StorageManager:
 
     def get_latest_relations_projection(self, content_snippet_length: Optional[int] = None) -> List[Dict[str, Any]]:
         """获取最新关系投影，供关系批量 upsert 使用。"""
-        snippet_length = content_snippet_length or self.relation_content_snippet_length
+        snippet_length = (
+            self.relation_content_snippet_length
+            if content_snippet_length is None
+            else content_snippet_length
+        )
         results: List[Dict[str, Any]] = []
         for relation, embedding_array in self._get_relations_with_embeddings():
+            if snippet_length is None or snippet_length <= 0:
+                _csnip = relation.content
+            else:
+                _csnip = relation.content[:snippet_length]
             results.append({
                 "relation": relation,
                 "relation_id": relation.relation_id,
                 "pair": tuple(sorted((relation.entity1_absolute_id, relation.entity2_absolute_id))),
                 "content": relation.content,
-                "content_snippet": relation.content[:snippet_length],
+                "content_snippet": _csnip,
                 "embedding_array": embedding_array,
             })
         return results
