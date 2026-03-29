@@ -285,15 +285,27 @@ class TestCallLlmMockMode:
         result = self.client._parse_json_response(raw)
         assert result == {"key": "value"}
 
-    def test_resolve_request_max_tokens_clamped_by_context_budget(self):
+    def test_parse_json_response_salvages_truncated_array_tail(self):
+        raw = """```json
+[
+  {"name": "水浒传", "content": "中国古典小说"},
+  {"name": "洪太尉", "content": "朝廷命官"},
+  {"name": "龙虎山", "content": "道教名山
+```"""
+        result = self.client._parse_json_response(raw)
+        assert result == [
+            {"name": "水浒传", "content": "中国古典小说"},
+            {"name": "洪太尉", "content": "朝廷命官"},
+        ]
+
+    def test_resolve_request_max_tokens_keeps_desired_when_prompt_within_budget(self):
         messages = [{"role": "user", "content": "你" * 7900}]
         resolved = self.client._resolve_request_max_tokens(messages, desired_max_tokens=6000)
-        assert 1 <= resolved < 6000
-        assert self.client._estimate_messages_token_count(messages) + resolved <= _TEST_CONTEXT_WINDOW_TOKENS
+        assert resolved == 6000
 
     def test_resolve_request_max_tokens_raises_when_prompt_exceeds_budget(self):
         messages = [{"role": "user", "content": "你" * 8100}]
-        with pytest.raises(LLMContextBudgetExceeded, match="上下文预算超限"):
+        with pytest.raises(LLMContextBudgetExceeded, match="输入上下文超限"):
             self.client._resolve_request_max_tokens(messages, desired_max_tokens=100)
 
     def test_call_llm_does_not_retry_when_finish_reason_is_length(self, monkeypatch):

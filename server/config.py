@@ -15,7 +15,7 @@ DEFAULTS = {
         "model": "gpt-4",
         "base_url": None,
         "think": False,
-        # 模型总上下文上限（输入+输出），用于客户端预算；与 service_config.json 中 llm.context_window_tokens 对应
+        # 请求输入 prompt 的本地预检上限；与 service_config.json 中 llm.context_window_tokens 对应
         "context_window_tokens": 8000,
     },
     "embedding": {

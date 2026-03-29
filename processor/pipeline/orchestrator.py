@@ -110,7 +110,7 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
             embedding_full_search_threshold: Embedding 全文搜索阈值（可选）
             max_concurrent_windows: 同时处理的滑窗数上限（默认 1）；满员时不唤醒下一窗口，避免窗口内实体/关系并行导致线程爆炸
             compress_multi_round_extraction: 多轮实体/关系抽取是否使用压缩对话（不累积各轮 assistant 全文，默认 False）
-            llm_context_window_tokens: 模型总上下文 token 上限（输入+输出），与 service_config.llm.context_window_tokens 一致；未传时读 server 默认
+            llm_context_window_tokens: 请求输入 prompt 的本地预检上限；未传时读 server 默认
             prompt_memory_cache_max_chars: 注入抽取 prompt 的记忆缓存最大字符数；超长时自动截断，默认 2000
         """
         _content_snippet_length = content_snippet_length if content_snippet_length is not None else 50

@@ -2,4 +2,4 @@
 
 
 class LLMContextBudgetExceeded(RuntimeError):
-    """估算输入已超过 llm.context_window_tokens，无法再为本请求预留输出额度。"""
+    """估算输入已达到或超过 llm.context_window_tokens，无法继续发起该请求。"""

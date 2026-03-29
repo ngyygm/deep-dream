@@ -244,7 +244,7 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
         Args:
             api_key / model_name / base_url / content_snippet_length / relation_content_snippet_length / think_mode / max_tokens / context_window_tokens:
                 步骤 1–5（上游滑窗与抽取）使用的配置；max_llm_concurrency 为步骤 1–5 的 LLM 并发上限。
-                context_window_tokens：模型总上下文 token 上限（输入+输出），与 service_config.llm.context_window_tokens 一致，须由 Processor 注入。
+                context_window_tokens：请求输入 prompt 的 token 预算上限；本地仅预检输入，不再用它压缩输出 max_tokens。
             prompt_memory_cache_max_chars:
                 进入抽取类 prompt 的记忆缓存最大字符数；超长时自动截断，避免异常缓存拖爆上下文预算。
             alignment_enabled:
@@ -485,7 +485,7 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
             prompt_tokens = self._estimate_messages_token_count(next_messages)
             wprint(
                 f"[TMG] {stage_label} 多轮预检停止：下一轮估算输入约 {prompt_tokens} tokens，"
-                f"已触达总上限 {self.context_window_tokens}"
+                f"已触达输入上限 {self.context_window_tokens}"
             )
             return False
 
@@ -557,7 +557,7 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
                 extra += f", 期望输出上限: {desired_max_tokens}"
             if resolved_max_tokens is not None:
                 extra += f", 实际输出上限: {resolved_max_tokens}"
-            extra += f", 总上限: {self.context_window_tokens}"
+            extra += f", 输入上限: {self.context_window_tokens}"
             wprint(f"[TMG] {extra}")
         for idx, msg in enumerate(messages, start=1):
             role = msg.get("role", "")
@@ -600,32 +600,23 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
         messages: List[Dict[str, Any]],
         desired_max_tokens: int,
     ) -> int:
-        """在配置的总上下文预算内，计算本次请求允许的最大输出 token。"""
+        """仅预检输入 prompt 是否超限；输出上限按期望值直接传给模型。"""
         context_cap = self.context_window_tokens
         prompt_tokens = self._estimate_messages_token_count(messages)
-        remaining = context_cap - prompt_tokens
-        if remaining <= 0:
+        if prompt_tokens >= context_cap:
             self._log_llm_messages_full(
                 messages,
-                title="上下文预算超限，完整输入如下",
+                title="输入上下文超限，完整输入如下",
                 prompt_tokens=prompt_tokens,
                 desired_max_tokens=desired_max_tokens,
                 resolved_max_tokens=0,
             )
             raise LLMContextBudgetExceeded(
-                f"LLM 上下文预算超限：估算输入约 {prompt_tokens} tokens，"
-                f"已达到或超过模型总上限 {context_cap}。请缩短输入、减少多轮历史，"
+                f"LLM 输入上下文超限：估算输入约 {prompt_tokens} tokens，"
+                f"已达到或超过输入上限 {context_cap}。请缩短输入、减少多轮历史，"
                 "或下调窗口大小 / 提示长度。"
             )
-
-        desired = max(1, min(int(desired_max_tokens), context_cap))
-        resolved = min(desired, remaining)
-        if resolved < desired:
-            wprint(
-                f"[TMG] 上下文预算限制：估算输入 {prompt_tokens} tokens，"
-                f"输出上限从 {desired} 收缩到 {resolved}（总上限 {context_cap}）"
-            )
-        return max(1, resolved)
+        return max(1, int(desired_max_tokens))
 
     def effective_entity_snippet_length(self) -> int:
         """按当前线程优先级返回实体 content 截断长度（步骤6–7 可走 alignment 配置）。"""
@@ -978,7 +969,7 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
                     )
                     _detailed_error_logged = True
 
-                if "上下文预算超限" in error_str:
+                if "上下文预算超限" in error_str or "输入上下文超限" in error_str:
                     wprint(str(e))
                     raise
 
@@ -1216,9 +1207,73 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
             try:
                 return json.loads(fixed)
             except json.JSONDecodeError:
+                repaired = self._try_repair_truncated_json_array(json_str)
+                if repaired is not None:
+                    try:
+                        parsed = json.loads(repaired)
+                        wprint(
+                            "[TMG] 警告: 检测到数组型 JSON 尾部截断；"
+                            "已裁剪不完整尾部并补全 `]`，沿用可恢复部分。"
+                        )
+                        return parsed
+                    except json.JSONDecodeError:
+                        pass
                 wprint(f"[TMG] 警告: LLM 响应 JSON 解析失败（可能被截断）。"
                       f"响应: {json_str}")
                 raise
+
+    def _try_repair_truncated_json_array(self, json_str: str) -> Optional[str]:
+        """修复尾部被截断的 JSON 数组：裁掉不完整尾巴并补上 `]`。"""
+        stripped = (json_str or "").strip()
+        if not stripped.startswith("[") or stripped.endswith("]"):
+            return None
+
+        in_string = False
+        escaped = False
+        stack: List[str] = []
+        last_complete_value_end: Optional[int] = None
+
+        for idx, ch in enumerate(stripped):
+            if in_string:
+                if escaped:
+                    escaped = False
+                    continue
+                if ch == "\\":
+                    escaped = True
+                    continue
+                if ch == '"':
+                    in_string = False
+                continue
+
+            if ch == '"':
+                in_string = True
+                continue
+
+            if ch in "[{":
+                stack.append(ch)
+                continue
+
+            if ch in "]}":
+                if not stack:
+                    break
+                opener = stack[-1]
+                if (opener == "[" and ch != "]") or (opener == "{" and ch != "}"):
+                    break
+                stack.pop()
+                if stack == ["["]:
+                    last_complete_value_end = idx + 1
+                elif not stack and ch == "]":
+                    last_complete_value_end = idx + 1
+                    break
+
+        if last_complete_value_end is None:
+            return None
+
+        candidate = stripped[:last_complete_value_end].rstrip()
+        if not candidate.startswith("["):
+            return None
+        candidate = candidate.rstrip(", \n\r\t") + "]"
+        return candidate if candidate != stripped else None
 
     def _mock_llm_response(self, prompt: str) -> str:
         """模拟LLM响应（用于测试）"""
