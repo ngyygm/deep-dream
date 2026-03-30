@@ -373,6 +373,48 @@ window.PathFinder = (function () {
     try {
       const api = _opts.api;
       const graphId = _opts.graphId || 'default';
+
+      // Neo4j: try Cypher fast path first, fall back to standard
+      if (isNeo4j()) {
+        try {
+          const cypherRes = await api.shortestPathCypher(leftEntity.entity_id, rightEntity.entity_id, graphId, 6);
+          const cypherPaths = cypherRes.data?.paths || [];
+          if (cypherPaths.length > 0) {
+            // Convert name arrays to entity/relation format for graph rendering
+            const entityMap = new Map();
+            const pathEntities = [];
+            const pathRelations = [];
+            for (const namePath of cypherPaths) {
+              const entities = [];
+              const relations = [];
+              for (const name of namePath) {
+                const absId = 'cypher_' + name;
+                if (!entityMap.has(absId)) {
+                  const e = { absolute_id: absId, entity_id: name, name: name, content: '' };
+                  entityMap.set(absId, e);
+                }
+                entities.push(entityMap.get(absId));
+              }
+              for (let i = 0; i < entities.length - 1; i++) {
+                relations.push({ absolute_id: 'rel_' + i + '_' + entities[i].absolute_id });
+              }
+              pathEntities.push(entities);
+              pathRelations.push(relations);
+            }
+            _state.results = {
+              path_length: cypherPaths[0].length - 1,
+              total_shortest_paths: cypherPaths.length,
+              paths: cypherPaths.map((np, idx) => ({
+                entities: pathEntities[idx],
+                relations: pathRelations[idx],
+                path_length: np.length - 1,
+              })),
+            };
+            return;
+          }
+        } catch { /* fall through to standard search */ }
+      }
+
       const res = await api.shortestPaths(leftEntity.entity_id, rightEntity.entity_id, graphId, {
         maxDepth: 6,
         maxPaths: 10,

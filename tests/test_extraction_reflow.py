@@ -169,14 +169,14 @@ def test_extract_only_enhancement_only_final_entities(tmp_path, monkeypatch):
     assert set(enhanced) == {"A", "B"}
 
 
-def test_dedupe_extracted_entities_keeps_first():
+def test_dedupe_extracted_entities_prefers_longer_content():
     raw = [
-        {"name": "A", "content": "first"},
-        {"name": "A", "content": "second"},
+        {"name": "A", "content": "short"},
+        {"name": "A", "content": "a much longer second content"},
         {"name": "B", "content": "b"},
     ]
     assert dedupe_extracted_entities(raw) == [
-        {"name": "A", "content": "first"},
+        {"name": "A", "content": "a much longer second content"},
         {"name": "B", "content": "b"},
     ]
 

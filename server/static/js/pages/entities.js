@@ -2,6 +2,10 @@
    Entities Page - Entity Browser
    ========================================== */
 
+function escapeAttr(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
 (function() {
   const PAGE_SIZE = 50;
   let debounceTimer = null;
@@ -9,6 +13,7 @@
   let displayedCount = 0;
   let isSearchMode = false;
   let isSearchAllMode = false;
+  let _currentModalClose = null;
 
   // ---- Search & Filter Bar ----
 
@@ -45,6 +50,7 @@
 
     const rows = entities.map(e => `
       <tr data-entity-id="${escapeHtml(e.entity_id)}" data-absolute-id="${escapeHtml(e.absolute_id)}">
+        <td><input type="checkbox" class="entity-checkbox" value="${escapeAttr(e.entity_id)}"></td>
         <td style="max-width:180px;font-weight:500;">${escapeHtml(e.name || '-')}</td>
         <td style="max-width:300px;" class="truncate" title="${escapeHtml(e.content || '')}">${escapeHtml(truncate(e.content || '', 60))}</td>
         <td style="white-space:nowrap;">${formatDate(e.event_time)}</td>
@@ -52,20 +58,30 @@
         <td style="text-align:center;">
           <span class="badge badge-info">${escapeHtml(String(e.version_count || '?'))}</span>
         </td>
+        <td>
+          <button class="btn btn-sm btn-primary" onclick="event.stopPropagation(); openEditEntityModal('${escapeAttr(e.entity_id)}', '${escapeAttr(e.name)}', '${escapeAttr(e.content || '')}', '${escapeAttr(e.summary || '')}', '${escapeAttr(e.attributes ? JSON.stringify(e.attributes).replace(/'/g, "\\'") : '')}')" data-i18n="entities.edit">Edit</button>
+          <button class="btn btn-sm btn-danger" onclick="event.stopPropagation(); confirmDeleteEntity('${escapeAttr(e.entity_id)}')" data-i18n="entities.delete">Delete</button>
+        </td>
       </tr>
     `).join('');
 
     return `
       <div class="card" style="margin-top:0.75rem;">
+        <div style="display:flex;align-items:center;gap:0.5rem;padding:0.5rem 0.75rem;border-bottom:1px solid var(--border-color);">
+          <button class="btn btn-sm btn-danger" id="batch-delete-entities-btn" data-i18n="entities.batchDelete">Batch Delete</button>
+          <button class="btn btn-sm btn-primary" id="merge-entities-btn" data-i18n="entities.merge">Merge</button>
+        </div>
         <div class="table-container">
           <table class="data-table">
             <thead>
               <tr>
+                <th><input type="checkbox" id="selectAllEntities" onchange="toggleAllEntityCheckboxes(this)"></th>
                 <th>${t('entities.name')}</th>
                 <th>${t('entities.content')}</th>
                 <th>${t('entities.eventTime')}</th>
                 <th>${t('entities.source')}</th>
                 <th style="text-align:center;">${t('entities.version')}</th>
+                <th data-i18n="entities.actions">Actions</th>
               </tr>
             </thead>
             <tbody>${rows}</tbody>
@@ -130,6 +146,30 @@
           <div class="mono doc-link" data-cache-id="${escapeHtml(entity.memory_cache_id)}" style="margin-top:0.125rem;">${escapeHtml(entity.memory_cache_id)}</div>
         </div>
         ` : ''}
+        ${entity.summary ? `
+        <div>
+          <span style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;">${t('entities.summary')}</span>
+          <div style="margin-top:0.125rem;line-height:1.6;font-size:0.85rem;">${escapeHtml(entity.summary)}</div>
+        </div>
+        ` : ''}
+        ${entity.attributes && Object.keys(entity.attributes).length > 0 ? `
+        <div>
+          <span style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;">${t('entities.attributes')}</span>
+          <div style="margin-top:0.25rem;display:flex;flex-wrap:wrap;gap:0.375rem;">
+            ${Object.entries(entity.attributes).map(([k, v]) => `
+              <span class="badge badge-secondary" style="font-size:0.75rem;">${escapeHtml(k)}: ${escapeHtml(String(v))}</span>
+            `).join('')}
+          </div>
+        </div>
+        ` : ''}
+        <div style="display:flex;gap:0.5rem;">
+          <button class="btn btn-primary btn-sm" id="evolve-summary-btn">
+            <i data-lucide="sparkles" style="width:14px;height:14px;margin-right:4px;"></i>${t('entities.evolveSummary')}
+          </button>
+          <button class="btn btn-secondary btn-sm" id="view-provenance-btn">
+            <i data-lucide="git-commit" style="width:14px;height:14px;margin-right:4px;"></i>${t('entities.provenance')}
+          </button>
+        </div>
       </div>
 
       <div class="divider"></div>
@@ -153,6 +193,28 @@
         </div>
         <div id="relations-container"></div>
       </div>
+      ${isNeo4j() ? `
+      <div class="divider"></div>
+      <div id="entity-neighbors-section">
+        <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.75rem;">
+          <i data-lucide="share-2" style="width:16px;height:16px;color:var(--text-muted);"></i>
+          <span style="font-size:0.875rem;font-weight:600;">${t('communities.neighborGraph')}</span>
+        </div>
+        <button class="btn btn-secondary btn-sm" id="load-neighbors-btn">
+          <i data-lucide="network" style="width:14px;height:14px;"></i>${t('graph.loadGraph')}
+        </button>
+        <div id="neighbors-graph" style="height:300px;margin-top:0.5rem;border:1px solid var(--border-color);border-radius:0.5rem;"></div>
+      </div>` : ''}
+
+      <div class="divider"></div>
+      <div id="entity-contradictions-section">
+        <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.75rem;">
+          <i data-lucide="alert-triangle" style="width:16px;height:16px;color:var(--text-muted);"></i>
+          <span style="font-size:0.875rem;font-weight:600;">${t('entities.contradictions')}</span>
+          <div class="spinner spinner-sm" id="contradictions-spinner"></div>
+        </div>
+        <div id="contradictions-container"></div>
+      </div>
     `;
 
     const { overlay } = showModal({
@@ -171,23 +233,123 @@
       });
     });
 
+    // Evolve summary button
+    const evolveBtn = overlay.querySelector('#evolve-summary-btn');
+    if (evolveBtn) {
+      evolveBtn.addEventListener('click', async () => {
+        evolveBtn.disabled = true;
+        evolveBtn.innerHTML = `${spinnerHtml('spinner-sm')} ${t('entities.evolveSummaryRunning')}`;
+        try {
+          const res = await state.api.evolveEntitySummary(entity.entity_id);
+          showToast(t('entities.evolveSummarySuccess'), 'success');
+          // Refresh entity detail
+          if (res.data) {
+            entity.summary = res.data.summary || entity.summary;
+            entity.attributes = res.data.attributes || entity.attributes;
+          }
+          resetToListAll();
+        } catch (err) {
+          showToast(t('entities.evolveSummaryFailed') + ': ' + err.message, 'error');
+        } finally {
+          evolveBtn.disabled = false;
+          evolveBtn.innerHTML = `<i data-lucide="sparkles" style="width:14px;height:14px;margin-right:4px;"></i>${t('entities.evolveSummary')}`;
+          if (window.lucide) lucide.createIcons({ nodes: [evolveBtn] });
+        }
+      });
+    }
+
+    // View provenance button
+    const provenanceBtn = overlay.querySelector('#view-provenance-btn');
+    if (provenanceBtn) {
+      provenanceBtn.addEventListener('click', async () => {
+        provenanceBtn.disabled = true;
+        try {
+          const res = await state.api.entityProvenance(entity.entity_id);
+          const prov = res.data || {};
+          let body = `<div style="display:flex;flex-direction:column;gap:0.75rem;">`;
+          if (prov.source_document || prov.source) {
+            body += `<div><span style="font-size:0.75rem;color:var(--text-muted);">${t('entities.provenanceSource')}</span><div style="margin-top:0.125rem;">${escapeHtml(prov.source_document || prov.source || '-')}</div></div>`;
+          }
+          if (prov.extracted_at || prov.created_at) {
+            body += `<div><span style="font-size:0.75rem;color:var(--text-muted);">${t('entities.provenanceExtractedAt')}</span><div class="mono" style="margin-top:0.125rem;">${formatDate(prov.extracted_at || prov.created_at)}</div></div>`;
+          }
+          if (prov.confidence != null) {
+            body += `<div><span style="font-size:0.75rem;color:var(--text-muted);">${t('entities.provenanceConfidence')}</span><div class="mono" style="margin-top:0.125rem;">${prov.confidence}</div></div>`;
+          }
+          if (body === `<div style="display:flex;flex-direction:column;gap:0.75rem;">`) {
+            body += `<div style="color:var(--text-muted);">${t('entities.noProvenance')}</div>`;
+          }
+          body += '</div>';
+          showModal({ title: t('entities.provenance'), content: body, size: 'sm' });
+        } catch (err) {
+          showToast(t('entities.loadProvenanceFailed') + ': ' + err.message, 'error');
+        } finally {
+          provenanceBtn.disabled = false;
+        }
+      });
+    }
+
+    // Neo4j: Bind neighbors graph button
+    const loadNeighborsBtn = overlay.querySelector('#load-neighbors-btn');
+    if (loadNeighborsBtn && isNeo4j()) {
+      let neighborNetwork = null;
+      loadNeighborsBtn.addEventListener('click', async () => {
+        const graphCanvas = overlay.querySelector('#neighbors-graph');
+        if (!graphCanvas) return;
+        if (neighborNetwork) { neighborNetwork.destroy(); neighborNetwork = null; }
+        graphCanvas.innerHTML = `<div class="flex items-center justify-center h-full">${spinnerHtml()}</div>`;
+        try {
+          const res = await state.api.entityNeighbors(entity.absolute_id, graphId, 1);
+          const data = res.data || {};
+          const centerEntity = data.entity;
+          const nodes = [{ id: centerEntity.uuid, label: centerEntity.name || centerEntity.entity_id || '?', font: { size: 14, bold: true }, shape: 'dot', size: 25, color: { background: '#ef4444', border: '#f87171' } }];
+          const nodeIds = new Set([centerEntity.uuid]);
+          for (const n of (data.nodes || [])) {
+            if (!nodeIds.has(n.uuid)) {
+              nodes.push({ id: n.uuid, label: n.name || n.entity_id || '?', font: { size: 12 }, shape: 'dot', size: 18 });
+              nodeIds.add(n.uuid);
+            }
+          }
+          const edges = (data.edges || []).map(e => ({
+            from: e.source_uuid,
+            to: e.target_uuid,
+            label: e.content ? truncate(e.content, 25) : '',
+            font: { size: 9, color: '#999' },
+            arrows: 'to',
+            smooth: { type: 'continuous' },
+          }));
+          if (neighborNetwork) neighborNetwork.destroy();
+          neighborNetwork = new vis.Network(graphCanvas,
+            { nodes: new vis.DataSet(nodes), edges: new vis.DataSet(edges) },
+            GraphUtils.getPhysicsOptions()
+          );
+        } catch (err) {
+          graphCanvas.innerHTML = `<div class="flex items-center justify-center h-full text-sm" style="color:var(--text-muted);">${escapeHtml(err.message)}</div>`;
+        }
+      });
+    }
+
     // Fetch versions and relations in parallel
     const graphId = state.currentGraphId;
     const entityId = entity.entity_id;
 
     try {
-      const [versionsRes, relationsRes] = await Promise.all([
+      const [versionsRes, relationsRes, contradictionsRes] = await Promise.all([
         state.api.entityVersions(entityId, graphId),
         state.api.entityRelations(entityId, graphId),
+        state.api.entityContradictions(entityId).catch(() => ({ data: [] })),
       ]);
 
       const vSpinner = overlay.querySelector('#versions-spinner');
       if (vSpinner) vSpinner.remove();
       const rSpinner = overlay.querySelector('#relations-spinner');
       if (rSpinner) rSpinner.remove();
+      const cSpinner = overlay.querySelector('#contradictions-spinner');
+      if (cSpinner) cSpinner.remove();
 
       const versions = versionsRes.data || [];
       const relations = relationsRes.data || [];
+      const contradictions = contradictionsRes.data || [];
 
       const versionsContainer = overlay.querySelector('#versions-container');
       if (versionsContainer) {
@@ -203,6 +365,11 @@
           : `<div style="color:var(--text-muted);font-size:0.8125rem;">${t('entities.noRelations')}</div>`;
       }
 
+      const contradictionsContainer = overlay.querySelector('#contradictions-container');
+      if (contradictionsContainer) {
+        contradictionsContainer.innerHTML = renderContradictions(contradictions, entityId, overlay);
+      }
+
       if (window.lucide) lucide.createIcons({ nodes: [overlay] });
     } catch (err) {
       const vSpinner = overlay.querySelector('#versions-spinner');
@@ -212,6 +379,39 @@
       showToast(t('entities.loadVersionsFailed') + '：' + err.message, 'error');
     }
   }
+
+  // ---- Contradictions ----
+
+  function renderContradictions(contradictions, entityId, overlay) {
+    if (!Array.isArray(contradictions) || contradictions.length === 0) {
+      return `<div style="color:var(--text-muted);font-size:0.8125rem;">${t('entities.noContradictions')}</div>`;
+    }
+    const items = contradictions.map((c, i) => {
+      const severity = c.severity || 'medium';
+      const severityColor = severity === 'high' ? 'var(--error)' : severity === 'low' ? 'var(--success)' : 'var(--warning)';
+      return `
+        <div style="padding:0.5rem 0;border-bottom:1px solid var(--border-color);">
+          <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.25rem;">
+            <span style="width:8px;height:8px;border-radius:50%;background:${severityColor};"></span>
+            <span style="font-size:0.8125rem;font-weight:500;">${escapeHtml(c.description || t('entities.contradictionBetween'))}</span>
+          </div>
+          ${c.version_a ? `<div style="font-size:0.8125rem;color:var(--text-secondary);margin-left:1rem;">${escapeHtml(truncate(c.version_a, 100))}</div>` : ''}
+          ${c.version_b ? `<div style="font-size:0.8125rem;color:var(--text-secondary);margin-left:1rem;">${escapeHtml(truncate(c.version_b, 100))}</div>` : ''}
+          ${c.contradiction_id ? `<button class="btn btn-ghost btn-sm" style="margin-top:0.25rem;margin-left:1rem;" onclick="event.stopPropagation();window._resolveContradiction('${escapeAttr(entityId)}','${escapeAttr(c.contradiction_id)}')">${t('entities.resolveContradiction')}</button>` : ''}
+        </div>`;
+    }).join('');
+    return `<div>${items}</div>`;
+  }
+
+  // Expose resolve contradiction handler
+  window._resolveContradiction = async function(entityId, contradictionId) {
+    try {
+      await state.api.resolveContradiction(entityId, { contradiction_id: contradictionId });
+      showToast(t('entities.resolveSuccess'), 'success');
+    } catch (err) {
+      showToast(t('entities.resolveFailed') + ': ' + err.message, 'error');
+    }
+  };
 
   // ---- Version Timeline ----
 
@@ -349,8 +549,10 @@
   function bindTableEvents(container) {
     container.querySelectorAll('tr[data-entity-id]').forEach(row => {
       row.addEventListener('click', (e) => {
-        // Don't trigger if clicking load-more button
+        // Don't trigger if clicking load-more button, checkboxes, or action buttons
         if (e.target.closest('#entity-load-more-btn')) return;
+        if (e.target.closest('input[type="checkbox"]')) return;
+        if (e.target.closest('button')) return;
         const entityId = row.getAttribute('data-entity-id');
         const entity = allEntities.find(en => en.entity_id === entityId);
         if (entity) openEntityDetail(entity);
@@ -362,6 +564,16 @@
       loadMoreBtn.addEventListener('click', () => {
         renderCurrentSlice();
       });
+    }
+
+    const batchDeleteBtn = container.querySelector('#batch-delete-entities-btn');
+    if (batchDeleteBtn) {
+      batchDeleteBtn.addEventListener('click', openBatchDeleteEntities);
+    }
+
+    const mergeBtn = container.querySelector('#merge-entities-btn');
+    if (mergeBtn) {
+      mergeBtn.addEventListener('click', openMergeEntities);
     }
   }
 
@@ -423,6 +635,135 @@
     if (searchInput) searchInput.value = '';
   }
 
+  // ---- Edit Entity ----
+
+  function openEditEntityModal(entityId, currentName, currentContent, currentSummary, currentAttributes) {
+    const html = `
+      <div class="form-group">
+        <label class="form-label" data-i18n="entities.name">${t('entities.name')}</label>
+        <input type="text" id="editEntityName" class="input" value="${escapeAttr(currentName)}">
+      </div>
+      <div class="form-group">
+        <label class="form-label" data-i18n="entities.content">${t('entities.content')}</label>
+        <textarea id="editEntityContent" class="input" rows="4">${escapeAttr(currentContent)}</textarea>
+      </div>
+      <div class="form-group">
+        <label class="form-label" data-i18n="entities.summary">${t('entities.summary')}</label>
+        <textarea id="editEntitySummary" class="input" rows="3">${escapeAttr(currentSummary || '')}</textarea>
+      </div>
+      <div class="form-group">
+        <label class="form-label" data-i18n="entities.attributes">${t('entities.attributes')}</label>
+        <textarea id="editEntityAttributes" class="input" rows="2" placeholder="key1: value1, key2: value2">${escapeAttr(currentAttributes ? JSON.stringify(currentAttributes) : '')}</textarea>
+      </div>`;
+
+    const footer = `
+      <button class="btn btn-secondary modal-cancel-btn">${t('common.cancel')}</button>
+      <button class="btn btn-primary modal-save-btn">${t('common.save')}</button>`;
+
+    const { overlay, close } = showModal({
+      title: t('entities.editTitle'),
+      content: html,
+      footer: footer,
+      size: 'sm',
+    });
+    _currentModalClose = close;
+
+    overlay.querySelector('.modal-cancel-btn').addEventListener('click', close);
+    overlay.querySelector('.modal-save-btn').addEventListener('click', () => submitEditEntity(entityId, close));
+  }
+
+  async function submitEditEntity(entityId, close) {
+    const name = document.getElementById('editEntityName').value.trim();
+    const content = document.getElementById('editEntityContent').value.trim();
+    const summary = document.getElementById('editEntitySummary').value.trim();
+    const attributesStr = document.getElementById('editEntityAttributes').value.trim();
+    let attributes = undefined;
+    if (attributesStr) {
+      try { attributes = JSON.parse(attributesStr); } catch { /* ignore invalid JSON */ }
+    }
+    if (!name && !content) { showToast(t('entities.nameRequired'), 'error'); return; }
+    try {
+      const data = { name: name || undefined, content: content || undefined };
+      if (summary) data.summary = summary;
+      if (attributes) data.attributes = attributes;
+      const res = await state.api.updateEntity(entityId, data);
+      if (res.error) { showToast(res.error, 'error'); return; }
+      showToast(t('entities.updateSuccess'), 'success');
+      close();
+      resetToListAll();
+    } catch (e) { showToast(t('entities.updateFailed') + ': ' + e.message, 'error'); }
+  }
+
+  // ---- Delete Entity ----
+
+  function confirmDeleteEntity(entityId) {
+    const html = `
+      <p>${t('entities.deleteConfirm')}</p>
+      <label class="checkbox-label" style="display:flex;align-items:center;gap:0.5rem;margin-top:0.5rem;">
+        <input type="checkbox" id="deleteCascade"> ${t('entities.cascadeDelete')}
+      </label>`;
+
+    const footer = `
+      <button class="btn btn-secondary modal-cancel-btn">${t('common.cancel')}</button>
+      <button class="btn btn-danger modal-confirm-btn">${t('common.confirm')}</button>`;
+
+    const { overlay, close } = showModal({
+      title: t('entities.deleteTitle'),
+      content: html,
+      footer: footer,
+      size: 'sm',
+    });
+    _currentModalClose = close;
+
+    overlay.querySelector('.modal-cancel-btn').addEventListener('click', close);
+    overlay.querySelector('.modal-confirm-btn').addEventListener('click', () => executeDeleteEntity(entityId, close));
+  }
+
+  async function executeDeleteEntity(entityId, close) {
+    const cascade = document.getElementById('deleteCascade')?.checked || false;
+    try {
+      const res = await state.api.deleteEntity(entityId, cascade);
+      if (res.error) { showToast(res.error, 'error'); return; }
+      showToast(t('entities.deleteSuccess'), 'success');
+      close();
+      resetToListAll();
+    } catch (e) { showToast(t('entities.deleteFailed') + ': ' + e.message, 'error'); }
+  }
+
+  // ---- Batch Delete & Merge ----
+
+  function toggleAllEntityCheckboxes(el) {
+    document.querySelectorAll('.entity-checkbox').forEach(cb => cb.checked = el.checked);
+  }
+
+  function getSelectedEntityIds() {
+    return [...document.querySelectorAll('.entity-checkbox:checked')].map(cb => cb.value);
+  }
+
+  function openBatchDeleteEntities() {
+    const ids = getSelectedEntityIds();
+    if (!ids.length) { showToast(t('entities.selectEntities'), 'warn'); return; }
+    if (!confirm(t('entities.deleteConfirm') + ' (' + ids.length + ')')) return;
+    state.api.batchDeleteEntities(ids).then(res => {
+      if (res.error) { showToast(res.error, 'error'); return; }
+      showToast(t('entities.batchDeleteSuccess').replace('{count}', ids.length), 'success');
+      resetToListAll();
+    }).catch(e => showToast(t('entities.deleteFailed') + ': ' + e.message, 'error'));
+  }
+
+  function openMergeEntities() {
+    const ids = getSelectedEntityIds();
+    if (ids.length < 2) { showToast(t('entities.selectEntities') + ' (>=2)', 'warn'); return; }
+    const target = ids[0];
+    const sources = ids.slice(1);
+    if (!confirm(t('entities.mergeConfirm'))) return;
+    state.api.mergeEntities(target, sources).then(res => {
+      if (res.error) { showToast(res.error, 'error'); return; }
+      showToast(t('entities.mergeSuccess'), 'success');
+      resetToListAll();
+    }).catch(e => showToast(t('entities.mergeFailed') + ': ' + e.message, 'error'));
+  }
+
   // ---- Page Render ----
 
   async function render(container) {
@@ -462,8 +803,11 @@
     isSearchAllMode = false;
   }
 
-  // Expose globally for use by other pages (search, relations, path-finder)
+  // Expose globally for use by other pages (search, relations, path-finder) and inline onclick handlers
   window.showEntityDetail = openEntityDetail;
+  window.openEditEntityModal = openEditEntityModal;
+  window.confirmDeleteEntity = confirmDeleteEntity;
+  window.toggleAllEntityCheckboxes = toggleAllEntityCheckboxes;
 
   registerPage('entities', { render, destroy });
 })();

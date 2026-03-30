@@ -139,8 +139,10 @@ class TMGApi {
       max_relations: options.maxRelations ?? 50,
       expand: options.expand ?? true,
     };
+    if (options.searchMode) body.search_mode = options.searchMode;
     if (options.timeBefore) body.time_before = options.timeBefore;
     if (options.timeAfter) body.time_after = options.timeAfter;
+    if (options.reranker) body.reranker = options.reranker;
     return this.post('/api/v1/find', body);
   }
 
@@ -151,7 +153,7 @@ class TMGApi {
     return this.get(`/api/v1/find/entities?${q}`);
   }
   searchEntities(query, graphId = 'default', options = {}) {
-    return this.post('/api/v1/find/entities/search', {
+    const body = {
       query_name: query,
       graph_id: graphId,
       query_content: options.queryContent || query,
@@ -159,7 +161,9 @@ class TMGApi {
       max_results: options.maxResults ?? 20,
       text_mode: options.textMode || 'name_and_content',
       similarity_method: options.method || 'embedding',
-    });
+    };
+    if (options.searchMode) body.search_mode = options.searchMode;
+    return this.post('/api/v1/find/entities/search', body);
   }
   entityVersions(entityId, graphId = 'default') {
     return this.get(`/api/v1/find/entities/${encodeURIComponent(entityId)}/versions?graph_id=${encodeURIComponent(graphId)}`);
@@ -168,6 +172,7 @@ class TMGApi {
     let q = `graph_id=${encodeURIComponent(graphId)}`;
     if (options.limit) q += `&limit=${options.limit}`;
     if (options.maxVersionAbsoluteId) q += `&max_version_absolute_id=${encodeURIComponent(options.maxVersionAbsoluteId)}`;
+    if (options.relationScope) q += `&relation_scope=${encodeURIComponent(options.relationScope)}`;
     return this.get(`/api/v1/find/entities/${encodeURIComponent(entityId)}/relations?${q}`);
   }
   entityVersionCounts(entityIds, graphId = 'default') {
@@ -181,6 +186,87 @@ class TMGApi {
   }
   entityByAbsoluteId(absoluteId, graphId = 'default') {
     return this.get(`/api/v1/find/entities/absolute/${encodeURIComponent(absoluteId)}?graph_id=${encodeURIComponent(graphId)}`);
+  }
+
+  // --- CRUD ---
+  updateEntity(entityId, data) {
+    return this.request(`/api/v1/find/entities/${encodeURIComponent(entityId)}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
+  }
+
+  // --- Entity v3: Summary Evolution ---
+  evolveEntitySummary(entityId) {
+    return this.post(`/api/v1/find/entities/${encodeURIComponent(entityId)}/evolve-summary`, {});
+  }
+
+  // --- Entity v3: Contradictions ---
+  entityContradictions(entityId) {
+    return this.get(`/api/v1/find/entities/${encodeURIComponent(entityId)}/contradictions`);
+  }
+
+  resolveContradiction(entityId, data) {
+    return this.post(`/api/v1/find/entities/${encodeURIComponent(entityId)}/resolve-contradiction`, data);
+  }
+
+  // --- Entity v3: Provenance ---
+  entityProvenance(entityId) {
+    return this.get(`/api/v1/find/entities/${encodeURIComponent(entityId)}/provenance`);
+  }
+
+  // --- Graph Traversal (Phase B) ---
+  traverseGraph(seedEntityIds, maxDepth = 3, maxNodes = 100) {
+    return this.post('/api/v1/find/traverse', {
+      seed_entity_ids: seedEntityIds,
+      max_depth: maxDepth,
+      max_nodes: maxNodes,
+    });
+  }
+
+  // --- Episodes v3: Batch Ingest ---
+  batchIngestEpisodes(episodes) {
+    return this.post('/api/v1/find/episodes/batch-ingest', { episodes });
+  }
+
+  deleteEntity(entityId, cascade = false) {
+    return this.request(`/api/v1/find/entities/${encodeURIComponent(entityId)}?cascade=${cascade}`, {
+      method: 'DELETE',
+    });
+  }
+
+  batchDeleteEntities(entityIds, cascade = false) {
+    return this.request('/api/v1/find/entities/batch-delete', {
+      method: 'POST',
+      body: JSON.stringify({ entity_ids: entityIds, cascade }),
+    });
+  }
+
+  updateRelation(relationId, data) {
+    return this.request(`/api/v1/find/relations/${encodeURIComponent(relationId)}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
+  }
+
+  deleteRelation(relationId) {
+    return this.request(`/api/v1/find/relations/${encodeURIComponent(relationId)}`, {
+      method: 'DELETE',
+    });
+  }
+
+  batchDeleteRelations(relationIds) {
+    return this.request('/api/v1/find/relations/batch-delete', {
+      method: 'POST',
+      body: JSON.stringify({ relation_ids: relationIds }),
+    });
+  }
+
+  mergeEntities(targetEntityId, sourceEntityIds) {
+    return this.request('/api/v1/find/entities/merge', {
+      method: 'POST',
+      body: JSON.stringify({ target_entity_id: targetEntityId, source_entity_ids: sourceEntityIds }),
+    });
   }
 
   // Relations
@@ -199,12 +285,14 @@ class TMGApi {
     return this.get(`/api/v1/find/relations?${q}`);
   }
   searchRelations(query, graphId = 'default', options = {}) {
-    return this.post('/api/v1/find/relations/search', {
+    const body = {
       query_text: query,
       graph_id: graphId,
       similarity_threshold: options.threshold ?? 0.3,
       max_results: options.maxResults ?? 20,
-    });
+    };
+    if (options.searchMode) body.search_mode = options.searchMode;
+    return this.post('/api/v1/find/relations/search', body);
   }
   relationsBetween(entityA, entityB, graphId = 'default') {
     return this.post('/api/v1/find/relations/between', {
@@ -223,6 +311,86 @@ class TMGApi {
     });
   }
 
+  // Neo4j: Entity Neighbors
+  entityNeighbors(entityUuid, graphId = 'default', depth = 1) {
+    return this.get(`/api/v1/find/entities/${encodeURIComponent(entityUuid)}/neighbors?graph_id=${encodeURIComponent(graphId)}&depth=${depth}`);
+  }
+
+  // Neo4j: Cypher Shortest Path
+  shortestPathCypher(entityA, entityB, graphId = 'default', maxDepth = 6) {
+    return this.post('/api/v1/find/paths/shortest-cypher', {
+      entity_id_a: entityA,
+      entity_id_b: entityB,
+      graph_id: graphId,
+      max_depth: maxDepth,
+    });
+  }
+
+  // Episodes
+  listEpisodes(graphId = 'default', limit = 20, offset = 0) {
+    return this.get(`/api/v1/episodes?graph_id=${encodeURIComponent(graphId)}&limit=${limit}&offset=${offset}`);
+  }
+  getEpisode(uuid, graphId = 'default') {
+    return this.get(`/api/v1/episodes/${encodeURIComponent(uuid)}?graph_id=${encodeURIComponent(graphId)}`);
+  }
+  getEpisodeEntities(uuid, graphId = 'default') {
+    return this.get(`/api/v1/episodes/${encodeURIComponent(uuid)}/entities?graph_id=${encodeURIComponent(graphId)}`);
+  }
+  searchEpisodes(query, graphId = 'default', limit = 20) {
+    return this.post('/api/v1/episodes/search', { query, graph_id: graphId, limit });
+  }
+  deleteEpisode(uuid, graphId = 'default') {
+    return this.delete(`/api/v1/episodes/${encodeURIComponent(uuid)}?graph_id=${encodeURIComponent(graphId)}`);
+  }
+
+  // Communities
+  detectCommunities(graphId = 'default', algorithm = 'louvain', resolution = 1.0) {
+    return this.post('/api/v1/communities/detect', { algorithm, resolution, graph_id: graphId });
+  }
+  listCommunities(graphId = 'default', minSize = 3, limit = 50) {
+    return this.get(`/api/v1/communities?graph_id=${encodeURIComponent(graphId)}&min_size=${minSize}&limit=${limit}`);
+  }
+  getCommunity(cid, graphId = 'default') {
+    return this.get(`/api/v1/communities/${encodeURIComponent(cid)}?graph_id=${encodeURIComponent(graphId)}`);
+  }
+  getCommunityGraph(cid, graphId = 'default') {
+    return this.get(`/api/v1/communities/${encodeURIComponent(cid)}/graph?graph_id=${encodeURIComponent(graphId)}`);
+  }
+  clearCommunities(graphId = 'default') {
+    return this.delete(`/api/v1/communities?graph_id=${encodeURIComponent(graphId)}`);
+  }
+
+  // --- Time Travel ---
+  getSnapshot(time) {
+    return this.request(`/api/v1/find/snapshot?time=${encodeURIComponent(time)}`);
+  }
+
+  getChanges(since, until) {
+    let url = `/api/v1/find/changes?since=${encodeURIComponent(since)}`;
+    if (until) url += `&until=${encodeURIComponent(until)}`;
+    return this.request(url);
+  }
+
+  invalidateRelation(relationId, reason = '') {
+    return this.request(`/api/v1/find/relations/${encodeURIComponent(relationId)}/invalidate`, {
+      method: 'POST',
+      body: JSON.stringify({ reason }),
+    });
+  }
+
+  getInvalidatedRelations(limit = 100) {
+    return this.request(`/api/v1/find/relations/invalidated?limit=${limit}`);
+  }
+
+  // --- Stats & Timeline ---
+  getGraphStats() {
+    return this.request('/api/v1/find/graph-stats');
+  }
+
+  getEntityTimeline(entityId) {
+    return this.request(`/api/v1/find/entities/${encodeURIComponent(entityId)}/timeline`);
+  }
+
   // Docs
   listDocs(graphId = 'default') {
     return this.get(`/api/v1/docs?graph_id=${encodeURIComponent(graphId)}`);
@@ -233,6 +401,40 @@ class TMGApi {
 
   memoryCacheDoc(cacheId) {
     return this.get(`/api/v1/find/memory-caches/${encodeURIComponent(cacheId)}/doc`);
+  }
+
+  // --- DeepDream (Phase E) ---
+  startDream(options = {}) {
+    return this.post('/api/v1/find/dream/start', {
+      review_window_days: options.reviewWindowDays ?? 30,
+      max_entities_per_cycle: options.maxEntitiesPerCycle ?? 100,
+      similarity_threshold: options.similarityThreshold ?? 0.8,
+    });
+  }
+
+  dreamStatus() {
+    return this.get('/api/v1/find/dream/status');
+  }
+
+  dreamLogs(limit = 20) {
+    return this.get(`/api/v1/find/dream/logs?limit=${limit}`);
+  }
+
+  dreamLogDetail(cycleId) {
+    return this.get(`/api/v1/find/dream/logs/${encodeURIComponent(cycleId)}`);
+  }
+
+  // --- Agent Meta Query (Phase F) ---
+  agentAsk(question) {
+    return this.post('/api/v1/find/ask', { question });
+  }
+
+  explainEntity(entityId, aspect) {
+    return this.post('/api/v1/find/explain', { entity_id: entityId, aspect });
+  }
+
+  smartSuggestions() {
+    return this.get('/api/v1/find/suggestions');
   }
 
   // System
@@ -268,7 +470,12 @@ const state = {
   currentGraphId: localStorage.getItem('tmg_graph_id') || 'default',
   refreshTimers: {},
   currentPage: null,
+  backendType: 'sqlite',
 };
+
+function isNeo4j() {
+  return state.backendType === 'neo4j';
+}
 
 function setGraphId(id) {
   state.currentGraphId = id;
@@ -363,6 +570,9 @@ const pageTitles = {
   search: t('nav.search'),
   entities: t('nav.entities'),
   relations: t('nav.relations'),
+  episodes: t('nav.episodes'),
+  communities: t('nav.communities'),
+  dream: t('nav.dream'),
   'api-test': t('nav.apiTest'),
 };
 
@@ -461,7 +671,7 @@ function initTheme() {
 }
 
 // ---- Init ----
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
   initTheme();
   window.I18N.init();
 
@@ -483,6 +693,21 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Load graphs
   loadGraphSelector();
+
+  // Detect backend type
+  try {
+    const h = await state.api.health(state.currentGraphId);
+    if (h.data?.storage_backend) {
+      state.backendType = h.data.storage_backend;
+    }
+  } catch { /* ignore */ }
+
+  // Show/hide Neo4j-only nav items
+  const neo4jNavItems = ['nav-episodes', 'nav-communities', 'nav-dream'];
+  neo4jNavItems.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = isNeo4j() ? '' : 'none';
+  });
 
   // Mobile sidebar toggle
   const toggle = document.getElementById('sidebar-toggle');

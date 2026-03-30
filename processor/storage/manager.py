@@ -5,9 +5,13 @@ import sqlite3
 import threading
 import os
 import json
+import time
+import logging
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any, Literal, Tuple, Set
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 import hashlib
 import numpy as np
 import difflib
@@ -126,6 +130,20 @@ class StorageManager:
         # 为旧库自动添加缺失的 source_document 列（幂等）
         self._ensure_column(c, "entities", "source_document", "TEXT DEFAULT ''")
         self._ensure_column(c, "relations", "source_document", "TEXT DEFAULT ''")
+        self._ensure_column(c, "entities", "summary", "TEXT")
+        self._ensure_column(c, "entities", "attributes", "TEXT")
+        self._ensure_column(c, "entities", "confidence", "REAL")
+        self._ensure_column(c, "relations", "summary", "TEXT")
+        self._ensure_column(c, "relations", "attributes", "TEXT")
+        self._ensure_column(c, "relations", "confidence", "REAL")
+        self._ensure_column(c, "relations", "provenance", "TEXT")
+        # BM25 全文搜索虚拟表
+        c.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS entity_fts USING fts5(name, content, entity_id UNINDEXED)
+        """)
+        c.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS relation_fts USING fts5(content, relation_id UNINDEXED)
+        """)
         conn.commit()
 
     def _ensure_dirs(self):
@@ -149,14 +167,27 @@ class StorageManager:
                 self._local.conn = None
         # 确保目录存在
         self._ensure_dirs()
-        conn = sqlite3.connect(str(self.db_path), check_same_thread=False, timeout=30)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout=30000")
-        conn.execute("PRAGMA foreign_keys=ON")
-        # 确保表结构存在（数据库文件被删除后重建场景）
-        self._ensure_tables(conn)
-        self._local.conn = conn
-        return conn
+        max_retries = 3
+        last_err = None
+        for attempt in range(max_retries):
+            try:
+                conn = sqlite3.connect(str(self.db_path), check_same_thread=False, timeout=30)
+                conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute("PRAGMA busy_timeout=30000")
+                conn.execute("PRAGMA foreign_keys=ON")
+                # 确保表结构存在（数据库文件被删除后重建场景）
+                self._ensure_tables(conn)
+                self._local.conn = conn
+                return conn
+            except sqlite3.OperationalError as e:
+                last_err = e
+                logger.warning("_get_conn: 第 %d 次连接失败 (%s), 路径=%s, 重试中...", attempt + 1, e, self.db_path)
+                # 连接失败时清理可能残留的半开连接
+                self._local.conn = None
+                if attempt < max_retries - 1:
+                    time.sleep(0.1 * (attempt + 1))
+                    self._ensure_dirs()
+        raise last_err  # type: ignore[misc]
 
     def close(self):
         """关闭当前线程的数据库连接。"""
@@ -306,7 +337,43 @@ class StorageManager:
         if getattr(t, 'tzinfo', None) is not None and t.tzinfo is not None:
             return t.astimezone(timezone.utc).replace(tzinfo=None)
         return t
-    
+
+    def _row_to_entity(self, row) -> Entity:
+        """从数据库行构造 Entity 对象，自动适配新旧 schema。"""
+        return Entity(
+            absolute_id=row[0],
+            entity_id=row[1],
+            name=row[2],
+            content=row[3],
+            event_time=self._safe_parse_datetime(row[4]),
+            processed_time=self._safe_parse_datetime(row[5]),
+            memory_cache_id=row[6],
+            source_document=row[7] if len(row) > 7 else '',
+            embedding=row[8] if len(row) > 8 else None,
+            summary=row[9] if len(row) > 9 else None,
+            attributes=row[10] if len(row) > 10 else None,
+            confidence=float(row[11]) if len(row) > 11 and row[11] is not None else None,
+        )
+
+    def _row_to_relation(self, row) -> Relation:
+        """从数据库行构造 Relation 对象，自动适配新旧 schema。"""
+        return Relation(
+            absolute_id=row[0],
+            relation_id=row[1],
+            entity1_absolute_id=row[2] or "",
+            entity2_absolute_id=row[3] or "",
+            content=row[4],
+            event_time=self._safe_parse_datetime(row[5]),
+            processed_time=self._safe_parse_datetime(row[6]),
+            memory_cache_id=row[7],
+            source_document=row[8] if len(row) > 8 else '',
+            embedding=row[9] if len(row) > 9 else None,
+            summary=row[10] if len(row) > 10 else None,
+            attributes=row[11] if len(row) > 11 else None,
+            confidence=float(row[12]) if len(row) > 12 and row[12] is not None else None,
+            provenance=row[13] if len(row) > 13 else None,
+        )
+
     def _init_database(self):
         """初始化SQLite数据库（使用独立连接，此时线程池尚未启用）。"""
         conn = sqlite3.connect(str(self.db_path))
@@ -374,6 +441,56 @@ class StorageManager:
         # 旧库迁移：自动添加 source_document 列（幂等）
         self._ensure_column(cursor, "entities", "source_document", "TEXT DEFAULT ''")
         self._ensure_column(cursor, "relations", "source_document", "TEXT DEFAULT ''")
+
+        # 旧库迁移：为 Phase 3 添加 valid_at / invalid_at 列（幂等）
+        self._ensure_column(cursor, "entities", "valid_at", "TEXT")
+        self._ensure_column(cursor, "entities", "invalid_at", "TEXT")
+        self._ensure_column(cursor, "relations", "valid_at", "TEXT")
+        self._ensure_column(cursor, "relations", "invalid_at", "TEXT")
+
+        # Phase A: 摘要、属性、置信度
+        self._ensure_column(cursor, "entities", "summary", "TEXT")
+        self._ensure_column(cursor, "entities", "attributes", "TEXT")
+        self._ensure_column(cursor, "entities", "confidence", "REAL")
+        self._ensure_column(cursor, "relations", "summary", "TEXT")
+        self._ensure_column(cursor, "relations", "attributes", "TEXT")
+        self._ensure_column(cursor, "relations", "confidence", "REAL")
+        self._ensure_column(cursor, "relations", "provenance", "TEXT")
+
+        # Phase C: Episode mentions
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS episode_mentions (
+                episode_id TEXT NOT NULL,
+                entity_absolute_id TEXT NOT NULL,
+                mention_context TEXT DEFAULT '',
+                PRIMARY KEY (episode_id, entity_absolute_id)
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_episode_mentions_entity ON episode_mentions(entity_absolute_id)")
+
+        # Phase E: Dream logs
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS dream_logs (
+                cycle_id TEXT PRIMARY KEY,
+                graph_id TEXT NOT NULL,
+                start_time TEXT NOT NULL,
+                end_time TEXT,
+                status TEXT DEFAULT 'running',
+                narrative TEXT DEFAULT '',
+                insights_json TEXT DEFAULT '[]',
+                connections_json TEXT DEFAULT '[]',
+                consolidations_json TEXT DEFAULT '[]',
+                config_json TEXT DEFAULT '{}'
+            )
+        """)
+
+        # BM25 全文搜索虚拟表
+        cursor.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS entity_fts USING fts5(name, content, entity_id UNINDEXED)
+        """)
+        cursor.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS relation_fts USING fts5(content, relation_id UNINDEXED)
+        """)
 
         conn.commit()
         conn.close()
@@ -539,6 +656,47 @@ class StorageManager:
             source_document=metadata.get("source_document") or metadata.get("doc_name", ""),
             activity_type=metadata.get("activity_type"),
         )
+
+    def get_entity_count(self) -> int:
+        """返回实体总数（去重 entity_id）。"""
+        with self._conn() as conn:
+            row = conn.execute("SELECT COUNT(DISTINCT entity_id) AS cnt FROM entities").fetchone()
+            return row["cnt"] if row else 0
+
+    def get_relation_count(self) -> int:
+        """返回关系总数（去重 relation_id）。"""
+        with self._conn() as conn:
+            row = conn.execute("SELECT COUNT(DISTINCT relation_id) AS cnt FROM relations").fetchone()
+            return row["cnt"] if row else 0
+
+    def delete_memory_cache(self, cache_id: str) -> int:
+        """删除记忆缓存，返回删除的文件数。0 表示未找到。"""
+        import shutil
+
+        # 1. 尝试 docs/ 新结构
+        doc_hash = self._id_to_doc_hash.get(cache_id)
+        if doc_hash:
+            doc_dir = self.docs_dir / doc_hash
+            if doc_dir.is_dir():
+                shutil.rmtree(doc_dir, ignore_errors=True)
+                self._id_to_doc_hash.pop(cache_id, None)
+                return 1
+
+        # 2. 回退到旧结构
+        for base_dir in (self.cache_json_dir, self.cache_dir):
+            meta_path = base_dir / f"{cache_id}.json"
+            if meta_path.exists():
+                with open(meta_path, "r", encoding="utf-8") as f:
+                    metadata = json.load(f)
+                meta_path.unlink(missing_ok=True)
+                # 尝试删除对应的 .md 文件
+                filename = metadata.get("filename", f"{cache_id}.md")
+                for md_dir in (self.cache_md_dir, self.cache_dir):
+                    filepath = md_dir / filename
+                    if filepath.exists():
+                        filepath.unlink()
+                        return 1
+        return 0
     
     def _iter_cache_meta_files(self) -> List[Path]:
         """迭代所有 cache 元数据文件（优先 docs/ 子目录，回退旧结构）"""
@@ -620,6 +778,34 @@ class StorageManager:
                 latest_metadata = metadata
 
         return latest_metadata
+
+    def search_memory_caches_by_bm25(self, query: str, limit: int = 20) -> List[MemoryCache]:
+        """简单文本搜索记忆缓存（遍历所有缓存，按内容匹配排序）。
+
+        注意：这不是真正的 BM25，因为记忆缓存使用文件存储而非 SQLite FTS。
+        对于生产环境的大规模数据，应使用向量搜索或专用全文索引。
+        """
+        if not query:
+            return []
+        query_lower = query.lower()
+        results = []
+        for cache_file in self._iter_cache_meta_files():
+            try:
+                cache = self.load_memory_cache(
+                    cache_file.stem if cache_file.suffix == ".json" else
+                    (cache_file.parent.name if cache_file.name == "meta.json" else cache_file.stem)
+                )
+            except Exception:
+                continue
+            if cache is None:
+                continue
+            # 简单的子串匹配评分
+            content_lower = (cache.content or "").lower()
+            if query_lower in content_lower:
+                score = content_lower.count(query_lower)
+                results.append((score, cache))
+        results.sort(key=lambda x: x[0], reverse=True)
+        return [c for _, c in results[:limit]]
 
     def find_cache_by_doc_hash(self, doc_hash: str, document_path: str = "") -> Optional[MemoryCache]:
         """通过 doc_hash 查找已存在的缓存（断点续传复用）。
@@ -732,8 +918,8 @@ class StorageManager:
             try:
                 cursor = conn.cursor()
                 cursor.execute("""
-                    INSERT INTO entities (id, entity_id, name, content, event_time, processed_time, memory_cache_id, source_document, embedding)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO entities (id, entity_id, name, content, event_time, processed_time, memory_cache_id, source_document, embedding, valid_at, summary, attributes, confidence)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     entity.absolute_id,
                     entity.entity_id,
@@ -743,9 +929,31 @@ class StorageManager:
                     entity.processed_time.isoformat(),
                     entity.memory_cache_id,
                     entity.source_document,
-                    embedding_blob
+                    embedding_blob,
+                    (entity.valid_at or entity.event_time).isoformat(),
+                    getattr(entity, 'summary', None),
+                    getattr(entity, 'attributes', None),
+                    getattr(entity, 'confidence', None),
                 ))
                 conn.commit()
+                # 同步写入 FTS 表
+                try:
+                    cursor.execute("""
+                        INSERT INTO entity_fts(rowid, name, content, entity_id)
+                        VALUES (?, ?, ?, ?)
+                    """, (entity.absolute_id, entity.name, entity.content, entity.entity_id))
+                    conn.commit()
+                except Exception:
+                    pass  # FTS 写入失败不影响主流程
+                # 设置旧版本 invalid_at
+                try:
+                    cursor.execute("""
+                        UPDATE entities SET invalid_at = ?
+                        WHERE entity_id = ? AND id != ? AND invalid_at IS NULL
+                    """, (entity.event_time.isoformat(), entity.entity_id, entity.absolute_id))
+                    conn.commit()
+                except Exception:
+                    pass
             except Exception:
                 conn.rollback()
                 raise
@@ -783,17 +991,28 @@ class StorageManager:
                 entity.memory_cache_id,
                 entity.source_document,
                 embedding_blob,
+                (entity.valid_at or entity.event_time).isoformat(),
             ))
 
         with self._write_lock:
             conn = self._get_conn()
             cursor = conn.cursor()
             cursor.executemany("""
-                INSERT OR IGNORE INTO entities (id, entity_id, name, content, event_time, processed_time, memory_cache_id, source_document, embedding)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT OR IGNORE INTO entities (id, entity_id, name, content, event_time, processed_time, memory_cache_id, source_document, embedding, valid_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, rows)
             conn.commit()
-    
+            # 同步写入 FTS 表
+            try:
+                fts_rows = [(e.absolute_id, e.name, e.content, e.entity_id) for e in entities]
+                cursor.executemany("""
+                    INSERT OR REPLACE INTO entity_fts(rowid, name, content, entity_id)
+                    VALUES (?, ?, ?, ?)
+                """, fts_rows)
+                conn.commit()
+            except Exception:
+                pass
+
     def get_entity_by_entity_id(self, entity_id: str) -> Optional[Entity]:
         """根据entity_id获取最新版本的实体"""
         entity_id = self.resolve_entity_id(entity_id)
@@ -803,7 +1022,7 @@ class StorageManager:
         cursor = conn.cursor()
         
         cursor.execute("""
-            SELECT id, entity_id, name, content, event_time, processed_time, memory_cache_id, source_document, embedding
+            SELECT id, entity_id, name, content, event_time, processed_time, memory_cache_id, source_document, embedding, summary, attributes, confidence
             FROM entities
             WHERE entity_id = ?
             ORDER BY processed_time DESC
@@ -824,7 +1043,10 @@ class StorageManager:
             processed_time=self._safe_parse_datetime(row[5]),
             memory_cache_id=row[6],
             source_document=row[7] if len(row) > 7 else '',
-            embedding=row[8] if len(row) > 8 else None
+            embedding=row[8] if len(row) > 8 else None,
+            summary=row[9] if len(row) > 9 else None,
+            attributes=row[10] if len(row) > 10 else None,
+            confidence=row[11] if len(row) > 11 else None,
         )
     
     # get_entity_by_id 是 get_entity_by_entity_id 的别名，兼容 pipeline 层调用
@@ -934,7 +1156,7 @@ class StorageManager:
         cursor = conn.cursor()
         
         cursor.execute("""
-            SELECT id, entity_id, name, content, event_time, processed_time, memory_cache_id, source_document, embedding
+            SELECT id, entity_id, name, content, event_time, processed_time, memory_cache_id, source_document, embedding, valid_at, invalid_at
             FROM entities
             WHERE entity_id = ? AND event_time <= ?
             ORDER BY processed_time DESC
@@ -955,7 +1177,9 @@ class StorageManager:
             processed_time=self._safe_parse_datetime(row[5]),
             memory_cache_id=row[6],
             source_document=row[7] if len(row) > 7 else '',
-            embedding=row[8] if len(row) > 8 else None
+            embedding=row[8] if len(row) > 8 else None,
+            valid_at=self._safe_parse_datetime(row[9]) if len(row) > 9 else None,
+            invalid_at=self._safe_parse_datetime(row[10]) if len(row) > 10 else None
         )
     
     def get_entity_embedding_preview(self, absolute_id: str, num_values: int = 5) -> Optional[List[float]]:
@@ -1098,8 +1322,75 @@ class StorageManager:
                 "embedding_array": embedding_array,
             })
         return results
-    
-    def search_entities_by_similarity(self, query_name: str, query_content: Optional[str] = None, 
+
+    def search_entities_by_bm25(self, query: str, limit: int = 20) -> List[Entity]:
+        """BM25 全文搜索实体。"""
+        if not query:
+            return []
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        # FTS5 BM25 搜索，按 bm25 排序
+        cursor.execute("""
+            SELECT e.id, e.entity_id, e.name, e.content, e.event_time, e.processed_time,
+                   e.memory_cache_id, e.source_document, e.embedding,
+                   fts.rank AS bm25_score
+            FROM entity_fts AS fts
+            JOIN entities AS e ON e.id = fts.rowid
+            WHERE entity_fts MATCH ?
+            ORDER BY fts.rank
+            LIMIT ?
+        """, (query, limit))
+
+        entities = []
+        for row in cursor.fetchall():
+            entities.append(Entity(
+                absolute_id=row[0],
+                entity_id=self.resolve_entity_id(row[1]),
+                name=row[2],
+                content=row[3],
+                event_time=self._safe_parse_datetime(row[4]),
+                processed_time=self._safe_parse_datetime(row[5]),
+                memory_cache_id=row[6],
+                source_document=row[7] or '',
+                embedding=row[8],
+            ))
+        return entities
+
+    def search_relations_by_bm25(self, query: str, limit: int = 20) -> List[Relation]:
+        """BM25 全文搜索关系。"""
+        if not query:
+            return []
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT r.id, r.relation_id, r.entity1_absolute_id, r.entity2_absolute_id,
+                   r.content, r.event_time, r.processed_time,
+                   r.memory_cache_id, r.source_document, r.embedding,
+                   fts.rank AS bm25_score
+            FROM relation_fts AS fts
+            JOIN relations AS r ON r.id = fts.rowid
+            WHERE relation_fts MATCH ?
+            ORDER BY fts.rank
+            LIMIT ?
+        """, (query, limit))
+
+        relations = []
+        for row in cursor.fetchall():
+            relations.append(Relation(
+                absolute_id=row[0],
+                relation_id=row[1],
+                entity1_absolute_id=row[2],
+                entity2_absolute_id=row[3],
+                content=row[4],
+                event_time=self._safe_parse_datetime(row[5]),
+                processed_time=self._safe_parse_datetime(row[6]),
+                memory_cache_id=row[7],
+                source_document=row[8] or '',
+                embedding=row[9],
+            ))
+        return relations
+
+    def search_entities_by_similarity(self, query_name: str, query_content: Optional[str] = None,
                                      threshold: float = 0.7, max_results: int = 10, 
                                      content_snippet_length: int = 50,
                                      text_mode: Literal["name_only", "content_only", "name_and_content"] = "name_and_content",
@@ -1179,7 +1470,7 @@ class StorageManager:
                 query_text, all_entities, threshold, use_content, max_results, content_snippet_length, text_mode, "text"
             )
         
-        query_embedding_array = np.array(query_embedding[0] if isinstance(query_embedding, list) else query_embedding, dtype=np.float32)
+        query_embedding_array = np.array(query_embedding[0] if isinstance(query_embedding, (list, np.ndarray)) else query_embedding, dtype=np.float32)
         
         # 收集已存储的embedding和需要重新计算的实体
         stored_embeddings = []
@@ -1212,7 +1503,7 @@ class StorageManager:
             if new_embeddings is not None:
                 # 将新计算的embedding添加到存储列表中
                 for i, entity in enumerate(entities_to_encode):
-                    embedding_array = np.array(new_embeddings[i] if isinstance(new_embeddings, list) else new_embeddings, dtype=np.float32)
+                    embedding_array = np.array(new_embeddings[i] if isinstance(new_embeddings, (list, np.ndarray)) else new_embeddings, dtype=np.float32)
                     stored_embeddings.append((entity_indices[i], embedding_array))
         
         if not stored_embeddings:
@@ -1361,8 +1652,8 @@ class StorageManager:
             try:
                 cursor = conn.cursor()
                 cursor.execute("""
-                    INSERT INTO relations (id, relation_id, entity1_absolute_id, entity2_absolute_id, content, event_time, processed_time, memory_cache_id, source_document, embedding)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO relations (id, relation_id, entity1_absolute_id, entity2_absolute_id, content, event_time, processed_time, memory_cache_id, source_document, embedding, valid_at, summary, attributes, confidence, provenance)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     relation.absolute_id,
                     relation.relation_id,
@@ -1373,9 +1664,32 @@ class StorageManager:
                     relation.processed_time.isoformat(),
                     relation.memory_cache_id,
                     relation.source_document,
-                    embedding_blob
+                    embedding_blob,
+                    (relation.valid_at or relation.event_time).isoformat(),
+                    getattr(relation, 'summary', None),
+                    getattr(relation, 'attributes', None),
+                    getattr(relation, 'confidence', None),
+                    getattr(relation, 'provenance', None),
                 ))
                 conn.commit()
+                # 同步写入 FTS 表
+                try:
+                    cursor.execute("""
+                        INSERT INTO relation_fts(rowid, content, relation_id)
+                        VALUES (?, ?, ?)
+                    """, (relation.absolute_id, relation.content, relation.relation_id))
+                    conn.commit()
+                except Exception:
+                    pass  # FTS 写入失败不影响主流程
+                # 设置旧版本 invalid_at
+                try:
+                    cursor.execute("""
+                        UPDATE relations SET invalid_at = ?
+                        WHERE relation_id = ? AND id != ? AND invalid_at IS NULL
+                    """, (relation.event_time.isoformat(), relation.relation_id, relation.absolute_id))
+                    conn.commit()
+                except Exception:
+                    pass
             except Exception:
                 conn.rollback()
                 raise
@@ -1415,14 +1729,15 @@ class StorageManager:
                 relation.memory_cache_id,
                 relation.source_document,
                 embedding_blob,
+                (relation.valid_at or relation.event_time).isoformat(),
             ))
 
         with self._write_lock:
             conn = self._get_conn()
             cursor = conn.cursor()
             cursor.executemany("""
-                INSERT INTO relations (id, relation_id, entity1_absolute_id, entity2_absolute_id, content, event_time, processed_time, memory_cache_id, source_document, embedding)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO relations (id, relation_id, entity1_absolute_id, entity2_absolute_id, content, event_time, processed_time, memory_cache_id, source_document, embedding, valid_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, rows)
             conn.commit()
     
@@ -1737,18 +2052,20 @@ class StorageManager:
 
             return deleted_count
     
-    def get_all_entities(self, limit: Optional[int] = None) -> List[Entity]:
+    def get_all_entities(self, limit: Optional[int] = None, exclude_embedding: bool = False) -> List[Entity]:
         """获取所有实体的最新版本
-        
+
         Args:
             limit: 限制返回的实体数量（按时间倒序），None表示不限制
+            exclude_embedding: 是否排除 embedding 字段（前端展示等不需要 embedding 的场景应设为 True）
         """
         conn = self._get_conn()
         cursor = conn.cursor()
-        
+
+        emb_col = ", e1.embedding" if not exclude_embedding else ""
         # 获取每个 entity_id 的最新版本
-        query = """
-            SELECT e1.id, e1.entity_id, e1.name, e1.content, e1.event_time, e1.processed_time, e1.memory_cache_id, e1.source_document, e1.embedding
+        query = f"""
+            SELECT e1.id, e1.entity_id, e1.name, e1.content, e1.event_time, e1.processed_time, e1.memory_cache_id, e1.source_document{emb_col}
             FROM entities e1
             INNER JOIN (
                 SELECT entity_id, MAX(processed_time) as max_time
@@ -1757,14 +2074,14 @@ class StorageManager:
             ) e2 ON e1.entity_id = e2.entity_id AND e1.processed_time = e2.max_time
             ORDER BY e1.processed_time DESC
         """
-        
+
         if limit is not None:
             query += f" LIMIT {int(limit)}"
-        
+
         cursor.execute(query)
-        
+
         rows = cursor.fetchall()
-        
+
         return [
             Entity(
                 absolute_id=row[0],
@@ -1774,25 +2091,42 @@ class StorageManager:
                 event_time=datetime.fromisoformat(row[4]),
                 processed_time=datetime.fromisoformat(row[5]),
                 memory_cache_id=row[6],
-                source_document=row[7] if len(row) > 7 and row[7] is not None else "",  # 向后兼容
-                embedding=row[8] if len(row) > 8 else None
+                source_document=row[7] if len(row) > 7 and row[7] is not None else "",
+                embedding=row[8] if not exclude_embedding and len(row) > 8 else None
             )
             for row in rows
         ]
-    
-    def get_all_entities_before_time(self, time_point: datetime, limit: Optional[int] = None) -> List[Entity]:
+
+    def count_unique_entities(self) -> int:
+        """轻量统计：返回不重复的 entity_id 数量（不加载任何实体数据）。"""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(DISTINCT entity_id) FROM entities")
+        return cursor.fetchone()[0]
+
+    def count_unique_relations(self) -> int:
+        """轻量统计：返回不重复的 relation_id 数量（不加载任何关系数据）。"""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(DISTINCT relation_id) FROM relations")
+        return cursor.fetchone()[0]
+
+    def get_all_entities_before_time(self, time_point: datetime, limit: Optional[int] = None,
+                                     exclude_embedding: bool = False) -> List[Entity]:
         """获取指定时间点之前或等于该时间点的所有实体的最新版本
-        
+
         Args:
             time_point: 时间点
             limit: 限制返回的实体数量（按时间倒序），None表示不限制
+            exclude_embedding: 是否排除 embedding 字段
         """
         conn = self._get_conn()
         cursor = conn.cursor()
-        
+
+        emb_col = ", e1.embedding" if not exclude_embedding else ""
         # 获取每个 entity_id 在指定时间点之前或等于该时间点的最新版本
-        query = """
-            SELECT e1.id, e1.entity_id, e1.name, e1.content, e1.event_time, e1.processed_time, e1.memory_cache_id, e1.source_document, e1.embedding
+        query = f"""
+            SELECT e1.id, e1.entity_id, e1.name, e1.content, e1.event_time, e1.processed_time, e1.memory_cache_id, e1.source_document{emb_col}
             FROM entities e1
             INNER JOIN (
                 SELECT entity_id, MAX(processed_time) as max_time
@@ -1802,14 +2136,14 @@ class StorageManager:
             ) e2 ON e1.entity_id = e2.entity_id AND e1.processed_time = e2.max_time
             ORDER BY e1.processed_time DESC
         """
-        
+
         if limit is not None:
             query += f" LIMIT {int(limit)}"
-        
+
         cursor.execute(query, (time_point.isoformat(),))
-        
+
         rows = cursor.fetchall()
-        
+
         return [
             Entity(
                 absolute_id=row[0],
@@ -1819,8 +2153,8 @@ class StorageManager:
                 event_time=datetime.fromisoformat(row[4]),
                 processed_time=datetime.fromisoformat(row[5]),
                 memory_cache_id=row[6],
-                source_document=row[7] if len(row) > 7 and row[7] is not None else "",  # 向后兼容
-                embedding=row[8] if len(row) > 8 else None
+                source_document=row[7] if len(row) > 7 and row[7] is not None else "",
+                embedding=row[8] if not exclude_embedding and len(row) > 8 else None
             )
             for row in rows
         ]
@@ -2118,15 +2452,23 @@ class StorageManager:
         
         return result
     
-    def get_all_relations(self) -> List[Relation]:
-        """获取所有关系的最新版本"""
+    def get_all_relations(self, limit: Optional[int] = None, offset: Optional[int] = None,
+                          exclude_embedding: bool = False) -> List[Relation]:
+        """获取所有关系的最新版本
+
+        Args:
+            limit: SQL 层限制返回条数（避免全量读取后在 Python 中截断）
+            offset: SQL 层偏移量
+            exclude_embedding: 是否排除 embedding 字段
+        """
         conn = self._get_conn()
         cursor = conn.cursor()
-        
+
+        emb_col = ", r1.embedding" if not exclude_embedding else ""
         # 获取每个 relation_id 的最新版本
-        cursor.execute("""
+        query = f"""
             SELECT r1.id, r1.relation_id, r1.entity1_absolute_id, r1.entity2_absolute_id,
-                   r1.content, r1.event_time, r1.processed_time, r1.memory_cache_id, r1.source_document, r1.embedding
+                   r1.content, r1.event_time, r1.processed_time, r1.memory_cache_id, r1.source_document{emb_col}
             FROM relations r1
             INNER JOIN (
                 SELECT relation_id, MAX(processed_time) as max_time
@@ -2134,10 +2476,17 @@ class StorageManager:
                 GROUP BY relation_id
             ) r2 ON r1.relation_id = r2.relation_id AND r1.processed_time = r2.max_time
             ORDER BY r1.processed_time DESC
-        """)
-        
+        """
+
+        if offset is not None and offset > 0:
+            query += f" OFFSET {int(offset)}"
+        if limit is not None:
+            query += f" LIMIT {int(limit)}"
+
+        cursor.execute(query)
+
         rows = cursor.fetchall()
-        
+
         return [
             Relation(
                 absolute_id=row[0],
@@ -2148,8 +2497,8 @@ class StorageManager:
                 event_time=datetime.fromisoformat(row[5]),
                 processed_time=datetime.fromisoformat(row[6]),
                 memory_cache_id=row[7],
-                source_document=row[8] if len(row) > 8 and row[8] is not None else "",  # 向后兼容
-                embedding=row[9] if len(row) > 9 else None
+                source_document=row[8] if len(row) > 8 and row[8] is not None else "",
+                embedding=row[9] if not exclude_embedding and len(row) > 9 else None
             )
             for row in rows
         ]
@@ -2242,7 +2591,7 @@ class StorageManager:
         if query_embedding is None:
             return []
         
-        query_embedding_array = np.array(query_embedding[0] if isinstance(query_embedding, list) else query_embedding, dtype=np.float32)
+        query_embedding_array = np.array(query_embedding[0] if isinstance(query_embedding, (list, np.ndarray)) else query_embedding, dtype=np.float32)
         
         # 计算相似度
         similarities = []
@@ -2825,12 +3174,103 @@ class StorageManager:
         
         return count
     
+    def get_graph_statistics(self) -> Dict[str, Any]:
+        """返回图谱结构统计数据"""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+
+        # 基础计数
+        cursor.execute("SELECT COUNT(*) FROM entities")
+        entity_count = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM relations")
+        relation_count = cursor.fetchone()[0]
+
+        stats = {
+            "entity_count": entity_count,
+            "relation_count": relation_count,
+        }
+
+        # 平均关系数 / 实体
+        if entity_count > 0:
+            cursor.execute("""
+                SELECT AVG(cnt) FROM (
+                    SELECT COUNT(*) as cnt FROM (
+                        SELECT entity1_absolute_id AS abs_id FROM relations
+                        UNION ALL
+                        SELECT entity2_absolute_id AS abs_id FROM relations
+                    ) GROUP BY abs_id
+                )
+            """)
+            row = cursor.fetchone()
+            stats["avg_relations_per_entity"] = round(row[0], 2) if row and row[0] else 0
+
+            # 最大关系数
+            cursor.execute("""
+                SELECT MAX(cnt) FROM (
+                    SELECT COUNT(*) as cnt FROM (
+                        SELECT entity1_absolute_id AS abs_id FROM relations
+                        UNION ALL
+                        SELECT entity2_absolute_id AS abs_id FROM relations
+                    ) GROUP BY abs_id
+                )
+            """)
+            row = cursor.fetchone()
+            stats["max_relations_per_entity"] = row[0] if row and row[0] else 0
+
+            # 孤立实体数
+            cursor.execute("""
+                SELECT COUNT(*) FROM entities e
+                WHERE e.id NOT IN (
+                    SELECT entity1_absolute_id FROM relations
+                    UNION
+                    SELECT entity2_absolute_id FROM relations
+                )
+            """)
+            stats["isolated_entities"] = cursor.fetchone()[0]
+
+            # 图密度 (实际边数 / 最大可能边数)
+            cursor.execute("SELECT COUNT(DISTINCT entity_id) FROM entities")
+            unique_entities = cursor.fetchone()[0]
+            if unique_entities > 1:
+                max_possible = unique_entities * (unique_entities - 1) / 2
+                cursor.execute("SELECT COUNT(DISTINCT relation_id) FROM relations")
+                unique_relations = cursor.fetchone()[0]
+                stats["graph_density"] = round(unique_relations / max_possible, 4)
+            else:
+                stats["graph_density"] = 0.0
+        else:
+            stats["avg_relations_per_entity"] = 0
+            stats["max_relations_per_entity"] = 0
+            stats["isolated_entities"] = entity_count
+            stats["graph_density"] = 0.0
+
+        # 时间趋势
+        cursor.execute("""
+            SELECT DATE(event_time) as d, COUNT(*) as cnt
+            FROM entities
+            GROUP BY d
+            ORDER BY d
+            LIMIT 30
+        """)
+        stats["entity_count_over_time"] = [{"date": r[0], "count": r[1]} for r in cursor.fetchall()]
+
+        cursor.execute("""
+            SELECT DATE(event_time) as d, COUNT(*) as cnt
+            FROM relations
+            GROUP BY d
+            ORDER BY d
+            LIMIT 30
+        """)
+        stats["relation_count_over_time"] = [{"date": r[0], "count": r[1]} for r in cursor.fetchall()]
+
+        return stats
+
     def get_entity_version_counts(self, entity_ids: List[str]) -> Dict[str, int]:
         """批量获取多个entity_id的版本数量
-        
+
         Args:
             entity_ids: 实体ID列表
-            
+
         Returns:
             Dict[entity_id, version_count]
         """
@@ -2917,7 +3357,35 @@ class StorageManager:
             conn = self._get_conn()
             cursor = conn.cursor()
             cursor.execute("DELETE FROM entities WHERE entity_id = ?", (entity_id,))
+            # 清理 FTS 表
+            try:
+                cursor.execute("DELETE FROM entity_fts WHERE entity_id = ?", (entity_id,))
+            except Exception:
+                pass
             return cursor.rowcount
+
+    def delete_relation_by_id(self, relation_id: str) -> int:
+        """删除关系的所有版本。返回删除的行数。"""
+        with self._write_lock:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM relations WHERE relation_id = ?", (relation_id,))
+            count = cursor.rowcount
+            # 清理 FTS 表
+            try:
+                cursor.execute("DELETE FROM relation_fts WHERE relation_id = ?", (relation_id,))
+            except Exception:
+                pass
+            conn.commit()
+            return count
+
+    def delete_entity_all_versions(self, entity_id: str) -> int:
+        """删除实体的所有版本（含重定向解析）。返回删除的行数。"""
+        return self.delete_entity_by_id(entity_id)
+
+    def delete_relation_all_versions(self, relation_id: str) -> int:
+        """删除关系的所有版本。返回删除的行数。"""
+        return self.delete_relation_by_id(relation_id)
 
     def get_entity_ids_by_names(self, names: list) -> dict:
         """按名称批量查询实 entity_id（每个 name 取最新版本）。
@@ -3008,8 +3476,8 @@ class StorageManager:
                 }],
             }
 
-        # 2. 加载全量最新关系
-        all_relations = self.get_all_relations()
+        # 2. 加载全量最新关系（路径查找不需要 embedding）
+        all_relations = self.get_all_relations(exclude_embedding=True)
         if not all_relations:
             result_empty["source_entity"] = source_entity
             result_empty["target_entity"] = target_entity
@@ -3156,4 +3624,390 @@ class StorageManager:
             "path_length": found_depth,
             "total_shortest_paths": total_shortest_paths,
             "paths": paths_result,
+        }
+
+    # ------------------------------------------------------------------
+    # 时间旅行（Time Travel）功能
+    # ------------------------------------------------------------------
+
+    def get_snapshot(self, time_point: datetime, limit: Optional[int] = None) -> Dict[str, Any]:
+        """获取指定时间点的实体/关系快照"""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT id, entity_id, name, content, event_time, processed_time, memory_cache_id, source_document, valid_at, invalid_at
+            FROM entities
+            WHERE (valid_at IS NULL OR valid_at <= ?)
+              AND (invalid_at IS NULL OR invalid_at > ?)
+            ORDER BY event_time DESC
+            LIMIT ?
+        """, (time_point.isoformat(), time_point.isoformat(), limit or 10000))
+
+        entities = []
+        for row in cursor.fetchall():
+            entities.append(Entity(
+                absolute_id=row[0], entity_id=row[1], name=row[2], content=row[3],
+                event_time=self._safe_parse_datetime(row[4]),
+                processed_time=self._safe_parse_datetime(row[5]),
+                memory_cache_id=row[6], source_document=row[7] if len(row) > 7 else '',
+                valid_at=self._safe_parse_datetime(row[8]) if len(row) > 8 else None,
+                invalid_at=self._safe_parse_datetime(row[9]) if len(row) > 9 else None,
+            ))
+
+        cursor.execute("""
+            SELECT id, relation_id, entity1_absolute_id, entity2_absolute_id, content, event_time, processed_time, memory_cache_id, source_document, valid_at, invalid_at
+            FROM relations
+            WHERE (valid_at IS NULL OR valid_at <= ?)
+              AND (invalid_at IS NULL OR invalid_at > ?)
+            ORDER BY event_time DESC
+            LIMIT ?
+        """, (time_point.isoformat(), time_point.isoformat(), limit or 10000))
+
+        relations = []
+        for row in cursor.fetchall():
+            relations.append(Relation(
+                absolute_id=row[0], relation_id=row[1],
+                entity1_absolute_id=row[2], entity2_absolute_id=row[3],
+                content=row[4], event_time=self._safe_parse_datetime(row[5]),
+                processed_time=self._safe_parse_datetime(row[6]),
+                memory_cache_id=row[7], source_document=row[8] if len(row) > 8 else '',
+                valid_at=self._safe_parse_datetime(row[9]) if len(row) > 9 else None,
+                invalid_at=self._safe_parse_datetime(row[10]) if len(row) > 10 else None,
+            ))
+
+        return {"entities": entities, "relations": relations}
+
+    def get_changes(self, since: datetime, until: Optional[datetime] = None) -> Dict[str, Any]:
+        """获取时间范围内的变更记录"""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        until_str = until.isoformat() if until else datetime.now(timezone.utc).isoformat()
+
+        # 新增/修改的实体
+        cursor.execute("""
+            SELECT id, entity_id, name, content, event_time, processed_time, memory_cache_id, source_document, valid_at, invalid_at
+            FROM entities
+            WHERE event_time >= ? AND event_time <= ?
+            ORDER BY event_time DESC
+        """, (since.isoformat(), until_str))
+
+        entities = []
+        for row in cursor.fetchall():
+            entities.append(Entity(
+                absolute_id=row[0], entity_id=row[1], name=row[2], content=row[3],
+                event_time=self._safe_parse_datetime(row[4]),
+                processed_time=self._safe_parse_datetime(row[5]),
+                memory_cache_id=row[6], source_document=row[7] if len(row) > 7 else '',
+                valid_at=self._safe_parse_datetime(row[8]) if len(row) > 8 else None,
+                invalid_at=self._safe_parse_datetime(row[9]) if len(row) > 9 else None,
+            ))
+
+        # 新增/修改/失效的关系
+        cursor.execute("""
+            SELECT id, relation_id, entity1_absolute_id, entity2_absolute_id, content, event_time, processed_time, memory_cache_id, source_document, valid_at, invalid_at
+            FROM relations
+            WHERE event_time >= ? AND event_time <= ?
+            ORDER BY event_time DESC
+        """, (since.isoformat(), until_str))
+
+        relations = []
+        for row in cursor.fetchall():
+            relations.append(Relation(
+                absolute_id=row[0], relation_id=row[1],
+                entity1_absolute_id=row[2], entity2_absolute_id=row[3],
+                content=row[4], event_time=self._safe_parse_datetime(row[5]),
+                processed_time=self._safe_parse_datetime(row[6]),
+                memory_cache_id=row[7], source_document=row[8] if len(row) > 8 else '',
+                valid_at=self._safe_parse_datetime(row[9]) if len(row) > 9 else None,
+                invalid_at=self._safe_parse_datetime(row[10]) if len(row) > 10 else None,
+            ))
+
+        return {"entities": entities, "relations": relations}
+
+    def invalidate_relation(self, relation_id: str, reason: str = "") -> int:
+        """标记关系为失效（不删除数据，保留历史记录）"""
+        with self._write_lock:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE relations SET invalid_at = ?
+                WHERE relation_id = ? AND invalid_at IS NULL
+            """, (datetime.now(timezone.utc).isoformat(), relation_id))
+            conn.commit()
+            return cursor.rowcount
+
+    def get_invalidated_relations(self, limit: int = 100) -> List[Relation]:
+        """列出所有已失效的关系"""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, relation_id, entity1_absolute_id, entity2_absolute_id, content, event_time, processed_time, memory_cache_id, source_document, valid_at, invalid_at
+            FROM relations
+            WHERE invalid_at IS NOT NULL
+            ORDER BY invalid_at DESC
+            LIMIT ?
+        """, (limit,))
+        relations = []
+        for row in cursor.fetchall():
+            relations.append(Relation(
+                absolute_id=row[0], relation_id=row[1],
+                entity1_absolute_id=row[2], entity2_absolute_id=row[3],
+                content=row[4], event_time=self._safe_parse_datetime(row[5]),
+                processed_time=self._safe_parse_datetime(row[6]),
+                memory_cache_id=row[7], source_document=row[8] if len(row) > 8 else '',
+                valid_at=self._safe_parse_datetime(row[9]) if len(row) > 9 else None,
+                invalid_at=self._safe_parse_datetime(row[10]) if len(row) > 10 else None,
+            ))
+        return relations
+
+    # ========== Phase A: 实体智能 ==========
+
+    def update_entity_summary(self, entity_id: str, summary: str):
+        """更新实体的摘要（最新版本）。"""
+        with self._write_lock:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE entities SET summary = ?
+                WHERE id = (
+                    SELECT id FROM entities
+                    WHERE entity_id = ?
+                    ORDER BY processed_time DESC LIMIT 1
+                )
+            """, (summary, entity_id))
+            conn.commit()
+
+    def update_entity_attributes(self, entity_id: str, attributes: str):
+        """更新实体的属性字典（JSON 字符串）。"""
+        with self._write_lock:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE entities SET attributes = ?
+                WHERE id = (
+                    SELECT id FROM entities
+                    WHERE entity_id = ?
+                    ORDER BY processed_time DESC LIMIT 1
+                )
+            """, (attributes, entity_id))
+            conn.commit()
+
+    def update_entity_confidence(self, entity_id: str, confidence: float):
+        """更新实体的置信度评分。"""
+        with self._write_lock:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE entities SET confidence = ?
+                WHERE id = (
+                    SELECT id FROM entities
+                    WHERE entity_id = ?
+                    ORDER BY processed_time DESC LIMIT 1
+                )
+            """, (confidence, entity_id))
+            conn.commit()
+
+    def compute_entity_confidence(self, entity_id: str) -> float:
+        """自动计算实体的置信度评分。"""
+        versions = self.get_entity_versions(entity_id)
+        if not versions:
+            return 0.0
+        score = min(len(versions) * 0.1, 0.3)
+        latest = versions[0]
+        if latest.processed_time:
+            days_since = (datetime.now(timezone.utc).replace(tzinfo=None) - latest.processed_time).days
+            if days_since <= 30:
+                score += 0.3
+            elif days_since <= 90:
+                score += 0.2
+            else:
+                score += 0.1
+        mentions = self.get_entity_provenance(entity_id)
+        if mentions:
+            score += min(len(mentions) * 0.05, 0.3)
+        content_len = len(latest.content)
+        if content_len > 200:
+            score += 0.1
+        return min(score, 1.0)
+
+    # ========== Phase B: 图遍历辅助 ==========
+
+    def get_relations_by_entity_ids(self, entity_ids: List[str], limit: Optional[int] = None) -> List[Relation]:
+        """获取与指定实体 ID 列表相关的所有关系。"""
+        if not entity_ids:
+            return []
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        placeholders = ",".join("?" * len(entity_ids))
+        cursor.execute(f"""
+            SELECT entity_id, MAX(processed_time), id
+            FROM entities
+            WHERE entity_id IN ({placeholders})
+            GROUP BY entity_id
+        """, entity_ids)
+        abs_id_map = {row[0]: row[2] for row in cursor.fetchall()}
+        abs_ids = list(abs_id_map.values())
+        if not abs_ids:
+            return []
+        abs_placeholders = ",".join("?" * len(abs_ids))
+        query = f"""
+            SELECT id, relation_id, entity1_absolute_id, entity2_absolute_id,
+                   content, event_time, processed_time, memory_cache_id, source_document, embedding
+            FROM relations
+            WHERE entity1_absolute_id IN ({abs_placeholders})
+               OR entity2_absolute_id IN ({abs_placeholders})
+            ORDER BY processed_time DESC
+        """
+        params = abs_ids + abs_ids
+        if limit:
+            query += " LIMIT ?"
+            params.append(int(limit))
+        cursor.execute(query, params)
+        relations = []
+        for row in cursor.fetchall():
+            relations.append(Relation(
+                absolute_id=row[0], relation_id=row[1],
+                entity1_absolute_id=row[2] or "", entity2_absolute_id=row[3] or "",
+                content=row[4], event_time=self._safe_parse_datetime(row[5]),
+                processed_time=self._safe_parse_datetime(row[6]),
+                memory_cache_id=row[7], source_document=row[8] if len(row) > 8 else '',
+                embedding=row[9] if len(row) > 9 else None,
+            ))
+        return relations
+
+    def get_entity_degree(self, entity_id: str) -> int:
+        """获取实体的度（连接数）。"""
+        return len(self.get_relations_by_entity_ids([entity_id]))
+
+    # ========== Phase C: Episode MENTIONS ==========
+
+    def save_episode_mentions(self, episode_id: str, entity_absolute_ids: List[str], context: str = ""):
+        """记录 Episode 中提及的实体。"""
+        with self._write_lock:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            for abs_id in entity_absolute_ids:
+                cursor.execute("""
+                    INSERT OR REPLACE INTO episode_mentions (episode_id, entity_absolute_id, mention_context)
+                    VALUES (?, ?, ?)
+                """, (episode_id, abs_id, context))
+            conn.commit()
+
+    def get_entity_provenance(self, entity_id: str) -> List[dict]:
+        """获取提及该实体的所有 Episode。"""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM entities WHERE entity_id = ?", (entity_id,))
+        abs_ids = [row[0] for row in cursor.fetchall()]
+        if not abs_ids:
+            return []
+        placeholders = ",".join("?" * len(abs_ids))
+        cursor.execute(f"""
+            SELECT episode_id, entity_absolute_id, mention_context
+            FROM episode_mentions
+            WHERE entity_absolute_id IN ({placeholders})
+        """, abs_ids)
+        return [
+            {"episode_id": row[0], "entity_absolute_id": row[1], "mention_context": row[2] or ""}
+            for row in cursor.fetchall()
+        ]
+
+    def get_episode_entities(self, episode_id: str) -> List[dict]:
+        """获取 Episode 中提及的所有实体。"""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT em.entity_absolute_id, em.mention_context, e.name, e.entity_id
+            FROM episode_mentions em
+            LEFT JOIN entities e ON em.entity_absolute_id = e.id
+            WHERE em.episode_id = ?
+        """, (episode_id,))
+        return [
+            {"absolute_id": row[0], "mention_context": row[1] or "", "name": row[2] or "", "entity_id": row[3] or ""}
+            for row in cursor.fetchall()
+        ]
+
+    def delete_episode_mentions(self, episode_id: str):
+        """删除 Episode 的所有提及记录。"""
+        with self._write_lock:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM episode_mentions WHERE episode_id = ?", (episode_id,))
+            conn.commit()
+
+    # ========== Phase D: 关系溯源 ==========
+
+    def update_relation_provenance(self, relation_id: str, provenance: str):
+        """更新关系的溯源信息（JSON 字符串）。"""
+        with self._write_lock:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE relations SET provenance = ?
+                WHERE id = (
+                    SELECT id FROM relations
+                    WHERE relation_id = ?
+                    ORDER BY processed_time DESC LIMIT 1
+                )
+            """, (provenance, relation_id))
+            conn.commit()
+
+    # ========== Phase E: Dream Logs ==========
+
+    def save_dream_log(self, report):
+        """保存梦境报告。"""
+        with self._write_lock:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT OR REPLACE INTO dream_logs
+                (cycle_id, graph_id, start_time, end_time, status, narrative,
+                 insights_json, connections_json, consolidations_json, config_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                report.cycle_id, report.graph_id,
+                report.start_time.isoformat(),
+                report.end_time.isoformat() if report.end_time else None,
+                report.status, report.narrative,
+                json.dumps(report.insights, ensure_ascii=False),
+                json.dumps(report.new_connections, ensure_ascii=False),
+                json.dumps(report.consolidations, ensure_ascii=False),
+                json.dumps({}, ensure_ascii=False),
+            ))
+            conn.commit()
+
+    def list_dream_logs(self, graph_id: str = "default", limit: int = 20) -> List[dict]:
+        """列出梦境日志。"""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT cycle_id, graph_id, start_time, end_time, status, narrative
+            FROM dream_logs WHERE graph_id = ?
+            ORDER BY start_time DESC LIMIT ?
+        """, (graph_id, limit))
+        return [
+            {"cycle_id": row[0], "graph_id": row[1], "start_time": row[2],
+             "end_time": row[3], "status": row[4], "narrative": (row[5] or "")[:200]}
+            for row in cursor.fetchall()
+        ]
+
+    def get_dream_log(self, cycle_id: str) -> Optional[dict]:
+        """获取单次梦境日志详情。"""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT cycle_id, graph_id, start_time, end_time, status, narrative,
+                   insights_json, connections_json, consolidations_json
+            FROM dream_logs WHERE cycle_id = ?
+        """, (cycle_id,))
+        row = cursor.fetchone()
+        if not row:
+            return None
+        return {
+            "cycle_id": row[0], "graph_id": row[1], "start_time": row[2],
+            "end_time": row[3], "status": row[4], "narrative": row[5] or "",
+            "insights": json.loads(row[6]) if row[6] else [],
+            "connections": json.loads(row[7]) if row[7] else [],
+            "consolidations": json.loads(row[8]) if row[8] else [],
         }

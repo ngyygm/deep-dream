@@ -886,7 +886,7 @@ class TestMultiRoundAcceptedAssistantHistory:
         assistant_payload = client._parse_json_response(seen_messages[1][2]["content"])
         assert assistant_payload == {
             "entities": [
-                {"name": "A", "content": "alpha"},
+                {"name": "A", "content": "alpha duplicate"},
                 {"name": "B", "content": "beta"},
             ],
             "relations": [
@@ -901,10 +901,10 @@ class TestMultiRoundAcceptedAssistantHistory:
             (
                 [
                     {"name": "A", "content": "alpha"},
-                    {"name": "A", "content": "alpha duplicate"},
+                    {"name": "A", "content": "alpha duplicate with longer content"},
                     {"name": "B", "content": "beta"},
                 ],
-                '```json\n[{"name":"A","content":"alpha"},{"name":"A","content":"alpha duplicate"},{"name":"B","content":"beta"}]\n```',
+                '```json\n[{"name":"A","content":"alpha"},{"name":"A","content":"alpha duplicate with longer content"},{"name":"B","content":"beta"}]\n```',
             ),
             (
                 [
@@ -930,11 +930,15 @@ class TestMultiRoundAcceptedAssistantHistory:
         )
         out = client.extract_entities(cache, "body", rounds=2, verbose=False, compress_multi_round=False)
 
-        assert [e["name"] for e in out] == ["A", "B", "C"]
+        assert out == [
+            {"name": "A", "content": "alpha duplicate with longer content"},
+            {"name": "B", "content": "beta again"},
+            {"name": "C", "content": "gamma"},
+        ]
         assert len(seen_messages) == 2
         assistant_payload = client._parse_json_response(seen_messages[1][2]["content"])
         assert assistant_payload == [
-            {"name": "A", "content": "alpha"},
+            {"name": "A", "content": "alpha duplicate with longer content"},
             {"name": "B", "content": "beta"},
         ]
 

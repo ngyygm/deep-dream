@@ -17,6 +17,7 @@ from urllib import request
 from urllib.error import HTTPError, URLError
 
 from openai import OpenAI
+import httpx
 
 # 每个 LLM 请求若都 new OpenAI()，会在高并发下为每个实例挂一套 httpx 连接池，迅速耗尽 fd（Errno 24）。
 _openai_singleton_lock = threading.Lock()
@@ -30,7 +31,11 @@ def _openai_shared_client(base_url: str, api_key: str) -> OpenAI:
     with _openai_singleton_lock:
         client = _openai_singletons.get(cache_key)
         if client is None:
-            client = OpenAI(base_url=bu, api_key=key or None)
+            http_client = httpx.Client(
+                limits=httpx.Limits(max_connections=128, max_keepalive_connections=32),
+                timeout=httpx.Timeout(connect=30.0, read=300.0, write=30.0, pool=30.0),
+            )
+            client = OpenAI(base_url=bu, api_key=key or None, http_client=http_client)
             _openai_singletons[cache_key] = client
         return client
 

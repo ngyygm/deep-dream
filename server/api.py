@@ -34,11 +34,13 @@ from werkzeug.exceptions import NotFound
 
 from server.config import load_config, merge_llm_alignment, resolve_embedding_model
 from server.monitor import LOG_MODE_DETAIL, LOG_MODE_MONITOR, SystemMonitor
-from server.queue import RememberTask, RememberTaskQueue
+from server.task_queue import RememberTask, RememberTaskQueue
 from server.registry import GraphRegistry
 from processor import TemporalMemoryGraphProcessor
 from processor.llm.client import LLM_PRIORITY_STEP6
 from processor.models import Entity, MemoryCache, Relation
+from processor.search.hybrid import HybridSearcher
+from processor.search.graph_traversal import GraphTraversalSearcher
 
 
 # ---------------------------------------------------------------------------
@@ -74,6 +76,9 @@ def entity_to_dict(e: Entity) -> Dict[str, Any]:
         "memory_cache_id": e.memory_cache_id,
         "source_document": getattr(e, "source_document", "") or getattr(e, "doc_name", "") or "",
         "doc_name": getattr(e, "source_document", "") or getattr(e, "doc_name", "") or "",
+        "summary": getattr(e, "summary", None),
+        "attributes": getattr(e, "attributes", None),
+        "confidence": getattr(e, "confidence", None),
     }
 
 
@@ -90,6 +95,10 @@ def relation_to_dict(r: Relation) -> Dict[str, Any]:
         "memory_cache_id": r.memory_cache_id,
         "source_document": getattr(r, "source_document", "") or getattr(r, "doc_name", "") or "",
         "doc_name": getattr(r, "source_document", "") or getattr(r, "doc_name", "") or "",
+        "summary": getattr(r, "summary", None),
+        "attributes": getattr(r, "attributes", None),
+        "confidence": getattr(r, "confidence", None),
+        "provenance": getattr(r, "provenance", None),
     }
 
 
@@ -119,6 +128,7 @@ def memory_cache_to_dict(c: MemoryCache) -> Dict[str, Any]:
         "source_document": getattr(c, "source_document", "") or getattr(c, "doc_name", "") or "",
         "doc_name": getattr(c, "source_document", "") or getattr(c, "doc_name", "") or "",
         "activity_type": getattr(c, "activity_type", None),
+        "episode_type": getattr(c, "episode_type", None),
     }
 
 
@@ -179,11 +189,11 @@ def _extract_candidate_ids(
         for e in entities:
             entity_absolute_ids.add(e.absolute_id)
     elif time_before_dt:
-        entities = storage.get_all_entities_before_time(time_before_dt, limit=max_entities)
+        entities = storage.get_all_entities_before_time(time_before_dt, limit=max_entities, exclude_embedding=True)
         for e in entities:
             entity_absolute_ids.add(e.absolute_id)
     else:
-        entities = storage.get_all_entities(limit=max_entities)
+        entities = storage.get_all_entities(limit=max_entities, exclude_embedding=True)
         for e in entities:
             entity_absolute_ids.add(e.absolute_id)
 
@@ -232,6 +242,11 @@ def create_app(
             response.headers["Access-Control-Allow-Origin"] = ""
         response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
         response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+        # 静态文件禁止缓存，确保部署后浏览器立即加载最新版本
+        if request.path.startswith("/static/") and request.path.endswith((".js", ".css")):
+            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
         return response
 
     @app.before_request
@@ -392,8 +407,10 @@ def create_app(
                 processor.embedding_client is not None
                 and processor.embedding_client.is_available()
             )
+            storage_backend = "neo4j" if hasattr(processor.storage, 'is_neo4j') else "sqlite"
             return ok({
                 "graph_id": request.graph_id,
+                "storage_backend": storage_backend,
                 "storage_path": str(processor.storage.storage_path),
                 "embedding_available": embedding_available,
             })
@@ -926,6 +943,107 @@ def create_app(
                     "query": {"since_seconds": "float，可选，默认 300"},
                 },
             ],
+            "entity_v3": [
+                {
+                    "path": "/api/v1/find/entities/<entity_id>/evolve-summary",
+                    "methods": ["POST"],
+                    "summary": "LLM 演化实体摘要（Phase A）",
+                },
+                {
+                    "path": "/api/v1/find/entities/<entity_id>/contradictions",
+                    "methods": ["GET"],
+                    "summary": "检测实体版本间矛盾（Phase D）",
+                },
+                {
+                    "path": "/api/v1/find/entities/<entity_id>/resolve-contradiction",
+                    "methods": ["POST"],
+                    "summary": "LLM 裁决实体矛盾（Phase D）",
+                    "body": {"contradiction_id": "string，必填"},
+                },
+                {
+                    "path": "/api/v1/find/entities/<entity_id>/provenance",
+                    "methods": ["GET"],
+                    "summary": "实体事实溯源 - 返回提及该实体的 Episode（Phase C）",
+                },
+            ],
+            "search_v3": [
+                {
+                    "path": "/api/v1/find/traverse",
+                    "methods": ["POST"],
+                    "summary": "BFS 图遍历搜索（Phase B）",
+                    "body": {
+                        "seed_entity_ids": "list[string]，必填",
+                        "max_depth": "int，可选，默认 3",
+                        "max_nodes": "int，可选，默认 100",
+                    },
+                },
+            ],
+            "episode_v3": [
+                {
+                    "path": "/api/v1/find/episodes/<uuid>",
+                    "methods": ["GET", "DELETE"],
+                    "summary": "获取/删除 Episode 详情（Phase C）",
+                },
+                {
+                    "path": "/api/v1/find/episodes/search",
+                    "methods": ["POST"],
+                    "summary": "搜索 Episode（Phase C）",
+                    "body": {"query": "string，必填", "limit": "int，可选"},
+                },
+                {
+                    "path": "/api/v1/find/episodes/batch-ingest",
+                    "methods": ["POST"],
+                    "summary": "批量导入 Episode（Phase C）",
+                    "body": {"episodes": "list[{content, source_document, episode_type}]，必填"},
+                },
+            ],
+            "dream": [
+                {
+                    "path": "/api/v1/find/dream/start",
+                    "methods": ["POST"],
+                    "summary": "启动 DeepDream 记忆巩固周期（Phase E）",
+                    "body": {
+                        "review_window_days": "int，可选，默认 30",
+                        "max_entities_per_cycle": "int，可选，默认 100",
+                        "similarity_threshold": "float，可选，默认 0.8",
+                    },
+                },
+                {
+                    "path": "/api/v1/find/dream/status",
+                    "methods": ["GET"],
+                    "summary": "查询 DeepDream 当前状态（Phase E）",
+                },
+                {
+                    "path": "/api/v1/find/dream/logs",
+                    "methods": ["GET"],
+                    "summary": "获取 DeepDream 历史日志（Phase E）",
+                    "query": {"limit": "int，可选，默认 20"},
+                },
+                {
+                    "path": "/api/v1/find/dream/logs/<cycle_id>",
+                    "methods": ["GET"],
+                    "summary": "获取单次 DeepDream 日志详情（Phase E）",
+                },
+            ],
+            "agent": [
+                {
+                    "path": "/api/v1/find/ask",
+                    "methods": ["POST"],
+                    "summary": "Agent 元查询 - 自然语言问答（Phase F）",
+                    "body": {"question": "string，必填"},
+                },
+                {
+                    "path": "/api/v1/find/explain",
+                    "methods": ["POST"],
+                    "summary": "LLM 解释实体（Phase F）",
+                    "body": {"entity_id": "string，必填", "aspect": "summary | relations | timeline | contradictions"},
+                },
+                {
+                    "path": "/api/v1/find/suggestions",
+                    "methods": ["GET"],
+                    "summary": "智能建议 - 分析图谱返回改进建议（Phase F）",
+                },
+            ],
         })
 
     # =========================================================
@@ -1025,8 +1143,8 @@ def create_app(
     def find_stats():
         try:
             processor = _get_processor()
-            total_entities = len(processor.storage.get_all_entities(limit=None))
-            total_relations = len(processor.storage.get_all_relations())
+            total_entities = processor.storage.count_unique_entities()
+            total_relations = processor.storage.count_unique_relations()
 
             cache_json_dir = processor.storage.cache_json_dir
             cache_dir = processor.storage.cache_dir
@@ -1040,10 +1158,20 @@ def create_app(
             else:
                 total_memory_caches = len(list(cache_dir.glob("*.json")))
 
+            total_episodes = 0
+            if hasattr(processor.storage, 'count_episodes'):
+                total_episodes = processor.storage.count_episodes()
+
+            total_communities = 0
+            if hasattr(processor.storage, 'count_communities'):
+                total_communities = processor.storage.count_communities()
+
             return ok({
                 "total_entities": total_entities,
                 "total_relations": total_relations,
                 "total_memory_caches": total_memory_caches,
+                "total_episodes": total_episodes,
+                "total_communities": total_communities,
             })
         except Exception as e:
             return err(str(e), 500)
@@ -1080,6 +1208,11 @@ def create_app(
             expand = body.get("expand", True)
             time_before = body.get("time_before")
             time_after = body.get("time_after")
+            reranker = str(body.get("reranker", "rrf") or "rrf").strip().lower()
+
+            search_mode = str(body.get("search_mode", "semantic") or "semantic").strip().lower()
+            if search_mode not in ("semantic", "bm25", "hybrid"):
+                search_mode = "semantic"
 
             try:
                 time_before_dt = parse_time_point(time_before) if time_before else None
@@ -1090,22 +1223,46 @@ def create_app(
             processor = _get_processor()
             storage = processor.storage
 
-            # --- 第一步：语义召回实体 ---
-            matched_entities = storage.search_entities_by_similarity(
-                query_name=query,
-                query_content=query,
-                threshold=similarity_threshold,
-                max_results=max_entities,
-                text_mode="name_and_content",
-                similarity_method="embedding",
-            )
+            # --- 第一步：按 search_mode 召回实体 ---
+            if search_mode == "bm25":
+                matched_entities = storage.search_entities_by_bm25(
+                    query, limit=max_entities
+                )
+            elif search_mode == "hybrid":
+                searcher = HybridSearcher(storage)
+                matched_entities = searcher.search_entities(
+                    query_text=query,
+                    top_k=max_entities,
+                    semantic_threshold=similarity_threshold,
+                )
+            else:
+                matched_entities = storage.search_entities_by_similarity(
+                    query_name=query,
+                    query_content=query,
+                    threshold=similarity_threshold,
+                    max_results=max_entities,
+                    text_mode="name_and_content",
+                    similarity_method="embedding",
+                )
 
-            # --- 第二步：语义召回关系 ---
-            matched_relations = storage.search_relations_by_similarity(
-                query_text=query,
-                threshold=similarity_threshold,
-                max_results=max_relations,
-            )
+            # --- 第二步：按 search_mode 召回关系 ---
+            if search_mode == "bm25":
+                matched_relations = storage.search_relations_by_bm25(
+                    query, limit=max_relations
+                )
+            elif search_mode == "hybrid":
+                searcher = HybridSearcher(storage)
+                matched_relations = searcher.search_relations(
+                    query_text=query,
+                    top_k=max_relations,
+                    semantic_threshold=similarity_threshold,
+                )
+            else:
+                matched_relations = storage.search_relations_by_similarity(
+                    query_text=query,
+                    threshold=similarity_threshold,
+                    max_results=max_relations,
+                )
 
             entity_abs_ids: Set[str] = {e.absolute_id for e in matched_entities}
             relation_abs_ids: Set[str] = {r.absolute_id for r in matched_relations}
@@ -1156,6 +1313,16 @@ def create_app(
                     continue
                 seen_rel_ids.add(r.absolute_id)
                 final_relations.append(r)
+
+            # --- 第六步：可选重排序 ---
+            if reranker == "node_degree" and hasattr(storage, 'get_entity_degree'):
+                degree_map = {}
+                for e in final_entities:
+                    degree_map[e.entity_id] = storage.get_entity_degree(e.entity_id)
+                searcher_hybrid = HybridSearcher(storage)
+                scored = [(e, 1.0) for e in final_entities]
+                reranked = searcher_hybrid.node_degree_rerank(scored, degree_map)
+                final_entities = [e for e, _ in reranked[:max_entities]]
 
             result: Dict[str, Any] = {
                 "query": query,
@@ -1208,7 +1375,7 @@ def create_app(
         try:
             processor = _get_processor()
             limit = request.args.get("limit", type=int)
-            entities = processor.storage.get_all_entities(limit=limit)
+            entities = processor.storage.get_all_entities(limit=limit, exclude_embedding=True)
             return ok([entity_to_dict(e) for e in entities])
         except Exception as e:
             return err(str(e), 500)
@@ -1225,7 +1392,7 @@ def create_app(
             except ValueError as ve:
                 return err(str(ve), 400)
             limit = request.args.get("limit", type=int)
-            entities = processor.storage.get_all_entities_before_time(time_point, limit=limit)
+            entities = processor.storage.get_all_entities_before_time(time_point, limit=limit, exclude_embedding=True)
             return ok([entity_to_dict(e) for e in entities])
         except Exception as e:
             return err(str(e), 500)
@@ -1292,15 +1459,31 @@ def create_app(
                 similarity_method = "embedding"
             content_snippet_length = int(_get_value("content_snippet_length", 50))
 
-            entities = processor.storage.search_entities_by_similarity(
-                query_name=query_name,
-                query_content=query_content,
-                threshold=threshold,
-                max_results=max_results,
-                content_snippet_length=content_snippet_length,
-                text_mode=text_mode,
-                similarity_method=similarity_method,
-            )
+            search_mode = str(_get_value("search_mode", "semantic") or "semantic").strip().lower()
+            if search_mode not in ("semantic", "bm25", "hybrid"):
+                search_mode = "semantic"
+
+            if search_mode == "bm25":
+                entities = processor.storage.search_entities_by_bm25(
+                    query_name, limit=max_results
+                )
+            elif search_mode == "hybrid":
+                searcher = HybridSearcher(processor.storage)
+                entities = searcher.search_entities(
+                    query_text=query_name,
+                    top_k=max_results,
+                    semantic_threshold=threshold,
+                )
+            else:
+                entities = processor.storage.search_entities_by_similarity(
+                    query_name=query_name,
+                    query_content=query_content,
+                    threshold=threshold,
+                    max_results=max_results,
+                    content_snippet_length=content_snippet_length,
+                    text_mode=text_mode,
+                    similarity_method=similarity_method,
+                )
             return ok([entity_to_dict(e) for e in entities])
         except Exception as e:
             return err(str(e), 500)
@@ -1424,6 +1607,59 @@ def create_app(
             return err(str(e), 500)
 
     # =========================================================
+    # Entity / Relation CRUD (Phase 2)
+    # =========================================================
+
+    @app.route("/api/v1/find/entities/<entity_id>", methods=["DELETE"])
+    def delete_entity(entity_id: str):
+        """删除实体所有版本。"""
+        try:
+            processor = _get_processor()
+            cascade = request.args.get("cascade", "false").lower() == "true"
+            count = processor.storage.delete_entity_all_versions(entity_id)
+            if count == 0:
+                return err(f"未找到实体: {entity_id}", 404)
+            return ok({"message": f"已删除 {count} 个实体版本", "entity_id": entity_id, "cascade": cascade})
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/v1/find/entities/batch-delete", methods=["POST"])
+    def batch_delete_entities():
+        """批量删除实体。"""
+        try:
+            processor = _get_processor()
+            body = request.get_json(silent=True) or {}
+            entity_ids = body.get("entity_ids", [])
+            if not isinstance(entity_ids, list) or not entity_ids:
+                return err("entity_ids 需为非空数组", 400)
+            cascade = body.get("cascade", False)
+            total = 0
+            for eid in entity_ids:
+                total += processor.storage.delete_entity_all_versions(eid)
+            return ok({"message": f"已删除 {total} 个实体版本", "count": len(entity_ids)})
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/v1/find/entities/merge", methods=["POST"])
+    def merge_entities():
+        """合并实体：将源实体合并到目标实体。"""
+        try:
+            processor = _get_processor()
+            body = request.get_json(silent=True) or {}
+            target_id = (body.get("target_entity_id") or "").strip()
+            source_ids = body.get("source_entity_ids", [])
+            if not target_id or not isinstance(source_ids, list) or not source_ids:
+                return err("target_entity_id 和 source_entity_ids 为必填", 400)
+            # 验证 target 存在
+            target = processor.storage.get_entity_by_entity_id(target_id)
+            if target is None:
+                return err(f"目标实体不存在: {target_id}", 404)
+            result = processor.storage.merge_entity_ids(target_id, source_ids)
+            return ok({"message": "实体合并完成", "target_entity_id": target_id, "source_entity_ids": source_ids, "merged_count": result})
+        except Exception as e:
+            return err(str(e), 500)
+
+    # =========================================================
     # Find: 关系原子接口
     # =========================================================
     @app.route("/api/v1/find/relations", methods=["GET"])
@@ -1432,11 +1668,10 @@ def create_app(
             processor = _get_processor()
             limit = request.args.get("limit", type=int)
             offset = request.args.get("offset", type=int, default=0) or 0
-            relations = processor.storage.get_all_relations()
-            if offset > 0:
-                relations = relations[offset:]
-            if limit is not None:
-                relations = relations[:limit]
+            relations = processor.storage.get_all_relations(
+                limit=limit, offset=offset if offset > 0 else None,
+                exclude_embedding=True,
+            )
             dicts = [relation_to_dict(r) for r in relations]
             enrich_relations(dicts, processor)
             return ok(dicts)
@@ -1460,11 +1695,28 @@ def create_app(
                 return err("query_text 为必填参数", 400)
             threshold = float(_get_value("similarity_threshold") or _get_value("threshold", 0.5))
             max_results = int(_get_value("max_results", 10))
-            relations = processor.storage.search_relations_by_similarity(
-                query_text=query_text,
-                threshold=threshold,
-                max_results=max_results,
-            )
+
+            search_mode = str(_get_value("search_mode", "semantic") or "semantic").strip().lower()
+            if search_mode not in ("semantic", "bm25", "hybrid"):
+                search_mode = "semantic"
+
+            if search_mode == "bm25":
+                relations = processor.storage.search_relations_by_bm25(
+                    query_text, limit=max_results
+                )
+            elif search_mode == "hybrid":
+                searcher = HybridSearcher(processor.storage)
+                relations = searcher.search_relations(
+                    query_text=query_text,
+                    top_k=max_results,
+                    semantic_threshold=threshold,
+                )
+            else:
+                relations = processor.storage.search_relations_by_similarity(
+                    query_text=query_text,
+                    threshold=threshold,
+                    max_results=max_results,
+                )
             dicts = [relation_to_dict(r) for r in relations]
             enrich_relations(dicts, processor)
             return ok(dicts)
@@ -1596,6 +1848,69 @@ def create_app(
         except Exception as e:
             return err(str(e), 500)
 
+    @app.route("/api/v1/find/relations/<relation_id>", methods=["PUT"])
+    def update_relation(relation_id: str):
+        """编辑关系：创建新版本。"""
+        try:
+            processor = _get_processor()
+            body = request.get_json(silent=True) or {}
+            content = body.get("content")
+            if not content:
+                return err("content 为必填字段", 400)
+
+            current_versions = processor.storage.get_relation_versions(relation_id)
+            if not current_versions:
+                return err(f"未找到关系: {relation_id}", 404)
+            current = current_versions[0]  # 最新版本
+
+            from datetime import datetime, timezone
+            now = datetime.now(timezone.utc)
+            from processor.models import Relation as RelationModel
+            updated = RelationModel(
+                absolute_id=str(uuid.uuid4()),
+                relation_id=relation_id,
+                entity1_absolute_id=current.entity1_absolute_id,
+                entity2_absolute_id=current.entity2_absolute_id,
+                content=content,
+                event_time=now,
+                processed_time=now,
+                memory_cache_id=current.memory_cache_id,
+                source_document=current.source_document,
+                valid_at=now,
+            )
+            processor.storage.save_relation(updated)
+            return ok({"message": "关系已更新", "absolute_id": updated.absolute_id, "relation_id": relation_id})
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/v1/find/relations/<relation_id>", methods=["DELETE"])
+    def delete_relation(relation_id: str):
+        """删除关系所有版本。"""
+        try:
+            processor = _get_processor()
+            count = processor.storage.delete_relation_all_versions(relation_id)
+            if count == 0:
+                return err(f"未找到关系: {relation_id}", 404)
+            return ok({"message": f"已删除 {count} 个关系版本", "relation_id": relation_id})
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/v1/find/relations/batch-delete", methods=["POST"])
+    def batch_delete_relations():
+        """批量删除关系。"""
+        try:
+            processor = _get_processor()
+            body = request.get_json(silent=True) or {}
+            relation_ids = body.get("relation_ids", [])
+            if not isinstance(relation_ids, list) or not relation_ids:
+                return err("relation_ids 需为非空数组", 400)
+            total = 0
+            for rid in relation_ids:
+                total += processor.storage.delete_relation_all_versions(rid)
+            return ok({"message": f"已删除 {total} 个关系版本", "count": len(relation_ids)})
+        except Exception as e:
+            return err(str(e), 500)
+
     @app.route("/api/v1/find/entities/<entity_id>/relations", methods=["GET"])
     def find_relations_by_entity(entity_id: str):
         try:
@@ -1607,14 +1922,78 @@ def create_app(
             except ValueError as ve:
                 return err(str(ve), 400)
             max_version_absolute_id = (request.args.get("max_version_absolute_id") or "").strip() or None
-            relations = processor.storage.get_entity_relations_by_entity_id(
+            relation_scope = (request.args.get("relation_scope") or "accumulated").strip()
+
+            if relation_scope not in ("accumulated", "version_only", "all_versions"):
+                relation_scope = "accumulated"
+
+            # When no max_version_absolute_id, all modes degenerate to returning all relations
+            if not max_version_absolute_id:
+                relations = processor.storage.get_entity_relations_by_entity_id(
+                    entity_id=entity_id,
+                    limit=limit,
+                    time_point=time_point,
+                    max_version_absolute_id=None,
+                )
+                dicts = [relation_to_dict(r) for r in relations]
+                enrich_relations(dicts, processor)
+                return ok(dicts)
+
+            # ---- version_only: only relations directly linked to this version ----
+            if relation_scope == "version_only":
+                relations = processor.storage.get_entity_relations_by_entity_id(
+                    entity_id=entity_id,
+                    limit=limit,
+                    time_point=time_point,
+                    max_version_absolute_id=max_version_absolute_id,
+                )
+                dicts = [relation_to_dict(r) for r in relations]
+                enrich_relations(dicts, processor)
+                return ok(dicts)
+
+            # ---- accumulated / all_versions: need both version-scoped and latest ----
+            version_rels = processor.storage.get_entity_relations_by_entity_id(
                 entity_id=entity_id,
                 limit=limit,
                 time_point=time_point,
                 max_version_absolute_id=max_version_absolute_id,
             )
-            dicts = [relation_to_dict(r) for r in relations]
+            latest_rels = processor.storage.get_entity_relations_by_entity_id(
+                entity_id=entity_id,
+                limit=limit,
+                time_point=time_point,
+                max_version_absolute_id=None,
+            )
+
+            version_abs_ids = set(r.absolute_id for r in version_rels)
+            latest_abs_ids = set(r.absolute_id for r in latest_rels)
+
+            # Union of both query results
+            all_rels_map = {r.absolute_id: r for r in version_rels}
+            for r in latest_rels:
+                if r.absolute_id not in all_rels_map:
+                    all_rels_map[r.absolute_id] = r
+            all_rels = list(all_rels_map.values())
+
+            dicts = [relation_to_dict(r) for r in all_rels]
             enrich_relations(dicts, processor)
+
+            if relation_scope == "accumulated":
+                # Mark relations in version but NOT in latest as _inherited
+                for d in dicts:
+                    if d["absolute_id"] in version_abs_ids and d["absolute_id"] not in latest_abs_ids:
+                        d["_inherited"] = True
+            else:
+                # all_versions: classify each relation
+                for d in dicts:
+                    aid = d["absolute_id"]
+                    if aid in version_abs_ids and aid in latest_abs_ids:
+                        d["_version_scope"] = "current"
+                    elif aid in version_abs_ids:
+                        d["_version_scope"] = "inherited"
+                    else:
+                        d["_version_scope"] = "future"
+
             return ok(dicts)
         except Exception as e:
             return err(str(e), 500)
@@ -1691,6 +2070,554 @@ def create_app(
             return err(str(e), 500)
 
     # =========================================================
+    # Time Travel / Snapshot / Invalidation (Phase 3)
+    # =========================================================
+    @app.route("/api/v1/find/snapshot", methods=["GET"])
+    def find_snapshot():
+        """获取指定时间点的图谱快照"""
+        try:
+            time_str = request.args.get("time")
+            if not time_str:
+                return err("time 为必填参数（ISO 格式）", 400)
+            time_point = parse_time_point(time_str)
+            limit = request.args.get("limit", type=int)
+
+            processor = _get_processor()
+            snapshot = processor.storage.get_snapshot(time_point, limit=limit)
+            return ok({
+                "time": time_point.isoformat(),
+                "entities": [entity_to_dict(e) for e in snapshot["entities"]],
+                "relations": [relation_to_dict(r) for r in snapshot["relations"]],
+                "entity_count": len(snapshot["entities"]),
+                "relation_count": len(snapshot["relations"]),
+            })
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/v1/find/changes", methods=["GET"])
+    def find_changes():
+        """获取时间范围内的变更记录"""
+        try:
+            since_str = request.args.get("since")
+            until_str = request.args.get("until")
+            if not since_str:
+                return err("since 为必填参数（ISO 格式）", 400)
+            since = parse_time_point(since_str)
+            until = parse_time_point(until_str) if until_str else None
+            limit = request.args.get("limit", type=int)
+
+            processor = _get_processor()
+            changes = processor.storage.get_changes(since, until=until)
+            return ok({
+                "since": since.isoformat(),
+                "until": (until or datetime.now(timezone.utc)).isoformat(),
+                "entities": [entity_to_dict(e) for e in changes["entities"]],
+                "relations": [relation_to_dict(r) for r in changes["relations"]],
+                "entity_count": len(changes["entities"]),
+                "relation_count": len(changes["relations"]),
+            })
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/v1/find/relations/<relation_id>/invalidate", methods=["POST"])
+    def invalidate_relation(relation_id: str):
+        """标记关系为失效（不删除，保留历史）"""
+        try:
+            processor = _get_processor()
+            body = request.get_json(silent=True) or {}
+            reason = body.get("reason", "")
+            count = processor.storage.invalidate_relation(relation_id, reason)
+            if count == 0:
+                return err(f"未找到可失效的关系: {relation_id}", 404)
+            return ok({"message": f"已标记 {count} 个关系版本为失效", "relation_id": relation_id})
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/v1/find/relations/invalidated", methods=["GET"])
+    def find_invalidated_relations():
+        """列出所有已失效的关系"""
+        try:
+            processor = _get_processor()
+            limit = request.args.get("limit", type=int, default=100)
+            relations = processor.storage.get_invalidated_relations(limit)
+            dicts = [relation_to_dict(r) for r in relations]
+            enrich_relations(dicts, processor)
+            return ok(dicts)
+        except Exception as e:
+            return err(str(e), 500)
+
+    # =========================================================
+    # 图谱结构统计 & 实体时间线
+    # =========================================================
+    @app.route("/api/v1/find/graph-stats", methods=["GET"])
+    def find_graph_stats():
+        """图谱结构统计"""
+        try:
+            processor = _get_processor()
+            stats = processor.storage.get_graph_statistics()
+            return ok(stats)
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/v1/find/entities/<entity_id>/timeline", methods=["GET"])
+    def find_entity_timeline(entity_id: str):
+        """实体版本时间线"""
+        try:
+            processor = _get_processor()
+            versions = processor.storage.get_entity_versions(entity_id)
+            if not versions:
+                return err(f"未找到实体: {entity_id}", 404)
+
+            # 获取关联关系的版本
+            relations_timeline = []
+            for v in versions:
+                rels = processor.storage.get_entity_relations_by_entity_id(
+                    entity_id=entity_id, max_version_absolute_id=v.absolute_id,
+                )
+                for r in rels:
+                    relations_timeline.append({
+                        "relation_id": r.relation_id,
+                        "content": r.content,
+                        "event_time": r.event_time.isoformat() if r.event_time else None,
+                        "absolute_id": r.absolute_id,
+                    })
+
+            # 去重
+            seen = set()
+            unique_rels = []
+            for r in relations_timeline:
+                if r["absolute_id"] not in seen:
+                    seen.add(r["absolute_id"])
+                    unique_rels.append(r)
+
+            return ok({
+                "entity_id": entity_id,
+                "versions": [entity_to_dict(v) for v in versions],
+                "relations_timeline": unique_rels,
+            })
+        except Exception as e:
+            return err(str(e), 500)
+
+    # =========================================================
+    # Phase A: Entity Intelligence — 摘要进化 / 属性更新
+    # =========================================================
+    @app.route("/api/v1/find/entities/<entity_id>/evolve-summary", methods=["POST"])
+    def evolve_entity_summary(entity_id: str):
+        """手动触发实体摘要进化。"""
+        try:
+            processor = _get_processor()
+            entity = processor.storage.get_entity_by_entity_id(entity_id)
+            if entity is None:
+                return err(f"未找到实体: {entity_id}", 404)
+
+            versions = processor.storage.get_entity_versions(entity_id)
+            old_version = versions[1] if len(versions) > 1 else None
+
+            import asyncio
+            loop = asyncio.new_event_loop()
+            try:
+                summary = loop.run_until_complete(
+                    processor.llm.evolve_entity_summary(entity, old_version)
+                )
+            finally:
+                loop.close()
+
+            processor.storage.update_entity_summary(entity_id, summary)
+            return ok({"entity_id": entity_id, "summary": summary})
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/v1/find/entities/<entity_id>", methods=["PUT"])
+    def update_entity_v2(entity_id: str):
+        """编辑实体：支持更新 summary 和 attributes（不创建新版本）。"""
+        try:
+            processor = _get_processor()
+            body = request.get_json(silent=True) or {}
+            summary = body.get("summary")
+            attributes = body.get("attributes")
+
+            if summary is not None:
+                processor.storage.update_entity_summary(entity_id, str(summary))
+            if attributes is not None:
+                attr_str = json.dumps(attributes, ensure_ascii=False) if isinstance(attributes, dict) else str(attributes)
+                processor.storage.update_entity_attributes(entity_id, attr_str)
+
+            if summary is None and attributes is None:
+                # 回退到原版：创建新版本
+                name = body.get("name")
+                content = body.get("content")
+                if not name and not content:
+                    return err("name 或 content 至少需要提供一个", 400)
+                current = processor.storage.get_entity_by_entity_id(entity_id)
+                if current is None:
+                    return err(f"未找到实体: {entity_id}", 404)
+                now = datetime.now(timezone.utc)
+                updated = Entity(
+                    absolute_id=str(uuid.uuid4()),
+                    entity_id=entity_id,
+                    name=name if name else current.name,
+                    content=content if content else current.content,
+                    event_time=now, processed_time=now,
+                    memory_cache_id=current.memory_cache_id,
+                    source_document=current.source_document,
+                    valid_at=now,
+                )
+                processor.storage.save_entity(updated)
+                return ok({"message": "实体已更新", "absolute_id": updated.absolute_id})
+
+            return ok({"message": "实体属性已更新", "entity_id": entity_id})
+        except Exception as e:
+            return err(str(e), 500)
+
+    # =========================================================
+    # Phase B: Advanced Search — BFS 遍历 + MMR 重排序
+    # =========================================================
+    @app.route("/api/v1/find/traverse", methods=["POST"])
+    def traverse_graph():
+        """BFS 图遍历搜索。"""
+        try:
+            body = request.get_json(silent=True) or {}
+            seed_ids = body.get("seed_entity_ids", [])
+            if not isinstance(seed_ids, list) or not seed_ids:
+                return err("seed_entity_ids 需为非空数组", 400)
+            max_depth = int(body.get("max_depth", 2))
+            max_nodes = int(body.get("max_nodes", 50))
+
+            processor = _get_processor()
+            searcher = GraphTraversalSearcher(processor.storage)
+            entities = searcher.bfs_expand(seed_ids, max_depth=max_depth, max_nodes=max_nodes)
+            return ok([entity_to_dict(e) for e in entities])
+        except Exception as e:
+            return err(str(e), 500)
+
+    # =========================================================
+    # Phase C: Episode Enhancement — CRUD + 事实溯源
+    # =========================================================
+    @app.route("/api/v1/find/episodes/<cache_id>", methods=["GET"])
+    def find_episode(cache_id: str):
+        """获取 Episode 详情。"""
+        try:
+            processor = _get_processor()
+            cache = processor.storage.load_memory_cache(cache_id)
+            if cache is None:
+                return err(f"未找到 Episode: {cache_id}", 404)
+            result = memory_cache_to_dict(cache)
+            if hasattr(processor.storage, 'get_episode_entities'):
+                result["entities"] = processor.storage.get_episode_entities(cache_id)
+            return ok(result)
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/v1/find/episodes/search", methods=["POST"])
+    def search_episodes():
+        """搜索 Episode。"""
+        try:
+            body = request.get_json(silent=True) or {}
+            query = (body.get("query") or "").strip()
+            if not query:
+                return err("query 为必填", 400)
+            limit = int(body.get("limit", 20))
+            processor = _get_processor()
+            # BM25 搜索记忆缓存
+            results = processor.storage.search_memory_caches_by_bm25(query, limit=limit)
+            return ok([memory_cache_to_dict(c) for c in results])
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/v1/find/episodes/<cache_id>", methods=["DELETE"])
+    def delete_episode(cache_id: str):
+        """删除 Episode。"""
+        try:
+            processor = _get_processor()
+            if hasattr(processor.storage, 'delete_episode_mentions'):
+                processor.storage.delete_episode_mentions(cache_id)
+            count = processor.storage.delete_memory_cache(cache_id)
+            if count == 0:
+                return err(f"未找到 Episode: {cache_id}", 404)
+            return ok({"message": "已删除", "cache_id": cache_id})
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/v1/find/episodes/batch-ingest", methods=["POST"])
+    def batch_ingest_episodes():
+        """批量导入 Episode。"""
+        try:
+            body = request.get_json(silent=True) or {}
+            episodes = body.get("episodes", [])
+            if not isinstance(episodes, list):
+                return err("episodes 需为数组", 400)
+            processor = _get_processor()
+            ingested = 0
+            for ep in episodes:
+                text = (ep.get("content") or ep.get("text") or "").strip()
+                if not text:
+                    continue
+                source = ep.get("source_document", "batch_ingest")
+                ep_type = ep.get("episode_type")
+                mc = MemoryCache(
+                    absolute_id=str(uuid.uuid4()),
+                    content=text,
+                    event_time=datetime.now(timezone.utc),
+                    source_document=source,
+                    episode_type=ep_type,
+                )
+                processor.storage.save_memory_cache(mc)
+                ingested += 1
+            return ok({"message": f"已导入 {ingested} 条 Episode", "count": ingested})
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/v1/find/entities/<entity_id>/provenance", methods=["GET"])
+    def get_entity_provenance(entity_id: str):
+        """事实溯源：获取提及该实体的所有 Episode。"""
+        try:
+            processor = _get_processor()
+            if not hasattr(processor.storage, 'get_entity_provenance'):
+                return ok([])
+            provenance = processor.storage.get_entity_provenance(entity_id)
+            return ok(provenance)
+        except Exception as e:
+            return err(str(e), 500)
+
+    # =========================================================
+    # Phase D: 矛盾检测
+    # =========================================================
+    @app.route("/api/v1/find/entities/<entity_id>/contradictions", methods=["GET"])
+    def get_entity_contradictions(entity_id: str):
+        """检测同一实体不同版本之间的矛盾。"""
+        try:
+            processor = _get_processor()
+            versions = processor.storage.get_entity_versions(entity_id)
+            if len(versions) < 2:
+                return ok([])
+
+            import asyncio
+            loop = asyncio.new_event_loop()
+            try:
+                contradictions = loop.run_until_complete(
+                    processor.llm.detect_contradictions(entity_id, versions)
+                )
+            finally:
+                loop.close()
+
+            return ok(contradictions)
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/v1/find/entities/<entity_id>/resolve-contradiction", methods=["POST"])
+    def resolve_entity_contradiction(entity_id: str):
+        """LLM 裁决矛盾。"""
+        try:
+            body = request.get_json(silent=True) or {}
+            contradiction = body.get("contradiction")
+            if not contradiction or not isinstance(contradiction, dict):
+                return err("contradiction 为必填字段", 400)
+
+            processor = _get_processor()
+            import asyncio
+            loop = asyncio.new_event_loop()
+            try:
+                resolution = loop.run_until_complete(
+                    processor.llm.resolve_contradiction(contradiction)
+                )
+            finally:
+                loop.close()
+
+            return ok(resolution)
+        except Exception as e:
+            return err(str(e), 500)
+
+    # =========================================================
+    # Phase E: DeepDream 记忆巩固
+    # =========================================================
+    _dream_engine = None
+    _dream_lock = threading.Lock()
+
+    @app.route("/api/v1/find/dream/start", methods=["POST"])
+    def start_dream():
+        """启动梦境周期。"""
+        try:
+            body = request.get_json(silent=True) or {}
+            review_window = int(body.get("review_window_days", 30))
+            max_entities = int(body.get("max_entities_per_cycle", 100))
+            similarity_threshold = float(body.get("similarity_threshold", 0.8))
+
+            processor = _get_processor()
+
+            from processor.dream.engine import DeepDreamEngine
+            from processor.dream.models import DreamConfig
+
+            config = DreamConfig(
+                review_window_days=review_window,
+                max_entities_per_cycle=max_entities,
+                similarity_threshold=similarity_threshold,
+            )
+
+            engine = DeepDreamEngine(processor.storage, processor.dream_llm_client)
+
+            import asyncio
+            loop = asyncio.new_event_loop()
+            try:
+                report = loop.run_until_complete(
+                    engine.run_dream_cycle(request.graph_id or "default", config)
+                )
+            finally:
+                loop.close()
+
+            return ok({
+                "cycle_id": report.cycle_id,
+                "status": report.status,
+                "insights_count": len(report.insights),
+                "connections_count": len(report.new_connections),
+                "consolidations_count": len(report.consolidations),
+                "narrative": report.narrative,
+            })
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/v1/find/dream/status", methods=["GET"])
+    def dream_status():
+        """查询梦境状态（最近一次）。"""
+        try:
+            processor = _get_processor()
+            if not hasattr(processor.storage, 'list_dream_logs'):
+                return ok({"status": "not_available"})
+            logs = processor.storage.list_dream_logs(request.graph_id or "default", limit=1)
+            if logs:
+                return ok(logs[0])
+            return ok({"status": "no_cycles"})
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/v1/find/dream/logs", methods=["GET"])
+    def dream_logs():
+        """历史梦境日志列表。"""
+        try:
+            processor = _get_processor()
+            if not hasattr(processor.storage, 'list_dream_logs'):
+                return ok([])
+            limit = request.args.get("limit", type=int, default=20)
+            logs = processor.storage.list_dream_logs(request.graph_id or "default", limit=limit)
+            return ok(logs)
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/v1/find/dream/logs/<cycle_id>", methods=["GET"])
+    def dream_log_detail(cycle_id: str):
+        """单条梦境日志详情。"""
+        try:
+            processor = _get_processor()
+            if not hasattr(processor.storage, 'get_dream_log'):
+                return err("DeepDream 不可用", 404)
+            log = processor.storage.get_dream_log(cycle_id)
+            if log is None:
+                return err(f"未找到梦境日志: {cycle_id}", 404)
+            return ok(log)
+        except Exception as e:
+            return err(str(e), 500)
+
+    # =========================================================
+    # Phase F: Agent-First API — 元查询 / 解释 / 建议
+    # =========================================================
+    @app.route("/api/v1/find/ask", methods=["POST"])
+    def agent_ask():
+        """Agent 元查询：自然语言问题 → 结构化查询 + 回答。"""
+        try:
+            body = request.get_json(silent=True) or {}
+            question = (body.get("question") or "").strip()
+            if not question:
+                return err("question 为必填", 400)
+
+            processor = _get_processor()
+            import asyncio
+            loop = asyncio.new_event_loop()
+            try:
+                result = loop.run_until_complete(
+                    processor.llm.agent_meta_query(question, request.graph_id or "default")
+                )
+            finally:
+                loop.close()
+
+            # 根据 query_plan 执行实际搜索
+            intent = result.get("query_plan", {})
+            query_type = intent.get("query_type", "hybrid")
+            query_text = intent.get("query_text", question)
+
+            entities = []
+            relations = []
+
+            if query_type == "traverse":
+                entity_name = intent.get("entity_name", "")
+                if entity_name:
+                    seed_entities = processor.storage.search_entities_by_bm25(entity_name, limit=3)
+                    seed_ids = [e.entity_id for e in seed_entities]
+                    if seed_ids:
+                        searcher = GraphTraversalSearcher(processor.storage)
+                        entities = searcher.bfs_expand(seed_ids, max_depth=2, max_nodes=20)
+            else:
+                searcher = HybridSearcher(processor.storage)
+                entities = searcher.search_entities(query_text=query_text, top_k=20)
+                relations = searcher.search_relations(query_text=query_text, top_k=10)
+
+            result["results"] = {
+                "entities": [entity_to_dict(e) for e in entities],
+                "relations": [relation_to_dict(r) for r in relations],
+            }
+            return ok(result)
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/v1/find/explain", methods=["POST"])
+    def explain_entity():
+        """自然语言解释实体。"""
+        try:
+            body = request.get_json(silent=True) or {}
+            entity_id = (body.get("entity_id") or "").strip()
+            aspect = (body.get("aspect") or "summary").strip()
+            if not entity_id:
+                return err("entity_id 为必填", 400)
+
+            processor = _get_processor()
+            entity = processor.storage.get_entity_by_entity_id(entity_id)
+            if entity is None:
+                return err(f"未找到实体: {entity_id}", 404)
+
+            import asyncio
+            loop = asyncio.new_event_loop()
+            try:
+                explanation = loop.run_until_complete(
+                    processor.llm.explain_entity(entity, aspect)
+                )
+            finally:
+                loop.close()
+
+            return ok({"entity_id": entity_id, "aspect": aspect, "explanation": explanation})
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/v1/find/suggestions", methods=["GET"])
+    def get_suggestions():
+        """智能建议。"""
+        try:
+            processor = _get_processor()
+            entities = processor.storage.get_all_entities(limit=30, exclude_embedding=True)
+            entity_count = processor.storage.get_entity_count()
+            relation_count = processor.storage.get_relation_count()
+
+            import asyncio
+            loop = asyncio.new_event_loop()
+            try:
+                suggestions = loop.run_until_complete(
+                    processor.llm.generate_suggestions(entities, entity_count, relation_count)
+                )
+            finally:
+                loop.close()
+
+            return ok(suggestions)
+        except Exception as e:
+            return err(str(e), 500)
+
+    # =========================================================
     # 图谱管理
     # =========================================================
     @app.route("/api/v1/graphs", methods=["GET", "POST"])
@@ -1761,6 +2688,193 @@ def create_app(
                 "original": content.get("original"),
                 "cache": content.get("cache"),
             })
+        except Exception as e:
+            return err(str(e), 500)
+
+    # =========================================================
+    # Neo4j: Entity Neighbors
+    # =========================================================
+    @app.route("/api/v1/find/entities/<entity_uuid>/neighbors", methods=["GET"])
+    def find_entity_neighbors(entity_uuid: str):
+        """获取实体的邻居图（Neo4j 专属）。"""
+        try:
+            processor = _get_processor()
+            if not hasattr(processor.storage, 'get_entity_neighbors'):
+                return err("此功能需要 Neo4j 后端", 400)
+            depth = min(max(int(request.args.get('depth', 1)), 1), 5)
+            result = processor.storage.get_entity_neighbors(entity_uuid, depth=depth)
+            return ok(result)
+        except Exception as e:
+            return err(str(e), 500)
+
+    # =========================================================
+    # Neo4j: Cypher Shortest Path
+    # =========================================================
+    @app.route("/api/v1/find/paths/shortest-cypher", methods=["POST"])
+    def find_shortest_path_cypher():
+        """使用 Cypher shortestPath 查找路径（Neo4j 专属）。"""
+        try:
+            processor = _get_processor()
+            if not hasattr(processor.storage, 'find_shortest_path_cypher'):
+                return err("此功能需要 Neo4j 后端", 400)
+            body = request.get_json(silent=True) or {}
+            entity_a = (body.get("entity_id_a") or "").strip()
+            entity_b = (body.get("entity_id_b") or "").strip()
+            if not entity_a or not entity_b:
+                return err("entity_id_a 和 entity_id_b 不能为空", 400)
+            max_depth = min(max(int(body.get("max_depth", 6)), 1), 10)
+            paths = processor.storage.find_shortest_path_cypher(entity_a, entity_b, max_depth=max_depth)
+            return ok({
+                "paths": paths,
+                "source_entity_id": entity_a,
+                "target_entity_id": entity_b,
+            })
+        except Exception as e:
+            return err(str(e), 500)
+
+    # =========================================================
+    # Episodes
+    # =========================================================
+    @app.route("/api/v1/episodes", methods=["GET"])
+    def list_episodes():
+        """分页列出 Episodes（Neo4j 专属）。"""
+        try:
+            processor = _get_processor()
+            if not hasattr(processor.storage, 'list_episodes'):
+                return err("此功能需要 Neo4j 后端", 400)
+            limit = min(max(int(request.args.get('limit', 20)), 1), 100)
+            offset = max(int(request.args.get('offset', 0)), 0)
+            episodes = processor.storage.list_episodes(limit=limit, offset=offset)
+            total = processor.storage.count_episodes()
+            return ok({"episodes": episodes, "total": total, "limit": limit, "offset": offset})
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/v1/episodes/<uuid>", methods=["GET"])
+    def get_episode(uuid: str):
+        """获取 Episode 详情（Neo4j 专属）。"""
+        try:
+            processor = _get_processor()
+            if not hasattr(processor.storage, 'get_episode'):
+                return err("此功能需要 Neo4j 后端", 400)
+            episode = processor.storage.get_episode(uuid)
+            if episode is None:
+                return err("Episode 不存在", 404)
+            return ok(episode)
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/v1/episodes/<uuid>/entities", methods=["GET"])
+    def get_episode_entities(uuid: str):
+        """获取 Episode 关联实体（Neo4j 专属）。"""
+        try:
+            processor = _get_processor()
+            if not hasattr(processor.storage, 'get_episode_entities'):
+                return err("此功能需要 Neo4j 后端", 400)
+            entities = processor.storage.get_episode_entities(uuid)
+            return ok({"entities": entities})
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/v1/episodes/search", methods=["POST"])
+    def neo4j_search_episodes():
+        """搜索 Episodes（Neo4j 专属）。"""
+        try:
+            processor = _get_processor()
+            if not hasattr(processor.storage, 'search_episodes'):
+                return err("此功能需要 Neo4j 后端", 400)
+            body = request.get_json(silent=True) or {}
+            query = (body.get("query") or "").strip()
+            if not query:
+                return err("query 不能为空", 400)
+            limit = min(max(int(body.get("limit", 20)), 1), 100)
+            episodes = processor.storage.search_episodes(query, limit=limit)
+            return ok({"episodes": episodes})
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/v1/episodes/<uuid>", methods=["DELETE"])
+    def neo4j_delete_episode(uuid: str):
+        """删除 Episode（Neo4j 专属）。"""
+        try:
+            processor = _get_processor()
+            if not hasattr(processor.storage, 'delete_episode'):
+                return err("此功能需要 Neo4j 后端", 400)
+            success = processor.storage.delete_episode(uuid)
+            if not success:
+                return err("Episode 不存在或删除失败", 404)
+            return ok({"deleted": True})
+        except Exception as e:
+            return err(str(e), 500)
+
+    # =========================================================
+    # Communities
+    # =========================================================
+    @app.route("/api/v1/communities/detect", methods=["POST"])
+    def detect_communities():
+        """运行社区检测（Neo4j 专属）。"""
+        try:
+            processor = _get_processor()
+            if not hasattr(processor.storage, 'detect_communities'):
+                return err("此功能需要 Neo4j 后端", 400)
+            body = request.get_json(silent=True) or {}
+            algorithm = (body.get("algorithm") or "louvain").strip()
+            resolution = float(body.get("resolution", 1.0))
+            resolution = min(max(resolution, 0.1), 10.0)
+            result = processor.storage.detect_communities(algorithm=algorithm, resolution=resolution)
+            return ok(result)
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/v1/communities", methods=["GET"])
+    def list_communities():
+        """列出社区（Neo4j 专属）。"""
+        try:
+            processor = _get_processor()
+            if not hasattr(processor.storage, 'get_communities'):
+                return err("此功能需要 Neo4j 后端", 400)
+            min_size = max(int(request.args.get('min_size', 3)), 1)
+            limit = min(max(int(request.args.get('limit', 50)), 1), 200)
+            communities = processor.storage.get_communities(limit=limit, min_size=min_size)
+            return ok({"communities": communities, "count": len(communities)})
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/v1/communities/<int:cid>", methods=["GET"])
+    def get_community(cid: int):
+        """获取社区详情（Neo4j 专属）。"""
+        try:
+            processor = _get_processor()
+            if not hasattr(processor.storage, 'get_community'):
+                return err("此功能需要 Neo4j 后端", 400)
+            community = processor.storage.get_community(cid)
+            if community is None:
+                return err("社区不存在", 404)
+            return ok(community)
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/v1/communities/<int:cid>/graph", methods=["GET"])
+    def get_community_graph(cid: int):
+        """获取社区子图数据（Neo4j 专属）。"""
+        try:
+            processor = _get_processor()
+            if not hasattr(processor.storage, 'get_community_graph'):
+                return err("此功能需要 Neo4j 后端", 400)
+            graph_data = processor.storage.get_community_graph(cid)
+            return ok(graph_data)
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/v1/communities", methods=["DELETE"])
+    def clear_communities():
+        """清除所有 community_id（Neo4j 专属）。"""
+        try:
+            processor = _get_processor()
+            if not hasattr(processor.storage, 'clear_communities'):
+                return err("此功能需要 Neo4j 后端", 400)
+            cleared = processor.storage.clear_communities()
+            return ok({"cleared": cleared})
         except Exception as e:
             return err(str(e), 500)
 

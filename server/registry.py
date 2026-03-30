@@ -9,8 +9,9 @@ import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, List, Optional
 
-from server.config import merge_llm_alignment, resolve_embedding_model
+from server.config import merge_llm_alignment, merge_llm_dream, resolve_embedding_model
 from processor.storage.embedding import EmbeddingClient
+from processor.storage import create_storage_manager
 from processor.pipeline.orchestrator import TemporalMemoryGraphProcessor
 
 if TYPE_CHECKING:
@@ -99,12 +100,14 @@ class GraphRegistry:
         max_concurrency = llm.get("max_concurrency")
         kwargs: dict = {
             "storage_path": storage_path,
+            "config": config,
             "window_size": window_size,
             "overlap": overlap,
             "llm_api_key": llm.get("api_key"),
             "llm_model": llm.get("model", "gpt-4"),
             "llm_base_url": llm.get("base_url"),
             "alignment_llm": merge_llm_alignment(llm),
+            "dream_llm": merge_llm_dream(llm),
             "llm_think_mode": bool(llm.get("think", llm.get("think_mode", False))),
             "embedding_client": self._get_embedding_client(),
             "llm_max_tokens": llm.get("max_tokens"),
@@ -141,27 +144,36 @@ class GraphRegistry:
 
     def get_queue(self, graph_id: str):
         """获取或创建指定图谱的 RememberTaskQueue。"""
+        # 快速路径：已存在则直接返回
         with self._lock:
-            if graph_id not in self._queues:
-                from server.queue import RememberTaskQueue
+            if graph_id in self._queues:
+                return self._queues[graph_id]
 
-                processor = self.get_processor(graph_id)
-                storage_path = Path(processor.storage.storage_path)
-                event_log = None
+        # 构造 RememberTaskQueue（会启动 worker 线程），必须在锁外执行，
+        # 否则 worker 调用 create_task_processor() 时会死锁。
+        from server.task_queue import RememberTaskQueue
+
+        processor = self.get_processor(graph_id)
+        storage_path = Path(processor.storage.storage_path)
+        event_log = None
+        if self._system_monitor is not None:
+            event_log = self._system_monitor.event_log
+        queue = RememberTaskQueue(
+            processor,
+            storage_path,
+            processor_factory=lambda gid=graph_id: self.create_task_processor(gid),
+            max_workers=self._config.get("remember_workers", 1),
+            max_retries=self._config.get("remember_max_retries", 2),
+            retry_delay_seconds=self._config.get("remember_retry_delay_seconds", 2),
+            event_log=event_log,
+        )
+
+        with self._lock:
+            # 双重检查：防止并发重复创建
+            if graph_id not in self._queues:
+                self._queues[graph_id] = queue
                 if self._system_monitor is not None:
-                    event_log = self._system_monitor.event_log
-                self._queues[graph_id] = RememberTaskQueue(
-                    processor,
-                    storage_path,
-                    processor_factory=lambda gid=graph_id: self.create_task_processor(gid),
-                    max_workers=self._config.get("remember_workers", 1),
-                    max_retries=self._config.get("remember_max_retries", 2),
-                    retry_delay_seconds=self._config.get("remember_retry_delay_seconds", 2),
-                    event_log=event_log,
-                )
-                # 注册到 SystemMonitor
-                if self._system_monitor is not None:
-                    self._system_monitor.attach_graph(graph_id, processor, self._queues[graph_id])
+                    self._system_monitor.attach_graph(graph_id, processor, queue)
             return self._queues[graph_id]
 
     # ------------------------------------------------------------------
@@ -169,12 +181,18 @@ class GraphRegistry:
     # ------------------------------------------------------------------
 
     def list_graphs(self) -> List[str]:
-        """列出基础目录下所有已有图谱（扫描子目录中有 graph.db 的）。"""
+        """列出基础目录下所有已有图谱（支持 SQLite 和 Neo4j 后端）。"""
         result: List[str] = []
         if not self._base_path.is_dir():
             return result
         for child in sorted(self._base_path.iterdir()):
-            if child.is_dir() and (child / "graph.db").exists():
+            if not child.is_dir():
+                continue
+            # SQLite 后端：有 graph.db
+            # Neo4j 后端：有 vectors.db 或 docs/ 目录
+            if ((child / "graph.db").exists() or
+                    (child / "vectors.db").exists() or
+                    (child / "docs").is_dir()):
                 result.append(child.name)
         return result
 

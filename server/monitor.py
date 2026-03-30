@@ -206,12 +206,20 @@ class GraphMonitor:
 
     def _collect_storage_stats(self) -> dict:
         try:
-            total_entities = len(self._processor.storage.get_all_entities(limit=None))
-            total_relations = len(self._processor.storage.get_all_relations())
-            cache_json_dir = self._processor.storage.cache_json_dir
-            cache_dir = self._processor.storage.cache_dir
+            # 优先使用 count 方法（O(1) 查询），避免加载全部实体/关系
+            storage = self._processor.storage
+            if hasattr(storage, 'count_unique_entities'):
+                total_entities = storage.count_unique_entities()
+            else:
+                total_entities = len(storage.get_all_entities(limit=None, exclude_embedding=True))
+            if hasattr(storage, 'count_unique_relations'):
+                total_relations = storage.count_unique_relations()
+            else:
+                total_relations = len(storage.get_all_relations())
+            cache_json_dir = storage.cache_json_dir
+            cache_dir = storage.cache_dir
             # 优先从 docs/ 新结构计数
-            docs_meta_files = list(self._processor.storage.docs_dir.glob("*/meta.json")) if self._processor.storage.docs_dir.is_dir() else []
+            docs_meta_files = list(storage.docs_dir.glob("*/meta.json")) if storage.docs_dir.is_dir() else []
             if docs_meta_files:
                 total_memory_caches = len(docs_meta_files)
             else:

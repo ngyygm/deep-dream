@@ -129,7 +129,7 @@ class _EntityExtractionMixin:
 
         all_entities: List[Dict[str, str]] = []
         all_relations: List[Dict[str, str]] = []
-        seen_names: set = set()
+        entity_name_to_index: Dict[str, int] = {}
         seen_rel_keys: set = set()
 
         # 构建对话历史
@@ -158,15 +158,34 @@ class _EntityExtractionMixin:
                     break
                 raise
 
-            # 按名称去重合并实体
+            # 按名称去重合并实体；同名时保留 content 更长的版本
             accepted_entities: List[Dict[str, str]] = []
+            accepted_entity_name_to_index: Dict[str, int] = {}
             new_entity_count = 0
             for e in new_entities:
-                if e['name'] not in seen_names:
-                    all_entities.append(e)
-                    seen_names.add(e['name'])
-                    accepted_entities.append(e)
+                name = str(e.get("name") or "").strip()
+                if not name:
+                    continue
+                candidate = {
+                    "name": name,
+                    "content": str(e.get("content") or "").strip(),
+                }
+                existing_idx = entity_name_to_index.get(name)
+                if existing_idx is None:
+                    entity_name_to_index[name] = len(all_entities)
+                    all_entities.append(candidate)
+                    accepted_entity_name_to_index[name] = len(accepted_entities)
+                    accepted_entities.append(candidate)
                     new_entity_count += 1
+                    continue
+                if len(candidate["content"]) > len(all_entities[existing_idx]["content"]):
+                    all_entities[existing_idx] = candidate
+                    accepted_idx = accepted_entity_name_to_index.get(name)
+                    if accepted_idx is None:
+                        accepted_entity_name_to_index[name] = len(accepted_entities)
+                        accepted_entities.append(candidate)
+                    else:
+                        accepted_entities[accepted_idx] = candidate
 
             # 按 (entity1, entity2) 去重合并关系
             accepted_relations: List[Dict[str, str]] = []
@@ -332,7 +351,7 @@ class _EntityExtractionMixin:
 请从文本中抽取所有概念实体（越多越好）："""
 
         all_entities: List[Dict[str, str]] = []
-        seen_names: set = set()
+        name_to_index: Dict[str, int] = {}
 
         messages: List[Dict[str, str]] = [
             {"role": "system", "content": system_prompt},
@@ -361,15 +380,34 @@ class _EntityExtractionMixin:
                     break
                 raise
 
-            # 验收并去重：仅将本轮真正新增的实体作为“被系统接受”的 assistant 输出
+            # 验收并去重：同名实体只保留一个；若新版本 content 更长，则覆盖旧版本
             accepted_entities: List[Dict[str, str]] = []
+            accepted_name_to_index: Dict[str, int] = {}
             new_count = 0
             for e in new_entities:
-                if e['name'] not in seen_names:
-                    all_entities.append(e)
-                    seen_names.add(e['name'])
-                    accepted_entities.append(e)
+                name = str(e.get("name") or "").strip()
+                if not name:
+                    continue
+                candidate = {
+                    "name": name,
+                    "content": str(e.get("content") or "").strip(),
+                }
+                existing_idx = name_to_index.get(name)
+                if existing_idx is None:
+                    name_to_index[name] = len(all_entities)
+                    all_entities.append(candidate)
+                    accepted_name_to_index[name] = len(accepted_entities)
+                    accepted_entities.append(candidate)
                     new_count += 1
+                    continue
+                if len(candidate["content"]) > len(all_entities[existing_idx]["content"]):
+                    all_entities[existing_idx] = candidate
+                    accepted_idx = accepted_name_to_index.get(name)
+                    if accepted_idx is None:
+                        accepted_name_to_index[name] = len(accepted_entities)
+                        accepted_entities.append(candidate)
+                    else:
+                        accepted_entities[accepted_idx] = candidate
 
             accepted_response = _json_code_block(accepted_entities)
 

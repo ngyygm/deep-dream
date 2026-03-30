@@ -33,6 +33,30 @@ window.GraphUtils = (function () {
   const SEARCH_EXPANDED_LIGHT = { bg: '#a5b4fc', border: '#818cf8' };
   const SEARCH_EXPANDED_DARK  = { bg: '#6366f1', border: '#818cf8' };
 
+  // Community color palette (20 distinct colors)
+  const COMMUNITY_PALETTE = [
+    { bg: '#ef4444', border: '#f87171' }, // red
+    { bg: '#f59e0b', border: '#fbbf24' }, // amber
+    { bg: '#10b981', border: '#34d399' }, // emerald
+    { bg: '#3b82f6', border: '#60a5fa' }, // blue
+    { bg: '#8b5cf6', border: '#a78bfa' }, // violet
+    { bg: '#ec4899', border: '#f472b6' }, // pink
+    { bg: '#14b8a6', border: '#2dd4bf' }, // teal
+    { bg: '#f97316', border: '#fb923c' }, // orange
+    { bg: '#06b6d4', border: '#22d3ee' }, // cyan
+    { bg: '#84cc16', border: '#a3e635' }, // lime
+    { bg: '#6366f1', border: '#818cf8' }, // indigo
+    { bg: '#d946ef', border: '#e879f9' }, // fuchsia
+    { bg: '#0ea5e9', border: '#38bdf8' }, // sky
+    { bg: '#a855f7', border: '#c084fc' }, // purple
+    { bg: '#e11d48', border: '#fb7185' }, // rose
+    { bg: '#65a30d', border: '#84cc16' }, // green
+    { bg: '#7c3aed', border: '#8b5cf6' }, // violet-dark
+    { bg: '#0891b2', border: '#06b6d4' }, // teal-dark
+    { bg: '#c2410c', border: '#ea580c' }, // orange-dark
+    { bg: '#4f46e5', border: '#6366f1' }, // indigo-dark
+  ];
+
   function getRankColor(rank) {
     if (rank === 1) return TIER_1;
     if (rank <= 5) return TIER_2;
@@ -44,6 +68,7 @@ window.GraphUtils = (function () {
 
   const EDGE_CURRENT  = { color: '#4b5563', highlight: '#9ca3af', hover: '#6b7280' };
   const EDGE_INHERITED = { color: '#d97706', highlight: '#fbbf24', hover: '#b45309' };
+  const EDGE_FUTURE   = { color: '#3b82f6', highlight: '#60a5fa', hover: '#2563eb' };
 
   // ---- Theme detection ----
 
@@ -54,11 +79,12 @@ window.GraphUtils = (function () {
   // ---- Build nodes ----
   //   entities: array of entity objects
   //   options:
-  //     colorMode: 'hop' | 'search' | 'default'
+  //     colorMode: 'hop' | 'search' | 'community' | 'default'
   //     versionCounts: { entity_id: count }
   //     hopMap: { absoluteId: hopLevel }          (for 'hop' mode)
   //     highlightAbsId: string                    (focused entity id)
   //     rankMap: { absoluteId: 1-based-rank }     (for 'search' mode, rank-based coloring)
+  //     communityMap: { absoluteId: communityId }  (for 'community' mode)
   //     versionLabel: { idx: number, total: number }  (focused entity version label)
   //     unnamedLabel: string                      (fallback for unnamed entities)
 
@@ -74,6 +100,7 @@ window.GraphUtils = (function () {
     const hopMap = options.hopMap || null;
     const highlightAbsId = options.highlightAbsId || null;
     const rankMap = options.rankMap || null;
+    const communityMap = options.communityMap || null;
     const versionLabel = options.versionLabel || null;
     const unnamedLabel = options.unnamedLabel || 'unnamed';
 
@@ -100,7 +127,7 @@ window.GraphUtils = (function () {
 
         // Color selection
         let bgColor, borderColor;
-        if (options.colorMode === 'hop' && hopMap) {
+        if (options.colorMode === 'hop' && hopMap && hopLevel !== undefined) {
           var palette = HOP_PALETTE[Math.min(hopLevel, HOP_PALETTE.length - 1)];
           bgColor = palette.bg;
           borderColor = palette.border;
@@ -115,6 +142,17 @@ window.GraphUtils = (function () {
             var expandedScheme = light ? SEARCH_EXPANDED_LIGHT : SEARCH_EXPANDED_DARK;
             bgColor = expandedScheme.bg;
             borderColor = expandedScheme.border;
+          }
+        } else if (options.colorMode === 'community' && communityMap) {
+          var cid = communityMap[e.absolute_id];
+          if (cid !== undefined && cid !== null) {
+            var commColor = COMMUNITY_PALETTE[cid % COMMUNITY_PALETTE.length];
+            bgColor = commColor.bg;
+            borderColor = commColor.border;
+          } else {
+            var defaultColor = light ? DEFAULT_LIGHT : DEFAULT_DARK;
+            bgColor = defaultColor.bg;
+            borderColor = defaultColor.border;
           }
         } else {
           // default
@@ -163,6 +201,9 @@ window.GraphUtils = (function () {
     options = options || {};
     var inheritedRelationIds = options.inheritedRelationIds || null;
     var hasInherited = inheritedRelationIds && inheritedRelationIds.size > 0;
+    var futureRelationIds = options.futureRelationIds || null;
+    var hasFuture = futureRelationIds && futureRelationIds.size > 0;
+    var weightMode = options.weightMode || null;
 
     var relationMap = {};
 
@@ -174,14 +215,16 @@ window.GraphUtils = (function () {
         .map(function (r) {
           relationMap[r.absolute_id] = r;
           var isInherited = hasInherited && inheritedRelationIds.has(r.absolute_id);
-          var edgeColor = isInherited ? EDGE_INHERITED : EDGE_CURRENT;
+          var isFuture = hasFuture && futureRelationIds.has(r.absolute_id);
+          var edgeColor = isFuture ? EDGE_FUTURE : (isInherited ? EDGE_INHERITED : EDGE_CURRENT);
+          var dashes = isFuture ? [2, 4] : (isInherited ? [5, 5] : false);
 
           return {
             id: r.absolute_id,
             from: r.entity1_absolute_id,
             to: r.entity2_absolute_id,
             color: edgeColor,
-            dashes: isInherited ? [5, 5] : false,
+            dashes: dashes,
             smooth: {
               enabled: true,
               type: 'continuous',
@@ -190,6 +233,32 @@ window.GraphUtils = (function () {
           };
         })
     );
+
+    // If weightMode is 'count', adjust edge width based on number of relations per entity pair
+    if (weightMode === 'count') {
+      var pairCount = {};
+      var pairMaxCount = 1;
+      edges.forEach(function (e) {
+        var key = [e.from, e.to].sort().join('|');
+        pairCount[key] = (pairCount[key] || 0) + 1;
+        if (pairCount[key] > pairMaxCount) pairMaxCount = pairCount[key];
+      });
+
+      edges.forEach(function (e) {
+        var key = [e.from, e.to].sort().join('|');
+        var count = pairCount[key] || 1;
+        e.width = Math.min(1 + count * 1.5, 8);
+        // Adjust opacity: more relations = darker/more opaque
+        var baseColor = e.color.color || '#4b5563';
+        var opacity = 0.3 + (count / pairMaxCount) * 0.7;
+        e.color = {
+          color: baseColor,
+          opacity: Math.round(opacity * 100) / 100,
+          highlight: e.color.highlight,
+          hover: e.color.hover,
+        };
+      });
+    }
 
     return { edges: edges, relationMap: relationMap };
   }
@@ -248,8 +317,10 @@ window.GraphUtils = (function () {
     RANK_OTHER: RANK_OTHER,
     SEARCH_EXPANDED_LIGHT: SEARCH_EXPANDED_LIGHT,
     SEARCH_EXPANDED_DARK: SEARCH_EXPANDED_DARK,
+    COMMUNITY_PALETTE: COMMUNITY_PALETTE,
     EDGE_CURRENT: EDGE_CURRENT,
     EDGE_INHERITED: EDGE_INHERITED,
+    EDGE_FUTURE: EDGE_FUTURE,
 
     // Functions
     buildNodes: buildNodes,

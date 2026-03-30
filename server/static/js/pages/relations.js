@@ -25,6 +25,10 @@
     return e ? e.entity_id : '-';
   }
 
+  function escapeAttr(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
   async function loadEntityMap() {
     try {
       const res = await state.api.listEntities(state.currentGraphId, 5000);
@@ -51,6 +55,10 @@
         <td title="${escapeHtml(entityName(r.entity2_absolute_id, r.entity2_name))}">${escapeHtml(truncate(entityName(r.entity2_absolute_id, r.entity2_name), 24))}</td>
         <td class="mono" style="white-space:nowrap;">${formatDate(r.event_time)}</td>
         <td title="${escapeHtml(r.source_document || r.doc_name || '')}">${escapeHtml(truncate(r.source_document || r.doc_name || '-', 20))}</td>
+        <td>
+          <button class="btn btn-sm btn-primary" onclick="event.stopPropagation(); window.openEditRelationModal('${escapeAttr(r.relation_id)}', '${escapeAttr(r.content || '')}')" data-i18n="relations.edit">Edit</button>
+          <button class="btn btn-sm btn-danger" onclick="event.stopPropagation(); window.confirmDeleteRelation('${escapeAttr(r.relation_id)}')" data-i18n="relations.delete">Delete</button>
+        </td>
       </tr>`;
     }).join('');
 
@@ -63,6 +71,7 @@
             <th>${t('relations.entity2')}</th>
             <th>${t('relations.time')}</th>
             <th>${t('relations.source')}</th>
+            <th data-i18n="relations.actions">Actions</th>
           </tr>
         </thead>
         <tbody>${rows}</tbody>
@@ -676,8 +685,56 @@
     if (typeof PathFinder !== 'undefined') PathFinder.destroy();
   }
 
-  // Expose globally for use by other pages (search, path-finder)
+  // ---- Edit relation modal ----
+  function openEditRelationModal(relationId, currentContent) {
+    const t = (key) => window.I18N ? window.I18N.t(key) : key;
+    const html = `
+        <div class="modal-header">
+            <h3>${t('relations.editTitle')}</h3>
+            <button class="btn-close" onclick="closeModal()">&times;</button>
+        </div>
+        <div class="modal-body">
+            <div class="form-group">
+                <label class="form-label" data-i18n="relations.content">Content</label>
+                <textarea id="editRelationContent" class="input" rows="4">${escapeAttr(currentContent)}</textarea>
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeModal()" data-i18n="common.cancel">Cancel</button>
+            <button class="btn btn-primary" onclick="window.submitEditRelation('${escapeAttr(relationId)}')" data-i18n="common.save">Save</button>
+        </div>`;
+    showModal(html);
+  }
+
+  async function submitEditRelation(relationId) {
+    const t = (key) => window.I18N ? window.I18N.t(key) : key;
+    const content = document.getElementById('editRelationContent').value.trim();
+    if (!content) { showToast(t('relations.contentRequired'), 'error'); return; }
+    try {
+      const res = await state.api.updateRelation(relationId, { content });
+      if (res.error) { showToast(res.error, 'error'); return; }
+      showToast(t('relations.updateSuccess'), 'success');
+      closeModal();
+      loadAllRelations();
+    } catch (e) { showToast(t('relations.updateFailed') + ': ' + e.message, 'error'); }
+  }
+
+  // ---- Delete relation ----
+  function confirmDeleteRelation(relationId) {
+    const t = (key) => window.I18N ? window.I18N.t(key) : key;
+    if (!confirm(t('relations.deleteConfirm'))) return;
+    state.api.deleteRelation(relationId).then(res => {
+      if (res.error) { showToast(res.error, 'error'); return; }
+      showToast(t('relations.deleteSuccess'), 'success');
+      loadAllRelations();
+    }).catch(e => showToast(t('relations.deleteFailed') + ': ' + e.message, 'error'));
+  }
+
+  // Expose globally for use by other pages (search, path-finder) and inline onclick handlers
   window.showRelationDetail = showRelationDetail;
+  window.openEditRelationModal = openEditRelationModal;
+  window.submitEditRelation = submitEditRelation;
+  window.confirmDeleteRelation = confirmDeleteRelation;
 
   registerPage('relations', { render, destroy });
 })();

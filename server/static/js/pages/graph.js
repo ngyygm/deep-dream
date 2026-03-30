@@ -24,11 +24,22 @@
   let advancedOptionsOpen = false;
 
   // Hop & version accumulation state
-  let onlyCurrentVersion = false;
+  let relationScope = 'accumulated';
   let currentHopLevel = 1;
   let cachedInheritedRelationIds = null; // Set of relation absolute_ids inherited in main view
   let cachedAllRawRelations = null; // original raw relations from API (before remapping)
   let cachedRemappedMainRelations = null; // remapped relations for main view
+
+  // Community coloring state
+  let communityColoringEnabled = false;
+  let communityMap = null; // absolute_id -> community_id
+
+  // Relation strength mode
+  let relationStrengthEnabled = false;
+
+  // Time travel snapshot state
+  let snapshotMode = false;
+  let snapshotTime = null;
 
   // Color palettes and shared graph builders are in GraphUtils (graph-utils.js)
 
@@ -83,6 +94,31 @@
                 <i data-lucide="check" style="width:16px;height:16px;"></i>
                 ${t('graph.apply')}
               </button>
+            </div>
+            ${isNeo4j() ? `
+            <div style="margin-top:10px;display:flex;align-items:center;gap:0.5rem;">
+              <input type="checkbox" id="community-coloring" style="cursor:pointer;">
+              <label for="community-coloring" style="font-size:0.8125rem;cursor:pointer;color:var(--text-secondary);">${t('graph.communityColoring')}</label>
+            </div>` : ''}
+            <div style="margin-top:10px;display:flex;align-items:center;gap:0.5rem;">
+              <input type="checkbox" id="relation-strength-mode" style="cursor:pointer;">
+              <label for="relation-strength-mode" style="font-size:0.8125rem;cursor:pointer;color:var(--text-secondary);">${t('graph.relationStrength')}</label>
+            </div>
+            <div style="margin-top:10px;">
+              <label class="form-label" style="font-size:0.8125rem;color:var(--text-secondary);">${t('timeTravel.snapshot')}</label>
+              <div style="display:flex;gap:4px;align-items:center;">
+                <input type="datetime-local" id="graph-snapshot-time" class="input" style="width:200px;font-size:0.8125rem;">
+                <button class="btn btn-sm btn-primary" id="load-snapshot-btn" title="${t('timeTravel.title')}">
+                  <i data-lucide="clock" style="width:14px;height:14px;"></i>
+                  ${t('timeTravel.title')}
+                </button>
+                ${snapshotMode ? `
+                <button class="btn btn-sm btn-secondary" id="clear-snapshot-btn" title="${t('graph.exitFocus')}">
+                  <i data-lucide="rotate-ccw" style="width:14px;height:14px;"></i>
+                  ${t('graph.exitFocus')}
+                </button>
+                ` : ''}
+              </div>
             </div>
           </div>
         </div>
@@ -152,6 +188,53 @@
         optionsPanel.style.display = 'block';
         if (chevron) chevron.style.transform = 'rotate(180deg)';
       }
+    }
+
+    // Community coloring toggle
+    const commCheckbox = document.getElementById('community-coloring');
+    if (commCheckbox) {
+      commCheckbox.addEventListener('change', async () => {
+        communityColoringEnabled = commCheckbox.checked;
+        if (communityColoringEnabled && !communityMap) {
+          await loadCommunityMap();
+        }
+        if (cachedAllEntities && Object.keys(cachedAllEntities).length > 0) {
+          // Rebuild graph with community coloring
+          if (focusAbsoluteId) {
+            focusOnEntity(focusAbsoluteId);
+          } else {
+            rebuildMainView();
+          }
+        }
+      });
+    }
+
+    // Relation strength toggle
+    const strengthCheckbox = document.getElementById('relation-strength-mode');
+    if (strengthCheckbox) {
+      strengthCheckbox.checked = relationStrengthEnabled;
+      strengthCheckbox.addEventListener('change', () => {
+        relationStrengthEnabled = strengthCheckbox.checked;
+        if (cachedAllEntities && Object.keys(cachedAllEntities).length > 0) {
+          if (focusAbsoluteId) {
+            focusOnEntity(focusAbsoluteId);
+          } else {
+            rebuildMainView();
+          }
+        }
+      });
+    }
+
+    // Time travel snapshot button
+    const snapshotBtn = document.getElementById('load-snapshot-btn');
+    if (snapshotBtn) {
+      snapshotBtn.addEventListener('click', () => loadGraphSnapshot());
+    }
+
+    // Clear snapshot button
+    const clearSnapshotBtn = document.getElementById('clear-snapshot-btn');
+    if (clearSnapshotBtn) {
+      clearSnapshotBtn.addEventListener('click', () => clearSnapshot());
     }
 
     if (isFirstRender) {
@@ -390,11 +473,36 @@
     }
   }
 
+  // ---- Load community map from API ----
+  async function loadCommunityMap() {
+    if (!isNeo4j()) return;
+    try {
+      const res = await state.api.listCommunities(state.currentGraphId, 1, 200);
+      const communities = res.data?.communities || [];
+      communityMap = {};
+      for (const c of communities) {
+        for (const m of (c.members || [])) {
+          communityMap[m.uuid] = c.community_id;
+        }
+      }
+    } catch (err) {
+      console.warn('Failed to load community map:', err);
+      communityMap = null;
+    }
+  }
+
+  function rebuildMainView() {
+    if (cachedAllNodes.length > 0) {
+      buildGraph(cachedAllNodes, cachedAllEdges, null, null, cachedInheritedRelationIds);
+    }
+  }
+
   // ---- Build vis-network DataSet and initialize the network ----
   //   hopMap: { absoluteId: hopLevel } — optional, for focus mode coloring
   //   inheritedRelationIds: Set of relation absolute_ids that are inherited from older versions
+  //   futureRelationIds: Set of relation absolute_ids that are from future versions
 
-  function buildGraph(entities, relations, highlightAbsId, hopMap, inheritedRelationIds) {
+  function buildGraph(entities, relations, highlightAbsId, hopMap, inheritedRelationIds, futureRelationIds) {
     entityMap = {};
     relationMap = {};
 
@@ -404,13 +512,18 @@
       : null;
 
     // Use shared graph builder
+    let colorMode = hopMap ? 'hop' : 'default';
+    if (communityColoringEnabled && communityMap && !hopMap) {
+      colorMode = 'community';
+    }
     const { nodes, entityMap: eMap, nodeIds } = GraphUtils.buildNodes(entities, {
-      colorMode: hopMap ? 'hop' : 'default',
+      colorMode: colorMode,
       versionCounts: versionCounts,
       hopMap: hopMap,
       highlightAbsId: highlightAbsId,
       versionLabel: versionLabel,
       unnamedLabel: t('graph.unnamedEntity'),
+      communityMap: communityMap,
     });
     const visibleNodeIds = new Set();
     nodes.forEach((node) => {
@@ -432,6 +545,8 @@
 
     const { edges, relationMap: rMap } = GraphUtils.buildEdges(relations, nodeIds, {
       inheritedRelationIds: inheritedRelationIds,
+      futureRelationIds: futureRelationIds,
+      weightMode: relationStrengthEnabled ? 'count' : null,
     });
     relationMap = rMap;
 
@@ -486,16 +601,17 @@
   }
 
   // ---- Multi-hop BFS for focus mode ----
-  //   Returns: { hopMap, entities, relations, inheritedRelationIds }
-  //   Uses entityOneHop for BFS discovery (correct current endpoints),
-  //   then fetches accumulated relations for inherited detection,
-  //   and remaps all relation endpoints after BFS completes.
+  //   Returns: { hopMap, entities, relations, inheritedRelationIds, futureRelationIds }
+  //   Uses backend relation_scope for focused entity; neighbors use simple queries.
+  //   - Among base set, those NOT in latest version → dashed amber (inherited, lost over time)
+  //   - Relations that only exist in newer versions → NOT shown (future, cannot predict)
 
   async function fetchMultiHop(startAbsId, startEntityId, hopLevel) {
     const graphId = state.currentGraphId;
     const hopMap = { [startAbsId]: 0 };
     const relationSet = new Map();  // absolute_id -> raw relation (before remapping)
     const inheritedRelationIds = new Set();
+    const futureRelationIds = new Set();
     let frontier = [{ absId: startAbsId, entityId: startEntityId }];
 
     const focusedAbsIds = new Set(currentVersions.map(v => v.absolute_id));
@@ -511,16 +627,43 @@
       const MAX_PER_HOP = 20;
 
       for (const node of frontier) {
-        let currentRels = [];
+        let versionRels = [];
+        const isFocusedNode = focusedAbsIds.has(node.absId);
 
-        // Always fetch current-version relations for neighbor discovery (endpoints are always correct)
         try {
-          const res = await state.api.entityOneHop(node.absId, graphId);
-          currentRels = res.data || [];
+          let res;
+          if (node.entityId && isFocusedNode) {
+            // Focused entity: use backend relation_scope classification
+            res = await state.api.entityRelations(node.entityId, graphId, {
+              maxVersionAbsoluteId: node.absId,
+              relationScope: relationScope
+            });
+          } else if (node.entityId) {
+            // Neighbor entity: simple query without version scope
+            res = await state.api.entityRelations(node.entityId, graphId, {
+              maxVersionAbsoluteId: node.absId
+            });
+          } else {
+            res = await state.api.entityOneHop(node.absId, graphId);
+          }
+          versionRels = res.data || [];
+
+          // For focused nodes with relation_scope, extract classification from response
+          if (isFocusedNode && node.entityId && relationScope !== 'version_only') {
+            for (const r of versionRels) {
+              if (relationScope === 'all_versions') {
+                if (r._version_scope === 'inherited') inheritedRelationIds.add(r.absolute_id);
+                if (r._version_scope === 'future') futureRelationIds.add(r.absolute_id);
+              } else {
+                // accumulated mode
+                if (r._inherited) inheritedRelationIds.add(r.absolute_id);
+              }
+            }
+          }
         } catch (_) {}
 
-        // Add current relations and discover neighbors
-        for (const r of currentRels) {
+        // Add version relations as base set
+        for (const r of versionRels) {
           relationSet.set(r.absolute_id, r);
           const otherAbsId = r.entity1_absolute_id === node.absId
             ? r.entity2_absolute_id : r.entity1_absolute_id;
@@ -528,46 +671,6 @@
             hopMap[otherAbsId] = h;
             nextFrontier.push({ absId: otherAbsId, entityId: null });
           }
-        }
-
-        // In accumulated mode, also fetch accumulated relations for inherited detection
-        if (!onlyCurrentVersion && node.entityId) {
-          try {
-            const accumRes = await state.api.entityRelations(node.entityId, graphId, {
-              maxVersionAbsoluteId: node.absId
-            });
-            const accumulated = accumRes.data || [];
-            const currentRelIds = new Set(currentRels.map(r => r.absolute_id));
-
-            for (const r of accumulated) {
-              if (!currentRelIds.has(r.absolute_id)) {
-                // Inherited relation — add raw (will remap after BFS)
-                inheritedRelationIds.add(r.absolute_id);
-                relationSet.set(r.absolute_id, r);
-
-                // Try to discover the "other" endpoint for BFS
-                let otherAbsId;
-                if (r.entity1_absolute_id === node.absId) {
-                  otherAbsId = r.entity2_absolute_id;
-                } else if (r.entity2_absolute_id === node.absId) {
-                  otherAbsId = r.entity1_absolute_id;
-                } else if (focusedAbsIds.has(r.entity1_absolute_id)) {
-                  otherAbsId = r.entity2_absolute_id;
-                } else if (focusedAbsIds.has(r.entity2_absolute_id)) {
-                  otherAbsId = r.entity1_absolute_id;
-                } else {
-                  const e1eid = absToEntityId[r.entity1_absolute_id];
-                  otherAbsId = (e1eid === node.entityId)
-                    ? r.entity2_absolute_id : r.entity1_absolute_id;
-                }
-
-                if (otherAbsId && !(otherAbsId in hopMap)) {
-                  hopMap[otherAbsId] = h;
-                  nextFrontier.push({ absId: otherAbsId, entityId: null });
-                }
-              }
-            }
-          } catch (_) {}
         }
 
         // Resolve entity_id for new frontier nodes from cache
@@ -701,7 +804,7 @@
     }
     const finalEntities = dedupedEntities.filter(e => connectedNodeIds.has(e.absolute_id));
 
-    return { hopMap, entities: finalEntities, relations, inheritedRelationIds };
+    return { hopMap, entities: finalEntities, relations, inheritedRelationIds, futureRelationIds };
   }
 
   // ---- Focus on a specific entity version (multi-hop view) ----
@@ -728,7 +831,7 @@
       }
 
       // Use stored hop level (set on "Load Graph" click)
-      const { hopMap, entities, relations, inheritedRelationIds } = await fetchMultiHop(
+      const { hopMap, entities, relations, inheritedRelationIds, futureRelationIds } = await fetchMultiHop(
         absoluteId, entity.entity_id, currentHopLevel
       );
 
@@ -743,7 +846,7 @@
         versionCounts = vcRes.data || {};
       } catch (_) {}
 
-      buildGraph(entities, relations, absoluteId, hopMap, inheritedRelationIds);
+      buildGraph(entities, relations, absoluteId, hopMap, inheritedRelationIds, futureRelationIds);
 
       focusAbsoluteId = absoluteId;
       const exitBtn = document.getElementById('exit-focus-btn');
@@ -847,9 +950,13 @@
 
       ${focusAbsoluteId ? `
       <div style="margin-bottom:0.75rem;">
-        <label style="display:flex;align-items:center;gap:0.35rem;font-size:0.8rem;cursor:pointer;color:var(--text-secondary);">
-          <input type="checkbox" id="only-current-version-cb" ${onlyCurrentVersion ? 'checked' : ''}>
-          ${t('graph.onlyCurrentVersion')}
+        <label style="display:flex;align-items:center;gap:0.35rem;font-size:0.8rem;color:var(--text-secondary);">
+          ${t('graph.relationScope')}
+          <select id="relation-scope-sel" style="font-size:0.8rem;padding:0.15rem 0.3rem;border-radius:0.25rem;background:var(--bg-secondary);color:var(--text-primary);border:1px solid var(--border-primary);">
+            <option value="accumulated" ${relationScope === 'accumulated' ? 'selected' : ''}>${t('graph.scopeAccumulated')}</option>
+            <option value="version_only" ${relationScope === 'version_only' ? 'selected' : ''}>${t('graph.scopeVersionOnly')}</option>
+            <option value="all_versions" ${relationScope === 'all_versions' ? 'selected' : ''}>${t('graph.scopeAllVersions')}</option>
+          </select>
         </label>
       </div>
       ` : ''}
@@ -946,10 +1053,10 @@
       });
     }
 
-    const onlyCb = document.getElementById('only-current-version-cb');
-    if (onlyCb) {
-      onlyCb.addEventListener('change', () => {
-        onlyCurrentVersion = onlyCb.checked;
+    const scopeSel = document.getElementById('relation-scope-sel');
+    if (scopeSel) {
+      scopeSel.addEventListener('change', () => {
+        relationScope = scopeSel.value;
         focusOnEntity(absoluteId);
       });
     }
@@ -968,8 +1075,10 @@
       entityMap[absoluteId] = version;
     }
 
-    await showEntityDetail(absoluteId);
+    // Rebuild graph first, then render sidebar — prevents graph rebuild
+    // from interfering with sidebar state (e.g. entityMap reset in buildGraph)
     await focusOnEntity(absoluteId);
+    await showEntityDetail(absoluteId);
   }
 
   // ---- Show relation detail in the sidebar ----
@@ -1196,6 +1305,102 @@
     }
   }
 
+  // ---- Time Travel: load graph snapshot ----
+
+  async function loadGraphSnapshot() {
+    const timeInput = document.getElementById('graph-snapshot-time');
+    const time = timeInput ? timeInput.value : null;
+    if (!time) {
+      showToast(t('timeTravel.time') + ' ' + t('common.required', 'required'), 'warn');
+      return;
+    }
+
+    const loadingEl = document.getElementById('graph-loading');
+    const statsEl = document.getElementById('graph-stats');
+    if (loadingEl) loadingEl.style.display = 'flex';
+    if (statsEl) statsEl.textContent = t('common.loading');
+
+    try {
+      // datetime-local gives "YYYY-MM-DDTHH:MM", append ":00" for seconds
+      const timeParam = time + ':00';
+      const res = await state.api.getSnapshot(timeParam);
+
+      if (res.error) {
+        showToast(res.error, 'error');
+        return;
+      }
+
+      renderSnapshotData(res);
+      snapshotMode = true;
+      snapshotTime = time;
+      showToast(t('timeTravel.snapshot') + ': ' + time, 'success');
+    } catch (err) {
+      console.error('Snapshot load failed:', err);
+      showToast(t('graph.loadFailed') + ': ' + err.message, 'error');
+    } finally {
+      if (loadingEl) loadingEl.style.display = 'none';
+    }
+  }
+
+  function renderSnapshotData(data) {
+    const snapshotEntities = data.entities || [];
+    const snapshotRelations = data.relations || [];
+
+    if (snapshotEntities.length === 0) {
+      const statsEl = document.getElementById('graph-stats');
+      if (statsEl) statsEl.textContent = t('graph.noRelations');
+      showToast(t('common.noData'), 'warn');
+      return;
+    }
+
+    // Build entity lookup from snapshot data
+    const snapshotEntityMap = {};
+    for (const e of snapshotEntities) {
+      snapshotEntityMap[e.absolute_id] = e;
+    }
+
+    // Store snapshot data as cached for rebuild on option changes
+    cachedAllNodes = snapshotEntities;
+    cachedAllEdges = snapshotRelations;
+    cachedInheritedRelationIds = null;
+
+    // Build version counts
+    const snapshotEntityIds = [...new Set(snapshotEntities.map(e => e.entity_id))];
+    versionCounts = {};
+    // Simple version count from the snapshot entities themselves
+    for (const eid of snapshotEntityIds) {
+      versionCounts[eid] = snapshotEntities.filter(e => e.entity_id === eid).length;
+    }
+
+    // Render using existing buildGraph
+    buildGraph(snapshotEntities, snapshotRelations, null, null, null);
+
+    // Update stats
+    const statsEl = document.getElementById('graph-stats');
+    if (statsEl) {
+      statsEl.textContent = t('graph.loaded', {
+        entities: snapshotEntities.length,
+        relations: snapshotRelations.length,
+      }) + ' [' + t('timeTravel.snapshot') + ']';
+    }
+
+    // Clear focus mode
+    focusAbsoluteId = null;
+    const exitBtn = document.getElementById('exit-focus-btn');
+    if (exitBtn) exitBtn.style.display = 'none';
+    const focusBadge = document.getElementById('focus-mode-badge');
+    if (focusBadge) focusBadge.style.display = 'none';
+  }
+
+  function clearSnapshot() {
+    snapshotMode = false;
+    snapshotTime = null;
+    const timeInput = document.getElementById('graph-snapshot-time');
+    if (timeInput) timeInput.value = '';
+    // Reload the graph normally
+    loadGraph();
+  }
+
   // ---- Cleanup on page leave ----
 
   function destroy() {
@@ -1211,6 +1416,9 @@
     cachedInheritedRelationIds = null;
     cachedAllRawRelations = null;
     cachedRemappedMainRelations = null;
+    relationStrengthEnabled = false;
+    snapshotMode = false;
+    snapshotTime = null;
   }
 
   // ---- Register this page ----

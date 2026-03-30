@@ -17,6 +17,7 @@ from ..llm.client import (
 )
 from ..storage.embedding import EmbeddingClient
 from ..storage.manager import StorageManager
+from ..storage import create_storage_manager
 from .entity import EntityProcessor
 from .relation import RelationProcessor
 from ..models import MemoryCache, Entity
@@ -42,8 +43,11 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
     
     def __init__(self, storage_path: str, window_size: int = 1000, overlap: int = 200,
                  llm_api_key: Optional[str] = None, llm_model: str = "gpt-4",
+                 config: Optional[Dict[str, Any]] = None,
+                 storage_manager=None,
                  llm_base_url: Optional[str] = None,
                  alignment_llm: Optional[Dict[str, Any]] = None,
+                 dream_llm: Optional[Dict[str, Any]] = None,
                  embedding_model_path: Optional[str] = None,
                  embedding_model_name: Optional[str] = None,
                  embedding_device: str = "cpu",
@@ -144,12 +148,23 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
             use_local=embedding_use_local
         )
         
-        self.storage = StorageManager(
-            storage_path, 
-            embedding_client=self.embedding_client,
-            entity_content_snippet_length=_content_snippet_length,
-            relation_content_snippet_length=_relation_content_snippet_length
-        )
+        if storage_manager is not None:
+            self.storage = storage_manager
+        elif config is not None:
+            self.storage = create_storage_manager(
+                config,
+                embedding_client=self.embedding_client,
+                storage_path=storage_path,
+                entity_content_snippet_length=_content_snippet_length,
+                relation_content_snippet_length=_relation_content_snippet_length,
+            )
+        else:
+            self.storage = StorageManager(
+                storage_path,
+                embedding_client=self.embedding_client,
+                entity_content_snippet_length=_content_snippet_length,
+                relation_content_snippet_length=_relation_content_snippet_length
+            )
         self.document_processor = DocumentProcessor(window_size, overlap)
         _al = alignment_llm or {}
         self.llm_client = LLMClient(
@@ -177,6 +192,18 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
             alignment_content_snippet_length=_al.get("content_snippet_length"),
             alignment_relation_content_snippet_length=_al.get("relation_content_snippet_length"),
         )
+        _dream_cfg = dream_llm or {}
+        if _dream_cfg.get("enabled"):
+            self.dream_llm_client = LLMClient(
+                api_key=_dream_cfg.get("api_key", llm_api_key),
+                model_name=_dream_cfg.get("model", llm_model),
+                base_url=_dream_cfg.get("base_url", llm_base_url),
+                think_mode=bool(_dream_cfg.get("think_mode", False)),
+                max_tokens=_dream_cfg.get("max_tokens"),
+                max_llm_concurrency=1,
+            )
+        else:
+            self.dream_llm_client = self.llm_client
         self.entity_processor = EntityProcessor(
             self.storage, 
             self.llm_client,
@@ -980,6 +1007,7 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
                                     total_text_length=total_length, verbose=verbose,
                                     verbose_steps=verbose_steps,
                                     document_path=document_path, event_time=event_time,
+                                    window_index=_wi + 1, total_windows=total_chunks,
                                 )
 
                             new_mc = _run_with_progress_heartbeat(

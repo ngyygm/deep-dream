@@ -27,17 +27,23 @@ def _normalize_pair_for_relation(e1: str, e2: str) -> Tuple[str, str]:
 
 
 def dedupe_extracted_entities(entities: Optional[List[Dict[str, Any]]]) -> List[Dict[str, str]]:
-    """按实体 name（strip 后）去重，保留首次出现的条目。"""
-    seen: set[str] = set()
+    """按实体 name（strip 后）去重；同名时保留 content 更长的条目。"""
+    name_to_index: Dict[str, int] = {}
     out: List[Dict[str, str]] = []
     for e in entities or []:
         if not isinstance(e, dict):
             continue
         name = str(e.get("name") or "").strip()
-        if not name or name in seen:
+        if not name:
             continue
-        seen.add(name)
-        out.append({"name": name, "content": str(e.get("content") or "").strip()})
+        content = str(e.get("content") or "").strip()
+        existing_idx = name_to_index.get(name)
+        if existing_idx is None:
+            name_to_index[name] = len(out)
+            out.append({"name": name, "content": content})
+            continue
+        if len(content) > len(out[existing_idx]["content"]):
+            out[existing_idx] = {"name": name, "content": content}
     return out
 
 
@@ -87,7 +93,8 @@ class _ExtractionMixin:
                       total_text_length: int = 0, verbose: bool = True,
                       verbose_steps: bool = True,
                       document_path: str = "",
-                      event_time: Optional[datetime] = None) -> MemoryCache:
+                      event_time: Optional[datetime] = None,
+                      window_index: int = 0, total_windows: int = 0) -> MemoryCache:
         """步骤1：更新记忆缓存。必须在 _cache_lock 下调用，保证 cache 链串行。"""
         self.llm_client._priority_local.priority = LLM_PRIORITY_STEP1
         if verbose:
@@ -109,6 +116,8 @@ class _ExtractionMixin:
             text_end_pos=text_end_pos,
             total_text_length=total_text_length,
             event_time=event_time,
+            window_index=window_index,
+            total_windows=total_windows,
         )
 
         self.llm_client._current_distill_step = None
@@ -777,6 +786,15 @@ class _ExtractionMixin:
                 f"{_win_label} · 步骤6/7: 实体对齐",
                 f"实体对齐完成，共 {len(unique_entities)} 个实体")
 
+        # Phase C: 记录 Episode → Entity MENTIONS
+        if unique_entities and hasattr(self.storage, 'save_episode_mentions'):
+            try:
+                abs_ids = [e.absolute_id for e in unique_entities]
+                self.storage.save_episode_mentions(new_memory_cache.absolute_id, abs_ids)
+            except Exception as e:
+                if verbose:
+                    wprint(f"【步骤6】MENTIONS｜失败｜{e}")
+
         return _AlignResult(
             entity_name_to_id=entity_name_to_id,
             pending_relations=pending_relations_from_entities,
@@ -957,7 +975,8 @@ class _ExtractionMixin:
                        text_end_pos: int = 0, total_text_length: int = 0,
                        verbose: bool = True, verbose_steps: bool = True,
                        document_path: str = "",
-                       event_time: Optional[datetime] = None):
+                       event_time: Optional[datetime] = None,
+                       window_index: int = 0, total_windows: int = 1):
         """兼容入口：串行执行 cache 更新 + 抽取处理（process_documents 等旧路径使用）。"""
         if verbose:
             wprint(f"\n{'='*60}")
@@ -974,6 +993,8 @@ class _ExtractionMixin:
                 total_text_length=total_text_length, verbose=verbose,
                 verbose_steps=verbose_steps,
                 document_path=document_path, event_time=event_time,
+                window_index=window_index, total_windows=total_windows,
             )
         self._process_extraction(new_mc, input_text, document_name,
-                                 verbose=verbose, verbose_steps=verbose_steps, event_time=event_time)
+                                 verbose=verbose, verbose_steps=verbose_steps, event_time=event_time,
+                                 window_index=window_index, total_windows=total_windows)

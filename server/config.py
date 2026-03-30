@@ -10,6 +10,15 @@ DEFAULTS = {
     "host": "0.0.0.0",
     "port": 5001,
     "storage_path": "./graph",
+    "storage": {
+        "backend": "sqlite",  # "sqlite" | "neo4j"
+        "neo4j": {
+            "uri": "bolt://localhost:7687",
+            "user": "neo4j",
+            "password": "password",
+        },
+        "vector_dim": 1024,
+    },
     "llm": {
         "api_key": None,
         "model": "gpt-4",
@@ -270,6 +279,52 @@ def merge_llm_alignment(llm: Dict[str, Any]) -> Dict[str, Any]:
     mc_align = pick("max_concurrency", "alignment_max_concurrency")
     if mc_align is not None:
         out["max_concurrency"] = int(mc_align)
+
+    if nested.get("enabled") is True:
+        out["enabled"] = True
+        return out
+
+    if out:
+        out["enabled"] = True
+    return out
+
+
+def merge_llm_dream(llm: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    合并 DeepDream 专用 LLM 配置。
+    - llm.dream.enabled == false：关闭 dream 专用通道，回退到默认 LLM。
+    - enabled == true 或未写 enabled 但存在 base_url/api_key/model 等：启用 dream 配置。
+    """
+    if llm.get("dream_enabled") is False:
+        return {}
+
+    nested = llm.get("dream")
+    if not isinstance(nested, dict):
+        nested = {}
+
+    if nested.get("enabled") is False:
+        return {}
+
+    def pick(nested_key: str, flat_key: str):
+        v = nested.get(nested_key)
+        if v is None and nested_key == "think":
+            v = nested.get("think_mode")
+        if v is not None:
+            return v
+        return llm.get(flat_key)
+
+    out: Dict[str, Any] = {}
+    mapping = (
+        ("base_url", "dream_base_url"),
+        ("api_key", "dream_api_key"),
+        ("model", "dream_model"),
+        ("max_tokens", "dream_max_tokens"),
+        ("think", "dream_think"),
+    )
+    for nk, fk in mapping:
+        val = pick(nk, fk)
+        if val is not None:
+            out["think_mode" if nk == "think" else nk] = val
 
     if nested.get("enabled") is True:
         out["enabled"] = True

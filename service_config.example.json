@@ -5,6 +5,16 @@
   "log_mode": "detail",
   "monitor_refresh_seconds": 1.0,
   "storage_path": "./graph",
+  "storage": {
+    "backend": "sqlite",
+    "_comment_backend": "sqlite | neo4j",
+    "neo4j": {
+      "uri": "bolt://localhost:7687",
+      "user": "neo4j",
+      "password": "tmg2024secure"
+    },
+    "vector_dim": 1024
+  },
   "llm": {
     "api_key": "ollama",
     "model": "model_name",
@@ -21,6 +31,14 @@
       "base_url": "http://127.0.0.1:11435",
       "think": false,
       "max_tokens": 8192
+    },
+    "dream": {
+      "enabled": false,
+      "api_key": "ollama",
+      "model": "dream_model_name",
+      "base_url": "http://127.0.0.1:11434",
+      "think": false,
+      "max_tokens": 4096
     }
   },
   "embedding": {

@@ -15,13 +15,53 @@ from .prompts import (
 )
 
 
+import re
+
+
+def _append_system_status(content: str, doc_name: str,
+                         text_start_pos: int = 0, text_end_pos: int = 0,
+                         total_text_length: int = 0,
+                         window_index: int = 0, total_windows: int = 0) -> str:
+    """在 LLM 生成的记忆缓存内容末尾追加「系统状态」section（代码注入，不依赖 LLM）。
+
+    追加格式：
+        ## 系统状态
+        - 文档名：xxx
+        - 处理进度：[3/10]（字符位置：1000-2000/10000）
+
+    如果 doc_name 为空且窗口参数全为零，则跳过追加。
+    """
+    # 先移除之前可能注入的 ## 系统状态 段落，避免重复
+    content = re.sub(r'\n*## 系统状态\s*\n.*$', '', content, flags=re.DOTALL).rstrip()
+
+    if not doc_name and text_start_pos == 0 and text_end_pos == 0 and window_index == 0:
+        return content
+
+    parts = ["\n## 系统状态"]
+    if doc_name:
+        parts.append(f"- 文档名：{doc_name}")
+
+    # 窗口进度
+    if total_windows > 0:
+        parts.append(f"- 处理进度：[{window_index}/{total_windows}]")
+    elif total_text_length > 0:
+        parts.append(
+            f"- 处理进度：[{text_start_pos}-{text_end_pos}/{total_text_length}]"
+        )
+    elif text_end_pos > 0:
+        parts.append(f"- 处理进度：字符位置 {text_start_pos}-{text_end_pos}")
+
+    return content + "\n" + "\n".join(parts)
+
+
 class _MemoryOpsMixin:
     """记忆缓存相关的 LLM 操作（mixin，通过 LLMClient 多继承使用）。"""
 
     def update_memory_cache(self, current_cache: Optional[MemoryCache], input_text: str,
                            document_name: str = "", text_start_pos: int = 0,
                            text_end_pos: int = 0, total_text_length: int = 0,
-                           event_time: Optional[datetime] = None) -> MemoryCache:
+                           event_time: Optional[datetime] = None,
+                           window_index: int = 0, total_windows: int = 0) -> MemoryCache:
         """
         任务1：更新记忆缓存
 
@@ -33,6 +73,8 @@ class _MemoryOpsMixin:
             text_start_pos: 当前文本在文档中的起始位置（字符位置）
             text_end_pos: 当前文本在文档中的结束位置（字符位置）
             total_text_length: 文档总长度（字符数）
+            window_index: 当前窗口索引（从1开始）
+            total_windows: 总窗口数
 
         Returns:
             更新后的新记忆缓存
@@ -40,15 +82,19 @@ class _MemoryOpsMixin:
         system_prompt = UPDATE_MEMORY_CACHE_SYSTEM_PROMPT
 
         if current_cache:
+            # 喂给 LLM 之前，移除上次代码注入的系统状态段落
+            cache_for_prompt = re.sub(
+                r'\n*## 系统状态\s*\n.*$', '', current_cache.content, flags=re.DOTALL
+            ).rstrip()
             prompt = f"""<记忆缓存>
-{current_cache.content}
+{cache_for_prompt}
 </记忆缓存>
 
 <输入文本>
 {input_text}
 </输入文本>
 
-请根据新的输入文本更新记忆缓存：保留有用信息，添加新信息，删除过期信息，更新系统状态。"""
+请根据新的输入文本更新记忆缓存：保留有用信息，添加新信息，删除过期信息。"""
         else:
             prompt = f"""<输入文本>
 {input_text}
@@ -69,10 +115,14 @@ class _MemoryOpsMixin:
         new_content = clean_markdown_code_blocks(new_content)
         # XML 分隔符标签已在 _call_llm 中统一清理
 
+        # 代码注入系统状态：文档名 + 窗口进度（不依赖 LLM 生成）
+        source_document_only = document_name.split('/')[-1] if document_name else ""
+        new_content = _append_system_status(new_content, source_document_only,
+                                           text_start_pos, text_end_pos, total_text_length,
+                                           window_index, total_windows)
+
         base_time = event_time if event_time is not None else datetime.now()
         new_cache_id = f"cache_{base_time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
-
-        source_document_only = document_name.split('/')[-1] if document_name else ""
 
         return MemoryCache(
             absolute_id=new_cache_id,

@@ -7,7 +7,7 @@
   const MAX_HISTORY = 10;
 
   // ---- Local state ----
-  let searchMode = 'normal';  // 'normal' | 'multi' | 'path'
+  let searchMode = 'normal';  // 'normal' | 'multi' | 'path' | 'traverse' | 'ask'
   let multiQueries = [''];
   let batchResults = {};   // { queryIndex: { entities, relations } }
   let activeBatchTab = 0;
@@ -52,7 +52,9 @@
     const timeBefore = document.getElementById('search-time-before')?.value || '';
     const expandEl = document.getElementById('search-expand');
     const expand = expandEl ? expandEl.checked : true;
-    return { threshold, maxEntities, maxRelations, timeAfter, timeBefore, expand };
+    const search_mode = document.getElementById('searchMode')?.value || 'semantic';
+    const reranker = document.getElementById('searchReranker')?.value || 'rrf';
+    return { threshold, maxEntities, maxRelations, timeAfter, timeBefore, expand, search_mode, reranker };
   }
 
   // ---- Build entity name lookup from results ----
@@ -128,6 +130,44 @@
       `;
     } else if (searchMode === 'path') {
       modeContent = `<div id="pf-container"></div>`;
+    } else if (searchMode === 'traverse') {
+      modeContent = `
+        <p style="font-size:0.85rem;color:var(--text-muted);margin-bottom:12px;">${t('search.traverseHint')}</p>
+        <div style="display:grid;grid-template-columns:1fr auto auto;gap:12px;align-items:end;">
+          <div>
+            <label class="form-label">${t('search.seedEntities')}</label>
+            <input type="text" id="traverse-seeds" class="input" placeholder="entity_id_1, entity_id_2, ...">
+          </div>
+          <div>
+            <label class="form-label">${t('search.maxDepth')}</label>
+            <input type="number" id="traverse-depth" class="input" value="3" min="1" max="10" style="width:80px;">
+          </div>
+          <div>
+            <label class="form-label">${t('search.maxNodes')}</label>
+            <input type="number" id="traverse-max-nodes" class="input" value="100" min="1" max="500" style="width:80px;">
+          </div>
+        </div>
+        <div style="margin-top:12px;">
+          <button class="btn btn-primary" id="traverse-btn">
+            <i data-lucide="play" style="width:14px;height:14px;margin-right:4px;"></i>
+            ${t('search.startTraversal')}
+          </button>
+        </div>
+      `;
+    } else if (searchMode === 'ask') {
+      modeContent = `
+        <p style="font-size:0.85rem;color:var(--text-muted);margin-bottom:12px;">${t('search.agentAskHint')}</p>
+        <div style="display:flex;gap:10px;align-items:stretch;">
+          <div style="flex:1;">
+            <textarea id="ask-question" class="input" rows="3" placeholder="${t('search.questionPlaceholder')}" style="resize:vertical;"></textarea>
+          </div>
+          <button class="btn btn-primary" id="ask-btn" style="align-self:flex-end;">
+            <i data-lucide="send" style="width:16px;height:16px;margin-right:4px;"></i>
+            ${t('search.ask')}
+          </button>
+        </div>
+        <div id="ask-result" style="margin-top:12px;"></div>
+      `;
     }
 
     return `
@@ -150,6 +190,14 @@
           <button class="tab ${searchMode === 'path' ? 'active' : ''}" data-search-mode="path">
             <i data-lucide="route" style="width:14px;height:14px;margin-right:4px;"></i>
             ${t('search.pathFinder')}
+          </button>
+          <button class="tab ${searchMode === 'traverse' ? 'active' : ''}" data-search-mode="traverse">
+            <i data-lucide="git-merge" style="width:14px;height:14px;margin-right:4px;"></i>
+            ${t('search.traverse')}
+          </button>
+          <button class="tab ${searchMode === 'ask' ? 'active' : ''}" data-search-mode="ask">
+            <i data-lucide="brain" style="width:14px;height:14px;margin-right:4px;"></i>
+            ${t('search.agentAsk')}
           </button>
         </div>
         <div style="padding:16px 20px;" id="mode-content">
@@ -193,6 +241,22 @@
                   <input type="checkbox" id="search-expand" checked>
                   <span class="toggle-slider"></span>
                 </label>
+              </div>
+              <div>
+                <label class="form-label" data-i18n="search.searchMode">${t('search.searchMode')}</label>
+                <select id="searchMode" class="input" style="height:38px;">
+                  <option value="semantic" data-i18n="search.modeSemantic">${t('search.modeSemantic')}</option>
+                  <option value="bm25" data-i18n="search.modeBM25">${t('search.modeBM25')}</option>
+                  <option value="hybrid" data-i18n="search.modeHybrid">${t('search.modeHybrid')}</option>
+                </select>
+              </div>
+              <div>
+                <label class="form-label">${t('search.reranker')}</label>
+                <select id="searchReranker" class="input" style="height:38px;">
+                  <option value="rrf">${t('search.rerankerRRF')}</option>
+                  <option value="mmr">${t('search.rerankerMMR')}</option>
+                  <option value="node_degree">${t('search.rerankerNodeDegree')}</option>
+                </select>
               </div>
             </div>
           </div>
@@ -523,6 +587,8 @@
         timeAfter: filters.timeAfter || undefined,
         timeBefore: filters.timeBefore || undefined,
         expand: filters.expand,
+        search_mode: filters.search_mode,
+        reranker: filters.reranker,
       });
 
       currentResults = res.data || { entities: [], relations: [] };
@@ -578,6 +644,8 @@
             timeAfter: filters.timeAfter || undefined,
             timeBefore: filters.timeBefore || undefined,
             expand: filters.expand,
+            search_mode: filters.search_mode,
+            reranker: filters.reranker,
           });
           batchResults[i] = { query: q, entities: res.data?.entities || [], relations: res.data?.relations || [] };
         } catch (err) {
@@ -659,6 +727,8 @@
         timeAfter: filters.timeAfter || undefined,
         timeBefore: filters.timeBefore || undefined,
         expand,
+        search_mode: filters.search_mode,
+        reranker: filters.reranker,
       });
 
       currentResults = res.data || { entities: [], relations: [] };
@@ -731,6 +801,7 @@
     }
     const advOpen = document.getElementById('advanced-filters')?.style.display !== 'none';
     const threshold = document.getElementById('search-threshold')?.value;
+    const searchModeVal = document.getElementById('searchMode')?.value;
 
     area.innerHTML = renderSearchCard();
 
@@ -742,6 +813,10 @@
     if (threshold) {
       const el = area.querySelector('#search-threshold');
       if (el) el.value = threshold;
+    }
+    if (searchModeVal) {
+      const el = area.querySelector('#searchMode');
+      if (el) el.value = searchModeVal;
     }
     if (advOpen) {
       const fp = area.querySelector('#advanced-filters');
@@ -845,6 +920,12 @@
 
     // Multi-query events (when in multi mode)
     if (searchMode === 'multi') bindMultiQueryEvents(container);
+
+    // Traverse mode events
+    if (searchMode === 'traverse') bindTraverseEvents(container);
+
+    // Ask mode events
+    if (searchMode === 'ask') bindAskEvents(container);
   }
 
   // ---- Bind multi-query specific events ----
@@ -892,6 +973,106 @@
         syncMultiQueryInputs(container);
         executeBatchSearch();
       });
+    }
+  }
+
+  // ---- Bind traverse mode events ----
+  function bindTraverseEvents(container) {
+    const traverseBtn = container.querySelector('#traverse-btn');
+    if (traverseBtn) {
+      traverseBtn.addEventListener('click', executeTraversal);
+    }
+  }
+
+  // ---- Execute graph traversal ----
+  async function executeTraversal() {
+    const seedsInput = document.getElementById('traverse-seeds');
+    const seeds = seedsInput ? seedsInput.value.trim() : '';
+    if (!seeds) {
+      showToast(t('search.traverseNoSeeds'), 'warning');
+      return;
+    }
+    const seedIds = seeds.split(',').map(s => s.trim()).filter(Boolean);
+    const maxDepth = parseInt(document.getElementById('traverse-depth')?.value || '3', 10);
+    const maxNodes = parseInt(document.getElementById('traverse-max-nodes')?.value || '100', 10);
+    const btn = document.getElementById('traverse-btn');
+    const originalBtnHtml = btn ? btn.innerHTML : '';
+
+    if (btn) {
+      btn.disabled = true;
+      btn.innerHTML = `${spinnerHtml('spinner-sm')} ${t('search.traversing')}`;
+    }
+
+    try {
+      const res = await state.api.traverseGraph(seedIds, maxDepth, maxNodes);
+      const data = res.data || {};
+      const entities = data.entities || [];
+      const relations = data.relations || [];
+      currentResults = { entities, relations };
+      activeTab = 'entities';
+      batchResults = {};
+      refreshResults();
+      showToast(t('search.traverseSuccess', { count: entities.length }), 'success');
+    } catch (err) {
+      showToast(`${t('search.traverseFailed')}: ${err.message}`, 'error');
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.innerHTML = originalBtnHtml;
+        if (window.lucide) lucide.createIcons({ nodes: [btn] });
+      }
+    }
+  }
+
+  // ---- Bind ask mode events ----
+  function bindAskEvents(container) {
+    const askBtn = container.querySelector('#ask-btn');
+    if (askBtn) {
+      askBtn.addEventListener('click', executeAgentAsk);
+    }
+    const askInput = container.querySelector('#ask-question');
+    if (askInput) {
+      askInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) executeAgentAsk();
+      });
+    }
+  }
+
+  // ---- Execute agent ask ----
+  async function executeAgentAsk() {
+    const questionEl = document.getElementById('ask-question');
+    const question = questionEl ? questionEl.value.trim() : '';
+    if (!question) {
+      showToast(t('search.noQuery'), 'warning');
+      return;
+    }
+    const btn = document.getElementById('ask-btn');
+    const resultEl = document.getElementById('ask-result');
+    const originalBtnHtml = btn ? btn.innerHTML : '';
+
+    if (btn) {
+      btn.disabled = true;
+      btn.innerHTML = `${spinnerHtml('spinner-sm')} ${t('search.asking')}`;
+    }
+    if (resultEl) resultEl.innerHTML = `<div class="flex items-center gap-2 p-4">${spinnerHtml()}<span style="color:var(--text-muted);">${t('search.asking')}</span></div>`;
+
+    try {
+      const res = await state.api.agentAsk(question);
+      const answer = res.data?.answer || res.data?.response || res.data?.text || '';
+      if (resultEl) {
+        resultEl.innerHTML = answer
+          ? `<div style="background:var(--bg-secondary);padding:1rem;border-radius:0.5rem;border:1px solid var(--border-color);font-size:0.9rem;line-height:1.7;white-space:pre-wrap;word-break:break-word;">${escapeHtml(answer)}</div>`
+          : `<div style="color:var(--text-muted);">${t('search.noAnswer')}</div>`;
+      }
+    } catch (err) {
+      if (resultEl) resultEl.innerHTML = `<div style="color:var(--error);">${t('search.askFailed')}: ${escapeHtml(err.message)}</div>`;
+      showToast(`${t('search.askFailed')}: ${err.message}`, 'error');
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.innerHTML = originalBtnHtml;
+        if (window.lucide) lucide.createIcons({ nodes: [btn] });
+      }
     }
   }
 

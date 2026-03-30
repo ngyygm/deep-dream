@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 import pytest
-from server.queue import RememberTask
+from server.task_queue import RememberTask
 
 # ---------------------------------------------------------------------------
 # Fixtures

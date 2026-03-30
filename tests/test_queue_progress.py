@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from pathlib import Path
 
-from server.queue import RememberTask, RememberTaskQueue, _remember_callback_ui_fields
+from server.task_queue import RememberTask, RememberTaskQueue, _remember_callback_ui_fields
 
 
 def _make_task(**overrides) -> RememberTask:

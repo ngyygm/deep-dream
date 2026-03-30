@@ -5,6 +5,7 @@ Temporal Memory Graph - 时序记忆图谱系统
 from .models import MemoryCache, Entity, Relation
 from .storage import StorageManager
 from .storage import EmbeddingClient
+from .storage import create_storage_manager
 from .pipeline import TemporalMemoryGraphProcessor
 from .pipeline import DocumentProcessor
 from .llm import LLMClient
@@ -20,6 +21,7 @@ __all__ = [
     "Relation",
     "StorageManager",
     "EmbeddingClient",
+    "create_storage_manager",
     "TemporalMemoryGraphProcessor",
     "DocumentProcessor",
     "LLMClient",

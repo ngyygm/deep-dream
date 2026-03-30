@@ -1,0 +1,27 @@
+version: "3.8"
+
+services:
+  neo4j:
+    image: neo4j:5-community
+    container_name: tmg-neo4j
+    restart: unless-stopped
+    ports:
+      - "7474:7474"   # HTTP Browser
+      - "7687:7687"   # Bolt protocol
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-tmg2024secure}
+      NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_server_memory_heap_initial__size: 256m
+      NEO4J_server_memory_heap_max__size: 512m
+      NEO4J_server_memory_pagecache_size: 128m
+      NEO4J_dbms_security_procedures_unrestricted: apoc.*
+    volumes:
+      - ./graph/neo4j_data:/data
+      - ./graph/neo4j_logs:/logs
+    mem_limit: 1g
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p ${NEO4J_PASSWORD:-tmg2024secure} 'RETURN 1' || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s

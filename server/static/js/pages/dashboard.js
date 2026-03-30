@@ -88,7 +88,7 @@
   // Render sections
   // ---------------------------------------------------------------------------
 
-  /** Build the top 6 stat cards. */
+  /** Build the top stat cards. */
   function buildStatCards(overview, graphs, accessStats) {
     const totalEntities = sumAcrossGraphs(graphs, 'entities');
     const totalRelations = sumAcrossGraphs(graphs, 'relations');
@@ -100,7 +100,10 @@
     if (successRate < 90) srClass = 'text-error';
     else if (successRate < 99) srClass = 'text-warning';
 
-    return `<div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-6">
+    const isNeo4jBackend = isNeo4j();
+    const gridCols = isNeo4jBackend ? 'lg:grid-cols-8' : 'lg:grid-cols-6';
+
+    let html = `<div class="grid grid-cols-2 md:grid-cols-3 ${gridCols} gap-4 mb-6">
       <!-- Uptime -->
       <div class="stat-card">
         <div class="stat-label">${t('dashboard.uptime')}</div>
@@ -134,8 +137,24 @@
         <div class="stat-label">${t('dashboard.avgLatency')}</div>
         <div class="stat-value">${avgLatency.toFixed(1)}<span style="font-size:0.875rem;color:var(--text-muted);"> ${t('dashboard.ms')}</span></div>
         <div style="font-size:0.75rem;color:var(--text-muted);margin-top:0.25rem;">${t('dashboard.peakMs', { count: formatNumber(accessStats.max_duration_ms) })}</div>
+      </div>`;
+
+    if (isNeo4jBackend) {
+      html += `
+      <!-- Episodes (Neo4j only) -->
+      <div class="stat-card" style="cursor:pointer;" onclick="window.location.hash='#episodes'">
+        <div class="stat-label">${t('nav.episodes')}</div>
+        <div class="stat-value" style="color:#14b8a6;">${formatNumber(_episodeCount)}</div>
       </div>
-    </div>`;
+      <!-- Communities (Neo4j only) -->
+      <div class="stat-card" style="cursor:pointer;" onclick="window.location.hash='#communities'">
+        <div class="stat-label">${t('nav.communities')}</div>
+        <div class="stat-value" style="color:#8b5cf6;">${formatNumber(_communityCount)}</div>
+      </div>`;
+    }
+
+    html += '</div>';
+    return html;
   }
 
   /** Build graph list cards. */
@@ -361,6 +380,8 @@
   let _tasks = [];
   let _logs = [];
   let _accessStats = {};
+  let _episodeCount = 0;
+  let _communityCount = 0;
 
   async function fetchOverview() {
     try {
@@ -402,6 +423,63 @@
       updateApiStats();
       updateStatCards(); // stat cards also depend on access stats
     } catch (err) { console.warn('fetchAccessStats failed:', err); }
+  }
+
+  async function fetchEpisodeCount() {
+    if (!isNeo4j()) return;
+    try {
+      const res = await state.api.findStats(state.currentGraphId);
+      _episodeCount = res.data?.total_episodes || 0;
+      _communityCount = res.data?.total_communities || 0;
+      updateStatCards();
+    } catch (err) { console.warn('fetchEpisodeCount failed:', err); }
+  }
+
+  async function fetchGraphStats() {
+    try {
+      const res = await state.api.getGraphStats();
+      if (res.error) return;
+      const stats = res;
+      const container = document.getElementById('graphStatsContainer');
+      if (!container) return;
+      container.innerHTML = `
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title" style="display:flex;align-items:center;gap:0.5rem;">
+              <i data-lucide="bar-chart-3" style="width:16px;height:16px;"></i>
+              <span data-i18n="stats.graphStats">${t('stats.graphStats')}</span>
+            </div>
+          </div>
+          <div class="stats-grid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:1rem;">
+            <div class="stat-card">
+              <div class="stat-value">${formatNumber(stats.entity_count || 0)}</div>
+              <div class="stat-label" data-i18n="dashboard.totalEntities">${t('dashboard.totalEntities')}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-value">${formatNumber(stats.relation_count || 0)}</div>
+              <div class="stat-label" data-i18n="dashboard.totalRelations">${t('dashboard.totalRelations')}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-value">${(stats.avg_relations_per_entity || 0).toFixed(2)}</div>
+              <div class="stat-label" data-i18n="stats.avgRelations">${t('stats.avgRelations')}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-value">${formatNumber(stats.max_relations_per_entity || 0)}</div>
+              <div class="stat-label" data-i18n="stats.maxRelations">${t('stats.maxRelations')}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-value">${formatNumber(stats.isolated_entities || 0)}</div>
+              <div class="stat-label" data-i18n="stats.isolatedEntities">${t('stats.isolatedEntities')}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-value">${(stats.graph_density || 0).toFixed(4)}</div>
+              <div class="stat-label" data-i18n="stats.density">${t('stats.density')}</div>
+            </div>
+          </div>
+        </div>`;
+      if (window.I18N) window.I18N.apply(container);
+      if (window.lucide) lucide.createIcons({ nodes: [container] });
+    } catch (e) { console.error('Failed to load graph stats:', e); }
   }
 
   // ---------------------------------------------------------------------------
@@ -472,6 +550,9 @@
         <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-6">${Array(6).fill('<div class="stat-card"><div class="stat-label" style="height:0.75rem;background:var(--bg-input);border-radius:4px;width:60%;"></div><div class="stat-value" style="height:1.5rem;background:var(--bg-input);border-radius:4px;width:40%;margin-top:0.5rem;"></div></div>').join('')}</div>
       </div>
 
+      <!-- Graph Statistics -->
+      <div id="graphStatsContainer" class="mb-6">${spinnerHtml()}</div>
+
       <!-- Two-column layout -->
       <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
 
@@ -522,13 +603,15 @@
       autoScrollCb.addEventListener('change', () => { _autoScroll = autoScrollCb.checked; });
     }
 
-    // Initial load: fetch all 5 in parallel (one-time)
+    // Initial load: fetch all in parallel (one-time)
     await Promise.all([
       fetchOverview(),
       fetchGraphs(),
       fetchTasks(),
       fetchLogs(),
       fetchAccessStats(),
+      fetchEpisodeCount(),
+      fetchGraphStats(),
     ]);
 
     // --- Independent refresh timers per section ---
@@ -547,6 +630,9 @@
 
     // Access stats: every 30s (analytics, changes slowly)
     state.refreshTimers.dash_access = setInterval(fetchAccessStats, 30000);
+
+    // Graph stats: every 30s
+    state.refreshTimers.dash_graph_stats = setInterval(fetchGraphStats, 30000);
   }
 
   // ---------------------------------------------------------------------------
@@ -613,6 +699,7 @@
     _tasks = [];
     _logs = [];
     _accessStats = {};
+    _communityCount = 0;
   }
 
   // ---------------------------------------------------------------------------

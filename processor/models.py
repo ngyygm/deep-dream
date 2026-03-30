@@ -14,6 +14,7 @@ class MemoryCache:
     event_time: datetime  # 事件发生时间
     source_document: str  # 来源文档名称
     activity_type: Optional[str] = None  # 可选的活动类型，如"阅读小说"、"处理文档"等
+    episode_type: Optional[str] = None  # Episode 类型: "narrative" | "fact" | "conversation" | "dream"
 
 
 @dataclass
@@ -28,6 +29,11 @@ class Entity:
     memory_cache_id: str  # 记录当前更新是基于什么记忆环境下的判断
     source_document: str  # 来源文档名称
     embedding: Optional[bytes] = None  # Embedding向量（BLOB格式，可选）
+    valid_at: Optional[datetime] = None  # 事实生效时间
+    invalid_at: Optional[datetime] = None  # 事实失效时间（被新版本替代）
+    summary: Optional[str] = None  # 实体摘要（由 LLM 进化维护）
+    attributes: Optional[str] = None  # JSON 字符串，结构化属性字典
+    confidence: Optional[float] = None  # 置信度评分 (0.0-1.0)
 
 
 @dataclass
@@ -48,3 +54,9 @@ class Relation:
     memory_cache_id: str  # 记录当前更新是基于什么记忆环境下的判断
     source_document: str  # 来源文档名称
     embedding: Optional[bytes] = None  # Embedding向量（BLOB格式，可选）
+    valid_at: Optional[datetime] = None  # 事实生效时间
+    invalid_at: Optional[datetime] = None  # 事实失效时间（被新版本替代）
+    summary: Optional[str] = None  # 关系摘要（由 LLM 进化维护）
+    attributes: Optional[str] = None  # JSON 字符串，结构化属性字典
+    confidence: Optional[float] = None  # 置信度评分 (0.0-1.0)
+    provenance: Optional[str] = None  # JSON: [{"episode_id": "...", "confidence": 0.9}, ...]

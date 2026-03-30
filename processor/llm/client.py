@@ -45,6 +45,10 @@ from .entity_extraction import _EntityExtractionMixin
 from .relation_extraction import _RelationExtractionMixin
 from .content_merger import _ContentMergerMixin
 from .consolidation import _ConsolidationMixin
+from .summary_evolution import SummaryEvolutionMixin
+from .entity_resolution import EntityResolutionMixin
+from .contradiction import ContradictionDetectionMixin
+from .agent_query import AgentQueryMixin
 
 try:
     from openai import RateLimitError
@@ -144,7 +148,9 @@ LLM_PRIORITY_STEP6 = 5   # 步骤6: 实体对齐
 LLM_PRIORITY_STEP7 = 6   # 步骤7: 关系对齐
 
 
-class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixin, _ContentMergerMixin, _ConsolidationMixin):
+class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixin,
+                 _ContentMergerMixin, _ConsolidationMixin, SummaryEvolutionMixin,
+                 EntityResolutionMixin, ContradictionDetectionMixin, AgentQueryMixin):
 
     @staticmethod
     def _normalize_entity_pair(entity1: str, entity2: str) -> tuple:
@@ -604,12 +610,10 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
         context_cap = self.context_window_tokens
         prompt_tokens = self._estimate_messages_token_count(messages)
         if prompt_tokens >= context_cap:
-            self._log_llm_messages_full(
-                messages,
-                title="输入上下文超限，完整输入如下",
-                prompt_tokens=prompt_tokens,
-                desired_max_tokens=desired_max_tokens,
-                resolved_max_tokens=0,
+            wprint(
+                f"[TMG] 输入上下文超限: 估算输入 tokens: {prompt_tokens}, "
+                f"输入上限: {context_cap}, 期望输出上限: {desired_max_tokens}, "
+                f"消息条数: {len(messages)}"
             )
             raise LLMContextBudgetExceeded(
                 f"LLM 输入上下文超限：估算输入约 {prompt_tokens} tokens，"
@@ -727,9 +731,12 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
         os.makedirs(step_dir, exist_ok=True)
         filepath = os.path.join(step_dir, f"{self._distill_task_id}.jsonl")
         line = json.dumps({"messages": messages}, ensure_ascii=False)
-        with self._distill_lock:
-            with open(filepath, "a", encoding="utf-8") as f:
-                f.write(line + "\n")
+        try:
+            with self._distill_lock:
+                with open(filepath, "a", encoding="utf-8") as f:
+                    f.write(line + "\n")
+        except OSError:
+            pass
 
     def call_llm_until_json_parses(
         self,
@@ -895,21 +902,19 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
                         resp.raw["choices"][0].get("finish_reason") == "length")
                 )
                 if _is_truncated:
+                    _est_input = self._estimate_messages_token_count(messages)
                     wprint(
                         f"[TMG] LLM 输出被截断（finish_reason=length）。"
                         f"当前请求输出上限为 {_api_max_tokens}，已不再自动扩容重试；"
                         "如需避免截断，请缩短输入上下文或减少输出体积。"
                     )
-                    self._log_llm_messages_full(
-                        messages,
-                        title="长度截断时的完整输入如下",
-                        prompt_tokens=self._estimate_messages_token_count(messages),
-                        desired_max_tokens=_desired_max_tokens,
-                        resolved_max_tokens=_api_max_tokens,
-                    )
-                    self._log_llm_response_full(
-                        response_text,
-                        title="长度截断时的完整输出",
+                    wprint(
+                        f"[TMG] 截断摘要: 估算输入 tokens: {_est_input}, "
+                        f"期望输出上限: {_desired_max_tokens}, "
+                        f"实际输出上限: {_api_max_tokens}, "
+                        f"输入上限: {self.context_window_tokens}, "
+                        f"消息条数: {len(messages)}, "
+                        f"输出长度: {len(response_text)} 字符"
                     )
 
                 # 检测是否是有效的UTF-8编码
@@ -938,6 +943,9 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
                 error_str = str(e).lower()
                 last_error = e
                 is_timeout = "timeout" in error_str or "timed out" in error_str
+                is_fd_error = (
+                    isinstance(e, OSError) and getattr(e, "errno", None) == 24
+                ) or "too many open files" in error_str or "errno 24" in error_str
                 is_connection_error = any(
                     kw in error_str
                     for kw in [
@@ -952,21 +960,18 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
                         "connection reset",
                         "errno 111",
                     ]
-                )
+                ) or is_fd_error
                 is_tpm_error = _is_rate_limit_tpm_error(e)
 
                 if not _detailed_error_logged and not is_connection_error and not is_timeout and not is_tpm_error:
                     if self._error_suggests_context_overflow(e):
-                        self._log_llm_messages_full(
-                            messages,
-                            title="服务端报上下文/长度相关错误，完整输入如下",
-                            prompt_tokens=self._estimate_messages_token_count(messages),
-                            desired_max_tokens=_effective_max_tokens,
+                        wprint(
+                            f"[TMG] 服务端报上下文/长度相关错误: "
+                            f"估算输入 tokens: {self._estimate_messages_token_count(messages)}, "
+                            f"期望输出上限: {_effective_max_tokens}, "
+                            f"消息条数: {len(messages)}, "
+                            f"错误: {e}"
                         )
-                    self._log_llm_error_full(
-                        e,
-                        title="服务端报错完整详情",
-                    )
                     _detailed_error_logged = True
 
                 if "上下文预算超限" in error_str or "输入上下文超限" in error_str:
