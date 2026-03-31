@@ -6,25 +6,6 @@
 (function() {
   // ---- Helpers ----
 
-  function getElapsed(startedAt, finishedAt) {
-    if (!startedAt) return '-';
-    let start = Number(startedAt);
-    if (isNaN(start)) return '-';
-    // Unix timestamp in seconds vs ISO string in ms
-    if (start < 4102444800000) start *= 1000;
-
-    let end;
-    if (finishedAt) {
-      end = Number(finishedAt);
-      if (end < 4102444800000) end *= 1000;
-    } else {
-      end = Date.now();
-    }
-
-    const diff = Math.max(0, Math.round((end - start) / 1000));
-    return formatRelativeTime(diff);
-  }
-
   function progressClass(status) {
     if (status === 'completed') return 'success';
     if (status === 'failed') return 'error';
@@ -354,29 +335,14 @@
         const overallP = Math.min(1, Math.max(0, task.step7_progress ?? task.progress ?? 0));
         let progressCell;
         if (hasTriple) {
-          progressCell = `
-            <div style="min-width:240px;">
-              <div style="font-size:0.6rem;color:var(--text-muted);margin-bottom:4px;">${t('memory.overallProgress')} ${(overallP * 100).toFixed(2)}%</div>
-              <div style="margin-bottom:4px;">
-                <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px 12px;">
-                  <div>
-                    <div style="font-size:0.65rem;color:var(--primary);margin-bottom:2px;">${t('dashboard.mainWindow')}</div>
-                    <div class="progress-bar" style="height:3px;"><div class="progress-bar-fill" style="width:${(smp*100).toFixed(2)}%;background:var(--primary);"></div></div>
-                    <div style="font-size:0.6rem;color:var(--text-muted);margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(task.main_label || '-')}</div>
-                  </div>
-                  <div>
-                    <div style="font-size:0.65rem;color:var(--info);margin-bottom:2px;">${t('dashboard.entityAlign')}</div>
-                    <div class="progress-bar" style="height:3px;"><div class="progress-bar-fill" style="width:${(s6p*100).toFixed(2)}%;background:var(--info);"></div></div>
-                    <div style="font-size:0.6rem;color:var(--text-muted);margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(task.step6_label || '-')}</div>
-                  </div>
-                  <div>
-                    <div style="font-size:0.65rem;color:var(--warning);margin-bottom:2px;">${t('dashboard.relationAlign')}</div>
-                    <div class="progress-bar" style="height:3px;"><div class="progress-bar-fill" style="width:${(s7p*100).toFixed(2)}%;background:var(--warning);"></div></div>
-                    <div style="font-size:0.6rem;color:var(--text-muted);margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(task.step7_label || '-')}</div>
-                  </div>
-                </div>
-              </div>
-            </div>`;
+          progressCell = tripleProgressBar({
+            smp, s6p, s7p,
+            mainLabel: task.main_label || '-',
+            step6Label: task.step6_label || '-',
+            step7Label: task.step7_label || '-',
+            showOverall: true,
+            overallP: overallP,
+          });
         } else {
           progressCell = `<div style="min-width:100px;">${progressBar(task.progress, pCls)}</div>`;
         }
@@ -555,27 +521,14 @@
       const overallPd = Math.min(1, Math.max(0, task.step7_progress ?? task.progress ?? 0));
       let progressDetail;
       if (hasTriple) {
-        progressDetail = `
-          <div style="min-width:220px;">
-            <div style="font-size:0.7rem;color:var(--text-muted);margin-bottom:4px;">${t('memory.overallProgress')} ${(overallPd * 100).toFixed(2)}%</div>
-            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px 12px;">
-              <div>
-                <div style="font-size:0.7rem;color:var(--primary);margin-bottom:2px;">${t('dashboard.mainWindow')}</div>
-                <div class="progress-bar" style="height:3px;"><div class="progress-bar-fill" style="width:${(smp*100).toFixed(2)}%;background:var(--primary);"></div></div>
-                <div style="font-size:0.65rem;color:var(--text-muted);margin-top:1px;">${escapeHtml(task.main_label || '-')}</div>
-              </div>
-              <div>
-                <div style="font-size:0.7rem;color:var(--info);margin-bottom:2px;">${t('dashboard.entityAlign')}</div>
-                <div class="progress-bar" style="height:3px;"><div class="progress-bar-fill" style="width:${(s6p*100).toFixed(2)}%;background:var(--info);"></div></div>
-                <div style="font-size:0.65rem;color:var(--text-muted);margin-top:1px;">${escapeHtml(task.step6_label || '-')}</div>
-              </div>
-              <div>
-                <div style="font-size:0.7rem;color:var(--warning);margin-bottom:2px;">${t('dashboard.relationAlign')}</div>
-                <div class="progress-bar" style="height:3px;"><div class="progress-bar-fill" style="width:${(s7p*100).toFixed(2)}%;background:var(--warning);"></div></div>
-                <div style="font-size:0.65rem;color:var(--text-muted);margin-top:1px;">${escapeHtml(task.step7_label || '-')}</div>
-              </div>
-            </div>
-          </div>`;
+        progressDetail = tripleProgressBar({
+          smp, s6p, s7p,
+          mainLabel: task.main_label || '-',
+          step6Label: task.step6_label || '-',
+          step7Label: task.step7_label || '-',
+          showOverall: true,
+          overallP: overallPd,
+        });
       } else {
         progressDetail = `<div style="min-width:120px;">${progressBar(task.progress, pCls)}</div>`;
       }

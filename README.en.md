@@ -1,15 +1,19 @@
 <p align="center">
-  <img src="https://img.shields.io/github/stars/ngyygm/Temporal_Memory_Graph?style=for-the-badge&logo=github" alt="GitHub stars"/>
-  <img src="https://img.shields.io/github/forks/ngyygm/Temporal_Memory_Graph?style=for-the-badge&logo=github" alt="GitHub forks"/>
-  <img src="https://img.shields.io/github/license/ngyygm/Temporal_Memory_Graph?style=for-the-badge" alt="License"/>
+  <img src="https://img.shields.io/github/stars/ngyygm/deep-dream?style=for-the-badge&logo=github" alt="GitHub stars"/>
+  <img src="https://img.shields.io/github/forks/ngyygm/deep-dream?style=for-the-badge&logo=github" alt="GitHub forks"/>
+  <img src="https://img.shields.io/github/license/ngyygm/deep-dream?style=for-the-badge" alt="License"/>
   <img src="https://img.shields.io/badge/python-3.8+-blue?style=for-the-badge&logo=python" alt="Python"/>
 </p>
 
 <p align="center">
-  <strong>Temporal Memory Graph (TMG)</strong>
+  <strong>Deep Dream</strong>
 </p>
 <p align="center">
-  <b>Long-term memory for AI agents</b> — store, recall, and traverse in time, the way humans do.
+  <b>Full-lifecycle memory for AI agents</b> — remember, recall, and dream like a human.
+</p>
+
+<p align="center">
+  <img src="docs/images/logo.jpeg" alt="Deep Dream Logo" width="200"/>
 </p>
 
 <p align="center">
@@ -18,219 +22,147 @@
 
 ---
 
-## Overview
+## Humans spend one-third of their lives asleep
 
-TMG gives AI agents **temporal, natural-language memory**: long-term storage and retrieval designed for agents, with human-like semantics (natural language in and out) and **time as a first-class citizen**—every memory is traceable, and entities and relations carry version chains. Experiences are written into a single unified graph; natural-language queries wake up relevant regions and support questions like “what happened then?”
+This is not wasted time. During sleep, the brain is far from idle — it **replays** the day's experiences, **reorganizes** memory fragments, and **discovers** hidden connections that waking consciousness never had time to notice. Every REM cycle is an act of autonomous knowledge consolidation: weaving scattered fragments into networks, crystallizing vague intuitions into insight.
 
-| Focus | Description |
-|-------|-------------|
-| **Agent-oriented** | Built for agents: long-term memory read/write, not human-facing notes or knowledge bases. |
-| **Human-like** | Natural language in, natural language out; no predefined tags; the system does concept extraction and relation building. |
-| **Time as first-class** | Memories are timestamped; entities and relations have version chains and support time-range or point-in-time queries. |
-| **Unified graph** | All memories live in one graph; semantic retrieval plus graph expansion returns “a region of related memory.” |
+**Deep Dream gives AI agents the same ability.**
 
-System boundary: TMG provides **Remember** (write) and **Find** (retrieve) only; **Select** (what to use, how to use it) is left to the caller.
-
-### Compared to traditional knowledge graphs
-
-| Aspect | Traditional KG | TMG |
-|--------|----------------|-----|
-| Relations | Fixed types (e.g. is_a, located_in) | Natural-language descriptions (concept edges) |
-| Write | Structured input and schema | Raw text/documents; system extracts and aligns |
-| Time | Static or simple timestamps | Version chains + timestamps; time-travel queries |
-| Updates | Often overwrite | Append-only; full history kept |
-| Retrieval | Structured queries, tag filters | Semantic search + graph neighborhood expansion |
+Deep Dream is a long-term memory system for agents. While awake, agents write memories (Remember) and retrieve them (Find). When an agent enters "sleep," **DeepDream autonomous dream consolidation** begins — a Dream Agent endlessly traverses the knowledge graph, discovering hidden relations between entities and building new conceptual bridges, just like the brain's free association during the night.
 
 ---
 
-## Architecture
+## Why do agents need to dream?
 
-```mermaid
-flowchart TB
-    subgraph Input["Input"]
-        T[Text / Documents]
-        F[File upload]
-    end
+| Human Memory | Deep Dream |
+|-------------|-----------|
+| Daily experience → encode memory | Text/documents → **Remember** into knowledge graph |
+| Recall the past → retrieve memory | Natural-language query → **Find** via semantic search |
+| Nightly sleep → consolidate & reorganize | Dream Agent → **DeepDream** discovers new relations |
 
-    subgraph Pipeline["Memory pipeline"]
-        W[Sliding window]
-        M[Memory Agent]
-        M --> M1[Update memory cache]
-        M --> M2[Entity extraction]
-        M --> M3[Relation extraction]
-        M --> M4[Graph alignment]
-        M --> M5[Versioned write]
-    end
+Traditional knowledge graphs are **static** — what you write is what you get. Human memory doesn't work that way. In dreams, we reconnect fragments and discover patterns invisible to waking thought. DeepDream gives agents the same capability:
 
-    subgraph Storage["Unified memory graph"]
-        E[(Entity versions)]
-        R[(Relation versions)]
-        C[(MemoryCache)]
-    end
+- **Beyond nearest neighbors** — Not just similar entities; discovers connections across vast semantic distances
+- **Associative leaps** — Like free association in dreams, jumping from one concept to a seemingly unrelated one
+- **Multi-strategy dreaming** — Free association, contrastive analysis, temporal bridging, cross-domain discovery, orphan adoption, hub remix... strategies rotate cyclically
+- **Never stops** — As long as the agent is "asleep," dreaming continues in infinite iterations
 
-    subgraph Find["Retrieval"]
-        Q[Natural-language query]
-        S[Semantic recall]
-        G[Graph expansion]
-        Tf[Time filter]
-        Out[Local memory region]
-    end
+### Key constraint
 
-    T --> W
-    F --> W
-    W --> M
-    M --> E
-    M --> R
-    M --> C
-    Q --> S
-    S --> G
-    G --> Tf
-    Tf --> Out
-    E -.-> S
-    R -.-> S
+The Dream Agent follows one strict rule: **it can only discover new relations between existing entities — never fabricate entities that don't exist.** Just as humans recombine existing memories in dreams rather than inventing entirely new people and events. All dream discoveries carry clear provenance markers (`source: dream`), cleanly separated from waking memories.
+
+---
+
+## Core Architecture
+
+Deep Dream provides three layers of capability:
+
+<p align="center">
+  <img src="docs/images/architecture.jpeg" alt="Deep Dream Architecture" width="600"/>
+</p>
+
+```
+Remember (awake)            Find (when needed)        Dream (asleep)
+┌──────────────┐      ┌──────────────┐      ┌────────────────────┐
+│ Text → Entity │      │ Semantic      │      │ Dream Agent        │
+│ Docs → Rel.   │      │ Graph expand  │      │  ├─ Strategy select│
+│ Versioned     │      │ Time travel   │      │  ├─ Tool calls     │
+│ write         │      │               │      │  ├─ Relation find  │
+└──────┬───────┘      └──────┬───────┘      │  └─ Infinite loop  │
+       │                     │              └────────┬───────────┘
+       ▼                     ▼                       ▼
+   ┌───────────────────────────────────────────────────────┐
+   │              Unified Memory Knowledge Graph            │
+   │       Entity versions · Relation versions · Episode    │
+   └───────────────────────────────────────────────────────┘
 ```
 
+The Dream Agent is not a hardcoded loop — it is an **autonomous agent** that connects to Deep Dream's API through a skill, autonomously deciding:
+- Which dream strategy to use at each step
+- Which entities and relations to traverse
+- When to propose new relation hypotheses
+- When to record dream discoveries
+
 ---
 
-## Quick start
+## Quick Start
 
 ```bash
+git clone https://github.com/ngyygm/deep-dream.git
+cd deep-dream
+pip install -r requirements.txt
 cp service_config.example.json service_config.json
-# Edit service_config.json: LLM and embedding
+# Edit service_config.json: configure LLM and Embedding
 python -m server.api --config service_config.json
 ```
 
-Open **http://localhost:16200/** in your browser to access the Web Dashboard. The dashboard shares port 16200 with the API — no extra process needed.
+Open **http://127.0.0.1:16200/** in your browser for the management dashboard.
 
-**Web Dashboard — 6 pages:**
-
-| Page | Features |
-|------|----------|
-| **Dashboard** | System overview: uptime, graph count, entity/relation stats, API success rate, task queue, system logs (5s auto-refresh) |
-| **Graph** | Interactive graph visualization (vis-network.js): force-directed layout, adjustable entity/relation limits, click nodes for detail & version history |
-| **Memory** | Memory management: text input or drag-and-drop file upload, event time & source settings, task queue viewer, document list |
-| **Search** | Semantic search: natural-language queries, similarity threshold, max results, time-range filter, graph expansion, multi-query batch mode |
-| **Entities** | Entity browser: list all entities, semantic search, click for detail & version timeline (expandable content, name-change diffs) |
-| **Relations** | Relation browser: list all relations, semantic search, query relations between two entities |
-
-Tech stack: Pure HTML/CSS/JS (no build tools), Tailwind CSS + vis-network.js + Lucide Icons, SPA hash routing.
-
-**Remember (POST JSON or multipart file upload; async, returns task_id):**
-
-> `graph_id` is optional — defaults to `"default"` when omitted. Specify explicitly only when you need multi-graph isolation.
+### Write memory
 
 ```bash
-# JSON body
 curl -s -X POST http://localhost:16200/api/v1/remember \
   -H "Content-Type: application/json" \
-  -d '{"text":"Lin Heihei is an archaeology PhD who met a talking white fox in a cave.","event_time":"2026-03-09T14:00:00"}' | jq
-# → {"success": true, "data": {"task_id": "abc123", "status": "queued", ...}}
-
-# File upload
-curl -s -X POST http://localhost:16200/api/v1/remember \
-  -F "file=@document.txt" \
-  -F "source_document=document.txt" | jq
-
-# Check task status
-curl -s "http://localhost:16200/api/v1/remember/tasks/abc123" | jq
+  -d '{"text":"Lin Heihei is an archaeology PhD who met a talking white fox in a cave. The fox said it has guarded the cave for 300 years.","event_time":"2026-03-09T14:00:00"}'
 ```
 
-Unfinished tasks are persisted under `storage_path/<graph_id>/tasks/` and re-queued after restart. Original text is saved as flat files `docs/{YYYYMMDD_HHMMSS}_{source_name}.txt`, sorted naturally by filename (i.e. chronologically). With `flask_threaded: true` (default), Find stays responsive while Remember runs.
-
-**Find:**
+### Retrieve memory
 
 ```bash
 curl -s -X POST http://localhost:16200/api/v1/find \
   -H "Content-Type: application/json" \
-  -d '{"query": "What happened between Lin Heihei and the white fox?"}' | jq
+  -d '{"query": "What happened between Lin Heihei and the white fox?"}'
+```
+
+### Start dream consolidation
+
+```bash
+curl -s -X POST http://localhost:16200/api/v1/find/dream/agent/start \
+  -H "Content-Type: application/json" \
+  -d '{"max_cycles": 10, "strategies": ["free_association", "cross_domain", "leap"]}'
 ```
 
 ---
 
-## Using the Skill (agent integration)
+## Dream Strategies
 
-TMG ships a **Skill** so that Cursor, Claude, and similar agents can deploy, configure, start, and call the API by following the documentation—no hand-written HTTP client.
-
-### Where the Skill lives
-
-- **Path:** `Temporal_Memory_Graph/skills/tmg-memory-graph/`
-- **Files:** `SKILL.md` (agent instructions), `reference.md` (API quick reference)
-- **Purpose:** Any agent that can “read docs and act” can use TMG after reading the Skill (when to use, how to deploy, how to call the API).
-
-### Three steps to give an agent access
-
-1. **Expose the Skill to the agent**  
-   - **Cursor:** In rules, add “When using TMG memory, read and follow `Temporal_Memory_Graph/skills/tmg-memory-graph/SKILL.md`,” or copy key points into `.cursor/rules`.  
-   - **Claude / others:** Add `skills/tmg-memory-graph/` to the agent’s skill directory or knowledge base.
-
-2. **Trigger with natural language**  
-   When the user says “remember this,” “look up what we knew about X,” or “connect to TMG memory,” the agent reads the Skill and runs the flow (check service → remember/find).
-
-3. **What the agent will do**  
-   - If the service is not running: clone repo → configure `service_config.json` → run `python -m server.api` → verify with `GET /api/v1/health`.
-   - Remember: `POST /api/v1/remember` with JSON field `text` (or multipart `file` upload), optional `graph_id` (defaults to `"default"`), optional `source_document`/`source_name`/`event_time`/`load_cache_memory`.
-   - Find: `POST /api/v1/find` with natural-language `query` (`graph_id` optional, defaults to `"default"`); use entity/relation/version atomic endpoints when needed.
-
----
-
-## API summary
-
-### Remember — write (POST)
-
-POST JSON body (multipart file upload is also accepted); `text` or `file` is required. Batch substantial content — avoid one-sentence calls.
-
-| Param | Required | Description |
-|-------|----------|-------------|
-| `graph_id` | No | Target graph ID (defaults to `"default"`) |
-| `text` | One of `text` / `file` | Natural-language text (JSON body) |
-| `file` | One of `text` / `file` | Uploaded file (multipart) |
-| `source_document` | No | Source document name (backward-compat: `doc_name`) |
-| `source_name` | No | Source label |
-| `event_time` | No | ISO 8601 — when events actually happened |
-| `load_cache_memory` | No | `true`/`false` |
-
-The service saves the full text to `storage_path/<graph_id>/docs/{YYYYMMDD_HHMMSS}_{source_name}.txt` (flat files sorted naturally by filename, i.e. chronologically) and journals task state under `<graph_id>/tasks/`. After a crash, queued/running tasks are re-queued. Internally: chunking, memory cache update, entity/relation extraction, graph alignment, versioned write.
-
-### Find — retrieve
-
-All Find endpoints accept an optional `graph_id` (query string, JSON body, or form field) — defaults to `"default"` when omitted.
-
-- **Recommended:** `POST /api/v1/find` — semantic recall, graph expansion, and time filtering in one call; required: `query`; rest optional.
-- **Atomic endpoints:** Entity search (`/api/v1/find/entities/search`, etc.), relations, memory cache, stats (`/api/v1/find/stats`), batch fetch (`POST /api/v1/find/candidates`).
-
-Full paths and parameters: see `skills/tmg-memory-graph/reference.md` and `server/api.py`.
-
-### Response format
-
-- Success: `{"success": true, "data": ..., "elapsed_ms": 123.45}`
-- Error: `{"success": false, "error": "message", "elapsed_ms": 12.34}`
-
----
-
-## Data model (brief)
-
-- **Entity:** Concept entity; `entity_id` (logical), `id` (version absolute ID), `name`, `content` (natural language), `event_time`, `processed_time`; versions form a chain.
-- **Relation:** Concept relation; natural-language description (no fixed relation types); `entity1/2_absolute_id`, `event_time`, `processed_time`, version chain.  
-- **MemoryCache:** Internal context summary chain for alignment and reasoning.  
-
-All content is natural language + time; no predefined tag schema.
+| Strategy | Analogy | Goal |
+|----------|---------|------|
+| `free_association` | Free association | Find hidden connections between random entities |
+| `contrastive` | Contrastive analysis | Discover differences between similar entities |
+| `temporal_bridge` | Time travel | Find evolution patterns across time |
+| `cross_domain` | Cross-domain insight | Unexpected bridges between different fields |
+| `orphan_adoption` | Orphan rescue | Find connections for isolated entities |
+| `hub_remix` | Hub recombination | New paths between core nodes |
+| `leap` | Creative leap | Far-distance associative jumps |
+| `narrative` | Story weaving | Weave scattered fragments into narrative threads |
 
 ---
 
 ## Configuration
 
-See `service_config.example.json`; configure `service_config.json` with:
+See `service_config.example.json`:
 
-- **Service:** `host`, `port`, `storage_path`  
-- **Concurrency:** `flask_threaded` (default `true` — Find while Remember runs)  
-- **LLM:** `api_key`, `model`, `base_url`, `think`  
-- **Embedding:** `embedding.model` (local path or HuggingFace id), `embedding.device`  
-- **Chunking:** `chunking.window_size`, `chunking.overlap`  
+| Config | Description |
+|--------|-------------|
+| `host` / `port` | Service address, default `0.0.0.0:16200` |
+| `llm` | LLM config (Ollama / OpenAI-compatible / GLM etc.) |
+| `embedding` | Embedding model (local path or HuggingFace name) |
+| `chunking` | Sliding window size and overlap |
+| `runtime.concurrency.*` | Three-tier concurrency control |
 
-For Ollama, set `llm.base_url` to `http://127.0.0.1:11434` and use the native `POST /api/chat` endpoint. Only the native Ollama protocol supports `think: true/false`; do not use the `/v1` OpenAI-compatible URL when you need to disable thinking.
+---
+
+## Agent Integration
+
+Deep Dream ships a Skill so any agent that supports skill invocation (Cursor, Claude Code, etc.) can directly use memory and dream capabilities:
+
+- **Skill name:** `deep-dream` (created via skill-creator)
+- **Path:** `.claude/skills/deep-dream/`
+- **Integration:** Add the Skill to the agent's skill directory, and the agent can autonomously Remember, Find, and Dream.
 
 ---
 
 ## License
 
-See the [LICENSE](LICENSE) file in the repository root, if present.
+See [LICENSE](LICENSE) in the repository root.

@@ -548,6 +548,30 @@
 
     searchNetwork = new vis.Network(canvas, { nodes, edges }, options);
 
+    searchNetwork.once('stabilizationIterationsDone', function () {
+      searchNetwork.setOptions({ physics: { enabled: false } });
+    });
+
+    // Allow re-dragging: enable physics during drag so unfixed nodes respond to forces
+    searchNetwork.on('dragStart', function (params) {
+      if (params.nodes.length === 0) return;
+      params.nodes.forEach(function (nodeId) {
+        nodes.update({ id: nodeId, fixed: false });
+      });
+      searchNetwork.setOptions({ physics: { enabled: true } });
+    });
+
+    searchNetwork.on('dragEnd', function (params) {
+      if (params.nodes.length === 0) return;
+      params.nodes.forEach(function (nodeId) {
+        var pos = searchNetwork.getPositions([nodeId])[nodeId];
+        if (pos) {
+          nodes.update({ id: nodeId, x: pos.x, y: pos.y, fixed: { x: true, y: true } });
+        }
+      });
+      searchNetwork.setOptions({ physics: { enabled: false } });
+    });
+
     // Click handler: show detail modal
     searchNetwork.on('click', params => {
       const nodeId = params.nodes[0];

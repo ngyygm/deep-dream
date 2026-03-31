@@ -147,10 +147,14 @@ class TMGApi {
   }
 
   // Entities
-  listEntities(graphId = 'default', limit) {
+  listEntities(graphId = 'default', limit, offset) {
     let q = `graph_id=${encodeURIComponent(graphId)}`;
     if (limit) q += `&limit=${limit}`;
+    if (offset) q += `&offset=${offset}`;
     return this.get(`/api/v1/find/entities?${q}`);
+  }
+  getCounts(graphId = 'default') {
+    return this.get(`/api/v1/stats/counts?graph_id=${encodeURIComponent(graphId)}`);
   }
   searchEntities(query, graphId = 'default', options = {}) {
     const body = {
@@ -347,8 +351,8 @@ class TMGApi {
   detectCommunities(graphId = 'default', algorithm = 'louvain', resolution = 1.0) {
     return this.post('/api/v1/communities/detect', { algorithm, resolution, graph_id: graphId });
   }
-  listCommunities(graphId = 'default', minSize = 3, limit = 50) {
-    return this.get(`/api/v1/communities?graph_id=${encodeURIComponent(graphId)}&min_size=${minSize}&limit=${limit}`);
+  listCommunities(graphId = 'default', minSize = 3, limit = 50, offset = 0) {
+    return this.get(`/api/v1/communities?graph_id=${encodeURIComponent(graphId)}&min_size=${minSize}&limit=${limit}&offset=${offset}`);
   }
   getCommunity(cid, graphId = 'default') {
     return this.get(`/api/v1/communities/${encodeURIComponent(cid)}?graph_id=${encodeURIComponent(graphId)}`);
@@ -530,6 +534,99 @@ function escapeHtml(str) {
   const div = document.createElement('div');
   div.textContent = str;
   return div.innerHTML;
+}
+
+function escapeAttr(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function getElapsed(startedAt, finishedAt) {
+  if (!startedAt) return '-';
+  let start = Number(startedAt);
+  if (isNaN(start)) return '-';
+  if (start < 4102444800000) start *= 1000;
+
+  let end;
+  if (finishedAt) {
+    end = Number(finishedAt);
+    if (end < 4102444800000) end *= 1000;
+  } else {
+    end = Date.now();
+  }
+
+  const diff = Math.max(0, Math.round((end - start) / 1000));
+  return formatRelativeTime(diff);
+}
+
+function tripleProgressBar(opts) {
+  var cols = [
+    { pct: opts.smp, color: 'var(--primary)', label: t('dashboard.mainWindow'), text: opts.mainLabel },
+    { pct: opts.s6p, color: 'var(--info)', label: t('dashboard.entityAlign'), text: opts.step6Label },
+    { pct: opts.s7p, color: 'var(--warning)', label: t('dashboard.relationAlign'), text: opts.step7Label },
+  ];
+  var html = '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px 12px;">';
+  for (var ci = 0; ci < cols.length; ci++) {
+    var c = cols[ci];
+    html += '<div>'
+      + '<div style="font-size:0.65rem;color:' + c.color + ';margin-bottom:2px;">' + c.label + '</div>'
+      + '<div class="progress-bar" style="height:3px;"><div class="progress-bar-fill" style="width:' + (c.pct * 100).toFixed(2) + '%;background:' + c.color + ';"></div></div>'
+      + '<div style="font-size:0.6rem;color:var(--text-muted);margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + escapeHtml(c.text || '-') + '</div>'
+      + '</div>';
+  }
+  html += '</div>';
+  if (opts.showOverall) {
+    html = '<div style="min-width:240px;">'
+      + '<div style="font-size:0.6rem;color:var(--text-muted);margin-bottom:4px;">' + t('memory.overallProgress') + ' ' + (opts.overallP * 100).toFixed(2) + '%</div>'
+      + '<div style="margin-bottom:4px;">' + html + '</div>'
+      + '</div>';
+  }
+  return html;
+}
+
+function renderVersionTimeline(opts) {
+  var sorted = [...opts.versions].sort(function(a, b) {
+    var ta = a.processed_time ? new Date(a.processed_time).getTime() : 0;
+    var tb = b.processed_time ? new Date(b.processed_time).getTime() : 0;
+    return tb - ta;
+  });
+
+  var items = sorted.map(function(v, i) {
+    var prev = sorted[i + 1];
+    var isActive = opts.isActiveCheck ? opts.isActiveCheck(v) : (i === 0);
+    var diffHtml = opts.renderDiff ? opts.renderDiff(v, prev) : '';
+    var headerHtml = opts.renderHeader ? opts.renderHeader(v, i, sorted, isActive) : '';
+    var bodyHtml = opts.renderBody ? opts.renderBody(v) : '';
+
+    return '<div style="position:relative;padding-left:1.5rem;padding-bottom:' + (i < sorted.length - 1 ? '1rem' : '0') + ';">'
+      + (i < sorted.length - 1 ? '<div style="position:absolute;left:5px;top:12px;bottom:0;width:1px;background:var(--border-color);"></div>' : '')
+      + '<div style="position:absolute;left:0;top:4px;width:11px;height:11px;border-radius:50%;background:' + (isActive ? 'var(--primary)' : 'var(--border-color)') + ';border:2px solid ' + (isActive ? 'var(--primary-hover)' : 'var(--border-hover)') + ';"></div>'
+      + '<div style="cursor:pointer;" class="' + opts.toggleClass + '" data-version-idx="' + i + '">'
+      + headerHtml
+      + diffHtml
+      + '</div>'
+      + '<div class="' + opts.expandedIdPrefix + '" id="' + opts.expandedIdPrefix + '-' + i + '" style="display:none;margin-top:0.5rem;">'
+      + bodyHtml
+      + '</div>'
+      + '</div>';
+  }).join('');
+
+  // Attach expand/collapse behavior
+  setTimeout(function() {
+    var container = opts.overlay.querySelector('#' + opts.containerId);
+    if (!container) return;
+    container.querySelectorAll('.' + opts.toggleClass).forEach(function(toggle) {
+      toggle.addEventListener('click', function() {
+        var idx = toggle.getAttribute('data-version-idx');
+        var expanded = opts.overlay.querySelector('#' + opts.expandedIdPrefix + '-' + idx);
+        if (expanded) {
+          var isHidden = expanded.style.display === 'none';
+          expanded.style.display = isHidden ? 'block' : 'none';
+        }
+      });
+    });
+  }, 0);
+
+  return items;
 }
 
 function truncate(str, maxLen = 80) {

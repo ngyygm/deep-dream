@@ -17,7 +17,7 @@ import os
 import sqlite3
 import struct
 import threading
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import sqlite_vec
 
@@ -178,6 +178,18 @@ class VectorStore:
         conn = self._get_conn()
         cursor = conn.execute(f"SELECT count(*) FROM {table}")
         return cursor.fetchone()[0]
+
+    def get_batch(self, table: str, uuids: List[str]) -> Dict[str, List[float]]:
+        """批量获取向量。"""
+        if not uuids:
+            return {}
+        conn = self._get_conn()
+        placeholders = ",".join("?" * len(uuids))
+        cursor = conn.execute(
+            f"SELECT uuid, embedding FROM {table} WHERE uuid IN ({placeholders})",
+            uuids,
+        )
+        return {row[0]: _bytes_to_floats(row[1]) for row in cursor}
 
     def close(self) -> None:
         """关闭当前线程的连接。"""
