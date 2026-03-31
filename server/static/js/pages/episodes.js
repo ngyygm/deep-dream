@@ -1,5 +1,5 @@
 /* ==========================================
-   Episodes Page - Episode Management
+   Episodes Page - Processing Records
    ========================================== */
 registerPage('episodes', (function () {
   'use strict';
@@ -8,24 +8,40 @@ registerPage('episodes', (function () {
   let _episodes = [];
   let _total = 0;
   let _offset = 0;
-  let _limit = 20;
+  let _limit = 50;
   let _loading = false;
+  let _allLoaded = false;
   let _batchRows = [{ content: '', source_document: '', episode_type: '' }];
 
-  async function _loadEpisodes(offset) {
+  async function _loadEpisodes(offset, append) {
     if (_loading) return;
     _loading = true;
-    _offset = offset || 0;
-    _renderList();
+    if (!append) {
+      _offset = offset || 0;
+      _episodes = [];
+      _allLoaded = false;
+      _renderList();
+    }
     try {
-      const res = await state.api.listEpisodes(state.currentGraphId, _limit, _offset);
+      const res = await state.api.listEpisodes(state.currentGraphId, _limit, offset || 0);
       const data = res.data || {};
-      _episodes = data.episodes || [];
+      const newEpisodes = data.episodes || [];
       _total = data.total || 0;
+
+      if (append) {
+        _episodes = _episodes.concat(newEpisodes);
+      } else {
+        _episodes = newEpisodes;
+      }
+      _offset = (offset || 0) + newEpisodes.length;
+      _allLoaded = _episodes.length >= _total;
       _renderList();
     } catch (err) {
-      _container.querySelector('#ep-list').innerHTML =
-        `<div class="empty-state"><i data-lucide="alert-triangle"></i><p>${escapeHtml(err.message)}</p></div>`;
+      const listEl = _container.querySelector('#ep-list');
+      if (listEl) {
+        listEl.innerHTML =
+          `<div class="empty-state"><i data-lucide="alert-triangle"></i><p>${escapeHtml(err.message)}</p></div>`;
+      }
     } finally {
       _loading = false;
     }
@@ -34,6 +50,7 @@ registerPage('episodes', (function () {
   async function _searchEpisodes(query) {
     if (!query || _loading) return;
     _loading = true;
+    _allLoaded = true; // search mode: disable infinite scroll
     _renderList();
     try {
       const res = await state.api.searchEpisodes(query, state.currentGraphId, 50);
@@ -42,8 +59,11 @@ registerPage('episodes', (function () {
       _offset = 0;
       _renderList();
     } catch (err) {
-      _container.querySelector('#ep-list').innerHTML =
-        `<div class="empty-state"><i data-lucide="alert-triangle"></i><p>${escapeHtml(err.message)}</p></div>`;
+      const listEl = _container.querySelector('#ep-list');
+      if (listEl) {
+        listEl.innerHTML =
+          `<div class="empty-state"><i data-lucide="alert-triangle"></i><p>${escapeHtml(err.message)}</p></div>`;
+      }
     } finally {
       _loading = false;
     }
@@ -51,6 +71,8 @@ registerPage('episodes', (function () {
 
   function _renderList() {
     const listEl = _container.querySelector('#ep-list');
+    if (!listEl) return;
+
     if (_loading && _episodes.length === 0) {
       listEl.innerHTML = `<div class="flex items-center justify-center p-8">${spinnerHtml()}</div>`;
       if (window.lucide) lucide.createIcons();
@@ -89,19 +111,37 @@ registerPage('episodes', (function () {
     }
     html += '</div>';
 
-    // Pagination
-    if (_total > _limit) {
-      html += `<div class="flex items-center justify-between mt-4 text-sm" style="color:var(--text-muted);">
-        <span>${t('episodes.showing')} ${_offset + 1}-${Math.min(_offset + _limit, _total)} / ${_total}</span>
-        <div class="flex gap-2">
-          <button class="btn btn-secondary btn-sm" ${_offset <= 0 ? 'disabled' : ''} onclick="window._epLoad(${_offset - _limit})">${t('common.loadMore')}</button>
-          <button class="btn btn-secondary btn-sm" ${_offset + _limit >= _total ? 'disabled' : ''} onclick="window._epLoad(${_offset + _limit})">${t('episodes.next')}</button>
-        </div>
+    // Load-more sentinel for infinite scroll
+    if (!_allLoaded) {
+      html += `<div id="ep-sentinel" style="padding:1rem;text-align:center;color:var(--text-muted);font-size:0.85rem;">
+        ${_loading ? `${spinnerHtml('spinner-sm')} 加载中...` : ''}
+      </div>`;
+    } else {
+      html += `<div style="padding:0.75rem;text-align:center;color:var(--text-muted);font-size:0.8125rem;">
+        ${t('episodes.showing')} ${_episodes.length} / ${_total}
       </div>`;
     }
 
     listEl.innerHTML = html;
     if (window.lucide) lucide.createIcons();
+
+    // Observe sentinel for infinite scroll
+    const sentinel = listEl.querySelector('#ep-sentinel');
+    if (sentinel) {
+      _observeSentinel(sentinel);
+    }
+  }
+
+  let _sentinelObserver = null;
+
+  function _observeSentinel(sentinel) {
+    if (_sentinelObserver) _sentinelObserver.disconnect();
+    _sentinelObserver = new IntersectionObserver((entries) => {
+      if (entries[0].isIntersecting && !_loading && !_allLoaded) {
+        _loadEpisodes(_offset, true);
+      }
+    }, { rootMargin: '200px' });
+    _sentinelObserver.observe(sentinel);
   }
 
   async function _showDetail(uuid) {
@@ -160,7 +200,10 @@ registerPage('episodes', (function () {
     try {
       await state.api.deleteEpisode(uuid, state.currentGraphId);
       showToast(t('episodes.deleteSuccess'), 'success');
-      _loadEpisodes(_offset);
+      _episodes = _episodes.filter(e => e.uuid !== uuid);
+      _total--;
+      _allLoaded = false;
+      _renderList();
     } catch (err) {
       showToast(t('episodes.deleteFailed') + ': ' + err.message, 'error');
     }
@@ -232,7 +275,7 @@ registerPage('episodes', (function () {
         const imported = res.data?.imported || res.data?.count || episodes.length;
         showToast(t('episodes.importSuccess', { count: imported }), 'success');
         close();
-        _loadEpisodes(0);
+        _loadEpisodes(0, false);
       } catch (err) {
         showToast(t('episodes.importFailed') + ': ' + err.message, 'error');
       } finally {
@@ -256,7 +299,7 @@ registerPage('episodes', (function () {
   // Expose to onclick handlers
   window._epShowDetail = _showDetail;
   window._epDelete = _deleteEpisode;
-  window._epLoad = _loadEpisodes;
+  window._epLoad = function(offset) { _loadEpisodes(offset, false); };
   window._epDoSearch = null;
   window._epAddBatchRow = function () {
     _batchRows.push({ content: '', source_document: '', episode_type: '' });
@@ -327,10 +370,14 @@ registerPage('episodes', (function () {
       _renderBatchImportModal();
     };
 
-    await _loadEpisodes(0);
+    await _loadEpisodes(0, false);
   }
 
   function destroy() {
+    if (_sentinelObserver) {
+      _sentinelObserver.disconnect();
+      _sentinelObserver = null;
+    }
     _container = null;
     _episodes = [];
     _batchRows = [{ content: '', source_document: '', episode_type: '' }];

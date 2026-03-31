@@ -1,40 +1,118 @@
 /* ==========================================
    Graph Utilities — Shared vis-network helpers
-   Used by graph.js and search.js
+   Used by graph.js, search.js, communities.js
    ========================================== */
 
 window.GraphUtils = (function () {
   'use strict';
 
-  // ---- Unified 4-tier color system ----
-  // Used across search ranking, graph hop levels, and path finder
+  // ---- Focus mode: type-based coloring with hop fading ----
+  //   Focus (hop 0): Red
+  //   Current: Blue node + dark solid edge, fades with hop
+  //   Inherited (history): Orange node + orange dashed edge, fades with hop
+  //   Future: Purple node + purple dotted edge, fades with hop
+
+  // Node palettes — index 0 unused, 1-3 = hop levels (3+ clamped to 3)
+  var FOCUS_NODE = { bg: '#ef4444', border: '#f87171' };
+
+  var CURRENT_NODE = [
+    null,
+    { bg: '#3b82f6', border: '#60a5fa' },  // hop 1: blue-500
+    { bg: '#93c5fd', border: '#bfdbfe' },  // hop 2: blue-300
+    { bg: '#bfdbfe', border: '#dbeafe' },  // hop 3+: blue-200
+  ];
+
+  var INHERITED_NODE = [
+    null,
+    { bg: '#f97316', border: '#fb923c' },  // hop 1: orange-500
+    { bg: '#fdba74', border: '#fed7aa' },  // hop 2: orange-300
+    { bg: '#fed7aa', border: '#ffedd5' },  // hop 3+: orange-200
+  ];
+
+  var FUTURE_NODE = [
+    null,
+    { bg: '#a855f7', border: '#c084fc' },  // hop 1: purple-500
+    { bg: '#d8b4fe', border: '#e9d5ff' },  // hop 2: purple-300
+    { bg: '#e9d5ff', border: '#f3e8ff' },  // hop 3+: purple-200
+  ];
+
+  // Node sizes per hop level
+  var NODE_SIZES = [25, 20, 16, 13];
+
+  // Edge palettes — same hop fading
+  var EDGE_CURRENT = [
+    null,
+    { color: '#2563eb', highlight: '#3b82f6', hover: '#1d4ed8' },  // hop 1: blue-600
+    { color: '#60a5fa', highlight: '#93c5fd', hover: '#3b82f6' },  // hop 2: blue-400
+    { color: '#93c5fd', highlight: '#bfdbfe', hover: '#60a5fa' },  // hop 3+: blue-300
+  ];
+
+  var EDGE_INHERITED = [
+    null,
+    { color: '#ea580c', highlight: '#f97316', hover: '#c2410c' },  // hop 1: orange-600
+    { color: '#fb923c', highlight: '#fdba74', hover: '#f97316' },  // hop 2: orange-400
+    { color: '#fdba74', highlight: '#fed7aa', hover: '#fb923c' },  // hop 3+: orange-300
+  ];
+
+  var EDGE_FUTURE = [
+    null,
+    { color: '#9333ea', highlight: '#a855f7', hover: '#7e22ce' },  // hop 1: purple-600
+    { color: '#c084fc', highlight: '#d8b4fe', hover: '#a855f7' },  // hop 2: purple-400
+    { color: '#d8b4fe', highlight: '#e9d5ff', hover: '#c084fc' },  // hop 3+: purple-300
+  ];
+
+  // Helper: pick palette entry by hop (clamped 1-3)
+  function hopPalette(palette, hop) {
+    return palette[Math.min(Math.max(hop || 1, 1), palette.length - 1)];
+  }
+
+  // ---- Legacy 4-tier color system (search, path-finder) ----
   //   Tier 1: Red    — Primary / Focus / #1
   //   Tier 2: Amber  — Secondary / #2~5
   //   Tier 3: Teal   — Tertiary  / #6~10
   //   Tier 4: Slate  — Low       / #11+
 
-  const TIER_1    = { bg: '#ef4444', border: '#f87171' };
-  const TIER_2    = { bg: '#f59e0b', border: '#fbbf24' };
-  const TIER_3    = { bg: '#14b8a6', border: '#2dd4bf' };
-  const TIER_4    = { bg: '#64748b', border: '#94a3b8' };
+  var TIER_1    = { bg: '#ef4444', border: '#f87171' };
+  var TIER_2    = { bg: '#f59e0b', border: '#fbbf24' };
+  var TIER_3    = { bg: '#14b8a6', border: '#2dd4bf' };
+  var TIER_4    = { bg: '#64748b', border: '#94a3b8' };
 
-  const HOP_PALETTE = [TIER_1, TIER_2, TIER_3, TIER_4];
+  var HOP_PALETTE = [TIER_1, TIER_2, TIER_3, TIER_4];
 
-  const DEFAULT_LIGHT = { bg: '#a5b4fc', border: '#818cf8' };
-  const DEFAULT_DARK  = { bg: '#6366f1', border: '#818cf8' };
+  var DEFAULT_LIGHT = { bg: '#a5b4fc', border: '#818cf8' };
+  var DEFAULT_DARK  = { bg: '#6366f1', border: '#818cf8' };
 
   // Search page: rank-based entity colors (same 4 tiers)
-  const RANK_1       = TIER_1;
-  const RANK_2_5     = TIER_2;
-  const RANK_6_10    = TIER_3;
-  const RANK_OTHER   = TIER_4;
+  var RANK_1       = TIER_1;
+  var RANK_2_5     = TIER_2;
+  var RANK_6_10    = TIER_3;
+  var RANK_OTHER   = TIER_4;
 
   // Expanded neighbor (not in rankMap) — distinct neutral color
-  const SEARCH_EXPANDED_LIGHT = { bg: '#a5b4fc', border: '#818cf8' };
-  const SEARCH_EXPANDED_DARK  = { bg: '#6366f1', border: '#818cf8' };
+  var SEARCH_EXPANDED_LIGHT = { bg: '#a5b4fc', border: '#818cf8' };
+  var SEARCH_EXPANDED_DARK  = { bg: '#6366f1', border: '#818cf8' };
+
+  // Hub color palette — 3 groups of saturated + light colors for top-3 hubs
+  var HUB_PALETTE = [
+    { bg: '#ef4444', border: '#f87171' },  // red
+    { bg: '#3b82f6', border: '#60a5fa' },  // blue
+    { bg: '#10b981', border: '#34d399' },  // green
+  ];
+
+  var HUB_NEIGHBOR_PALETTE = [
+    { bg: '#fca5a5', border: '#f87171' },  // light red
+    { bg: '#93c5fd', border: '#60a5fa' },  // light blue
+    { bg: '#6ee7b7', border: '#34d399' },  // light green
+  ];
+
+  var HUB_EDGE_PALETTE = [
+    { color: '#f87171', highlight: '#fca5a5', hover: '#ef4444' },  // red
+    { color: '#60a5fa', highlight: '#93c5fd', hover: '#3b82f6' },  // blue
+    { color: '#34d399', highlight: '#6ee7b7', hover: '#10b981' },  // green
+  ];
 
   // Community color palette (20 distinct colors)
-  const COMMUNITY_PALETTE = [
+  var COMMUNITY_PALETTE = [
     { bg: '#ef4444', border: '#f87171' }, // red
     { bg: '#f59e0b', border: '#fbbf24' }, // amber
     { bg: '#10b981', border: '#34d399' }, // emerald
@@ -64,11 +142,9 @@ window.GraphUtils = (function () {
     return TIER_4;
   }
 
-  // ---- Edge colors ----
+  // ---- Legacy edge colors (non-focus-mode) ----
 
-  const EDGE_CURRENT  = { color: '#4b5563', highlight: '#9ca3af', hover: '#6b7280' };
-  const EDGE_INHERITED = { color: '#d97706', highlight: '#fbbf24', hover: '#b45309' };
-  const EDGE_FUTURE   = { color: '#3b82f6', highlight: '#60a5fa', hover: '#2563eb' };
+  var EDGE_DEFAULT  = { color: '#4b5563', highlight: '#9ca3af', hover: '#6b7280' };
 
   // ---- Theme detection ----
 
@@ -81,53 +157,86 @@ window.GraphUtils = (function () {
   //   options:
   //     colorMode: 'hop' | 'search' | 'community' | 'default'
   //     versionCounts: { entity_id: count }
-  //     hopMap: { absoluteId: hopLevel }          (for 'hop' mode)
+  //     hopMap: { absoluteId: hopLevel }          (for focus/search modes)
   //     highlightAbsId: string                    (focused entity id)
-  //     rankMap: { absoluteId: 1-based-rank }     (for 'search' mode, rank-based coloring)
+  //     rankMap: { absoluteId: 1-based-rank }     (for 'search' mode)
   //     communityMap: { absoluteId: communityId }  (for 'community' mode)
-  //     versionLabel: { idx: number, total: number }  (focused entity version label)
-  //     unnamedLabel: string                      (fallback for unnamed entities)
+  //     versionLabel: { idx: number, total: number }
+  //     unnamedLabel: string
+  //     inheritedEntityIds: Set<absoluteId>        (focus mode: inherited entities)
+  //     futureEntityIds: Set<absoluteId>           (focus mode: future entities)
 
   function buildNodes(entities, options) {
     options = options || {};
-    const light = isLightTheme();
+    var light = isLightTheme();
 
     // Font colors
-    const labelFontColor = light ? '#1e293b' : '#e2e8f0';
-    const highlightFontColor = light ? '#1e40af' : '#ffffff';
+    var labelFontColor = light ? '#1e293b' : '#e2e8f0';
+    var highlightFontColor = light ? '#1e40af' : '#ffffff';
 
-    const versionCounts = options.versionCounts || {};
-    const hopMap = options.hopMap || null;
-    const highlightAbsId = options.highlightAbsId || null;
-    const rankMap = options.rankMap || null;
-    const communityMap = options.communityMap || null;
-    const versionLabel = options.versionLabel || null;
-    const unnamedLabel = options.unnamedLabel || 'unnamed';
+    var versionCounts = options.versionCounts || {};
+    var hopMap = options.hopMap || null;
+    var highlightAbsId = options.highlightAbsId || null;
+    var rankMap = options.rankMap || null;
+    var communityMap = options.communityMap || null;
+    var versionLabel = options.versionLabel || null;
+    var unnamedLabel = options.unnamedLabel || 'unnamed';
+    var inheritedEntityIds = options.inheritedEntityIds || null;
+    var futureEntityIds = options.futureEntityIds || null;
 
-    const entityMap = {};
-    const nodeIds = new Set();
+    // Focus mode: type-based coloring with hop fading
+    var hasTypeColoring = hopMap && (inheritedEntityIds || futureEntityIds);
 
-    const nodes = new vis.DataSet(
+    var entityMap = {};
+    var nodeIds = new Set();
+
+    var nodes = new vis.DataSet(
       entities.map(function (e) {
         entityMap[e.absolute_id] = e;
         nodeIds.add(e.absolute_id);
 
-        const baseName = e.name || e.entity_id || unnamedLabel;
-        const isHighlight = highlightAbsId && e.absolute_id === highlightAbsId;
-        const hopLevel = hopMap ? hopMap[e.absolute_id] : undefined;
+        var baseName = e.name || e.entity_id || unnamedLabel;
+        var isHighlight = highlightAbsId && e.absolute_id === highlightAbsId;
+        var hopLevel = hopMap ? hopMap[e.absolute_id] : undefined;
 
         // Label formatting
-        let label;
+        var label;
         if (isHighlight && versionLabel && versionLabel.total > 1) {
           label = baseName + ' [' + versionLabel.idx + '/' + versionLabel.total + ']';
         } else {
-          const vc = versionCounts[e.entity_id] || 1;
+          var vc = versionCounts[e.entity_id] || 1;
           label = vc > 1 ? baseName + ' [' + vc + ']' : baseName;
         }
 
-        // Color selection
-        let bgColor, borderColor;
-        if (options.colorMode === 'hop' && hopMap && hopLevel !== undefined) {
+        // ---- Color selection ----
+        var bgColor, borderColor;
+
+        if (hasTypeColoring) {
+          // Focus mode: type + hop based coloring
+          if (isHighlight) {
+            bgColor = FOCUS_NODE.bg;
+            borderColor = FOCUS_NODE.border;
+          } else {
+            var isInh = inheritedEntityIds && inheritedEntityIds.has(e.absolute_id);
+            var isFut = futureEntityIds && futureEntityIds.has(e.absolute_id);
+            var h = hopLevel || 1;
+
+            if (isFut) {
+              var scheme = hopPalette(FUTURE_NODE, h);
+              bgColor = scheme.bg;
+              borderColor = scheme.border;
+            } else if (isInh) {
+              var scheme = hopPalette(INHERITED_NODE, h);
+              bgColor = scheme.bg;
+              borderColor = scheme.border;
+            } else {
+              var scheme = hopPalette(CURRENT_NODE, h);
+              bgColor = scheme.bg;
+              borderColor = scheme.border;
+            }
+          }
+        } else if (options.colorMode === 'hop' && hopMap && hopLevel !== undefined) {
+          // Legacy hop coloring (non-focus)
           var palette = HOP_PALETTE[Math.min(hopLevel, HOP_PALETTE.length - 1)];
           bgColor = palette.bg;
           borderColor = palette.border;
@@ -138,7 +247,6 @@ window.GraphUtils = (function () {
             bgColor = rankScheme.bg;
             borderColor = rankScheme.border;
           } else {
-            // Expanded neighbor (not in rankMap)
             var expandedScheme = light ? SEARCH_EXPANDED_LIGHT : SEARCH_EXPANDED_DARK;
             bgColor = expandedScheme.bg;
             borderColor = expandedScheme.border;
@@ -154,15 +262,42 @@ window.GraphUtils = (function () {
             bgColor = defaultColor.bg;
             borderColor = defaultColor.border;
           }
+        } else if (options.colorMode === 'hub' && options.hubMap) {
+          var hubIdx = options.hubMap[e.absolute_id];
+          var isNeighbor = options.hubNeighborIds && options.hubNeighborIds.has(e.absolute_id);
+          if (hubIdx !== undefined) {
+            if (isNeighbor) {
+              var scheme = HUB_NEIGHBOR_PALETTE[hubIdx];
+              bgColor = scheme.bg;
+              borderColor = scheme.border;
+            } else {
+              var scheme = HUB_PALETTE[hubIdx];
+              bgColor = scheme.bg;
+              borderColor = scheme.border;
+            }
+          } else {
+            var defaultColor = light ? DEFAULT_LIGHT : DEFAULT_DARK;
+            bgColor = defaultColor.bg;
+            borderColor = defaultColor.border;
+          }
         } else {
-          // default
           var defaultColor = light ? DEFAULT_LIGHT : DEFAULT_DARK;
           bgColor = defaultColor.bg;
           borderColor = defaultColor.border;
         }
 
+        // Node size
+        var nodeSize;
+        if (hasTypeColoring) {
+          nodeSize = isHighlight ? 25 : NODE_SIZES[Math.min(hopLevel || 1, NODE_SIZES.length - 1)];
+        } else if (options.colorMode === 'search' && rankMap) {
+          nodeSize = rankMap[e.absolute_id] === 1 ? 28
+            : (rankMap[e.absolute_id] <= 5 ? 22 : (rankMap[e.absolute_id] <= 10 ? 18 : 14));
+        } else {
+          nodeSize = isHighlight ? 25 : (hopLevel === 0 ? 25 : 20);
+        }
+
         var nodeFontColor = isHighlight ? highlightFontColor : labelFontColor;
-        var nodeSize = isHighlight ? 25 : (hopLevel === 0 ? 25 : 20);
 
         return {
           id: e.absolute_id,
@@ -174,9 +309,7 @@ window.GraphUtils = (function () {
             highlight: { background: borderColor, border: '#a5b4fc' },
             hover: { background: borderColor, border: '#a5b4fc' },
           },
-          size: options.colorMode === 'search' && rankMap
-            ? (rankMap[e.absolute_id] === 1 ? 28 : (rankMap[e.absolute_id] <= 5 ? 22 : (rankMap[e.absolute_id] <= 10 ? 18 : 14)))
-            : nodeSize,
+          size: nodeSize,
           shape: 'dot',
           font: {
             color: nodeFontColor,
@@ -196,6 +329,9 @@ window.GraphUtils = (function () {
   //   nodeIds: Set<absoluteId> — visible node IDs
   //   options:
   //     inheritedRelationIds: Set<absoluteId>
+  //     futureRelationIds: Set<absoluteId>
+  //     hopMap: { absoluteId: hopLevel }       (for focus mode hop fading)
+  //     weightMode: 'count' | null
 
   function buildEdges(relations, nodeIds, options) {
     options = options || {};
@@ -203,7 +339,11 @@ window.GraphUtils = (function () {
     var hasInherited = inheritedRelationIds && inheritedRelationIds.size > 0;
     var futureRelationIds = options.futureRelationIds || null;
     var hasFuture = futureRelationIds && futureRelationIds.size > 0;
+    var hopMap = options.hopMap || null;
     var weightMode = options.weightMode || null;
+
+    // Focus mode: type-based edge coloring with hop fading
+    var hasTypeColoring = hopMap && (hasInherited || hasFuture);
 
     var relationMap = {};
 
@@ -216,8 +356,48 @@ window.GraphUtils = (function () {
           relationMap[r.absolute_id] = r;
           var isInherited = hasInherited && inheritedRelationIds.has(r.absolute_id);
           var isFuture = hasFuture && futureRelationIds.has(r.absolute_id);
-          var edgeColor = isFuture ? EDGE_FUTURE : (isInherited ? EDGE_INHERITED : EDGE_CURRENT);
-          var dashes = isFuture ? [2, 4] : (isInherited ? [5, 5] : false);
+
+          var edgeColor, dashes;
+
+          if (hasTypeColoring) {
+            // Compute edge hop from endpoints
+            var h1 = hopMap[r.entity1_absolute_id];
+            var h2 = hopMap[r.entity2_absolute_id];
+            var edgeHop = Math.max(h1 || 1, h2 || 1);
+            edgeHop = Math.min(edgeHop, 3);
+
+            if (isFuture) {
+              edgeColor = EDGE_FUTURE[edgeHop];
+              dashes = [2, 4];
+            } else if (isInherited) {
+              edgeColor = EDGE_INHERITED[edgeHop];
+              dashes = [5, 5];
+            } else {
+              edgeColor = EDGE_CURRENT[edgeHop];
+              dashes = false;
+            }
+          } else {
+            // Non-focus mode: simple inherited/future colors
+            if (isFuture) {
+              edgeColor = EDGE_FUTURE[1];
+              dashes = [2, 4];
+            } else if (isInherited) {
+              edgeColor = EDGE_INHERITED[1];
+              dashes = [5, 5];
+            } else if (options.hubMap) {
+              var hh1 = options.hubMap[r.entity1_absolute_id];
+              var hh2 = options.hubMap[r.entity2_absolute_id];
+              if (hh1 !== undefined && hh2 !== undefined && hh1 === hh2) {
+                edgeColor = HUB_EDGE_PALETTE[hh1];
+              } else {
+                edgeColor = EDGE_DEFAULT;
+              }
+              dashes = false;
+            } else {
+              edgeColor = EDGE_DEFAULT;
+              dashes = false;
+            }
+          }
 
           return {
             id: r.absolute_id,
@@ -248,7 +428,6 @@ window.GraphUtils = (function () {
         var key = [e.from, e.to].sort().join('|');
         var count = pairCount[key] || 1;
         e.width = Math.min(1 + count * 1.5, 8);
-        // Adjust opacity: more relations = darker/more opaque
         var baseColor = e.color.color || '#4b5563';
         var opacity = 0.3 + (count / pairMaxCount) * 0.7;
         e.color = {
@@ -279,7 +458,7 @@ window.GraphUtils = (function () {
       },
       stabilization: {
         enabled: true,
-        iterations: 150,
+        iterations: 300,
         updateInterval: 25,
       },
     };
@@ -301,7 +480,16 @@ window.GraphUtils = (function () {
   // ---- Public API ----
 
   return {
-    // Unified tier constants
+    // Focus mode type-based palettes
+    FOCUS_NODE: FOCUS_NODE,
+    CURRENT_NODE: CURRENT_NODE,
+    INHERITED_NODE: INHERITED_NODE,
+    FUTURE_NODE: FUTURE_NODE,
+    EDGE_CURRENT: EDGE_CURRENT,
+    EDGE_INHERITED: EDGE_INHERITED,
+    EDGE_FUTURE: EDGE_FUTURE,
+
+    // Legacy tier constants
     TIER_1: TIER_1,
     TIER_2: TIER_2,
     TIER_3: TIER_3,
@@ -318,9 +506,10 @@ window.GraphUtils = (function () {
     SEARCH_EXPANDED_LIGHT: SEARCH_EXPANDED_LIGHT,
     SEARCH_EXPANDED_DARK: SEARCH_EXPANDED_DARK,
     COMMUNITY_PALETTE: COMMUNITY_PALETTE,
-    EDGE_CURRENT: EDGE_CURRENT,
-    EDGE_INHERITED: EDGE_INHERITED,
-    EDGE_FUTURE: EDGE_FUTURE,
+    HUB_PALETTE: HUB_PALETTE,
+    HUB_NEIGHBOR_PALETTE: HUB_NEIGHBOR_PALETTE,
+    HUB_EDGE_PALETTE: HUB_EDGE_PALETTE,
+    EDGE_DEFAULT: EDGE_DEFAULT,
 
     // Functions
     buildNodes: buildNodes,

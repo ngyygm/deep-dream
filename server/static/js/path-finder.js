@@ -287,6 +287,30 @@ window.PathFinder = (function () {
 
     _state.network = new vis.Network(canvas, { nodes, edges }, options);
 
+    _state.network.once('stabilizationIterationsDone', function () {
+      _state.network.setOptions({ physics: { enabled: false } });
+    });
+
+    // Allow re-dragging: enable physics during drag so unfixed nodes respond to forces
+    _state.network.on('dragStart', function (params) {
+      if (params.nodes.length === 0) return;
+      params.nodes.forEach(function (nodeId) {
+        nodes.update({ id: nodeId, fixed: false });
+      });
+      _state.network.setOptions({ physics: { enabled: true } });
+    });
+
+    _state.network.on('dragEnd', function (params) {
+      if (params.nodes.length === 0) return;
+      params.nodes.forEach(function (nodeId) {
+        var pos = _state.network.getPositions([nodeId])[nodeId];
+        if (pos) {
+          nodes.update({ id: nodeId, x: pos.x, y: pos.y, fixed: { x: true, y: true } });
+        }
+      });
+      _state.network.setOptions({ physics: { enabled: false } });
+    });
+
     _state.network.on('click', params => {
       const nodeId = params.nodes[0];
       const edgeId = params.edges[0];

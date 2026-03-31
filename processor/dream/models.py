@@ -25,3 +25,7 @@ class DreamReport:
     new_connections: List[dict] = field(default_factory=list)
     consolidations: List[dict] = field(default_factory=list)
     narrative: str = ""
+    strategy: str = ""
+    entities_examined: int = 0
+    relations_created: int = 0
+    episode_ids: List[str] = field(default_factory=list)

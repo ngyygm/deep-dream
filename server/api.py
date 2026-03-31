@@ -41,6 +41,7 @@ from processor.llm.client import LLM_PRIORITY_STEP6
 from processor.models import Entity, MemoryCache, Relation
 from processor.search.hybrid import HybridSearcher
 from processor.search.graph_traversal import GraphTraversalSearcher
+from processor.perf import _perf_timer
 
 
 # ---------------------------------------------------------------------------
@@ -177,46 +178,59 @@ def _extract_candidate_ids(
     time_after_dt = parse_time_point(time_after) if time_after else None
 
     entity_name = (body.get("entity_name") or body.get("query_text") or "").strip()
-    if entity_name:
-        entities = storage.search_entities_by_similarity(
-            query_name=entity_name,
-            query_content=body.get("query_text") or entity_name,
-            threshold=float(body.get("similarity_threshold", 0.5)),
-            max_results=int(max_entities),
-            text_mode=body.get("text_mode") or "name_and_content",
-            similarity_method=body.get("similarity_method") or "embedding",
-        )
-        for e in entities:
-            entity_absolute_ids.add(e.absolute_id)
-    elif time_before_dt:
-        entities = storage.get_all_entities_before_time(time_before_dt, limit=max_entities, exclude_embedding=True)
-        for e in entities:
-            entity_absolute_ids.add(e.absolute_id)
-    else:
-        entities = storage.get_all_entities(limit=max_entities, exclude_embedding=True)
-        for e in entities:
-            entity_absolute_ids.add(e.absolute_id)
+    with _perf_timer("_extract_candidate_ids | entity_search"):
+        if entity_name:
+            entities = storage.search_entities_by_similarity(
+                query_name=entity_name,
+                query_content=body.get("query_text") or entity_name,
+                threshold=float(body.get("similarity_threshold", 0.5)),
+                max_results=int(max_entities),
+                text_mode=body.get("text_mode") or "name_and_content",
+                similarity_method=body.get("similarity_method") or "embedding",
+            )
+            for e in entities:
+                entity_absolute_ids.add(e.absolute_id)
+        elif time_before_dt:
+            entities = storage.get_all_entities_before_time(time_before_dt, limit=max_entities, exclude_embedding=True)
+            for e in entities:
+                entity_absolute_ids.add(e.absolute_id)
+        else:
+            entities = storage.get_all_entities(limit=max_entities, exclude_embedding=True)
+            for e in entities:
+                entity_absolute_ids.add(e.absolute_id)
 
     if not entity_absolute_ids:
         return entity_absolute_ids, relation_absolute_ids
 
-    relations = storage.get_relations_by_entity_absolute_ids(
-        list(entity_absolute_ids), limit=max_relations
-    )
-    for r in relations:
-        if time_before_dt and r.event_time and r.event_time > time_before_dt:
-            continue
-        if time_after_dt and r.event_time and r.event_time < time_after_dt:
-            continue
-        relation_absolute_ids.add(r.absolute_id)
+    with _perf_timer("_extract_candidate_ids | relation_search"):
+        relations = storage.get_relations_by_entity_absolute_ids(
+            list(entity_absolute_ids), limit=max_relations
+        )
+        for r in relations:
+            if time_before_dt and r.event_time and r.event_time > time_before_dt:
+                continue
+            if time_after_dt and r.event_time and r.event_time < time_after_dt:
+                continue
+            relation_absolute_ids.add(r.absolute_id)
+
     drop_entities = set()
-    for eid in entity_absolute_ids:
-        e = storage.get_entity_by_absolute_id(eid)
-        if e and e.event_time:
-            if time_before_dt and e.event_time > time_before_dt:
-                drop_entities.add(eid)
-            elif time_after_dt and e.event_time < time_after_dt:
-                drop_entities.add(eid)
+    with _perf_timer("_extract_candidate_ids | time_filter"):
+        if (time_before_dt or time_after_dt) and hasattr(storage, 'get_entities_by_absolute_ids'):
+            batch_entities = storage.get_entities_by_absolute_ids(list(entity_absolute_ids))
+            for e in batch_entities:
+                if e and e.event_time:
+                    if time_before_dt and e.event_time > time_before_dt:
+                        drop_entities.add(e.absolute_id)
+                    elif time_after_dt and e.event_time < time_after_dt:
+                        drop_entities.add(e.absolute_id)
+        else:
+            for eid in entity_absolute_ids:
+                e = storage.get_entity_by_absolute_id(eid)
+                if e and e.event_time:
+                    if time_before_dt and e.event_time > time_before_dt:
+                        drop_entities.add(eid)
+                    elif time_after_dt and e.event_time < time_after_dt:
+                        drop_entities.add(eid)
     entity_absolute_ids -= drop_entities
     return entity_absolute_ids, relation_absolute_ids
 
@@ -271,6 +285,12 @@ def create_app(
                 duration_ms=duration_ms,
                 graph_id=getattr(request, "graph_id", None),
             )
+            # Auto-log server errors (5xx) to event_log so they appear in system logs
+            if response.status_code >= 500:
+                monitor.event_log.error(
+                    "API",
+                    f"{request.method} {request.path} → {response.status_code}",
+                )
         return response
 
     config = config or {}
@@ -283,7 +303,7 @@ def create_app(
     # 简单内存限流（按 IP，滑动窗口）
     _rate_limit_store: Dict[str, List[float]] = {}
     _rate_limit_lock = threading.Lock()
-    _RATE_LIMIT = int(config.get("rate_limit_per_minute", 600))
+    _RATE_LIMIT = int(config.get("rate_limit_per_minute", 0))
     _RATE_WINDOW = 60.0  # 秒
 
     @app.before_request
@@ -1224,71 +1244,84 @@ def create_app(
             storage = processor.storage
 
             # --- 第一步：按 search_mode 召回实体 ---
-            if search_mode == "bm25":
-                matched_entities = storage.search_entities_by_bm25(
-                    query, limit=max_entities
-                )
-            elif search_mode == "hybrid":
-                searcher = HybridSearcher(storage)
-                matched_entities = searcher.search_entities(
-                    query_text=query,
-                    top_k=max_entities,
-                    semantic_threshold=similarity_threshold,
-                )
-            else:
-                matched_entities = storage.search_entities_by_similarity(
-                    query_name=query,
-                    query_content=query,
-                    threshold=similarity_threshold,
-                    max_results=max_entities,
-                    text_mode="name_and_content",
-                    similarity_method="embedding",
-                )
+            with _perf_timer("find_unified | step1_entity_recall"):
+                if search_mode == "bm25":
+                    matched_entities = storage.search_entities_by_bm25(
+                        query, limit=max_entities
+                    )
+                elif search_mode == "hybrid":
+                    searcher = HybridSearcher(storage)
+                    matched_entities = searcher.search_entities(
+                        query_text=query,
+                        top_k=max_entities,
+                        semantic_threshold=similarity_threshold,
+                    )
+                else:
+                    matched_entities = storage.search_entities_by_similarity(
+                        query_name=query,
+                        query_content=query,
+                        threshold=similarity_threshold,
+                        max_results=max_entities,
+                        text_mode="name_and_content",
+                        similarity_method="embedding",
+                    )
 
             # --- 第二步：按 search_mode 召回关系 ---
-            if search_mode == "bm25":
-                matched_relations = storage.search_relations_by_bm25(
-                    query, limit=max_relations
-                )
-            elif search_mode == "hybrid":
-                searcher = HybridSearcher(storage)
-                matched_relations = searcher.search_relations(
-                    query_text=query,
-                    top_k=max_relations,
-                    semantic_threshold=similarity_threshold,
-                )
-            else:
-                matched_relations = storage.search_relations_by_similarity(
-                    query_text=query,
-                    threshold=similarity_threshold,
-                    max_results=max_relations,
-                )
+            with _perf_timer("find_unified | step2_relation_recall"):
+                if search_mode == "bm25":
+                    matched_relations = storage.search_relations_by_bm25(
+                        query, limit=max_relations
+                    )
+                elif search_mode == "hybrid":
+                    searcher = HybridSearcher(storage)
+                    matched_relations = searcher.search_relations(
+                        query_text=query,
+                        top_k=max_relations,
+                        semantic_threshold=similarity_threshold,
+                    )
+                else:
+                    matched_relations = storage.search_relations_by_similarity(
+                        query_text=query,
+                        threshold=similarity_threshold,
+                        max_results=max_relations,
+                    )
 
             entity_abs_ids: Set[str] = {e.absolute_id for e in matched_entities}
             relation_abs_ids: Set[str] = {r.absolute_id for r in matched_relations}
             entities_by_abs: Dict[str, Entity] = {e.absolute_id: e for e in matched_entities}
 
-            # --- 第三步：从语义命中的关系中补充关联实体 ---
-            for r in list(matched_relations):
-                for abs_id in (r.entity1_absolute_id, r.entity2_absolute_id):
-                    if abs_id not in entity_abs_ids:
-                        e = storage.get_entity_by_absolute_id(abs_id)
+            # --- 第三步：从语义命中的关系中补充关联实体（批量获取） ---
+            with _perf_timer("find_unified | step3_entity_completion"):
+                missing_abs_ids = set()
+                for r in list(matched_relations):
+                    for abs_id in (r.entity1_absolute_id, r.entity2_absolute_id):
+                        if abs_id not in entity_abs_ids:
+                            missing_abs_ids.add(abs_id)
+                if missing_abs_ids and hasattr(storage, 'get_entities_by_absolute_ids'):
+                    batch_entities = storage.get_entities_by_absolute_ids(list(missing_abs_ids))
+                    for e in batch_entities:
                         if e:
                             entities_by_abs[e.absolute_id] = e
                             entity_abs_ids.add(e.absolute_id)
 
             # --- 第四步：图谱邻域扩展 ---
-            if expand and entity_abs_ids:
-                expanded_rels = storage.get_relations_by_entity_absolute_ids(
-                    list(entity_abs_ids), limit=max_relations
-                )
-                for r in expanded_rels:
-                    if r.absolute_id not in relation_abs_ids:
-                        relation_abs_ids.add(r.absolute_id)
-                        matched_relations.append(r)
-                    for abs_id in (r.entity1_absolute_id, r.entity2_absolute_id):
-                        if abs_id not in entity_abs_ids:
-                            e = storage.get_entity_by_absolute_id(abs_id)
+            with _perf_timer("find_unified | step4_graph_expansion"):
+                if expand and entity_abs_ids:
+                    expanded_rels = storage.get_relations_by_entity_absolute_ids(
+                        list(entity_abs_ids), limit=max_relations
+                    )
+                    # 批量获取扩展关系中的新实体
+                    expand_missing = set()
+                    for r in expanded_rels:
+                        if r.absolute_id not in relation_abs_ids:
+                            relation_abs_ids.add(r.absolute_id)
+                            matched_relations.append(r)
+                        for abs_id in (r.entity1_absolute_id, r.entity2_absolute_id):
+                            if abs_id not in entity_abs_ids:
+                                expand_missing.add(abs_id)
+                    if expand_missing and hasattr(storage, 'get_entities_by_absolute_ids'):
+                        batch_entities = storage.get_entities_by_absolute_ids(list(expand_missing))
+                        for e in batch_entities:
                             if e:
                                 entities_by_abs[e.absolute_id] = e
                                 entity_abs_ids.add(e.absolute_id)
@@ -1354,16 +1387,40 @@ def create_app(
             entities_data: List[Dict[str, Any]] = []
             relations_data: List[Dict[str, Any]] = []
             if include_entities:
-                for eid in entity_ids:
-                    e = storage.get_entity_by_absolute_id(eid)
-                    if e:
-                        entities_data.append(entity_to_dict(e))
+                if hasattr(storage, 'get_entities_by_absolute_ids'):
+                    batch = storage.get_entities_by_absolute_ids(list(entity_ids))
+                    entities_data = [entity_to_dict(e) for e in batch if e]
+                else:
+                    for eid in entity_ids:
+                        e = storage.get_entity_by_absolute_id(eid)
+                        if e:
+                            entities_data.append(entity_to_dict(e))
             if include_relations:
-                for rid in relation_ids:
-                    r = storage.get_relation_by_absolute_id(rid)
-                    if r:
-                        relations_data.append(relation_to_dict(r))
+                if hasattr(storage, 'get_relations_by_entity_absolute_ids'):
+                    batch_rels = storage.get_relations_by_entity_absolute_ids(list(relation_ids))
+                    for r in batch_rels:
+                        if r.absolute_id in relation_ids:
+                            relations_data.append(relation_to_dict(r))
+                else:
+                    for rid in relation_ids:
+                        r = storage.get_relation_by_absolute_id(rid)
+                        if r:
+                            relations_data.append(relation_to_dict(r))
             return ok({"entities": entities_data, "relations": relations_data})
+        except Exception as e:
+            return err(str(e), 500)
+
+    # =========================================================
+    # Stats: counts endpoint
+    # =========================================================
+    @app.route("/api/v1/stats/counts", methods=["GET"])
+    def get_counts():
+        try:
+            processor = _get_processor()
+            return ok({
+                "entity_count": processor.storage.count_unique_entities(),
+                "relation_count": processor.storage.count_unique_relations(),
+            })
         except Exception as e:
             return err(str(e), 500)
 
@@ -1375,7 +1432,8 @@ def create_app(
         try:
             processor = _get_processor()
             limit = request.args.get("limit", type=int)
-            entities = processor.storage.get_all_entities(limit=limit, exclude_embedding=True)
+            offset = request.args.get("offset", type=int, default=0) or 0
+            entities = processor.storage.get_all_entities(limit=limit, offset=offset if offset > 0 else None, exclude_embedding=True)
             return ok([entity_to_dict(e) for e in entities])
         except Exception as e:
             return err(str(e), 500)
@@ -1733,7 +1791,8 @@ def create_app(
             entity_id_b = str(body.get("entity_id_b") or body.get("to_entity_id") or request.args.get("entity_id_b") or request.args.get("to_entity_id") or "").strip()
             if not entity_id_a or not entity_id_b:
                 return err("entity_id_a 与 entity_id_b 为必填参数", 400)
-            relations = processor.storage.get_relations_by_entities(entity_id_a, entity_id_b)
+            with _perf_timer("find_relations_between"):
+                relations = processor.storage.get_relations_by_entities(entity_id_a, entity_id_b)
             dicts = [relation_to_dict(r) for r in relations]
             enrich_relations(dicts, processor)
             return ok(dicts)
@@ -1939,60 +1998,94 @@ def create_app(
                 enrich_relations(dicts, processor)
                 return ok(dicts)
 
-            # ---- version_only: only relations directly linked to this version ----
-            if relation_scope == "version_only":
-                relations = processor.storage.get_entity_relations_by_entity_id(
-                    entity_id=entity_id,
-                    limit=limit,
-                    time_point=time_point,
-                    max_version_absolute_id=max_version_absolute_id,
-                )
-                dicts = [relation_to_dict(r) for r in relations]
-                enrich_relations(dicts, processor)
-                return ok(dicts)
-
-            # ---- accumulated / all_versions: need both version-scoped and latest ----
-            version_rels = processor.storage.get_entity_relations_by_entity_id(
+            # ---- Shared queries ----
+            # current_rels: relations directly linked to the focused version only
+            current_rels = processor.storage.get_entity_relations(
+                max_version_absolute_id,
+                limit=limit,
+                time_point=time_point,
+            )
+            # accum_rels: accumulated relations from v1 through focused version
+            accum_rels = processor.storage.get_entity_relations_by_entity_id(
                 entity_id=entity_id,
                 limit=limit,
                 time_point=time_point,
                 max_version_absolute_id=max_version_absolute_id,
             )
+
+            # Dedup by relation_id
+            accum_by_rid = {r.relation_id: r for r in accum_rels}
+            current_by_rid = {r.relation_id: r for r in current_rels}
+            accum_rids = set(accum_by_rid)
+            current_rids = set(current_by_rid)
+
+            # ---- version_only: only relations directly linked to this version ----
+            if relation_scope == "version_only":
+                dicts = [relation_to_dict(r) for r in current_rels]
+                enrich_relations(dicts, processor)
+                return ok(dicts)
+
+            # ---- accumulated: v1..vN union + future from latest ----
+            if relation_scope == "accumulated":
+                latest_rels = processor.storage.get_entity_relations_by_entity_id(
+                    entity_id=entity_id,
+                    limit=limit,
+                    time_point=time_point,
+                    max_version_absolute_id=None,
+                )
+                latest_by_rid = {r.relation_id: r for r in latest_rels}
+                latest_rids = set(latest_by_rid)
+
+                all_rels = []
+                for rid in accum_rids | latest_rids:
+                    if rid in current_rids:
+                        all_rels.append(current_by_rid[rid])
+                    elif rid in accum_rids:
+                        all_rels.append(accum_by_rid[rid])
+                    else:
+                        all_rels.append(latest_by_rid[rid])
+
+                dicts = [relation_to_dict(r) for r in all_rels]
+                enrich_relations(dicts, processor)
+
+                for d in dicts:
+                    rid = d["relation_id"]
+                    if rid not in current_rids:
+                        if rid not in accum_rids:
+                            d["_future"] = True
+                        else:
+                            d["_inherited"] = True
+
+                return ok(dicts)
+
+            # ---- all_versions: (v1..vN) ∪ latest, classify as current/inherited/future ----
             latest_rels = processor.storage.get_entity_relations_by_entity_id(
                 entity_id=entity_id,
                 limit=limit,
                 time_point=time_point,
                 max_version_absolute_id=None,
             )
+            latest_by_rid = {r.relation_id: r for r in latest_rels}
+            latest_rids = set(latest_by_rid)
 
-            version_abs_ids = set(r.absolute_id for r in version_rels)
-            latest_abs_ids = set(r.absolute_id for r in latest_rels)
-
-            # Union of both query results
-            all_rels_map = {r.absolute_id: r for r in version_rels}
-            for r in latest_rels:
-                if r.absolute_id not in all_rels_map:
-                    all_rels_map[r.absolute_id] = r
-            all_rels = list(all_rels_map.values())
+            all_rels = []
+            for rid in accum_rids | latest_rids:
+                if rid in latest_rids:
+                    all_rels.append(latest_by_rid[rid])
+                else:
+                    all_rels.append(accum_by_rid[rid])
 
             dicts = [relation_to_dict(r) for r in all_rels]
             enrich_relations(dicts, processor)
 
-            if relation_scope == "accumulated":
-                # Mark relations in version but NOT in latest as _inherited
-                for d in dicts:
-                    if d["absolute_id"] in version_abs_ids and d["absolute_id"] not in latest_abs_ids:
-                        d["_inherited"] = True
-            else:
-                # all_versions: classify each relation
-                for d in dicts:
-                    aid = d["absolute_id"]
-                    if aid in version_abs_ids and aid in latest_abs_ids:
-                        d["_version_scope"] = "current"
-                    elif aid in version_abs_ids:
-                        d["_version_scope"] = "inherited"
-                    else:
-                        d["_version_scope"] = "future"
+            for d in dicts:
+                rid = d["relation_id"]
+                if rid in current_rids:
+                    d["_version_scope"] = "current"
+                elif rid in accum_rids:
+                    d["_version_scope"] = "inherited"
+                else:
+                    d["_version_scope"] = "future"
 
             return ok(dicts)
         except Exception as e:
@@ -2164,23 +2257,37 @@ def create_app(
         """实体版本时间线"""
         try:
             processor = _get_processor()
-            versions = processor.storage.get_entity_versions(entity_id)
+            with _perf_timer("find_entity_timeline"):
+                versions = processor.storage.get_entity_versions(entity_id)
             if not versions:
                 return err(f"未找到实体: {entity_id}", 404)
 
-            # 获取关联关系的版本
+            # 获取关联关系的版本（批量优化：获取所有版本的关系，按 processed_time 过滤）
             relations_timeline = []
-            for v in versions:
-                rels = processor.storage.get_entity_relations_by_entity_id(
-                    entity_id=entity_id, max_version_absolute_id=v.absolute_id,
+            if hasattr(processor.storage, 'get_entity_relations_timeline'):
+                timeline_data = processor.storage.get_entity_relations_timeline(
+                    entity_id, [v.absolute_id for v in versions]
                 )
-                for r in rels:
+                for item in timeline_data:
                     relations_timeline.append({
-                        "relation_id": r.relation_id,
-                        "content": r.content,
-                        "event_time": r.event_time.isoformat() if r.event_time else None,
-                        "absolute_id": r.absolute_id,
+                        "relation_id": item["relation_id"],
+                        "content": item["content"],
+                        "event_time": item["event_time"],
+                        "absolute_id": item["absolute_id"],
                     })
+            else:
+                # 回退到逐版本查询
+                for v in versions:
+                    rels = processor.storage.get_entity_relations_by_entity_id(
+                        entity_id=entity_id, max_version_absolute_id=v.absolute_id,
+                    )
+                    for r in rels:
+                        relations_timeline.append({
+                            "relation_id": r.relation_id,
+                            "content": r.content,
+                            "event_time": r.event_time.isoformat() if r.event_time else None,
+                            "absolute_id": r.absolute_id,
+                        })
 
             # 去重
             seen = set()
@@ -2217,7 +2324,7 @@ def create_app(
             loop = asyncio.new_event_loop()
             try:
                 summary = loop.run_until_complete(
-                    processor.llm.evolve_entity_summary(entity, old_version)
+                    processor.llm_client.evolve_entity_summary(entity, old_version)
                 )
             finally:
                 loop.close()
@@ -2395,7 +2502,7 @@ def create_app(
             loop = asyncio.new_event_loop()
             try:
                 contradictions = loop.run_until_complete(
-                    processor.llm.detect_contradictions(entity_id, versions)
+                    processor.llm_client.detect_contradictions(entity_id, versions)
                 )
             finally:
                 loop.close()
@@ -2418,7 +2525,7 @@ def create_app(
             loop = asyncio.new_event_loop()
             try:
                 resolution = loop.run_until_complete(
-                    processor.llm.resolve_contradiction(contradiction)
+                    processor.llm_client.resolve_contradiction(contradiction)
                 )
             finally:
                 loop.close()
@@ -2517,6 +2624,124 @@ def create_app(
             return err(str(e), 500)
 
     # =========================================================
+    # Phase E.2: DeepDream Agent API — Agent 驱动的梦境巩固
+    # =========================================================
+
+    @app.route("/api/v1/find/dream/seeds", methods=["POST"])
+    def dream_seeds():
+        """获取梦境种子实体，支持多种策略。"""
+        try:
+            body = request.get_json(silent=True) or {}
+            strategy = str(body.get("strategy", "random")).strip()
+            count = min(int(body.get("count", 10)), 100)
+            exclude_ids = body.get("exclude_entity_ids") or []
+            community_id = body.get("community_id")
+
+            valid_strategies = ["random", "orphan", "hub", "time_gap", "cross_community", "low_confidence"]
+            if strategy not in valid_strategies:
+                return err(f"无效策略: {strategy}，可选: {', '.join(valid_strategies)}", 400)
+
+            processor = _get_processor()
+            if not hasattr(processor.storage, 'get_dream_seeds'):
+                return err("DeepDream 不可用", 404)
+
+            seeds = processor.storage.get_dream_seeds(
+                strategy=strategy,
+                count=count,
+                exclude_ids=exclude_ids,
+                community_id=int(community_id) if community_id is not None else None,
+            )
+
+            # 格式化返回
+            for s in seeds:
+                if s.get("event_time"):
+                    s["event_time"] = str(s["event_time"])
+                if s.get("confidence") is not None:
+                    s["confidence"] = round(float(s["confidence"]), 4)
+                if s.get("degree") is not None:
+                    s["degree"] = int(s["degree"])
+                if s.get("community_id") is not None:
+                    s["community_id"] = int(s["community_id"])
+
+            return ok({"seeds": seeds, "strategy": strategy, "count": len(seeds)})
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/v1/find/dream/relation", methods=["POST"])
+    def dream_create_relation():
+        """创建梦境发现的关系。"""
+        try:
+            body = request.get_json(silent=True) or {}
+            entity1_id = str(body.get("entity1_id") or "").strip()
+            entity2_id = str(body.get("entity2_id") or "").strip()
+            content = str(body.get("content") or "").strip()
+            confidence = body.get("confidence")
+            reasoning = str(body.get("reasoning") or "").strip()
+            dream_cycle_id = str(body.get("dream_cycle_id") or "").strip() or None
+
+            # 参数校验
+            if not entity1_id or not entity2_id:
+                return err("entity1_id 与 entity2_id 为必填参数", 400)
+            if not content:
+                return err("content 为必填参数", 400)
+            if not reasoning:
+                return err("reasoning 为必填参数，必须说明为什么这两个实体有关联", 400)
+            if confidence is None:
+                return err("confidence 为必填参数", 400)
+            confidence = float(confidence)
+            if not (0.0 <= confidence <= 1.0):
+                return err("confidence 必须在 0.0-1.0 之间", 400)
+            if entity1_id == entity2_id:
+                return err("不能创建自环关系", 400)
+
+            processor = _get_processor()
+            if not hasattr(processor.storage, 'save_dream_relation'):
+                return err("DeepDream 不可用", 404)
+
+            result = processor.storage.save_dream_relation(
+                entity1_id=entity1_id,
+                entity2_id=entity2_id,
+                content=content,
+                confidence=confidence,
+                reasoning=reasoning,
+                dream_cycle_id=dream_cycle_id,
+            )
+            return ok(result)
+        except ValueError as e:
+            return err(str(e), 409)
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/v1/find/dream/episode", methods=["POST"])
+    def dream_save_episode():
+        """保存梦境 episode。"""
+        try:
+            body = request.get_json(silent=True) or {}
+            content = str(body.get("content") or "").strip()
+            entities_examined = body.get("entities_examined") or []
+            relations_created = body.get("relations_created") or []
+            strategy_used = str(body.get("strategy_used") or "").strip()
+            dream_cycle_id = str(body.get("dream_cycle_id") or "").strip() or None
+
+            if not content:
+                return err("content 为必填参数", 400)
+
+            processor = _get_processor()
+            if not hasattr(processor.storage, 'save_dream_episode'):
+                return err("DeepDream 不可用", 404)
+
+            result = processor.storage.save_dream_episode(
+                content=content,
+                entities_examined=entities_examined,
+                relations_created=relations_created,
+                strategy_used=strategy_used,
+                dream_cycle_id=dream_cycle_id,
+            )
+            return ok(result)
+        except Exception as e:
+            return err(str(e), 500)
+
+    # =========================================================
     # Phase F: Agent-First API — 元查询 / 解释 / 建议
     # =========================================================
     @app.route("/api/v1/find/ask", methods=["POST"])
@@ -2533,7 +2758,7 @@ def create_app(
             loop = asyncio.new_event_loop()
             try:
                 result = loop.run_until_complete(
-                    processor.llm.agent_meta_query(question, request.graph_id or "default")
+                    processor.llm_client.agent_meta_query(question, request.graph_id or "default")
                 )
             finally:
                 loop.close()
@@ -2586,7 +2811,7 @@ def create_app(
             loop = asyncio.new_event_loop()
             try:
                 explanation = loop.run_until_complete(
-                    processor.llm.explain_entity(entity, aspect)
+                    processor.llm_client.explain_entity(entity, aspect)
                 )
             finally:
                 loop.close()
@@ -2608,7 +2833,7 @@ def create_app(
             loop = asyncio.new_event_loop()
             try:
                 suggestions = loop.run_until_complete(
-                    processor.llm.generate_suggestions(entities, entity_count, relation_count)
+                    processor.llm_client.generate_suggestions(entities, entity_count, relation_count)
                 )
             finally:
                 loop.close()
@@ -2702,7 +2927,8 @@ def create_app(
             if not hasattr(processor.storage, 'get_entity_neighbors'):
                 return err("此功能需要 Neo4j 后端", 400)
             depth = min(max(int(request.args.get('depth', 1)), 1), 5)
-            result = processor.storage.get_entity_neighbors(entity_uuid, depth=depth)
+            with _perf_timer(f"find_entity_neighbors | depth={depth}"):
+                result = processor.storage.get_entity_neighbors(entity_uuid, depth=depth)
             return ok(result)
         except Exception as e:
             return err(str(e), 500)
@@ -2835,8 +3061,9 @@ def create_app(
                 return err("此功能需要 Neo4j 后端", 400)
             min_size = max(int(request.args.get('min_size', 3)), 1)
             limit = min(max(int(request.args.get('limit', 50)), 1), 200)
-            communities = processor.storage.get_communities(limit=limit, min_size=min_size)
-            return ok({"communities": communities, "count": len(communities)})
+            offset = max(int(request.args.get('offset', 0)), 0)
+            communities, total = processor.storage.get_communities(limit=limit, min_size=min_size, offset=offset)
+            return ok({"communities": communities, "count": len(communities), "total": total})
         except Exception as e:
             return err(str(e), 500)
 

@@ -1,15 +1,19 @@
 <p align="center">
-  <img src="https://img.shields.io/github/stars/ngyygm/Temporal_Memory_Graph?style=for-the-badge&logo=github" alt="GitHub stars"/>
-  <img src="https://img.shields.io/github/forks/ngyygm/Temporal_Memory_Graph?style=for-the-badge&logo=github" alt="GitHub forks"/>
-  <img src="https://img.shields.io/github/license/ngyygm/Temporal_Memory_Graph?style=for-the-badge" alt="License"/>
+  <img src="https://img.shields.io/github/stars/ngyygm/deep-dream?style=for-the-badge&logo=github" alt="GitHub stars"/>
+  <img src="https://img.shields.io/github/forks/ngyygm/deep-dream?style=for-the-badge&logo=github" alt="GitHub forks"/>
+  <img src="https://img.shields.io/github/license/ngyygm/deep-dream?style=for-the-badge" alt="License"/>
   <img src="https://img.shields.io/badge/python-3.8+-blue?style=for-the-badge&logo=python" alt="Python"/>
 </p>
 
 <p align="center">
-  <strong>Temporal Memory Graph (TMG)</strong>
+  <strong>Deep Dream</strong>
 </p>
 <p align="center">
-  为 Agent 设计的长期记忆系统 —— 像人类一样存、取、回溯。
+  Agent 的全生命周期记忆 — 像人一样记忆、回溯、做梦。
+</p>
+
+<p align="center">
+  <img src="docs/images/logo.jpeg" alt="Deep Dream Logo" width="200"/>
 </p>
 
 <p align="center">
@@ -18,273 +22,120 @@
 
 ---
 
-## 简介
+## 人一生三分之一的时间在睡眠中度过
 
-TMG 让 AI Agent 拥有**带时间的自然语言记忆**。所有记忆写入一张统一知识图，用自然语言提问即可唤醒相关片段，并支持「那时发生了什么」式的时间回溯。
+这并非浪费。睡眠中，大脑并没有闲着——它在**重播**白天的经历，**重组**记忆碎片，**发现**那些清醒时来不及注意的隐藏联系。每一次快速眼动（REM）睡眠，都是一次自主的知识巩固：将散落的片段编织成网络，将模糊的直觉凝固为洞见。
 
-核心能力：**Remember**（写入记忆）+ **Find**（检索记忆）。**Select**（筛选与决策）由调用方完成。
+**Deep Dream 让 AI Agent 拥有了同样的能力。**
 
-| 特性 | 说明 |
-|------|------|
-| 面向 Agent | 为智能体提供长期记忆存储与检索，而非面向人类的笔记系统 |
-| 自然语言 | 直接输入文本，系统自动完成概念抽取与关系构建，无需标签 |
-| 时间是一等公民 | 每条记忆带时间戳，实体/关系具备版本链，支持按时间回溯 |
-| 统一记忆图 | 所有记忆写入同一张图，语义检索 + 图谱扩展召回相关记忆 |
+Deep Dream 是一个面向 Agent 的长期记忆系统。Agent 在清醒时写入记忆（Remember），在需要时检索记忆（Find）。而当 Agent 进入"睡眠"状态，**DeepDream 自主梦境巩固**启动——一个自主的 Dream Agent 无限循环地遍历知识图谱，像大脑在夜间的自由联想一样，不断发现实体间的隐藏关系、构建新的概念桥梁。
+
+---
+
+## 为什么 Agent 需要做梦？
+
+| 人类记忆 | Deep Dream |
+|----------|-----------|
+| 白天经历 → 写入记忆 | 文本/文档 → **Remember** 写入知识图谱 |
+| 回忆往事 → 提取记忆 | 自然语言提问 → **Find** 语义检索 |
+| 夜间睡眠 → 重组巩固 | Dream Agent → **DeepDream** 自主发现新关系 |
+
+传统的知识图谱是**静态**的——写入什么就是什么。但人类的记忆不是这样工作的。我们在梦中重新连接记忆碎片，发现清醒时无法注意到的模式。DeepDream 赋予 Agent 同样的能力：
+
+- **不局限于最相近的** — 不仅发现相似实体间的关系，还能跨越巨大语义距离，找到意想不到的连接
+- **跳跃性思维** — 像梦境中的自由联想，从一个概念跳到看似无关的另一个概念
+- **多策略做梦** — 自由联想、对比分析、时间桥接、跨域发现、孤立收养、枢纽混搭……多种策略循环轮换
+- **永不停止** — 只要 Agent 在"睡眠"中，梦境就持续进行，无限次迭代
+
+### 关键约束
+
+Dream Agent 在做梦时严格遵守一条规则：**只能发现已有实体间的新关系，绝不编造不存在的实体。** 这就像人类在梦中重组已有记忆，而非凭空创造全新的人物和事件。所有梦境发现都带有明确的来源标记（`source: dream`），与清醒时写入的记忆清晰区分。
+
+---
+
+## 核心架构
+
+Deep Dream 提供三层能力：
+
+<p align="center">
+  <img src="docs/images/architecture.jpeg" alt="Deep Dream Architecture" width="600"/>
+</p>
+
+```
+Remember（清醒时）          Find（需要时）           Dream（睡眠时）
+┌──────────────┐      ┌──────────────┐      ┌────────────────────┐
+│ 文本 → 实体   │      │ 语义检索      │      │ Dream Agent        │
+│ 文档 → 关系   │      │ 图谱扩展      │      │  ├─ 策略选择        │
+│ 版本化写入    │      │ 时间回溯      │      │  ├─ 工具调用        │
+│              │      │              │      │  ├─ 关系发现        │
+└──────┬───────┘      └──────┬───────┘      │  └─ 无限迭代        │
+       │                     │              └────────┬───────────┘
+       ▼                     ▼                       ▼
+   ┌───────────────────────────────────────────────────────┐
+   │                统一记忆知识图谱                         │
+   │         Entity 版本链 · Relation 版本链 · Episode      │
+   └───────────────────────────────────────────────────────┘
+```
+
+Dream Agent 不是一个硬编码的循环——它是一个**自主智能体**，通过 skill 接入 Deep Dream 的 API，像使用工具一样自主决定：
+- 什么时候选择哪种做梦策略
+- 需要遍历哪些实体和关系
+- 什么时候提出新的关系假设
+- 什么时候记录梦境发现
 
 ---
 
 ## 快速开始
 
-### 1. 获取项目
-
 ```bash
-git clone https://github.com/ngyygm/Temporal_Memory_Graph.git
-cd Temporal_Memory_Graph
+git clone https://github.com/ngyygm/deep-dream.git
+cd deep-dream
 pip install -r requirements.txt
-```
-
-### 2. 配置服务
-
-```bash
 cp service_config.example.json service_config.json
-```
-
-打开 `service_config.json`，配置以下两项：
-
-**LLM（必改）** — 选一种：
-
-```jsonc
-// 方案 A：本地 Ollama
-"llm": { "api_key": "ollama", "model": "qwen2.5:7b", "base_url": "http://127.0.0.1:11434", "think": false }
-
-// 方案 B：远程 OpenAI 兼容 API（智谱 / DeepSeek / 硅基流动等）
-"llm": { "api_key": "你的 API Key", "model": "glm-4-flash", "base_url": "https://open.bigmodel.cn/api/paas/v4", "think": false }
-```
-
-**Embedding（必改）**：
-
-```jsonc
-// 填本地路径（已下载）或 HuggingFace 名称（首次自动下载）
-"embedding": { "model": "Qwen/Qwen3-Embedding-0.6B", "device": "cpu" }
-```
-
-### 3. 启动服务
-
-```bash
+# 编辑 service_config.json: 配置 LLM 和 Embedding
 python -m server.api --config service_config.json
-
-# 监控模式（推荐）：固定面板实时刷新状态
-python -m server.api --config service_config.json --log-mode monitor
 ```
 
-看到 `TMG 服务已启动` 和 `LLM 握手成功` 即表示启动成功。
+浏览器访问 **http://127.0.0.1:16200/** 打开管理面板。
 
-### 4. 验证服务
-
-```bash
-curl -s "http://127.0.0.1:16200/api/v1/health" | python -m json.tool
-```
-
-### 5. 打开 Web 管理面板
-
-服务启动后，浏览器访问 **http://127.0.0.1:16200/** 即可打开 Web 管理面板。Web 面板与 API 服务共用 16200 端口，无需额外进程。
-
-**面板包含 6 个功能页面：**
-
-| 页面 | 功能 |
-|------|------|
-| **Dashboard** | 系统概览：运行时间、图谱数量、实体/关系统计、API 成功率、任务队列、系统日志（5 秒自动刷新） |
-| **Graph** | 交互式图谱可视化：vis-network.js 力导向图，可调实体/关系数量上限，点击节点查看详情与版本历史 |
-| **Memory** | 记忆管理：文本直接输入或拖拽上传文件，设置事件时间与来源，查看任务处理队列与文档列表 |
-| **Search** | 语义检索：自然语言查询，支持相似度阈值、最大结果数、时间范围过滤、图谱扩展，多条批量检索模式 |
-| **Entities** | 实体浏览器：全部实体列表、语义搜索、点击查看详情与版本时间线（支持展开内容、名称变更对比） |
-| **Relations** | 关系浏览器：全部关系列表、语义搜索、指定两实体查询关系 |
-
-**技术栈：** 纯 HTML/CSS/JS（无构建工具），Tailwind CSS + vis-network.js + Lucide Icons，SPA 哈希路由。
-
-### 6. 写入记忆
+### 写入记忆
 
 ```bash
-# JSON 方式
 curl -s -X POST http://localhost:16200/api/v1/remember \
   -H "Content-Type: application/json" \
-  -d '{"text":"林嘿嘿是考古学博士，在山洞遇见了会说话的白狐。白狐说已守护山洞三百年。","event_time":"2026-03-09T14:00:00"}' | jq
-
-# 文件上传方式
-curl -s -X POST http://localhost:16200/api/v1/remember \
-  -F "file=@document.txt" \
-  -F "source_document=document.txt" | jq
+  -d '{"text":"林嘿嘿是考古学博士，在山洞遇见了会说话的白狐。白狐说已守护山洞三百年。","event_time":"2026-03-09T14:00:00"}'
 ```
 
-Remember 是异步处理，提交后立即返回 `task_id`。查看处理进度：
-
-```bash
-# 查看任务状态（queued → running → completed/failed）
-curl -s "http://localhost:16200/api/v1/remember/tasks/<task_id>" | jq
-
-# 查看任务队列
-curl -s "http://localhost:16200/api/v1/remember/tasks?limit=10" | jq
-```
-
-> 进程异常退出后重启会自动恢复未完成的任务。
-
-#### Remember 缓存与断点续传
-
-续跑起点由任务中的 **`step7_done_chunks`**（关系链步骤 7 已完成的窗口数）决定，**不是**仅看主链或 `docs/` 目录条数。各步骤落盘与行为如下：
-
-| 步骤 | 磁盘/状态 | 重启后 |
-|------|-----------|--------|
-| 任务断点 | `<storage_path>/<graph_id>/tasks/queue.jsonl` 中的 `main_done_chunks` / `step6_done_chunks` / `step7_done_chunks` | `start_chunk` = `step7_done_chunks` |
-| 步骤 1 | `docs/*_{doc_hash}/`（记忆缓存）+ 按块 hash / `document_path` 查找 | 同一块文本且同一 `document_path` 命中则跳过步骤 1 的 LLM |
-| 步骤 2–5（含实体增强） | 同一文档目录下 `extraction.json` | 命中则跳过步骤 2–5 全部 LLM；**实体增强结果已含在保存的 `entities` 中**（保存发生在步骤 5 完成之后） |
-| 步骤 6–7 | **无**单独「对齐结果」缓存文件 | 已记入 `step7_done_chunks` 的窗口**不再进入**本轮流水线；仍在断点之后的窗口每次处理时仍会执行实体/关系对齐 LLM |
-
-**易误解点：**
-
-1. **`queue.jsonl` 若未成功写入**（例如历史 `Too many open files`），`step7_done_chunks` 可能偏旧，可能重复跑步骤 6/7；步骤 1–5 仍可能因 `extraction.json` 命中而跳过。
-2. **先关闭 `entity_post_enhancement` 跑完并写入缓存，再开启增强**：仍会命中抽取缓存，**不会**自动补跑步骤 5（除非删除对应窗的抽取缓存或改代码逻辑）。
-3. **原文块或 `document_path` 变化**：块 hash 变化 → 步骤 1–5 缓存未命中，会重跑抽取链。
-
-步骤 6/7 的「按窗落盘只读缓存」当前**未实现**；避免重复主要依赖断点准确与存储健康。
-
-### 7. 检索记忆
+### 检索记忆
 
 ```bash
 curl -s -X POST http://localhost:16200/api/v1/find \
   -H "Content-Type: application/json" \
-  -d '{"query": "林嘿嘿和白狐之间发生了什么"}' | jq
+  -d '{"query": "林嘿嘿和白狐之间发生了什么"}'
 ```
 
-### 8. 多图谱隔离
-
-通过 `graph_id` 参数创建独立的记忆库（默认 `"default"`）：
+### 启动梦境巩固
 
 ```bash
-# 写入不同图谱
-curl -s -X POST http://localhost:16200/api/v1/remember \
+curl -s -X POST http://localhost:16200/api/v1/find/dream/agent/start \
   -H "Content-Type: application/json" \
-  -d '{"graph_id":"work","text":"今天完成了项目原型设计。","event_time":"2026-03-27T09:00:00"}'
-
-# 检索指定图谱
-curl -s -X POST http://localhost:16200/api/v1/find \
-  -H "Content-Type: application/json" \
-  -d '{"graph_id":"work","query":"最近做了什么"}'
-```
-
-### Python 示例
-
-```python
-import requests, time
-
-BASE = "http://127.0.0.1:16200"
-
-# 写入
-r = requests.post(f"{BASE}/api/v1/remember", json={
-    "text": "TMG 是一个为 AI Agent 设计的长期记忆系统。",
-    "event_time": "2026-03-27T10:00:00",
-})
-task_id = r.json()["data"]["task_id"]
-
-# 等待完成
-while True:
-    status = requests.get(f"{BASE}/api/v1/remember/tasks/{task_id}").json()["data"]["status"]
-    if status in ("completed", "failed"):
-        break
-    time.sleep(2)
-
-# 检索
-r = requests.post(f"{BASE}/api/v1/find", json={"query": "TMG 是什么", "expand": True})
-for e in r.json()["data"]["entities"]:
-    print(f"  - {e['name']}: {e['content'][:60]}")
+  -d '{"max_cycles": 10, "strategies": ["free_association", "cross_domain", "leap"]}'
 ```
 
 ---
 
-## 系统架构
+## Dream Agent 的做梦策略
 
-```mermaid
-flowchart TB
-    subgraph Input["输入层"]
-        T[自然语言文本]
-        F[文件上传]
-    end
-
-    subgraph Pipeline["记忆流水线"]
-        W[滑窗切片]
-        M[Memory Agent]
-        M --> M1[更新记忆缓存]
-        M --> M2[概念实体抽取]
-        M --> M3[概念关系抽取]
-        M --> M4[图谱语义对齐]
-        M --> M5[版本化写入]
-    end
-
-    subgraph Storage["统一记忆图"]
-        E[(Entity 版本链)]
-        R[(Relation 版本链)]
-        C[(MemoryCache)]
-    end
-
-    subgraph Find["检索层"]
-        Q[自然语言查询]
-        S[语义召回]
-        G[图谱扩展]
-        Tf[时间过滤]
-        Out[局部记忆区域]
-    end
-
-    T --> W
-    F --> W
-    W --> M
-    M --> E
-    M --> R
-    M --> C
-    Q --> S
-    S --> G
-    G --> Tf
-    Tf --> Out
-    E -.-> S
-    R -.-> S
-```
-
----
-
-## API 概览
-
-### Remember — 记忆写入（POST，异步）
-
-| 参数 | 必填 | 说明 |
+| 策略 | 类比 | 目标 |
 |------|------|------|
-| `graph_id` | 否 | 目标图谱 ID（默认 `"default"`） |
-| `text` | 与 `file` 二选一 | 自然语言正文 |
-| `file` | 与 `text` 二选一 | 上传文件（multipart） |
-| `source_document` | 否 | 来源文档名称 |
-| `event_time` | 否 | ISO 8601 事件时间 |
-| `load_cache_memory` | 否 | `true`/`false` |
-
-请求立即返回 `task_id`（HTTP 202），后台线程处理。
-
-### Find — 语义检索
-
-- **推荐**：`POST /api/v1/find`，传入 `query` 即可完成语义召回、图谱扩展与时间过滤
-- **原子接口**：实体检索（`/api/v1/find/entities/search`）、关系检索、记忆缓存、统计（`/api/v1/find/stats`）等
-
-### 响应格式
-
-- 成功：`{"success": true, "data": ..., "elapsed_ms": 123.45}`
-- 失败：`{"success": false, "error": "错误信息", "elapsed_ms": 12.34}`
-
-完整 API 见 `skills/tmg-memory-graph/reference.md` 及 `server/api.py`。
-
----
-
-## 数据模型
-
-- **Entity**：概念实体，含 `name`、`content`（自然语言）、`event_time`、`processed_time`，多版本形成版本链
-- **Relation**：概念关系，以自然语言描述，含 `entity1/2_absolute_id` 及版本链
-- **MemoryCache**：系统内部上下文摘要链，用于对齐与推理
-
-全量内容为自然语言 + 时间，无预定义标签体系。
+| `free_association` | 自由联想 | 随机实体间寻找隐藏连接 |
+| `contrastive` | 对比分析 | 相似实体间的差异与对比 |
+| `temporal_bridge` | 时间穿越 | 跨越时间长河发现演变规律 |
+| `cross_domain` | 跨域灵感 | 不同领域间的意外桥梁 |
+| `orphan_adoption` | 孤儿收容 | 为孤立实体寻找归属 |
+| `hub_remix` | 枢纽重组 | 核心节点间的新路径发现 |
+| `leap` | 思维跳跃 | 创造性的远距离联想 |
+| `narrative` | 故事编织 | 将零散片段串联成叙事线 |
 
 ---
 
@@ -295,49 +146,20 @@ flowchart TB
 | 配置 | 说明 |
 |------|------|
 | `host` / `port` | 服务地址，默认 `0.0.0.0:16200` |
-| `storage_path` | 数据存储目录，各图谱在 `<path>/<graph_id>/` 下独立存储 |
-| `flask_threaded` | 默认 `true`，Remember 处理时仍可响应 Find |
-| `llm.api_key` / `model` / `base_url` | LLM 配置 |
-| `llm.think` | 是否开启思考模式（仅 Ollama 原生协议支持） |
-| `embedding.model` / `device` | Embedding 模型路径/HuggingFace 名称，`device` 可选 `cpu`/`cuda` |
-| `chunking.window_size` / `overlap` | 滑窗大小和重叠（字符数） |
-| `pipeline.compress_multi_round_extraction` | 默认 `false`；为 `true` 时多轮实体/关系抽取不累积各轮 assistant 全文，每轮独立请求并附带已抽名称/关系摘要，降低上下文 token（适合厂商长上下文限流场景） |
-| `runtime.concurrency.*` | 三层并发控制（queue_workers / window_workers / llm_call_workers） |
-| `runtime.retry.*` | 失败重试次数和延迟 |
-
-Remember 各步骤的**磁盘缓存与断点续传**（步骤 1–5 与步骤 6–7 的差异）见**快速开始**中的「Remember 缓存与断点续传」小节。
-
-**LLM 服务端选择**：
-
-| 服务 | base_url | 说明 |
-|------|----------|------|
-| Ollama | `http://127.0.0.1:11434` | 原生协议，支持 `think` 模式，**不要加 `/v1`** |
-| 智谱 GLM | `https://open.bigmodel.cn/api/coding/paas/v4` | OpenAI 兼容 |
-| LM Studio | `http://127.0.0.1:1234/v1` | OpenAI 兼容，默认端口 1234 |
-| 其他 OpenAI 兼容 | 对应地址 | 填 API Key 和模型名即可 |
+| `llm` | LLM 配置（Ollama / OpenAI 兼容 / 智谱 GLM 等） |
+| `embedding` | Embedding 模型（本地路径或 HuggingFace 名称） |
+| `chunking` | 滑窗大小和重叠 |
+| `runtime.concurrency.*` | 三层并发控制 |
 
 ---
 
 ## Agent 集成
 
-TMG 提供 **Skill**，使 Cursor、Claude 等 Agent 能自动完成部署和 API 调用。
+Deep Dream 提供 Skill，使任何支持技能调用的 Agent（Cursor、Claude Code 等）能直接使用记忆和梦境功能：
 
-- **路径**：`skills/tmg-memory-graph/`（包含 `SKILL.md` 和 `reference.md`）
-- **OpenClaw 用户**：将整个目录拷贝到 `~/.openclaw/workspace/skills/tmg-memory-graph/`
-- **Cursor 用户**：在规则中注明「使用 TMG 记忆时，请阅读 `skills/tmg-memory-graph/SKILL.md`」
-- **其他 Agent**：将 `skills/tmg-memory-graph/` 加入技能目录或知识库
-
-详见 `skills/tmg-memory-graph/SKILL.md` 中的集成指南。
-
----
-
-## 常见问题
-
-**启动报 "LLM 握手失败"** — 检查 `base_url` 是否可达、`api_key` 是否有效、`model` 名称是否正确。
-
-**Remember 任务一直卡在 queued** — 检查服务日志是否有报错，确认 LLM 可用（`GET /api/v1/health/llm`）。
-
-**Embedding 模型下载慢** — 提前手动下载填本地路径，或设置镜像：`export HF_ENDPOINT=https://hf-mirror.com`
+- **Skill 名称**：`deep-dream`（通过 skill-creator 创建）
+- **路径**：`.claude/skills/deep-dream/`
+- **集成方式**：将 Skill 加入 Agent 的技能目录，Agent 即可自主 Remember、Find、Dream
 
 ---
 

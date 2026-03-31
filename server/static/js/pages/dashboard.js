@@ -142,12 +142,12 @@
     if (isNeo4jBackend) {
       html += `
       <!-- Episodes (Neo4j only) -->
-      <div class="stat-card" style="cursor:pointer;" onclick="window.location.hash='#episodes'">
+      <div class="stat-card" style="cursor:pointer;" onclick="navigate('#episodes')">
         <div class="stat-label">${t('nav.episodes')}</div>
         <div class="stat-value" style="color:#14b8a6;">${formatNumber(_episodeCount)}</div>
       </div>
       <!-- Communities (Neo4j only) -->
-      <div class="stat-card" style="cursor:pointer;" onclick="window.location.hash='#communities'">
+      <div class="stat-card" style="cursor:pointer;" onclick="navigate('#communities')">
         <div class="stat-label">${t('nav.communities')}</div>
         <div class="stat-value" style="color:#8b5cf6;">${formatNumber(_communityCount)}</div>
       </div>`;
@@ -272,24 +272,12 @@
       // 进度区域：running 时显示 总进度 + 滑窗(1–5) + 实体链 + 关系链
       let progressHtml;
       if (isRunning) {
-        progressHtml = `
-          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px 12px;">
-            <div>
-              <div style="font-size:0.65rem;color:var(--primary);margin-bottom:2px;">${t('dashboard.mainWindow')}</div>
-              <div class="progress-bar" style="height:3px;"><div class="progress-bar-fill" style="width:${(smp * 100).toFixed(2)}%;background:var(--primary);"></div></div>
-              <div style="font-size:0.6rem;color:var(--text-muted);margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(tk.main_label || '-')}</div>
-            </div>
-            <div>
-              <div style="font-size:0.65rem;color:var(--info);margin-bottom:2px;">${t('dashboard.entityAlign')}</div>
-              <div class="progress-bar" style="height:3px;"><div class="progress-bar-fill" style="width:${(s6p * 100).toFixed(2)}%;background:var(--info);"></div></div>
-              <div style="font-size:0.6rem;color:var(--text-muted);margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(tk.step6_label || '-')}</div>
-            </div>
-            <div>
-              <div style="font-size:0.65rem;color:var(--warning);margin-bottom:2px;">${t('dashboard.relationAlign')}</div>
-              <div class="progress-bar" style="height:3px;"><div class="progress-bar-fill" style="width:${(s7p * 100).toFixed(2)}%;background:var(--warning);"></div></div>
-              <div style="font-size:0.6rem;color:var(--text-muted);margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(tk.step7_label || '-')}</div>
-            </div>
-          </div>`;
+        progressHtml = tripleProgressBar({
+          smp, s6p, s7p,
+          mainLabel: tk.main_label || '-',
+          step6Label: tk.step6_label || '-',
+          step7Label: tk.step7_label || '-',
+        });
       } else {
         progressHtml = `
           ${progressBar(pct, pctCls)}
@@ -479,7 +467,11 @@
         </div>`;
       if (window.I18N) window.I18N.apply(container);
       if (window.lucide) lucide.createIcons({ nodes: [container] });
-    } catch (e) { console.error('Failed to load graph stats:', e); }
+    } catch (e) {
+      console.error('Failed to load graph stats:', e);
+      const container = document.getElementById('graphStatsContainer');
+      if (container && container.querySelector('.spinner')) container.innerHTML = '';
+    }
   }
 
   // ---------------------------------------------------------------------------

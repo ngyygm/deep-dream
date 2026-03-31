@@ -3,13 +3,16 @@
    ========================================== */
 
 (function() {
-  // ---- State ----
+  // ---- Module-level cache (persists across render/destroy) ----
   let entityMap = {};          // absolute_id -> { name, entity_id }
   let allRelations = [];       // accumulated for "全部关系" tab
   let allOffset = 0;
   let allLoading = false;
   let allHasMore = true;
   let activeTab = 'all';
+
+  // ---- UI state only (cleared on destroy) ----
+  let searchTimer = null;
 
   // ---- Helpers ----
   function entityName(absoluteId, fallbackName) {
@@ -23,10 +26,6 @@
     if (!absoluteId) return '-';
     const e = entityMap[absoluteId];
     return e ? e.entity_id : '-';
-  }
-
-  function escapeAttr(s) {
-    return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   }
 
   async function loadEntityMap() {
@@ -250,68 +249,40 @@
   // ---- Relation Version Timeline ----
 
   function buildRelationVersionTimeline(versions, overlay) {
-    // Sort by processed_time descending (newest first)
-    const sorted = [...versions].sort((a, b) => {
-      const ta = a.processed_time ? new Date(a.processed_time).getTime() : 0;
-      const tb = b.processed_time ? new Date(b.processed_time).getTime() : 0;
-      return tb - ta;
+    var currentAbsId = overlay.querySelector('#relation-detail-abs-id')?.textContent || '';
+
+    return renderVersionTimeline({
+      versions: versions,
+      overlay: overlay,
+      containerId: 'relation-versions-container',
+      toggleClass: 'relation-version-toggle',
+      expandedIdPrefix: 'relation-version-expanded',
+      isActiveCheck: function(v) { return v.absolute_id === currentAbsId; },
+      renderHeader: function(v, i, sorted, isActive) {
+        return '<div style="display:flex;align-items:center;gap:0.5rem;">'
+          + '<span class="mono" style="font-size:0.75rem;color:var(--text-muted);">' + formatDate(v.processed_time) + '</span>'
+          + (i === 0 ? '<span class="badge badge-info" style="font-size:0.6875rem;">' + t('relations.latest') + '</span>' : '')
+          + (isActive && i !== 0 ? '<span class="badge badge-primary" style="font-size:0.6875rem;">' + t('relations.current') + '</span>' : '')
+          + '</div>'
+          + '<div style="margin-top:0.125rem;color:var(--text-secondary);font-size:0.8125rem;" class="truncate">' + escapeHtml(truncate(v.content || '', 100)) + '</div>';
+      },
+      renderDiff: function(v, prev) {
+        if (!prev) return '';
+        var contentChanged = v.content !== prev.content;
+        var e1Changed = v.entity1_absolute_id !== prev.entity1_absolute_id;
+        var e2Changed = v.entity2_absolute_id !== prev.entity2_absolute_id;
+        if (!contentChanged && !e1Changed && !e2Changed) return '';
+        return '<div style="margin-top:0.5rem;padding:0.375rem 0.5rem;background:var(--bg-input);border-radius:0.375rem;font-size:0.8125rem;">'
+          + (contentChanged ? '<div style="margin-bottom:0.25rem;"><span style="color:var(--text-muted);font-size:0.75rem;">' + t('relations.contentChanged') + '</span></div>' : '')
+          + ((e1Changed || e2Changed) ? '<div><span style="color:var(--text-muted);font-size:0.75rem;">' + t('relations.entityChanged') + '</span></div>' : '')
+          + '</div>';
+      },
+      renderBody: function(v) {
+        return '<div style="background:var(--bg-input);border:1px solid var(--border-color);border-radius:0.375rem;padding:0.75rem;font-size:0.8125rem;line-height:1.6;white-space:pre-wrap;word-break:break-word;">'
+          + escapeHtml(v.content || '')
+          + '</div>';
+      },
     });
-
-    const items = sorted.map((v, i) => {
-      const prev = sorted[i + 1];
-      const contentChanged = prev && v.content !== prev.content;
-      const e1Changed = prev && v.entity1_absolute_id !== prev.entity1_absolute_id;
-      const e2Changed = prev && v.entity2_absolute_id !== prev.entity2_absolute_id;
-
-      const diffHtml = (contentChanged || e1Changed || e2Changed) ? `
-        <div style="margin-top:0.5rem;padding:0.375rem 0.5rem;background:var(--bg-input);border-radius:0.375rem;font-size:0.8125rem;">
-          ${contentChanged ? `<div style="margin-bottom:0.25rem;"><span style="color:var(--text-muted);font-size:0.75rem;">${t('relations.contentChanged')}</span></div>` : ''}
-          ${(e1Changed || e2Changed) ? `<div><span style="color:var(--text-muted);font-size:0.75rem;">${t('relations.entityChanged')}</span></div>` : ''}
-        </div>
-      ` : '';
-
-      const isActive = v.absolute_id === overlay.querySelector('#relation-detail-abs-id')?.textContent;
-
-      return `
-        <div style="position:relative;padding-left:1.5rem;padding-bottom:${i < sorted.length - 1 ? '1rem' : '0'};">
-          ${i < sorted.length - 1 ? '<div style="position:absolute;left:5px;top:12px;bottom:0;width:1px;background:var(--border-color);"></div>' : ''}
-          <div style="position:absolute;left:0;top:4px;width:11px;height:11px;border-radius:50%;background:${isActive ? 'var(--primary)' : 'var(--border-color)'};border:2px solid ${isActive ? 'var(--primary-hover)' : 'var(--border-hover)'};"></div>
-          <div style="cursor:pointer;" class="relation-version-toggle" data-version-idx="${i}">
-            <div style="display:flex;align-items:center;gap:0.5rem;">
-              <span class="mono" style="font-size:0.75rem;color:var(--text-muted);">${formatDate(v.processed_time)}</span>
-              ${i === 0 ? '<span class="badge badge-info" style="font-size:0.6875rem;">' + t('relations.latest') + '</span>' : ''}
-              ${isActive && i !== 0 ? '<span class="badge badge-primary" style="font-size:0.6875rem;">' + t('relations.current') + '</span>' : ''}
-            </div>
-            <div style="margin-top:0.125rem;color:var(--text-secondary);font-size:0.8125rem;" class="truncate">${escapeHtml(truncate(v.content || '', 100))}</div>
-            ${diffHtml}
-          </div>
-          <div class="relation-version-expanded" id="relation-version-expanded-${i}" style="display:none;margin-top:0.5rem;">
-            <div style="background:var(--bg-input);border:1px solid var(--border-color);border-radius:0.375rem;padding:0.75rem;font-size:0.8125rem;line-height:1.6;white-space:pre-wrap;word-break:break-word;">
-              ${escapeHtml(v.content || '')}
-            </div>
-          </div>
-        </div>
-      `;
-    }).join('');
-
-    // Attach expand/collapse and version switch behavior
-    setTimeout(() => {
-      const container = overlay.querySelector('#relation-versions-container');
-      if (!container) return;
-
-      container.querySelectorAll('.relation-version-toggle').forEach(toggle => {
-        toggle.addEventListener('click', () => {
-          const idx = toggle.getAttribute('data-version-idx');
-          const expanded = overlay.querySelector('#relation-version-expanded-' + idx);
-          if (expanded) {
-            const isHidden = expanded.style.display === 'none';
-            expanded.style.display = isHidden ? 'block' : 'none';
-          }
-        });
-      });
-    }, 0);
-
-    return items;
   }
 
   function bindTableClicks(rootEl) {
@@ -374,8 +345,22 @@
     }
   }
 
+  // Refresh: invalidate cache and reload from scratch
+  async function refreshRelations() {
+    allRelations = [];
+    allOffset = 0;
+    allHasMore = true;
+    allLoading = false;
+    entityMap = {};
+    const container = document.getElementById('relations-all-body');
+    if (container) {
+      container.innerHTML = `<div class="flex items-center justify-center p-8"><div class="spinner"></div></div>`;
+    }
+    await loadEntityMap();
+    await loadAllRelations();
+  }
+
   // ---- Tab 2: Search Relations ----
-  let searchTimer = null;
 
   async function doSearch(query) {
     const resultsEl = document.getElementById('relations-search-results');
@@ -561,14 +546,19 @@
     // Determine initial tab from hash params
     const initialTab = params[0] || 'all';
 
-    // Load entity map first
-    await loadEntityMap();
+    // Load entity map (cached — if already populated, skip)
+    if (Object.keys(entityMap).length === 0) {
+      await loadEntityMap();
+    }
 
     container.innerHTML = `
       <div class="page-enter">
         <div class="card">
           <div class="card-header">
             <h2 class="card-title">${t('relations.title')}</h2>
+            <button class="btn btn-ghost btn-sm" id="relations-refresh-btn" title="${t('common.refresh')}">
+              <i data-lucide="refresh-cw" style="width:14px;height:14px;"></i>
+            </button>
           </div>
 
           <!-- Tabs -->
@@ -590,10 +580,12 @@
           <!-- Tab 1: All Relations -->
           <div id="relations-tab-all">
             <div id="relations-all-body">
-              <div class="flex items-center justify-center p-8"><div class="spinner"></div></div>
+              ${allRelations.length > 0
+                ? buildRelationTable(allRelations)
+                : '<div class="flex items-center justify-center p-8"><div class="spinner"></div></div>'}
             </div>
             <div style="margin-top:1rem;text-align:center;">
-              <button id="relations-load-more" class="btn btn-secondary btn-sm">${t('relations.loadMore')}</button>
+              <button id="relations-load-more" class="btn btn-secondary btn-sm" ${!allHasMore && allRelations.length > 0 ? 'disabled' : ''}>${allHasMore ? t('relations.loadMore') : t('relations.allLoaded', { count: allRelations.length })}</button>
             </div>
           </div>
 
@@ -650,6 +642,12 @@
       tab.addEventListener('click', () => switchTab(tab.getAttribute('data-tab')));
     });
 
+    // Bind refresh button
+    const refreshBtn = document.getElementById('relations-refresh-btn');
+    if (refreshBtn) {
+      refreshBtn.addEventListener('click', refreshRelations);
+    }
+
     // Load initial tab
     switchTab(initialTab);
 
@@ -657,31 +655,32 @@
     initSearch();
     initBetween();
 
-    // Load "All Relations" tab data
-    allRelations = [];
-    allOffset = 0;
-    allHasMore = true;
-    allLoading = false;
-    await loadAllRelations();
+    // Load "All Relations" tab data only if cache is empty
+    if (allRelations.length === 0) {
+      await loadAllRelations();
+      // Bind table clicks for the freshly loaded data
+      const allBody = document.getElementById('relations-all-body');
+      if (allBody) bindTableClicks(allBody);
+    }
 
     // Bind load-more button
     const loadBtn = document.getElementById('relations-load-more');
     if (loadBtn) {
-      loadBtn.addEventListener('click', loadAllRelations);
+      loadBtn.addEventListener('click', async () => {
+        await loadAllRelations();
+        const allBody = document.getElementById('relations-all-body');
+        if (allBody) bindTableClicks(allBody);
+      });
     }
   }
 
   function destroy() {
-    allRelations = [];
-    allOffset = 0;
-    allHasMore = true;
-    allLoading = false;
-    activeTab = 'all';
-    entityMap = {};
+    // Only clear UI state, preserve cache (allRelations, allOffset, allHasMore, entityMap)
     if (searchTimer) {
       clearTimeout(searchTimer);
       searchTimer = null;
     }
+    activeTab = 'all';
     if (typeof PathFinder !== 'undefined') PathFinder.destroy();
   }
 
@@ -715,7 +714,7 @@
       if (res.error) { showToast(res.error, 'error'); return; }
       showToast(t('relations.updateSuccess'), 'success');
       closeModal();
-      loadAllRelations();
+      refreshRelations();
     } catch (e) { showToast(t('relations.updateFailed') + ': ' + e.message, 'error'); }
   }
 
@@ -726,7 +725,7 @@
     state.api.deleteRelation(relationId).then(res => {
       if (res.error) { showToast(res.error, 'error'); return; }
       showToast(t('relations.deleteSuccess'), 'success');
-      loadAllRelations();
+      refreshRelations();
     }).catch(e => showToast(t('relations.deleteFailed') + ': ' + e.message, 'error'));
   }
 

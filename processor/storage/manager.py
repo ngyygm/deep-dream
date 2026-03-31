@@ -2052,11 +2052,12 @@ class StorageManager:
 
             return deleted_count
     
-    def get_all_entities(self, limit: Optional[int] = None, exclude_embedding: bool = False) -> List[Entity]:
+    def get_all_entities(self, limit: Optional[int] = None, offset: Optional[int] = None, exclude_embedding: bool = False) -> List[Entity]:
         """获取所有实体的最新版本
 
         Args:
             limit: 限制返回的实体数量（按时间倒序），None表示不限制
+            offset: 跳过前N条记录，None表示不跳过
             exclude_embedding: 是否排除 embedding 字段（前端展示等不需要 embedding 的场景应设为 True）
         """
         conn = self._get_conn()
@@ -2075,7 +2076,9 @@ class StorageManager:
             ORDER BY e1.processed_time DESC
         """
 
-        if limit is not None:
+        if limit is not None and offset is not None and offset > 0:
+            query += f" LIMIT {int(limit)} OFFSET {int(offset)}"
+        elif limit is not None:
             query += f" LIMIT {int(limit)}"
 
         cursor.execute(query)

@@ -2,17 +2,17 @@
    Entities Page - Entity Browser
    ========================================== */
 
-function escapeAttr(s) {
-  return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-}
-
 (function() {
-  const PAGE_SIZE = 50;
+  const BATCH_SIZE = 50;
   let debounceTimer = null;
+
+  // ---- Module-level cache (persists across render/destroy) ----
   let allEntities = [];
-  let displayedCount = 0;
+  let allOffset = 0;
+  let allHasMore = true;
+  let allLoading = false;
+  let totalCount = null;
   let isSearchMode = false;
-  let isSearchAllMode = false;
   let _currentModalClose = null;
 
   // ---- Search & Filter Bar ----
@@ -35,7 +35,10 @@ function escapeAttr(s) {
               ${t('entities.listAll')}
             </button>
           </div>
-          <span id="entity-count" class="mono" style="font-size:0.8125rem;color:var(--text-muted);">${t('entities.entityCount', { count: 0 })}</span>
+          <span id="entity-count" class="mono" style="font-size:0.8125rem;color:var(--text-muted);"></span>
+          <button class="btn btn-ghost btn-sm" id="entity-refresh-btn" title="${t('common.refresh')}">
+            <i data-lucide="refresh-cw" style="width:14px;height:14px;"></i>
+          </button>
         </div>
       </div>
     `;
@@ -93,12 +96,19 @@ function escapeAttr(s) {
   }
 
   function buildLoadMore() {
-    if (displayedCount >= allEntities.length) return '';
-    const remaining = allEntities.length - displayedCount;
+    if (!allHasMore) {
+      if (allEntities.length > 0) {
+        return `
+          <div style="display:flex;justify-content:center;padding-top:0.75rem;">
+            <span style="font-size:0.8125rem;color:var(--text-muted);">${t('entities.allLoaded', { count: allEntities.length })}</span>
+          </div>`;
+      }
+      return '';
+    }
     return `
       <div style="display:flex;justify-content:center;padding-top:0.75rem;">
         <button class="btn btn-ghost" id="entity-load-more-btn">
-          ${t('common.loadMore')} (${t('common.remaining')} ${remaining} ${t('common.records')})
+          ${t('common.loadMore')}
         </button>
       </div>
     `;
@@ -247,7 +257,7 @@ function escapeAttr(s) {
             entity.summary = res.data.summary || entity.summary;
             entity.attributes = res.data.attributes || entity.attributes;
           }
-          resetToListAll();
+          invalidateAndReload();
         } catch (err) {
           showToast(t('entities.evolveSummaryFailed') + ': ' + err.message, 'error');
         } finally {
@@ -302,7 +312,8 @@ function escapeAttr(s) {
           const res = await state.api.entityNeighbors(entity.absolute_id, graphId, 1);
           const data = res.data || {};
           const centerEntity = data.entity;
-          const nodes = [{ id: centerEntity.uuid, label: centerEntity.name || centerEntity.entity_id || '?', font: { size: 14, bold: true }, shape: 'dot', size: 25, color: { background: '#ef4444', border: '#f87171' } }];
+          const tier1 = GraphUtils.TIER_1;
+          const nodes = [{ id: centerEntity.uuid, label: centerEntity.name || centerEntity.entity_id || '?', font: { size: 14, bold: true }, shape: 'dot', size: 25, color: { background: tier1.bg, border: tier1.border } }];
           const nodeIds = new Set([centerEntity.uuid]);
           for (const n of (data.nodes || [])) {
             if (!nodeIds.has(n.uuid)) {
@@ -416,64 +427,35 @@ function escapeAttr(s) {
   // ---- Version Timeline ----
 
   function buildVersionTimeline(versions, overlay) {
-    // Sort versions by processed_time descending (newest first)
-    const sorted = [...versions].sort((a, b) => {
-      const ta = a.processed_time ? new Date(a.processed_time).getTime() : 0;
-      const tb = b.processed_time ? new Date(b.processed_time).getTime() : 0;
-      return tb - ta;
+    return renderVersionTimeline({
+      versions: versions,
+      overlay: overlay,
+      containerId: 'versions-container',
+      toggleClass: 'version-expand-toggle',
+      expandedIdPrefix: 'version-expanded',
+      isActiveCheck: function(v) { return false; },
+      renderHeader: function(v, i, sorted, isActive) {
+        return '<div style="display:flex;align-items:center;gap:0.5rem;">'
+          + '<span class="mono" style="font-size:0.75rem;color:var(--text-muted);">' + formatDate(v.processed_time) + '</span>'
+          + (i === 0 ? '<span class="badge badge-info" style="font-size:0.6875rem;">' + t('entities.latest') + '</span>' : '')
+          + '</div>'
+          + '<div style="margin-top:0.25rem;font-weight:500;font-size:0.875rem;">' + escapeHtml(v.name || '-') + '</div>'
+          + '<div style="margin-top:0.125rem;color:var(--text-secondary);font-size:0.8125rem;" class="truncate">' + escapeHtml(truncate(v.content || '', 100)) + '</div>';
+      },
+      renderDiff: function(v, prev) {
+        if (!prev || v.name === prev.name) return '';
+        return '<div style="display:flex;gap:0.75rem;align-items:center;margin-top:0.5rem;padding:0.375rem 0.5rem;background:var(--bg-input);border-radius:0.375rem;font-size:0.8125rem;">'
+          + '<span style="color:var(--error);text-decoration:line-through;">' + escapeHtml(prev.name) + '</span>'
+          + '<i data-lucide="arrow-right" style="width:14px;height:14px;color:var(--text-muted);flex-shrink:0;"></i>'
+          + '<span style="color:var(--success);">' + escapeHtml(v.name) + '</span>'
+          + '</div>';
+      },
+      renderBody: function(v) {
+        return '<div style="background:var(--bg-input);border:1px solid var(--border-color);border-radius:0.375rem;padding:0.75rem;font-size:0.8125rem;line-height:1.6;white-space:pre-wrap;word-break:break-word;">'
+          + escapeHtml(v.content || '')
+          + '</div>';
+      },
     });
-
-    const items = sorted.map((v, i) => {
-      const prev = sorted[i + 1];
-      const nameChanged = prev && v.name !== prev.name;
-      const nameDiffHtml = nameChanged ? `
-        <div style="display:flex;gap:0.75rem;align-items:center;margin-top:0.5rem;padding:0.375rem 0.5rem;background:var(--bg-input);border-radius:0.375rem;font-size:0.8125rem;">
-          <span style="color:var(--error);text-decoration:line-through;">${escapeHtml(prev.name)}</span>
-          <i data-lucide="arrow-right" style="width:14px;height:14px;color:var(--text-muted);flex-shrink:0;"></i>
-          <span style="color:var(--success);">${escapeHtml(v.name)}</span>
-        </div>
-      ` : '';
-
-      return `
-        <div style="position:relative;padding-left:1.5rem;padding-bottom:${i < sorted.length - 1 ? '1rem' : '0'};">
-          ${i < sorted.length - 1 ? '<div style="position:absolute;left:5px;top:12px;bottom:0;width:1px;background:var(--border-color);"></div>' : ''}
-          <div style="position:absolute;left:0;top:4px;width:11px;height:11px;border-radius:50%;background:${i === 0 ? 'var(--primary)' : 'var(--border-color)'};border:2px solid ${i === 0 ? 'var(--primary-hover)' : 'var(--border-hover)'};"></div>
-          <div style="cursor:pointer;" class="version-expand-toggle" data-version-idx="${i}">
-            <div style="display:flex;align-items:center;gap:0.5rem;">
-              <span class="mono" style="font-size:0.75rem;color:var(--text-muted);">${formatDate(v.processed_time)}</span>
-              ${i === 0 ? '<span class="badge badge-info" style="font-size:0.6875rem;">' + t('entities.latest') + '</span>' : ''}
-            </div>
-            <div style="margin-top:0.25rem;font-weight:500;font-size:0.875rem;">${escapeHtml(v.name || '-')}</div>
-            <div style="margin-top:0.125rem;color:var(--text-secondary);font-size:0.8125rem;" class="truncate">${escapeHtml(truncate(v.content || '', 100))}</div>
-            ${nameDiffHtml}
-          </div>
-          <div class="version-expanded-content" id="version-expanded-${i}" style="display:none;margin-top:0.5rem;">
-            <div style="background:var(--bg-input);border:1px solid var(--border-color);border-radius:0.375rem;padding:0.75rem;font-size:0.8125rem;line-height:1.6;white-space:pre-wrap;word-break:break-word;">
-              ${escapeHtml(v.content || '')}
-            </div>
-          </div>
-        </div>
-      `;
-    }).join('');
-
-    // Attach expand/collapse behavior after render
-    setTimeout(() => {
-      if (!overlay) return;
-      const container = overlay.querySelector('#versions-container');
-      if (!container) return;
-      container.querySelectorAll('.version-expand-toggle').forEach(toggle => {
-        toggle.addEventListener('click', () => {
-          const idx = toggle.getAttribute('data-version-idx');
-          const expanded = overlay.querySelector('#version-expanded-' + idx);
-          if (expanded) {
-            const isHidden = expanded.style.display === 'none';
-            expanded.style.display = isHidden ? 'block' : 'none';
-          }
-        });
-      });
-    }, 0);
-
-    return items;
   }
 
   // ---- Relations List ----
@@ -506,42 +488,64 @@ function escapeAttr(s) {
     return `<div>${items}</div>`;
   }
 
-  // ---- Data Loading ----
+  // ---- Data Loading (server-side pagination) ----
 
-  async function loadAllEntities() {
+  async function loadEntityBatch() {
+    if (allLoading || !allHasMore) return;
+    allLoading = true;
     const graphId = state.currentGraphId;
-    const res = await state.api.listEntities(graphId);
-    allEntities = res.data || [];
-    displayedCount = 0;
-    isSearchMode = false;
-    isSearchAllMode = true;
+    try {
+      const res = await state.api.listEntities(graphId, BATCH_SIZE, allOffset);
+      const entities = res.data || [];
+      if (entities.length === 0) {
+        allHasMore = false;
+      } else {
+        allEntities = allEntities.concat(entities);
+        allOffset += entities.length;
+        if (entities.length < BATCH_SIZE) {
+          allHasMore = false;
+        }
+      }
+    } finally {
+      allLoading = false;
+    }
+  }
+
+  async function fetchTotalCount() {
+    try {
+      const res = await state.api.getCounts(state.currentGraphId);
+      totalCount = res.data ? (res.data.entity_count || null) : null;
+    } catch (e) {
+      totalCount = null;
+    }
+  }
+
+  function updateCountDisplay() {
+    const countEl = document.getElementById('entity-count');
+    if (!countEl) return;
+    if (isSearchMode) {
+      countEl.textContent = t('entities.resultCount', { count: allEntities.length });
+    } else if (totalCount !== null) {
+      countEl.textContent = t('entities.showing', { shown: allEntities.length, total: totalCount });
+    } else {
+      countEl.textContent = t('entities.entityCount', { count: allEntities.length });
+    }
+  }
+
+  function renderEntityTable() {
+    const tableContainer = document.getElementById('entity-table-container');
+    if (tableContainer) {
+      tableContainer.innerHTML = buildEntityTable(allEntities);
+      bindTableEvents(tableContainer);
+    }
+    updateCountDisplay();
   }
 
   async function searchEntities(query) {
     const graphId = state.currentGraphId;
     const res = await state.api.searchEntities(query, graphId);
     allEntities = res.data || [];
-    displayedCount = 0;
     isSearchMode = true;
-    isSearchAllMode = false;
-  }
-
-  function renderCurrentSlice() {
-    const slice = allEntities.slice(0, displayedCount + PAGE_SIZE);
-    displayedCount = slice.length;
-
-    const tableContainer = document.getElementById('entity-table-container');
-    if (tableContainer) {
-      tableContainer.innerHTML = buildEntityTable(slice);
-      bindTableEvents(tableContainer);
-    }
-
-    const countEl = document.getElementById('entity-count');
-    if (countEl) {
-      countEl.textContent = isSearchMode
-        ? t('entities.resultCount', { count: allEntities.length })
-        : t('entities.entityCount', { count: allEntities.length });
-    }
   }
 
   // ---- Event Binding ----
@@ -561,8 +565,11 @@ function escapeAttr(s) {
 
     const loadMoreBtn = container.querySelector('#entity-load-more-btn');
     if (loadMoreBtn) {
-      loadMoreBtn.addEventListener('click', () => {
-        renderCurrentSlice();
+      loadMoreBtn.addEventListener('click', async () => {
+        loadMoreBtn.disabled = true;
+        loadMoreBtn.textContent = t('common.loadMore') + '...';
+        await loadEntityBatch();
+        renderEntityTable();
       });
     }
 
@@ -580,6 +587,7 @@ function escapeAttr(s) {
   function bindSearchEvents(container) {
     const searchInput = container.querySelector('#entity-search-input');
     const listAllBtn = container.querySelector('#entity-list-all-btn');
+    const refreshBtn = container.querySelector('#entity-refresh-btn');
 
     if (searchInput) {
       searchInput.addEventListener('input', () => {
@@ -598,7 +606,7 @@ function escapeAttr(s) {
               tableContainer.innerHTML = `<div style="display:flex;justify-content:center;padding:2rem;">${spinnerHtml()}</div>`;
             }
             await searchEntities(query);
-            renderCurrentSlice();
+            renderEntityTable();
           } catch (err) {
             showToast(t('entities.searchFailed') + '：' + err.message, 'error');
             const tableContainer = container.querySelector('#entity-table-container');
@@ -615,24 +623,47 @@ function escapeAttr(s) {
         resetToListAll();
       });
     }
+
+    if (refreshBtn) {
+      refreshBtn.addEventListener('click', () => {
+        invalidateAndReload();
+      });
+    }
   }
 
-  async function resetToListAll() {
+  // Reset cache and reload from scratch
+  async function invalidateAndReload() {
+    allEntities = [];
+    allOffset = 0;
+    allHasMore = true;
+    totalCount = null;
+    isSearchMode = false;
+    const searchInput = document.getElementById('entity-search-input');
+    if (searchInput) searchInput.value = '';
     const tableContainer = document.getElementById('entity-table-container');
     if (tableContainer) {
       tableContainer.innerHTML = `<div style="display:flex;justify-content:center;padding:2rem;">${spinnerHtml()}</div>`;
     }
     try {
-      await loadAllEntities();
-      renderCurrentSlice();
+      await Promise.all([loadEntityBatch(), fetchTotalCount()]);
+      renderEntityTable();
     } catch (err) {
       showToast(t('entities.loadFailed') + '：' + err.message, 'error');
       if (tableContainer) {
         tableContainer.innerHTML = emptyState(t('entities.loadFailed'), 'alert-triangle');
       }
     }
-    const searchInput = document.getElementById('entity-search-input');
-    if (searchInput) searchInput.value = '';
+  }
+
+  async function resetToListAll() {
+    // If we have cached data, just re-render from cache (no API call)
+    if (allEntities.length > 0 && !isSearchMode) {
+      renderEntityTable();
+      const searchInput = document.getElementById('entity-search-input');
+      if (searchInput) searchInput.value = '';
+      return;
+    }
+    await invalidateAndReload();
   }
 
   // ---- Edit Entity ----
@@ -690,7 +721,7 @@ function escapeAttr(s) {
       if (res.error) { showToast(res.error, 'error'); return; }
       showToast(t('entities.updateSuccess'), 'success');
       close();
-      resetToListAll();
+      invalidateAndReload();
     } catch (e) { showToast(t('entities.updateFailed') + ': ' + e.message, 'error'); }
   }
 
@@ -726,7 +757,7 @@ function escapeAttr(s) {
       if (res.error) { showToast(res.error, 'error'); return; }
       showToast(t('entities.deleteSuccess'), 'success');
       close();
-      resetToListAll();
+      invalidateAndReload();
     } catch (e) { showToast(t('entities.deleteFailed') + ': ' + e.message, 'error'); }
   }
 
@@ -747,7 +778,7 @@ function escapeAttr(s) {
     state.api.batchDeleteEntities(ids).then(res => {
       if (res.error) { showToast(res.error, 'error'); return; }
       showToast(t('entities.batchDeleteSuccess').replace('{count}', ids.length), 'success');
-      resetToListAll();
+      invalidateAndReload();
     }).catch(e => showToast(t('entities.deleteFailed') + ': ' + e.message, 'error'));
   }
 
@@ -760,7 +791,7 @@ function escapeAttr(s) {
     state.api.mergeEntities(target, sources).then(res => {
       if (res.error) { showToast(res.error, 'error'); return; }
       showToast(t('entities.mergeSuccess'), 'success');
-      resetToListAll();
+      invalidateAndReload();
     }).catch(e => showToast(t('entities.mergeFailed') + ': ' + e.message, 'error'));
   }
 
@@ -780,9 +811,24 @@ function escapeAttr(s) {
 
     bindSearchEvents(container);
 
+    // If cache has data, render immediately without API call
+    if (allEntities.length > 0 && !isSearchMode) {
+      renderEntityTable();
+      if (window.lucide) lucide.createIcons({ nodes: [container] });
+      return;
+    }
+
+    // First load or after search mode — fetch from server
     try {
-      await loadAllEntities();
-      renderCurrentSlice();
+      if (isSearchMode) {
+        // Coming back from search, reset to list mode
+        isSearchMode = false;
+        allEntities = [];
+        allOffset = 0;
+        allHasMore = true;
+      }
+      await Promise.all([loadEntityBatch(), fetchTotalCount()]);
+      renderEntityTable();
     } catch (err) {
       const tableContainer = container.querySelector('#entity-table-container');
       if (tableContainer) {
@@ -795,12 +841,10 @@ function escapeAttr(s) {
   }
 
   function destroy() {
+    // Only clear UI state, preserve cache (allEntities, allOffset, allHasMore, totalCount)
     clearTimeout(debounceTimer);
     debounceTimer = null;
-    allEntities = [];
-    displayedCount = 0;
-    isSearchMode = false;
-    isSearchAllMode = false;
+    _currentModalClose = null;
   }
 
   // Expose globally for use by other pages (search, relations, path-finder) and inline onclick handlers

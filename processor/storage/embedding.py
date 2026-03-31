@@ -85,13 +85,12 @@ class EmbeddingClient:
             texts = [texts]
         
         try:
-            with self._encode_lock:
-                embeddings = self.model.encode(
-                    texts,
-                    batch_size=batch_size,
-                    show_progress_bar=False,
-                    convert_to_numpy=True
-                )
+            embeddings = self.model.encode(
+                texts,
+                batch_size=batch_size,
+                show_progress_bar=False,
+                convert_to_numpy=True
+            )
             return embeddings
         except Exception as e:
             wprint(f"Embedding编码错误: {e}")
