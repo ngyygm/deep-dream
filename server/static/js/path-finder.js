@@ -40,7 +40,7 @@ window.PathFinder = (function () {
    * Initialize the PathFinder in the given container.
    * @param {HTMLElement} container
    * @param {Object} options
-   *   - api: TMGApi instance
+   *   - api: DeepDreamApi instance
    *   - graphId: current graph ID
    *   - t(key, params): i18n translation function
    *   - onShowEntityDetail(entity): callback for entity click

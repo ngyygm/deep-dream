@@ -98,6 +98,8 @@ class GraphRegistry:
         pipeline_extraction = pipeline.get("extraction") or {}
         pipeline_debug = pipeline.get("debug") or {}
         max_concurrency = llm.get("max_concurrency")
+        # 从 storage_path 提取 graph_id（路径格式: {base_path}/{graph_id}/）
+        graph_id = Path(storage_path).name
         kwargs: dict = {
             "storage_path": storage_path,
             "config": config,

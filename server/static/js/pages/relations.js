@@ -710,7 +710,7 @@
     const content = document.getElementById('editRelationContent').value.trim();
     if (!content) { showToast(t('relations.contentRequired'), 'error'); return; }
     try {
-      const res = await state.api.updateRelation(relationId, { content });
+      const res = await state.api.updateRelation(relationId, { content }, state.currentGraphId);
       if (res.error) { showToast(res.error, 'error'); return; }
       showToast(t('relations.updateSuccess'), 'success');
       closeModal();
@@ -722,7 +722,7 @@
   function confirmDeleteRelation(relationId) {
     const t = (key) => window.I18N ? window.I18N.t(key) : key;
     if (!confirm(t('relations.deleteConfirm'))) return;
-    state.api.deleteRelation(relationId).then(res => {
+    state.api.deleteRelation(relationId, state.currentGraphId).then(res => {
       if (res.error) { showToast(res.error, 'error'); return; }
       showToast(t('relations.deleteSuccess'), 'success');
       refreshRelations();

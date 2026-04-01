@@ -470,7 +470,7 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
             if tail > 0:
                 trimmed += content[-tail:]
         wprint(
-            f"[TMG] 记忆缓存过长：{len(content)} 字符，"
+            f"[DeepDream] 记忆缓存过长：{len(content)} 字符，"
             f"已截断为 {len(trimmed)} 字符后再注入抽取 prompt"
         )
         return trimmed
@@ -490,7 +490,7 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
         except LLMContextBudgetExceeded:
             prompt_tokens = self._estimate_messages_token_count(next_messages)
             wprint(
-                f"[TMG] {stage_label} 多轮预检停止：下一轮估算输入约 {prompt_tokens} tokens，"
+                f"[DeepDream] {stage_label} 多轮预检停止：下一轮估算输入约 {prompt_tokens} tokens，"
                 f"已触达输入上限 {self.context_window_tokens}"
             )
             return False
@@ -556,7 +556,7 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
         desired_max_tokens: Optional[int] = None,
         resolved_max_tokens: Optional[int] = None,
     ) -> None:
-        wprint(f"[TMG] {title}")
+        wprint(f"[DeepDream] {title}")
         if prompt_tokens is not None:
             extra = f"估算输入 tokens: {prompt_tokens}"
             if desired_max_tokens is not None:
@@ -564,23 +564,23 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
             if resolved_max_tokens is not None:
                 extra += f", 实际输出上限: {resolved_max_tokens}"
             extra += f", 输入上限: {self.context_window_tokens}"
-            wprint(f"[TMG] {extra}")
+            wprint(f"[DeepDream] {extra}")
         for idx, msg in enumerate(messages, start=1):
             role = msg.get("role", "")
             content = self._stringify_message_content(msg.get("content", ""))
-            wprint(f"[TMG] 上下文[{idx}] role={role} BEGIN")
+            wprint(f"[DeepDream] 上下文[{idx}] role={role} BEGIN")
             wprint(content)
-            wprint(f"[TMG] 上下文[{idx}] role={role} END")
+            wprint(f"[DeepDream] 上下文[{idx}] role={role} END")
 
     @staticmethod
     def _log_llm_response_full(response_text: str, *, title: str) -> None:
-        wprint(f"[TMG] {title} BEGIN")
+        wprint(f"[DeepDream] {title} BEGIN")
         wprint(response_text or "")
-        wprint(f"[TMG] {title} END")
+        wprint(f"[DeepDream] {title} END")
 
     @staticmethod
     def _log_llm_error_full(err: BaseException, *, title: str) -> None:
-        wprint(f"[TMG] {title} BEGIN")
+        wprint(f"[DeepDream] {title} BEGIN")
         wprint(f"type: {type(err).__name__}")
         wprint(f"str: {err}")
         wprint(f"repr: {err!r}")
@@ -599,7 +599,7 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
                 wprint(str(text))
             else:
                 wprint(f"response: {response!r}")
-        wprint(f"[TMG] {title} END")
+        wprint(f"[DeepDream] {title} END")
 
     def _resolve_request_max_tokens(
         self,
@@ -611,7 +611,7 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
         prompt_tokens = self._estimate_messages_token_count(messages)
         if prompt_tokens >= context_cap:
             wprint(
-                f"[TMG] 输入上下文超限: 估算输入 tokens: {prompt_tokens}, "
+                f"[DeepDream] 输入上下文超限: 估算输入 tokens: {prompt_tokens}, "
                 f"输入上限: {context_cap}, 期望输出上限: {desired_max_tokens}, "
                 f"消息条数: {len(messages)}"
             )
@@ -791,11 +791,11 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
                 last_err = e
                 if attempt >= max_attempts - 1:
                     wprint(
-                        f"[TMG] JSON 解析失败，已达最大重试次数（{max_attempts}）: {e}"
+                        f"[DeepDream] JSON 解析失败，已达最大重试次数（{max_attempts}）: {e}"
                     )
                     raise
                 wprint(
-                    f"[TMG] JSON 解析失败，将重试 LLM（{attempt + 2}/{max_attempts}）: {e}"
+                    f"[DeepDream] JSON 解析失败，将重试 LLM（{attempt + 2}/{max_attempts}）: {e}"
                 )
                 messages.append({"role": "assistant", "content": last_response})
                 base_retry = json_retry_user_message or _JSON_RETRY_USER_MESSAGE
@@ -904,12 +904,12 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
                 if _is_truncated:
                     _est_input = self._estimate_messages_token_count(messages)
                     wprint(
-                        f"[TMG] LLM 输出被截断（finish_reason=length）。"
+                        f"[DeepDream] LLM 输出被截断（finish_reason=length）。"
                         f"当前请求输出上限为 {_api_max_tokens}，已不再自动扩容重试；"
                         "如需避免截断，请缩短输入上下文或减少输出体积。"
                     )
                     wprint(
-                        f"[TMG] 截断摘要: 估算输入 tokens: {_est_input}, "
+                        f"[DeepDream] 截断摘要: 估算输入 tokens: {_est_input}, "
                         f"期望输出上限: {_desired_max_tokens}, "
                         f"实际输出上限: {_api_max_tokens}, "
                         f"输入上限: {self.context_window_tokens}, "
@@ -966,7 +966,7 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
                 if not _detailed_error_logged and not is_connection_error and not is_timeout and not is_tpm_error:
                     if self._error_suggests_context_overflow(e):
                         wprint(
-                            f"[TMG] 服务端报上下文/长度相关错误: "
+                            f"[DeepDream] 服务端报上下文/长度相关错误: "
                             f"估算输入 tokens: {self._estimate_messages_token_count(messages)}, "
                             f"期望输出上限: {_effective_max_tokens}, "
                             f"消息条数: {len(messages)}, "
@@ -982,7 +982,7 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
                 if "max_tokens" in error_str or "max_completion_tokens" in error_str or "too large" in error_str:
                     if _effective_max_tokens and _effective_max_tokens > 1:
                         _effective_max_tokens = _effective_max_tokens // 2
-                        wprint(f"[TMG] max_tokens 超限，自动降至 {_effective_max_tokens} 后重试")
+                        wprint(f"[DeepDream] max_tokens 超限，自动降至 {_effective_max_tokens} 后重试")
                         if _sem is not None:
                             _sem.release()
                         _sem_held = False
@@ -1185,13 +1185,13 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
             json_start = json_str.find("```json") + 7
             json_end = json_str.find("```", json_start)
             if json_end == -1:
-                wprint("[TMG] 警告: LLM 响应的 ```json 块未闭合，JSON 可能被截断")
+                wprint("[DeepDream] 警告: LLM 响应的 ```json 块未闭合，JSON 可能被截断")
             json_str = json_str[json_start:json_end].strip() if json_end != -1 else json_str[json_start:].strip()
         elif "```" in json_str:
             json_start = json_str.find("```") + 3
             json_end = json_str.find("```", json_start)
             if json_end == -1:
-                wprint("[TMG] 警告: LLM 响应的 ``` 块未闭合，JSON 可能被截断")
+                wprint("[DeepDream] 警告: LLM 响应的 ``` 块未闭合，JSON 可能被截断")
             json_str = json_str[json_start:json_end].strip() if json_end != -1 else json_str[json_start:].strip()
 
         json_str = self._clean_json_string(json_str)
@@ -1202,7 +1202,7 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
             open_char = stripped[0]
             close_char = ']' if open_char == '[' else '}'
             if not stripped.endswith(close_char):
-                wprint(f"[TMG] 警告: LLM 响应 JSON 被截断，以 {open_char} 开头但不以 {close_char} 结尾。"
+                wprint(f"[DeepDream] 警告: LLM 响应 JSON 被截断，以 {open_char} 开头但不以 {close_char} 结尾。"
                       f"请缩短输入上下文或输出内容。响应前200字符: {stripped[:200]}")
 
         try:
@@ -1217,13 +1217,13 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
                     try:
                         parsed = json.loads(repaired)
                         wprint(
-                            "[TMG] 警告: 检测到数组型 JSON 尾部截断；"
+                            "[DeepDream] 警告: 检测到数组型 JSON 尾部截断；"
                             "已裁剪不完整尾部并补全 `]`，沿用可恢复部分。"
                         )
                         return parsed
                     except json.JSONDecodeError:
                         pass
-                wprint(f"[TMG] 警告: LLM 响应 JSON 解析失败（可能被截断）。"
+                wprint(f"[DeepDream] 警告: LLM 响应 JSON 解析失败（可能被截断）。"
                       f"响应: {json_str}")
                 raise
 

@@ -3,7 +3,7 @@
    ========================================== */
 
 (function() {
-  const HISTORY_KEY = 'tmg_search_history';
+  const HISTORY_KEY = 'deepdream_search_history';
   const MAX_HISTORY = 10;
 
   // ---- Local state ----
@@ -1028,7 +1028,7 @@
     }
 
     try {
-      const res = await state.api.traverseGraph(seedIds, maxDepth, maxNodes);
+      const res = await state.api.traverseGraph(seedIds, maxDepth, maxNodes, state.currentGraphId);
       const data = res.data || {};
       const entities = data.entities || [];
       const relations = data.relations || [];
@@ -1081,7 +1081,7 @@
     if (resultEl) resultEl.innerHTML = `<div class="flex items-center gap-2 p-4">${spinnerHtml()}<span style="color:var(--text-muted);">${t('search.asking')}</span></div>`;
 
     try {
-      const res = await state.api.agentAsk(question);
+      const res = await state.api.agentAsk(question, state.currentGraphId);
       const answer = res.data?.answer || res.data?.response || res.data?.text || '';
       if (resultEl) {
         resultEl.innerHTML = answer

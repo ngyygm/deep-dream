@@ -1,5 +1,5 @@
 """
-Temporal_Memory_Graph 自然语言记忆图 API（多图谱模式）
+DeepDream 自然语言记忆图 API（多图谱模式）
 
 一个以自然语言为核心的统一记忆图服务。系统只有两个核心职责：
   - Remember：接收自然语言文本或文档，自动构建概念实体/关系图。
@@ -21,6 +21,7 @@ import errno
 import json
 import logging
 import os
+import queue
 import signal
 import socket
 import threading
@@ -2953,6 +2954,184 @@ def create_app(
         except Exception as e:
             return err(str(e), 500)
 
+    # =========================================================
+    # SSE streaming endpoints
+    # =========================================================
+
+    @app.route("/api/v1/find/dream/agent/stream", methods=["POST"])
+    def dream_agent_stream():
+        """SSE streaming endpoint for Dream Agent."""
+        body = request.get_json(silent=True) or {}
+
+        if not _dream_lock.acquire(blocking=False):
+            return err("梦境正在运行中，请等待完成", 409)
+
+        q: queue.Queue = queue.Queue()
+        _STREAM_SENTINEL = object()
+
+        try:
+            processor = _get_processor()
+            from processor.dream.models import DreamAgentConfig, VALID_DREAM_STRATEGIES
+
+            strategies = body.get("strategies") or ["free_association", "cross_domain", "leap"]
+            strategies = [s for s in strategies if s in VALID_DREAM_STRATEGIES]
+            if not strategies:
+                _dream_lock.release()
+                return err(f"无效策略列表，可选: {', '.join(VALID_DREAM_STRATEGIES)}", 400)
+
+            config = DreamAgentConfig(
+                graph_id=request.graph_id or "default",
+                max_cycles=min(int(body.get("max_cycles", 3)), 50),
+                strategies=strategies,
+                strategy_mode=body.get("strategy_mode", "round_robin"),
+                confidence_threshold=float(body.get("confidence_threshold", 0.6)),
+                max_tool_calls_per_cycle=min(int(body.get("max_tool_calls_per_cycle", 15)), 50),
+            )
+
+            from server.sse import make_queue_callback
+            from processor.dream.agent import DreamAgent
+
+            cb = make_queue_callback(q)
+
+            def _run():
+                import asyncio
+                loop = asyncio.new_event_loop()
+                try:
+                    agent = DreamAgent(processor.storage, processor.dream_llm_client, config, event_callback=cb)
+                    loop.run_until_complete(agent.run())
+                except Exception as e:
+                    cb("error", {"message": str(e)})
+                    cb("done", {"status": "failed"})
+                finally:
+                    loop.close()
+                    q.put(_STREAM_SENTINEL)
+                    _dream_lock.release()
+
+            t = threading.Thread(target=_run, daemon=True)
+            t.start()
+
+        except Exception as e:
+            _dream_lock.release()
+            return err(str(e), 500)
+
+        from server.sse import sse_response, queue_to_generator
+        return sse_response(queue_to_generator(q, sentinel=_STREAM_SENTINEL))
+
+    @app.route("/api/v1/find/ask/stream", methods=["POST"])
+    def agent_ask_stream():
+        """SSE streaming endpoint for Ask Agent."""
+        body = request.get_json(silent=True) or {}
+        question = (body.get("question") or "").strip()
+        if not question:
+            return err("question 为必填", 400)
+
+        q: queue.Queue = queue.Queue()
+        _STREAM_SENTINEL = object()
+
+        try:
+            processor = _get_processor()
+            _graph_id = request.graph_id or "default"
+
+            def _run():
+                import asyncio
+                from server.sse import sse_event
+                try:
+                    loop = asyncio.new_event_loop()
+                    try:
+                        result = loop.run_until_complete(
+                            processor.llm_client.agent_meta_query(question, _graph_id)
+                        )
+                    finally:
+                        loop.close()
+
+                    intent = result.get("query_plan", {})
+                    query_type = intent.get("query_type", "hybrid")
+                    query_text = intent.get("query_text", question)
+
+                    q.put(sse_event("thought", {
+                        "text": result.get("thought", ""),
+                        "query_plan": intent,
+                    }))
+
+                    # Execute search
+                    q.put(sse_event("tool_call", {
+                        "tool": "search",
+                        "arguments": {"query_text": query_text, "type": query_type},
+                    }))
+
+                    entities = []
+                    relations = []
+
+                    if query_type == "traverse":
+                        entity_name = intent.get("entity_name", "")
+                        if entity_name:
+                            seed_entities = processor.storage.search_entities_by_bm25(entity_name, limit=3)
+                            seed_ids = [e.entity_id for e in seed_entities]
+                            if seed_ids:
+                                searcher = GraphTraversalSearcher(processor.storage)
+                                entities = searcher.bfs_expand(seed_ids, max_depth=2, max_nodes=20)
+                    else:
+                        searcher = HybridSearcher(processor.storage)
+                        entities = searcher.search_entities(query_text=query_text, top_k=20)
+                        relations = searcher.search_relations(query_text=query_text, top_k=10)
+
+                    q.put(sse_event("tool_result", {
+                        "tool": "search",
+                        "success": True,
+                        "data": {
+                            "entity_count": len(entities),
+                            "relation_count": len(relations),
+                        },
+                    }))
+
+                    # Generate summary answer
+                    result["results"] = {
+                        "entities": [entity_to_dict(e) for e in entities],
+                        "relations": [relation_to_dict(r) for r in relations],
+                    }
+
+                    answer = result.get("answer", "")
+                    if not answer:
+                        # Build a summary from search results
+                        parts = [f"基于「{query_text}」的检索结果："]
+                        if entities:
+                            parts.append(f"找到 {len(entities)} 个相关实体")
+                            for e in entities[:5]:
+                                name = getattr(e, 'name', '') or ''
+                                content = (getattr(e, 'content', '') or '')[:80]
+                                parts.append(f"  - {name}: {content}")
+                        if relations:
+                            parts.append(f"找到 {len(relations)} 条相关关系")
+                            for r in relations[:5]:
+                                content = (getattr(r, 'content', '') or '')[:80]
+                                parts.append(f"  - {content}")
+                        answer = "\n".join(parts)
+
+                    q.put(sse_event("summary", {
+                        "answer": answer,
+                        "query_plan": intent,
+                        "results": {
+                            "entity_count": len(entities),
+                            "relation_count": len(relations),
+                        },
+                    }))
+
+                except Exception as e:
+                    import traceback; traceback.print_exc()
+                    q.put(sse_event("error", {"message": str(e)}))
+                finally:
+                    q.put(sse_event("done", {"status": "completed"}))
+                    q.put(_STREAM_SENTINEL)
+
+            t = threading.Thread(target=_run, daemon=True)
+            t.start()
+
+        except Exception as e:
+            return err(str(e), 500)
+
+        from server.sse import sse_response, queue_to_generator
+        return sse_response(queue_to_generator(q, sentinel=_STREAM_SENTINEL))
+
     @app.route("/api/v1/find/explain", methods=["POST"])
     def explain_entity():
         """自然语言解释实体。"""
@@ -3516,7 +3695,7 @@ def _check_storage_writable(storage_root: Path) -> Optional[str]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Temporal_Memory_Graph 自然语言记忆图 API（Remember + Find）")
+    parser = argparse.ArgumentParser(description="DeepDream 自然语言记忆图 API（Remember + Find）")
     parser.add_argument("--config", type=str, required=True, help="配置文件路径（如 service_config.json）")
     parser.add_argument("--host", type=str, default=None, help="覆盖配置中的 host")
     parser.add_argument("--port", type=int, default=None, help="覆盖配置中的 port")
@@ -3633,9 +3812,9 @@ def main() -> int:
     registry.get_queue("default")
 
     if log_mode == LOG_MODE_MONITOR:
-        from server.dashboard import TMGDashboard
+        from server.dashboard import DeepDreamDashboard
         system_monitor.event_log.info("System", "监控面板已启用；任务细节日志已收敛为总览。")
-        dashboard = TMGDashboard(system_monitor, refresh_interval=monitor_refresh)
+        dashboard = DeepDreamDashboard(system_monitor, refresh_interval=monitor_refresh)
         dashboard.start()
     else:
         stats = system_monitor.graph_detail("default")
@@ -3644,7 +3823,7 @@ def main() -> int:
         caches = stats["storage"]["memory_caches"] if stats else 0
         print(f"""
 ╔══════════════════════════════════════════════════════════╗
-║     Temporal_Memory_Graph — 自然语言记忆图 API           ║
+║     DeepDream — 自然语言记忆图 API           ║
 ╚══════════════════════════════════════════════════════════╝
 
   当前大脑记忆库 (default):

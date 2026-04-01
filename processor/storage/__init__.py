@@ -32,6 +32,7 @@ def create_storage_manager(config: dict, embedding_client=None, storage_path=Non
             entity_content_snippet_length=kwargs.get("entity_content_snippet_length", 50),
             relation_content_snippet_length=kwargs.get("relation_content_snippet_length", 50),
             vector_dim=storage_config.get("vector_dim", 1024),
+            graph_id=kwargs.get("graph_id", "default"),
         )
 
     # 默认 SQLite 后端

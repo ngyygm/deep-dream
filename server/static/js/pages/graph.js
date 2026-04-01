@@ -579,7 +579,7 @@
 
     try {
       const timeParam = time + ':00';
-      const res = await state.api.getSnapshot(timeParam);
+      const res = await state.api.getSnapshot(timeParam, state.currentGraphId);
 
       if (res.error) {
         showToast(res.error, 'error');

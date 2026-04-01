@@ -2,7 +2,7 @@
    i18n Engine
    ========================================== */
 window.I18N = {
-  currentLang: localStorage.getItem('tmg_lang') || 'zh',
+  currentLang: localStorage.getItem('deepdream_lang') || localStorage.getItem('tmg_lang') || 'zh',
   fallbackLang: 'zh',
   langData: {},
 
@@ -26,7 +26,7 @@ window.I18N = {
   setLang(lang) {
     if (!this.langData[lang]) return;
     this.currentLang = lang;
-    localStorage.setItem('tmg_lang', lang);
+    localStorage.setItem('deepdream_lang', lang);
     this.applyLang(lang);
 
     // Re-render current page

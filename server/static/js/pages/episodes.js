@@ -271,7 +271,7 @@ registerPage('episodes', (function () {
       saveBtn.disabled = true;
       saveBtn.innerHTML = `${spinnerHtml('spinner-sm')} ${t('common.loading')}`;
       try {
-        const res = await state.api.batchIngestEpisodes(episodes);
+        const res = await state.api.batchIngestEpisodes(episodes, state.currentGraphId);
         const imported = res.data?.imported || res.data?.count || episodes.length;
         showToast(t('episodes.importSuccess', { count: imported }), 'success');
         close();

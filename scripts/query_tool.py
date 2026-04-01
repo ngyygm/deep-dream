@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Temporal_Memory_Graph 查询工具
+DeepDream 查询工具
 
 使用示例：
     python query_tool.py --storage_path ./data --query "林嘿嘿是谁？"
@@ -15,14 +15,14 @@ from datetime import datetime
 
 # 添加项目路径
 project_root = Path(__file__).parent.parent.parent.parent
-sys.path.insert(0, str(project_root / "Temporal_Memory_Graph"))
+sys.path.insert(0, str(project_root / "DeepDream"))
 
 from processor.storage import StorageManager
 from processor.models import Entity, Relation
 
 
-class TMGQueryTool:
-    """Temporal_Memory_Graph 查询工具"""
+class DeepDreamQueryTool:
+    """DeepDream 查询工具"""
 
     def __init__(self, storage_path: str):
         self.storage = StorageManager(storage_path)
@@ -291,7 +291,7 @@ class TMGQueryTool:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Temporal_Memory_Graph 查询工具")
+    parser = argparse.ArgumentParser(description="DeepDream 查询工具")
     parser.add_argument("--storage_path", "-s", required=True, help="存储路径")
     parser.add_argument("--query", "-q", help="查询问题")
     parser.add_argument("--entity", "-e", help="实体名称")
@@ -305,7 +305,7 @@ def main():
     args = parser.parse_args()
 
     # 初始化工具
-    tool = TMGQueryTool(args.storage_path)
+    tool = DeepDreamQueryTool(args.storage_path)
 
     # 根据模式执行查询
     if args.mode == "entity":

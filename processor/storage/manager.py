@@ -1774,7 +1774,7 @@ class StorageManager:
                 cursor = conn.cursor()
                 cursor.execute("""
                     INSERT INTO relations (id, relation_id, entity1_absolute_id, entity2_absolute_id, content, event_time, processed_time, memory_cache_id, source_document, embedding, valid_at, summary, attributes, confidence, provenance, content_format)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     relation.absolute_id,
                     relation.relation_id,

@@ -26,7 +26,7 @@ def init(log_path: str | None = None):
             os.makedirs(os.path.dirname(_LOG_PATH), exist_ok=True)
         # 写入分隔线标记新一次运行
         _write_raw(f"\n{'='*70}")
-        _write_raw(f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}] TMG Pipeline Debug Log - NEW SESSION")
+        _write_raw(f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}] DeepDream Pipeline Debug Log - NEW SESSION")
         _write_raw(f"{'='*70}\n")
 
 

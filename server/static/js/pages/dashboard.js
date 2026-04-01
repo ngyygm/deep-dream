@@ -425,7 +425,7 @@
 
   async function fetchGraphStats() {
     try {
-      const res = await state.api.getGraphStats();
+      const res = await state.api.getGraphStats(state.currentGraphId);
       if (res.error) return;
       const stats = res;
       const container = document.getElementById('graphStatsContainer');

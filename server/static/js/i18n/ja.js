@@ -45,6 +45,7 @@ window.I18N_LANG_JA = {
 
   // Navigation
   'nav.dashboard': 'ダッシュボード',
+  'nav.chat': 'チャット',
   'nav.graph': 'グラフ',
   'nav.memory': 'メモリ',
   'nav.search': '検索',
@@ -669,4 +670,27 @@ window.I18N_LANG_JA = {
   'agent.suggestions': '提案',
   'agent.noSuggestions': '提案なし',
   'agent.suggestionPriority': '提案優先度',
+
+  // Chat
+  'chat.placeholder': '質問を入力するか /dream でドリームを開始...',
+  'chat.startDream': 'ドリーム開始',
+  'chat.stop': '停止',
+  'chat.clear': 'クリア',
+  'chat.user': 'あなた',
+  'chat.assistant': 'アシスタント',
+  'chat.welcomeTitle': 'DeepDream チャット',
+  'chat.welcomeDesc': 'ナレッジグラフについて質問するか、ドリームセッションを開始して隠れたつながりを見つけましょう。',
+  'chat.dreamStarted': 'ドリームセッションが開始されました',
+  'chat.streamStopped': 'ストリームが停止しました',
+  'chat.cycleLabel': 'サイクル',
+  'chat.cycleComplete': 'サイクル完了',
+  'chat.entities': 'エンティティ',
+  'chat.relations': 'リレーション',
+  'chat.saved': '保存済み',
+  'chat.toolCalls': 'ツール呼び出し',
+  'chat.relationCreated': '新しいリレーション',
+  'chat.episodeSaved': 'Episode 保存済み',
+  'chat.dreamCycles': 'サイクル数',
+  'chat.dreamStrategy': 'ストラテジーモード',
+  'chat.dreamMaxToolCalls': '最大ツール呼び出し/サイクル',
 };

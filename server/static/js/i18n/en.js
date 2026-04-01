@@ -45,6 +45,7 @@ window.I18N_LANG_EN = {
 
   // Navigation
   'nav.dashboard': 'Dashboard',
+  'nav.chat': 'Chat',
   'nav.graph': 'Graph',
   'nav.memory': 'Memory',
   'nav.search': 'Search',
@@ -669,4 +670,27 @@ window.I18N_LANG_EN = {
   'agent.suggestions': 'Suggestions',
   'agent.noSuggestions': 'No suggestions',
   'agent.suggestionPriority': 'Suggestion Priority',
+
+  // Chat
+  'chat.placeholder': 'Ask a question or type /dream to start dreaming...',
+  'chat.startDream': 'Start Dream',
+  'chat.stop': 'Stop',
+  'chat.clear': 'Clear',
+  'chat.user': 'You',
+  'chat.assistant': 'Assistant',
+  'chat.welcomeTitle': 'DeepDream Chat',
+  'chat.welcomeDesc': 'Ask questions about your knowledge graph or start a dream session to discover hidden connections.',
+  'chat.dreamStarted': 'Dream session started',
+  'chat.streamStopped': 'Stream stopped',
+  'chat.cycleLabel': 'Cycle',
+  'chat.cycleComplete': 'Cycle complete',
+  'chat.entities': 'entities',
+  'chat.relations': 'relations',
+  'chat.saved': 'saved',
+  'chat.toolCalls': 'tool calls',
+  'chat.relationCreated': 'New relation',
+  'chat.episodeSaved': 'Episode saved',
+  'chat.dreamCycles': 'Cycles',
+  'chat.dreamStrategy': 'Strategy Mode',
+  'chat.dreamMaxToolCalls': 'Max Tool Calls / Cycle',
 };

@@ -13,8 +13,8 @@ for /f "tokens=5" %%a in ('netstat -aon ^| findstr ":%PORT% " ^| findstr "LISTEN
 
 timeout /t 2 /nobreak >nul
 
-:: Start TMG Web visualization
-echo Starting TMG Web on http://localhost:%PORT%...
+:: Start DeepDream Web visualization
+echo Starting DeepDream Web on http://localhost:%PORT%...
 cd /d "%~dp0"
 .venv\Scripts\python.exe -m server.web --config service_config.json --port %PORT% --host 127.0.0.1 --graph-id default
 pause
