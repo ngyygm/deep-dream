@@ -137,6 +137,27 @@ class StorageManager:
         self._ensure_column(c, "relations", "attributes", "TEXT")
         self._ensure_column(c, "relations", "confidence", "REAL")
         self._ensure_column(c, "relations", "provenance", "TEXT")
+        # ContentPatch: section 级变更记录
+        self._ensure_column(c, "entities", "content_format", "TEXT DEFAULT 'plain'")
+        self._ensure_column(c, "relations", "content_format", "TEXT DEFAULT 'plain'")
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS content_patches (
+                uuid TEXT PRIMARY KEY,
+                target_type TEXT NOT NULL,
+                target_absolute_id TEXT NOT NULL,
+                target_entity_id TEXT NOT NULL,
+                section_key TEXT NOT NULL,
+                change_type TEXT NOT NULL,
+                old_hash TEXT DEFAULT '',
+                new_hash TEXT DEFAULT '',
+                diff_summary TEXT DEFAULT '',
+                source_document TEXT DEFAULT '',
+                event_time TEXT NOT NULL
+            )
+        """)
+        c.execute("CREATE INDEX IF NOT EXISTS idx_cp_target_abs ON content_patches(target_absolute_id)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_cp_entity_id ON content_patches(target_entity_id)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_cp_section ON content_patches(target_entity_id, section_key)")
         # BM25 全文搜索虚拟表
         c.execute("""
             CREATE VIRTUAL TABLE IF NOT EXISTS entity_fts USING fts5(name, content, entity_id UNINDEXED)
@@ -188,6 +209,81 @@ class StorageManager:
                     time.sleep(0.1 * (attempt + 1))
                     self._ensure_dirs()
         raise last_err  # type: ignore[misc]
+
+    # ========== ContentPatch 操作 ==========
+
+    def save_content_patches(self, patches: list):
+        """批量保存 ContentPatch 记录到 SQLite。"""
+        from ..models import ContentPatch
+        if not patches:
+            return
+        conn = self._get_conn()
+        with self._write_lock:
+            cursor = conn.cursor()
+            for p in patches:
+                cursor.execute("""
+                    INSERT OR REPLACE INTO content_patches
+                    (uuid, target_type, target_absolute_id, target_entity_id,
+                     section_key, change_type, old_hash, new_hash, diff_summary,
+                     source_document, event_time)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    p.uuid, p.target_type, p.target_absolute_id, p.target_entity_id,
+                    p.section_key, p.change_type, p.old_hash, p.new_hash,
+                    p.diff_summary, p.source_document,
+                    p.event_time.isoformat() if p.event_time else datetime.now().isoformat(),
+                ))
+            conn.commit()
+
+    def get_content_patches(self, entity_id: str, section_key: str = None) -> list:
+        """查询指定 entity_id 的 ContentPatch 记录。"""
+        from ..models import ContentPatch
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        if section_key:
+            cursor.execute(
+                "SELECT * FROM content_patches WHERE target_entity_id = ? AND section_key = ? ORDER BY event_time DESC",
+                (entity_id, section_key),
+            )
+        else:
+            cursor.execute(
+                "SELECT * FROM content_patches WHERE target_entity_id = ? ORDER BY event_time DESC",
+                (entity_id,),
+            )
+        patches = []
+        for row in cursor.fetchall():
+            patches.append(ContentPatch(
+                uuid=row[0],
+                target_type=row[1],
+                target_absolute_id=row[2],
+                target_entity_id=row[3],
+                section_key=row[4],
+                change_type=row[5],
+                old_hash=row[6] or "",
+                new_hash=row[7] or "",
+                diff_summary=row[8] or "",
+                source_document=row[9] or "",
+                event_time=datetime.fromisoformat(row[10]) if row[10] else datetime.now(),
+            ))
+        return patches
+
+    def get_section_history(self, entity_id: str, section_key: str) -> list:
+        """获取单个 section 的全版本变更历史。"""
+        return self.get_content_patches(entity_id, section_key=section_key)
+
+    def get_version_diff(self, entity_id: str, v1: str, v2: str) -> dict:
+        """获取两个版本之间的 section 级 diff。"""
+        from ..content_schema import parse_markdown_sections, compute_section_diff
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id, content FROM entities WHERE id IN (?, ?)",
+            (v1, v2),
+        )
+        rows = {row[0]: row[1] for row in cursor.fetchall()}
+        s1 = parse_markdown_sections(rows.get(v1, "") or "")
+        s2 = parse_markdown_sections(rows.get(v2, "") or "")
+        return compute_section_diff(s1, s2)
 
     def close(self):
         """关闭当前线程的数据库连接。"""
@@ -353,6 +449,7 @@ class StorageManager:
             summary=row[9] if len(row) > 9 else None,
             attributes=row[10] if len(row) > 10 else None,
             confidence=float(row[11]) if len(row) > 11 and row[11] is not None else None,
+            content_format=row[14] if len(row) > 14 and row[14] else 'plain',
         )
 
     def _row_to_relation(self, row) -> Relation:
@@ -372,6 +469,7 @@ class StorageManager:
             attributes=row[11] if len(row) > 11 else None,
             confidence=float(row[12]) if len(row) > 12 and row[12] is not None else None,
             provenance=row[13] if len(row) > 13 else None,
+            content_format=row[15] if len(row) > 15 and row[15] else 'plain',
         )
 
     def _init_database(self):
@@ -456,6 +554,28 @@ class StorageManager:
         self._ensure_column(cursor, "relations", "attributes", "TEXT")
         self._ensure_column(cursor, "relations", "confidence", "REAL")
         self._ensure_column(cursor, "relations", "provenance", "TEXT")
+
+        # ContentPatch: section 级变更记录
+        self._ensure_column(cursor, "entities", "content_format", "TEXT DEFAULT 'plain'")
+        self._ensure_column(cursor, "relations", "content_format", "TEXT DEFAULT 'plain'")
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS content_patches (
+                uuid TEXT PRIMARY KEY,
+                target_type TEXT NOT NULL,
+                target_absolute_id TEXT NOT NULL,
+                target_entity_id TEXT NOT NULL,
+                section_key TEXT NOT NULL,
+                change_type TEXT NOT NULL,
+                old_hash TEXT DEFAULT '',
+                new_hash TEXT DEFAULT '',
+                diff_summary TEXT DEFAULT '',
+                source_document TEXT DEFAULT '',
+                event_time TEXT NOT NULL
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_cp_target_abs ON content_patches(target_absolute_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_cp_entity_id ON content_patches(target_entity_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_cp_section ON content_patches(target_entity_id, section_key)")
 
         # Phase C: Episode mentions
         cursor.execute("""
@@ -918,8 +1038,8 @@ class StorageManager:
             try:
                 cursor = conn.cursor()
                 cursor.execute("""
-                    INSERT INTO entities (id, entity_id, name, content, event_time, processed_time, memory_cache_id, source_document, embedding, valid_at, summary, attributes, confidence)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO entities (id, entity_id, name, content, event_time, processed_time, memory_cache_id, source_document, embedding, valid_at, summary, attributes, confidence, content_format)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     entity.absolute_id,
                     entity.entity_id,
@@ -934,6 +1054,7 @@ class StorageManager:
                     getattr(entity, 'summary', None),
                     getattr(entity, 'attributes', None),
                     getattr(entity, 'confidence', None),
+                    getattr(entity, 'content_format', 'plain'),
                 ))
                 conn.commit()
                 # 同步写入 FTS 表
@@ -1652,8 +1773,8 @@ class StorageManager:
             try:
                 cursor = conn.cursor()
                 cursor.execute("""
-                    INSERT INTO relations (id, relation_id, entity1_absolute_id, entity2_absolute_id, content, event_time, processed_time, memory_cache_id, source_document, embedding, valid_at, summary, attributes, confidence, provenance)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO relations (id, relation_id, entity1_absolute_id, entity2_absolute_id, content, event_time, processed_time, memory_cache_id, source_document, embedding, valid_at, summary, attributes, confidence, provenance, content_format)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     relation.absolute_id,
                     relation.relation_id,
@@ -1670,6 +1791,7 @@ class StorageManager:
                     getattr(relation, 'attributes', None),
                     getattr(relation, 'confidence', None),
                     getattr(relation, 'provenance', None),
+                    getattr(relation, 'content_format', 'plain'),
                 ))
                 conn.commit()
                 # 同步写入 FTS 表

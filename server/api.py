@@ -66,12 +66,16 @@ def _read_file_content(path: str) -> str:
 
 
 def entity_to_dict(e: Entity) -> Dict[str, Any]:
+    from processor.content_schema import parse_markdown_sections
+    sections = parse_markdown_sections(e.content) if e.content else {}
     return {
         "id": e.absolute_id,  # 向后兼容
         "absolute_id": e.absolute_id,
         "entity_id": e.entity_id,
         "name": e.name,
         "content": e.content,
+        "content_format": getattr(e, "content_format", "plain"),
+        "content_sections": sections if sections else None,
         "event_time": e.event_time.isoformat() if e.event_time else None,
         "processed_time": e.processed_time.isoformat() if e.processed_time else None,
         "memory_cache_id": e.memory_cache_id,
@@ -2306,6 +2310,95 @@ def create_app(
             return err(str(e), 500)
 
     # =========================================================
+    # Phase: Section-Level Version Control
+    # =========================================================
+
+    @app.route("/api/v1/find/entities/<entity_id>/section-history", methods=["GET"])
+    def entity_section_history(entity_id: str):
+        """获取单个 section 的全版本变更历史。"""
+        try:
+            processor = _get_processor()
+            section_key = request.args.get("section", "")
+            if not section_key:
+                return err("缺少 section 参数", 400)
+            patches = processor.storage.get_section_history(entity_id, section_key)
+            return ok({
+                "entity_id": entity_id,
+                "section_key": section_key,
+                "patches": [
+                    {
+                        "uuid": p.uuid,
+                        "target_absolute_id": p.target_absolute_id,
+                        "change_type": p.change_type,
+                        "old_hash": p.old_hash,
+                        "new_hash": p.new_hash,
+                        "diff_summary": p.diff_summary,
+                        "source_document": p.source_document,
+                        "event_time": p.event_time.isoformat() if p.event_time else None,
+                    }
+                    for p in patches
+                ],
+            })
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/v1/find/entities/<entity_id>/version-diff", methods=["GET"])
+    def entity_version_diff(entity_id: str):
+        """获取两个版本之间的 section 级 diff."""
+        try:
+            processor = _get_processor()
+            v1 = request.args.get("v1", "")
+            v2 = request.args.get("v2", "")
+            if not v1 or not v2:
+                return err("需要 v1 和 v2 参数（两个版本的 absolute_id）", 400)
+            diff = processor.storage.get_version_diff(entity_id, v1, v2)
+            return ok({
+                "entity_id": entity_id,
+                "v1": v1,
+                "v2": v2,
+                "sections": {
+                    key: {
+                        "old": info.get("old", ""),
+                        "new": info.get("new", ""),
+                        "changed": info.get("changed", False),
+                        "change_type": info.get("change_type", "unchanged"),
+                    }
+                    for key, info in diff.items()
+                },
+            })
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/v1/find/entities/<entity_id>/patches", methods=["GET"])
+    def entity_patches(entity_id: str):
+        """获取实体的所有 ContentPatch 记录.\
+        可选参数 section: 过滤特定 section"""
+        try:
+            processor = _get_processor()
+            section_key = request.args.get("section", None)
+            patches = processor.storage.get_content_patches(entity_id, section_key=section_key)
+            return ok({
+                "entity_id": entity_id,
+                "patches": [
+                    {
+                        "uuid": p.uuid,
+                        "target_type": p.target_type,
+                        "target_absolute_id": p.target_absolute_id,
+                        "section_key": p.section_key,
+                        "change_type": p.change_type,
+                        "old_hash": p.old_hash,
+                        "new_hash": p.new_hash,
+                        "diff_summary": p.diff_summary,
+                        "source_document": p.source_document,
+                        "event_time": p.event_time.isoformat() if p.event_time else None,
+                    }
+                    for p in patches
+                ],
+            })
+        except Exception as e:
+            return err(str(e), 500)
+
+    # =========================================================
     # Phase A: Entity Intelligence — 摘要进化 / 属性更新
     # =========================================================
     @app.route("/api/v1/find/entities/<entity_id>/evolve-summary", methods=["POST"])
@@ -2738,6 +2831,74 @@ def create_app(
                 dream_cycle_id=dream_cycle_id,
             )
             return ok(result)
+        except Exception as e:
+            return err(str(e), 500)
+
+    # =========================================================
+    # Phase E.3: Dream Agent — 自主梦境代理启动
+    # =========================================================
+
+    @app.route("/api/v1/find/dream/agent/start", methods=["POST"])
+    def dream_agent_start():
+        """启动 Dream Agent 自主梦境会话。"""
+        try:
+            body = request.get_json(silent=True) or {}
+            processor = _get_processor()
+
+            from processor.dream.models import DreamAgentConfig, VALID_DREAM_STRATEGIES
+            from processor.dream.engine import run_agent_dream
+
+            # 构建配置
+            strategies = body.get("strategies") or ["free_association", "cross_domain", "leap"]
+            # 过滤无效策略
+            strategies = [s for s in strategies if s in VALID_DREAM_STRATEGIES]
+            if not strategies:
+                return err(f"无效策略列表，可选: {', '.join(VALID_DREAM_STRATEGIES)}", 400)
+
+            config = DreamAgentConfig(
+                graph_id=request.graph_id or "default",
+                max_cycles=min(int(body.get("max_cycles", 10)), 50),
+                strategies=strategies,
+                strategy_mode=body.get("strategy_mode", "round_robin"),
+                confidence_threshold=float(body.get("confidence_threshold", 0.6)),
+                max_tool_calls_per_cycle=min(int(body.get("max_tool_calls_per_cycle", 15)), 50),
+            )
+
+            import asyncio
+            loop = asyncio.new_event_loop()
+            try:
+                state = loop.run_until_complete(
+                    run_agent_dream(processor.storage, processor.dream_llm_client, config)
+                )
+            finally:
+                loop.close()
+
+            # 构建响应
+            cycle_summaries = []
+            for cr in state.cycle_results:
+                cycle_summaries.append({
+                    "strategy": cr.strategy,
+                    "entities_examined": cr.entities_examined,
+                    "relations_discovered": cr.relations_discovered,
+                    "relations_saved": cr.relations_saved,
+                    "tool_calls_made": cr.tool_calls_made,
+                    "error": cr.error,
+                })
+
+            return ok({
+                "session_id": state.session_id,
+                "status": state.status,
+                "graph_id": state.graph_id,
+                "total_cycles": state.current_cycle,
+                "total_entities_examined": state.total_entities_examined,
+                "total_relations_discovered": state.total_relations_discovered,
+                "total_relations_saved": state.total_relations_saved,
+                "total_tool_calls": state.total_tool_calls,
+                "narrative": state.narrative,
+                "cycles": cycle_summaries,
+                "start_time": str(state.start_time) if state.start_time else None,
+                "end_time": str(state.end_time) if state.end_time else None,
+            })
         except Exception as e:
             return err(str(e), 500)
 

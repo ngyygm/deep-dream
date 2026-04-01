@@ -34,6 +34,7 @@ class Entity:
     summary: Optional[str] = None  # 实体摘要（由 LLM 进化维护）
     attributes: Optional[str] = None  # JSON 字符串，结构化属性字典
     confidence: Optional[float] = None  # 置信度评分 (0.0-1.0)
+    content_format: str = "plain"  # "plain" (旧) | "markdown" (新)
 
 
 @dataclass
@@ -60,3 +61,20 @@ class Relation:
     attributes: Optional[str] = None  # JSON 字符串，结构化属性字典
     confidence: Optional[float] = None  # 置信度评分 (0.0-1.0)
     provenance: Optional[str] = None  # JSON: [{"episode_id": "...", "confidence": 0.9}, ...]
+    content_format: str = "plain"  # "plain" (旧) | "markdown" (新)
+
+
+@dataclass
+class ContentPatch:
+    """Section 级变更记录"""
+    uuid: str
+    target_type: str  # "Entity" | "Relation"
+    target_absolute_id: str  # 哪个版本节点
+    target_entity_id: str  # 逻辑 ID
+    section_key: str  # 哪个 section
+    change_type: str  # "added" | "modified" | "unchanged" | "removed" | "restructured"
+    old_hash: str  # 旧 section 内容 hash
+    new_hash: str  # 新 section 内容 hash
+    diff_summary: str  # 变更摘要
+    source_document: str  # 触发来源
+    event_time: datetime

@@ -1,4 +1,9 @@
-"""DeepDream 记忆巩固引擎 - 像人做梦一样复习、重新连接、压缩记忆。"""
+"""DeepDream 记忆巩固引擎 - 像人做梦一样复习、重新连接、压缩记忆。
+
+包含两种梦境模式：
+1. DeepDreamEngine — 传统 4 阶段梦境周期（review → reconnect → consolidate → narrative）
+2. DreamAgent — 基于 LLM 工具调用的自主梦境代理（agent loop 模式）
+"""
 from __future__ import annotations
 
 import json
@@ -338,3 +343,32 @@ class DeepDreamEngine:
         if isinstance(result, dict):
             return result.get("consolidations", [])
         return []
+
+
+# ============================================================
+# Dream Agent 入口 — 工具驱动的自主梦境
+# ============================================================
+
+async def run_agent_dream(
+    storage: Any,
+    llm_client: Any,
+    config: Optional["DreamAgentConfig"] = None,
+) -> "DreamAgentState":
+    """运行 Dream Agent 自主梦境会话。
+
+    Args:
+        storage: 存储层实例（需支持 dream 相关方法）
+        llm_client: LLM 客户端实例
+        config: Dream Agent 配置（可选）
+
+    Returns:
+        DreamAgentState 包含完整的梦境会话状态和结果
+    """
+    from .agent import DreamAgent
+    from .models import DreamAgentConfig as _DAC
+
+    if config is None:
+        config = _DAC()
+
+    agent = DreamAgent(storage, llm_client, config)
+    return await agent.run()

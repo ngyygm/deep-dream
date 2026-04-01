@@ -51,6 +51,7 @@ def _neo4j_record_to_entity(record) -> Entity:
         summary=record.get("summary"),
         attributes=record.get("attributes"),
         confidence=float(record["confidence"]) if record.get("confidence") is not None else None,
+        content_format=record.get("content_format", "plain"),
     )
 
 
@@ -73,6 +74,7 @@ def _neo4j_record_to_relation(record) -> Relation:
         attributes=record.get("attributes"),
         confidence=float(record["confidence"]) if record.get("confidence") is not None else None,
         provenance=record.get("provenance"),
+        content_format=record.get("content_format", "plain"),
     )
 
 
@@ -191,6 +193,8 @@ class Neo4jStorageManager:
             "CREATE CONSTRAINT episode_uuid IF NOT EXISTS FOR (ep:Episode) REQUIRE ep.uuid IS UNIQUE",
             # Entity redirect 唯一性约束
             "CREATE CONSTRAINT redirect_source IF NOT EXISTS FOR (red:EntityRedirect) REQUIRE red.source_id IS UNIQUE",
+            # ContentPatch 唯一性约束
+            "CREATE CONSTRAINT content_patch_uuid IF NOT EXISTS FOR (cp:ContentPatch) REQUIRE cp.uuid IS UNIQUE",
         ]
         indexes = [
             "CREATE INDEX entity_entity_id IF NOT EXISTS FOR (e:Entity) ON (e.entity_id)",
@@ -202,6 +206,9 @@ class Neo4jStorageManager:
             "CREATE INDEX relation_processed_time IF NOT EXISTS FOR (r:Relation) ON (r.processed_time)",
             "CREATE INDEX relation_entities IF NOT EXISTS FOR (r:Relation) ON (r.entity1_absolute_id, r.entity2_absolute_id)",
             "CREATE INDEX redirect_target IF NOT EXISTS FOR (red:EntityRedirect) ON (red.target_id)",
+            # ContentPatch 索引
+            "CREATE INDEX content_patch_target IF NOT EXISTS FOR (cp:ContentPatch) ON (cp.target_absolute_id)",
+            "CREATE INDEX content_patch_entity IF NOT EXISTS FOR (cp:ContentPatch) ON (cp.target_entity_id)",
         ]
         with self._driver.session() as session:
             for c in constraints:
@@ -261,6 +268,118 @@ class Neo4jStorageManager:
     # ------------------------------------------------------------------
     # 连接管理
     # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # ContentPatch（Section 级变更记录）
+    # ------------------------------------------------------------------
+
+    def save_content_patches(self, patches: list):
+        """批量保存 ContentPatch 节点到 Neo4j。"""
+        from ..models import ContentPatch
+        if not patches:
+            return
+        with self._entity_write_lock:
+            with self._driver.session() as session:
+                for p in patches:
+                    session.run(
+                        """
+                        CREATE (cp:ContentPatch {
+                            uuid: $uuid,
+                            target_type: $target_type,
+                            target_absolute_id: $target_abs_id,
+                            target_entity_id: $target_entity_id,
+                            section_key: $section_key,
+                            change_type: $change_type,
+                            old_hash: $old_hash,
+                            new_hash: $new_hash,
+                            diff_summary: $diff_summary,
+                            source_document: $source,
+                            event_time: datetime($event_time)
+                        })
+                        WITH cp, $target_abs_id AS abs_id
+                        MATCH (t) WHERE t.uuid = abs_id
+                        MERGE (cp)-[:PATCHES]->(t)
+                        """,
+                        uuid=p.uuid,
+                        target_type=p.target_type,
+                        target_abs_id=p.target_absolute_id,
+                        target_entity_id=p.target_entity_id,
+                        section_key=p.section_key,
+                        change_type=p.change_type,
+                        old_hash=p.old_hash,
+                        new_hash=p.new_hash,
+                        diff_summary=p.diff_summary,
+                        source=p.source_document,
+                        event_time=p.event_time.isoformat() if p.event_time else datetime.now().isoformat(),
+                    )
+
+    def get_content_patches(self, entity_id: str, section_key: str = None) -> list:
+        """查询指定 entity_id 的 ContentPatch 记录。"""
+        from ..models import ContentPatch
+        with self._driver.session() as session:
+            if section_key:
+                result = session.run(
+                    """
+                    MATCH (cp:ContentPatch {target_entity_id: $eid, section_key: $sk})
+                    RETURN cp ORDER BY cp.event_time DESC
+                    """,
+                    eid=entity_id, sk=section_key,
+                )
+            else:
+                result = session.run(
+                    """
+                    MATCH (cp:ContentPatch {target_entity_id: $eid})
+                    RETURN cp ORDER BY cp.event_time DESC
+                    """,
+                    eid=entity_id,
+                )
+            patches = []
+            for record in result:
+                cp = record["cp"]
+                patches.append(ContentPatch(
+                    uuid=cp["uuid"],
+                    target_type=cp["target_type"],
+                    target_absolute_id=cp["target_absolute_id"],
+                    target_entity_id=cp["target_entity_id"],
+                    section_key=cp["section_key"],
+                    change_type=cp["change_type"],
+                    old_hash=cp.get("old_hash", ""),
+                    new_hash=cp.get("new_hash", ""),
+                    diff_summary=cp.get("diff_summary", ""),
+                    source_document=cp.get("source_document", ""),
+                    event_time=_parse_dt(cp.get("event_time")),
+                ))
+            return patches
+
+    def get_section_history(self, entity_id: str, section_key: str) -> list:
+        """获取单个 section 的全版本变更历史。"""
+        return self.get_content_patches(entity_id, section_key=section_key)
+
+    def get_version_diff(self, entity_id: str, v1: str, v2: str) -> dict:
+        """获取两个版本之间的 section 级 diff。
+
+        v1, v2 是两个 absolute_id（版本 uuid）。
+        返回 {section_key: {"v1": content_or_None, "v2": content_or_None, "changed": bool}}
+        """
+        from ..content_schema import parse_markdown_sections, compute_section_diff
+        with self._driver.session() as session:
+            v1_content = ""
+            v2_content = ""
+            result = session.run(
+                """
+                MATCH (e:Entity) WHERE e.uuid = $v1 OR e.uuid = $v2
+                RETURN e.uuid AS uid, e.content AS content
+                """,
+                v1=v1, v2=v2,
+            )
+            for record in result:
+                if record["uid"] == v1:
+                    v1_content = record["content"] or ""
+                elif record["uid"] == v2:
+                    v2_content = record["content"] or ""
+            s1 = parse_markdown_sections(v1_content)
+            s2 = parse_markdown_sections(v2_content)
+            return compute_section_diff(s1, s2)
 
     def close(self):
         """关闭 Neo4j 驱动和向量存储连接。"""
@@ -688,6 +807,7 @@ class Neo4jStorageManager:
                             e.summary = $summary,
                             e.attributes = $attributes,
                             e.confidence = $confidence,
+                            e.content_format = $content_format,
                             e.valid_at = datetime($valid_at)
                         WITH $uuid AS abs_id, $entity_id AS eid, $event_time AS et
                         MATCH (e:Entity {entity_id: eid})
@@ -705,6 +825,7 @@ class Neo4jStorageManager:
                     summary=entity.summary,
                     attributes=entity.attributes,
                     confidence=entity.confidence,
+                    content_format=getattr(entity, "content_format", "plain"),
                     valid_at=valid_at,
                 )
 
@@ -1582,6 +1703,7 @@ class Neo4jStorageManager:
                         r.attributes = $attributes,
                         r.confidence = $confidence,
                         r.provenance = $provenance,
+                        r.content_format = $content_format,
                         r.valid_at = datetime($valid_at)
                     WITH $uuid AS abs_id, $relation_id AS rid, $event_time AS et
                     MATCH (r:Relation {relation_id: rid})
@@ -1606,6 +1728,7 @@ class Neo4jStorageManager:
                     attributes=relation.attributes,
                     confidence=relation.confidence,
                     provenance=relation.provenance,
+                    content_format=getattr(relation, "content_format", "plain"),
                     valid_at=valid_at,
                 )
 

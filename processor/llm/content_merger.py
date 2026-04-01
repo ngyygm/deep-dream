@@ -12,6 +12,8 @@ from .prompts import (
     MERGE_RELATION_CONTENT_SYSTEM_PROMPT,
     MERGE_MULTIPLE_RELATION_CONTENTS_SYSTEM_PROMPT,
     MERGE_MULTIPLE_ENTITY_CONTENTS_SYSTEM_PROMPT,
+    MERGE_ENTITY_SECTION_SYSTEM_PROMPT,
+    MERGE_RELATION_SECTION_SYSTEM_PROMPT,
 )
 
 
@@ -428,3 +430,102 @@ class _ContentMergerMixin:
             wprint(f"警告：多实体内容合并JSON解析失败，使用原始响应: {e}")
             cleaned_response = clean_markdown_code_blocks(response)
             return cleaned_response.strip()
+
+    # ------------------------------------------------------------------
+    # Section 级合并
+    # ------------------------------------------------------------------
+
+    def merge_entity_section(
+        self,
+        section_key: str,
+        old_section: str,
+        new_section: str,
+        *,
+        old_source_document: str = "",
+        new_source_document: str = "",
+        entity_name: str = "",
+    ) -> str:
+        """合并实体的单个 section（增量更新）。
+
+        只对变更的 section 调用 LLM，而非整个 content。
+        """
+        system_prompt = MERGE_ENTITY_SECTION_SYSTEM_PROMPT
+
+        prompt = f"""<实体名称>{entity_name or '(未提供)'}</实体名称>
+<Section>{section_key}</Section>
+
+<旧版本>
+- source_document: {self._source_doc_label(old_source_document)}
+- content:
+{old_section}
+</旧版本>
+
+<新版本>
+- source_document: {self._source_doc_label(new_source_document)}
+- content:
+{new_section}
+</新版本>
+
+请合并该 section 的内容，只输出一个 ```json ... ``` 代码块；代码块内部格式为：{{"content": "合并后的 section 正文"}}"""
+
+        response = self._call_llm(prompt, system_prompt)
+
+        try:
+            result = self._parse_json_response(response)
+            if isinstance(result, dict) and 'content' in result:
+                merged = str(result['content']).strip()
+                if merged:
+                    return merged
+            wprint(f"警告：实体 section 合并返回的 JSON 格式不正确，使用原始响应")
+            return response.strip()
+        except Exception as e:
+            wprint(f"警告：实体 section 合并 JSON 解析失败: {e}")
+            return clean_markdown_code_blocks(response).strip()
+
+    def merge_relation_section(
+        self,
+        section_key: str,
+        old_section: str,
+        new_section: str,
+        *,
+        old_source_document: str = "",
+        new_source_document: str = "",
+        entity1_name: str = "",
+        entity2_name: str = "",
+    ) -> str:
+        """合并关系的单个 section（增量更新）。"""
+        system_prompt = MERGE_RELATION_SECTION_SYSTEM_PROMPT
+
+        prompt = f"""<关系实体对>
+- entity1: {entity1_name or '(未提供)'}
+- entity2: {entity2_name or '(未提供)'}
+</关系实体对>
+<Section>{section_key}</Section>
+
+<旧版本>
+- source_document: {self._source_doc_label(old_source_document)}
+- content:
+{old_section}
+</旧版本>
+
+<新版本>
+- source_document: {self._source_doc_label(new_source_document)}
+- content:
+{new_section}
+</新版本>
+
+请合并该 section 的内容，只输出一个 ```json ... ``` 代码块；代码块内部格式为：{{"content": "合并后的 section 正文"}}"""
+
+        response = self._call_llm(prompt, system_prompt)
+
+        try:
+            result = self._parse_json_response(response)
+            if isinstance(result, dict) and 'content' in result:
+                merged = str(result['content']).strip()
+                if merged:
+                    return merged
+            wprint(f"警告：关系 section 合并返回的 JSON 格式不正确，使用原始响应")
+            return response.strip()
+        except Exception as e:
+            wprint(f"警告：关系 section 合并 JSON 解析失败: {e}")
+            return clean_markdown_code_blocks(response).strip()

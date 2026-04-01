@@ -7,10 +7,19 @@ from concurrent.futures import ThreadPoolExecutor, as_completed, Future
 import uuid
 import numpy as np
 
-from ..models import Entity, MemoryCache
+from ..models import Entity, MemoryCache, ContentPatch
 from ..storage.manager import StorageManager
 from ..llm.client import LLMClient
 from ..utils import clean_markdown_code_blocks, clean_separator_tags, wprint
+from ..content_schema import (
+    ENTITY_SECTIONS,
+    content_to_sections,
+    compute_section_diff,
+    has_any_change,
+    collect_changed_sections,
+    render_markdown_sections,
+    section_hash,
+)
 
 
 class EntityProcessor:
@@ -1182,7 +1191,8 @@ class EntityProcessor:
             event_time=event_time,
             processed_time=processed_time,
             memory_cache_id=memory_cache_id,
-            source_document=source_document_only
+            source_document=source_document_only,
+            content_format="markdown",
         )
         return entity
 
@@ -1211,18 +1221,71 @@ class EntityProcessor:
             event_time=event_time,
             processed_time=processed_time,
             memory_cache_id=memory_cache_id,
-            source_document=source_document_only
+            source_document=source_document_only,
+            content_format="markdown",
         )
         return entity
 
     def _create_entity_version(self, entity_id: str, name: str, content: str,
                               memory_cache_id: str, source_document: str = "",
-                              base_time: Optional[datetime] = None) -> Entity:
-        """创建实体的新版本"""
+                              base_time: Optional[datetime] = None,
+                              old_content: str = "",
+                              old_content_format: str = "plain") -> Entity:
+        """创建实体的新版本，并记录 section 级 patches。"""
         entity = self._build_entity_version(entity_id, name, content, memory_cache_id, source_document, base_time=base_time)
         self.storage.save_entity(entity)
+
+        # 计算 section patches
+        if old_content:
+            patches = self._compute_entity_patches(
+                entity_id=entity_id,
+                old_content=old_content,
+                old_content_format=old_content_format,
+                new_content=content,
+                new_absolute_id=entity.absolute_id,
+                source_document=source_document_only if source_document else "",
+                event_time=entity.event_time,
+            )
+            if patches:
+                self.storage.save_content_patches(patches)
+
         return entity
     
+    def _compute_entity_patches(
+        self,
+        entity_id: str,
+        old_content: str,
+        old_content_format: str,
+        new_content: str,
+        new_absolute_id: str,
+        source_document: str = "",
+        event_time: Optional[datetime] = None,
+    ) -> list:
+        """计算新旧内容之间的 section 级变更 patches。"""
+        old_sections = content_to_sections(old_content, old_content_format, ENTITY_SECTIONS)
+        new_sections = content_to_sections(new_content, "markdown", ENTITY_SECTIONS)
+        diff = compute_section_diff(old_sections, new_sections)
+        if not has_any_change(diff):
+            return []
+        patches = []
+        for key, info in diff.items():
+            if not info.get("changed", False):
+                continue
+            patches.append(ContentPatch(
+                uuid=str(uuid.uuid4()),
+                target_type="Entity",
+                target_absolute_id=new_absolute_id,
+                target_entity_id=entity_id,
+                section_key=key,
+                change_type=info.get("change_type", "modified"),
+                old_hash=section_hash(info.get("old", "") or ""),
+                new_hash=section_hash(info.get("new", "") or ""),
+                diff_summary=f"Section '{key}' {info.get('change_type', 'modified')}",
+                source_document=source_document,
+                event_time=event_time or datetime.now(),
+            ))
+        return patches
+
     def get_entity_by_name(self, entity_name: str) -> Optional[Entity]:
         """根据名称获取实体（返回最新版本）"""
         # 使用name_only模式，更精确

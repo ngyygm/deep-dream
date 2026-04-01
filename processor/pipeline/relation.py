@@ -6,11 +6,18 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import uuid
 
-from ..models import Relation
+from ..models import Relation, ContentPatch
 from ..storage.manager import StorageManager
 from ..llm.client import LLMClient
 from ..debug_log import log as dbg, log_section as dbg_section
 from ..utils import wprint
+from ..content_schema import (
+    RELATION_SECTIONS,
+    content_to_sections,
+    compute_section_diff,
+    has_any_change,
+    section_hash,
+)
 
 
 class RelationProcessor:
@@ -664,7 +671,7 @@ class RelationProcessor:
             event_time=ts,
             processed_time=processed_time,
             memory_cache_id=memory_cache_id,
-            source_document=source_document_only
+            source_document=source_document_only,
         )
         return relation
 
