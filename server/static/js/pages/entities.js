@@ -250,7 +250,7 @@
         evolveBtn.disabled = true;
         evolveBtn.innerHTML = `${spinnerHtml('spinner-sm')} ${t('entities.evolveSummaryRunning')}`;
         try {
-          const res = await state.api.evolveEntitySummary(entity.entity_id);
+          const res = await state.api.evolveEntitySummary(entity.entity_id, state.currentGraphId);
           showToast(t('entities.evolveSummarySuccess'), 'success');
           // Refresh entity detail
           if (res.data) {
@@ -274,7 +274,7 @@
       provenanceBtn.addEventListener('click', async () => {
         provenanceBtn.disabled = true;
         try {
-          const res = await state.api.entityProvenance(entity.entity_id);
+          const res = await state.api.entityProvenance(entity.entity_id, state.currentGraphId);
           const prov = res.data || {};
           let body = `<div style="display:flex;flex-direction:column;gap:0.75rem;">`;
           if (prov.source_document || prov.source) {
@@ -348,7 +348,7 @@
       const [versionsRes, relationsRes, contradictionsRes] = await Promise.all([
         state.api.entityVersions(entityId, graphId),
         state.api.entityRelations(entityId, graphId),
-        state.api.entityContradictions(entityId).catch(() => ({ data: [] })),
+        state.api.entityContradictions(entityId, state.currentGraphId).catch(() => ({ data: [] })),
       ]);
 
       const vSpinner = overlay.querySelector('#versions-spinner');
@@ -417,7 +417,7 @@
   // Expose resolve contradiction handler
   window._resolveContradiction = async function(entityId, contradictionId) {
     try {
-      await state.api.resolveContradiction(entityId, { contradiction_id: contradictionId });
+      await state.api.resolveContradiction(entityId, { contradiction_id: contradictionId }, state.currentGraphId);
       showToast(t('entities.resolveSuccess'), 'success');
     } catch (err) {
       showToast(t('entities.resolveFailed') + ': ' + err.message, 'error');
@@ -717,7 +717,7 @@
       const data = { name: name || undefined, content: content || undefined };
       if (summary) data.summary = summary;
       if (attributes) data.attributes = attributes;
-      const res = await state.api.updateEntity(entityId, data);
+      const res = await state.api.updateEntity(entityId, data, state.currentGraphId);
       if (res.error) { showToast(res.error, 'error'); return; }
       showToast(t('entities.updateSuccess'), 'success');
       close();
@@ -753,7 +753,7 @@
   async function executeDeleteEntity(entityId, close) {
     const cascade = document.getElementById('deleteCascade')?.checked || false;
     try {
-      const res = await state.api.deleteEntity(entityId, cascade);
+      const res = await state.api.deleteEntity(entityId, cascade, state.currentGraphId);
       if (res.error) { showToast(res.error, 'error'); return; }
       showToast(t('entities.deleteSuccess'), 'success');
       close();
@@ -775,7 +775,7 @@
     const ids = getSelectedEntityIds();
     if (!ids.length) { showToast(t('entities.selectEntities'), 'warn'); return; }
     if (!confirm(t('entities.deleteConfirm') + ' (' + ids.length + ')')) return;
-    state.api.batchDeleteEntities(ids).then(res => {
+    state.api.batchDeleteEntities(ids, false, state.currentGraphId).then(res => {
       if (res.error) { showToast(res.error, 'error'); return; }
       showToast(t('entities.batchDeleteSuccess').replace('{count}', ids.length), 'success');
       invalidateAndReload();
@@ -788,7 +788,7 @@
     const target = ids[0];
     const sources = ids.slice(1);
     if (!confirm(t('entities.mergeConfirm'))) return;
-    state.api.mergeEntities(target, sources).then(res => {
+    state.api.mergeEntities(target, sources, state.currentGraphId).then(res => {
       if (res.error) { showToast(res.error, 'error'); return; }
       showToast(t('entities.mergeSuccess'), 'success');
       invalidateAndReload();

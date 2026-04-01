@@ -1,5 +1,5 @@
 """
-TMG 通用工具函数。
+DeepDream 通用工具函数。
 
 放在此处的是被多个模块复用的纯函数，不依赖任何业务状态。
 """
@@ -109,8 +109,8 @@ def clean_separator_tags(text: str) -> str:
 
 _window_local = threading.local()
 
-# 并行时日志：单行原子输出，避免多线程 print 交错；可用 TMG_LOG_SERIAL=0 关闭（直接 print）
-_log_serial: bool = os.environ.get("TMG_LOG_SERIAL", "1").strip().lower() not in ("0", "false", "no")
+# 并行时日志：单行原子输出，避免多线程 print 交错；可用 DEEPDREAM_LOG_SERIAL=0 关闭（直接 print）
+_log_serial: bool = os.environ.get("DEEPDREAM_LOG_SERIAL", "1").strip().lower() not in ("0", "false", "no")
 _log_queue: queue.Queue[str] | None = None
 _log_writer_started = False
 _log_writer_lock = threading.Lock()

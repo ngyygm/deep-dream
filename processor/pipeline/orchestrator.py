@@ -201,6 +201,7 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
                 think_mode=bool(_dream_cfg.get("think_mode", False)),
                 max_tokens=_dream_cfg.get("max_tokens"),
                 max_llm_concurrency=1,
+                context_window_tokens=_dream_cfg.get("context_window_tokens", _ctx_win),
             )
         else:
             self.dream_llm_client = self.llm_client

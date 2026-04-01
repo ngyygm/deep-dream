@@ -129,7 +129,7 @@ registerPage('dream', (function () {
       const maxEntities = parseInt(document.getElementById('dream-max-entities')?.value || '100', 10);
       const similarity = parseFloat(document.getElementById('dream-similarity')?.value || '0.8');
 
-      await state.api.startDream({
+      await state.api.startDream(state.currentGraphId, {
         reviewWindowDays: reviewWindow,
         maxEntitiesPerCycle: maxEntities,
         similarityThreshold: similarity,
@@ -152,7 +152,7 @@ registerPage('dream', (function () {
     const statusSpinner = _container?.querySelector('#dream-status-spinner');
 
     try {
-      const res = await state.api.dreamStatus();
+      const res = await state.api.dreamStatus(state.currentGraphId);
       const data = res.data || {};
       const status = data.status || 'idle';
 
@@ -195,7 +195,7 @@ registerPage('dream', (function () {
 
   async function showDreamDetail(cycleId) {
     try {
-      const res = await state.api.dreamLogDetail(cycleId);
+      const res = await state.api.dreamLogDetail(cycleId, state.currentGraphId);
       const data = res.data || {};
 
       // Narrative
@@ -266,7 +266,7 @@ registerPage('dream', (function () {
     if (!listEl) return;
 
     try {
-      const res = await state.api.dreamLogs(20);
+      const res = await state.api.dreamLogs(20, state.currentGraphId);
       const logs = res.data || [];
 
       if (!Array.isArray(logs) || logs.length === 0) {
@@ -308,7 +308,7 @@ registerPage('dream', (function () {
   window._dreamShowLog = async function (cycleId) {
     if (!cycleId) return;
     try {
-      const res = await state.api.dreamLogDetail(cycleId);
+      const res = await state.api.dreamLogDetail(cycleId, state.currentGraphId);
       const data = res.data || {};
 
       let body = `<div style="display:flex;flex-direction:column;gap:0.75rem;">`;

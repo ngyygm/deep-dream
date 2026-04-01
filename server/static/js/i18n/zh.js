@@ -46,6 +46,7 @@ window.I18N_LANG_ZH = {
 
   // Navigation
   'nav.dashboard': '仪表盘',
+  'nav.chat': '对话',
   'nav.graph': '图谱',
   'nav.memory': '记忆',
   'nav.search': '检索',
@@ -633,4 +634,27 @@ window.I18N_LANG_ZH = {
   'agent.suggestions': '建议',
   'agent.noSuggestions': '暂无建议',
   'agent.suggestionPriority': '建议优先级',
+
+  // Chat
+  'chat.placeholder': '输入问题或 /dream 开始梦境...',
+  'chat.startDream': '开始梦境',
+  'chat.stop': '停止',
+  'chat.clear': '清空',
+  'chat.user': '你',
+  'chat.assistant': '助手',
+  'chat.welcomeTitle': 'DeepDream 对话',
+  'chat.welcomeDesc': '提问关于你的知识图谱的问题，或启动梦境会话来发现隐藏的关联。',
+  'chat.dreamStarted': '梦境会话已启动',
+  'chat.streamStopped': '流已停止',
+  'chat.cycleLabel': '周期',
+  'chat.cycleComplete': '周期完成',
+  'chat.entities': '实体',
+  'chat.relations': '关系',
+  'chat.saved': '已保存',
+  'chat.toolCalls': '工具调用',
+  'chat.relationCreated': '新关系',
+  'chat.episodeSaved': 'Episode 已保存',
+  'chat.dreamCycles': '周期数',
+  'chat.dreamStrategy': '策略模式',
+  'chat.dreamMaxToolCalls': '每周期最大工具调用数',
 };

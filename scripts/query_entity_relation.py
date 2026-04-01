@@ -22,7 +22,7 @@ import re
 from pathlib import Path
 from datetime import datetime
 
-# 添加Temporal_Memory_Graph到路径（支持多种路径）
+# 添加DeepDream到路径（支持多种路径）
 import os
 from pathlib import Path
 
@@ -33,13 +33,13 @@ if (tmg_dir / "processor").exists():
     sys.path.insert(0, str(tmg_dir))
 else:
     # 方法2: 使用绝对路径
-    sys.path.insert(0, str(Path("/home/linkco/exa/Temporal_Memory_Graph")))
+    sys.path.insert(0, str(Path("/home/linkco/exa/DeepDream")))
 
 try:
     from processor.storage import StorageManager
 except ImportError:
     print("错误: 无法导入 StorageManager")
-    print("请确保 Temporal_Memory_Graph 在正确的位置")
+    print("请确保 DeepDream 在正确的位置")
     sys.exit(1)
 
 
@@ -294,8 +294,8 @@ def main():
 
     parser.add_argument('--entity1', required=True, help='第一个实体的名称（支持别名、称谓）')
     parser.add_argument('--entity2', required=True, help='第二个实体的名称（支持别名、称谓）')
-    parser.add_argument('--storage-path', default='/home/linkco/exa/Temporal_Memory_Graph/graph/santi',
-                       help='存储路径（默认: /home/linkco/exa/Temporal_Memory_Graph/graph/santi）')
+    parser.add_argument('--storage-path', default='/home/linkco/exa/DeepDream/graph/santi',
+                       help='存储路径（默认: /home/linkco/exa/DeepDream/graph/santi）')
     parser.add_argument('--threshold', type=float, default=0.3,
                        help='实体搜索的相似度阈值（默认: 0.3）')
     parser.add_argument('--detail', action='store_true',

@@ -42,11 +42,13 @@ class DreamAgent:
     4. 保存发现 → 进入下一个周期
     """
 
-    def __init__(self, storage: Any, llm_client: Any, config: Optional[DreamAgentConfig] = None):
+    def __init__(self, storage: Any, llm_client: Any, config: Optional[DreamAgentConfig] = None,
+                 event_callback: Optional[Any] = None):
         self.storage = storage
         self.llm = llm_client
         self.config = config or DreamAgentConfig()
         self.tool_descriptions = format_tool_descriptions()
+        self._cb = event_callback  # callable(event_type: str, data: dict) | None
         self.state = DreamAgentState(
             session_id=f"dream_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}",
             graph_id=self.config.graph_id,
@@ -56,6 +58,7 @@ class DreamAgent:
         """运行完整的 Dream Agent 会话。"""
         self.state.status = "running"
         self.state.start_time = datetime.now()
+        self._emit("done", {"status": "running", "session_id": self.state.session_id})
 
         try:
             for cycle in range(self.config.max_cycles):
@@ -67,12 +70,28 @@ class DreamAgent:
                     self.state.session_id, cycle + 1, self.config.max_cycles, strategy,
                 )
 
+                self._emit("cycle_start", {
+                    "cycle": cycle + 1,
+                    "total_cycles": self.config.max_cycles,
+                    "strategy": strategy,
+                })
+
                 result = await self._run_cycle(strategy)
                 self.state.cycle_results.append(result)
                 self.state.total_entities_examined += result.entities_examined
                 self.state.total_relations_discovered += result.relations_discovered
                 self.state.total_relations_saved += result.relations_saved
                 self.state.total_tool_calls += result.tool_calls_made
+
+                self._emit("cycle_end", {
+                    "cycle": cycle + 1,
+                    "strategy": result.strategy,
+                    "entities_examined": result.entities_examined,
+                    "relations_discovered": result.relations_discovered,
+                    "relations_saved": result.relations_saved,
+                    "tool_calls_made": result.tool_calls_made,
+                    "error": result.error,
+                })
 
                 if result.error:
                     logger.warning("Dream Agent 周期 %d 错误: %s", cycle + 1, result.error)
@@ -81,12 +100,24 @@ class DreamAgent:
             self._generate_narrative()
             self.state.status = "completed"
 
+            if self.state.narrative:
+                self._emit("summary", {"narrative": self.state.narrative})
+
         except Exception as e:
             logger.error("Dream Agent 运行失败: %s", e)
             self.state.status = "failed"
             self.state.narrative = f"梦境中断：{str(e)}"
+            self._emit("error", {"message": str(e)})
         finally:
             self.state.end_time = datetime.now()
+            self._emit("done", {
+                "status": self.state.status,
+                "session_id": self.state.session_id,
+                "total_entities_examined": self.state.total_entities_examined,
+                "total_relations_discovered": self.state.total_relations_discovered,
+                "total_relations_saved": self.state.total_relations_saved,
+                "total_tool_calls": self.state.total_tool_calls,
+            })
 
         return self.state
 
@@ -150,6 +181,7 @@ class DreamAgent:
                         "content": "请输出合法的 JSON 格式。参考系统提示中的输出格式。",
                     })
                     result.tool_calls_made += 1
+                    self._emit("thought", {"text": llm_response, "parse_error": True})
                     continue
 
                 messages.append({"role": "assistant", "content": llm_response})
@@ -173,6 +205,12 @@ class DreamAgent:
                     thought = parsed.get("thought", "")
                     if thought:
                         result.observations.append(thought)
+                        self._emit("thought", {"text": thought, "done": True})
+
+                    self._emit("episode_saved", {
+                        "episode_content": episode_content,
+                        "relations_saved": result.relations_saved,
+                    })
                     break
 
                 # 执行工具调用
@@ -182,6 +220,7 @@ class DreamAgent:
                     thought = parsed.get("thought", "")
                     if thought:
                         result.observations.append(thought)
+                        self._emit("thought", {"text": thought})
                     continue
 
                 tool_results_text = []
@@ -190,12 +229,20 @@ class DreamAgent:
                     arguments = tc.get("arguments", {})
                     result.tool_calls_made += 1
 
+                    self._emit("tool_call", {"tool": tool_name, "arguments": arguments})
+
                     exec_result = executor.execute(tool_name, arguments)
 
                     if exec_result.success:
+                        result_preview = json.dumps(exec_result.data, ensure_ascii=False, default=str)[:500]
                         tool_results_text.append(
-                            f"[{tool_name}] 成功: {json.dumps(exec_result.data, ensure_ascii=False, default=str)[:500]}"
+                            f"[{tool_name}] 成功: {result_preview}"
                         )
+                        self._emit("tool_result", {
+                            "tool": tool_name,
+                            "success": True,
+                            "data": exec_result.data,
+                        })
                         # 跟踪检查的实体
                         if tool_name in ("get_seeds", "search_similar", "search_bm25"):
                             data = exec_result.data
@@ -223,10 +270,20 @@ class DreamAgent:
                                     result.entities_examined += 1
                         elif tool_name == "create_relation":
                             result.relations_saved += 1
+                            self._emit("relation_created", {
+                                "entity1_id": arguments.get("entity1_id", ""),
+                                "entity2_id": arguments.get("entity2_id", ""),
+                                "content": arguments.get("content", ""),
+                            })
                     else:
                         tool_results_text.append(
                             f"[{tool_name}] 失败: {exec_result.error}"
                         )
+                        self._emit("tool_result", {
+                            "tool": tool_name,
+                            "success": False,
+                            "error": exec_result.error,
+                        })
 
                 # 将工具结果反馈给 LLM
                 if tool_results_text:
@@ -245,6 +302,18 @@ class DreamAgent:
             logger.error("Dream Agent 周期错误 (strategy=%s): %s", strategy, e)
 
         return result
+
+    # ============================================================
+    # 事件回调
+    # ============================================================
+
+    def _emit(self, event_type: str, data: Dict[str, Any]) -> None:
+        """Emit an event via the callback, if configured."""
+        if self._cb is not None:
+            try:
+                self._cb(event_type, data)
+            except Exception:
+                pass
 
     # ============================================================
     # 辅助方法

@@ -1,0 +1,139 @@
+{
+  "label": "AFTER_BM25",
+  "entity_count": 21967,
+  "relation_count": 59677,
+  "results": {
+    "resolve_entity_id": {
+      "label": "resolve_entity_id",
+      "rounds": 5,
+      "errors": 0,
+      "times_ms": [
+        1.6,
+        1.6,
+        1.6,
+        1.8,
+        1.7
+      ],
+      "mean_ms": 1.7,
+      "median_ms": 1.6,
+      "min_ms": 1.6,
+      "max_ms": 1.8,
+      "p95_ms": 1.8
+    },
+    "get_entity_by_entity_id": {
+      "label": "get_entity_by_entity_id",
+      "rounds": 5,
+      "errors": 0,
+      "times_ms": [
+        6.5,
+        4.0,
+        3.8,
+        4.7,
+        4.0
+      ],
+      "mean_ms": 4.6,
+      "median_ms": 4.0,
+      "min_ms": 3.8,
+      "max_ms": 6.5,
+      "p95_ms": 6.5
+    },
+    "get_entity_by_absolute_id": {
+      "label": "get_entity_by_absolute_id",
+      "rounds": 5,
+      "errors": 0,
+      "times_ms": [
+        2.5,
+        2.3,
+        2.4,
+        2.3,
+        2.4
+      ],
+      "mean_ms": 2.4,
+      "median_ms": 2.4,
+      "min_ms": 2.3,
+      "max_ms": 2.5,
+      "p95_ms": 2.5
+    },
+    "get_relations_by_entities": {
+      "label": "get_relations_by_entities",
+      "rounds": 5,
+      "errors": 0,
+      "times_ms": [
+        1.6,
+        1.6,
+        1.6,
+        1.9,
+        1.8
+      ],
+      "mean_ms": 1.7,
+      "median_ms": 1.6,
+      "min_ms": 1.6,
+      "max_ms": 1.9,
+      "p95_ms": 1.9
+    },
+    "get_entity_relations_by_entity_id": {
+      "label": "get_entity_relations_by_entity_id",
+      "rounds": 5,
+      "errors": 0,
+      "times_ms": [
+        174.5,
+        113.4,
+        110.3,
+        111.6,
+        111.7
+      ],
+      "mean_ms": 124.3,
+      "median_ms": 111.7,
+      "min_ms": 110.3,
+      "max_ms": 174.5,
+      "p95_ms": 174.5
+    },
+    "search_entities_by_similarity": {
+      "label": "search_entities_by_similarity",
+      "rounds": 3,
+      "errors": 0,
+      "times_ms": [
+        84.2,
+        79.3,
+        78.3
+      ],
+      "mean_ms": 80.6,
+      "median_ms": 79.3,
+      "min_ms": 78.3,
+      "max_ms": 84.2,
+      "p95_ms": 84.2
+    },
+    "get_entities_by_absolute_ids_x50": {
+      "label": "get_entities_by_absolute_ids_x50",
+      "rounds": 5,
+      "errors": 0,
+      "times_ms": [
+        5.7,
+        5.7,
+        5.9,
+        5.5,
+        5.7
+      ],
+      "mean_ms": 5.7,
+      "median_ms": 5.7,
+      "min_ms": 5.5,
+      "max_ms": 5.9,
+      "p95_ms": 5.9
+    },
+    "_get_entities_with_embeddings": {
+      "label": "_get_entities_with_embeddings",
+      "rounds": 3,
+      "errors": 0,
+      "times_ms": [
+        2379.0,
+        2175.6,
+        2539.8
+      ],
+      "mean_ms": 2364.8,
+      "median_ms": 2379.0,
+      "min_ms": 2175.6,
+      "max_ms": 2539.8,
+      "p95_ms": 2539.8
+    }
+  }
+}

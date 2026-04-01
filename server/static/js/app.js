@@ -1,5 +1,5 @@
 /* ==========================================
-   TMG Web Dashboard - Core Application
+   DeepDream Dashboard - Core Application
    ========================================== */
 
 // ---- API Client ----
@@ -18,7 +18,7 @@ function _isFetchNetworkFailure(err) {
   );
 }
 
-class TMGApi {
+class DeepDreamApi {
   constructor() {
     this.baseUrl = '';
   }
@@ -193,83 +193,84 @@ class TMGApi {
   }
 
   // --- CRUD ---
-  updateEntity(entityId, data) {
-    return this.request(`/api/v1/find/entities/${encodeURIComponent(entityId)}`, {
+  updateEntity(entityId, data, graphId = 'default') {
+    return this.request(`/api/v1/find/entities/${encodeURIComponent(entityId)}?graph_id=${encodeURIComponent(graphId)}`, {
       method: 'PUT',
       body: JSON.stringify(data),
     });
   }
 
   // --- Entity v3: Summary Evolution ---
-  evolveEntitySummary(entityId) {
-    return this.post(`/api/v1/find/entities/${encodeURIComponent(entityId)}/evolve-summary`, {});
+  evolveEntitySummary(entityId, graphId = 'default') {
+    return this.post(`/api/v1/find/entities/${encodeURIComponent(entityId)}/evolve-summary?graph_id=${encodeURIComponent(graphId)}`, {});
   }
 
   // --- Entity v3: Contradictions ---
-  entityContradictions(entityId) {
-    return this.get(`/api/v1/find/entities/${encodeURIComponent(entityId)}/contradictions`);
+  entityContradictions(entityId, graphId = 'default') {
+    return this.get(`/api/v1/find/entities/${encodeURIComponent(entityId)}/contradictions?graph_id=${encodeURIComponent(graphId)}`);
   }
 
-  resolveContradiction(entityId, data) {
-    return this.post(`/api/v1/find/entities/${encodeURIComponent(entityId)}/resolve-contradiction`, data);
+  resolveContradiction(entityId, data, graphId = 'default') {
+    return this.post(`/api/v1/find/entities/${encodeURIComponent(entityId)}/resolve-contradiction?graph_id=${encodeURIComponent(graphId)}`, data);
   }
 
   // --- Entity v3: Provenance ---
-  entityProvenance(entityId) {
-    return this.get(`/api/v1/find/entities/${encodeURIComponent(entityId)}/provenance`);
+  entityProvenance(entityId, graphId = 'default') {
+    return this.get(`/api/v1/find/entities/${encodeURIComponent(entityId)}/provenance?graph_id=${encodeURIComponent(graphId)}`);
   }
 
   // --- Graph Traversal (Phase B) ---
-  traverseGraph(seedEntityIds, maxDepth = 3, maxNodes = 100) {
+  traverseGraph(seedEntityIds, maxDepth = 3, maxNodes = 100, graphId = 'default') {
     return this.post('/api/v1/find/traverse', {
       seed_entity_ids: seedEntityIds,
       max_depth: maxDepth,
       max_nodes: maxNodes,
+      graph_id: graphId,
     });
   }
 
   // --- Episodes v3: Batch Ingest ---
-  batchIngestEpisodes(episodes) {
-    return this.post('/api/v1/find/episodes/batch-ingest', { episodes });
+  batchIngestEpisodes(episodes, graphId = 'default') {
+    return this.post('/api/v1/find/episodes/batch-ingest', { episodes, graph_id: graphId });
   }
 
-  deleteEntity(entityId, cascade = false) {
-    return this.request(`/api/v1/find/entities/${encodeURIComponent(entityId)}?cascade=${cascade}`, {
+  deleteEntity(entityId, cascade = false, graphId = 'default') {
+    return this.request(`/api/v1/find/entities/${encodeURIComponent(entityId)}?cascade=${cascade}&graph_id=${encodeURIComponent(graphId)}`, {
       method: 'DELETE',
     });
   }
 
-  batchDeleteEntities(entityIds, cascade = false) {
+  batchDeleteEntities(entityIds, cascade = false, graphId = 'default') {
     return this.request('/api/v1/find/entities/batch-delete', {
       method: 'POST',
-      body: JSON.stringify({ entity_ids: entityIds, cascade }),
+      body: JSON.stringify({ entity_ids: entityIds, cascade, graph_id: graphId }),
     });
   }
 
-  updateRelation(relationId, data) {
-    return this.request(`/api/v1/find/relations/${encodeURIComponent(relationId)}`, {
+  updateRelation(relationId, data, graphId = 'default') {
+    return this.request(`/api/v1/find/relations/${encodeURIComponent(relationId)}?graph_id=${encodeURIComponent(graphId)}`, {
       method: 'PUT',
       body: JSON.stringify(data),
     });
   }
 
-  deleteRelation(relationId) {
-    return this.request(`/api/v1/find/relations/${encodeURIComponent(relationId)}`, {
+  deleteRelation(relationId, graphId = 'default') {
+    return this.request(`/api/v1/find/relations/${encodeURIComponent(relationId)}?graph_id=${encodeURIComponent(graphId)}`, {
       method: 'DELETE',
     });
   }
 
-  batchDeleteRelations(relationIds) {
+  batchDeleteRelations(relationIds, graphId = 'default') {
     return this.request('/api/v1/find/relations/batch-delete', {
       method: 'POST',
-      body: JSON.stringify({ relation_ids: relationIds }),
+      body: JSON.stringify({ relation_ids: relationIds, graph_id: graphId }),
     });
   }
 
-  mergeEntities(targetEntityId, sourceEntityIds) {
+  mergeEntities(targetEntityId, sourceEntityIds, graphId = 'default') {
     return this.request('/api/v1/find/entities/merge', {
       method: 'POST',
-      body: JSON.stringify({ target_entity_id: targetEntityId, source_entity_ids: sourceEntityIds }),
+      body: JSON.stringify({ target_entity_id: targetEntityId, source_entity_ids: sourceEntityIds, graph_id: graphId }),
     });
   }
 
@@ -365,34 +366,34 @@ class TMGApi {
   }
 
   // --- Time Travel ---
-  getSnapshot(time) {
-    return this.request(`/api/v1/find/snapshot?time=${encodeURIComponent(time)}`);
+  getSnapshot(time, graphId = 'default') {
+    return this.request(`/api/v1/find/snapshot?time=${encodeURIComponent(time)}&graph_id=${encodeURIComponent(graphId)}`);
   }
 
-  getChanges(since, until) {
-    let url = `/api/v1/find/changes?since=${encodeURIComponent(since)}`;
+  getChanges(since, until, graphId = 'default') {
+    let url = `/api/v1/find/changes?since=${encodeURIComponent(since)}&graph_id=${encodeURIComponent(graphId)}`;
     if (until) url += `&until=${encodeURIComponent(until)}`;
     return this.request(url);
   }
 
-  invalidateRelation(relationId, reason = '') {
-    return this.request(`/api/v1/find/relations/${encodeURIComponent(relationId)}/invalidate`, {
+  invalidateRelation(relationId, reason = '', graphId = 'default') {
+    return this.request(`/api/v1/find/relations/${encodeURIComponent(relationId)}/invalidate?graph_id=${encodeURIComponent(graphId)}`, {
       method: 'POST',
       body: JSON.stringify({ reason }),
     });
   }
 
-  getInvalidatedRelations(limit = 100) {
-    return this.request(`/api/v1/find/relations/invalidated?limit=${limit}`);
+  getInvalidatedRelations(limit = 100, graphId = 'default') {
+    return this.request(`/api/v1/find/relations/invalidated?limit=${limit}&graph_id=${encodeURIComponent(graphId)}`);
   }
 
   // --- Stats & Timeline ---
-  getGraphStats() {
-    return this.request('/api/v1/find/graph-stats');
+  getGraphStats(graphId = 'default') {
+    return this.request(`/api/v1/find/graph-stats?graph_id=${encodeURIComponent(graphId)}`);
   }
 
-  getEntityTimeline(entityId) {
-    return this.request(`/api/v1/find/entities/${encodeURIComponent(entityId)}/timeline`);
+  getEntityTimeline(entityId, graphId = 'default') {
+    return this.request(`/api/v1/find/entities/${encodeURIComponent(entityId)}/timeline?graph_id=${encodeURIComponent(graphId)}`);
   }
 
   // Docs
@@ -403,42 +404,43 @@ class TMGApi {
     return this.get(`/api/v1/docs/${encodeURIComponent(filename)}?graph_id=${encodeURIComponent(graphId)}`);
   }
 
-  memoryCacheDoc(cacheId) {
-    return this.get(`/api/v1/find/memory-caches/${encodeURIComponent(cacheId)}/doc`);
+  memoryCacheDoc(cacheId, graphId = 'default') {
+    return this.get(`/api/v1/find/memory-caches/${encodeURIComponent(cacheId)}/doc?graph_id=${encodeURIComponent(graphId)}`);
   }
 
   // --- DeepDream (Phase E) ---
-  startDream(options = {}) {
+  startDream(graphId = 'default', options = {}) {
     return this.post('/api/v1/find/dream/start', {
+      graph_id: graphId,
       review_window_days: options.reviewWindowDays ?? 30,
       max_entities_per_cycle: options.maxEntitiesPerCycle ?? 100,
       similarity_threshold: options.similarityThreshold ?? 0.8,
     });
   }
 
-  dreamStatus() {
-    return this.get('/api/v1/find/dream/status');
+  dreamStatus(graphId = 'default') {
+    return this.get(`/api/v1/find/dream/status?graph_id=${encodeURIComponent(graphId)}`);
   }
 
-  dreamLogs(limit = 20) {
-    return this.get(`/api/v1/find/dream/logs?limit=${limit}`);
+  dreamLogs(limit = 20, graphId = 'default') {
+    return this.get(`/api/v1/find/dream/logs?limit=${limit}&graph_id=${encodeURIComponent(graphId)}`);
   }
 
-  dreamLogDetail(cycleId) {
-    return this.get(`/api/v1/find/dream/logs/${encodeURIComponent(cycleId)}`);
+  dreamLogDetail(cycleId, graphId = 'default') {
+    return this.get(`/api/v1/find/dream/logs/${encodeURIComponent(cycleId)}?graph_id=${encodeURIComponent(graphId)}`);
   }
 
   // --- Agent Meta Query (Phase F) ---
-  agentAsk(question) {
-    return this.post('/api/v1/find/ask', { question });
+  agentAsk(question, graphId = 'default') {
+    return this.post('/api/v1/find/ask', { question, graph_id: graphId });
   }
 
-  explainEntity(entityId, aspect) {
-    return this.post('/api/v1/find/explain', { entity_id: entityId, aspect });
+  explainEntity(entityId, aspect, graphId = 'default') {
+    return this.post('/api/v1/find/explain', { entity_id: entityId, aspect, graph_id: graphId });
   }
 
-  smartSuggestions() {
-    return this.get('/api/v1/find/suggestions');
+  smartSuggestions(graphId = 'default') {
+    return this.get(`/api/v1/find/suggestions?graph_id=${encodeURIComponent(graphId)}`);
   }
 
   // System
@@ -470,8 +472,8 @@ class TMGApi {
 
 // ---- Global State ----
 const state = {
-  api: new TMGApi(),
-  currentGraphId: localStorage.getItem('tmg_graph_id') || 'default',
+  api: new DeepDreamApi(),
+  currentGraphId: localStorage.getItem('deepdream_graph_id') || localStorage.getItem('tmg_graph_id') || 'default',
   refreshTimers: {},
   currentPage: null,
   backendType: 'sqlite',
@@ -483,7 +485,7 @@ function isNeo4j() {
 
 function setGraphId(id) {
   state.currentGraphId = id;
-  localStorage.setItem('tmg_graph_id', id);
+  localStorage.setItem('deepdream_graph_id', id);
   const sel = document.getElementById('graph-selector');
   if (sel) sel.value = id;
   // Re-render current page if it has a graph-aware render
@@ -661,6 +663,7 @@ function emptyState(text, icon = 'inbox') {
 // ---- Router ----
 const pages = {};
 const pageTitles = {
+  chat: t('nav.chat'),
   dashboard: t('nav.dashboard'),
   graph: t('nav.graph'),
   memory: t('nav.memory'),
@@ -682,9 +685,9 @@ function navigate(hash) {
 }
 
 async function handleRoute() {
-  const hash = (window.location.hash || '#dashboard').slice(1);
+  const hash = (window.location.hash || '#chat').slice(1);
   const [page, ...params] = hash.split('/').filter(Boolean);
-  const pageName = page || 'dashboard';
+  const pageName = page || 'chat';
   const pageModule = pages[pageName];
 
   // Clear refresh timers
@@ -750,7 +753,7 @@ function toggleTheme() {
   const isDark = html.getAttribute('data-theme') !== 'light';
   const newTheme = isDark ? 'light' : 'dark';
   html.setAttribute('data-theme', newTheme);
-  localStorage.setItem('tmg_theme', newTheme);
+  localStorage.setItem('deepdream_theme', newTheme);
   updateThemeIcon(newTheme);
 }
 
@@ -762,7 +765,7 @@ function updateThemeIcon(theme) {
 }
 
 function initTheme() {
-  const saved = localStorage.getItem('tmg_theme') || 'dark';
+  const saved = localStorage.getItem('deepdream_theme') || localStorage.getItem('tmg_theme') || 'dark';
   document.documentElement.setAttribute('data-theme', saved);
   updateThemeIcon(saved);
 }
@@ -823,7 +826,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 window.showDocContent = async function(cacheId) {
   if (!cacheId) return;
   try {
-    const res = await state.api.memoryCacheDoc(cacheId);
+    const res = await state.api.memoryCacheDoc(cacheId, state.currentGraphId);
     const data = res.data || {};
     const meta = data.meta || {};
 

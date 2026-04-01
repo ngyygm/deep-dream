@@ -123,12 +123,18 @@ class Neo4jStorageManager:
         entity_content_snippet_length: int = 50,
         relation_content_snippet_length: int = 50,
         vector_dim: int = 1024,
+        graph_id: str = "default",
         **_kwargs,
     ):
         import neo4j
 
         self.storage_path = Path(storage_path)
         self.storage_path.mkdir(parents=True, exist_ok=True)
+
+        # Neo4j 多数据库隔离：每个 graph_id 对应独立数据库
+        self._graph_id = graph_id
+        # Neo4j 数据库名规则：小写字母、数字、下划线、点；将连字符替换为下划线
+        self._database = f"deepdream_{graph_id.lower().replace('-', '_')}"
 
         # Neo4j 驱动
         self._neo4j_uri = neo4j_uri
@@ -140,6 +146,9 @@ class Neo4jStorageManager:
             max_transaction_retry_time=15.0,
         )
         self._driver.verify_connectivity()
+
+        # 确保数据库存在
+        self._ensure_database()
 
         # 文档目录（与 StorageManager 相同的文件存储结构）
         self.docs_dir = self.storage_path / "docs"
@@ -182,6 +191,46 @@ class Neo4jStorageManager:
     # Neo4j Schema 初始化
     # ------------------------------------------------------------------
 
+    def _ensure_database(self):
+        """确保 graph_id 对应的 Neo4j 数据库存在。
+
+        策略:
+          - graph_id="default" → 直接使用原 "neo4j" 数据库（老数据零迁移）
+          - 其他 graph_id → 尝试 CREATE DATABASE（Enterprise Edition）
+          - Community Edition 不支持多数据库时回退到 "neo4j"
+        """
+        # default 图谱直接使用原 neo4j 数据库，无需迁移
+        if self._graph_id == "default":
+            self._database = "neo4j"
+            logger.info("graph_id='default' → using original 'neo4j' database (no migration needed)")
+            return
+
+        db_name = self._database
+        try:
+            with self._driver.session(database="system") as session:
+                session.run(f"CREATE DATABASE `{db_name}` IF NOT EXISTS")
+            # 等待数据库上线
+            for _ in range(30):
+                with self._driver.session(database="system") as session:
+                    result = session.run("SHOW DATABASES")
+                    for record in result:
+                        if record["name"] == db_name and record.get("currentStatus") == "online":
+                            logger.info("Neo4j database '%s' is online", db_name)
+                            return
+                time.sleep(0.5)
+            logger.warning("Neo4j database '%s' may not be online yet, proceeding anyway", db_name)
+        except Exception as e:
+            # Community Edition 不支持 CREATE DATABASE，回退到默认数据库
+            logger.warning(
+                "Could not create database '%s' (falling back to default 'neo4j'): %s",
+                db_name, e,
+            )
+            self._database = "neo4j"
+
+    def _session(self):
+        """创建指向当前图谱数据库的 session。"""
+        return self._driver.session(database=self._database)
+
     def _init_schema(self):
         """创建 Neo4j 约束和索引（幂等）。"""
         constraints = [
@@ -210,7 +259,7 @@ class Neo4jStorageManager:
             "CREATE INDEX content_patch_target IF NOT EXISTS FOR (cp:ContentPatch) ON (cp.target_absolute_id)",
             "CREATE INDEX content_patch_entity IF NOT EXISTS FOR (cp:ContentPatch) ON (cp.target_entity_id)",
         ]
-        with self._driver.session() as session:
+        with self._session() as session:
             for c in constraints:
                 try:
                     session.run(c)
@@ -279,7 +328,7 @@ class Neo4jStorageManager:
         if not patches:
             return
         with self._entity_write_lock:
-            with self._driver.session() as session:
+            with self._session() as session:
                 for p in patches:
                     session.run(
                         """
@@ -316,7 +365,7 @@ class Neo4jStorageManager:
     def get_content_patches(self, entity_id: str, section_key: str = None) -> list:
         """查询指定 entity_id 的 ContentPatch 记录。"""
         from ..models import ContentPatch
-        with self._driver.session() as session:
+        with self._session() as session:
             if section_key:
                 result = session.run(
                     """
@@ -362,7 +411,7 @@ class Neo4jStorageManager:
         返回 {section_key: {"v1": content_or_None, "v2": content_or_None, "changed": bool}}
         """
         from ..content_schema import parse_markdown_sections, compute_section_diff
-        with self._driver.session() as session:
+        with self._session() as session:
             v1_content = ""
             v2_content = ""
             result = session.run(
@@ -418,7 +467,7 @@ class Neo4jStorageManager:
         if cached is not None:
             return cached
         with _perf_timer("resolve_entity_id"):
-            with self._driver.session() as session:
+            with self._session() as session:
                 resolved = self._resolve_entity_id_in_session(session, entity_id)
         self._cache.set(cache_key, resolved, ttl=120)
         return resolved
@@ -430,7 +479,7 @@ class Neo4jStorageManager:
         if not source_id or not target_id:
             return target_id
         with self._write_lock:
-            with self._driver.session() as session:
+            with self._session() as session:
                 canonical_target = self._resolve_entity_id_in_session(session, target_id)
                 if not canonical_target:
                     canonical_target = target_id
@@ -501,7 +550,7 @@ class Neo4jStorageManager:
             self._id_to_doc_hash[cache.absolute_id] = doc_dir.name
 
         # 在 Neo4j 中创建 Episode 节点
-        with self._driver.session() as session:
+        with self._session() as session:
             session.run(
                 """
                 MERGE (ep:Episode {uuid: $uuid})
@@ -523,7 +572,7 @@ class Neo4jStorageManager:
     def load_memory_cache(self, cache_id: str) -> Optional[MemoryCache]:
         """从 Neo4j 或文件系统加载记忆缓存。"""
         # 优先从 Neo4j 加载
-        with self._driver.session() as session:
+        with self._session() as session:
             result = session.run(
                 "MATCH (ep:Episode {uuid: $uuid}) RETURN ep.content AS content, "
                 "ep.event_time AS event_time, ep.source_document AS source_document",
@@ -565,7 +614,7 @@ class Neo4jStorageManager:
 
     def get_latest_memory_cache(self, activity_type: Optional[str] = None) -> Optional[MemoryCache]:
         """获取最新的记忆缓存。"""
-        with self._driver.session() as session:
+        with self._session() as session:
             query = "MATCH (ep:Episode) "
             params: dict = {}
             if activity_type:
@@ -588,7 +637,7 @@ class Neo4jStorageManager:
 
     def get_latest_memory_cache_metadata(self, activity_type: Optional[str] = None) -> Optional[Dict]:
         """获取最新记忆缓存的元数据。"""
-        with self._driver.session() as session:
+        with self._session() as session:
             query = "MATCH (ep:Episode) "
             params: dict = {}
             if activity_type:
@@ -610,14 +659,14 @@ class Neo4jStorageManager:
 
     def get_entity_count(self) -> int:
         """返回实体总数。"""
-        with self._driver.session() as session:
+        with self._session() as session:
             result = session.run("MATCH (e:Entity) RETURN count(e) AS cnt")
             record = result.single()
             return record["cnt"] if record else 0
 
     def get_relation_count(self) -> int:
         """返回关系总数。"""
-        with self._driver.session() as session:
+        with self._session() as session:
             result = session.run("MATCH (r:Relation) RETURN count(r) AS cnt")
             record = result.single()
             return record["cnt"] if record else 0
@@ -657,7 +706,7 @@ class Neo4jStorageManager:
                 shutil.rmtree(doc_dir, ignore_errors=True)
                 self._id_to_doc_hash.pop(cache_id, None)
         # 2. 删除 Neo4j Episode 节点
-        with self._driver.session() as session:
+        with self._session() as session:
             result = session.run("MATCH (ep:Episode {uuid: $uuid}) DETACH DELETE ep RETURN count(ep) AS cnt", uuid=cache_id)
             record = result.single()
             if record and record["cnt"] > 0:
@@ -793,7 +842,7 @@ class Neo4jStorageManager:
             valid_at = (entity.valid_at or entity.event_time).isoformat()
 
             with self._write_lock:
-                with self._driver.session() as session:
+                with self._session() as session:
                     session.run(
                         """
                         MERGE (e:Entity {uuid: $uuid})
@@ -889,7 +938,7 @@ class Neo4jStorageManager:
                         vec_items.append((entity.absolute_id, emb_list))
 
                 # 一次 UNWIND 替代 N 次 session.run
-                with self._driver.session() as session:
+                with self._session() as session:
                     session.run(
                         """
                         UNWIND $rows AS row
@@ -930,7 +979,7 @@ class Neo4jStorageManager:
             entity_id = self.resolve_entity_id(entity_id)
             if not entity_id:
                 return None
-            with self._driver.session() as session:
+            with self._session() as session:
                 result = session.run(
                     """
                     MATCH (e:Entity {entity_id: $eid})
@@ -964,7 +1013,7 @@ class Neo4jStorageManager:
         cached = self._cache.get(cache_key)
         if cached is not None:
             return cached
-        with self._driver.session() as session:
+        with self._session() as session:
             result = session.run(
                 """
                 MATCH (e:Entity {uuid: $uuid})
@@ -989,7 +1038,7 @@ class Neo4jStorageManager:
         """批量根据 absolute_id 查询实体名称。"""
         if not absolute_ids:
             return {}
-        with self._driver.session() as session:
+        with self._session() as session:
             result = session.run(
                 """
                 MATCH (e:Entity)
@@ -1004,7 +1053,7 @@ class Neo4jStorageManager:
         """批量根据 absolute_id 获取实体。"""
         if not absolute_ids:
             return []
-        with self._driver.session() as session:
+        with self._session() as session:
             result = session.run(
                 """
                 MATCH (e:Entity)
@@ -1023,7 +1072,7 @@ class Neo4jStorageManager:
         entity_id = self.resolve_entity_id(entity_id)
         if not entity_id:
             return None
-        with self._driver.session() as session:
+        with self._session() as session:
             result = session.run(
                 """
                 MATCH (e:Entity {entity_id: $eid})
@@ -1065,7 +1114,7 @@ class Neo4jStorageManager:
         entity_id = self.resolve_entity_id(entity_id)
         if not entity_id:
             return []
-        with self._driver.session() as session:
+        with self._session() as session:
             result = session.run(
                 """
                 MATCH (e:Entity {entity_id: $eid})
@@ -1089,7 +1138,7 @@ class Neo4jStorageManager:
 
     def _get_entities_with_embeddings_impl(self) -> List[tuple]:
         """获取所有实体的最新版本及其 embedding（实际实现）。"""
-        with self._driver.session() as session:
+        with self._session() as session:
             result = session.run(
                 """
                 MATCH (e:Entity)
@@ -1143,7 +1192,7 @@ class Neo4jStorageManager:
 
     def get_all_entities(self, limit: Optional[int] = None, offset: Optional[int] = None, exclude_embedding: bool = False) -> List[Entity]:
         """获取所有实体的最新版本。"""
-        with self._driver.session() as session:
+        with self._session() as session:
             query = """
                 MATCH (e:Entity)
                 WITH e.entity_id AS eid, COLLECT(e) AS ents
@@ -1173,7 +1222,7 @@ class Neo4jStorageManager:
 
     def count_unique_entities(self) -> int:
         """统计不重复的 entity_id 数量。"""
-        with self._driver.session() as session:
+        with self._session() as session:
             result = session.run(
                 "MATCH (e:Entity) RETURN COUNT(DISTINCT e.entity_id) AS cnt"
             )
@@ -1182,7 +1231,7 @@ class Neo4jStorageManager:
 
     def count_unique_relations(self) -> int:
         """统计不重复的 relation_id 数量。"""
-        with self._driver.session() as session:
+        with self._session() as session:
             result = session.run(
                 "MATCH (r:Relation) RETURN COUNT(DISTINCT r.relation_id) AS cnt"
             )
@@ -1192,7 +1241,7 @@ class Neo4jStorageManager:
     def get_all_entities_before_time(self, time_point: datetime, limit: Optional[int] = None,
                                       exclude_embedding: bool = False) -> List[Entity]:
         """获取指定时间点之前的所有实体最新版本。"""
-        with self._driver.session() as session:
+        with self._session() as session:
             query = """
                 MATCH (e:Entity)
                 WHERE e.event_time <= datetime($tp)
@@ -1224,7 +1273,7 @@ class Neo4jStorageManager:
         entity_id = self.resolve_entity_id(entity_id)
         if not entity_id:
             return 0
-        with self._driver.session() as session:
+        with self._session() as session:
             result = session.run(
                 "MATCH (e:Entity {entity_id: $eid}) RETURN COUNT(e) AS cnt",
                 eid=entity_id,
@@ -1243,7 +1292,7 @@ class Neo4jStorageManager:
                 canonical_ids.append(canonical)
         if not canonical_ids:
             return {}
-        with self._driver.session() as session:
+        with self._session() as session:
             result = session.run(
                 """
                 MATCH (e:Entity)
@@ -1259,7 +1308,7 @@ class Neo4jStorageManager:
         cached = self._cache.get("graph_stats")
         if cached is not None:
             return cached
-        with self._driver.session() as session:
+        with self._session() as session:
             # 基础计数
             r = session.run("MATCH (e:Entity) RETURN count(e) AS cnt")
             entity_count = r.single()["cnt"]
@@ -1348,7 +1397,7 @@ class Neo4jStorageManager:
         entity_id = self.resolve_entity_id(entity_id)
         if not entity_id:
             return False
-        with self._driver.session() as session:
+        with self._session() as session:
             result = session.run(
                 """
                 MATCH (r:Relation)
@@ -1369,7 +1418,7 @@ class Neo4jStorageManager:
         if not candidate_entity_ids:
             return []
         with self._write_lock:
-            with self._driver.session() as session:
+            with self._session() as session:
                 # 找出候选中无关系的 entity_id
                 result = session.run(
                     """
@@ -1402,7 +1451,7 @@ class Neo4jStorageManager:
         if not entity_id:
             return 0
         with self._write_lock:
-            with self._driver.session() as session:
+            with self._session() as session:
                 # 获取所有 absolute_id
                 result = session.run(
                     "MATCH (e:Entity {entity_id: $eid}) RETURN e.uuid AS uuid",
@@ -1428,7 +1477,7 @@ class Neo4jStorageManager:
     def delete_relation_by_id(self, relation_id: str) -> int:
         """删除关系的所有版本。返回删除的行数。"""
         with self._relation_write_lock:
-            with self._driver.session() as session:
+            with self._session() as session:
                 # 删除关系节点
                 result = session.run(
                     "MATCH (r:Relation {relation_id: $rid}) DETACH DELETE r RETURN count(r) AS cnt",
@@ -1452,7 +1501,7 @@ class Neo4jStorageManager:
         if not entity_id:
             return 0
         with self._write_lock:
-            with self._driver.session() as session:
+            with self._session() as session:
                 # 删除相关关系
                 session.run(
                     """MATCH (e:Entity {entity_id: $eid})-[r:RELATES_TO]-()
@@ -1486,7 +1535,7 @@ class Neo4jStorageManager:
         """按名称批量查询 entity_id。"""
         if not names:
             return {}
-        with self._driver.session() as session:
+        with self._session() as session:
             result = session.run(
                 """
                 MATCH (e:Entity)
@@ -1519,7 +1568,7 @@ class Neo4jStorageManager:
         if not query:
             return []
         try:
-            with self._driver.session() as session:
+            with self._session() as session:
                 result = session.run(
                     """CALL db.index.fulltext.queryNodes('entityFulltext', $query)
                        YIELD node, score
@@ -1547,7 +1596,7 @@ class Neo4jStorageManager:
         if not query:
             return []
         try:
-            with self._driver.session() as session:
+            with self._session() as session:
                 result = session.run(
                     """CALL db.index.fulltext.queryNodes('relationFulltext', $query)
                        YIELD node, score
@@ -1687,7 +1736,7 @@ class Neo4jStorageManager:
         valid_at = (relation.valid_at or relation.event_time).isoformat()
 
         with self._relation_write_lock:
-            with self._driver.session() as session:
+            with self._session() as session:
                 session.run(
                     """
                     MERGE (r:Relation {uuid: $uuid})
@@ -1786,7 +1835,7 @@ class Neo4jStorageManager:
                     vec_items.append((relation.absolute_id, emb_list))
 
             # 一次 UNWIND 替代 N 次 session.run
-            with self._driver.session() as session:
+            with self._session() as session:
                 session.run(
                     """
                     UNWIND $rows AS row
@@ -1816,7 +1865,7 @@ class Neo4jStorageManager:
 
     def get_relation_by_absolute_id(self, relation_absolute_id: str) -> Optional[Relation]:
         """根据 absolute_id 获取关系。"""
-        with self._driver.session() as session:
+        with self._session() as session:
             result = session.run(
                 """
                 MATCH (r:Relation {uuid: $uuid})
@@ -1842,7 +1891,7 @@ class Neo4jStorageManager:
         """批量根据 absolute_id 获取关系。"""
         if not absolute_ids:
             return []
-        with self._driver.session() as session:
+        with self._session() as session:
             result = session.run(
                 """
                 MATCH (r:Relation)
@@ -1859,7 +1908,7 @@ class Neo4jStorageManager:
             return [_neo4j_record_to_relation(r) for r in result]
 
     def get_relation_by_relation_id(self, relation_id: str) -> Optional[Relation]:
-        with self._driver.session() as session:
+        with self._session() as session:
             result = session.run(
                 """
                 MATCH (r:Relation {relation_id: $rid})
@@ -1894,7 +1943,7 @@ class Neo4jStorageManager:
         if not from_entity_id or not to_entity_id:
             return []
 
-        with self._driver.session() as session:
+        with self._session() as session:
             # Step 1: 批量获取两个 entity_id 的所有 absolute_id（合并 2 次 resolve + 2 次 _get_all_absolute_ids）
             result = session.run(
                 """
@@ -1949,7 +1998,7 @@ class Neo4jStorageManager:
 
     def _get_all_absolute_ids_for_entity(self, entity_id: str) -> List[str]:
         """获取实体的所有版本的 absolute_id。"""
-        with self._driver.session() as session:
+        with self._session() as session:
             result = session.run(
                 "MATCH (e:Entity {entity_id: $eid}) RETURN e.uuid AS uuid",
                 eid=entity_id,
@@ -1979,7 +2028,7 @@ class Neo4jStorageManager:
 
     def get_relation_versions(self, relation_id: str) -> List[Relation]:
         """获取关系的所有版本。"""
-        with self._driver.session() as session:
+        with self._session() as session:
             result = session.run(
                 """
                 MATCH (r:Relation {relation_id: $rid})
@@ -1998,7 +2047,7 @@ class Neo4jStorageManager:
     def update_relation_memory_cache_id(self, relation_id: str, memory_cache_id: str):
         """更新关系的 memory_cache_id。"""
         with self._relation_write_lock:
-            with self._driver.session() as session:
+            with self._session() as session:
                 session.run(
                     """
                     MATCH (r:Relation {relation_id: $rid})
@@ -2010,7 +2059,7 @@ class Neo4jStorageManager:
 
     def get_self_referential_relations(self) -> Dict[str, List[Dict]]:
         """获取自引用关系。"""
-        with self._driver.session() as session:
+        with self._session() as session:
             result = session.run(
                 """
                 MATCH (r:Relation)
@@ -2033,7 +2082,7 @@ class Neo4jStorageManager:
     def delete_self_referential_relations(self) -> int:
         """删除所有自引用关系。"""
         with self._relation_write_lock:
-            with self._driver.session() as session:
+            with self._session() as session:
                 # 先获取要删除的 uuid
                 result = session.run(
                     "MATCH (r:Relation) WHERE r.entity1_absolute_id = r.entity2_absolute_id RETURN r.uuid AS uuid"
@@ -2060,7 +2109,7 @@ class Neo4jStorageManager:
         abs_ids = self._get_all_absolute_ids_for_entity(entity_id)
         if not abs_ids:
             return []
-        with self._driver.session() as session:
+        with self._session() as session:
             result = session.run(
                 """
                 MATCH (r:Relation)
@@ -2091,7 +2140,7 @@ class Neo4jStorageManager:
         if not abs_ids:
             return 0
         with self._relation_write_lock:
-            with self._driver.session() as session:
+            with self._session() as session:
                 result = session.run(
                     """
                     MATCH (r:Relation)
@@ -2118,7 +2167,7 @@ class Neo4jStorageManager:
     def get_entity_relations(self, entity_absolute_id: str, limit: Optional[int] = None,
                               time_point: Optional[datetime] = None) -> List[Relation]:
         """获取与指定实体相关的所有关系。"""
-        with self._driver.session() as session:
+        with self._session() as session:
             if time_point:
                 query = """
                     MATCH (r:Relation)
@@ -2179,7 +2228,7 @@ class Neo4jStorageManager:
             return []
         if max_version_absolute_id:
             # 获取从最早到 max_version 的所有 absolute_id（拆分为两次查询，避免嵌套 MATCH 语法错误）
-            with self._driver.session() as session:
+            with self._session() as session:
                 result = session.run(
                     "MATCH (e2:Entity {uuid: $max_abs}) RETURN e2.processed_time AS max_pt",
                     max_abs=max_version_absolute_id,
@@ -2202,7 +2251,7 @@ class Neo4jStorageManager:
         if not abs_ids:
             return []
 
-        with self._driver.session() as session:
+        with self._session() as session:
             if time_point:
                 query = """
                     MATCH (r:Relation)
@@ -2253,7 +2302,7 @@ class Neo4jStorageManager:
         if not abs_ids:
             return []
 
-        with self._driver.session() as session:
+        with self._session() as session:
             # 获取各版本的 processed_time
             result = session.run(
                 """
@@ -2311,7 +2360,7 @@ class Neo4jStorageManager:
         """根据 absolute_id 列表获取关系。"""
         if not entity_absolute_ids:
             return []
-        with self._driver.session() as session:
+        with self._session() as session:
             query = """
                 MATCH (r:Relation)
                 WHERE (r.entity1_absolute_id IN $abs_ids OR r.entity2_absolute_id IN $abs_ids)
@@ -2337,7 +2386,7 @@ class Neo4jStorageManager:
         entity_id = self.resolve_entity_id(entity_id)
         if not entity_id:
             return []
-        with self._driver.session() as session:
+        with self._session() as session:
             result = session.run(
                 """
                 MATCH (e:Entity {entity_id: $eid})
@@ -2355,7 +2404,7 @@ class Neo4jStorageManager:
     def get_all_relations(self, limit: Optional[int] = None, offset: Optional[int] = None,
                            exclude_embedding: bool = False) -> List[Relation]:
         """获取所有关系的最新版本。"""
-        with self._driver.session() as session:
+        with self._session() as session:
             query = """
                 MATCH (r:Relation)
                 WITH r.relation_id AS rid, COLLECT(r) AS rels
@@ -2392,7 +2441,7 @@ class Neo4jStorageManager:
 
     def _get_relations_with_embeddings_impl(self) -> List[tuple]:
         """获取所有关系的最新版本及其 embedding（实际实现）。"""
-        with self._driver.session() as session:
+        with self._session() as session:
             result = session.run(
                 """
                 MATCH (r:Relation)
@@ -2658,7 +2707,7 @@ class Neo4jStorageManager:
             return {"entities_updated": 0, "relations_updated": 0}
 
         with self._write_lock:
-            with self._driver.session() as session:
+            with self._session() as session:
                 entities_updated = 0
                 canonical_source_ids: List[str] = []
 
@@ -2734,7 +2783,7 @@ class Neo4jStorageManager:
             }
 
         # 使用 Cypher allShortestPaths
-        with self._driver.session() as session:
+        with self._session() as session:
             result = session.run(
                 """
                 MATCH (source:Entity {entity_id: $sid}),
@@ -2860,7 +2909,7 @@ class Neo4jStorageManager:
         Returns:
             路径列表，每条路径为实体名称列表。
         """
-        with self._driver.session() as session:
+        with self._session() as session:
             result = session.run(
                 """
                 MATCH (a:Entity {entity_id: $sid}), (b:Entity {entity_id: $tid})
@@ -2877,7 +2926,7 @@ class Neo4jStorageManager:
 
     def get_entity_neighbors(self, entity_uuid: str, depth: int = 1) -> Dict:
         """获取实体的邻居图，返回完整的 nodes + edges 结构。"""
-        with self._driver.session() as session:
+        with self._session() as session:
             # 先获取中心节点
             center = session.run(
                 "MATCH (e:Entity {uuid: $uuid}) RETURN e.uuid AS uuid, e.name AS name, e.entity_id AS entity_id",
@@ -2948,7 +2997,7 @@ class Neo4jStorageManager:
 
     def list_episodes(self, limit: int = 20, offset: int = 0) -> List[Dict]:
         """分页查询 Episode 节点，按 created_at DESC。"""
-        with self._driver.session() as session:
+        with self._session() as session:
             result = session.run(
                 "MATCH (ep:Episode) RETURN ep.uuid AS uuid, ep.content AS content, "
                 "ep.source_document AS source_document, ep.event_time AS event_time, "
@@ -2972,14 +3021,14 @@ class Neo4jStorageManager:
 
     def count_episodes(self) -> int:
         """统计 Episode 节点总数。"""
-        with self._driver.session() as session:
+        with self._session() as session:
             result = session.run("MATCH (ep:Episode) RETURN COUNT(ep) AS cnt")
             record = result.single()
             return record["cnt"] if record else 0
 
     def count_communities(self) -> int:
         """统计社区数量（DISTINCT community_id）。"""
-        with self._driver.session() as session:
+        with self._session() as session:
             result = session.run(
                 "MATCH (e:Entity) WHERE e.community_id IS NOT NULL "
                 "RETURN count(DISTINCT e.community_id) AS cnt"
@@ -2989,7 +3038,7 @@ class Neo4jStorageManager:
 
     def get_episode(self, uuid: str) -> Optional[Dict]:
         """获取单个 Episode 详情。"""
-        with self._driver.session() as session:
+        with self._session() as session:
             result = session.run(
                 "MATCH (ep:Episode {uuid: $uuid}) RETURN ep.uuid AS uuid, ep.content AS content, "
                 "ep.source_document AS source_document, ep.event_time AS event_time, "
@@ -3010,7 +3059,7 @@ class Neo4jStorageManager:
 
     def search_episodes(self, query: str, limit: int = 20) -> List[Dict]:
         """通过 content LIKE 搜索 Episode。"""
-        with self._driver.session() as session:
+        with self._session() as session:
             result = session.run(
                 "MATCH (ep:Episode) WHERE ep.content CONTAINS $query "
                 "RETURN ep.uuid AS uuid, ep.content AS content, "
@@ -3033,7 +3082,7 @@ class Neo4jStorageManager:
 
     def get_episode_entities(self, uuid: str) -> List[Dict]:
         """通过 memory_cache_id 关联查出 Episode 下的实体。"""
-        with self._driver.session() as session:
+        with self._session() as session:
             episode = session.run(
                 "MATCH (ep:Episode {uuid: $uuid}) RETURN ep.memory_cache_id AS mcid",
                 uuid=uuid,
@@ -3061,7 +3110,7 @@ class Neo4jStorageManager:
 
     def delete_episode(self, uuid: str) -> bool:
         """删除 Episode 节点。"""
-        with self._driver.session() as session:
+        with self._session() as session:
             result = session.run(
                 "MATCH (ep:Episode {uuid: $uuid}) DELETE ep RETURN COUNT(ep) AS deleted",
                 uuid=uuid,
@@ -3082,7 +3131,7 @@ class Neo4jStorageManager:
         t0 = time.time()
 
         # 加载所有 Entity + RELATES_TO 边
-        with self._driver.session() as session:
+        with self._session() as session:
             result = session.run(
                 "MATCH (e:Entity) RETURN e.uuid AS uuid, e.entity_id AS eid, e.name AS name"
             )
@@ -3133,7 +3182,7 @@ class Neo4jStorageManager:
         batch_size = 5000
         for i in range(0, len(items), batch_size):
             batch = items[i:i + batch_size]
-            with self._driver.session() as session:
+            with self._session() as session:
                 session.run(
                     "UNWIND $items AS item "
                     "MATCH (e:Entity {uuid: item.uuid}) "
@@ -3143,7 +3192,7 @@ class Neo4jStorageManager:
 
     def get_communities(self, limit: int = 50, min_size: int = 3, offset: int = 0) -> Tuple[List[Dict], int]:
         """按社区分组，返回 members 列表 + 总数。"""
-        with self._driver.session() as session:
+        with self._session() as session:
             # 先获取数据
             result = session.run(
                 "MATCH (e:Entity) WHERE e.community_id IS NOT NULL "
@@ -3163,7 +3212,7 @@ class Neo4jStorageManager:
                 })
 
             # 再 count 总数（用独立 session 避免流冲突）
-            with self._driver.session() as count_session:
+            with self._session() as count_session:
                 count_result = count_session.run(
                     "MATCH (e:Entity) WHERE e.community_id IS NOT NULL "
                     "WITH e.community_id AS cid, collect(e) AS members "
@@ -3183,7 +3232,7 @@ class Neo4jStorageManager:
         if cached is not None:
             return cached
 
-        with self._driver.session() as session:
+        with self._session() as session:
             result = session.run(
                 "MATCH (e:Entity) WHERE e.community_id = $cid "
                 "OPTIONAL MATCH (e)-[r:RELATES_TO]-(other:Entity) "
@@ -3238,7 +3287,7 @@ class Neo4jStorageManager:
         if cached is not None:
             return cached
 
-        with self._driver.session() as session:
+        with self._session() as session:
             result = session.run(
                 "MATCH (e:Entity) WHERE e.community_id = $cid "
                 "WITH e LIMIT 300 "
@@ -3274,7 +3323,7 @@ class Neo4jStorageManager:
 
     def clear_communities(self) -> int:
         """清除所有 community_id 属性，返回清除数量。"""
-        with self._driver.session() as session:
+        with self._session() as session:
             result = session.run(
                 "MATCH (e:Entity) WHERE e.community_id IS NOT NULL "
                 "REMOVE e.community_id RETURN COUNT(e) AS cleared"
@@ -3290,7 +3339,7 @@ class Neo4jStorageManager:
 
     def get_snapshot(self, time_point: datetime, limit: Optional[int] = None) -> Dict[str, Any]:
         """获取指定时间点的实体/关系快照"""
-        with self._driver.session() as session:
+        with self._session() as session:
             result = session.run("""
                 MATCH (e:Entity)
                 WHERE (e.valid_at IS NULL OR e.valid_at <= $time)
@@ -3326,7 +3375,7 @@ class Neo4jStorageManager:
         """获取时间范围内的变更"""
         if until is None:
             until = datetime.now(timezone.utc)
-        with self._driver.session() as session:
+        with self._session() as session:
             result = session.run("""
                 MATCH (e:Entity)
                 WHERE e.event_time >= $since AND e.event_time <= $until
@@ -3357,7 +3406,7 @@ class Neo4jStorageManager:
     def invalidate_relation(self, relation_id: str, reason: str = "") -> int:
         """标记关系为失效"""
         now = datetime.now(timezone.utc).isoformat()
-        with self._driver.session() as session:
+        with self._session() as session:
             result = session.run("""
                 MATCH (r:Relation {relation_id: $relation_id})
                 WHERE r.invalid_at IS NULL
@@ -3369,7 +3418,7 @@ class Neo4jStorageManager:
 
     def get_invalidated_relations(self, limit: int = 100) -> List[Relation]:
         """列出已失效的关系"""
-        with self._driver.session() as session:
+        with self._session() as session:
             result = session.run("""
                 MATCH (r:Relation)
                 WHERE r.invalid_at IS NOT NULL
@@ -3394,7 +3443,7 @@ class Neo4jStorageManager:
         resolved = self.resolve_entity_id(entity_id)
         if not resolved:
             return
-        with self._driver.session() as session:
+        with self._session() as session:
             session.run("""
                 MATCH (e:Entity {entity_id: $eid})
                 WHERE e.invalid_at IS NULL
@@ -3407,7 +3456,7 @@ class Neo4jStorageManager:
         resolved = self.resolve_entity_id(entity_id)
         if not resolved:
             return
-        with self._driver.session() as session:
+        with self._session() as session:
             session.run("""
                 MATCH (e:Entity {entity_id: $eid})
                 WHERE e.invalid_at IS NULL
@@ -3420,7 +3469,7 @@ class Neo4jStorageManager:
         resolved = self.resolve_entity_id(entity_id)
         if not resolved:
             return
-        with self._driver.session() as session:
+        with self._session() as session:
             session.run("""
                 MATCH (e:Entity {entity_id: $eid})
                 WHERE e.invalid_at IS NULL
@@ -3451,7 +3500,7 @@ class Neo4jStorageManager:
         """获取指定实体 ID 列表相关的所有关系。"""
         if not entity_ids:
             return []
-        with self._driver.session() as session:
+        with self._session() as session:
             abs_ids = []
             for eid in entity_ids:
                 resolved = self.resolve_entity_id(eid)
@@ -3485,7 +3534,7 @@ class Neo4jStorageManager:
     def save_episode_mentions(self, episode_id: str, entity_absolute_ids: List[str], context: str = ""):
         """记录 Episode 提及的实体。"""
         with self._episode_write_lock:
-            with self._driver.session() as session:
+            with self._session() as session:
                 session.run("""
                     MERGE (ep:Episode {uuid: $ep_id})
                 """, ep_id=episode_id)
@@ -3501,7 +3550,7 @@ class Neo4jStorageManager:
         entity = self.get_entity_by_entity_id(entity_id)
         if not entity:
             return []
-        with self._driver.session() as session:
+        with self._session() as session:
             result = session.run("""
                 MATCH (ep:Episode)-[m:MENTIONS]->(e:Entity {uuid: $abs_id})
                 RETURN ep.uuid AS episode_id, m.context AS context
@@ -3510,7 +3559,7 @@ class Neo4jStorageManager:
 
     def get_episode_entities(self, episode_id: str) -> List[dict]:
         """获取 Episode 关联的所有实体。"""
-        with self._driver.session() as session:
+        with self._session() as session:
             result = session.run("""
                 MATCH (ep:Episode {uuid: $ep_id})-[m:MENTIONS]->(e:Entity)
                 RETURN e.uuid AS entity_absolute_id, e.entity_id AS entity_id,
@@ -3528,7 +3577,7 @@ class Neo4jStorageManager:
 
     def delete_episode_mentions(self, episode_id: str):
         """删除 Episode 的所有 MENTIONS 边。"""
-        with self._driver.session() as session:
+        with self._session() as session:
             session.run("""
                 MATCH (ep:Episode {uuid: $ep_id})-[m:MENTIONS]->()
                 DELETE m
@@ -3536,7 +3585,7 @@ class Neo4jStorageManager:
 
     def update_relation_provenance(self, relation_id: str, provenance: str):
         """更新关系的事实溯源信息。"""
-        with self._driver.session() as session:
+        with self._session() as session:
             session.run("""
                 MATCH (r:Relation {relation_id: $rid})
                 WHERE r.invalid_at IS NULL
@@ -3547,7 +3596,7 @@ class Neo4jStorageManager:
     def save_dream_log(self, report):
         """保存梦境日志。"""
         import json as _json
-        with self._driver.session() as session:
+        with self._session() as session:
             session.run("""
                 MERGE (d:DreamLog {cycle_id: $cycle_id})
                 SET d.graph_id = $graph_id,
@@ -3581,7 +3630,7 @@ class Neo4jStorageManager:
     def list_dream_logs(self, graph_id: str = "default", limit: int = 20) -> List[dict]:
         """列出梦境日志。"""
         import json as _json
-        with self._driver.session() as session:
+        with self._session() as session:
             result = session.run("""
                 MATCH (d:DreamLog)
                 WHERE d.graph_id = $graph_id
@@ -3618,7 +3667,7 @@ class Neo4jStorageManager:
     def get_dream_log(self, cycle_id: str) -> Optional[dict]:
         """获取单条梦境日志。"""
         import json as _json
-        with self._driver.session() as session:
+        with self._session() as session:
             result = session.run("""
                 MATCH (d:DreamLog {cycle_id: $cycle_id})
                 RETURN d.cycle_id AS cycle_id, d.graph_id AS graph_id,
@@ -3701,7 +3750,7 @@ class Neo4jStorageManager:
         return seeds
 
     def _dream_seeds_random(self, count, exclude_uuids, community_id):
-        with self._driver.session() as session:
+        with self._session() as session:
             result = session.run("""
                 MATCH (e:Entity)
                 WHERE NOT e.uuid IN $exclude_uuids
@@ -3716,7 +3765,7 @@ class Neo4jStorageManager:
             return [dict(r) for r in result]
 
     def _dream_seeds_orphan(self, count, exclude_uuids, community_id):
-        with self._driver.session() as session:
+        with self._session() as session:
             result = session.run("""
                 MATCH (e:Entity) WHERE NOT (e)--()
                   AND NOT e.uuid IN $exclude_uuids
@@ -3730,7 +3779,7 @@ class Neo4jStorageManager:
             return [dict(r) for r in result]
 
     def _dream_seeds_hub(self, count, exclude_uuids, community_id):
-        with self._driver.session() as session:
+        with self._session() as session:
             result = session.run("""
                 MATCH (e:Entity)-[r]-(rel)
                 WITH e, count(DISTINCT rel) AS degree
@@ -3745,7 +3794,7 @@ class Neo4jStorageManager:
             return [dict(r) for r in result]
 
     def _dream_seeds_time_gap(self, count, exclude_uuids, community_id):
-        with self._driver.session() as session:
+        with self._session() as session:
             result = session.run("""
                 MATCH (e:Entity)
                 WHERE e.processed_time IS NOT NULL
@@ -3762,7 +3811,7 @@ class Neo4jStorageManager:
             return [dict(r) for r in result]
 
     def _dream_seeds_low_confidence(self, count, exclude_uuids, community_id):
-        with self._driver.session() as session:
+        with self._session() as session:
             result = session.run("""
                 MATCH (e:Entity)
                 WHERE e.confidence IS NOT NULL AND e.confidence < 0.5

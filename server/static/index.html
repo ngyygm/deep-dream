@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>TMG - Temporal Memory Graph</title>
+  <title>DeepDream</title>
 
   <!-- Google Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -36,6 +36,7 @@
 
   <!-- Custom Styles -->
   <link rel="stylesheet" href="/static/css/app.css">
+  <link rel="stylesheet" href="/static/css/chat.css">
 </head>
 <body class="overflow-hidden" style="background:var(--bg-primary);color:var(--text-primary);">
   <div class="flex h-screen">
@@ -48,7 +49,7 @@
             <i data-lucide="brain" style="width:18px;height:18px;color:var(--primary);"></i>
           </div>
           <div>
-            <div class="text-sm font-bold leading-tight" style="color:var(--text-primary);">TMG</div>
+            <div class="text-sm font-bold leading-tight" style="color:var(--text-primary);">DeepDream</div>
             <div class="text-[10px] leading-tight" style="color:var(--text-muted);">Temporal Memory Graph</div>
           </div>
         </div>
@@ -56,6 +57,10 @@
 
       <!-- Navigation -->
       <nav class="flex-1 px-3 py-3 space-y-0.5 overflow-y-auto">
+        <a class="sidebar-link" href="#chat" data-page="chat">
+          <i data-lucide="message-circle"></i>
+          <span data-i18n="nav.chat">Chat</span>
+        </a>
         <a class="sidebar-link active" href="#dashboard" data-page="dashboard">
           <i data-lucide="layout-dashboard"></i>
           <span data-i18n="nav.dashboard">仪表盘</span>
@@ -162,12 +167,16 @@
   <script src="/static/js/i18n/index.js"></script>
 
   <!-- Scripts (order matters) -->
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <script src="/static/js/app.js"></script>
   <script src="/static/js/components/toast.js"></script>
   <script src="/static/js/components/modal.js"></script>
   <script src="/static/js/graph-utils.js"></script>
   <script src="/static/js/path-finder.js"></script>
   <script src="/static/js/graph-explorer.js"></script>
+  <script src="/static/js/chat/stream.js"></script>
+  <script src="/static/js/chat/renderer.js"></script>
+  <script src="/static/js/pages/chat.js"></script>
   <script src="/static/js/pages/dashboard.js"></script>
   <script src="/static/js/pages/graph.js"></script>
   <script src="/static/js/pages/memory.js"></script>

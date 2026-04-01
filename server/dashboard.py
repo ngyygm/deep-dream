@@ -1,5 +1,5 @@
 """
-TMG Dashboard — 基于 rich 的实时终端监控仪表盘。
+DeepDream Dashboard — 基于 rich 的实时终端监控仪表盘。
 
 层级布局：
   顶部: 系统总览条（运行时间 | 图谱数 | 线程数 | 模式）
@@ -28,7 +28,7 @@ from server.monitor import (
 )
 
 
-class TMGDashboard:
+class DeepDreamDashboard:
     """基于 rich.Live 的实时终端仪表盘，从 SystemMonitor 读取数据。"""
 
     def __init__(
@@ -104,7 +104,7 @@ class TMGDashboard:
     def _render_header(self) -> Panel:
         overview = self.monitor.overview()
         header_text = Text()
-        header_text.append("Temporal_Memory_Graph", style="bold cyan")
+        header_text.append("DeepDream", style="bold cyan")
         header_text.append("  System Monitor", style="bold white")
         header_text.append(f"  |  Uptime: ", style="dim")
         header_text.append(overview["uptime_display"], style="green")
