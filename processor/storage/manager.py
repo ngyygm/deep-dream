@@ -62,6 +62,13 @@ class StorageManager:
         self.entity_content_snippet_length = entity_content_snippet_length
         self.relation_content_snippet_length = relation_content_snippet_length
 
+        # 全量 embedding 缓存（短 TTL，避免同一 remember() 调用中重复全表扫描）
+        self._entity_emb_cache: Optional[List[tuple]] = None
+        self._entity_emb_cache_ts: float = 0.0
+        self._relation_emb_cache: Optional[List[tuple]] = None
+        self._relation_emb_cache_ts: float = 0.0
+        self._emb_cache_ttl: float = 5.0  # 秒
+
         # 初始化数据库
         self._init_database()
 
@@ -1064,6 +1071,7 @@ class StorageManager:
     
     def save_entity(self, entity: Entity):
         """保存实体（包含预计算的embedding向量）"""
+        self._invalidate_emb_cache()
         # 计算embedding（无需锁，纯计算）
         embedding_blob = self._compute_entity_embedding(entity)
         entity.embedding = embedding_blob
@@ -1117,6 +1125,7 @@ class StorageManager:
         """批量保存实体，使用批量 embedding 与单事务写入。"""
         if not entities:
             return
+        self._invalidate_emb_cache()
 
         # 批量计算 embedding（无需锁）
         embeddings = None
@@ -1437,13 +1446,24 @@ class StorageManager:
             for row in rows
         ]
     
+    def _invalidate_emb_cache(self):
+        """清除 embedding 缓存（在实体/关系写入时调用）。"""
+        self._entity_emb_cache = None
+        self._entity_emb_cache_ts = 0.0
+        self._relation_emb_cache = None
+        self._relation_emb_cache_ts = 0.0
+
     def _get_entities_with_embeddings(self) -> List[tuple]:
         """
-        获取所有实体的最新版本及其embedding
+        获取所有实体的最新版本及其embedding（带短 TTL 缓存）。
 
         Returns:
             List of (Entity, embedding_array) tuples, embedding_array为None表示没有embedding
         """
+        now = time.time()
+        if self._entity_emb_cache is not None and (now - self._entity_emb_cache_ts) < self._emb_cache_ttl:
+            return self._entity_emb_cache
+
         conn = self._get_conn()
         cursor = conn.cursor()
 
@@ -1478,7 +1498,9 @@ class StorageManager:
                 embedding=row[8] if len(row) > 8 else None
             )
             results.append((entity, embedding_array))
-        
+
+        self._entity_emb_cache = results
+        self._entity_emb_cache_ts = time.time()
         return results
 
     def get_latest_entities_projection(self, content_snippet_length: Optional[int] = None) -> List[Dict[str, Any]]:
@@ -1834,6 +1856,7 @@ class StorageManager:
     
     def save_relation(self, relation: Relation):
         """保存关系（包含预计算的embedding向量）"""
+        self._invalidate_emb_cache()
         # 计算embedding（无需锁）
         embedding_blob = self._compute_relation_embedding(relation)
         relation.embedding = embedding_blob
@@ -2843,11 +2866,15 @@ class StorageManager:
     
     def _get_relations_with_embeddings(self) -> List[tuple]:
         """
-        获取所有关系的最新版本及其embedding
-        
+        获取所有关系的最新版本及其embedding（带短 TTL 缓存）。
+
         Returns:
             List of (Relation, embedding_array) tuples, embedding_array为None表示没有embedding
         """
+        now = time.time()
+        if self._relation_emb_cache is not None and (now - self._relation_emb_cache_ts) < self._emb_cache_ttl:
+            return self._relation_emb_cache
+
         conn = self._get_conn()
         cursor = conn.cursor()
         
@@ -2884,11 +2911,13 @@ class StorageManager:
                 embedding=row[9] if len(row) > 9 else None
             )
             results.append((relation, embedding_array))
-        
+
+        self._relation_emb_cache = results
+        self._relation_emb_cache_ts = time.time()
         return results
-    
-    def search_relations_by_similarity(self, query_text: str, 
-                                      threshold: float = 0.3, 
+
+    def search_relations_by_similarity(self, query_text: str,
+                                      threshold: float = 0.3,
                                       max_results: int = 10) -> List[Relation]:
         """
         根据embedding相似度搜索关系

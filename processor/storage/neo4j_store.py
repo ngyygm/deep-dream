@@ -189,6 +189,13 @@ class Neo4jStorageManager:
         self.entity_content_snippet_length = entity_content_snippet_length
         self.relation_content_snippet_length = relation_content_snippet_length
 
+        # 全量 embedding 缓存（短 TTL，避免同一 remember() 调用中重复全量加载）
+        self._entity_emb_cache: Optional[List[tuple]] = None
+        self._entity_emb_cache_ts: float = 0.0
+        self._relation_emb_cache: Optional[List[tuple]] = None
+        self._relation_emb_cache_ts: float = 0.0
+        self._emb_cache_ttl: float = 5.0
+
         # sqlite-vec 向量存储
         self._vector_store = VectorStore(
             str(self.storage_path / "vectors.db"),
@@ -942,6 +949,7 @@ class Neo4jStorageManager:
 
     def save_entity(self, entity: Entity):
         """保存实体到 Neo4j + sqlite-vec（合并为单条 Cypher）。"""
+        self._invalidate_emb_cache()
         with _perf_timer("save_entity"):
             embedding_blob = self._compute_entity_embedding(entity)
             entity.embedding = embedding_blob
@@ -998,6 +1006,7 @@ class Neo4jStorageManager:
         """批量保存实体（UNWIND 批量写入）。"""
         if not entities:
             return
+        self._invalidate_emb_cache()
 
         with _perf_timer(f"bulk_save_entities | count={len(entities)}"):
             # 批量计算 embedding
@@ -1219,10 +1228,24 @@ class Neo4jStorageManager:
                 entities.append(_neo4j_record_to_entity(record))
             return entities
 
+    def _invalidate_emb_cache(self):
+        """清除 embedding 缓存（在实体/关系写入时调用）。"""
+        self._entity_emb_cache = None
+        self._entity_emb_cache_ts = 0.0
+        self._relation_emb_cache = None
+        self._relation_emb_cache_ts = 0.0
+
     def _get_entities_with_embeddings(self) -> List[tuple]:
-        """获取所有实体的最新版本及其 embedding。"""
+        """获取所有实体的最新版本及其 embedding（带短 TTL 缓存）。"""
+        import time as _time
+        now = _time.time()
+        if self._entity_emb_cache is not None and (now - self._entity_emb_cache_ts) < self._emb_cache_ttl:
+            return self._entity_emb_cache
         with _perf_timer("_get_entities_with_embeddings"):
-            return self._get_entities_with_embeddings_impl()
+            result = self._get_entities_with_embeddings_impl()
+        self._entity_emb_cache = result
+        self._entity_emb_cache_ts = _time.time()
+        return result
 
     def _get_entities_with_embeddings_impl(self) -> List[tuple]:
         """获取所有实体的最新版本及其 embedding（实际实现）。"""
@@ -2227,6 +2250,7 @@ class Neo4jStorageManager:
 
     def save_relation(self, relation: Relation):
         """保存关系到 Neo4j + sqlite-vec（合并为单条 Cypher）。"""
+        self._invalidate_emb_cache()
         with _perf_timer("save_relation"):
             self._save_relation_impl(relation)
 
@@ -2975,9 +2999,16 @@ class Neo4jStorageManager:
         return relations
 
     def _get_relations_with_embeddings(self) -> List[tuple]:
-        """获取所有关系的最新版本及其 embedding。"""
+        """获取所有关系的最新版本及其 embedding（带短 TTL 缓存）。"""
+        import time as _time
+        now = _time.time()
+        if self._relation_emb_cache is not None and (now - self._relation_emb_cache_ts) < self._emb_cache_ttl:
+            return self._relation_emb_cache
         with _perf_timer("_get_relations_with_embeddings"):
-            return self._get_relations_with_embeddings_impl()
+            result = self._get_relations_with_embeddings_impl()
+        self._relation_emb_cache = result
+        self._relation_emb_cache_ts = _time.time()
+        return result
 
     def _get_relations_with_embeddings_impl(self) -> List[tuple]:
         """获取所有关系的最新版本及其 embedding（实际实现）。"""
