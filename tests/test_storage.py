@@ -541,53 +541,6 @@ class TestMergeOperations:
         relations = storage.get_relations_by_entities("eid_old_a", "eid_old_b")
         assert any(rel.content == "redirect relation" for rel in relations)
 
-    def test_self_referential_relations_detection(self, storage):
-        # Create one entity with 2 versions
-        t0 = datetime(2025, 1, 1, 12, 0, 0)
-        storage.save_entity(_make_entity(
-            absolute_id="abs_sr_v0",
-            family_id="eid_sr",
-            name="SelfRefEntity v0",
-            processed_time=t0,
-        ))
-        storage.save_entity(_make_entity(
-            absolute_id="abs_sr_v1",
-            family_id="eid_sr",
-            name="SelfRefEntity v1",
-            processed_time=t0 + timedelta(seconds=1),
-        ))
-
-        # Create a self-referential relation (both ends point to same family_id)
-        storage.save_relation(_make_relation(
-            absolute_id="rabs_sr",
-            family_id="rid_sr",
-            entity1_absolute_id="abs_sr_v0",
-            entity2_absolute_id="abs_sr_v1",
-            content="Self-referential relation",
-            processed_time=t0 + timedelta(seconds=2),
-        ))
-
-        # Create a normal relation for contrast
-        storage.save_entity(_make_entity(
-            absolute_id="abs_sr_other",
-            family_id="eid_sr_other",
-            name="Other Entity",
-            processed_time=t0,
-        ))
-        storage.save_relation(_make_relation(
-            absolute_id="rabs_sr_normal",
-            family_id="rid_sr_normal",
-            entity1_absolute_id="abs_sr_v0",
-            entity2_absolute_id="abs_sr_other",
-            content="Normal relation",
-            processed_time=t0 + timedelta(seconds=3),
-        ))
-
-        self_refs = storage.get_self_referential_relations()
-        assert "eid_sr" in self_refs
-        assert len(self_refs["eid_sr"]) >= 1
-        assert self_refs["eid_sr"][0]["content"] == "Self-referential relation"
-
     def test_merge_empty_source_list(self, storage):
         storage.save_entity(_make_entity(absolute_id="abs_mt", family_id="eid_mt"))
         result = storage.merge_entity_families("eid_mt", [])

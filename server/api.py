@@ -32,7 +32,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from flask import Flask, abort, jsonify, make_response, request, send_from_directory
+from flask import Flask, abort, jsonify, make_response, request
 from werkzeug.exceptions import NotFound
 
 from server.config import load_config, merge_llm_alignment, resolve_embedding_model
@@ -46,27 +46,6 @@ from processor.models import Entity, Episode, Relation
 from processor.search.hybrid import HybridSearcher
 from processor.search.graph_traversal import GraphTraversalSearcher
 from processor.perf import _perf_timer
-
-
-# ---------------------------------------------------------------------------
-# 文件读取工具
-# ---------------------------------------------------------------------------
-
-_TEXT_EXTENSIONS = {".txt", ".md", ".text", ".log", ".csv", ".json", ".xml",
-                   ".yaml", ".yml", ".ini", ".conf", ".cfg", ".rst", ".html"}
-
-
-def _read_file_content(path: str) -> str:
-    """读取文件内容为纯文本。"""
-    p = Path(path)
-    if not p.exists():
-        raise FileNotFoundError(f"文件不存在: {path}")
-    ext = p.suffix.lower()
-
-    if ext in _TEXT_EXTENSIONS or ext == "":
-        return p.read_text(encoding="utf-8")
-
-    return p.read_text(encoding="utf-8")
 
 
 def entity_to_dict(e: Entity, max_content_length: int = 2000) -> Dict[str, Any]:

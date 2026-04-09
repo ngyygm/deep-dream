@@ -103,7 +103,3 @@ class GraphTraversalSearcher:
 
         return result_entities[:max_nodes]
 
-    def get_entity_degree(self, family_id: str) -> int:
-        """获取实体的度（连接数）。"""
-        relations = self.storage.get_relations_by_family_ids([family_id])
-        return len(relations)

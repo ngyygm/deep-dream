@@ -581,16 +581,6 @@ class Neo4jStorageManager:
                 )
             return canonical_target
 
-    def register_entity_redirects(self, target_family_id: str, source_family_ids: List[str]) -> str:
-        """批量登记多个旧 family_id 指向同一 canonical id。"""
-        canonical_target = (target_family_id or "").strip()
-        if not canonical_target:
-            return canonical_target
-        for source_id in source_family_ids:
-            if source_id and source_id != canonical_target:
-                canonical_target = self.register_entity_redirect(source_id, canonical_target)
-        return canonical_target
-
     # ------------------------------------------------------------------
     # Episode 操作（文件存储，与 StorageManager 相同逻辑）
     # ------------------------------------------------------------------
@@ -1822,58 +1812,6 @@ class Neo4jStorageManager:
                 "message": f"已删除 {deleted_entities} 个已失效实体版本和 {deleted_relations} 个已失效关系版本",
             }
 
-    def entity_has_any_relation(self, family_id: str) -> bool:
-        """检查实体是否有关系。"""
-        family_id = self.resolve_family_id(family_id)
-        if not family_id:
-            return False
-        with self._session() as session:
-            result = session.run(
-                """
-                MATCH (r:Relation)
-                WHERE r.entity1_absolute_id IN (
-                    MATCH (e:Entity {family_id: $fid}) RETURN e.uuid
-                ) OR r.entity2_absolute_id IN (
-                    MATCH (e:Entity {family_id: $fid}) RETURN e.uuid
-                )
-                RETURN COUNT(r) AS cnt LIMIT 1
-                """,
-                fid=family_id,
-            )
-            record = result.single()
-            return (record["cnt"] or 0) > 0
-
-    def delete_orphan_entities(self, candidate_family_ids: list) -> list:
-        """批量检查并删除没有关系的实体。"""
-        if not candidate_family_ids:
-            return []
-        with self._write_lock:
-            with self._session() as session:
-                # 找出候选中无关系的 family_id
-                result = session.run(
-                    """
-                    MATCH (e:Entity)
-                    WHERE e.family_id IN $fids
-                    AND NOT (
-                        (e)-[:RELATES_TO]-(:Entity)
-                    )
-                    RETURN DISTINCT e.family_id AS fid
-                    """,
-                    fids=candidate_family_ids,
-                )
-                orphan_ids = [record["fid"] for record in result]
-                if orphan_ids:
-                    session.run(
-                        """
-                        MATCH (e:Entity)
-                        WHERE e.family_id IN $fids
-                        DETACH DELETE e
-                        """,
-                        fids=orphan_ids,
-                    )
-                    # 同步删除向量
-                    self._vector_store.delete_batch("entity_vectors", orphan_ids)
-                return orphan_ids
 
     def delete_entity_by_id(self, family_id: str) -> int:
         """删除实体的所有版本。"""
@@ -2606,123 +2544,6 @@ class Neo4jStorageManager:
             )
             return [_neo4j_record_to_relation(r) for r in result]
 
-    def update_relation_episode_id(self, family_id: str, episode_id: str):
-        """更新关系的 episode_id。"""
-        with self._relation_write_lock:
-            with self._session() as session:
-                session.run(
-                    """
-                    MATCH (r:Relation {family_id: $fid})
-                    SET r.episode_id = $cache_id
-                    """,
-                    fid=family_id,
-                    cache_id=episode_id,
-                )
-
-    def get_self_referential_relations(self) -> Dict[str, List[Dict]]:
-        """获取自引用关系。"""
-        with self._session() as session:
-            result = session.run(
-                """
-                MATCH (r:Relation)
-                WHERE r.entity1_absolute_id = r.entity2_absolute_id
-                RETURN r.uuid AS uuid, r.family_id AS family_id,
-                       r.entity1_absolute_id AS entity1_absolute_id,
-                       r.content AS content
-                """
-            )
-            grouped: Dict[str, List[Dict]] = {}
-            for record in result:
-                eid = record["entity1_absolute_id"]
-                grouped.setdefault(eid, []).append({
-                    "uuid": record["uuid"],
-                    "family_id": record["family_id"],
-                    "content": record["content"],
-                })
-            return grouped
-
-    def delete_self_referential_relations(self) -> int:
-        """删除所有自引用关系。"""
-        with self._relation_write_lock:
-            with self._session() as session:
-                # 先获取要删除的 uuid
-                result = session.run(
-                    "MATCH (r:Relation) WHERE r.entity1_absolute_id = r.entity2_absolute_id RETURN r.uuid AS uuid"
-                )
-                uuids = [record["uuid"] for record in result]
-                count = len(uuids)
-                if uuids:
-                    session.run(
-                        """
-                        MATCH (r:Relation)
-                        WHERE r.uuid IN $uuids
-                        DETACH DELETE r
-                        """,
-                        uuids=uuids,
-                    )
-                    self._vector_store.delete_batch("relation_vectors", uuids)
-                return count
-
-    def get_self_referential_relations_for_entity(self, family_id: str) -> List[Dict]:
-        """获取指定实体的自引用关系（包括合并后两端指向同一 family 的关系）。"""
-        family_id = self.resolve_family_id(family_id)
-        if not family_id:
-            return []
-        abs_ids = self._get_all_absolute_ids_for_entity(family_id)
-        if not abs_ids:
-            return []
-        with self._session() as session:
-            result = session.run(
-                """
-                MATCH (r:Relation)
-                WHERE r.entity1_absolute_id IN $abs_ids AND r.entity2_absolute_id IN $abs_ids
-                RETURN r.uuid AS uuid, r.family_id AS family_id,
-                       r.entity1_absolute_id AS entity1_absolute_id,
-                       r.content AS content
-                """,
-                abs_ids=abs_ids,
-            )
-            return [
-                {
-                    "uuid": record["uuid"],
-                    "family_id": record["family_id"],
-                    "entity1_absolute_id": record["entity1_absolute_id"],
-                    "content": record["content"],
-                }
-                for record in result
-            ]
-
-    def delete_self_referential_relations_for_entity(self, family_id: str) -> int:
-        """删除指定实体的自引用关系。"""
-        family_id = self.resolve_family_id(family_id)
-        if not family_id:
-            return 0
-        abs_ids = self._get_all_absolute_ids_for_entity(family_id)
-        if not abs_ids:
-            return 0
-        with self._relation_write_lock:
-            with self._session() as session:
-                result = session.run(
-                    """
-                    MATCH (r:Relation)
-                    WHERE r.entity1_absolute_id IN $abs_ids AND r.entity2_absolute_id IN $abs_ids
-                    RETURN r.uuid AS uuid
-                    """,
-                    abs_ids=abs_ids,
-                )
-                uuids = [record["uuid"] for record in result]
-                count = len(uuids)
-                if uuids:
-                    session.run(
-                        """
-                        MATCH (r:Relation)
-                        WHERE r.uuid IN $uuids
-                        DETACH DELETE r
-                        """,
-                        uuids=uuids,
-                    )
-                    self._vector_store.delete_batch("relation_vectors", uuids)
-                return count
 
     def get_entity_relations(self, entity_absolute_id: str, limit: Optional[int] = None,
                               time_point: Optional[datetime] = None) -> List[Relation]:
@@ -4001,21 +3822,6 @@ class Neo4jStorageManager:
                 LIMIT $limit
             """, family_ids=family_ids, limit=limit)
             return [_neo4j_record_to_relation(r) for r in result]
-
-    def get_entity_degree(self, family_id: str) -> int:
-        """获取实体的度（连接数）— 轻量 COUNT 查询，不物化 Relation 对象。"""
-        with self._session() as session:
-            result = session.run("""
-                MATCH (e:Entity) WHERE e.family_id = $fid AND e.invalid_at IS NULL
-                WITH collect(DISTINCT e.uuid) AS abs_ids
-                UNWIND abs_ids AS aid
-                MATCH (r:Relation)
-                WHERE (r.entity1_absolute_id = aid OR r.entity2_absolute_id = aid)
-                  AND r.invalid_at IS NULL
-                RETURN count(DISTINCT r) AS cnt
-            """, fid=family_id)
-            record = result.single()
-            return record["cnt"] if record else 0
 
     def batch_get_entity_degrees(self, family_ids: List[str]) -> Dict[str, int]:
         """批量获取实体度数 — 单次 Cypher 查询替代 N 次 get_entity_degree。"""

@@ -3,7 +3,6 @@
 """
 import sqlite3
 import threading
-import os
 import json
 import time
 import logging
@@ -694,36 +693,6 @@ class StorageManager:
             conn.commit()
             return canonical_target
 
-    def register_entity_redirects(self, target_family_id: str, source_family_ids: List[str]) -> str:
-        """批量登记多个旧 family_id 指向同一 canonical id（单次锁+单次 commit）。"""
-        canonical_target = (target_family_id or "").strip()
-        if not canonical_target:
-            return canonical_target
-        valid_sources = [s for s in source_family_ids if s and s != canonical_target]
-        if not valid_sources:
-            return canonical_target
-        with self._write_lock:
-            conn = self._get_conn()
-            cursor = conn.cursor()
-            resolved_target = self._resolve_family_id_with_cursor(cursor, canonical_target)
-            if not resolved_target:
-                resolved_target = canonical_target
-            for source_id in valid_sources:
-                resolved_source = self._resolve_family_id_with_cursor(cursor, source_id)
-                if resolved_source == resolved_target:
-                    continue
-                cursor.execute(
-                    """
-                    INSERT INTO entity_redirects (source_family_id, target_family_id, updated_at)
-                    VALUES (?, ?, ?)
-                    ON CONFLICT(source_family_id) DO UPDATE SET
-                        target_family_id = excluded.target_family_id,
-                        updated_at = excluded.updated_at
-                    """,
-                    (source_id, resolved_target, datetime.now().isoformat()),
-                )
-            conn.commit()
-            return resolved_target
 
     # ========== Episode 操作 ==========
 
@@ -2159,179 +2128,6 @@ class StorageManager:
             for row in rows
         ]
     
-    def update_relation_episode_id(self, family_id: str, episode_id: str):
-        """更新关系最新版本的 episode_id"""
-        with self._write_lock:
-            conn = self._get_conn()
-            cursor = conn.cursor()
-
-            # 获取最新版本的id
-            cursor.execute("""
-                SELECT id FROM relations
-                WHERE family_id = ?
-                ORDER BY processed_time DESC
-                LIMIT 1
-            """, (family_id,))
-
-            row = cursor.fetchone()
-            if row:
-                latest_id = row[0]
-                cursor.execute("""
-                    UPDATE relations
-                    SET episode_id = ?
-                    WHERE id = ?
-                """, (episode_id, latest_id))
-                conn.commit()
-        
-    
-    def get_self_referential_relations(self) -> Dict[str, List[Dict]]:
-        """获取所有自指向的关系（两端指向同一个family_id），按family_id分组
-
-        自指向关系的定义：关系的两端实体具有相同的family_id
-        这包括两种情况：
-        1. entity1_absolute_id == entity2_absolute_id（指向完全相同的版本）
-        2. entity1_absolute_id 和 entity2_absolute_id 不同，但它们对应的family_id相同
-
-        Returns:
-            字典，key为family_id，value为该实体的所有自指向关系列表
-            每个关系包含：id, family_id, content, processed_time
-        """
-        conn = self._get_conn()
-        cursor = conn.cursor()
-        
-        # 查找所有自指向的关系（两端family_id相同）
-        cursor.execute("""
-            SELECT r.id, r.family_id, r.content, r.processed_time, e1.family_id
-            FROM relations r
-            JOIN entities e1 ON r.entity1_absolute_id = e1.id
-            JOIN entities e2 ON r.entity2_absolute_id = e2.id
-            WHERE e1.family_id = e2.family_id
-            ORDER BY e1.family_id, r.processed_time
-        """)
-        
-        rows = cursor.fetchall()
-        
-        # 按family_id分组
-        result = {}
-        for row in rows:
-            relation_id, family_id_str, content, processed_time, family_id = row
-            if family_id not in result:
-                result[family_id] = []
-            result[family_id].append({
-                'id': relation_id,
-                'family_id': family_id_str,
-                'content': content,
-                'processed_time': processed_time
-            })
-        
-        return result
-    
-    def delete_self_referential_relations(self) -> int:
-        """删除所有自指向的关系（两端指向同一个family_id）
-
-        Returns:
-            删除的关系数量
-        """
-        with self._write_lock:
-            conn = self._get_conn()
-            cursor = conn.cursor()
-
-            # 查找所有自指向的关系（两端family_id相同）
-            cursor.execute("""
-                SELECT r.id FROM relations r
-                JOIN entities e1 ON r.entity1_absolute_id = e1.id
-                JOIN entities e2 ON r.entity2_absolute_id = e2.id
-                WHERE e1.family_id = e2.family_id
-            """)
-
-            rows = cursor.fetchall()
-            deleted_count = 0
-
-            if rows:
-                relation_ids = [row[0] for row in rows]
-                placeholders = ','.join(['?' for _ in relation_ids])
-
-                cursor.execute(f"""
-                    DELETE FROM relations
-                    WHERE id IN ({placeholders})
-                """, relation_ids)
-                deleted_count = cursor.rowcount
-                conn.commit()
-
-            return deleted_count
-    
-    def get_self_referential_relations_for_entity(self, family_id: str) -> List[Dict]:
-        """获取指定family_id的自指向关系
-
-        Args:
-            family_id: 实体ID
-
-        Returns:
-            自指向关系列表，每个关系包含：id, family_id, content, processed_time
-        """
-        conn = self._get_conn()
-        cursor = conn.cursor()
-        
-        # 查找该family_id的自指向关系
-        cursor.execute("""
-            SELECT r.id, r.family_id, r.content, r.processed_time
-            FROM relations r
-            JOIN entities e1 ON r.entity1_absolute_id = e1.id
-            JOIN entities e2 ON r.entity2_absolute_id = e2.id
-            WHERE e1.family_id = ? AND e2.family_id = ?
-            ORDER BY r.processed_time
-        """, (family_id, family_id))
-
-        rows = cursor.fetchall()
-
-        result = []
-        for row in rows:
-            relation_id, family_id_str, content, processed_time = row
-            result.append({
-                'id': relation_id,
-                'family_id': family_id_str,
-                'content': content,
-                'processed_time': processed_time
-            })
-        
-        return result
-    
-    def delete_self_referential_relations_for_entity(self, family_id: str) -> int:
-        """删除指定family_id的自指向关系
-
-        Args:
-            family_id: 实体ID
-
-        Returns:
-            删除的关系数量
-        """
-        with self._write_lock:
-            conn = self._get_conn()
-            cursor = conn.cursor()
-
-            # 查找该family_id的自指向关系
-            cursor.execute("""
-                SELECT r.id FROM relations r
-                JOIN entities e1 ON r.entity1_absolute_id = e1.id
-                JOIN entities e2 ON r.entity2_absolute_id = e2.id
-                WHERE e1.family_id = ? AND e2.family_id = ?
-            """, (family_id, family_id))
-
-            rows = cursor.fetchall()
-            deleted_count = 0
-
-            if rows:
-                relation_ids = [row[0] for row in rows]
-                placeholders = ','.join(['?' for _ in relation_ids])
-
-                cursor.execute(f"""
-                    DELETE FROM relations
-                    WHERE id IN ({placeholders})
-                """, relation_ids)
-                deleted_count = cursor.rowcount
-                conn.commit()
-
-            return deleted_count
     
     def get_all_entities(self, limit: Optional[int] = None, offset: Optional[int] = None, exclude_embedding: bool = False) -> List[Entity]:
         """获取所有实体的最新版本
@@ -3438,54 +3234,6 @@ class StorageManager:
         
         return {row[0]: row[1] for row in rows}
 
-    def entity_has_any_relation(self, family_id: str) -> bool:
-        """检查实体是否在关系表中作为任一端出现（轻量查询，只查 COUNT）。"""
-        family_id = self.resolve_family_id(family_id)
-        if not family_id:
-            return False
-        conn = self._get_conn()
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT COUNT(*) FROM relations
-            WHERE entity1_absolute_id IN (SELECT id FROM entities WHERE family_id = ?)
-               OR entity2_absolute_id IN (SELECT id FROM entities WHERE family_id = ?)
-        """, (family_id, family_id))
-        return cursor.fetchone()[0] > 0
-
-    def delete_orphan_entities(self, candidate_family_ids: list) -> list:
-        """批量检查并删除没有关系的实体。
-
-        一条 SQL 找出候选列表中确实无关系的 family_id，然后删除。
-
-        Args:
-            candidate_family_ids: 待检查的 family_id 列表
-
-        Returns:
-            被删除的 family_id 列表
-        """
-        if not candidate_family_ids:
-            return []
-        with self._write_lock:
-            conn = self._get_conn()
-            cursor = conn.cursor()
-            placeholders = ','.join(['?'] * len(candidate_family_ids))
-            # 找出候选中没有任何关系的 family_id
-            cursor.execute(f"""
-                SELECT e.family_id FROM entities e
-                WHERE e.family_id IN ({placeholders})
-                  AND e.id NOT IN (
-                      SELECT entity1_absolute_id FROM relations
-                      UNION
-                      SELECT entity2_absolute_id FROM relations
-                  )
-                GROUP BY e.family_id
-            """, candidate_family_ids)
-            orphan_ids = [row[0] for row in cursor.fetchall()]
-            if orphan_ids:
-                ph2 = ','.join(['?'] * len(orphan_ids))
-                cursor.execute(f"DELETE FROM entities WHERE family_id IN ({ph2})", orphan_ids)
-            return orphan_ids
-
     def delete_entity_by_id(self, family_id: str) -> int:
         """删除实体的所有版本。返回删除的行数。"""
         family_id = self.resolve_family_id(family_id)
@@ -3999,19 +3747,6 @@ class StorageManager:
                 embedding=row[9] if len(row) > 9 else None,
             ))
         return relations
-
-    def get_entity_degree(self, family_id: str) -> int:
-        """获取实体的度（连接数）。"""
-        conn = self._get_conn()
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT COUNT(*) FROM relations WHERE "
-            "(entity1_absolute_id IN (SELECT absolute_id FROM entities WHERE family_id = ?) "
-            "OR entity2_absolute_id IN (SELECT absolute_id FROM entities WHERE family_id = ?)) "
-            "AND invalid_at IS NULL",
-            (family_id, family_id)
-        )
-        return cursor.fetchone()[0]
 
     def batch_get_entity_degrees(self, family_ids: List[str]) -> Dict[str, int]:
         """批量获取实体度数 — 单次查询替代 N 次 get_entity_degree。"""
