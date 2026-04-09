@@ -982,9 +982,7 @@ class GraphWebServer:
                         is_matched = entity.family_id in matched_family_ids
                         
                         # 获取版本数量
-                        version_count = self.storage.get_entity_version_count(entity.family_id) \
-                            if hasattr(self.storage, 'get_entity_version_count') \
-                            else len(self.storage.get_entity_versions(entity.family_id))
+                        version_count = self.storage.get_entity_version_count(entity.family_id)
                         
                         # 在标签中显示版本数量
                         label = f"{entity.name} ({version_count}版本)" if version_count > 1 else entity.name
