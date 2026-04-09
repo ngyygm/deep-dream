@@ -4486,8 +4486,11 @@ def create_app(
 
     @app.route("/api/v1/find/quick-search", methods=["POST"])
     def quick_search():
-        """One-shot search: hybrid BM25+embedding with name boosting.
-        Cascade: exact name → BM25 text → embedding → merge & dedup.
+        """One-shot search: hybrid BM25+embedding RRF fusion with name boosting.
+
+        Phase 1: exact name match (highest confidence)
+        Phase 2: BM25 + embedding via HybridSearcher RRF fusion
+        Phase 3: relation search via HybridSearcher RRF fusion
         """
         try:
             processor = _get_processor()
@@ -4500,9 +4503,9 @@ def create_app(
             threshold = max(0.0, min(1.0, float(body.get("similarity_threshold", 0.4))))
 
             # Phase 1: Exact name match (instant, highest confidence)
-            exact_map = processor.storage.get_family_ids_by_names([query])
             exact_entities = []
             seen_fids = set()
+            exact_map = processor.storage.get_family_ids_by_names([query])
             if exact_map:
                 fid = list(exact_map.values())[0]
                 ent = processor.storage.get_entity_by_family_id(fid)
@@ -4510,46 +4513,31 @@ def create_app(
                     exact_entities.append(ent)
                     seen_fids.add(ent.family_id)
 
-            # Phase 2: BM25 text search (fast keyword match)
-            bm25_entities = []
-            try:
-                bm25_results = processor.storage.search_entities_by_bm25(query, limit=max_entities * 2)
-                for e in bm25_results:
-                    if e.family_id not in seen_fids:
-                        bm25_entities.append(e)
-                        seen_fids.add(e.family_id)
-            except Exception:
-                pass
+            # Phase 2: BM25 + embedding RRF fusion via HybridSearcher
+            searcher = HybridSearcher(processor.storage)
 
-            # Phase 3: Embedding semantic search (for fuzzy/conceptual matches)
-            embed_entities = []
-            try:
-                embed_results = processor.storage.search_entities_by_similarity(
-                    query_name=query,
-                    query_content=query,
-                    threshold=threshold,
-                    max_results=max_entities,
-                    text_mode="name_and_content",
-                    similarity_method="embedding",
-                )
-                for e in embed_results:
-                    if e.family_id not in seen_fids:
-                        embed_entities.append(e)
-                        seen_fids.add(e.family_id)
-            except Exception:
-                pass
+            fused_entities = searcher.search_entities(
+                query_text=query,
+                top_k=max_entities,
+                semantic_threshold=threshold,
+            )
+            # Dedup: skip entities already found by exact match
+            rrf_entities = []
+            for ent, score in fused_entities:
+                if ent.family_id not in seen_fids:
+                    rrf_entities.append(ent)
+                    seen_fids.add(ent.family_id)
 
-            # Merge: exact first, then BM25, then embedding
-            entities = exact_entities + bm25_entities[:max(1, max_entities - len(exact_entities))] + embed_entities[:max(0, max_entities - len(exact_entities) - len(bm25_entities))]
+            entities = exact_entities + rrf_entities
             entities = entities[:max_entities]
 
-            # Get relations for found entities
-            entity_abs_ids = {e.absolute_id for e in entities}
-            relations = []
-            if entity_abs_ids:
-                relations = processor.storage.get_relations_by_entity_absolute_ids(
-                    list(entity_abs_ids), limit=max_relations
-                )
+            # Phase 3: Relation search via HybridSearcher RRF fusion
+            fused_relations = searcher.search_relations(
+                query_text=query,
+                top_k=max_relations,
+                semantic_threshold=max(0.2, threshold - 0.1),
+            )
+            relations = [r for r, _ in fused_relations]
 
             entity_dicts = [entity_to_dict(e) for e in entities]
             rel_dicts = [relation_to_dict(r) for r in relations]
