@@ -1524,10 +1524,11 @@ class StorageManager:
         return relations
 
     def search_entities_by_similarity(self, query_name: str, query_content: Optional[str] = None,
-                                     threshold: float = 0.7, max_results: int = 10, 
+                                     threshold: float = 0.7, max_results: int = 10,
                                      content_snippet_length: int = 50,
                                      text_mode: Literal["name_only", "content_only", "name_and_content"] = "name_and_content",
-                                     similarity_method: Literal["embedding", "text", "jaccard", "bleu"] = "embedding") -> List[Entity]:
+                                     similarity_method: Literal["embedding", "text", "jaccard", "bleu"] = "embedding",
+                                     _preloaded_entities: Optional[List[tuple]] = None) -> List[Entity]:
         """
         根据名称相似度搜索实体
         
@@ -1551,8 +1552,8 @@ class StorageManager:
                 - "jaccard": 使用Jaccard相似度
                 - "bleu": 使用BLEU相似度
         """
-        # 获取所有实体及其embedding
-        entities_with_embeddings = self._get_entities_with_embeddings()
+        # 获取所有实体及其embedding（优先使用预加载数据，避免N+1）
+        entities_with_embeddings = _preloaded_entities if _preloaded_entities is not None else self._get_entities_with_embeddings()
         
         if not entities_with_embeddings:
             return []
@@ -3000,9 +3001,10 @@ class StorageManager:
                     max_results=half_candidates,
                     content_snippet_length=content_snippet_length,
                     text_mode="name_only",
-                    similarity_method="embedding"
+                    similarity_method="embedding",
+                    _preloaded_entities=entities_with_embeddings
                 )
-                
+
                 # 模式2：使用name+content检索（使用embedding）
                 candidates_full_embedding = self.search_entities_by_similarity(
                     query_name=entity.name,
@@ -3011,9 +3013,10 @@ class StorageManager:
                     max_results=half_candidates,
                     content_snippet_length=content_snippet_length,
                     text_mode="name_and_content",
-                    similarity_method="embedding"
+                    similarity_method="embedding",
+                    _preloaded_entities=entities_with_embeddings
                 )
-                
+
                 # 模式3：只用name检索（使用文本相似度，作为补充）
                 if len(candidate_ids) < max_candidates:
                     candidates_name_text = self.search_entities_by_similarity(
@@ -3023,7 +3026,8 @@ class StorageManager:
                         max_results=half_candidates,
                         content_snippet_length=content_snippet_length,
                         text_mode="name_only",
-                        similarity_method="text"
+                        similarity_method="text",
+                        _preloaded_entities=entities_with_embeddings
                     )
                     for candidate in candidates_name_text:
                         if candidate.family_id != family_id:
@@ -3043,7 +3047,8 @@ class StorageManager:
                         max_results=half_candidates,
                         content_snippet_length=content_snippet_length,
                         text_mode="name_only",
-                        similarity_method="jaccard"
+                        similarity_method="jaccard",
+                        _preloaded_entities=entities_with_embeddings
                     )
                     for candidate in candidates_name_jaccard:
                         if candidate.family_id != family_id and len(candidate_ids) < max_candidates:
@@ -4008,7 +4013,17 @@ class StorageManager:
 
     def get_entity_degree(self, family_id: str) -> int:
         """获取实体的度（连接数）。"""
-        return len(self.get_relations_by_family_ids([family_id]))
+        with self._read_lock:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT COUNT(*) FROM relations WHERE "
+                "(entity1_absolute_id IN (SELECT absolute_id FROM entities WHERE family_id = ?) "
+                "OR entity2_absolute_id IN (SELECT absolute_id FROM entities WHERE family_id = ?)) "
+                "AND invalid_at IS NULL",
+                (family_id, family_id)
+            )
+            return cursor.fetchone()[0]
 
     # ========== Phase C: Episode MENTIONS ==========
 
