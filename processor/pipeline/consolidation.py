@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed, Future
+from datetime import datetime
 import threading
 import time
 import traceback
@@ -61,20 +62,7 @@ class _ConsolidationMixin:
         # 确定是否启用预搜索
         # 如果parallel=True，必须启用预搜索（但这种情况应该已经进入上面的并行版本）
         # 如果parallel=False，根据enable_pre_search参数决定
-        if enable_pre_search is None:
-            # 默认启用预搜索（批量计算更高效）
-            use_pre_search = True
-        else:
-            use_pre_search = enable_pre_search
-
-        # 确定是否启用预搜索
-        # 如果parallel=True，必须启用预搜索（但这种情况应该已经进入上面的并行版本）
-        # 如果parallel=False，根据enable_pre_search参数决定
-        if enable_pre_search is None:
-            # 默认启用预搜索（批量计算更高效）
-            use_pre_search = True
-        else:
-            use_pre_search = enable_pre_search
+        use_pre_search = enable_pre_search if enable_pre_search is not None else True
 
         if verbose:
             wprint("=" * 60)
@@ -116,15 +104,14 @@ class _ConsolidationMixin:
                 if summarized_content.replace(' ', '').replace('\n', '') == entity.content.replace(' ', '').replace('\n', ''):
                     if verbose:
                         wprint(f"      内容未变化，跳过版本创建")
-                    # 仍需删除自指向关系
-                    actual_deleted = self.storage.delete_self_referential_relations()
+                    # 仅删除当前实体的自指向关系
+                    actual_deleted = self.storage.delete_self_referential_relations_for_entity(family_id)
                     if verbose:
                         wprint(f"    已删除 {actual_deleted} 个自指向关系")
                     entities_updated_from_self_ref += 1
                     continue
 
                 # 更新实体的最新版本（创建新版本）
-                from datetime import datetime
                 new_family_id = f"entity_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
                 new_entity = Entity(
                     absolute_id=new_family_id,
