@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import re
 import time
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
@@ -53,7 +54,6 @@ def _is_valid_entity_name(name: str) -> bool:
     5. 对话标记检查：包含"曰：""道："等对话格式
     6. 括号内容检查：括号内不应包含场景/事件/系统信息
     """
-    import re
 
     if not name or len(name) < _MIN_ENTITY_NAME_LENGTH:
         return False
@@ -347,7 +347,6 @@ def _clean_entity_name(name: str) -> str:
     - "杨昂（诸营）" → "杨昂" （括号内容是场景上下文，应移除）
     - "许褚（曹操亲卫）" → "许褚（曹操亲卫）" （括号内容是持久关系，应保留）
     """
-    import re
 
     def _is_scene_annotation(content: str) -> bool:
         """判断括号内容是否是场景/事件标注（而非消歧信息）。
@@ -446,7 +445,6 @@ def _core_entity_name(name: str) -> str:
 
     例如："曹操（魏王）" → "曹操"，"许褚（曹操亲卫）" → "许褚"
     """
-    import re
     return re.sub(r'[（(][^）)]+[）)]', '', name).strip()
 
 
@@ -534,7 +532,6 @@ def _is_valid_relation_content(content: str, entity1_name: str = "", entity2_nam
         return False
 
     # 检查是否是空洞模板（只说"有关联"而不描述具体内容）
-    import re
     _empty_patterns = [
         r'^.{0,4}与.{0,4}的?关联关系?$',
         r'^.{0,4}与.{0,4}有关$',
@@ -718,7 +715,6 @@ def _is_self_consistent_entity(name: str, content: str, all_entities: List[Dict[
     Returns:
         True 如果实体自洽（name 和 content 描述同一概念）
     """
-    import re
 
     if not name or not content:
         return False
@@ -1085,7 +1081,7 @@ class _ExtractionMixin:
             dbg(f"  关系[{_ri}]: '{_r.get('entity1_name', '')}' <-> '{_r.get('entity2_name', '')}'  content='{_r.get('content', '')[:100]}'")
         if verbose:
             if _ent_count == 0:
-                wprint(f"【步骤2】警告｜跳过｜重试{_extraction_empty_retry}次仍空")
+                wprint(f"【步骤2】警告｜抽取结果为空，无实体被提取")
             else:
                 wprint(f"【步骤2】实体｜小结｜共{_ent_count}个")
         _report_step(0, "合并抽取实体/关系", f"抽取到 {_ent_count} 个实体, {_rel_count} 个关系")
@@ -1910,7 +1906,6 @@ class _ExtractionMixin:
         verbose: bool = True,
     ) -> Dict[str, Any]:
         """步骤8: 纯代码校验（零LLM调用）。返回校验报告。"""
-        import re as _re
 
         report = {
             "entity_count": len(entities),
@@ -1969,7 +1964,7 @@ class _ExtractionMixin:
         for e in entities:
             name = getattr(e, 'name', '')
             fid = getattr(e, 'family_id', '')
-            core = _re.sub(r'[（(][^）)]+[）)]', '', name).strip()
+            core = re.sub(r'[（(][^）)]+[）)]', '', name).strip()
             if core not in core_name_map:
                 core_name_map[core] = []
             core_name_map[core].append(fid)
