@@ -201,8 +201,9 @@ class _ContentMergerMixin:
             # JSON格式不正确，使用简单合并策略
             return f"{old_name}（{new_name}）"
 
-        except Exception:
+        except Exception as exc:
             # JSON解析失败，使用简单合并策略
+            wprint(f"警告：名称合并JSON解析失败，使用简单策略: {exc}")
             # 选择较短的作为主名称，较长的作为补充
             if len(old_name) <= len(new_name):
                 return f"{old_name}（{new_name}）"

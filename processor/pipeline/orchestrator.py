@@ -833,7 +833,8 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
                                 _ri,
                                 _eid,
                             )
-                    except Exception:
+                    except Exception as exc:
+                        wprint(f"  │  step7 输入构建失败: {exc}")
                         step7_inputs_cache = None
                         rel_prefetch_future = None
                 if i > 0:
@@ -846,7 +847,8 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
                 if rel_prefetch_future is not None:
                     try:
                         prepared_relations_by_pair, _ = rel_prefetch_future.result()
-                    except Exception:
+                    except Exception as exc:
+                        wprint(f"  │  关系预取结果获取失败: {exc}")
                         prepared_relations_by_pair = None
                 with self._runtime_lock:
                     self._active_step7 += 1

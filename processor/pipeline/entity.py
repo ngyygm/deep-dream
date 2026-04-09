@@ -115,7 +115,8 @@ class EntityProcessor:
             if entity_embedding_prefetch is not None:
                 try:
                     prefetched_embeddings = entity_embedding_prefetch.result()
-                except Exception:
+                except Exception as exc:
+                    wprint(f"  │  embedding预取失败: {exc}")
                     prefetched_embeddings = None
             use_parallel = (max_workers is not None and max_workers > 1 and len(extracted_entities) > 1)
             if use_parallel:
