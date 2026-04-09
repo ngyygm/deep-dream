@@ -350,38 +350,44 @@ class Neo4jStorageManager:
             return
         with self._entity_write_lock:
             with self._session() as session:
-                for p in patches:
-                    session.run(
-                        """
-                        CREATE (cp:ContentPatch {
-                            uuid: $uuid,
-                            target_type: $target_type,
-                            target_absolute_id: $target_abs_id,
-                            target_family_id: $target_family_id,
-                            section_key: $section_key,
-                            change_type: $change_type,
-                            old_hash: $old_hash,
-                            new_hash: $new_hash,
-                            diff_summary: $diff_summary,
-                            source_document: $source,
-                            event_time: datetime($event_time)
-                        })
-                        WITH cp, $target_abs_id AS abs_id
-                        MATCH (t) WHERE t.uuid = abs_id
-                        MERGE (cp)-[:PATCHES]->(t)
-                        """,
-                        uuid=p.uuid,
-                        target_type=p.target_type,
-                        target_abs_id=p.target_absolute_id,
-                        target_family_id=p.target_family_id,
-                        section_key=p.section_key,
-                        change_type=p.change_type,
-                        old_hash=p.old_hash,
-                        new_hash=p.new_hash,
-                        diff_summary=p.diff_summary,
-                        source=p.source_document,
-                        event_time=p.event_time.isoformat() if p.event_time else datetime.now().isoformat(),
-                    )
+                rows = [
+                    {
+                        "uuid": p.uuid,
+                        "target_type": p.target_type,
+                        "target_abs_id": p.target_absolute_id,
+                        "target_family_id": p.target_family_id,
+                        "section_key": p.section_key,
+                        "change_type": p.change_type,
+                        "old_hash": p.old_hash,
+                        "new_hash": p.new_hash,
+                        "diff_summary": p.diff_summary,
+                        "source": p.source_document,
+                        "event_time": p.event_time.isoformat() if p.event_time else datetime.now().isoformat(),
+                    }
+                    for p in patches
+                ]
+                session.run(
+                    """
+                    UNWIND $rows AS row
+                    CREATE (cp:ContentPatch {
+                        uuid: row.uuid,
+                        target_type: row.target_type,
+                        target_absolute_id: row.target_abs_id,
+                        target_family_id: row.target_family_id,
+                        section_key: row.section_key,
+                        change_type: row.change_type,
+                        old_hash: row.old_hash,
+                        new_hash: row.new_hash,
+                        diff_summary: row.diff_summary,
+                        source_document: row.source,
+                        event_time: datetime(row.event_time)
+                    })
+                    WITH cp, row.target_abs_id AS abs_id
+                    MATCH (t) WHERE t.uuid = abs_id
+                    MERGE (cp)-[:PATCHES]->(t)
+                    """,
+                    rows=rows,
+                )
 
     def get_content_patches(self, family_id: str, section_key: str = None) -> list:
         """查询指定 family_id 的 ContentPatch 记录。"""
