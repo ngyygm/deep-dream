@@ -2337,19 +2337,33 @@ def create_app(
                 return err("absolute_ids 需为非空数组", 400)
             deleted = []
             blocked = {}
+            # Batch check for blocking relations
+            blocking_map = processor.storage.batch_get_relations_referencing_absolute_ids(absolute_ids)
+            to_delete = []
             for aid in absolute_ids:
-                blocking = processor.storage.get_relations_referencing_absolute_id(aid)
+                blocking = blocking_map.get(aid, [])
                 if blocking:
                     blocked[aid] = {
                         "blocking_count": len(blocking),
                         "blocking_relations": [relation_to_dict(r) for r in blocking[:5]],
                     }
                 else:
-                    success = processor.storage.delete_entity_by_absolute_id(aid)
-                    if success:
-                        deleted.append(aid)
-                    else:
-                        blocked[aid] = {"blocking_count": 0, "reason": "未找到"}
+                    to_delete.append(aid)
+            # Batch delete non-blocked versions
+            if to_delete:
+                batch_deleted = processor.storage.batch_delete_entity_versions_by_absolute_ids(to_delete)
+                # Track which ones were actually deleted
+                deleted_set = set(to_delete) if batch_deleted == len(to_delete) else set()
+                if batch_deleted != len(to_delete):
+                    # Fallback: check individually which were deleted
+                    for aid in to_delete:
+                        entity = processor.storage.get_entity_by_absolute_id(aid)
+                        if not entity:
+                            deleted.append(aid)
+                        else:
+                            blocked[aid] = {"blocking_count": 0, "reason": "未找到"}
+                else:
+                    deleted = to_delete
             return ok({
                 "deleted": deleted,
                 "blocked": blocked,
@@ -2475,18 +2489,11 @@ def create_app(
             absolute_ids = body.get("absolute_ids", [])
             if not isinstance(absolute_ids, list) or not absolute_ids:
                 return err("absolute_ids 需为非空数组", 400)
-            deleted = []
-            failed = []
-            for aid in absolute_ids:
-                success = processor.storage.delete_relation_by_absolute_id(aid)
-                if success:
-                    deleted.append(aid)
-                else:
-                    failed.append(aid)
+            deleted_count = processor.storage.batch_delete_relation_versions_by_absolute_ids(absolute_ids)
             return ok({
-                "deleted": deleted,
-                "failed": failed,
-                "summary": {"deleted_count": len(deleted), "failed_count": len(failed)},
+                "deleted": absolute_ids[:deleted_count],
+                "failed": absolute_ids[deleted_count:] if deleted_count < len(absolute_ids) else [],
+                "summary": {"deleted_count": deleted_count, "failed_count": len(absolute_ids) - deleted_count},
             })
         except Exception as e:
             return err(str(e), 500)

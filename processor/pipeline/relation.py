@@ -29,30 +29,6 @@ class RelationProcessor:
         self.batch_resolution_enabled = True
         self.batch_resolution_confidence_threshold = 0.70
     
-    def process_relations(self, extracted_relations: List[Dict[str, str]], 
-                         entity_name_to_id: Dict[str, str],
-                         episode_id: str, source_document: str = "",
-                         base_time: Optional[datetime] = None) -> List[Relation]:
-        """
-        处理抽取的关系：去重合并、搜索、对齐、更新/新建
-        
-        Args:
-            extracted_relations: 抽取的关系列表（每个包含entity1_name, entity2_name, content）
-            entity_name_to_id: 实体名称到family_id的映射
-            episode_id: 当前记忆缓存的ID
-            source_document: 文档名称（只保存文档名，不包含路径）
-        
-        Returns:
-            处理后的关系列表（已保存到数据库）
-        """
-        return self.process_relations_batch(
-            extracted_relations,
-            entity_name_to_id,
-            episode_id,
-            source_document=source_document,
-            base_time=base_time,
-        )
-
     def build_relations_by_pair_from_inputs(
         self,
         extracted_relations: List[Dict[str, str]],

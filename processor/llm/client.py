@@ -479,17 +479,6 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
             return False
 
     @staticmethod
-    def _stringify_message_content(content: Any) -> str:
-        if isinstance(content, str):
-            return content
-        if isinstance(content, (dict, list)):
-            try:
-                return json.dumps(content, ensure_ascii=False, indent=2)
-            except Exception:
-                return str(content)
-        return str(content)
-
-    @staticmethod
     def _error_suggests_context_overflow(err: BaseException) -> bool:
         """服务端错误是否与上下文/token/长度相关（仅此类错误才转储完整 messages）。"""
         chunks: List[str] = [str(err), repr(err)]
@@ -578,10 +567,6 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
         if u.endswith("/v4") or u.endswith("/v1"):
             return True
         return False
-
-    def _use_openai_compatible(self) -> bool:
-        """兼容旧代码：按主 base_url 判断。"""
-        return self._use_openai_compatible_url(self.base_url, self.api_key)
 
     def _is_valid_utf8(self, text: str) -> bool:
         """
