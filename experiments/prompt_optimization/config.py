@@ -2,7 +2,7 @@
 import os
 
 # LLM Configuration — read from service_config.json
-_LLM_API_KEY = "2a827bfeb3b9403d82d4132bec7d1bf0.22qzXO7q7C6fqC42"
+_LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
 LLM_CONFIG = {
     "api_key": _LLM_API_KEY,
     "model": "GLM-4-Flash",

@@ -176,7 +176,8 @@ class AgentQueryMixin:
                 json_parse_retries=2,
             )
             return result if isinstance(result, dict) else {"query_type": "hybrid", "query_text": question}
-        except Exception:
+        except Exception as e:
+            wprint(f"[DeepDream] 查询意图解析失败，回退到混合查询: {e}")
             return {"query_type": "hybrid", "query_text": question}
 
     async def _execute_query(self, intent: Dict[str, Any], graph_id: str) -> Dict[str, Any]:

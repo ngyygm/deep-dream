@@ -262,7 +262,8 @@ class _ContentMergerMixin:
             if isinstance(result, dict):
                 return result
             return None
-        except Exception:
+        except Exception as e:
+            wprint(f"[DeepDream] 实体合并内容解析失败: {e}")
             return None
 
     def merge_relation_content(
