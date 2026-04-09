@@ -1239,15 +1239,19 @@ class Neo4jStorageManager:
             if limit is not None:
                 query += f" LIMIT {int(limit)}"
             result = session.run(query)
-            entities = []
-            for record in result:
-                entity = _neo4j_record_to_entity(record)
-                if not exclude_embedding:
-                    emb = self._vector_store.get("entity_vectors", entity.absolute_id)
-                    if emb:
-                        entity.embedding = np.array(emb, dtype=np.float32).tobytes()
-                entities.append(entity)
-            return entities
+            records = list(result)
+
+        entities = [_neo4j_record_to_entity(r) for r in records]
+
+        if not exclude_embedding and entities:
+            uuids = [e.absolute_id for e in entities]
+            emb_map = self._vector_store.get_batch("entity_vectors", uuids)
+            for entity in entities:
+                emb_list = emb_map.get(entity.absolute_id)
+                if emb_list:
+                    entity.embedding = np.array(emb_list, dtype=np.float32).tobytes()
+
+        return entities
 
     def count_unique_entities(self) -> int:
         """统计有效实体中不重复的 family_id 数量。"""
@@ -1284,15 +1288,19 @@ class Neo4jStorageManager:
             if limit is not None:
                 query += f" LIMIT {int(limit)}"
             result = session.run(query, tp=time_point.isoformat())
-            entities = []
-            for record in result:
-                entity = _neo4j_record_to_entity(record)
-                if not exclude_embedding:
-                    emb = self._vector_store.get("entity_vectors", entity.absolute_id)
-                    if emb:
-                        entity.embedding = np.array(emb, dtype=np.float32).tobytes()
-                entities.append(entity)
-            return entities
+            records = list(result)
+
+        entities = [_neo4j_record_to_entity(r) for r in records]
+
+        if not exclude_embedding and entities:
+            uuids = [e.absolute_id for e in entities]
+            emb_map = self._vector_store.get_batch("entity_vectors", uuids)
+            for entity in entities:
+                emb_list = emb_map.get(entity.absolute_id)
+                if emb_list:
+                    entity.embedding = np.array(emb_list, dtype=np.float32).tobytes()
+
+        return entities
 
     def get_entity_version_count(self, family_id: str) -> int:
         """获取指定 family_id 的版本数量。"""
@@ -1497,6 +1505,7 @@ class Neo4jStorageManager:
 
     def get_data_quality_report(self) -> Dict[str, Any]:
         """返回数据质量报告。"""
+        # Session 1: 所有计数查询（实体 + 关系）
         with self._session() as session:
             # 有效实体
             r = session.run("""
@@ -1515,8 +1524,7 @@ class Neo4jStorageManager:
             r = session.run("MATCH (e:Entity) WHERE e.family_id IS NULL RETURN count(e) AS cnt")
             no_family_id = r.single()["cnt"]
 
-        # 有效关系
-        with self._session() as session:
+            # 有效关系
             r = session.run("""
                 MATCH (rel:Relation) WHERE rel.invalid_at IS NULL
                 RETURN count(DISTINCT rel.family_id) AS valid_families, count(rel) AS valid_nodes
@@ -1525,7 +1533,6 @@ class Neo4jStorageManager:
             valid_relation_families = row["valid_families"]
             valid_relation_nodes = row["valid_nodes"]
 
-        with self._session() as session:
             # 失效关系版本
             r = session.run("MATCH (rel:Relation) WHERE rel.invalid_at IS NOT NULL RETURN count(rel) AS cnt")
             invalidated_relation_versions = r.single()["cnt"]
@@ -1533,7 +1540,7 @@ class Neo4jStorageManager:
         # 孤立实体
         isolated_count = self.count_isolated_entities()
 
-        # 关系引用了不存在的实体（悬空引用）- 分两步查询
+        # Session 2: 悬空引用检测
         with self._session() as session:
             r = session.run("""
                 MATCH (rel:Relation) WHERE rel.invalid_at IS NULL
@@ -1548,7 +1555,6 @@ class Neo4jStorageManager:
                 if row.get("e2_ids"):
                     rel_aids.update(row["e2_ids"])
 
-        with self._session() as session:
             r = session.run("MATCH (e:Entity) WHERE e.invalid_at IS NULL RETURN collect(DISTINCT e.uuid) AS uuids")
             row = r.single()
             valid_uuids = set(row["uuids"]) if row and row["uuids"] else set()
@@ -2285,11 +2291,66 @@ class Neo4jStorageManager:
 
     def get_relations_by_entity_pairs(self, entity_pairs: List[Tuple[str, str]]) -> Dict[Tuple[str, str], List[Relation]]:
         """批量获取多个实体对的关系。"""
-        results: Dict[Tuple[str, str], List[Relation]] = {}
+        if not entity_pairs:
+            return {}
+
+        # 收集所有唯一的 family_id
+        all_family_ids = set()
         for e1, e2 in entity_pairs:
-            pair_key = tuple(sorted((e1, e2)))
-            if pair_key not in results:
-                results[pair_key] = self.get_relations_by_entities(pair_key[0], pair_key[1])
+            all_family_ids.add(e1)
+            all_family_ids.add(e2)
+
+        # 单次查询获取所有相关的绝对 ID
+        with self._session() as session:
+            result = session.run(
+                "MATCH (e:Entity) WHERE e.family_id IN $fids AND e.invalid_at IS NULL RETURN e.family_id AS fid, e.uuid AS uuid",
+                fids=list(all_family_ids),
+            )
+            fid_to_aids: Dict[str, List[str]] = {}
+            for record in result:
+                fid_to_aids.setdefault(record["fid"], []).append(record["uuid"])
+
+        # 构建所有绝对 ID 集合
+        all_aids = set()
+        for aids in fid_to_aids.values():
+            all_aids.update(aids)
+
+        if not all_aids:
+            return {tuple(sorted((e1, e2))): [] for e1, e2 in entity_pairs}
+
+        # 单次查询获取所有相关关系
+        with self._session() as session:
+            result = session.run(
+                """
+                MATCH (r:Relation)
+                WHERE (r.entity1_absolute_id IN $aids OR r.entity2_absolute_id IN $aids)
+                  AND r.invalid_at IS NULL
+                RETURN r.uuid AS uuid, r.family_id AS family_id,
+                       r.entity1_absolute_id AS entity1_absolute_id,
+                       r.entity2_absolute_id AS entity2_absolute_id,
+                       r.content AS content, r.event_time AS event_time,
+                       r.processed_time AS processed_time, r.episode_id AS episode_id,
+                       r.source_document AS source_document
+                """,
+                aids=list(all_aids),
+            )
+            all_relations = [_neo4j_record_to_relation(rec) for rec in result]
+
+        # 按 family_id 对的绝对 ID 组合进行分组
+        results: Dict[Tuple[str, str], List[Relation]] = {}
+        for e1_fid, e2_fid in entity_pairs:
+            pair_key = tuple(sorted((e1_fid, e2_fid)))
+            if pair_key in results:
+                continue
+            e1_aids = set(fid_to_aids.get(e1_fid, []))
+            e2_aids = set(fid_to_aids.get(e2_fid, []))
+            pair_rels = [
+                rel for rel in all_relations
+                if (rel.entity1_absolute_id in e1_aids and rel.entity2_absolute_id in e2_aids)
+                or (rel.entity1_absolute_id in e2_aids and rel.entity2_absolute_id in e1_aids)
+            ]
+            results[pair_key] = pair_rels
+
         return results
 
     def _get_all_absolute_ids_for_entity(self, family_id: str) -> List[str]:
@@ -2718,17 +2779,19 @@ class Neo4jStorageManager:
             if limit is not None:
                 query += f" LIMIT {int(limit)}"
             result = session.run(query)
-            relations = []
-            for record in result:
-                relation = _neo4j_record_to_relation(record)
-                if not exclude_embedding:
-                    emb = self._vector_store.get("relation_vectors", relation.absolute_id)
-                    if emb:
-                        relation.embedding = np.array(emb, dtype=np.float32).tobytes()
-                relations.append(relation)
-            return relations
+            records = list(result)
 
-    def _get_relations_with_embeddings(self) -> List[tuple]:
+        relations = [_neo4j_record_to_relation(r) for r in records]
+
+        if not exclude_embedding and relations:
+            uuids = [rel.absolute_id for rel in relations]
+            emb_map = self._vector_store.get_batch("relation_vectors", uuids)
+            for rel in relations:
+                emb_list = emb_map.get(rel.absolute_id)
+                if emb_list:
+                    rel.embedding = np.array(emb_list, dtype=np.float32).tobytes()
+
+        return relations(self) -> List[tuple]:
         """获取所有关系的最新版本及其 embedding。"""
         with _perf_timer("_get_relations_with_embeddings"):
             return self._get_relations_with_embeddings_impl()

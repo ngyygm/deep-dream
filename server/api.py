@@ -1768,7 +1768,7 @@ def create_app(
         try:
             processor = _get_processor()
             body = request.get_json(silent=True) or {}
-            family_ids = body.get("family_ids") or body.get("family_ids", [])
+            family_ids = body.get("family_ids") or body.get("entity_ids", [])
             if not isinstance(family_ids, list) or not family_ids:
                 return err("family_ids 需为非空数组", 400)
             if len(family_ids) > 100:
@@ -3893,8 +3893,8 @@ def create_app(
             if not hasattr(processor.storage, 'find_shortest_path_cypher'):
                 return err("此功能需要 Neo4j 后端", 400)
             body = request.get_json(silent=True) or {}
-            entity_a = (body.get("family_id_a") or body.get("family_id_a") or "").strip()
-            entity_b = (body.get("family_id_b") or body.get("family_id_b") or "").strip()
+            entity_a = (body.get("family_id_a") or body.get("entity_a") or "").strip()
+            entity_b = (body.get("family_id_b") or body.get("entity_b") or "").strip()
             if not entity_a or not entity_b:
                 return err("family_id_a 和 family_id_b 不能为空", 400)
             max_depth = min(max(int(body.get("max_depth", 6)), 1), 10)
