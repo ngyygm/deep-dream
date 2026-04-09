@@ -1091,7 +1091,7 @@ class EntityProcessor:
                 "name": candidate_entity.name,
                 "content": candidate_entity.content,
                 "source_document": candidate_entity.source_document,
-                "version_count": self.storage.get_entity_version_counts([cid]).get(cid, 0) if hasattr(self.storage, 'get_entity_version_counts') else len(self.storage.get_entity_versions(cid))
+                "version_count": version_counts.get(cid, 1)
             }
 
             # 新实体暂无已有关系

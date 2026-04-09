@@ -1656,14 +1656,21 @@ class StorageManager:
         return entities
     
     def _calculate_jaccard_similarity(self, text1: str, text2: str) -> float:
-        """计算Jaccard相似度（基于字符集合）"""
-        set1 = set(text1.lower())
-        set2 = set(text2.lower())
-        intersection = len(set1 & set2)
-        union = len(set1 | set2)
-        if union == 0:
+        """计算Jaccard相似度（基于bigram集合，比字符集更精确）"""
+        s1 = (text1 or "").lower().strip()
+        s2 = (text2 or "").lower().strip()
+        if not s1 or not s2:
             return 0.0
-        return intersection / union
+        if s1 == s2:
+            return 1.0
+        set1 = {s1[i:i+2] for i in range(len(s1) - 1)}
+        set2 = {s2[i:i+2] for i in range(len(s2) - 1)}
+        if not set1 or not set2:
+            cs1, cs2 = set(s1), set(s2)
+            union = len(cs1 | cs2)
+            return len(cs1 & cs2) / union if union else 0.0
+        union = len(set1 | set2)
+        return len(set1 & set2) / union
     
     def _calculate_bleu_similarity(self, text1: str, text2: str) -> float:
         """计算BLEU相似度（基于字符n-gram）"""

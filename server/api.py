@@ -113,6 +113,7 @@ def relation_to_dict(r: Relation) -> Dict[str, Any]:
         "attributes": getattr(r, "attributes", None),
         "confidence": getattr(r, "confidence", None),
         "provenance": getattr(r, "provenance", None),
+        "content_format": getattr(r, "content_format", "plain"),
     }
 
 

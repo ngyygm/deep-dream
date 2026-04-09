@@ -145,18 +145,37 @@ class _RelationExtractionMixin:
 
     @staticmethod
     def _char_jaccard_similarity(a: str, b: str) -> float:
-        """字符集合 Jaccard：|A∩B|/|A∪B|，用于关系端点与已知实体名的简单模糊匹配。"""
+        """Bigram Jaccard + 子串包含奖励：用于关系端点与已知实体名的模糊匹配。
+
+        当一个名称是另一个的子串时（如 "太尉" ⊂ "洪太尉"），
+        bigram Jaccard 偏低但语义上应视为匹配，给予 max(jaccard, substr_score) 奖励。
+        """
         a = (a or "").strip()
         b = (b or "").strip()
         if not a and not b:
             return 1.0
         if not a or not b:
             return 0.0
-        sa, sb = set(a), set(b)
-        u = sa | sb
-        if not u:
+        if a == b:
             return 1.0
-        return len(sa & sb) / len(u)
+        # 子串包含奖励：短名是长名的子串时，奖励 = 短名长度 / 长名长度
+        if a in b or b in a:
+            shorter = min(len(a), len(b))
+            longer = max(len(a), len(b))
+            substr_score = shorter / longer
+        else:
+            substr_score = 0.0
+        # bigram Jaccard
+        sa = {a[i:i+2] for i in range(len(a) - 1)}
+        sb = {b[i:i+2] for i in range(len(b) - 1)}
+        if not sa or not sb:
+            ca, cb = set(a), set(b)
+            u = ca | cb
+            jaccard = len(ca & cb) / len(u) if u else 0.0
+        else:
+            u = sa | sb
+            jaccard = len(sa & sb) / len(u)
+        return max(jaccard, substr_score)
 
     def _tie_break_jaccard_entity_candidates(
         self,
