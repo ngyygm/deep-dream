@@ -354,16 +354,32 @@ class GraphWebServer:
                             
                             # 获取这些 absolute_id 关联的所有关系边
                             entity_relations = self.storage.get_relations_by_entity_absolute_ids(
-                                entity_abs_ids, 
+                                entity_abs_ids,
                                 limit=None
                             )
-                            
+
+                            # 批量预加载所有关系端点的实体（替代逐个 get_entity_by_absolute_id）
+                            all_rel_abs_ids = set()
+                            for rel in entity_relations:
+                                all_rel_abs_ids.add(rel.entity1_absolute_id)
+                                all_rel_abs_ids.add(rel.entity2_absolute_id)
+                            batch_fn = getattr(self.storage, 'get_entities_by_absolute_ids', None)
+                            if batch_fn and all_rel_abs_ids:
+                                entity_batch = batch_fn(list(all_rel_abs_ids))
+                                entity_by_abs = {e.absolute_id: e for e in entity_batch if e}
+                            else:
+                                entity_by_abs = {}
+
                             # 收集关系边和对应的另一端实体信息，用于排序
                             relation_candidates = []
-                            
+
                             for relation in entity_relations:
-                                entity1 = self.storage.get_entity_by_absolute_id(relation.entity1_absolute_id)
-                                entity2 = self.storage.get_entity_by_absolute_id(relation.entity2_absolute_id)
+                                entity1 = entity_by_abs.get(relation.entity1_absolute_id)
+                                entity2 = entity_by_abs.get(relation.entity2_absolute_id)
+                                if not entity1:
+                                    entity1 = self.storage.get_entity_by_absolute_id(relation.entity1_absolute_id)
+                                if not entity2:
+                                    entity2 = self.storage.get_entity_by_absolute_id(relation.entity2_absolute_id)
 
                                 if entity1 and entity2:
                                     entity1_fid = entity1.family_id
@@ -513,24 +529,41 @@ class GraphWebServer:
                         })
                 else:
                     # 非focus模式或hops=0，使用原来的单层逻辑，但也要按另一端实体的边数排序
+                    # 先收集所有实体和关系，批量预加载端点实体
+                    all_entity_relations = []
                     for entity in entities:
                         max_version_absolute_id = focus_absolute_id if (focus_family_id and focus_family_id == entity.family_id) else None
                         effective_time_point = None if max_version_absolute_id else time_point
-                        
-                        # 先获取所有关系边，不限制数量，用于排序
                         entity_relations = self.storage.get_entity_relations_by_family_id(
-                            entity.family_id, 
-                            limit=None, 
+                            entity.family_id,
+                            limit=None,
                             time_point=effective_time_point,
                             max_version_absolute_id=max_version_absolute_id
                         )
-                        
+                        all_entity_relations.append((entity, entity_relations, effective_time_point))
+
+                    # 批量预加载所有关系端点的实体
+                    all_rel_abs_ids = set()
+                    for _, rels, _ in all_entity_relations:
+                        for rel in rels:
+                            all_rel_abs_ids.add(rel.entity1_absolute_id)
+                            all_rel_abs_ids.add(rel.entity2_absolute_id)
+                    batch_fn = getattr(self.storage, 'get_entities_by_absolute_ids', None)
+                    entity_by_abs = {}
+                    if batch_fn and all_rel_abs_ids:
+                        entity_by_abs = {e.absolute_id: e for e in batch_fn(list(all_rel_abs_ids)) if e}
+
+                    for entity, entity_relations, effective_time_point in all_entity_relations:
                         # 收集关系边和对应的另一端实体信息，用于排序
                         relation_candidates = []
-                        
+
                         for relation in entity_relations:
-                            entity1_temp = self.storage.get_entity_by_absolute_id(relation.entity1_absolute_id)
-                            entity2_temp = self.storage.get_entity_by_absolute_id(relation.entity2_absolute_id)
+                            entity1_temp = entity_by_abs.get(relation.entity1_absolute_id)
+                            entity2_temp = entity_by_abs.get(relation.entity2_absolute_id)
+                            if not entity1_temp:
+                                entity1_temp = self.storage.get_entity_by_absolute_id(relation.entity1_absolute_id)
+                            if not entity2_temp:
+                                entity2_temp = self.storage.get_entity_by_absolute_id(relation.entity2_absolute_id)
                             
                             if entity1_temp and entity2_temp:
                                 effective_time_point = focus_time_point if focus_family_id else time_point

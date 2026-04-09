@@ -395,8 +395,8 @@ class DreamOrchestrator:
                 if hasattr(self.storage, 'get_relations_by_entities') else []
             if existing:
                 return None
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Dream: existing relation check failed for %s↔%s: %s", seed_fid, nb_fid, exc)
 
         # 获取实体详情
         seed_entity = self.storage.get_entity_by_family_id(seed_fid)

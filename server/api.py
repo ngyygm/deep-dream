@@ -4033,9 +4033,12 @@ def create_app(
                         if dry_run:
                             results[action] = {"status": "preview", "count": len(family_ids), "family_ids": family_ids[:20]}
                         else:
-                            deleted = 0
-                            for fid in family_ids:
-                                deleted += storage.delete_entity_all_versions(fid)
+                            if hasattr(storage, 'batch_delete_entities'):
+                                deleted = storage.batch_delete_entities(family_ids)
+                            else:
+                                deleted = 0
+                                for fid in family_ids:
+                                    deleted += storage.delete_entity_all_versions(fid)
                             results[action] = {"status": "done", "deleted_families": len(family_ids), "deleted_versions": deleted}
                     else:
                         results[action] = {"status": "skipped", "reason": "当前存储后端不支持"}
@@ -4272,9 +4275,12 @@ def create_app(
                             "dry_run": True,
                         }
                     else:
-                        deleted = 0
-                        for fid in family_ids:
-                            deleted += processor.storage.delete_entity_all_versions(fid)
+                        if hasattr(processor.storage, 'batch_delete_entities'):
+                            deleted = processor.storage.batch_delete_entities(family_ids)
+                        else:
+                            deleted = 0
+                            for fid in family_ids:
+                                deleted += processor.storage.delete_entity_all_versions(fid)
                         results["isolated_entities"] = {
                             "message": f"已删除 {len(family_ids)} 个孤立实体（{deleted} 个版本）",
                             "deleted_families": len(family_ids),
