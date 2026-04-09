@@ -175,7 +175,12 @@ def entity_to_concept(e: Entity) -> Concept:
 
 
 def relation_to_concept(r: Relation) -> Concept:
-    """将旧 Relation 转换为统一 Concept"""
+    """将旧 Relation 转换为统一 Concept
+
+    注意：connects 使用 absolute_id（版本级ID），迁移时需通过
+    存储层查询或缓存将 absolute_id 映射为 family_id，
+    以确保 Concept.connects 指向逻辑身份而非特定版本。
+    """
     return Concept(
         family_id=r.family_id,
         role=ROLE_RELATION,
@@ -184,6 +189,7 @@ def relation_to_concept(r: Relation) -> Concept:
         summary=r.summary,
         confidence=r.confidence,
         attributes=r.attributes,
+        # TODO(Phase 0): 迁移时需将 absolute_id 解析为 family_id
         connects=[r.entity1_absolute_id, r.entity2_absolute_id],
         versions=[ConceptVersion(
             absolute_id=r.absolute_id,

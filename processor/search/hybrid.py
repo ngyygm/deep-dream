@@ -150,11 +150,14 @@ class HybridSearcher:
                 fid = getattr(item, 'family_id', None)
                 key = fid if fid else item.absolute_id
                 rrf_score = weight / (k + rank + 1)
-                existing = scores.get(key)
-                if existing is not None and existing >= rrf_score:
-                    continue  # 已有更高分版本，跳过
-                scores[key] = scores.get(key, 0) + rrf_score
-                items[key] = item
+                # RRF 核心逻辑：多路分数累加，同一实体取最高排名的贡献
+                # 即使已在其他路径出现过，当前路径的分数仍需累加
+                if key not in scores:
+                    scores[key] = 0.0
+                scores[key] += rrf_score
+                # 保留排名最高的版本（最近出现的那条）
+                if key not in items:
+                    items[key] = item
 
         # 按融合分数降序排列
         sorted_items = sorted(scores.items(), key=lambda x: x[1], reverse=True)
