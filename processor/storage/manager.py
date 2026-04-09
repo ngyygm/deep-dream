@@ -595,6 +595,64 @@ class StorageManager:
             current_id = row[0]
         return current_id
 
+    def resolve_family_ids(self, family_ids: List[str]) -> Dict[str, str]:
+        """批量解析 family_id 到 canonical id。一次 SQL 查询获取所有重定向。
+
+        Returns:
+            {原始 family_id: canonical family_id} 映射
+        """
+        if not family_ids:
+            return {}
+        unique_ids = list(set(fid.strip() for fid in family_ids if fid and fid.strip()))
+        if not unique_ids:
+            return {}
+
+        conn = self._get_conn()
+        cursor = conn.cursor()
+
+        # 一次查询获取所有重定向
+        placeholders = ",".join("?" * len(unique_ids))
+        cursor.execute(
+            f"SELECT source_family_id, target_family_id FROM entity_redirects WHERE source_family_id IN ({placeholders})",
+            unique_ids,
+        )
+        redirect_map: Dict[str, str] = {}
+        for row in cursor.fetchall():
+            redirect_map[row[0]] = row[1]
+
+        # 沿重定向链解析（通常链长 <= 2，几乎不需要再次查库）
+        result: Dict[str, str] = {}
+        needs_second_hop: Dict[str, str] = {}  # source -> intermediate target
+
+        for fid in unique_ids:
+            target = redirect_map.get(fid)
+            if target and target != fid:
+                needs_second_hop[fid] = target
+            else:
+                result[fid] = fid
+
+        # 第二跳：检查中间 target 是否也有重定向
+        if needs_second_hop:
+            intermediate_ids = list(set(needs_second_hop.values()))
+            placeholders2 = ",".join("?" * len(intermediate_ids))
+            cursor.execute(
+                f"SELECT source_family_id, target_family_id FROM entity_redirects WHERE source_family_id IN ({placeholders2})",
+                intermediate_ids,
+            )
+            second_hop = {row[0]: row[1] for row in cursor.fetchall()}
+
+            for fid, intermediate in needs_second_hop.items():
+                final = second_hop.get(intermediate, intermediate)
+                result[fid] = final
+
+        # 为未在 unique_ids 中的原始 family_ids 生成映射
+        output: Dict[str, str] = {}
+        for fid in family_ids:
+            key = fid.strip() if fid else ""
+            output[fid] = result.get(key, key)
+
+        return output
+
     def resolve_family_id(self, family_id: str) -> str:
         """解析 family_id 到当前 canonical id；不存在映射时原样返回。"""
         conn = self._get_conn()
@@ -1461,11 +1519,16 @@ class StorageManager:
             LIMIT ?
         """, (query, limit))
 
+        rows = cursor.fetchall()
+        # 批量解析 family_id 重定向
+        raw_fids = [row[1] for row in rows]
+        resolved_map = self.resolve_family_ids(raw_fids) if raw_fids else {}
+
         entities = []
-        for row in cursor.fetchall():
+        for row in rows:
             entities.append(Entity(
                 absolute_id=row[0],
-                family_id=self.resolve_family_id(row[1]),
+                family_id=resolved_map.get(row[1], row[1]),
                 name=row[2],
                 content=row[3],
                 event_time=self._safe_parse_datetime(row[4]),
@@ -1965,9 +2028,7 @@ class StorageManager:
             all_raw_fids.add(e1)
             all_raw_fids.add(e2)
 
-        canonical_map: Dict[str, Optional[str]] = {}
-        for fid in all_raw_fids:
-            canonical_map[fid] = self.resolve_family_id(fid)
+        canonical_map: Dict[str, Optional[str]] = self.resolve_family_ids(all_raw_fids)
 
         # 过滤有效的 canonical pairs
         valid_canonical_fids = set()
@@ -3504,10 +3565,14 @@ class StorageManager:
         """
         if not family_ids:
             return {}
+        # 批量解析重定向
+        resolved_map = self.resolve_family_ids(family_ids)
         canonical_ids = []
+        seen_canonical = set()
         for family_id in family_ids:
-            canonical_id = self.resolve_family_id(family_id)
-            if canonical_id and canonical_id not in canonical_ids:
+            canonical_id = resolved_map.get(family_id, family_id)
+            if canonical_id and canonical_id not in seen_canonical:
+                seen_canonical.add(canonical_id)
                 canonical_ids.append(canonical_id)
         if not canonical_ids:
             return {}
@@ -3617,11 +3682,8 @@ class StorageManager:
 
     def batch_delete_entities(self, family_ids: List[str]) -> int:
         """批量删除实体 — 单次事务，替代 N 次单独删除。"""
-        resolved = []
-        for fid in family_ids:
-            r = self.resolve_family_id(fid)
-            if r:
-                resolved.append(r)
+        resolved_map = self.resolve_family_ids(family_ids)
+        resolved = list(set(r for r in resolved_map.values() if r))
         if not resolved:
             return 0
         with self._write_lock:

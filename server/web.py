@@ -227,13 +227,22 @@ class GraphWebServer:
                             family_id_to_hop_level[entity.family_id] = 0
                         
                         # 获取版本数量
-                        try:
-                            versions = self.storage.get_entity_versions(entity.family_id)
-                            version_count = len(versions) if versions else 0
-                        except Exception as e:
-                            print(f"⚠️  获取实体版本失败 (family_id={entity.family_id}): {str(e)}")
-                            versions = []
-                            version_count = 1  # 默认值
+                        is_focus_entity = focus_family_id and focus_family_id == entity.family_id and focus_absolute_id
+                        if is_focus_entity:
+                            # focus实体需要完整版本列表来计算当前版本索引
+                            try:
+                                versions = self.storage.get_entity_versions(entity.family_id)
+                                version_count = len(versions) if versions else 0
+                            except Exception as e:
+                                print(f"⚠️  获取实体版本失败 (family_id={entity.family_id}): {str(e)}")
+                                versions = []
+                                version_count = 1
+                        else:
+                            # 非focus实体只需计数，避免加载完整版本列表
+                            try:
+                                version_count = self.storage.get_entity_version_count(entity.family_id)
+                            except Exception:
+                                version_count = 1
                         
                         # 在focus模式下，显示当前版本索引（如 "实体名 (3/5版本)"）
                         # 否则显示总版本数（如 "实体名 (5版本)"）
@@ -671,8 +680,14 @@ class GraphWebServer:
                                 related_entity = None
 
                         if related_entity:
-                            versions = self.storage.get_entity_versions(related_entity.family_id)
-                            version_count = len(versions)
+                            # 仅在 focus 模式需要计算版本索引时加载完整版本列表，
+                            # 否则只用 COUNT 查询
+                            need_version_index = focus_family_id and absolute_id
+                            if need_version_index:
+                                versions = self.storage.get_entity_versions(related_entity.family_id)
+                                version_count = len(versions)
+                            else:
+                                version_count = self.storage.get_entity_version_count(related_entity.family_id)
 
                             # 在focus模式下，显示该实体版本的索引
                             if focus_family_id and absolute_id:
@@ -1207,12 +1222,18 @@ class GraphWebServer:
                         'error': f'未找到关系 {family_id} 的版本'
                     }), 404
                 
+                # 批量获取所有版本引用的实体，避免逐版本 2 次 DB 查询
+                all_abs_ids = set()
+                for rel in versions:
+                    all_abs_ids.add(rel.entity1_absolute_id)
+                    all_abs_ids.add(rel.entity2_absolute_id)
+                entity_map = self.storage.get_entities_by_absolute_ids(list(all_abs_ids)) if all_abs_ids else {}
+
                 versions_data = []
                 for i, relation in enumerate(versions, 1):
-                    # 获取实体信息
-                    entity1 = self.storage.get_entity_by_absolute_id(relation.entity1_absolute_id)
-                    entity2 = self.storage.get_entity_by_absolute_id(relation.entity2_absolute_id)
-                    
+                    entity1 = entity_map.get(relation.entity1_absolute_id)
+                    entity2 = entity_map.get(relation.entity2_absolute_id)
+
                     versions_data.append({
                         'index': i,
                         'total': len(versions),
