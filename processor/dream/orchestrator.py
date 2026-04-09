@@ -9,10 +9,12 @@
 
 import json
 import logging
+import time
 import uuid
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ..llm.prompts import (
     GENERATE_RELATION_CONTENT_SYSTEM_PROMPT,
@@ -27,6 +29,59 @@ VALID_STRATEGIES = [
     "random", "orphan", "hub", "time_gap",
     "cross_community", "low_confidence",
 ]
+
+
+class DreamHistory:
+    """跨周期探索历史 — 避免重复检查相同的实体对。
+
+    使用 LRU 淘汰策略：保留最近 _max_entries 条检查记录，
+    超出时淘汰最早的记录，允许过期对在足够多的周期后被重新探索。
+    """
+
+    def __init__(self, max_entries: int = 2000):
+        # key: frozenset(entity1_fid, entity2_fid), value: cycle_id
+        self._checked_pairs: OrderedDict = OrderedDict()
+        # 记录每个 cycle 探索过的实体 family_ids
+        self._explored_entities: Dict[str, Set[str]] = {}
+        self._max_entries = max_entries
+
+    def mark_checked(self, fid1: str, fid2: str, cycle_id: str) -> None:
+        """记录一对实体已被检查。"""
+        key = frozenset((fid1, fid2))
+        self._checked_pairs[key] = cycle_id
+        # LRU 淘汰
+        if len(self._checked_pairs) > self._max_entries:
+            self._checked_pairs.popitem(last=False)
+
+    def was_checked(self, fid1: str, fid2: str) -> bool:
+        """判断一对实体是否已被检查过。"""
+        key = frozenset((fid1, fid2))
+        if key in self._checked_pairs:
+            # 移到末尾（最近访问）
+            self._checked_pairs.move_to_end(key)
+            return True
+        return False
+
+    def mark_explored(self, cycle_id: str, entity_ids: Set[str]) -> None:
+        """记录一个周期探索过的实体。"""
+        self._explored_entities[cycle_id] = entity_ids
+        # 只保留最近 10 个周期
+        if len(self._explored_entities) > 10:
+            oldest = next(iter(self._explored_entities))
+            del self._explored_entities[oldest]
+
+    def get_recently_explored(self, last_n: int = 3) -> Set[str]:
+        """获取最近 N 个周期探索过的所有实体 family_id。"""
+        recent_keys = list(self._explored_entities.keys())[-last_n:]
+        result: Set[str] = set()
+        for k in recent_keys:
+            result.update(self._explored_entities[k])
+        return result
+
+    def reset(self) -> None:
+        """清空历史。"""
+        self._checked_pairs.clear()
+        self._explored_entities.clear()
 
 
 @dataclass
@@ -70,14 +125,18 @@ class DreamOrchestrator:
         self.llm_client = llm_client
         self.config = config or DreamConfig()
         self._searcher = GraphTraversalSearcher(storage)
+        self._history = DreamHistory()
+        self._cycle_count = 0
 
     def run(self) -> DreamResult:
         """执行一轮完整的梦境周期。"""
         config = self.config
+        self._cycle_count += 1
         cycle_id = f"dream_{uuid.uuid4().hex[:12]}"
 
-        # Step 1: 种子选择
-        seeds = self._select_seeds(config)
+        # Step 1: 种子选择（排除近期探索过的实体）
+        recently_explored = self._history.get_recently_explored(last_n=3)
+        seeds = self._select_seeds(config, recently_explored)
         if not seeds:
             return DreamResult(
                 cycle_id=cycle_id,
@@ -108,6 +167,11 @@ class DreamOrchestrator:
             cycle_id, cycle_summary, seen_ids, relations_created, config,
         )
 
+        # Step 5: 更新跨周期历史
+        self._history.mark_explored(cycle_id, seen_ids)
+        for r in relations_created:
+            self._history.mark_checked(r["entity1_id"], r["entity2_id"], cycle_id)
+
         return DreamResult(
             cycle_id=cycle_id,
             strategy=config.strategy,
@@ -127,13 +191,16 @@ class DreamOrchestrator:
     # Step 1: 种子选择
     # ------------------------------------------------------------------
 
-    def _select_seeds(self, config: DreamConfig) -> List[Dict[str, Any]]:
-        """从存储层获取梦境种子。"""
+    def _select_seeds(self, config: DreamConfig, recently_explored: Optional[Set[str]] = None) -> List[Dict[str, Any]]:
+        """从存储层获取梦境种子（排除近期已探索的实体）。"""
+        exclude = set(config.exclude_ids)
+        if recently_explored:
+            exclude.update(recently_explored)
         try:
             return self.storage.get_dream_seeds(
                 strategy=config.strategy,
                 count=config.seed_count,
-                exclude_ids=config.exclude_ids,
+                exclude_ids=list(exclude),
             )
         except Exception as e:
             logger.warning("Dream: 种子选择失败: %s", e)
@@ -226,14 +293,22 @@ class DreamOrchestrator:
         Returns:
             (relations_created, pairs_checked)
         """
-        # 收集所有待检查的配对
+        # 收集所有待检查的配对（跳过历史已检查的）
         pairs: List[tuple] = []
+        skipped_by_history = 0
         for exp in explored:
             seed_info = exp["seed"]
             seed_fid = seed_info["family_id"]
             seed_name = seed_info["name"]
             for neighbor in exp["neighbors"][:config.max_neighbors_per_seed]:
-                pairs.append((seed_fid, seed_name, neighbor["family_id"], neighbor["name"]))
+                nb_fid = neighbor["family_id"]
+                if self._history.was_checked(seed_fid, nb_fid):
+                    skipped_by_history += 1
+                    continue
+                pairs.append((seed_fid, seed_name, nb_fid, neighbor["name"]))
+
+        if skipped_by_history:
+            logger.info("Dream: 跳过 %d 对历史已检查的配对", skipped_by_history)
 
         if not pairs:
             return [], 0
@@ -257,11 +332,13 @@ class DreamOrchestrator:
                     break
                 pair = futures[future]
                 pairs_checked += 1
+                # 记录此配对已被检查（无论结果如何）
+                seed_fid, seed_name, nb_fid, nb_name = pair
+                self._history.mark_checked(seed_fid, nb_fid, cycle_id)
                 try:
                     result = future.result()
                     if result is None:
                         continue
-                    seed_fid, seed_name, nb_fid, nb_name = pair
 
                     # 保存 dream relation
                     confidence = result["confidence"]
