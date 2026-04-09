@@ -3812,24 +3812,24 @@ class Neo4jStorageManager:
             return 0.5
 
     def get_relations_by_family_ids(self, family_ids: List[str], limit: int = 100) -> List[Relation]:
-        """获取指定实体 ID 列表相关的所有关系。"""
+        """获取指定实体 ID 列表相关的所有关系。
+
+        使用单次 Cypher 查询完成 family_id→absolute_id 解析 + 关系检索，
+        避免逐个 family_id 调用 resolve_family_id + get_entity_by_family_id 的 N+1 问题。
+        """
         if not family_ids:
             return []
         with self._session() as session:
-            abs_ids = []
-            for fid in family_ids:
-                resolved = self.resolve_family_id(fid)
-                if resolved:
-                    entity = self.get_entity_by_family_id(resolved)
-                    if entity:
-                        abs_ids.append(entity.absolute_id)
-            if not abs_ids:
-                return []
+            # 单次查询：解析 family_id → 最新 absolute_id，再查找关联关系
             result = session.run("""
+                MATCH (e:Entity)
+                WHERE e.family_id IN $family_ids AND e.invalid_at IS NULL
+                WITH collect(DISTINCT e.uuid) AS abs_ids
+                UNWIND abs_ids AS aid
                 MATCH (r:Relation)
-                WHERE (r.entity1_absolute_id IN $abs_ids OR r.entity2_absolute_id IN $abs_ids)
+                WHERE (r.entity1_absolute_id = aid OR r.entity2_absolute_id = aid)
                   AND r.invalid_at IS NULL
-                RETURN r.uuid AS uuid, r.family_id AS family_id,
+                RETURN DISTINCT r.uuid AS uuid, r.family_id AS family_id,
                        r.entity1_absolute_id AS entity1_absolute_id,
                        r.entity2_absolute_id AS entity2_absolute_id,
                        r.content AS content, r.event_time AS event_time,
@@ -3839,12 +3839,94 @@ class Neo4jStorageManager:
                        r.attributes AS attributes, r.confidence AS confidence,
                        r.provenance AS provenance
                 LIMIT $limit
-            """, abs_ids=abs_ids, limit=limit)
+            """, family_ids=family_ids, limit=limit)
             return [_neo4j_record_to_relation(r) for r in result]
 
     def get_entity_degree(self, family_id: str) -> int:
         """获取实体的度（连接数）。"""
         return len(self.get_relations_by_family_ids([family_id]))
+
+    def batch_bfs_traverse(self, seed_family_ids: List[str], max_depth: int = 2, max_nodes: int = 50) -> Tuple[List[Entity], List[Relation], Dict[str, int]]:
+        """批量 BFS 遍历：从种子实体出发，单次 Cypher 查询完成多跳扩展。
+
+        Args:
+            seed_family_ids: 种子实体的 family_id 列表
+            max_depth: 最大扩展深度
+            max_nodes: 最多返回的节点数
+
+        Returns:
+            (entities, relations, hop_map) 其中 hop_map[family_id] = hop 距离
+        """
+        if not seed_family_ids:
+            return [], [], {}
+
+        with self._session() as session:
+            # 第一步：解析种子 family_id → absolute_id
+            seed_result = session.run("""
+                MATCH (e:Entity)
+                WHERE e.family_id IN $family_ids AND e.invalid_at IS NULL
+                RETURN e.family_id AS family_id, e.uuid AS absolute_id
+            """, family_ids=seed_family_ids)
+
+            seed_abs_to_fid = {}
+            seed_fids = []
+            for rec in seed_result:
+                fid = rec["family_id"]
+                aid = rec["absolute_id"]
+                seed_abs_to_fid[aid] = fid
+                seed_fids.append(fid)
+
+            if not seed_fids:
+                return [], [], {}
+
+            # 第二步：Cypher BFS — 从种子 absolute_id 出发，沿关系边扩展
+            # 通过 Entity 节点的 RELATES_TO 边进行遍历（已有边类型）
+            result = session.run("""
+                MATCH (seed:Entity)
+                WHERE seed.family_id IN $seed_fids AND seed.invalid_at IS NULL
+                WITH collect(seed) AS seeds
+                UNWIND seeds AS s
+                MATCH path = (s)-[:RELATES_TO*1..%d]-(neighbor:Entity)
+                WHERE neighbor.invalid_at IS NULL
+                WITH DISTINCT neighbor, length(path) AS dist
+                ORDER BY dist ASC
+                LIMIT $max_nodes
+                RETURN neighbor.uuid AS absolute_id,
+                       neighbor.family_id AS family_id,
+                       neighbor.name AS name,
+                       neighbor.content AS content,
+                       neighbor.event_time AS event_time,
+                       neighbor.processed_time AS processed_time,
+                       neighbor.episode_id AS episode_id,
+                       neighbor.source_document AS source_document,
+                       neighbor.summary AS summary,
+                       neighbor.confidence AS confidence,
+                       neighbor.attributes AS attributes,
+                       neighbor.community_id AS community_id,
+                       dist AS dist
+            """ % max_depth, seed_fids=seed_fids, max_nodes=max_nodes)
+
+            entities = []
+            hop_map = {}
+            for rec in result:
+                ent = _neo4j_record_to_entity(rec)
+                if ent and ent.family_id not in hop_map:
+                    entities.append(ent)
+                    hop_map[ent.family_id] = rec["dist"]
+
+            # 种子实体也加入（如果 BFS 没有返回）
+            for fid in seed_fids:
+                if fid not in hop_map:
+                    entity = self.get_entity_by_family_id(fid)
+                    if entity and entity not in entities:
+                        entities.insert(0, entity)
+                        hop_map[fid] = 0
+
+            # 第三步：批量获取这些实体之间的关系
+            discovered_fids = list(hop_map.keys())
+            relations = self.get_relations_by_family_ids(discovered_fids, limit=max_nodes * 3) if discovered_fids else []
+
+            return entities, relations, hop_map
 
     def save_episode_mentions(self, episode_id: str, entity_absolute_ids: List[str], context: str = ""):
         """记录 Episode 提及的实体。"""

@@ -22,6 +22,9 @@ class GraphTraversalSearcher:
     ) -> List[Entity]:
         """从种子实体 BFS 扩展，返回发现的实体。
 
+        优先使用存储层的 batch_bfs_traverse（单次 Cypher 查询），
+        回退到逐节点扩展（兼容 SQLite 后端）。
+
         Args:
             seed_family_ids: 种子实体的 family_id 列表
             max_depth: 最大扩展深度（跳数）
@@ -30,6 +33,25 @@ class GraphTraversalSearcher:
         Returns:
             发现的实体列表（包含种子实体）
         """
+        # 优先使用批量 BFS（Neo4j 后端）
+        if hasattr(self.storage, 'batch_bfs_traverse'):
+            try:
+                entities, _, _ = self.storage.batch_bfs_traverse(
+                    seed_family_ids, max_depth=max_depth, max_nodes=max_nodes)
+                return entities[:max_nodes]
+            except Exception as e:
+                logger.debug("batch_bfs_traverse failed, fallback to iterative: %s", e)
+
+        # 回退：逐节点扩展（SQLite 后端）
+        return self._iterative_bfs(seed_family_ids, max_depth, max_nodes)
+
+    def _iterative_bfs(
+        self,
+        seed_family_ids: List[str],
+        max_depth: int = 2,
+        max_nodes: int = 50,
+    ) -> List[Entity]:
+        """逐节点 BFS 扩展（兼容 SQLite 后端）。"""
         visited: Set[str] = set()
         queue: List[Tuple[str, int]] = []  # (family_id, depth)
         result_entities: List[Entity] = []
