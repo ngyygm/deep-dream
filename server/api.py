@@ -1417,10 +1417,10 @@ def create_app(
                 final_relations.append(r)
 
             # --- 第六步：可选重排序 ---
-            if reranker == "node_degree" and hasattr(storage, 'get_entity_degree'):
-                degree_map = {}
-                for e in final_entities:
-                    degree_map[e.family_id] = storage.get_entity_degree(e.family_id)
+            if reranker == "node_degree" and hasattr(storage, 'batch_get_entity_degrees'):
+                degree_map = storage.batch_get_entity_degrees(
+                    [e.family_id for e in final_entities]
+                )
                 searcher_hybrid = HybridSearcher(storage)
                 scored = [(e, 1.0) for e in final_entities]
                 reranked = searcher_hybrid.node_degree_rerank(scored, degree_map)
@@ -1774,9 +1774,12 @@ def create_app(
             if len(family_ids) > 100:
                 return err("单次批量删除上限 100 个", 400)
             cascade = body.get("cascade", False)
-            total = 0
-            for eid in family_ids:
-                total += processor.storage.delete_entity_all_versions(eid)
+            if hasattr(processor.storage, 'batch_delete_entities'):
+                total = processor.storage.batch_delete_entities(family_ids)
+            else:
+                total = 0
+                for eid in family_ids:
+                    total += processor.storage.delete_entity_all_versions(eid)
             return ok({"message": f"已删除 {total} 个实体版本", "count": len(family_ids)})
         except Exception as e:
             return err(str(e), 500)
@@ -2134,8 +2137,11 @@ def create_app(
             if len(family_ids) > 100:
                 return err("单次批量删除上限 100 个", 400)
             total = 0
-            for rid in family_ids:
-                total += processor.storage.delete_relation_all_versions(rid)
+            if hasattr(processor.storage, 'batch_delete_relations'):
+                total = processor.storage.batch_delete_relations(family_ids)
+            else:
+                for rid in family_ids:
+                    total += processor.storage.delete_relation_all_versions(rid)
             return ok({"message": f"已删除 {total} 个关系版本", "count": len(family_ids)})
         except Exception as e:
             return err(str(e), 500)

@@ -3476,6 +3476,45 @@ class StorageManager:
         """删除关系的所有版本。返回删除的行数。"""
         return self.delete_relation_by_id(family_id)
 
+    def batch_delete_entities(self, family_ids: List[str]) -> int:
+        """批量删除实体 — 单次事务，替代 N 次单独删除。"""
+        resolved = []
+        for fid in family_ids:
+            r = self.resolve_family_id(fid)
+            if r:
+                resolved.append(r)
+        if not resolved:
+            return 0
+        with self._write_lock:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            placeholders = ",".join("?" * len(resolved))
+            cursor.execute(f"DELETE FROM entities WHERE family_id IN ({placeholders})", tuple(resolved))
+            count = cursor.rowcount
+            try:
+                cursor.execute(f"DELETE FROM entity_fts WHERE family_id IN ({placeholders})", tuple(resolved))
+            except Exception:
+                pass
+            conn.commit()
+            return count
+
+    def batch_delete_relations(self, family_ids: List[str]) -> int:
+        """批量删除关系 — 单次事务，替代 N 次单独删除。"""
+        if not family_ids:
+            return 0
+        with self._write_lock:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            placeholders = ",".join("?" * len(family_ids))
+            cursor.execute(f"DELETE FROM relations WHERE family_id IN ({placeholders})", tuple(family_ids))
+            count = cursor.rowcount
+            try:
+                cursor.execute(f"DELETE FROM relation_fts WHERE family_id IN ({placeholders})", tuple(family_ids))
+            except Exception:
+                pass
+            conn.commit()
+            return count
+
     def get_family_ids_by_names(self, names: list) -> dict:
         """按名称批量查询实 family_id（每个 name 取最新版本）。
 
@@ -3927,6 +3966,148 @@ class StorageManager:
             (family_id, family_id)
         )
         return cursor.fetchone()[0]
+
+    def batch_get_entity_degrees(self, family_ids: List[str]) -> Dict[str, int]:
+        """批量获取实体度数 — 单次查询替代 N 次 get_entity_degree。"""
+        if not family_ids:
+            return {}
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        placeholders = ",".join("?" * len(family_ids))
+        cursor.execute(
+            f"SELECT e.family_id, COUNT(r.id) "
+            f"FROM entities e "
+            f"LEFT JOIN relations r ON ("
+            f"(r.entity1_absolute_id = e.id OR r.entity2_absolute_id = e.id) "
+            f"AND r.invalid_at IS NULL) "
+            f"WHERE e.family_id IN ({placeholders}) "
+            f"GROUP BY e.family_id",
+            tuple(family_ids),
+        )
+        result = {row[0]: row[1] for row in cursor.fetchall()}
+        # 补零：未出现在结果中的 family_id 度数为 0
+        for fid in family_ids:
+            result.setdefault(fid, 0)
+        return result
+
+    def batch_get_entity_profiles(self, family_ids: List[str]) -> List[Dict[str, Any]]:
+        """批量获取实体档案（entity + relations + version_count），消除 N+1。
+
+        替代对每个 family_id 分别调用 get_entity_by_family_id +
+        get_entity_relations_by_family_id + get_entity_version_count 的 N+1 模式。
+
+        Returns:
+            [{"family_id", "entity", "relations", "version_count"}, ...]
+        """
+        if not family_ids:
+            return []
+
+        # Step 1: 解析 canonical family_ids
+        canonical_map: Dict[str, str] = {}  # original -> canonical
+        canonical_set: List[str] = []
+        for fid in family_ids:
+            resolved = self.resolve_family_id(fid)
+            canonical = resolved if resolved else fid
+            canonical_map[fid] = canonical
+            if canonical not in canonical_map.values() or canonical == canonical_map.get(fid):
+                if canonical not in canonical_set:
+                    canonical_set.append(canonical)
+
+        if not canonical_set:
+            return [{"family_id": fid, "entity": None, "relations": [], "version_count": 0} for fid in family_ids]
+
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        placeholders = ",".join("?" * len(canonical_set))
+
+        # Step 2: 批量获取最新实体（窗口函数取每组最新一条）
+        cursor.execute(f"""
+            SELECT id, family_id, name, content, event_time, processed_time,
+                   episode_id, source_document, embedding, summary, attributes, confidence
+            FROM (
+                SELECT *, ROW_NUMBER() OVER (PARTITION BY family_id ORDER BY processed_time DESC) AS rn
+                FROM entities WHERE family_id IN ({placeholders})
+            ) WHERE rn = 1
+        """, tuple(canonical_set))
+
+        entity_map: Dict[str, Entity] = {}
+        for row in cursor.fetchall():
+            fid = row[1]
+            entity_map[fid] = Entity(
+                absolute_id=row[0], family_id=row[1], name=row[2], content=row[3],
+                event_time=self._safe_parse_datetime(row[4]),
+                processed_time=self._safe_parse_datetime(row[5]),
+                episode_id=row[6], source_document=row[7] if len(row) > 7 else '',
+                embedding=row[8] if len(row) > 8 else None,
+                summary=row[9] if len(row) > 9 else None,
+                attributes=row[10] if len(row) > 10 else None,
+                confidence=row[11] if len(row) > 11 else None,
+            )
+
+        # Step 3: 批量获取版本数
+        version_counts = self.get_entity_version_counts(canonical_set)
+
+        # Step 4: 批量获取所有相关 absolute_ids，再批量查关系
+        cursor.execute(f"""
+            SELECT family_id, id FROM entities
+            WHERE family_id IN ({placeholders}) AND invalid_at IS NULL
+        """, tuple(canonical_set))
+
+        fid_to_aids: Dict[str, List[str]] = {}
+        all_aids: List[str] = []
+        for row in cursor.fetchall():
+            fid_to_aids.setdefault(row[0], []).append(row[1])
+            all_aids.append(row[1])
+
+        relations_map: Dict[str, List[Relation]] = {fid: [] for fid in canonical_set}
+        if all_aids:
+            aid_placeholders = ",".join("?" * len(all_aids))
+            cursor.execute(f"""
+                SELECT id, family_id, entity1_absolute_id, entity2_absolute_id,
+                       content, event_time, processed_time, episode_id, source_document
+                FROM relations
+                WHERE (entity1_absolute_id IN ({aid_placeholders})
+                    OR entity2_absolute_id IN ({aid_placeholders}))
+                  AND invalid_at IS NULL
+            """, tuple(all_aids) * 2)
+
+            all_rels = []
+            for row in cursor.fetchall():
+                all_rels.append(Relation(
+                    absolute_id=row[0], family_id=row[1] or "",
+                    entity1_absolute_id=row[2] or "", entity2_absolute_id=row[3] or "",
+                    content=row[4], event_time=self._safe_parse_datetime(row[5]),
+                    processed_time=self._safe_parse_datetime(row[6]),
+                    episode_id=row[7], source_document=row[8] if len(row) > 8 else '',
+                ))
+
+            # 分配关系到对应的 family_id
+            for rel in all_rels:
+                for fid, aids in fid_to_aids.items():
+                    if rel.entity1_absolute_id in aids or rel.entity2_absolute_id in aids:
+                        relations_map[fid].append(rel)
+
+        # Step 5: 组装结果
+        results = []
+        seen_fids = set()
+        for fid in family_ids:
+            canonical = canonical_map.get(fid, fid)
+            if canonical in seen_fids:
+                results.append({"family_id": fid, "entity": None, "relations": [], "version_count": 0})
+                continue
+            seen_fids.add(canonical)
+            entity = entity_map.get(canonical)
+            if entity:
+                results.append({
+                    "family_id": canonical,
+                    "entity": entity,
+                    "relations": relations_map.get(canonical, []),
+                    "version_count": version_counts.get(canonical, 1),
+                })
+            else:
+                results.append({"family_id": canonical, "entity": None, "relations": [], "version_count": 0})
+
+        return results
 
     # ========== Phase C: Episode MENTIONS ==========
 

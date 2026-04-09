@@ -1873,6 +1873,45 @@ class Neo4jStorageManager:
         """删除关系的所有版本。返回删除的行数。"""
         return self.delete_relation_by_id(family_id)
 
+    def batch_delete_entities(self, family_ids: List[str]) -> int:
+        """批量删除实体 — 单次事务，替代 N 次 DETACH DELETE。"""
+        resolved = []
+        for fid in family_ids:
+            r = self.resolve_family_id(fid)
+            if r:
+                resolved.append(r)
+        if not resolved:
+            return 0
+        with self._write_lock:
+            with self._session() as session:
+                result = session.run(
+                    "UNWIND $fids AS fid MATCH (e:Entity {family_id: fid}) DETACH DELETE e RETURN count(e) AS cnt",
+                    fids=resolved,
+                )
+                record = result.single()
+                count = record["cnt"] if record else 0
+            self._cache.invalidate("entity:")
+            self._cache.invalidate("resolve:")
+            self._cache.invalidate("sim_search:")
+            self._cache.invalidate("graph_stats")
+            return count
+
+    def batch_delete_relations(self, family_ids: List[str]) -> int:
+        """批量删除关系 — 单次事务，替代 N 次删除。"""
+        if not family_ids:
+            return 0
+        with self._write_lock:
+            with self._session() as session:
+                result = session.run(
+                    "UNWIND $fids AS fid MATCH (r:Relation {family_id: fid}) DELETE r RETURN count(r) AS cnt",
+                    fids=family_ids,
+                )
+                record = result.single()
+                count = record["cnt"] if record else 0
+            self._cache.invalidate("relation:")
+            self._cache.invalidate("graph_stats")
+            return count
+
     def get_family_ids_by_names(self, names: list) -> dict:
         """按名称批量查询 family_id。"""
         if not names:
@@ -3949,6 +3988,28 @@ class Neo4jStorageManager:
             """, fid=family_id)
             record = result.single()
             return record["cnt"] if record else 0
+
+    def batch_get_entity_degrees(self, family_ids: List[str]) -> Dict[str, int]:
+        """批量获取实体度数 — 单次 Cypher 查询替代 N 次 get_entity_degree。"""
+        if not family_ids:
+            return {}
+        with self._session() as session:
+            result = session.run("""
+                UNWIND $fids AS fid
+                MATCH (e:Entity) WHERE e.family_id = fid AND e.invalid_at IS NULL
+                WITH fid, collect(DISTINCT e.uuid) AS abs_ids
+                UNWIND abs_ids AS aid
+                OPTIONAL MATCH (r:Relation)
+                WHERE (r.entity1_absolute_id = aid OR r.entity2_absolute_id = aid)
+                  AND r.invalid_at IS NULL
+                RETURN fid, count(DISTINCT r) AS cnt
+            """, fids=family_ids)
+            degree_map = {}
+            for record in result:
+                degree_map[record["fid"]] = record["cnt"]
+        for fid in family_ids:
+            degree_map.setdefault(fid, 0)
+        return degree_map
 
     def batch_bfs_traverse(self, seed_family_ids: List[str], max_depth: int = 2, max_nodes: int = 50) -> Tuple[List[Entity], List[Relation], Dict[str, int]]:
         """批量 BFS 遍历：从种子实体出发，单次 Cypher 查询完成多跳扩展。
