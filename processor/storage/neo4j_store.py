@@ -3904,38 +3904,6 @@ class Neo4jStorageManager:
             """, fid=resolved, attributes=attributes)
         self._cache.invalidate("entity:")
 
-    def update_entity_confidence(self, family_id: str, confidence: float):
-        """更新实体置信度。"""
-        resolved = self.resolve_family_id(family_id)
-        if not resolved:
-            return
-        with self._session() as session:
-            session.run("""
-                MATCH (e:Entity {family_id: $fid})
-                WHERE e.invalid_at IS NULL
-                SET e.confidence = $confidence
-            """, fid=resolved, confidence=confidence)
-        self._cache.invalidate("entity:")
-
-    def compute_entity_confidence(self, family_id: str) -> float:
-        """计算实体置信度（基于被提及次数和更新新鲜度）。"""
-        try:
-            provenance = self.get_entity_provenance(family_id)
-            mention_count = len(provenance)
-            entity = self.get_entity_by_family_id(family_id)
-            if not entity:
-                return 0.0
-            base = 0.3
-            mention_score = min(mention_count * 0.1, 0.4)
-            freshness_score = 0.3
-            if entity.processed_time:
-                from datetime import timezone
-                age_days = (datetime.now(timezone.utc) - entity.processed_time).days
-                freshness_score = max(0.0, 0.3 - age_days * 0.01)
-            return round(min(base + mention_score + freshness_score, 1.0), 3)
-        except Exception:
-            return 0.5
-
     def get_relations_by_family_ids(self, family_ids: List[str], limit: int = 100) -> List[Relation]:
         """获取指定实体 ID 列表相关的所有关系。
 
@@ -3968,8 +3936,19 @@ class Neo4jStorageManager:
             return [_neo4j_record_to_relation(r) for r in result]
 
     def get_entity_degree(self, family_id: str) -> int:
-        """获取实体的度（连接数）。"""
-        return len(self.get_relations_by_family_ids([family_id]))
+        """获取实体的度（连接数）— 轻量 COUNT 查询，不物化 Relation 对象。"""
+        with self._session() as session:
+            result = session.run("""
+                MATCH (e:Entity) WHERE e.family_id = $fid AND e.invalid_at IS NULL
+                WITH collect(DISTINCT e.uuid) AS abs_ids
+                UNWIND abs_ids AS aid
+                MATCH (r:Relation)
+                WHERE (r.entity1_absolute_id = aid OR r.entity2_absolute_id = aid)
+                  AND r.invalid_at IS NULL
+                RETURN count(DISTINCT r) AS cnt
+            """, fid=family_id)
+            record = result.single()
+            return record["cnt"] if record else 0
 
     def batch_bfs_traverse(self, seed_family_ids: List[str], max_depth: int = 2, max_nodes: int = 50) -> Tuple[List[Entity], List[Relation], Dict[str, int]]:
         """批量 BFS 遍历：从种子实体出发，单次 Cypher 查询完成多跳扩展。
@@ -4105,16 +4084,6 @@ class Neo4jStorageManager:
                 MATCH (ep:Episode {uuid: $ep_id})-[m:MENTIONS]->()
                 DELETE m
             """, ep_id=episode_id)
-
-    def update_relation_provenance(self, family_id: str, provenance: str):
-        """更新关系的事实溯源信息。"""
-        with self._session() as session:
-            session.run("""
-                MATCH (r:Relation {family_id: $fid})
-                WHERE r.invalid_at IS NULL
-                SET r.provenance = $provenance
-            """, fid=family_id, provenance=provenance)
-        self._cache.invalidate("relation:")
 
     def save_dream_log(self, report):
         """保存梦境日志。"""
