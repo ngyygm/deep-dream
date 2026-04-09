@@ -4761,8 +4761,8 @@ def main() -> int:
                 )
                 try:
                     system_monitor.event_log.error("System", f"  排查示例: ss -tlnp | grep ':{port} ' 或 lsof -i :{port}")
-                except Exception:
-                    pass
+                except Exception as _e:
+                    logger.debug("端口排查提示失败: %s", _e)
             else:
                 system_monitor.event_log.error("System", "  已尝试自动换端口但仍失败，请检查系统权限或防火墙设置。")
             return 1
@@ -4823,16 +4823,16 @@ def main() -> int:
         if dashboard_ref is not None:
             try:
                 dashboard_ref.stop()
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug("关闭仪表盘失败: %s", _e)
         # 关闭所有图谱的数据库连接
         for gid in registry.list_graphs():
             try:
                 proc = registry.get_processor(gid)
                 if hasattr(proc, 'storage') and hasattr(proc.storage, 'close'):
                     proc.storage.close()
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug("关闭 graph %s 存储失败: %s", gid, _e)
         os._exit(0)
 
     signal.signal(signal.SIGTERM, _on_signal)
@@ -4842,15 +4842,15 @@ def main() -> int:
         if dashboard_ref is not None:
             try:
                 dashboard_ref.stop()
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug("atexit 关闭仪表盘失败: %s", _e)
         for gid in registry.list_graphs():
             try:
                 proc = registry.get_processor(gid)
                 if hasattr(proc, 'storage') and hasattr(proc.storage, 'close'):
                     proc.storage.close()
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug("atexit 关闭 graph %s 存储失败: %s", gid, _e)
 
     try:
         app.run(host=host, port=listen_port, debug=args.debug, threaded=threaded)

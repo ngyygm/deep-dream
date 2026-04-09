@@ -86,7 +86,8 @@ def _as_dict(obj: Any) -> Dict[str, Any]:
         return to_dict()
     try:
         return dict(obj)  # type: ignore[arg-type]
-    except Exception:
+    except Exception as _e:
+        _logging.getLogger(__name__).debug("_as_dict 转换失败: %s", _e)
         return {}
 
 
