@@ -1372,11 +1372,9 @@ class Neo4jStorageManager:
         """批量获取多个 family_id 的版本数量。"""
         if not family_ids:
             return {}
-        canonical_ids = []
-        for fid in family_ids:
-            canonical = self.resolve_family_id(fid)
-            if canonical and canonical not in canonical_ids:
-                canonical_ids.append(canonical)
+        # 批量解析重定向
+        resolved_map = self.resolve_family_ids(family_ids)
+        canonical_ids = list(set(r for r in resolved_map.values() if r))
         if not canonical_ids:
             return {}
         with self._session() as session:
@@ -1943,11 +1941,8 @@ class Neo4jStorageManager:
 
     def batch_delete_entities(self, family_ids: List[str]) -> int:
         """批量删除实体 — 单次事务，替代 N 次 DETACH DELETE。"""
-        resolved = []
-        for fid in family_ids:
-            r = self.resolve_family_id(fid)
-            if r:
-                resolved.append(r)
+        resolved_map = self.resolve_family_ids(family_ids)
+        resolved = list(set(r for r in resolved_map.values() if r))
         if not resolved:
             return 0
         with self._write_lock:
