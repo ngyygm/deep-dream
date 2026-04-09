@@ -28,7 +28,7 @@ _SEPARATOR_TAG_RE = re.compile(
 )
 
 
-def fuzzy_match_family_id(name: str, entity_name_to_id: dict) -> Optional[str]:
+def fuzzy_match_family_id(name: str, entity_name_to_id: dict) -> str | None:
     """模糊匹配实体名称到 family ID。
 
     匹配策略（按优先级）：
@@ -56,10 +56,9 @@ def fuzzy_match_family_id(name: str, entity_name_to_id: dict) -> Optional[str]:
             return eid
 
     # 3. 去除所有空白
-    import re as _re
-    name_nospace = _re.sub(r'\s+', '', name)
+    name_nospace = re.sub(r'\s+', '', name)
     for key, eid in entity_name_to_id.items():
-        if _re.sub(r'\s+', '', key) == name_nospace:
+        if re.sub(r'\s+', '', key) == name_nospace:
             return eid
 
     # 4. 包含关系（至少2字符，长度比 >= 0.5）
