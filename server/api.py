@@ -3563,8 +3563,8 @@ def create_app(
         try:
             processor = _get_processor()
             entities = processor.storage.get_all_entities(limit=30, exclude_embedding=True)
-            entity_count = processor.storage.get_entity_count()
-            relation_count = processor.storage.get_relation_count()
+            entity_count = processor.storage.count_unique_entities()
+            relation_count = processor.storage.count_unique_relations()
 
             import asyncio
             loop = asyncio.new_event_loop()
