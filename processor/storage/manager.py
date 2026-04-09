@@ -322,8 +322,8 @@ class StorageManager:
                             if st in ("queued", "running"):
                                 lines.append(json.dumps(rec, ensure_ascii=False))
                                 migrated += 1
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            logger.debug("task json parse failed: %s", exc)
                     if lines:
                         queue_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
                         wprint(f"[迁移] {len(old_json_files)} 个旧任务文件 → queue.jsonl（{migrated} 个未完成）")
@@ -331,8 +331,8 @@ class StorageManager:
                     for jf in old_json_files:
                         try:
                             jf.unlink()
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            logger.debug("task file unlink failed: %s", exc)
                 except Exception as e:
                     wprint(f"[迁移警告] 任务文件迁移失败: {e}")
 
@@ -407,8 +407,8 @@ class StorageManager:
                         cache_id = meta.get("absolute_id") or meta.get("id")
                         if cache_id:
                             self._id_to_doc_hash[cache_id] = doc_dir.name
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.debug("directory rename failed: %s", exc)
 
     @staticmethod
     def _safe_parse_datetime(value: Any, default: Optional[datetime] = None) -> Optional[datetime]:
@@ -817,7 +817,8 @@ class StorageManager:
             try:
                 with open(cache_file, "r", encoding="utf-8") as f:
                     metadata = json.load(f)
-            except Exception:
+            except Exception as exc:
+                logger.debug("episode load failed: %s", exc)
                 continue
 
             if activity_type and metadata.get("activity_type") != activity_type:
@@ -857,7 +858,8 @@ class StorageManager:
             try:
                 with open(cache_file, "r", encoding="utf-8") as f:
                     metadata = json.load(f)
-            except Exception:
+            except Exception as exc:
+                logger.debug("episode load failed: %s", exc)
                 continue
 
             if activity_type and metadata.get("activity_type") != activity_type:
@@ -886,7 +888,8 @@ class StorageManager:
                     cache_file.stem if cache_file.suffix == ".json" else
                     (cache_file.parent.name if cache_file.name == "meta.json" else cache_file.stem)
                 )
-            except Exception:
+            except Exception as exc:
+                logger.debug("episode load failed: %s", exc)
                 continue
             if cache is None:
                 continue
@@ -915,7 +918,8 @@ class StorageManager:
             try:
                 with open(meta_path, "r", encoding="utf-8") as f:
                     metadata = json.load(f)
-            except Exception:
+            except Exception as exc:
+                logger.debug("episode load failed: %s", exc)
                 continue
             if document_path and metadata.get("document_path") != document_path:
                 continue
@@ -933,7 +937,8 @@ class StorageManager:
             try:
                 with open(meta_path, "r", encoding="utf-8") as f:
                     metadata = json.load(f)
-            except Exception:
+            except Exception as exc:
+                logger.debug("episode load failed: %s", exc)
                 continue
             if document_path and metadata.get("document_path") != document_path:
                 continue
@@ -956,7 +961,8 @@ class StorageManager:
                 json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
             )
             return True
-        except Exception:
+        except Exception as exc:
+            logger.debug("extraction save failed: %s", exc)
             return False
 
     def load_extraction_result(self, doc_hash: str,
@@ -976,8 +982,8 @@ class StorageManager:
             relations = data.get("relations", [])
             if isinstance(entities, list) and isinstance(relations, list):
                 return (entities, relations)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("extraction result save failed: %s", exc)
         return None
 
     # ========== Entity 操作 ==========
@@ -1033,16 +1039,16 @@ class StorageManager:
                         INSERT INTO entity_fts(rowid, name, content, family_id)
                         VALUES (?, ?, ?, ?)
                     """, (entity.absolute_id, entity.name, entity.content, entity.family_id))
-                except Exception:
-                    pass  # FTS 写入失败不影响主流程
+                except Exception as exc:
+                    logger.warning("FTS entity write failed: %s", exc)
                 # 设置旧版本 invalid_at
                 try:
                     cursor.execute("""
                         UPDATE entities SET invalid_at = ?
                         WHERE family_id = ? AND id != ? AND invalid_at IS NULL
                     """, (entity.event_time.isoformat(), entity.family_id, entity.absolute_id))
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("FTS invalid_at update failed: %s", exc)
                 # 单次 commit 包含所有写操作
                 conn.commit()
             except Exception:
@@ -1069,7 +1075,8 @@ class StorageManager:
             if embeddings is not None:
                 try:
                     embedding_blob = np.array(embeddings[idx], dtype=np.float32).tobytes()
-                except Exception:
+                except Exception as exc:
+                    logger.debug("embedding encode failed: %s", exc)
                     embedding_blob = None
             entity.embedding = embedding_blob
             rows.append((
@@ -1101,8 +1108,8 @@ class StorageManager:
                     VALUES (?, ?, ?, ?)
                 """, fts_rows)
                 conn.commit()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("embedding decode failed: %s", exc)
 
     def get_entity_by_family_id(self, family_id: str) -> Optional[Entity]:
         """根据family_id获取最新版本的实体"""
@@ -1313,9 +1320,10 @@ class StorageManager:
         try:
             embedding_array = np.frombuffer(row[0], dtype=np.float32)
             return embedding_array[:num_values].tolist()
-        except Exception:
+        except Exception as exc:
+            logger.debug("entity embedding preview failed: %s", exc)
             return None
-    
+
     def get_relation_embedding_preview(self, absolute_id: str, num_values: int = 5) -> Optional[List[float]]:
         """获取关系embedding向量的前N个值"""
         conn = self._get_conn()
@@ -1335,9 +1343,10 @@ class StorageManager:
         try:
             embedding_array = np.frombuffer(row[0], dtype=np.float32)
             return embedding_array[:num_values].tolist()
-        except Exception:
+        except Exception as exc:
+            logger.debug("relation embedding preview failed: %s", exc)
             return None
-    
+
     def get_entity_versions(self, family_id: str) -> List[Entity]:
         """获取实体的所有版本"""
         family_id = self.resolve_family_id(family_id)
@@ -1797,16 +1806,16 @@ class StorageManager:
                         INSERT INTO relation_fts(rowid, content, family_id)
                         VALUES (?, ?, ?)
                     """, (relation.absolute_id, relation.content, relation.family_id))
-                except Exception:
-                    pass  # FTS 写入失败不影响主流程
+                except Exception as exc:
+                    logger.warning("FTS relation write failed: %s", exc)
                 # 设置旧版本 invalid_at
                 try:
                     cursor.execute("""
                         UPDATE relations SET invalid_at = ?
                         WHERE family_id = ? AND id != ? AND invalid_at IS NULL
                     """, (relation.event_time.isoformat(), relation.family_id, relation.absolute_id))
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("FTS relation invalid_at update failed: %s", exc)
                 # 单次 commit 包含所有写操作
                 conn.commit()
             except Exception:
@@ -1834,7 +1843,8 @@ class StorageManager:
             if embeddings is not None:
                 try:
                     embedding_blob = np.array(embeddings[idx], dtype=np.float32).tobytes()
-                except Exception:
+                except Exception as exc:
+                    logger.debug("embedding encode failed: %s", exc)
                     embedding_blob = None
             relation.embedding = embedding_blob
             rows.append((
@@ -2891,8 +2901,8 @@ class StorageManager:
                 try:
                     meta = json.loads(meta_path.read_text(encoding="utf-8"))
                     return meta.get("text")
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("meta.json text read failed: %s", exc)
 
         # 2. 回退到旧结构
         metadata_path = self.cache_json_dir / f"{cache_id}.json"
@@ -2903,8 +2913,8 @@ class StorageManager:
                 with open(metadata_path, "r", encoding="utf-8") as f:
                     metadata = json.load(f)
                 return metadata.get("text")
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("old cache json read failed: %s", exc)
 
         return None
 
@@ -2940,24 +2950,24 @@ class StorageManager:
         if meta_path.exists():
             try:
                 result["meta"] = json.loads(meta_path.read_text(encoding="utf-8"))
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("meta.json read failed: %s", exc)
 
         # 读取 original.txt
         original_path = doc_dir / "original.txt"
         if original_path.exists():
             try:
                 result["original"] = original_path.read_text(encoding="utf-8")
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("original.txt read failed: %s", exc)
 
         # 读取 cache.md
         cache_path = doc_dir / "cache.md"
         if cache_path.exists():
             try:
                 result["cache"] = cache_path.read_text(encoding="utf-8")
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("cache.md read failed: %s", exc)
 
         return result
 
@@ -2979,7 +2989,8 @@ class StorageManager:
                 continue
             try:
                 meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            except Exception:
+            except Exception as exc:
+                logger.debug("list_docs meta.json parse failed: %s", exc)
                 continue
 
             source_name = meta.get("source_document") or ""
@@ -3003,8 +3014,8 @@ class StorageManager:
                     st = original_path.stat()
                     text_len = st.st_size
                     processed_time_str = datetime.fromtimestamp(st.st_mtime).isoformat()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("original.txt stat failed: %s", exc)
 
             docs.append({
                 "source_name": source_name,
@@ -3500,8 +3511,8 @@ class StorageManager:
             # 清理 FTS 表
             try:
                 cursor.execute("DELETE FROM entity_fts WHERE family_id = ?", (family_id,))
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("FTS delete failed: %s", exc)
             return cursor.rowcount
 
     def delete_relation_by_id(self, family_id: str) -> int:
@@ -3514,8 +3525,8 @@ class StorageManager:
             # 清理 FTS 表
             try:
                 cursor.execute("DELETE FROM relation_fts WHERE family_id = ?", (family_id,))
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("FTS delete failed: %s", exc)
             conn.commit()
             return count
 
@@ -3544,8 +3555,8 @@ class StorageManager:
             count = cursor.rowcount
             try:
                 cursor.execute(f"DELETE FROM entity_fts WHERE family_id IN ({placeholders})", tuple(resolved))
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("FTS delete failed: %s", exc)
             conn.commit()
             return count
 
@@ -3561,8 +3572,8 @@ class StorageManager:
             count = cursor.rowcount
             try:
                 cursor.execute(f"DELETE FROM relation_fts WHERE family_id IN ({placeholders})", tuple(family_ids))
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("FTS delete failed: %s", exc)
             conn.commit()
             return count
 

@@ -325,8 +325,8 @@ class Neo4jStorageManager:
                     cache_id = meta.get("absolute_id") or meta.get("id")
                     if cache_id:
                         self._id_to_doc_hash[cache_id] = doc_dir.name
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Failed to read doc meta.json: %s", e)
 
     # ------------------------------------------------------------------
     # 连接管理
@@ -448,8 +448,8 @@ class Neo4jStorageManager:
         """关闭 Neo4j 驱动和向量存储连接。"""
         try:
             self._driver.close()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Error closing Neo4j driver: %s", e)
         self._vector_store.close()
 
     # ------------------------------------------------------------------
@@ -655,8 +655,8 @@ class Neo4jStorageManager:
                         source_document=meta.get("source_document", ""),
                         activity_type=meta.get("activity_type"),
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Failed to load episode %s from file: %s", cache_id, e)
         return None
 
     def _iter_cache_meta_files(self) -> List[Path]:
@@ -724,7 +724,8 @@ class Neo4jStorageManager:
                 meta = json.loads(meta_file.read_text(encoding="utf-8"))
                 cache_id = meta.get("absolute_id") or meta.get("id") or meta_file.parent.name
                 cache = self.load_episode(cache_id)
-            except Exception:
+            except Exception as e:
+                logger.debug("Skipping episode file %s during search: %s", meta_file, e)
                 continue
             if cache is None:
                 continue
@@ -773,7 +774,8 @@ class Neo4jStorageManager:
                         source_document=meta.get("source_document", ""),
                         activity_type=meta.get("activity_type"),
                     )
-            except Exception:
+            except Exception as e:
+                logger.debug("Skipping meta file during doc_hash lookup: %s", e)
                 continue
         return None
 
@@ -818,7 +820,8 @@ class Neo4jStorageManager:
                 json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
             )
             return True
-        except Exception:
+        except Exception as e:
+            logger.debug("Failed to save extraction result for doc_hash=%s: %s", doc_hash, e)
             return False
 
     def load_extraction_result(self, doc_hash: str,
@@ -833,7 +836,8 @@ class Neo4jStorageManager:
         try:
             data = json.loads(extraction_path.read_text(encoding="utf-8"))
             return data.get("entities", []), data.get("relations", [])
-        except Exception:
+        except Exception as e:
+            logger.debug("Failed to load extraction result for doc_hash=%s: %s", doc_hash, e)
             return None
 
     # ------------------------------------------------------------------
@@ -955,7 +959,8 @@ class Neo4jStorageManager:
                             if norm > 0:
                                 emb_arr = emb_arr / norm
                             embedding_blob = emb_arr.tobytes()
-                        except Exception:
+                        except Exception as e:
+                            logger.debug("Embedding decode failed for entity index %d: %s", idx, e)
                             embedding_blob = None
                     entity.embedding = embedding_blob
 
@@ -1831,7 +1836,8 @@ class Neo4jStorageManager:
                 try:
                     self._vector_store.delete_batch("relation_vectors",
                         [r.absolute_id for r in self.get_relation_versions(family_id)])
-                except Exception:
+                except Exception as e:
+                    logger.warning("Failed to clean up relation vectors for %s: %s", family_id, e)
                     pass
                 self._cache.invalidate("relation:")
                 self._cache.invalidate("graph_stats")
@@ -1861,8 +1867,8 @@ class Neo4jStorageManager:
                 try:
                     self._vector_store.delete_batch("entity_vectors",
                         [e.absolute_id for e in self.get_entity_versions(family_id)])
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning("Failed to clean up entity vectors for %s: %s", family_id, e)
                 self._cache.invalidate("entity:")
                 self._cache.invalidate("resolve:")
                 self._cache.invalidate("sim_search:")
@@ -1969,7 +1975,8 @@ class Neo4jStorageManager:
                         seen_fids.add(fid)
                         entities.append(_neo4j_record_to_entity(record))
                 return entities
-        except Exception:
+        except Exception as e:
+            logger.debug("find_entity_by_name_prefix failed for '%s': %s", prefix, e)
             return []
 
     # ------------------------------------------------------------------
@@ -2252,7 +2259,8 @@ class Neo4jStorageManager:
                         if norm > 0:
                             emb_arr = emb_arr / norm
                         embedding_blob = emb_arr.tobytes()
-                    except Exception:
+                    except Exception as e:
+                        logger.debug("Embedding decode failed for relation index %d: %s", idx, e)
                         embedding_blob = None
                 relation.embedding = embedding_blob
 
@@ -3055,16 +3063,16 @@ class Neo4jStorageManager:
                 try:
                     meta = json.loads(meta_path.read_text(encoding="utf-8"))
                     return meta.get("text")
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Failed to read episode text from meta.json: %s", e)
         # 回退旧结构
         metadata_path = self.cache_json_dir / f"{cache_id}.json"
         if metadata_path.exists():
             try:
                 meta = json.loads(metadata_path.read_text(encoding="utf-8"))
                 return meta.get("text", "")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Failed to read episode text from fallback json: %s", e)
         return None
 
     def get_doc_dir(self, doc_hash: str) -> Optional[Path]:
@@ -3085,7 +3093,8 @@ class Neo4jStorageManager:
                 "cache": cache_path.read_text(encoding="utf-8") if cache_path.exists() else "",
                 "meta": json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {},
             }
-        except Exception:
+        except Exception as e:
+            logger.debug("Failed to read doc content for '%s': %s", filename, e)
             return None
 
     def list_docs(self) -> List[Dict[str, Any]]:
@@ -3102,7 +3111,8 @@ class Neo4jStorageManager:
                     "document_path": meta.get("document_path", ""),
                     "dir_name": meta_file.parent.name,
                 })
-            except Exception:
+            except Exception as e:
+                logger.debug("Skipping meta file during list_docs: %s", e)
                 continue
         return results
 
