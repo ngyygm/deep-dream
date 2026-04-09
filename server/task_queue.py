@@ -6,6 +6,7 @@ Remember 任务队列：异步记忆写入任务队列（串行滑窗处理）�
 from __future__ import annotations
 
 import json
+import logging
 import queue as _queue
 import re
 import sys
@@ -19,7 +20,7 @@ from typing import Any, Dict, List, Optional
 
 from server.monitor import LOG_MODE_DETAIL
 
-
+logger = logging.getLogger(__name__)
 def _estimate_chunk_count(text_length: int, window_size: int, overlap: int) -> int:
     if text_length <= 0:
         return 1
@@ -381,9 +382,10 @@ class RememberJournal:
                             if rec.get("task_id") == tid:
                                 continue  # 移除旧行
                         except Exception:
-                            pass  # 保留无法解析的行
+                            pass  # 保留无法解析的行（ corrupted JSON ）
                         lines.append(raw_line)
-            except Exception:
+            except Exception as e:
+                logger.warning("读取任务日志失败: %s", e)
                 lines = []
 
         # 活跃任务写回，终态任务不写（从队列中移除）
@@ -412,9 +414,9 @@ class RememberJournal:
                         if rec.get("task_id") == task_id:
                             return rec
                     except Exception:
-                        continue
-        except Exception:
-            pass
+                        continue  # 跳过损坏的 JSON 行
+        except Exception as e:
+            logger.debug("查找任务记录失败 %s: %s", task_id, e)
         return None
 
     def iter_records(self) -> List[Dict[str, Any]]:
@@ -430,9 +432,9 @@ class RememberJournal:
                     try:
                         out.append(json.loads(raw_line))
                     except Exception:
-                        continue
-        except Exception:
-            pass
+                        continue  # 跳过损坏的 JSON 行
+        except Exception as e:
+            logger.debug("遍历任务记录失败: %s", e)
         return out
 
 
@@ -721,10 +723,10 @@ class RememberTaskQueue:
                     with self._lock:
                         self._tasks[tid] = task
                     self._persist(task)
-                except Exception:
+                except Exception as e:
+                    logger.debug("恢复暂停任务 %s 失败: %s", tid, e)
                     continue
                 continue
-            if st in ("queued", "running"):
                 op = rec.get("original_path")
                 if not op or not Path(op).exists():
                     rec2 = dict(rec)
@@ -734,8 +736,8 @@ class RememberTaskQueue:
                     try:
                         tdead = _remember_task_from_record(rec2, text="")
                         self._journal.write(tdead)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug("写入恢复失败记录 %s: %s", tid, e)
                     self._log_warn(f"[Remember] 恢复跳过 task_id={_short_task_id(str(tid))}: 原文缺失")
                     continue
                 try:
@@ -864,8 +866,8 @@ class RememberTaskQueue:
         if op and Path(op).exists():
             try:
                 text = Path(op).read_text(encoding="utf-8")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("读取任务原文失败 %s: %s", op, e)
         return _remember_task_from_record(rec, text=text)
 
     def list_tasks(self, limit: int = 50) -> List[Dict]:
@@ -911,8 +913,8 @@ class RememberTaskQueue:
                 p = Path(task.original_path)
                 if p.exists() and "originals" in p.parts:
                     p.unlink(missing_ok=True)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("删除原文文件失败 %s: %s", task.original_path, e)
 
         detail = "（已从待处理队列移除）" if removed_from_queue else "（已标记删除，待 worker 跳过）"
         self._log_info(
@@ -992,8 +994,8 @@ class RememberTaskQueue:
                     p = Path(task.original_path)
                     if p.exists() and "originals" in p.parts:
                         p.unlink(missing_ok=True)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("删除原文文件失败 %s: %s", task.original_path, e)
             self._log_info(
                 f"[Remember] 删除暂停任务: task_id={_short_task_id(task_id)}, "
                 f"source_name={task.source_name!r}"
@@ -1079,7 +1081,8 @@ class RememberTaskQueue:
                 continue
             try:
                 stats = processor.get_runtime_stats() or {}
-            except Exception:
+            except Exception as e:
+                logger.debug("获取 processor %s runtime stats 失败: %s", gid, e)
                 continue
             for key in totals:
                 totals[key] += int(stats.get(key, 0) or 0)
@@ -1393,8 +1396,8 @@ class RememberTaskQueue:
                         p = Path(task.original_path)
                         if p.exists() and "originals" in p.parts:
                             p.unlink(missing_ok=True)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug("清理原文文件失败: %s", e)
                 self._queue.task_done()
 
     def _trim_history(self):

@@ -712,20 +712,6 @@ class Neo4jStorageManager:
                 }
         return None
 
-    def get_entity_count(self) -> int:
-        """返回实体总数。"""
-        with self._session() as session:
-            result = session.run("MATCH (e:Entity) RETURN count(e) AS cnt")
-            record = result.single()
-            return record["cnt"] if record else 0
-
-    def get_relation_count(self) -> int:
-        """返回关系总数。"""
-        with self._session() as session:
-            result = session.run("MATCH (r:Relation) RETURN count(r) AS cnt")
-            record = result.single()
-            return record["cnt"] if record else 0
-
     def search_episodes_by_bm25(self, query: str, limit: int = 20) -> List[Episode]:
         """遍历 docs/ 目录搜索 Episode（简单文本匹配，与 SQLite 版本一致）。"""
         if not query:
@@ -1947,13 +1933,6 @@ class Neo4jStorageManager:
         except Exception:
             return []
 
-    def get_total_entity_count(self) -> int:
-        """获取不重复 family_id 数量。"""
-        try:
-            return self.count_unique_entities()
-        except Exception:
-            return 0
-
     # ------------------------------------------------------------------
     # BM25 Full-Text Search
     # ------------------------------------------------------------------
@@ -3097,7 +3076,7 @@ class Neo4jStorageManager:
                                             use_mixed_search: bool = False,
                                             content_snippet_length: int = 50,
                                             progress_callback: Optional[callable] = None) -> Dict[str, set]:
-        """通过 embedding 相似度查找相关实体。"""
+        """通过 embedding 相似度查找相关实体（向量化计算）。"""
         all_entities = self.get_all_entities(exclude_embedding=True)
         if not all_entities:
             return {}
@@ -3111,71 +3090,34 @@ class Neo4jStorageManager:
         if embeddings is None:
             return {}
 
-        # 计算相似度
-        entity_pairs: Dict[str, set] = {}
         n = len(all_entities)
-        for i in range(n):
-            if progress_callback:
-                progress_callback(i, n)
-            for j in range(i + 1, n):
-                emb_i = np.array(embeddings[i], dtype=np.float32)
-                emb_j = np.array(embeddings[j], dtype=np.float32)
-                dot = np.dot(emb_i, emb_j)
-                norm_i = np.linalg.norm(emb_i)
-                norm_j = np.linalg.norm(emb_j)
-                sim = float(dot / (norm_i * norm_j + 1e-9))
-                if sim >= similarity_threshold:
-                    eid_i = all_entities[i].family_id
-                    eid_j = all_entities[j].family_id
-                    entity_pairs.setdefault(eid_i, set()).add(eid_j)
-                    entity_pairs.setdefault(eid_j, set()).add(eid_i)
+        if n < 2:
+            return {}
+
+        if progress_callback:
+            progress_callback(0, n)
+
+        # 向量化余弦相似度：构建矩阵，一次性计算
+        emb_matrix = np.array(embeddings, dtype=np.float32)
+        norms = np.linalg.norm(emb_matrix, axis=1, keepdims=True)
+        norms = np.maximum(norms, 1e-9)
+        emb_normed = emb_matrix / norms
+        sim_matrix = emb_normed @ emb_normed.T
+
+        # 上三角定位超过阈值的对
+        rows, cols = np.where(np.triu(sim_matrix >= similarity_threshold, k=1))
+
+        entity_pairs: Dict[str, set] = {}
+        for i, j in zip(rows, cols):
+            eid_i = all_entities[int(i)].family_id
+            eid_j = all_entities[int(j)].family_id
+            entity_pairs.setdefault(eid_i, set()).add(eid_j)
+            entity_pairs.setdefault(eid_j, set()).add(eid_i)
+
+        if progress_callback:
+            progress_callback(n, n)
 
         return entity_pairs
-
-    def get_entities_grouped_by_similarity(self, similarity_threshold: float = 0.6) -> List[List[Entity]]:
-        """按相似度分组实体（Union-Find）。"""
-        all_entities = self.get_all_entities(exclude_embedding=True)
-        if not all_entities:
-            return []
-
-        if not self.embedding_client or not self.embedding_client.is_available():
-            return []
-
-        texts = [f"{e.name} {e.content[:self.entity_content_snippet_length]}" for e in all_entities]
-        embeddings = self.embedding_client.encode(texts)
-        if embeddings is None:
-            return []
-
-        n = len(all_entities)
-        parent = list(range(n))
-
-        def find(x):
-            while parent[x] != x:
-                parent[x] = parent[parent[x]]
-                x = parent[x]
-            return x
-
-        def union(x, y):
-            px, py = find(x), find(y)
-            if px != py:
-                parent[px] = py
-
-        for i in range(n):
-            for j in range(i + 1, n):
-                emb_i = np.array(embeddings[i], dtype=np.float32)
-                emb_j = np.array(embeddings[j], dtype=np.float32)
-                dot = np.dot(emb_i, emb_j)
-                norm_i = np.linalg.norm(emb_i)
-                norm_j = np.linalg.norm(emb_j)
-                sim = float(dot / (norm_i * norm_j + 1e-9))
-                if sim >= similarity_threshold:
-                    union(i, j)
-
-        groups: Dict[int, List[Entity]] = {}
-        for i in range(n):
-            groups.setdefault(find(i), []).append(all_entities[i])
-
-        return [group for group in groups.values() if len(group) > 1]
 
     def merge_entity_families(self, target_family_id: str, source_family_ids: List[str],
                               skip_name_check: bool = False) -> Dict[str, Any]:

@@ -11,9 +11,11 @@ from __future__ import annotations
 
 import threading
 import time
+import logging
 from collections import Counter, deque
 from typing import Any, Deque, Dict, List, Optional
 
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # 日志模式常量
@@ -230,7 +232,8 @@ class GraphMonitor:
                 "relations": total_relations,
                 "episodes": total_episodes,
             }
-        except Exception:
+        except Exception as e:
+            logger.warning("收集图谱统计失败: %s", e)
             return {"entities": 0, "relations": 0, "episodes": 0}
 
     def _collect_queue_stats(self) -> dict:
@@ -243,7 +246,8 @@ class GraphMonitor:
                 "tracked_count": snapshot["tracked_count"],
                 "active_tasks": snapshot.get("active_tasks", []),
             }
-        except Exception:
+        except Exception as e:
+            logger.warning("收集队列统计失败: %s", e)
             return {
                 "queued_count": 0,
                 "running_count": 0,
@@ -261,13 +265,14 @@ class GraphMonitor:
             if hasattr(self._queue, "get_runtime_stats_snapshot"):
                 try:
                     processor_stats = self._queue.get_runtime_stats_snapshot()
-                except Exception:
+                except Exception as e:
+                    logger.debug("获取 queue runtime stats 失败: %s", e)
                     processor_stats = {}
             if not processor_stats and hasattr(self._processor, "get_runtime_stats"):
                 try:
                     processor_stats = self._processor.get_runtime_stats()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("获取 processor runtime stats 失败: %s", e)
             remember_alive = sum(1 for n in names if n.startswith("remember-worker-"))
             window_alive = sum(1 for n in names if n.startswith("tmg-window"))
             llm_alive = sum(1 for n in names if n.startswith("tmg-llm"))
@@ -288,7 +293,8 @@ class GraphMonitor:
                 "llm_threads_busy": int(processor_stats.get("llm_semaphore_active", 0)),
                 "llm_threads_max": int(processor_stats.get("llm_semaphore_max", 0)),
             }
-        except Exception:
+        except Exception as e:
+            logger.warning("收集线程统计失败: %s", e)
             return {
                 "python_threads_total": 0,
                 "remember_worker_threads_alive": 0,
@@ -404,8 +410,8 @@ class SystemMonitor:
                 for t in tasks:
                     t["graph_id"] = gid
                 all_tasks.extend(tasks)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("列图 %s 任务失败: %s", gid, e)
         # 按创建时间降序排列
         all_tasks.sort(key=lambda t: t.get("created_at", 0), reverse=True)
         return all_tasks[:limit]
@@ -462,8 +468,8 @@ class SystemMonitor:
                 for t in tasks:
                     t["graph_id"] = gid
                 all_tasks.extend(tasks)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("列图 %s 任务失败(2): %s", gid, e)
         all_tasks.sort(key=lambda t: t.get("created_at", 0), reverse=True)
 
         # 3. logs

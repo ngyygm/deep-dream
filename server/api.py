@@ -4064,7 +4064,8 @@ def create_app(
                                     loop.close()
                                 storage.update_entity_summary(e.family_id, summary)
                                 evolved += 1
-                            except Exception:
+                            except Exception as e:
+                                logger.warning("evolve_entity_summary %s 失败: %s", e.family_id, e)
                                 failed += 1
                     results[action] = {"status": "done", "evolved": evolved, "failed": failed, "dry_run": dry_run}
 

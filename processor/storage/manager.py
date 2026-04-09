@@ -798,18 +798,6 @@ class StorageManager:
             activity_type=metadata.get("activity_type"),
         )
 
-    def get_entity_count(self) -> int:
-        """返回实体总数（去重 family_id）。"""
-        with self._conn() as conn:
-            row = conn.execute("SELECT COUNT(DISTINCT family_id) AS cnt FROM entities").fetchone()
-            return row["cnt"] if row else 0
-
-    def get_relation_count(self) -> int:
-        """返回关系总数（去重 family_id）。"""
-        with self._conn() as conn:
-            row = conn.execute("SELECT COUNT(DISTINCT family_id) AS cnt FROM relations").fetchone()
-            return row["cnt"] if row else 0
-
     def delete_episode(self, cache_id: str) -> int:
         """删除记忆缓存，返回删除的文件数。0 表示未找到。"""
         import shutil
@@ -3112,71 +3100,7 @@ class StorageManager:
                 result[family_id] = candidate_ids
         
         return result
-    
-    def get_entities_grouped_by_similarity(self, similarity_threshold: float = 0.6) -> List[List[Entity]]:
-        """
-        获取按名称相似度分组的实体
 
-        使用embedding向量计算实体之间的相似度，将相似的实体分组。
-        向量化余弦相似度计算，避免 Python 双重循环。
-
-        Args:
-            similarity_threshold: 相似度阈值，高于此值的实体会被分到同一组
-
-        Returns:
-            实体分组列表，每组包含相似的实体
-        """
-        entities_with_embeddings = self._get_entities_with_embeddings()
-
-        if not entities_with_embeddings:
-            return []
-
-        # 分离有/无 embedding 的实体
-        valid = [(i, e, emb) for i, (e, emb) in enumerate(entities_with_embeddings) if emb is not None]
-        if not valid:
-            return []
-
-        n = len(valid)
-        if n < 2:
-            return []
-
-        # 批量构建 embedding 矩阵 (n, dim)
-        emb_matrix = np.array([emb for _, _, emb in valid], dtype=np.float32)
-        # 归一化
-        norms = np.linalg.norm(emb_matrix, axis=1, keepdims=True)
-        norms = np.maximum(norms, 1e-9)
-        emb_normed = emb_matrix / norms
-
-        # 一次性计算余弦相似度矩阵 (n, n)
-        sim_matrix = emb_normed @ emb_normed.T
-
-        # 使用并查集合并
-        parent = list(range(n))
-
-        def find(x):
-            while parent[x] != x:
-                parent[x] = parent[parent[x]]
-                x = parent[x]
-            return x
-
-        def union(x, y):
-            px, py = find(x), find(y)
-            if px != py:
-                parent[px] = py
-
-        # 只遍历上三角，np.argwhere 高效定位超过阈值的对
-        rows, cols = np.where(np.triu(sim_matrix >= similarity_threshold, k=1))
-        for i, j in zip(rows, cols):
-            union(int(i), int(j))
-
-        # 构建分组
-        groups: Dict[int, List[Entity]] = {}
-        for idx_in_valid, entity, _ in valid:
-            root = find(idx_in_valid)
-            groups.setdefault(root, []).append(entity)
-
-        return [g for g in groups.values() if len(g) > 1]
-    
     def merge_entity_families(self, target_family_id: str, source_family_ids: List[str]) -> Dict[str, Any]:
         """
         将多个source_family_id的记录合并到target_family_id
@@ -3545,16 +3469,6 @@ class StorageManager:
             if name not in result:
                 result[name] = self.resolve_family_id(eid)
         return result
-
-    def get_total_entity_count(self) -> int:
-        """获取数据库中的实体总数（去重 family_id 后的数量）。"""
-        try:
-            conn = self._get_conn()
-            cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(DISTINCT family_id) FROM entities")
-            return cursor.fetchone()[0]
-        except Exception:
-            return 0
 
     def find_shortest_paths(self, source_family_id: str, target_family_id: str,
                             max_depth: int = 6, max_paths: int = 10) -> Dict[str, Any]:
