@@ -405,6 +405,7 @@ window.GraphUtils = (function () {
             to: r.entity2_absolute_id,
             color: edgeColor,
             dashes: dashes,
+            title: typeof escapeHtml !== 'undefined' ? escapeHtml(typeof truncate !== 'undefined' ? truncate(r.content || '', 80) : (r.content || '')) : (r.content || ''),
             smooth: {
               enabled: true,
               type: 'continuous',
