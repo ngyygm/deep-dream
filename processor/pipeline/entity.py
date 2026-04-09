@@ -520,6 +520,7 @@ class EntityProcessor:
                         "content": projection["content"],
                         "source_document": projection["entity"].source_document if projection.get("entity") else "",
                         "version_count": projection["version_count"],
+                        "entity": projection.get("entity"),
                         "lexical_score": lexical_score,
                         "dense_score": best_dense,
                         "combined_score": max(lexical_score, dense_name_score, dense_full_score),
@@ -581,7 +582,8 @@ class EntityProcessor:
         if (top["name"] == entity_name
             and top.get("combined_score", 0) >= 0.85
             and top.get("merge_safe", True)):
-            latest = self.storage.get_entity_by_family_id(top["family_id"])
+            # 优先使用候选中已携带的实体对象，避免重复 DB 查询
+            latest = top.get("entity") or self.storage.get_entity_by_family_id(top["family_id"])
             if latest:
                 if self._entity_tree_log():
                     wprint(f"  │  快捷路径：精确名称+高相似度({top.get('combined_score', 0):.2f})→复用 {latest.family_id}")
