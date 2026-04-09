@@ -3282,239 +3282,42 @@ def create_app(
           - max_relations（可选）：本轮最多创建关系数，默认 5
           - min_confidence（可选）：最低置信度阈值，默认 0.5
           - exclude_ids（可选）：排除的 family_id 列表
-          - wait（可选）：true 时同步等待完成（默认 true）
-          - timeout（可选）：超时秒数（默认 120）
-
-        返回：
-          - seeds: 使用的种子实体
-          - explored: 探索过的实体及其邻居
-          - relations_created: 创建的梦境关系列表
-          - cycle_summary: 本轮梦境摘要
+          - llm_concurrency（可选）：LLM 并发数，默认 3
         """
         try:
             body = request.get_json(silent=True) or {}
-            strategy = str(body.get("strategy", "random")).strip()
-            seed_count = min(int(body.get("seed_count", 3)), 10)
-            max_depth = min(int(body.get("max_depth", 2)), 4)
-            max_relations = min(int(body.get("max_relations", 5)), 20)
-            min_confidence = float(body.get("min_confidence", 0.5))
-            exclude_ids = body.get("exclude_ids") or body.get("exclude_family_ids") or []
-
-            valid_strategies = ["random", "orphan", "hub", "time_gap", "cross_community", "low_confidence"]
-            if strategy not in valid_strategies:
-                return err(f"无效策略: {strategy}，可选: {', '.join(valid_strategies)}", 400)
 
             processor = _get_processor()
             if not hasattr(processor.storage, 'get_dream_seeds'):
                 return err("DeepDream 不可用（需要 Neo4j 后端）", 404)
 
-            graph_id = request.graph_id or "default"
+            from processor.dream import DreamOrchestrator, DreamConfig, VALID_STRATEGIES
 
-            # Step 1: Get seeds
-            seeds = processor.storage.get_dream_seeds(
+            strategy = str(body.get("strategy", "random")).strip()
+            if strategy not in VALID_STRATEGIES:
+                return err(f"无效策略: {strategy}，可选: {', '.join(VALID_STRATEGIES)}", 400)
+
+            config = DreamConfig(
                 strategy=strategy,
-                count=seed_count,
-                exclude_ids=exclude_ids,
+                seed_count=int(body.get("seed_count", 3)),
+                max_depth=int(body.get("max_depth", 2)),
+                max_relations=int(body.get("max_relations", 5)),
+                min_confidence=float(body.get("min_confidence", 0.5)),
+                exclude_ids=body.get("exclude_ids") or body.get("exclude_family_ids") or [],
+                llm_concurrency=int(body.get("llm_concurrency", 3)),
             )
-            if not seeds:
-                return ok({
-                    "seeds": [],
-                    "explored": [],
-                    "relations_created": [],
-                    "cycle_summary": "图谱为空或无可用种子，梦境结束",
-                })
 
-            # Step 2: For each seed, explore neighbors via BFS
-            all_explored = []
-            seen_ids = set()
-            seed_family_ids = [s["family_id"] for s in seeds if s.get("family_id")]
-
-            # Use GraphTraversalSearcher for neighbor discovery (works with family_id)
-            try:
-                searcher = GraphTraversalSearcher(processor.storage)
-                bfs_entities = searcher.bfs_expand(seed_family_ids, max_depth=max_depth, max_nodes=50)
-            except Exception as exc:
-                logger.warning("dream_run: BFS遍历失败: %s", exc)
-                bfs_entities = []
-
-            # Build entity lookup: family_id -> entity info
-            entity_lookup = {}
-            for ent in bfs_entities:
-                fid = getattr(ent, 'family_id', None)
-                if fid:
-                    entity_lookup[fid] = {
-                        "family_id": fid,
-                        "name": getattr(ent, 'name', ''),
-                        "content": (getattr(ent, 'content', '') or '')[:500],
-                    }
-                    seen_ids.add(fid)
-            # Also add seeds themselves
-            for s in seeds:
-                fid = s.get("family_id")
-                if fid and fid not in entity_lookup:
-                    entity_lookup[fid] = {
-                        "family_id": fid,
-                        "name": s.get("name", ""),
-                        "content": (s.get("content") or "")[:500],
-                    }
-                    seen_ids.add(fid)
-
-            for seed in seeds:
-                fid = seed.get("family_id")
-                if not fid:
-                    continue
-                # Neighbors = all explored entities except the seed itself
-                neighbor_data = [
-                    {"family_id": eid, "name": info["name"], "content": info["content"][:200]}
-                    for eid, info in entity_lookup.items()
-                    if eid != fid
-                ]
-                all_explored.append({
-                    "seed": {"family_id": fid, "name": seed.get("name", "")},
-                    "neighbors": neighbor_data[:20],
-                    "neighbor_count": len(neighbor_data),
-                })
-
-            # Step 3: Generate a dream cycle ID
-            cycle_id = f"dream_{uuid.uuid4().hex[:12]}"
-
-            # Step 4: For each pair of explored entities, check for latent relationships
-            # Use LLM-based relation discovery between seed entities and their neighbors
-            relations_created = []
-            entity_pairs_checked = 0
-
-            for explored in all_explored:
-                if len(relations_created) >= max_relations:
-                    break
-                seed_info = explored["seed"]
-                seed_fid = seed_info["family_id"]
-                seed_name = seed_info["name"]
-
-                for neighbor in explored["neighbors"][:10]:
-                    if len(relations_created) >= max_relations:
-                        break
-                    nb_fid = neighbor["family_id"]
-                    nb_name = neighbor["name"]
-
-                    entity_pairs_checked += 1
-
-                    # Check if relation already exists between these entities
-                    try:
-                        existing_rels = processor.storage.get_relations_by_entities(seed_fid, nb_fid) if hasattr(processor.storage, 'get_relations_by_entities') else []
-                    except Exception as exc:
-                        logger.debug("dream_run: 检查已有关系 %s↔%s 失败: %s", seed_fid, nb_fid, exc)
-                        existing_rels = []
-                    if existing_rels:
-                        continue
-
-                    # Use LLM to judge if there's a latent relationship
-                    try:
-                        seed_entity = processor.storage.get_entity_by_family_id(seed_fid)
-                        nb_entity = processor.storage.get_entity_by_family_id(nb_fid)
-                        if not seed_entity or not nb_entity:
-                            continue
-
-                        # Quick LLM call to assess relationship potential
-                        from processor.llm.prompts import JUDGE_NEED_CREATE_RELATION_SYSTEM_PROMPT, GENERATE_RELATION_CONTENT_SYSTEM_PROMPT
-                        import json as _json
-
-                        judge_messages = [
-                            {"role": "system", "content": JUDGE_NEED_CREATE_RELATION_SYSTEM_PROMPT},
-                            {"role": "user", "content": (
-                                f"实体A: {seed_entity.name}\n描述: {(seed_entity.content or '')[:500]}\n\n"
-                                f"实体B: {nb_entity.name}\n描述: {(nb_entity.content or '')[:500]}\n\n"
-                                f"判断这两个实体之间是否存在明确的、有意义的关联。"
-                            )},
-                        ]
-                        judge_obj, _ = processor.llm_client.call_llm_until_json_parses(
-                            judge_messages,
-                            parse_fn=_json.loads,
-                            json_parse_retries=1,
-                            timeout=60,
-                        )
-                        if not judge_obj.get("need_create", False):
-                            continue
-
-                        judge_confidence = float(judge_obj.get("confidence", 0.5))
-
-                        # Generate relation content
-                        rel_messages = [
-                            {"role": "system", "content": GENERATE_RELATION_CONTENT_SYSTEM_PROMPT},
-                            {"role": "user", "content": (
-                                f"实体A: {seed_entity.name}\n描述: {(seed_entity.content or '')[:500]}\n\n"
-                                f"实体B: {nb_entity.name}\n描述: {(nb_entity.content or '')[:500]}\n\n"
-                                f"请生成描述这两个实体之间关系的自然语言。"
-                            )},
-                        ]
-                        rel_obj, _ = processor.llm_client.call_llm_until_json_parses(
-                            rel_messages,
-                            parse_fn=_json.loads,
-                            json_parse_retries=1,
-                            timeout=60,
-                        )
-                        rel_content = rel_obj.get("content", "").strip()
-                        if not rel_content or len(rel_content) < 10:
-                            continue
-
-                        # Use confidence from LLM judge, clamped to valid range
-                        confidence = max(0.1, min(1.0, judge_confidence))
-                        if confidence < min_confidence:
-                            continue
-                        reasoning = f"梦境发现：{seed_name} 与 {nb_name} 存在潜在关联（策略: {strategy}）"
-
-                        # Save dream relation
-                        result = processor.storage.save_dream_relation(
-                            entity1_id=seed_fid,
-                            entity2_id=nb_fid,
-                            content=rel_content,
-                            confidence=confidence,
-                            reasoning=reasoning,
-                            dream_cycle_id=cycle_id,
-                        )
-                        relations_created.append({
-                            "entity1_id": seed_fid,
-                            "entity1_name": seed_name,
-                            "entity2_id": nb_fid,
-                            "entity2_name": nb_name,
-                            "content": rel_content,
-                            "confidence": confidence,
-                            "result": result,
-                        })
-                    except Exception as exc:
-                        logger.warning("dream_run: 检查关系 %s↔%s 时出错: %s", seed_fid, nb_fid, exc)
-                        continue
-
-            # Step 5: Save dream episode
-            cycle_summary = (
-                f"梦境周期 {cycle_id}：策略={strategy}，种子={len(seeds)}，"
-                f"探索实体={len(seen_ids)}，检查配对={entity_pairs_checked}，"
-                f"创建关系={len(relations_created)}"
-            )
-            try:
-                processor.storage.save_dream_episode(
-                    content=cycle_summary,
-                    entities_examined=list(seen_ids)[:50],
-                    relations_created=[r.get("result", {}).get("family_id", "") for r in relations_created if r.get("result")],
-                    strategy_used=strategy,
-                    dream_cycle_id=cycle_id,
-                    relations_created_count=len(relations_created),
-                )
-            except Exception as exc:
-                logger.warning("dream_run: 保存梦境记录失败: %s", exc)
+            orchestrator = DreamOrchestrator(processor.storage, processor.llm_client, config)
+            result = orchestrator.run()
 
             return ok({
-                "cycle_id": cycle_id,
-                "strategy": strategy,
-                "seeds": [{"family_id": s.get("family_id"), "name": s.get("name", "")} for s in seeds],
-                "explored": all_explored,
-                "relations_created": relations_created,
-                "stats": {
-                    "seeds_count": len(seeds),
-                    "entities_explored": len(seen_ids),
-                    "pairs_checked": entity_pairs_checked,
-                    "relations_created_count": len(relations_created),
-                },
-                "cycle_summary": cycle_summary,
+                "cycle_id": result.cycle_id,
+                "strategy": result.strategy,
+                "seeds": result.seeds,
+                "explored": result.explored,
+                "relations_created": result.relations_created,
+                "stats": result.stats,
+                "cycle_summary": result.cycle_summary,
             })
         except Exception as e:
             return err(str(e), 500)
