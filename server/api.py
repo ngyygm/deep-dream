@@ -2949,7 +2949,7 @@ def create_app(
         """BFS 图遍历搜索。"""
         try:
             body = request.get_json(silent=True) or {}
-            seed_ids = body.get("seed_family_ids") or body.get("seed_family_ids", [])
+            seed_ids = body.get("seed_family_ids") or body.get("start_entity_ids", [])
             if not isinstance(seed_ids, list) or not seed_ids:
                 return err("seed_family_ids 需为非空数组", 400)
             max_depth = int(body.get("max_depth", 2))

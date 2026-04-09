@@ -668,14 +668,35 @@ class StorageManager:
             return canonical_target
 
     def register_entity_redirects(self, target_family_id: str, source_family_ids: List[str]) -> str:
-        """批量登记多个旧 family_id 指向同一 canonical id。"""
+        """批量登记多个旧 family_id 指向同一 canonical id（单次锁+单次 commit）。"""
         canonical_target = (target_family_id or "").strip()
         if not canonical_target:
             return canonical_target
-        for source_id in source_family_ids:
-            if source_id and source_id != canonical_target:
-                canonical_target = self.register_entity_redirect(source_id, canonical_target)
-        return canonical_target
+        valid_sources = [s for s in source_family_ids if s and s != canonical_target]
+        if not valid_sources:
+            return canonical_target
+        with self._write_lock:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            resolved_target = self._resolve_family_id_with_cursor(cursor, canonical_target)
+            if not resolved_target:
+                resolved_target = canonical_target
+            for source_id in valid_sources:
+                resolved_source = self._resolve_family_id_with_cursor(cursor, source_id)
+                if resolved_source == resolved_target:
+                    continue
+                cursor.execute(
+                    """
+                    INSERT INTO entity_redirects (source_family_id, target_family_id, updated_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(source_family_id) DO UPDATE SET
+                        target_family_id = excluded.target_family_id,
+                        updated_at = excluded.updated_at
+                    """,
+                    (source_id, resolved_target, datetime.now().isoformat()),
+                )
+            conn.commit()
+            return resolved_target
 
     # ========== Episode 操作 ==========
 
@@ -1056,14 +1077,12 @@ class StorageManager:
                     getattr(entity, 'confidence', None),
                     getattr(entity, 'content_format', 'plain'),
                 ))
-                conn.commit()
                 # 同步写入 FTS 表
                 try:
                     cursor.execute("""
                         INSERT INTO entity_fts(rowid, name, content, family_id)
                         VALUES (?, ?, ?, ?)
                     """, (entity.absolute_id, entity.name, entity.content, entity.family_id))
-                    conn.commit()
                 except Exception:
                     pass  # FTS 写入失败不影响主流程
                 # 设置旧版本 invalid_at
@@ -1072,9 +1091,10 @@ class StorageManager:
                         UPDATE entities SET invalid_at = ?
                         WHERE family_id = ? AND id != ? AND invalid_at IS NULL
                     """, (entity.event_time.isoformat(), entity.family_id, entity.absolute_id))
-                    conn.commit()
                 except Exception:
                     pass
+                # 单次 commit 包含所有写操作
+                conn.commit()
             except Exception:
                 conn.rollback()
                 raise
@@ -1375,22 +1395,21 @@ class StorageManager:
     def _get_entities_with_embeddings(self) -> List[tuple]:
         """
         获取所有实体的最新版本及其embedding
-        
+
         Returns:
             List of (Entity, embedding_array) tuples, embedding_array为None表示没有embedding
         """
         conn = self._get_conn()
         cursor = conn.cursor()
-        
-        # 获取每个family_id的最新版本及其embedding
+
+        # 使用窗口函数获取每个 family_id 的最新版本（O(N) 替代 O(N^2) 子查询）
         cursor.execute("""
             SELECT id, family_id, name, content, event_time, processed_time, episode_id, source_document, embedding
-            FROM entities e1
-            WHERE e1.processed_time = (
-                SELECT MAX(e2.processed_time)
-                FROM entities e2
-                WHERE e2.family_id = e1.family_id
+            FROM (
+                SELECT *, ROW_NUMBER() OVER (PARTITION BY family_id ORDER BY processed_time DESC) AS rn
+                FROM entities
             )
+            WHERE rn = 1
         """)
 
         results = []
@@ -1793,14 +1812,12 @@ class StorageManager:
                     getattr(relation, 'provenance', None),
                     getattr(relation, 'content_format', 'plain'),
                 ))
-                conn.commit()
                 # 同步写入 FTS 表
                 try:
                     cursor.execute("""
                         INSERT INTO relation_fts(rowid, content, family_id)
                         VALUES (?, ?, ?)
                     """, (relation.absolute_id, relation.content, relation.family_id))
-                    conn.commit()
                 except Exception:
                     pass  # FTS 写入失败不影响主流程
                 # 设置旧版本 invalid_at
@@ -1809,9 +1826,10 @@ class StorageManager:
                         UPDATE relations SET invalid_at = ?
                         WHERE family_id = ? AND id != ? AND invalid_at IS NULL
                     """, (relation.event_time.isoformat(), relation.family_id, relation.absolute_id))
-                    conn.commit()
                 except Exception:
                     pass
+                # 单次 commit 包含所有写操作
+                conn.commit()
             except Exception:
                 conn.rollback()
                 raise
