@@ -11,13 +11,6 @@ from ..storage.manager import StorageManager
 from ..llm.client import LLMClient
 from ..debug_log import log as dbg, log_section as dbg_section
 from ..utils import wprint, normalize_entity_pair
-from ..content_schema import (
-    RELATION_SECTIONS,
-    content_to_sections,
-    compute_section_diff,
-    has_any_change,
-    section_hash,
-)
 
 
 class RelationProcessor:

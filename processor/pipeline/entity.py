@@ -12,13 +12,12 @@ import numpy as np
 from ..models import Entity, Episode, ContentPatch
 from ..storage.manager import StorageManager
 from ..llm.client import LLMClient
-from ..utils import clean_markdown_code_blocks, clean_separator_tags, wprint
+from ..utils import wprint
 from ..content_schema import (
     ENTITY_SECTIONS,
     content_to_sections,
     compute_section_diff,
     has_any_change,
-    render_markdown_sections,
     section_hash,
 )
 

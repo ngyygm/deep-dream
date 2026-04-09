@@ -10,24 +10,10 @@
 from __future__ import annotations
 
 import datetime
-import os
 import threading
 
 _LOG_PATH: str | None = None
 _LOCK = threading.Lock()
-
-
-def init(log_path: str | None = None):
-    """初始化日志文件路径。在 processor 启动时调用一次。"""
-    global _LOG_PATH
-    with _LOCK:
-        _LOG_PATH = log_path
-        if _LOG_PATH:
-            os.makedirs(os.path.dirname(_LOG_PATH), exist_ok=True)
-        # 写入分隔线标记新一次运行
-        _write_raw(f"\n{'='*70}")
-        _write_raw(f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}] DeepDream Pipeline Debug Log - NEW SESSION")
-        _write_raw(f"{'='*70}\n")
 
 
 def _get_path() -> str:
