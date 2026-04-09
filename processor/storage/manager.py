@@ -847,6 +847,7 @@ class StorageManager:
 
         latest_cache = None
         latest_time = None
+        latest_cache_id = None
 
         for cache_file in cache_files:
             try:
@@ -866,7 +867,10 @@ class StorageManager:
             cache_time = self._safe_parse_datetime(metadata.get("event_time"), datetime.now())
             if latest_time is None or cache_time > latest_time:
                 latest_time = cache_time
-                latest_cache = self.load_episode(cache_id)
+                latest_cache_id = cache_id
+
+        if latest_cache_id:
+            latest_cache = self.load_episode(latest_cache_id)
 
         return latest_cache
 
