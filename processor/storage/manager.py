@@ -1973,13 +1973,104 @@ class StorageManager:
         ]
 
     def get_relations_by_entity_pairs(self, entity_pairs: List[Tuple[str, str]]) -> Dict[Tuple[str, str], List[Relation]]:
-        """批量获取多个实体对的关系，按无向 pair 返回。"""
+        """批量获取多个实体对的关系，按无向 pair 返回。
+
+        优化：批量解析所有 family_id → absolute_id，单次关系查询，按 pair 分组。
+        """
+        if not entity_pairs:
+            return {}
+
+        # 去重 pair keys
+        unique_pairs: Dict[Tuple[str, str], Tuple[str, str]] = {}
+        for e1, e2 in entity_pairs:
+            pair_key = tuple(sorted((e1, e2)))
+            if pair_key not in unique_pairs:
+                unique_pairs[pair_key] = (e1, e2)
+
+        # 批量解析所有 family_id → canonical
+        all_raw_fids = set()
+        for e1, e2 in unique_pairs.values():
+            all_raw_fids.add(e1)
+            all_raw_fids.add(e2)
+
+        canonical_map: Dict[str, Optional[str]] = {}
+        for fid in all_raw_fids:
+            canonical_map[fid] = self.resolve_family_id(fid)
+
+        # 过滤有效的 canonical pairs
+        valid_canonical_fids = set()
+        canonical_pairs: Dict[Tuple[str, str], Tuple[str, str]] = {}
+        for pair_key, (e1, e2) in unique_pairs.items():
+            c1 = canonical_map.get(e1)
+            c2 = canonical_map.get(e2)
+            if c1 and c2:
+                canonical_pair = tuple(sorted((c1, c2)))
+                if canonical_pair not in canonical_pairs:
+                    canonical_pairs[canonical_pair] = pair_key
+                    valid_canonical_fids.add(c1)
+                    valid_canonical_fids.add(c2)
+
+        if not valid_canonical_fids:
+            return {pk: [] for pk in unique_pairs}
+
+        # 批量获取所有 canonical family_id 的 absolute_ids
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        placeholders = ",".join("?" * len(valid_canonical_fids))
+        cursor.execute(
+            f"SELECT family_id, id FROM entities WHERE family_id IN ({placeholders})",
+            tuple(valid_canonical_fids),
+        )
+        fid_to_aids: Dict[str, List[str]] = {}
+        all_aids: List[str] = []
+        for row in cursor.fetchall():
+            fid_to_aids.setdefault(row[0], []).append(row[1])
+            all_aids.append(row[1])
+
+        if not all_aids:
+            return {pk: [] for pk in unique_pairs}
+
+        # 单次查询所有相关关系
+        aid_placeholders = ",".join("?" * len(all_aids))
+        cursor.execute(f"""
+            SELECT r.id, r.family_id, r.entity1_absolute_id, r.entity2_absolute_id,
+                   r.content, r.event_time, r.processed_time, r.episode_id, r.source_document
+            FROM relations r
+            WHERE (r.entity1_absolute_id IN ({aid_placeholders})
+                OR r.entity2_absolute_id IN ({aid_placeholders}))
+              AND r.invalid_at IS NULL
+        """, tuple(all_aids) * 2)
+
+        all_rels = []
+        for row in cursor.fetchall():
+            all_rels.append(Relation(
+                absolute_id=row[0], family_id=row[1] or "",
+                entity1_absolute_id=row[2] or "", entity2_absolute_id=row[3] or "",
+                content=row[4], event_time=self._safe_parse_datetime(row[5]),
+                processed_time=self._safe_parse_datetime(row[6]),
+                episode_id=row[7], source_document=row[8] if len(row) > 8 else '',
+            ))
+
+        # 按 canonical pair 分组
+        canonical_rels: Dict[Tuple[str, str], List[Relation]] = {cp: [] for cp in canonical_pairs}
+        for rel in all_rels:
+            e1_fid = None
+            e2_fid = None
+            for fid, aids in fid_to_aids.items():
+                if rel.entity1_absolute_id in aids:
+                    e1_fid = fid
+                if rel.entity2_absolute_id in aids:
+                    e2_fid = fid
+            if e1_fid and e2_fid:
+                pair = tuple(sorted((e1_fid, e2_fid)))
+                if pair in canonical_rels:
+                    canonical_rels[pair].append(rel)
+
+        # 映射回原始 pair keys
         results: Dict[Tuple[str, str], List[Relation]] = {}
-        for entity1_id, entity2_id in entity_pairs:
-            pair_key = tuple(sorted((entity1_id, entity2_id)))
-            if pair_key in results:
-                continue
-            results[pair_key] = self.get_relations_by_entities(pair_key[0], pair_key[1])
+        for canonical_pair, original_key in canonical_pairs.items():
+            results[original_key] = canonical_rels.get(canonical_pair, [])
+
         return results
 
     def get_latest_relations_projection(self, content_snippet_length: Optional[int] = None) -> List[Dict[str, Any]]:
