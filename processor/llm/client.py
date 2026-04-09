@@ -88,11 +88,11 @@ def _is_rate_limit_tpm_error(exc: BaseException) -> bool:
     if code == 429:
         return True
     s = str(exc).lower()
-    if "429" not in str(exc):
-        return False
-    if "error code: 429" in s or "status code 429" in s:
+    # 检查 429 状态码相关字符串
+    if "429" in s and ("error code" in s or "status code" in s):
         return True
-    return any(k in s for k in ("rate", "limit", "tpm", "throttl"))
+    # 检查速率限制关键词（不依赖 429 状态码）
+    return any(k in s for k in ("rate_limit", "rate limit", "tpm", "throttl", "capacity", "overloaded"))
 
 
 class PrioritySemaphore:
