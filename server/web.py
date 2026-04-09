@@ -720,9 +720,9 @@ class GraphWebServer:
         def get_stats():
             """获取统计信息 API"""
             try:
-                entities = self.storage.get_all_entities()
-                relations = self.storage.get_all_relations()
-                
+                entities = self.storage.get_all_entities(exclude_embedding=True)
+                relations = self.storage.get_all_relations(exclude_embedding=True)
+
                 return jsonify({
                     'success': True,
                     'stats': {

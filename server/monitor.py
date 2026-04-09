@@ -215,7 +215,7 @@ class GraphMonitor:
             if hasattr(storage, 'count_unique_relations'):
                 total_relations = storage.count_unique_relations()
             else:
-                total_relations = len(storage.get_all_relations())
+                total_relations = len(storage.get_all_relations(exclude_embedding=True))
             cache_json_dir = storage.cache_json_dir
             cache_dir = storage.cache_dir
             # 优先从 docs/ 新结构计数

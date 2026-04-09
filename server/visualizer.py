@@ -55,8 +55,8 @@ class GraphVisualizer:
             return False
 
         # 获取所有实体和关系
-        entities = self.storage.get_all_entities()
-        relations = self.storage.get_all_relations()
+        entities = self.storage.get_all_entities(exclude_embedding=True)
+        relations = self.storage.get_all_relations(exclude_embedding=True)
 
         if not entities:
             print("警告：没有找到实体，无法生成可视化")
@@ -162,8 +162,8 @@ class GraphVisualizer:
             return False
 
         # 获取所有实体和关系
-        entities = self.storage.get_all_entities()
-        relations = self.storage.get_all_relations()
+        entities = self.storage.get_all_entities(exclude_embedding=True)
+        relations = self.storage.get_all_relations(exclude_embedding=True)
 
         if not entities:
             print("警告：没有找到实体，无法生成可视化")
@@ -254,8 +254,8 @@ class GraphVisualizer:
         Args:
             output_path: 输出 JSON 文件路径
         """
-        entities = self.storage.get_all_entities()
-        relations = self.storage.get_all_relations()
+        entities = self.storage.get_all_entities(exclude_embedding=True)
+        relations = self.storage.get_all_relations(exclude_embedding=True)
 
         data = {
             "entities": [
@@ -297,8 +297,8 @@ class GraphVisualizer:
 
     def print_statistics(self):
         """打印图谱统计信息"""
-        entities = self.storage.get_all_entities()
-        relations = self.storage.get_all_relations()
+        entities = self.storage.get_all_entities(exclude_embedding=True)
+        relations = self.storage.get_all_relations(exclude_embedding=True)
 
         print("\n" + "="*50)
         print("图谱统计信息")

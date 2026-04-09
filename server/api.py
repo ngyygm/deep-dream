@@ -4500,7 +4500,7 @@ def create_app(
             # Latest entities
             latest_entities = processor.storage.get_all_entities(limit=limit, exclude_embedding=True)
             # Latest relations
-            latest_relations = processor.storage.get_all_relations(limit=limit) if hasattr(processor.storage, 'get_all_relations') else []
+            latest_relations = processor.storage.get_all_relations(limit=limit, exclude_embedding=True) if hasattr(processor.storage, 'get_all_relations') else []
             # Stats
             stats = processor.storage.get_graph_statistics()
 

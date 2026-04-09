@@ -1286,8 +1286,6 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
                                     parallel: bool = False,
                                     enable_name_match_step: bool = True,
                                     enable_pre_search: Optional[bool] = None) -> dict:
-        # NOTE: 此方法与 consolidation.py _ConsolidationMixin 中为重复实现。
-        # 如需修改 consolidate 逻辑，两处均需同步更新。
         """
         整理知识图谱：识别并合并重复实体，创建关联关系
         
