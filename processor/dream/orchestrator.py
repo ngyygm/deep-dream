@@ -316,6 +316,15 @@ class DreamOrchestrator:
         if not pairs:
             return [], 0
 
+        # 批量预取所有配对的已有关系，避免 _judge_pair 中逐对查询
+        try:
+            pair_keys = [(p[0], p[2]) for p in pairs]
+            existing_map = self.storage.get_relations_by_entity_pairs(pair_keys)
+            existing_pairs = {k for k, v in existing_map.items() if v}
+        except Exception as exc:
+            logger.debug("Dream: 批量关系预取失败，回退逐对查询: %s", exc)
+            existing_pairs = None
+
         relations_created: List[Dict[str, Any]] = []
         pairs_checked = 0
 
@@ -327,7 +336,7 @@ class DreamOrchestrator:
                 future = executor.submit(
                     self._judge_pair,
                     seed_fid, seed_name, nb_fid, nb_name, config,
-                    entity_lookup,
+                    entity_lookup, existing_pairs,
                 )
                 futures[future] = pair
 
@@ -380,19 +389,26 @@ class DreamOrchestrator:
         nb_name: str,
         config: DreamConfig,
         entity_lookup: Optional[Dict[str, Dict[str, str]]] = None,
+        existing_pairs: Optional[Set[Tuple[str, str]]] = None,
     ) -> Optional[Dict[str, Any]]:
         """判断一对实体是否存在隐含关联。
 
         Returns:
             None 表示无关联，dict 包含 content 和 confidence 表示有关联。
         """
-        # 检查是否已有关系
-        try:
-            existing = self.storage.get_relations_by_entities(seed_fid, nb_fid)
-            if existing:
+        # 检查是否已有关系（优先使用批量预取结果）
+        if existing_pairs is not None:
+            pair_key = (seed_fid, nb_fid)
+            rev_key = (nb_fid, seed_fid)
+            if pair_key in existing_pairs or rev_key in existing_pairs:
                 return None
-        except Exception as exc:
-            logger.debug("Dream: existing relation check failed for %s↔%s: %s", seed_fid, nb_fid, exc)
+        else:
+            try:
+                existing = self.storage.get_relations_by_entities(seed_fid, nb_fid)
+                if existing:
+                    return None
+            except Exception as exc:
+                logger.debug("Dream: existing relation check failed for %s↔%s: %s", seed_fid, nb_fid, exc)
 
         # 优先从 entity_lookup 获取实体详情，避免重复 DB 查询
         if entity_lookup:
