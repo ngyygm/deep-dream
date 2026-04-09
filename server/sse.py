@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import queue
 import threading
-from typing import Any, Callable, Dict, Generator, Optional
+from typing import Any, Generator
 
 from flask import Response
 
@@ -54,16 +54,3 @@ def queue_to_generator(q: queue.Queue, sentinel=None) -> Generator[str, None, No
         yield item
     yield sse_event("done", {"status": "completed"})
 
-
-def make_queue_callback(
-    q: queue.Queue,
-    prefix: str = "",
-) -> Callable[[str, Dict[str, Any]], None]:
-    """Return an ``event_callback(event_type, data)`` that writes SSE events into *q*.
-
-    This is designed to be passed to any SSE streaming event producer.
-    """
-    def _cb(event_type: str, data: Dict[str, Any]) -> None:
-        q.put(sse_event(event_type, data))
-
-    return _cb

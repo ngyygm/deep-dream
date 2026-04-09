@@ -15,7 +15,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from processor import StorageManager, EmbeddingClient
 from processor.utils import normalize_entity_pair
-from .visualizer import GraphVisualizer
 
 
 # Load HTML template
@@ -54,9 +53,8 @@ class GraphWebServer:
             use_local=embedding_use_local
         )
         
-        # 初始化存储和可视化器
+        # 初始化存储
         self.storage = StorageManager(storage_path, embedding_client=self.embedding_client)
-        self.visualizer = GraphVisualizer(self.storage)
         
         # 缓存当前使用的存储路径（用于路径切换检测）
         self._current_storage_path = storage_path
@@ -80,9 +78,8 @@ class GraphWebServer:
             except ValueError:
                 raise ValueError(f"存储路径必须在 {base} 目录下: {new_path}")
             try:
-                # 重新初始化存储和可视化器
+                # 重新初始化存储
                 self.storage = StorageManager(str(target), embedding_client=self.embedding_client)
-                self.visualizer = GraphVisualizer(self.storage)
                 self._current_storage_path = str(target)
                 print(f"✅ 已切换到新的存储路径: {target}")
             except Exception as e:

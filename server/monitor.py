@@ -340,10 +340,6 @@ class SystemMonitor:
                 self._graphs[graph_id] = GraphMonitor(graph_id, processor, queue)
                 self._graph_order.append(graph_id)
 
-    def get_graph_ids(self) -> List[str]:
-        with self._lock:
-            return list(self._graph_order)
-
     def overview(self) -> dict:
         """系统总览。"""
         import threading

@@ -3331,11 +3331,6 @@ class Neo4jStorageManager:
         """标识当前为 Neo4j 后端。"""
         return True
 
-    @property
-    def db_path(self) -> Path:
-        """兼容 StorageManager.db_path 属性。"""
-        return self.storage_path / "graph.db"
-
     # ------------------------------------------------------------------
     # Episode 管理
     # ------------------------------------------------------------------

@@ -9,7 +9,6 @@
 
 import json
 import logging
-import threading
 import time
 import uuid
 from collections import OrderedDict
@@ -121,7 +120,7 @@ class DreamResult:
 class DreamOrchestrator:
     """梦境编排器：种子选择 → 图探索 → 关联发现 → 结果保存。
 
-    支持手动触发 run() 和后台定时调度 start_scheduler() / stop_scheduler()。
+    支持手动触发 run()。
     """
 
     def __init__(self, storage: Any, llm_client: Any, config: Optional[DreamConfig] = None):
@@ -131,10 +130,6 @@ class DreamOrchestrator:
         self._searcher = GraphTraversalSearcher(storage)
         self._history = DreamHistory()
         self._cycle_count = 0
-        # 调度器状态
-        self._scheduler_thread: Optional[threading.Thread] = None
-        self._scheduler_stop = threading.Event()
-        self._idle_check_fn: Optional[Any] = None  # Callable → bool (True = idle)
 
     def run(self) -> DreamResult:
         """执行一轮完整的梦境周期。"""
@@ -491,69 +486,3 @@ class DreamOrchestrator:
         except Exception as exc:
             logger.warning("Dream: 保存梦境记录失败: %s", exc)
 
-    # ------------------------------------------------------------------
-    # 后台定时调度
-    # ------------------------------------------------------------------
-
-    def start_scheduler(
-        self,
-        interval_seconds: int = 300,
-        idle_check_fn: Optional[Any] = None,
-        daemon: bool = True,
-    ) -> None:
-        """启动后台定时调度。
-
-        Args:
-            interval_seconds: 每轮之间的间隔秒数（默认 5 分钟）
-            idle_check_fn: 可调用对象，返回 True 表示系统空闲可以运行 Dream。
-                           不提供则始终运行。
-            daemon: 调度线程是否为守护线程
-        """
-        if self._scheduler_thread and self._scheduler_thread.is_alive():
-            logger.warning("Dream 调度器已在运行")
-            return
-
-        self._scheduler_stop.clear()
-        self._idle_check_fn = idle_check_fn
-
-        def _scheduler_loop():
-            logger.info("Dream 调度器启动，间隔 %ds", interval_seconds)
-            while not self._scheduler_stop.wait(timeout=interval_seconds):
-                # 检查系统是否空闲
-                if self._idle_check_fn and not self._idle_check_fn():
-                    continue
-                try:
-                    result = self.run()
-                    logger.info(
-                        "Dream 后台周期完成: %s（种子=%d，创建关系=%d）",
-                        result.cycle_id,
-                        result.stats.get("seeds_count", 0),
-                        result.stats.get("relations_created_count", 0),
-                    )
-                except Exception as exc:
-                    logger.warning("Dream 后台周期失败: %s", exc)
-            logger.info("Dream 调度器已停止")
-
-        self._scheduler_thread = threading.Thread(
-            target=_scheduler_loop,
-            name="dream-scheduler",
-            daemon=daemon,
-        )
-        self._scheduler_thread.start()
-
-    def stop_scheduler(self, timeout: float = 10.0) -> None:
-        """停止后台调度器。"""
-        if not self._scheduler_thread or not self._scheduler_thread.is_alive():
-            return
-        self._scheduler_stop.set()
-        self._scheduler_thread.join(timeout=timeout)
-        if self._scheduler_thread.is_alive():
-            logger.warning("Dream 调度器未在 %.1fs 内停止", timeout)
-        else:
-            logger.info("Dream 调度器已停止")
-        self._scheduler_thread = None
-
-    @property
-    def history(self) -> DreamHistory:
-        """获取跨周期历史（用于调试/检查）。"""
-        return self._history

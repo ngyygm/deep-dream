@@ -79,20 +79,6 @@ def _wf_for_chain(chain_id: str, intra: float) -> float:
     return (5.0 / 7.0) * intra
 
 
-def _entity_col_progress(wf: float) -> float:
-    """实体列 0–1：实体侧工作占单窗前 6/7，归一化到整条。"""
-    cap = 6.0 / 7.0
-    if cap <= 1e-15:
-        return 0.0
-    return max(0.0, min(1.0, wf / cap))
-
-
-def _relation_col_progress(chain_id: str, intra: float) -> float:
-    if chain_id == "step7":
-        return max(0.0, min(1.0, intra))
-    return 0.0
-
-
 def _wf_win_steps_1_5(global_p: float, g_lo: float, g_hi: float) -> float:
     """单窗内步骤1–5 占窗口宽度的前 5/7；返回 [0, 5/7] 的窗口内占比（相对整窗 0–1 的片段）。"""
     span = g_hi - g_lo
