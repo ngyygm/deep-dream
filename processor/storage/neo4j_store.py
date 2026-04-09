@@ -486,6 +486,68 @@ class Neo4jStorageManager:
         self._cache.set(cache_key, resolved, ttl=120)
         return resolved
 
+    def resolve_family_ids(self, family_ids: List[str]) -> Dict[str, str]:
+        """批量解析 family_id 到 canonical id。利用缓存 + 一次 Cypher 查询未缓存项。
+
+        Returns:
+            {原始 family_id: canonical family_id} 映射
+        """
+        if not family_ids:
+            return {}
+        unique_ids = list(set(fid.strip() for fid in family_ids if fid and fid.strip()))
+        if not unique_ids:
+            return {}
+
+        # 第一步：从缓存获取
+        result: Dict[str, str] = {}
+        uncached: List[str] = []
+        for fid in unique_ids:
+            cache_key = f"resolve:{fid}"
+            cached = self._cache.get(cache_key)
+            if cached is not None:
+                result[fid] = cached
+            else:
+                uncached.append(fid)
+
+        # 第二步：批量查询未缓存项
+        if uncached:
+            with _perf_timer("resolve_family_ids_batch"):
+                with self._session() as session:
+                    cypher = """
+                    UNWIND $ids AS sid
+                    MATCH (red:EntityRedirect {source_id: sid})
+                    RETURN red.source_id AS source, red.target_id AS target
+                    """
+                    records = session.run(cypher, ids=uncached)
+                    redirect_map = {r["source"]: r["target"] for r in records}
+
+            # 解析第二跳（链式重定向）
+            second_hop_sources = [t for t in redirect_map.values() if t not in result and t in uncached]
+            if second_hop_sources:
+                with self._session() as session:
+                    cypher2 = """
+                    UNWIND $ids AS sid
+                    MATCH (red:EntityRedirect {source_id: sid})
+                    RETURN red.source_id AS source, red.target_id AS target
+                    """
+                    records2 = session.run(cypher2, ids=second_hop_sources)
+                    redirect_map.update({r["source"]: r["target"] for r in records2})
+
+            for fid in uncached:
+                target = redirect_map.get(fid, fid)
+                # 沿链解析（通常只需 1 跳）
+                final = redirect_map.get(target, target) if target != fid else fid
+                result[fid] = final
+                cache_key = f"resolve:{fid}"
+                self._cache.set(cache_key, final, ttl=120)
+
+        # 构建输出映射（处理可能有重复的 family_ids）
+        output: Dict[str, str] = {}
+        for fid in family_ids:
+            key = fid.strip() if fid else ""
+            output[fid] = result.get(key, key)
+        return output
+
     def register_entity_redirect(self, source_family_id: str, target_family_id: str) -> str:
         """登记旧 family_id → canonical family_id 映射。"""
         source_id = (source_family_id or "").strip()
