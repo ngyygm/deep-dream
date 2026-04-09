@@ -732,7 +732,7 @@ def create_app(
         """查看记忆写入任务队列；推荐使用 /api/v1/remember/tasks。"""
         try:
             remember_queue = _get_queue()
-            limit = request.args.get("limit", 50, type=int)
+            limit = min(request.args.get("limit", 50, type=int), 200)
             tasks = remember_queue.list_tasks(limit=limit)
             return ok({"tasks": tasks, "count": len(tasks)})
         except Exception as e:
@@ -1499,7 +1499,7 @@ def create_app(
     def find_entities_all():
         try:
             processor = _get_processor()
-            limit = request.args.get("limit", type=int)
+            limit = min(request.args.get("limit", type=int) or 500, 500)
             offset = request.args.get("offset", type=int, default=0) or 0
             total = processor.storage.count_unique_entities()
             entities = processor.storage.get_all_entities(limit=limit, offset=offset if offset > 0 else None, exclude_embedding=True)
@@ -1770,6 +1770,8 @@ def create_app(
             family_ids = body.get("family_ids") or body.get("family_ids", [])
             if not isinstance(family_ids, list) or not family_ids:
                 return err("family_ids 需为非空数组", 400)
+            if len(family_ids) > 100:
+                return err("单次批量删除上限 100 个", 400)
             cascade = body.get("cascade", False)
             total = 0
             for eid in family_ids:
@@ -1952,8 +1954,8 @@ def create_app(
             processor = _get_processor()
             body = request.get_json(silent=True) if request.method == "POST" else None
             body = body if isinstance(body, dict) else {}
-            family_id_a = str(body.get("family_id_a") or body.get("family_id_a") or body.get("from_family_id") or request.args.get("family_id_a") or request.args.get("family_id_a") or request.args.get("from_family_id") or "").strip()
-            family_id_b = str(body.get("family_id_b") or body.get("family_id_b") or body.get("to_family_id") or request.args.get("family_id_b") or request.args.get("family_id_b") or request.args.get("to_family_id") or "").strip()
+            family_id_a = str(body.get("family_id_a") or body.get("from_family_id") or request.args.get("family_id_a") or request.args.get("from_family_id") or "").strip()
+            family_id_b = str(body.get("family_id_b") or body.get("to_family_id") or request.args.get("family_id_b") or request.args.get("to_family_id") or "").strip()
             if not family_id_a or not family_id_b:
                 return err("family_id_a 与 family_id_b 为必填参数", 400)
             with _perf_timer("find_relations_between"):
@@ -1971,10 +1973,10 @@ def create_app(
             processor = _get_processor()
             body = request.get_json(silent=True) if request.method == "POST" else None
             body = body if isinstance(body, dict) else {}
-            family_id_a = str(body.get("family_id_a") or body.get("family_id_a") or body.get("from_family_id")
+            family_id_a = str(body.get("family_id_a") or body.get("from_family_id")
                              or request.args.get("family_id_a")
                              or request.args.get("from_family_id") or "").strip()
-            family_id_b = str(body.get("family_id_b") or body.get("family_id_b") or body.get("to_family_id")
+            family_id_b = str(body.get("family_id_b") or body.get("to_family_id")
                              or request.args.get("family_id_b")
                              or request.args.get("to_family_id") or "").strip()
             if not family_id_a or not family_id_b:
@@ -2128,6 +2130,8 @@ def create_app(
             family_ids = body.get("family_ids") or body.get("relation_ids", [])
             if not isinstance(family_ids, list) or not family_ids:
                 return err("family_ids 需为非空数组", 400)
+            if len(family_ids) > 100:
+                return err("单次批量删除上限 100 个", 400)
             total = 0
             for rid in family_ids:
                 total += processor.storage.delete_relation_all_versions(rid)
@@ -3328,7 +3332,8 @@ def create_app(
             try:
                 searcher = GraphTraversalSearcher(processor.storage)
                 bfs_entities = searcher.bfs_expand(seed_family_ids, max_depth=max_depth, max_nodes=50)
-            except Exception:
+            except Exception as exc:
+                logger.warning("dream_run: BFS遍历失败: %s", exc)
                 bfs_entities = []
 
             # Build entity lookup: family_id -> entity info
@@ -3395,7 +3400,8 @@ def create_app(
                     # Check if relation already exists between these entities
                     try:
                         existing_rels = processor.storage.get_relations_by_entities(seed_fid, nb_fid) if hasattr(processor.storage, 'get_relations_by_entities') else []
-                    except Exception:
+                    except Exception as exc:
+                        logger.debug("dream_run: 检查已有关系 %s↔%s 失败: %s", seed_fid, nb_fid, exc)
                         existing_rels = []
                     if existing_rels:
                         continue
@@ -3428,6 +3434,8 @@ def create_app(
                         if not judge_obj.get("need_create", False):
                             continue
 
+                        judge_confidence = float(judge_obj.get("confidence", 0.5))
+
                         # Generate relation content
                         rel_messages = [
                             {"role": "system", "content": GENERATE_RELATION_CONTENT_SYSTEM_PROMPT},
@@ -3447,8 +3455,10 @@ def create_app(
                         if not rel_content or len(rel_content) < 10:
                             continue
 
-                        # Assign a confidence based on LLM response quality
-                        confidence = 0.7
+                        # Use confidence from LLM judge, clamped to valid range
+                        confidence = max(0.1, min(1.0, judge_confidence))
+                        if confidence < min_confidence:
+                            continue
                         reasoning = f"梦境发现：{seed_name} 与 {nb_name} 存在潜在关联（策略: {strategy}）"
 
                         # Save dream relation
@@ -3469,7 +3479,8 @@ def create_app(
                             "confidence": confidence,
                             "result": result,
                         })
-                    except Exception:
+                    except Exception as exc:
+                        logger.warning("dream_run: 检查关系 %s↔%s 时出错: %s", seed_fid, nb_fid, exc)
                         continue
 
             # Step 5: Save dream episode
@@ -3487,8 +3498,8 @@ def create_app(
                     dream_cycle_id=cycle_id,
                     relations_created_count=len(relations_created),
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("dream_run: 保存梦境记录失败: %s", exc)
 
             return ok({
                 "cycle_id": cycle_id,
@@ -4485,7 +4496,7 @@ def create_app(
                 return err("query is required", 400)
             max_entities = min(int(body.get("max_entities", 10)), 50)
             max_relations = min(int(body.get("max_relations", 20)), 100)
-            threshold = float(body.get("similarity_threshold", 0.4))
+            threshold = max(0.0, min(1.0, float(body.get("similarity_threshold", 0.4))))
 
             # Phase 1: Exact name match (instant, highest confidence)
             exact_map = processor.storage.get_family_ids_by_names([query])
