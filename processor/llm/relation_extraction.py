@@ -13,7 +13,6 @@ from ..utils import wprint
 from .errors import LLMContextBudgetExceeded
 from .prompts import (
     EXTRACT_RELATIONS_SINGLE_PASS_SYSTEM_PROMPT,
-    JUDGE_NEED_CREATE_RELATION_SYSTEM_PROMPT,
     GENERATE_RELATION_CONTENT_SYSTEM_PROMPT,
 )
 
@@ -891,72 +890,6 @@ class _RelationExtractionMixin:
             dbg(f"关系解析失败: {e}")
             dbg(f"  LLM响应前800字符: {response[:800]}")
             return []
-
-    def judge_need_create_relation(self, entity1_name: str, entity1_content: str,
-                                    entity2_name: str, entity2_content: str,
-                                    entity1_episode: Optional[str] = None,
-                                    entity2_episode: Optional[str] = None) -> bool:
-        """
-        判断两个实体之间是否真的需要创建关系边
-
-        这个方法在生成关系content之前调用，使用两个实体的完整信息（name、content、episode）
-        来判断是否确实存在明确的、有意义的关联。
-
-        Args:
-            entity1_name: 起始实体名称
-            entity1_content: 起始实体内容描述
-            entity2_name: 目标实体名称
-            entity2_content: 目标实体内容描述
-            entity1_episode: 起始实体的记忆缓存内容（可选）
-            entity2_episode: 目标实体的记忆缓存内容（可选）
-
-        Returns:
-            True表示确实需要创建关系边，False表示不需要
-        """
-        system_prompt = JUDGE_NEED_CREATE_RELATION_SYSTEM_PROMPT
-
-        # 构建实体信息
-        entities_info = f"""
-起始实体：
-- 名称: {entity1_name}
-- 描述: {entity1_content}
-"""
-        if entity1_episode:
-            entities_info += f"- 相关记忆缓存: {entity1_episode[:500]}...\n"
-
-        entities_info += f"""
-目标实体：
-- 名称: {entity2_name}
-- 描述: {entity2_content}
-"""
-        if entity2_episode:
-            entities_info += f"- 相关记忆缓存: {entity2_episode[:500]}...\n"
-
-        prompt = f"""<实体信息>
-{entities_info}
-</实体信息>
-
-请判断以下两个实体之间是否需要创建关系边。
-
-只输出一个 ```json ... ``` 代码块；代码块内部格式为：{{"need_create": true/false}}"""
-
-        response = self._call_llm(prompt, system_prompt)
-
-        # 尝试解析JSON响应
-        try:
-            result = self._parse_json_response(response)
-
-            if isinstance(result, dict) and "need_create" in result:
-                return bool(result["need_create"])
-            else:
-                # 如果解析失败，默认返回False（保守策略）
-                return False
-
-        except (json.JSONDecodeError, Exception) as e:
-            wprint(f"解析判断关系JSON失败: {e}")
-            wprint(f"响应内容: {response[:500]}...")
-            # 如果修复失败，默认返回False（保守策略）
-            return False
 
     def generate_relation_content(self, entity1_name: str, entity1_content: str,
                                   entity2_name: str, entity2_content: str,

@@ -10,7 +10,6 @@ from ..utils import clean_markdown_code_blocks
 from .prompts import (
     UPDATE_MEMORY_CACHE_SYSTEM_PROMPT,
     CREATE_DOCUMENT_OVERALL_MEMORY_SYSTEM_PROMPT,
-    GENERATE_CONSOLIDATION_SUMMARY_SYSTEM_PROMPT,
     GENERATE_RELATION_MEMORY_CACHE_SYSTEM_PROMPT,
 )
 
@@ -184,61 +183,6 @@ class _MemoryOpsMixin:
             source_document=source_document_only,
             activity_type="文档整体",
         )
-
-    def generate_consolidation_summary(self, merge_results: list,
-                                       alias_results: list,
-                                       analyzed_groups_count: int) -> str:
-        """
-        生成知识图谱整理的摘要
-
-        Args:
-            merge_results: 合并操作结果列表
-            alias_results: 别名关系创建结果列表
-            analyzed_groups_count: 分析的实体组数量
-
-        Returns:
-            整理摘要的Markdown格式文本
-        """
-        system_prompt = GENERATE_CONSOLIDATION_SUMMARY_SYSTEM_PROMPT
-
-        # 构建操作详情
-        operations_str = f"分析的相似实体组数量: {analyzed_groups_count}\n\n"
-
-        if merge_results:
-            operations_str += "## 实体合并操作\n\n"
-            for i, merge in enumerate(merge_results, 1):
-                operations_str += f"{i}. 将 {merge.get('merged_source_ids', [])} 合并到 {merge.get('target_family_id', '')}\n"
-                operations_str += f"   - 更新的实体记录数: {merge.get('entities_updated', 0)}\n"
-                if merge.get('reason'):
-                    operations_str += f"   - 原因: {merge.get('reason', '')}\n"
-        else:
-            operations_str += "## 实体合并操作\n\n无需合并的实体。\n"
-
-        if alias_results:
-            operations_str += "\n## 别名关系创建\n\n"
-            for i, alias in enumerate(alias_results, 1):
-                operations_str += f"{i}. {alias.get('entity1_name', '')} -> {alias.get('entity2_name', '')}\n"
-                operations_str += f"   - 关系描述: {alias.get('content', '')}\n"
-        else:
-            operations_str += "\n## 别名关系创建\n\n无需创建的别名关系。\n"
-
-        prompt = f"""<操作详情>
-{operations_str}
-</操作详情>
-
-请生成一个简洁的Markdown格式摘要，包括：
-1. 整理概述
-2. 主要操作
-3. 整理效果
-
-直接输出Markdown内容，不要包含代码块标记："""
-
-        response = self._call_llm(prompt, system_prompt)
-
-        # 清理可能的代码块标记
-        response = clean_markdown_code_blocks(response)
-
-        return response
 
     def generate_relation_episode(self, relations: list,
                                        entities_info: list,
