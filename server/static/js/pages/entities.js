@@ -14,6 +14,7 @@
   let totalCount = null;
   let isSearchMode = false;
   let _currentModalClose = null;
+  let _searchSeq = 0;
 
   // ---- Search & Filter Bar ----
 
@@ -555,8 +556,10 @@
   }
 
   async function searchEntities(query) {
+    const seq = ++_searchSeq;
     const graphId = state.currentGraphId;
     const res = await state.api.searchEntities(query, graphId);
+    if (seq !== _searchSeq) return; // stale result, discard
     allEntities = res.data || [];
     isSearchMode = true;
   }
@@ -781,6 +784,8 @@
   }
 
   async function executeDeleteEntity(familyId, close) {
+    const confirmBtn = document.querySelector('.modal-confirm-btn');
+    if (confirmBtn) { confirmBtn.disabled = true; confirmBtn.textContent = '...'; }
     const cascade = document.getElementById('deleteCascade')?.checked || false;
     try {
       const res = await state.api.deleteEntity(familyId, cascade, state.currentGraphId);
@@ -789,6 +794,7 @@
       close();
       invalidateAndReload();
     } catch (e) { showToast(t('entities.deleteFailed') + ': ' + e.message, 'error'); }
+    finally { if (confirmBtn) { confirmBtn.disabled = false; } }
   }
 
   // ---- Batch Delete & Merge ----

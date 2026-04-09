@@ -730,8 +730,10 @@
 
   async function _submitEditRelationWithClose(familyId, closeFn) {
     const t = (key) => window.I18N ? window.I18N.t(key) : key;
+    const saveBtn = document.getElementById('editRelationSave');
+    if (saveBtn) { saveBtn.disabled = true; }
     const content = document.getElementById('editRelationContent').value.trim();
-    if (!content) { showToast(t('relations.contentRequired'), 'error'); return; }
+    if (!content) { showToast(t('relations.contentRequired'), 'error'); if (saveBtn) saveBtn.disabled = false; return; }
     try {
       const res = await state.api.updateRelation(familyId, { content }, state.currentGraphId);
       if (res.error) { showToast(res.error, 'error'); return; }
@@ -739,6 +741,7 @@
       closeFn();
       refreshRelations();
     } catch (e) { showToast(t('relations.updateFailed') + ': ' + e.message, 'error'); }
+    finally { if (saveBtn) { saveBtn.disabled = false; } }
   }
 
   // ---- Delete relation ----
