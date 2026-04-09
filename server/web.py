@@ -1291,13 +1291,18 @@ class GraphWebServer:
                     except (ValueError, TypeError):
                         pass
 
-                # 获取指定版本的实体信息
+                # 获取指定版本的实体信息 — 批量获取避免逐条查询
+                entity_abs_ids = list(entity_versions.values())
+                entity_map = self.storage.get_entities_by_absolute_ids(entity_abs_ids) if entity_abs_ids else {}
+                # 批量获取版本计数
+                entity_fids = list(entity_versions.keys())
+                version_count_map = self.storage.get_entity_version_counts(entity_fids) if entity_fids else {}
+
                 nodes_data = []
                 for family_id, absolute_id in entity_versions.items():
-                    entity = self.storage.get_entity_by_absolute_id(absolute_id)
+                    entity = entity_map.get(absolute_id)
                     if entity:
-                        versions = self.storage.get_entity_versions(family_id)
-                        version_count = len(versions)
+                        version_count = version_count_map.get(family_id, 1)
                         label = f"{entity.name} ({version_count}版本)" if version_count > 1 else entity.name
 
                         nodes_data.append({
@@ -1312,14 +1317,25 @@ class GraphWebServer:
                             'version_count': version_count
                         })
 
-                # 获取指定版本的关系信息
+                # 获取指定版本的关系信息 — 批量获取实体避免逐条查询
                 edges_data = []
+                all_rel_entity_abs_ids = set()
+                rel_versions_cache = {}
                 for family_id, absolute_id in relation_versions.items():
                     versions = self.storage.get_relation_versions(family_id)
                     relation = next((r for r in versions if r.absolute_id == absolute_id), None)
                     if relation:
-                        entity1 = self.storage.get_entity_by_absolute_id(relation.entity1_absolute_id)
-                        entity2 = self.storage.get_entity_by_absolute_id(relation.entity2_absolute_id)
+                        rel_versions_cache[family_id] = relation
+                        all_rel_entity_abs_ids.add(relation.entity1_absolute_id)
+                        all_rel_entity_abs_ids.add(relation.entity2_absolute_id)
+
+                rel_entity_map = self.storage.get_entities_by_absolute_ids(list(all_rel_entity_abs_ids)) if all_rel_entity_abs_ids else {}
+
+                for family_id, absolute_id in relation_versions.items():
+                    relation = rel_versions_cache.get(family_id)
+                    if relation:
+                        entity1 = rel_entity_map.get(relation.entity1_absolute_id)
+                        entity2 = rel_entity_map.get(relation.entity2_absolute_id)
                         if entity1 and entity2:
                             edges_data.append({
                                 'family_id': family_id,
