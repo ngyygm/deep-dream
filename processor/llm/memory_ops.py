@@ -10,7 +10,6 @@ from ..utils import clean_markdown_code_blocks
 from .prompts import (
     UPDATE_MEMORY_CACHE_SYSTEM_PROMPT,
     CREATE_DOCUMENT_OVERALL_MEMORY_SYSTEM_PROMPT,
-    GENERATE_RELATION_MEMORY_CACHE_SYSTEM_PROMPT,
 )
 
 
@@ -183,68 +182,3 @@ class _MemoryOpsMixin:
             source_document=source_document_only,
             activity_type="文档整体",
         )
-
-    def generate_relation_episode(self, relations: list,
-                                       entities_info: list,
-                                       entity_episodes: dict) -> str:
-        """
-        根据关系和实体生成记忆缓存内容
-
-        Args:
-            relations: 关系列表，每个包含 entity1_id, entity2_id, entity1_name, entity2_name, content, family_id, is_new, is_updated
-            entities_info: 实体信息列表，每个包含 family_id, name, content
-            entity_episodes: 实体ID到其记忆缓存内容的映射
-
-        Returns:
-            生成的记忆缓存内容（Markdown格式）
-        """
-        system_prompt = GENERATE_RELATION_MEMORY_CACHE_SYSTEM_PROMPT
-
-        # 构建实体信息
-        entities_str = ""
-        for entity_info in entities_info:
-            family_id = entity_info.get("family_id", "")
-            name = entity_info.get("name", "")
-            content = entity_info.get("content", "")
-            episode_content = entity_episodes.get(family_id, "")
-
-            entities_str += f"\n### 实体: {name}\n"
-            entities_str += f"- 实体描述: {content}\n"
-            if episode_content:
-                entities_str += f"- 相关记忆缓存: {episode_content[:200]}...\n"
-
-        # 构建关系信息
-        relations_str = ""
-        for relation in relations:
-            entity1_name = relation.get("entity1_name", "")
-            entity2_name = relation.get("entity2_name", "")
-            content = relation.get("content", "")
-            is_new = relation.get("is_new", False)
-            is_updated = relation.get("is_updated", False)
-
-            status = "新建" if is_new else ("更新" if is_updated else "已存在")
-            relations_str += f"\n- {entity1_name} -> {entity2_name} ({status})\n"
-            relations_str += f"  关系描述: {content}\n"
-
-        prompt = f"""<实体信息>
-{entities_str}
-</实体信息>
-
-<关系信息>
-{relations_str}
-</关系信息>
-
-请生成一份记忆缓存文档，说明：
-1. 系统当前正在进行的操作
-2. 正在处理哪些实体和关系
-3. 这些实体和关系的内容和意义
-4. 处理的目的和结果
-
-直接输出Markdown内容，不要包含代码块标记："""
-
-        response = self._call_llm(prompt, system_prompt)
-
-        # 清理可能的代码块标记
-        response = clean_markdown_code_blocks(response)
-
-        return response.strip()

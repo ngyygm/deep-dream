@@ -13,7 +13,6 @@ from ..utils import wprint
 from .errors import LLMContextBudgetExceeded
 from .prompts import (
     EXTRACT_RELATIONS_SINGLE_PASS_SYSTEM_PROMPT,
-    GENERATE_RELATION_CONTENT_SYSTEM_PROMPT,
 )
 
 
@@ -890,96 +889,3 @@ class _RelationExtractionMixin:
             dbg(f"关系解析失败: {e}")
             dbg(f"  LLM响应前800字符: {response[:800]}")
             return []
-
-    def generate_relation_content(self, entity1_name: str, entity1_content: str,
-                                  entity2_name: str, entity2_content: str,
-                                  relation_episode: Optional[str] = None,
-                                  preliminary_content: Optional[str] = None) -> str:
-        """
-        根据两个实体和episode生成关系的content
-
-        Args:
-            entity1_name: 起始实体名称
-            entity1_content: 起始实体内容描述
-            entity2_name: 目标实体名称
-            entity2_content: 目标实体内容描述
-            relation_episode: 关系的记忆缓存内容（可选，这是总结两个实体的episode）
-            preliminary_content: 初步的关系content（可选，用于参考）
-
-        Returns:
-            生成的关系content（自然语言描述）
-        """
-        system_prompt = GENERATE_RELATION_CONTENT_SYSTEM_PROMPT
-
-        # 构建初步关系描述信息
-        preliminary_info = ""
-        if preliminary_content:
-            preliminary_info = f"""
-初步关系描述（作为参考）：
-{preliminary_content}
-"""
-
-        # 构建实体信息（简化，只提供基本信息）
-        entities_info = f"""
-起始实体：
-- 名称: {entity1_name}
-- 描述: {entity1_content[:200]}{'...' if len(entity1_content) > 200 else ''}
-
-目标实体：
-- 名称: {entity2_name}
-- 描述: {entity2_content[:200]}{'...' if len(entity2_content) > 200 else ''}
-"""
-
-        # 构建关系记忆缓存信息（只关注与关系相关的部分）
-        relation_context = ""
-        if relation_episode:
-            relation_context = f"""
-关系记忆缓存：
-{relation_episode[:500]}{'...' if len(relation_episode) > 500 else ''}
-"""
-
-        prompt = f"""<实体信息>
-{preliminary_info}
-{entities_info}
-{relation_context}
-</实体信息>
-
-只输出一个 ```json ... ``` 代码块；代码块内部格式为：{{"content": "关系描述"}}"""
-
-        response = self._call_llm(prompt, system_prompt)
-
-        # 尝试解析JSON响应
-        try:
-            result = self._parse_json_response(response)
-
-            if isinstance(result, dict) and "content" in result:
-                return result["content"]
-            else:
-                # 如果解析失败，返回默认描述
-                return f"'{entity1_name}'与'{entity2_name}'的关联关系"
-
-        except (json.JSONDecodeError, Exception) as e:
-            wprint(f"解析关系content JSON失败: {e}")
-            # 显示更多调试信息
-            error_pos = getattr(e, 'pos', None)
-            if error_pos is not None:
-                start = max(0, error_pos - 100)
-                end = min(len(response), error_pos + 100)
-                wprint(f"错误位置: {error_pos}, 附近内容: {response[start:end]}")
-            else:
-                wprint(f"响应内容前500字符: {response[:500]}...")
-
-            # 尝试直接从响应中提取content字段的值（使用正则表达式）
-            try:
-                content_match = re.search(r'"content"\s*:\s*"([^"]*(?:\\.[^"]*)*)"', response)
-                if content_match:
-                    content_value = content_match.group(1)
-                    content_value = content_value.encode().decode('unicode_escape')
-                    wprint(f"使用正则表达式提取的content: {content_value[:100]}...")
-                    return content_value
-            except Exception as regex_error:
-                wprint(f"正则表达式提取失败: {regex_error}")
-
-            # 最后回退到默认描述
-            wprint(f"所有修复尝试都失败，使用默认描述")
-            return f"'{entity1_name}'与'{entity2_name}'的关联关系"

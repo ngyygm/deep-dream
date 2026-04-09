@@ -7,38 +7,17 @@ LLM客户端：封装LLM调用，实现三个核心任务。
 
 think 模式由初始化参数 think_mode 控制；只有 Ollama 原生协议支持通过 `think: true/false` 显式开关思考模式。
 """
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
-from datetime import datetime
+from typing import Any, Callable, Dict, List, Optional, Tuple
 import heapq
 import json
 import os
 import re
 import threading
-import uuid
 import time
 
-from ..models import Episode, Entity
-from ..utils import clean_markdown_code_blocks, clean_separator_tags, wprint
+from ..models import Episode
+from ..utils import clean_separator_tags, wprint
 from .chat_api import ollama_chat, openai_compatible_chat
-from .prompts import (
-    # 记忆缓存
-    UPDATE_MEMORY_CACHE_SYSTEM_PROMPT,
-    CREATE_DOCUMENT_OVERALL_MEMORY_SYSTEM_PROMPT,
-    GENERATE_RELATION_MEMORY_CACHE_SYSTEM_PROMPT,
-    # 实体抽取
-    EXTRACT_ENTITIES_AND_RELATIONS_SYSTEM_PROMPT,
-    EXTRACT_ENTITIES_SINGLE_PASS_SYSTEM_PROMPT,
-    EXTRACT_ENTITIES_BY_NAMES_SYSTEM_PROMPT,
-    ENHANCE_ENTITY_CONTENT_SYSTEM_PROMPT,
-    # 关系抽取
-    EXTRACT_RELATIONS_SINGLE_PASS_SYSTEM_PROMPT,
-    # 内容判断与合并
-    JUDGE_CONTENT_NEED_UPDATE_SYSTEM_PROMPT,
-    MERGE_ENTITY_NAME_SYSTEM_PROMPT,
-    # 知识图谱整理
-    ANALYZE_ENTITY_CANDIDATES_PRELIMINARY_SYSTEM_PROMPT,
-    RESOLVE_ENTITY_CANDIDATES_BATCH_SYSTEM_PROMPT,
-)
 from .errors import LLMContextBudgetExceeded
 from .memory_ops import _MemoryOpsMixin
 from .entity_extraction import _EntityExtractionMixin
@@ -46,7 +25,6 @@ from .relation_extraction import _RelationExtractionMixin
 from .content_merger import _ContentMergerMixin
 from .consolidation import _ConsolidationMixin
 from .summary_evolution import SummaryEvolutionMixin
-from .entity_resolution import EntityResolutionMixin
 from .contradiction import ContradictionDetectionMixin
 from .agent_query import AgentQueryMixin
 
@@ -150,7 +128,7 @@ LLM_PRIORITY_STEP7 = 6   # 步骤7: 关系对齐
 
 class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixin,
                  _ContentMergerMixin, _ConsolidationMixin, SummaryEvolutionMixin,
-                 EntityResolutionMixin, ContradictionDetectionMixin, AgentQueryMixin):
+                 ContradictionDetectionMixin, AgentQueryMixin):
 
     @staticmethod
     def _normalize_entity_pair(entity1: str, entity2: str) -> tuple:
