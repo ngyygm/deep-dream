@@ -71,20 +71,11 @@ class DeepDreamApi {
   health(graphId = 'default') {
     return this.get(`/api/v1/health?graph_id=${encodeURIComponent(graphId)}`);
   }
-  systemOverview() { return this.get('/api/v1/system/overview'); }
-  systemGraphs() { return this.get('/api/v1/system/graphs'); }
-  systemGraphDetail(graphId) { return this.get(`/api/v1/system/graphs/${encodeURIComponent(graphId)}`); }
-  systemTasks(limit = 50) { return this.get(`/api/v1/system/tasks?limit=${limit}`); }
-  systemLogs(limit = 50, level, source) {
-    let q = `limit=${limit}`;
-    if (level) q += `&level=${encodeURIComponent(level)}`;
-    if (source) q += `&source=${encodeURIComponent(source)}`;
-    return this.get(`/api/v1/system/logs?${q}`);
-  }
-  systemAccessStats(sinceSeconds = 300) { return this.get(`/api/v1/system/access-stats?since_seconds=${sinceSeconds}`); }
 
   // Graphs
   listGraphs() { return this.get('/api/v1/graphs'); }
+  createGraph(graphId) { return this.post('/api/v1/graphs', { graph_id: graphId }); }
+  deleteGraph(graphId) { return this.delete(`/api/v1/graphs/${encodeURIComponent(graphId)}`); }
   findStats(graphId = 'default') {
     return this.get(`/api/v1/find/stats?graph_id=${encodeURIComponent(graphId)}`);
   }
@@ -169,19 +160,19 @@ class DeepDreamApi {
     if (options.searchMode) body.search_mode = options.searchMode;
     return this.post('/api/v1/find/entities/search', body);
   }
-  entityVersions(entityId, graphId = 'default') {
-    return this.get(`/api/v1/find/entities/${encodeURIComponent(entityId)}/versions?graph_id=${encodeURIComponent(graphId)}`);
+  entityVersions(familyId, graphId = 'default') {
+    return this.get(`/api/v1/find/entities/${encodeURIComponent(familyId)}/versions?graph_id=${encodeURIComponent(graphId)}`);
   }
-  entityRelations(entityId, graphId = 'default', options = {}) {
+  entityRelations(familyId, graphId = 'default', options = {}) {
     let q = `graph_id=${encodeURIComponent(graphId)}`;
     if (options.limit) q += `&limit=${options.limit}`;
     if (options.maxVersionAbsoluteId) q += `&max_version_absolute_id=${encodeURIComponent(options.maxVersionAbsoluteId)}`;
     if (options.relationScope) q += `&relation_scope=${encodeURIComponent(options.relationScope)}`;
-    return this.get(`/api/v1/find/entities/${encodeURIComponent(entityId)}/relations?${q}`);
+    return this.get(`/api/v1/find/entities/${encodeURIComponent(familyId)}/relations?${q}`);
   }
-  entityVersionCounts(entityIds, graphId = 'default') {
+  entityVersionCounts(familyIds, graphId = 'default') {
     return this.post('/api/v1/find/entities/version-counts', {
-      entity_ids: entityIds,
+      family_ids: familyIds,
       graph_id: graphId,
     });
   }
@@ -193,36 +184,35 @@ class DeepDreamApi {
   }
 
   // --- CRUD ---
-  updateEntity(entityId, data, graphId = 'default') {
-    return this.request(`/api/v1/find/entities/${encodeURIComponent(entityId)}?graph_id=${encodeURIComponent(graphId)}`, {
-      method: 'PUT',
-      body: JSON.stringify(data),
+  updateEntity(familyId, data, graphId = 'default') {
+    return this.request('PUT', `/api/v1/find/entities/${encodeURIComponent(familyId)}?graph_id=${encodeURIComponent(graphId)}`, {
+      json: data,
     });
   }
 
   // --- Entity v3: Summary Evolution ---
-  evolveEntitySummary(entityId, graphId = 'default') {
-    return this.post(`/api/v1/find/entities/${encodeURIComponent(entityId)}/evolve-summary?graph_id=${encodeURIComponent(graphId)}`, {});
+  evolveEntitySummary(familyId, graphId = 'default') {
+    return this.post(`/api/v1/find/entities/${encodeURIComponent(familyId)}/evolve-summary?graph_id=${encodeURIComponent(graphId)}`, {});
   }
 
   // --- Entity v3: Contradictions ---
-  entityContradictions(entityId, graphId = 'default') {
-    return this.get(`/api/v1/find/entities/${encodeURIComponent(entityId)}/contradictions?graph_id=${encodeURIComponent(graphId)}`);
+  entityContradictions(familyId, graphId = 'default') {
+    return this.get(`/api/v1/find/entities/${encodeURIComponent(familyId)}/contradictions?graph_id=${encodeURIComponent(graphId)}`);
   }
 
-  resolveContradiction(entityId, data, graphId = 'default') {
-    return this.post(`/api/v1/find/entities/${encodeURIComponent(entityId)}/resolve-contradiction?graph_id=${encodeURIComponent(graphId)}`, data);
+  resolveContradiction(familyId, data, graphId = 'default') {
+    return this.post(`/api/v1/find/entities/${encodeURIComponent(familyId)}/resolve-contradiction?graph_id=${encodeURIComponent(graphId)}`, data);
   }
 
   // --- Entity v3: Provenance ---
-  entityProvenance(entityId, graphId = 'default') {
-    return this.get(`/api/v1/find/entities/${encodeURIComponent(entityId)}/provenance?graph_id=${encodeURIComponent(graphId)}`);
+  entityProvenance(familyId, graphId = 'default') {
+    return this.get(`/api/v1/find/entities/${encodeURIComponent(familyId)}/provenance?graph_id=${encodeURIComponent(graphId)}`);
   }
 
   // --- Graph Traversal (Phase B) ---
-  traverseGraph(seedEntityIds, maxDepth = 3, maxNodes = 100, graphId = 'default') {
+  traverseGraph(seedFamilyIds, maxDepth = 3, maxNodes = 100, graphId = 'default') {
     return this.post('/api/v1/find/traverse', {
-      seed_entity_ids: seedEntityIds,
+      seed_family_ids: seedFamilyIds,
       max_depth: maxDepth,
       max_nodes: maxNodes,
       graph_id: graphId,
@@ -234,49 +224,39 @@ class DeepDreamApi {
     return this.post('/api/v1/find/episodes/batch-ingest', { episodes, graph_id: graphId });
   }
 
-  deleteEntity(entityId, cascade = false, graphId = 'default') {
-    return this.request(`/api/v1/find/entities/${encodeURIComponent(entityId)}?cascade=${cascade}&graph_id=${encodeURIComponent(graphId)}`, {
-      method: 'DELETE',
+  deleteEntity(familyId, cascade = false, graphId = 'default') {
+    return this.request('DELETE', `/api/v1/find/entities/${encodeURIComponent(familyId)}?cascade=${cascade}&graph_id=${encodeURIComponent(graphId)}`);
+  }
+
+  batchDeleteEntities(familyIds, cascade = false, graphId = 'default') {
+    return this.request('POST', '/api/v1/find/entities/batch-delete', {
+      json: { family_ids: familyIds, cascade, graph_id: graphId },
     });
   }
 
-  batchDeleteEntities(entityIds, cascade = false, graphId = 'default') {
-    return this.request('/api/v1/find/entities/batch-delete', {
-      method: 'POST',
-      body: JSON.stringify({ entity_ids: entityIds, cascade, graph_id: graphId }),
+  updateRelation(familyId, data, graphId = 'default') {
+    return this.request('PUT', `/api/v1/find/relations/${encodeURIComponent(familyId)}?graph_id=${encodeURIComponent(graphId)}`, {
+      json: data,
     });
   }
 
-  updateRelation(relationId, data, graphId = 'default') {
-    return this.request(`/api/v1/find/relations/${encodeURIComponent(relationId)}?graph_id=${encodeURIComponent(graphId)}`, {
-      method: 'PUT',
-      body: JSON.stringify(data),
+  deleteRelation(familyId, graphId = 'default') {
+    return this.request('DELETE', `/api/v1/find/relations/${encodeURIComponent(familyId)}?graph_id=${encodeURIComponent(graphId)}`);
+  }
+
+  batchDeleteRelations(familyIds, graphId = 'default') {
+    return this.request('POST', '/api/v1/find/relations/batch-delete', {
+      json: { family_ids: familyIds, graph_id: graphId },
     });
   }
 
-  deleteRelation(relationId, graphId = 'default') {
-    return this.request(`/api/v1/find/relations/${encodeURIComponent(relationId)}?graph_id=${encodeURIComponent(graphId)}`, {
-      method: 'DELETE',
-    });
-  }
-
-  batchDeleteRelations(relationIds, graphId = 'default') {
-    return this.request('/api/v1/find/relations/batch-delete', {
-      method: 'POST',
-      body: JSON.stringify({ relation_ids: relationIds, graph_id: graphId }),
-    });
-  }
-
-  mergeEntities(targetEntityId, sourceEntityIds, graphId = 'default') {
-    return this.request('/api/v1/find/entities/merge', {
-      method: 'POST',
-      body: JSON.stringify({ target_entity_id: targetEntityId, source_entity_ids: sourceEntityIds, graph_id: graphId }),
-    });
+  mergeEntities(targetFamilyId, sourceFamilyIds, graphId = 'default') {
+    return this.post('/api/v1/find/entities/merge', { target_family_id: targetFamilyId, source_family_ids: sourceFamilyIds, graph_id: graphId });
   }
 
   // Relations
-  relationVersions(relationId, graphId = 'default') {
-    return this.get(`/api/v1/find/relations/${encodeURIComponent(relationId)}/versions?graph_id=${encodeURIComponent(graphId)}`);
+  relationVersions(familyId, graphId = 'default') {
+    return this.get(`/api/v1/find/relations/${encodeURIComponent(familyId)}/versions?graph_id=${encodeURIComponent(graphId)}`);
   }
   relationByAbsoluteId(absoluteId, graphId = 'default') {
     return this.get(`/api/v1/find/relations/absolute/${encodeURIComponent(absoluteId)}?graph_id=${encodeURIComponent(graphId)}`);
@@ -301,15 +281,15 @@ class DeepDreamApi {
   }
   relationsBetween(entityA, entityB, graphId = 'default') {
     return this.post('/api/v1/find/relations/between', {
-      entity_id_a: entityA,
-      entity_id_b: entityB,
+      family_id_a: entityA,
+      family_id_b: entityB,
       graph_id: graphId,
     });
   }
   shortestPaths(entityA, entityB, graphId = 'default', options = {}) {
     return this.post('/api/v1/find/paths/shortest', {
-      entity_id_a: entityA,
-      entity_id_b: entityB,
+      family_id_a: entityA,
+      family_id_b: entityB,
       graph_id: graphId,
       max_depth: options.maxDepth || 6,
       max_paths: options.maxPaths || 10,
@@ -324,8 +304,8 @@ class DeepDreamApi {
   // Neo4j: Cypher Shortest Path
   shortestPathCypher(entityA, entityB, graphId = 'default', maxDepth = 6) {
     return this.post('/api/v1/find/paths/shortest-cypher', {
-      entity_id_a: entityA,
-      entity_id_b: entityB,
+      family_id_a: entityA,
+      family_id_b: entityB,
       graph_id: graphId,
       max_depth: maxDepth,
     });
@@ -367,33 +347,30 @@ class DeepDreamApi {
 
   // --- Time Travel ---
   getSnapshot(time, graphId = 'default') {
-    return this.request(`/api/v1/find/snapshot?time=${encodeURIComponent(time)}&graph_id=${encodeURIComponent(graphId)}`);
+    return this.get(`/api/v1/find/snapshot?time=${encodeURIComponent(time)}&graph_id=${encodeURIComponent(graphId)}`);
   }
 
   getChanges(since, until, graphId = 'default') {
     let url = `/api/v1/find/changes?since=${encodeURIComponent(since)}&graph_id=${encodeURIComponent(graphId)}`;
     if (until) url += `&until=${encodeURIComponent(until)}`;
-    return this.request(url);
+    return this.get(url);
   }
 
-  invalidateRelation(relationId, reason = '', graphId = 'default') {
-    return this.request(`/api/v1/find/relations/${encodeURIComponent(relationId)}/invalidate?graph_id=${encodeURIComponent(graphId)}`, {
-      method: 'POST',
-      body: JSON.stringify({ reason }),
-    });
+  invalidateRelation(familyId, reason = '', graphId = 'default') {
+    return this.post(`/api/v1/find/relations/${encodeURIComponent(familyId)}/invalidate?graph_id=${encodeURIComponent(graphId)}`, { reason });
   }
 
   getInvalidatedRelations(limit = 100, graphId = 'default') {
-    return this.request(`/api/v1/find/relations/invalidated?limit=${limit}&graph_id=${encodeURIComponent(graphId)}`);
+    return this.get(`/api/v1/find/relations/invalidated?limit=${limit}&graph_id=${encodeURIComponent(graphId)}`);
   }
 
   // --- Stats & Timeline ---
   getGraphStats(graphId = 'default') {
-    return this.request(`/api/v1/find/graph-stats?graph_id=${encodeURIComponent(graphId)}`);
+    return this.get(`/api/v1/find/graph-stats?graph_id=${encodeURIComponent(graphId)}`);
   }
 
-  getEntityTimeline(entityId, graphId = 'default') {
-    return this.request(`/api/v1/find/entities/${encodeURIComponent(entityId)}/timeline?graph_id=${encodeURIComponent(graphId)}`);
+  getEntityTimeline(familyId, graphId = 'default') {
+    return this.get(`/api/v1/find/entities/${encodeURIComponent(familyId)}/timeline?graph_id=${encodeURIComponent(graphId)}`);
   }
 
   // Docs
@@ -404,30 +381,8 @@ class DeepDreamApi {
     return this.get(`/api/v1/docs/${encodeURIComponent(filename)}?graph_id=${encodeURIComponent(graphId)}`);
   }
 
-  memoryCacheDoc(cacheId, graphId = 'default') {
-    return this.get(`/api/v1/find/memory-caches/${encodeURIComponent(cacheId)}/doc?graph_id=${encodeURIComponent(graphId)}`);
-  }
-
-  // --- DeepDream (Phase E) ---
-  startDream(graphId = 'default', options = {}) {
-    return this.post('/api/v1/find/dream/start', {
-      graph_id: graphId,
-      review_window_days: options.reviewWindowDays ?? 30,
-      max_entities_per_cycle: options.maxEntitiesPerCycle ?? 100,
-      similarity_threshold: options.similarityThreshold ?? 0.8,
-    });
-  }
-
-  dreamStatus(graphId = 'default') {
-    return this.get(`/api/v1/find/dream/status?graph_id=${encodeURIComponent(graphId)}`);
-  }
-
-  dreamLogs(limit = 20, graphId = 'default') {
-    return this.get(`/api/v1/find/dream/logs?limit=${limit}&graph_id=${encodeURIComponent(graphId)}`);
-  }
-
-  dreamLogDetail(cycleId, graphId = 'default') {
-    return this.get(`/api/v1/find/dream/logs/${encodeURIComponent(cycleId)}?graph_id=${encodeURIComponent(graphId)}`);
+  episodeDoc(cacheId, graphId = 'default') {
+    return this.get(`/api/v1/find/episodes/${encodeURIComponent(cacheId)}/doc?graph_id=${encodeURIComponent(graphId)}`);
   }
 
   // --- Agent Meta Query (Phase F) ---
@@ -435,8 +390,8 @@ class DeepDreamApi {
     return this.post('/api/v1/find/ask', { question, graph_id: graphId });
   }
 
-  explainEntity(entityId, aspect, graphId = 'default') {
-    return this.post('/api/v1/find/explain', { entity_id: entityId, aspect, graph_id: graphId });
+  explainEntity(familyId, aspect, graphId = 'default') {
+    return this.post('/api/v1/find/explain', { family_id: familyId, aspect, graph_id: graphId });
   }
 
   smartSuggestions(graphId = 'default') {
@@ -467,6 +422,47 @@ class DeepDreamApi {
     if (opts.logSource) q += `&log_source=${encodeURIComponent(opts.logSource)}`;
     if (opts.accessSince) q += `&access_since=${opts.accessSince}`;
     return this.get(`/api/v1/system/dashboard?${q}`);
+  }
+
+  // Butler
+  butlerReport(graphId = 'default') {
+    return this.get(`/api/v1/butler/report?graph_id=${encodeURIComponent(graphId)}`);
+  }
+  butlerExecute(actions, dryRun = false, graphId = 'default') {
+    return this.post(`/api/v1/butler/execute?graph_id=${encodeURIComponent(graphId)}`, {
+      actions,
+      dry_run: dryRun,
+    });
+  }
+
+  // Dream
+  dreamStatus(graphId = 'default') {
+    return this.get(`/api/v1/find/dream/status?graph_id=${encodeURIComponent(graphId)}`);
+  }
+  dreamLogs(graphId = 'default', limit = 20) {
+    return this.get(`/api/v1/find/dream/logs?graph_id=${encodeURIComponent(graphId)}&limit=${limit}`);
+  }
+  dreamLogDetail(cycleId, graphId = 'default') {
+    return this.get(`/api/v1/find/dream/logs/${encodeURIComponent(cycleId)}?graph_id=${encodeURIComponent(graphId)}`);
+  }
+  dreamSeeds(graphId = 'default', strategy = 'random', count = 5) {
+    return this.post(`/api/v1/find/dream/seeds?graph_id=${encodeURIComponent(graphId)}`, {
+      strategy, count,
+    });
+  }
+
+  // Quality / Maintenance
+  qualityReport(graphId = 'default') {
+    return this.get(`/api/v1/find/quality-report?graph_id=${encodeURIComponent(graphId)}`);
+  }
+  maintenanceHealth(graphId = 'default') {
+    return this.get(`/api/v1/find/maintenance/health?graph_id=${encodeURIComponent(graphId)}`);
+  }
+  maintenanceCleanup(dryRun = false, graphId = 'default') {
+    return this.post(`/api/v1/find/maintenance/cleanup?graph_id=${encodeURIComponent(graphId)}`, { dry_run: dryRun });
+  }
+  graphSummary(graphId = 'default') {
+    return this.get(`/api/v1/find/graph-summary?graph_id=${encodeURIComponent(graphId)}`);
   }
 }
 
@@ -536,6 +532,20 @@ function escapeHtml(str) {
   const div = document.createElement('div');
   div.textContent = str;
   return div.innerHTML;
+}
+
+function renderMarkdown(text) {
+  if (!text) return '';
+  if (typeof marked === 'undefined') return escapeHtml(text);
+  try {
+    marked.setOptions({ breaks: true, gfm: true });
+    var html = marked.parse(text);
+    // Strip <script> tags for safety
+    html = html.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '');
+    return html;
+  } catch (e) {
+    return escapeHtml(text);
+  }
 }
 
 function escapeAttr(s) {
@@ -660,20 +670,50 @@ function emptyState(text, icon = 'inbox') {
   return `<div class="empty-state"><i data-lucide="${icon}"></i><p>${escapeHtml(text)}</p></div>`;
 }
 
+// Make clickable table rows keyboard-accessible
+// Usage: after rendering rows, call bindClickableRows(container)
+function bindClickableRows(container) {
+  if (!container) return;
+  container.querySelectorAll('tr[data-family-id], tr[data-task-id]').forEach(row => {
+    if (!row.hasAttribute('tabindex')) row.setAttribute('tabindex', '0');
+    row.setAttribute('role', 'button');
+    row.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        row.click();
+      }
+    });
+  });
+}
+
 // ---- Router ----
 const pages = {};
-const pageTitles = {
-  chat: t('nav.chat'),
-  dashboard: t('nav.dashboard'),
-  graph: t('nav.graph'),
-  memory: t('nav.memory'),
-  search: t('nav.search'),
-  entities: t('nav.entities'),
-  relations: t('nav.relations'),
-  episodes: t('nav.episodes'),
-  communities: t('nav.communities'),
-  dream: t('nav.dream'),
-  'api-test': t('nav.apiTest'),
+const _pageTitleKeys = {
+  chat: 'nav.chat',
+  dashboard: 'nav.dashboard',
+  graph: 'nav.graph',
+  memory: 'nav.memory',
+  search: 'nav.search',
+  entities: 'nav.entities',
+  relations: 'nav.relations',
+  episodes: 'nav.episodes',
+  communities: 'nav.communities',
+  dream: 'nav.dream',
+  'api-test': 'nav.apiTest',
+};
+
+const _pageSloganKeys = {
+  chat: 'slogan.chat',
+  dashboard: 'slogan.dashboard',
+  graph: 'slogan.graph',
+  memory: 'slogan.memory',
+  search: 'slogan.search',
+  entities: 'slogan.entities',
+  relations: 'slogan.relations',
+  episodes: 'slogan.episodes',
+  communities: 'slogan.communities',
+  dream: 'slogan.dream',
+  'api-test': 'slogan.apiTest',
 };
 
 function registerPage(name, module) {
@@ -706,8 +746,26 @@ async function handleRoute() {
     return;
   }
 
-  // Set title
-  document.getElementById('page-title').textContent = pageTitles[pageName] || pageName;
+  // Set title & breadcrumb
+  const breadcrumb = document.getElementById('breadcrumb');
+  const pageTitle = t(_pageTitleKeys[pageName] || '') || pageName;
+  if (breadcrumb) {
+    let bc = `<span id="page-title" class="font-semibold" style="color:var(--text-secondary);">${escapeHtml(pageTitle)}</span>`;
+    if (params.length > 0) {
+      const paramLabel = decodeURIComponent(params[0]);
+      bc = `<a href="#${pageName}" class="breadcrumb-link" style="color:var(--text-muted);text-decoration:none;font-weight:500;">${escapeHtml(pageTitle)}</a>`
+        + `<span style="color:var(--text-muted);font-size:0.75rem;">/</span>`
+        + `<span id="page-title" class="font-semibold" style="color:var(--text-secondary);">${escapeHtml(truncate(paramLabel, 30))}</span>`;
+    }
+    breadcrumb.innerHTML = bc;
+  } else {
+    const titleEl = document.getElementById('page-title');
+    if (titleEl) titleEl.textContent = pageTitle;
+  }
+
+  // Update sidebar slogan
+  const sloganEl = document.getElementById('sidebar-slogan');
+  if (sloganEl) sloganEl.textContent = t(_pageSloganKeys[pageName] || _pageSloganKeys['chat']);
 
   // Call destroy if exists
   if (state.currentPage && pages[state.currentPage] && pages[state.currentPage].destroy) {
@@ -715,7 +773,7 @@ async function handleRoute() {
   }
 
   state.currentPage = pageName;
-  container.innerHTML = `<div class="page-enter"><div class="flex items-center justify-center p-12">${spinnerHtml()}</div></div>`;
+  container.innerHTML = `<div class="page-enter"><div class="skeleton-card" style="margin-bottom:1rem;"><div class="skeleton skeleton-line w-1/4 h-8"></div><div class="skeleton skeleton-line w-3/4"></div><div class="skeleton skeleton-line w-1/2"></div></div><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:1rem;"><div class="skeleton-card"><div class="skeleton skeleton-line w-1/2 h-6"></div><div class="skeleton skeleton-line w-full"></div></div><div class="skeleton-card"><div class="skeleton skeleton-line w-1/2 h-6"></div><div class="skeleton skeleton-line w-full"></div></div><div class="skeleton-card"><div class="skeleton skeleton-line w-1/2 h-6"></div><div class="skeleton skeleton-line w-full"></div></div></div></div>`;
 
   try {
     await pageModule.render(container, params);
@@ -744,7 +802,55 @@ async function loadGraphSelector() {
     if (!graphs.includes(currentVal)) {
       sel.innerHTML = `<option value="${escapeHtml(currentVal)}" selected>${escapeHtml(currentVal)}</option>` + sel.innerHTML;
     }
+
+    // Show/hide delete button: only show when more than one graph exists
+    const delBtn = document.getElementById('graph-delete-btn');
+    if (delBtn) {
+      delBtn.style.display = graphs.length > 1 ? '' : 'none';
+      if (window.lucide) lucide.createIcons();
+    }
   } catch { /* ignore */ }
+}
+
+async function deleteCurrentGraph() {
+  const graphId = state.currentGraphId;
+  const graphs = Array.from(document.getElementById('graph-selector')?.options || []).map(o => o.value);
+
+  // Safety: don't delete if it's the only graph
+  if (graphs.length <= 1) {
+    showToast('至少保留一个图谱', 'warning');
+    return;
+  }
+
+  // Confirmation modal
+  const confirmed = await new Promise(resolve => {
+    showModal({
+      title: '删除图谱',
+      size: 'sm',
+      content: `<p style="color:var(--text-secondary);">确定要删除图谱 <strong style="color:var(--danger);">${escapeHtml(graphId)}</strong> 吗？</p>
+                <p style="color:var(--text-muted);font-size:0.8rem;margin-top:8px;">此操作将永久删除该图谱的所有实体、关系和文档，不可恢复。</p>`,
+      footer: `
+        <button class="btn btn-ghost" id="modal-cancel-btn">取消</button>
+        <button class="btn" style="background:var(--danger);color:#fff;" id="modal-confirm-btn">删除</button>
+      `,
+      onClose: () => resolve(false),
+    });
+    document.getElementById('modal-cancel-btn')?.addEventListener('click', () => resolve(false));
+    document.getElementById('modal-confirm-btn')?.addEventListener('click', () => resolve(true));
+  });
+
+  if (!confirmed) return;
+
+  try {
+    await state.api.deleteGraph(graphId);
+    showToast(`图谱 "${graphId}" 已删除`, 'success');
+    // Switch to first remaining graph
+    const remaining = graphs.filter(g => g !== graphId);
+    setGraphId(remaining[0] || 'default');
+    loadGraphSelector();
+  } catch (e) {
+    showToast(`删除失败: ${e.message || e}`, 'error');
+  }
 }
 
 // ---- Theme ----
@@ -786,6 +892,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     sel.value = state.currentGraphId;
     sel.addEventListener('change', () => setGraphId(sel.value));
   }
+  // Setup graph delete button
+  const graphDelBtn = document.getElementById('graph-delete-btn');
+  if (graphDelBtn) {
+    graphDelBtn.addEventListener('click', deleteCurrentGraph);
+  }
 
   // Setup hash routing
   window.addEventListener('hashchange', handleRoute);
@@ -803,30 +914,62 @@ document.addEventListener('DOMContentLoaded', async () => {
   } catch { /* ignore */ }
 
   // Show/hide Neo4j-only nav items
-  const neo4jNavItems = ['nav-episodes', 'nav-communities', 'nav-dream'];
+  const neo4jNavItems = ['nav-episodes', 'nav-communities'];
   neo4jNavItems.forEach(id => {
     const el = document.getElementById(id);
     if (el) el.style.display = isNeo4j() ? '' : 'none';
   });
 
-  // Mobile sidebar toggle
+  // Mobile sidebar toggle with backdrop
   const toggle = document.getElementById('sidebar-toggle');
   const sidebar = document.getElementById('sidebar');
   if (toggle && sidebar) {
-    toggle.addEventListener('click', () => sidebar.classList.toggle('open'));
-    document.addEventListener('click', (e) => {
-      if (!sidebar.contains(e.target) && !toggle.contains(e.target)) {
-        sidebar.classList.remove('open');
-      }
+    // Create backdrop element for mobile
+    const backdrop = document.createElement('div');
+    backdrop.className = 'sidebar-backdrop';
+    backdrop.id = 'sidebar-backdrop';
+    document.body.appendChild(backdrop);
+
+    toggle.addEventListener('click', () => {
+      sidebar.classList.toggle('open');
+      backdrop.classList.toggle('active', sidebar.classList.contains('open'));
     });
+    backdrop.addEventListener('click', () => {
+      sidebar.classList.remove('open');
+      backdrop.classList.remove('active');
+    });
+
+    // Close sidebar on nav link click (mobile)
+    sidebar.querySelectorAll('.sidebar-link').forEach(link => {
+      link.addEventListener('click', () => {
+        if (window.innerWidth < 768) {
+          sidebar.classList.remove('open');
+          backdrop.classList.remove('active');
+        }
+      });
+    });
+
+    // Restore collapsed state on desktop
+    const collapsed = localStorage.getItem('deepdream_sidebar_collapsed') === 'true';
+    if (collapsed && window.innerWidth >= 768) {
+      sidebar.classList.add('collapsed');
+    }
   }
 });
+
+// ---- Sidebar collapse (desktop) ----
+function _toggleSidebarCollapse() {
+  const sidebar = document.getElementById('sidebar');
+  if (!sidebar) return;
+  sidebar.classList.toggle('collapsed');
+  localStorage.setItem('deepdream_sidebar_collapsed', sidebar.classList.contains('collapsed'));
+}
 
 // ---- Global: Show document content modal ----
 window.showDocContent = async function(cacheId) {
   if (!cacheId) return;
   try {
-    const res = await state.api.memoryCacheDoc(cacheId, state.currentGraphId);
+    const res = await state.api.episodeDoc(cacheId, state.currentGraphId);
     const data = res.data || {};
     const meta = data.meta || {};
 
@@ -872,3 +1015,215 @@ window.showDocContent = async function(cacheId) {
     showToast(t('memory.loadDocContentFailed') + ': ' + err.message, 'error');
   }
 };
+
+// ---- Keyboard Shortcut System ----
+const _shortcuts = [];
+const _SHORTCUT_IGNORE_TAGS = new Set(['INPUT', 'TEXTAREA', 'SELECT']);
+
+function registerShortcut(key, desc, handler, opts = {}) {
+  _shortcuts.push({ key, desc, handler, global: opts.global || false, ctrlKey: opts.ctrlKey, shiftKey: opts.shiftKey, altKey: opts.altKey });
+}
+
+function _matchShortcut(e, s) {
+  if (s.key !== e.key) return false;
+  const needCtrl = s.ctrlKey !== undefined;
+  if (needCtrl) {
+    const ctrlOk = e.ctrlKey || e.metaKey;
+    if (s.ctrlKey && !ctrlOk) return false;
+    if (!s.ctrlKey && ctrlOk) return false;
+  }
+  if (s.shiftKey && !e.shiftKey) return false;
+  if (s.altKey && !e.altKey) return false;
+  return true;
+}
+
+document.addEventListener('keydown', (e) => {
+  // Global shortcuts
+  for (const s of _shortcuts) {
+    if (s.global && _matchShortcut(e, s)) {
+      e.preventDefault();
+      s.handler(e);
+      return;
+    }
+  }
+  // Page-level shortcuts (skip when typing)
+  const tag = document.activeElement?.tagName;
+  if (_SHORTCUT_IGNORE_TAGS.has(tag)) return;
+  for (const s of _shortcuts) {
+    if (!s.global && _matchShortcut(e, s)) {
+      e.preventDefault();
+      s.handler(e);
+      return;
+    }
+  }
+});
+
+// Register core shortcuts
+registerShortcut('k', 'Open command palette', () => _openCommandPalette(), { ctrlKey: true, global: true });
+registerShortcut('/', 'Focus search', () => {
+  navigate('#search');
+  setTimeout(() => { const el = document.getElementById('search-input'); if (el) el.focus(); }, 100);
+}, { global: true });
+registerShortcut('b', 'Toggle sidebar', () => {
+  const sidebar = document.getElementById('sidebar');
+  if (sidebar) sidebar.classList.toggle('collapsed');
+}, { ctrlKey: true, global: true });
+registerShortcut('?', 'Show shortcuts', () => _showShortcutsHelp(), { ctrlKey: true, global: true });
+
+registerShortcut('1', 'Chat', () => navigate('#chat'), { altKey: true });
+registerShortcut('2', 'Dashboard', () => navigate('#dashboard'), { altKey: true });
+registerShortcut('3', 'Graph', () => navigate('#graph'), { altKey: true });
+registerShortcut('4', 'Memory', () => navigate('#memory'), { altKey: true });
+registerShortcut('5', 'Search', () => navigate('#search'), { altKey: true });
+registerShortcut('6', 'Entities', () => navigate('#entities'), { altKey: true });
+registerShortcut('7', 'Relations', () => navigate('#relations'), { altKey: true });
+registerShortcut('8', 'Dream', () => navigate('#dream'), { altKey: true });
+
+// ---- Command Palette (Ctrl+K) ----
+function _openCommandPalette() {
+  const commands = [
+    { label: t('nav.chat') || 'Chat', icon: 'message-circle', action: () => navigate('#chat') },
+    { label: t('nav.dashboard') || 'Dashboard', icon: 'layout-dashboard', action: () => navigate('#dashboard') },
+    { label: t('nav.graph') || 'Graph', icon: 'network', action: () => navigate('#graph') },
+    { label: t('nav.memory') || 'Memory', icon: 'database', action: () => navigate('#memory') },
+    { label: t('nav.search') || 'Search', icon: 'search', action: () => navigate('#search') },
+    { label: t('nav.entities') || 'Entities', icon: 'circle-dot', action: () => navigate('#entities') },
+    { label: t('nav.relations') || 'Relations', icon: 'git-branch', action: () => navigate('#relations') },
+    { label: t('nav.dream') || 'Dream', icon: 'moon', action: () => navigate('#dream') },
+    { label: t('nav.apiTest') || 'API Test', icon: 'terminal', action: () => navigate('#api-test') },
+    { label: t('common.toggleTheme') || 'Toggle Theme', icon: 'sun', action: () => toggleTheme() },
+    { label: t('common.writeMemory') || 'Write Memory', icon: 'plus', action: () => navigate('#memory') },
+    { label: t('common.healthCheck') || 'Health Check', icon: 'heart', action: async () => {
+      try {
+        await state.api.health(state.currentGraphId);
+        showToast(t('common.statusOk') || 'API Connected', 'success');
+      } catch (e) {
+        showToast(t('common.statusError') || 'API Error: ' + e.message, 'error');
+      }
+    }},
+  ];
+
+  // Add page-specific commands from current page module
+  const currentPageModule = pages[state.currentPage];
+  if (currentPageModule && currentPageModule.getCommands) {
+    commands.push(...currentPageModule.getCommands());
+  }
+
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.setAttribute('role', 'dialog');
+  overlay.setAttribute('aria-label', 'Command Palette');
+  overlay.style.background = 'rgba(0,0,0,0.5)';
+  overlay.style.alignItems = 'flex-start';
+  overlay.style.paddingTop = '18vh';
+  overlay.innerHTML = `
+    <div class="command-palette" style="background:var(--bg-surface);border:1px solid var(--border-color);border-radius:0.75rem;width:90%;max-width:500px;max-height:400px;display:flex;flex-direction:column;box-shadow:var(--shadow-lg);animation:modal-scale-in 0.12s ease;">
+      <div style="padding:0.75rem;border-bottom:1px solid var(--border-color);display:flex;align-items:center;gap:0.5rem;">
+        <i data-lucide="search" style="width:18px;height:18px;color:var(--text-muted);flex-shrink:0;"></i>
+        <input type="text" id="command-palette-input" class="input" placeholder="${t('common.searchCommands') || 'Type a command...'}" style="border:none;background:transparent;box-shadow:none;padding:0;font-size:0.9rem;">
+        <kbd style="font-size:0.7rem;padding:2px 6px;border-radius:4px;background:var(--bg-surface-hover);border:1px solid var(--border-color);color:var(--text-muted);font-family:var(--font-mono);">ESC</kbd>
+      </div>
+      <div id="command-palette-list" style="overflow-y:auto;padding:0.25rem;"></div>
+      <div style="padding:0.5rem 0.75rem;border-top:1px solid var(--border-color);display:flex;gap:1rem;font-size:0.7rem;color:var(--text-muted);">
+        <span><kbd style="padding:1px 4px;border-radius:3px;background:var(--bg-surface-hover);border:1px solid var(--border-color);">↑↓</kbd> navigate</span>
+        <span><kbd style="padding:1px 4px;border-radius:3px;background:var(--bg-surface-hover);border:1px solid var(--border-color);">↵</kbd> select</span>
+      </div>
+    </div>
+  `;
+
+  let selectedIdx = 0;
+  let filtered = [...commands];
+
+  function render() {
+    const list = overlay.querySelector('#command-palette-list');
+    if (!list) return;
+    list.innerHTML = filtered.length === 0
+      ? '<div style="padding:1rem;text-align:center;color:var(--text-muted);font-size:0.85rem;">No results</div>'
+      : filtered.map((cmd, i) => `
+        <div class="command-item" data-cmd-idx="${i}" style="display:flex;align-items:center;gap:0.75rem;padding:0.5rem 0.75rem;border-radius:0.5rem;cursor:pointer;transition:background 0.1s ease;${i === selectedIdx ? 'background:var(--primary-dim);' : ''}">
+          <i data-lucide="${cmd.icon || 'circle'}" style="width:16px;height:16px;color:var(--text-muted);flex-shrink:0;"></i>
+          <span style="font-size:0.85rem;color:${i === selectedIdx ? 'var(--primary-hover)' : 'var(--text-primary)'};">${escapeHtml(cmd.label)}</span>
+          ${cmd.desc ? `<span style="font-size:0.7rem;color:var(--text-muted);margin-left:auto;">${escapeHtml(cmd.desc)}</span>` : ''}
+        </div>
+      `).join('');
+    if (window.lucide) lucide.createIcons({ nodes: [overlay] });
+  }
+
+  const input = overlay.querySelector('#command-palette-input');
+  input.addEventListener('input', () => {
+    const q = input.value.toLowerCase().trim();
+    filtered = q ? commands.filter(c => c.label.toLowerCase().includes(q) || (c.desc || '').toLowerCase().includes(q)) : [...commands];
+    selectedIdx = 0;
+    render();
+  });
+
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      selectedIdx = Math.min(selectedIdx + 1, filtered.length - 1);
+      render();
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      selectedIdx = Math.max(selectedIdx - 1, 0);
+      render();
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (filtered[selectedIdx]) {
+        close();
+        filtered[selectedIdx].action();
+      }
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      close();
+    }
+  });
+
+  // Event delegation on the list container — works for dynamically rendered items
+  const listEl = overlay.querySelector('#command-palette-list');
+  listEl.addEventListener('click', (e) => {
+    const item = e.target.closest('.command-item');
+    if (!item) return;
+    const idx = parseInt(item.dataset.cmdIdx);
+    if (filtered[idx]) { close(); filtered[idx].action(); }
+  });
+  listEl.addEventListener('mousemove', (e) => {
+    const item = e.target.closest('.command-item');
+    if (!item) return;
+    const idx = parseInt(item.dataset.cmdIdx);
+    if (idx === selectedIdx) return;
+    selectedIdx = idx;
+    listEl.querySelectorAll('.command-item').forEach((el, i) => {
+      el.style.background = i === selectedIdx ? 'var(--primary-dim)' : '';
+    });
+  });
+
+  const close = () => overlay.remove();
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+
+  document.body.appendChild(overlay);
+  render();
+  requestAnimationFrame(() => input.focus());
+}
+
+function _showShortcutsHelp() {
+  const shortcutList = _shortcuts.map(s => {
+    let keys = [];
+    if (s.ctrlKey) keys.push('Ctrl');
+    if (s.altKey) keys.push('Alt');
+    if (s.shiftKey) keys.push('Shift');
+    keys.push(s.key.length === 1 ? s.key.toUpperCase() : s.key);
+    return { keys: keys.join(' + '), desc: s.desc };
+  });
+
+  const content = `
+    <div style="display:flex;flex-direction:column;gap:0.25rem;">
+      ${shortcutList.map(s => `
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:0.5rem 0;border-bottom:1px solid var(--border-color);">
+          <span style="font-size:0.85rem;color:var(--text-secondary);">${escapeHtml(s.desc)}</span>
+          <kbd style="font-size:0.75rem;padding:3px 8px;border-radius:4px;background:var(--bg-surface-hover);border:1px solid var(--border-color);font-family:var(--font-mono);color:var(--primary);">${escapeHtml(s.keys)}</kbd>
+        </div>
+      `).join('')}
+    </div>
+  `;
+  showModal({ title: t('common.keyboardShortcuts') || 'Keyboard Shortcuts', content, size: 'sm' });
+}

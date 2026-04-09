@@ -183,18 +183,18 @@
         {
           name: 'Entity Versions',
           method: 'GET',
-          path: '/api/v1/find/entities/{entity_id}/versions',
+          path: '/api/v1/find/entities/{family_id}/versions',
           params: [
-            { name: 'entity_id', type: 'text', default: '', pathParam: true },
+            { name: 'family_id', type: 'text', default: '', pathParam: true },
             { name: 'graph_id', type: 'text', default: 'default' },
           ],
         },
         {
           name: 'Entity Relations',
           method: 'GET',
-          path: '/api/v1/find/entities/{entity_id}/relations',
+          path: '/api/v1/find/entities/{family_id}/relations',
           params: [
-            { name: 'entity_id', type: 'text', default: '', pathParam: true },
+            { name: 'family_id', type: 'text', default: '', pathParam: true },
             { name: 'graph_id', type: 'text', default: 'default' },
             { name: 'limit', type: 'number', default: '' },
           ],
@@ -232,8 +232,8 @@
           path: '/api/v1/find/relations/between',
           contentType: 'json',
           params: [
-            { name: 'entity_id_a', type: 'text', default: '' },
-            { name: 'entity_id_b', type: 'text', default: '' },
+            { name: 'family_id_a', type: 'text', default: '' },
+            { name: 'family_id_b', type: 'text', default: '' },
             { name: 'graph_id', type: 'text', default: 'default' },
           ],
         },

@@ -28,8 +28,8 @@ _SEPARATOR_TAG_RE = re.compile(
 )
 
 
-def fuzzy_match_entity_id(name: str, entity_name_to_id: dict) -> Optional[str]:
-    """模糊匹配实体名称到 ID。
+def fuzzy_match_family_id(name: str, entity_name_to_id: dict) -> Optional[str]:
+    """模糊匹配实体名称到 family ID。
 
     匹配策略（按优先级）：
     1. 精确匹配
@@ -38,7 +38,7 @@ def fuzzy_match_entity_id(name: str, entity_name_to_id: dict) -> Optional[str]:
     4. 包含关系（一方包含另一方，且长度比 >= 0.5）
 
     Returns:
-        匹配到的 entity_id，未找到返回 None。
+        匹配到的 family_id，未找到返回 None。
     """
     if not name or not entity_name_to_id:
         return None
@@ -78,6 +78,15 @@ def fuzzy_match_entity_id(name: str, entity_name_to_id: dict) -> Optional[str]:
 def compute_doc_hash(text: str) -> str:
     """计算文本的 doc_hash（MD5 前12位），用于缓存去重和断点续传。"""
     return hashlib.md5(text.encode("utf-8")).hexdigest()[:12]
+
+
+def normalize_entity_pair(entity1: str, entity2: str) -> tuple:
+    """标准化实体对：按字典序排序，使无向边端点固定。
+
+    多处复用的纯函数，用于确保 (A,B) 和 (B,A) 被视为同一关系。
+    """
+    a, b = (entity1 or "").strip(), (entity2 or "").strip()
+    return (a, b) if a <= b else (b, a)
 
 
 def clean_markdown_code_blocks(text: str) -> str:

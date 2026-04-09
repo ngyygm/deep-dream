@@ -305,6 +305,7 @@ class RememberTask:
     main_progress: float = 0.0
     main_label: str = ""
     last_update: float = field(default_factory=time.time)
+    done_event: threading.Event = field(default_factory=threading.Event)
 
 
 class RememberJournal:
@@ -639,6 +640,9 @@ class RememberTaskQueue:
             if result is not None:
                 task.result = result
             task.last_update = time.time()
+            # Signal synchronous waiters when task reaches terminal state
+            if status in ("completed", "failed"):
+                task.done_event.set()
 
     def _task_to_dict(self, t: RememberTask) -> Dict[str, Any]:
         now = time.time()
@@ -831,6 +835,21 @@ class RememberTaskQueue:
         self._queue.put(task)
         self._log_info(f"[Remember] 任务入队: task_id={_short_task_id(task.task_id)}, source_name={task.source_name!r}")
         return task.task_id
+
+    def wait_for_task(self, task_id: str, timeout: float = 300) -> Optional[RememberTask]:
+        """Block until a task reaches completed/failed state, or timeout expires.
+
+        Returns the RememberTask (final or current state), or None if task_id not found.
+        """
+        with self._lock:
+            task = self._tasks.get(task_id)
+        if task is None:
+            return None
+        # Already done?
+        if task.status in ("completed", "failed"):
+            return task
+        task.done_event.wait(timeout=timeout)
+        return task
 
     def get_status(self, task_id: str) -> Optional[RememberTask]:
         with self._lock:

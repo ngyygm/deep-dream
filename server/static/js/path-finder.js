@@ -160,13 +160,13 @@ window.PathFinder = (function () {
 
     const items = entities.map((item, i) => {
       const isSelected = i === selectedIdx;
-      const name = item.entity.name || item.entity.entity_id || '?';
+      const name = item.entity.name || item.entity.family_id || '?';
       return `<div class="path-entity-item" data-side="${side}" data-index="${i}"
                    style="display:flex;align-items:center;gap:8px;padding:6px 10px;border-radius:6px;cursor:pointer;
                           ${isSelected ? 'background:var(--primary);color:#fff;' : 'background:var(--bg-secondary);color:var(--text-primary);'}
                           transition:background 0.15s;">
         <span class="mono" style="font-size:0.7rem;${isSelected ? 'opacity:0.8;' : 'color:var(--text-muted);'}">#${i + 1}</span>
-        <span style="font-size:0.8125rem;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(item.entity.entity_id || '')}">${escapeHtml(truncate(name, 20))}</span>
+        <span style="font-size:0.8125rem;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(item.entity.family_id || '')}">${escapeHtml(truncate(name, 20))}</span>
       </div>`;
     }).join('');
 
@@ -187,10 +187,10 @@ window.PathFinder = (function () {
 
     for (let i = 0; i < entities.length; i++) {
       const e = entities[i];
-      const eName = e.name || e.entity_id || '?';
+      const eName = e.name || e.family_id || '?';
       const eIdx = _state.chainIdx++;
       _state.chainEntityMap[eIdx] = e;
-      html += `<span class="badge badge-primary" style="cursor:pointer;font-size:0.8125rem;padding:0.25rem 0.5rem;" title="${escapeHtml(e.entity_id || '')}&#10;${escapeHtml(truncate(e.content || '', 100))}" data-pce="${eIdx}">${escapeHtml(truncate(eName, 20))}</span>`;
+      html += `<span class="badge badge-primary" style="cursor:pointer;font-size:0.8125rem;padding:0.25rem 0.5rem;" title="${escapeHtml(e.family_id || '')}&#10;${escapeHtml(truncate(e.content || '', 100))}" data-pce="${eIdx}">${escapeHtml(truncate(eName, 20))}</span>`;
       if (i < relations.length) {
         const r = relations[i];
         const rIdx = _state.chainIdx++;
@@ -318,7 +318,7 @@ window.PathFinder = (function () {
         if (_opts.onShowEntityDetail) _opts.onShowEntityDetail(_state.entityMap[nodeId]);
       } else if (edgeId && _state.relationMap[edgeId]) {
         const entityLookup = {};
-        allEntities.forEach(e => { entityLookup[e.absolute_id] = e.name || e.entity_id || ''; });
+        allEntities.forEach(e => { entityLookup[e.absolute_id] = e.name || e.family_id || ''; });
         if (_opts.onShowRelationDetail) _opts.onShowRelationDetail(_state.relationMap[edgeId], entityLookup);
       }
     });
@@ -389,7 +389,7 @@ window.PathFinder = (function () {
     const leftEntity = _state.leftEntities[_state.leftSelected].entity;
     const rightEntity = _state.rightEntities[_state.rightSelected].entity;
 
-    if (leftEntity.entity_id === rightEntity.entity_id) {
+    if (leftEntity.family_id === rightEntity.family_id) {
       _state.results = { path_length: 0, total_shortest_paths: 0, paths: [] };
       return;
     }
@@ -401,7 +401,7 @@ window.PathFinder = (function () {
       // Neo4j: try Cypher fast path first, fall back to standard
       if (isNeo4j()) {
         try {
-          const cypherRes = await api.shortestPathCypher(leftEntity.entity_id, rightEntity.entity_id, graphId, 6);
+          const cypherRes = await api.shortestPathCypher(leftEntity.family_id, rightEntity.family_id, graphId, 6);
           const cypherPaths = cypherRes.data?.paths || [];
           if (cypherPaths.length > 0) {
             // Convert name arrays to entity/relation format for graph rendering
@@ -414,7 +414,7 @@ window.PathFinder = (function () {
               for (const name of namePath) {
                 const absId = 'cypher_' + name;
                 if (!entityMap.has(absId)) {
-                  const e = { absolute_id: absId, entity_id: name, name: name, content: '' };
+                  const e = { absolute_id: absId, family_id: name, name: name, content: '' };
                   entityMap.set(absId, e);
                 }
                 entities.push(entityMap.get(absId));
@@ -439,7 +439,7 @@ window.PathFinder = (function () {
         } catch { /* fall through to standard search */ }
       }
 
-      const res = await api.shortestPaths(leftEntity.entity_id, rightEntity.entity_id, graphId, {
+      const res = await api.shortestPaths(leftEntity.family_id, rightEntity.family_id, graphId, {
         maxDepth: 6,
         maxPaths: 10,
       });
@@ -497,7 +497,7 @@ window.PathFinder = (function () {
         if (_state.chainRelationMap[idx] && _opts.onShowRelationDetail) {
           const entityLookup = {};
           Object.values(_state.chainEntityMap).forEach(ent => {
-            entityLookup[ent.absolute_id] = ent.name || ent.entity_id || '';
+            entityLookup[ent.absolute_id] = ent.name || ent.family_id || '';
           });
           _opts.onShowRelationDetail(_state.chainRelationMap[idx], entityLookup);
         }

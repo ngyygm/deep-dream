@@ -18,9 +18,9 @@
       theme: {
         extend: {
           colors: {
-            surface: '#1a1d27',
-            'surface-hover': '#22253a',
-            'bg-input': '#141620',
+            surface: '#1c1520',
+            'surface-hover': '#2a1e28',
+            'bg-input': '#170f14',
           }
         }
       }
@@ -50,7 +50,7 @@
           </div>
           <div>
             <div class="text-sm font-bold leading-tight" style="color:var(--text-primary);">DeepDream</div>
-            <div class="text-[10px] leading-tight" style="color:var(--text-muted);">Temporal Memory Graph</div>
+            <div id="sidebar-slogan" class="text-[10px] leading-tight" style="color:var(--text-muted);" data-i18n="slogan.chat">探索知识的深层梦境</div>
           </div>
         </div>
       </div>
@@ -93,8 +93,8 @@
           <i data-lucide="film"></i>
           <span data-i18n="nav.episodes">Episodes</span>
         </a>
-        <a class="sidebar-link" href="#dream" data-page="dream" id="nav-dream" style="display:none;">
-          <i data-lucide="sparkles"></i>
+        <a class="sidebar-link" href="#dream" data-page="dream">
+          <i data-lucide="moon"></i>
           <span data-i18n="nav.dream">DeepDream</span>
         </a>
         <a class="sidebar-link" href="#api-test" data-page="api-test">
@@ -121,7 +121,10 @@
           <button id="sidebar-toggle" class="btn btn-ghost btn-sm p-1.5 md:hidden">
             <i data-lucide="menu" style="width:18px;height:18px;"></i>
           </button>
-          <h1 id="page-title" class="text-sm font-semibold" style="color:var(--text-secondary);">Dashboard</h1>
+          <!-- Breadcrumb -->
+          <nav id="breadcrumb" class="flex items-center gap-1.5 text-sm" aria-label="Breadcrumb">
+            <span id="page-title" class="font-semibold" style="color:var(--text-secondary);">Dashboard</span>
+          </nav>
         </div>
         <div class="flex items-center gap-3">
           <!-- Graph Selector -->
@@ -130,6 +133,9 @@
             <select id="graph-selector" class="input text-xs py-1 px-2 w-36">
               <option value="default">default</option>
             </select>
+            <button id="graph-delete-btn" class="btn btn-ghost btn-sm p-1" title="删除当前图谱" style="display:none;">
+              <i data-lucide="trash-2" style="width:14px;height:14px;color:var(--danger);"></i>
+            </button>
           </div>
           <!-- Language selector -->
           <select id="lang-selector" class="input text-xs py-1 px-1.5" style="width:auto;min-width:60px;">

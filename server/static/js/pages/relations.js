@@ -4,7 +4,8 @@
 
 (function() {
   // ---- Module-level cache (persists across render/destroy) ----
-  let entityMap = {};          // absolute_id -> { name, entity_id }
+  let entityMap = {};          // absolute_id -> { name, family_id }
+  let relationMap = {};        // family_id -> relation object
   let allRelations = [];       // accumulated for "全部关系" tab
   let allOffset = 0;
   let allLoading = false;
@@ -19,22 +20,22 @@
     if (!absoluteId) return '-';
     if (fallbackName) return fallbackName;
     const e = entityMap[absoluteId];
-    return e ? (e.name || e.entity_id || absoluteId.slice(0, 8) + '...') : absoluteId.slice(0, 8) + '...';
+    return e ? (e.name || e.family_id || absoluteId.slice(0, 8) + '...') : absoluteId.slice(0, 8) + '...';
   }
 
-  function entityId(absoluteId) {
+  function familyId(absoluteId) {
     if (!absoluteId) return '-';
     const e = entityMap[absoluteId];
-    return e ? e.entity_id : '-';
+    return e ? e.family_id : '-';
   }
 
   async function loadEntityMap() {
     try {
       const res = await state.api.listEntities(state.currentGraphId, 5000);
-      const entities = res.data || [];
+      const entities = res.data?.entities || res.data || [];
       entityMap = {};
       entities.forEach(e => {
-        entityMap[e.absolute_id] = { name: e.name, entity_id: e.entity_id };
+        entityMap[e.absolute_id] = { name: e.name, family_id: e.family_id };
       });
     } catch (err) {
       console.error('Failed to load entity map:', err);
@@ -48,15 +49,16 @@
       return emptyState(t('relations.noRelations'));
     }
     let rows = relations.map(r => {
-      return `<tr data-relation='${escapeHtml(JSON.stringify(r))}'>
+      if (r.family_id) relationMap[r.family_id] = r;
+      return `<tr data-relation-family-id="${escapeAttr(r.family_id || '')}">
         <td title="${escapeHtml(r.content || '')}">${escapeHtml(truncate(r.content || '-', 60))}</td>
         <td title="${escapeHtml(entityName(r.entity1_absolute_id, r.entity1_name))}">${escapeHtml(truncate(entityName(r.entity1_absolute_id, r.entity1_name), 24))}</td>
         <td title="${escapeHtml(entityName(r.entity2_absolute_id, r.entity2_name))}">${escapeHtml(truncate(entityName(r.entity2_absolute_id, r.entity2_name), 24))}</td>
         <td class="mono" style="white-space:nowrap;">${formatDate(r.event_time)}</td>
         <td title="${escapeHtml(r.source_document || r.doc_name || '')}">${escapeHtml(truncate(r.source_document || r.doc_name || '-', 20))}</td>
         <td>
-          <button class="btn btn-sm btn-primary" onclick="event.stopPropagation(); window.openEditRelationModal('${escapeAttr(r.relation_id)}', '${escapeAttr(r.content || '')}')" data-i18n="relations.edit">Edit</button>
-          <button class="btn btn-sm btn-danger" onclick="event.stopPropagation(); window.confirmDeleteRelation('${escapeAttr(r.relation_id)}')" data-i18n="relations.delete">Delete</button>
+          <button class="btn btn-sm btn-primary btn-edit-relation" data-family-id="${escapeAttr(r.family_id || '')}" data-i18n="relations.edit">Edit</button>
+          <button class="btn btn-sm btn-danger btn-delete-relation" data-family-id="${escapeAttr(r.family_id || '')}" data-i18n="relations.delete">Delete</button>
         </td>
       </tr>`;
     }).join('');
@@ -81,9 +83,9 @@
   // ---- Detail modal with version history ----
   async function showRelationDetail(r) {
     const e1Name = entityName(r.entity1_absolute_id, r.entity1_name);
-    const e1Id = entityId(r.entity1_absolute_id);
+    const e1Id = familyId(r.entity1_absolute_id);
     const e2Name = entityName(r.entity2_absolute_id, r.entity2_name);
-    const e2Id = entityId(r.entity2_absolute_id);
+    const e2Id = familyId(r.entity2_absolute_id);
     const needsE1Resolve = !r.entity1_name && !entityMap[r.entity1_absolute_id];
     const needsE2Resolve = !r.entity2_name && !entityMap[r.entity2_absolute_id];
 
@@ -93,7 +95,7 @@
       <div style="display:flex;flex-direction:column;gap:1rem;">
         <div>
           <div class="form-label">${t('relations.content')}</div>
-          <div id="relation-detail-content" style="font-size:0.875rem;color:var(--text-primary);line-height:1.6;">${escapeHtml(r.content || '-')}</div>
+          <div id="relation-detail-content" class="md-content" style="font-size:0.875rem;color:var(--text-primary);">${renderMarkdown(r.content || '-')}</div>
         </div>
 
         <div class="divider"></div>
@@ -118,7 +120,7 @@
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.75rem 1.5rem;">
           <div>
             <div class="form-label">${t('relations.relationId')}</div>
-            <div class="mono" style="font-size:0.8125rem;color:var(--text-primary);">${escapeHtml(r.relation_id || '-')}</div>
+            <div class="mono" style="font-size:0.8125rem;color:var(--text-primary);">${escapeHtml(r.family_id || '-')}</div>
           </div>
           <div>
             <div class="form-label">${t('relations.absoluteId')}</div>
@@ -137,8 +139,8 @@
             <div style="font-size:0.8125rem;color:var(--text-primary);">${escapeHtml(r.source_document || r.doc_name || '-')}</div>
           </div>
           <div>
-            <div class="form-label">${t('relations.memoryCacheId')}</div>
-            ${r.memory_cache_id ? `<div class="mono doc-link" data-cache-id="${escapeHtml(r.memory_cache_id)}" style="font-size:0.8125rem;">${escapeHtml(r.memory_cache_id)}</div>` : `<div style="font-size:0.8125rem;color:var(--text-primary);">-</div>`}
+            <div class="form-label">${t('relations.episodeId')}</div>
+            ${r.episode_id ? `<div class="mono doc-link" data-cache-id="${escapeHtml(r.episode_id)}" style="font-size:0.8125rem;">${escapeHtml(r.episode_id)}</div>` : `<div style="font-size:0.8125rem;color:var(--text-primary);">-</div>`}
           </div>
         </div>
 
@@ -192,9 +194,9 @@
               if (res.data) {
                 const el = overlay.querySelector('#rel-e1-name');
                 const idEl = overlay.querySelector('#rel-e1-id');
-                if (el) el.textContent = res.data.name || res.data.entity_id || el.textContent;
-                if (idEl) idEl.textContent = res.data.entity_id || idEl.textContent;
-                entityMap[r.entity1_absolute_id] = { name: res.data.name, entity_id: res.data.entity_id };
+                if (el) el.textContent = res.data.name || res.data.family_id || el.textContent;
+                if (idEl) idEl.textContent = res.data.family_id || idEl.textContent;
+                entityMap[r.entity1_absolute_id] = { name: res.data.name, family_id: res.data.family_id };
               }
             }).catch(() => {})
         );
@@ -206,9 +208,9 @@
               if (res.data) {
                 const el = overlay.querySelector('#rel-e2-name');
                 const idEl = overlay.querySelector('#rel-e2-id');
-                if (el) el.textContent = res.data.name || res.data.entity_id || el.textContent;
-                if (idEl) idEl.textContent = res.data.entity_id || idEl.textContent;
-                entityMap[r.entity2_absolute_id] = { name: res.data.name, entity_id: res.data.entity_id };
+                if (el) el.textContent = res.data.name || res.data.family_id || el.textContent;
+                if (idEl) idEl.textContent = res.data.family_id || idEl.textContent;
+                entityMap[r.entity2_absolute_id] = { name: res.data.name, family_id: res.data.family_id };
               }
             }).catch(() => {})
         );
@@ -218,9 +220,9 @@
 
     // Fetch versions
     const graphId = state.currentGraphId;
-    const relationId = r.relation_id;
+    const familyId = r.family_id;
 
-    state.api.relationVersions(relationId, graphId)
+    state.api.relationVersions(familyId, graphId)
       .then(res => {
         const spinner = overlay.querySelector('#relation-versions-spinner');
         if (spinner) spinner.remove();
@@ -278,21 +280,39 @@
           + '</div>';
       },
       renderBody: function(v) {
-        return '<div style="background:var(--bg-input);border:1px solid var(--border-color);border-radius:0.375rem;padding:0.75rem;font-size:0.8125rem;line-height:1.6;white-space:pre-wrap;word-break:break-word;">'
-          + escapeHtml(v.content || '')
+        return '<div class="md-content" style="background:var(--bg-input);border:1px solid var(--border-color);border-radius:0.375rem;padding:0.75rem;">'
+          + renderMarkdown(v.content || '')
           + '</div>';
       },
     });
   }
 
   function bindTableClicks(rootEl) {
-    rootEl.querySelectorAll('tr[data-relation]').forEach(tr => {
-      tr.addEventListener('click', () => {
-        try {
-          const r = JSON.parse(tr.getAttribute('data-relation'));
-          showRelationDetail(r);
-        } catch (e) {
-          console.error('Failed to parse relation data', e);
+    rootEl.querySelectorAll('tr[data-relation-family-id]').forEach(tr => {
+      tr.addEventListener('click', (e) => {
+        if (e.target.closest('button')) return;
+        const familyId = tr.getAttribute('data-relation-family-id');
+        const r = relationMap[familyId];
+        if (r) showRelationDetail(r);
+      });
+    });
+    // Edit / Delete button delegation
+    rootEl.querySelectorAll('.btn-edit-relation').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const familyId = btn.getAttribute('data-family-id');
+        const r = relationMap[familyId];
+        if (r && window.openEditRelationModal) {
+          window.openEditRelationModal(familyId, r.content || '');
+        }
+      });
+    });
+    rootEl.querySelectorAll('.btn-delete-relation').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const familyId = btn.getAttribute('data-family-id');
+        if (window.confirmDeleteRelation) {
+          window.confirmDeleteRelation(familyId);
         }
       });
     });
@@ -308,7 +328,7 @@
 
     try {
       const res = await state.api.listRelations(state.currentGraphId, 50, allOffset);
-      const relations = res.data || [];
+      const relations = res.data?.relations || res.data || [];
       if (relations.length === 0) {
         allHasMore = false;
         if (allOffset === 0) {
@@ -381,7 +401,7 @@
           const res = await state.api.relationByAbsoluteId(query, state.currentGraphId);
           relations = res.data ? [res.data] : [];
         } else {
-          // relation_id → get all versions
+          // family_id → get all versions
           const res = await state.api.relationVersions(query, state.currentGraphId);
           relations = res.data || [];
         }
@@ -402,7 +422,7 @@
         threshold: 0.3,
         maxResults: 50,
       });
-      const relations = res.data || [];
+      const relations = res.data?.relations || res.data || [];
       if (relations.length === 0) {
         resultsEl.innerHTML = emptyState(t('relations.searchNoMatch'));
       } else {
@@ -503,7 +523,7 @@
     if (!datalistA) return;
 
     const options = Object.values(entityMap).map(e =>
-      `<option value="${escapeHtml(e.entity_id)}">${escapeHtml(e.name)}</option>`
+      `<option value="${escapeHtml(e.family_id)}">${escapeHtml(e.name)}</option>`
     ).join('');
 
     document.querySelectorAll('datalist#entity-datalist').forEach(dl => {
@@ -685,44 +705,48 @@
   }
 
   // ---- Edit relation modal ----
-  function openEditRelationModal(relationId, currentContent) {
+  function openEditRelationModal(familyId, currentContent) {
     const t = (key) => window.I18N ? window.I18N.t(key) : key;
-    const html = `
-        <div class="modal-header">
-            <h3>${t('relations.editTitle')}</h3>
-            <button class="btn-close" onclick="closeModal()">&times;</button>
-        </div>
-        <div class="modal-body">
-            <div class="form-group">
-                <label class="form-label" data-i18n="relations.content">Content</label>
-                <textarea id="editRelationContent" class="input" rows="4">${escapeAttr(currentContent)}</textarea>
-            </div>
-        </div>
-        <div class="modal-footer">
-            <button class="btn btn-secondary" onclick="closeModal()" data-i18n="common.cancel">Cancel</button>
-            <button class="btn btn-primary" onclick="window.submitEditRelation('${escapeAttr(relationId)}')" data-i18n="common.save">Save</button>
-        </div>`;
-    showModal(html);
+    const bodyContent = `
+      <div class="form-group">
+        <label class="form-label" data-i18n="relations.content">Content</label>
+        <textarea id="editRelationContent" class="input" rows="4">${escapeAttr(currentContent)}</textarea>
+      </div>`;
+    const footerContent = `
+      <button class="btn btn-secondary" id="editRelationCancel" data-i18n="common.cancel">Cancel</button>
+      <button class="btn btn-primary" id="editRelationSave" data-i18n="common.save">Save</button>`;
+
+    const { close } = showModal({
+      title: t('relations.editTitle'),
+      content: bodyContent,
+      footer: footerContent,
+    });
+
+    document.getElementById('editRelationCancel').addEventListener('click', close);
+    document.getElementById('editRelationSave').addEventListener('click', () => {
+      window._submitEditRelationWithClose(familyId, close);
+    });
   }
 
-  async function submitEditRelation(relationId) {
+  async function _submitEditRelationWithClose(familyId, closeFn) {
     const t = (key) => window.I18N ? window.I18N.t(key) : key;
     const content = document.getElementById('editRelationContent').value.trim();
     if (!content) { showToast(t('relations.contentRequired'), 'error'); return; }
     try {
-      const res = await state.api.updateRelation(relationId, { content }, state.currentGraphId);
+      const res = await state.api.updateRelation(familyId, { content }, state.currentGraphId);
       if (res.error) { showToast(res.error, 'error'); return; }
       showToast(t('relations.updateSuccess'), 'success');
-      closeModal();
+      closeFn();
       refreshRelations();
     } catch (e) { showToast(t('relations.updateFailed') + ': ' + e.message, 'error'); }
   }
 
   // ---- Delete relation ----
-  function confirmDeleteRelation(relationId) {
+  async function confirmDeleteRelation(familyId) {
     const t = (key) => window.I18N ? window.I18N.t(key) : key;
-    if (!confirm(t('relations.deleteConfirm'))) return;
-    state.api.deleteRelation(relationId, state.currentGraphId).then(res => {
+    const ok = await showConfirm({ message: t('relations.deleteConfirm'), destructive: true });
+    if (!ok) return;
+    state.api.deleteRelation(familyId, state.currentGraphId).then(res => {
       if (res.error) { showToast(res.error, 'error'); return; }
       showToast(t('relations.deleteSuccess'), 'success');
       refreshRelations();
@@ -732,7 +756,6 @@
   // Expose globally for use by other pages (search, path-finder) and inline onclick handlers
   window.showRelationDetail = showRelationDetail;
   window.openEditRelationModal = openEditRelationModal;
-  window.submitEditRelation = submitEditRelation;
   window.confirmDeleteRelation = confirmDeleteRelation;
 
   registerPage('relations', { render, destroy });

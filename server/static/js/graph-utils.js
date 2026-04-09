@@ -79,8 +79,8 @@ window.GraphUtils = (function () {
 
   var HOP_PALETTE = [TIER_1, TIER_2, TIER_3, TIER_4];
 
-  var DEFAULT_LIGHT = { bg: '#a5b4fc', border: '#818cf8' };
-  var DEFAULT_DARK  = { bg: '#6366f1', border: '#818cf8' };
+  var DEFAULT_LIGHT = { bg: '#f9a8d4', border: '#f472b6' };
+  var DEFAULT_DARK  = { bg: '#ec4899', border: '#f472b6' };
 
   // Search page: rank-based entity colors (same 4 tiers)
   var RANK_1       = TIER_1;
@@ -89,8 +89,8 @@ window.GraphUtils = (function () {
   var RANK_OTHER   = TIER_4;
 
   // Expanded neighbor (not in rankMap) — distinct neutral color
-  var SEARCH_EXPANDED_LIGHT = { bg: '#a5b4fc', border: '#818cf8' };
-  var SEARCH_EXPANDED_DARK  = { bg: '#6366f1', border: '#818cf8' };
+  var SEARCH_EXPANDED_LIGHT = { bg: '#f9a8d4', border: '#f472b6' };
+  var SEARCH_EXPANDED_DARK  = { bg: '#ec4899', border: '#f472b6' };
 
   // Hub color palette — 3 groups of saturated + light colors for top-3 hubs
   var HUB_PALETTE = [
@@ -123,7 +123,7 @@ window.GraphUtils = (function () {
     { bg: '#f97316', border: '#fb923c' }, // orange
     { bg: '#06b6d4', border: '#22d3ee' }, // cyan
     { bg: '#84cc16', border: '#a3e635' }, // lime
-    { bg: '#6366f1', border: '#818cf8' }, // indigo
+    { bg: '#ec4899', border: '#f472b6' }, // pink (was indigo)
     { bg: '#d946ef', border: '#e879f9' }, // fuchsia
     { bg: '#0ea5e9', border: '#38bdf8' }, // sky
     { bg: '#a855f7', border: '#c084fc' }, // purple
@@ -132,7 +132,7 @@ window.GraphUtils = (function () {
     { bg: '#7c3aed', border: '#8b5cf6' }, // violet-dark
     { bg: '#0891b2', border: '#06b6d4' }, // teal-dark
     { bg: '#c2410c', border: '#ea580c' }, // orange-dark
-    { bg: '#4f46e5', border: '#6366f1' }, // indigo-dark
+    { bg: '#db2777', border: '#ec4899' }, // pink-dark
   ];
 
   function getRankColor(rank) {
@@ -156,7 +156,7 @@ window.GraphUtils = (function () {
   //   entities: array of entity objects
   //   options:
   //     colorMode: 'hop' | 'search' | 'community' | 'default'
-  //     versionCounts: { entity_id: count }
+  //     versionCounts: { family_id: count }
   //     hopMap: { absoluteId: hopLevel }          (for focus/search modes)
   //     highlightAbsId: string                    (focused entity id)
   //     rankMap: { absoluteId: 1-based-rank }     (for 'search' mode)
@@ -195,7 +195,7 @@ window.GraphUtils = (function () {
         entityMap[e.absolute_id] = e;
         nodeIds.add(e.absolute_id);
 
-        var baseName = e.name || e.entity_id || unnamedLabel;
+        var baseName = e.name || e.family_id || unnamedLabel;
         var isHighlight = highlightAbsId && e.absolute_id === highlightAbsId;
         var hopLevel = hopMap ? hopMap[e.absolute_id] : undefined;
 
@@ -204,7 +204,7 @@ window.GraphUtils = (function () {
         if (isHighlight && versionLabel && versionLabel.total > 1) {
           label = baseName + ' [' + versionLabel.idx + '/' + versionLabel.total + ']';
         } else {
-          var vc = versionCounts[e.entity_id] || 1;
+          var vc = versionCounts[e.family_id] || 1;
           label = vc > 1 ? baseName + ' [' + vc + ']' : baseName;
         }
 

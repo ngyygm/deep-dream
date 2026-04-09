@@ -52,6 +52,7 @@ def queue_to_generator(q: queue.Queue, sentinel=None) -> Generator[str, None, No
         if item is sentinel:
             break
         yield item
+    yield sse_event("done", {"status": "completed"})
 
 
 def make_queue_callback(
@@ -60,7 +61,7 @@ def make_queue_callback(
 ) -> Callable[[str, Dict[str, Any]], None]:
     """Return an ``event_callback(event_type, data)`` that writes SSE events into *q*.
 
-    This is designed to be passed to :meth:`DreamAgent.__init__`.
+    This is designed to be passed to any SSE streaming event producer.
     """
     def _cb(event_type: str, data: Dict[str, Any]) -> None:
         q.put(sse_event(event_type, data))

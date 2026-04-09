@@ -221,17 +221,17 @@ class GraphMonitor:
             # 优先从 docs/ 新结构计数
             docs_meta_files = list(storage.docs_dir.glob("*/meta.json")) if storage.docs_dir.is_dir() else []
             if docs_meta_files:
-                total_memory_caches = len(docs_meta_files)
+                total_episodes = len(docs_meta_files)
             else:
                 json_files = list(cache_json_dir.glob("*.json"))
-                total_memory_caches = len(json_files) if json_files else len(list(cache_dir.glob("*.json")))
+                total_episodes = len(json_files) if json_files else len(list(cache_dir.glob("*.json")))
             return {
                 "entities": total_entities,
                 "relations": total_relations,
-                "memory_caches": total_memory_caches,
+                "episodes": total_episodes,
             }
         except Exception:
-            return {"entities": 0, "relations": 0, "memory_caches": 0}
+            return {"entities": 0, "relations": 0, "episodes": 0}
 
     def _collect_queue_stats(self) -> dict:
         try:

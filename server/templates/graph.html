@@ -953,7 +953,7 @@
             currentRelationVersions = null;
             currentRelationAbsoluteId = null;
             
-            // 通过API获取完整信息（包括embedding_preview和memory_cache_text）
+            // 通过API获取完整信息（包括embedding_preview和episode_text）
             if (node.absolute_id) {
                 fetch('/api/entities/' + encodeURIComponent(currentEntityId) + '/version/' + encodeURIComponent(node.absolute_id))
                     .then(response => response.json())
@@ -971,8 +971,8 @@
                                 content: entity.content,
                                 event_time: entity.event_time,
                                 processed_time: entity.processed_time,
-                                memory_cache_content: entity.memory_cache_content,
-                                memory_cache_text: entity.memory_cache_text,
+                                episode_content: entity.episode_content,
+                                episode_text: entity.episode_text,
                                 source_document: entity.source_document,
                                 doc_name: entity.source_document,
                                 embedding_preview: entity.embedding_preview
@@ -1074,25 +1074,25 @@
                 html += '</div>';
             }
             
-            // 缓存记忆（memory_cache_id对应的md文档内容）
-            if (entity.memory_cache_content) {
+            // 缓存记忆（episode_id对应的md文档内容）
+            if (entity.episode_content) {
                 html += '<div class="detail-section">';
                 html += '<div class="detail-section-title">💾 缓存记忆</div>';
                 html += '<div class="detail-content">';
                 html += '<div style="max-height: 200px; overflow-y: auto; font-size: 13px; line-height: 1.5; white-space: pre-wrap; word-wrap: break-word;">';
-                html += escapeHtml(entity.memory_cache_content);
+                html += escapeHtml(entity.episode_content);
                 html += '</div>';
                 html += '</div>';
                 html += '</div>';
             }
             
-            // 原文内容（memory_cache_id对应json中的text内容）
-            if (entity.memory_cache_text) {
+            // 原文内容（episode_id对应json中的text内容）
+            if (entity.episode_text) {
                 html += '<div class="detail-section">';
                 html += '<div class="detail-section-title">📄 原文内容</div>';
                 html += '<div class="detail-content">';
                 html += '<div style="max-height: 200px; overflow-y: auto; font-size: 13px; line-height: 1.5; white-space: pre-wrap; word-wrap: break-word;">';
-                html += escapeHtml(entity.memory_cache_text);
+                html += escapeHtml(entity.episode_text);
                 html += '</div>';
                 html += '</div>';
                 html += '</div>';
@@ -1232,8 +1232,8 @@
                             content: entity.content,
                             event_time: entity.event_time,
                             processed_time: entity.processed_time,
-                            memory_cache_content: entity.memory_cache_content,
-                            memory_cache_text: entity.memory_cache_text,
+                            episode_content: entity.episode_content,
+                            episode_text: entity.episode_text,
                             source_document: entity.source_document,
                             doc_name: entity.source_document,
                             embedding_preview: entity.embedding_preview

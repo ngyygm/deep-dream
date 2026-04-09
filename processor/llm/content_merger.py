@@ -83,13 +83,17 @@ class _ContentMergerMixin:
 
         # 解析响应
         response = response.strip().lower()
-        if response == "true":
+        # 宽松匹配：处理LLM返回的各种格式
+        if response in ("true", "yes", "是", "需要更新", "需要"):
             return True
-        elif response == "false":
+        elif response in ("false", "no", "否", "不需要更新", "不需要", "已包含"):
             return False
         else:
-            # 如果LLM返回的不是true/false，默认返回True（保守策略，倾向于更新）
-            return True
+            # 如果LLM返回明确的更新指令（包含"更新"等关键词），视为需要更新
+            if "更新" in response or "新信息" in response or "差异" in response:
+                return True
+            # 兜底：模糊响应默认不更新，避免版本膨胀
+            return False
 
     def merge_entity_content(
         self,
@@ -214,10 +218,10 @@ class _ContentMergerMixin:
 
         Args:
             extracted_relation: 抽取的关系（包含entity1_name, entity2_name, content）
-            existing_relations: 已有关系列表（每个包含relation_id, content）
+            existing_relations: 已有关系列表（每个包含family_id, content）
 
         Returns:
-            如果匹配，返回 {"relation_id": "...", "need_update": True/False}
+            如果匹配，返回 {"family_id": "...", "need_update": True/False}
             如果不匹配，返回 None
         """
         if not existing_relations:
@@ -226,12 +230,12 @@ class _ContentMergerMixin:
         system_prompt = JUDGE_RELATION_MATCH_SYSTEM_PROMPT
 
         existing_str = "\n\n".join([
-            f"relation_id: {r['relation_id']}\tsource_document: {self._source_doc_label(r.get('source_document', ''))}\tcontent: {r['content']}"
+            f"family_id: {r['family_id']}\tsource_document: {self._source_doc_label(r.get('source_document', ''))}\tcontent: {r['content']}"
             for r in existing_relations
         ])
 
-        entity1_name = extracted_relation.get('entity1_name') or extracted_relation.get('entity1_name', '')
-        entity2_name = extracted_relation.get('entity2_name') or extracted_relation.get('entity2_name', '')
+        entity1_name = extracted_relation.get('entity1_name') or extracted_relation.get('entity1') or extracted_relation.get('from', '')
+        entity2_name = extracted_relation.get('entity2_name') or extracted_relation.get('entity2') or extracted_relation.get('to', '')
 
         prompt = f"""<新关系>
 - entity1: {entity1_name}

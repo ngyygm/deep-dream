@@ -156,10 +156,10 @@
       communityColoringEnabled: communityColoringEnabled,
       communityMap: communityMap,
       relationStrengthEnabled: relationStrengthEnabled,
-      entityIdToLatest: function () {
+      familyIdToLatest: function () {
         var map = {};
         for (var absId in cachedAllEntities) {
-          map[cachedAllEntities[absId].entity_id] = absId;
+          map[cachedAllEntities[absId].family_id] = absId;
         }
         return map;
       },
@@ -351,7 +351,7 @@
     const currentAbsIds = new Set(entities.map(e => e.absolute_id));
     const currentEntityIds = {};
     for (const e of entities) {
-      currentEntityIds[e.entity_id] = e.absolute_id;
+      currentEntityIds[e.family_id] = e.absolute_id;
     }
 
     // Collect unknown endpoint absolute_ids
@@ -385,15 +385,15 @@
 
       if (!currentAbsIds.has(e1AbsId)) {
         const oldEntity = resolved[e1AbsId];
-        if (oldEntity && currentEntityIds[oldEntity.entity_id]) {
-          e1AbsId = currentEntityIds[oldEntity.entity_id];
+        if (oldEntity && currentEntityIds[oldEntity.family_id]) {
+          e1AbsId = currentEntityIds[oldEntity.family_id];
           remapped1 = true;
         }
       }
       if (!currentAbsIds.has(e2AbsId)) {
         const oldEntity = resolved[e2AbsId];
-        if (oldEntity && currentEntityIds[oldEntity.entity_id]) {
-          e2AbsId = currentEntityIds[oldEntity.entity_id];
+        if (oldEntity && currentEntityIds[oldEntity.family_id]) {
+          e2AbsId = currentEntityIds[oldEntity.family_id];
           remapped2 = true;
         }
       }
@@ -474,8 +474,8 @@
         state.api.listRelations(graphId, 2000),
       ]);
 
-      const allKnownEntities = entityRes.data || [];
-      const allRelations = relationRes.data || [];
+      const allKnownEntities = entityRes.data?.entities || entityRes.data || [];
+      const allRelations = relationRes.data?.relations || relationRes.data || [];
 
       if (allKnownEntities.length === 0) {
         if (statsEl) statsEl.textContent = t('graph.noRelations');
@@ -512,7 +512,7 @@
         .map(aid => entityByAbs[aid])
         .filter(Boolean);
 
-      const allEntityIds = [...new Set(allVisible.map(e => e.entity_id))];
+      const allEntityIds = [...new Set(allVisible.map(e => e.family_id))];
       try {
         const vcRes = await state.api.entityVersionCounts(allEntityIds, graphId);
         const vc = vcRes.data || {};
@@ -524,6 +524,7 @@
 
       const hubLayout = computeHubLayout(visibleRelations);
       explorer.buildGraph(allVisible, visibleRelations, null, null, cachedInheritedRelationIds, undefined, hubLayout);
+      explorer.setMainViewCache(visibleRelations, allVisible, cachedInheritedRelationIds);
 
       focusAbsoluteId = null;
       const exitBtn = document.getElementById('exit-focus-btn');
@@ -613,10 +614,10 @@
     cachedAllEdges = snapshotRelations;
     cachedInheritedRelationIds = null;
 
-    const snapshotEntityIds = [...new Set(snapshotEntities.map(e => e.entity_id))];
+    const snapshotEntityIds = [...new Set(snapshotEntities.map(e => e.family_id))];
     var vc = {};
     for (const eid of snapshotEntityIds) {
-      vc[eid] = snapshotEntities.filter(e => e.entity_id === eid).length;
+      vc[eid] = snapshotEntities.filter(e => e.family_id === eid).length;
     }
     if (explorer) explorer.setVersionCounts(vc);
 

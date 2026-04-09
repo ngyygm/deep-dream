@@ -34,7 +34,7 @@ def parse_markdown_sections(content: str) -> Dict[str, str]:
 
     sections: Dict[str, str] = {}
     # 匹配 ## 或 # 开头的 heading
-    heading_pattern = re.compile(r'^(#{1,2})\s+(.+)$', re.MULTILINE)
+    heading_pattern = re.compile(r'^(#{1,3})\s+(.+)$', re.MULTILINE)
 
     matches = list(heading_pattern.finditer(content))
     if not matches:

@@ -1,0 +1,454 @@
+{
+  "step": 6,
+  "total_samples": 20,
+  "successful": 20,
+  "errors": 0,
+  "total_prompt_tokens": 47467,
+  "results": [
+    {
+      "sample_id": "alignment_0",
+      "user_prompt": "<当前实体>\n- entity_id: NEW_ENTITY\n- name: 郊外\n- source_document: 红楼梦.txt\n- content: 郊外,指城市或村庄外围的地区,通常具有较为宁静的自然环境,远离都市的喧嚣。在这里,宝玉和秦钟体验到了农家生活的独特魅力,对农家生活表现出浓厚的兴趣。\n</当前实体>\n\n上下文：\n宝玉不换，只得罢了．家下仆妇们将带着行路的茶壶茶杯，十锦屉盒，各样小食端来，凤姐等吃过茶，待他们收拾完毕，便起身上车．外面旺儿预备下赏封，赏了本村主人．庄妇等来叩赏．凤姐并不在意，宝玉却留心看时，内中并无二丫头．一时上了车，出来走不多远，只见迎头二丫头怀里抱着他小兄弟，同着几个小女孩子说笑而来．宝玉恨不得下车跟了他去，料是众人不依的，少不得以目相送，争奈车轻马快，一时展眼无踪．\n\n    走不多时，仍又跟上大殡了．早有前面法鼓金铙，幢幡宝盖：铁槛寺接灵众僧齐至．少时到入寺中，另演佛事，重设香坛．安灵于内殿偏室之中，宝珠安于里寝室相伴．外面贾珍款待一应亲友，也有扰饭的，也有不吃饭而辞的，一应谢过乏，从公侯伯子男一起一起的散去，至未末时分方才散尽了．里面的堂客皆是凤姐张罗接待，先从显官诰命散起，也到晌午大错时方散尽了．只有几个亲戚是至近的，等做过三日安灵道场方去．那时邢，王二夫人知凤姐必不能来家，也便就要进城．王夫人要带宝玉去，宝玉乍到郊外，那里肯回去，只要跟凤姐住着．王夫人无法，只得交与凤姐便回来了．原来这铁槛寺原是宁荣二公当日修造，现今还是有香火地亩布施，以备京中老了人口，在此便宜寄放．其中阴阳两宅俱已预备妥贴，好为送灵人口寄居．不想如今后辈人口繁盛，其中贫富不一，或性情参商：有那家业艰难安分的，便住在这里了，有那尚排场有钱势的，只说这里不方便，一定另外或村庄或尼庵寻个下处，为事毕宴退之所．即今秦氏之丧，族中诸人皆权在铁槛寺下榻，独有凤姐嫌不方便，因而早遣人来和馒头庵的姑子净虚说了，腾出两间房子来作下处．原来这馒头庵就是水月庵，因他庙里做的馒头好，就起了这个浑号，离铁槛寺不远．当下和尚工课已完，奠过茶饭，贾珍便命贾蓉请凤姐歇息．凤姐见还有几个妯娌陪着女亲，自己便辞了众人，带了宝玉，秦钟往水月庵来．原来秦业年迈多病，不能在此，只命秦钟等待安灵罢了．那秦钟便只跟着凤姐，宝玉，一\n\n<候选实体列表>\n候选1:\n- entity_id: ent_c7eb9e5a5c4e\n- name: 城外远处\n- version_count: 1\n- source_document: 水浒传.txt\n- lexical_score: 0.2000\n- dense_score: 0.6434\n- content: 城外远处是故事中金老父女寻找车辆逃离的地点,位于潘家酒店附近。\n</候选实体列表>\n\n请输出一个 ```json ... ``` 代码块，代码块内部为：\n{\n  \"match_existing_id\": \"若应合并到已有实体则填写 entity_id，否则为空字符串\",\n  \"update_mode\": \"reuse_existing | merge_into_latest | create_new\",\n  \"merged_name\": \"若需要，给出最终名称，否则为空字符串\",\n  \"merged_content\": \"若需要更新/合并，给出最终内容，否则为空字符串\",\n  \"relations_to_create\": [\n    {\"entity_id\": \"候选entity_id\", \"relation_content\": \"与当前实体的自然语言关系\"}\n  ],\n  \"confidence\": 0.0\n}\n\n要求：\n- 只能选一个 match_existing_id\n- 若不合并，但与若干候选存在明确关系，可放入 relations_to_create\n- 必须参考 source_document；跨文档时只有在明确是同一概念实体时才允许合并或融合内容\n- 若信息不足，confidence 降低\n- 只输出一个 ```json ... ``` 代码块",
+      "response": "```json\n{\n  \"match_existing_id\": \"\",\n  \"update_mode\": \"create_new\",\n  \"merged_name\": \"\",\n  \"merged_content\": \"\",\n  \"relations_to_create\": [\n    {\n      \"entity_id\": \"ent_c7eb9e5a5c4e\",\n      \"relation_content\": \"郊外与城外远处的概念相近，但具体描述不同\"\n    }\n  ],\n  \"confidence\": 0.5\n}\n```",
+      "ground_truth_parsed": {
+        "match_existing_id": "",
+        "update_mode": "create_new",
+        "merged_name": "",
+        "merged_content": "",
+        "relations_to_create": [],
+        "confidence": 0.5
+      },
+      "ground_truth_action": "create_new",
+      "metadata": {
+        "entry_idx": 0,
+        "prompt_tokens": 2011,
+        "response_length": 270,
+        "parse_ok": true
+      }
+    },
+    {
+      "sample_id": "alignment_1",
+      "user_prompt": "<当前实体>\n- entity_id: NEW_ENTITY\n- name: 红雾绕\n- source_document: 西游记.txt\n- content: 红雾绕指袈裟上所散发出的红色光芒,这种光芒如同红雾般环绕,既神秘又充满威严,象征着袈裟的非凡价值和神圣力量。\n</当前实体>\n\n上下文：\n之面这便是不好处。”\n\n    又问道：“何为要钱不要钱？”菩萨道：“不遵佛法不敬三宝强买袈裟、锡杖定要卖他七千两这便是要钱；若敬重三宝见善随喜皈依我佛承受得起我将袈裟、锡杖情愿送他与我结个善缘这便是不要钱。”萧瑀闻言倍添春色知他是个好人即便下马与菩萨以礼相见口称：“**长老恕我萧瑀之罪。我大唐皇帝十分好善满朝的文武无不奉行。即今起建水6大会这袈裟正好与大都阐陈玄奘法师穿用。我和你入朝见驾去来。”\n\n    菩萨欣然从之拽转步径进东华门里。黄门官转奏蒙旨宣至宝殿。见萧瑀引着两个疥癞僧人立于阶下唐王问曰：\n\n    “萧瑀来奏何事？”萧瑀俯伏阶前道：“臣出了东华门前偶遇二僧乃卖袈裟与锡杖者。臣思法师玄奘可着此服故领僧人启见。”太宗大喜便问那袈裟价值几何。菩萨与木叉侍立阶下更不行礼因问袈裟之价答道：“袈裟五千两锡杖二千两。”\n\n    太宗道：“那袈裟有何好处就值许多？”菩萨道：“这袈裟龙披一缕免大鹏蚕噬之灾；鹤挂一丝得凡入圣之妙。但坐处有万神朝礼；凡举动有七佛随身。这袈裟是冰蚕造练抽丝巧匠翻腾为线。仙娥织就神女机成。方方簇幅绣花缝片片相帮堆锦簆。玲珑散碎斗妆花色亮飘光喷宝艳。穿上满身红雾绕脱来一段彩云飞。三天门外透玄光五岳山前生宝气。重重嵌就西番莲灼灼悬珠星斗象。四角上有夜明珠攒顶间一颗祖母绿。虽无全照原本体也有生光八宝攒。这袈裟闲时折迭遇圣才穿。闲时折迭千层包裹透虹霓；遇圣才穿惊动诸天神鬼怕。上边有如意珠、摩尼珠、辟尘珠、定风珠；又有那红玛瑙、紫珊瑚、夜明珠、舍利子。偷月沁白与日争红。条条仙气盈空朵朵祥光捧圣。条条仙气盈空照彻了天关；朵朵祥光捧圣影遍了世界。照山川惊虎豹；影海岛动鱼龙。沿边两道销金锁叩领连环白玉琮。诗曰：三宝巍巍道可尊四生六道尽评论。明心解养人天法见性能传智慧灯。护体庄严金世界身心清净玉壶冰。自从佛制袈裟后万劫谁能敢断僧？”\n\n    唐王在那宝殿上闻言十分\n\n<候选实体列表>\n候选1:\n- entity_id: ent_532cd3a9de98\n- name: 黑雾纷纷是鬼祟暗中喷出气\n- version_count: 2\n- source_document: 西游记.txt\n- lexical_score: 0.0769\n- dense_score: 0.6524\n- content: 黑雾中弥漫着鬼祟暗中喷出的阴森气息,营造出一种令人不寒而栗的神秘氛围。\n候选2:\n- entity_id: ent_ad76421e4e93\n- name: 红光紫雾\n- version_count: 1\n- source_document: 三国演义.txt\n- lexical_score: 0.4000\n- dense_score: 0.6471\n- content: 红光紫雾被认为是古代的吉祥征兆,常与君主登基或大赦天下等喜庆之事相连,象征着祥瑞和权力的高度。\n候选3:\n- entity_id: ent_2dc0d8829a13\n- name: 乌云浊雾\n- version_count: 1\n- source_document: 红楼梦.txt\n- lexical_score: 0.1667\n- dense_score: 0.6391\n- content: 乌云浊雾是金陵十二钗又副册中水墨画的主题,象征着人物的命运多舛和内心的迷茫。\n候选4:\n- entity_id: ent_e387255fa43b\n- name: 黑雾漫漫\n- version_count: 1\n- source_document: 西游记.txt\n- lexical_score: 0.2000\n- dense_score: 0.6207\n- content: 黑雾漫漫形容阴司中弥漫的浓重黑雾,给人以神秘、恐怖的视觉感受,暗示着阴司的幽暗与险恶。\n</候选实体列表>\n\n请输出一个 ```json ... ``` 代码块，代码块内部为：\n{\n  \"match_existing_id\": \"若应合并到已有实体则填写 entity_id，否则为空字符串\",\n  \"update_mode\": \"reuse_existing | merge_into_latest | create_new\",\n  \"merged_name\": \"若需要，给出最终名称，否则为空字符串\",\n  \"merged_content\": \"若需要更新/合并，给出最终内容，否则为空字符串\",\n  \"relations_to_create\": [\n    {\"entity_id\": \"候选entity_id\", \"relation_content\": \"与当前实体的自然语言关系\"}\n  ],\n  \"confidence\": 0.0\n}\n\n要求：\n- 只能选一个 match_existing_id\n- 若不合并，但与若干候选存在明确关系，可放入 relations_to_create\n- 必须参考 source_document；跨文档时只有在明确是同一概念实体时才允许合并或融合内容\n- 若信息不足，confidence 降低\n- 只输出一个 ```json ... ``` 代码块",
+      "response": "```json\n{\n  \"match_existing_id\": \"\",\n  \"update_mode\": \"create_new\",\n  \"merged_name\": \"\",\n  \"merged_content\": \"\",\n  \"relations_to_create\": [],\n  \"confidence\": 0.0\n}\n```",
+      "ground_truth_parsed": {
+        "match_existing_id": "",
+        "update_mode": "create_new",
+        "merged_name": "",
+        "merged_content": "",
+        "relations_to_create": [],
+        "confidence": 0.8
+      },
+      "ground_truth_action": "create_new",
+      "metadata": {
+        "entry_idx": 1,
+        "prompt_tokens": 2415,
+        "response_length": 167,
+        "parse_ok": true
+      }
+    },
+    {
+      "sample_id": "alignment_2",
+      "user_prompt": "<当前实体>\n- entity_id: NEW_ENTITY\n- name: 受兹州令后升礼部侍郎\n- source_document: 西游记.txt\n- content: 崔珪,原为兹州令,后因政绩显著,晋升为礼部侍郎。在阳间时,他与魏征关系密切,八拜为交。去世后,崔珪在阴司担任酆都掌案判官,掌管生死文簿,梦中常与魏征相会。\n</当前实体>\n\n上下文：\n荼神貌。脚踏乌靴坐折手持利刃凶骁。圆睁两眼四边瞧那个邪神敢到？一夜通明也无鬼魅。虽是前后门无事只是身体渐重。一日太后又传旨召众臣商议殡殓后事。太宗又宣徐茂功吩咐国家大事叮嘱仿刘蜀主托孤之意。言毕沐浴更衣待时而已。旁闪魏征手扯龙衣奏道：\n\n    “陛下宽心臣有一事管保陛下长生。”太宗道：“病势已入膏肓命将危矣如何保得？”征云：“臣有书一封进与陛下捎去到冥司付酆都判官崔珪。”太宗道：“崔珪是谁？”征云：“崔珪乃是太上先皇帝驾前之臣先受兹州令后升礼部侍郎。在日与臣八拜为交相知甚厚。他如今已死现在阴司做掌生死文簿的酆都判官梦中常与臣相会。此去若将此书付与他他念微臣薄分必然放陛下回来管教魂魄还阳世定取龙颜转帝都。”太宗闻言接在手中笼入袖里遂瞑目而亡。那三宫六院、皇后嫔妃、侍长储君及两班文武俱举哀戴孝又在白虎殿上停着梓宫不题。\n\n    却说太宗渺渺茫茫魂灵径出五凤楼前只见那御林军马请大驾出朝采猎。太宗欣然从之缥渺而去。行多时人马俱无。独自个散步荒郊草野之间。正惊惶难寻道路只见那一边有一人高声大叫道：“大唐皇帝往这里来！往这里来！”太宗闻言抬头观看只见那人：头顶乌纱腰围犀角。头顶乌纱飘软带腰围犀角显金厢。手擎牙笏凝祥霭身着罗袍隐瑞光。\n\n    脚踏一双粉底靴登云促雾；怀揣一本生死簿注定存亡。鬓蓬松飘耳上胡须飞舞绕腮旁。昔日曾为唐国相如今掌案侍阎王。太宗行到那边只见他跪拜路旁口称“陛下赦臣失悮远迎之罪！”太宗问曰：“你是何人？因甚事前来接拜？”那人道：\n\n    “微臣半月前在森罗殿上见泾河鬼龙告陛下许救反诛之故第一殿秦广大王即差鬼使催请陛下要三曹对案。臣已知之故来此间候接不期今日来迟望乞恕罪恕罪。”太宗道：“你姓甚名谁？是何官职？”那人道：“微臣存日在阳曹侍先君驾前为兹州令后拜礼部侍郎姓崔名珪。今在阴司得受酆都掌案判官。”太宗大喜近前来御手忙搀道：“先生远劳。朕驾前魏征有书一封正寄\n\n<候选实体列表>\n候选1:\n- entity_id: ent_9c841d484282\n- name: 段珪\n- version_count: 6\n- source_document: 三国演义.txt\n- lexical_score: 0.0000\n- dense_score: 0.6128\n- content: 段珪是东汉时期的一名宦官,与张让、赵忠等九人结党营私,被称为‘十常侍’,对朝政产生了重大影响。在宫中宦官之乱中,段珪劫持太后,被卢植指责为逆贼,并勇敢地阻止了这一行径。他也是东汉末年人物,曾参与十常侍作乱,劫持少帝出北邙,后与苏献一同被孝元皇太后击打,导致传国玉玺一角崩坏,以金镶之。崔毅,崔烈之弟,庄主,隐居于崔毅庄,因见十常侍卖官嫉贤而隐居,后因闵贡寻至,引贡见帝,表现出忠诚与义气。\n候选2:\n- entity_id: ent_a47924e46b1c\n- name: 请将军领州事\n- version_count: 1\n- source_document: 三国演义.txt\n- lexical_score: 0.0667\n- dense_score: 0.6021\n- content: 请求将军担任州的长官,以掌握冀州的行政和军事大权。\n</候选实体列表>\n\n请输出一个 ```json ... ``` 代码块，代码块内部为：\n{\n  \"match_existing_id\": \"若应合并到已有实体则填写 entity_id，否则为空字符串\",\n  \"update_mode\": \"reuse_existing | merge_into_latest | create_new\",\n  \"merged_name\": \"若需要，给出最终名称，否则为空字符串\",\n  \"merged_content\": \"若需要更新/合并，给出最终内容，否则为空字符串\",\n  \"relations_to_create\": [\n    {\"entity_id\": \"候选entity_id\", \"relation_content\": \"与当前实体的自然语言关系\"}\n  ],\n  \"confidence\": 0.0\n}\n\n要求：\n- 只能选一个 match_existing_id\n- 若不合并，但与若干候选存在明确关系，可放入 relations_to_create\n- 必须参考 source_document；跨文档时只有在明确是同一概念实体时才允许合并或融合内容\n- 若信息不足，confidence 降低\n- 只输出一个 ```json ... ``` 代码块",
+      "response": "```json\n{\n  \"match_existing_id\": \"NEW_ENTITY\",\n  \"update_mode\": \"merge_into_latest\",\n  \"merged_name\": \"崔珪\",\n  \"merged_content\": \"崔珪,原为兹州令,后因政绩显著,晋升为礼部侍郎。在阳间时,他与魏征关系密切,八拜为交。去世后,崔珪在阴司担任酆都掌案判官,掌管生死文簿,梦中常与魏征相会。\",\n  \"relations_to_create\": [],\n  \"confidence\": 1.0\n}\n```",
+      "ground_truth_parsed": {
+        "match_existing_id": "",
+        "update_mode": "create_new",
+        "merged_name": "",
+        "merged_content": "",
+        "relations_to_create": [],
+        "confidence": 1.0
+      },
+      "ground_truth_action": "create_new",
+      "metadata": {
+        "entry_idx": 2,
+        "prompt_tokens": 2258,
+        "response_length": 263,
+        "parse_ok": true
+      }
+    },
+    {
+      "sample_id": "alignment_3",
+      "user_prompt": "<当前实体>\n- entity_id: NEW_ENTITY\n- name: 一宵\n- source_document: 水浒传.txt\n- content: 一宵指的是从傍晚到次日凌晨的一段时间,即一个晚上。\n</当前实体>\n\n上下文：\n”\n\n    杨志道：“洒家便是。”\n\n    王伦道：“既然是杨制使，就请到山寨，吃三杯水酒，纳还行李，如何？”\n\n    杨志道：“好汉既然认得洒家，便还了俺行李，更强似请吃酒。”\n\n    王伦道：“制使，小可数年前到东京应举时，便闻制使大名；今日幸得相见，如何教你空去？且请到山寨少叙片时，并无他意。”\n\n    杨志听说了，只得跟了王伦一行人等过了河，上山寨来。\n\n    就叫朱贵同上山寨相会。\n\n    都来到寨中聚义厅上。\n\n    左边一带，四把交椅，却是王伦，杜迁，宋万，朱贵；右边一带，两把交椅，上首杨志，下首林冲。\n\n    都坐定了。\n\n    王伦叫杀羊置酒，安排筵宴，管待杨志，不在话下。\n\n    卑休絮烦。\n\n    酒至数杯，王伦心里想道：“若留林冲，实形容得我们不济，不如我做个人情，并留了杨志，与他作敌。”\n\n    因指着林冲对杨志道：“这个兄弟，他是东京八十万禁军教头，唤做豹子头林冲；因这高太尉那厮安不得好人，把他寻事刺配沧州。那里又犯了事。如今也新到这里。却才制使上东京勺当，不是王伦纠合制使∶小可兀自弃文就武，来此落草，制使又是有罪的人，虽经赦宥，难复前职；亦且高俅那厮见掌军权，他如何肯容你？不如只就小寨歇马，大秤分金银，大碗吃酒肉，同做好汉。不佑制使心下主意若何？”\n\n    杨志答道：“重蒙众头领如此带携，只是酒家有个亲眷，见在东京居住。前者官事连累了，他不曾酬谢得他，今日欲要投那里走一遭，望众头领还了洒家行李。如不肯还，杨志空手也去了。”\n\n    王伦笑道：“既是制使不肯在此，如何敢勒逼入伙。且请宽心住一宵，明日早行。”\n\n    杨志大喜。\n\n    当日饮酒到二更方歇，各自去歇息了。\n\n    次日早，起来，又置酒与杨志送行。\n\n    吃了早饭，众头领叫一个小喽罗把昨夜担儿挑了，一齐都送下山。\n\n    来到路口，与杨地作别\n\n<候选实体列表>\n候选1:\n- entity_id: ent_4bbfad99573c\n- name: 一宵\n- version_count: 1\n- source_document: 水浒传.txt\n- lexical_score: 1.0000\n- dense_score: 1.0000\n- content: 一宵指的是从傍晚到次日凌晨的一段时间,即一个晚上。\n候选2:\n- entity_id: ent_5a4cc990c1a5\n- name: 昏夜（上夜）\n- version_count: 2\n- source_document: 红楼梦.txt\n- lexical_score: 0.0000\n- dense_score: 0.6427\n- content: 昏夜和上夜都是指夜间的时间段。昏夜特指夜晚,在《西游记》中,太宗的寝宫门外出现鬼魅呼号,太宗难以忍受,最终由秦叔宝和敬德守卫宫门,未见邪崇,太宗得以安寝。上夜则是指夜间值班,负责照管门户、监察火烛、打扫地方,确保宁国府的安全与秩序。\n候选3:\n- entity_id: ent_5cb9cfb4ce15\n- name: 一早\n- version_count: 1\n- source_document: 红楼梦.txt\n- lexical_score: 0.3333\n- dense_score: 0.6395\n- content: 一早,指清晨,即早晨的早期时间,通常指日出前后的一段时间。\n候选4:\n- entity_id: ent_ba7a3c929c10\n- name: 晚\n- version_count: 1\n- source_document: 西游记.txt\n- lexical_score: 0.0000\n- dense_score: 0.6174\n- content: 晚,指的是一天中的后期时段,通常从日落到天黑之间,是人们休息和进行夜间活动的时间。在《西游记》中,晚也是孙悟空等角色进行修炼和探索的重要时间节点。\n</候选实体列表>\n\n请输出一个 ```json ... ``` 代码块，代码块内部为：\n{\n  \"match_existing_id\": \"若应合并到已有实体则填写 entity_id，否则为空字符串\",\n  \"update_mode\": \"reuse_existing | merge_into_latest | create_new\",\n  \"merged_name\": \"若需要，给出最终名称，否则为空字符串\",\n  \"merged_content\": \"若需要更新/合并，给出最终内容，否则为空字符串\",\n  \"relations_to_create\": [\n    {\"entity_id\": \"候选entity_id\", \"relation_content\": \"与当前实体的自然语言关系\"}\n  ],\n  \"confidence\": 0.0\n}\n\n要求：\n- 只能选一个 match_existing_id\n- 若不合并，但与若干候选存在明确关系，可放入 relations_to_create\n- 必须参考 source_document；跨文档时只有在明确是同一概念实体时才允许合并或融合内容\n- 若信息不足，confidence 降低\n- 只输出一个 ```json ... ``` 代码块",
+      "response": "```json\n{\n  \"match_existing_id\": \"ent_4bbfad99573c\",\n  \"update_mode\": \"merge_into_latest\",\n  \"merged_name\": \"一宵\",\n  \"merged_content\": \"一宵指的是从傍晚到次日凌晨的一段时间,即一个晚上。\",\n  \"relations_to_create\": [],\n  \"confidence\": 0.95\n}\n```",
+      "ground_truth_parsed": {
+        "match_existing_id": "ent_4bbfad99573c",
+        "update_mode": "reuse_existing",
+        "merged_name": "",
+        "merged_content": "",
+        "relations_to_create": [],
+        "confidence": 1.0
+      },
+      "ground_truth_action": "match",
+      "metadata": {
+        "entry_idx": 3,
+        "prompt_tokens": 2440,
+        "response_length": 218,
+        "parse_ok": true
+      }
+    },
+    {
+      "sample_id": "alignment_4",
+      "user_prompt": "<当前实体>\n- entity_id: NEW_ENTITY\n- name: 定风珠\n- source_document: 西游记.txt\n- content: 佛教中的宝珠,装饰在袈裟上,具有定风之功效,能稳定风势,防止袈裟在特殊环境中受损,同时也是一种象征,代表着僧人的清净与坚定。\n</当前实体>\n\n上下文：\n之面这便是不好处。”\n\n    又问道：“何为要钱不要钱？”菩萨道：“不遵佛法不敬三宝强买袈裟、锡杖定要卖他七千两这便是要钱；若敬重三宝见善随喜皈依我佛承受得起我将袈裟、锡杖情愿送他与我结个善缘这便是不要钱。”萧瑀闻言倍添春色知他是个好人即便下马与菩萨以礼相见口称：“**长老恕我萧瑀之罪。我大唐皇帝十分好善满朝的文武无不奉行。即今起建水6大会这袈裟正好与大都阐陈玄奘法师穿用。我和你入朝见驾去来。”\n\n    菩萨欣然从之拽转步径进东华门里。黄门官转奏蒙旨宣至宝殿。见萧瑀引着两个疥癞僧人立于阶下唐王问曰：\n\n    “萧瑀来奏何事？”萧瑀俯伏阶前道：“臣出了东华门前偶遇二僧乃卖袈裟与锡杖者。臣思法师玄奘可着此服故领僧人启见。”太宗大喜便问那袈裟价值几何。菩萨与木叉侍立阶下更不行礼因问袈裟之价答道：“袈裟五千两锡杖二千两。”\n\n    太宗道：“那袈裟有何好处就值许多？”菩萨道：“这袈裟龙披一缕免大鹏蚕噬之灾；鹤挂一丝得凡入圣之妙。但坐处有万神朝礼；凡举动有七佛随身。这袈裟是冰蚕造练抽丝巧匠翻腾为线。仙娥织就神女机成。方方簇幅绣花缝片片相帮堆锦簆。玲珑散碎斗妆花色亮飘光喷宝艳。穿上满身红雾绕脱来一段彩云飞。三天门外透玄光五岳山前生宝气。重重嵌就西番莲灼灼悬珠星斗象。四角上有夜明珠攒顶间一颗祖母绿。虽无全照原本体也有生光八宝攒。这袈裟闲时折迭遇圣才穿。闲时折迭千层包裹透虹霓；遇圣才穿惊动诸天神鬼怕。上边有如意珠、摩尼珠、辟尘珠、定风珠；又有那红玛瑙、紫珊瑚、夜明珠、舍利子。偷月沁白与日争红。条条仙气盈空朵朵祥光捧圣。条条仙气盈空照彻了天关；朵朵祥光捧圣影遍了世界。照山川惊虎豹；影海岛动鱼龙。沿边两道销金锁叩领连环白玉琮。诗曰：三宝巍巍道可尊四生六道尽评论。明心解养人天法见性能传智慧灯。护体庄严金世界身心清净玉壶冰。自从佛制袈裟后万劫谁能敢断僧？”\n\n    唐王在那宝殿上闻言十分\n\n<候选实体列表>\n候选1:\n- entity_id: ent_68f99937794a\n- name: 定颜珠\n- version_count: 1\n- source_document: 西游记.txt\n- lexical_score: 0.5000\n- dense_score: 0.6191\n- content: 定颜珠是神话中的物品,具有神奇功效,能够保持持有者的容貌不变,常用于特殊场合或紧急时刻,以维持外貌的年轻或完美。\n</候选实体列表>\n\n请输出一个 ```json ... ``` 代码块，代码块内部为：\n{\n  \"match_existing_id\": \"若应合并到已有实体则填写 entity_id，否则为空字符串\",\n  \"update_mode\": \"reuse_existing | merge_into_latest | create_new\",\n  \"merged_name\": \"若需要，给出最终名称，否则为空字符串\",\n  \"merged_content\": \"若需要更新/合并，给出最终内容，否则为空字符串\",\n  \"relations_to_create\": [\n    {\"entity_id\": \"候选entity_id\", \"relation_content\": \"与当前实体的自然语言关系\"}\n  ],\n  \"confidence\": 0.0\n}\n\n要求：\n- 只能选一个 match_existing_id\n- 若不合并，但与若干候选存在明确关系，可放入 relations_to_create\n- 必须参考 source_document；跨文档时只有在明确是同一概念实体时才允许合并或融合内容\n- 若信息不足，confidence 降低\n- 只输出一个 ```json ... ``` 代码块",
+      "response": "```json\n{\n  \"match_existing_id\": \"NEW_ENTITY\",\n  \"update_mode\": \"merge_into_latest\",\n  \"merged_name\": \"定风珠\",\n  \"merged_content\": \"佛教中的宝珠,装饰在袈裟上,具有定风之功效,能稳定风势,防止袈裟在特殊环境中受损,同时也是一种象征,代表着僧人的清净与坚定。\",\n  \"relations_to_create\": [\n    {\"entity_id\": \"ent_68f99937794a\", \"relation_content\": \"定风珠和定颜珠是两种不同的佛教宝珠，分别具有定风和定颜的功效。\"}\n  ],\n  \"confidence\": 0.8\n}\n```",
+      "ground_truth_parsed": {
+        "match_existing_id": "",
+        "update_mode": "create_new",
+        "merged_name": "",
+        "merged_content": "",
+        "relations_to_create": [
+          {
+            "entity_id": "ent_68f99937794a",
+            "relation_content": "定风珠和定颜珠均为佛教中的宝珠，但功效不同"
+          }
+        ],
+        "confidence": 0.5
+      },
+      "ground_truth_action": "relation",
+      "metadata": {
+        "entry_idx": 4,
+        "prompt_tokens": 2020,
+        "response_length": 345,
+        "parse_ok": true
+      }
+    },
+    {
+      "sample_id": "alignment_5",
+      "user_prompt": "<当前实体>\n- entity_id: NEW_ENTITY\n- name: 手持锡杖\n- source_document: 西游记.txt\n- content: 玄奘法师穿着由兜罗四面锦沿边、销金锁、白玉琮、连环等装饰的袈裟,手持由铜镶铁造、九连环、九节仙藤制成的锡杖,侍立于阶前,展现出佛子威严与雅秀,袈裟上层层金线与八宝妆花相映生辉,锡杖则象征着其行走天下的坚定与智慧。\n</当前实体>\n\n上下文：\n动鱼龙。沿边两道销金锁叩领连环白玉琮。诗曰：三宝巍巍道可尊四生六道尽评论。明心解养人天法见性能传智慧灯。护体庄严金世界身心清净玉壶冰。自从佛制袈裟后万劫谁能敢断僧？”\n\n    唐王在那宝殿上闻言十分欢喜又问：“那和尚九环杖有甚好处？”菩萨道：“我这锡杖是那铜镶铁造九连环九节仙藤永驻颜。入手厌看青骨瘦下山轻带白云还。摩呵五祖游天阙罗卜寻娘破地关。不染红尘些子秽喜伴神僧上玉山。”唐王闻言即命展开袈裟从头细看果然是件好物道：“**长老实不瞒你朕今大开善教广种福田见在那化生寺聚集多僧敷演经法。内中有一个大有德行者法名玄奘。朕买你这两件宝物赐他受用。你端的要价几何？”菩萨闻言与木叉合掌皈依道声佛号躬身上启道：“既有德行贫僧情愿送他决不要钱。”说罢抽身便走。唐王急着萧瑀扯住欠身立于殿上问曰：“你原说袈裟五千两锡杖二千两你见朕要买就不要钱敢是说朕心倚恃君位强要你的物件？更无此理。朕照你原价奉偿却不可推避。”菩萨起手道：“贫僧有愿在前原说果有敬重三宝见善随喜皈依我佛不要钱愿送与他。今见陛下明德止善敬我佛门况又高僧有德有行宣扬**理当奉上决不要钱。贫僧愿留下此物告回。”唐王见他这等勤恳甚喜随命光禄寺大排素宴酬谢。菩萨又坚辞不受畅然而去依旧望都土地庙中隐避不题。\n\n    却说太宗设午朝着魏征赍旨宣玄奘入朝。那法师正聚众登坛讽经诵偈一闻有旨随下坛整衣与魏征同往见驾。\n\n    太宗道：“求证善事有劳法师无物酬谢。早间萧瑀迎着二僧愿送锦襕异宝袈裟一件九环锡杖一条。今特召法师领去受用。”玄奘叩头谢恩。太宗道：“法师如不弃可穿上与朕看看。”\n\n    长老遂将袈裟抖开披在身上手持锡杖侍立阶前。君臣个个欣然。诚为如来佛子你看他：凛凛威颜多雅秀佛衣可体如裁就。辉光艳艳满乾坤结彩纷纷凝宇宙。朗朗明珠上下排层层金线穿前后。兜罗四面锦沿边万样稀奇铺绮绣。八宝妆花缚钮丝金环束领攀绒扣。佛天大小列高低星象尊卑分\n\n<候选实体列表>\n候选1:\n- entity_id: ent_d171caae1f18\n- name: 九环锡杖\n- version_count: 1\n- source_document: 西游记.txt\n- lexical_score: 0.3333\n- dense_score: 0.7388\n- content: 九环锡杖,是佛教僧侣使用的法器,由九个环组成,象征着修行者的戒律和智慧。它不仅是僧侣行走的辅助工具,也是身份的象征,代表着僧侣的威严和修行成就。\n候选2:\n- entity_id: ent_76a140ed6cb4\n- name: 袈裟\n- version_count: 18\n- source_document: 西游记.txt\n- lexical_score: 0.0000\n- dense_score: 0.7313\n- content: 锦澜袈裟是观音菩萨赐予的宝贝,专为东土取经之旅准备。它具有避轮回、免毒害的神奇功效,并由取经人亲自使用,象征着修行之路的坚定与纯洁。袈裟与锡杖是佛教修行的重要辅助物品,对修行者具有保护作用,能免受沉沦、地狱之难。尽管它们的价值很高,但对不敬佛法、不遵佛法的人难以呈现其价值。此外,袈裟还具有龙披一缕免大鹏蚕噬之灾,鹤挂一丝得凡入圣之妙的神奇属性,穿上后坐处有万神朝礼,举动有七佛随身。袈裟由冰蚕造练抽丝巧匠翻腾为线,仙娥织就神女机成,绣花缝片片相帮堆锦簆,玲珑散碎斗妆花色亮飘光喷宝艳,具有极高的价值和象征意义。\n候选3:\n- entity_id: ent_c9df19711929\n- name: 如来佛\n- version_count: 6\n- source_document: 西游记.txt\n- lexical_score: 0.0000\n- dense_score: 0.6796\n- content: 佛教中的至高神祇,观世音菩萨领了如来的旨意,旨在长安城访察取经的善人,并对袈裟和锡杖的高价值进行了解释,暗示了取经任务的重要性和困难性。\n候选4:\n- entity_id: ent_6db309233ce2\n- name: 佛制袈裟\n- version_count: 3\n- source_document: 西游记.txt\n- lexical_score: 0.0000\n- dense_score: 0.6446\n- content: 佛制袈裟,为佛教中规定的袈裟样式,由冰蚕丝制成,具有神奇的属性,如龙披一缕免大鹏蚕噬之灾,鹤挂一丝得凡入圣之妙。袈裟上绣有万神朝礼、七佛随身的图案,内含如意珠、摩尼珠、辟尘珠、定风珠等多种宝物,穿上后能透出玄光,生宝气,具有极高的价值和象征意义。\n候选5:\n- entity_id: ent_c19fd7c3af36\n- name: 要价\n- version_count: 1\n- source_document: 西游记.txt\n- lexical_score: 0.0000\n- dense_score: 0.6360\n- content: 观世音菩萨要价为袈裟五千两,锡杖二千两,这些价格反映了袈裟和锡杖的独特价值和意义。\n</候选实体列表>\n\n请输出一个 ```json ... ``` 代码块，代码块内部为：\n{\n  \"match_existing_id\": \"若应合并到已有实体则填写 entity_id，否则为空字符串\",\n  \"update_mode\": \"reuse_existing | merge_into_latest | create_new\",\n  \"merged_name\": \"若需要，给出最终名称，否则为空字符串\",\n  \"merged_content\": \"若需要更新/合并，给出最终内容，否则为空字符串\",\n  \"relations_to_create\": [\n    {\"entity_id\": \"候选entity_id\", \"relation_content\": \"与当前实体的自然语言关系\"}\n  ],\n  \"confidence\": 0.0\n}\n\n要求：\n- 只能选一个 match_existing_id\n- 若不合并，但与若干候选存在明确关系，可放入 relations_to_create\n- 必须参考 source_document；跨文档时只有在明确是同一概念实体时才允许合并或融合内容\n- 若信息不足，confidence 降低\n- 只输出一个 ```json ... ``` 代码块",
+      "response": "```json\n{\n  \"match_existing_id\": \"ent_d171caae1f18\",\n  \"update_mode\": \"merge_into_latest\",\n  \"merged_name\": \"九环锡杖\",\n  \"merged_content\": \"九环锡杖,是佛教僧侣使用的法器,由九个环组成,象征着修行者的戒律和智慧。它不仅是僧侣行走的辅助工具,也是身份的象征,代表着僧侣的威严和修行成就。\",\n  \"relations_to_create\": [\n    {\"entity_id\": \"ent_76a140ed6cb4\", \"relation_content\": \"作为袈裟的配套法器\"},\n    {\"entity_id\": \"ent_c9df19711929\", \"relation_content\": \"属于佛教的象征\"},\n    {\"entity_id\": \"ent_c19fd7c3af36\", \"relation_content\": \"用于保护修行者\"}\n  ],\n  \"confidence\": 1.0\n}\n```",
+      "ground_truth_parsed": {
+        "match_existing_id": "ent_d171caae1f18",
+        "update_mode": "reuse_existing",
+        "merged_name": "",
+        "merged_content": "",
+        "relations_to_create": [],
+        "confidence": 0.95
+      },
+      "ground_truth_action": "match",
+      "metadata": {
+        "entry_idx": 5,
+        "prompt_tokens": 2828,
+        "response_length": 480,
+        "parse_ok": true
+      }
+    },
+    {
+      "sample_id": "alignment_6",
+      "user_prompt": "<当前实体>\n- entity_id: NEW_ENTITY\n- name: 早饭后\n- source_document: 红楼梦.txt\n- content: 早饭后,指在早餐之后的时间段,通常用于描述一天中的早晨活动结束后的时间段。\n</当前实体>\n\n上下文：\n，明日观花，甚至聚赌嫖娼，渐渐无所不至，引诱的薛蟠比当日更坏了十倍．虽然贾政训子有方，治家有法，一则族大人多，照管不到这些，二则现任族长乃是贾珍，彼乃宁府长孙，又现袭职，凡族中事，自有他掌管，三则公私冗杂，且素性潇洒，不以俗务为要，每公暇之时，不过看书着棋而已，余事多不介意．况且这梨香院相隔两层房舍，又有街门另开，任意可以出入，所以这些子弟们竟可以放意畅怀的，因此遂将移居之念渐渐打灭了．\n\n第五回  游幻境指迷十二钗　饮仙醪曲演红楼梦\n\n    \t\t\n\n    第四回中既将薛家母子在荣府内寄居等事略已表明，此回则暂不能写矣．\n\n    如今且说林黛玉自在荣府以来，贾母万般怜爱，寝食起居，一如宝玉，迎春，探春，惜春三个亲孙女倒且靠后，便是宝玉和黛玉二人之亲密友爱处，亦自较别个不同，日则同行同坐，夜则同息同止，真是言和意顺，略无参商．不想如今忽然来了一个薛宝钗，年岁虽大不多，然品格端方，容貌丰美，人多谓黛玉所不及．而且宝钗行为豁达，随分从时，不比黛玉孤高自许，目无下尘，故比黛玉大得下人之心．便是那些小丫头子们，亦多喜与宝钗去顽．因此黛玉心中便有些悒郁不忿之意，宝钗却浑然不觉．那宝玉亦在孩提之间，况自天性所禀来的一片愚拙偏僻，视姊妹弟兄皆出一意，并无亲疏远近之别．其中因与黛玉同随贾母一处坐卧，故略比别个姊妹熟惯些．既熟惯，则更觉亲密，既亲密，则不免一时有求全之毁，不虞之隙．这日不知为何，他二人言语有些不合起来，黛玉又气的独在房中垂泪，宝玉又自悔言语冒撞，前去俯就，那黛玉方渐渐的回转来．因东边宁府中花园内梅花盛开，贾珍之妻尤氏乃治酒，请贾母，邢夫人，王夫人等赏花．是日先携了贾蓉之妻，二人来面请．贾母等于早饭后过来，就在会芳园游顽，先茶后酒，不过皆是宁荣二府女眷家宴小集，并无别样新文趣事可记．\n\n    一时宝玉倦怠，欲睡中觉，贾母命人好生哄着，歇一回再来．贾蓉之妻秦氏便忙笑回道：“\n\n<候选实体列表>\n候选1:\n- entity_id: ent_0b47565e4a48\n- name: 晚饭\n- version_count: 2\n- source_document: 水浒传.txt\n- lexical_score: 0.2500\n- dense_score: 0.6277\n- content: 晚饭,指晚餐,是人们在一天中的最后一餐,通常在傍晚时分食用,以补充一天中的能量消耗。\n</候选实体列表>\n\n请输出一个 ```json ... ``` 代码块，代码块内部为：\n{\n  \"match_existing_id\": \"若应合并到已有实体则填写 entity_id，否则为空字符串\",\n  \"update_mode\": \"reuse_existing | merge_into_latest | create_new\",\n  \"merged_name\": \"若需要，给出最终名称，否则为空字符串\",\n  \"merged_content\": \"若需要更新/合并，给出最终内容，否则为空字符串\",\n  \"relations_to_create\": [\n    {\"entity_id\": \"候选entity_id\", \"relation_content\": \"与当前实体的自然语言关系\"}\n  ],\n  \"confidence\": 0.0\n}\n\n要求：\n- 只能选一个 match_existing_id\n- 若不合并，但与若干候选存在明确关系，可放入 relations_to_create\n- 必须参考 source_document；跨文档时只有在明确是同一概念实体时才允许合并或融合内容\n- 若信息不足，confidence 降低\n- 只输出一个 ```json ... ``` 代码块",
+      "response": "```json\n{\n  \"match_existing_id\": \"\",\n  \"update_mode\": \"create_new\",\n  \"merged_name\": \"\",\n  \"merged_content\": \"\",\n  \"relations_to_create\": [],\n  \"confidence\": 0.0\n}\n```",
+      "ground_truth_parsed": {
+        "match_existing_id": "",
+        "update_mode": "create_new",
+        "merged_name": "",
+        "merged_content": "",
+        "relations_to_create": [],
+        "confidence": 0.8
+      },
+      "ground_truth_action": "create_new",
+      "metadata": {
+        "entry_idx": 6,
+        "prompt_tokens": 1992,
+        "response_length": 167,
+        "parse_ok": true
+      }
+    },
+    {
+      "sample_id": "alignment_7",
+      "user_prompt": "<当前实体>\n- entity_id: NEW_ENTITY\n- name: 蔡太师\n- source_document: 水浒传.txt\n- content: 蔡太师,宋代权臣,曾任宰相,权势熏天,是《水浒传》中梁山好汉对抗的对象之一,被描绘为贪污腐败、残暴不仁的代表人物。\n</当前实体>\n\n上下文：\n！且请到庄里说话。”\n\n    六人俱从庄外入来，到得后堂分宾主坐定。\n\n    吴用把前话说了。\n\n    晁盖大喜，便叫庄客宰杀猪羊，安排烧纸。\n\n    阮氏三弟兄见晁盖人物轩昂，语言酒落，三个说道：“我们最爱结识好汉，原来只在此间。今日不得吴教授相引。如何得会！”\n\n    三个弟兄好生欢喜。\n\n    当晚且吃了些饭，说了半夜话。\n\n    次日天晓，去后堂前面列了金钱纸马，香花灯烛，摆了夜来煮的猪羊烧纸。\n\n    众人见晁盖如此志诚，尽皆欢喜，个个说誓道：“梁中书在北京害民，诈得钱物，却把去东京与蔡太师庆生辰。此一等正是不义之财。我等六人中，但有私意者，天诛地灭。神明鉴察。”六人都说誓了，烧化纸钱。\n\n    六筹好汉正在堂后散福饮酒，只见一个庄客报说：“门前有个先生要见保正化斋粮。”\n\n    晁盖道：“你好不晓事；见我管待客人在此吃酒，你便与他三五升米便了，何须直来问我们？”\n\n    庄客道：“小人把米与他，他又不要，只要面见保正。”\n\n    晁盖道：“一定是嫌少，你便再与他三二斗去。你说与他∶“保正今日在庄上请人吃酒，没工夫相见。””庄客去了多时，只见又来说道：“那先生，与了他三斗米，又不肯去，自称是一清道人，不为钱米而来，只要求见保正一面。”\n\n    晁盖道：“你这厮不会答应！便说今日委实没工夫，教他改日却来相见拜茶。”\n\n    庄客道：“小人也是这般说。那个先生说道∶“我不为钱米斋粮，闻知保正是个义士，特求一见。””晁盖道：“你也这般缠！全不替我分忧！他若再嫌少时，可与他三四斗去，何必又来说？我若不和客人们饮时，便去厮见一面，打甚么紧。你去发付他罢，再休要来说！”\n\n    庄客去了没半个时辰，只听得庄门外热闹。\n\n    又见一个庄客飞也似来，报道：“那先生发怒，把十来个庄客都打倒了！”\n\n    晁盖听得，吓了一惊，慌忙起身道：“众位弟兄\n\n<候选实体列表>\n候选1:\n- entity_id: ent_3e10dd0cead5\n- name: 蔡太师\n- version_count: 1\n- source_document: 水浒传.txt\n- lexical_score: 1.0000\n- dense_score: 0.8022\n- content: 蔡太师,即蔡京的岳父,是北宋末年权倾一时的宦官,其权势之大,影响深远,不仅涉及朝政,还与民间私商有着密切联系。\n候选2:\n- entity_id: ent_6f83cb333342\n- name: 太师\n- version_count: 2\n- source_document: 三国演义.txt\n- lexical_score: 0.6667\n- dense_score: 0.6863\n- content: 古代官职,拥有极高的权力,由董卓担任时曾派遣太傅马日磾、太仆赵岐前往河北调解袁绍与公孙瓒之间的争斗。\n候选3:\n- entity_id: ent_c26ffbc65afe\n- name: 祖师\n- version_count: 1\n- source_document: 西游记.txt\n- lexical_score: 0.2500\n- dense_score: 0.6096\n- content: 祖师是对道教创始人或尊长道士的尊称,在《水浒传》楔子中,指的是天师,他年幼却道行非常,是额外之人,四方显化,极是灵验,世人皆称为道通祖师。\n</候选实体列表>\n\n请输出一个 ```json ... ``` 代码块，代码块内部为：\n{\n  \"match_existing_id\": \"若应合并到已有实体则填写 entity_id，否则为空字符串\",\n  \"update_mode\": \"reuse_existing | merge_into_latest | create_new\",\n  \"merged_name\": \"若需要，给出最终名称，否则为空字符串\",\n  \"merged_content\": \"若需要更新/合并，给出最终内容，否则为空字符串\",\n  \"relations_to_create\": [\n    {\"entity_id\": \"候选entity_id\", \"relation_content\": \"与当前实体的自然语言关系\"}\n  ],\n  \"confidence\": 0.0\n}\n\n要求：\n- 只能选一个 match_existing_id\n- 若不合并，但与若干候选存在明确关系，可放入 relations_to_create\n- 必须参考 source_document；跨文档时只有在明确是同一概念实体时才允许合并或融合内容\n- 若信息不足，confidence 降低\n- 只输出一个 ```json ... ``` 代码块",
+      "response": "```json\n{\n  \"match_existing_id\": \"ent_3e10dd0cead5\",\n  \"update_mode\": \"merge_into_latest\",\n  \"merged_name\": \"蔡太师\",\n  \"merged_content\": \"蔡太师,宋代权臣,曾任宰相,权势熏天,是《水浒传》中梁山好汉对抗的对象之一,被描绘为贪污腐败、残暴不仁的代表人物。\",\n  \"relations_to_create\": [],\n  \"confidence\": 0.9\n}\n```",
+      "ground_truth_parsed": {
+        "match_existing_id": "ent_3e10dd0cead5",
+        "update_mode": "reuse_existing",
+        "merged_name": "",
+        "merged_content": "",
+        "relations_to_create": [],
+        "confidence": 0.9
+      },
+      "ground_truth_action": "match",
+      "metadata": {
+        "entry_idx": 7,
+        "prompt_tokens": 2310,
+        "response_length": 250,
+        "parse_ok": true
+      }
+    },
+    {
+      "sample_id": "alignment_8",
+      "user_prompt": "<当前实体>\n- entity_id: NEW_ENTITY\n- name: 圣旨\n- source_document: 西游记.txt\n- content: 圣旨是玉帝下达的招安命令,旨在招安孙悟空,并授予他官职,旨在收服孙悟空,同时减少动众劳师,符合收仙之道。\n</当前实体>\n\n上下文：\n乃三百年前天产石猴。当时不以为然不知这几年在何方修炼成仙降龙伏虎强销死籍也。”玉帝道：“那路神将下界收伏？”言未已班中闪出太白长庚星俯启奏道：“上圣三界中凡有九窍者皆可修仙。奈此猴乃天地育成之体日月孕就之身他也顶天履地服露餐霞；今既修成仙道有降龙伏虎之能与人何以异哉？臣启陛下可念生化之慈恩降一道招安圣旨把他宣来上届授他一个大小官职与他籍名在箓拘束此间若受天命后再升赏；若违天命就此擒拿。一则不动众劳师二则收仙有道也。”玉帝闻言甚喜道：“依卿所奏。”即着文曲星官修诏着太白金星招安。\n\n    金星领了旨出南天门外按下祥云直至花果山水帘洞。对众小猴道：“我乃天差天使有圣旨在此请你大王上届快快报知！”洞外小猴一层层传至洞天深处道：“大王外面有一老人背着一角文书言是上天差来的天使有圣旨请你也。”美猴王听得大喜道：“我这两日正思量要上天走走却就有天使来请。”叫：“快请进来！”猴王急整衣冠门外迎接。金星径入当中面南立定道：“我是西方太白金星奉玉帝招安圣旨下界请你上天拜受仙录。”悟空笑道：“多感老星降临。”教：“小的们！安排筵宴款待。”金星道：“圣旨在身不敢久留；就请大王同往待荣迁之后再从容叙也。”悟空道：“承光顾空退！空退！”即唤四健将分付：“谨慎教演儿孙待我上天去看看路却好带你们上去同居住也。”四健将领诺。这猴王与金星纵起云头升在空霄之上正是那：高迁上品天仙位名列云班宝录中。毕竟不知授个甚么官爵且听下回分解。\n\n第四回 官封弼马心何足 名注齐天意未宁\n\n    那太白金星与美猴王同出了洞天深处一齐驾云而起。原来悟空筋斗云比众不同十分快疾把个金星撇在脑后先至南天门外。正欲收云前进被增长天王领着庞、刘、苟、毕、邓、辛、张、陶一路大力天丁枪刀剑戟挡住天门不肯放进。猴王道：“这个金星老儿乃奸诈之徒！既请老孙如何教人动刀动枪阻塞门路？”正嚷间金星倏到。悟空就觌面狠道：“你这老儿怎么哄我？被你说奉\n\n<候选实体列表>\n候选1:\n- entity_id: ent_4c6c8bfd5692\n- name: 懿旨\n- version_count: 1\n- source_document: 三国演义.txt\n- lexical_score: 0.3333\n- dense_score: 0.6632\n- content: 懿旨是古代太后发布的命令,具有极高的权威性,通常用于下达重要政令或处理紧急事务。\n候选2:\n- entity_id: ent_3d0fe9d531d0\n- name: 御笔亲书\n- version_count: 3\n- source_document: 三国演义.txt\n- lexical_score: 0.0000\n- dense_score: 0.6101\n- content: 皇帝通过御笔亲书的诏令是一种具有权威性和法律效力的文书,可用于赦免罪囚、减免税赋、封官授爵或下达命令。在《三国演义》中,帝诏是传达皇帝旨意的重要方式,例如封孙坚为长沙太守、封刘虞为幽州牧等。同时,皇帝还通过诏令命在京宫观寺院修设好事禳灾,以祈禳京师瘟疫。檄是古代官府用以征召或发布命令的文书,具有权威性和正式性,常用于召唤军队或宣布重要决策。两者都是《三国演义》中传达命令和决策的重要手段,但诏令更侧重于赦免和赏罚,而檄则更侧重于征召和宣布。\n</候选实体列表>\n\n请输出一个 ```json ... ``` 代码块，代码块内部为：\n{\n  \"match_existing_id\": \"若应合并到已有实体则填写 entity_id，否则为空字符串\",\n  \"update_mode\": \"reuse_existing | merge_into_latest | create_new\",\n  \"merged_name\": \"若需要，给出最终名称，否则为空字符串\",\n  \"merged_content\": \"若需要更新/合并，给出最终内容，否则为空字符串\",\n  \"relations_to_create\": [\n    {\"entity_id\": \"候选entity_id\", \"relation_content\": \"与当前实体的自然语言关系\"}\n  ],\n  \"confidence\": 0.0\n}\n\n要求：\n- 只能选一个 match_existing_id\n- 若不合并，但与若干候选存在明确关系，可放入 relations_to_create\n- 必须参考 source_document；跨文档时只有在明确是同一概念实体时才允许合并或融合内容\n- 若信息不足，confidence 降低\n- 只输出一个 ```json ... ``` 代码块",
+      "response": "```json\n{\n  \"match_existing_id\": \"\",\n  \"update_mode\": \"create_new\",\n  \"merged_name\": \"\",\n  \"merged_content\": \"\",\n  \"relations_to_create\": [],\n  \"confidence\": 0.0\n}\n```",
+      "ground_truth_parsed": {
+        "match_existing_id": "",
+        "update_mode": "create_new",
+        "merged_name": "",
+        "merged_content": "",
+        "relations_to_create": [
+          {
+            "entity_id": "ent_3d0fe9d531d0",
+            "relation_content": "圣旨是皇帝下达的命令，御笔亲书是皇帝亲自书写的诏令，两者都是传达皇帝旨意的重要方式。"
+          }
+        ],
+        "confidence": 0.8
+      },
+      "ground_truth_action": "relation",
+      "metadata": {
+        "entry_idx": 8,
+        "prompt_tokens": 2263,
+        "response_length": 167,
+        "parse_ok": true
+      }
+    },
+    {
+      "sample_id": "alignment_9",
+      "user_prompt": "<当前实体>\n- entity_id: NEW_ENTITY\n- name: 太守刘焉\n- source_document: 三国演义.txt\n- content: 太守刘焉是刘备等人见面的地方官员,他在《三国演义》中扮演着重要的角色,不仅认刘备为侄,还在黄巾贼来犯涿郡时,命令邹靖引玄德等三人统兵五百前去破敌,是刘备等人加入军队的关键人物。\n</当前实体>\n\n上下文：\n名羽，字长生，后改云长，河东解良人也。因本处势豪倚势凌人，被吾杀了，逃难江湖，五六年矣。今闻此处招军破贼，特来应募。”玄德遂以己志告之，云长大喜。同到张飞庄上，共议大事。飞曰：“吾庄后有一桃园，花开正盛；明日当于园中祭告天地，我三人结为兄弟，协力同心，然后可图大事。”玄德、云长齐声应曰：“如此甚好。”\n\n    次日，于桃园中，备下乌牛白马祭礼等项，三人焚香再拜而说誓曰：“念刘备、关羽、张飞，虽然异姓，既结为兄弟，则同心协力，救困扶危；上报国家，下安黎庶。不求同年同月同日生，只愿同年同月同日死。皇天后土，实鉴此心，背义忘恩，天人共戮！”誓毕，拜玄德为兄，关羽次之，张飞为弟。祭罢天地，复宰牛设酒，聚乡中勇士，得三百余人，就桃园中痛饮一醉。来日收拾军器，但恨无马匹可乘。正思虑间，人报有两个客人，引一伙伴当，赶一群马，投庄上来。玄德曰：“此天佑我也！”三人出庄迎接。原来二客乃中山大商：一名张世平，一名苏双，每年往北贩马，近因寇发而回。玄德请二人到庄，置酒管待，诉说欲讨贼安民之意。二客大喜，愿将良马五十匹相送；又赠金银五百两，镔铁一千斤，以资器用。\n\n    玄德谢别二客，便命良匠打造双股剑。云长造青龙偃月刀，又名“冷艳锯”，重八十二斤。张飞造丈八点钢矛。各置全身铠甲。共聚乡勇五百余人，来见邹靖。邹靖引见太守刘焉。三人参见毕，各通姓名。玄德说起宗派，刘焉大喜，遂认玄德为侄。不数日，人报黄巾贼将程远志统兵五万来犯涿郡。刘焉令邹靖引玄德等三人，统兵五百，前去破敌。玄德等欣然领军前进，直至大兴山下，与贼相见。贼众皆披发，以黄巾抹额。当下两军相对，玄德出马，左有云长，右有翼德，扬鞭大骂：“反国逆贼，何不早降！”程远志大怒，遣副将邓茂出战。张飞挺丈八蛇矛直出，手起处，刺中邓茂心窝，翻身落马。程远志见折了邓茂，拍马舞刀，直取张飞。云长舞动大刀，纵马飞迎。程远志见了，早吃一惊，措手不及，被云长刀\n\n<候选实体列表>\n候选1:\n- entity_id: ent_8e1750d00635\n- name: 刘焉\n- version_count: 1\n- source_document: 三国演义.txt\n- lexical_score: 0.5000\n- dense_score: 0.7159\n- content: 东汉末年政治家,招募军队,是刘备、张飞和关羽结识并开始结交的关键人物。他发布的招募榜文,使得刘备、张飞和关羽有了相遇的契机,共同开启了他们的人生篇章。\n候选2:\n- entity_id: ent_defe70522406\n- name: 中山靖王刘胜\n- version_count: 1\n- source_document: 三国演义.txt\n- lexical_score: 0.1111\n- dense_score: 0.6092\n- content: 中山靖王刘胜是刘焉的祖先,汉景帝之子,中山靖王刘胜因封地在中山（今河北省定州市）,故称中山靖王。\n候选3:\n- entity_id: ent_db9b1fc57e62\n- name: 涿县\n- version_count: 5\n- source_document: 三国演义.txt\n- lexical_score: 0.0000\n- dense_score: 0.6036\n- content: 涿县,位于今河北省中部,是东汉末年一个著名的县名。历史上,涿县涌现出许多英雄豪杰,其中刘备便是涿县中走出的重要人物。刘备的祖先之一,刘贞,西汉时被封为涿鹿亭侯,后因坐酎金失侯,使得刘备一支在涿县遗存。刘贞的后代刘雄、刘弘在涿县生活,刘弘曾任官吏,但早逝,留下幼孤的刘备。刘备幼时家贫,以贩屦织席为业,其家附近的楼桑村有高大的桑树,被相者预言为贵人之家,而刘备的志向也在幼时便有所体现。\n</候选实体列表>\n\n请输出一个 ```json ... ``` 代码块，代码块内部为：\n{\n  \"match_existing_id\": \"若应合并到已有实体则填写 entity_id，否则为空字符串\",\n  \"update_mode\": \"reuse_existing | merge_into_latest | create_new\",\n  \"merged_name\": \"若需要，给出最终名称，否则为空字符串\",\n  \"merged_content\": \"若需要更新/合并，给出最终内容，否则为空字符串\",\n  \"relations_to_create\": [\n    {\"entity_id\": \"候选entity_id\", \"relation_content\": \"与当前实体的自然语言关系\"}\n  ],\n  \"confidence\": 0.0\n}\n\n要求：\n- 只能选一个 match_existing_id\n- 若不合并，但与若干候选存在明确关系，可放入 relations_to_create\n- 必须参考 source_document；跨文档时只有在明确是同一概念实体时才允许合并或融合内容\n- 若信息不足，confidence 降低\n- 只输出一个 ```json ... ``` 代码块",
+      "response": "```json\n{\n  \"match_existing_id\": \"ent_8e1750d00635\",\n  \"update_mode\": \"merge_into_latest\",\n  \"merged_name\": \"刘焉\",\n  \"merged_content\": \"太守刘焉是东汉末年政治家，招募军队，是刘备、张飞和关羽结识并开始结交的关键人物。他发布的招募榜文，使得刘备、张飞和关羽有了相遇的契机，共同开启了他们的人生篇章。\",\n  \"relations_to_create\": [],\n  \"confidence\": 0.9\n}\n```",
+      "ground_truth_parsed": {
+        "match_existing_id": "ent_8e1750d00635",
+        "update_mode": "reuse_existing",
+        "merged_name": "",
+        "merged_content": "",
+        "relations_to_create": [],
+        "confidence": 0.9
+      },
+      "ground_truth_action": "match",
+      "metadata": {
+        "entry_idx": 9,
+        "prompt_tokens": 2435,
+        "response_length": 272,
+        "parse_ok": true
+      }
+    },
+    {
+      "sample_id": "alignment_10",
+      "user_prompt": "<当前实体>\n- entity_id: NEW_ENTITY\n- name: 真经\n- source_document: 西游记.txt\n- content: 真经,指真正的佛经,在贞观十三年九月,由陈玄奘大阐法师在长安城化生寺召集一千二百名高僧开演,内容包括诸品妙经,具有极高的宗教和文化价值。\n</当前实体>\n\n上下文：\n善果沉没秉教宣扬前后三。贞观十三年岁次己巳九月甲戌初三日癸卯良辰。陈玄奘大阐法师聚集一千二百名高僧都在长安城化生寺开演诸品妙经。那皇帝早朝已毕帅文武多官乘凤辇龙车出离金銮宝殿径上寺来拈香。怎见那銮驾？真个是：一天瑞气万道祥光。仁风轻淡荡化日丽非常。\n\n    千官环佩分前后五卫旌旗列两旁。执金瓜擎斧钺双双对对；绛纱烛御炉香霭霭堂堂。龙飞凤舞鹗荐鹰扬。圣明天子正忠义大臣良。介福千年过舜禹升平万代赛尧汤。又见那曲柄伞滚龙袍辉光相射；玉连环彩凤扇瑞霭飘扬。珠冠玉带紫绶金章。护驾军千队扶舆将两行。这皇帝沐浴虔诚尊敬佛皈依善果喜拈香。唐王大驾早到寺前吩咐住了音乐响器下了车辇引着多官。拜佛拈香。三匝已毕抬头观看果然好座道场但见：幢幡飘舞宝盖飞辉。幢幡飘舞凝空道道彩霞摇；宝盖飞辉映日翩翩红电彻。世尊金象貌臻臻罗汉玉容威烈烈。瓶插仙花炉焚檀降。瓶插仙花锦树辉辉漫宝刹；炉焚檀降香云霭霭透清霄。时新果品砌朱盘奇样糖酥堆彩案。高僧罗列诵真经愿拔孤魂离苦难。太宗文武俱各拈香拜了佛祖金身参了罗汉。又见那大阐都纲陈玄奘法师引众僧罗拜唐王。礼毕分班各安禅位法师献上济孤榜文与太宗看榜曰：“至德渺茫禅宗寂灭。清净灵通周流三界。千变万化统摄阴阳。体用真常无穷极矣。观彼孤魂深宜哀愍。此奉太宗圣命：选集诸僧参禅**。大开方便门庭广运慈悲舟楫普济苦海群生脱免沉疴六趣。引归真路普玩鸿蒙；动止无为混成纯素。仗此良因邀赏清都绛阙；乘吾胜会脱离地狱凡笼。早登极乐任逍遥来往西方随自在。诗曰：一炉永寿香几卷生箓。无边妙法宣无际天恩沐。冤孽尽消除孤魂皆出狱。愿保我邦家清平万年福。”太宗看了满心欢喜对众僧道：“汝等秉立丹衷切休怠慢佛事。待后功成完备各各福有所归朕当重赏决不空劳。”那一千二百僧一齐顿称谢。\n\n    当日三斋已毕唐王驾回。待七日正会复请拈香。时天色将晚各官俱退。怎见得好晚？你看那：万里长空淡落辉归鸦数点下栖迟。满城灯\n\n<候选实体列表>\n候选1:\n- entity_id: ent_669ee93559f6\n- name: 三藏真经\n- version_count: 1\n- source_document: 西游记.txt\n- lexical_score: 0.5000\n- dense_score: 0.7559\n- content: 三藏真经是包含法、论、经各一藏的经文,共计三十五卷,旨在劝人为善。其中法藏谈天,论藏说地,经藏度鬼,涵盖了天、地、鬼三界的教义和修行方法。\n候选2:\n- entity_id: ent_b02aede423bb\n- name: 三藏\n- version_count: 3\n- source_document: 西游记.txt\n- lexical_score: 0.0000\n- dense_score: 0.7248\n- content: 三藏真经包含法一藏,讲述天界的知识;论一藏,阐述地界的道理;经一藏,教导鬼界的修行。这三藏共计三十五部,旨在劝人为善,教导众生领悟佛法真谛。\n候选3:\n- entity_id: ent_f1f0328d27e2\n- name: 三十五\n- version_count: 1\n- source_document: 西游记.txt\n- lexical_score: 0.0000\n- dense_score: 0.6635\n- content: 三藏真经共计三十五卷,包括法一藏谈天,论一藏说地,经一藏度鬼,涵盖了天上、地上、地下以及鬼界的教导,旨在劝人为善。\n候选4:\n- entity_id: ent_7b8092d29485\n- name: 经\n- version_count: 1\n- source_document: 西游记.txt\n- lexical_score: 0.5000\n- dense_score: 0.6255\n- content: 佛教中的经藏,包含法一藏谈天、论一藏说地、经一藏度鬼,共计三十五部,旨在劝人为善,包括三乘妙典五蕴得严,对众生善恶各方不一的教化有重要作用。\n候选5:\n- entity_id: ent_cc317dd24057\n- name: 经藏\n- version_count: 1\n- source_document: 西游记.txt\n- lexical_score: 0.3333\n- dense_score: 0.6149\n- content: 佛教中的经藏,包括法藏、论藏和经藏,共计三十五部,其中法藏谈天,论藏说地,经藏度鬼,旨在劝人为善。\n</候选实体列表>\n\n请输出一个 ```json ... ``` 代码块，代码块内部为：\n{\n  \"match_existing_id\": \"若应合并到已有实体则填写 entity_id，否则为空字符串\",\n  \"update_mode\": \"reuse_existing | merge_into_latest | create_new\",\n  \"merged_name\": \"若需要，给出最终名称，否则为空字符串\",\n  \"merged_content\": \"若需要更新/合并，给出最终内容，否则为空字符串\",\n  \"relations_to_create\": [\n    {\"entity_id\": \"候选entity_id\", \"relation_content\": \"与当前实体的自然语言关系\"}\n  ],\n  \"confidence\": 0.0\n}\n\n要求：\n- 只能选一个 match_existing_id\n- 若不合并，但与若干候选存在明确关系，可放入 relations_to_create\n- 必须参考 source_document；跨文档时只有在明确是同一概念实体时才允许合并或融合内容\n- 若信息不足，confidence 降低\n- 只输出一个 ```json ... ``` 代码块",
+      "response": "```json\n{\n  \"match_existing_id\": \"ent_669ee93559f6\",\n  \"update_mode\": \"merge_into_latest\",\n  \"merged_name\": \"真经\",\n  \"merged_content\": \"真经,指真正的佛经,在贞观十三年九月,由陈玄奘大阐法师在长安城化生寺召集一千二百名高僧开演,内容包括诸品妙经,具有极高的宗教和文化价值。\",\n  \"relations_to_create\": [\n    {\"entity_id\": \"ent_b02aede423bb\", \"relation_content\": \"包含\"},\n    {\"entity_id\": \"ent_f1f0328d27e2\", \"relation_content\": \"包含\"},\n    {\"entity_id\": \"ent_cc317dd24057\", \"relation_content\": \"包含\"}\n  ],\n  \"confidence\": 0.8\n}\n```",
+      "ground_truth_parsed": {
+        "match_existing_id": "ent_669ee93559f6",
+        "update_mode": "merge_into_latest",
+        "merged_name": "三藏真经",
+        "merged_content": "三藏真经是包含法、论、经各一藏的经文,共计三十五卷,旨在劝人为善。其中法藏谈天,论藏说地,经藏度鬼,涵盖了天、地、鬼三界的教义和修行方法。",
+        "relations_to_create": [
+          {
+            "entity_id": "ent_b02aede423bb",
+            "relation_content": "三藏真经的别称"
+          },
+          {
+            "entity_id": "ent_f1f0328d27e2",
+            "relation_content": "三藏真经的卷数"
+          },
+          {
+            "entity_id": "ent_7b8092d29485",
+            "relation_content": "三藏真经的组成部分"
+          },
+          {
+            "entity_id": "ent_cc317dd24057",
+            "relation_content": "三藏真经的组成部分"
+          }
+        ],
+        "confidence": 0.9
+      },
+      "ground_truth_action": "match_relation",
+      "metadata": {
+        "entry_idx": 10,
+        "prompt_tokens": 2625,
+        "response_length": 457,
+        "parse_ok": true
+      }
+    },
+    {
+      "sample_id": "alignment_11",
+      "user_prompt": "<当前实体>\n- entity_id: NEW_ENTITY\n- name: 晚\n- source_document: 西游记.txt\n- content: 晚,指傍晚时分,此时天色渐暗,华灯初上,归鸦栖息,满城灯火通明,与白天的喧嚣形成鲜明对比。\n</当前实体>\n\n上下文：\n善果沉没秉教宣扬前后三。贞观十三年岁次己巳九月甲戌初三日癸卯良辰。陈玄奘大阐法师聚集一千二百名高僧都在长安城化生寺开演诸品妙经。那皇帝早朝已毕帅文武多官乘凤辇龙车出离金銮宝殿径上寺来拈香。怎见那銮驾？真个是：一天瑞气万道祥光。仁风轻淡荡化日丽非常。\n\n    千官环佩分前后五卫旌旗列两旁。执金瓜擎斧钺双双对对；绛纱烛御炉香霭霭堂堂。龙飞凤舞鹗荐鹰扬。圣明天子正忠义大臣良。介福千年过舜禹升平万代赛尧汤。又见那曲柄伞滚龙袍辉光相射；玉连环彩凤扇瑞霭飘扬。珠冠玉带紫绶金章。护驾军千队扶舆将两行。这皇帝沐浴虔诚尊敬佛皈依善果喜拈香。唐王大驾早到寺前吩咐住了音乐响器下了车辇引着多官。拜佛拈香。三匝已毕抬头观看果然好座道场但见：幢幡飘舞宝盖飞辉。幢幡飘舞凝空道道彩霞摇；宝盖飞辉映日翩翩红电彻。世尊金象貌臻臻罗汉玉容威烈烈。瓶插仙花炉焚檀降。瓶插仙花锦树辉辉漫宝刹；炉焚檀降香云霭霭透清霄。时新果品砌朱盘奇样糖酥堆彩案。高僧罗列诵真经愿拔孤魂离苦难。太宗文武俱各拈香拜了佛祖金身参了罗汉。又见那大阐都纲陈玄奘法师引众僧罗拜唐王。礼毕分班各安禅位法师献上济孤榜文与太宗看榜曰：“至德渺茫禅宗寂灭。清净灵通周流三界。千变万化统摄阴阳。体用真常无穷极矣。观彼孤魂深宜哀愍。此奉太宗圣命：选集诸僧参禅**。大开方便门庭广运慈悲舟楫普济苦海群生脱免沉疴六趣。引归真路普玩鸿蒙；动止无为混成纯素。仗此良因邀赏清都绛阙；乘吾胜会脱离地狱凡笼。早登极乐任逍遥来往西方随自在。诗曰：一炉永寿香几卷生箓。无边妙法宣无际天恩沐。冤孽尽消除孤魂皆出狱。愿保我邦家清平万年福。”太宗看了满心欢喜对众僧道：“汝等秉立丹衷切休怠慢佛事。待后功成完备各各福有所归朕当重赏决不空劳。”那一千二百僧一齐顿称谢。\n\n    当日三斋已毕唐王驾回。待七日正会复请拈香。时天色将晚各官俱退。怎见得好晚？你看那：万里长空淡落辉归鸦数点下栖迟。满城灯\n\n<候选实体列表>\n候选1:\n- entity_id: ent_ba7a3c929c10\n- name: 晚\n- version_count: 1\n- source_document: 西游记.txt\n- lexical_score: 1.0000\n- dense_score: 0.9071\n- content: 晚,指的是一天中的后期时段,通常从日落到天黑之间,是人们休息和进行夜间活动的时间。在《西游记》中,晚也是孙悟空等角色进行修炼和探索的重要时间节点。\n候选2:\n- entity_id: ent_0b47565e4a48\n- name: 晚饭\n- version_count: 2\n- source_document: 水浒传.txt\n- lexical_score: 0.5000\n- dense_score: 0.7157\n- content: 晚饭,指晚餐,是人们在一天中的最后一餐,通常在傍晚时分食用,以补充一天中的能量消耗。\n候选3:\n- entity_id: ent_23a3c0577550\n- name: 日晚间\n- version_count: 3\n- source_document: 水浒传.txt\n- lexical_score: 0.3333\n- dense_score: 0.6990\n- content: 日晚间指的是故事中提到的具体时间点,通常指傍晚或晚上。在《水浒传》中,鲁智深在桃花庄刘太公家借宿,并在日晚间与刘太公交谈,了解到刘太公家中小女招夫之事,此时间点成为故事发展的重要转折点。\n候选4:\n- entity_id: ent_5a4cc990c1a5\n- name: 昏夜（上夜）\n- version_count: 2\n- source_document: 红楼梦.txt\n- lexical_score: 0.0000\n- dense_score: 0.6889\n- content: 昏夜和上夜都是指夜间的时间段。昏夜特指夜晚,在《西游记》中,太宗的寝宫门外出现鬼魅呼号,太宗难以忍受,最终由秦叔宝和敬德守卫宫门,未见邪崇,太宗得以安寝。上夜则是指夜间值班,负责照管门户、监察火烛、打扫地方,确保宁国府的安全与秩序。\n候选5:\n- entity_id: ent_ccd21eb26609\n- name: 黄昏\n- version_count: 2\n- source_document: 三国演义.txt\n- lexical_score: 0.0000\n- dense_score: 0.6724\n- content: 黄昏,指日落之后,天色将暗的时间,此时常用于描述战斗或活动进行到后期,如典韦与壮士在葛陂的激战直至黄昏才暂时停止。\n</候选实体列表>\n\n请输出一个 ```json ... ``` 代码块，代码块内部为：\n{\n  \"match_existing_id\": \"若应合并到已有实体则填写 entity_id，否则为空字符串\",\n  \"update_mode\": \"reuse_existing | merge_into_latest | create_new\",\n  \"merged_name\": \"若需要，给出最终名称，否则为空字符串\",\n  \"merged_content\": \"若需要更新/合并，给出最终内容，否则为空字符串\",\n  \"relations_to_create\": [\n    {\"entity_id\": \"候选entity_id\", \"relation_content\": \"与当前实体的自然语言关系\"}\n  ],\n  \"confidence\": 0.0\n}\n\n要求：\n- 只能选一个 match_existing_id\n- 若不合并，但与若干候选存在明确关系，可放入 relations_to_create\n- 必须参考 source_document；跨文档时只有在明确是同一概念实体时才允许合并或融合内容\n- 若信息不足，confidence 降低\n- 只输出一个 ```json ... ``` 代码块",
+      "response": "```json\n{\n  \"match_existing_id\": \"ent_ba7a3c929c10\",\n  \"update_mode\": \"merge_into_latest\",\n  \"merged_name\": \"晚\",\n  \"merged_content\": \"晚,指傍晚时分,此时天色渐暗,华灯初上,归鸦栖息,满城灯火通明,与白天的喧嚣形成鲜明对比。在《西游记》中，晚也是孙悟空等角色进行修炼和探索的重要时间节点。\",\n  \"relations_to_create\": [],\n  \"confidence\": 0.8\n}\n```",
+      "ground_truth_parsed": {
+        "match_existing_id": "ent_ba7a3c929c10",
+        "update_mode": "reuse_existing",
+        "merged_name": "",
+        "merged_content": "",
+        "relations_to_create": [],
+        "confidence": 0.9
+      },
+      "ground_truth_action": "match",
+      "metadata": {
+        "entry_idx": 11,
+        "prompt_tokens": 2657,
+        "response_length": 268,
+        "parse_ok": true
+      }
+    },
+    {
+      "sample_id": "alignment_12",
+      "user_prompt": "<当前实体>\n- entity_id: NEW_ENTITY\n- name: 停盏施英勇\n- source_document: 三国演义.txt\n- content: 关羽在宴会上停杯施英勇,单枪匹马斩杀华雄,展现出超凡的勇猛和武艺。\n</当前实体>\n\n上下文：\n异常，都在那里冷笑。绍问曰：“公孙太守背后何人？”瓒呼玄德出曰：“此吾自幼同舍兄弟，平原令刘备是也。”曹操曰：“莫非破黄巾刘玄德乎？”瓒曰：“然。”即令刘玄德拜见。瓒将玄德功劳，并其出身，细说一遍。绍曰：“既是汉室宗派，取坐来。”命坐。备逊谢。绍曰：“吾非敬汝名爵，吾敬汝是帝室之胄耳。”玄德乃坐于末位，关、张叉手侍立于后。忽探子来报：“华雄引铁骑下关，用长竿挑着孙太守赤帻，来寨前大骂搦战。”绍曰：“谁敢去战？”袁术背后转出骁将俞涉曰：“小将愿往。”绍喜，便著俞涉出马。即时报来：“俞涉与华雄战不三合，被华雄斩了。”众大惊。太守韩馥曰：“吾有上将潘凤，可斩华雄。”绍急令出战。潘凤手提大斧上马。去不多时，飞马来报：“潘凤又被华雄斩了。”众皆失色。绍曰：“可惜吾上将颜良、文丑未至！得一人在此，何惧华雄！”言未毕，阶下一人大呼出曰：“小将愿往斩华雄头，献于帐下！”众视之，见其人身长九尺，髯长二尺，丹凤眼，卧蚕眉，面如重枣，声如巨钟，立于帐前。绍问何人。公孙瓒曰：“此刘玄德之弟关羽也。”绍问现居何职。瓒曰：“跟随刘玄德充马弓手。”帐上袁术大喝曰：“汝欺吾众诸侯无大将耶？量一弓手，安敢乱言！与我打出！”曹操急止之曰：“公路息怒。此人既出大言，必有勇略；试教出马，如其不胜，责之未迟。”袁绍曰：“使一弓手出战，必被华雄所笑。”操曰：“此人仪表不俗，华雄安知他是弓手？”关公曰：“如不胜，请斩某头。”操教酾热酒一杯，与关公饮了上马。关公曰：“酒且斟下，某去便来。”出帐提刀，飞身上马。众诸侯听得关外鼓声大振，喊声大举，如天摧地塌，岳撼山崩，众皆失惊。正欲探听，鸾铃响处，马到中军，云长提华雄之头，掷于地上。其酒尚温。后人有诗赞之曰：“威镇乾坤第一功，辕门画鼓响冬冬。云长停盏施英勇，酒尚温时斩华雄。”曹操大喜。只见玄德背后转出张飞，高声大叫：“俺哥哥斩了华雄，不就这里杀入关去，活拿董卓，更待何时！”袁\n\n<候选实体列表>\n候选1:\n- entity_id: ent_b788fc596f0a\n- name: 杀势豪\n- version_count: 1\n- source_document: 三国演义.txt\n- lexical_score: 0.0000\n- dense_score: 0.6664\n- content: 关羽因本处豪强势力欺凌百姓,激愤之下将其杀死,随后逃难江湖,已有五六年之久。\n候选2:\n- entity_id: ent_15ba54261ef0\n- name: 饮酒\n- version_count: 1\n- source_document: 三国演义.txt\n- lexical_score: 0.0000\n- dense_score: 0.6291\n- content: 刘备、张飞和关羽在涿县楼桑村的一家村店中饮酒,期间结交并共议大事,此行为为饮酒,不仅是简单的喝酒,更是三人友谊和结义的开端。\n候选3:\n- entity_id: ent_82bc16d95e8b\n- name: 生擒将校极多\n- version_count: 1\n- source_document: 三国演义.txt\n- lexical_score: 0.0000\n- dense_score: 0.6274\n- content: 华雄在战斗中表现出色,生擒众多敌将,其勇猛之势令人敬畏。\n候选4:\n- entity_id: ent_ab731df83190\n- name: 关羽\n- version_count: 3\n- source_document: 三国演义.txt\n- lexical_score: 0.0000\n- dense_score: 0.6232\n- content: 关羽,刘备结义兄弟,原为马弓手,武艺高强,勇猛异常,后随刘备参与讨伐董卓的行动。\n候选5:\n- entity_id: ent_8ad24b31f8bf\n- name: 云长大喜\n- version_count: 2\n- source_document: 三国演义.txt\n- lexical_score: 0.0000\n- dense_score: 0.6006\n- content: 关羽听刘备讲述志向后感到高兴,显示出对刘备的认同和热情。他与刘备、张飞结义,在安喜县深受民众爱戴。在刘备与督邮的冲突中,关羽建议杀督邮、弃官归乡,以图远大之计。\n</候选实体列表>\n\n请输出一个 ```json ... ``` 代码块，代码块内部为：\n{\n  \"match_existing_id\": \"若应合并到已有实体则填写 entity_id，否则为空字符串\",\n  \"update_mode\": \"reuse_existing | merge_into_latest | create_new\",\n  \"merged_name\": \"若需要，给出最终名称，否则为空字符串\",\n  \"merged_content\": \"若需要更新/合并，给出最终内容，否则为空字符串\",\n  \"relations_to_create\": [\n    {\"entity_id\": \"候选entity_id\", \"relation_content\": \"与当前实体的自然语言关系\"}\n  ],\n  \"confidence\": 0.0\n}\n\n要求：\n- 只能选一个 match_existing_id\n- 若不合并，但与若干候选存在明确关系，可放入 relations_to_create\n- 必须参考 source_document；跨文档时只有在明确是同一概念实体时才允许合并或融合内容\n- 若信息不足，confidence 降低\n- 只输出一个 ```json ... ``` 代码块",
+      "response": "```json\n{\n  \"match_existing_id\": \"ent_ab731df83190\",\n  \"update_mode\": \"merge_into_latest\",\n  \"merged_name\": \"关羽\",\n  \"merged_content\": \"关羽，刘备结义兄弟，原为马弓手，武艺高强，勇猛异常，后随刘备参与讨伐董卓的行动，曾在宴会上停杯施英勇，单枪匹马斩杀华雄，展现出超凡的勇猛和武艺。\",\n  \"relations_to_create\": [],\n  \"confidence\": 0.9\n}\n```",
+      "ground_truth_parsed": {
+        "match_existing_id": "ent_ab731df83190",
+        "update_mode": "reuse_existing",
+        "merged_name": "",
+        "merged_content": "",
+        "relations_to_create": [],
+        "confidence": 1.0
+      },
+      "ground_truth_action": "match",
+      "metadata": {
+        "entry_idx": 12,
+        "prompt_tokens": 2564,
+        "response_length": 264,
+        "parse_ok": true
+      }
+    },
+    {
+      "sample_id": "alignment_13",
+      "user_prompt": "<当前实体>\n- entity_id: NEW_ENTITY\n- name: 宁府\n- source_document: 红楼梦.txt\n- content: 宁府,贾赦、贾政、贾珍等家族成员所在之府,是贾家的主要居住地,同时也是家族活动和家族事务的中心。在宁府中,家族成员间的关系错综复杂,权力斗争和家族荣誉在此交织。宁府的送殡场面热闹非凡,展示了家族的团结和影响力。\n</当前实体>\n\n上下文：\n犬子岂敢谬承金奖．赖蕃郡余祯，果如是言，亦荫生辈之幸矣。”水溶又道：“只是一件，令郎如是资质，想老太夫人，夫人辈自然钟爱极矣，但吾辈后生，甚不宜钟溺，钟溺则未免荒失学业．昔小王曾蹈此辙，想令郎亦未必不如是也．若令郎在家难以用功，不妨常到寒第．小王虽不才，却多蒙海上众名士凡至都者，未有不另垂青目．是以寒第高人颇聚．令郎常去谈会谈会，则学问可以日进矣。”贾政忙躬身答应．\n\n    水溶又将腕上一串念珠卸了下来，递与宝玉道：“今日初会，仓促竟无敬贺之物，此是前日圣上亲赐йк香念珠一串，权为贺敬之礼。”宝玉连忙接了，回身奉与贾政．贾政与宝玉一齐谢过．于是贾赦，贾珍等一齐上来请回舆，水溶道：“逝者已登仙界，非碌碌你我尘寰中之人也．小王虽上叨天恩，虚邀郡袭，岂V可越仙?而进也？\"贾赦等见执意不从，只得告辞谢恩回来，命手下掩乐停音，滔滔然将殡过完，方让水溶回舆去了．不在话下．\n\n    且说宁府送殡，一路热闹非常．刚至城门前，又有贾赦，贾政，贾珍等诸同僚属下各家祭棚接祭，一一的谢过，然后出城，竟奔铁槛寺大路行来．彼时贾珍带贾蓉来到诸长辈前，让坐轿上马，因而贾赦一辈的各自上了车轿，贾珍一辈的也将要上马．凤姐儿因记挂着宝玉，怕他在郊外纵性逞强，不服家人的话，贾政管不着这些小事，惟恐有个失闪，难见贾母，因此便命小厮来唤他．宝玉只得来到他车前．凤姐笑道：“好兄弟，你是个尊贵人，女孩儿一样的人品，别学他们猴在马上．下来，咱们姐儿两个坐车，岂不好？\"宝玉听说，忙下了马，爬入凤姐车上，二人说笑前来．不一时，只见从那边两骑马压地飞来，离凤姐车不远，一齐蹿下来，扶车回说：“这里有下处，奶奶请歇更衣。”凤姐急命请邢夫人王夫人的示下，那人回来说：“太太们说不用歇了，叫奶奶自便罢。”凤姐听了，便命歇了再走．众小厮听了，一带辕马，岔出人群，往北飞走．宝玉在车内急命请秦相公．那时秦钟正骑马随着他父亲的轿，忽见宝玉的\n\n<候选实体列表>\n候选1:\n- entity_id: ent_260fbbf189e9\n- name: 诸长辈\n- version_count: 5\n- source_document: 红楼梦.txt\n- lexical_score: 0.0000\n- dense_score: 0.7953\n- content: 多个长辈,包括贾赦、贾政、贾珍等,他们在宁府送殡的场合出现,各自乘坐车轿,展现了家族内部的权力和地位关系。\n候选2:\n- entity_id: ent_8cc7bdd2e472\n- name: 荣府\n- version_count: 3\n- source_document: 红楼梦.txt\n- lexical_score: 0.3333\n- dense_score: 0.7496\n- content: 荣府,贾氏家族的宅邸,位于宁府附近,是贾家主要的活动场所,贾珍亲自前往铁槛寺踏看寄灵所在,并嘱咐住持色空预备接灵事宜,凤姐在荣府忙碌于各种事务,包括处理王夫人、邢夫人、西安郡王妃等人的事宜,以及处理王仁连家眷回南等事宜。\n候选3:\n- entity_id: ent_82338519a5dd\n- name: 宁荣二府女眷家宴小集\n- version_count: 14\n- source_document: 红楼梦.txt\n- lexical_score: 0.2000\n- dense_score: 0.7045\n- content: 宁荣二府女眷家宴小集,是宁荣二府女眷之间的家庭小聚会,通常在宁荣二府的会芳园举行,活动中先茶后酒,气氛轻松愉快,参与者多为贾母、邢夫人、王夫人等家族长辈及其眷属。\n候选4:\n- entity_id: ent_0146307cefe8\n- name: 亲朋堂客\n- version_count: 3\n- source_document: 红楼梦.txt\n- lexical_score: 0.0000\n- dense_score: 0.6982\n- content: 指的是宁府中的亲戚和宾客,他们在贾珍的安排下,参与到宁府的各种事宜中,如送殡、庆贺、接待等,他们在宁府中的活动体现了家族的团结和社交关系。\n候选5:\n- entity_id: ent_3a193467b2db\n- name: 宁国府职员\n- version_count: 5\n- source_document: 红楼梦.txt\n- lexical_score: 0.4000\n- dense_score: 0.6884\n- content: 宁国府的职员们在凤姐严厉的管理下,兢兢业业,负责处理府中各种事务,如执牌交牌、登记交牌等,保证了府中秩序的稳定。同时,宁府管家负责家族事务,如王夫人、邢夫人、西安郡王妃等事宜,以及王仁连家眷回南等事宜,她的忙碌和周全承应得到了合族上下的称赞,尤其在处理发引事宜和接灵准备中表现出色,展现了她的能力和地位。\n</候选实体列表>\n\n请输出一个 ```json ... ``` 代码块，代码块内部为：\n{\n  \"match_existing_id\": \"若应合并到已有实体则填写 entity_id，否则为空字符串\",\n  \"update_mode\": \"reuse_existing | merge_into_latest | create_new\",\n  \"merged_name\": \"若需要，给出最终名称，否则为空字符串\",\n  \"merged_content\": \"若需要更新/合并，给出最终内容，否则为空字符串\",\n  \"relations_to_create\": [\n    {\"entity_id\": \"候选entity_id\", \"relation_content\": \"与当前实体的自然语言关系\"}\n  ],\n  \"confidence\": 0.0\n}\n\n要求：\n- 只能选一个 match_existing_id\n- 若不合并，但与若干候选存在明确关系，可放入 relations_to_create\n- 必须参考 source_document；跨文档时只有在明确是同一概念实体时才允许合并或融合内容\n- 若信息不足，confidence 降低\n- 只输出一个 ```json ... ``` 代码块",
+      "response": "```json\n{\n  \"match_existing_id\": \"ent_8cc7bdd2e472\",\n  \"update_mode\": \"merge_into_latest\",\n  \"merged_name\": \"宁府\",\n  \"merged_content\": \"宁府，贾氏家族的宅邸，位于宁府附近，是贾家主要的活动场所，贾珍亲自前往铁槛寺踏看寄灵所在，并嘱咐住持色空预备接灵事宜，凤姐在宁府忙碌于各种事务，包括处理王夫人、邢夫人、西安郡王妃等人的事宜，以及处理王仁连家眷回南等事宜。\",\n  \"relations_to_create\": [],\n  \"confidence\": 0.8\n}\n```",
+      "ground_truth_parsed": {
+        "match_existing_id": "ent_260fbbf189e9",
+        "update_mode": "merge_into_latest",
+        "merged_name": "",
+        "merged_content": "",
+        "relations_to_create": [],
+        "confidence": 0.8
+      },
+      "ground_truth_action": "match",
+      "metadata": {
+        "entry_idx": 13,
+        "prompt_tokens": 2765,
+        "response_length": 302,
+        "parse_ok": true
+      }
+    },
+    {
+      "sample_id": "alignment_14",
+      "user_prompt": "<当前实体>\n- entity_id: NEW_ENTITY\n- name: 爵禄\n- source_document: 三国演义.txt\n- content: 古代官职和封地所得到的荣誉和待遇,常作为对官员功绩和地位的象征。在《三国演义》中,陈珪父子媚朝廷以求爵禄,体现了爵禄在政治斗争中的重要性。\n</当前实体>\n\n上下文：\n谋士商议，陈宫与陈珪父子俱至。陈宫曰：“徐州之祸，乃陈珪父子所招，媚朝廷以求爵禄，今日移祸于将军。可斩二人之头献袁术，其军自退。”布听其言，即命擒下陈珪、陈登。陈登大笑曰：“何如是之懦也？吾观七路之兵，如七堆腐草，何足介意！”布曰：“汝若有计破敌、免汝死罪。”陈登曰：“将军若用老夫之言，徐州可保无虞。”布曰：“试言之。”登曰：“术兵虽众，皆乌合之师，素不亲信；我以正兵守之，出奇兵胜之，无不成功。更有一计，不止保安徐州，并可生擒袁术。”布曰：“计将安出？”登曰：“韩暹、杨奉乃汉旧臣，因惧曹操而走，无家可依，暂归袁术；术必轻之，彼亦不乐为术用。若凭尺书结为内应，更连刘备为外合，必擒袁术矣。”布曰：“汝须亲到韩暹、杨奉处下书。”陈登允诺。布乃发表上许都，并致书与豫州，然后令陈登引数骑，先于下邳道上候韩暹。退引兵至，下寨毕，登入见。暹问曰：“汝乃吕布之人，来此何干？”登笑曰：“某为大汉公卿，何谓吕布之人？若将军者，向为汉臣，今乃为叛贼之臣，使昔日关中保驾之功，化为乌有，窃为将军不取也。且袁术性最多疑，将军后必为其所害。今不早图，悔之无及！”暹叹曰：“吾欲归汉，恨无门耳。”登乃出布书。暹览书毕曰：“吾已知之。公先回。吾与杨将军反戈击之。但看火起为号，温侯以兵相应可也。”登辞暹，急回报吕布。\n\n    布乃分兵五路，高顺引一军进小沛，敌桥蕤；陈宫引一军进沂都，敌陈纪；张辽、臧霸引一军出琅琊，敌雷薄；宋宪、魏续引一军出碣石，敌陈兰；吕布自引一军出大道，敌张勋。各领军一万，余者守城。吕布出城三十里下寨。张勋军到，料敌吕布不过，且退二十里屯住，待四下兵接应。\n\n    是夜二更时分，韩暹、杨奉分兵到处放火，接应吕家军入寨。勋军大乱。吕布乘势掩杀，张勋败走。吕布赶到天明，正撞纪灵接应。两军相迎，恰待交锋，韩暹、杨奉两路杀来。纪灵大败而走，吕布引兵追杀。山背后一彪军到，门旗开处，只见一队军马，打\n\n<候选实体列表>\n候选1:\n- entity_id: ent_04de128ace1c\n- name: 爵禄\n- version_count: 1\n- source_document: 三国演义.txt\n- lexical_score: 1.0000\n- dense_score: 1.0000\n- content: 古代官职和封地所得到的荣誉和待遇,常作为对官员功绩和地位的象征。在《三国演义》中,陈珪父子媚朝廷以求爵禄,体现了爵禄在政治斗争中的重要性。\n候选2:\n- entity_id: ent_feb4dc3642a9\n- name: 爵\n- version_count: 2\n- source_document: 西游记.txt\n- lexical_score: 0.5000\n- dense_score: 0.7299\n- content: 禄爵无边万国荣,代表着极高的荣誉和地位,象征着拥有者在国家和社会中的尊贵地位,以及无上的荣耀和尊崇。\n候选3:\n- entity_id: ent_b610cab6930b\n- name: 官爵\n- version_count: 2\n- source_document: 红楼梦.txt\n- lexical_score: 0.3333\n- dense_score: 0.6849\n- content: 官爵,指官职和爵位,是古代社会中表示身份地位和权力的标志。在贾家,官爵代表着家族成员在社会中的地位,以及他们所拥有的特权和责任。\n候选4:\n- entity_id: ent_ae12e135c04f\n- name: 禄\n- version_count: 1\n- source_document: 西游记.txt\n- lexical_score: 0.5000\n- dense_score: 0.6544\n- content: 禄,象征福气和吉祥,重如山岳,彩凤鸣于其上,随时泰然自若,视长庚之星,代表着无尽的富贵和吉祥,是人们追求的理想境界。\n候选5:\n- entity_id: ent_3d4a068986b5\n- name: 老爷既荣任到这一省\n- version_count: 1\n- source_document: 红楼梦.txt\n- lexical_score: 0.0000\n- dense_score: 0.6291\n- content: 既然老爷已经荣任到这一省,作为地方官,他应当熟悉并遵守本省的`护官符-,这是了解本地权势结构和避免触犯权贵的重要途径。\n</候选实体列表>\n\n请输出一个 ```json ... ``` 代码块，代码块内部为：\n{\n  \"match_existing_id\": \"若应合并到已有实体则填写 entity_id，否则为空字符串\",\n  \"update_mode\": \"reuse_existing | merge_into_latest | create_new\",\n  \"merged_name\": \"若需要，给出最终名称，否则为空字符串\",\n  \"merged_content\": \"若需要更新/合并，给出最终内容，否则为空字符串\",\n  \"relations_to_create\": [\n    {\"entity_id\": \"候选entity_id\", \"relation_content\": \"与当前实体的自然语言关系\"}\n  ],\n  \"confidence\": 0.0\n}\n\n要求：\n- 只能选一个 match_existing_id\n- 若不合并，但与若干候选存在明确关系，可放入 relations_to_create\n- 必须参考 source_document；跨文档时只有在明确是同一概念实体时才允许合并或融合内容\n- 若信息不足，confidence 降低\n- 只输出一个 ```json ... ``` 代码块",
+      "response": "```json\n{\n  \"match_existing_id\": \"ent_04de128ace1c\",\n  \"update_mode\": \"merge_into_latest\",\n  \"merged_name\": \"爵禄\",\n  \"merged_content\": \"古代官职和封地所得到的荣誉和待遇，常作为对官员功绩和地位的象征。在《三国演义》中，陈珪父子媚朝廷以求爵禄，体现了爵禄在政治斗争中的重要性。\",\n  \"relations_to_create\": [],\n  \"confidence\": 0.9\n}\n```",
+      "ground_truth_parsed": {
+        "match_existing_id": "ent_04de128ace1c",
+        "update_mode": "reuse_existing",
+        "merged_name": "",
+        "merged_content": "",
+        "relations_to_create": [],
+        "confidence": 1.0
+      },
+      "ground_truth_action": "match",
+      "metadata": {
+        "entry_idx": 14,
+        "prompt_tokens": 2619,
+        "response_length": 261,
+        "parse_ok": true
+      }
+    },
+    {
+      "sample_id": "alignment_15",
+      "user_prompt": "<当前实体>\n- entity_id: NEW_ENTITY\n- name: 残年爆竹\n- source_document: 西游记.txt\n- content: 残年爆竹,成语,形容声音响亮,常用来比喻旧事物灭亡或重大事件结束时的热闹场景。\n</当前实体>\n\n上下文：\n者一筋斗跳上南天门里唬得个庞刘苟毕躬身马赵温关控背俱道：“不好了！不好了！那闹天宫的主子又来了！”行者摇着手道：“列位免礼休惊我来寻广目天王的。”说不了却遇天王早到迎着行者道：“久阔久阔。前闻得观音菩萨来见玉帝借了四值功曹、六丁六甲并揭谛等保护唐僧往西天取经去说你与他做了徒弟今日怎么得闲到此？”行者道：“且休叙阔。唐僧路遇歹人放火烧他事在万分紧急特来寻你借辟火罩儿救他一救。快些拿来使使即刻返上。”天王道：“你差了既是歹人放火只该借水救他如何要辟火罩？”行者道：“你那里晓得就里。借水救之却烧不起来倒相应了他；只是借此罩护住了唐僧无伤其余管他尽他烧去快些快些！此时恐已无及莫误了我下边干事！”那天王笑道：“这猴子还是这等起不善之心只顾了自家就不管别人。”\n\n    行者道：“快着快着莫要调嘴害了大事！”那天王不敢不借遂将罩儿递与行者。\n\n    行者拿了按着云头径到禅堂房脊上罩住了唐僧与白马、行李他却去那后面老和尚住的方丈房上头坐着意保护那袈裟。看那些人放起火来他转捻诀念咒望巽地上吸一口气吹将去一阵风起把那火转刮得烘烘乱着。好火！好火！但见：黑烟漠漠红焰腾腾。黑烟漠漠长空不见一天星；红焰腾腾大地有光千里赤。起初时灼灼金蛇；次后来威威血马。南方三炁逞英雄回禄大神施法力。燥干柴烧烈火性说甚么燧人钻木；熟油门前飘彩焰赛过了老祖开炉。正是那无情火怎禁这有意行凶不去弭灾反行助虐。风随火势焰飞有千丈余高；火趁风威灰迸上九霄云外。乒乒乓乓好便似残年爆竹；泼泼喇喇却就如军中炮声。烧得那当场佛象莫能逃东院伽蓝无处躲。胜如赤壁夜鏖兵赛过阿房宫内火！这正是星星之火能烧万顷之田。须臾间风狂火盛把一座观音院处处通红。你看那众和尚搬箱抬笼抢桌端锅满院里叫苦连天。\n\n    孙行者护住了后边方丈辟火罩罩住了前面禅堂其余前后火光大真个是照天红焰辉煌透壁金光照耀！\n\n    不期火起之时惊动了一山兽怪。这观音院正\n\n<候选实体列表>\n候选1:\n- entity_id: ent_6bb548302e5a\n- name: 恐哭损残年\n- version_count: 1\n- source_document: 红楼梦.txt\n- lexical_score: 0.2857\n- dense_score: 0.6024\n- content: 恐哭损残年,意味着担心哭泣会损害健康,暗示了对人生无常和脆弱性的深刻认识。\n</候选实体列表>\n\n请输出一个 ```json ... ``` 代码块，代码块内部为：\n{\n  \"match_existing_id\": \"若应合并到已有实体则填写 entity_id，否则为空字符串\",\n  \"update_mode\": \"reuse_existing | merge_into_latest | create_new\",\n  \"merged_name\": \"若需要，给出最终名称，否则为空字符串\",\n  \"merged_content\": \"若需要更新/合并，给出最终内容，否则为空字符串\",\n  \"relations_to_create\": [\n    {\"entity_id\": \"候选entity_id\", \"relation_content\": \"与当前实体的自然语言关系\"}\n  ],\n  \"confidence\": 0.0\n}\n\n要求：\n- 只能选一个 match_existing_id\n- 若不合并，但与若干候选存在明确关系，可放入 relations_to_create\n- 必须参考 source_document；跨文档时只有在明确是同一概念实体时才允许合并或融合内容\n- 若信息不足，confidence 降低\n- 只输出一个 ```json ... ``` 代码块",
+      "response": "```json\n{\n  \"match_existing_id\": \"\",\n  \"update_mode\": \"create_new\",\n  \"merged_name\": \"\",\n  \"merged_content\": \"\",\n  \"relations_to_create\": [],\n  \"confidence\": 0.0\n}\n```",
+      "ground_truth_parsed": {
+        "match_existing_id": "",
+        "update_mode": "create_new",
+        "merged_name": "",
+        "merged_content": "",
+        "relations_to_create": [],
+        "confidence": 0.0
+      },
+      "ground_truth_action": "create_new",
+      "metadata": {
+        "entry_idx": 15,
+        "prompt_tokens": 1992,
+        "response_length": 167,
+        "parse_ok": true
+      }
+    },
+    {
+      "sample_id": "alignment_16",
+      "user_prompt": "<当前实体>\n- entity_id: NEW_ENTITY\n- name: 聋且昏\n- source_document: 红楼梦.txt\n- content: 老僧的特征是既聋且昏,齿落舌钝,无法清晰回答问题。\n</当前实体>\n\n上下文：\n只有一个龙钟老僧在那里煮粥．雨村见了，便不在意．及至问他两句话，那老僧既聋且昏，齿落舌钝，所答非所问．\n\n    雨村不耐烦，便仍出来，意欲到那村肆中沽饮三杯，以助野趣，于是款步行来．将入肆门，只见座上吃酒之客有一人起身大笑，接了出来，口内说：“奇遇，奇遇。”雨村忙看时，此人是都中在古董行中贸易的号冷子兴者，旧日在都相识．雨村最赞这冷子兴是个有作为大本领的人，这子兴又借雨村斯文之名，故二人说话投机，最相契合．雨村忙笑问道：“老兄何日到此？弟竟不知．今日偶遇，真奇缘也。”子兴道：“去年岁底到家，今因还要入都，从此顺路找个敝友说一句话，承他之情，留我多住两日．我也无紧事，且盘桓两日，待月半时也就起身了．今日敝友有事，我因闲步至此，且歇歇脚，不期这样巧遇！\"一面说，一面让雨村同席坐了，另整上酒肴来．二人闲谈漫饮，叙些别后之事．\n\n    雨村因问：“近日都中可有新闻没有？\"子兴道：“倒没有什么新闻，倒是老先生你贵同宗家，出了一件小小的异事。”雨村笑道：“弟族中无人在都，何谈及此？\"子兴笑道：“你们同姓，岂非同宗一族？\"雨村问是谁家．子兴道：“荣国府贾府中，可也玷辱了先生的门楣么？\"雨村笑道：“原来是他家．若论起来，寒族人丁却不少，自东汉贾复以来，支派繁盛，各省皆有，谁逐细考查得来？若论荣国一支，却是同谱．但他那等荣耀，我们不便去攀扯，至今故越发生疏难认了。”子兴叹道：“老先生休如此说．如今的这宁荣两门，也都萧疏了，不比先时的光景。”雨村道：“当日宁荣两宅的人口也极多，如何就萧疏了？\"冷子兴道：“正是，说来也话长。”雨村道：“去岁我到金陵地界，因欲游览六朝遗迹，那日进了石头城，从他老宅门前经过．街东是宁国府，街西是荣国府，二宅相连，竟将大半条街占了．大门前虽冷落无人，隔着围墙一望，里面厅殿楼阁，也还都峥嵘轩峻，就是后一带花园子里面树木山石，也还都有蓊蔚洇润之气，那里象个衰败之家？\"\n\n<候选实体列表>\n候选1:\n- entity_id: ent_8728715bc1f3\n- name: 龙钟老僧\n- version_count: 1\n- source_document: 红楼梦.txt\n- lexical_score: 0.0000\n- dense_score: 0.6801\n- content: 龙钟老僧,智通寺中的一位老僧,年事已高,听力衰弱,言语不清,负责在寺庙中煮粥,给人一种沧桑感。\n</候选实体列表>\n\n请输出一个 ```json ... ``` 代码块，代码块内部为：\n{\n  \"match_existing_id\": \"若应合并到已有实体则填写 entity_id，否则为空字符串\",\n  \"update_mode\": \"reuse_existing | merge_into_latest | create_new\",\n  \"merged_name\": \"若需要，给出最终名称，否则为空字符串\",\n  \"merged_content\": \"若需要更新/合并，给出最终内容，否则为空字符串\",\n  \"relations_to_create\": [\n    {\"entity_id\": \"候选entity_id\", \"relation_content\": \"与当前实体的自然语言关系\"}\n  ],\n  \"confidence\": 0.0\n}\n\n要求：\n- 只能选一个 match_existing_id\n- 若不合并，但与若干候选存在明确关系，可放入 relations_to_create\n- 必须参考 source_document；跨文档时只有在明确是同一概念实体时才允许合并或融合内容\n- 若信息不足，confidence 降低\n- 只输出一个 ```json ... ``` 代码块",
+      "response": "```json\n{\n  \"match_existing_id\": \"ent_8728715bc1f3\",\n  \"update_mode\": \"merge_into_latest\",\n  \"merged_name\": \"聋且昏\",\n  \"merged_content\": \"老僧的特征是既聋且昏,齿落舌钝,无法清晰回答问题。\",\n  \"relations_to_create\": [\n    {\"entity_id\": \"NEW_ENTITY\", \"relation_content\": \"描述同一位龙钟老僧\"}\n  ],\n  \"confidence\": 0.9\n}\n```",
+      "ground_truth_parsed": {
+        "match_existing_id": "ent_8728715bc1f3",
+        "update_mode": "reuse_existing",
+        "merged_name": "",
+        "merged_content": "",
+        "relations_to_create": [],
+        "confidence": 0.8
+      },
+      "ground_truth_action": "match",
+      "metadata": {
+        "entry_idx": 16,
+        "prompt_tokens": 1988,
+        "response_length": 286,
+        "parse_ok": true
+      }
+    },
+    {
+      "sample_id": "alignment_17",
+      "user_prompt": "<当前实体>\n- entity_id: NEW_ENTITY\n- name: 宴\n- source_document: 三国演义.txt\n- content: 曹操设宴犒劳诸将,宴席上陈珪父子被加封十县之禄,陈登被授予伏波将军之职。\n</当前实体>\n\n上下文：\n众弃关而走。登就关上放起火来。吕布乘黑杀至，陈宫军和吕布军在黑暗里自相掩杀。曹兵望见号火，一齐杀到，乘势攻击。孙观等各自四散逃避去了。吕布直杀到天明，方知是计；急与陈宫回徐州。到得城边叫门时，城上乱箭射下。糜竺在敌楼上喝曰：“汝夺吾主城池，今当仍还吾主，汝不得复入此城也。”布大怒曰：“陈珪何在？”竺曰：“吾已杀之矣”。布回顾宫曰：“陈登安在？”宫曰：“将军尚执迷而问此佞贼乎？”布令遍寻军中，却只不见。宫劝布急投小沛，布从之。行至半路，只见一彪军骤至，视之，乃高顺、张辽也。布问之，答曰：“陈登来报说主公被围，令某等急来救解。”宫曰：“此又佞贼之计也。”布怒曰：“吾必杀此贼！”急驱马至小沛。只见小沛城上尽插曹兵旗号。原来曹操已令曹仁袭了城池，引军守把。吕布于城下大骂陈登。登在城上指布骂曰：“吾乃汉臣，安肯事汝反贼耶！”布大怒，正待攻城，忽听背后喊声大起，一队人马来到，当先一将乃是张飞。高顺出马迎敌，不能取胜。布亲自接战。正斗间，阵外喊声复起，曹操亲统大军冲杀前来。吕布料难抵敌，引军东走。曹兵随后追赶。吕布走得人困马乏。忽又闪出一彪军拦住去路，为首一将，立马横刀，大喝：“吕布休走！关云长在此！”吕布慌忙接战。背后张飞赶来。布无心恋战，与陈宫等杀开条路，径奔下邳。侯成引兵接应去了。\n\n    关、张相见，各洒泪言失散之事。云长曰：“我在海州路上住扎，探得消息，故来至此。”张飞曰：“弟在芒砀山住了这几时，今日幸得相遇。”两个叙话毕，一同引兵来见玄德，哭拜于地。玄德悲喜交集，引二人见曹操，便随操入徐州。糜竺接见，具言家属无恙，玄德甚喜。陈珪父子亦来参拜曹操。操设一大宴，犒劳诸将。操自居中，使陈珪居右、玄德居左。其余将士，各依次坐。宴罢，操嘉陈珪父子之功，加封十县之禄，授登为伏波将军。且说曹操得了徐州，心中大喜，商议起兵攻下邳。程昱曰：“布今止有下邳一城，若逼之太急，必死战而投袁术矣。布\n\n<候选实体列表>\n候选1:\n- entity_id: ent_2fbc56a82a46\n- name: 曹操\n- version_count: 1\n- source_document: 三国演义.txt\n- lexical_score: 0.0000\n- dense_score: 0.6575\n- content: 曹操在此时担任骁骑校尉一职,此职位赋予他一定的军事权力和职责,并在王允设宴时提出刺杀董卓的计划,显示出他在政治和军事上的勇气与决心。\n候选2:\n- entity_id: ent_9a3cc90f504d\n- name: 筵席\n- version_count: 6\n- source_document: 红楼梦.txt\n- lexical_score: 0.0000\n- dense_score: 0.6291\n- content: 在家中准备的宴席,用于款待尤氏一家以及邀请老太太、大太太、二太太和琏二婶子等来宾,筵席丰盛,以示尊重和欢迎。\n候选3:\n- entity_id: ent_b9ed457b03cb\n- name: 陈珪\n- version_count: 3\n- source_document: 三国演义.txt\n- lexical_score: 0.0000\n- dense_score: 0.6167\n- content: 陈珪,东汉末年人物,是陈宫的父亲。在袁术征讨徐州时,陈珪建议吕布斩杀陈登以退敌,此策略被吕布采纳。然而,陈登对此表示吕布懦弱。陈珪与儿子陈宫关系紧张,因陈宫忠言进谏,导致陈珪父子对吕布的赞扬不被采纳,陈宫因此闷闷不乐。最终,陈宫在围猎时遇到曹操使者,使者携刘备回书。\n候选4:\n- entity_id: ent_c7e4f8e67386\n- name: 筵宴\n- version_count: 3\n- source_document: 水浒传.txt\n- lexical_score: 0.5000\n- dense_score: 0.6155\n- content: 筵宴是为杨志安排的宴席,由梁山泊山寨中的王伦等人主持,席间款待杨志,并讨论了杨志的行李归还、加入梁山泊的可能性以及与林冲的关系等事宜。\n候选5:\n- entity_id: ent_24e8e0f5ddfa\n- name: 陈登\n- version_count: 7\n- source_document: 三国演义.txt\n- lexical_score: 0.0000\n- dense_score: 0.6153\n- content: 三国时期魏国将领,陈登在曹操与吕布的斗争中扮演关键角色,曾建议曹操早图吕布,并愿意作为内应,后因未能为吕布争取徐州牧而被吕布愤怒,其父陈珪因功被封秩中二千石。\n</候选实体列表>\n\n请输出一个 ```json ... ``` 代码块，代码块内部为：\n{\n  \"match_existing_id\": \"若应合并到已有实体则填写 entity_id，否则为空字符串\",\n  \"update_mode\": \"reuse_existing | merge_into_latest | create_new\",\n  \"merged_name\": \"若需要，给出最终名称，否则为空字符串\",\n  \"merged_content\": \"若需要更新/合并，给出最终内容，否则为空字符串\",\n  \"relations_to_create\": [\n    {\"entity_id\": \"候选entity_id\", \"relation_content\": \"与当前实体的自然语言关系\"}\n  ],\n  \"confidence\": 0.0\n}\n\n要求：\n- 只能选一个 match_existing_id\n- 若不合并，但与若干候选存在明确关系，可放入 relations_to_create\n- 必须参考 source_document；跨文档时只有在明确是同一概念实体时才允许合并或融合内容\n- 若信息不足，confidence 降低\n- 只输出一个 ```json ... ``` 代码块",
+      "response": "```json\n{\n  \"match_existing_id\": \"\",\n  \"update_mode\": \"create_new\",\n  \"merged_name\": \"\",\n  \"merged_content\": \"\",\n  \"relations_to_create\": [\n    {\"entity_id\": \"ent_b9ed457b03cb\", \"relation_content\": \"陈珪的儿子\"},\n    {\"entity_id\": \"ent_24e8e0f5ddfa\", \"relation_content\": \"陈珪的儿子\"}\n  ],\n  \"confidence\": 0.5\n}\n```",
+      "ground_truth_parsed": {
+        "match_existing_id": "ent_b9ed457b03cb",
+        "update_mode": "reuse_existing",
+        "merged_name": "",
+        "merged_content": "",
+        "relations_to_create": [
+          {
+            "entity_id": "ent_9a3cc90f504d",
+            "relation_content": "宴席的主办者"
+          },
+          {
+            "entity_id": "ent_c7e4f8e67386",
+            "relation_content": "宴席的类型"
+          },
+          {
+            "entity_id": "ent_24e8e0f5ddfa",
+            "relation_content": "宴席的参与者"
+          }
+        ],
+        "confidence": 0.8
+      },
+      "ground_truth_action": "match_relation",
+      "metadata": {
+        "entry_idx": 17,
+        "prompt_tokens": 2662,
+        "response_length": 305,
+        "parse_ok": true
+      }
+    },
+    {
+      "sample_id": "alignment_18",
+      "user_prompt": "<当前实体>\n- entity_id: NEW_ENTITY\n- name: 恶\n- source_document: 西游记.txt\n- content: 刘伯钦,《西游记》中的人物,以打猎为生,勇敢地与山猫搏斗并战胜它,展示了他的力量和技巧,保护了三藏法师的安全。\n</当前实体>\n\n上下文：\n著你多有冲撞。”三藏道：\n\n    “贫僧是大唐驾下钦差往西天拜佛求经的和尚。适间来到此处遇著些狼虎蛇虫四边围绕不能前进。忽见太保来众兽皆走救了贫僧性命多谢！多谢！”伯钦道：“我在这里住人专倚打些狼虎为生捉些蛇虫过活故此众兽怕我走了。你既是唐朝来的与我都是乡里。此间还是大唐的地界我也是唐朝的百姓我和你同食皇王的水土诚然是一国之人。你休怕跟我来到我舍下歇马明朝我送你上路。”三藏闻言满心欢喜谢了伯钦牵马随行。\n\n    过了山坡又听得呼呼风响。伯钦道：“长老休走坐在此间。风响处是个山猫来了等我拿他家去管待你。”三藏见说又胆战心惊不敢举步。那太保执了钢叉拽开步迎将上去。\n\n    只见一只斑斓虎对面撞见他看见伯钦急回头就步。这太保霹雳一声咄道：“那业畜！那里走！”那虎见赶得急转身轮爪扑来。这太保三股叉举手迎敌唬得个三藏软瘫在草地。这和尚自出娘肚皮那曾见这样凶险的勾当？太保与那虎在那山坡下人虎相持果是一场好斗。但见：怒气纷纷狂风滚滚。怒气纷纷太保冲冠多膂力；狂风滚滚斑彪逞势喷红尘。那一个张牙舞爪这一个转步回身。三股叉擎天幌日千花尾扰雾飞云。这一个当胸乱刺那一个劈面来吞。闪过的再生人道撞着的定见阎君。只听得那斑彪哮吼太保声哏。斑彪哮吼振裂山川惊鸟兽；太保声哏喝开天府现星辰。那一个金睛怒出这一个壮胆生嗔。可爱镇山刘太保堪夸据地兽之君。人虎贪生争胜负些儿有慢丧三魂。他两个斗了有一个时辰只见那虎爪慢腰松被太保举叉平胸刺倒可怜呵钢叉尖穿透心肝霎时间血流满地。揪著耳朵拖上路来好男子！气不连喘面不改色对三藏道：“造化！造化！这只山猫彀长老食用几日。”\n\n    三藏夸赞不尽道：“太保真山神也！”伯钦道：“有何本事敢劳过奖？这个是长老的洪福。去来！赶早儿剥了皮煮些肉管待你也。”他一只手执着叉一只手拖着虎在前引路。三藏牵着马随后而行迤逶行过山坡忽见一座山庄。那门前真个是：参天古树漫路荒藤。万壑风尘冷\n\n<候选实体列表>\n候选1:\n- entity_id: ent_593ac7695590\n- name: 刘伯钦\n- version_count: 1\n- source_document: 西游记.txt\n- lexical_score: 0.0000\n- dense_score: 0.7441\n- content: 刘伯钦,山中的猎户,绰号镇山太保,头戴艾叶花斑豹皮帽,身穿羊绒织锦叵罗衣,腰间束狮蛮带,脚蹬麂皮靴,手持钢叉,腰悬弓箭,英勇善战,救了三藏法师于危难之中。\n候选2:\n- entity_id: ent_edc724569956\n- name: 山中的猎户\n- version_count: 1\n- source_document: 西游记.txt\n- lexical_score: 0.0000\n- dense_score: 0.6499\n- content: 山中的猎户刘伯钦,绰号镇山太保,身手矫健,善于狩猎,手持钢叉,腰悬弓箭,穿着豹皮帽和羊绒织锦叵罗衣,腰间束狮蛮带,脚穿麂皮靴,是山中的英勇猎手。\n候选3:\n- entity_id: ent_63c78535cbf2\n- name: 大王\n- version_count: 1\n- source_document: 西游记.txt\n- lexical_score: 0.0000\n- dense_score: 0.6430\n- content: 大王是三藏法师对刘伯钦的称呼,表达了对他的尊敬和感激之情。刘伯钦,绰号镇山太保,是山中的猎户,因勇敢和武艺高强而闻名,他帮助三藏法师脱险,展现了他的英雄气概。\n候选4:\n- entity_id: ent_3dcc39096f73\n- name: 毒药\n- version_count: 1\n- source_document: 西游记.txt\n- lexical_score: 0.0000\n- dense_score: 0.6305\n- content: 刘伯钦携带的毒药,用于猎杀山中的野兽,具有强烈的毒性,足以震慑山虫和野兽。\n候选5:\n- entity_id: ent_f8ee481dc6ad\n- name: 猪八戒\n- version_count: 1\n- source_document: 西游记.txt\n- lexical_score: 0.0000\n- dense_score: 0.6173\n- content: 唐僧的徒弟之一,以其贪吃懒惰、好色而著称,但亦有着忠诚、勇敢的一面,在取经路上为师兄弟们提供了不少帮助。\n</候选实体列表>\n\n请输出一个 ```json ... ``` 代码块，代码块内部为：\n{\n  \"match_existing_id\": \"若应合并到已有实体则填写 entity_id，否则为空字符串\",\n  \"update_mode\": \"reuse_existing | merge_into_latest | create_new\",\n  \"merged_name\": \"若需要，给出最终名称，否则为空字符串\",\n  \"merged_content\": \"若需要更新/合并，给出最终内容，否则为空字符串\",\n  \"relations_to_create\": [\n    {\"entity_id\": \"候选entity_id\", \"relation_content\": \"与当前实体的自然语言关系\"}\n  ],\n  \"confidence\": 0.0\n}\n\n要求：\n- 只能选一个 match_existing_id\n- 若不合并，但与若干候选存在明确关系，可放入 relations_to_create\n- 必须参考 source_document；跨文档时只有在明确是同一概念实体时才允许合并或融合内容\n- 若信息不足，confidence 降低\n- 只输出一个 ```json ... ``` 代码块",
+      "response": "```json\n{\n  \"match_existing_id\": \"ent_593ac7695590\",\n  \"update_mode\": \"merge_into_latest\",\n  \"merged_name\": \"刘伯钦\",\n  \"merged_content\": \"刘伯钦,山中的猎户,绰号镇山太保,头戴艾叶花斑豹皮帽,身穿羊绒织锦叵罗衣,腰间束狮蛮带,脚蹬麂皮靴,手持钢叉,腰悬弓箭,英勇善战,救了三藏法师于危难之中。\",\n  \"relations_to_create\": [],\n  \"confidence\": 0.9\n}\n```",
+      "ground_truth_parsed": {
+        "match_existing_id": "ent_593ac7695590",
+        "update_mode": "reuse_existing",
+        "merged_name": "",
+        "merged_content": "",
+        "relations_to_create": [],
+        "confidence": 1.0
+      },
+      "ground_truth_action": "match",
+      "metadata": {
+        "entry_idx": 18,
+        "prompt_tokens": 2619,
+        "response_length": 270,
+        "parse_ok": true
+      }
+    },
+    {
+      "sample_id": "alignment_19",
+      "user_prompt": "<当前实体>\n- entity_id: NEW_ENTITY\n- name: 赵彦\n- source_document: 三国演义.txt\n- content: 东汉末年名臣,议郎,因忠谏直言而受到曹操的非罪打压,遭受五毒备至的酷刑,其忠诚和正直深受朝野尊重。\n</当前实体>\n\n上下文：\n行凶忒，割剥元元，残贤害善。\n\n    故九江太守边让，英才俊伟，天下知名；直言正色，\n\n    论不阿谄；身首被枭悬之诛，妻孥受灰灭之咎。自是士\n\n    林愤痛，民怨弥重；一夫奋臂，举州同声。故躬破于徐\n\n    方，地夺于吕布；彷徨东裔，蹈据无所。幕府惟强干弱\n\n    枝之义，且不登叛人之党，故复援旌擐甲，席卷起征，金\n\n    鼓响振，布众奔沮；拯其死亡之患，复其方伯之位：则\n\n    幕府无德于兖土之民，而有大造于操也。\n\n    后会銮驾返旆，群虏寇攻。时冀州方有北鄙之警，匪\n\n    遑离局；故使从事中郎徐勋，就发遣操，使缮修郊庙，翊\n\n    卫幼主。操便放志：专行胁迁，当御省禁；卑侮王室，败\n\n    法乱纪；坐领三台，专制朝政；爵赏由心，弄戮在口；所\n\n    爱光五宗，所恶灭三族；群谈者受显诛，腹议者蒙隐戮；\n\n    百僚钳口，道路以目；尚书记朝会，公卿充员品而已。\n\n    故太尉杨彪，典历二司，享国极位。操因缘眦睚，被\n\n    以非罪；榜楚参并，五毒备至；触情任忒，不顾宪纲。又\n\n    议郎赵彦，忠谏直言，义有可纳，是以圣朝含听，改容\n\n    加饰。操欲迷夺时明，杜绝言路，擅收立杀，不俟报国。\n\n    又梁孝王，先帝母昆，坟陵尊显；桑梓松柏，犹宜肃恭。\n\n    而操帅将吏士，亲临发掘，破棺裸尸，掠取金宝。至令\n\n    圣朝流涕，士民伤怀！操又特置发丘中郎将、摸金校尉，\n\n    所过隳突，无骸不露。身处三公之位，而行桀虏之态，污\n\n    国害民，毒施人鬼！加其细致惨苛，科防互设；罾缴充\n\n    蹊，坑阱塞路；举手挂网罗，动足触机陷：是以兖、豫\n\n    有无聊之民，帝都有吁嗟之怨。历观载籍，无道之臣，贪\n\n    残酷烈，于操为甚！幕府方诘外奸，未及整训；加绪含容，冀可弥缝。而\n\n    操豺狼野心，潜包祸谋，乃欲摧挠栋梁，孤弱\n\n<候选实体列表>\n候选1:\n- entity_id: ent_49ace32da8cd\n- name: 赵彦\n- version_count: 2\n- source_document: 三国演义.txt\n- lexical_score: 1.0000\n- dense_score: 0.8305\n- content: 赵彦,东汉末年议郎,因弹劾曹操被杀,其行为体现了对曹操专横统治的反抗,最终导致其悲剧性的结局。\n</候选实体列表>\n\n请输出一个 ```json ... ``` 代码块，代码块内部为：\n{\n  \"match_existing_id\": \"若应合并到已有实体则填写 entity_id，否则为空字符串\",\n  \"update_mode\": \"reuse_existing | merge_into_latest | create_new\",\n  \"merged_name\": \"若需要，给出最终名称，否则为空字符串\",\n  \"merged_content\": \"若需要更新/合并，给出最终内容，否则为空字符串\",\n  \"relations_to_create\": [\n    {\"entity_id\": \"候选entity_id\", \"relation_content\": \"与当前实体的自然语言关系\"}\n  ],\n  \"confidence\": 0.0\n}\n\n要求：\n- 只能选一个 match_existing_id\n- 若不合并，但与若干候选存在明确关系，可放入 relations_to_create\n- 必须参考 source_document；跨文档时只有在明确是同一概念实体时才允许合并或融合内容\n- 若信息不足，confidence 降低\n- 只输出一个 ```json ... ``` 代码块",
+      "response": "```json\n{\n  \"match_existing_id\": \"ent_49ace32da8cd\",\n  \"update_mode\": \"merge_into_latest\",\n  \"merged_name\": \"赵彦\",\n  \"merged_content\": \"东汉末年名臣,议郎,因忠谏直言而受到曹操的非罪打压,遭受五毒备至的酷刑,其忠诚和正直深受朝野尊重。\",\n  \"relations_to_create\": [],\n  \"confidence\": 1.0\n}\n```",
+      "ground_truth_parsed": {
+        "match_existing_id": "ent_49ace32da8cd",
+        "update_mode": "reuse_existing",
+        "merged_name": "",
+        "merged_content": "",
+        "relations_to_create": [
+          {
+            "entity_id": "ent_49ace32da8cd",
+            "relation_content": "与当前实体是同一人物"
+          }
+        ],
+        "confidence": 1.0
+      },
+      "ground_truth_action": "match_relation",
+      "metadata": {
+        "entry_idx": 19,
+        "prompt_tokens": 2004,
+        "response_length": 241,
+        "parse_ok": true
+      }
+    }
+  ]
+}

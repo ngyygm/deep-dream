@@ -5,6 +5,7 @@ registerPage('episodes', (function () {
   'use strict';
 
   let _container = null;
+  let _detailEntities = [];
   let _episodes = [];
   let _total = 0;
   let _offset = 0;
@@ -114,7 +115,7 @@ registerPage('episodes', (function () {
     // Load-more sentinel for infinite scroll
     if (!_allLoaded) {
       html += `<div id="ep-sentinel" style="padding:1rem;text-align:center;color:var(--text-muted);font-size:0.85rem;">
-        ${_loading ? `${spinnerHtml('spinner-sm')} 加载中...` : ''}
+        ${_loading ? `${spinnerHtml('spinner-sm')} ${t('common.loading')}` : ''}
       </div>`;
     } else {
       html += `<div style="padding:0.75rem;text-align:center;color:var(--text-muted);font-size:0.8125rem;">
@@ -152,6 +153,7 @@ registerPage('episodes', (function () {
       ]);
       const ep = epRes.data || {};
       const entities = entRes.data?.entities || [];
+      _detailEntities = entities;
 
       let body = `<div style="display:flex;flex-direction:column;gap:1rem;">`;
       body += `<div style="display:grid;grid-template-columns:auto 1fr;gap:0.25rem 0.75rem;font-size:0.85rem;">
@@ -163,17 +165,18 @@ registerPage('episodes', (function () {
 
       body += `<div>
         <h4 style="margin-bottom:0.5rem;">${t('common.content')}</h4>
-        <div style="max-height:300px;overflow-y:auto;background:var(--bg-secondary);padding:0.75rem;border-radius:0.5rem;font-size:0.85rem;line-height:1.6;white-space:pre-wrap;word-break:break-word;">${escapeHtml(ep.content || '')}</div>
+        <div class="md-content" style="max-height:300px;overflow-y:auto;background:var(--bg-secondary);padding:0.75rem;border-radius:0.5rem;font-size:0.85rem;">${renderMarkdown(ep.content || '')}</div>
       </div>`;
 
       if (entities.length > 0) {
         body += `<div>
           <h4 style="margin-bottom:0.5rem;">${t('episodes.entities')} (${entities.length})</h4>
           <div class="space-y-1">`;
-        for (const ent of entities) {
-          body += `<div class="flex items-center gap-2 p-2 rounded cursor-pointer" style="background:var(--bg-secondary);font-size:0.85rem;" onclick="window.showEntityDetail(${JSON.stringify(ent).replace(/"/g, '&quot;')})">
+        for (let i = 0; i < entities.length; i++) {
+          const ent = entities[i];
+          body += `<div class="flex items-center gap-2 p-2 rounded cursor-pointer" style="background:var(--bg-secondary);font-size:0.85rem;" data-entity-idx="${i}">
             <i data-lucide="circle-dot" style="width:14px;height:14px;color:var(--primary);flex-shrink:0;"></i>
-            <span class="font-medium">${escapeHtml(ent.name || ent.entity_id || '-')}</span>
+            <span class="font-medium">${escapeHtml(ent.name || ent.family_id || '-')}</span>
             ${ent.content ? `<span class="text-xs" style="color:var(--text-muted);">${escapeHtml(truncate(ent.content, 60))}</span>` : ''}
           </div>`;
         }
@@ -184,19 +187,31 @@ registerPage('episodes', (function () {
 
       body += '</div>';
 
-      showModal({
+      const { overlay } = showModal({
         title: t('episodes.detail'),
         content: body,
         size: 'lg',
       });
-      if (window.lucide) lucide.createIcons();
+      if (window.lucide) lucide.createIcons({ nodes: [overlay] });
+
+      // Entity click delegation
+      overlay.querySelectorAll('[data-entity-idx]').forEach(el => {
+        el.addEventListener('click', () => {
+          const idx = parseInt(el.getAttribute('data-entity-idx'), 10);
+          const entity = _detailEntities[idx];
+          if (entity && window.showEntityDetail) {
+            window.showEntityDetail(entity);
+          }
+        });
+      });
     } catch (err) {
       showToast(err.message, 'error');
     }
   }
 
   async function _deleteEpisode(uuid) {
-    if (!confirm(t('episodes.deleteConfirm'))) return;
+    const ok = await showConfirm({ message: t('episodes.deleteConfirm'), destructive: true });
+    if (!ok) return;
     try {
       await state.api.deleteEpisode(uuid, state.currentGraphId);
       showToast(t('episodes.deleteSuccess'), 'success');

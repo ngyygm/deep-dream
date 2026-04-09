@@ -16,7 +16,7 @@ import threading
 import uuid
 import time
 
-from ..models import MemoryCache, Entity
+from ..models import Episode, Entity
 from ..utils import clean_markdown_code_blocks, clean_separator_tags, wprint
 from .chat_api import ollama_chat, openai_compatible_chat
 from .prompts import (
@@ -154,24 +154,10 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
 
     @staticmethod
     def _normalize_entity_pair(entity1: str, entity2: str) -> tuple:
-        """
-        标准化实体对，将实体对按字母顺序排序，使关系无向化
-        
-        Args:
-            entity1: 第一个实体名称
-            entity2: 第二个实体名称
-        
-        Returns:
-            标准化后的实体对元组（按字母顺序排序）
-        """
-        entity1 = entity1.strip()
-        entity2 = entity2.strip()
-        # 按字母顺序排序，确保(A,B)和(B,A)被视为同一个关系
-        if entity1 <= entity2:
-            return (entity1, entity2)
-        else:
-            return (entity2, entity1)
-    
+        """标准化实体对，委托给 processor.utils.normalize_entity_pair。"""
+        from ..utils import normalize_entity_pair
+        return normalize_entity_pair(entity1, entity2)
+
     @staticmethod
     def _extract_entity_base_name(entity_name: str) -> str:
         """提取实体的基础名称，去掉首个括号后的补充说明。"""
@@ -229,11 +215,11 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
                  relation_content_snippet_length: int = 50,
                  relation_endpoint_jaccard_threshold: float = 0.9,
                  embedding_client: Any = None,
-                 relation_endpoint_embedding_threshold: Optional[float] = 0.72,
+                 relation_endpoint_embedding_threshold: Optional[float] = 0.85,
                  think_mode: bool = False,
                  distill_data_dir: Optional[str] = None, max_tokens: Optional[int] = None,
                  context_window_tokens: Optional[int] = None,
-                 prompt_memory_cache_max_chars: Optional[int] = None,
+                 prompt_episode_max_chars: Optional[int] = None,
                  max_llm_concurrency: Optional[int] = None,
                  alignment_base_url: Optional[str] = None,
                  alignment_api_key: Optional[str] = None,
@@ -251,7 +237,7 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
             api_key / model_name / base_url / content_snippet_length / relation_content_snippet_length / think_mode / max_tokens / context_window_tokens:
                 步骤 1–5（上游滑窗与抽取）使用的配置；max_llm_concurrency 为步骤 1–5 的 LLM 并发上限。
                 context_window_tokens：请求输入 prompt 的 token 预算上限；本地仅预检输入，不再用它压缩输出 max_tokens。
-            prompt_memory_cache_max_chars:
+            prompt_episode_max_chars:
                 进入抽取类 prompt 的记忆缓存最大字符数；超长时自动截断，避免异常缓存拖爆上下文预算。
             alignment_enabled:
                 False 时忽略所有 alignment_*，步骤 6/7 与上游共用同一模型与（未拆分时）统一并发池。
@@ -282,10 +268,10 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
                 "并由 TemporalMemoryGraphProcessor 传入 LLMClient。"
             )
         self.context_window_tokens = max(256, int(context_window_tokens))
-        if prompt_memory_cache_max_chars is None:
-            self.prompt_memory_cache_max_chars = 2000
+        if prompt_episode_max_chars is None:
+            self.prompt_episode_max_chars = 2000
         else:
-            self.prompt_memory_cache_max_chars = max(0, int(prompt_memory_cache_max_chars))
+            self.prompt_episode_max_chars = max(0, int(prompt_episode_max_chars))
 
         self.alignment_base_url = self._strip_opt_str(alignment_base_url)
         if alignment_api_key is None:
@@ -451,12 +437,12 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
                 total += self._estimate_text_token_count(content)
         return total + 16  # 请求包尾部保留固定开销
 
-    def _prepare_memory_cache_for_prompt(self, memory_cache: Optional[MemoryCache]) -> str:
+    def _prepare_episode_for_prompt(self, episode: Optional[Episode]) -> str:
         """将记忆缓存裁剪到 prompt 可接受长度，避免异常膨胀拖爆上下文。"""
         content = ""
-        if memory_cache is not None:
-            content = getattr(memory_cache, "content", "") or ""
-        limit = self.prompt_memory_cache_max_chars
+        if episode is not None:
+            content = getattr(episode, "content", "") or ""
+        limit = self.prompt_episode_max_chars
         if limit is None or limit <= 0 or len(content) <= limit:
             return content
 
@@ -1078,8 +1064,9 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
         json_str = json_str.replace('：', ':')  # 中文冒号 -> 英文冒号
         json_str = json_str.replace('，', ',')  # 中文逗号 -> 英文逗号
         json_str = json_str.replace('；', ';')  # 中文分号 -> 英文分号
-        json_str = json_str.replace('"', '"')  # 中文左引号 -> 英文引号
-        json_str = json_str.replace('"', '"')  # 中文右引号 -> 英文引号
+        # 注意：中文弯引号 \u201c \u201d 经常出现在 JSON 字符串值内部（如 "研制"九章"…"）
+        # 不能全局替换为 ASCII "，否则会破坏 JSON 结构。
+        # 它们是合法 UTF-8 字符，可直接保留。
         # 移除可能的尾随逗号（在数组或对象的最后一个元素后）
         json_str = re.sub(r',(\s*[}\]])', r'\1', json_str)
         return json_str
@@ -1283,7 +1270,8 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
     def _mock_llm_response(self, prompt: str) -> str:
         """模拟LLM响应（用于测试）"""
         prompt_lower = prompt.lower()
-        if "更新记忆缓存" in prompt or "memory_cache" in prompt_lower or "创建初始的记忆缓存" in prompt:
+        if ("更新记忆缓存" in prompt or "memory_cache" in prompt_lower
+                or "创建初始记忆缓存" in prompt or "创建初始的记忆缓存" in prompt):
             return """当前摘要：正在处理文档内容。当前阅读的是文档的开头部分，介绍了故事的基本背景和主要人物。重要细节包括主要人物的基本信息和故事的初始情境。
 
 自我思考：
@@ -1294,6 +1282,37 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
 系统状态：
 - 已处理文本范围：处理到"文档开始"结束
 - 当前文档名：示例文档.txt"""
+        elif "候选实体列表" in prompt and "match_existing_id" in prompt:
+            # 批量候选裁决 — 若当前实体名与某候选名完全一致则匹配复用
+            import re as _re
+            _candidate_block = prompt.split("</当前实体>")[1] if "</当前实体>" in prompt else ""
+            _current_name_match = _re.search(r"<当前实体>.*?name:\s*(\S+)", prompt, _re.DOTALL)
+            _current_name = _current_name_match.group(1) if _current_name_match else ""
+            _candidate_entries = _candidate_block.split("候选")[1:] if _candidate_block else []
+            _match_id = ""
+            _update_mode = "create_new"
+            for _entry in _candidate_entries:
+                _cid_m = _re.search(r"family_id:\s*(\S+)", _entry)
+                _cname_m = _re.search(r"name:\s*(\S+)", _entry)
+                if _cid_m and _cname_m and _cname_m.group(1) == _current_name:
+                    _match_id = _cid_m.group(1)
+                    _update_mode = "reuse_existing"
+                    break
+            return _mock_json_fence({
+                "match_existing_id": _match_id,
+                "update_mode": _update_mode,
+                "merged_name": "",
+                "merged_content": "",
+                "relations_to_create": [],
+                "confidence": 0.9 if _match_id else 0.3,
+            })
+        elif ("判断.*实体.*匹配" in prompt or "judge.*entity.*match" in prompt_lower or
+              "判断新抽取的实体是否与已有实体" in prompt):
+            # 模拟实体匹配响应
+            return _mock_json_fence({
+                "family_id": "ent_001",
+                "need_update": False
+            })
         elif ("抽取实体" in prompt or "抽取所有概念实体" in prompt or "entity" in prompt_lower or
               "从输入文本中抽取所有实体" in prompt or "实体抽取" in prompt or
               "概念实体" in prompt):
@@ -1303,6 +1322,12 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
                     "content": "这是一个示例实体的描述"
                 }
             ])
+        elif "继续生成" in prompt or "继续补充" in prompt:
+            # 多轮抽取的续轮提示 → 返回空数组表示已无更多内容
+            return _mock_json_fence([])
+        elif "输出格式纠错" in prompt or "json 代码块" in prompt_lower:
+            # JSON 解析重试提示 → 返回空数组兜底
+            return _mock_json_fence([])
         elif ("抽取关系" in prompt or "抽取所有概念实体间的关系" in prompt or
               "relation" in prompt_lower or "从输入文本中抽取实体之间的关系" in prompt or
               "关系抽取" in prompt or "实体间的关系" in prompt):
@@ -1320,13 +1345,6 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
                     "content": "示例实体1与示例实体2之间的关系描述"
                 }
             ])
-        elif ("判断.*实体.*匹配" in prompt or "judge.*entity.*match" in prompt_lower or
-              "判断新抽取的实体是否与已有实体" in prompt):
-            # 模拟实体匹配响应
-            return _mock_json_fence({
-                "entity_id": "ent_001",
-                "need_update": False
-            })
         elif ("实体后验增强" in prompt or "enhance.*entity.*content" in prompt_lower or
               "对该实体的content进行更细致的补全和挖掘" in prompt or "增强后的完整实体content" in prompt):
             # 模拟实体后验增强响应（JSON格式）
@@ -1342,7 +1360,7 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
         elif ("判断" in prompt and "更新" in prompt and ("content" in prompt_lower or "内容" in prompt)):
             return _mock_json_fence({"need_update": False})
         elif ("关系" in prompt and "匹配" in prompt) or "relation_match" in prompt_lower:
-            return _mock_json_fence({"relation_id": None})
+            return _mock_json_fence({"family_id": None})
         elif ("生成关系" in prompt or "relation_content" in prompt_lower or "关系的content" in prompt):
             return _mock_json_fence({"content": "这是一个示例关系描述"})
         elif "知识图谱整理" in prompt or "consolidation" in prompt_lower:

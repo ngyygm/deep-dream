@@ -54,11 +54,11 @@ def search_entity(storage, entity_name, threshold=0.3, max_results=10):
     return entities
 
 
-def query_single_entity(storage, entity_id, include_versions=False, include_cache=False, max_relations=50):
+def query_single_entity(storage, family_id, include_versions=False, include_cache=False, max_relations=50):
     """深度查询单个实体"""
 
     # 获取实体基本信息
-    entity = storage.get_entity_by_id(entity_id)
+    entity = storage.get_entity_by_family_id(family_id)
     if not entity:
         return None
 
@@ -70,17 +70,17 @@ def query_single_entity(storage, entity_id, include_versions=False, include_cach
     }
 
     # 获取所有关系
-    relations = storage.get_entity_relations_by_entity_id(entity_id, limit=max_relations)
+    relations = storage.get_entity_relations_by_family_id(family_id, limit=max_relations)
     result['relations'] = relations
 
     # 获取历史版本
     if include_versions:
-        versions = storage.get_entity_versions(entity_id)
+        versions = storage.get_entity_versions(family_id)
         result['versions'] = versions
 
     # 获取相关记忆缓存
     if include_cache:
-        cache_ids = set(rel.memory_cache_id for rel in relations if rel.memory_cache_id)
+        cache_ids = set(rel.episode_id for rel in relations if rel.episode_id)
         result['caches'] = cache_ids
 
     return result
@@ -92,12 +92,12 @@ def print_basic_info(entity):
     print("【基本信息】")
     print("-" * 80)
     print(f"名称: {entity.name}")
-    print(f"Entity ID: {entity.entity_id}")
+    print(f"Family ID: {entity.family_id}")
     print(f"Absolute ID: {entity.absolute_id}")
     print(f"描述: {entity.content}")
     print(f"时间: {entity.event_time}")
     print(f"文档: {entity.source_document}")
-    print(f"缓存ID: {entity.memory_cache_id}")
+    print(f"缓存ID: {entity.episode_id}")
 
 
 def print_relations(relations, storage, show_all=False):
@@ -129,7 +129,7 @@ def print_relations(relations, storage, show_all=False):
         print(f"{i}. {name}")
         print(f"   关系: {rel.content[:100]}...")
         print(f"   时间: {rel.event_time}")
-        print(f"   实体ID: {other_entity.entity_id}")
+        print(f"   实体ID: {other_entity.family_id}")
         print()
 
         if not show_all and i >= 10:
@@ -164,7 +164,7 @@ def print_memory_caches(cache_ids, storage, max_show=3):
     print("-" * 80)
 
     for i, cache_id in enumerate(list(cache_ids)[:max_show], 1):
-        cache = storage.load_memory_cache(cache_id)
+        cache = storage.load_episode(cache_id)
         if cache:
             print(f"\n缓存 {i}: {cache_id}")
             print(f"时间: {cache.event_time}")
@@ -185,7 +185,7 @@ def print_summary(result, storage):
     caches = result['caches']
 
     print(f"实体: {entity.name}")
-    print(f"Entity ID: {entity.entity_id}")
+    print(f"Family ID: {entity.family_id}")
     print(f"关系数量: {len(relations)}")
     print(f"版本数量: {len(versions)}")
     print(f"相关缓存: {len(caches)}")
@@ -249,7 +249,7 @@ def main():
 
     print(f"\n找到 {len(entities)} 个匹配实体，使用第一个")
     entity = entities[0]
-    print(f"Entity ID: {entity.entity_id}")
+    print(f"Family ID: {entity.family_id}")
     print(f"名称: {entity.name}")
 
     # 深度查询
@@ -258,7 +258,7 @@ def main():
 
     result = query_single_entity(
         storage,
-        entity.entity_id,
+        entity.family_id,
         include_versions=args.include_versions,
         include_cache=args.include_cache,
         max_relations=args.max_relations

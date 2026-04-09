@@ -4,14 +4,20 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List, Optional
 
-from ..models import MemoryCache
+from ..models import Episode
 from ..utils import wprint
 from .errors import LLMContextBudgetExceeded
 
 # 多轮补充时仅追加本条 user，依赖首轮 system/user 与历史 assistant 中的任务与格式约定
-_MULTI_ROUND_CONTINUE_USER = "继续生成"
+_MULTI_ROUND_CONTINUE_USER = (
+    "继续从文本中抽取概念实体。注意：\n"
+    "1. 优先补充上一轮遗漏的：抽象概念、事件/过程、时间概念、描述性概念、文本锚点（章节标题等）\n"
+    "2. 检查是否遗漏了文本中提到但尚未编目的关键概念\n"
+    "3. 每个实体 content 应包含该概念在文中的具体行为、属性或角色"
+)
 from .prompts import (
     EXTRACT_ENTITIES_AND_RELATIONS_SYSTEM_PROMPT,
+    EXTRACT_ENTITIES_RELATIONS_STRICT_SYSTEM_PROMPT,
     EXTRACT_ENTITIES_SINGLE_PASS_SYSTEM_PROMPT,
     EXTRACT_ENTITIES_BY_NAMES_SYSTEM_PROMPT,
     ENHANCE_ENTITY_CONTENT_SYSTEM_PROMPT,
@@ -96,8 +102,10 @@ class _EntityExtractionMixin:
                 )
         return cleaned
 
-    def extract_entities_and_relations(self, memory_cache: MemoryCache, input_text: str,
-                                        rounds: int = 1, verbose: bool = False) -> tuple:
+    def extract_entities_and_relations(self, episode: Episode, input_text: str,
+                                        rounds: int = 1, verbose: bool = False,
+                                        strict: bool = True,
+                                        on_round_done=None) -> tuple:
         """
         合并抽取概念实体和实体间关系，支持多轮次补充抽取。
 
@@ -105,20 +113,22 @@ class _EntityExtractionMixin:
         再追加一条 user 消息要求继续补充，天然携带已生成内容的完整上下文。
 
         Args:
-            memory_cache: 记忆缓存
+            episode: 记忆缓存
             input_text: 输入文本
             rounds: 抽取轮次（默认 1）；>1 时每轮要求 LLM 继续补充
             verbose: 是否输出详细信息
+            strict: 是否使用严格版 prompt（默认 True，禁止抽取抽象概念/类别词）
+            on_round_done: 每轮完成后的回调 fn(round_idx, total_rounds, entity_count, rel_count)
 
         Returns:
             (entities, relations) — entities: List[Dict{name, content}],
                                     relations: List[Dict{entity1_name, entity2_name, content}]
         """
-        system_prompt = EXTRACT_ENTITIES_AND_RELATIONS_SYSTEM_PROMPT
-        prompt_memory_cache = self._prepare_memory_cache_for_prompt(memory_cache)
+        system_prompt = EXTRACT_ENTITIES_RELATIONS_STRICT_SYSTEM_PROMPT if strict else EXTRACT_ENTITIES_AND_RELATIONS_SYSTEM_PROMPT
+        prompt_episode = self._prepare_episode_for_prompt(episode)
 
         first_prompt = f"""<记忆缓存>
-{prompt_memory_cache}
+{prompt_episode}
 </记忆缓存>
 
 <输入文本>
@@ -211,6 +221,9 @@ class _EntityExtractionMixin:
                     f"【合并】轮{r}/{t}｜完成｜新{new_entity_count}实体 {new_rel_count}关系 "
                     f"累{len(all_entities)}实体 {len(all_relations)}关系"
                 )
+
+            if on_round_done:
+                on_round_done(round_idx + 1, rounds, len(all_entities), len(all_relations))
 
             # 本轮无新增，提前退出
             if new_entity_count == 0 and new_rel_count == 0:
@@ -319,7 +332,7 @@ class _EntityExtractionMixin:
                 return vn
         return None
 
-    def extract_entities(self, memory_cache: MemoryCache, input_text: str,
+    def extract_entities(self, episode: Episode, input_text: str,
                          rounds: int = 1, verbose: bool = False,
                          on_round_done=None,
                          compress_multi_round: bool = False) -> List[Dict[str, str]]:
@@ -327,7 +340,7 @@ class _EntityExtractionMixin:
         抽取实体，支持多轮次补充抽取（利用 LLM 对话历史）。
 
         Args:
-            memory_cache: 当前的记忆缓存
+            episode: 当前的记忆缓存
             input_text: 当前窗口的输入文本
             rounds: 抽取轮次（默认 1）；>1 时利用对话历史要求 LLM 继续补充
             verbose: 是否输出详细信息
@@ -338,10 +351,10 @@ class _EntityExtractionMixin:
             抽取的实体列表，每个实体包含 name 和 content
         """
         system_prompt = EXTRACT_ENTITIES_SINGLE_PASS_SYSTEM_PROMPT
-        prompt_memory_cache = self._prepare_memory_cache_for_prompt(memory_cache)
+        prompt_episode = self._prepare_episode_for_prompt(episode)
 
         first_prompt = f"""<记忆缓存>
-{prompt_memory_cache}
+{prompt_episode}
 </记忆缓存>
 
 <输入文本>
@@ -458,20 +471,20 @@ class _EntityExtractionMixin:
             wprint(f"响应内容: {response[:500]}...")
             return []
 
-    def _extract_entities_single_pass(self, memory_cache: MemoryCache, input_text: str,
+    def _extract_entities_single_pass(self, episode: Episode, input_text: str,
                                  existing_entities: Optional[List[Dict[str, str]]] = None,
                                  verbose: bool = False) -> List[Dict[str, str]]:
         """
         单次实体抽取
 
         Args:
-            memory_cache: 记忆缓存
+            episode: 记忆缓存
             input_text: 输入文本
             existing_entities: 已抽取的实体列表（用于查漏补缺，可选）
             verbose: 是否输出详细信息
         """
         system_prompt = EXTRACT_ENTITIES_SINGLE_PASS_SYSTEM_PROMPT
-        prompt_memory_cache = self._prepare_memory_cache_for_prompt(memory_cache)
+        prompt_episode = self._prepare_episode_for_prompt(episode)
 
         # 简化已有实体提示
         existing_entities_str = ""
@@ -490,7 +503,7 @@ class _EntityExtractionMixin:
 - 只抽取新发现的实体"""
 
         prompt = f"""<记忆缓存>
-{prompt_memory_cache}
+{prompt_episode}
 </记忆缓存>
 
 <输入文本>
@@ -523,14 +536,14 @@ class _EntityExtractionMixin:
 
         return cleaned_entities
 
-    def extract_entities_by_names(self, memory_cache: MemoryCache, input_text: str,
+    def extract_entities_by_names(self, episode: Episode, input_text: str,
                                   entity_names: List[str],
                                   verbose: bool = False) -> List[Dict[str, str]]:
         """
         抽取指定名称的实体
 
         Args:
-            memory_cache: 记忆缓存
+            episode: 记忆缓存
             input_text: 输入文本
             entity_names: 要抽取的实体名称列表
             verbose: 是否输出详细信息
@@ -542,12 +555,12 @@ class _EntityExtractionMixin:
             return []
 
         system_prompt = EXTRACT_ENTITIES_BY_NAMES_SYSTEM_PROMPT
-        prompt_memory_cache = self._prepare_memory_cache_for_prompt(memory_cache)
+        prompt_episode = self._prepare_episode_for_prompt(episode)
 
         entity_names_str = "\n".join([f"- {name}" for name in entity_names])
 
         prompt = f"""<记忆缓存>
-{prompt_memory_cache}
+{prompt_episode}
 </记忆缓存>
 
 <输入文本>
@@ -588,13 +601,13 @@ class _EntityExtractionMixin:
 
         return cleaned_entities
 
-    def enhance_entity_content(self, memory_cache: MemoryCache, input_text: str,
+    def enhance_entity_content(self, episode: Episode, input_text: str,
                               entity: Dict[str, str]) -> str:
         """
         实体后验增强：结合缓存记忆和当前text对实体的content进行更细致的补全挖掘
 
         Args:
-            memory_cache: 当前的记忆缓存
+            episode: 当前的记忆缓存
             input_text: 当前窗口的输入文本
             entity: 实体字典，包含name和content
 
@@ -602,10 +615,10 @@ class _EntityExtractionMixin:
             增强后的实体content
         """
         system_prompt = ENHANCE_ENTITY_CONTENT_SYSTEM_PROMPT
-        prompt_memory_cache = self._prepare_memory_cache_for_prompt(memory_cache)
+        prompt_episode = self._prepare_episode_for_prompt(episode)
 
         prompt = f"""<记忆缓存>
-{prompt_memory_cache}
+{prompt_episode}
 </记忆缓存>
 
 <输入文本>

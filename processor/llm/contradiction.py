@@ -37,13 +37,13 @@ class ContradictionDetectionMixin:
 
     async def detect_contradictions(
         self,
-        entity_id: str,
+        family_id: str,
         versions: List[Entity],
     ) -> List[dict]:
         """检测同一实体不同版本之间的矛盾。
 
         Args:
-            entity_id: 实体 ID
+            family_id: 实体 ID
             versions: 实体的多个版本列表
 
         Returns:
@@ -58,7 +58,7 @@ class ContradictionDetectionMixin:
         )
 
         prompt = f"""<实体 ID>
-{entity_id}
+{family_id}
 </实体 ID>
 
 <实体版本>

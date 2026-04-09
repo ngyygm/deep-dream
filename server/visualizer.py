@@ -80,9 +80,9 @@ class GraphVisualizer:
         """)
 
         # 添加实体节点
-        entity_id_to_name = {}
+        family_id_to_name = {}
         for entity in entities:
-            entity_id_to_name[entity.entity_id] = entity.name
+            family_id_to_name[entity.family_id] = entity.name
             # 创建节点标签（显示名称和简短描述）
             label = entity.name
             if show_labels and entity.content:
@@ -93,7 +93,7 @@ class GraphVisualizer:
                 title = entity.name
 
             net.add_node(
-                entity.entity_id,
+                entity.family_id,
                 label=label,
                 title=title,
                 color="#4A90E2",
@@ -108,11 +108,11 @@ class GraphVisualizer:
             entity2 = self.storage.get_entity_by_absolute_id(relation.entity2_absolute_id)
 
             if entity1 and entity2:
-                entity1_id = entity1.entity_id
-                entity2_id = entity2.entity_id
+                entity1_id = entity1.family_id
+                entity2_id = entity2.family_id
 
                 # 确保两个实体都存在
-                if entity1_id in entity_id_to_name and entity2_id in entity_id_to_name:
+                if entity1_id in family_id_to_name and entity2_id in family_id_to_name:
                     # 创建边的标签（显示关系内容的前30个字符）
                     edge_label = ""
                     if show_labels and relation.content:
@@ -173,10 +173,10 @@ class GraphVisualizer:
         G = nx.Graph()
 
         # 添加节点
-        entity_id_to_name = {}
+        family_id_to_name = {}
         for entity in entities:
-            entity_id_to_name[entity.entity_id] = entity.name
-            G.add_node(entity.entity_id, name=entity.name, content=entity.content)
+            family_id_to_name[entity.family_id] = entity.name
+            G.add_node(entity.family_id, name=entity.name, content=entity.content)
 
         # 添加边（通过绝对ID获取实体，无向关系）
         for relation in relations:
@@ -185,10 +185,10 @@ class GraphVisualizer:
             entity2 = self.storage.get_entity_by_absolute_id(relation.entity2_absolute_id)
 
             if entity1 and entity2:
-                entity1_id = entity1.entity_id
-                entity2_id = entity2.entity_id
+                entity1_id = entity1.family_id
+                entity2_id = entity2.family_id
 
-                if entity1_id in entity_id_to_name and entity2_id in entity_id_to_name:
+                if entity1_id in family_id_to_name and entity2_id in family_id_to_name:
                     G.add_edge(entity1_id, entity2_id, content=relation.content)
 
         # 选择布局算法
@@ -226,7 +226,7 @@ class GraphVisualizer:
         )
 
         # 绘制标签
-        labels = {node_id: entity_id_to_name[node_id] for node_id in G.nodes()}
+        labels = {node_id: family_id_to_name[node_id] for node_id in G.nodes()}
         nx.draw_networkx_labels(
             G, pos,
             labels=labels,
@@ -260,26 +260,26 @@ class GraphVisualizer:
         data = {
             "entities": [
                 {
-                    "entity_id": e.entity_id,
+                    "family_id": e.family_id,
                     "name": e.name,
                     "content": e.content,
                     "event_time": e.event_time.isoformat() if e.event_time else None,
                     "processed_time": e.processed_time.isoformat() if e.processed_time else None,
-                    "memory_cache_id": e.memory_cache_id
+                    "episode_id": e.episode_id
                 }
                 for e in entities
             ],
             "relations": [
                 {
-                    "relation_id": r.relation_id,
+                    "family_id": r.family_id,
                     "entity1_absolute_id": r.entity1_absolute_id,
                     "entity2_absolute_id": r.entity2_absolute_id,
-                    "entity1_id": (_e1 := self.storage.get_entity_by_absolute_id(r.entity1_absolute_id)).entity_id if _e1 else None,
-                    "entity2_id": (_e2 := self.storage.get_entity_by_absolute_id(r.entity2_absolute_id)).entity_id if _e2 else None,
+                    "entity1_family_id": (_e1 := self.storage.get_entity_by_absolute_id(r.entity1_absolute_id)).family_id if _e1 else None,
+                    "entity2_family_id": (_e2 := self.storage.get_entity_by_absolute_id(r.entity2_absolute_id)).family_id if _e2 else None,
                     "content": r.content,
                     "event_time": r.event_time.isoformat() if r.event_time else None,
                     "processed_time": r.processed_time.isoformat() if r.processed_time else None,
-                    "memory_cache_id": r.memory_cache_id
+                    "episode_id": r.episode_id
                 }
                 for r in relations
             ],
@@ -309,13 +309,13 @@ class GraphVisualizer:
         if entities:
             print("\n实体列表:")
             for i, entity in enumerate(entities[:10], 1):  # 只显示前10个
-                print(f"  {i}. {entity.name} (ID: {entity.entity_id})")
+                print(f"  {i}. {entity.name} (ID: {entity.family_id})")
             if len(entities) > 10:
                 print(f"  ... 还有 {len(entities) - 10} 个实体")
 
         if relations:
             print("\n关系列表:")
-            entity_id_to_name = {e.entity_id: e.name for e in entities}
+            family_id_to_name = {e.family_id: e.name for e in entities}
             for i, relation in enumerate(relations[:10], 1):  # 只显示前10个
                 # 通过绝对ID获取实体
                 entity1 = self.storage.get_entity_by_absolute_id(relation.entity1_absolute_id)

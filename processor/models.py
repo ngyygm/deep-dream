@@ -7,8 +7,12 @@ from dataclasses import dataclass, field
 
 
 @dataclass
-class MemoryCache:
-    """记忆缓存 - 文档化设计"""
+class Episode:
+    """Episode — 知识图谱的一等节点
+
+    每次写入（remember / dream）产生一个 Episode，包含当时的记忆上下文和原始文本。
+    抽取出的实体/关系通过 MENTIONS 边连接回 Episode，实现事实溯源。
+    """
     absolute_id: str
     content: str  # Markdown格式的完整描述
     event_time: datetime  # 事件发生时间
@@ -21,12 +25,12 @@ class MemoryCache:
 class Entity:
     """实体 - 带版本链"""
     absolute_id: str  # 主键，版本唯一标识符（DB 列名 id）
-    entity_id: str  # 实体的逻辑ID，同一实体的不同版本具有相同的entity_id
+    family_id: str  # 实体的家族ID，同一实体的不同版本具有相同的family_id
     name: str  # 实体名称
     content: str  # 实体的自然语言描述
     event_time: datetime  # 事件发生时间
     processed_time: datetime  # 系统实际处理时间
-    memory_cache_id: str  # 记录当前更新是基于什么记忆环境下的判断
+    episode_id: str  # 记录当前更新是基于什么记忆环境下的判断
     source_document: str  # 来源文档名称
     embedding: Optional[bytes] = None  # Embedding向量（BLOB格式，可选）
     valid_at: Optional[datetime] = None  # 事实生效时间
@@ -35,6 +39,7 @@ class Entity:
     attributes: Optional[str] = None  # JSON 字符串，结构化属性字典
     confidence: Optional[float] = None  # 置信度评分 (0.0-1.0)
     content_format: str = "plain"  # "plain" (旧) | "markdown" (新)
+    community_id: Optional[str] = None  # 社区检测分配的社区ID
 
 
 @dataclass
@@ -46,13 +51,13 @@ class Relation:
     存储时，实体对按字母顺序排序（entity1 < entity2），确保 (A,B) 和 (B,A) 被视为同一个关系。
     """
     absolute_id: str  # 主键，版本唯一标识符（DB 列名 id）
-    relation_id: str  # 关系的逻辑ID，同一关系的不同版本具有相同的relation_id
-    entity1_absolute_id: str  # 第一个实体的绝对ID（版本唯一ID，可以通过此ID找到entity_id），按字母顺序排序
-    entity2_absolute_id: str  # 第二个实体的绝对ID（版本唯一ID，可以通过此ID找到entity_id），按字母顺序排序
+    family_id: str  # 关系的家族ID，同一关系的不同版本具有相同的family_id
+    entity1_absolute_id: str  # 第一个实体的绝对ID（版本唯一ID，可以通过此ID找到family_id），按字母顺序排序
+    entity2_absolute_id: str  # 第二个实体的绝对ID（版本唯一ID，可以通过此ID找到family_id），按字母顺序排序
     content: str  # 关系的自然语言描述
     event_time: datetime  # 事件发生时间
     processed_time: datetime  # 系统实际处理时间
-    memory_cache_id: str  # 记录当前更新是基于什么记忆环境下的判断
+    episode_id: str  # 记录当前更新是基于什么记忆环境下的判断
     source_document: str  # 来源文档名称
     embedding: Optional[bytes] = None  # Embedding向量（BLOB格式，可选）
     valid_at: Optional[datetime] = None  # 事实生效时间
@@ -70,7 +75,7 @@ class ContentPatch:
     uuid: str
     target_type: str  # "Entity" | "Relation"
     target_absolute_id: str  # 哪个版本节点
-    target_entity_id: str  # 逻辑 ID
+    target_family_id: str  # 逻辑 ID
     section_key: str  # 哪个 section
     change_type: str  # "added" | "modified" | "unchanged" | "removed" | "restructured"
     old_hash: str  # 旧 section 内容 hash

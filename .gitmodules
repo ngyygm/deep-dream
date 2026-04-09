@@ -1,4 +1,0 @@
-[submodule "vendor/dream-code"]
-	path = vendor/dream-code
-	url = https://github.com/lingooker/claude-code-rev.git
-	branch = main

@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from ..models import MemoryCache
+from ..models import Episode
 from ..utils import clean_markdown_code_blocks
 from .prompts import (
     UPDATE_MEMORY_CACHE_SYSTEM_PROMPT,
@@ -57,11 +57,11 @@ def _append_system_status(content: str, doc_name: str,
 class _MemoryOpsMixin:
     """记忆缓存相关的 LLM 操作（mixin，通过 LLMClient 多继承使用）。"""
 
-    def update_memory_cache(self, current_cache: Optional[MemoryCache], input_text: str,
+    def update_episode(self, current_cache: Optional[Episode], input_text: str,
                            document_name: str = "", text_start_pos: int = 0,
                            text_end_pos: int = 0, total_text_length: int = 0,
                            event_time: Optional[datetime] = None,
-                           window_index: int = 0, total_windows: int = 0) -> MemoryCache:
+                           window_index: int = 0, total_windows: int = 0) -> Episode:
         """
         任务1：更新记忆缓存
 
@@ -124,7 +124,7 @@ class _MemoryOpsMixin:
         base_time = event_time if event_time is not None else datetime.now()
         new_cache_id = f"cache_{base_time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
 
-        return MemoryCache(
+        return Episode(
             absolute_id=new_cache_id,
             content=new_content,
             event_time=base_time,
@@ -134,7 +134,7 @@ class _MemoryOpsMixin:
 
     def create_document_overall_memory(self, text_preview: str, document_name: str = "",
                                        event_time: Optional[datetime] = None,
-                                       previous_overall_content: Optional[str] = None) -> MemoryCache:
+                                       previous_overall_content: Optional[str] = None) -> Episode:
         """
         生成文档整体记忆：描述「即将处理的内容」是什么，供下一文档作为初始背景。
         与窗口链分离，生成后即可作为 B 的初始记忆，无需等 A 的最后一窗。
@@ -146,7 +146,7 @@ class _MemoryOpsMixin:
             previous_overall_content: 上一文档的整体记忆（Markdown），可选，用于衔接
 
         Returns:
-            MemoryCache，activity_type="文档整体"
+            Episode，activity_type="文档整体"
         """
         system_prompt = CREATE_DOCUMENT_OVERALL_MEMORY_SYSTEM_PROMPT
         if previous_overall_content:
@@ -177,7 +177,7 @@ class _MemoryOpsMixin:
         base_time = event_time if event_time is not None else datetime.now()
         new_cache_id = f"overall_{base_time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
         source_document_only = document_name.split("/")[-1] if document_name else ""
-        return MemoryCache(
+        return Episode(
             absolute_id=new_cache_id,
             content=new_content,
             event_time=base_time,
@@ -207,7 +207,7 @@ class _MemoryOpsMixin:
         if merge_results:
             operations_str += "## 实体合并操作\n\n"
             for i, merge in enumerate(merge_results, 1):
-                operations_str += f"{i}. 将 {merge.get('merged_source_ids', [])} 合并到 {merge.get('target_entity_id', '')}\n"
+                operations_str += f"{i}. 将 {merge.get('merged_source_ids', [])} 合并到 {merge.get('target_family_id', '')}\n"
                 operations_str += f"   - 更新的实体记录数: {merge.get('entities_updated', 0)}\n"
                 if merge.get('reason'):
                     operations_str += f"   - 原因: {merge.get('reason', '')}\n"
@@ -240,16 +240,16 @@ class _MemoryOpsMixin:
 
         return response
 
-    def generate_relation_memory_cache(self, relations: list,
+    def generate_relation_episode(self, relations: list,
                                        entities_info: list,
-                                       entity_memory_caches: dict) -> str:
+                                       entity_episodes: dict) -> str:
         """
         根据关系和实体生成记忆缓存内容
 
         Args:
-            relations: 关系列表，每个包含 entity1_id, entity2_id, entity1_name, entity2_name, content, relation_id, is_new, is_updated
-            entities_info: 实体信息列表，每个包含 entity_id, name, content
-            entity_memory_caches: 实体ID到其记忆缓存内容的映射
+            relations: 关系列表，每个包含 entity1_id, entity2_id, entity1_name, entity2_name, content, family_id, is_new, is_updated
+            entities_info: 实体信息列表，每个包含 family_id, name, content
+            entity_episodes: 实体ID到其记忆缓存内容的映射
 
         Returns:
             生成的记忆缓存内容（Markdown格式）
@@ -259,15 +259,15 @@ class _MemoryOpsMixin:
         # 构建实体信息
         entities_str = ""
         for entity_info in entities_info:
-            entity_id = entity_info.get("entity_id", "")
+            family_id = entity_info.get("family_id", "")
             name = entity_info.get("name", "")
             content = entity_info.get("content", "")
-            memory_cache_content = entity_memory_caches.get(entity_id, "")
+            episode_content = entity_episodes.get(family_id, "")
 
             entities_str += f"\n### 实体: {name}\n"
             entities_str += f"- 实体描述: {content}\n"
-            if memory_cache_content:
-                entities_str += f"- 相关记忆缓存: {memory_cache_content[:200]}...\n"
+            if episode_content:
+                entities_str += f"- 相关记忆缓存: {episode_content[:200]}...\n"
 
         # 构建关系信息
         relations_str = ""

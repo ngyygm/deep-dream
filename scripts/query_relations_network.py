@@ -40,24 +40,24 @@ except ImportError:
 
 
 
-def build_network(storage, entity_id, max_depth=2):
+def build_network(storage, family_id, max_depth=2):
     """构建关系网络（BFS）"""
     network = {
-        'nodes': {},  # entity_id -> {name, depth}
+        'nodes': {},  # family_id -> {name, depth}
         'edges': [],  # list of (from_id, to_id, relation)
-        'levels': defaultdict(set)  # depth -> set of entity_ids
+        'levels': defaultdict(set)  # depth -> set of family_ids
     }
 
     # 获取起始实体
-    start_entity = storage.get_entity_by_id(entity_id)
+    start_entity = storage.get_entity_by_family_id(family_id)
     if not start_entity:
         return None
 
-    network['nodes'][start_entity.entity_id] = {
+    network['nodes'][start_entity.family_id] = {
         'name': start_entity.name,
         'depth': 0
     }
-    network['levels'][0].add(start_entity.entity_id)
+    network['levels'][0].add(start_entity.family_id)
 
     # BFS扩展
     visited = set([start_entity.absolute_id])
@@ -72,8 +72,8 @@ def build_network(storage, entity_id, max_depth=2):
         if not current_entity:
             continue
 
-        relations = storage.get_entity_relations_by_entity_id(
-            current_entity.entity_id,  # 使用entity_id
+        relations = storage.get_entity_relations_by_family_id(
+            current_entity.family_id,  # 使用family_id
             limit=50
         )
 
@@ -86,19 +86,19 @@ def build_network(storage, entity_id, max_depth=2):
                 continue
 
             # 添加节点
-            if other_entity.entity_id not in visited:
-                visited.add(other_entity.entity_id)
-                network['nodes'][other_entity.entity_id] = {
+            if other_entity.family_id not in visited:
+                visited.add(other_entity.family_id)
+                network['nodes'][other_entity.family_id] = {
                     'name': other_entity.name,
                     'depth': depth + 1
                 }
-                network['levels'][depth + 1].add(other_entity.entity_id)
-                queue.append((other_entity.entity_id, depth + 1))
+                network['levels'][depth + 1].add(other_entity.family_id)
+                queue.append((other_entity.family_id, depth + 1))
 
             # 添加边
             network['edges'].append({
                 'from': current_id,
-                'to': other_entity.entity_id,
+                'to': other_entity.family_id,
                 'relation': rel.content[:100],
                 'time': rel.event_time.isoformat()
             })
@@ -128,15 +128,15 @@ def print_network_text(network):
 
     # 按层级打印
     for depth in sorted(network['levels'].keys()):
-        entity_ids = network['levels'][depth]
-        print(f"\n层级 {depth} ({len(entity_ids)} 个实体):")
+        family_ids = network['levels'][depth]
+        print(f"\n层级 {depth} ({len(family_ids)} 个实体):")
 
-        for entity_id in list(entity_ids)[:20]:
-            node = network['nodes'][entity_id]
-            print(f"  - {node['name']} (ID: {entity_id})")
+        for family_id in list(family_ids)[:20]:
+            node = network['nodes'][family_id]
+            print(f"  - {node['name']} (ID: {family_id})")
 
-        if len(entity_ids) > 20:
-            print(f"  ... (还有 {len(entity_ids) - 20} 个)")
+        if len(family_ids) > 20:
+            print(f"  ... (还有 {len(family_ids) - 20} 个)")
 
     # 关键节点
     print("\n" + "=" * 80)
@@ -144,8 +144,8 @@ def print_network_text(network):
     print("-" * 80)
 
     key_nodes = find_key_nodes(network)
-    for i, (entity_id, count) in enumerate(key_nodes, 1):
-        node = network['nodes'].get(entity_id)
+    for i, (family_id, count) in enumerate(key_nodes, 1):
+        node = network['nodes'].get(family_id)
         if node:
             print(f"{i}. {node['name']} - {count} 个连接")
 
@@ -164,11 +164,11 @@ def export_network_graphviz(network, output_file):
     dot.append("  node [shape=box];")
 
     # 添加节点
-    for entity_id, node in network['nodes'].items():
+    for family_id, node in network['nodes'].items():
         label = node['name'].replace('"', '\\"')
         depth = node['depth']
         color = ["lightblue", "lightgreen", "lightyellow"][min(depth, 2)]
-        dot.append(f'  "{entity_id}" [label="{label}", fillcolor="{color}", style="filled"];')
+        dot.append(f'  "{family_id}" [label="{label}", fillcolor="{color}", style="filled"];')
 
     # 添加边
     for edge in network['edges'][:50]:  # 限制边的数量
@@ -188,13 +188,13 @@ def export_network_markdown(network, output_file):
     lines = []
     lines.append("# 关系网络\n")
     lines.append("## 节点列表\n")
-    lines.append("| 层级 | 实体名称 | Entity ID |\n")
+    lines.append("| 层级 | 实体名称 | Family ID |\n")
     lines.append("|------|----------|------------|\n")
 
     for depth in sorted(network['levels'].keys()):
-        for entity_id in network['levels'][depth]:
-            node = network['nodes'][entity_id]
-            lines.append(f"| {depth} | {node['name']} | {entity_id} |\n")
+        for family_id in network['levels'][depth]:
+            node = network['nodes'][family_id]
+            lines.append(f"| {depth} | {node['name']} | {family_id} |\n")
 
     lines.append("\n## 关系列表\n")
     lines.append("| 从 | 到 | 关系 |\n")
@@ -251,13 +251,13 @@ def main():
         return
 
     entity = entities[0]
-    print(f"\n找到实体: {entity.name} (ID: {entity.entity_id})")
+    print(f"\n找到实体: {entity.name} (ID: {entity.family_id})")
 
     # 构建网络
     print(f"\n【步骤2】构建关系网络（深度: {args.depth}）")
     print("-" * 80)
 
-    network = build_network(storage, entity.entity_id, max_depth=args.depth)
+    network = build_network(storage, entity.family_id, max_depth=args.depth)
 
     if not network or not network['nodes']:
         print("\n构建网络失败")
@@ -275,15 +275,15 @@ def main():
         print_network_text(network)
 
     elif args.format == 'json':
-        output_file = args.output or f"network_{entity.entity_id}.json"
+        output_file = args.output or f"network_{entity.family_id}.json"
         export_network_json(network, output_file)
 
     elif args.format == 'graphviz':
-        output_file = args.output or f"network_{entity.entity_id}.dot"
+        output_file = args.output or f"network_{entity.family_id}.dot"
         export_network_graphviz(network, output_file)
 
     elif args.format == 'markdown':
-        output_file = args.output or f"network_{entity.entity_id}.md"
+        output_file = args.output or f"network_{entity.family_id}.md"
         export_network_markdown(network, output_file)
 
     print("\n" + "=" * 80)

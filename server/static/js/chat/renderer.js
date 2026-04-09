@@ -8,9 +8,19 @@ const ChatRenderer = {
   renderUserMessage(text) {
     const wrap = document.createElement('div');
     wrap.className = 'chat-message chat-message-user';
-    wrap.innerHTML =
-      '<div class="chat-msg-sender">' + escapeHtml(t('chat.user') || 'You') + '</div>' +
-      '<div class="chat-msg-bubble">' + escapeHtml(text) + '</div>';
+    var sender = document.createElement('div');
+    sender.className = 'chat-msg-sender';
+    sender.textContent = t('chat.user') || 'You';
+    var bubble = document.createElement('div');
+    bubble.className = 'chat-msg-bubble';
+    // Render markdown for user messages too (preserves line breaks, lists, etc.)
+    if (text && typeof marked !== 'undefined') {
+      bubble.innerHTML = marked.parse(text);
+    } else {
+      bubble.textContent = text;
+    }
+    wrap.appendChild(sender);
+    wrap.appendChild(bubble);
     return wrap;
   },
 

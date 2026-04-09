@@ -1,0 +1,68 @@
+# 类型: mixed
+# 来源: dev_diary
+# 描述: 开发者日记，混合代码、链接、配置、笔记
+
+## 2024-11-15 开发日志
+
+今天终于搞定了用户服务的数据库迁移。踩了不少坑，记录一下。
+
+### 问题1：MongoDB 事务超时
+
+迁移脚本在处理大批量数据时报了 `MongoError: TransactionExceededTimeLimit (code 257)`。查了一下，MongoDB 事务默认超时 60 秒，我的 batch 有 10000 条，事务里还嵌套了索引检查。
+
+解决方案：把大 batch 拆成 500 条一组，每组单独事务。代码改了一行：
+
+```python
+# Before
+batch_size = 10000
+
+# After
+batch_size = 500  # 每个事务不超过 60s
+```
+
+参考文档：https://www.mongodb.com/docs/v7.0/core/transactions/
+
+### 问题2：Redis 连接池泄露
+
+跑完迁移后 Grafana 告警 `redis-cluster-01.internal:6379` 连接数飙到 800（正常 200 左右）。原因是 `aioredis` 的连接池没有正确关闭。
+
+修复：
+```python
+# Before — 每次都创建新连接
+async def get_redis():
+    return await aioredis.from_url("redis://redis-cluster-01:6379")
+
+# After — 复用连接池
+_redis_pool = None
+async def get_redis():
+    global _redis_pool
+    if _redis_pool is None:
+        _redis_pool = await aioredis.from_url(
+            "redis://redis-cluster-01:6379",
+            max_connections=50,
+            decode_responses=True
+        )
+    return _redis_pool
+```
+
+部署到 k8s 后验证：`kubectl logs -n data-pipeline deployment/data-pipeline-api | grep redis` 连接数恢复正常。
+
+### 下午的任务
+
+下午开了 Sprint Review，确认了下周的排期：
+
+| 任务 | 负责人 | 截止日期 |
+|------|--------|---------|
+| API 限流中间件 | 我 | 11-18 |
+| 监控 Dashboard | 李伟 | 11-19 |
+| 压力测试 | 王芳 | 11-20 |
+
+API 限流用 Kong 插件实现，配置 rate-limiting: 100 req/min per user。参考了这篇博客：https://konghq.com/blog/rate-limiting-kong-gateway
+
+### 今日 commit
+
+- `a3f7b2c` fix: reduce mongo batch size to avoid transaction timeout
+- `e1d9c4a` fix: reuse redis connection pool
+- `b8f2e1d` feat: add rate limiting middleware config
+
+明天继续，要写完限流中间件的单元测试。

@@ -85,7 +85,7 @@ def migrate_entities(conn, driver, batch_size=500, dry_run=False):
     cursor = conn.cursor()
     cursor.execute("""
         SELECT id, entity_id, name, content, event_time, processed_time,
-               memory_cache_id, source_document
+               episode_id, source_document
         FROM entities
         ORDER BY processed_time ASC
     """)
@@ -112,7 +112,7 @@ def migrate_entities(conn, driver, batch_size=500, dry_run=False):
                             e.content = $content,
                             e.event_time = datetime($event_time),
                             e.processed_time = datetime($processed_time),
-                            e.memory_cache_id = $cache_id,
+                            e.episode_id = $cache_id,
                             e.source_document = $source
                         """,
                         uuid=row[0],
@@ -139,7 +139,7 @@ def migrate_relations(conn, driver, batch_size=500, dry_run=False):
     cursor = conn.cursor()
     cursor.execute("""
         SELECT id, relation_id, entity1_absolute_id, entity2_absolute_id,
-               content, event_time, processed_time, memory_cache_id, source_document
+               content, event_time, processed_time, episode_id, source_document
         FROM relations
         ORDER BY processed_time ASC
     """)
@@ -167,7 +167,7 @@ def migrate_relations(conn, driver, batch_size=500, dry_run=False):
                             r.content = $content,
                             r.event_time = datetime($event_time),
                             r.processed_time = datetime($processed_time),
-                            r.memory_cache_id = $cache_id,
+                            r.episode_id = $cache_id,
                             r.source_document = $source
                         """,
                         uuid=row[0],

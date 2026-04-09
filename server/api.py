@@ -21,6 +21,8 @@ import errno
 import json
 import logging
 import os
+
+logger = logging.getLogger(__name__)
 import queue
 import signal
 import socket
@@ -37,9 +39,10 @@ from server.config import load_config, merge_llm_alignment, resolve_embedding_mo
 from server.monitor import LOG_MODE_DETAIL, LOG_MODE_MONITOR, SystemMonitor
 from server.task_queue import RememberTask, RememberTaskQueue
 from server.registry import GraphRegistry
+from server.sse import sse_response, queue_to_generator
 from processor import TemporalMemoryGraphProcessor
 from processor.llm.client import LLM_PRIORITY_STEP6
-from processor.models import Entity, MemoryCache, Relation
+from processor.models import Entity, Episode, Relation
 from processor.search.hybrid import HybridSearcher
 from processor.search.graph_traversal import GraphTraversalSearcher
 from processor.perf import _perf_timer
@@ -66,25 +69,30 @@ def _read_file_content(path: str) -> str:
     return p.read_text(encoding="utf-8")
 
 
-def entity_to_dict(e: Entity) -> Dict[str, Any]:
+def entity_to_dict(e: Entity, max_content_length: int = 2000) -> Dict[str, Any]:
     from processor.content_schema import parse_markdown_sections
     sections = parse_markdown_sections(e.content) if e.content else {}
+    content = e.content or ""
+    truncated = len(content) > max_content_length
+    content_display = content[:max_content_length] + ("..." if truncated else "")
     return {
         "id": e.absolute_id,  # 向后兼容
         "absolute_id": e.absolute_id,
-        "entity_id": e.entity_id,
+        "family_id": e.family_id,
         "name": e.name,
-        "content": e.content,
+        "content": content_display,
+        "content_truncated": truncated,
         "content_format": getattr(e, "content_format", "plain"),
         "content_sections": sections if sections else None,
         "event_time": e.event_time.isoformat() if e.event_time else None,
         "processed_time": e.processed_time.isoformat() if e.processed_time else None,
-        "memory_cache_id": e.memory_cache_id,
+        "episode_id": e.episode_id,
         "source_document": getattr(e, "source_document", "") or getattr(e, "doc_name", "") or "",
         "doc_name": getattr(e, "source_document", "") or getattr(e, "doc_name", "") or "",
         "summary": getattr(e, "summary", None),
         "attributes": getattr(e, "attributes", None),
         "confidence": getattr(e, "confidence", None),
+        "community_id": getattr(e, "community_id", None),
     }
 
 
@@ -92,13 +100,13 @@ def relation_to_dict(r: Relation) -> Dict[str, Any]:
     return {
         "id": r.absolute_id,  # 向后兼容
         "absolute_id": r.absolute_id,
-        "relation_id": r.relation_id,
+        "family_id": r.family_id,
         "entity1_absolute_id": r.entity1_absolute_id,
         "entity2_absolute_id": r.entity2_absolute_id,
         "content": r.content,
         "event_time": r.event_time.isoformat() if r.event_time else None,
         "processed_time": r.processed_time.isoformat() if r.processed_time else None,
-        "memory_cache_id": r.memory_cache_id,
+        "episode_id": r.episode_id,
         "source_document": getattr(r, "source_document", "") or getattr(r, "doc_name", "") or "",
         "doc_name": getattr(r, "source_document", "") or getattr(r, "doc_name", "") or "",
         "summary": getattr(r, "summary", None),
@@ -125,7 +133,7 @@ def enrich_relations(relations_dicts, processor):
     return relations_dicts
 
 
-def memory_cache_to_dict(c: MemoryCache) -> Dict[str, Any]:
+def episode_to_dict(c: Episode) -> Dict[str, Any]:
     return {
         "id": c.absolute_id,  # 向后兼容
         "absolute_id": c.absolute_id,
@@ -149,11 +157,8 @@ def ok(data: Any) -> tuple:
 
 
 def err(message: str, status: int = 400) -> tuple:
-    # 对 500 错误隐藏内部细节，只返回通用提示
     if status >= 500:
-        import logging
-        logging.getLogger(__name__).error("API error: %s", message)
-        message = "服务器内部错误，请稍后重试"
+        logger.error("API error (%d): %s", status, message, exc_info=True)
     out: Dict[str, Any] = {"success": False, "error": message}
     try:
         if hasattr(request, "start_time"):
@@ -397,12 +402,12 @@ def create_app(
             raise ValueError(f"{name} 需为非负数字（秒）")
         return seconds
 
-    def _score_entity_versions_against_time(entity_id: str, time_point: datetime, proc=None) -> List[Tuple[float, int, Entity]]:
+    def _score_entity_versions_against_time(family_id: str, time_point: datetime, proc=None) -> List[Tuple[float, int, Entity]]:
         if proc is None:
             proc = _get_processor()
         target = _normalize_time_for_compare(time_point)
         scored: List[Tuple[float, int, Entity]] = []
-        for version in proc.storage.get_entity_versions(entity_id):
+        for version in proc.storage.get_entity_versions(family_id):
             if not version.event_time:
                 continue
             vt = _normalize_time_for_compare(version.event_time)
@@ -477,17 +482,20 @@ def create_app(
           - JSON body 的 file_path 字段（仅限服务端本机文件）
 
         参数：
-          - graph_id（必填）：目标图谱 ID
+          - graph_id（可选）：目标图谱 ID，默认 "default"
           - text（可选）：正文
           - file（可选）：上传文件（multipart）
-          - file_path（可选）：服务端本地文件路径
-          - source_name / doc_name（可选）：来源名称，默认 api_input
+          - source_name / doc_name / source_document（可选）：来源名称，默认 api_input
           - load_cache_memory（可选）：
             true = 接续图谱中已有缓存链（同图任务需串行）
             false = 不接续外部缓存链，但任务内部滑窗仍续写自己的 cache 链（可并行）
           - event_time（可选）：ISO 8601 事件时间
+          - wait（可选）：true 时同步等待完成再返回（默认 false，异步返回 202）
+          - timeout（可选）：同步等待超时秒数（默认 300，仅 wait=true 时生效）
 
-        返回：HTTP 202。查询进度：GET /api/v1/remember/tasks/<task_id>
+        返回：
+          - wait=false（默认）：HTTP 202 + task_id（异步轮询模式）
+          - wait=true：HTTP 200 + 完整结果（同步阻塞模式，适合 Agent 单次调用）
         """
         try:
             processor = _get_processor()
@@ -564,7 +572,7 @@ def create_app(
                 except ValueError:
                     return err("event_time 需为 ISO 8601 格式", 400)
 
-            # 原文由处理器在 save_memory_cache 阶段保存到 docs/{timestamp}_{hash}/original.txt
+            # 原文由处理器在 save_episode 阶段保存到 docs/{timestamp}_{hash}/original.txt
             # 此处不再额外保存扁平文件，避免重复
             original_path = ""
 
@@ -596,6 +604,54 @@ def create_app(
             )
 
             remember_queue.submit(task)
+
+            # Synchronous wait mode: block until task completes, then return full result
+            wait_mode = _remember_get_bool("wait")
+            if wait_mode:
+                timeout = 300
+                timeout_str = _remember_get_str("timeout")
+                if timeout_str:
+                    try:
+                        timeout = max(10, min(3600, float(timeout_str)))
+                    except ValueError:
+                        pass
+                done_task = remember_queue.wait_for_task(task_id, timeout=timeout)
+                if done_task is None:
+                    return err(f"任务 {task_id} 未找到", 404)
+                task_dict = remember_queue._task_to_dict(done_task)
+                if done_task.status == "completed":
+                    return make_response(jsonify({
+                        "success": True,
+                        "data": {
+                            "task_id": task_id,
+                            "status": "completed",
+                            "result": done_task.result,
+                            **task_dict,
+                        },
+                    }), 200)
+                elif done_task.status == "failed":
+                    return make_response(jsonify({
+                        "success": False,
+                        "data": {
+                            "task_id": task_id,
+                            "status": "failed",
+                            "error": done_task.error,
+                            **task_dict,
+                        },
+                    }), 500)
+                else:
+                    # Timeout: still running, return current state with 202
+                    return make_response(jsonify({
+                        "success": True,
+                        "data": {
+                            "task_id": task_id,
+                            "status": done_task.status,
+                            "message": f"同步等待超时（{timeout}秒），任务仍在处理中。GET /api/v1/remember/tasks/{task_id} 继续轮询",
+                            **task_dict,
+                        },
+                    }), 202)
+
+            # Default async mode: return 202 immediately
             return make_response(jsonify({
                 "success": True,
                 "data": {
@@ -834,13 +890,13 @@ def create_app(
                     "summary": "按实体 absolute_id 读取单个实体版本",
                 },
                 {
-                    "path": "/api/v1/find/entities/<entity_id>/as-of-time",
+                    "path": "/api/v1/find/entities/<family_id>/as-of-time",
                     "methods": ["GET"],
                     "summary": "返回该实体在指定时间点的最近过去版本",
                     "query": {"time_point": "ISO 8601 string，必填"},
                 },
                 {
-                    "path": "/api/v1/find/entities/<entity_id>/nearest-to-time",
+                    "path": "/api/v1/find/entities/<family_id>/nearest-to-time",
                     "methods": ["GET"],
                     "summary": "返回该实体距离指定时间点最近的版本",
                     "query": {
@@ -849,7 +905,7 @@ def create_app(
                     },
                 },
                 {
-                    "path": "/api/v1/find/entities/<entity_id>/around-time",
+                    "path": "/api/v1/find/entities/<family_id>/around-time",
                     "methods": ["GET"],
                     "summary": "返回该实体在指定时间点附近窗口内的所有版本",
                     "query": {
@@ -863,7 +919,7 @@ def create_app(
                     "summary": "按实体 absolute_id 查询相关关系",
                 },
                 {
-                    "path": "/api/v1/find/entities/<entity_id>/relations",
+                    "path": "/api/v1/find/entities/<family_id>/relations",
                     "methods": ["GET"],
                     "summary": "按实体业务 ID 查询相关关系",
                 },
@@ -890,18 +946,18 @@ def create_app(
                     "aliases": ["/api/v1/find/entities/absolute/<absolute_id>/relations"],
                 },
                 {
-                    "path": "/api/v1/find/relations/by-entity-id/<entity_id>",
+                    "path": "/api/v1/find/relations/by-entity-id/<family_id>",
                     "methods": ["GET"],
                     "summary": "按实体业务 ID 查询相关关系",
-                    "aliases": ["/api/v1/find/entities/<entity_id>/relations"],
+                    "aliases": ["/api/v1/find/entities/<family_id>/relations"],
                 },
                 {
                     "path": "/api/v1/find/relations/between",
                     "methods": ["GET", "POST"],
                     "summary": "查询两个实体之间的关系",
                     "body_or_query": {
-                        "entity_id_a": "string，必填",
-                        "entity_id_b": "string，必填",
+                        "family_id_a": "string，必填",
+                        "family_id_b": "string，必填",
                     },
                 },
                 {
@@ -909,28 +965,28 @@ def create_app(
                     "methods": ["GET", "POST"],
                     "summary": "查找两个实体之间的最短路径",
                     "body_or_query": {
-                        "entity_id_a": "string，必填",
-                        "entity_id_b": "string，必填",
+                        "family_id_a": "string，必填",
+                        "family_id_b": "string，必填",
                         "max_depth": "int，可选，默认6",
                         "max_paths": "int，可选，默认10",
                     },
                 },
             ],
-            "memory_cache": [
+            "episode": [
                 {
-                    "path": "/api/v1/find/memory-caches/latest",
+                    "path": "/api/v1/find/episodes/latest",
                     "methods": ["GET"],
-                    "summary": "读取最新记忆缓存",
+                    "summary": "读取最新 Episode",
                 },
                 {
-                    "path": "/api/v1/find/memory-caches/latest/metadata",
+                    "path": "/api/v1/find/episodes/latest/metadata",
                     "methods": ["GET"],
-                    "summary": "读取最新记忆缓存元数据",
+                    "summary": "读取最新 Episode 元数据",
                 },
                 {
-                    "path": "/api/v1/find/memory-caches/<cache_id>",
+                    "path": "/api/v1/find/episodes/<cache_id>",
                     "methods": ["GET"],
-                    "summary": "按 cache_id 读取记忆缓存",
+                    "summary": "按 cache_id 读取 Episode",
                 },
             ],
             "system": [
@@ -970,23 +1026,23 @@ def create_app(
             ],
             "entity_v3": [
                 {
-                    "path": "/api/v1/find/entities/<entity_id>/evolve-summary",
+                    "path": "/api/v1/find/entities/<family_id>/evolve-summary",
                     "methods": ["POST"],
                     "summary": "LLM 演化实体摘要（Phase A）",
                 },
                 {
-                    "path": "/api/v1/find/entities/<entity_id>/contradictions",
+                    "path": "/api/v1/find/entities/<family_id>/contradictions",
                     "methods": ["GET"],
                     "summary": "检测实体版本间矛盾（Phase D）",
                 },
                 {
-                    "path": "/api/v1/find/entities/<entity_id>/resolve-contradiction",
+                    "path": "/api/v1/find/entities/<family_id>/resolve-contradiction",
                     "methods": ["POST"],
                     "summary": "LLM 裁决实体矛盾（Phase D）",
                     "body": {"contradiction_id": "string，必填"},
                 },
                 {
-                    "path": "/api/v1/find/entities/<entity_id>/provenance",
+                    "path": "/api/v1/find/entities/<family_id>/provenance",
                     "methods": ["GET"],
                     "summary": "实体事实溯源 - 返回提及该实体的 Episode（Phase C）",
                 },
@@ -997,7 +1053,7 @@ def create_app(
                     "methods": ["POST"],
                     "summary": "BFS 图遍历搜索（Phase B）",
                     "body": {
-                        "seed_entity_ids": "list[string]，必填",
+                        "seed_family_ids": "list[string]，必填",
                         "max_depth": "int，可选，默认 3",
                         "max_nodes": "int，可选，默认 100",
                     },
@@ -1022,21 +1078,29 @@ def create_app(
                     "body": {"episodes": "list[{content, source_document, episode_type}]，必填"},
                 },
             ],
-            "dream": [
+            "butler": [
                 {
-                    "path": "/api/v1/find/dream/start",
+                    "path": "/api/v1/butler/report",
+                    "methods": ["GET"],
+                    "summary": "管家报告：一次调用获取图谱健康 + 质量 + 梦境状态 + 推荐操作",
+                    "query": {"graph_id": "string，必填"},
+                },
+                {
+                    "path": "/api/v1/butler/execute",
                     "methods": ["POST"],
-                    "summary": "启动 DeepDream 记忆巩固周期（Phase E）",
+                    "summary": "管家执行：一键执行推荐操作（清理/社区检测/摘要进化）",
                     "body": {
-                        "review_window_days": "int，可选，默认 30",
-                        "max_entities_per_cycle": "int，可选，默认 100",
-                        "similarity_threshold": "float，可选，默认 0.8",
+                        "graph_id": "string，必填",
+                        "actions": "list[string]，必填，可选: cleanup_isolated, cleanup_invalidated, detect_communities, evolve_summaries",
+                        "dry_run": "bool，可选，默认 false",
                     },
                 },
+            ],
+            "dream": [
                 {
                     "path": "/api/v1/find/dream/status",
                     "methods": ["GET"],
-                    "summary": "查询 DeepDream 当前状态（Phase E）",
+                    "summary": "查询 DeepDream 当前状态",
                 },
                 {
                     "path": "/api/v1/find/dream/logs",
@@ -1061,7 +1125,7 @@ def create_app(
                     "path": "/api/v1/find/explain",
                     "methods": ["POST"],
                     "summary": "LLM 解释实体（Phase F）",
-                    "body": {"entity_id": "string，必填", "aspect": "summary | relations | timeline | contradictions"},
+                    "body": {"family_id": "string，必填", "aspect": "summary | relations | timeline | contradictions"},
                 },
                 {
                     "path": "/api/v1/find/suggestions",
@@ -1172,20 +1236,20 @@ def create_app(
             total_relations = processor.storage.count_unique_relations()
 
             cache_json_dir = processor.storage.cache_json_dir
-            cache_dir = processor.storage.cache_dir
-            json_files = list(cache_json_dir.glob("*.json"))
-            # 优先从 docs/ 新结构计数
-            docs_meta_files = list(processor.storage.docs_dir.glob("*/meta.json")) if processor.storage.docs_dir.is_dir() else []
-            if docs_meta_files:
-                total_memory_caches = len(docs_meta_files)
-            elif json_files:
-                total_memory_caches = len(json_files)
-            else:
-                total_memory_caches = len(list(cache_dir.glob("*.json")))
-
             total_episodes = 0
             if hasattr(processor.storage, 'count_episodes'):
                 total_episodes = processor.storage.count_episodes()
+            else:
+                # 旧后端：从文件系统计数
+                cache_dir = processor.storage.cache_dir
+                json_files = list(cache_json_dir.glob("*.json"))
+                docs_meta_files = list(processor.storage.docs_dir.glob("*/meta.json")) if processor.storage.docs_dir.is_dir() else []
+                if docs_meta_files:
+                    total_episodes = len(docs_meta_files)
+                elif json_files:
+                    total_episodes = len(json_files)
+                else:
+                    total_episodes = len(list(cache_dir.glob("*.json")))
 
             total_communities = 0
             if hasattr(processor.storage, 'count_communities'):
@@ -1194,7 +1258,6 @@ def create_app(
             return ok({
                 "total_entities": total_entities,
                 "total_relations": total_relations,
-                "total_memory_caches": total_memory_caches,
                 "total_episodes": total_episodes,
                 "total_communities": total_communities,
             })
@@ -1356,7 +1419,7 @@ def create_app(
             if reranker == "node_degree" and hasattr(storage, 'get_entity_degree'):
                 degree_map = {}
                 for e in final_entities:
-                    degree_map[e.entity_id] = storage.get_entity_degree(e.entity_id)
+                    degree_map[e.family_id] = storage.get_entity_degree(e.family_id)
                 searcher_hybrid = HybridSearcher(storage)
                 scored = [(e, 1.0) for e in final_entities]
                 reranked = searcher_hybrid.node_degree_rerank(scored, degree_map)
@@ -1383,7 +1446,7 @@ def create_app(
             include_entities = body.get("include_entities", True)
             include_relations = body.get("include_relations", True)
             try:
-                entity_ids, relation_ids = _extract_candidate_ids(
+                family_ids, relation_family_ids = _extract_candidate_ids(
                     processor.storage, body, parse_time_point
                 )
             except ValueError as ve:
@@ -1393,21 +1456,21 @@ def create_app(
             relations_data: List[Dict[str, Any]] = []
             if include_entities:
                 if hasattr(storage, 'get_entities_by_absolute_ids'):
-                    batch = storage.get_entities_by_absolute_ids(list(entity_ids))
+                    batch = storage.get_entities_by_absolute_ids(list(family_ids))
                     entities_data = [entity_to_dict(e) for e in batch if e]
                 else:
-                    for eid in entity_ids:
+                    for eid in family_ids:
                         e = storage.get_entity_by_absolute_id(eid)
                         if e:
                             entities_data.append(entity_to_dict(e))
             if include_relations:
                 if hasattr(storage, 'get_relations_by_entity_absolute_ids'):
-                    batch_rels = storage.get_relations_by_entity_absolute_ids(list(relation_ids))
+                    batch_rels = storage.get_relations_by_entity_absolute_ids(list(relation_family_ids))
                     for r in batch_rels:
-                        if r.absolute_id in relation_ids:
+                        if r.absolute_id in relation_family_ids:
                             relations_data.append(relation_to_dict(r))
                 else:
-                    for rid in relation_ids:
+                    for rid in relation_family_ids:
                         r = storage.get_relation_by_absolute_id(rid)
                         if r:
                             relations_data.append(relation_to_dict(r))
@@ -1438,8 +1501,14 @@ def create_app(
             processor = _get_processor()
             limit = request.args.get("limit", type=int)
             offset = request.args.get("offset", type=int, default=0) or 0
+            total = processor.storage.count_unique_entities()
             entities = processor.storage.get_all_entities(limit=limit, offset=offset if offset > 0 else None, exclude_embedding=True)
-            return ok([entity_to_dict(e) for e in entities])
+            return ok({
+                "entities": [entity_to_dict(e) for e in entities],
+                "total": total,
+                "offset": offset,
+                "limit": limit,
+            })
         except Exception as e:
             return err(str(e), 500)
 
@@ -1464,11 +1533,17 @@ def create_app(
     def find_entity_version_counts():
         try:
             processor = _get_processor()
-            body = request.get_json(silent=True) or {}
-            entity_ids = body.get("entity_ids")
-            if not isinstance(entity_ids, list) or not all(isinstance(x, str) for x in entity_ids):
-                return err("请求体需包含 entity_ids 字符串数组", 400)
-            counts = processor.storage.get_entity_version_counts(entity_ids)
+            body = request.get_json(silent=True)
+            if not isinstance(body, dict):
+                body = {}
+            family_ids = body.get("family_ids")
+            if not family_ids or not isinstance(family_ids, list):
+                return ok({})
+            # Filter to only valid strings
+            family_ids = [x for x in family_ids if isinstance(x, str)]
+            if not family_ids:
+                return ok({})
+            counts = processor.storage.get_entity_version_counts(family_ids)
             return ok(counts)
         except Exception as e:
             return err(str(e), 500)
@@ -1551,17 +1626,17 @@ def create_app(
         except Exception as e:
             return err(str(e), 500)
 
-    @app.route("/api/v1/find/entities/<entity_id>/versions", methods=["GET"])
-    def find_entity_versions(entity_id: str):
+    @app.route("/api/v1/find/entities/<family_id>/versions", methods=["GET"])
+    def find_entity_versions(family_id: str):
         try:
             processor = _get_processor()
-            versions = processor.storage.get_entity_versions(entity_id)
+            versions = processor.storage.get_entity_versions(family_id)
             return ok([entity_to_dict(e) for e in versions])
         except Exception as e:
             return err(str(e), 500)
 
-    @app.route("/api/v1/find/entities/<entity_id>/as-of-time", methods=["GET"])
-    def find_entity_at_time(entity_id: str):
+    @app.route("/api/v1/find/entities/<family_id>/as-of-time", methods=["GET"])
+    def find_entity_at_time(family_id: str):
         try:
             processor = _get_processor()
             time_point_str = request.args.get("time_point")
@@ -1571,15 +1646,15 @@ def create_app(
                 time_point = parse_time_point(time_point_str)
             except ValueError as ve:
                 return err(str(ve), 400)
-            entity = processor.storage.get_entity_version_at_time(entity_id, time_point)
+            entity = processor.storage.get_entity_version_at_time(family_id, time_point)
             if entity is None:
-                return err(f"未找到该时间点版本: {entity_id}", 404)
+                return err(f"未找到该时间点版本: {family_id}", 404)
             return ok(entity_to_dict(entity))
         except Exception as e:
             return err(str(e), 500)
 
-    @app.route("/api/v1/find/entities/<entity_id>/nearest-to-time", methods=["GET"])
-    def find_entity_nearest_to_time(entity_id: str):
+    @app.route("/api/v1/find/entities/<family_id>/nearest-to-time", methods=["GET"])
+    def find_entity_nearest_to_time(family_id: str):
         try:
             processor = _get_processor()
             time_point_str = request.args.get("time_point")
@@ -1591,16 +1666,16 @@ def create_app(
             except ValueError as ve:
                 return err(str(ve), 400)
 
-            scored = _score_entity_versions_against_time(entity_id, time_point, proc=processor)
+            scored = _score_entity_versions_against_time(family_id, time_point, proc=processor)
             if not scored:
-                return err(f"未找到实体: {entity_id}", 404)
+                return err(f"未找到实体: {family_id}", 404)
 
             delta_seconds, _, entity = scored[0]
             if max_delta_seconds is not None and delta_seconds > max_delta_seconds:
                 return err(f"最近版本超出允许误差: {delta_seconds:.3f}s > {max_delta_seconds:.3f}s", 404)
 
             return ok({
-                "entity_id": entity_id,
+                "family_id": family_id,
                 "query_time": time_point.isoformat(),
                 "matched": entity_to_dict(entity),
                 "delta_seconds": round(delta_seconds, 6),
@@ -1608,8 +1683,8 @@ def create_app(
         except Exception as e:
             return err(str(e), 500)
 
-    @app.route("/api/v1/find/entities/<entity_id>/around-time", methods=["GET"])
-    def find_entity_around_time(entity_id: str):
+    @app.route("/api/v1/find/entities/<family_id>/around-time", methods=["GET"])
+    def find_entity_around_time(family_id: str):
         try:
             processor = _get_processor()
             time_point_str = request.args.get("time_point")
@@ -1625,7 +1700,7 @@ def create_app(
 
             target = _normalize_time_for_compare(time_point)
             matches: List[Dict[str, Any]] = []
-            for delta_seconds, _, entity in _score_entity_versions_against_time(entity_id, time_point, proc=processor):
+            for delta_seconds, _, entity in _score_entity_versions_against_time(family_id, time_point, proc=processor):
                 if delta_seconds > within_seconds:
                     continue
                 item = entity_to_dict(entity)
@@ -1635,10 +1710,10 @@ def create_app(
                 matches.append(item)
 
             if not matches:
-                return err(f"未找到 {within_seconds:.3f} 秒范围内的实体版本: {entity_id}", 404)
+                return err(f"未找到 {within_seconds:.3f} 秒范围内的实体版本: {family_id}", 404)
 
             return ok({
-                "entity_id": entity_id,
+                "family_id": family_id,
                 "query_time": time_point.isoformat(),
                 "within_seconds": within_seconds,
                 "count": len(matches),
@@ -1647,24 +1722,24 @@ def create_app(
         except Exception as e:
             return err(str(e), 500)
 
-    @app.route("/api/v1/find/entities/<entity_id>/version-count", methods=["GET"])
-    def find_entity_version_count(entity_id: str):
+    @app.route("/api/v1/find/entities/<family_id>/version-count", methods=["GET"])
+    def find_entity_version_count(family_id: str):
         try:
             processor = _get_processor()
-            count = processor.storage.get_entity_version_count(entity_id)
+            count = processor.storage.get_entity_version_count(family_id)
             if count <= 0:
-                return err(f"未找到实体: {entity_id}", 404)
-            return ok({"entity_id": entity_id, "version_count": count})
+                return err(f"未找到实体: {family_id}", 404)
+            return ok({"family_id": family_id, "version_count": count})
         except Exception as e:
             return err(str(e), 500)
 
-    @app.route("/api/v1/find/entities/<entity_id>", methods=["GET"])
-    def find_entity_by_id(entity_id: str):
+    @app.route("/api/v1/find/entities/<family_id>", methods=["GET"])
+    def find_entity_by_family_id(family_id: str):
         try:
             processor = _get_processor()
-            entity = processor.storage.get_entity_by_entity_id(entity_id)
+            entity = processor.storage.get_entity_by_family_id(family_id)
             if entity is None:
-                return err(f"未找到实体: {entity_id}", 404)
+                return err(f"未找到实体: {family_id}", 404)
             return ok(entity_to_dict(entity))
         except Exception as e:
             return err(str(e), 500)
@@ -1673,16 +1748,16 @@ def create_app(
     # Entity / Relation CRUD (Phase 2)
     # =========================================================
 
-    @app.route("/api/v1/find/entities/<entity_id>", methods=["DELETE"])
-    def delete_entity(entity_id: str):
+    @app.route("/api/v1/find/entities/<family_id>", methods=["DELETE"])
+    def delete_entity_family(family_id: str):
         """删除实体所有版本。"""
         try:
             processor = _get_processor()
             cascade = request.args.get("cascade", "false").lower() == "true"
-            count = processor.storage.delete_entity_all_versions(entity_id)
+            count = processor.storage.delete_entity_all_versions(family_id)
             if count == 0:
-                return err(f"未找到实体: {entity_id}", 404)
-            return ok({"message": f"已删除 {count} 个实体版本", "entity_id": entity_id, "cascade": cascade})
+                return err(f"未找到实体: {family_id}", 404)
+            return ok({"message": f"已删除 {count} 个实体版本", "family_id": family_id, "cascade": cascade})
         except Exception as e:
             return err(str(e), 500)
 
@@ -1692,14 +1767,93 @@ def create_app(
         try:
             processor = _get_processor()
             body = request.get_json(silent=True) or {}
-            entity_ids = body.get("entity_ids", [])
-            if not isinstance(entity_ids, list) or not entity_ids:
-                return err("entity_ids 需为非空数组", 400)
+            family_ids = body.get("family_ids") or body.get("family_ids", [])
+            if not isinstance(family_ids, list) or not family_ids:
+                return err("family_ids 需为非空数组", 400)
             cascade = body.get("cascade", False)
             total = 0
-            for eid in entity_ids:
+            for eid in family_ids:
                 total += processor.storage.delete_entity_all_versions(eid)
-            return ok({"message": f"已删除 {total} 个实体版本", "count": len(entity_ids)})
+            return ok({"message": f"已删除 {total} 个实体版本", "count": len(family_ids)})
+        except Exception as e:
+            return err(str(e), 500)
+
+    # ------------------------------------------------------------------
+    # 管理类 API：孤立实体清理、数据质量报告
+    # ------------------------------------------------------------------
+
+    @app.route("/api/v1/find/entities/isolated", methods=["GET"])
+    def find_isolated_entities():
+        """列出所有孤立实体（无任何有效关系的有效实体）。仅 Neo4j 后端支持。"""
+        try:
+            processor = _get_processor()
+            if not hasattr(processor.storage, 'get_isolated_entities'):
+                return ok({"entities": [], "total": 0, "message": "当前存储后端不支持孤立实体检测"})
+            limit = request.args.get("limit", type=int, default=100)
+            offset = request.args.get("offset", type=int, default=0) or 0
+            isolated = processor.storage.get_isolated_entities(limit=limit, offset=offset)
+            total = processor.storage.count_isolated_entities()
+            return ok({
+                "entities": [entity_to_dict(e) for e in isolated],
+                "total": total,
+                "offset": offset,
+                "limit": limit,
+            })
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/v1/find/entities/delete-isolated", methods=["POST"])
+    def delete_isolated_entities():
+        """批量删除所有孤立实体（无任何有效关系的有效实体）。仅 Neo4j 后端支持。"""
+        try:
+            processor = _get_processor()
+            if not hasattr(processor.storage, 'get_isolated_entities'):
+                return ok({"message": "当前存储后端不支持孤立实体检测", "deleted": 0})
+            dry_run = request.get_json(silent=True) or {}
+            dry_run = dry_run.get("dry_run", False) if isinstance(dry_run, dict) else False
+            isolated = processor.storage.get_isolated_entities(limit=10000)
+            if not isolated:
+                return ok({"message": "没有孤立实体", "deleted": 0})
+            family_ids = list({e.family_id for e in isolated if e.family_id})
+            if dry_run:
+                return ok({
+                    "message": f"预览：将删除 {len(family_ids)} 个孤立实体",
+                    "family_ids": family_ids,
+                    "dry_run": True,
+                })
+            deleted = 0
+            for fid in family_ids:
+                deleted += processor.storage.delete_entity_all_versions(fid)
+            return ok({
+                "message": f"已删除 {len(family_ids)} 个孤立实体（{deleted} 个版本）",
+                "deleted_families": len(family_ids),
+                "deleted_versions": deleted,
+            })
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/v1/find/quality-report", methods=["GET"])
+    def quality_report():
+        """数据质量报告。"""
+        try:
+            processor = _get_processor()
+            stats = processor.storage.get_data_quality_report()
+            return ok(stats)
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/v1/find/cleanup/invalidated-versions", methods=["POST"])
+    def cleanup_invalidated_versions():
+        """清理已失效的旧版本节点。"""
+        try:
+            processor = _get_processor()
+            body = request.get_json(silent=True) or {}
+            before_date = body.get("before_date")
+            dry_run = body.get("dry_run", False)
+            result = processor.storage.cleanup_invalidated_versions(
+                before_date=before_date, dry_run=dry_run,
+            )
+            return ok(result)
         except Exception as e:
             return err(str(e), 500)
 
@@ -1709,16 +1863,16 @@ def create_app(
         try:
             processor = _get_processor()
             body = request.get_json(silent=True) or {}
-            target_id = (body.get("target_entity_id") or "").strip()
-            source_ids = body.get("source_entity_ids", [])
+            target_id = (body.get("target_family_id") or "").strip()
+            source_ids = body.get("source_family_ids", [])
             if not target_id or not isinstance(source_ids, list) or not source_ids:
-                return err("target_entity_id 和 source_entity_ids 为必填", 400)
+                return err("target_family_id 和 source_family_ids 为必填", 400)
             # 验证 target 存在
-            target = processor.storage.get_entity_by_entity_id(target_id)
+            target = processor.storage.get_entity_by_family_id(target_id)
             if target is None:
                 return err(f"目标实体不存在: {target_id}", 404)
-            result = processor.storage.merge_entity_ids(target_id, source_ids)
-            return ok({"message": "实体合并完成", "target_entity_id": target_id, "source_entity_ids": source_ids, "merged_count": result})
+            result = processor.storage.merge_entity_families(target_id, source_ids)
+            return ok({"message": "实体合并完成", "target_family_id": target_id, "source_family_ids": source_ids, "merged_count": result})
         except Exception as e:
             return err(str(e), 500)
 
@@ -1731,13 +1885,19 @@ def create_app(
             processor = _get_processor()
             limit = request.args.get("limit", type=int)
             offset = request.args.get("offset", type=int, default=0) or 0
+            total = processor.storage.count_unique_relations()
             relations = processor.storage.get_all_relations(
                 limit=limit, offset=offset if offset > 0 else None,
                 exclude_embedding=True,
             )
             dicts = [relation_to_dict(r) for r in relations]
             enrich_relations(dicts, processor)
-            return ok(dicts)
+            return ok({
+                "relations": dicts,
+                "total": total,
+                "offset": offset,
+                "limit": limit,
+            })
         except Exception as e:
             return err(str(e), 500)
 
@@ -1792,12 +1952,12 @@ def create_app(
             processor = _get_processor()
             body = request.get_json(silent=True) if request.method == "POST" else None
             body = body if isinstance(body, dict) else {}
-            entity_id_a = str(body.get("entity_id_a") or body.get("from_entity_id") or request.args.get("entity_id_a") or request.args.get("from_entity_id") or "").strip()
-            entity_id_b = str(body.get("entity_id_b") or body.get("to_entity_id") or request.args.get("entity_id_b") or request.args.get("to_entity_id") or "").strip()
-            if not entity_id_a or not entity_id_b:
-                return err("entity_id_a 与 entity_id_b 为必填参数", 400)
+            family_id_a = str(body.get("family_id_a") or body.get("family_id_a") or body.get("from_family_id") or request.args.get("family_id_a") or request.args.get("family_id_a") or request.args.get("from_family_id") or "").strip()
+            family_id_b = str(body.get("family_id_b") or body.get("family_id_b") or body.get("to_family_id") or request.args.get("family_id_b") or request.args.get("family_id_b") or request.args.get("to_family_id") or "").strip()
+            if not family_id_a or not family_id_b:
+                return err("family_id_a 与 family_id_b 为必填参数", 400)
             with _perf_timer("find_relations_between"):
-                relations = processor.storage.get_relations_by_entities(entity_id_a, entity_id_b)
+                relations = processor.storage.get_relations_by_entities(family_id_a, family_id_b)
             dicts = [relation_to_dict(r) for r in relations]
             enrich_relations(dicts, processor)
             return ok(dicts)
@@ -1811,14 +1971,14 @@ def create_app(
             processor = _get_processor()
             body = request.get_json(silent=True) if request.method == "POST" else None
             body = body if isinstance(body, dict) else {}
-            entity_id_a = str(body.get("entity_id_a") or body.get("from_entity_id")
-                             or request.args.get("entity_id_a")
-                             or request.args.get("from_entity_id") or "").strip()
-            entity_id_b = str(body.get("entity_id_b") or body.get("to_entity_id")
-                             or request.args.get("entity_id_b")
-                             or request.args.get("to_entity_id") or "").strip()
-            if not entity_id_a or not entity_id_b:
-                return err("entity_id_a 与 entity_id_b 为必填参数", 400)
+            family_id_a = str(body.get("family_id_a") or body.get("family_id_a") or body.get("from_family_id")
+                             or request.args.get("family_id_a")
+                             or request.args.get("from_family_id") or "").strip()
+            family_id_b = str(body.get("family_id_b") or body.get("family_id_b") or body.get("to_family_id")
+                             or request.args.get("family_id_b")
+                             or request.args.get("to_family_id") or "").strip()
+            if not family_id_a or not family_id_b:
+                return err("family_id_a 与 family_id_b 为必填参数", 400)
 
             max_depth = body.get("max_depth") if body else None
             if max_depth is None:
@@ -1831,8 +1991,8 @@ def create_app(
             max_paths = max_paths or 10
 
             result = processor.storage.find_shortest_paths(
-                source_entity_id=entity_id_a,
-                target_entity_id=entity_id_b,
+                source_family_id=family_id_a,
+                target_family_id=family_id_b,
                 max_depth=max_depth,
                 max_paths=max_paths,
             )
@@ -1901,19 +2061,19 @@ def create_app(
         except Exception as e:
             return err(str(e), 500)
 
-    @app.route("/api/v1/find/relations/<relation_id>/versions", methods=["GET"])
-    def find_relation_versions(relation_id: str):
+    @app.route("/api/v1/find/relations/<family_id>/versions", methods=["GET"])
+    def find_relation_versions(family_id: str):
         try:
             processor = _get_processor()
-            versions = processor.storage.get_relation_versions(relation_id)
+            versions = processor.storage.get_relation_versions(family_id)
             dicts = [relation_to_dict(r) for r in versions]
             enrich_relations(dicts, processor)
             return ok(dicts)
         except Exception as e:
             return err(str(e), 500)
 
-    @app.route("/api/v1/find/relations/<relation_id>", methods=["PUT"])
-    def update_relation(relation_id: str):
+    @app.route("/api/v1/find/relations/<family_id>", methods=["PUT"])
+    def update_relation_by_family(family_id: str):
         """编辑关系：创建新版本。"""
         try:
             processor = _get_processor()
@@ -1922,9 +2082,9 @@ def create_app(
             if not content:
                 return err("content 为必填字段", 400)
 
-            current_versions = processor.storage.get_relation_versions(relation_id)
+            current_versions = processor.storage.get_relation_versions(family_id)
             if not current_versions:
-                return err(f"未找到关系: {relation_id}", 404)
+                return err(f"未找到关系: {family_id}", 404)
             current = current_versions[0]  # 最新版本
 
             from datetime import datetime, timezone
@@ -1932,30 +2092,30 @@ def create_app(
             from processor.models import Relation as RelationModel
             updated = RelationModel(
                 absolute_id=str(uuid.uuid4()),
-                relation_id=relation_id,
+                family_id=family_id,
                 entity1_absolute_id=current.entity1_absolute_id,
                 entity2_absolute_id=current.entity2_absolute_id,
                 content=content,
                 event_time=now,
                 processed_time=now,
-                memory_cache_id=current.memory_cache_id,
+                episode_id=current.episode_id,
                 source_document=current.source_document,
                 valid_at=now,
             )
             processor.storage.save_relation(updated)
-            return ok({"message": "关系已更新", "absolute_id": updated.absolute_id, "relation_id": relation_id})
+            return ok({"message": "关系已更新", "absolute_id": updated.absolute_id, "family_id": family_id})
         except Exception as e:
             return err(str(e), 500)
 
-    @app.route("/api/v1/find/relations/<relation_id>", methods=["DELETE"])
-    def delete_relation(relation_id: str):
+    @app.route("/api/v1/find/relations/<family_id>", methods=["DELETE"])
+    def delete_relation_family(family_id: str):
         """删除关系所有版本。"""
         try:
             processor = _get_processor()
-            count = processor.storage.delete_relation_all_versions(relation_id)
+            count = processor.storage.delete_relation_all_versions(family_id)
             if count == 0:
-                return err(f"未找到关系: {relation_id}", 404)
-            return ok({"message": f"已删除 {count} 个关系版本", "relation_id": relation_id})
+                return err(f"未找到关系: {family_id}", 404)
+            return ok({"message": f"已删除 {count} 个关系版本", "family_id": family_id})
         except Exception as e:
             return err(str(e), 500)
 
@@ -1965,18 +2125,18 @@ def create_app(
         try:
             processor = _get_processor()
             body = request.get_json(silent=True) or {}
-            relation_ids = body.get("relation_ids", [])
-            if not isinstance(relation_ids, list) or not relation_ids:
-                return err("relation_ids 需为非空数组", 400)
+            family_ids = body.get("family_ids") or body.get("relation_ids", [])
+            if not isinstance(family_ids, list) or not family_ids:
+                return err("family_ids 需为非空数组", 400)
             total = 0
-            for rid in relation_ids:
+            for rid in family_ids:
                 total += processor.storage.delete_relation_all_versions(rid)
-            return ok({"message": f"已删除 {total} 个关系版本", "count": len(relation_ids)})
+            return ok({"message": f"已删除 {total} 个关系版本", "count": len(family_ids)})
         except Exception as e:
             return err(str(e), 500)
 
-    @app.route("/api/v1/find/entities/<entity_id>/relations", methods=["GET"])
-    def find_relations_by_entity(entity_id: str):
+    @app.route("/api/v1/find/entities/<family_id>/relations", methods=["GET"])
+    def find_relations_by_entity(family_id: str):
         try:
             processor = _get_processor()
             limit = request.args.get("limit", type=int)
@@ -1993,8 +2153,8 @@ def create_app(
 
             # When no max_version_absolute_id, all modes degenerate to returning all relations
             if not max_version_absolute_id:
-                relations = processor.storage.get_entity_relations_by_entity_id(
-                    entity_id=entity_id,
+                relations = processor.storage.get_entity_relations_by_family_id(
+                    family_id=family_id,
                     limit=limit,
                     time_point=time_point,
                     max_version_absolute_id=None,
@@ -2011,16 +2171,16 @@ def create_app(
                 time_point=time_point,
             )
             # accum_rels: accumulated relations from v1 through focused version
-            accum_rels = processor.storage.get_entity_relations_by_entity_id(
-                entity_id=entity_id,
+            accum_rels = processor.storage.get_entity_relations_by_family_id(
+                family_id=family_id,
                 limit=limit,
                 time_point=time_point,
                 max_version_absolute_id=max_version_absolute_id,
             )
 
-            # Dedup by relation_id
-            accum_by_rid = {r.relation_id: r for r in accum_rels}
-            current_by_rid = {r.relation_id: r for r in current_rels}
+            # Dedup by family_id
+            accum_by_rid = {r.family_id: r for r in accum_rels}
+            current_by_rid = {r.family_id: r for r in current_rels}
             accum_rids = set(accum_by_rid)
             current_rids = set(current_by_rid)
 
@@ -2032,13 +2192,13 @@ def create_app(
 
             # ---- accumulated: v1..vN union + future from latest ----
             if relation_scope == "accumulated":
-                latest_rels = processor.storage.get_entity_relations_by_entity_id(
-                    entity_id=entity_id,
+                latest_rels = processor.storage.get_entity_relations_by_family_id(
+                    family_id=family_id,
                     limit=limit,
                     time_point=time_point,
                     max_version_absolute_id=None,
                 )
-                latest_by_rid = {r.relation_id: r for r in latest_rels}
+                latest_by_rid = {r.family_id: r for r in latest_rels}
                 latest_rids = set(latest_by_rid)
 
                 all_rels = []
@@ -2054,7 +2214,7 @@ def create_app(
                 enrich_relations(dicts, processor)
 
                 for d in dicts:
-                    rid = d["relation_id"]
+                    rid = d["family_id"]
                     if rid not in current_rids:
                         if rid not in accum_rids:
                             d["_future"] = True
@@ -2064,13 +2224,13 @@ def create_app(
                 return ok(dicts)
 
             # ---- all_versions: (v1..vN) ∪ latest, classify as current/inherited/future ----
-            latest_rels = processor.storage.get_entity_relations_by_entity_id(
-                entity_id=entity_id,
+            latest_rels = processor.storage.get_entity_relations_by_family_id(
+                family_id=family_id,
                 limit=limit,
                 time_point=time_point,
                 max_version_absolute_id=None,
             )
-            latest_by_rid = {r.relation_id: r for r in latest_rels}
+            latest_by_rid = {r.family_id: r for r in latest_rels}
             latest_rids = set(latest_by_rid)
 
             all_rels = []
@@ -2084,7 +2244,7 @@ def create_app(
             enrich_relations(dicts, processor)
 
             for d in dicts:
-                rid = d["relation_id"]
+                rid = d["family_id"]
                 if rid in current_rids:
                     d["_version_scope"] = "current"
                 elif rid in accum_rids:
@@ -2097,57 +2257,363 @@ def create_app(
             return err(str(e), 500)
 
     # =========================================================
-    # Find: 记忆缓存原子接口
+    # Find: 版本级 CRUD（Phase 2 — absolute_id 优先操作）
     # =========================================================
-    @app.route("/api/v1/find/memory-caches/latest/metadata", methods=["GET"])
-    def find_latest_memory_cache_metadata():
+
+    @app.route("/api/v1/find/entities/create", methods=["POST"])
+    def create_entity():
+        """手动创建实体（生成新 family_id + absolute_id）。"""
+        try:
+            processor = _get_processor()
+            body = request.get_json(silent=True) or {}
+            name = (body.get("name") or "").strip()
+            content = (body.get("content") or "").strip()
+            if not name:
+                return err("name 为必填", 400)
+            import uuid as _uuid
+
+            now = datetime.now()
+            ts = now.strftime("%Y%m%d_%H%M%S")
+            # 生成唯一 ID（生成后查库校验）
+            family_id = f"ent_{_uuid.uuid4().hex[:12]}"
+            absolute_id = f"entity_{ts}_{_uuid.uuid4().hex[:8]}"
+            for _ in range(10):
+                existing = processor.storage.get_entity_by_absolute_id(absolute_id)
+                if not existing:
+                    break
+                absolute_id = f"entity_{ts}_{_uuid.uuid4().hex[:8]}"
+            for _ in range(10):
+                existing = processor.storage.get_entity_by_family_id(family_id)
+                if not existing:
+                    break
+                family_id = f"ent_{_uuid.uuid4().hex[:12]}"
+
+            entity = Entity(
+                absolute_id=absolute_id,
+                family_id=family_id,
+                name=name,
+                content=content,
+                event_time=now,
+                processed_time=now,
+                episode_id=body.get("episode_id", ""),
+                source_document=body.get("source_document", ""),
+            )
+            processor.storage.save_entity(entity)
+            return ok(entity_to_dict(entity))
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/v1/find/entities/absolute/<absolute_id>", methods=["PUT"])
+    def update_entity_absolute(absolute_id: str):
+        """更新指定版本实体（不触发版本链 invalidate）。"""
+        try:
+            processor = _get_processor()
+            body = request.get_json(silent=True) or {}
+            fields = {}
+            for key in ("name", "content", "summary", "attributes", "confidence"):
+                if key in body:
+                    fields[key] = body[key]
+            if not fields:
+                return err("至少提供一个可更新字段", 400)
+            updated = processor.storage.update_entity_by_absolute_id(absolute_id, **fields)
+            if not updated:
+                return err(f"未找到实体版本: {absolute_id}", 404)
+            return ok(entity_to_dict(updated))
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/v1/find/entities/absolute/<absolute_id>", methods=["DELETE"])
+    def delete_entity_absolute(absolute_id: str):
+        """删除指定版本实体（带删除保护：有关联关系时拒绝）。"""
+        try:
+            processor = _get_processor()
+            # 删除保护：检查是否有关系引用该 absolute_id
+            blocking = processor.storage.get_relations_referencing_absolute_id(absolute_id)
+            if blocking:
+                blocking_dicts = [relation_to_dict(r) for r in blocking[:10]]
+                return ok({
+                    "absolute_id": absolute_id,
+                    "deleted": False,
+                    "reason": f"该版本仍有 {len(blocking)} 条关联关系",
+                    "blocking_relations": blocking_dicts,
+                }, 409) if False else err(
+                    f"该版本仍有 {len(blocking)} 条关联关系，请先删除或重定向这些关系",
+                    409,
+                )
+            success = processor.storage.delete_entity_by_absolute_id(absolute_id)
+            if not success:
+                return err(f"未找到实体版本: {absolute_id}", 404)
+            return ok({"absolute_id": absolute_id, "deleted": True})
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/v1/find/entities/batch-delete-versions", methods=["POST"])
+    def batch_delete_entity_versions():
+        """批量删除实体版本（带删除保护）。"""
+        try:
+            processor = _get_processor()
+            body = request.get_json(silent=True) or {}
+            absolute_ids = body.get("absolute_ids", [])
+            if not isinstance(absolute_ids, list) or not absolute_ids:
+                return err("absolute_ids 需为非空数组", 400)
+            deleted = []
+            blocked = {}
+            for aid in absolute_ids:
+                blocking = processor.storage.get_relations_referencing_absolute_id(aid)
+                if blocking:
+                    blocked[aid] = {
+                        "blocking_count": len(blocking),
+                        "blocking_relations": [relation_to_dict(r) for r in blocking[:5]],
+                    }
+                else:
+                    success = processor.storage.delete_entity_by_absolute_id(aid)
+                    if success:
+                        deleted.append(aid)
+                    else:
+                        blocked[aid] = {"blocking_count": 0, "reason": "未找到"}
+            return ok({
+                "deleted": deleted,
+                "blocked": blocked,
+                "summary": {"deleted_count": len(deleted), "blocked_count": len(blocked)},
+            })
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/v1/find/relations/create", methods=["POST"])
+    def create_relation():
+        """手动创建关系（生成新 family_id + absolute_id）。
+
+        实体 ID 参数支持两种形式（二选一，优先使用 absolute_id）：
+          - entity1_absolute_id / entity2_absolute_id（版本快照 ID）
+          - entity1_family_id / entity2_family_id（逻辑 ID，自动解析为最新 absolute_id）
+        """
+        try:
+            processor = _get_processor()
+            body = request.get_json(silent=True) or {}
+
+            # Resolve entity IDs: prefer absolute_id, fall back to family_id
+            e1 = (body.get("entity1_absolute_id") or "").strip()
+            e2 = (body.get("entity2_absolute_id") or "").strip()
+
+            if not e1:
+                e1_fid = (body.get("entity1_family_id") or "").strip()
+                if e1_fid:
+                    entity1 = processor.storage.get_entity_by_family_id(e1_fid)
+                    if entity1:
+                        e1 = entity1.absolute_id
+                    else:
+                        return err(f"entity1_family_id '{e1_fid}' 未找到对应实体", 404)
+
+            if not e2:
+                e2_fid = (body.get("entity2_family_id") or "").strip()
+                if e2_fid:
+                    entity2 = processor.storage.get_entity_by_family_id(e2_fid)
+                    if entity2:
+                        e2 = entity2.absolute_id
+                    else:
+                        return err(f"entity2_family_id '{e2_fid}' 未找到对应实体", 404)
+
+            if not e1 or not e2:
+                return err("需要 entity1_absolute_id 或 entity1_family_id（entity2 同理）", 400)
+
+            content = (body.get("content") or "").strip()
+            if not content:
+                return err("content 为必填", 400)
+
+            import uuid as _uuid
+
+            now = datetime.now()
+            ts = now.strftime("%Y%m%d_%H%M%S")
+            # 确保 entity1 < entity2（无向关系）
+            if e1 > e2:
+                e1, e2 = e2, e1
+            family_id = f"rel_{_uuid.uuid4().hex[:12]}"
+            absolute_id = f"relation_{ts}_{_uuid.uuid4().hex[:8]}"
+            for _ in range(10):
+                existing = processor.storage.get_relation_by_absolute_id(absolute_id)
+                if not existing:
+                    break
+                absolute_id = f"relation_{ts}_{_uuid.uuid4().hex[:8]}"
+            for _ in range(10):
+                existing = processor.storage.get_relation_by_family_id(family_id)
+                if not existing:
+                    break
+                family_id = f"rel_{_uuid.uuid4().hex[:12]}"
+
+            relation = Relation(
+                absolute_id=absolute_id,
+                family_id=family_id,
+                entity1_absolute_id=e1,
+                entity2_absolute_id=e2,
+                content=content,
+                event_time=now,
+                processed_time=now,
+                episode_id=body.get("episode_id", ""),
+                source_document=body.get("source_document", ""),
+            )
+            processor.storage.save_relation(relation)
+            return ok(relation_to_dict(relation))
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/v1/find/relations/absolute/<absolute_id>", methods=["PUT"])
+    def update_relation_absolute(absolute_id: str):
+        """更新指定版本关系。"""
+        try:
+            processor = _get_processor()
+            body = request.get_json(silent=True) or {}
+            fields = {}
+            for key in ("content", "summary", "attributes", "confidence"):
+                if key in body:
+                    fields[key] = body[key]
+            if not fields:
+                return err("至少提供一个可更新字段", 400)
+            updated = processor.storage.update_relation_by_absolute_id(absolute_id, **fields)
+            if not updated:
+                return err(f"未找到关系版本: {absolute_id}", 404)
+            return ok(relation_to_dict(updated))
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/v1/find/relations/absolute/<absolute_id>", methods=["DELETE"])
+    def delete_relation_absolute(absolute_id: str):
+        """删除指定版本关系。"""
+        try:
+            processor = _get_processor()
+            success = processor.storage.delete_relation_by_absolute_id(absolute_id)
+            if not success:
+                return err(f"未找到关系版本: {absolute_id}", 404)
+            return ok({"absolute_id": absolute_id, "deleted": True})
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/v1/find/relations/batch-delete-versions", methods=["POST"])
+    def batch_delete_relation_versions():
+        """批量删除关系版本。"""
+        try:
+            processor = _get_processor()
+            body = request.get_json(silent=True) or {}
+            absolute_ids = body.get("absolute_ids", [])
+            if not isinstance(absolute_ids, list) or not absolute_ids:
+                return err("absolute_ids 需为非空数组", 400)
+            deleted = []
+            failed = []
+            for aid in absolute_ids:
+                success = processor.storage.delete_relation_by_absolute_id(aid)
+                if success:
+                    deleted.append(aid)
+                else:
+                    failed.append(aid)
+            return ok({
+                "deleted": deleted,
+                "failed": failed,
+                "summary": {"deleted_count": len(deleted), "failed_count": len(failed)},
+            })
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/v1/find/entities/split-version", methods=["POST"])
+    def split_entity_version():
+        """将实体版本拆分到新的 family_id。"""
+        try:
+            processor = _get_processor()
+            body = request.get_json(silent=True) or {}
+            absolute_id = (body.get("absolute_id") or "").strip()
+            if not absolute_id:
+                return err("absolute_id 为必填", 400)
+            new_family_id = (body.get("new_family_id") or "").strip()
+            # 获取旧的 family_id（用于返回）
+            old_entity = processor.storage.get_entity_by_absolute_id(absolute_id)
+            if not old_entity:
+                return err(f"未找到实体版本: {absolute_id}", 404)
+            old_family_id = old_entity.family_id
+            updated = processor.storage.split_entity_version(absolute_id, new_family_id)
+            if not updated:
+                return err(f"拆分失败: {absolute_id}", 500)
+            return ok({
+                "absolute_id": absolute_id,
+                "old_family_id": old_family_id,
+                "new_family_id": updated.family_id,
+                "entity": entity_to_dict(updated),
+            })
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/v1/find/relations/redirect", methods=["POST"])
+    def redirect_relation():
+        """重定向关系的实体端点。"""
+        try:
+            processor = _get_processor()
+            body = request.get_json(silent=True) or {}
+            family_id = (body.get("family_id") or "").strip()
+            side = (body.get("side") or "").strip()
+            new_family_id = (body.get("new_family_id") or "").strip()
+            if not family_id or not side or not new_family_id:
+                return err("family_id, side, new_family_id 为必填", 400)
+            if side not in ("entity1", "entity2"):
+                return err("side 必须为 entity1 或 entity2", 400)
+            count = processor.storage.redirect_relation(family_id, side, new_family_id)
+            return ok({
+                "family_id": family_id,
+                "side": side,
+                "new_family_id": new_family_id,
+                "relations_updated": count,
+            })
+        except Exception as e:
+            return err(str(e), 500)
+
+    # =========================================================
+    # Find: Episode 原子接口
+    # =========================================================
+    @app.route("/api/v1/find/episodes/latest/metadata", methods=["GET"])
+    def find_latest_episode_metadata():
         try:
             processor = _get_processor()
             activity_type = request.args.get("activity_type")
-            metadata = processor.storage.get_latest_memory_cache_metadata(activity_type=activity_type)
+            metadata = processor.storage.get_latest_episode_metadata(activity_type=activity_type)
             if metadata is None:
-                return err("未找到记忆缓存元数据", 404)
+                return err("未找到 Episode 元数据", 404)
             return ok(metadata)
         except Exception as e:
             return err(str(e), 500)
 
-    @app.route("/api/v1/find/memory-caches/latest", methods=["GET"])
-    def find_latest_memory_cache():
+    @app.route("/api/v1/find/episodes/latest", methods=["GET"])
+    def find_latest_episode():
         try:
             processor = _get_processor()
             activity_type = request.args.get("activity_type")
-            cache = processor.storage.get_latest_memory_cache(activity_type=activity_type)
+            cache = processor.storage.get_latest_episode(activity_type=activity_type)
             if cache is None:
-                return err("未找到记忆缓存", 404)
-            return ok(memory_cache_to_dict(cache))
+                return err("未找到 Episode", 404)
+            return ok(episode_to_dict(cache))
         except Exception as e:
             return err(str(e), 500)
 
-    @app.route("/api/v1/find/memory-caches/<cache_id>/text", methods=["GET"])
-    def find_memory_cache_text(cache_id: str):
+    @app.route("/api/v1/find/episodes/<cache_id>/text", methods=["GET"])
+    def find_episode_text(cache_id: str):
         try:
             processor = _get_processor()
-            text = processor.storage.get_memory_cache_text(cache_id)
+            text = processor.storage.get_episode_text(cache_id)
             if text is None:
-                return err(f"未找到记忆缓存或原文: {cache_id}", 404)
+                return err(f"未找到 Episode 或原文: {cache_id}", 404)
             return ok({"cache_id": cache_id, "text": text})
         except Exception as e:
             return err(str(e), 500)
 
-    @app.route("/api/v1/find/memory-caches/<cache_id>", methods=["GET"])
-    def find_memory_cache(cache_id: str):
+    @app.route("/api/v1/find/episodes/<cache_id>", methods=["GET"])
+    def find_episode(cache_id: str):
         try:
             processor = _get_processor()
-            cache = processor.storage.load_memory_cache(cache_id)
+            cache = processor.storage.load_episode(cache_id)
             if cache is None:
-                return err(f"未找到记忆缓存: {cache_id}", 404)
-            return ok(memory_cache_to_dict(cache))
+                return err(f"未找到 Episode: {cache_id}", 404)
+            return ok(episode_to_dict(cache))
         except Exception as e:
             return err(str(e), 500)
 
-    @app.route("/api/v1/find/memory-caches/<cache_id>/doc", methods=["GET"])
-    def find_memory_cache_doc(cache_id: str):
-        """获取记忆缓存对应的完整文档内容（原文 + 缓存摘要）。"""
+    @app.route("/api/v1/find/episodes/<cache_id>/doc", methods=["GET"])
+    def find_episode_doc(cache_id: str):
+        """获取 Episode 对应的完整文档内容（原文 + 缓存摘要）。"""
         try:
             processor = _get_processor()
             doc_hash = processor.storage.get_doc_hash_by_cache_id(cache_id)
@@ -2217,17 +2683,17 @@ def create_app(
         except Exception as e:
             return err(str(e), 500)
 
-    @app.route("/api/v1/find/relations/<relation_id>/invalidate", methods=["POST"])
-    def invalidate_relation(relation_id: str):
+    @app.route("/api/v1/find/relations/<family_id>/invalidate", methods=["POST"])
+    def invalidate_relation(family_id: str):
         """标记关系为失效（不删除，保留历史）"""
         try:
             processor = _get_processor()
             body = request.get_json(silent=True) or {}
             reason = body.get("reason", "")
-            count = processor.storage.invalidate_relation(relation_id, reason)
+            count = processor.storage.invalidate_relation(family_id, reason)
             if count == 0:
-                return err(f"未找到可失效的关系: {relation_id}", 404)
-            return ok({"message": f"已标记 {count} 个关系版本为失效", "relation_id": relation_id})
+                return err(f"未找到可失效的关系: {family_id}", 404)
+            return ok({"message": f"已标记 {count} 个关系版本为失效", "family_id": family_id})
         except Exception as e:
             return err(str(e), 500)
 
@@ -2257,25 +2723,25 @@ def create_app(
         except Exception as e:
             return err(str(e), 500)
 
-    @app.route("/api/v1/find/entities/<entity_id>/timeline", methods=["GET"])
-    def find_entity_timeline(entity_id: str):
+    @app.route("/api/v1/find/entities/<family_id>/timeline", methods=["GET"])
+    def find_entity_timeline(family_id: str):
         """实体版本时间线"""
         try:
             processor = _get_processor()
             with _perf_timer("find_entity_timeline"):
-                versions = processor.storage.get_entity_versions(entity_id)
+                versions = processor.storage.get_entity_versions(family_id)
             if not versions:
-                return err(f"未找到实体: {entity_id}", 404)
+                return err(f"未找到实体: {family_id}", 404)
 
             # 获取关联关系的版本（批量优化：获取所有版本的关系，按 processed_time 过滤）
             relations_timeline = []
             if hasattr(processor.storage, 'get_entity_relations_timeline'):
                 timeline_data = processor.storage.get_entity_relations_timeline(
-                    entity_id, [v.absolute_id for v in versions]
+                    family_id, [v.absolute_id for v in versions]
                 )
                 for item in timeline_data:
                     relations_timeline.append({
-                        "relation_id": item["relation_id"],
+                        "family_id": item.get("relation_id") or item.get("family_id"),
                         "content": item["content"],
                         "event_time": item["event_time"],
                         "absolute_id": item["absolute_id"],
@@ -2283,12 +2749,12 @@ def create_app(
             else:
                 # 回退到逐版本查询
                 for v in versions:
-                    rels = processor.storage.get_entity_relations_by_entity_id(
-                        entity_id=entity_id, max_version_absolute_id=v.absolute_id,
+                    rels = processor.storage.get_entity_relations_by_family_id(
+                        family_id=family_id, max_version_absolute_id=v.absolute_id,
                     )
                     for r in rels:
                         relations_timeline.append({
-                            "relation_id": r.relation_id,
+                            "family_id": r.family_id,
                             "content": r.content,
                             "event_time": r.event_time.isoformat() if r.event_time else None,
                             "absolute_id": r.absolute_id,
@@ -2303,7 +2769,7 @@ def create_app(
                     unique_rels.append(r)
 
             return ok({
-                "entity_id": entity_id,
+                "family_id": family_id,
                 "versions": [entity_to_dict(v) for v in versions],
                 "relations_timeline": unique_rels,
             })
@@ -2314,17 +2780,17 @@ def create_app(
     # Phase: Section-Level Version Control
     # =========================================================
 
-    @app.route("/api/v1/find/entities/<entity_id>/section-history", methods=["GET"])
-    def entity_section_history(entity_id: str):
+    @app.route("/api/v1/find/entities/<family_id>/section-history", methods=["GET"])
+    def entity_section_history(family_id: str):
         """获取单个 section 的全版本变更历史。"""
         try:
             processor = _get_processor()
             section_key = request.args.get("section", "")
             if not section_key:
                 return err("缺少 section 参数", 400)
-            patches = processor.storage.get_section_history(entity_id, section_key)
+            patches = processor.storage.get_section_history(family_id, section_key)
             return ok({
-                "entity_id": entity_id,
+                "family_id": family_id,
                 "section_key": section_key,
                 "patches": [
                     {
@@ -2343,8 +2809,8 @@ def create_app(
         except Exception as e:
             return err(str(e), 500)
 
-    @app.route("/api/v1/find/entities/<entity_id>/version-diff", methods=["GET"])
-    def entity_version_diff(entity_id: str):
+    @app.route("/api/v1/find/entities/<family_id>/version-diff", methods=["GET"])
+    def entity_version_diff(family_id: str):
         """获取两个版本之间的 section 级 diff."""
         try:
             processor = _get_processor()
@@ -2352,9 +2818,9 @@ def create_app(
             v2 = request.args.get("v2", "")
             if not v1 or not v2:
                 return err("需要 v1 和 v2 参数（两个版本的 absolute_id）", 400)
-            diff = processor.storage.get_version_diff(entity_id, v1, v2)
+            diff = processor.storage.get_version_diff(family_id, v1, v2)
             return ok({
-                "entity_id": entity_id,
+                "family_id": family_id,
                 "v1": v1,
                 "v2": v2,
                 "sections": {
@@ -2370,16 +2836,16 @@ def create_app(
         except Exception as e:
             return err(str(e), 500)
 
-    @app.route("/api/v1/find/entities/<entity_id>/patches", methods=["GET"])
-    def entity_patches(entity_id: str):
+    @app.route("/api/v1/find/entities/<family_id>/patches", methods=["GET"])
+    def entity_patches(family_id: str):
         """获取实体的所有 ContentPatch 记录.\
         可选参数 section: 过滤特定 section"""
         try:
             processor = _get_processor()
             section_key = request.args.get("section", None)
-            patches = processor.storage.get_content_patches(entity_id, section_key=section_key)
+            patches = processor.storage.get_content_patches(family_id, section_key=section_key)
             return ok({
-                "entity_id": entity_id,
+                "family_id": family_id,
                 "patches": [
                     {
                         "uuid": p.uuid,
@@ -2402,16 +2868,16 @@ def create_app(
     # =========================================================
     # Phase A: Entity Intelligence — 摘要进化 / 属性更新
     # =========================================================
-    @app.route("/api/v1/find/entities/<entity_id>/evolve-summary", methods=["POST"])
-    def evolve_entity_summary(entity_id: str):
+    @app.route("/api/v1/find/entities/<family_id>/evolve-summary", methods=["POST"])
+    def evolve_entity_summary(family_id: str):
         """手动触发实体摘要进化。"""
         try:
             processor = _get_processor()
-            entity = processor.storage.get_entity_by_entity_id(entity_id)
+            entity = processor.storage.get_entity_by_family_id(family_id)
             if entity is None:
-                return err(f"未找到实体: {entity_id}", 404)
+                return err(f"未找到实体: {family_id}", 404)
 
-            versions = processor.storage.get_entity_versions(entity_id)
+            versions = processor.storage.get_entity_versions(family_id)
             old_version = versions[1] if len(versions) > 1 else None
 
             import asyncio
@@ -2423,13 +2889,13 @@ def create_app(
             finally:
                 loop.close()
 
-            processor.storage.update_entity_summary(entity_id, summary)
-            return ok({"entity_id": entity_id, "summary": summary})
+            processor.storage.update_entity_summary(family_id, summary)
+            return ok({"family_id": family_id, "summary": summary})
         except Exception as e:
             return err(str(e), 500)
 
-    @app.route("/api/v1/find/entities/<entity_id>", methods=["PUT"])
-    def update_entity_v2(entity_id: str):
+    @app.route("/api/v1/find/entities/<family_id>", methods=["PUT"])
+    def update_entity_v2(family_id: str):
         """编辑实体：支持更新 summary 和 attributes（不创建新版本）。"""
         try:
             processor = _get_processor()
@@ -2438,10 +2904,10 @@ def create_app(
             attributes = body.get("attributes")
 
             if summary is not None:
-                processor.storage.update_entity_summary(entity_id, str(summary))
+                processor.storage.update_entity_summary(family_id, str(summary))
             if attributes is not None:
                 attr_str = json.dumps(attributes, ensure_ascii=False) if isinstance(attributes, dict) else str(attributes)
-                processor.storage.update_entity_attributes(entity_id, attr_str)
+                processor.storage.update_entity_attributes(family_id, attr_str)
 
             if summary is None and attributes is None:
                 # 回退到原版：创建新版本
@@ -2449,24 +2915,24 @@ def create_app(
                 content = body.get("content")
                 if not name and not content:
                     return err("name 或 content 至少需要提供一个", 400)
-                current = processor.storage.get_entity_by_entity_id(entity_id)
+                current = processor.storage.get_entity_by_family_id(family_id)
                 if current is None:
-                    return err(f"未找到实体: {entity_id}", 404)
+                    return err(f"未找到实体: {family_id}", 404)
                 now = datetime.now(timezone.utc)
                 updated = Entity(
                     absolute_id=str(uuid.uuid4()),
-                    entity_id=entity_id,
+                    family_id=family_id,
                     name=name if name else current.name,
                     content=content if content else current.content,
                     event_time=now, processed_time=now,
-                    memory_cache_id=current.memory_cache_id,
+                    episode_id=current.episode_id,
                     source_document=current.source_document,
                     valid_at=now,
                 )
                 processor.storage.save_entity(updated)
                 return ok({"message": "实体已更新", "absolute_id": updated.absolute_id})
 
-            return ok({"message": "实体属性已更新", "entity_id": entity_id})
+            return ok({"message": "实体属性已更新", "family_id": family_id})
         except Exception as e:
             return err(str(e), 500)
 
@@ -2478,9 +2944,9 @@ def create_app(
         """BFS 图遍历搜索。"""
         try:
             body = request.get_json(silent=True) or {}
-            seed_ids = body.get("seed_entity_ids", [])
+            seed_ids = body.get("seed_family_ids") or body.get("seed_family_ids", [])
             if not isinstance(seed_ids, list) or not seed_ids:
-                return err("seed_entity_ids 需为非空数组", 400)
+                return err("seed_family_ids 需为非空数组", 400)
             max_depth = int(body.get("max_depth", 2))
             max_nodes = int(body.get("max_nodes", 50))
 
@@ -2494,20 +2960,6 @@ def create_app(
     # =========================================================
     # Phase C: Episode Enhancement — CRUD + 事实溯源
     # =========================================================
-    @app.route("/api/v1/find/episodes/<cache_id>", methods=["GET"])
-    def find_episode(cache_id: str):
-        """获取 Episode 详情。"""
-        try:
-            processor = _get_processor()
-            cache = processor.storage.load_memory_cache(cache_id)
-            if cache is None:
-                return err(f"未找到 Episode: {cache_id}", 404)
-            result = memory_cache_to_dict(cache)
-            if hasattr(processor.storage, 'get_episode_entities'):
-                result["entities"] = processor.storage.get_episode_entities(cache_id)
-            return ok(result)
-        except Exception as e:
-            return err(str(e), 500)
 
     @app.route("/api/v1/find/episodes/search", methods=["POST"])
     def search_episodes():
@@ -2519,20 +2971,19 @@ def create_app(
                 return err("query 为必填", 400)
             limit = int(body.get("limit", 20))
             processor = _get_processor()
-            # BM25 搜索记忆缓存
-            results = processor.storage.search_memory_caches_by_bm25(query, limit=limit)
-            return ok([memory_cache_to_dict(c) for c in results])
+            results = processor.storage.search_episodes_by_bm25(query, limit=limit)
+            return ok([episode_to_dict(c) for c in results])
         except Exception as e:
             return err(str(e), 500)
 
     @app.route("/api/v1/find/episodes/<cache_id>", methods=["DELETE"])
-    def delete_episode(cache_id: str):
+    def find_episode_delete(cache_id: str):
         """删除 Episode。"""
         try:
             processor = _get_processor()
             if hasattr(processor.storage, 'delete_episode_mentions'):
                 processor.storage.delete_episode_mentions(cache_id)
-            count = processor.storage.delete_memory_cache(cache_id)
+            count = processor.storage.delete_episode(cache_id)
             if count == 0:
                 return err(f"未找到 Episode: {cache_id}", 404)
             return ok({"message": "已删除", "cache_id": cache_id})
@@ -2541,41 +2992,47 @@ def create_app(
 
     @app.route("/api/v1/find/episodes/batch-ingest", methods=["POST"])
     def batch_ingest_episodes():
-        """批量导入 Episode。"""
+        """批量导入 Episode。使用 bulk_save 优化写入性能。"""
         try:
             body = request.get_json(silent=True) or {}
             episodes = body.get("episodes", [])
             if not isinstance(episodes, list):
                 return err("episodes 需为数组", 400)
             processor = _get_processor()
-            ingested = 0
+            episode_objects = []
             for ep in episodes:
                 text = (ep.get("content") or ep.get("text") or "").strip()
                 if not text:
                     continue
                 source = ep.get("source_document", "batch_ingest")
                 ep_type = ep.get("episode_type")
-                mc = MemoryCache(
+                mc = Episode(
                     absolute_id=str(uuid.uuid4()),
                     content=text,
                     event_time=datetime.now(timezone.utc),
                     source_document=source,
                     episode_type=ep_type,
                 )
-                processor.storage.save_memory_cache(mc)
-                ingested += 1
-            return ok({"message": f"已导入 {ingested} 条 Episode", "count": ingested})
+                episode_objects.append(mc)
+            if episode_objects:
+                # Use bulk save for Neo4j, fallback to loop for SQLite
+                if hasattr(processor.storage, 'bulk_save_episodes'):
+                    processor.storage.bulk_save_episodes(episode_objects)
+                else:
+                    for mc in episode_objects:
+                        processor.storage.save_episode(mc)
+            return ok({"message": f"已导入 {len(episode_objects)} 条 Episode", "count": len(episode_objects)})
         except Exception as e:
             return err(str(e), 500)
 
-    @app.route("/api/v1/find/entities/<entity_id>/provenance", methods=["GET"])
-    def get_entity_provenance(entity_id: str):
+    @app.route("/api/v1/find/entities/<family_id>/provenance", methods=["GET"])
+    def get_entity_provenance(family_id: str):
         """事实溯源：获取提及该实体的所有 Episode。"""
         try:
             processor = _get_processor()
             if not hasattr(processor.storage, 'get_entity_provenance'):
                 return ok([])
-            provenance = processor.storage.get_entity_provenance(entity_id)
+            provenance = processor.storage.get_entity_provenance(family_id)
             return ok(provenance)
         except Exception as e:
             return err(str(e), 500)
@@ -2583,12 +3040,12 @@ def create_app(
     # =========================================================
     # Phase D: 矛盾检测
     # =========================================================
-    @app.route("/api/v1/find/entities/<entity_id>/contradictions", methods=["GET"])
-    def get_entity_contradictions(entity_id: str):
+    @app.route("/api/v1/find/entities/<family_id>/contradictions", methods=["GET"])
+    def get_entity_contradictions(family_id: str):
         """检测同一实体不同版本之间的矛盾。"""
         try:
             processor = _get_processor()
-            versions = processor.storage.get_entity_versions(entity_id)
+            versions = processor.storage.get_entity_versions(family_id)
             if len(versions) < 2:
                 return ok([])
 
@@ -2596,7 +3053,7 @@ def create_app(
             loop = asyncio.new_event_loop()
             try:
                 contradictions = loop.run_until_complete(
-                    processor.llm_client.detect_contradictions(entity_id, versions)
+                    processor.llm_client.detect_contradictions(family_id, versions)
                 )
             finally:
                 loop.close()
@@ -2605,8 +3062,8 @@ def create_app(
         except Exception as e:
             return err(str(e), 500)
 
-    @app.route("/api/v1/find/entities/<entity_id>/resolve-contradiction", methods=["POST"])
-    def resolve_entity_contradiction(entity_id: str):
+    @app.route("/api/v1/find/entities/<family_id>/resolve-contradiction", methods=["POST"])
+    def resolve_entity_contradiction(family_id: str):
         """LLM 裁决矛盾。"""
         try:
             body = request.get_json(silent=True) or {}
@@ -2629,52 +3086,8 @@ def create_app(
             return err(str(e), 500)
 
     # =========================================================
-    # Phase E: DeepDream 记忆巩固
+    # Phase E: DeepDream 记忆巩固（积木端点 — 编排由 Agent Skill 驱动）
     # =========================================================
-    _dream_engine = None
-    _dream_lock = threading.Lock()
-
-    @app.route("/api/v1/find/dream/start", methods=["POST"])
-    def start_dream():
-        """启动梦境周期。"""
-        try:
-            body = request.get_json(silent=True) or {}
-            review_window = int(body.get("review_window_days", 30))
-            max_entities = int(body.get("max_entities_per_cycle", 100))
-            similarity_threshold = float(body.get("similarity_threshold", 0.8))
-
-            processor = _get_processor()
-
-            from processor.dream.engine import DeepDreamEngine
-            from processor.dream.models import DreamConfig
-
-            config = DreamConfig(
-                review_window_days=review_window,
-                max_entities_per_cycle=max_entities,
-                similarity_threshold=similarity_threshold,
-            )
-
-            engine = DeepDreamEngine(processor.storage, processor.dream_llm_client)
-
-            import asyncio
-            loop = asyncio.new_event_loop()
-            try:
-                report = loop.run_until_complete(
-                    engine.run_dream_cycle(request.graph_id or "default", config)
-                )
-            finally:
-                loop.close()
-
-            return ok({
-                "cycle_id": report.cycle_id,
-                "status": report.status,
-                "insights_count": len(report.insights),
-                "connections_count": len(report.new_connections),
-                "consolidations_count": len(report.consolidations),
-                "narrative": report.narrative,
-            })
-        except Exception as e:
-            return err(str(e), 500)
 
     @app.route("/api/v1/find/dream/status", methods=["GET"])
     def dream_status():
@@ -2718,7 +3131,7 @@ def create_app(
             return err(str(e), 500)
 
     # =========================================================
-    # Phase E.2: DeepDream Agent API — Agent 驱动的梦境巩固
+    # Phase E.2: DeepDream 梦境积木端点 — 种子 / 关系 / 记录
     # =========================================================
 
     @app.route("/api/v1/find/dream/seeds", methods=["POST"])
@@ -2728,8 +3141,13 @@ def create_app(
             body = request.get_json(silent=True) or {}
             strategy = str(body.get("strategy", "random")).strip()
             count = min(int(body.get("count", 10)), 100)
-            exclude_ids = body.get("exclude_entity_ids") or []
+            exclude_ids = body.get("exclude_family_ids") or []
             community_id = body.get("community_id")
+            if community_id is not None:
+                try:
+                    community_id = int(community_id)
+                except (ValueError, TypeError):
+                    return err("community_id 必须是整数", 400)
 
             valid_strategies = ["random", "orphan", "hub", "time_gap", "cross_community", "low_confidence"]
             if strategy not in valid_strategies:
@@ -2772,6 +3190,7 @@ def create_app(
             confidence = body.get("confidence")
             reasoning = str(body.get("reasoning") or "").strip()
             dream_cycle_id = str(body.get("dream_cycle_id") or "").strip() or None
+            episode_id = str(body.get("episode_id") or "").strip() or None
 
             # 参数校验
             if not entity1_id or not entity2_id:
@@ -2799,6 +3218,7 @@ def create_app(
                 confidence=confidence,
                 reasoning=reasoning,
                 dream_cycle_id=dream_cycle_id,
+                episode_id=episode_id,
             )
             return ok(result)
         except ValueError as e:
@@ -2814,6 +3234,14 @@ def create_app(
             content = str(body.get("content") or "").strip()
             entities_examined = body.get("entities_examined") or []
             relations_created = body.get("relations_created") or []
+            # Accept int count or separate count key (from MCP tools)
+            if isinstance(relations_created, int):
+                relations_created_count = relations_created
+                relations_created = []
+            elif body.get("relations_created_count") is not None:
+                relations_created_count = int(body["relations_created_count"])
+            else:
+                relations_created_count = len(relations_created)
             strategy_used = str(body.get("strategy_used") or "").strip()
             dream_cycle_id = str(body.get("dream_cycle_id") or "").strip() or None
 
@@ -2830,75 +3258,251 @@ def create_app(
                 relations_created=relations_created,
                 strategy_used=strategy_used,
                 dream_cycle_id=dream_cycle_id,
+                relations_created_count=relations_created_count,
             )
             return ok(result)
         except Exception as e:
             return err(str(e), 500)
 
-    # =========================================================
-    # Phase E.3: Dream Agent — 自主梦境代理启动
-    # =========================================================
+    @app.route("/api/v1/find/dream/run", methods=["POST"])
+    def dream_run():
+        """一键梦境巩固：获取种子 → 探索邻居 → 发现隐藏关系 → 返回结果。
 
-    @app.route("/api/v1/find/dream/agent/start", methods=["POST"])
-    def dream_agent_start():
-        """启动 Dream Agent 自主梦境会话。"""
+        这是 Agent 友好的一次调用接口，替代手动 15-25 次 API 调用。
+
+        参数：
+          - strategy（可选）：种子策略，默认 "random"。可选: random, orphan, hub, time_gap, cross_community, low_confidence
+          - seed_count（可选）：种子数量，默认 3
+          - max_depth（可选）：BFS 遍历深度，默认 2
+          - max_relations（可选）：本轮最多创建关系数，默认 5
+          - min_confidence（可选）：最低置信度阈值，默认 0.5
+          - exclude_ids（可选）：排除的 family_id 列表
+          - wait（可选）：true 时同步等待完成（默认 true）
+          - timeout（可选）：超时秒数（默认 120）
+
+        返回：
+          - seeds: 使用的种子实体
+          - explored: 探索过的实体及其邻居
+          - relations_created: 创建的梦境关系列表
+          - cycle_summary: 本轮梦境摘要
+        """
         try:
             body = request.get_json(silent=True) or {}
+            strategy = str(body.get("strategy", "random")).strip()
+            seed_count = min(int(body.get("seed_count", 3)), 10)
+            max_depth = min(int(body.get("max_depth", 2)), 4)
+            max_relations = min(int(body.get("max_relations", 5)), 20)
+            min_confidence = float(body.get("min_confidence", 0.5))
+            exclude_ids = body.get("exclude_ids") or body.get("exclude_family_ids") or []
+
+            valid_strategies = ["random", "orphan", "hub", "time_gap", "cross_community", "low_confidence"]
+            if strategy not in valid_strategies:
+                return err(f"无效策略: {strategy}，可选: {', '.join(valid_strategies)}", 400)
+
             processor = _get_processor()
+            if not hasattr(processor.storage, 'get_dream_seeds'):
+                return err("DeepDream 不可用（需要 Neo4j 后端）", 404)
 
-            from processor.dream.models import DreamAgentConfig, VALID_DREAM_STRATEGIES
-            from processor.dream.engine import run_agent_dream
+            graph_id = request.graph_id or "default"
 
-            # 构建配置
-            strategies = body.get("strategies") or ["free_association", "cross_domain", "leap"]
-            # 过滤无效策略
-            strategies = [s for s in strategies if s in VALID_DREAM_STRATEGIES]
-            if not strategies:
-                return err(f"无效策略列表，可选: {', '.join(VALID_DREAM_STRATEGIES)}", 400)
-
-            config = DreamAgentConfig(
-                graph_id=request.graph_id or "default",
-                max_cycles=min(int(body.get("max_cycles", 10)), 50),
-                strategies=strategies,
-                strategy_mode=body.get("strategy_mode", "round_robin"),
-                confidence_threshold=float(body.get("confidence_threshold", 0.6)),
-                max_tool_calls_per_cycle=min(int(body.get("max_tool_calls_per_cycle", 15)), 50),
+            # Step 1: Get seeds
+            seeds = processor.storage.get_dream_seeds(
+                strategy=strategy,
+                count=seed_count,
+                exclude_ids=exclude_ids,
             )
-
-            import asyncio
-            loop = asyncio.new_event_loop()
-            try:
-                state = loop.run_until_complete(
-                    run_agent_dream(processor.storage, processor.dream_llm_client, config)
-                )
-            finally:
-                loop.close()
-
-            # 构建响应
-            cycle_summaries = []
-            for cr in state.cycle_results:
-                cycle_summaries.append({
-                    "strategy": cr.strategy,
-                    "entities_examined": cr.entities_examined,
-                    "relations_discovered": cr.relations_discovered,
-                    "relations_saved": cr.relations_saved,
-                    "tool_calls_made": cr.tool_calls_made,
-                    "error": cr.error,
+            if not seeds:
+                return ok({
+                    "seeds": [],
+                    "explored": [],
+                    "relations_created": [],
+                    "cycle_summary": "图谱为空或无可用种子，梦境结束",
                 })
 
+            # Step 2: For each seed, explore neighbors via BFS
+            all_explored = []
+            seen_ids = set()
+            seed_family_ids = [s["family_id"] for s in seeds if s.get("family_id")]
+
+            # Use GraphTraversalSearcher for neighbor discovery (works with family_id)
+            try:
+                searcher = GraphTraversalSearcher(processor.storage)
+                bfs_entities = searcher.bfs_expand(seed_family_ids, max_depth=max_depth, max_nodes=50)
+            except Exception:
+                bfs_entities = []
+
+            # Build entity lookup: family_id -> entity info
+            entity_lookup = {}
+            for ent in bfs_entities:
+                fid = getattr(ent, 'family_id', None)
+                if fid:
+                    entity_lookup[fid] = {
+                        "family_id": fid,
+                        "name": getattr(ent, 'name', ''),
+                        "content": (getattr(ent, 'content', '') or '')[:500],
+                    }
+                    seen_ids.add(fid)
+            # Also add seeds themselves
+            for s in seeds:
+                fid = s.get("family_id")
+                if fid and fid not in entity_lookup:
+                    entity_lookup[fid] = {
+                        "family_id": fid,
+                        "name": s.get("name", ""),
+                        "content": (s.get("content") or "")[:500],
+                    }
+                    seen_ids.add(fid)
+
+            for seed in seeds:
+                fid = seed.get("family_id")
+                if not fid:
+                    continue
+                # Neighbors = all explored entities except the seed itself
+                neighbor_data = [
+                    {"family_id": eid, "name": info["name"], "content": info["content"][:200]}
+                    for eid, info in entity_lookup.items()
+                    if eid != fid
+                ]
+                all_explored.append({
+                    "seed": {"family_id": fid, "name": seed.get("name", "")},
+                    "neighbors": neighbor_data[:20],
+                    "neighbor_count": len(neighbor_data),
+                })
+
+            # Step 3: Generate a dream cycle ID
+            cycle_id = f"dream_{uuid.uuid4().hex[:12]}"
+
+            # Step 4: For each pair of explored entities, check for latent relationships
+            # Use LLM-based relation discovery between seed entities and their neighbors
+            relations_created = []
+            entity_pairs_checked = 0
+
+            for explored in all_explored:
+                if len(relations_created) >= max_relations:
+                    break
+                seed_info = explored["seed"]
+                seed_fid = seed_info["family_id"]
+                seed_name = seed_info["name"]
+
+                for neighbor in explored["neighbors"][:10]:
+                    if len(relations_created) >= max_relations:
+                        break
+                    nb_fid = neighbor["family_id"]
+                    nb_name = neighbor["name"]
+
+                    entity_pairs_checked += 1
+
+                    # Check if relation already exists between these entities
+                    try:
+                        existing_rels = processor.storage.get_relations_by_entities(seed_fid, nb_fid) if hasattr(processor.storage, 'get_relations_by_entities') else []
+                    except Exception:
+                        existing_rels = []
+                    if existing_rels:
+                        continue
+
+                    # Use LLM to judge if there's a latent relationship
+                    try:
+                        seed_entity = processor.storage.get_entity_by_family_id(seed_fid)
+                        nb_entity = processor.storage.get_entity_by_family_id(nb_fid)
+                        if not seed_entity or not nb_entity:
+                            continue
+
+                        # Quick LLM call to assess relationship potential
+                        from processor.llm.prompts import JUDGE_NEED_CREATE_RELATION_SYSTEM_PROMPT, GENERATE_RELATION_CONTENT_SYSTEM_PROMPT
+                        import json as _json
+
+                        judge_messages = [
+                            {"role": "system", "content": JUDGE_NEED_CREATE_RELATION_SYSTEM_PROMPT},
+                            {"role": "user", "content": (
+                                f"实体A: {seed_entity.name}\n描述: {(seed_entity.content or '')[:500]}\n\n"
+                                f"实体B: {nb_entity.name}\n描述: {(nb_entity.content or '')[:500]}\n\n"
+                                f"判断这两个实体之间是否存在明确的、有意义的关联。"
+                            )},
+                        ]
+                        judge_obj, _ = processor.llm_client.call_llm_until_json_parses(
+                            judge_messages,
+                            parse_fn=_json.loads,
+                            json_parse_retries=1,
+                            timeout=60,
+                        )
+                        if not judge_obj.get("need_create", False):
+                            continue
+
+                        # Generate relation content
+                        rel_messages = [
+                            {"role": "system", "content": GENERATE_RELATION_CONTENT_SYSTEM_PROMPT},
+                            {"role": "user", "content": (
+                                f"实体A: {seed_entity.name}\n描述: {(seed_entity.content or '')[:500]}\n\n"
+                                f"实体B: {nb_entity.name}\n描述: {(nb_entity.content or '')[:500]}\n\n"
+                                f"请生成描述这两个实体之间关系的自然语言。"
+                            )},
+                        ]
+                        rel_obj, _ = processor.llm_client.call_llm_until_json_parses(
+                            rel_messages,
+                            parse_fn=_json.loads,
+                            json_parse_retries=1,
+                            timeout=60,
+                        )
+                        rel_content = rel_obj.get("content", "").strip()
+                        if not rel_content or len(rel_content) < 10:
+                            continue
+
+                        # Assign a confidence based on LLM response quality
+                        confidence = 0.7
+                        reasoning = f"梦境发现：{seed_name} 与 {nb_name} 存在潜在关联（策略: {strategy}）"
+
+                        # Save dream relation
+                        result = processor.storage.save_dream_relation(
+                            entity1_id=seed_fid,
+                            entity2_id=nb_fid,
+                            content=rel_content,
+                            confidence=confidence,
+                            reasoning=reasoning,
+                            dream_cycle_id=cycle_id,
+                        )
+                        relations_created.append({
+                            "entity1_id": seed_fid,
+                            "entity1_name": seed_name,
+                            "entity2_id": nb_fid,
+                            "entity2_name": nb_name,
+                            "content": rel_content,
+                            "confidence": confidence,
+                            "result": result,
+                        })
+                    except Exception:
+                        continue
+
+            # Step 5: Save dream episode
+            cycle_summary = (
+                f"梦境周期 {cycle_id}：策略={strategy}，种子={len(seeds)}，"
+                f"探索实体={len(seen_ids)}，检查配对={entity_pairs_checked}，"
+                f"创建关系={len(relations_created)}"
+            )
+            try:
+                processor.storage.save_dream_episode(
+                    content=cycle_summary,
+                    entities_examined=list(seen_ids)[:50],
+                    relations_created=[r.get("result", {}).get("family_id", "") for r in relations_created if r.get("result")],
+                    strategy_used=strategy,
+                    dream_cycle_id=cycle_id,
+                    relations_created_count=len(relations_created),
+                )
+            except Exception:
+                pass
+
             return ok({
-                "session_id": state.session_id,
-                "status": state.status,
-                "graph_id": state.graph_id,
-                "total_cycles": state.current_cycle,
-                "total_entities_examined": state.total_entities_examined,
-                "total_relations_discovered": state.total_relations_discovered,
-                "total_relations_saved": state.total_relations_saved,
-                "total_tool_calls": state.total_tool_calls,
-                "narrative": state.narrative,
-                "cycles": cycle_summaries,
-                "start_time": str(state.start_time) if state.start_time else None,
-                "end_time": str(state.end_time) if state.end_time else None,
+                "cycle_id": cycle_id,
+                "strategy": strategy,
+                "seeds": [{"family_id": s.get("family_id"), "name": s.get("name", "")} for s in seeds],
+                "explored": all_explored,
+                "relations_created": relations_created,
+                "stats": {
+                    "seeds_count": len(seeds),
+                    "entities_explored": len(seen_ids),
+                    "pairs_checked": entity_pairs_checked,
+                    "relations_created_count": len(relations_created),
+                },
+                "cycle_summary": cycle_summary,
             })
         except Exception as e:
             return err(str(e), 500)
@@ -2937,19 +3541,40 @@ def create_app(
                 entity_name = intent.get("entity_name", "")
                 if entity_name:
                     seed_entities = processor.storage.search_entities_by_bm25(entity_name, limit=3)
-                    seed_ids = [e.entity_id for e in seed_entities]
+                    seed_ids = [e.family_id for e in seed_entities]
                     if seed_ids:
                         searcher = GraphTraversalSearcher(processor.storage)
                         entities = searcher.bfs_expand(seed_ids, max_depth=2, max_nodes=20)
             else:
+                # Compute query embedding for hybrid search (vector + BM25)
+                query_embedding = None
+                try:
+                    ec = getattr(processor.storage, 'embedding_client', None)
+                    if ec and getattr(ec, 'is_available', lambda: False)():
+                        query_embedding = ec.encode([query_text])[0]
+                except Exception:
+                    pass
                 searcher = HybridSearcher(processor.storage)
-                entities = searcher.search_entities(query_text=query_text, top_k=20)
-                relations = searcher.search_relations(query_text=query_text, top_k=10)
+                entity_hits = searcher.search_entities(query_text=query_text, query_embedding=query_embedding, top_k=20)
+                relation_hits = searcher.search_relations(query_text=query_text, query_embedding=query_embedding, top_k=10)
+                # HybridSearcher returns List[Tuple[Entity/Relation, float]] — unpack
+                entities = [e for e, _ in entity_hits]
+                relations = [r for r, _ in relation_hits]
 
+            entity_dicts = [entity_to_dict(e) for e in entities]
+            relation_dicts = [relation_to_dict(r) for r in relations]
             result["results"] = {
-                "entities": [entity_to_dict(e) for e in entities],
-                "relations": [relation_to_dict(r) for r in relations],
+                "entities": entity_dicts,
+                "relations": relation_dicts,
             }
+
+            # 用 LLM 综合搜索结果生成自然语言回答
+            try:
+                answer = processor.llm_client.synthesize_answer(question, entity_dicts, relation_dicts)
+                result["answer"] = answer
+            except Exception:
+                pass  # 回退到 agent_meta_query 的默认 answer
+
             return ok(result)
         except Exception as e:
             return err(str(e), 500)
@@ -2957,65 +3582,6 @@ def create_app(
     # =========================================================
     # SSE streaming endpoints
     # =========================================================
-
-    @app.route("/api/v1/find/dream/agent/stream", methods=["POST"])
-    def dream_agent_stream():
-        """SSE streaming endpoint for Dream Agent."""
-        body = request.get_json(silent=True) or {}
-
-        if not _dream_lock.acquire(blocking=False):
-            return err("梦境正在运行中，请等待完成", 409)
-
-        q: queue.Queue = queue.Queue()
-        _STREAM_SENTINEL = object()
-
-        try:
-            processor = _get_processor()
-            from processor.dream.models import DreamAgentConfig, VALID_DREAM_STRATEGIES
-
-            strategies = body.get("strategies") or ["free_association", "cross_domain", "leap"]
-            strategies = [s for s in strategies if s in VALID_DREAM_STRATEGIES]
-            if not strategies:
-                _dream_lock.release()
-                return err(f"无效策略列表，可选: {', '.join(VALID_DREAM_STRATEGIES)}", 400)
-
-            config = DreamAgentConfig(
-                graph_id=request.graph_id or "default",
-                max_cycles=min(int(body.get("max_cycles", 3)), 50),
-                strategies=strategies,
-                strategy_mode=body.get("strategy_mode", "round_robin"),
-                confidence_threshold=float(body.get("confidence_threshold", 0.6)),
-                max_tool_calls_per_cycle=min(int(body.get("max_tool_calls_per_cycle", 15)), 50),
-            )
-
-            from server.sse import make_queue_callback
-            from processor.dream.agent import DreamAgent
-
-            cb = make_queue_callback(q)
-
-            def _run():
-                import asyncio
-                loop = asyncio.new_event_loop()
-                try:
-                    agent = DreamAgent(processor.storage, processor.dream_llm_client, config, event_callback=cb)
-                    loop.run_until_complete(agent.run())
-                except Exception as e:
-                    cb("error", {"message": str(e)})
-                    cb("done", {"status": "failed"})
-                finally:
-                    loop.close()
-                    q.put(_STREAM_SENTINEL)
-                    _dream_lock.release()
-
-            t = threading.Thread(target=_run, daemon=True)
-            t.start()
-
-        except Exception as e:
-            _dream_lock.release()
-            return err(str(e), 500)
-
-        from server.sse import sse_response, queue_to_generator
-        return sse_response(queue_to_generator(q, sentinel=_STREAM_SENTINEL))
 
     @app.route("/api/v1/find/ask/stream", methods=["POST"])
     def agent_ask_stream():
@@ -3066,14 +3632,25 @@ def create_app(
                         entity_name = intent.get("entity_name", "")
                         if entity_name:
                             seed_entities = processor.storage.search_entities_by_bm25(entity_name, limit=3)
-                            seed_ids = [e.entity_id for e in seed_entities]
+                            seed_ids = [e.family_id for e in seed_entities]
                             if seed_ids:
                                 searcher = GraphTraversalSearcher(processor.storage)
                                 entities = searcher.bfs_expand(seed_ids, max_depth=2, max_nodes=20)
                     else:
+                        # Compute query embedding for hybrid search (vector + BM25)
+                        query_embedding = None
+                        try:
+                            ec = getattr(processor.storage, 'embedding_client', None)
+                            if ec and getattr(ec, 'is_available', lambda: False)():
+                                query_embedding = ec.encode([query_text])[0]
+                        except Exception:
+                            pass
                         searcher = HybridSearcher(processor.storage)
-                        entities = searcher.search_entities(query_text=query_text, top_k=20)
-                        relations = searcher.search_relations(query_text=query_text, top_k=10)
+                        entity_hits = searcher.search_entities(query_text=query_text, query_embedding=query_embedding, top_k=20)
+                        relation_hits = searcher.search_relations(query_text=query_text, query_embedding=query_embedding, top_k=10)
+                        # HybridSearcher returns List[Tuple[Entity/Relation, float]] — unpack
+                        entities = [e for e, _ in entity_hits]
+                        relations = [r for r, _ in relation_hits]
 
                     q.put(sse_event("tool_result", {
                         "tool": "search",
@@ -3084,28 +3661,33 @@ def create_app(
                         },
                     }))
 
-                    # Generate summary answer
+                    # Generate summary answer using LLM synthesis
+                    entity_dicts = [entity_to_dict(e) for e in entities]
+                    relation_dicts = [relation_to_dict(r) for r in relations]
                     result["results"] = {
-                        "entities": [entity_to_dict(e) for e in entities],
-                        "relations": [relation_to_dict(r) for r in relations],
+                        "entities": entity_dicts,
+                        "relations": relation_dicts,
                     }
 
                     answer = result.get("answer", "")
                     if not answer:
-                        # Build a summary from search results
-                        parts = [f"基于「{query_text}」的检索结果："]
-                        if entities:
-                            parts.append(f"找到 {len(entities)} 个相关实体")
-                            for e in entities[:5]:
-                                name = getattr(e, 'name', '') or ''
-                                content = (getattr(e, 'content', '') or '')[:80]
-                                parts.append(f"  - {name}: {content}")
-                        if relations:
-                            parts.append(f"找到 {len(relations)} 条相关关系")
-                            for r in relations[:5]:
-                                content = (getattr(r, 'content', '') or '')[:80]
-                                parts.append(f"  - {content}")
-                        answer = "\n".join(parts)
+                        try:
+                            answer = processor.llm_client.synthesize_answer(question, entity_dicts, relation_dicts)
+                        except Exception:
+                            # 回退：简单拼接
+                            parts = [f"基于「{query_text}」的检索结果："]
+                            if entities:
+                                parts.append(f"找到 {len(entities)} 个相关实体")
+                                for e in entities[:5]:
+                                    name = getattr(e, 'name', '') or ''
+                                    content = (getattr(e, 'content', '') or '')[:80]
+                                    parts.append(f"  - {name}: {content}")
+                            if relations:
+                                parts.append(f"找到 {len(relations)} 条相关关系")
+                                for r in relations[:5]:
+                                    content = (getattr(r, 'content', '') or '')[:80]
+                                    parts.append(f"  - {content}")
+                            answer = "\n".join(parts)
 
                     q.put(sse_event("summary", {
                         "answer": answer,
@@ -3137,15 +3719,15 @@ def create_app(
         """自然语言解释实体。"""
         try:
             body = request.get_json(silent=True) or {}
-            entity_id = (body.get("entity_id") or "").strip()
+            family_id = (body.get("family_id") or "").strip()
             aspect = (body.get("aspect") or "summary").strip()
-            if not entity_id:
-                return err("entity_id 为必填", 400)
+            if not family_id:
+                return err("family_id 为必填", 400)
 
             processor = _get_processor()
-            entity = processor.storage.get_entity_by_entity_id(entity_id)
+            entity = processor.storage.get_entity_by_family_id(family_id)
             if entity is None:
-                return err(f"未找到实体: {entity_id}", 404)
+                return err(f"未找到实体: {family_id}", 404)
 
             import asyncio
             loop = asyncio.new_event_loop()
@@ -3156,7 +3738,7 @@ def create_app(
             finally:
                 loop.close()
 
-            return ok({"entity_id": entity_id, "aspect": aspect, "explanation": explanation})
+            return ok({"family_id": family_id, "aspect": aspect, "explanation": explanation})
         except Exception as e:
             return err(str(e), 500)
 
@@ -3207,6 +3789,21 @@ def create_app(
         try:
             graphs = registry.list_graphs()
             return ok({"graphs": graphs, "count": len(graphs)})
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/v1/graphs/<graph_id>", methods=["DELETE"])
+    def delete_graph(graph_id: str):
+        """删除指定图谱（含所有数据）。"""
+        try:
+            GraphRegistry.validate_graph_id(graph_id)
+            existing = registry.list_graphs()
+            if graph_id not in existing:
+                return err(f"图谱 '{graph_id}' 不存在", 404)
+            registry.delete_graph(graph_id)
+            return ok({"graph_id": graph_id, "message": "图谱已删除"})
+        except ValueError as e:
+            return err(str(e), 400)
         except Exception as e:
             return err(str(e), 500)
 
@@ -3284,16 +3881,16 @@ def create_app(
             if not hasattr(processor.storage, 'find_shortest_path_cypher'):
                 return err("此功能需要 Neo4j 后端", 400)
             body = request.get_json(silent=True) or {}
-            entity_a = (body.get("entity_id_a") or "").strip()
-            entity_b = (body.get("entity_id_b") or "").strip()
+            entity_a = (body.get("family_id_a") or body.get("family_id_a") or "").strip()
+            entity_b = (body.get("family_id_b") or body.get("family_id_b") or "").strip()
             if not entity_a or not entity_b:
-                return err("entity_id_a 和 entity_id_b 不能为空", 400)
+                return err("family_id_a 和 family_id_b 不能为空", 400)
             max_depth = min(max(int(body.get("max_depth", 6)), 1), 10)
             paths = processor.storage.find_shortest_path_cypher(entity_a, entity_b, max_depth=max_depth)
             return ok({
                 "paths": paths,
-                "source_entity_id": entity_a,
-                "target_entity_id": entity_b,
+                "source_family_id": entity_a,
+                "target_family_id": entity_b,
             })
         except Exception as e:
             return err(str(e), 500)
@@ -3446,6 +4043,658 @@ def create_app(
             return err(str(e), 500)
 
     # =========================================================
+    # Butler: 管家式管理 — 一键健康分析 + 维护操作
+    # =========================================================
+
+    @app.route("/api/v1/butler/report", methods=["GET"])
+    def butler_report():
+        """管家报告：一次调用获取完整图谱健康状况、推荐操作。
+
+        返回:
+          health: { graph_id, total_entities, total_relations, total_episodes,
+                    storage_backend, embedding_available }
+          quality: { valid_entities, invalidated_entities, isolated_entities,
+                     valid_relations, invalidated_relations }
+          dream: { status, last_cycle_id, last_cycle_time }
+          recommendations: [ { action, priority, description, estimated_impact } ]
+        """
+        try:
+            processor = _get_processor()
+            storage = processor.storage
+
+            # 1. 基本统计
+            graph_stats = storage.get_graph_statistics()
+            embedding_available = (
+                processor.embedding_client is not None
+                and processor.embedding_client.is_available()
+            )
+            storage_backend = "neo4j" if hasattr(storage, 'is_neo4j') else "sqlite"
+
+            health = {
+                "graph_id": request.graph_id,
+                "total_entities": graph_stats.get("entity_count", 0),
+                "total_relations": graph_stats.get("relation_count", 0),
+                "total_episodes": graph_stats.get("episode_count", 0),
+                "total_communities": graph_stats.get("community_count", 0),
+                "storage_backend": storage_backend,
+                "embedding_available": embedding_available,
+            }
+
+            # 2. 数据质量
+            quality = {"valid_entities": 0, "invalidated_entities": 0, "isolated_entities": 0,
+                        "valid_relations": 0, "invalidated_relations": 0}
+            if hasattr(storage, 'get_data_quality_report'):
+                quality = storage.get_data_quality_report()
+            if hasattr(storage, 'count_isolated_entities'):
+                quality["isolated_entities"] = storage.count_isolated_entities()
+
+            # 3. 梦境状态
+            dream_status = {"status": "not_available", "last_cycle_id": None, "last_cycle_time": None}
+            if hasattr(storage, 'list_dream_logs'):
+                logs = storage.list_dream_logs(request.graph_id or "default", limit=1)
+                if logs:
+                    last = logs[0]
+                    dream_status = {
+                        "status": last.get("status", "completed"),
+                        "last_cycle_id": last.get("cycle_id"),
+                        "last_cycle_time": last.get("started_at") or last.get("created_at"),
+                        "entities_explored": last.get("entities_explored", 0),
+                        "relations_created": last.get("relations_created", 0),
+                    }
+                else:
+                    dream_status["status"] = "no_cycles"
+
+            # 4. 推荐操作
+            recommendations = []
+            iso_count = quality.get("isolated_entities", 0)
+            inv_count = quality.get("invalidated_entities", 0) + quality.get("invalidated_relations", 0)
+
+            if iso_count > 0:
+                recommendations.append({
+                    "action": "cleanup_isolated",
+                    "priority": "high" if iso_count > 20 else "medium",
+                    "description": f"发现 {iso_count} 个孤立实体（无关联关系），建议清理",
+                    "estimated_impact": f"释放约 {iso_count} 个实体的存储空间",
+                    "dry_run_available": True,
+                })
+
+            if inv_count > 0:
+                recommendations.append({
+                    "action": "cleanup_invalidated",
+                    "priority": "medium",
+                    "description": f"发现 {inv_count} 个已失效版本，建议清理",
+                    "estimated_impact": f"释放约 {inv_count} 个节点的存储空间",
+                    "dry_run_available": True,
+                })
+
+            total_ent = health["total_entities"]
+            total_rel = health["total_relations"]
+            if total_ent > 0 and total_rel < total_ent * 0.3:
+                recommendations.append({
+                    "action": "run_dream",
+                    "priority": "high",
+                    "description": f"关系密度低（{total_rel}/{total_ent}），建议运行梦境发现隐含关联",
+                    "estimated_impact": "发现并创建新的跨域关系，提升图谱连通性",
+                    "dream_type_suggestion": "free_association",
+                })
+
+            if dream_status["status"] == "no_cycles":
+                recommendations.append({
+                    "action": "run_dream",
+                    "priority": "medium",
+                    "description": "尚未运行过梦境周期，建议开始首次探索",
+                    "estimated_impact": "发现图谱中隐含的概念关联",
+                    "dream_type_suggestion": "random",
+                })
+
+            # 社区检测建议
+            if health["total_communities"] == 0 and total_ent > 20:
+                recommendations.append({
+                    "action": "detect_communities",
+                    "priority": "low",
+                    "description": f"图谱有 {total_ent} 个实体但未做社区检测，建议运行以发现主题聚类",
+                    "estimated_impact": "识别知识领域边界，辅助梦境探索策略",
+                })
+
+            # 实体摘要进化建议
+            if hasattr(storage, 'get_all_entities'):
+                no_summary = 0
+                sample = storage.get_all_entities(limit=50, exclude_embedding=True)
+                for e in sample:
+                    if not getattr(e, 'summary', None):
+                        no_summary += 1
+                if no_summary > len(sample) * 0.5:
+                    recommendations.append({
+                        "action": "evolve_summaries",
+                        "priority": "low",
+                        "description": f"抽样显示 {no_summary}/{len(sample)} 个实体缺少摘要",
+                        "estimated_impact": "提升语义检索质量",
+                    })
+
+            recommendations.sort(key=lambda r: {"high": 0, "medium": 1, "low": 2}.get(r["priority"], 3))
+
+            return ok({
+                "health": health,
+                "quality": quality,
+                "dream": dream_status,
+                "recommendations": recommendations,
+                "recommendation_count": len(recommendations),
+            })
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/v1/butler/execute", methods=["POST"])
+    def butler_execute():
+        """管家执行：一键执行推荐操作。
+
+        请求体:
+          actions: list[str] — 要执行的操作列表
+            可选值: "cleanup_isolated", "cleanup_invalidated", "detect_communities",
+                    "evolve_summaries"
+          dry_run: bool — 仅预览不实际执行（默认 false）
+        """
+        try:
+            body = request.get_json(silent=True) or {}
+            actions = body.get("actions", [])
+            dry_run = body.get("dry_run", False)
+            if not isinstance(actions, list) or not actions:
+                return err("actions 需为非空数组", 400)
+
+            processor = _get_processor()
+            storage = processor.storage
+            results = {}
+
+            for action in actions:
+                if action == "cleanup_isolated":
+                    if hasattr(storage, 'get_isolated_entities'):
+                        isolated = storage.get_isolated_entities(limit=10000)
+                        family_ids = list({e.family_id for e in isolated if e.family_id})
+                        if dry_run:
+                            results[action] = {"status": "preview", "count": len(family_ids), "family_ids": family_ids[:20]}
+                        else:
+                            deleted = 0
+                            for fid in family_ids:
+                                deleted += storage.delete_entity_all_versions(fid)
+                            results[action] = {"status": "done", "deleted_families": len(family_ids), "deleted_versions": deleted}
+                    else:
+                        results[action] = {"status": "skipped", "reason": "当前存储后端不支持"}
+
+                elif action == "cleanup_invalidated":
+                    if hasattr(storage, 'cleanup_invalidated_versions'):
+                        results[action] = storage.cleanup_invalidated_versions(dry_run=dry_run)
+                    else:
+                        results[action] = {"status": "skipped", "reason": "当前存储后端不支持"}
+
+                elif action == "detect_communities":
+                    if hasattr(storage, 'detect_communities'):
+                        results[action] = storage.detect_communities()
+                    else:
+                        results[action] = {"status": "skipped", "reason": "需要 Neo4j 后端"}
+
+                elif action == "evolve_summaries":
+                    # 仅对缺少 summary 的实体执行进化
+                    evolved = 0
+                    failed = 0
+                    sample = storage.get_all_entities(limit=20, exclude_embedding=True)
+                    for e in sample:
+                        if not getattr(e, 'summary', None):
+                            try:
+                                import asyncio
+                                loop = asyncio.new_event_loop()
+                                try:
+                                    summary = loop.run_until_complete(
+                                        processor.llm_client.evolve_entity_summary(e)
+                                    )
+                                finally:
+                                    loop.close()
+                                storage.update_entity_summary(e.family_id, summary)
+                                evolved += 1
+                            except Exception:
+                                failed += 1
+                    results[action] = {"status": "done", "evolved": evolved, "failed": failed, "dry_run": dry_run}
+
+                else:
+                    results[action] = {"status": "unknown", "reason": f"未知操作: {action}"}
+
+            return ok({"actions": results, "dry_run": dry_run})
+        except Exception as e:
+            return err(str(e), 500)
+
+    # =========================================================
+    # Chat Sessions — claude CLI 多会话管理
+    # =========================================================
+
+    _chat_mgr = None  # Lazy-init SessionManager
+    _chat_mgr_lock = threading.Lock()
+
+    def _get_chat_mgr():
+        nonlocal _chat_mgr
+        if _chat_mgr is not None:
+            return _chat_mgr
+        with _chat_mgr_lock:
+            if _chat_mgr is not None:
+                return _chat_mgr
+            from server.chat_session import SessionManager
+            _chat_mgr = SessionManager()
+            _chat_mgr.start()
+        return _chat_mgr
+
+    @app.route("/api/v1/chat/sessions", methods=["GET"])
+    def chat_list_sessions():
+        """List all chat sessions."""
+        include_closed = request.args.get("include_closed", "0") == "1"
+        try:
+            mgr = _get_chat_mgr()
+            return ok(mgr.list_sessions(include_closed=include_closed))
+        except Exception as e:
+            logger.error("GET /api/v1/chat/sessions failed: %s", e)
+            return err(str(e), 500)
+
+    @app.route("/api/v1/chat/sessions", methods=["POST"])
+    def chat_create_session():
+        """Create a new chat session."""
+        body = request.get_json(silent=True) or {}
+        graph_id = body.get("graph_id", "default")
+        title = body.get("title")
+        try:
+            mgr = _get_chat_mgr()
+            result = mgr.create_session(graph_id=graph_id, title=title)
+            return ok(result)
+        except Exception as e:
+            logger.error("POST /api/v1/chat/sessions failed: %s", e, exc_info=True)
+            return err(str(e), 500)
+
+    @app.route("/api/v1/chat/sessions/<sid>", methods=["GET"])
+    def chat_get_session(sid):
+        """Get session details."""
+        mgr = _get_chat_mgr()
+        result = mgr.get_session(sid)
+        if not result:
+            return err("Session not found", 404)
+        return ok(result)
+
+    @app.route("/api/v1/chat/sessions/<sid>", methods=["PUT"])
+    def chat_update_session(sid):
+        """Update session metadata (graph_id, title)."""
+        body = request.get_json(silent=True) or {}
+        mgr = _get_chat_mgr()
+        if not mgr.update_session(sid, **body):
+            return err("Session not found", 404)
+        return ok(mgr.get_session(sid))
+
+    @app.route("/api/v1/chat/sessions/<sid>", methods=["DELETE"])
+    def chat_delete_session(sid):
+        """Delete a session completely."""
+        mgr = _get_chat_mgr()
+        if not mgr.delete_session(sid):
+            return err("Session not found", 404)
+        return ok({"deleted": True})
+
+    @app.route("/api/v1/chat/sessions/<sid>/close", methods=["POST"])
+    def chat_close_session(sid):
+        """Close a session (keep history, terminate process)."""
+        mgr = _get_chat_mgr()
+        if not mgr.close_session(sid):
+            return err("Session not found", 404)
+        return ok({"status": "closed"})
+
+    @app.route("/api/v1/chat/sessions/<sid>/stream", methods=["POST"])
+    def chat_send_message(sid):
+        """Send a message to a session. Returns SSE stream of events."""
+        body = request.get_json(silent=True) or {}
+        message = body.get("message", "")
+        attachments = body.get("attachments")
+
+        if not message:
+            return err("message is required", 400)
+
+        mgr = _get_chat_mgr()
+        sentinel = mgr.get_event_sentinel()
+        resp_queue = mgr.send_message(sid, message, attachments=attachments)
+
+        if resp_queue is None:
+            return err("Session not found or closed", 404)
+
+        return sse_response(queue_to_generator(resp_queue, sentinel=sentinel))
+
+    # =========================================================
+    # 聚合 API：减少 Agent 调用次数（1 次替代 3-5 次）
+    # =========================================================
+
+    @app.route("/api/v1/find/entities/<family_id>/profile", methods=["GET"])
+    def entity_profile(family_id: str):
+        """聚合返回：实体详情 + 最新版本 + 关系列表 + 版本数。"""
+        try:
+            processor = _get_processor()
+            entity = processor.storage.get_entity_by_family_id(family_id)
+            if entity is None:
+                return err(f"未找到实体: {family_id}", 404)
+            relations = processor.storage.get_entity_relations_by_family_id(family_id)
+            version_count = 0
+            if hasattr(processor.storage, 'get_entity_version_count'):
+                version_count = processor.storage.get_entity_version_count(family_id)
+            else:
+                version_count = len(processor.storage.get_entity_versions(family_id))
+            rels = [relation_to_dict(r) for r in relations]
+            enrich_relations(rels, processor)
+            return ok({
+                "entity": entity_to_dict(entity),
+                "relations": rels,
+                "relation_count": len(rels),
+                "version_count": version_count,
+            })
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/v1/find/graph-summary", methods=["GET"])
+    def graph_summary():
+        """聚合返回：图谱统计 + 健康状态。"""
+        try:
+            processor = _get_processor()
+            stats = processor.storage.get_graph_statistics()
+            embedding_available = (
+                processor.embedding_client is not None
+                and processor.embedding_client.is_available()
+            )
+            storage_backend = "neo4j" if hasattr(processor.storage, 'is_neo4j') else "sqlite"
+            return ok({
+                "graph_id": request.graph_id,
+                "storage_backend": storage_backend,
+                "embedding_available": embedding_available,
+                "statistics": stats,
+            })
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/v1/find/maintenance/health", methods=["GET"])
+    def maintenance_health():
+        """数据健康度报告：孤立实体数/失效版本数/质量统计。"""
+        try:
+            processor = _get_processor()
+            stats = processor.storage.get_graph_statistics()
+            quality = None
+            if hasattr(processor.storage, 'get_data_quality_report'):
+                quality = processor.storage.get_data_quality_report()
+            isolated_count = 0
+            if hasattr(processor.storage, 'count_isolated_entities'):
+                isolated_count = processor.storage.count_isolated_entities()
+            return ok({
+                "graph_id": request.graph_id,
+                "statistics": stats,
+                "quality": quality,
+                "isolated_entity_count": isolated_count,
+            })
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/v1/find/maintenance/cleanup", methods=["POST"])
+    def maintenance_cleanup():
+        """一键清理：失效版本 + 孤立实体。"""
+        try:
+            processor = _get_processor()
+            body = request.get_json(silent=True) or {}
+            dry_run = body.get("dry_run", False)
+            results = {}
+            # 清理失效版本
+            if hasattr(processor.storage, 'cleanup_invalidated_versions'):
+                results["invalidated_versions"] = processor.storage.cleanup_invalidated_versions(
+                    dry_run=dry_run,
+                )
+            # 清理孤立实体（仅 Neo4j 后端支持）
+            if hasattr(processor.storage, 'get_isolated_entities'):
+                isolated = processor.storage.get_isolated_entities(limit=10000)
+                if isolated:
+                    family_ids = list({e.family_id for e in isolated if e.family_id})
+                    if dry_run:
+                        results["isolated_entities"] = {
+                            "message": f"预览：将删除 {len(family_ids)} 个孤立实体",
+                            "family_ids": family_ids,
+                            "dry_run": True,
+                        }
+                    else:
+                        deleted = 0
+                        for fid in family_ids:
+                            deleted += processor.storage.delete_entity_all_versions(fid)
+                        results["isolated_entities"] = {
+                            "message": f"已删除 {len(family_ids)} 个孤立实体（{deleted} 个版本）",
+                            "deleted_families": len(family_ids),
+                            "deleted_versions": deleted,
+                        }
+                else:
+                    results["isolated_entities"] = {"message": "没有孤立实体", "deleted": 0}
+            else:
+                results["isolated_entities"] = {"message": "当前存储后端不支持孤立实体检测", "deleted": 0}
+            return ok(results)
+        except Exception as e:
+            return err(str(e), 500)
+
+    # =========================================================
+    # Convenience endpoints for Agent workflows
+    # =========================================================
+
+    @app.route("/api/v1/find/quick-search", methods=["POST"])
+    def quick_search():
+        """One-shot search: hybrid BM25+embedding with name boosting.
+        Cascade: exact name → BM25 text → embedding → merge & dedup.
+        """
+        try:
+            processor = _get_processor()
+            body = request.get_json(silent=True) or {}
+            query = body.get("query", "").strip()
+            if not query:
+                return err("query is required", 400)
+            max_entities = min(int(body.get("max_entities", 10)), 50)
+            max_relations = min(int(body.get("max_relations", 20)), 100)
+            threshold = float(body.get("similarity_threshold", 0.4))
+
+            # Phase 1: Exact name match (instant, highest confidence)
+            exact_map = processor.storage.get_family_ids_by_names([query])
+            exact_entities = []
+            seen_fids = set()
+            if exact_map:
+                fid = list(exact_map.values())[0]
+                ent = processor.storage.get_entity_by_family_id(fid)
+                if ent:
+                    exact_entities.append(ent)
+                    seen_fids.add(ent.family_id)
+
+            # Phase 2: BM25 text search (fast keyword match)
+            bm25_entities = []
+            try:
+                bm25_results = processor.storage.search_entities_by_bm25(query, limit=max_entities * 2)
+                for e in bm25_results:
+                    if e.family_id not in seen_fids:
+                        bm25_entities.append(e)
+                        seen_fids.add(e.family_id)
+            except Exception:
+                pass
+
+            # Phase 3: Embedding semantic search (for fuzzy/conceptual matches)
+            embed_entities = []
+            try:
+                embed_results = processor.storage.search_entities_by_similarity(
+                    query_name=query,
+                    query_content=query,
+                    threshold=threshold,
+                    max_results=max_entities,
+                    text_mode="name_and_content",
+                    similarity_method="embedding",
+                )
+                for e in embed_results:
+                    if e.family_id not in seen_fids:
+                        embed_entities.append(e)
+                        seen_fids.add(e.family_id)
+            except Exception:
+                pass
+
+            # Merge: exact first, then BM25, then embedding
+            entities = exact_entities + bm25_entities[:max(1, max_entities - len(exact_entities))] + embed_entities[:max(0, max_entities - len(exact_entities) - len(bm25_entities))]
+            entities = entities[:max_entities]
+
+            # Get relations for found entities
+            entity_abs_ids = {e.absolute_id for e in entities}
+            relations = []
+            if entity_abs_ids:
+                relations = processor.storage.get_relations_by_entity_absolute_ids(
+                    list(entity_abs_ids), limit=max_relations
+                )
+
+            entity_dicts = [entity_to_dict(e) for e in entities]
+            rel_dicts = [relation_to_dict(r) for r in relations]
+            enrich_relations(rel_dicts, processor)
+
+            return ok({
+                "query": query,
+                "entities": entity_dicts,
+                "entity_count": len(entity_dicts),
+                "relations": rel_dicts,
+                "relation_count": len(rel_dicts),
+            })
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/v1/find/entities/by-name/<name>", methods=["GET"])
+    def find_entity_by_name(name: str):
+        """Quick entity lookup by exact or fuzzy name match.
+        Cascade: exact match → core-name match (strip parentheses) → BM25 text → embedding fallback.
+        """
+        try:
+            import re as _re
+            processor = _get_processor()
+            threshold = float(request.args.get("threshold", "0.5"))
+            limit = int(request.args.get("limit", "5"))
+            best = None
+
+            # Step 1: Exact name match
+            exact_map = processor.storage.get_family_ids_by_names([name])
+            if exact_map:
+                fid = list(exact_map.values())[0]
+                best = processor.storage.get_entity_by_family_id(fid)
+
+            # Step 2: Core-name match (strip parentheses for alias matching)
+            if not best:
+                core_name = _re.sub(r'[（(][^）)]+[）)]', '', name).strip()
+                if core_name and core_name != name:
+                    core_map = processor.storage.get_family_ids_by_names([core_name])
+                    if core_map:
+                        fid = list(core_map.values())[0]
+                        best = processor.storage.get_entity_by_family_id(fid)
+
+            # Step 2.5: Name prefix match (e.g., "Go语言" → "Go语言（Golang）")
+            if not best:
+                prefix_entities = processor.storage.find_entity_by_name_prefix(name, limit=3)
+                if prefix_entities:
+                    best = prefix_entities[0]
+
+            # Step 3: BM25 text search (fast, keyword-based)
+            if not best:
+                bm25_results = processor.storage.search_entities_by_bm25(name, limit=10)
+                if bm25_results:
+                    # Priority 1: name contains query
+                    for r in bm25_results:
+                        rn = (r.name or "").strip()
+                        if name.lower() in rn.lower():
+                            best = r
+                            break
+                    # Priority 2: core name (strip parens) matches query
+                    if not best:
+                        for r in bm25_results:
+                            rn = (r.name or "").strip()
+                            core_rn = _re.sub(r'[（(][^）)]+[）)]', '', rn).strip()
+                            if core_rn.lower() == name.lower():
+                                best = r
+                                break
+                    # Priority 3: first BM25 result
+                    if not best:
+                        best = bm25_results[0]
+
+            # Step 4: Embedding fallback (semantic, slower)
+            if not best:
+                entities = processor.storage.search_entities_by_similarity(
+                    query_name=name,
+                    query_content=name,
+                    threshold=threshold,
+                    max_results=limit,
+                    text_mode="name_only",
+                    similarity_method="embedding",
+                )
+                if entities:
+                    best = entities[0]
+
+            if not best:
+                return ok({"entity": None, "message": f"No entity found matching '{name}'"})
+            rels = processor.storage.get_entity_relations_by_family_id(best.family_id)
+            rel_dicts = [relation_to_dict(r) for r in rels]
+            enrich_relations(rel_dicts, processor)
+            return ok({
+                "entity": entity_to_dict(best),
+                "relations": rel_dicts,
+                "relation_count": len(rel_dicts),
+            })
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/v1/find/batch-profiles", methods=["POST"])
+    def batch_profiles():
+        """Get multiple entity profiles in one call."""
+        try:
+            processor = _get_processor()
+            body = request.get_json(silent=True) or {}
+            family_ids = body.get("family_ids", [])
+            if not family_ids:
+                return err("family_ids is required", 400)
+            if len(family_ids) > 20:
+                return err("Maximum 20 entities per batch", 400)
+
+            profiles = []
+            for fid in family_ids:
+                entity = processor.storage.get_entity_by_family_id(fid)
+                if entity is None:
+                    profiles.append({"family_id": fid, "entity": None, "error": "not found"})
+                    continue
+                relations = processor.storage.get_entity_relations_by_family_id(fid)
+                version_count = 0
+                if hasattr(processor.storage, 'get_entity_version_count'):
+                    version_count = processor.storage.get_entity_version_count(fid)
+                rel_dicts = [relation_to_dict(r) for r in relations]
+                enrich_relations(rel_dicts, processor)
+                profiles.append({
+                    "family_id": fid,
+                    "entity": entity_to_dict(entity),
+                    "relations": rel_dicts,
+                    "relation_count": len(rel_dicts),
+                    "version_count": version_count,
+                })
+            return ok({"profiles": profiles, "count": len(profiles)})
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/v1/find/recent-activity", methods=["GET"])
+    def recent_activity():
+        """Get recent graph activity: latest entities, relations, and episodes."""
+        try:
+            processor = _get_processor()
+            limit = min(int(request.args.get("limit", "10")), 50)
+            # Latest entities
+            latest_entities = processor.storage.get_all_entities(limit=limit, exclude_embedding=True)
+            # Latest relations
+            latest_relations = processor.storage.get_all_relations(limit=limit) if hasattr(processor.storage, 'get_all_relations') else []
+            # Stats
+            stats = processor.storage.get_graph_statistics()
+
+            entity_dicts = [entity_to_dict(e) for e in reversed(latest_entities)]
+            rel_dicts = [relation_to_dict(r) for r in reversed(latest_relations)]
+            enrich_relations(rel_dicts, processor)
+
+            return ok({
+                "statistics": stats,
+                "latest_entities": entity_dicts,
+                "latest_relations": rel_dicts,
+            })
+        except Exception as e:
+            return err(str(e), 500)
+
+    # =========================================================
     # SPA: 提供前端静态页面（所有非 API 路由返回 index.html）
     # =========================================================
     _SPA_INDEX = str(Path(__file__).resolve().parent / "static" / "index.html")
@@ -3519,7 +4768,7 @@ def build_processor(config: Dict[str, Any]) -> TemporalMemoryGraphProcessor:
         kwargs["max_alignment_candidates"] = pipeline_alignment["max_alignment_candidates"]
     for key in (
         "extraction_rounds", "entity_extraction_rounds", "relation_extraction_rounds",
-        "entity_post_enhancement", "prompt_memory_cache_max_chars",
+        "entity_post_enhancement", "prompt_episode_max_chars",
         "compress_multi_round_extraction",
     ):
         if key in pipeline_extraction:
@@ -3735,6 +4984,7 @@ def main() -> int:
     monitor_refresh = args.monitor_refresh if args.monitor_refresh is not None else config.get("monitor_refresh_seconds", 1.0)
     config["log_mode"] = log_mode
     config["monitor_refresh_seconds"] = monitor_refresh
+    config["_config_path"] = config_path
 
     # 禁用 Flask/werkzeug 的 HTTP access log（控制台太吵）
     logging.getLogger("werkzeug").setLevel(logging.ERROR)
@@ -3820,14 +5070,14 @@ def main() -> int:
         stats = system_monitor.graph_detail("default")
         entities = stats["storage"]["entities"] if stats else 0
         relations = stats["storage"]["relations"] if stats else 0
-        caches = stats["storage"]["memory_caches"] if stats else 0
+        caches = stats["storage"]["episodes"] if stats else 0
         print(f"""
 ╔══════════════════════════════════════════════════════════╗
 ║     DeepDream — 自然语言记忆图 API           ║
 ╚══════════════════════════════════════════════════════════╝
 
   当前大脑记忆库 (default):
-    实体: {entities}  关系: {relations}  记忆缓存: {caches}
+    实体: {entities}  关系: {relations}  Episode: {caches}
 
   服务地址: http://{host}:{listen_port}
   健康检查: GET  http://{host}:{listen_port}/api/v1/health?graph_id=default

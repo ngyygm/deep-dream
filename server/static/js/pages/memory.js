@@ -128,6 +128,13 @@
 
     // Text submit
     document.getElementById('btn-submit-text').addEventListener('click', submitText);
+    // Ctrl+Enter / Cmd+Enter to submit text
+    document.getElementById('memory-text').addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+        e.preventDefault();
+        submitText();
+      }
+    });
 
     // ---- Multi-file handling ----
     const dropZone = document.getElementById('file-drop-zone');
@@ -458,6 +465,7 @@
       });
 
       if (window.lucide) lucide.createIcons({ nodes: [el] });
+      bindClickableRows(el);
     } catch (err) {
       const el = document.getElementById('task-list-wrapper');
       if (el) {
@@ -472,8 +480,8 @@
 
   async function deleteQueuedTask(taskId) {
     if (!taskId) return;
-    const confirmed = window.confirm(t('memory.deleteTaskConfirm'));
-    if (!confirmed) return;
+    const ok = await showConfirm({ message: t('memory.deleteTaskConfirm'), destructive: true });
+    if (!ok) return;
     try {
       const res = await state.api.rememberDelete(taskId, state.currentGraphId);
       showToast(res.data?.message || t('memory.deleteTaskSuccess'), 'success');
@@ -851,10 +859,10 @@
     loadTasks();
     loadDocs();
 
-    // Auto-refresh task list every 1 second
+    // Auto-refresh task list every 3 seconds (less aggressive to avoid flicker)
     state.refreshTimers.memory = setInterval(() => {
       refreshTasks();
-    }, 1000);
+    }, 3000);
 
     // Re-render icons
     if (window.lucide) lucide.createIcons();

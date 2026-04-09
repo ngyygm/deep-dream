@@ -151,7 +151,7 @@ def run_benchmarks(storage, label: str, rounds: int = 5):
     # 找一对有关系的实体
     sample_rel = None
     for e in sample_entities:
-        all_rels = storage.get_entity_relations_by_entity_id(e.entity_id, limit=1)
+        all_rels = storage.get_entity_relations_by_family_id(e.entity_id, limit=1)
         if all_rels:
             sample_rel = all_rels[0]
             break
@@ -205,13 +205,13 @@ def run_benchmarks(storage, label: str, rounds: int = 5):
     )
     print(f"  {results['get_relations_by_entities']['median_ms']:.1f}ms")
 
-    # --- 5. get_entity_relations_by_entity_id ---
-    print(f"  [5/8] get_entity_relations_by_entity_id ({rounds} 轮)...", end="", flush=True)
-    results["get_entity_relations_by_entity_id"] = bench_single(
-        lambda: storage.get_entity_relations_by_entity_id(sample_eid, limit=20),
-        "get_entity_relations_by_entity_id", rounds=rounds, clear_cache_fn=clear_cache
+    # --- 5. get_entity_relations_by_family_id ---
+    print(f"  [5/8] get_entity_relations_by_family_id ({rounds} 轮)...", end="", flush=True)
+    results["get_entity_relations_by_family_id"] = bench_single(
+        lambda: storage.get_entity_relations_by_family_id(sample_eid, limit=20),
+        "get_entity_relations_by_family_id", rounds=rounds, clear_cache_fn=clear_cache
     )
-    print(f"  {results['get_entity_relations_by_entity_id']['median_ms']:.1f}ms")
+    print(f"  {results['get_entity_relations_by_family_id']['median_ms']:.1f}ms")
 
     # --- 6. search_entities_by_similarity (只跑 3 轮，因为全量加载) ---
     sim_rounds = 3

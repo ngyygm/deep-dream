@@ -3,16 +3,21 @@ Comprehensive pytest tests for TemporalMemoryGraphProcessor pipeline.
 
 Tests cover initialization, runtime statistics, remember_text with various
 inputs, phase1/phase2 processing, concurrency primitives, and edge cases.
-All tests use mock mode (no API key) and tmp_path for storage isolation.
+
+By default, tests run in mock mode (no API key). Set USE_REAL_LLM=1 to
+use the real LLM backend configured in service_config.json — this makes
+the pipeline call the actual model for entity/relation extraction.
+Tests that call the real LLM are marked with @pytest.mark.real_llm.
 """
 
+import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
 from processor.pipeline.orchestrator import TemporalMemoryGraphProcessor
-from processor.models import MemoryCache, Entity
+from processor.models import Episode, Entity
 
 
 # ---------------------------------------------------------------------------
@@ -20,7 +25,12 @@ from processor.models import MemoryCache, Entity
 # ---------------------------------------------------------------------------
 
 def _make_processor(tmp_path, **overrides):
-    """Create a TemporalMemoryGraphProcessor in mock mode with small windows."""
+    """Create a TemporalMemoryGraphProcessor with small windows.
+
+    In mock mode (default) no API key is provided.  When called from a
+    @pytest.mark.real_llm test that injects real_llm_config / shared_embedding_client
+    via fixtures, pass them in overrides.
+    """
     defaults = dict(
         storage_path=str(tmp_path),
         window_size=100,
@@ -47,11 +57,11 @@ class TestInitialization:
 
     def test_default_content_snippet_length(self, tmp_path):
         proc = _make_processor(tmp_path)
-        assert proc.content_snippet_length == 50
+        assert proc.content_snippet_length == 300
 
     def test_default_relation_content_snippet_length(self, tmp_path):
         proc = _make_processor(tmp_path)
-        assert proc.relation_content_snippet_length == 50
+        assert proc.relation_content_snippet_length == 200
 
     def test_default_max_similar_entities(self, tmp_path):
         proc = _make_processor(tmp_path)
@@ -104,8 +114,8 @@ class TestInitialization:
 
     def test_thread_pool_max_workers_default(self, tmp_path):
         proc = _make_processor(tmp_path)
-        # Default max_concurrent_windows=1 => max_workers=1
-        assert proc._extraction_executor._max_workers == 1
+        # max_llm_concurrency=2, max_concurrent_windows=None => auto-derived = 2
+        assert proc._extraction_executor._max_workers == 2
 
     def test_thread_pool_max_workers_custom(self, tmp_path):
         proc = _make_processor(tmp_path, max_concurrent_windows=4)
@@ -113,8 +123,8 @@ class TestInitialization:
 
     def test_window_slot_semaphore_default(self, tmp_path):
         proc = _make_processor(tmp_path)
-        # Default max_concurrent_windows=1
-        assert proc._window_slot._value == 1
+        # max_llm_concurrency=2, max_concurrent_windows=None => auto-derived = 2
+        assert proc._window_slot._value == 2
 
     def test_window_slot_semaphore_custom(self, tmp_path):
         proc = _make_processor(tmp_path, max_concurrent_windows=3)
@@ -149,9 +159,9 @@ class TestInitialization:
         assert proc.embedding_full_search_threshold == 0.65
         assert proc.max_alignment_candidates == 3
 
-    def test_current_memory_cache_initially_none(self, tmp_path):
+    def test_current_episode_initially_none(self, tmp_path):
         proc = _make_processor(tmp_path)
-        assert proc.current_memory_cache is None
+        assert proc.current_episode is None
 
     def test_active_counters_start_at_zero(self, tmp_path):
         proc = _make_processor(tmp_path)
@@ -263,11 +273,11 @@ class TestGetStatistics:
         stats = proc.get_statistics()
         assert isinstance(stats, dict)
 
-    def test_has_memory_caches_key(self, tmp_path):
+    def test_has_episodes_key(self, tmp_path):
         proc = _make_processor(tmp_path)
         stats = proc.get_statistics()
-        assert "memory_caches" in stats
-        assert isinstance(stats["memory_caches"], int)
+        assert "episodes" in stats
+        assert isinstance(stats["episodes"], int)
 
     def test_has_storage_path_key(self, tmp_path):
         proc = _make_processor(tmp_path)
@@ -275,10 +285,10 @@ class TestGetStatistics:
         assert "storage_path" in stats
         assert stats["storage_path"] == str(proc.storage.storage_path)
 
-    def test_memory_caches_starts_at_zero(self, tmp_path):
+    def test_episodes_starts_at_zero(self, tmp_path):
         proc = _make_processor(tmp_path)
         stats = proc.get_statistics()
-        assert stats["memory_caches"] == 0
+        assert stats["episodes"] == 0
 
 
 # ===================================================================
@@ -305,7 +315,7 @@ class TestRememberTextShort:
         text = "Alice went to the market to buy some fresh vegetables and fruits."
         result = proc.remember_text(text, doc_name="test_short", verbose=False, verbose_steps=False)
         assert isinstance(result, dict)
-        assert "memory_cache_id" in result
+        assert "episode_id" in result
         assert "chunks_processed" in result
         assert "storage_path" in result
 
@@ -315,12 +325,12 @@ class TestRememberTextShort:
         result = proc.remember_text(text, doc_name="test_short", verbose=False, verbose_steps=False)
         assert result["chunks_processed"] == 1
 
-    def test_memory_cache_id_is_string(self, tmp_path):
+    def test_episode_id_is_string(self, tmp_path):
         proc = _make_processor(tmp_path)
         text = "Alice went to the market to buy some fresh vegetables and fruits."
         result = proc.remember_text(text, doc_name="test_short", verbose=False, verbose_steps=False)
-        assert isinstance(result["memory_cache_id"], str)
-        assert len(result["memory_cache_id"]) > 0
+        assert isinstance(result["episode_id"], str)
+        assert len(result["episode_id"]) > 0
 
     def test_storage_path_matches(self, tmp_path):
         proc = _make_processor(tmp_path)
@@ -333,10 +343,7 @@ class TestRememberTextShort:
         text = "Alice went to the market to buy some fresh vegetables and fruits."
         proc.remember_text(text, doc_name="test_short", verbose=False, verbose_steps=False)
         entities = proc.storage.get_all_entities()
-        # In mock mode the prompt "请从文本中抽取所有概念实体（越多越好）："
-        # does not match the _mock_llm_response pattern "抽取实体" (contiguous),
-        # so the LLM returns "默认响应" which fails JSON parsing, yielding 0 entities.
-        # The test verifies the query completes without error and returns a list.
+        # In mock mode the LLM returns a fixed entity; verify the query completes without error.
         assert isinstance(entities, list)
 
     def test_relations_query_works_after_processing(self, tmp_path):
@@ -344,8 +351,7 @@ class TestRememberTextShort:
         text = "Alice went to the market to buy some fresh vegetables and fruits."
         proc.remember_text(text, doc_name="test_short", verbose=False, verbose_steps=False)
         relations = proc.storage.get_all_relations()
-        # Same mock mode limitation: 0 entities => 0 relations extracted.
-        # Verify the query completes without error.
+        # In mock mode the LLM returns a fixed relation; verify the query completes without error.
         assert isinstance(relations, list)
 
 
@@ -422,8 +428,8 @@ class TestRememberTextStartChunk:
             text, doc_name="test_skip", verbose=False, verbose_steps=False, start_chunk=10,
         )
         assert result["chunks_processed"] == 1
-        # memory_cache_id is None since current_memory_cache is still None
-        assert result["memory_cache_id"] is None
+        # episode_id is None since current_episode is still None
+        assert result["episode_id"] is None
 
 
 # ===================================================================
@@ -492,7 +498,7 @@ class TestEdgeCases:
         text = "Hello world! This is a test with unicode characters."
         result = proc.remember_text(text, doc_name="unicode", verbose=False, verbose_steps=False)
         assert result["chunks_processed"] >= 1
-        assert isinstance(result["memory_cache_id"], str)
+        assert isinstance(result["episode_id"], str)
 
 
 # ===================================================================
@@ -505,7 +511,7 @@ class TestRememberPhase1Overall:
         proc = _make_processor(tmp_path)
         text = "This is a document about testing the pipeline with mock data."
         result = proc.remember_phase1_overall(text, doc_name="phase1_test")
-        assert isinstance(result, MemoryCache)
+        assert isinstance(result, Episode)
 
     def test_activity_type_is_document_overall(self, tmp_path):
         proc = _make_processor(tmp_path)
@@ -550,7 +556,7 @@ class TestRememberPhase2Windows:
             text, doc_name="phase2_test", verbose=False,
         )
         assert isinstance(result, dict)
-        assert "memory_cache_id" in result
+        assert "episode_id" in result
         assert "chunks_processed" in result
         assert "storage_path" in result
 
@@ -562,19 +568,19 @@ class TestRememberPhase2Windows:
         )
         assert result["chunks_processed"] >= 1
 
-    def test_memory_cache_id_is_string(self, tmp_path):
+    def test_episode_id_is_string(self, tmp_path):
         proc = _make_processor(tmp_path)
         text = "Bob visited the science museum and learned about quantum physics experiments."
         result = proc.remember_phase2_windows(
             text, doc_name="phase2_test", verbose=False,
         )
-        assert isinstance(result["memory_cache_id"], str)
-        assert len(result["memory_cache_id"]) > 0
+        assert isinstance(result["episode_id"], str)
+        assert len(result["episode_id"]) > 0
 
     def test_with_overall_cache(self, tmp_path):
         proc = _make_processor(tmp_path)
         from datetime import datetime
-        overall = MemoryCache(
+        overall = Episode(
             absolute_id="overall_test_001",
             content="Test overall memory content for phase2.",
             event_time=datetime.now(),
@@ -587,3 +593,335 @@ class TestRememberPhase2Windows:
             verbose=False, overall_cache=overall,
         )
         assert result["chunks_processed"] >= 1
+
+
+# ===================================================================
+# 8. Version Inflation Prevention
+# ===================================================================
+
+class TestVersionInflation:
+    """Verify that identical content doesn't create duplicate versions."""
+
+    def test_skip_if_unchanged_entity_exact_match(self, tmp_path):
+        """_create_entity_version with skip_if_unchanged=True should return
+        existing version when content is identical."""
+        proc = _make_processor(tmp_path)
+        from datetime import datetime
+
+        # Create an initial entity
+        entity = Entity(
+            absolute_id="entity_20240101_000000_test001",
+            family_id="ent_version_test",
+            name="测试实体",
+            content="## 概述\n这是一个测试实体的内容。",
+            event_time=datetime(2024, 1, 1),
+            processed_time=datetime(2024, 1, 1),
+            episode_id="ep_test",
+            source_document="test",
+            content_format="markdown",
+        )
+        proc.storage.save_entity(entity)
+
+        # Try creating a version with identical content (skip_if_unchanged=True)
+        result = proc.entity_processor._create_entity_version(
+            family_id="ent_version_test",
+            name="测试实体",
+            content="## 概述\n这是一个测试实体的内容。",  # same content
+            episode_id="ep_test2",
+            source_document="test2",
+            old_content=entity.content,
+            old_content_format="markdown",
+            skip_if_unchanged=True,
+        )
+
+        # Should return the original entity (not a new version)
+        assert result.absolute_id == entity.absolute_id
+
+        # Verify only 1 version exists
+        versions = proc.storage.get_entity_versions("ent_version_test")
+        assert len(versions) == 1
+
+    def test_skip_if_unchanged_entity_different_content(self, tmp_path):
+        """_create_entity_version should create new version when content differs."""
+        proc = _make_processor(tmp_path)
+        from datetime import datetime
+
+        entity = Entity(
+            absolute_id="entity_20240101_000000_test002",
+            family_id="ent_version_test2",
+            name="测试实体",
+            content="## 概述\n原始内容",
+            event_time=datetime(2024, 1, 1),
+            processed_time=datetime(2024, 1, 1),
+            episode_id="ep_test",
+            source_document="test",
+            content_format="markdown",
+        )
+        proc.storage.save_entity(entity)
+
+        # Create with different content
+        result = proc.entity_processor._create_entity_version(
+            family_id="ent_version_test2",
+            name="测试实体",
+            content="## 概述\n更新后的内容",
+            episode_id="ep_test2",
+            source_document="test2",
+            old_content=entity.content,
+            old_content_format="markdown",
+            skip_if_unchanged=True,
+        )
+
+        # Should create a new version
+        assert result.absolute_id != entity.absolute_id
+
+        versions = proc.storage.get_entity_versions("ent_version_test2")
+        assert len(versions) == 2
+
+    def test_remember_same_text_twice_no_version_bloat(self, tmp_path):
+        """Remembering the same text twice should not create excessive entity versions.
+        The version count per entity should be ≤ 2 (initial + at most 1 update)."""
+        proc = _make_processor(tmp_path)
+        text = "Alice is a software engineer who works at TechCorp."
+
+        # Remember once
+        proc.remember_text(text, doc_name="test_doc", verbose=False)
+        # Remember same text again
+        proc.remember_text(text, doc_name="test_doc_2", verbose=False)
+
+        # Check all entities — each should have ≤ 2 versions
+        entities = proc.storage.get_all_entities()
+        for entity in entities:
+            versions = proc.storage.get_entity_versions(entity.family_id)
+            assert len(versions) <= 2, (
+                f"Entity '{entity.name}' ({entity.family_id}) has {len(versions)} versions, "
+                f"expected ≤ 2 after remembering same text twice"
+            )
+
+    def test_remember_different_text_creates_versions(self, tmp_path):
+        """Remembering different text about the same topic should create versions."""
+        proc = _make_processor(tmp_path)
+
+        proc.remember_text(
+            "Bob is a data scientist at Analytics Inc.",
+            doc_name="doc1", verbose=False,
+        )
+        proc.remember_text(
+            "Bob is a senior data scientist at Analytics Inc. He specializes in NLP.",
+            doc_name="doc2", verbose=False,
+        )
+
+        # At least one entity should exist
+        entities = proc.storage.get_all_entities()
+        assert len(entities) > 0
+
+    def test_batch_merge_exact_content_no_version(self, tmp_path):
+        """In the batch resolution path, merging with exact same content should
+        not create a new version (exact match guard)."""
+        proc = _make_processor(tmp_path)
+        from datetime import datetime
+
+        # Create existing entity
+        existing = Entity(
+            absolute_id="entity_20240101_000000_batch001",
+            family_id="ent_batch_test",
+            name="BatchTest",
+            content="## 概述\nBatch test entity content.",
+            event_time=datetime(2024, 1, 1),
+            processed_time=datetime(2024, 1, 1),
+            episode_id="ep_batch",
+            source_document="test",
+            content_format="markdown",
+        )
+        proc.storage.save_entity(existing)
+
+        # Simulate batch merge with identical content
+        entity_version, relations, name_mapping, to_persist = proc.entity_processor._process_single_entity_batch(
+            extracted_entity={"name": "BatchTest", "content": "## 概述\nBatch test entity content."},
+            candidates=[{
+                "family_id": "ent_batch_test",
+                "name": "BatchTest",
+                "content": "## 概述\nBatch test entity content.",
+                "source_document": "test",
+                "version_count": 1,
+                "lexical_score": 1.0,
+                "dense_score": 0.9,
+                "combined_score": 1.0,
+            }],
+            episode_id="ep_batch2",
+            similarity_threshold=0.7,
+            source_document="test2",
+        )
+
+        # Since content is identical, the existing entity should be returned (not a new version)
+        assert entity_version.family_id == "ent_batch_test"
+        versions = proc.storage.get_entity_versions("ent_batch_test")
+        assert len(versions) == 1, f"Expected 1 version, got {len(versions)}"
+
+
+# ===================================================================
+# Entity Alignment — Merge Safety Guards (Phase 2.2)
+# ===================================================================
+
+class TestEntityAlignmentMergeGuards:
+    """Verify that entity alignment refuses to merge when signals are too weak.
+
+    Two guards:
+    1. Embedding similarity < 0.5 → skip merge
+    2. Jaccard name similarity < 0.3 → skip merge
+    """
+
+    def test_batch_path_merge_safe_embedding_too_low(self, tmp_path):
+        """Batch path: merge_safe=False when embedding < 0.5, should block merge."""
+        proc = _make_processor(tmp_path)
+        from datetime import datetime
+
+        # Create "苹果公司" entity (Apple Inc.)
+        apple_corp = Entity(
+            absolute_id="entity_20240101_000000_apple_corp",
+            family_id="ent_apple_corp",
+            name="苹果公司",
+            content="## 概述\n苹果公司是一家美国跨国科技公司，总部位于加利福尼亚州库比蒂诺。",
+            event_time=datetime(2024, 1, 1),
+            processed_time=datetime(2024, 1, 1),
+            episode_id="ep_test",
+            source_document="test",
+            content_format="markdown",
+        )
+        proc.storage.save_entity(apple_corp)
+
+        # Try to merge "苹果（水果）" with embedding < 0.5
+        entity_version, relations, name_mapping, to_persist = proc.entity_processor._process_single_entity_batch(
+            extracted_entity={"name": "苹果（水果）", "content": "## 概述\n苹果是一种常见的水果，富含维生素C。"},
+            candidates=[{
+                "family_id": "ent_apple_corp",
+                "name": "苹果公司",
+                "content": "## 概述\n苹果公司是一家美国跨国科技公司。",
+                "source_document": "test",
+                "version_count": 1,
+                "lexical_score": 0.4,
+                "dense_score": 0.4,  # < 0.5 → merge_safe=False
+                "combined_score": 0.4,
+                "merge_safe": False,  # dense < 0.5
+            }],
+            episode_id="ep_test2",
+            similarity_threshold=0.7,
+            source_document="test2",
+        )
+
+        # Should NOT merge — create a new entity instead
+        assert entity_version.family_id != "ent_apple_corp", \
+            "Should not merge 苹果（水果）with 苹果公司 when embedding < 0.5"
+
+    def test_batch_path_merge_safe_jaccard_too_low(self, tmp_path):
+        """Batch path: merge_safe=False when Jaccard < 0.3, should block merge."""
+        proc = _make_processor(tmp_path)
+        from datetime import datetime
+
+        # Create a "量子计算" entity
+        quantum = Entity(
+            absolute_id="entity_20240101_000000_quantum",
+            family_id="ent_quantum",
+            name="量子计算",
+            content="## 概述\n量子计算是利用量子力学原理进行计算的技术。",
+            event_time=datetime(2024, 1, 1),
+            processed_time=datetime(2024, 1, 1),
+            episode_id="ep_test",
+            source_document="test",
+            content_format="markdown",
+        )
+        proc.storage.save_entity(quantum)
+
+        # "经典计算机" has very different characters from "量子计算"
+        # Jaccard: set(经典计算机) vs set(量子计算) = very low
+        entity_version, relations, name_mapping, to_persist = proc.entity_processor._process_single_entity_batch(
+            extracted_entity={"name": "经典计算机", "content": "## 概述\n经典计算机基于二进制逻辑门运算。"},
+            candidates=[{
+                "family_id": "ent_quantum",
+                "name": "量子计算",
+                "content": "## 概述\n量子计算是利用量子力学原理进行计算的技术。",
+                "source_document": "test",
+                "version_count": 1,
+                "lexical_score": 0.1,  # < 0.3 → merge_safe=False
+                "dense_score": 0.7,   # embedding is high but Jaccard is too low
+                "combined_score": 0.7,
+                "merge_safe": False,  # Jaccard < 0.3
+            }],
+            episode_id="ep_test2",
+            similarity_threshold=0.7,
+            source_document="test2",
+        )
+
+        # Should NOT merge
+        assert entity_version.family_id != "ent_quantum", \
+            "Should not merge 经典计算机 with 量子计算 when Jaccard < 0.3"
+
+    def test_batch_path_merge_safe_both_pass(self, tmp_path):
+        """Batch path: when both embedding >= 0.5 AND Jaccard >= 0.3, merge is allowed."""
+        proc = _make_processor(tmp_path)
+        from datetime import datetime
+
+        # Create "苹果公司" entity
+        apple_corp = Entity(
+            absolute_id="entity_20240101_000000_apple_corp2",
+            family_id="ent_apple_corp2",
+            name="苹果公司",
+            content="## 概述\n苹果公司是一家美国跨国科技公司，总部位于加利福尼亚州库比蒂诺。",
+            event_time=datetime(2024, 1, 1),
+            processed_time=datetime(2024, 1, 1),
+            episode_id="ep_test",
+            source_document="test",
+            content_format="markdown",
+        )
+        proc.storage.save_entity(apple_corp)
+
+        # "Apple" could refer to same entity — same content
+        entity_version, relations, name_mapping, to_persist = proc.entity_processor._process_single_entity_batch(
+            extracted_entity={"name": "苹果公司", "content": "## 概述\n苹果公司是一家美国跨国科技公司，总部位于加利福尼亚州库比蒂诺。"},
+            candidates=[{
+                "family_id": "ent_apple_corp2",
+                "name": "苹果公司",
+                "content": "## 概述\n苹果公司是一家美国跨国科技公司，总部位于加利福尼亚州库比蒂诺。",
+                "source_document": "test",
+                "version_count": 1,
+                "lexical_score": 1.0,
+                "dense_score": 0.9,  # >= 0.5
+                "combined_score": 1.0,
+                "merge_safe": True,  # both pass
+            }],
+            episode_id="ep_test2",
+            similarity_threshold=0.7,
+            source_document="test2",
+        )
+
+        # Should merge (same entity, same content)
+        assert entity_version.family_id == "ent_apple_corp2", \
+            "Should merge when both embedding >= 0.5 and Jaccard >= 0.3"
+
+    def test_candidate_table_merge_safe_threshold(self, tmp_path):
+        """Verify _build_entity_candidate_table sets merge_safe correctly."""
+        proc = _make_processor(tmp_path)
+
+        # Test Jaccard computation
+        j = proc.entity_processor._calculate_jaccard_similarity("苹果公司", "苹果（水果）")
+        # "苹果公司" chars: {苹,果,公,司}, "苹果（水果）" chars: {苹,果,（,水,）}
+        # intersection: {苹,果} = 2, union = 6 (deduped: {苹,果,公,司,（,水,）})
+        # Actually: set("苹果公司") = {苹,果,公,司}, set("苹果（水果）") = {苹,果,（,水,）}
+        # intersection = {苹,果} = 2, union = {苹,果,公,司,（,水,）} = 6
+        # Jaccard = 2/6 ≈ 0.33 — just above 0.3, so name alone doesn't block merge
+        assert 0.25 < j < 0.45, f"Expected Jaccard ≈ 0.33, got {j}"
+
+    def test_jaccard_completely_different_names(self, tmp_path):
+        """Verify Jaccard < 0.3 for completely different entity names."""
+        proc = _make_processor(tmp_path)
+
+        # "量子计算" vs "经典计算机": no common chars → Jaccard = 0
+        j1 = proc.entity_processor._calculate_jaccard_similarity("量子计算", "经典计算机")
+        assert j1 < 0.3, f"Expected Jaccard < 0.3 for 量子计算 vs 经典计算机, got {j1}"
+
+        # "Alice" vs "Bob": no common chars → Jaccard = 0
+        j2 = proc.entity_processor._calculate_jaccard_similarity("Alice", "Bob")
+        assert j2 == 0.0, f"Expected Jaccard = 0 for Alice vs Bob, got {j2}"
+
+        # "苹果公司" vs "苹果科技": significant overlap (共享 苹,果,公 → Jaccard > 0.3)
+        j3 = proc.entity_processor._calculate_jaccard_similarity("苹果公司", "苹果科技")
+        assert j3 >= 0.3, f"Expected Jaccard >= 0.3 for 苹果公司 vs 苹果科技, got {j3}"

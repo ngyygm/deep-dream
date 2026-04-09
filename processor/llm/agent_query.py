@@ -102,7 +102,7 @@ class AgentQueryMixin:
         ]
 
         try:
-            result, _ = self.call_llm(messages)
+            result = self._call_llm(prompt="", messages=messages)
             return (result or "").strip()
         except Exception as e:
             wprint(f"实体解释失败: {e}")
@@ -188,6 +188,55 @@ class AgentQueryMixin:
         # 简化版：返回查询文本和结果摘要
         query_text = results.get("query_text", question)
         return f"查询: {query_text}"
+
+    def synthesize_answer(self, question: str, entity_dicts: list, relation_dicts: list) -> str:
+        """基于搜索结果用 LLM 综合回答用户问题。
+
+        同步方法，供 API 层在获取搜索结果后调用。
+        """
+        if not entity_dicts and not relation_dicts:
+            return "未找到相关的知识图谱数据。"
+
+        # 构建上下文
+        context_parts = []
+        for e in entity_dicts[:15]:
+            name = e.get("name", "")
+            summary = e.get("summary") or ""
+            content = e.get("content", "")
+            snippet = summary if summary else (content[:200] if content else "")
+            context_parts.append(f"- 实体【{name}】: {snippet}")
+
+        for r in relation_dicts[:10]:
+            e1 = r.get("entity1_name", "")
+            e2 = r.get("entity2_name", "")
+            content = r.get("content", "")
+            context_parts.append(f"- 关系【{e1} ↔ {e2}】: {content[:150]}")
+
+        context = "\n".join(context_parts)
+
+        prompt = f"""<用户问题>
+{question}
+</用户问题>
+
+<知识图谱检索结果>
+{context}
+</知识图谱检索结果>
+
+请基于以上知识图谱检索结果，简洁地回答用户的问题。如果检索结果不足以完整回答，请基于已有信息给出部分回答并指出信息缺口。直接输出回答文本，不要使用 JSON 格式。"""
+
+        messages = [
+            {"role": "system", "content": "你是一个知识图谱问答助手。基于检索到的实体和关系数据，用简洁、准确的语言回答用户问题。"},
+            {"role": "user", "content": prompt},
+        ]
+
+        try:
+            result = self._call_llm(prompt="", messages=messages)
+            return (result or "").strip() or "无法基于检索结果生成回答。"
+        except Exception as e:
+            logger.warning("回答综合失败: %s", e)
+            # 回退：拼接实体名称
+            names = [e.get("name", "") for e in entity_dicts[:5] if e.get("name")]
+            return f"找到相关实体: {', '.join(names)}" if names else "检索完成但无法生成回答。"
 
     def _parse_suggestions(self, response: str) -> List[dict]:
         """解析建议列表响应。"""

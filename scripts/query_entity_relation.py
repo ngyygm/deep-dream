@@ -162,7 +162,7 @@ def search_entity_with_alias(storage, query_name, threshold=0.3, max_results=20)
                 similarity_method="text"
             )
             for entity in entities:
-                if entity.entity_id not in [e.entity_id for e in entities_found]:
+                if entity.family_id not in [e.family_id for e in entities_found]:
                     entities_found.append(entity)
             print(f"    [结果] 宽松搜索找到 {len(entities)} 个实体")
         except Exception as e:
@@ -176,7 +176,7 @@ def search_entity_with_alias(storage, query_name, threshold=0.3, max_results=20)
             matched = [e for e in all_entities if query_name in e.content or query_name in e.name]
 
             for entity in matched[:10]:
-                if entity.entity_id not in [e.entity_id for e in entities_found]:
+                if entity.family_id not in [e.family_id for e in entities_found]:
                     entities_found.append(entity)
 
             if matched:
@@ -188,8 +188,8 @@ def search_entity_with_alias(storage, query_name, threshold=0.3, max_results=20)
     seen_ids = set()
     unique_entities = []
     for entity in entities_found:
-        if entity.entity_id not in seen_ids:
-            seen_ids.add(entity.entity_id)
+        if entity.family_id not in seen_ids:
+            seen_ids.add(entity.family_id)
             unique_entities.append(entity)
 
     return unique_entities[:max_results], parse_info
@@ -206,7 +206,7 @@ def get_relations_containing_keyword(storage, entity, keyword):
     """
     获取实体的所有关系中包含特定关键词的关系
     """
-    relations = storage.get_entity_relations_by_entity_id(entity.entity_id, limit=200)
+    relations = storage.get_entity_relations_by_family_id(entity.family_id, limit=200)
     return [r for r in relations if keyword in r.content]
 
 
@@ -214,11 +214,11 @@ def load_relevant_cache_content(storage, relations, entity1_name, entity2_name, 
     """
     加载相关的记忆缓存内容
     """
-    cache_ids = set(rel.memory_cache_id for rel in relations if rel.memory_cache_id)
+    cache_ids = set(rel.episode_id for rel in relations if rel.episode_id)
 
     results = []
     for cache_id in list(cache_ids)[:max_caches]:
-        cache = storage.load_memory_cache(cache_id)
+        cache = storage.load_episode(cache_id)
         if cache and entity1_name in cache.content and entity2_name in cache.content:
             results.append({
                 'cache_id': cache_id,
@@ -234,7 +234,7 @@ def print_entity_info(entity, query_name):
     """打印实体信息"""
     match_indicator = "✓" if query_name in entity.name else "→"
     print(f"  {match_indicator} 名称: {entity.name}")
-    print(f"     Entity ID: {entity.entity_id}")
+    print(f"     Entity ID: {entity.family_id}")
     print(f"     描述: {entity.content[:100]}...")
     print(f"     时间: {entity.event_time}")
     print()
@@ -252,7 +252,7 @@ def print_relation_info(rel, idx, storage):
     print(f"  {name1} <-> {name2}")
     print(f"  内容: {rel.content}")
     print(f"  时间: {rel.event_time}")
-    print(f"  缓存ID: {rel.memory_cache_id}")
+    print(f"  缓存ID: {rel.episode_id}")
 
 
 def print_timeline(relations, storage):
@@ -370,8 +370,8 @@ def main():
     print("【步骤2】查询直接关系")
     print("-" * 80)
 
-    entity1_id = entities1[0].entity_id
-    entity2_id = entities2[0].entity_id
+    entity1_id = entities1[0].family_id
+    entity2_id = entities2[0].family_id
 
     direct_relations = query_entity_relations(storage, entity1_id, entity2_id)
 

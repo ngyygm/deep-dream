@@ -68,7 +68,7 @@ DEFAULTS = {
             "entity_extraction_rounds": 1,
             "relation_extraction_rounds": 1,
             "entity_post_enhancement": False,
-            "prompt_memory_cache_max_chars": 2000,
+            "prompt_episode_max_chars": 2000,
             "compress_multi_round_extraction": False,
         },
         "debug": {
@@ -171,18 +171,28 @@ def _normalize_runtime_config(config: Dict[str, Any]) -> Dict[str, Any]:
         alignment.get("max_alignment_candidates"),
         pipeline.get("max_alignment_candidates"),
     )
+    # Legacy field aliases: old name → canonical name
+    _extraction_aliases = {
+        "prompt_memory_cache_max_chars": "prompt_episode_max_chars",
+    }
     extraction_keys = (
         "extraction_rounds",
         "entity_extraction_rounds",
         "relation_extraction_rounds",
         "entity_post_enhancement",
-        "prompt_memory_cache_max_chars",
+        "prompt_episode_max_chars",
         "compress_multi_round_extraction",
     )
-    normalized_extraction = {
-        key: _pick(extraction.get(key), pipeline.get(key))
-        for key in extraction_keys
-    }
+    normalized_extraction = {}
+    for key in extraction_keys:
+        val = _pick(extraction.get(key), pipeline.get(key))
+        if val is None:
+            # Check legacy alias
+            for old_name, new_name in _extraction_aliases.items():
+                if new_name == key:
+                    val = _pick(extraction.get(old_name), pipeline.get(old_name))
+                    break
+        normalized_extraction[key] = val
     distill_data_dir = _pick(
         debug.get("distill_data_dir"),
         pipeline.get("distill_data_dir"),
@@ -212,6 +222,10 @@ def _normalize_runtime_config(config: Dict[str, Any]) -> Dict[str, Any]:
     search.update({k: v for k, v in normalized_search.items() if v is not None})
     alignment["max_alignment_candidates"] = max_alignment_candidates
     extraction.update({k: v for k, v in normalized_extraction.items() if v is not None})
+    # Backfill legacy aliases in extraction dict for backward compat
+    for old_name, new_name in _extraction_aliases.items():
+        if new_name in extraction and old_name not in extraction:
+            extraction[old_name] = extraction[new_name]
     debug["distill_data_dir"] = distill_data_dir if distill_data_dir is not None else "distill_pipeline"
     pipeline["search"] = search
     pipeline["alignment"] = alignment
@@ -230,6 +244,10 @@ def _normalize_runtime_config(config: Dict[str, Any]) -> Dict[str, Any]:
     pipeline["max_alignment_candidates"] = max_alignment_candidates
     for key, value in normalized_extraction.items():
         pipeline[key] = value
+    # Backfill legacy aliases in flat pipeline dict
+    for old_name, new_name in _extraction_aliases.items():
+        if new_name in pipeline and old_name not in pipeline:
+            pipeline[old_name] = pipeline[new_name]
     pipeline["distill_data_dir"] = debug["distill_data_dir"]
     cfg["pipeline"] = pipeline
 
@@ -289,52 +307,6 @@ def merge_llm_alignment(llm: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
-def merge_llm_dream(llm: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    合并 DeepDream 专用 LLM 配置。
-    - llm.dream.enabled == false：关闭 dream 专用通道，回退到默认 LLM。
-    - enabled == true 或未写 enabled 但存在 base_url/api_key/model 等：启用 dream 配置。
-    """
-    if llm.get("dream_enabled") is False:
-        return {}
-
-    nested = llm.get("dream")
-    if not isinstance(nested, dict):
-        nested = {}
-
-    if nested.get("enabled") is False:
-        return {}
-
-    def pick(nested_key: str, flat_key: str):
-        v = nested.get(nested_key)
-        if v is None and nested_key == "think":
-            v = nested.get("think_mode")
-        if v is not None:
-            return v
-        return llm.get(flat_key)
-
-    out: Dict[str, Any] = {}
-    mapping = (
-        ("base_url", "dream_base_url"),
-        ("api_key", "dream_api_key"),
-        ("model", "dream_model"),
-        ("max_tokens", "dream_max_tokens"),
-        ("think", "dream_think"),
-    )
-    for nk, fk in mapping:
-        val = pick(nk, fk)
-        if val is not None:
-            out["think_mode" if nk == "think" else nk] = val
-
-    if nested.get("enabled") is True:
-        out["enabled"] = True
-        return out
-
-    if out:
-        out["enabled"] = True
-    return out
-
-
 def _validate_config(config: Dict[str, Any]) -> None:
     """校验配置值合法性，不合法时抛出 ConfigError。"""
     errors: list = []
@@ -373,17 +345,17 @@ def _validate_config(config: Dict[str, Any]) -> None:
             errors.append(f"{name} 应在 0.0-1.0 之间，当前值: {val}")
 
     extraction = (pipeline.get("extraction") or {})
-    _pmcmc = extraction.get("prompt_memory_cache_max_chars", pipeline.get("prompt_memory_cache_max_chars"))
+    _pmcmc = extraction.get("prompt_episode_max_chars", pipeline.get("prompt_episode_max_chars"))
     if _pmcmc is not None:
         try:
             _pmcmc_i = int(_pmcmc)
             if _pmcmc_i < 0:
                 errors.append(
-                    f"pipeline.extraction.prompt_memory_cache_max_chars 应 >= 0，当前值: {_pmcmc}"
+                    f"pipeline.extraction.prompt_episode_max_chars 应 >= 0，当前值: {_pmcmc}"
                 )
         except (TypeError, ValueError):
             errors.append(
-                "pipeline.extraction.prompt_memory_cache_max_chars 应为整数"
+                "pipeline.extraction.prompt_episode_max_chars 应为整数"
                 f"，当前值: {_pmcmc}"
             )
 

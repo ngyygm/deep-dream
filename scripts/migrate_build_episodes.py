@@ -3,7 +3,7 @@
 构建 Episode 节点和 MENTIONS 边的迁移脚本。
 
 从 docs/ 目录的 meta.json 创建 Neo4j :Episode 节点，
-从 SQLite entities.memory_cache_id 创建 [:MENTIONS] 边到关联 Entity。
+从 SQLite entities.episode_id 创建 [:MENTIONS] 边到关联 Entity。
 
 Usage:
     python scripts/migrate_build_episodes.py
@@ -98,12 +98,12 @@ def main():
 
     # cache_id -> [entity_absolute_id, ...]
     mentions_map: dict[str, list[str]] = {}
-    cursor.execute("SELECT DISTINCT id, entity_id, memory_cache_id FROM entities")
+    cursor.execute("SELECT DISTINCT id, entity_id, episode_id FROM entities")
     rows = cursor.fetchall()
     print(f"Found {len(rows)} entity rows")
 
     for row in rows:
-        cache_id = row["memory_cache_id"]
+        cache_id = row["episode_id"]
         entity_abs_id = row["id"]
         if cache_id and entity_abs_id:
             mentions_map.setdefault(cache_id, []).append(entity_abs_id)

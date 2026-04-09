@@ -100,7 +100,7 @@ def print_entities(entities, show_numbered=False):
             print(f"[{i}] ", end="")
 
         print(f"名称: {entity.name}")
-        print(f"Entity ID: {entity.entity_id}")
+        print(f"Family ID: {entity.family_id}")
         print(f"描述: {entity.content[:100]}...")
         print(f"时间: {entity.event_time}")
         print()
@@ -148,7 +148,7 @@ def main():
             print(f"  精确搜索找到 {len(entities)} 个，尝试关键词搜索...")
             keyword_entities = search_in_all_entities(storage, args.query, args.max_results)
             for entity in keyword_entities:
-                if entity.entity_id not in [e.entity_id for e in entities]:
+                if entity.family_id not in [e.family_id for e in entities]:
                     entities.append(entity)
 
     print(f"\n搜索完成，找到 {len(entities)} 个匹配实体")

@@ -6,7 +6,7 @@ from datetime import datetime
 import hashlib
 import uuid
 
-from ..models import MemoryCache
+from ..models import Episode
 from ..utils import wprint
 
 
@@ -21,8 +21,8 @@ class _RelationOpsMixin:
 
         Args:
             rel_info: 关系信息字典，包含：
-                - entity1_id, entity2_id: 原始entity_id
-                - actual_entity1_id, actual_entity2_id: 实际使用的entity_id（可能已合并）
+                - entity1_id, entity2_id: 原始family_id
+                - actual_entity1_id, actual_entity2_id: 实际使用的family_id（可能已合并）
                 - entity1_name, entity2_name: 实体名称
                 - content: 初步的关系content（可选，如果提供则用于初步判断）
             verbose: 是否输出详细信息
@@ -32,7 +32,7 @@ class _RelationOpsMixin:
                 - entity1_id, entity2_id: 实体ID
                 - entity1_name, entity2_name: 实体名称
                 - content: 关系content
-                - relation_id: 关系ID
+                - family_id: 关系ID
                 - is_new: 是否新创建
                 - is_updated: 是否更新
             如果处理失败或跳过，返回None
@@ -48,8 +48,8 @@ class _RelationOpsMixin:
 
         try:
             # 获取两个实体的完整信息
-            entity1 = self.storage.get_entity_by_id(actual_entity1_id)
-            entity2 = self.storage.get_entity_by_id(actual_entity2_id)
+            entity1 = self.storage.get_entity_by_family_id(actual_entity1_id)
+            entity2 = self.storage.get_entity_by_family_id(actual_entity2_id)
 
             if not entity1 or not entity2:
                 if verbose:
@@ -68,10 +68,10 @@ class _RelationOpsMixin:
                 )
 
                 if existing_relations_before:
-                    # get_relations_by_entities 已按 relation_id 去重，直接使用
+                    # get_relations_by_entities 已按 family_id 去重，直接使用
                     existing_relations_info = [
                         {
-                            'relation_id': r.relation_id,
+                            'relation_id': r.family_id,
                             'content': r.content
                         }
                         for r in existing_relations_before
@@ -94,11 +94,11 @@ class _RelationOpsMixin:
                     elif not isinstance(match_result, dict):
                         match_result = None
 
-                    if match_result and match_result.get('relation_id'):
+                    if match_result and match_result.get('family_id'):
                         # 匹配到已有关系，判断是否需要更新
-                        relation_id = match_result['relation_id']
+                        family_id = match_result['family_id']
                         latest_relation = next(
-                            (r for r in existing_relations_before if r.relation_id == relation_id), None
+                            (r for r in existing_relations_before if r.family_id == family_id), None
                         )
 
                         if latest_relation:
@@ -110,33 +110,33 @@ class _RelationOpsMixin:
                             if not need_update:
                                 # 不需要更新，直接返回，跳过后续详细生成
                                 if verbose:
-                                    wprint(f"        关系已存在且无需更新（使用初步content判断），跳过详细生成: {relation_id}")
+                                    wprint(f"        关系已存在且无需更新（使用初步content判断），跳过详细生成: {family_id}")
                                 return {
                                     "entity1_id": actual_entity1_id,
                                     "entity2_id": actual_entity2_id,
                                     "entity1_name": entity1_name,
                                     "entity2_name": entity2_name,
                                     "content": latest_relation.content,
-                                    "relation_id": relation_id,
+                                    "family_id": family_id,
                                     "is_new": False,
                                     "is_updated": False
                                 }
                             else:
                                 if verbose:
-                                    wprint(f"        关系已存在但需要更新（使用初步content判断），继续生成详细content: {relation_id}")
+                                    wprint(f"        关系已存在但需要更新（使用初步content判断），继续生成详细content: {family_id}")
 
-            # 获取实体的memory_cache（只有在需要详细生成时才获取）
-            entity1_memory_cache = None
-            entity2_memory_cache = None
-            if entity1.memory_cache_id:
-                from_cache = self.storage.load_memory_cache(entity1.memory_cache_id)
+            # 获取实体的episode（只有在需要详细生成时才获取）
+            entity1_episode = None
+            entity2_episode = None
+            if entity1.episode_id:
+                from_cache = self.storage.load_episode(entity1.episode_id)
                 if from_cache:
-                    entity1_memory_cache = from_cache.content
+                    entity1_episode = from_cache.content
 
-            if entity2.memory_cache_id:
-                to_cache = self.storage.load_memory_cache(entity2.memory_cache_id)
+            if entity2.episode_id:
+                to_cache = self.storage.load_episode(entity2.episode_id)
                 if to_cache:
-                    entity2_memory_cache = to_cache.content
+                    entity2_episode = to_cache.content
 
             # 步骤1：先判断是否真的需要创建关系边（使用完整的实体信息）
             need_create_relation = self.llm_client.judge_need_create_relation(
@@ -144,8 +144,8 @@ class _RelationOpsMixin:
                 entity1_content=entity1.content,
                 entity2_name=entity2.name,
                 entity2_content=entity2.content,
-                entity1_memory_cache=entity1_memory_cache,
-                entity2_memory_cache=entity2_memory_cache
+                entity1_episode=entity1_episode,
+                entity2_episode=entity2_episode
             )
 
             if not need_create_relation:
@@ -156,26 +156,26 @@ class _RelationOpsMixin:
             if verbose:
                 wprint(f"        判断结果：两个实体之间存在明确的、有意义的关联，需要创建关系边")
 
-            # 步骤2：生成关系的memory_cache（临时，不保存）
-            relation_memory_cache_content = self.llm_client.generate_relation_memory_cache(
+            # 步骤2：生成关系的episode（临时，不保存）
+            relation_episode_content = self.llm_client.generate_relation_episode(
                 [],  # 关系列表为空，因为还没有生成关系content
                 [
-                    {"entity_id": actual_entity1_id, "name": entity1.name, "content": entity1.content},
-                    {"entity_id": actual_entity2_id, "name": entity2.name, "content": entity2.content}
+                    {"family_id": actual_entity1_id, "name": entity1.name, "content": entity1.content},
+                    {"family_id": actual_entity2_id, "name": entity2.name, "content": entity2.content}
                 ],
                 {
-                    actual_entity1_id: entity1_memory_cache or "",
-                    actual_entity2_id: entity2_memory_cache or ""
+                    actual_entity1_id: entity1_episode or "",
+                    actual_entity2_id: entity2_episode or ""
                 }
             )
 
-            # 步骤3：根据memory_cache和两个实体，生成关系的content
+            # 步骤3：根据episode和两个实体，生成关系的content
             relation_content = self.llm_client.generate_relation_content(
                 entity1_name=entity1.name,
                 entity1_content=entity1.content,
                 entity2_name=entity2.name,
                 entity2_content=entity2.content,
-                relation_memory_cache=relation_memory_cache_content,
+                relation_episode=relation_episode_content,
                 preliminary_content=preliminary_content
             )
 
@@ -209,10 +209,10 @@ class _RelationOpsMixin:
                     wprint(f"        不存在关系，需要创建新关系")
             else:
                 # 4b. 如果存在关系，判断是否需要更新
-                # get_relations_by_entities 已按 relation_id 去重，直接使用
+                # get_relations_by_entities 已按 family_id 去重，直接使用
                 existing_relations_info = [
                     {
-                        'relation_id': r.relation_id,
+                        'relation_id': r.family_id,
                         'content': r.content
                     }
                     for r in existing_relations_before
@@ -228,11 +228,11 @@ class _RelationOpsMixin:
                 elif not isinstance(match_result, dict):
                     match_result = None
 
-                if match_result and match_result.get('relation_id'):
+                if match_result and match_result.get('family_id'):
                     # 匹配到已有关系，判断是否需要更新
-                    relation_id = match_result['relation_id']
+                    family_id = match_result['family_id']
                     latest_relation = next(
-                        (r for r in existing_relations_before if r.relation_id == relation_id), None
+                        (r for r in existing_relations_before if r.family_id == family_id), None
                     )
 
                     if latest_relation:
@@ -246,11 +246,11 @@ class _RelationOpsMixin:
                             need_create_or_update = True
                             is_updated = True
                             if verbose:
-                                wprint(f"        关系已存在，需要更新: {relation_id}")
+                                wprint(f"        关系已存在，需要更新: {family_id}")
                         else:
                             # 不需要更新
                             if verbose:
-                                wprint(f"        关系已存在，无需更新: {relation_id}")
+                                wprint(f"        关系已存在，无需更新: {family_id}")
                             relation = latest_relation
                     else:
                         # 找不到匹配的关系，创建新关系
@@ -265,48 +265,48 @@ class _RelationOpsMixin:
                     if verbose:
                         wprint(f"        未匹配到已有关系，创建新关系")
 
-            # 只有在需要创建或更新时，才保存memory_cache并创建/更新关系
+            # 只有在需要创建或更新时，才保存episode并创建/更新关系
             if need_create_or_update:
-                # 生成总结的memory_cache（用于json的text字段）
+                # 生成总结的episode（用于json的text字段）
                 cache_text_content = f"""实体1:
 - name: {entity1.name}
 - content: {entity1.content}
-- memory_cache: {entity1_memory_cache if entity1_memory_cache else '无'}
+- episode: {entity1_episode if entity1_episode else '无'}
 
 实体2:
 - name: {entity2.name}
 - content: {entity2.content}
-- memory_cache: {entity2_memory_cache if entity2_memory_cache else '无'}
+- episode: {entity2_episode if entity2_episode else '无'}
 """
 
-                # 保存memory_cache（md和json）
+                # 保存episode（md和json）
                 # 从实体中获取文档名（如果实体有source_document，使用第一个实体的source_document）
                 source_document_from_entity = entity1.source_document if hasattr(entity1, 'source_document') and entity1.source_document else ""
 
-                relation_memory_cache = MemoryCache(
+                relation_episode = Episode(
                     absolute_id=f"cache_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}",
-                    content=relation_memory_cache_content,
+                    content=relation_episode_content,
                     event_time=datetime.now(),
                     source_document=source_document_from_entity,
                     activity_type="知识图谱整理-关系生成"
                 )
-                # 保存memory_cache
+                # 保存episode
                 rel_doc_hash = hashlib.md5(cache_text_content.encode("utf-8")).hexdigest()[:12] if cache_text_content else ""
-                self.storage.save_memory_cache(relation_memory_cache, text=cache_text_content, doc_hash=rel_doc_hash)
+                self.storage.save_episode(relation_episode, text=cache_text_content, doc_hash=rel_doc_hash)
 
                 if verbose:
-                    wprint(f"        保存关系memory_cache: {relation_memory_cache.absolute_id}")
+                    wprint(f"        保存关系episode: {relation_episode.absolute_id}")
 
                 relation = self.relation_processor._process_single_relation(
                     extracted_relation,
                     actual_entity1_id,
                     actual_entity2_id,
-                    relation_memory_cache.absolute_id,
+                    relation_episode.absolute_id,
                     entity1.name,
                     entity2.name,
                     verbose_relation=verbose,
                     source_document=source_document_from_entity,
-                    base_time=relation_memory_cache.event_time,
+                    base_time=relation_episode.event_time,
                 )
 
             if relation:
@@ -317,20 +317,20 @@ class _RelationOpsMixin:
                     "entity1_name": entity1.name,
                     "entity2_name": entity2.name,
                     "content": relation_content,
-                    "relation_id": relation.relation_id,
+                    "relation_id": relation.family_id,
                     "is_new": is_new_relation,
                     "is_updated": is_updated
                 }
 
                 if is_new_relation:
                     if verbose:
-                        wprint(f"        成功创建新关系: {relation.relation_id}")
+                        wprint(f"        成功创建新关系: {relation.family_id}")
                 elif is_updated:
                     if verbose:
-                        wprint(f"        关系已存在，已更新: {relation.relation_id}")
+                        wprint(f"        关系已存在，已更新: {relation.family_id}")
                 else:
                     if verbose:
-                        wprint(f"        关系已存在，无需更新: {relation.relation_id}")
+                        wprint(f"        关系已存在，无需更新: {relation.family_id}")
 
                 return alias_detail
             else:
@@ -398,7 +398,7 @@ class _RelationOpsMixin:
             consolidation_text += "".join(all_analyzed_entities_text)
 
         # 创建总结性的记忆缓存
-        summary_cache = MemoryCache(
+        summary_cache = Episode(
             absolute_id=f"cache_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}",
             content=f"""# 知识图谱整理总结
 
@@ -413,7 +413,7 @@ class _RelationOpsMixin:
 
         # 保存总结记忆缓存
         summary_doc_hash = hashlib.md5(consolidation_text.encode("utf-8")).hexdigest()[:12] if consolidation_text else ""
-        self.storage.save_memory_cache(
+        self.storage.save_episode(
             summary_cache,
             text=consolidation_text,
             doc_hash=summary_doc_hash
@@ -430,7 +430,7 @@ class _RelationOpsMixin:
             entities_for_analysis: 传入LLM分析的实体列表
 
         Returns:
-            包含完整实体信息的文本（包括entity_id, name, content等）
+            包含完整实体信息的文本（包括family_id, name, content等）
         """
         text_lines = []
         text_lines.append(f"知识图谱整理 - 传入LLM进行判断的实体列表（共 {len(entities_for_analysis)} 个实体）\n")
@@ -438,13 +438,13 @@ class _RelationOpsMixin:
         text_lines.append("")
 
         for idx, entity_info in enumerate(entities_for_analysis, 1):
-            entity_id = entity_info.get("entity_id", "未知")
+            family_id = entity_info.get("family_id", "未知")
             name = entity_info.get("name", "未知")
             content = entity_info.get("content", "")
             version_count = entity_info.get("version_count", 0)
 
             text_lines.append(f"{idx}. 实体名称: {name}")
-            text_lines.append(f"   entity_id: {entity_id}")
+            text_lines.append(f"   family_id: {family_id}")
             text_lines.append(f"   版本数: {version_count}")
             text_lines.append(f"   完整内容:")
             text_lines.append(f"   {content}")

@@ -76,7 +76,8 @@ registerPage('communities', (function () {
   }
 
   async function _clearCommunities() {
-    if (!confirm(t('communities.clearConfirm'))) return;
+    const ok = await showConfirm({ message: t('communities.clearConfirm'), destructive: true });
+    if (!ok) return;
     try {
       await state.api.clearCommunities(state.currentGraphId);
       _communities = [];
@@ -133,7 +134,7 @@ registerPage('communities', (function () {
     let html = '<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">';
     for (const c of _communities) {
       const color = palette[c.community_id % palette.length].bg;
-      const topMembers = (c.members || []).slice(0, 5).map(m => m.name || m.entity_id).join(', ');
+      const topMembers = (c.members || []).slice(0, 5).map(m => m.name || m.family_id).join(', ');
       html += `
         <div class="card p-4 cursor-pointer" onclick="navigate('#communities/${c.community_id}')">
           <div class="flex items-center gap-2 mb-2">
@@ -149,12 +150,12 @@ registerPage('communities', (function () {
     // Load-more sentinel for infinite scroll
     if (!_allLoaded) {
       html += `<div id="comm-sentinel" style="padding:1rem;text-align:center;color:var(--text-muted);font-size:0.85rem;">
-        ${_loading ? `${spinnerHtml('spinner-sm')} 加载中...` : ''}
+        ${_loading ? `${spinnerHtml('spinner-sm')} ${t('common.loading')}` : ''}
       </div>`;
     } else if (_communities.length > 0) {
       const displayTotal = _total > 0 ? _total : _communities.length;
       html += `<div style="padding:0.75rem;text-align:center;color:var(--text-muted);font-size:0.8125rem;">
-        已加载 ${_communities.length} / ${displayTotal}
+        ${t('communities.loadedCount', {loaded: _communities.length, total: displayTotal})}
       </div>`;
     }
 
@@ -253,10 +254,10 @@ registerPage('communities', (function () {
       idPrefix: 'comm-',
       entityCache: _commEntityMap,
       defaultHopLevel: 1,
-      entityIdToLatest: function () {
+      familyIdToLatest: function () {
         var map = {};
         for (var i = 0; i < _commEntities.length; i++) {
-          map[_commEntities[i].entity_id] = _commEntities[i].uuid;
+          map[_commEntities[i].family_id] = _commEntities[i].uuid;
         }
         return map;
       },
@@ -264,7 +265,7 @@ registerPage('communities', (function () {
         var graphNodes = _commEntities.map(function (m) {
           return {
             absolute_id: m.uuid,
-            entity_id: m.entity_id,
+            family_id: m.family_id,
             name: m.name,
             content: m.content || '',
           };
@@ -332,7 +333,7 @@ registerPage('communities', (function () {
       const graphNodes = (graphData.nodes || []).map(function (n) {
         return {
           absolute_id: n.uuid,
-          entity_id: n.entity_id,
+          family_id: n.family_id,
           name: n.name,
           content: _commEntityMap[n.uuid] ? (_commEntityMap[n.uuid].content || '') : '',
         };
@@ -352,9 +353,9 @@ registerPage('communities', (function () {
       const allEntityIds = [];
       var seenIds = new Set();
       for (var i = 0; i < graphNodes.length; i++) {
-        if (!seenIds.has(graphNodes[i].entity_id)) {
-          allEntityIds.push(graphNodes[i].entity_id);
-          seenIds.add(graphNodes[i].entity_id);
+        if (!seenIds.has(graphNodes[i].family_id)) {
+          allEntityIds.push(graphNodes[i].family_id);
+          seenIds.add(graphNodes[i].family_id);
         }
       }
       try {

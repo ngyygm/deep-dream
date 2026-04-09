@@ -51,9 +51,9 @@
       return emptyState(t('entities.noEntities'), 'box');
     }
 
-    const rows = entities.map(e => `
-      <tr data-entity-id="${escapeHtml(e.entity_id)}" data-absolute-id="${escapeHtml(e.absolute_id)}">
-        <td><input type="checkbox" class="entity-checkbox" value="${escapeAttr(e.entity_id)}"></td>
+    const rows = entities.filter(e => e.family_id).map(e => `
+      <tr data-family-id="${escapeHtml(e.family_id)}" data-absolute-id="${escapeHtml(e.absolute_id)}">
+        <td><input type="checkbox" class="entity-checkbox" value="${escapeAttr(e.family_id)}"></td>
         <td style="max-width:180px;font-weight:500;">${escapeHtml(e.name || '-')}</td>
         <td style="max-width:300px;" class="truncate" title="${escapeHtml(e.content || '')}">${escapeHtml(truncate(e.content || '', 60))}</td>
         <td style="white-space:nowrap;">${formatDate(e.event_time)}</td>
@@ -62,8 +62,8 @@
           <span class="badge badge-info">${escapeHtml(String(e.version_count || '?'))}</span>
         </td>
         <td>
-          <button class="btn btn-sm btn-primary" onclick="event.stopPropagation(); openEditEntityModal('${escapeAttr(e.entity_id)}', '${escapeAttr(e.name)}', '${escapeAttr(e.content || '')}', '${escapeAttr(e.summary || '')}', '${escapeAttr(e.attributes ? JSON.stringify(e.attributes).replace(/'/g, "\\'") : '')}')" data-i18n="entities.edit">Edit</button>
-          <button class="btn btn-sm btn-danger" onclick="event.stopPropagation(); confirmDeleteEntity('${escapeAttr(e.entity_id)}')" data-i18n="entities.delete">Delete</button>
+          <button class="btn btn-sm btn-primary btn-edit-entity" data-family-id="${escapeAttr(e.family_id)}" data-i18n="entities.edit">Edit</button>
+          <button class="btn btn-sm btn-danger btn-delete-entity" data-family-id="${escapeAttr(e.family_id)}" data-i18n="entities.delete">Delete</button>
         </td>
       </tr>
     `).join('');
@@ -122,7 +122,7 @@
       <div style="display:flex;flex-direction:column;gap:0.75rem;">
         <div>
           <span style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;">${t('graph.entityId')}</span>
-          <div class="mono" style="margin-top:0.125rem;">${escapeHtml(entity.entity_id)}</div>
+          <div class="mono" style="margin-top:0.125rem;">${escapeHtml(entity.family_id)}</div>
         </div>
         <div>
           <span style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;">${t('graph.absoluteId')}</span>
@@ -130,11 +130,14 @@
         </div>
         <div>
           <span style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;">${t('common.name')}</span>
-          <div style="margin-top:0.125rem;font-weight:600;">${escapeHtml(entity.name || '-')}</div>
+          <div style="margin-top:0.125rem;font-weight:600;display:flex;align-items:center;gap:0.5rem;">
+            ${escapeHtml(entity.name || '-')}
+            <span class="badge badge-info" style="font-size:0.625rem;">v${escapeHtml(String(entity.version_count || '?'))}</span>
+          </div>
         </div>
         <div>
           <span style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;">${t('common.content')}</span>
-          <div style="margin-top:0.125rem;line-height:1.6;white-space:pre-wrap;word-break:break-word;">${escapeHtml(entity.content || '-')}</div>
+          <div class="md-content" style="margin-top:0.125rem;">${renderMarkdown(entity.content || '-')}</div>
         </div>
         <div style="display:flex;gap:2rem;">
           <div>
@@ -150,16 +153,16 @@
             <div style="margin-top:0.125rem;">${escapeHtml(entity.doc_name || entity.source_document || '-')}</div>
           </div>
         </div>
-        ${entity.memory_cache_id ? `
+        ${entity.episode_id ? `
         <div>
-          <span style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;">${t('graph.memoryCacheId')}</span>
-          <div class="mono doc-link" data-cache-id="${escapeHtml(entity.memory_cache_id)}" style="margin-top:0.125rem;">${escapeHtml(entity.memory_cache_id)}</div>
+          <span style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;">${t('graph.episodeId')}</span>
+          <div class="mono doc-link" data-cache-id="${escapeHtml(entity.episode_id)}" style="margin-top:0.125rem;">${escapeHtml(entity.episode_id)}</div>
         </div>
         ` : ''}
         ${entity.summary ? `
         <div>
           <span style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;">${t('entities.summary')}</span>
-          <div style="margin-top:0.125rem;line-height:1.6;font-size:0.85rem;">${escapeHtml(entity.summary)}</div>
+          <div class="md-content" style="margin-top:0.125rem;font-size:0.85rem;">${renderMarkdown(entity.summary)}</div>
         </div>
         ` : ''}
         ${entity.attributes && Object.keys(entity.attributes).length > 0 ? `
@@ -228,7 +231,7 @@
     `;
 
     const { overlay } = showModal({
-      title: entity.name || entity.entity_id,
+      title: entity.name || entity.family_id,
       content: modalContent.innerHTML,
       size: 'lg',
     });
@@ -250,7 +253,7 @@
         evolveBtn.disabled = true;
         evolveBtn.innerHTML = `${spinnerHtml('spinner-sm')} ${t('entities.evolveSummaryRunning')}`;
         try {
-          const res = await state.api.evolveEntitySummary(entity.entity_id, state.currentGraphId);
+          const res = await state.api.evolveEntitySummary(entity.family_id, state.currentGraphId);
           showToast(t('entities.evolveSummarySuccess'), 'success');
           // Refresh entity detail
           if (res.data) {
@@ -274,7 +277,7 @@
       provenanceBtn.addEventListener('click', async () => {
         provenanceBtn.disabled = true;
         try {
-          const res = await state.api.entityProvenance(entity.entity_id, state.currentGraphId);
+          const res = await state.api.entityProvenance(entity.family_id, state.currentGraphId);
           const prov = res.data || {};
           let body = `<div style="display:flex;flex-direction:column;gap:0.75rem;">`;
           if (prov.source_document || prov.source) {
@@ -313,11 +316,11 @@
           const data = res.data || {};
           const centerEntity = data.entity;
           const tier1 = GraphUtils.TIER_1;
-          const nodes = [{ id: centerEntity.uuid, label: centerEntity.name || centerEntity.entity_id || '?', font: { size: 14, bold: true }, shape: 'dot', size: 25, color: { background: tier1.bg, border: tier1.border } }];
+          const nodes = [{ id: centerEntity.uuid, label: centerEntity.name || centerEntity.family_id || '?', font: { size: 14, bold: true }, shape: 'dot', size: 25, color: { background: tier1.bg, border: tier1.border } }];
           const nodeIds = new Set([centerEntity.uuid]);
           for (const n of (data.nodes || [])) {
             if (!nodeIds.has(n.uuid)) {
-              nodes.push({ id: n.uuid, label: n.name || n.entity_id || '?', font: { size: 12 }, shape: 'dot', size: 18 });
+              nodes.push({ id: n.uuid, label: n.name || n.family_id || '?', font: { size: 12 }, shape: 'dot', size: 18 });
               nodeIds.add(n.uuid);
             }
           }
@@ -342,13 +345,13 @@
 
     // Fetch versions and relations in parallel
     const graphId = state.currentGraphId;
-    const entityId = entity.entity_id;
+    const familyId = entity.family_id;
 
     try {
       const [versionsRes, relationsRes, contradictionsRes] = await Promise.all([
-        state.api.entityVersions(entityId, graphId),
-        state.api.entityRelations(entityId, graphId),
-        state.api.entityContradictions(entityId, state.currentGraphId).catch(() => ({ data: [] })),
+        state.api.entityVersions(familyId, graphId),
+        state.api.entityRelations(familyId, graphId),
+        state.api.entityContradictions(familyId, state.currentGraphId).catch(() => ({ data: [] })),
       ]);
 
       const vSpinner = overlay.querySelector('#versions-spinner');
@@ -372,13 +375,13 @@
       const relationsContainer = overlay.querySelector('#relations-container');
       if (relationsContainer) {
         relationsContainer.innerHTML = relations.length > 0
-          ? buildRelationsList(relations, entityId)
+          ? buildRelationsList(relations, familyId)
           : `<div style="color:var(--text-muted);font-size:0.8125rem;">${t('entities.noRelations')}</div>`;
       }
 
       const contradictionsContainer = overlay.querySelector('#contradictions-container');
       if (contradictionsContainer) {
-        contradictionsContainer.innerHTML = renderContradictions(contradictions, entityId, overlay);
+        contradictionsContainer.innerHTML = renderContradictions(contradictions, familyId, overlay);
       }
 
       if (window.lucide) lucide.createIcons({ nodes: [overlay] });
@@ -393,7 +396,7 @@
 
   // ---- Contradictions ----
 
-  function renderContradictions(contradictions, entityId, overlay) {
+  function renderContradictions(contradictions, familyId, overlay) {
     if (!Array.isArray(contradictions) || contradictions.length === 0) {
       return `<div style="color:var(--text-muted);font-size:0.8125rem;">${t('entities.noContradictions')}</div>`;
     }
@@ -408,16 +411,25 @@
           </div>
           ${c.version_a ? `<div style="font-size:0.8125rem;color:var(--text-secondary);margin-left:1rem;">${escapeHtml(truncate(c.version_a, 100))}</div>` : ''}
           ${c.version_b ? `<div style="font-size:0.8125rem;color:var(--text-secondary);margin-left:1rem;">${escapeHtml(truncate(c.version_b, 100))}</div>` : ''}
-          ${c.contradiction_id ? `<button class="btn btn-ghost btn-sm" style="margin-top:0.25rem;margin-left:1rem;" onclick="event.stopPropagation();window._resolveContradiction('${escapeAttr(entityId)}','${escapeAttr(c.contradiction_id)}')">${t('entities.resolveContradiction')}</button>` : ''}
+          ${c.contradiction_id ? `<button class="btn btn-ghost btn-sm" style="margin-top:0.25rem;margin-left:1rem;" onclick="event.stopPropagation();window._resolveContradiction('${escapeAttr(familyId)}',${i})">${t('entities.resolveContradiction')}</button>` : ''}
         </div>`;
     }).join('');
+    // 存储矛盾数据以便后续使用
+    if (!window._contradictionData) window._contradictionData = {};
+    window._contradictionData[familyId] = contradictions;
     return `<div>${items}</div>`;
   }
 
   // Expose resolve contradiction handler
-  window._resolveContradiction = async function(entityId, contradictionId) {
+  window._resolveContradiction = async function(familyId, contradictionIndex) {
     try {
-      await state.api.resolveContradiction(entityId, { contradiction_id: contradictionId }, state.currentGraphId);
+      const contradictions = (window._contradictionData && window._contradictionData[familyId]) || [];
+      const contradiction = typeof contradictionIndex === 'number' ? contradictions[contradictionIndex] : null;
+      if (!contradiction) {
+        showToast(t('entities.resolveFailed') + ': contradiction not found', 'error');
+        return;
+      }
+      await state.api.resolveContradiction(familyId, { contradiction }, state.currentGraphId);
       showToast(t('entities.resolveSuccess'), 'success');
     } catch (err) {
       showToast(t('entities.resolveFailed') + ': ' + err.message, 'error');
@@ -451,8 +463,8 @@
           + '</div>';
       },
       renderBody: function(v) {
-        return '<div style="background:var(--bg-input);border:1px solid var(--border-color);border-radius:0.375rem;padding:0.75rem;font-size:0.8125rem;line-height:1.6;white-space:pre-wrap;word-break:break-word;">'
-          + escapeHtml(v.content || '')
+        return '<div class="md-content" style="background:var(--bg-input);border:1px solid var(--border-color);border-radius:0.375rem;padding:0.75rem;">'
+          + renderMarkdown(v.content || '')
           + '</div>';
       },
     });
@@ -460,12 +472,12 @@
 
   // ---- Relations List ----
 
-  function buildRelationsList(relations, currentEntityId) {
+  function buildRelationsList(relations, currentFamilyId) {
     const items = relations.map(r => {
-      const isEntity1 = r.entity1_absolute_id === currentEntityId || r.entity1_entity_id === currentEntityId;
+      const isEntity1 = r.entity1_absolute_id === currentFamilyId || r.entity1_family_id === currentFamilyId;
       const otherId = isEntity1
-        ? (r.entity2_absolute_id || r.entity2_entity_id)
-        : (r.entity1_absolute_id || r.entity1_entity_id);
+        ? (r.entity2_absolute_id || r.entity2_family_id)
+        : (r.entity1_absolute_id || r.entity1_family_id);
       const direction = isEntity1 ? t('entities.to') : t('entities.from');
 
       return `
@@ -473,7 +485,7 @@
           <div style="display:flex;align-items:flex-start;gap:0.5rem;">
             <i data-lucide="arrow-right" style="width:14px;height:14px;color:var(--text-muted);flex-shrink:0;margin-top:2px;"></i>
             <div style="flex:1;min-width:0;">
-              <div style="font-size:0.8125rem;color:var(--text-primary);white-space:pre-wrap;word-break:break-word;">${escapeHtml(r.content || '-')}</div>
+              <div class="md-content" style="font-size:0.8125rem;color:var(--text-primary);">${renderMarkdown(r.content || '-')}</div>
               <div style="margin-top:0.25rem;display:flex;align-items:center;gap:0.5rem;">
                 <span class="badge badge-primary" style="font-size:0.6875rem;">${escapeHtml(direction)}</span>
                 <span class="mono" style="font-size:0.75rem;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(otherId || t('entities.unknown'))}</span>
@@ -496,7 +508,7 @@
     const graphId = state.currentGraphId;
     try {
       const res = await state.api.listEntities(graphId, BATCH_SIZE, allOffset);
-      const entities = res.data || [];
+      const entities = res.data?.entities || res.data || [];
       if (entities.length === 0) {
         allHasMore = false;
       } else {
@@ -537,6 +549,7 @@
     if (tableContainer) {
       tableContainer.innerHTML = buildEntityTable(allEntities);
       bindTableEvents(tableContainer);
+      bindClickableRows(tableContainer);
     }
     updateCountDisplay();
   }
@@ -551,14 +564,14 @@
   // ---- Event Binding ----
 
   function bindTableEvents(container) {
-    container.querySelectorAll('tr[data-entity-id]').forEach(row => {
+    container.querySelectorAll('tr[data-family-id]').forEach(row => {
       row.addEventListener('click', (e) => {
         // Don't trigger if clicking load-more button, checkboxes, or action buttons
         if (e.target.closest('#entity-load-more-btn')) return;
         if (e.target.closest('input[type="checkbox"]')) return;
         if (e.target.closest('button')) return;
-        const entityId = row.getAttribute('data-entity-id');
-        const entity = allEntities.find(en => en.entity_id === entityId);
+        const familyId = row.getAttribute('data-family-id');
+        const entity = allEntities.find(en => en.family_id === familyId);
         if (entity) openEntityDetail(entity);
       });
     });
@@ -582,6 +595,23 @@
     if (mergeBtn) {
       mergeBtn.addEventListener('click', openMergeEntities);
     }
+
+    // Edit / Delete button delegation
+    container.querySelectorAll('.btn-edit-entity').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const familyId = btn.getAttribute('data-family-id');
+        const entity = allEntities.find(en => en.family_id === familyId);
+        if (entity) openEditEntityModal(familyId, entity.name, entity.content || '', entity.summary || '', entity.attributes);
+      });
+    });
+    container.querySelectorAll('.btn-delete-entity').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const familyId = btn.getAttribute('data-family-id');
+        confirmDeleteEntity(familyId);
+      });
+    });
   }
 
   function bindSearchEvents(container) {
@@ -668,7 +698,7 @@
 
   // ---- Edit Entity ----
 
-  function openEditEntityModal(entityId, currentName, currentContent, currentSummary, currentAttributes) {
+  function openEditEntityModal(familyId, currentName, currentContent, currentSummary, currentAttributes) {
     const html = `
       <div class="form-group">
         <label class="form-label" data-i18n="entities.name">${t('entities.name')}</label>
@@ -700,10 +730,10 @@
     _currentModalClose = close;
 
     overlay.querySelector('.modal-cancel-btn').addEventListener('click', close);
-    overlay.querySelector('.modal-save-btn').addEventListener('click', () => submitEditEntity(entityId, close));
+    overlay.querySelector('.modal-save-btn').addEventListener('click', () => submitEditEntity(familyId, close));
   }
 
-  async function submitEditEntity(entityId, close) {
+  async function submitEditEntity(familyId, close) {
     const name = document.getElementById('editEntityName').value.trim();
     const content = document.getElementById('editEntityContent').value.trim();
     const summary = document.getElementById('editEntitySummary').value.trim();
@@ -717,7 +747,7 @@
       const data = { name: name || undefined, content: content || undefined };
       if (summary) data.summary = summary;
       if (attributes) data.attributes = attributes;
-      const res = await state.api.updateEntity(entityId, data, state.currentGraphId);
+      const res = await state.api.updateEntity(familyId, data, state.currentGraphId);
       if (res.error) { showToast(res.error, 'error'); return; }
       showToast(t('entities.updateSuccess'), 'success');
       close();
@@ -727,7 +757,7 @@
 
   // ---- Delete Entity ----
 
-  function confirmDeleteEntity(entityId) {
+  function confirmDeleteEntity(familyId) {
     const html = `
       <p>${t('entities.deleteConfirm')}</p>
       <label class="checkbox-label" style="display:flex;align-items:center;gap:0.5rem;margin-top:0.5rem;">
@@ -747,13 +777,13 @@
     _currentModalClose = close;
 
     overlay.querySelector('.modal-cancel-btn').addEventListener('click', close);
-    overlay.querySelector('.modal-confirm-btn').addEventListener('click', () => executeDeleteEntity(entityId, close));
+    overlay.querySelector('.modal-confirm-btn').addEventListener('click', () => executeDeleteEntity(familyId, close));
   }
 
-  async function executeDeleteEntity(entityId, close) {
+  async function executeDeleteEntity(familyId, close) {
     const cascade = document.getElementById('deleteCascade')?.checked || false;
     try {
-      const res = await state.api.deleteEntity(entityId, cascade, state.currentGraphId);
+      const res = await state.api.deleteEntity(familyId, cascade, state.currentGraphId);
       if (res.error) { showToast(res.error, 'error'); return; }
       showToast(t('entities.deleteSuccess'), 'success');
       close();
@@ -771,10 +801,11 @@
     return [...document.querySelectorAll('.entity-checkbox:checked')].map(cb => cb.value);
   }
 
-  function openBatchDeleteEntities() {
+  async function openBatchDeleteEntities() {
     const ids = getSelectedEntityIds();
     if (!ids.length) { showToast(t('entities.selectEntities'), 'warn'); return; }
-    if (!confirm(t('entities.deleteConfirm') + ' (' + ids.length + ')')) return;
+    const ok = await showConfirm({ message: t('entities.deleteConfirm') + ' (' + ids.length + ')', destructive: true });
+    if (!ok) return;
     state.api.batchDeleteEntities(ids, false, state.currentGraphId).then(res => {
       if (res.error) { showToast(res.error, 'error'); return; }
       showToast(t('entities.batchDeleteSuccess').replace('{count}', ids.length), 'success');
@@ -782,12 +813,13 @@
     }).catch(e => showToast(t('entities.deleteFailed') + ': ' + e.message, 'error'));
   }
 
-  function openMergeEntities() {
+  async function openMergeEntities() {
     const ids = getSelectedEntityIds();
     if (ids.length < 2) { showToast(t('entities.selectEntities') + ' (>=2)', 'warn'); return; }
     const target = ids[0];
     const sources = ids.slice(1);
-    if (!confirm(t('entities.mergeConfirm'))) return;
+    const ok = await showConfirm({ message: t('entities.mergeConfirm') });
+    if (!ok) return;
     state.api.mergeEntities(target, sources, state.currentGraphId).then(res => {
       if (res.error) { showToast(res.error, 'error'); return; }
       showToast(t('entities.mergeSuccess'), 'success');

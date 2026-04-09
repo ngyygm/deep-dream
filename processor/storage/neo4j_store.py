@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Literal, Optional, Set, Tuple
 
 import numpy as np
 
-from ..models import MemoryCache, Entity, Relation
+from ..models import Episode, Entity, Relation
 from ..utils import clean_markdown_code_blocks, wprint
 from ..perf import _perf_timer
 from .cache import QueryCache
@@ -31,6 +31,18 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Cypher RETURN 子句片段 — 所有 Entity 查询共用
+# ---------------------------------------------------------------------------
+_ENTITY_RETURN_FIELDS = """\
+e.uuid AS uuid, e.family_id AS family_id, e.name AS name,
+e.content AS content, e.summary AS summary,
+e.attributes AS attributes, e.confidence AS confidence,
+e.content_format AS content_format, e.community_id AS community_id,
+e.valid_at AS valid_at, e.invalid_at AS invalid_at,
+e.event_time AS event_time, e.processed_time AS processed_time,
+e.episode_id AS episode_id, e.source_document AS source_document"""
+
+# ---------------------------------------------------------------------------
 # Neo4j 节点 / 边 属性 → Entity / Relation 转换
 # ---------------------------------------------------------------------------
 
@@ -38,12 +50,12 @@ def _neo4j_record_to_entity(record) -> Entity:
     """将 Neo4j 查询返回的单条记录转为 Entity dataclass。"""
     return Entity(
         absolute_id=record["uuid"],
-        entity_id=record["entity_id"],
+        family_id=record["family_id"],
         name=record.get("name", ""),
         content=record.get("content", ""),
         event_time=_parse_dt(record.get("event_time")),
         processed_time=_parse_dt(record.get("processed_time")),
-        memory_cache_id=record.get("memory_cache_id", ""),
+        episode_id=record.get("episode_id", ""),
         source_document=record.get("source_document", "") or "",
         embedding=record.get("embedding"),
         valid_at=_parse_dt(record.get("valid_at")) if record.get("valid_at") is not None else None,
@@ -52,6 +64,7 @@ def _neo4j_record_to_entity(record) -> Entity:
         attributes=record.get("attributes"),
         confidence=float(record["confidence"]) if record.get("confidence") is not None else None,
         content_format=record.get("content_format", "plain"),
+        community_id=record.get("community_id"),
     )
 
 
@@ -59,13 +72,13 @@ def _neo4j_record_to_relation(record) -> Relation:
     """将 Neo4j 查询返回的单条记录转为 Relation dataclass。"""
     return Relation(
         absolute_id=record["uuid"],
-        relation_id=record["relation_id"],
+        family_id=record["family_id"],
         entity1_absolute_id=record.get("entity1_absolute_id", ""),
         entity2_absolute_id=record.get("entity2_absolute_id", ""),
         content=record.get("content", ""),
         event_time=_parse_dt(record.get("event_time")),
         processed_time=_parse_dt(record.get("processed_time")),
-        memory_cache_id=record.get("memory_cache_id", ""),
+        episode_id=record.get("episode_id", ""),
         source_document=record.get("source_document", "") or "",
         embedding=record.get("embedding"),
         valid_at=_parse_dt(record.get("valid_at")) if record.get("valid_at") is not None else None,
@@ -144,6 +157,7 @@ class Neo4jStorageManager:
             max_connection_pool_size=50,
             connection_acquisition_timeout=30.0,
             max_transaction_retry_time=15.0,
+            notifications_disabled_categories=["UNRECOGNIZED"],
         )
         self._driver.verify_connectivity()
 
@@ -153,7 +167,7 @@ class Neo4jStorageManager:
         # 文档目录（与 StorageManager 相同的文件存储结构）
         self.docs_dir = self.storage_path / "docs"
         self.docs_dir.mkdir(exist_ok=True)
-        self.cache_dir = self.storage_path / "memory_caches"
+        self.cache_dir = self.storage_path / "episodes"
         self.cache_json_dir = self.cache_dir / "json"
         self.cache_md_dir = self.cache_dir / "md"
 
@@ -246,18 +260,18 @@ class Neo4jStorageManager:
             "CREATE CONSTRAINT content_patch_uuid IF NOT EXISTS FOR (cp:ContentPatch) REQUIRE cp.uuid IS UNIQUE",
         ]
         indexes = [
-            "CREATE INDEX entity_entity_id IF NOT EXISTS FOR (e:Entity) ON (e.entity_id)",
+            "CREATE INDEX entity_family_id IF NOT EXISTS FOR (e:Entity) ON (e.family_id)",
             "CREATE INDEX entity_name IF NOT EXISTS FOR (e:Entity) ON (e.name)",
             "CREATE INDEX entity_processed_time IF NOT EXISTS FOR (e:Entity) ON (e.processed_time)",
             "CREATE INDEX entity_event_time IF NOT EXISTS FOR (e:Entity) ON (e.event_time)",
-            "CREATE INDEX entity_cache_id IF NOT EXISTS FOR (e:Entity) ON (e.memory_cache_id)",
-            "CREATE INDEX relation_relation_id IF NOT EXISTS FOR (r:Relation) ON (r.relation_id)",
+            "CREATE INDEX entity_cache_id IF NOT EXISTS FOR (e:Entity) ON (e.episode_id)",
+            "CREATE INDEX relation_family_id IF NOT EXISTS FOR (r:Relation) ON (r.family_id)",
             "CREATE INDEX relation_processed_time IF NOT EXISTS FOR (r:Relation) ON (r.processed_time)",
             "CREATE INDEX relation_entities IF NOT EXISTS FOR (r:Relation) ON (r.entity1_absolute_id, r.entity2_absolute_id)",
             "CREATE INDEX redirect_target IF NOT EXISTS FOR (red:EntityRedirect) ON (red.target_id)",
             # ContentPatch 索引
             "CREATE INDEX content_patch_target IF NOT EXISTS FOR (cp:ContentPatch) ON (cp.target_absolute_id)",
-            "CREATE INDEX content_patch_entity IF NOT EXISTS FOR (cp:ContentPatch) ON (cp.target_entity_id)",
+            "CREATE INDEX content_patch_family IF NOT EXISTS FOR (cp:ContentPatch) ON (cp.target_family_id)",
         ]
         with self._session() as session:
             for c in constraints:
@@ -285,7 +299,7 @@ class Neo4jStorageManager:
             perf_indexes = [
                 "CREATE INDEX entity_source_document IF NOT EXISTS FOR (e:Entity) ON (e.source_document)",
                 "CREATE INDEX relation_source_document IF NOT EXISTS FOR (r:Relation) ON (r.source_document)",
-                "CREATE INDEX episode_memory_cache_id IF NOT EXISTS FOR (ep:Episode) ON (ep.memory_cache_id)",
+                "CREATE INDEX episode_episode_type IF NOT EXISTS FOR (ep:Episode) ON (ep.episode_type)",
                 # Phase C: MENTIONS edge index
                 "CREATE INDEX mentions_entity IF NOT EXISTS FOR ()-[m:MENTIONS]->() ON (m.entity_absolute_id)",
                 # Phase E: DreamLog
@@ -336,7 +350,7 @@ class Neo4jStorageManager:
                             uuid: $uuid,
                             target_type: $target_type,
                             target_absolute_id: $target_abs_id,
-                            target_entity_id: $target_entity_id,
+                            target_family_id: $target_family_id,
                             section_key: $section_key,
                             change_type: $change_type,
                             old_hash: $old_hash,
@@ -352,7 +366,7 @@ class Neo4jStorageManager:
                         uuid=p.uuid,
                         target_type=p.target_type,
                         target_abs_id=p.target_absolute_id,
-                        target_entity_id=p.target_entity_id,
+                        target_family_id=p.target_family_id,
                         section_key=p.section_key,
                         change_type=p.change_type,
                         old_hash=p.old_hash,
@@ -362,25 +376,25 @@ class Neo4jStorageManager:
                         event_time=p.event_time.isoformat() if p.event_time else datetime.now().isoformat(),
                     )
 
-    def get_content_patches(self, entity_id: str, section_key: str = None) -> list:
-        """查询指定 entity_id 的 ContentPatch 记录。"""
+    def get_content_patches(self, family_id: str, section_key: str = None) -> list:
+        """查询指定 family_id 的 ContentPatch 记录。"""
         from ..models import ContentPatch
         with self._session() as session:
             if section_key:
                 result = session.run(
                     """
-                    MATCH (cp:ContentPatch {target_entity_id: $eid, section_key: $sk})
+                    MATCH (cp:ContentPatch {target_family_id: $fid, section_key: $sk})
                     RETURN cp ORDER BY cp.event_time DESC
                     """,
-                    eid=entity_id, sk=section_key,
+                    fid=family_id, sk=section_key,
                 )
             else:
                 result = session.run(
                     """
-                    MATCH (cp:ContentPatch {target_entity_id: $eid})
+                    MATCH (cp:ContentPatch {target_family_id: $fid})
                     RETURN cp ORDER BY cp.event_time DESC
                     """,
-                    eid=entity_id,
+                    fid=family_id,
                 )
             patches = []
             for record in result:
@@ -389,7 +403,7 @@ class Neo4jStorageManager:
                     uuid=cp["uuid"],
                     target_type=cp["target_type"],
                     target_absolute_id=cp["target_absolute_id"],
-                    target_entity_id=cp["target_entity_id"],
+                    target_family_id=cp["target_family_id"],
                     section_key=cp["section_key"],
                     change_type=cp["change_type"],
                     old_hash=cp.get("old_hash", ""),
@@ -400,11 +414,11 @@ class Neo4jStorageManager:
                 ))
             return patches
 
-    def get_section_history(self, entity_id: str, section_key: str) -> list:
+    def get_section_history(self, family_id: str, section_key: str) -> list:
         """获取单个 section 的全版本变更历史。"""
-        return self.get_content_patches(entity_id, section_key=section_key)
+        return self.get_content_patches(family_id, section_key=section_key)
 
-    def get_version_diff(self, entity_id: str, v1: str, v2: str) -> dict:
+    def get_version_diff(self, family_id: str, v1: str, v2: str) -> dict:
         """获取两个版本之间的 section 级 diff。
 
         v1, v2 是两个 absolute_id（版本 uuid）。
@@ -442,9 +456,9 @@ class Neo4jStorageManager:
     # Entity Redirect（实体 ID 解析）
     # ------------------------------------------------------------------
 
-    def _resolve_entity_id_in_session(self, session, entity_id: str) -> str:
-        """沿 EntityRedirect 链解析到 canonical entity_id。"""
-        current_id = (entity_id or "").strip()
+    def _resolve_family_id_in_session(self, session, family_id: str) -> str:
+        """沿 EntityRedirect 链解析到 canonical family_id。"""
+        current_id = (family_id or "").strip()
         if not current_id:
             return ""
         seen: Set[str] = set()
@@ -460,30 +474,30 @@ class Neo4jStorageManager:
             current_id = record["target"]
         return current_id
 
-    def resolve_entity_id(self, entity_id: str) -> str:
-        """解析 entity_id 到 canonical id。"""
-        cache_key = f"resolve:{entity_id}"
+    def resolve_family_id(self, family_id: str) -> str:
+        """解析 family_id 到 canonical id。"""
+        cache_key = f"resolve:{family_id}"
         cached = self._cache.get(cache_key)
         if cached is not None:
             return cached
-        with _perf_timer("resolve_entity_id"):
+        with _perf_timer("resolve_family_id"):
             with self._session() as session:
-                resolved = self._resolve_entity_id_in_session(session, entity_id)
+                resolved = self._resolve_family_id_in_session(session, family_id)
         self._cache.set(cache_key, resolved, ttl=120)
         return resolved
 
-    def register_entity_redirect(self, source_entity_id: str, target_entity_id: str) -> str:
-        """登记旧 entity_id → canonical entity_id 映射。"""
-        source_id = (source_entity_id or "").strip()
-        target_id = (target_entity_id or "").strip()
+    def register_entity_redirect(self, source_family_id: str, target_family_id: str) -> str:
+        """登记旧 family_id → canonical family_id 映射。"""
+        source_id = (source_family_id or "").strip()
+        target_id = (target_family_id or "").strip()
         if not source_id or not target_id:
             return target_id
         with self._write_lock:
             with self._session() as session:
-                canonical_target = self._resolve_entity_id_in_session(session, target_id)
+                canonical_target = self._resolve_family_id_in_session(session, target_id)
                 if not canonical_target:
                     canonical_target = target_id
-                canonical_source = self._resolve_entity_id_in_session(session, source_id)
+                canonical_source = self._resolve_family_id_in_session(session, source_id)
                 if canonical_source == canonical_target:
                     return canonical_target
                 now_iso = datetime.now().isoformat()
@@ -498,22 +512,22 @@ class Neo4jStorageManager:
                 )
             return canonical_target
 
-    def register_entity_redirects(self, target_entity_id: str, source_entity_ids: List[str]) -> str:
-        """批量登记多个旧 entity_id 指向同一 canonical id。"""
-        canonical_target = (target_entity_id or "").strip()
+    def register_entity_redirects(self, target_family_id: str, source_family_ids: List[str]) -> str:
+        """批量登记多个旧 family_id 指向同一 canonical id。"""
+        canonical_target = (target_family_id or "").strip()
         if not canonical_target:
             return canonical_target
-        for source_id in source_entity_ids:
+        for source_id in source_family_ids:
             if source_id and source_id != canonical_target:
                 canonical_target = self.register_entity_redirect(source_id, canonical_target)
         return canonical_target
 
     # ------------------------------------------------------------------
-    # MemoryCache 操作（文件存储，与 StorageManager 相同逻辑）
+    # Episode 操作（文件存储，与 StorageManager 相同逻辑）
     # ------------------------------------------------------------------
 
-    def save_memory_cache(self, cache: MemoryCache, text: str = "", document_path: str = "", doc_hash: str = "") -> str:
-        """保存记忆缓存到 docs/ 目录。"""
+    def save_episode(self, cache: Episode, text: str = "", document_path: str = "", doc_hash: str = "") -> str:
+        """保存 Episode 到文件系统 + Neo4j。"""
         if not doc_hash and text:
             doc_hash = hashlib.md5(text.encode("utf-8")).hexdigest()[:12]
         if not doc_hash:
@@ -555,22 +569,61 @@ class Neo4jStorageManager:
                 """
                 MERGE (ep:Episode {uuid: $uuid})
                 SET ep.content = $content,
-                    ep.memory_cache_id = $cache_id,
                     ep.source_document = $source,
                     ep.event_time = $event_time,
+                    ep.episode_type = $episode_type,
+                    ep.activity_type = $activity_type,
                     ep.created_at = datetime()
                 """,
                 uuid=cache.absolute_id,
                 content=cache.content,
-                cache_id=cache.absolute_id,
                 source=cache.source_document,
                 event_time=cache.event_time.isoformat(),
+                episode_type=cache.episode_type,
+                activity_type=cache.activity_type,
             )
 
         return doc_hash
 
-    def load_memory_cache(self, cache_id: str) -> Optional[MemoryCache]:
-        """从 Neo4j 或文件系统加载记忆缓存。"""
+    def bulk_save_episodes(self, episodes: list) -> int:
+        """批量保存 Episode 到 Neo4j，使用 UNWIND 单事务写入。
+
+        Args:
+            episodes: list of Episode objects
+
+        Returns:
+            保存的条数
+        """
+        if not episodes:
+            return 0
+        rows = []
+        for ep in episodes:
+            rows.append({
+                "uuid": ep.absolute_id,
+                "content": ep.content or "",
+                "source": getattr(ep, "source_document", "") or "",
+                "event_time": ep.event_time.isoformat() if ep.event_time else datetime.now().isoformat(),
+                "episode_type": getattr(ep, "episode_type", None),
+                "activity_type": getattr(ep, "activity_type", None),
+            })
+        with self._session() as session:
+            session.run(
+                """
+                UNWIND $rows AS row
+                MERGE (ep:Episode {uuid: row.uuid})
+                SET ep.content = row.content,
+                    ep.source_document = row.source,
+                    ep.event_time = row.event_time,
+                    ep.episode_type = row.episode_type,
+                    ep.activity_type = row.activity_type,
+                    ep.created_at = datetime()
+                """,
+                rows=rows,
+            )
+        return len(rows)
+
+    def load_episode(self, cache_id: str) -> Optional[Episode]:
+        """从 Neo4j 或文件系统加载 Episode。"""
         # 优先从 Neo4j 加载
         with self._session() as session:
             result = session.run(
@@ -580,7 +633,7 @@ class Neo4jStorageManager:
             )
             record = result.single()
             if record:
-                return MemoryCache(
+                return Episode(
                     absolute_id=cache_id,
                     content=record["content"] or "",
                     event_time=_parse_dt(record["event_time"]),
@@ -595,7 +648,7 @@ class Neo4jStorageManager:
             if meta_path.exists():
                 try:
                     meta = json.loads(meta_path.read_text(encoding="utf-8"))
-                    return MemoryCache(
+                    return Episode(
                         absolute_id=cache_id,
                         content=(doc_dir / "cache.md").read_text(encoding="utf-8") if (doc_dir / "cache.md").exists() else "",
                         event_time=datetime.fromisoformat(meta["event_time"]) if meta.get("event_time") else datetime.now(),
@@ -612,7 +665,7 @@ class Neo4jStorageManager:
             return []
         return sorted(self.docs_dir.glob("*/meta.json"))
 
-    def get_latest_memory_cache(self, activity_type: Optional[str] = None) -> Optional[MemoryCache]:
+    def get_latest_episode(self, activity_type: Optional[str] = None) -> Optional[Episode]:
         """获取最新的记忆缓存。"""
         with self._session() as session:
             query = "MATCH (ep:Episode) "
@@ -626,7 +679,7 @@ class Neo4jStorageManager:
             result = session.run(query, **params)
             record = result.single()
             if record:
-                return MemoryCache(
+                return Episode(
                     absolute_id=record["uuid"],
                     content=record["content"] or "",
                     event_time=_parse_dt(record["event_time"]),
@@ -635,7 +688,7 @@ class Neo4jStorageManager:
                 )
         return None
 
-    def get_latest_memory_cache_metadata(self, activity_type: Optional[str] = None) -> Optional[Dict]:
+    def get_latest_episode_metadata(self, activity_type: Optional[str] = None) -> Optional[Dict]:
         """获取最新记忆缓存的元数据。"""
         with self._session() as session:
             query = "MATCH (ep:Episode) "
@@ -649,11 +702,13 @@ class Neo4jStorageManager:
             result = session.run(query, **params)
             record = result.single()
             if record:
+                evt = record["event_time"]
+                cat = record["created_at"]
                 return {
                     "id": record["uuid"],
-                    "event_time": record["event_time"].isoformat() if record["event_time"] else None,
+                    "event_time": evt.isoformat() if hasattr(evt, 'isoformat') else (str(evt) if evt else None),
                     "source_document": record["source_document"],
-                    "created_at": record["created_at"].isoformat() if record["created_at"] else None,
+                    "created_at": cat.isoformat() if hasattr(cat, 'isoformat') else (str(cat) if cat else None),
                 }
         return None
 
@@ -671,7 +726,7 @@ class Neo4jStorageManager:
             record = result.single()
             return record["cnt"] if record else 0
 
-    def search_memory_caches_by_bm25(self, query: str, limit: int = 20) -> List[MemoryCache]:
+    def search_episodes_by_bm25(self, query: str, limit: int = 20) -> List[Episode]:
         """遍历 docs/ 目录搜索 Episode（简单文本匹配，与 SQLite 版本一致）。"""
         if not query:
             return []
@@ -682,7 +737,7 @@ class Neo4jStorageManager:
                 # 从 meta.json 读取 absolute_id 作为 cache_id（而非目录名）
                 meta = json.loads(meta_file.read_text(encoding="utf-8"))
                 cache_id = meta.get("absolute_id") or meta.get("id") or meta_file.parent.name
-                cache = self.load_memory_cache(cache_id)
+                cache = self.load_episode(cache_id)
             except Exception:
                 continue
             if cache is None:
@@ -694,7 +749,7 @@ class Neo4jStorageManager:
         results.sort(key=lambda x: x[0], reverse=True)
         return [c for _, c in results[:limit]]
 
-    def delete_memory_cache(self, cache_id: str) -> int:
+    def delete_episode(self, cache_id: str) -> int:
         """删除 docs/ 目录下的文件 + Neo4j Episode 节点。返回删除的条数。"""
         import shutil
 
@@ -719,13 +774,13 @@ class Neo4jStorageManager:
                 return 1
         return 0
 
-    def find_cache_by_doc_hash(self, doc_hash: str, document_path: str = "") -> Optional[MemoryCache]:
-        """根据 doc_hash 查找记忆缓存。"""
+    def find_cache_by_doc_hash(self, doc_hash: str, document_path: str = "") -> Optional[Episode]:
+        """根据 doc_hash 查找 Episode。"""
         for meta_file in self._iter_cache_meta_files():
             try:
                 meta = json.loads(meta_file.read_text(encoding="utf-8"))
                 if meta.get("doc_hash") == doc_hash:
-                    return MemoryCache(
+                    return Episode(
                         absolute_id=meta.get("absolute_id", ""),
                         content=(meta_file.parent / "cache.md").read_text(encoding="utf-8") if (meta_file.parent / "cache.md").exists() else "",
                         event_time=datetime.fromisoformat(meta["event_time"]) if meta.get("event_time") else datetime.now(),
@@ -760,14 +815,14 @@ class Neo4jStorageManager:
             result = {
                 "entities": [
                     {
-                        "absolute_id": e.absolute_id, "entity_id": e.entity_id,
+                        "absolute_id": e.absolute_id, "family_id": e.family_id,
                         "name": e.name, "content": e.content,
                     }
                     for e in entities
                 ],
                 "relations": [
                     {
-                        "absolute_id": r.absolute_id, "relation_id": r.relation_id,
+                        "absolute_id": r.absolute_id, "family_id": r.family_id,
                         "content": r.content,
                     }
                     for r in relations
@@ -846,30 +901,30 @@ class Neo4jStorageManager:
                     session.run(
                         """
                         MERGE (e:Entity {uuid: $uuid})
-                        SET e.entity_id = $entity_id,
+                        SET e.family_id = $family_id,
                             e.name = $name,
                             e.content = $content,
                             e.event_time = datetime($event_time),
                             e.processed_time = datetime($processed_time),
-                            e.memory_cache_id = $cache_id,
+                            e.episode_id = $cache_id,
                             e.source_document = $source,
                             e.summary = $summary,
                             e.attributes = $attributes,
                             e.confidence = $confidence,
                             e.content_format = $content_format,
                             e.valid_at = datetime($valid_at)
-                        WITH $uuid AS abs_id, $entity_id AS eid, $event_time AS et
-                        MATCH (e:Entity {entity_id: eid})
+                        WITH $uuid AS abs_id, $family_id AS fid, $event_time AS et
+                        MATCH (e:Entity {family_id: fid})
                         WHERE e.uuid <> abs_id AND e.invalid_at IS NULL
                         SET e.invalid_at = datetime(et)
                         """,
                         uuid=entity.absolute_id,
-                        entity_id=entity.entity_id,
+                        family_id=entity.family_id,
                         name=entity.name,
                         content=entity.content,
                         event_time=entity.event_time.isoformat(),
                         processed_time=entity.processed_time.isoformat(),
-                    cache_id=entity.memory_cache_id,
+                    cache_id=entity.episode_id,
                     source=entity.source_document,
                     summary=entity.summary,
                     attributes=entity.attributes,
@@ -920,12 +975,12 @@ class Neo4jStorageManager:
 
                     rows.append({
                         "uuid": entity.absolute_id,
-                        "entity_id": entity.entity_id,
+                        "family_id": entity.family_id,
                         "name": entity.name,
                         "content": entity.content,
                         "event_time": entity.event_time.isoformat(),
                         "processed_time": entity.processed_time.isoformat(),
-                        "cache_id": entity.memory_cache_id,
+                        "cache_id": entity.episode_id,
                         "source": entity.source_document,
                         "summary": entity.summary,
                         "attributes": entity.attributes,
@@ -943,19 +998,19 @@ class Neo4jStorageManager:
                         """
                         UNWIND $rows AS row
                         MERGE (e:Entity {uuid: row.uuid})
-                        SET e.entity_id = row.entity_id,
+                        SET e.family_id = row.family_id,
                             e.name = row.name,
                             e.content = row.content,
                             e.event_time = datetime(row.event_time),
                             e.processed_time = datetime(row.processed_time),
-                            e.memory_cache_id = row.cache_id,
+                            e.episode_id = row.cache_id,
                             e.source_document = row.source,
                             e.summary = row.summary,
                             e.attributes = row.attributes,
                             e.confidence = row.confidence,
                             e.valid_at = datetime(row.valid_at)
                         WITH row
-                        MATCH (e:Entity {entity_id: row.entity_id})
+                        MATCH (e:Entity {family_id: row.family_id})
                         WHERE e.uuid <> row.uuid AND e.invalid_at IS NULL
                         SET e.invalid_at = datetime(row.event_time)
                         """,
@@ -969,27 +1024,24 @@ class Neo4jStorageManager:
             self._cache.invalidate("resolve:")
             self._cache.invalidate("sim_search:")
 
-    def get_entity_by_entity_id(self, entity_id: str) -> Optional[Entity]:
-        """根据 entity_id 获取最新版本的实体。"""
-        cache_key = f"entity:by_eid:{entity_id}"
+    def get_entity_by_family_id(self, family_id: str) -> Optional[Entity]:
+        """根据 family_id 获取最新版本的实体。"""
+        cache_key = f"entity:by_fid:{family_id}"
         cached = self._cache.get(cache_key)
         if cached is not None:
             return cached
-        with _perf_timer("get_entity_by_entity_id"):
-            entity_id = self.resolve_entity_id(entity_id)
-            if not entity_id:
+        with _perf_timer("get_entity_by_family_id"):
+            family_id = self.resolve_family_id(family_id)
+            if not family_id:
                 return None
             with self._session() as session:
                 result = session.run(
-                    """
-                    MATCH (e:Entity {entity_id: $eid})
-                    RETURN e.uuid AS uuid, e.entity_id AS entity_id, e.name AS name,
-                           e.content AS content, e.event_time AS event_time,
-                           e.processed_time AS processed_time, e.memory_cache_id AS memory_cache_id,
-                           e.source_document AS source_document
+                    f"""
+                    MATCH (e:Entity {{family_id: $fid}})
+                    RETURN {_ENTITY_RETURN_FIELDS}
                     ORDER BY e.processed_time DESC LIMIT 1
                     """,
-                    eid=entity_id,
+                    fid=family_id,
                 )
                 record = result.single()
                 if not record:
@@ -1002,11 +1054,6 @@ class Neo4jStorageManager:
                 self._cache.set(cache_key, entity, ttl=60)
                 return entity
 
-    # 别名兼容
-    def get_entity_by_id(self, entity_id: str) -> Optional[Entity]:
-        """get_entity_by_entity_id 的别名。"""
-        return self.get_entity_by_entity_id(entity_id)
-
     def get_entity_by_absolute_id(self, absolute_id: str) -> Optional[Entity]:
         """根据 absolute_id 获取实体。"""
         cache_key = f"entity:by_abs:{absolute_id}"
@@ -1015,12 +1062,9 @@ class Neo4jStorageManager:
             return cached
         with self._session() as session:
             result = session.run(
-                """
-                MATCH (e:Entity {uuid: $uuid})
-                RETURN e.uuid AS uuid, e.entity_id AS entity_id, e.name AS name,
-                       e.content AS content, e.event_time AS event_time,
-                       e.processed_time AS processed_time, e.memory_cache_id AS memory_cache_id,
-                       e.source_document AS source_document
+                f"""
+                MATCH (e:Entity {{uuid: $uuid}})
+                RETURN {_ENTITY_RETURN_FIELDS}
                 """,
                 uuid=absolute_id,
             )
@@ -1055,35 +1099,29 @@ class Neo4jStorageManager:
             return []
         with self._session() as session:
             result = session.run(
-                """
+                f"""
                 MATCH (e:Entity)
                 WHERE e.uuid IN $uuids
-                RETURN e.uuid AS uuid, e.entity_id AS entity_id, e.name AS name,
-                       e.content AS content, e.event_time AS event_time,
-                       e.processed_time AS processed_time, e.memory_cache_id AS memory_cache_id,
-                       e.source_document AS source_document
+                RETURN {_ENTITY_RETURN_FIELDS}
                 """,
                 uuids=absolute_ids,
             )
             return [_neo4j_record_to_entity(r) for r in result]
 
-    def get_entity_version_at_time(self, entity_id: str, time_point: datetime) -> Optional[Entity]:
+    def get_entity_version_at_time(self, family_id: str, time_point: datetime) -> Optional[Entity]:
         """获取实体在指定时间点的版本。"""
-        entity_id = self.resolve_entity_id(entity_id)
-        if not entity_id:
+        family_id = self.resolve_family_id(family_id)
+        if not family_id:
             return None
         with self._session() as session:
             result = session.run(
-                """
-                MATCH (e:Entity {entity_id: $eid})
+                f"""
+                MATCH (e:Entity {{family_id: $fid}})
                 WHERE e.event_time <= datetime($tp)
-                RETURN e.uuid AS uuid, e.entity_id AS entity_id, e.name AS name,
-                       e.content AS content, e.event_time AS event_time,
-                       e.processed_time AS processed_time, e.memory_cache_id AS memory_cache_id,
-                       e.source_document AS source_document
+                RETURN {_ENTITY_RETURN_FIELDS}
                 ORDER BY e.processed_time DESC LIMIT 1
                 """,
-                eid=entity_id,
+                fid=family_id,
                 tp=time_point.isoformat(),
             )
             record = result.single()
@@ -1109,22 +1147,19 @@ class Neo4jStorageManager:
             return emb[:num_values]
         return None
 
-    def get_entity_versions(self, entity_id: str) -> List[Entity]:
+    def get_entity_versions(self, family_id: str) -> List[Entity]:
         """获取实体的所有版本。"""
-        entity_id = self.resolve_entity_id(entity_id)
-        if not entity_id:
+        family_id = self.resolve_family_id(family_id)
+        if not family_id:
             return []
         with self._session() as session:
             result = session.run(
-                """
-                MATCH (e:Entity {entity_id: $eid})
-                RETURN e.uuid AS uuid, e.entity_id AS entity_id, e.name AS name,
-                       e.content AS content, e.event_time AS event_time,
-                       e.processed_time AS processed_time, e.memory_cache_id AS memory_cache_id,
-                       e.source_document AS source_document
+                f"""
+                MATCH (e:Entity {{family_id: $fid}})
+                RETURN {_ENTITY_RETURN_FIELDS}
                 ORDER BY e.processed_time ASC
                 """,
-                eid=entity_id,
+                fid=family_id,
             )
             entities = []
             for record in result:
@@ -1140,16 +1175,13 @@ class Neo4jStorageManager:
         """获取所有实体的最新版本及其 embedding（实际实现）。"""
         with self._session() as session:
             result = session.run(
-                """
+                f"""
                 MATCH (e:Entity)
-                WITH e.entity_id AS eid, COLLECT(e) AS ents
+                WITH e.family_id AS fid, COLLECT(e) AS ents
                 UNWIND ents AS e
-                WITH eid, e ORDER BY e.processed_time DESC
-                WITH eid, HEAD(COLLECT(e)) AS e
-                RETURN e.uuid AS uuid, e.entity_id AS entity_id, e.name AS name,
-                       e.content AS content, e.event_time AS event_time,
-                       e.processed_time AS processed_time, e.memory_cache_id AS memory_cache_id,
-                       e.source_document AS source_document
+                WITH fid, e ORDER BY e.processed_time DESC
+                WITH fid, HEAD(COLLECT(e)) AS e
+                RETURN {_ENTITY_RETURN_FIELDS}
                 ORDER BY e.processed_time DESC
                 """
             )
@@ -1175,17 +1207,17 @@ class Neo4jStorageManager:
         snippet_length = content_snippet_length or self.entity_content_snippet_length
         entities_with_emb = self._get_entities_with_embeddings()
         version_counts = self.get_entity_version_counts([
-            e.entity_id for e, _ in entities_with_emb
+            e.family_id for e, _ in entities_with_emb
         ])
         results: List[Dict[str, Any]] = []
         for entity, embedding_array in entities_with_emb:
             results.append({
                 "entity": entity,
-                "entity_id": entity.entity_id,
+                "family_id": entity.family_id,
                 "name": entity.name,
                 "content": entity.content,
-                "content_snippet": entity.content[:snippet_length],
-                "version_count": version_counts.get(entity.entity_id, 1),
+                "content_snippet": (entity.content or "")[:snippet_length],
+                "version_count": version_counts.get(entity.family_id, 1),
                 "embedding_array": embedding_array,
             })
         return results
@@ -1193,16 +1225,13 @@ class Neo4jStorageManager:
     def get_all_entities(self, limit: Optional[int] = None, offset: Optional[int] = None, exclude_embedding: bool = False) -> List[Entity]:
         """获取所有实体的最新版本。"""
         with self._session() as session:
-            query = """
+            query = f"""
                 MATCH (e:Entity)
-                WITH e.entity_id AS eid, COLLECT(e) AS ents
+                WITH e.family_id AS fid, COLLECT(e) AS ents
                 UNWIND ents AS e
-                WITH eid, e ORDER BY e.processed_time DESC
-                WITH eid, HEAD(COLLECT(e)) AS e
-                RETURN e.uuid AS uuid, e.entity_id AS entity_id, e.name AS name,
-                       e.content AS content, e.event_time AS event_time,
-                       e.processed_time AS processed_time, e.memory_cache_id AS memory_cache_id,
-                       e.source_document AS source_document
+                WITH fid, e ORDER BY e.processed_time DESC
+                WITH fid, HEAD(COLLECT(e)) AS e
+                RETURN {_ENTITY_RETURN_FIELDS}
                 ORDER BY e.processed_time DESC
             """
             if offset is not None and offset > 0:
@@ -1221,19 +1250,19 @@ class Neo4jStorageManager:
             return entities
 
     def count_unique_entities(self) -> int:
-        """统计不重复的 entity_id 数量。"""
+        """统计有效实体中不重复的 family_id 数量。"""
         with self._session() as session:
             result = session.run(
-                "MATCH (e:Entity) RETURN COUNT(DISTINCT e.entity_id) AS cnt"
+                "MATCH (e:Entity) WHERE e.invalid_at IS NULL RETURN COUNT(DISTINCT e.family_id) AS cnt"
             )
             record = result.single()
             return record["cnt"] if record else 0
 
     def count_unique_relations(self) -> int:
-        """统计不重复的 relation_id 数量。"""
+        """统计有效关系中不重复的 family_id 数量。"""
         with self._session() as session:
             result = session.run(
-                "MATCH (r:Relation) RETURN COUNT(DISTINCT r.relation_id) AS cnt"
+                "MATCH (r:Relation) WHERE r.invalid_at IS NULL RETURN COUNT(DISTINCT r.family_id) AS cnt"
             )
             record = result.single()
             return record["cnt"] if record else 0
@@ -1242,17 +1271,14 @@ class Neo4jStorageManager:
                                       exclude_embedding: bool = False) -> List[Entity]:
         """获取指定时间点之前的所有实体最新版本。"""
         with self._session() as session:
-            query = """
+            query = f"""
                 MATCH (e:Entity)
                 WHERE e.event_time <= datetime($tp)
-                WITH e.entity_id AS eid, COLLECT(e) AS ents
+                WITH e.family_id AS fid, COLLECT(e) AS ents
                 UNWIND ents AS e
-                WITH eid, e ORDER BY e.processed_time DESC
-                WITH eid, HEAD(COLLECT(e)) AS e
-                RETURN e.uuid AS uuid, e.entity_id AS entity_id, e.name AS name,
-                       e.content AS content, e.event_time AS event_time,
-                       e.processed_time AS processed_time, e.memory_cache_id AS memory_cache_id,
-                       e.source_document AS source_document
+                WITH fid, e ORDER BY e.processed_time DESC
+                WITH fid, HEAD(COLLECT(e)) AS e
+                RETURN {_ENTITY_RETURN_FIELDS}
                 ORDER BY e.processed_time DESC
             """
             if limit is not None:
@@ -1268,26 +1294,26 @@ class Neo4jStorageManager:
                 entities.append(entity)
             return entities
 
-    def get_entity_version_count(self, entity_id: str) -> int:
-        """获取指定 entity_id 的版本数量。"""
-        entity_id = self.resolve_entity_id(entity_id)
-        if not entity_id:
+    def get_entity_version_count(self, family_id: str) -> int:
+        """获取指定 family_id 的版本数量。"""
+        family_id = self.resolve_family_id(family_id)
+        if not family_id:
             return 0
         with self._session() as session:
             result = session.run(
-                "MATCH (e:Entity {entity_id: $eid}) RETURN COUNT(e) AS cnt",
-                eid=entity_id,
+                "MATCH (e:Entity {family_id: $fid}) RETURN COUNT(e) AS cnt",
+                fid=family_id,
             )
             record = result.single()
             return record["cnt"] if record else 0
 
-    def get_entity_version_counts(self, entity_ids: List[str]) -> Dict[str, int]:
-        """批量获取多个 entity_id 的版本数量。"""
-        if not entity_ids:
+    def get_entity_version_counts(self, family_ids: List[str]) -> Dict[str, int]:
+        """批量获取多个 family_id 的版本数量。"""
+        if not family_ids:
             return {}
         canonical_ids = []
-        for eid in entity_ids:
-            canonical = self.resolve_entity_id(eid)
+        for fid in family_ids:
+            canonical = self.resolve_family_id(fid)
             if canonical and canonical not in canonical_ids:
                 canonical_ids.append(canonical)
         if not canonical_ids:
@@ -1296,83 +1322,108 @@ class Neo4jStorageManager:
             result = session.run(
                 """
                 MATCH (e:Entity)
-                WHERE e.entity_id IN $eids
-                RETURN e.entity_id AS entity_id, COUNT(e) AS cnt
+                WHERE e.family_id IN $fids
+                RETURN e.family_id AS family_id, COUNT(e) AS cnt
                 """,
-                eids=canonical_ids,
+                fids=canonical_ids,
             )
-            return {record["entity_id"]: record["cnt"] for record in result}
+            return {record["family_id"]: record["cnt"] for record in result}
 
     def get_graph_statistics(self) -> Dict[str, Any]:
-        """返回图谱结构统计数据"""
+        """返回图谱结构统计数据（仅统计有效版本，排除已失效的旧版本节点）"""
         cached = self._cache.get("graph_stats")
         if cached is not None:
             return cached
         with self._session() as session:
-            # 基础计数
-            r = session.run("MATCH (e:Entity) RETURN count(e) AS cnt")
+            # 有效实体数（去重 family_id，排除 invalidated）
+            r = session.run("""
+                MATCH (e:Entity)
+                WHERE e.invalid_at IS NULL
+                RETURN count(DISTINCT e.family_id) AS cnt
+            """)
             entity_count = r.single()["cnt"]
 
-            r = session.run("MATCH (r:Relation) RETURN count(r) AS cnt")
+            # 总节点数（含已失效旧版本）
+            r = session.run("MATCH (e:Entity) RETURN count(e) AS cnt")
+            total_entity_versions = r.single()["cnt"]
+
+            # 有效关系数（去重 family_id）
+            r = session.run("""
+                MATCH (r:Relation)
+                WHERE r.invalid_at IS NULL
+                RETURN count(DISTINCT r.family_id) AS cnt
+            """)
             relation_count = r.single()["cnt"]
+
+            r = session.run("MATCH (r:Relation) RETURN count(r) AS cnt")
+            total_relation_versions = r.single()["cnt"]
 
             stats = {
                 "entity_count": entity_count,
                 "relation_count": relation_count,
+                "total_entity_versions": total_entity_versions,
+                "total_relation_versions": total_relation_versions,
             }
 
             if entity_count > 0:
-                # 平均度数
+                # 收集所有有效 Relation 引用的 entity uuid
                 r = session.run("""
-                    MATCH (e:Entity)-[]-(r:Relation)
-                    WITH e, count(DISTINCT r) AS deg
-                    RETURN avg(deg) AS avg_deg
+                    MATCH (rel:Relation) WHERE rel.invalid_at IS NULL
+                    WITH collect(DISTINCT rel.entity1_absolute_id)
+                       + collect(DISTINCT rel.entity2_absolute_id) AS aids
+                    UNWIND aids AS aid
+                    RETURN collect(DISTINCT aid) AS connected_uuids
                 """)
                 row = r.single()
-                stats["avg_relations_per_entity"] = round(row["avg_deg"], 2) if row and row["avg_deg"] else 0
+                connected_uuids = set(row["connected_uuids"]) if row and row["connected_uuids"] else set()
 
-                # 最大度数
-                r = session.run("""
-                    MATCH (e:Entity)-[]-(r:Relation)
-                    WITH e, count(DISTINCT r) AS deg
-                    RETURN max(deg) AS max_deg
-                """)
-                row = r.single()
-                stats["max_relations_per_entity"] = row["max_deg"] if row and row["max_deg"] else 0
-
-                # 孤立实体
+                # 计算每个 family_id 的度数（= 有多少个 uuid 被 Relation 引用）
                 r = session.run("""
                     MATCH (e:Entity)
-                    WHERE NOT (e)--()
-                    RETURN count(e) AS cnt
+                    WHERE e.invalid_at IS NULL AND e.family_id IS NOT NULL
+                    RETURN e.uuid AS uid, e.family_id AS fid
                 """)
-                stats["isolated_entities"] = r.single()["cnt"]
+                fid_degrees = {}
+                for rec in r:
+                    uid = rec["uid"]
+                    fid = rec["fid"]
+                    deg = fid_degrees.get(fid, 0)
+                    if uid in connected_uuids:
+                        deg += 1
+                    fid_degrees[fid] = deg
+
+                if fid_degrees:
+                    degrees = list(fid_degrees.values())
+                    stats["avg_relations_per_entity"] = round(sum(degrees) / len(degrees), 2)
+                    stats["max_relations_per_entity"] = max(degrees)
+                else:
+                    stats["avg_relations_per_entity"] = 0
+                    stats["max_relations_per_entity"] = 0
+
+                # 孤立实体（有效实体中不被任何有效 Relation 引用的）
+                isolated_fids = [fid for fid, deg in fid_degrees.items() if deg == 0]
+                stats["isolated_entities"] = len(isolated_fids)
 
                 # 图密度
-                r = session.run("MATCH (e:Entity) RETURN count(DISTINCT e.entity_id) AS cnt")
-                unique_entities = r.single()["cnt"]
-                if unique_entities > 1:
-                    max_possible = unique_entities * (unique_entities - 1) / 2
-                    r = session.run("MATCH (r:Relation) RETURN count(DISTINCT r.relation_id) AS cnt")
-                    unique_relations = r.single()["cnt"]
-                    stats["graph_density"] = round(unique_relations / max_possible, 4)
+                if entity_count > 1:
+                    max_possible = entity_count * (entity_count - 1) / 2
+                    stats["graph_density"] = round(relation_count / max_possible, 4)
                 else:
                     stats["graph_density"] = 0.0
             else:
                 stats.update({
                     "avg_relations_per_entity": 0,
                     "max_relations_per_entity": 0,
-                    "isolated_entities": entity_count,
+                    "isolated_entities": 0,
                     "graph_density": 0.0,
                 })
 
-            # 时间趋势
+            # 时间趋势（基于有效实体）
             r = session.run("""
                 MATCH (e:Entity)
-                WITH e.event_time AS t
-                WHERE t IS NOT NULL
-                WITH date(t) AS d
-                RETURN d AS date, count(*) AS cnt
+                WHERE e.invalid_at IS NULL AND e.event_time IS NOT NULL
+                WITH date(e.event_time) AS d, e.family_id AS fid
+                RETURN d AS date, count(DISTINCT fid) AS cnt
                 ORDER BY d
                 LIMIT 30
             """)
@@ -1380,10 +1431,9 @@ class Neo4jStorageManager:
 
             r = session.run("""
                 MATCH (r:Relation)
-                WITH r.event_time AS t
-                WHERE t IS NOT NULL
-                WITH date(t) AS d
-                RETURN d AS date, count(*) AS cnt
+                WHERE r.invalid_at IS NULL AND r.event_time IS NOT NULL
+                WITH date(r.event_time) AS d, r.family_id AS fid
+                RETURN d AS date, count(DISTINCT fid) AS cnt
                 ORDER BY d
                 LIMIT 30
             """)
@@ -1392,80 +1442,262 @@ class Neo4jStorageManager:
         self._cache.set("graph_stats", stats, ttl=60)
         return stats
 
-    def entity_has_any_relation(self, entity_id: str) -> bool:
+    # ------------------------------------------------------------------
+    # 管理类方法：孤立实体、数据质量报告、版本清理
+    # ------------------------------------------------------------------
+
+    def get_isolated_entities(self, limit: int = 100, offset: int = 0) -> List[Entity]:
+        """获取所有孤立实体（有效实体中不被任何有效 Relation 引用的）。"""
+        with self._session() as session:
+            # 先收集所有被有效 Relation 引用的 entity uuid
+            r = session.run("""
+                MATCH (rel:Relation) WHERE rel.invalid_at IS NULL
+                WITH collect(DISTINCT rel.entity1_absolute_id)
+                   + collect(DISTINCT rel.entity2_absolute_id) AS aids
+                UNWIND aids AS aid
+                RETURN collect(DISTINCT aid) AS connected
+            """)
+            row = r.single()
+            connected = set(row["connected"]) if row and row["connected"] else set()
+
+            # 获取每个 family_id 的最新有效版本
+            r = session.run(f"""
+                MATCH (e:Entity)
+                WHERE e.invalid_at IS NULL AND e.family_id IS NOT NULL
+                WITH e.family_id AS fid, COLLECT(e) AS ents
+                UNWIND ents AS e
+                WITH fid, e ORDER BY e.processed_time DESC
+                WITH fid, HEAD(COLLECT(e)) AS e
+                RETURN {_ENTITY_RETURN_FIELDS}
+                ORDER BY e.processed_time DESC
+            """)
+            isolated = []
+            for rec in r:
+                uid = rec.get("uuid")
+                if uid and uid not in connected:
+                    isolated.append(_neo4j_record_to_entity(rec))
+            return isolated[offset:offset + limit]
+
+    def count_isolated_entities(self) -> int:
+        """统计孤立实体数量。"""
+        with self._session() as session:
+            r = session.run("""
+                MATCH (rel:Relation) WHERE rel.invalid_at IS NULL
+                WITH collect(DISTINCT rel.entity1_absolute_id)
+                   + collect(DISTINCT rel.entity2_absolute_id) AS aids
+                UNWIND aids AS aid
+                WITH collect(DISTINCT aid) AS connected
+                MATCH (e:Entity)
+                WHERE e.invalid_at IS NULL AND e.family_id IS NOT NULL
+                  AND NOT e.uuid IN connected
+                RETURN count(DISTINCT e.family_id) AS cnt
+            """)
+            row = r.single()
+            return row["cnt"] if row else 0
+
+    def get_data_quality_report(self) -> Dict[str, Any]:
+        """返回数据质量报告。"""
+        with self._session() as session:
+            # 有效实体
+            r = session.run("""
+                MATCH (e:Entity) WHERE e.invalid_at IS NULL AND e.family_id IS NOT NULL
+                RETURN count(DISTINCT e.family_id) AS valid_families, count(e) AS valid_nodes
+            """)
+            row = r.single()
+            valid_families = row["valid_families"]
+            valid_nodes = row["valid_nodes"]
+
+            # 失效版本
+            r = session.run("MATCH (e:Entity) WHERE e.invalid_at IS NOT NULL RETURN count(e) AS cnt")
+            invalidated_entity_versions = r.single()["cnt"]
+
+            # 无 family_id 的实体
+            r = session.run("MATCH (e:Entity) WHERE e.family_id IS NULL RETURN count(e) AS cnt")
+            no_family_id = r.single()["cnt"]
+
+        # 有效关系
+        with self._session() as session:
+            r = session.run("""
+                MATCH (rel:Relation) WHERE rel.invalid_at IS NULL
+                RETURN count(DISTINCT rel.family_id) AS valid_families, count(rel) AS valid_nodes
+            """)
+            row = r.single()
+            valid_relation_families = row["valid_families"]
+            valid_relation_nodes = row["valid_nodes"]
+
+        with self._session() as session:
+            # 失效关系版本
+            r = session.run("MATCH (rel:Relation) WHERE rel.invalid_at IS NOT NULL RETURN count(rel) AS cnt")
+            invalidated_relation_versions = r.single()["cnt"]
+
+        # 孤立实体
+        isolated_count = self.count_isolated_entities()
+
+        # 关系引用了不存在的实体（悬空引用）- 分两步查询
+        with self._session() as session:
+            r = session.run("""
+                MATCH (rel:Relation) WHERE rel.invalid_at IS NULL
+                RETURN collect(DISTINCT rel.entity1_absolute_id) AS e1_ids,
+                       collect(DISTINCT rel.entity2_absolute_id) AS e2_ids
+            """)
+            row = r.single()
+            rel_aids = set()
+            if row:
+                if row.get("e1_ids"):
+                    rel_aids.update(row["e1_ids"])
+                if row.get("e2_ids"):
+                    rel_aids.update(row["e2_ids"])
+
+        with self._session() as session:
+            r = session.run("MATCH (e:Entity) WHERE e.invalid_at IS NULL RETURN collect(DISTINCT e.uuid) AS uuids")
+            row = r.single()
+            valid_uuids = set(row["uuids"]) if row and row["uuids"] else set()
+
+        dangling_refs = len(rel_aids - valid_uuids)
+
+        return {
+            "entities": {
+                "valid_unique": valid_families,
+                "valid_versions": valid_nodes,
+                "invalidated_versions": invalidated_entity_versions,
+                "no_family_id": no_family_id,
+                "isolated": isolated_count,
+            },
+            "relations": {
+                "valid_unique": valid_relation_families,
+                "valid_versions": valid_relation_nodes,
+                "invalidated_versions": invalidated_relation_versions,
+                "dangling_entity_refs": dangling_refs,
+            },
+            "total_nodes": valid_nodes + invalidated_entity_versions + valid_relation_nodes + invalidated_relation_versions + no_family_id,
+        }
+
+    def cleanup_invalidated_versions(self, before_date: str = None, dry_run: bool = False) -> Dict[str, Any]:
+        """清理已失效的旧版本节点。"""
+        with self._session() as session:
+            date_filter = ""
+            params = {}
+            if before_date:
+                date_filter = " AND e.invalid_at < datetime($before_date)"
+                params["before_date"] = before_date
+
+            # Count entities to remove
+            r = session.run(f"""
+                MATCH (e:Entity) WHERE e.invalid_at IS NOT NULL {date_filter}
+                RETURN count(e) AS cnt
+            """, **params)
+            entity_count = r.single()["cnt"]
+
+            r = session.run(f"""
+                MATCH (r:Relation) WHERE r.invalid_at IS NOT NULL {date_filter}
+                RETURN count(r) AS cnt
+            """, **params)
+            relation_count = r.single()["cnt"]
+
+            if dry_run:
+                return {
+                    "dry_run": True,
+                    "entities_to_remove": entity_count,
+                    "relations_to_remove": relation_count,
+                    "message": f"预览：将删除 {entity_count} 个已失效实体版本和 {relation_count} 个已失效关系版本",
+                }
+
+            # Actually delete
+            r = session.run(f"""
+                MATCH (e:Entity) WHERE e.invalid_at IS NOT NULL {date_filter}
+                DELETE e
+                RETURN count(*) AS cnt
+            """, **params)
+            deleted_entities = r.single()["cnt"]
+
+            r = session.run(f"""
+                MATCH (r:Relation) WHERE r.invalid_at IS NOT NULL {date_filter}
+                DELETE r
+                RETURN count(*) AS cnt
+            """, **params)
+            deleted_relations = r.single()["cnt"]
+
+            return {
+                "dry_run": False,
+                "deleted_entity_versions": deleted_entities,
+                "deleted_relation_versions": deleted_relations,
+                "message": f"已删除 {deleted_entities} 个已失效实体版本和 {deleted_relations} 个已失效关系版本",
+            }
+
+    def entity_has_any_relation(self, family_id: str) -> bool:
         """检查实体是否有关系。"""
-        entity_id = self.resolve_entity_id(entity_id)
-        if not entity_id:
+        family_id = self.resolve_family_id(family_id)
+        if not family_id:
             return False
         with self._session() as session:
             result = session.run(
                 """
                 MATCH (r:Relation)
                 WHERE r.entity1_absolute_id IN (
-                    MATCH (e:Entity {entity_id: $eid}) RETURN e.uuid
+                    MATCH (e:Entity {family_id: $fid}) RETURN e.uuid
                 ) OR r.entity2_absolute_id IN (
-                    MATCH (e:Entity {entity_id: $eid}) RETURN e.uuid
+                    MATCH (e:Entity {family_id: $fid}) RETURN e.uuid
                 )
                 RETURN COUNT(r) AS cnt LIMIT 1
                 """,
-                eid=entity_id,
+                fid=family_id,
             )
             record = result.single()
             return (record["cnt"] or 0) > 0
 
-    def delete_orphan_entities(self, candidate_entity_ids: list) -> list:
+    def delete_orphan_entities(self, candidate_family_ids: list) -> list:
         """批量检查并删除没有关系的实体。"""
-        if not candidate_entity_ids:
+        if not candidate_family_ids:
             return []
         with self._write_lock:
             with self._session() as session:
-                # 找出候选中无关系的 entity_id
+                # 找出候选中无关系的 family_id
                 result = session.run(
                     """
                     MATCH (e:Entity)
-                    WHERE e.entity_id IN $eids
+                    WHERE e.family_id IN $fids
                     AND NOT (
                         (e)-[:RELATES_TO]-(:Entity)
                     )
-                    RETURN DISTINCT e.entity_id AS eid
+                    RETURN DISTINCT e.family_id AS fid
                     """,
-                    eids=candidate_entity_ids,
+                    fids=candidate_family_ids,
                 )
-                orphan_ids = [record["eid"] for record in result]
+                orphan_ids = [record["fid"] for record in result]
                 if orphan_ids:
                     session.run(
                         """
                         MATCH (e:Entity)
-                        WHERE e.entity_id IN $eids
+                        WHERE e.family_id IN $fids
                         DETACH DELETE e
                         """,
-                        eids=orphan_ids,
+                        fids=orphan_ids,
                     )
                     # 同步删除向量
                     self._vector_store.delete_batch("entity_vectors", orphan_ids)
                 return orphan_ids
 
-    def delete_entity_by_id(self, entity_id: str) -> int:
+    def delete_entity_by_id(self, family_id: str) -> int:
         """删除实体的所有版本。"""
-        entity_id = self.resolve_entity_id(entity_id)
-        if not entity_id:
+        family_id = self.resolve_family_id(family_id)
+        if not family_id:
             return 0
         with self._write_lock:
             with self._session() as session:
                 # 获取所有 absolute_id
                 result = session.run(
-                    "MATCH (e:Entity {entity_id: $eid}) RETURN e.uuid AS uuid",
-                    eid=entity_id,
+                    "MATCH (e:Entity {family_id: $fid}) RETURN e.uuid AS uuid",
+                    fid=family_id,
                 )
                 uuids = [record["uuid"] for record in result]
                 count = len(uuids)
                 if uuids:
                     session.run(
                         """
-                        MATCH (e:Entity {entity_id: $eid})
+                        MATCH (e:Entity {family_id: $fid})
                         DETACH DELETE e
                         """,
-                        eid=entity_id,
+                        fid=family_id,
                     )
                     self._vector_store.delete_batch("entity_vectors", uuids)
                 self._cache.invalidate("entity:")
@@ -1474,51 +1706,51 @@ class Neo4jStorageManager:
                 self._cache.invalidate("graph_stats")
                 return count
 
-    def delete_relation_by_id(self, relation_id: str) -> int:
+    def delete_relation_by_id(self, family_id: str) -> int:
         """删除关系的所有版本。返回删除的行数。"""
         with self._relation_write_lock:
             with self._session() as session:
                 # 删除关系节点
                 result = session.run(
-                    "MATCH (r:Relation {relation_id: $rid}) DETACH DELETE r RETURN count(r) AS cnt",
-                    rid=relation_id,
+                    "MATCH (r:Relation {family_id: $fid}) DETACH DELETE r RETURN count(r) AS cnt",
+                    fid=family_id,
                 )
                 record = result.single()
                 count = record["cnt"] if record else 0
                 # 清理向量存储
                 try:
                     self._vector_store.delete_batch("relation_vectors",
-                        [r.absolute_id for r in self.get_relation_versions(relation_id)])
+                        [r.absolute_id for r in self.get_relation_versions(family_id)])
                 except Exception:
                     pass
                 self._cache.invalidate("relation:")
                 self._cache.invalidate("graph_stats")
                 return count
 
-    def delete_entity_all_versions(self, entity_id: str) -> int:
+    def delete_entity_all_versions(self, family_id: str) -> int:
         """删除实体的所有版本（含关系边）。返回删除的行数。"""
-        entity_id = self.resolve_entity_id(entity_id)
-        if not entity_id:
+        family_id = self.resolve_family_id(family_id)
+        if not family_id:
             return 0
         with self._write_lock:
             with self._session() as session:
                 # 删除相关关系
                 session.run(
-                    """MATCH (e:Entity {entity_id: $eid})-[r:RELATES_TO]-()
+                    """MATCH (e:Entity {family_id: $fid})-[r:RELATES_TO]-()
                        DETACH DELETE r""",
-                    eid=entity_id,
+                    fid=family_id,
                 )
                 # 删除实体节点
                 result = session.run(
-                    "MATCH (e:Entity {entity_id: $eid}) DETACH DELETE e RETURN count(e) AS cnt",
-                    eid=entity_id,
+                    "MATCH (e:Entity {family_id: $fid}) DETACH DELETE e RETURN count(e) AS cnt",
+                    fid=family_id,
                 )
                 record = result.single()
                 count = record["cnt"] if record else 0
                 # 清理向量存储
                 try:
                     self._vector_store.delete_batch("entity_vectors",
-                        [e.absolute_id for e in self.get_entity_versions(entity_id)])
+                        [e.absolute_id for e in self.get_entity_versions(family_id)])
                 except Exception:
                     pass
                 self._cache.invalidate("entity:")
@@ -1527,12 +1759,12 @@ class Neo4jStorageManager:
                 self._cache.invalidate("graph_stats")
                 return count
 
-    def delete_relation_all_versions(self, relation_id: str) -> int:
+    def delete_relation_all_versions(self, family_id: str) -> int:
         """删除关系的所有版本。返回删除的行数。"""
-        return self.delete_relation_by_id(relation_id)
+        return self.delete_relation_by_id(family_id)
 
-    def get_entity_ids_by_names(self, names: list) -> dict:
-        """按名称批量查询 entity_id。"""
+    def get_family_ids_by_names(self, names: list) -> dict:
+        """按名称批量查询 family_id。"""
         if not names:
             return {}
         with self._session() as session:
@@ -1540,7 +1772,7 @@ class Neo4jStorageManager:
                 """
                 MATCH (e:Entity)
                 WHERE e.name IN $names
-                RETURN e.name AS name, e.entity_id AS entity_id
+                RETURN e.name AS name, e.family_id AS family_id
                 ORDER BY e.processed_time DESC
                 """,
                 names=names,
@@ -1549,11 +1781,50 @@ class Neo4jStorageManager:
             for record in result:
                 name = record["name"]
                 if name not in output:
-                    output[name] = self.resolve_entity_id(record["entity_id"])
+                    output[name] = self.resolve_family_id(record["family_id"])
             return output
 
+    def find_entity_by_name_prefix(self, prefix: str, limit: int = 5) -> list:
+        """查找名称以 prefix 开头的实体（处理消歧括号场景）。
+        例如 prefix="Go语言" 可匹配 "Go语言（Golang）"。
+        返回 Entity 对象列表，按 processed_time 倒序。
+        """
+        if not prefix:
+            return []
+        try:
+            with self._session() as session:
+                result = session.run(
+                    """
+                    MATCH (e:Entity)
+                    WHERE (e.name STARTS WITH $prefix OR e.name = $prefix)
+                      AND e.invalid_at IS NULL
+                    RETURN e.uuid AS uuid, e.family_id AS family_id,
+                           e.name AS name, e.content AS content,
+                           e.summary AS summary,
+                           e.attributes AS attributes, e.confidence AS confidence,
+                           e.source_document AS source_document, e.episode_id AS episode_id,
+                           e.doc_name AS doc_name,
+                           e.processed_time AS processed_time, e.event_time AS event_time,
+                           e.content_format AS content_format
+                    ORDER BY e.processed_time DESC
+                    LIMIT $limit
+                    """,
+                    prefix=prefix,
+                    limit=limit,
+                )
+                entities = []
+                seen_fids = set()
+                for record in result:
+                    fid = record.get("family_id")
+                    if fid and fid not in seen_fids:
+                        seen_fids.add(fid)
+                        entities.append(_neo4j_record_to_entity(record))
+                return entities
+        except Exception:
+            return []
+
     def get_total_entity_count(self) -> int:
-        """获取不重复 entity_id 数量。"""
+        """获取不重复 family_id 数量。"""
         try:
             return self.count_unique_entities()
         except Exception:
@@ -1564,58 +1835,83 @@ class Neo4jStorageManager:
     # ------------------------------------------------------------------
 
     def search_entities_by_bm25(self, query: str, limit: int = 20) -> List[Entity]:
-        """BM25 全文搜索实体（Neo4j 5.x 全文索引）。"""
+        """BM25 全文搜索实体（Neo4j 5.x 全文索引），去重 family_id 只保留最高分版本。"""
         if not query:
             return []
         try:
             with self._session() as session:
+                # 多取一些再在 Python 层去重，确保 limit 个 unique family_id
+                raw_limit = min(limit * 5, 500)
                 result = session.run(
-                    """CALL db.index.fulltext.queryNodes('entityFulltext', $query)
+                    """CALL db.index.fulltext.queryNodes('entityFulltext', $search_query)
                        YIELD node, score
-                       RETURN node.uuid AS uuid, node.entity_id AS entity_id,
+                       WHERE node.invalid_at IS NULL
+                       RETURN node.uuid AS uuid, node.family_id AS family_id,
                               node.name AS name, node.content AS content,
+                              node.summary AS summary,
+                              node.attributes AS attributes, node.confidence AS confidence,
+                              node.content_format AS content_format, node.community_id AS community_id,
+                              node.valid_at AS valid_at, node.invalid_at AS invalid_at,
                               node.event_time AS event_time,
                               node.processed_time AS processed_time,
-                              node.memory_cache_id AS memory_cache_id,
+                              node.episode_id AS episode_id,
                               node.source_document AS source_document,
                               score AS bm25_score
                        ORDER BY score DESC
-                       LIMIT $limit""",
-                    query=query, limit=limit,
+                       LIMIT $raw_limit""",
+                    search_query=query, raw_limit=raw_limit,
                 )
+                seen_fids = set()
                 entities = []
                 for record in result:
+                    fid = record.get("family_id")
+                    if fid and fid in seen_fids:
+                        continue
+                    if fid:
+                        seen_fids.add(fid)
                     entities.append(_neo4j_record_to_entity(record))
+                    if len(entities) >= limit:
+                        break
                 return entities
         except Exception as e:
             logger.warning("BM25 search failed, falling back to empty: %s", e)
             return []
 
     def search_relations_by_bm25(self, query: str, limit: int = 20) -> List[Relation]:
-        """BM25 全文搜索关系（Neo4j 5.x 全文索引）。"""
+        """BM25 全文搜索关系（Neo4j 5.x 全文索引），去重 family_id 只保留最高分版本。"""
         if not query:
             return []
         try:
             with self._session() as session:
+                raw_limit = min(limit * 5, 500)
                 result = session.run(
-                    """CALL db.index.fulltext.queryNodes('relationFulltext', $query)
+                    """CALL db.index.fulltext.queryNodes('relationFulltext', $search_query)
                        YIELD node, score
-                       RETURN node.uuid AS uuid, node.relation_id AS relation_id,
+                       WHERE node.invalid_at IS NULL
+                       RETURN node.uuid AS uuid, node.family_id AS family_id,
                               node.entity1_absolute_id AS entity1_absolute_id,
                               node.entity2_absolute_id AS entity2_absolute_id,
                               node.content AS content,
                               node.event_time AS event_time,
                               node.processed_time AS processed_time,
-                              node.memory_cache_id AS memory_cache_id,
+                              node.episode_id AS episode_id,
                               node.source_document AS source_document,
                               score AS bm25_score
                        ORDER BY score DESC
-                       LIMIT $limit""",
-                    query=query, limit=limit,
+                       LIMIT $raw_limit""",
+                    search_query=query, raw_limit=raw_limit,
                 )
+                seen_fids = set()
                 relations = []
                 for record in result:
+                    fid = record.get("family_id")
+                    if fid and fid in seen_fids:
+                        continue
+                    if fid:
+                        seen_fids.add(fid)
                     relations.append(_neo4j_record_to_relation(record))
+                    if len(relations) >= limit:
+                        break
                 return relations
         except Exception as e:
             logger.warning("BM25 search failed, falling back to empty: %s", e)
@@ -1685,7 +1981,7 @@ class Neo4jStorageManager:
         if norm > 0:
             query_emb = query_emb / norm
 
-        # 2. KNN top-k（多取几倍候选，因为同一 entity_id 可能有多个版本）
+        # 2. KNN top-k（多取几倍候选，因为同一 family_id 可能有多个版本）
         knn_limit = max_results * 5
         knn_results = self._vector_store.search(
             "entity_vectors", query_emb.tolist(), limit=knn_limit
@@ -1702,7 +1998,7 @@ class Neo4jStorageManager:
         uuids = [uuid for uuid, _ in knn_results]
         entities = self.get_entities_by_absolute_ids(uuids)
 
-        # 5. 过滤 threshold + 去重（同 entity_id 取最新，即 KNN 中距离最小的）
+        # 5. 过滤 threshold + 去重（同 family_id 取最新，即 KNN 中距离最小的）
         seen = set()
         results = []
         for entity in entities:
@@ -1712,9 +2008,9 @@ class Neo4jStorageManager:
             if l2_dist_sq is None:
                 continue
             cos_sim = 1.0 - l2_dist_sq / 2.0
-            if cos_sim >= threshold and entity.entity_id not in seen:
+            if cos_sim >= threshold and entity.family_id not in seen:
                 results.append(entity)
-                seen.add(entity.entity_id)
+                seen.add(entity.family_id)
                 if len(results) >= max_results:
                     break
         return results
@@ -1740,13 +2036,13 @@ class Neo4jStorageManager:
                 session.run(
                     """
                     MERGE (r:Relation {uuid: $uuid})
-                    SET r.relation_id = $relation_id,
+                    SET r.family_id = $family_id,
                         r.entity1_absolute_id = $e1_abs,
                         r.entity2_absolute_id = $e2_abs,
                         r.content = $content,
                         r.event_time = datetime($event_time),
                         r.processed_time = datetime($processed_time),
-                        r.memory_cache_id = $cache_id,
+                        r.episode_id = $cache_id,
                         r.source_document = $source,
                         r.summary = $summary,
                         r.attributes = $attributes,
@@ -1754,8 +2050,8 @@ class Neo4jStorageManager:
                         r.provenance = $provenance,
                         r.content_format = $content_format,
                         r.valid_at = datetime($valid_at)
-                    WITH $uuid AS abs_id, $relation_id AS rid, $event_time AS et
-                    MATCH (r:Relation {relation_id: rid})
+                    WITH $uuid AS abs_id, $family_id AS fid, $event_time AS et
+                    MATCH (r:Relation {family_id: fid})
                     WHERE r.uuid <> abs_id AND r.invalid_at IS NULL
                     SET r.invalid_at = datetime(et)
                     WITH $uuid AS rel_uuid, $e1_abs AS e1, $e2_abs AS e2, $content AS fact
@@ -1765,13 +2061,13 @@ class Neo4jStorageManager:
                     SET rel.fact = fact
                     """,
                     uuid=relation.absolute_id,
-                    relation_id=relation.relation_id,
+                    family_id=relation.family_id,
                     e1_abs=relation.entity1_absolute_id,
                     e2_abs=relation.entity2_absolute_id,
                     content=relation.content,
                     event_time=relation.event_time.isoformat(),
                     processed_time=relation.processed_time.isoformat(),
-                    cache_id=relation.memory_cache_id,
+                    cache_id=relation.episode_id,
                     source=relation.source_document,
                     summary=relation.summary,
                     attributes=relation.attributes,
@@ -1820,13 +2116,13 @@ class Neo4jStorageManager:
 
                 rows.append({
                     "uuid": relation.absolute_id,
-                    "relation_id": relation.relation_id,
+                    "family_id": relation.family_id,
                     "e1_abs": relation.entity1_absolute_id,
                     "e2_abs": relation.entity2_absolute_id,
                     "content": relation.content,
                     "event_time": relation.event_time.isoformat(),
                     "processed_time": relation.processed_time.isoformat(),
-                    "cache_id": relation.memory_cache_id,
+                    "cache_id": relation.episode_id,
                     "source": relation.source_document,
                 })
 
@@ -1840,13 +2136,13 @@ class Neo4jStorageManager:
                     """
                     UNWIND $rows AS row
                     MERGE (r:Relation {uuid: row.uuid})
-                    SET r.relation_id = row.relation_id,
+                    SET r.family_id = row.family_id,
                         r.entity1_absolute_id = row.e1_abs,
                         r.entity2_absolute_id = row.e2_abs,
                         r.content = row.content,
                         r.event_time = datetime(row.event_time),
                         r.processed_time = datetime(row.processed_time),
-                        r.memory_cache_id = row.cache_id,
+                        r.episode_id = row.cache_id,
                         r.source_document = row.source
                     WITH row
                     MATCH (n1:Entity {uuid: row.e1_abs})
@@ -1869,11 +2165,11 @@ class Neo4jStorageManager:
             result = session.run(
                 """
                 MATCH (r:Relation {uuid: $uuid})
-                RETURN r.uuid AS uuid, r.relation_id AS relation_id,
+                RETURN r.uuid AS uuid, r.family_id AS family_id,
                        r.entity1_absolute_id AS entity1_absolute_id,
                        r.entity2_absolute_id AS entity2_absolute_id,
                        r.content AS content, r.event_time AS event_time,
-                       r.processed_time AS processed_time, r.memory_cache_id AS memory_cache_id,
+                       r.processed_time AS processed_time, r.episode_id AS episode_id,
                        r.source_document AS source_document
                 """,
                 uuid=relation_absolute_id,
@@ -1896,31 +2192,31 @@ class Neo4jStorageManager:
                 """
                 MATCH (r:Relation)
                 WHERE r.uuid IN $uuids
-                RETURN r.uuid AS uuid, r.relation_id AS relation_id,
+                RETURN r.uuid AS uuid, r.family_id AS family_id,
                        r.entity1_absolute_id AS entity1_absolute_id,
                        r.entity2_absolute_id AS entity2_absolute_id,
                        r.content AS content, r.event_time AS event_time,
-                       r.processed_time AS processed_time, r.memory_cache_id AS memory_cache_id,
+                       r.processed_time AS processed_time, r.episode_id AS episode_id,
                        r.source_document AS source_document
                 """,
                 uuids=absolute_ids,
             )
             return [_neo4j_record_to_relation(r) for r in result]
 
-    def get_relation_by_relation_id(self, relation_id: str) -> Optional[Relation]:
+    def get_relation_by_family_id(self, family_id: str) -> Optional[Relation]:
         with self._session() as session:
             result = session.run(
                 """
-                MATCH (r:Relation {relation_id: $rid})
-                RETURN r.uuid AS uuid, r.relation_id AS relation_id,
+                MATCH (r:Relation {family_id: $fid})
+                RETURN r.uuid AS uuid, r.family_id AS family_id,
                        r.entity1_absolute_id AS entity1_absolute_id,
                        r.entity2_absolute_id AS entity2_absolute_id,
                        r.content AS content, r.event_time AS event_time,
-                       r.processed_time AS processed_time, r.memory_cache_id AS memory_cache_id,
+                       r.processed_time AS processed_time, r.episode_id AS episode_id,
                        r.source_document AS source_document
                 ORDER BY r.processed_time DESC LIMIT 1
                 """,
-                rid=relation_id,
+                fid=family_id,
             )
             record = result.single()
             if not record:
@@ -1931,36 +2227,36 @@ class Neo4jStorageManager:
                 relation.embedding = np.array(emb, dtype=np.float32).tobytes()
             return relation
 
-    def get_relations_by_entities(self, from_entity_id: str, to_entity_id: str) -> List[Relation]:
-        """根据两个 entity_id 获取所有关系（合并为 2 次 session 查询）。"""
+    def get_relations_by_entities(self, from_family_id: str, to_family_id: str) -> List[Relation]:
+        """根据两个 family_id 获取所有关系（合并为 2 次 session 查询）。"""
         with _perf_timer("get_relations_by_entities"):
-            return self._get_relations_by_entities_impl(from_entity_id, to_entity_id)
+            return self._get_relations_by_entities_impl(from_family_id, to_family_id)
 
-    def _get_relations_by_entities_impl(self, from_entity_id: str, to_entity_id: str) -> List[Relation]:
-        """根据两个 entity_id 获取所有关系（实际实现）。"""
-        from_entity_id = self.resolve_entity_id(from_entity_id)
-        to_entity_id = self.resolve_entity_id(to_entity_id)
-        if not from_entity_id or not to_entity_id:
+    def _get_relations_by_entities_impl(self, from_family_id: str, to_family_id: str) -> List[Relation]:
+        """根据两个 family_id 获取所有关系（实际实现）。"""
+        from_family_id = self.resolve_family_id(from_family_id)
+        to_family_id = self.resolve_family_id(to_family_id)
+        if not from_family_id or not to_family_id:
             return []
 
         with self._session() as session:
-            # Step 1: 批量获取两个 entity_id 的所有 absolute_id（合并 2 次 resolve + 2 次 _get_all_absolute_ids）
+            # Step 1: 批量获取两个 family_id 的所有 absolute_id（合并 2 次 resolve + 2 次 _get_all_absolute_ids）
             result = session.run(
                 """
                 MATCH (e:Entity)
-                WHERE e.entity_id IN [$eid1, $eid2]
-                WITH e.entity_id AS eid, collect(e.uuid) AS abs_ids
-                RETURN eid, abs_ids
+                WHERE e.family_id IN [$fid1, $fid2]
+                WITH e.family_id AS fid, collect(e.uuid) AS abs_ids
+                RETURN fid, abs_ids
                 """,
-                eid1=from_entity_id,
-                eid2=to_entity_id,
+                fid1=from_family_id,
+                fid2=to_family_id,
             )
-            eid_to_abs: Dict[str, List[str]] = {}
+            fid_to_abs: Dict[str, List[str]] = {}
             for record in result:
-                eid_to_abs[record["eid"]] = record["abs_ids"]
+                fid_to_abs[record["fid"]] = record["abs_ids"]
 
-            from_ids = eid_to_abs.get(from_entity_id, [])
-            to_ids = eid_to_abs.get(to_entity_id, [])
+            from_ids = fid_to_abs.get(from_family_id, [])
+            to_ids = fid_to_abs.get(to_family_id, [])
             if not from_ids or not to_ids:
                 return []
 
@@ -1970,15 +2266,15 @@ class Neo4jStorageManager:
                 MATCH (r:Relation)
                 WHERE (r.entity1_absolute_id IN $from_ids AND r.entity2_absolute_id IN $to_ids)
                    OR (r.entity1_absolute_id IN $to_ids AND r.entity2_absolute_id IN $from_ids)
-                WITH r.relation_id AS rid, COLLECT(r) AS rels
+                WITH r.family_id AS fid, COLLECT(r) AS rels
                 UNWIND rels AS r
-                WITH rid, r ORDER BY r.processed_time DESC
-                WITH rid, HEAD(COLLECT(r)) AS r
-                RETURN r.uuid AS uuid, r.relation_id AS relation_id,
+                WITH fid, r ORDER BY r.processed_time DESC
+                WITH fid, HEAD(COLLECT(r)) AS r
+                RETURN r.uuid AS uuid, r.family_id AS family_id,
                        r.entity1_absolute_id AS entity1_absolute_id,
                        r.entity2_absolute_id AS entity2_absolute_id,
                        r.content AS content, r.event_time AS event_time,
-                       r.processed_time AS processed_time, r.memory_cache_id AS memory_cache_id,
+                       r.processed_time AS processed_time, r.episode_id AS episode_id,
                        r.source_document AS source_document
                 ORDER BY r.processed_time DESC
                 """,
@@ -1996,12 +2292,12 @@ class Neo4jStorageManager:
                 results[pair_key] = self.get_relations_by_entities(pair_key[0], pair_key[1])
         return results
 
-    def _get_all_absolute_ids_for_entity(self, entity_id: str) -> List[str]:
+    def _get_all_absolute_ids_for_entity(self, family_id: str) -> List[str]:
         """获取实体的所有版本的 absolute_id。"""
         with self._session() as session:
             result = session.run(
-                "MATCH (e:Entity {entity_id: $eid}) RETURN e.uuid AS uuid",
-                eid=entity_id,
+                "MATCH (e:Entity {family_id: $fid}) RETURN e.uuid AS uuid",
+                fid=family_id,
             )
             return [record["uuid"] for record in result]
 
@@ -2018,7 +2314,7 @@ class Neo4jStorageManager:
             _csnip = relation.content if snippet_length is None or snippet_length <= 0 else relation.content[:snippet_length]
             results.append({
                 "relation": relation,
-                "relation_id": relation.relation_id,
+                "family_id": relation.family_id,
                 "pair": tuple(sorted((relation.entity1_absolute_id, relation.entity2_absolute_id))),
                 "content": relation.content,
                 "content_snippet": _csnip,
@@ -2026,35 +2322,35 @@ class Neo4jStorageManager:
             })
         return results
 
-    def get_relation_versions(self, relation_id: str) -> List[Relation]:
+    def get_relation_versions(self, family_id: str) -> List[Relation]:
         """获取关系的所有版本。"""
         with self._session() as session:
             result = session.run(
                 """
-                MATCH (r:Relation {relation_id: $rid})
-                RETURN r.uuid AS uuid, r.relation_id AS relation_id,
+                MATCH (r:Relation {family_id: $fid})
+                RETURN r.uuid AS uuid, r.family_id AS family_id,
                        r.entity1_absolute_id AS entity1_absolute_id,
                        r.entity2_absolute_id AS entity2_absolute_id,
                        r.content AS content, r.event_time AS event_time,
-                       r.processed_time AS processed_time, r.memory_cache_id AS memory_cache_id,
+                       r.processed_time AS processed_time, r.episode_id AS episode_id,
                        r.source_document AS source_document
                 ORDER BY r.processed_time ASC
                 """,
-                rid=relation_id,
+                fid=family_id,
             )
             return [_neo4j_record_to_relation(r) for r in result]
 
-    def update_relation_memory_cache_id(self, relation_id: str, memory_cache_id: str):
-        """更新关系的 memory_cache_id。"""
+    def update_relation_episode_id(self, family_id: str, episode_id: str):
+        """更新关系的 episode_id。"""
         with self._relation_write_lock:
             with self._session() as session:
                 session.run(
                     """
-                    MATCH (r:Relation {relation_id: $rid})
-                    SET r.memory_cache_id = $cache_id
+                    MATCH (r:Relation {family_id: $fid})
+                    SET r.episode_id = $cache_id
                     """,
-                    rid=relation_id,
-                    cache_id=memory_cache_id,
+                    fid=family_id,
+                    cache_id=episode_id,
                 )
 
     def get_self_referential_relations(self) -> Dict[str, List[Dict]]:
@@ -2064,7 +2360,7 @@ class Neo4jStorageManager:
                 """
                 MATCH (r:Relation)
                 WHERE r.entity1_absolute_id = r.entity2_absolute_id
-                RETURN r.uuid AS uuid, r.relation_id AS relation_id,
+                RETURN r.uuid AS uuid, r.family_id AS family_id,
                        r.entity1_absolute_id AS entity1_absolute_id,
                        r.content AS content
                 """
@@ -2074,7 +2370,7 @@ class Neo4jStorageManager:
                 eid = record["entity1_absolute_id"]
                 grouped.setdefault(eid, []).append({
                     "uuid": record["uuid"],
-                    "relation_id": record["relation_id"],
+                    "family_id": record["family_id"],
                     "content": record["content"],
                 })
             return grouped
@@ -2101,12 +2397,12 @@ class Neo4jStorageManager:
                     self._vector_store.delete_batch("relation_vectors", uuids)
                 return count
 
-    def get_self_referential_relations_for_entity(self, entity_id: str) -> List[Dict]:
-        """获取指定实体的自引用关系。"""
-        entity_id = self.resolve_entity_id(entity_id)
-        if not entity_id:
+    def get_self_referential_relations_for_entity(self, family_id: str) -> List[Dict]:
+        """获取指定实体的自引用关系（包括合并后两端指向同一 family 的关系）。"""
+        family_id = self.resolve_family_id(family_id)
+        if not family_id:
             return []
-        abs_ids = self._get_all_absolute_ids_for_entity(entity_id)
+        abs_ids = self._get_all_absolute_ids_for_entity(family_id)
         if not abs_ids:
             return []
         with self._session() as session:
@@ -2114,8 +2410,7 @@ class Neo4jStorageManager:
                 """
                 MATCH (r:Relation)
                 WHERE r.entity1_absolute_id IN $abs_ids AND r.entity2_absolute_id IN $abs_ids
-                AND r.entity1_absolute_id = r.entity2_absolute_id
-                RETURN r.uuid AS uuid, r.relation_id AS relation_id,
+                RETURN r.uuid AS uuid, r.family_id AS family_id,
                        r.entity1_absolute_id AS entity1_absolute_id,
                        r.content AS content
                 """,
@@ -2124,19 +2419,19 @@ class Neo4jStorageManager:
             return [
                 {
                     "uuid": record["uuid"],
-                    "relation_id": record["relation_id"],
+                    "family_id": record["family_id"],
                     "entity1_absolute_id": record["entity1_absolute_id"],
                     "content": record["content"],
                 }
                 for record in result
             ]
 
-    def delete_self_referential_relations_for_entity(self, entity_id: str) -> int:
+    def delete_self_referential_relations_for_entity(self, family_id: str) -> int:
         """删除指定实体的自引用关系。"""
-        entity_id = self.resolve_entity_id(entity_id)
-        if not entity_id:
+        family_id = self.resolve_family_id(family_id)
+        if not family_id:
             return 0
-        abs_ids = self._get_all_absolute_ids_for_entity(entity_id)
+        abs_ids = self._get_all_absolute_ids_for_entity(family_id)
         if not abs_ids:
             return 0
         with self._relation_write_lock:
@@ -2145,7 +2440,6 @@ class Neo4jStorageManager:
                     """
                     MATCH (r:Relation)
                     WHERE r.entity1_absolute_id IN $abs_ids AND r.entity2_absolute_id IN $abs_ids
-                    AND r.entity1_absolute_id = r.entity2_absolute_id
                     RETURN r.uuid AS uuid
                     """,
                     abs_ids=abs_ids,
@@ -2173,15 +2467,15 @@ class Neo4jStorageManager:
                     MATCH (r:Relation)
                     WHERE (r.entity1_absolute_id = $abs_id OR r.entity2_absolute_id = $abs_id)
                     AND r.event_time <= datetime($tp)
-                    WITH r.relation_id AS rid, COLLECT(r) AS rels
+                    WITH r.family_id AS fid, COLLECT(r) AS rels
                     UNWIND rels AS r
-                    WITH rid, r ORDER BY r.processed_time DESC
-                    WITH rid, HEAD(COLLECT(r)) AS r
-                    RETURN r.uuid AS uuid, r.relation_id AS relation_id,
+                    WITH fid, r ORDER BY r.processed_time DESC
+                    WITH fid, HEAD(COLLECT(r)) AS r
+                    RETURN r.uuid AS uuid, r.family_id AS family_id,
                            r.entity1_absolute_id AS entity1_absolute_id,
                            r.entity2_absolute_id AS entity2_absolute_id,
                            r.content AS content, r.event_time AS event_time,
-                           r.processed_time AS processed_time, r.memory_cache_id AS memory_cache_id,
+                           r.processed_time AS processed_time, r.episode_id AS episode_id,
                            r.source_document AS source_document
                     ORDER BY r.processed_time DESC
                 """
@@ -2190,15 +2484,15 @@ class Neo4jStorageManager:
                 query = """
                     MATCH (r:Relation)
                     WHERE (r.entity1_absolute_id = $abs_id OR r.entity2_absolute_id = $abs_id)
-                    WITH r.relation_id AS rid, COLLECT(r) AS rels
+                    WITH r.family_id AS fid, COLLECT(r) AS rels
                     UNWIND rels AS r
-                    WITH rid, r ORDER BY r.processed_time DESC
-                    WITH rid, HEAD(COLLECT(r)) AS r
-                    RETURN r.uuid AS uuid, r.relation_id AS relation_id,
+                    WITH fid, r ORDER BY r.processed_time DESC
+                    WITH fid, HEAD(COLLECT(r)) AS r
+                    RETURN r.uuid AS uuid, r.family_id AS family_id,
                            r.entity1_absolute_id AS entity1_absolute_id,
                            r.entity2_absolute_id AS entity2_absolute_id,
                            r.content AS content, r.event_time AS event_time,
-                           r.processed_time AS processed_time, r.memory_cache_id AS memory_cache_id,
+                           r.processed_time AS processed_time, r.episode_id AS episode_id,
                            r.source_document AS source_document
                     ORDER BY r.processed_time DESC
                 """
@@ -2209,21 +2503,21 @@ class Neo4jStorageManager:
             result = session.run(query, **params)
             return [_neo4j_record_to_relation(r) for r in result]
 
-    def get_entity_relations_by_entity_id(self, entity_id: str, limit: Optional[int] = None,
+    def get_entity_relations_by_family_id(self, family_id: str, limit: Optional[int] = None,
                                            time_point: Optional[datetime] = None,
                                            max_version_absolute_id: Optional[str] = None) -> List[Relation]:
-        """通过 entity_id 获取实体的所有关系（包含所有版本）。"""
-        with _perf_timer("get_entity_relations_by_entity_id"):
-            return self._get_entity_relations_by_entity_id_impl(entity_id, limit, time_point, max_version_absolute_id)
+        """通过 family_id 获取实体的所有关系（包含所有版本）。"""
+        with _perf_timer("get_entity_relations_by_family_id"):
+            return self._get_entity_relations_by_family_id_impl(family_id, limit, time_point, max_version_absolute_id)
 
-    def _get_entity_relations_by_entity_id_impl(self, entity_id: str, limit: Optional[int] = None,
+    def _get_entity_relations_by_family_id_impl(self, family_id: str, limit: Optional[int] = None,
                                                  time_point: Optional[datetime] = None,
                                                  max_version_absolute_id: Optional[str] = None) -> List[Relation]:
-        """通过 entity_id 获取实体的所有关系（实际实现）。"""
-        entity_id = self.resolve_entity_id(entity_id)
-        if not entity_id:
+        """通过 family_id 获取实体的所有关系（实际实现）。"""
+        family_id = self.resolve_family_id(family_id)
+        if not family_id:
             return []
-        abs_ids = self._get_all_absolute_ids_for_entity(entity_id)
+        abs_ids = self._get_all_absolute_ids_for_entity(family_id)
         if not abs_ids:
             return []
         if max_version_absolute_id:
@@ -2238,12 +2532,12 @@ class Neo4jStorageManager:
                     max_pt = record["max_pt"]
                     result = session.run(
                         """
-                        MATCH (e:Entity {entity_id: $eid})
+                        MATCH (e:Entity {family_id: $fid})
                         WHERE e.processed_time <= $max_pt
                         RETURN e.uuid AS uuid
                         ORDER BY e.processed_time ASC
                         """,
-                        eid=entity_id,
+                        fid=family_id,
                         max_pt=max_pt,
                     )
                     abs_ids = [r["uuid"] for r in result]
@@ -2257,15 +2551,15 @@ class Neo4jStorageManager:
                     MATCH (r:Relation)
                     WHERE (r.entity1_absolute_id IN $abs_ids OR r.entity2_absolute_id IN $abs_ids)
                     AND r.event_time <= datetime($tp)
-                    WITH r.relation_id AS rid, COLLECT(r) AS rels
+                    WITH r.family_id AS fid, COLLECT(r) AS rels
                     UNWIND rels AS r
-                    WITH rid, r ORDER BY r.processed_time DESC
-                    WITH rid, HEAD(COLLECT(r)) AS r
-                    RETURN r.uuid AS uuid, r.relation_id AS relation_id,
+                    WITH fid, r ORDER BY r.processed_time DESC
+                    WITH fid, HEAD(COLLECT(r)) AS r
+                    RETURN r.uuid AS uuid, r.family_id AS family_id,
                            r.entity1_absolute_id AS entity1_absolute_id,
                            r.entity2_absolute_id AS entity2_absolute_id,
                            r.content AS content, r.event_time AS event_time,
-                           r.processed_time AS processed_time, r.memory_cache_id AS memory_cache_id,
+                           r.processed_time AS processed_time, r.episode_id AS episode_id,
                            r.source_document AS source_document
                     ORDER BY r.processed_time DESC
                 """
@@ -2274,15 +2568,15 @@ class Neo4jStorageManager:
                 query = """
                     MATCH (r:Relation)
                     WHERE (r.entity1_absolute_id IN $abs_ids OR r.entity2_absolute_id IN $abs_ids)
-                    WITH r.relation_id AS rid, COLLECT(r) AS rels
+                    WITH r.family_id AS fid, COLLECT(r) AS rels
                     UNWIND rels AS r
-                    WITH rid, r ORDER BY r.processed_time DESC
-                    WITH rid, HEAD(COLLECT(r)) AS r
-                    RETURN r.uuid AS uuid, r.relation_id AS relation_id,
+                    WITH fid, r ORDER BY r.processed_time DESC
+                    WITH fid, HEAD(COLLECT(r)) AS r
+                    RETURN r.uuid AS uuid, r.family_id AS family_id,
                            r.entity1_absolute_id AS entity1_absolute_id,
                            r.entity2_absolute_id AS entity2_absolute_id,
                            r.content AS content, r.event_time AS event_time,
-                           r.processed_time AS processed_time, r.memory_cache_id AS memory_cache_id,
+                           r.processed_time AS processed_time, r.episode_id AS episode_id,
                            r.source_document AS source_document
                     ORDER BY r.processed_time DESC
                 """
@@ -2293,12 +2587,12 @@ class Neo4jStorageManager:
             result = session.run(query, **params)
             return [_neo4j_record_to_relation(r) for r in result]
 
-    def get_entity_relations_timeline(self, entity_id: str, version_abs_ids: List[str]) -> List[Dict]:
+    def get_entity_relations_timeline(self, family_id: str, version_abs_ids: List[str]) -> List[Dict]:
         """批量获取实体在各版本时间点的关系（消除 N+1 查询）。"""
-        entity_id = self.resolve_entity_id(entity_id)
-        if not entity_id or not version_abs_ids:
+        family_id = self.resolve_family_id(family_id)
+        if not family_id or not version_abs_ids:
             return []
-        abs_ids = self._get_all_absolute_ids_for_entity(entity_id)
+        abs_ids = self._get_all_absolute_ids_for_entity(family_id)
         if not abs_ids:
             return []
 
@@ -2322,11 +2616,11 @@ class Neo4jStorageManager:
                 """
                 MATCH (r:Relation)
                 WHERE (r.entity1_absolute_id IN $abs_ids OR r.entity2_absolute_id IN $abs_ids)
-                WITH r.relation_id AS rid, COLLECT(r) AS rels
+                WITH r.family_id AS fid, COLLECT(r) AS rels
                 UNWIND rels AS r
-                WITH rid, r ORDER BY r.processed_time DESC
-                WITH rid, HEAD(COLLECT(r)) AS r
-                RETURN r.uuid AS uuid, r.relation_id AS relation_id,
+                WITH fid, r ORDER BY r.processed_time DESC
+                WITH fid, HEAD(COLLECT(r)) AS r
+                RETURN r.uuid AS uuid, r.family_id AS family_id,
                        r.entity1_absolute_id AS entity1_absolute_id,
                        r.entity2_absolute_id AS entity2_absolute_id,
                        r.content AS content, r.event_time AS event_time,
@@ -2347,7 +2641,7 @@ class Neo4jStorageManager:
                     if rel_pt and v_pt and rel_pt <= v_pt:
                         seen.add(record["uuid"])
                         timeline.append({
-                            "relation_id": record["relation_id"],
+                            "family_id": record["family_id"],
                             "content": record["content"],
                             "event_time": record["event_time"].isoformat() if record["event_time"] else None,
                             "absolute_id": record["uuid"],
@@ -2364,15 +2658,15 @@ class Neo4jStorageManager:
             query = """
                 MATCH (r:Relation)
                 WHERE (r.entity1_absolute_id IN $abs_ids OR r.entity2_absolute_id IN $abs_ids)
-                WITH r.relation_id AS rid, COLLECT(r) AS rels
+                WITH r.family_id AS fid, COLLECT(r) AS rels
                 UNWIND rels AS r
-                WITH rid, r ORDER BY r.processed_time DESC
-                WITH rid, HEAD(COLLECT(r)) AS r
-                RETURN r.uuid AS uuid, r.relation_id AS relation_id,
+                WITH fid, r ORDER BY r.processed_time DESC
+                WITH fid, HEAD(COLLECT(r)) AS r
+                RETURN r.uuid AS uuid, r.family_id AS family_id,
                        r.entity1_absolute_id AS entity1_absolute_id,
                        r.entity2_absolute_id AS entity2_absolute_id,
                        r.content AS content, r.event_time AS event_time,
-                       r.processed_time AS processed_time, r.memory_cache_id AS memory_cache_id,
+                       r.processed_time AS processed_time, r.episode_id AS episode_id,
                        r.source_document AS source_document
                 ORDER BY r.processed_time DESC
             """
@@ -2381,22 +2675,22 @@ class Neo4jStorageManager:
             result = session.run(query, abs_ids=entity_absolute_ids)
             return [_neo4j_record_to_relation(r) for r in result]
 
-    def get_entity_absolute_ids_up_to_version(self, entity_id: str, max_absolute_id: str) -> List[str]:
+    def get_entity_absolute_ids_up_to_version(self, family_id: str, max_absolute_id: str) -> List[str]:
         """获取从最早版本到指定版本的所有 absolute_id。"""
-        entity_id = self.resolve_entity_id(entity_id)
-        if not entity_id:
+        family_id = self.resolve_family_id(family_id)
+        if not family_id:
             return []
         with self._session() as session:
             result = session.run(
                 """
-                MATCH (e:Entity {entity_id: $eid})
+                MATCH (e:Entity {family_id: $fid})
                 WHERE e.processed_time <= (
                     MATCH (e2:Entity {uuid: $max_abs}) RETURN e2.processed_time
                 )
                 RETURN e.uuid AS uuid
                 ORDER BY e.processed_time ASC
                 """,
-                eid=entity_id,
+                fid=family_id,
                 max_abs=max_absolute_id,
             )
             return [r["uuid"] for r in result]
@@ -2407,15 +2701,15 @@ class Neo4jStorageManager:
         with self._session() as session:
             query = """
                 MATCH (r:Relation)
-                WITH r.relation_id AS rid, COLLECT(r) AS rels
+                WITH r.family_id AS fid, COLLECT(r) AS rels
                 UNWIND rels AS r
-                WITH rid, r ORDER BY r.processed_time DESC
-                WITH rid, HEAD(COLLECT(r)) AS r
-                RETURN r.uuid AS uuid, r.relation_id AS relation_id,
+                WITH fid, r ORDER BY r.processed_time DESC
+                WITH fid, HEAD(COLLECT(r)) AS r
+                RETURN r.uuid AS uuid, r.family_id AS family_id,
                        r.entity1_absolute_id AS entity1_absolute_id,
                        r.entity2_absolute_id AS entity2_absolute_id,
                        r.content AS content, r.event_time AS event_time,
-                       r.processed_time AS processed_time, r.memory_cache_id AS memory_cache_id,
+                       r.processed_time AS processed_time, r.episode_id AS episode_id,
                        r.source_document AS source_document
                 ORDER BY r.processed_time DESC
             """
@@ -2445,15 +2739,15 @@ class Neo4jStorageManager:
             result = session.run(
                 """
                 MATCH (r:Relation)
-                WITH r.relation_id AS rid, COLLECT(r) AS rels
+                WITH r.family_id AS fid, COLLECT(r) AS rels
                 UNWIND rels AS r
-                WITH rid, r ORDER BY r.processed_time DESC
-                WITH rid, HEAD(COLLECT(r)) AS r
-                RETURN r.uuid AS uuid, r.relation_id AS relation_id,
+                WITH fid, r ORDER BY r.processed_time DESC
+                WITH fid, HEAD(COLLECT(r)) AS r
+                RETURN r.uuid AS uuid, r.family_id AS family_id,
                        r.entity1_absolute_id AS entity1_absolute_id,
                        r.entity2_absolute_id AS entity2_absolute_id,
                        r.content AS content, r.event_time AS event_time,
-                       r.processed_time AS processed_time, r.memory_cache_id AS memory_cache_id,
+                       r.processed_time AS processed_time, r.episode_id AS episode_id,
                        r.source_document AS source_document
                 ORDER BY r.processed_time DESC
                 """
@@ -2506,7 +2800,7 @@ class Neo4jStorageManager:
         if norm > 0:
             query_emb = query_emb / norm
 
-        # 2. KNN top-k（多取几倍候选，因为同一 relation_id 可能有多个版本）
+        # 2. KNN top-k（多取几倍候选，因为同一 family_id 可能有多个版本）
         knn_limit = max_results * 5
         knn_results = self._vector_store.search(
             "relation_vectors", query_emb.tolist(), limit=knn_limit
@@ -2522,7 +2816,7 @@ class Neo4jStorageManager:
         uuids = [uuid for uuid, _ in knn_results]
         relations = self.get_relations_by_absolute_ids(uuids)
 
-        # 5. 过滤 threshold + 去重（同 relation_id 取最新）
+        # 5. 过滤 threshold + 去重（同 family_id 取最新）
         seen = set()
         results = []
         for relation in relations:
@@ -2532,9 +2826,9 @@ class Neo4jStorageManager:
             if l2_dist_sq is None:
                 continue
             cos_sim = 1.0 - l2_dist_sq / 2.0
-            if cos_sim >= threshold and relation.relation_id not in seen:
+            if cos_sim >= threshold and relation.family_id not in seen:
                 results.append(relation)
-                seen.add(relation.relation_id)
+                seen.add(relation.family_id)
                 if len(results) >= max_results:
                     break
         return results
@@ -2547,7 +2841,7 @@ class Neo4jStorageManager:
         """根据 cache_id 获取 doc_hash。"""
         return self._id_to_doc_hash.get(cache_id)
 
-    def get_memory_cache_text(self, cache_id: str) -> Optional[str]:
+    def get_episode_text(self, cache_id: str) -> Optional[str]:
         """获取记忆缓存对应的原始文本。"""
         doc_hash = self._id_to_doc_hash.get(cache_id)
         if doc_hash:
@@ -2648,8 +2942,8 @@ class Neo4jStorageManager:
                 norm_j = np.linalg.norm(emb_j)
                 sim = float(dot / (norm_i * norm_j + 1e-9))
                 if sim >= similarity_threshold:
-                    eid_i = all_entities[i].entity_id
-                    eid_j = all_entities[j].entity_id
+                    eid_i = all_entities[i].family_id
+                    eid_j = all_entities[j].family_id
                     entity_pairs.setdefault(eid_i, set()).add(eid_j)
                     entity_pairs.setdefault(eid_j, set()).add(eid_i)
 
@@ -2700,32 +2994,72 @@ class Neo4jStorageManager:
 
         return [group for group in groups.values() if len(group) > 1]
 
-    def merge_entity_ids(self, target_entity_id: str, source_entity_ids: List[str]) -> Dict[str, Any]:
-        """合并多个 entity_id 到目标 entity_id。"""
-        target_entity_id = self.resolve_entity_id(target_entity_id)
-        if not target_entity_id or not source_entity_ids:
+    def merge_entity_families(self, target_family_id: str, source_family_ids: List[str],
+                              skip_name_check: bool = False) -> Dict[str, Any]:
+        """合并多个 family_id 到目标 family_id。
+
+        Args:
+            target_family_id: 目标实体的 family_id。
+            source_family_ids: 要合并的源实体 family_id 列表。
+            skip_name_check: 如果为 True，跳过名称安全检查（用于已确认的合并）。
+        """
+        target_family_id = self.resolve_family_id(target_family_id)
+        if not target_family_id or not source_family_ids:
             return {"entities_updated": 0, "relations_updated": 0}
+
+        # 名称安全检查：拒绝名称完全不相关的合并
+        if not skip_name_check:
+            target_entity = self.get_entity_by_family_id(target_family_id)
+            target_name = target_entity.name if target_entity else ""
+            for source_id in source_family_ids:
+                resolved_source = self.resolve_family_id(source_id)
+                if not resolved_source:
+                    continue
+                source_entity = self.get_entity_by_family_id(resolved_source)
+                if not source_entity:
+                    continue
+                source_name = source_entity.name
+                if target_name and source_name:
+                    shared = len(set(source_name) & set(target_name))
+                    total = len(set(source_name) | set(target_name))
+                    overlap = shared / total if total > 0 else 0
+                    if overlap < 0.2:
+                        import logging
+                        logging.getLogger(__name__).warning(
+                            f"拒绝合并：名称差异过大 — "
+                            f"target={target_name}({target_family_id}) "
+                            f"source={source_name}({resolved_source}) "
+                            f"overlap={overlap:.2f}"
+                        )
+                        # 从列表中移除此 source
+                        source_family_ids = [
+                            s for s in source_family_ids
+                            if self.resolve_family_id(s) != resolved_source
+                        ]
+
+        if not source_family_ids:
+            return {"entities_updated": 0, "relations_updated": 0, "rejected": True}
 
         with self._write_lock:
             with self._session() as session:
                 entities_updated = 0
                 canonical_source_ids: List[str] = []
 
-                for source_id in source_entity_ids:
-                    source_id = self._resolve_entity_id_in_session(session, source_id)
-                    if not source_id or source_id == target_entity_id or source_id in canonical_source_ids:
+                for source_id in source_family_ids:
+                    source_id = self._resolve_family_id_in_session(session, source_id)
+                    if not source_id or source_id == target_family_id or source_id in canonical_source_ids:
                         continue
                     canonical_source_ids.append(source_id)
 
                     # 更新所有使用 source_id 的实体节点
                     result = session.run(
                         """
-                        MATCH (e:Entity {entity_id: $sid})
-                        SET e.entity_id = $tid
+                        MATCH (e:Entity {family_id: $sid})
+                        SET e.family_id = $tid
                         RETURN COUNT(e) AS cnt
                         """,
                         sid=source_id,
-                        tid=target_entity_id,
+                        tid=target_family_id,
                     )
                     record = result.single()
                     if record:
@@ -2739,18 +3073,18 @@ class Neo4jStorageManager:
                         SET red.target_id = $tid, red.updated_at = $now
                         """,
                         sid=source_id,
-                        tid=target_entity_id,
+                        tid=target_family_id,
                         now=now_iso,
                     )
 
                 return {
                     "entities_updated": entities_updated,
                     "relations_updated": 0,
-                    "target_entity_id": target_entity_id,
+                    "target_family_id": target_family_id,
                     "merged_source_ids": canonical_source_ids,
                 }
 
-    def find_shortest_paths(self, source_entity_id: str, target_entity_id: str,
+    def find_shortest_paths(self, source_family_id: str, target_family_id: str,
                              max_depth: int = 6, max_paths: int = 10) -> Dict[str, Any]:
         """使用 Neo4j Cypher 查找最短路径。"""
         result_empty = {
@@ -2761,15 +3095,15 @@ class Neo4jStorageManager:
             "paths": [],
         }
 
-        source_entity = self.get_entity_by_entity_id(source_entity_id)
-        target_entity = self.get_entity_by_entity_id(target_entity_id)
+        source_entity = self.get_entity_by_family_id(source_family_id)
+        target_entity = self.get_entity_by_family_id(target_family_id)
 
         if not source_entity or not target_entity:
             result_empty["source_entity"] = source_entity
             result_empty["target_entity"] = target_entity
             return result_empty
 
-        if source_entity_id == target_entity_id:
+        if source_family_id == target_family_id:
             return {
                 "source_entity": source_entity,
                 "target_entity": target_entity,
@@ -2786,8 +3120,8 @@ class Neo4jStorageManager:
         with self._session() as session:
             result = session.run(
                 """
-                MATCH (source:Entity {entity_id: $sid}),
-                      (target:Entity {entity_id: $tid})
+                MATCH (source:Entity {family_id: $sid}),
+                      (target:Entity {family_id: $tid})
                 MATCH path = allShortestPaths((source)-[:RELATES_TO*1..""" + str(max_depth) + """]-(target))
                 UNWIND [n IN nodes(path) | n.uuid] AS abs_ids
                 UNWIND [r IN relationships(path) | r.relation_uuid] AS rel_uuids
@@ -2795,8 +3129,8 @@ class Neo4jStorageManager:
                 RETURN abs_id_set, rel_id_set
                 LIMIT $max_paths
                 """,
-                sid=source_entity_id,
-                tid=target_entity_id,
+                sid=source_family_id,
+                tid=target_family_id,
                 max_paths=max_paths,
             )
 
@@ -2815,20 +3149,17 @@ class Neo4jStorageManager:
             abs_entity_map: Dict[str, Entity] = {}
             if needed_abs_ids:
                 res = session.run(
-                    """
+                    f"""
                     MATCH (e:Entity)
                     WHERE e.uuid IN $uuids
-                    RETURN e.uuid AS uuid, e.entity_id AS entity_id, e.name AS name,
-                           e.content AS content, e.event_time AS event_time,
-                           e.processed_time AS processed_time, e.memory_cache_id AS memory_cache_id,
-                           e.source_document AS source_document
+                    RETURN {_ENTITY_RETURN_FIELDS}
                     """,
                     uuids=list(needed_abs_ids),
                 )
                 for r in res:
                     entity = _neo4j_record_to_entity(r)
                     abs_entity_map[entity.absolute_id] = entity
-                    abs_to_eid[entity.absolute_id] = entity.entity_id
+                    abs_to_eid[entity.absolute_id] = entity.family_id
 
             rel_map: Dict[str, Relation] = {}
             if needed_rel_ids:
@@ -2836,11 +3167,11 @@ class Neo4jStorageManager:
                     """
                     MATCH (r:Relation)
                     WHERE r.uuid IN $uuids
-                    RETURN r.uuid AS uuid, r.relation_id AS relation_id,
+                    RETURN r.uuid AS uuid, r.family_id AS family_id,
                            r.entity1_absolute_id AS entity1_absolute_id,
                            r.entity2_absolute_id AS entity2_absolute_id,
                            r.content AS content, r.event_time AS event_time,
-                           r.processed_time AS processed_time, r.memory_cache_id AS memory_cache_id,
+                           r.processed_time AS processed_time, r.episode_id AS episode_id,
                            r.source_document AS source_document
                     """,
                     uuids=list(needed_rel_ids),
@@ -2852,18 +3183,18 @@ class Neo4jStorageManager:
             # 构建路径结果
             result2 = session.run(
                 """
-                MATCH (source:Entity {entity_id: $sid}),
-                      (target:Entity {entity_id: $tid})
+                MATCH (source:Entity {family_id: $sid}),
+                      (target:Entity {family_id: $tid})
                 MATCH path = allShortestPaths((source)-[:RELATES_TO*1..""" + str(max_depth) + """]-(target))
                 UNWIND nodes(path) AS n
                 UNWIND relationships(path) AS r
-                WITH path, COLLECT(DISTINCT {uuid: n.uuid, entity_id: n.entity_id}) AS nodes,
+                WITH path, COLLECT(DISTINCT {uuid: n.uuid, family_id: n.family_id}) AS nodes,
                      COLLECT(DISTINCT {uuid: r.relation_uuid}) AS rels
                 RETURN nodes, rels
                 LIMIT $max_paths
                 """,
-                sid=source_entity_id,
-                tid=target_entity_id,
+                sid=source_family_id,
+                tid=target_family_id,
                 max_paths=max_paths,
             )
 
@@ -2902,7 +3233,7 @@ class Neo4jStorageManager:
     # Neo4j 特有操作（新增能力）
     # ------------------------------------------------------------------
 
-    def find_shortest_path_cypher(self, source_entity_id: str, target_entity_id: str,
+    def find_shortest_path_cypher(self, source_family_id: str, target_family_id: str,
                                    max_depth: int = 6) -> List[List[str]]:
         """使用 Cypher shortestPath 查找单条最短路径（性能更优）。
 
@@ -2912,12 +3243,12 @@ class Neo4jStorageManager:
         with self._session() as session:
             result = session.run(
                 """
-                MATCH (a:Entity {entity_id: $sid}), (b:Entity {entity_id: $tid})
+                MATCH (a:Entity {family_id: $sid}), (b:Entity {family_id: $tid})
                 MATCH path = shortestPath((a)-[:RELATES_TO*1..""" + str(max_depth) + """]-(b))
                 RETURN [n IN nodes(path) | n.name] AS names
                 """,
-                sid=source_entity_id,
-                tid=target_entity_id,
+                sid=source_family_id,
+                tid=target_family_id,
             )
             records = list(result)
             if not records:
@@ -2929,14 +3260,14 @@ class Neo4jStorageManager:
         with self._session() as session:
             # 先获取中心节点
             center = session.run(
-                "MATCH (e:Entity {uuid: $uuid}) RETURN e.uuid AS uuid, e.name AS name, e.entity_id AS entity_id",
+                "MATCH (e:Entity {uuid: $uuid}) RETURN e.uuid AS uuid, e.name AS name, e.family_id AS family_id",
                 uuid=entity_uuid,
             )
             center_records = list(center)
             center_node = None
             if center_records:
                 r = center_records[0]
-                center_node = {"uuid": r["uuid"], "name": r["name"], "entity_id": r["entity_id"]}
+                center_node = {"uuid": r["uuid"], "name": r["name"], "family_id": r["family_id"]}
 
             # 获取所有邻居节点和边
             result = session.run(
@@ -2944,7 +3275,7 @@ class Neo4jStorageManager:
                 MATCH (e:Entity {{uuid: $uuid}})-[r:RELATES_TO*1..{depth}]-(neighbor:Entity)
                 UNWIND r AS rel
                 WITH DISTINCT neighbor, rel LIMIT 500
-                RETURN neighbor.uuid AS uuid, neighbor.name AS name, neighbor.entity_id AS entity_id,
+                RETURN neighbor.uuid AS uuid, neighbor.name AS name, neighbor.family_id AS family_id,
                        startNode(rel).uuid AS source_uuid, endNode(rel).uuid AS target_uuid,
                        rel.relation_uuid AS relation_uuid, rel.fact AS fact
                 """,
@@ -2963,7 +3294,7 @@ class Neo4jStorageManager:
                     neighbors["nodes"].append({
                         "uuid": uuid_val,
                         "name": record["name"],
-                        "entity_id": record["entity_id"],
+                        "family_id": record["family_id"],
                     })
                     seen.add(uuid_val)
                 edge_key = (record.get("source_uuid"), record.get("target_uuid"))
@@ -3001,7 +3332,7 @@ class Neo4jStorageManager:
             result = session.run(
                 "MATCH (ep:Episode) RETURN ep.uuid AS uuid, ep.content AS content, "
                 "ep.source_document AS source_document, ep.event_time AS event_time, "
-                "ep.memory_cache_id AS memory_cache_id, "
+                "ep.episode_id AS episode_id, "
                 "ep.created_at AS created_at "
                 "ORDER BY ep.created_at DESC SKIP $offset LIMIT $limit",
                 offset=offset, limit=limit,
@@ -3013,7 +3344,7 @@ class Neo4jStorageManager:
                     "content": r["content"] or "",
                     "source_document": r["source_document"] or "",
                     "event_time": _fmt_dt(r["event_time"]),
-                    "memory_cache_id": r["memory_cache_id"] or "",
+                    "episode_id": r["episode_id"] or "",
                     "created_at": _fmt_dt(r["created_at"]),
                 }
                 episodes.append(ep)
@@ -3042,7 +3373,7 @@ class Neo4jStorageManager:
             result = session.run(
                 "MATCH (ep:Episode {uuid: $uuid}) RETURN ep.uuid AS uuid, ep.content AS content, "
                 "ep.source_document AS source_document, ep.event_time AS event_time, "
-                "ep.memory_cache_id AS memory_cache_id, ep.created_at AS created_at",
+                "ep.episode_id AS episode_id, ep.created_at AS created_at",
                 uuid=uuid,
             )
             record = result.single()
@@ -3053,7 +3384,7 @@ class Neo4jStorageManager:
                 "content": record["content"] or "",
                 "source_document": record["source_document"] or "",
                 "event_time": _fmt_dt(record["event_time"]),
-                "memory_cache_id": record["memory_cache_id"] or "",
+                "episode_id": record["episode_id"] or "",
                 "created_at": _fmt_dt(record["created_at"]),
             }
 
@@ -3061,12 +3392,12 @@ class Neo4jStorageManager:
         """通过 content LIKE 搜索 Episode。"""
         with self._session() as session:
             result = session.run(
-                "MATCH (ep:Episode) WHERE ep.content CONTAINS $query "
+                "MATCH (ep:Episode) WHERE ep.content CONTAINS $search_query "
                 "RETURN ep.uuid AS uuid, ep.content AS content, "
                 "ep.source_document AS source_document, ep.event_time AS event_time, "
-                "ep.memory_cache_id AS memory_cache_id, ep.created_at AS created_at "
+                "ep.episode_id AS episode_id, ep.created_at AS created_at "
                 "ORDER BY ep.created_at DESC LIMIT $limit",
-                query=query, limit=limit,
+                search_query=query, limit=limit,
             )
             episodes = []
             for r in result:
@@ -3075,24 +3406,24 @@ class Neo4jStorageManager:
                     "content": r["content"] or "",
                     "source_document": r["source_document"] or "",
                     "event_time": _fmt_dt(r["event_time"]),
-                    "memory_cache_id": r["memory_cache_id"] or "",
+                    "episode_id": r["episode_id"] or "",
                     "created_at": _fmt_dt(r["created_at"]),
                 })
             return episodes
 
     def get_episode_entities(self, uuid: str) -> List[Dict]:
-        """通过 memory_cache_id 关联查出 Episode 下的实体。"""
+        """通过 episode_id 关联查出 Episode 下的实体。"""
         with self._session() as session:
             episode = session.run(
-                "MATCH (ep:Episode {uuid: $uuid}) RETURN ep.memory_cache_id AS mcid",
+                "MATCH (ep:Episode {uuid: $uuid}) RETURN ep.episode_id AS mcid",
                 uuid=uuid,
             ).single()
             if not episode or not episode["mcid"]:
                 return []
             mcid = episode["mcid"]
             result = session.run(
-                "MATCH (e:Entity {memory_cache_id: $mcid}) "
-                "RETURN e.uuid AS uuid, e.entity_id AS entity_id, e.name AS name, "
+                "MATCH (e:Entity {episode_id: $mcid}) "
+                "RETURN e.uuid AS uuid, e.family_id AS family_id, e.name AS name, "
                 "e.content AS content, e.event_time AS event_time "
                 "ORDER BY e.processed_time DESC LIMIT 200",
                 mcid=mcid,
@@ -3101,22 +3432,12 @@ class Neo4jStorageManager:
             for r in result:
                 entities.append({
                     "uuid": r["uuid"],
-                    "entity_id": r["entity_id"],
+                    "family_id": r["family_id"],
                     "name": r["name"],
                     "content": r["content"] or "",
                     "event_time": r["event_time"].isoformat() if r["event_time"] else None,
                 })
             return entities
-
-    def delete_episode(self, uuid: str) -> bool:
-        """删除 Episode 节点。"""
-        with self._session() as session:
-            result = session.run(
-                "MATCH (ep:Episode {uuid: $uuid}) DELETE ep RETURN COUNT(ep) AS deleted",
-                uuid=uuid,
-            )
-            record = result.single()
-            return record["deleted"] > 0 if record else False
 
     # ------------------------------------------------------------------
     # 社区检测
@@ -3133,11 +3454,11 @@ class Neo4jStorageManager:
         # 加载所有 Entity + RELATES_TO 边
         with self._session() as session:
             result = session.run(
-                "MATCH (e:Entity) RETURN e.uuid AS uuid, e.entity_id AS eid, e.name AS name"
+                "MATCH (e:Entity) RETURN e.uuid AS uuid, e.family_id AS fid, e.name AS name"
             )
-            entity_map = {}  # uuid -> eid
+            entity_map = {}  # uuid -> fid
             for r in result:
-                entity_map[r["uuid"]] = r["eid"]
+                entity_map[r["uuid"]] = r["fid"]
 
             result = session.run(
                 "MATCH (a:Entity)-[r:RELATES_TO]->(b:Entity) "
@@ -3199,7 +3520,7 @@ class Neo4jStorageManager:
                 "WITH e.community_id AS cid, collect(e) AS members "
                 "WHERE size(members) >= $min_size "
                 "RETURN cid, size(members) AS size, "
-                "[m IN members | {uuid: m.uuid, entity_id: m.entity_id, name: m.name}] AS members "
+                "[m IN members | {uuid: m.uuid, family_id: m.family_id, name: m.name}] AS members "
                 "ORDER BY size DESC SKIP $offset LIMIT $limit",
                 min_size=min_size, offset=offset, limit=limit,
             )
@@ -3239,7 +3560,7 @@ class Neo4jStorageManager:
                 "WHERE other.community_id = $cid "
                 "WITH e, collect(DISTINCT {uuid: other.uuid, name: other.name, fact: r.fact, "
                 "ruuid: r.relation_uuid}) AS rels "
-                "RETURN e.uuid AS uuid, e.entity_id AS entity_id, e.name AS name, "
+                "RETURN e.uuid AS uuid, e.family_id AS family_id, e.name AS name, "
                 "e.content AS content, rels "
                 "ORDER BY size(rels) DESC LIMIT 500",
                 cid=cid,
@@ -3250,7 +3571,7 @@ class Neo4jStorageManager:
             for r in result:
                 members.append({
                     "uuid": r["uuid"],
-                    "entity_id": r["entity_id"],
+                    "family_id": r["family_id"],
                     "name": r["name"],
                     "content": r["content"] or "",
                 })
@@ -3294,7 +3615,7 @@ class Neo4jStorageManager:
                 "OPTIONAL MATCH (a:Entity)-[r:RELATES_TO]->(b:Entity) "
                 "WHERE (a.uuid = e.uuid OR b.uuid = e.uuid) "
                 "WITH e, collect(DISTINCT {src: a.uuid, tgt: b.uuid, fact: r.fact}) AS rels "
-                "RETURN e.uuid AS uuid, e.entity_id AS entity_id, e.name AS name, rels",
+                "RETURN e.uuid AS uuid, e.family_id AS family_id, e.name AS name, rels",
                 cid=cid,
             )
             nodes = []
@@ -3303,7 +3624,7 @@ class Neo4jStorageManager:
             for r in result:
                 nodes.append({
                     "uuid": r["uuid"],
-                    "entity_id": r["entity_id"],
+                    "family_id": r["family_id"],
                     "name": r["name"],
                 })
                 for rel in (r["rels"] or []):
@@ -3340,14 +3661,11 @@ class Neo4jStorageManager:
     def get_snapshot(self, time_point: datetime, limit: Optional[int] = None) -> Dict[str, Any]:
         """获取指定时间点的实体/关系快照"""
         with self._session() as session:
-            result = session.run("""
+            result = session.run(f"""
                 MATCH (e:Entity)
                 WHERE (e.valid_at IS NULL OR e.valid_at <= $time)
                   AND (e.invalid_at IS NULL OR e.invalid_at > $time)
-                RETURN e.uuid AS id, e.entity_id AS entity_id, e.name AS name,
-                       e.content AS content, e.event_time AS event_time,
-                       e.processed_time AS processed_time, e.memory_cache_id AS memory_cache_id,
-                       e.source_document AS source_document
+                RETURN {_ENTITY_RETURN_FIELDS}
                 ORDER BY e.event_time DESC
                 LIMIT $limit
             """, time=time_point.isoformat(), limit=limit or 10000)
@@ -3357,11 +3675,11 @@ class Neo4jStorageManager:
                 MATCH (r:Relation)
                 WHERE (r.valid_at IS NULL OR r.valid_at <= $time)
                   AND (r.invalid_at IS NULL OR r.invalid_at > $time)
-                RETURN r.uuid AS id, r.relation_id AS relation_id,
+                RETURN r.uuid AS uuid, r.family_id AS family_id,
                        r.entity1_absolute_id AS entity1_absolute_id,
                        r.entity2_absolute_id AS entity2_absolute_id,
                        r.content AS content, r.event_time AS event_time,
-                       r.processed_time AS processed_time, r.memory_cache_id AS memory_cache_id,
+                       r.processed_time AS processed_time, r.episode_id AS episode_id,
                        r.source_document AS source_document, r.valid_at AS valid_at,
                        r.invalid_at AS invalid_at
                 ORDER BY r.event_time DESC
@@ -3376,13 +3694,10 @@ class Neo4jStorageManager:
         if until is None:
             until = datetime.now(timezone.utc)
         with self._session() as session:
-            result = session.run("""
+            result = session.run(f"""
                 MATCH (e:Entity)
                 WHERE e.event_time >= $since AND e.event_time <= $until
-                RETURN e.uuid AS id, e.entity_id AS entity_id, e.name AS name,
-                       e.content AS content, e.event_time AS event_time,
-                       e.processed_time AS processed_time, e.memory_cache_id AS memory_cache_id,
-                       e.source_document AS source_document
+                RETURN {_ENTITY_RETURN_FIELDS}
                 ORDER BY e.event_time DESC
             """, since=since.isoformat(), until=until.isoformat())
             entities = [_neo4j_record_to_entity(r) for r in result]
@@ -3390,11 +3705,11 @@ class Neo4jStorageManager:
             result = session.run("""
                 MATCH (r:Relation)
                 WHERE r.event_time >= $since AND r.event_time <= $until
-                RETURN r.uuid AS id, r.relation_id AS relation_id,
+                RETURN r.uuid AS uuid, r.family_id AS family_id,
                        r.entity1_absolute_id AS entity1_absolute_id,
                        r.entity2_absolute_id AS entity2_absolute_id,
                        r.content AS content, r.event_time AS event_time,
-                       r.processed_time AS processed_time, r.memory_cache_id AS memory_cache_id,
+                       r.processed_time AS processed_time, r.episode_id AS episode_id,
                        r.source_document AS source_document, r.valid_at AS valid_at,
                        r.invalid_at AS invalid_at
                 ORDER BY r.event_time DESC
@@ -3403,16 +3718,16 @@ class Neo4jStorageManager:
 
         return {"entities": entities, "relations": relations}
 
-    def invalidate_relation(self, relation_id: str, reason: str = "") -> int:
+    def invalidate_relation(self, family_id: str, reason: str = "") -> int:
         """标记关系为失效"""
         now = datetime.now(timezone.utc).isoformat()
         with self._session() as session:
             result = session.run("""
-                MATCH (r:Relation {relation_id: $relation_id})
+                MATCH (r:Relation {family_id: $family_id})
                 WHERE r.invalid_at IS NULL
                 SET r.invalid_at = $now
                 RETURN count(r) AS cnt
-            """, relation_id=relation_id, now=now)
+            """, family_id=family_id, now=now)
             record = result.single()
             return record["cnt"] if record else 0
 
@@ -3422,11 +3737,11 @@ class Neo4jStorageManager:
             result = session.run("""
                 MATCH (r:Relation)
                 WHERE r.invalid_at IS NOT NULL
-                RETURN r.uuid AS id, r.relation_id AS relation_id,
+                RETURN r.uuid AS uuid, r.family_id AS family_id,
                        r.entity1_absolute_id AS entity1_absolute_id,
                        r.entity2_absolute_id AS entity2_absolute_id,
                        r.content AS content, r.event_time AS event_time,
-                       r.processed_time AS processed_time, r.memory_cache_id AS memory_cache_id,
+                       r.processed_time AS processed_time, r.episode_id AS episode_id,
                        r.source_document AS source_document, r.valid_at AS valid_at,
                        r.invalid_at AS invalid_at
                 ORDER BY r.invalid_at DESC
@@ -3438,51 +3753,51 @@ class Neo4jStorageManager:
     # Phase A/C/D/E: 新增方法
     # ------------------------------------------------------------------
 
-    def update_entity_summary(self, entity_id: str, summary: str):
+    def update_entity_summary(self, family_id: str, summary: str):
         """更新实体摘要。"""
-        resolved = self.resolve_entity_id(entity_id)
+        resolved = self.resolve_family_id(family_id)
         if not resolved:
             return
         with self._session() as session:
             session.run("""
-                MATCH (e:Entity {entity_id: $eid})
+                MATCH (e:Entity {family_id: $fid})
                 WHERE e.invalid_at IS NULL
                 SET e.summary = $summary
-            """, eid=resolved, summary=summary)
+            """, fid=resolved, summary=summary)
         self._cache.invalidate("entity:")
 
-    def update_entity_attributes(self, entity_id: str, attributes: str):
+    def update_entity_attributes(self, family_id: str, attributes: str):
         """更新实体结构化属性。"""
-        resolved = self.resolve_entity_id(entity_id)
+        resolved = self.resolve_family_id(family_id)
         if not resolved:
             return
         with self._session() as session:
             session.run("""
-                MATCH (e:Entity {entity_id: $eid})
+                MATCH (e:Entity {family_id: $fid})
                 WHERE e.invalid_at IS NULL
                 SET e.attributes = $attributes
-            """, eid=resolved, attributes=attributes)
+            """, fid=resolved, attributes=attributes)
         self._cache.invalidate("entity:")
 
-    def update_entity_confidence(self, entity_id: str, confidence: float):
+    def update_entity_confidence(self, family_id: str, confidence: float):
         """更新实体置信度。"""
-        resolved = self.resolve_entity_id(entity_id)
+        resolved = self.resolve_family_id(family_id)
         if not resolved:
             return
         with self._session() as session:
             session.run("""
-                MATCH (e:Entity {entity_id: $eid})
+                MATCH (e:Entity {family_id: $fid})
                 WHERE e.invalid_at IS NULL
                 SET e.confidence = $confidence
-            """, eid=resolved, confidence=confidence)
+            """, fid=resolved, confidence=confidence)
         self._cache.invalidate("entity:")
 
-    def compute_entity_confidence(self, entity_id: str) -> float:
+    def compute_entity_confidence(self, family_id: str) -> float:
         """计算实体置信度（基于被提及次数和更新新鲜度）。"""
         try:
-            provenance = self.get_entity_provenance(entity_id)
+            provenance = self.get_entity_provenance(family_id)
             mention_count = len(provenance)
-            entity = self.get_entity_by_entity_id(entity_id)
+            entity = self.get_entity_by_family_id(family_id)
             if not entity:
                 return 0.0
             base = 0.3
@@ -3496,16 +3811,16 @@ class Neo4jStorageManager:
         except Exception:
             return 0.5
 
-    def get_relations_by_entity_ids(self, entity_ids: List[str], limit: int = 100) -> List[Relation]:
+    def get_relations_by_family_ids(self, family_ids: List[str], limit: int = 100) -> List[Relation]:
         """获取指定实体 ID 列表相关的所有关系。"""
-        if not entity_ids:
+        if not family_ids:
             return []
         with self._session() as session:
             abs_ids = []
-            for eid in entity_ids:
-                resolved = self.resolve_entity_id(eid)
+            for fid in family_ids:
+                resolved = self.resolve_family_id(fid)
                 if resolved:
-                    entity = self.get_entity_by_entity_id(resolved)
+                    entity = self.get_entity_by_family_id(resolved)
                     if entity:
                         abs_ids.append(entity.absolute_id)
             if not abs_ids:
@@ -3514,11 +3829,11 @@ class Neo4jStorageManager:
                 MATCH (r:Relation)
                 WHERE (r.entity1_absolute_id IN $abs_ids OR r.entity2_absolute_id IN $abs_ids)
                   AND r.invalid_at IS NULL
-                RETURN r.uuid AS id, r.relation_id AS relation_id,
+                RETURN r.uuid AS uuid, r.family_id AS family_id,
                        r.entity1_absolute_id AS entity1_absolute_id,
                        r.entity2_absolute_id AS entity2_absolute_id,
                        r.content AS content, r.event_time AS event_time,
-                       r.processed_time AS processed_time, r.memory_cache_id AS memory_cache_id,
+                       r.processed_time AS processed_time, r.episode_id AS episode_id,
                        r.source_document AS source_document, r.valid_at AS valid_at,
                        r.invalid_at AS invalid_at, r.summary AS summary,
                        r.attributes AS attributes, r.confidence AS confidence,
@@ -3527,9 +3842,9 @@ class Neo4jStorageManager:
             """, abs_ids=abs_ids, limit=limit)
             return [_neo4j_record_to_relation(r) for r in result]
 
-    def get_entity_degree(self, entity_id: str) -> int:
+    def get_entity_degree(self, family_id: str) -> int:
         """获取实体的度（连接数）。"""
-        return len(self.get_relations_by_entity_ids([entity_id]))
+        return len(self.get_relations_by_family_ids([family_id]))
 
     def save_episode_mentions(self, episode_id: str, entity_absolute_ids: List[str], context: str = ""):
         """记录 Episode 提及的实体。"""
@@ -3545,9 +3860,9 @@ class Neo4jStorageManager:
                         MERGE (ep)-[m:MENTIONS {context: $ctx}]->(e)
                     """, ep_id=episode_id, e_abs=abs_id, ctx=context)
 
-    def get_entity_provenance(self, entity_id: str) -> List[dict]:
+    def get_entity_provenance(self, family_id: str) -> List[dict]:
         """获取提及该实体的所有 Episode。"""
-        entity = self.get_entity_by_entity_id(entity_id)
+        entity = self.get_entity_by_family_id(family_id)
         if not entity:
             return []
         with self._session() as session:
@@ -3562,13 +3877,13 @@ class Neo4jStorageManager:
         with self._session() as session:
             result = session.run("""
                 MATCH (ep:Episode {uuid: $ep_id})-[m:MENTIONS]->(e:Entity)
-                RETURN e.uuid AS entity_absolute_id, e.entity_id AS entity_id,
+                RETURN e.uuid AS entity_absolute_id, e.family_id AS family_id,
                        e.name AS name, m.context AS context
             """, ep_id=episode_id)
             return [
                 {
                     "entity_absolute_id": r["entity_absolute_id"],
-                    "entity_id": r.get("entity_id", ""),
+                    "family_id": r.get("family_id", ""),
                     "name": r.get("name", ""),
                     "context": r.get("context", ""),
                 }
@@ -3583,14 +3898,14 @@ class Neo4jStorageManager:
                 DELETE m
             """, ep_id=episode_id)
 
-    def update_relation_provenance(self, relation_id: str, provenance: str):
+    def update_relation_provenance(self, family_id: str, provenance: str):
         """更新关系的事实溯源信息。"""
         with self._session() as session:
             session.run("""
-                MATCH (r:Relation {relation_id: $rid})
+                MATCH (r:Relation {family_id: $fid})
                 WHERE r.invalid_at IS NULL
                 SET r.provenance = $provenance
-            """, rid=relation_id, provenance=provenance)
+            """, fid=family_id, provenance=provenance)
         self._cache.invalidate("relation:")
 
     def save_dream_log(self, report):
@@ -3714,9 +4029,9 @@ class Neo4jStorageManager:
         exclude_uuids = set()
         if exclude_ids:
             for eid in exclude_ids:
-                resolved = self.resolve_entity_id(eid)
+                resolved = self.resolve_family_id(eid)
                 if resolved:
-                    entity = self.get_entity_by_entity_id(resolved)
+                    entity = self.get_entity_by_family_id(resolved)
                     if entity:
                         exclude_uuids.add(entity.absolute_id)
 
@@ -3756,7 +4071,7 @@ class Neo4jStorageManager:
                 WHERE NOT e.uuid IN $exclude_uuids
                   AND ($cid IS NULL OR e.community_id = $cid)
                 WITH e ORDER BY rand() LIMIT $count
-                RETURN e.uuid AS uuid, e.entity_id AS entity_id,
+                RETURN e.uuid AS uuid, e.family_id AS family_id,
                        e.name AS name, e.content AS content,
                        e.confidence AS confidence, e.event_time AS event_time,
                        e.community_id AS community_id,
@@ -3770,7 +4085,7 @@ class Neo4jStorageManager:
                 MATCH (e:Entity) WHERE NOT (e)--()
                   AND NOT e.uuid IN $exclude_uuids
                   AND ($cid IS NULL OR e.community_id = $cid)
-                RETURN e.uuid AS uuid, e.entity_id AS entity_id,
+                RETURN e.uuid AS uuid, e.family_id AS family_id,
                        e.name AS name, e.content AS content,
                        e.confidence AS confidence, e.event_time AS event_time,
                        e.community_id AS community_id, 0 AS degree
@@ -3786,7 +4101,7 @@ class Neo4jStorageManager:
                 WHERE NOT e.uuid IN $exclude_uuids
                   AND ($cid IS NULL OR e.community_id = $cid)
                 ORDER BY degree DESC LIMIT $count
-                RETURN e.uuid AS uuid, e.entity_id AS entity_id,
+                RETURN e.uuid AS uuid, e.family_id AS family_id,
                        e.name AS name, e.content AS content,
                        e.confidence AS confidence, e.event_time AS event_time,
                        e.community_id AS community_id, degree
@@ -3802,7 +4117,7 @@ class Neo4jStorageManager:
                   AND duration.between(e.processed_time, datetime()).days > 30
                   AND ($cid IS NULL OR e.community_id = $cid)
                 ORDER BY e.processed_time ASC LIMIT $count
-                RETURN e.uuid AS uuid, e.entity_id AS entity_id,
+                RETURN e.uuid AS uuid, e.family_id AS family_id,
                        e.name AS name, e.content AS content,
                        e.confidence AS confidence, e.event_time AS event_time,
                        e.community_id AS community_id,
@@ -3818,7 +4133,7 @@ class Neo4jStorageManager:
                   AND NOT e.uuid IN $exclude_uuids
                   AND ($cid IS NULL OR e.community_id = $cid)
                 ORDER BY e.confidence ASC LIMIT $count
-                RETURN e.uuid AS uuid, e.entity_id AS entity_id,
+                RETURN e.uuid AS uuid, e.family_id AS family_id,
                        e.name AS name, e.content AS content,
                        e.confidence AS confidence, e.event_time AS event_time,
                        e.community_id AS community_id,
@@ -3827,7 +4142,10 @@ class Neo4jStorageManager:
             return [dict(r) for r in result]
 
     def _dream_seeds_cross_community(self, count, exclude_uuids, community_id):
-        """从不同社区各取 1 个随机实体，组合返回跨社区实体对。"""
+        """从不同社区各取 1 个随机实体，组合返回跨社区实体对。
+
+        注意：cross_community 策略忽略 community_id 参数，因为它需要跨社区采样。
+        """
         communities, _ = self.get_communities(limit=10, min_size=2)
         if len(communities) < 2:
             return self._dream_seeds_random(count, exclude_uuids, community_id)
@@ -3855,37 +4173,78 @@ class Neo4jStorageManager:
     def save_dream_relation(self, entity1_id: str, entity2_id: str,
                             content: str, confidence: float, reasoning: str,
                             dream_cycle_id: Optional[str] = None,
-                            memory_cache_id: Optional[str] = None) -> Dict[str, Any]:
-        """创建梦境发现的关系。
+                            episode_id: Optional[str] = None) -> Dict[str, Any]:
+        """创建或合并梦境发现的关系。
 
-        Returns: {"relation_id": "...", "entity1_id": "...", "entity2_id": "..."}
-        Raises: ValueError 如果关系已存在或实体不存在
+        Returns: {"family_id": "...", "entity1_family_id": "...", "entity2_family_id": "...", "action": "created"|"merged"}
+        Raises: ValueError 如果实体不存在
         """
         import uuid as _uuid
+        import json as _json
         from processor.models import Relation
 
         # 解析实体
-        resolved1 = self.resolve_entity_id(entity1_id)
-        resolved2 = self.resolve_entity_id(entity2_id)
+        resolved1 = self.resolve_family_id(entity1_id)
+        resolved2 = self.resolve_family_id(entity2_id)
         if not resolved1:
             raise ValueError(f"实体不存在: {entity1_id}")
         if not resolved2:
             raise ValueError(f"实体不存在: {entity2_id}")
 
-        entity1 = self.get_entity_by_entity_id(resolved1)
-        entity2 = self.get_entity_by_entity_id(resolved2)
+        entity1 = self.get_entity_by_family_id(resolved1)
+        entity2 = self.get_entity_by_family_id(resolved2)
         if not entity1:
             raise ValueError(f"实体不存在: {entity1_id}")
         if not entity2:
             raise ValueError(f"实体不存在: {entity2_id}")
 
-        # 检查是否已存在关系
+        # 检查是否已存在关系 — 合并而非报错
         existing = self.get_relations_by_entities(resolved1, resolved2)
         if existing:
-            raise ValueError(
-                f"关系已存在: {entity1.name} ↔ {entity2.name} "
-                f"(relation_id: {existing[0].relation_id})"
+            latest = existing[0]
+            # 合并：取较高 confidence，追加 reasoning
+            new_confidence = max(latest.confidence or 0, confidence)
+            # 构建新的 provenance entry
+            new_prov_entry = {
+                "source": "dream",
+                "dream_cycle_id": dream_cycle_id,
+                "confidence": confidence,
+                "reasoning": reasoning,
+            }
+            try:
+                old_prov = _json.loads(latest.provenance) if latest.provenance else []
+            except Exception:
+                old_prov = []
+            old_prov.append(new_prov_entry)
+
+            # 创建新版本（保留同一 family_id）
+            now = datetime.now()
+            record_id = f"relation_{now.strftime('%Y%m%d_%H%M%S')}_{_uuid.uuid4().hex[:8]}"
+            source_doc = f"dream:{dream_cycle_id}" if dream_cycle_id else "dream"
+            merged_content = f"{latest.content}\n[Dream update] {content}" if content != latest.content else latest.content
+
+            relation = Relation(
+                absolute_id=record_id,
+                family_id=latest.family_id,
+                entity1_absolute_id=latest.entity1_absolute_id,
+                entity2_absolute_id=latest.entity2_absolute_id,
+                content=merged_content,
+                event_time=now,
+                processed_time=now,
+                episode_id=episode_id or latest.episode_id or "",
+                source_document=source_doc,
+                confidence=new_confidence,
+                provenance=_json.dumps(old_prov, ensure_ascii=False),
             )
+            self.save_relation(relation)
+            return {
+                "family_id": latest.family_id,
+                "entity1_family_id": resolved1,
+                "entity2_family_id": resolved2,
+                "entity1_name": entity1.name,
+                "entity2_name": entity2.name,
+                "action": "merged",
+            }
 
         # 排序确保 (A,B) 和 (B,A) 视为同一关系
         if entity1.name <= entity2.name:
@@ -3894,7 +4253,7 @@ class Neo4jStorageManager:
             e1_abs, e2_abs = entity2.absolute_id, entity1.absolute_id
 
         now = datetime.now()
-        relation_id = f"rel_{_uuid.uuid4().hex[:12]}"
+        family_id = f"rel_{_uuid.uuid4().hex[:12]}"
         record_id = f"relation_{now.strftime('%Y%m%d_%H%M%S')}_{_uuid.uuid4().hex[:8]}"
 
         source_doc = f"dream:{dream_cycle_id}" if dream_cycle_id else "dream"
@@ -3907,13 +4266,13 @@ class Neo4jStorageManager:
 
         relation = Relation(
             absolute_id=record_id,
-            relation_id=relation_id,
+            family_id=family_id,
             entity1_absolute_id=e1_abs,
             entity2_absolute_id=e2_abs,
             content=content,
             event_time=now,
             processed_time=now,
-            memory_cache_id=memory_cache_id or "",
+            episode_id=episode_id or "",
             source_document=source_doc,
             confidence=confidence,
             provenance=_json.dumps([provenance_data], ensure_ascii=False),
@@ -3922,64 +4281,275 @@ class Neo4jStorageManager:
         self.save_relation(relation)
 
         return {
-            "relation_id": relation_id,
-            "entity1_id": resolved1,
-            "entity2_id": resolved2,
+            "family_id": family_id,
+            "entity1_family_id": resolved1,
+            "entity2_family_id": resolved2,
             "entity1_name": entity1.name,
             "entity2_name": entity2.name,
+            "action": "created",
         }
 
     def save_dream_episode(self, content: str,
                            entities_examined: Optional[List[str]] = None,
                            relations_created: Optional[List[Dict]] = None,
                            strategy_used: str = "",
-                           dream_cycle_id: Optional[str] = None) -> Dict[str, Any]:
-        """保存梦境 episode。
+                           dream_cycle_id: Optional[str] = None,
+                           **kwargs) -> Dict[str, Any]:
+        """保存梦境 episode，同时创建 DreamLog 节点以便 dream_status/dream_logs 查询。
 
-        Returns: {"episode_id": "...", "episode_type": "dream"}
+        Returns: {"episode_id": "...", "episode_type": "dream", "cycle_id": "..."}
         """
         import uuid as _uuid
-        from processor.models import MemoryCache
+        import json as _json
+        from types import SimpleNamespace
+        from processor.models import Episode
 
-        episode_id = f"episode_dream_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{_uuid.uuid4().hex[:8]}"
+        now = datetime.now()
+        episode_id = f"episode_dream_{now.strftime('%Y%m%d_%H%M%S')}_{_uuid.uuid4().hex[:8]}"
+
+        # 自动生成 cycle_id（如果未提供）
+        if not dream_cycle_id:
+            dream_cycle_id = f"dream_{now.strftime('%Y%m%d_%H%M%S')}_{_uuid.uuid4().hex[:6]}"
 
         # 构建结构化内容
+        _explicit_rel_count = kwargs.get("relations_created_count")
+        _explicit_ent_count = kwargs.get("entities_examined_count")
+        ent_count = _explicit_ent_count if _explicit_ent_count is not None else (len(entities_examined) if entities_examined else 0)
+        rel_count = _explicit_rel_count if _explicit_rel_count is not None else (len(relations_created) if relations_created else 0)
         structured = {
             "narrative": content,
             "strategy": strategy_used,
-            "entities_examined_count": len(entities_examined) if entities_examined else 0,
-            "relations_created_count": len(relations_created) if relations_created else 0,
+            "entities_examined_count": ent_count,
+            "relations_created_count": rel_count,
         }
         if relations_created:
             structured["relations_created"] = relations_created
 
         full_content = content
-        if structured["relations_created_count"] > 0 or structured["entities_examined_count"] > 0:
+        if rel_count > 0 or ent_count > 0:
             full_content += "\n\n---\n" + _json.dumps(structured, ensure_ascii=False, indent=2)
 
-        cache = MemoryCache(
+        cache = Episode(
             absolute_id=episode_id,
             content=full_content,
-            event_time=datetime.now(),
+            event_time=now,
             source_document=f"dream:{dream_cycle_id}" if dream_cycle_id else "dream",
             episode_type="dream",
         )
 
-        self.save_memory_cache(cache)
+        self.save_episode(cache)
 
         # 记录提及的实体
         if entities_examined:
             abs_ids = []
             for eid in entities_examined:
-                resolved = self.resolve_entity_id(eid)
+                resolved = self.resolve_family_id(eid)
                 if resolved:
-                    entity = self.get_entity_by_entity_id(resolved)
+                    entity = self.get_entity_by_family_id(resolved)
                     if entity:
                         abs_ids.append(entity.absolute_id)
             if abs_ids:
                 self.save_episode_mentions(episode_id, abs_ids, context=f"dream:{strategy_used}")
 
+        # 同时创建 DreamLog 节点，以便 dream_status/dream_logs 可以查询
+        report = SimpleNamespace(
+            cycle_id=dream_cycle_id,
+            graph_id=self._graph_id,
+            start_time=now,
+            end_time=now,
+            status="completed",
+            narrative=content[:2000],
+            insights=[],
+            new_connections=relations_created or [],
+            consolidations=[],
+            strategy=strategy_used,
+            entities_examined=ent_count,
+            relations_created=rel_count,
+            episode_ids=[episode_id],
+        )
+        self.save_dream_log(report)
+
         return {
             "episode_id": episode_id,
             "episode_type": "dream",
+            "cycle_id": dream_cycle_id,
         }
+
+    # ========== Version-Level CRUD (Phase 2) ==========
+
+    def update_entity_by_absolute_id(self, absolute_id: str, **fields) -> Optional[Entity]:
+        """根据 absolute_id 更新指定字段，返回更新后的 Entity 或 None。"""
+        valid_keys = {"name", "content", "summary", "attributes", "confidence"}
+        filtered = {k: v for k, v in fields.items() if k in valid_keys and v is not None}
+        if not filtered:
+            return self.get_entity_by_absolute_id(absolute_id)
+
+        with self._write_lock:
+            with self._session() as session:
+                set_clauses = ", ".join(f"e.{k} = ${k}" for k in filtered)
+                params = dict(filtered, aid=absolute_id)
+                cypher = (
+                    f"MATCH (e:Entity {{uuid: $aid}}) "
+                    f"SET {set_clauses} "
+                    f"RETURN {_ENTITY_RETURN_FIELDS}"
+                )
+                result = session.run(cypher, **params)
+                record = result.single()
+                if not record:
+                    return None
+                entity = _neo4j_record_to_entity(record)
+            self._cache.invalidate("entity:")
+            return entity
+
+    def delete_entity_by_absolute_id(self, absolute_id: str) -> bool:
+        """根据 absolute_id 删除实体及其所有关系，返回是否成功删除。"""
+        with self._write_lock:
+            with self._session() as session:
+                result = session.run(
+                    "MATCH (e:Entity {uuid: $aid}) DETACH DELETE e RETURN count(e) AS cnt",
+                    aid=absolute_id,
+                )
+                record = result.single()
+                deleted = record is not None and record["cnt"] > 0
+            if deleted:
+                self._vector_store.delete_batch("entity_vectors", [absolute_id])
+            self._cache.invalidate("entity:")
+            self._cache.invalidate("resolve:")
+            self._cache.invalidate("sim_search:")
+            self._cache.invalidate("graph_stats")
+            return deleted
+
+    def update_relation_by_absolute_id(self, absolute_id: str, **fields) -> Optional[Relation]:
+        """根据 absolute_id 更新指定字段，返回更新后的 Relation 或 None。"""
+        valid_keys = {"content", "summary", "attributes", "confidence"}
+        filtered = {k: v for k, v in fields.items() if k in valid_keys and v is not None}
+        if not filtered:
+            return None
+
+        with self._relation_write_lock:
+            with self._session() as session:
+                set_clauses = ", ".join(f"r.{k} = ${k}" for k in filtered)
+                params = dict(filtered, aid=absolute_id)
+                cypher = (
+                    f"MATCH (r:Relation {{uuid: $aid}}) "
+                    f"SET {set_clauses} "
+                    f"RETURN r.uuid AS uuid, r.family_id AS family_id, "
+                    f"r.entity1_absolute_id AS entity1_absolute_id, "
+                    f"r.entity2_absolute_id AS entity2_absolute_id, "
+                    f"r.content AS content, r.event_time AS event_time, "
+                    f"r.processed_time AS processed_time, r.episode_id AS episode_id, "
+                    f"r.source_document AS source_document"
+                )
+                result = session.run(cypher, **params)
+                record = result.single()
+                if not record:
+                    return None
+                relation = _neo4j_record_to_relation(record)
+            self._cache.invalidate("relation:")
+            return relation
+
+    def delete_relation_by_absolute_id(self, absolute_id: str) -> bool:
+        """根据 absolute_id 删除关系，返回是否成功删除。"""
+        with self._relation_write_lock:
+            with self._session() as session:
+                result = session.run(
+                    "MATCH (r:Relation {uuid: $aid}) DETACH DELETE r RETURN count(r) AS cnt",
+                    aid=absolute_id,
+                )
+                record = result.single()
+                deleted = record is not None and record["cnt"] > 0
+            if deleted:
+                self._vector_store.delete_batch("relation_vectors", [absolute_id])
+            self._cache.invalidate("relation:")
+            self._cache.invalidate("graph_stats")
+            return deleted
+
+    def get_relations_referencing_absolute_id(self, absolute_id: str) -> List[Relation]:
+        """获取所有引用了指定 absolute_id 的关系。"""
+        with self._session() as session:
+            result = session.run(
+                """
+                MATCH (r:Relation)
+                WHERE r.entity1_absolute_id = $aid OR r.entity2_absolute_id = $aid
+                RETURN r.uuid AS uuid, r.family_id AS family_id,
+                       r.entity1_absolute_id AS entity1_absolute_id,
+                       r.entity2_absolute_id AS entity2_absolute_id,
+                       r.content AS content, r.event_time AS event_time,
+                       r.processed_time AS processed_time,
+                       r.episode_id AS episode_id,
+                       r.source_document AS source_document
+                """,
+                aid=absolute_id,
+            )
+            return [_neo4j_record_to_relation(r) for r in result]
+
+    def split_entity_version(self, absolute_id: str, new_family_id: str = "") -> Optional[Entity]:
+        """将实体拆分到新的 family_id，返回更新后的 Entity。"""
+        import uuid as _uuid
+
+        if not new_family_id:
+            new_family_id = f"ent_{_uuid.uuid4().hex[:12]}"
+
+        with self._write_lock:
+            with self._session() as session:
+                result = session.run(
+                    f"""
+                    MATCH (e:Entity {{uuid: $aid}})
+                    SET e.family_id = $new_fid
+                    RETURN {_ENTITY_RETURN_FIELDS}
+                    """,
+                    aid=absolute_id,
+                    new_fid=new_family_id,
+                )
+                record = result.single()
+                if not record:
+                    return None
+                entity = _neo4j_record_to_entity(record)
+            self._cache.invalidate("entity:")
+            self._cache.invalidate("resolve:")
+            return entity
+
+    def redirect_relation(self, family_id: str, side: str, new_family_id: str) -> int:
+        """将指定 family_id 的所有关系在 side 侧重定向到 new_family_id。
+
+        Args:
+            family_id: 要重定向的关系的 family_id。
+            side: "entity1" 或 "entity2"。
+            new_family_id: 新目标实体的 family_id。
+
+        Returns:
+            更新的关系数量。
+        """
+        if side not in ("entity1", "entity2"):
+            raise ValueError(f"side must be 'entity1' or 'entity2', got '{side}'")
+
+        side_field = f"{side}_absolute_id"
+
+        with self._relation_write_lock:
+            with self._session() as session:
+                # 1. 获取 new_family_id 对应的最新实体 absolute_id
+                target_result = session.run(
+                    """
+                    MATCH (e:Entity {family_id: $fid})
+                    RETURN e.uuid AS uuid
+                    ORDER BY e.processed_time DESC LIMIT 1
+                    """,
+                    fid=new_family_id,
+                )
+                target_record = target_result.single()
+                if not target_record:
+                    return 0
+                new_abs_id = target_record["uuid"]
+
+                # 2. 更新所有匹配的关系
+                update_result = session.run(
+                    f"MATCH (r:Relation {{family_id: $fid}}) "
+                    f"SET r.{side_field} = $new_abs_id "
+                    f"RETURN count(r) AS cnt",
+                    fid=family_id,
+                    new_abs_id=new_abs_id,
+                )
+                update_record = update_result.single()
+                count = update_record["cnt"] if update_record else 0
+            self._cache.invalidate("relation:")
+            return count

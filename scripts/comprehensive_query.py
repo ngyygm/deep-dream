@@ -201,8 +201,8 @@ class QueryOrchestrator:
             return None
 
         relations = self.storage.get_relations_by_entities(
-            entity1.entity_id,
-            entity2.entity_id
+            entity1.family_id,
+            entity2.family_id
         )
 
         print(f"\n找到 {len(relations)} 条直接关系")
@@ -241,8 +241,8 @@ class QueryOrchestrator:
         print(f"描述: {entity.content}")
 
         # 查询关系
-        relations = self.storage.get_entity_relations_by_entity_id(
-            entity.entity_id,
+        relations = self.storage.get_entity_relations_by_family_id(
+            entity.family_id,
             limit=20
         )
 
@@ -325,7 +325,7 @@ class QueryOrchestrator:
 
         for cache_file in cache_files[:20]:
             try:
-                cache = self.storage.load_memory_cache(cache_file.stem)
+                cache = self.storage.load_episode(cache_file.stem)
                 if cache and any(kw.lower() in cache.content.lower() for kw in keywords.split()):
                     matched_caches.append(cache)
             except:

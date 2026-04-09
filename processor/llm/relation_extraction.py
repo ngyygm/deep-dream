@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 import numpy as np
 
-from ..models import MemoryCache, Entity
+from ..models import Episode, Entity
 from ..debug_log import log as dbg
 from ..utils import wprint
 from .errors import LLMContextBudgetExceeded
@@ -23,7 +23,12 @@ def _json_code_block(payload: Any) -> str:
     return f"```json\n{json.dumps(payload, ensure_ascii=False)}\n```"
 
 
-_MULTI_ROUND_CONTINUE_USER = "继续生成"
+_MULTI_ROUND_CONTINUE_USER = (
+    "继续从文本中抽取概念关系。注意：\n"
+    "1. 优先补充上一轮遗漏的：跨实体对的关系、因果/从属/时序关系\n"
+    "2. 同一对实体间如果存在多种不同性质的关联（如不同事件、不同方面），应分别创建多条关系\n"
+    "3. content 应回答：这两个概念之间**有什么具体联系**？不要只写标签式的关联"
+)
 
 
 class _RelationExtractionMixin:
@@ -105,7 +110,7 @@ class _RelationExtractionMixin:
         return '\n'.join(entity_lines), valid_names, name_order
 
     @staticmethod
-    def _extract_relation_entity_id_token(entity_ref: Any) -> Optional[str]:
+    def _extract_relation_family_id_token(entity_ref: Any) -> Optional[str]:
         """从 `E1 | 实体名` / `E1: 实体名` / `E1` 中提取规范编号。"""
         if entity_ref is None:
             return None
@@ -127,7 +132,7 @@ class _RelationExtractionMixin:
         ref = str(entity_ref).strip()
         if not ref:
             return None
-        token = _RelationExtractionMixin._extract_relation_entity_id_token(ref)
+        token = _RelationExtractionMixin._extract_relation_family_id_token(ref)
         if not token:
             return None
         token_match = re.search(r"(?i)\bE\s*\d+\b", ref)
@@ -461,7 +466,7 @@ class _RelationExtractionMixin:
 
         return normalized_relations, normalized_count, filtered_count
 
-    def extract_relations(self, memory_cache: MemoryCache, input_text: str,
+    def extract_relations(self, episode: Episode, input_text: str,
                          entities: Union[List[Dict[str, str]], List[Entity]],
                          rounds: int = 1,
                          verbose: bool = False,
@@ -471,9 +476,9 @@ class _RelationExtractionMixin:
         抽取概念关系边，支持多轮次补充抽取（利用 LLM 对话历史）。
 
         Args:
-            memory_cache: 当前的记忆缓存
+            episode: 当前的记忆缓存
             input_text: 当前窗口的输入文本
-            entities: 实体列表，可以是Dict（name, content）或Entity对象（包含entity_id）
+            entities: 实体列表，可以是Dict（name, content）或Entity对象（包含family_id）
             rounds: 抽取轮次（默认 1）；>1 时利用对话历史要求 LLM 继续补充
             verbose: 是否输出详细日志
             on_round_done: 每轮完成后的回调 fn(round_idx, total_rounds, cumulative_count)
@@ -492,13 +497,13 @@ class _RelationExtractionMixin:
                 entity_info = {
                     'name': entity.name,
                     'content': entity.content,
-                    'entity_id': entity.entity_id
+                    'family_id': entity.family_id
                 }
             else:
                 entity_info = {
                     'name': entity['name'],
                     'content': entity['content'],
-                    'entity_id': None
+                    'family_id': None
                 }
             entity_info_list.append(entity_info)
 
@@ -638,7 +643,7 @@ class _RelationExtractionMixin:
                             )
                         try:
                             fallback_relations = self._extract_relations_single_pass(
-                                memory_cache,
+                                episode,
                                 input_text,
                                 entity_info_list,
                                 existing_relations=None,
@@ -683,7 +688,7 @@ class _RelationExtractionMixin:
                 )
         return all_relations
 
-    def _extract_relations_single_pass(self, memory_cache: MemoryCache,
+    def _extract_relations_single_pass(self, episode: Episode,
                                       input_text: str,
                                       entities: List[Dict[str, Any]],
                                       existing_relations: Optional[Dict[tuple, List[str]]] = None,
@@ -693,9 +698,9 @@ class _RelationExtractionMixin:
         单次关系抽取
 
         Args:
-            memory_cache: 记忆缓存
+            episode: 记忆缓存
             input_text: 输入文本
-            entities: 实体信息列表（包含name, content, entity_id）
+            entities: 实体信息列表（包含name, content, family_id）
             existing_relations: 已抽取的关系字典，key是(entity1, entity2)，value是关系content列表
             uncovered_entities: 未覆盖的实体名称列表（还没有任何关系，需要优先补全）
             verbose: 是否输出详细日志
@@ -903,7 +908,7 @@ class _RelationExtractionMixin:
                 elif '描述' in rel:
                     content = str(rel['描述']).strip()
 
-                # 只保留必需的字段，移除其他字段（如relation_id）
+                # 只保留必需的字段，移除其他字段（如family_id）
                 cleaned_relation = {
                     'entity1_name': normalized_pair[0],  # 使用标准化后的顺序
                     'entity2_name': normalized_pair[1],
@@ -945,12 +950,12 @@ class _RelationExtractionMixin:
 
     def judge_need_create_relation(self, entity1_name: str, entity1_content: str,
                                     entity2_name: str, entity2_content: str,
-                                    entity1_memory_cache: Optional[str] = None,
-                                    entity2_memory_cache: Optional[str] = None) -> bool:
+                                    entity1_episode: Optional[str] = None,
+                                    entity2_episode: Optional[str] = None) -> bool:
         """
         判断两个实体之间是否真的需要创建关系边
 
-        这个方法在生成关系content之前调用，使用两个实体的完整信息（name、content、memory_cache）
+        这个方法在生成关系content之前调用，使用两个实体的完整信息（name、content、episode）
         来判断是否确实存在明确的、有意义的关联。
 
         Args:
@@ -958,8 +963,8 @@ class _RelationExtractionMixin:
             entity1_content: 起始实体内容描述
             entity2_name: 目标实体名称
             entity2_content: 目标实体内容描述
-            entity1_memory_cache: 起始实体的记忆缓存内容（可选）
-            entity2_memory_cache: 目标实体的记忆缓存内容（可选）
+            entity1_episode: 起始实体的记忆缓存内容（可选）
+            entity2_episode: 目标实体的记忆缓存内容（可选）
 
         Returns:
             True表示确实需要创建关系边，False表示不需要
@@ -972,16 +977,16 @@ class _RelationExtractionMixin:
 - 名称: {entity1_name}
 - 描述: {entity1_content}
 """
-        if entity1_memory_cache:
-            entities_info += f"- 相关记忆缓存: {entity1_memory_cache[:500]}...\n"
+        if entity1_episode:
+            entities_info += f"- 相关记忆缓存: {entity1_episode[:500]}...\n"
 
         entities_info += f"""
 目标实体：
 - 名称: {entity2_name}
 - 描述: {entity2_content}
 """
-        if entity2_memory_cache:
-            entities_info += f"- 相关记忆缓存: {entity2_memory_cache[:500]}...\n"
+        if entity2_episode:
+            entities_info += f"- 相关记忆缓存: {entity2_episode[:500]}...\n"
 
         prompt = f"""<实体信息>
 {entities_info}
@@ -1011,17 +1016,17 @@ class _RelationExtractionMixin:
 
     def generate_relation_content(self, entity1_name: str, entity1_content: str,
                                   entity2_name: str, entity2_content: str,
-                                  relation_memory_cache: Optional[str] = None,
+                                  relation_episode: Optional[str] = None,
                                   preliminary_content: Optional[str] = None) -> str:
         """
-        根据两个实体和memory_cache生成关系的content
+        根据两个实体和episode生成关系的content
 
         Args:
             entity1_name: 起始实体名称
             entity1_content: 起始实体内容描述
             entity2_name: 目标实体名称
             entity2_content: 目标实体内容描述
-            relation_memory_cache: 关系的记忆缓存内容（可选，这是总结两个实体的memory_cache）
+            relation_episode: 关系的记忆缓存内容（可选，这是总结两个实体的episode）
             preliminary_content: 初步的关系content（可选，用于参考）
 
         Returns:
@@ -1050,10 +1055,10 @@ class _RelationExtractionMixin:
 
         # 构建关系记忆缓存信息（只关注与关系相关的部分）
         relation_context = ""
-        if relation_memory_cache:
+        if relation_episode:
             relation_context = f"""
 关系记忆缓存：
-{relation_memory_cache[:500]}{'...' if len(relation_memory_cache) > 500 else ''}
+{relation_episode[:500]}{'...' if len(relation_episode) > 500 else ''}
 """
 
         prompt = f"""<实体信息>

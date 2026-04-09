@@ -15,16 +15,18 @@ window.GraphExplorer = (function () {
     var _versionCounts = {};
     var _pinnedNodePositions = {};
 
-    // Accumulation state for version-switching
-    var _accumEntities = null;       // Map<absolute_id, entity> — accumulated entities
-    var _accumRelationsByRid = null; // Map<relation_id, relation> — dedup by relation_id
-    var _accumHopMap = null;         // Map<absolute_id, number> — min hop per entity
-    var _accumFocusEntityId = null;  // entity_id being focused (detect version switch vs new focus)
-
     var _focusAbsoluteId = null;
     var _currentVersions = [];
     var _currentVersionIdx = 0;
     var _relationScope = 'accumulated';
+
+    // Main view cache (set by graph.js after loadGraph)
+    var _mainViewRelations = [];
+    var _mainViewEntities = {};
+    var _mainViewInheritedRelationIds = null;
+
+    // Focus session (encapsulates accumulation state)
+    var _session = null;
 
     var _opts = options;
 
@@ -290,247 +292,108 @@ window.GraphExplorer = (function () {
       });
     }
 
-    // ---- Multi-hop BFS for focus mode ----
+    // ---- FocusSession: minimal accumulation tracker ----
 
-    async function fetchMultiHop(startAbsId, startEntityId, hopLevel) {
-      var graphId = state.currentGraphId;
-      var hopMap = {};
-      hopMap[startAbsId] = 0;
-      var relationSet = new Map();   // abs_id → raw relation from API
-      var inheritedRelationIds = new Set();
-      var futureRelationIds = new Set();
-      var frontier = [{ absId: startAbsId, entityId: startEntityId }];
+    function FocusSession() {
+      this.focusFamilyId = null;
+      this.accumulatedRelationIds = new Set();
+    }
 
-      var absToEntityId = {};
-      if (startEntityId) absToEntityId[startAbsId] = startEntityId;
+    FocusSession.prototype.reset = function (familyId) {
+      this.focusFamilyId = familyId;
+      this.accumulatedRelationIds = new Set();
+    };
 
+    FocusSession.prototype.merge = function (familyId, currentRelationAbsIds) {
+      if (this.focusFamilyId !== familyId) {
+        this.reset(familyId);
+        return new Set();
+      }
+      var inherited = new Set();
+      var self = this;
+      this.accumulatedRelationIds.forEach(function (id) {
+        if (!currentRelationAbsIds.has(id)) inherited.add(id);
+      });
+      currentRelationAbsIds.forEach(function (id) { self.accumulatedRelationIds.add(id); });
+      return inherited;
+    };
+
+    // ---- Family-ID-Based BFS (no API calls) ----
+
+    function focusBFS(startFamilyId, hopLevel) {
       var entityCache = _opts.entityCache || {};
-      var scope = _relationScope;    // 'version_only' | 'accumulated' | 'all_versions'
+
+      // Build abs_id → family_id map
+      var absToFid = {};
+      for (var absId in entityCache) {
+        absToFid[absId] = entityCache[absId].family_id;
+      }
+
+      // Build family_id → [relation] index from main view cache
+      var familyIndex = {};
+      var mainRels = _mainViewRelations || [];
+      for (var i = 0; i < mainRels.length; i++) {
+        var r = mainRels[i];
+        var fid1 = absToFid[r.entity1_absolute_id];
+        var fid2 = absToFid[r.entity2_absolute_id];
+        if (!fid1 || !fid2) continue;
+        if (!familyIndex[fid1]) familyIndex[fid1] = [];
+        if (!familyIndex[fid2]) familyIndex[fid2] = [];
+        familyIndex[fid1].push(r);
+        if (fid1 !== fid2) familyIndex[fid2].push(r);
+      }
+
+      // BFS using family_id keys
+      var visited = new Set([startFamilyId]);
+      var hopMapFid = {};
+      hopMapFid[startFamilyId] = 0;
+      var discoveredRelations = new Map();
+      var frontier = [startFamilyId];
 
       for (var h = 1; h <= hopLevel; h++) {
         var nextFrontier = [];
-        var MAX_PER_HOP = _opts.maxPerHop || 999;
-
-        // ---- Between hops: resolve missing entityIds via API ----
-        var unresolved = frontier.filter(function (n) { return !n.entityId; });
-        if (unresolved.length > 0) {
-          var resolvePromises = unresolved.slice(0, 30).map(function (n) {
-            return state.api.entityByAbsoluteId(n.absId, graphId).then(function (uRes) {
-              if (uRes.data) {
-                _entityMap[n.absId] = uRes.data;
-                n.entityId = uRes.data.entity_id;
-                absToEntityId[n.absId] = uRes.data.entity_id;
-              }
-            }).catch(function () {});
-          });
-          await Promise.all(resolvePromises);
-        }
-
-        // ---- Expand each frontier node ----
-        for (var ni = 0; ni < frontier.length; ni++) {
-          var node = frontier[ni];
-          var apiRels = [];
-
-          try {
-            var res;
-            if (node.entityId) {
-              res = await state.api.entityRelations(node.entityId, graphId, {
-                maxVersionAbsoluteId: node.absId,
-                relationScope: scope
-              });
-            } else {
-              res = await state.api.entityOneHop(node.absId, graphId);
-            }
-            apiRels = res.data || [];
-
-            // ---- Classify relations from API markers (ALL hops, ALL nodes) ----
-            if (node.entityId && scope !== 'version_only') {
-              for (var ci = 0; ci < apiRels.length; ci++) {
-                var ar = apiRels[ci];
-                if (scope === 'all_versions') {
-                  // Backend marks each relation with _version_scope: current|inherited|future
-                  if (ar._version_scope === 'inherited') inheritedRelationIds.add(ar.absolute_id);
-                  if (ar._version_scope === 'future') futureRelationIds.add(ar.absolute_id);
-                } else {
-                  // accumulated: backend marks _inherited and _future booleans
-                  if (ar._inherited) inheritedRelationIds.add(ar.absolute_id);
-                  // Do NOT add _future to futureRelationIds — accumulated excludes future
-                }
-              }
-            }
-          } catch (_) {}
-
-          // ---- Add to relation set; filter _future for accumulated scope ----
-          for (var ri = 0; ri < apiRels.length; ri++) {
-            var rr = apiRels[ri];
-            // For accumulated scope, completely discard _future relations
-            if (scope === 'accumulated' && rr._future) continue;
-            relationSet.set(rr.absolute_id, rr);
-
-            // Discover new frontier nodes
-            var otherId = rr.entity1_absolute_id === node.absId
-              ? rr.entity2_absolute_id : rr.entity1_absolute_id;
-            if (otherId && !(otherId in hopMap)) {
-              hopMap[otherId] = h;
-              nextFrontier.push({ absId: otherId, entityId: null });
-            }
-          }
-
-          // Quick cache hit for new frontier nodes
-          for (var fi = 0; fi < nextFrontier.length; fi++) {
-            if (nextFrontier[fi].entityId) continue;
-            var ent = _entityMap[nextFrontier[fi].absId] || entityCache[nextFrontier[fi].absId];
-            if (ent) {
-              nextFrontier[fi].entityId = ent.entity_id;
-              absToEntityId[nextFrontier[fi].absId] = ent.entity_id;
+        for (var fi = 0; fi < frontier.length; fi++) {
+          var fid = frontier[fi];
+          var rels = familyIndex[fid] || [];
+          for (var ri = 0; ri < rels.length; ri++) {
+            var rel = rels[ri];
+            discoveredRelations.set(rel.absolute_id, rel);
+            var otherFid = absToFid[rel.entity1_absolute_id] === fid
+              ? absToFid[rel.entity2_absolute_id]
+              : (absToFid[rel.entity2_absolute_id] === fid
+                ? absToFid[rel.entity1_absolute_id]
+                : null);
+            if (otherFid && !visited.has(otherFid)) {
+              visited.add(otherFid);
+              hopMapFid[otherFid] = h;
+              nextFrontier.push(otherFid);
             }
           }
         }
-
-        frontier = nextFrontier.slice(0, MAX_PER_HOP * h);
+        frontier = nextFrontier;
       }
 
-      // ---- Post-BFS: resolve entity data, deduplicate, remap relations ----
+      var relations = [];
+      discoveredRelations.forEach(function (rel) { relations.push(rel); });
 
-      var rawEntities = [];
-      var resolvedIds = new Set();
-      var hopKeys = Object.keys(hopMap);
-      for (var hki = 0; hki < hopKeys.length; hki++) {
-        var absId = hopKeys[hki];
-        if (resolvedIds.has(absId)) continue;
-        var rEnt = _entityMap[absId] || entityCache[absId];
-        if (rEnt) {
-          rawEntities.push(rEnt);
-          resolvedIds.add(absId);
-          absToEntityId[absId] = rEnt.entity_id;
-        }
-      }
-
-      // Build entity_id -> latest absId from entityCache
-      var entityIdToLatest = {};
-      if (_opts.entityIdToLatest) {
-        entityIdToLatest = Object.assign({}, _opts.entityIdToLatest());
-      }
-      // Override: focused entity always maps to the version being viewed
-      if (startEntityId) entityIdToLatest[startEntityId] = startAbsId;
-
-      // Deduplicate: keep only latest version per entity_id
-      var dedupedEntities = [];
-      var seenEntityIds = new Set();
-      for (var dei = 0; dei < rawEntities.length; dei++) {
-        var dEnt = rawEntities[dei];
-        var latestAbsId = entityIdToLatest[dEnt.entity_id];
-        if (!latestAbsId || dEnt.absolute_id === latestAbsId) {
-          if (!seenEntityIds.has(dEnt.entity_id)) {
-            dedupedEntities.push(dEnt);
-            seenEntityIds.add(dEnt.entity_id);
-          }
-        }
-      }
-
-      // Resolve unknown endpoints
-      var unknownEndpoints = new Set();
-      relationSet.forEach(function (rel) {
-        if (!resolvedIds.has(rel.entity1_absolute_id)) unknownEndpoints.add(rel.entity1_absolute_id);
-        if (!resolvedIds.has(rel.entity2_absolute_id)) unknownEndpoints.add(rel.entity2_absolute_id);
-      });
-      if (unknownEndpoints.size > 0) {
-        var toResolve = Array.from(unknownEndpoints).slice(0, 30);
-        var resolvePromises = toResolve.map(async function (uAbsId) {
-          try {
-            var uRes = await state.api.entityByAbsoluteId(uAbsId, graphId);
-            if (uRes.data) {
-              _entityMap[uAbsId] = uRes.data;
-              absToEntityId[uAbsId] = uRes.data.entity_id;
-            }
-          } catch (_) {}
-        });
-        await Promise.all(resolvePromises);
-      }
-
-      // Remap relation endpoints to latest visible versions
-      var finalRelations = [];
-      relationSet.forEach(function (rel) {
-        var e1 = rel.entity1_absolute_id;
-        var e2 = rel.entity2_absolute_id;
-        var skip = false;
-
-        var eid1 = absToEntityId[e1];
-        if (eid1 && entityIdToLatest[eid1]) {
-          e1 = entityIdToLatest[eid1];
-        } else {
-          skip = true;
-        }
-        var eid2 = absToEntityId[e2];
-        if (eid2 && entityIdToLatest[eid2]) {
-          e2 = entityIdToLatest[eid2];
-        } else {
-          skip = true;
-        }
-
-        if (skip) return;
-
-        for (var rei = 0; rei < 2; rei++) {
-          var rAbsId = rei === 0 ? e1 : e2;
-          var rEnt2 = entityCache[rAbsId] || _entityMap[rAbsId];
-          if (rEnt2 && !seenEntityIds.has(rEnt2.entity_id)) {
-            dedupedEntities.push(rEnt2);
-            seenEntityIds.add(rEnt2.entity_id);
-          }
-        }
-
-        var oldHop1 = hopMap[rel.entity1_absolute_id];
-        if (oldHop1 !== undefined) {
-          hopMap[e1] = Math.min(hopMap[e1] !== undefined ? hopMap[e1] : Infinity, oldHop1);
-        }
-        var oldHop2 = hopMap[rel.entity2_absolute_id];
-        if (oldHop2 !== undefined) {
-          hopMap[e2] = Math.min(hopMap[e2] !== undefined ? hopMap[e2] : Infinity, oldHop2);
-        }
-
-        finalRelations.push({ absolute_id: rel.absolute_id, relation_id: rel.relation_id, entity1_absolute_id: e1, entity2_absolute_id: e2, content: rel.content, event_time: rel.event_time, processed_time: rel.processed_time, source_document: rel.source_document, _inherited: rel._inherited, _version_scope: rel._version_scope });
-      });
-
-      // Filter out edges that skip hops (e.g., hop 0 directly to hop 2+)
-      finalRelations = finalRelations.filter(function (r) {
-        var fh1 = hopMap[r.entity1_absolute_id];
-        var fh2 = hopMap[r.entity2_absolute_id];
-        if (fh1 === undefined || fh2 === undefined) return true;
-        return Math.abs(fh1 - fh2) <= 1;
-      });
-
-      // Clean hopMap: remove ghost entries for deduplicated entities
-      var cleanEntityIds = new Set();
-      for (var dci = 0; dci < dedupedEntities.length; dci++) {
-        cleanEntityIds.add(dedupedEntities[dci].absolute_id);
-      }
-      var hopKeysToClean = Object.keys(hopMap);
-      for (var hki = 0; hki < hopKeysToClean.length; hki++) {
-        if (!cleanEntityIds.has(hopKeysToClean[hki])) delete hopMap[hopKeysToClean[hki]];
-      }
-
-      // Filter: only keep connected entities
-      var connectedNodeIds = new Set();
-      for (var cri = 0; cri < finalRelations.length; cri++) {
-        connectedNodeIds.add(finalRelations[cri].entity1_absolute_id);
-        connectedNodeIds.add(finalRelations[cri].entity2_absolute_id);
-      }
-      var finalEntities = dedupedEntities.filter(function (e) { return connectedNodeIds.has(e.absolute_id); });
-
-      return { hopMap: hopMap, entities: finalEntities, relations: finalRelations, inheritedRelationIds: inheritedRelationIds, futureRelationIds: futureRelationIds };
+      return {
+        familyIds: visited,
+        hopMapFid: hopMapFid,
+        relations: relations,
+        absToFid: absToFid
+      };
     }
 
-    // ---- Focus on a specific entity version (multi-hop view) ----
+    // ---- Focus on a specific entity version ----
 
     async function focusOnEntity(absoluteId, opts) {
       opts = opts || {};
-      var isVersionSwitch = opts.isVersionSwitch || false;
-
       var graphId = state.currentGraphId;
       var loadingEl = _el(_opts.loadingId);
       if (loadingEl) loadingEl.style.display = 'flex';
 
       try {
+        // 1. Resolve entity
         var entity = _entityMap[absoluteId];
         if (!entity) {
           try {
@@ -544,110 +407,154 @@ window.GraphExplorer = (function () {
           return;
         }
 
-        // Detect if this is actually a version switch (same entity_id, accumulation active)
-        if (_accumEntities !== null && entity.entity_id === _accumFocusEntityId) {
-          isVersionSwitch = true;
-        }
-
-        if (!isVersionSwitch) {
-          // New focus session — reset accumulation
-          _accumEntities = new Map();
-          _accumRelationsByRid = new Map();
-          _accumHopMap = {};
-          _accumFocusEntityId = entity.entity_id;
-        }
-
+        var familyId = entity.family_id;
         var hopLevel = _opts.defaultHopLevel || 1;
-        var multiHopResult = await fetchMultiHop(absoluteId, entity.entity_id, hopLevel);
 
-        // Merge into accumulation
-        // Safety: ensure accumulation is always initialized before merge
-        if (!_accumEntities) {
-          _accumEntities = new Map();
-          _accumRelationsByRid = new Map();
-          _accumHopMap = {};
-          _accumFocusEntityId = entity.entity_id;
-          isVersionSwitch = false;
-        }
-        for (var mei = 0; mei < multiHopResult.entities.length; mei++) {
-          _accumEntities.set(multiHopResult.entities[mei].absolute_id, multiHopResult.entities[mei]);
-        }
-        for (var mri = 0; mri < multiHopResult.relations.length; mri++) {
-          var mr = multiHopResult.relations[mri];
-          var dedupKey = mr.relation_id || mr.absolute_id;
-          // Always update: replace old version's relation with remapped version
-          _accumRelationsByRid.set(dedupKey, mr);
-        }
-        for (var mhid in multiHopResult.hopMap) {
-          _accumHopMap[mhid] = Math.min(_accumHopMap[mhid] !== undefined ? _accumHopMap[mhid] : Infinity, multiHopResult.hopMap[mhid]);
-        }
+        // 2. BFS topology (family-id based, no API calls)
+        var bfs = focusBFS(familyId, hopLevel);
 
-        // Build classification sets
-        var inheritedRelationIds = new Set(multiHopResult.inheritedRelationIds);
-        var futureRelationIds = new Set(multiHopResult.futureRelationIds);
+        // 3. Build familyIdToLatest with focus override
+        var familyIdToLatest = _opts.familyIdToLatest ? Object.assign({}, _opts.familyIdToLatest()) : {};
+        familyIdToLatest[familyId] = absoluteId;
 
-        if (isVersionSwitch) {
-          // Relations accumulated from previous versions but not in new BFS → inherited
-          var newRelAbsIds = new Set(multiHopResult.relations.map(function (r) { return r.absolute_id; }));
-          _accumRelationsByRid.forEach(function (rel, rid) {
-            if (!newRelAbsIds.has(rel.absolute_id)) {
-              inheritedRelationIds.add(rel.absolute_id);
-            }
+        // 4. Resolve missing absolute_ids (endpoints not in entityCache)
+        var absToFid = Object.assign({}, bfs.absToFid);
+        var unresolvedAbsIds = [];
+        var seenAbs = new Set();
+        for (var ui = 0; ui < bfs.relations.length; ui++) {
+          var ur = bfs.relations[ui];
+          if (!absToFid[ur.entity1_absolute_id] && !seenAbs.has(ur.entity1_absolute_id)) {
+            unresolvedAbsIds.push(ur.entity1_absolute_id);
+            seenAbs.add(ur.entity1_absolute_id);
+          }
+          if (!absToFid[ur.entity2_absolute_id] && !seenAbs.has(ur.entity2_absolute_id)) {
+            unresolvedAbsIds.push(ur.entity2_absolute_id);
+            seenAbs.add(ur.entity2_absolute_id);
+          }
+        }
+        if (unresolvedAbsIds.length > 0) {
+          var resolveBatch = unresolvedAbsIds.slice(0, 30);
+          var resolvePromises = resolveBatch.map(function (uAbsId) {
+            return state.api.entityByAbsoluteId(uAbsId, graphId).then(function (uRes) {
+              if (uRes.data) {
+                _entityMap[uAbsId] = uRes.data;
+                absToFid[uAbsId] = uRes.data.family_id;
+              }
+            }).catch(function () {});
           });
+          await Promise.all(resolvePromises);
         }
 
-        // Deduplicate accumulated entities by entity_id (version switching can add duplicates)
-        var dedupedAccum = {};
-        _accumEntities.forEach(function (ent, absId) {
-          var eid = ent.entity_id;
-          if (!dedupedAccum[eid]) {
-            dedupedAccum[eid] = ent;
-          } else {
-            // For focused entity, prefer the version being viewed
-            if (eid === _accumFocusEntityId && absId === absoluteId) {
-              dedupedAccum[eid] = ent;
+        // 5. Collect entity data for all discovered family_ids
+        var entityCache = _opts.entityCache || {};
+        var entities = [];
+        var seenFids = new Set();
+        bfs.familyIds.forEach(function (fid) {
+          if (seenFids.has(fid)) return;
+          var targetAbsId = familyIdToLatest[fid];
+          var ent = null;
+          if (targetAbsId) ent = _entityMap[targetAbsId] || entityCache[targetAbsId];
+          if (!ent) {
+            for (var abs in entityCache) {
+              if (entityCache[abs].family_id === fid) { ent = entityCache[abs]; break; }
             }
-            // Otherwise, keep the later/larger entity (prefer deduped from fetchMultiHop remapping)
+          }
+          if (!ent) {
+            for (var abs2 in _entityMap) {
+              if (_entityMap[abs2].family_id === fid) { ent = _entityMap[abs2]; break; }
+            }
+          }
+          if (ent) {
+            entities.push(ent);
+            seenFids.add(fid);
           }
         });
 
-        // Build final arrays from deduplicated accumulation
-        var entities = Object.values(dedupedAccum);
-        var relations = Array.from(_accumRelationsByRid.values());
-        var hopMap = Object.assign({}, _accumHopMap);
-
-        // Clean hopMap: remove entries not in final entities
-        var finalEntityIds = new Set();
-        for (var fei = 0; fei < entities.length; fei++) {
-          finalEntityIds.add(entities[fei].absolute_id);
-        }
-        var hopKeysToRemove = Object.keys(hopMap).filter(function (k) { return !finalEntityIds.has(k); });
-        for (var hri = 0; hri < hopKeysToRemove.length; hri++) {
-          delete hopMap[hopKeysToRemove[hri]];
-        }
-
-        if (!entities.find(function (e) { return e.absolute_id === absoluteId; })) {
-          entities.unshift(entity);
+        // 6. Remap relation endpoints to target absolute_ids
+        var relations = [];
+        var relAbsIdSet = new Set();
+        for (var ri = 0; ri < bfs.relations.length; ri++) {
+          var r = bfs.relations[ri];
+          var e1 = r.entity1_absolute_id;
+          var e2 = r.entity2_absolute_id;
+          var rfid1 = absToFid[e1];
+          var rfid2 = absToFid[e2];
+          if (rfid1 && familyIdToLatest[rfid1]) e1 = familyIdToLatest[rfid1];
+          if (rfid2 && familyIdToLatest[rfid2]) e2 = familyIdToLatest[rfid2];
+          relations.push(Object.assign({}, r, { entity1_absolute_id: e1, entity2_absolute_id: e2 }));
+          relAbsIdSet.add(r.absolute_id);
         }
 
-        // Fetch version counts
-        var allEntityIds = [];
-        var seenIds = new Set();
-        for (var aei = 0; aei < entities.length; aei++) {
-          if (!seenIds.has(entities[aei].entity_id)) {
-            allEntityIds.push(entities[aei].entity_id);
-            seenIds.add(entities[aei].entity_id);
+        // 7. Convert hopMap: family_id → absolute_id keys
+        var hopMap = {};
+        var fids = Object.keys(bfs.hopMapFid);
+        for (var hi = 0; hi < fids.length; hi++) {
+          var hAbsId = familyIdToLatest[fids[hi]];
+          if (hAbsId) hopMap[hAbsId] = bfs.hopMapFid[fids[hi]];
+        }
+
+        // 8. API classification (parallel) — get _inherited / _future markers
+        var inheritedRelationIds = new Set();
+        var futureRelationIds = new Set();
+        var scope = _relationScope;
+
+        // Optimize: skip API if viewing latest version in accumulated scope
+        var latestAbsForFocus = _opts.familyIdToLatest ? _opts.familyIdToLatest()[familyId] : null;
+        var isLatestVersion = (absoluteId === latestAbsForFocus);
+
+        if (scope !== 'version_only' && !(isLatestVersion && scope === 'accumulated')) {
+          var apiFids = [];
+          bfs.familyIds.forEach(function (fid) { apiFids.push(fid); });
+          var apiPromises = apiFids.map(function (fid) {
+            return state.api.entityRelations(fid, graphId, {
+              maxVersionAbsoluteId: absoluteId,
+              relationScope: scope
+            }).then(function (apiRes) {
+              var apiRels = apiRes.data?.relations || apiRes.data || [];
+              for (var ai = 0; ai < apiRels.length; ai++) {
+                var ar = apiRels[ai];
+                if (scope === 'all_versions') {
+                  if (ar._version_scope === 'inherited') inheritedRelationIds.add(ar.absolute_id);
+                  if (ar._version_scope === 'future') futureRelationIds.add(ar.absolute_id);
+                } else {
+                  if (ar._inherited) inheritedRelationIds.add(ar.absolute_id);
+                }
+              }
+            }).catch(function () {});
+          });
+          await Promise.all(apiPromises);
+        }
+
+        // 9. Session merge for version switch accumulation
+        var isVersionSwitch = _session && _session.focusFamilyId === familyId;
+        if (!_session) _session = new FocusSession();
+        var sessionInherited = _session.merge(familyId, relAbsIdSet);
+        sessionInherited.forEach(function (id) { inheritedRelationIds.add(id); });
+
+        // 10. Filter: only keep connected entities
+        var connAbsIds = new Set();
+        for (var ci = 0; ci < relations.length; ci++) {
+          connAbsIds.add(relations[ci].entity1_absolute_id);
+          connAbsIds.add(relations[ci].entity2_absolute_id);
+        }
+        entities = entities.filter(function (e) { return connAbsIds.has(e.absolute_id); });
+
+        // 11. Fetch version counts
+        var allFids = [];
+        var vseenIds = new Set();
+        for (var vei = 0; vei < entities.length; vei++) {
+          if (!vseenIds.has(entities[vei].family_id)) {
+            allFids.push(entities[vei].family_id);
+            vseenIds.add(entities[vei].family_id);
           }
         }
         try {
-          var vcRes = await state.api.entityVersionCounts(allEntityIds, graphId);
+          var vcRes = await state.api.entityVersionCounts(allFids, graphId);
           _versionCounts = vcRes.data || {};
         } catch (_) {}
 
-        // Don't clear pinned positions on version switch
-        if (!isVersionSwitch) {
-          _pinnedNodePositions = {};
-        }
+        // 12. Render
+        if (!isVersionSwitch) _pinnedNodePositions = {};
         buildGraph(entities, relations, absoluteId, hopMap, inheritedRelationIds, futureRelationIds);
 
         _focusAbsoluteId = absoluteId;
@@ -656,10 +563,7 @@ window.GraphExplorer = (function () {
         var focusBadge = _el(_opts.focusBadgeId);
         if (focusBadge) focusBadge.style.display = '';
 
-        // Callback after focus
-        if (_opts.onAfterFocus) {
-          _opts.onAfterFocus(entities);
-        }
+        if (_opts.onAfterFocus) _opts.onAfterFocus(entities);
       } catch (err) {
         console.error('Focus failed:', err);
         showToast(t('graph.loadFailed') + ': ' + err.message, 'error');
@@ -668,16 +572,13 @@ window.GraphExplorer = (function () {
       }
     }
 
-    // ---- Exit focus mode, restore default view ----
+    // ---- Exit focus mode ----
 
     function exitFocus() {
       _focusAbsoluteId = null;
       _currentVersions = [];
       _currentVersionIdx = 0;
-      _accumEntities = null;
-      _accumRelationsByRid = null;
-      _accumHopMap = null;
-      _accumFocusEntityId = null;
+      _session = null;
       var exitBtn = _el(_opts.exitFocusBtnId);
       if (exitBtn) exitBtn.style.display = 'none';
       var focusBadge = _el(_opts.focusBadgeId);
@@ -709,11 +610,11 @@ window.GraphExplorer = (function () {
       var detailContent = _el(_opts.detailContentId);
       if (!detailContent) return;
 
-      var entityId = entity.entity_id;
+      var familyId = entity.family_id;
 
       var versions = [];
       try {
-        var vRes = await state.api.entityVersions(entityId, state.currentGraphId);
+        var vRes = await state.api.entityVersions(familyId, state.currentGraphId);
         versions = vRes.data || [];
       } catch (_) {}
 
@@ -780,15 +681,15 @@ window.GraphExplorer = (function () {
         '<div style="display:flex;flex-direction:column;gap:0.75rem;">' +
           '<div>' +
             '<span class="form-label" style="margin-bottom:0.125rem;">' + t('graph.content') + '</span>' +
-            '<p style="font-size:0.8125rem;color:var(--text-secondary);line-height:1.5;word-break:break-word;white-space:pre-wrap;">' +
-              escapeHtml(entity.content || '-') +
-            '</p>' +
+            '<div class="md-content" style="font-size:0.8125rem;color:var(--text-secondary);">' +
+              renderMarkdown(entity.content || '-') +
+            '</div>' +
           '</div>' +
 
           '<div>' +
             '<span class="form-label" style="margin-bottom:0.125rem;">' + t('graph.entityId') + '</span>' +
-            '<p class="mono truncate" style="color:var(--text-muted);font-size:0.75rem;" title="' + escapeHtml(entity.entity_id || '') + '">' +
-              escapeHtml(entity.entity_id || '-') +
+            '<p class="mono truncate" style="color:var(--text-muted);font-size:0.75rem;" title="' + escapeHtml(entity.family_id || '') + '">' +
+              escapeHtml(entity.family_id || '-') +
             '</p>' +
           '</div>' +
 
@@ -822,11 +723,11 @@ window.GraphExplorer = (function () {
             '</div>'
           : '') +
 
-          (entity.memory_cache_id ?
+          (entity.episode_id ?
             '<div>' +
-              '<span class="form-label" style="margin-bottom:0.125rem;">' + t('graph.memoryCacheId') + '</span>' +
-              '<span class="doc-link mono truncate" style="font-size:0.75rem;" data-view-doc="' + escapeHtml(entity.memory_cache_id) + '" title="' + t('common.clickToView') + '">' +
-                escapeHtml(entity.memory_cache_id) +
+              '<span class="form-label" style="margin-bottom:0.125rem;">' + t('graph.episodeId') + '</span>' +
+              '<span class="doc-link mono truncate" style="font-size:0.75rem;" data-view-doc="' + escapeHtml(entity.episode_id) + '" title="' + t('common.clickToView') + '">' +
+                escapeHtml(entity.episode_id) +
               '</span>' +
             '</div>'
           : '') +
@@ -852,11 +753,8 @@ window.GraphExplorer = (function () {
       if (scopeSel) {
         scopeSel.addEventListener('change', function () {
           _relationScope = scopeSel.value;
-          // Reset accumulation — scope change is a new focus context
-          _accumEntities = null;
-          _accumRelationsByRid = null;
-          _accumHopMap = null;
-          _accumFocusEntityId = null;
+          // Reset session — scope change is a new focus context
+          _session = null;
           focusOnEntity(absoluteId);
         });
       }
@@ -901,9 +799,9 @@ window.GraphExplorer = (function () {
         '<div style="display:flex;flex-direction:column;gap:0.75rem;">' +
           '<div>' +
             '<span class="form-label" style="margin-bottom:0.125rem;">' + t('graph.content') + '</span>' +
-            '<p style="font-size:0.8125rem;color:var(--text-secondary);line-height:1.5;word-break:break-word;white-space:pre-wrap;">' +
-              escapeHtml(relation.content || '-') +
-            '</p>' +
+            '<div class="md-content" style="font-size:0.8125rem;color:var(--text-secondary);">' +
+              renderMarkdown(relation.content || '-') +
+            '</div>' +
           '</div>' +
 
           '<div>' +
@@ -929,7 +827,7 @@ window.GraphExplorer = (function () {
           '<div>' +
             '<span class="form-label" style="margin-bottom:0.125rem;">' + t('graph.relationId') + '</span>' +
             '<p class="mono truncate" style="color:var(--text-muted);font-size:0.75rem;">' +
-              escapeHtml(relation.relation_id || '-') +
+              escapeHtml(relation.family_id || '-') +
             '</p>' +
           '</div>' +
 
@@ -990,17 +888,17 @@ window.GraphExplorer = (function () {
     // ---- Versions modal ----
 
     async function openVersionsModal(entity) {
-      var entityId = entity.entity_id || entity.absolute_id;
+      var familyId = entity.family_id || entity.absolute_id;
       var graphId = state.currentGraphId;
 
       var modal = showModal({
-        title: t('graph.versionsTitle', { name: truncate(entity.name || entityId, 40) }),
+        title: t('graph.versionsTitle', { name: truncate(entity.name || familyId, 40) }),
         content: '<div class="flex justify-center p-6">' + spinnerHtml() + '</div>',
         size: 'lg',
       });
 
       try {
-        var res = await state.api.entityVersions(entityId, graphId);
+        var res = await state.api.entityVersions(familyId, graphId);
         var versions = res.data || [];
 
         if (versions.length === 0) {
@@ -1041,17 +939,17 @@ window.GraphExplorer = (function () {
     // ---- Relations modal ----
 
     async function openRelationsModal(entity) {
-      var entityId = entity.entity_id || entity.absolute_id;
+      var familyId = entity.family_id || entity.absolute_id;
       var graphId = state.currentGraphId;
 
       var modal = showModal({
-        title: t('graph.relationsTitle', { name: truncate(entity.name || entityId, 40) }),
+        title: t('graph.relationsTitle', { name: truncate(entity.name || familyId, 40) }),
         content: '<div class="flex justify-center p-6">' + spinnerHtml() + '</div>',
         size: 'lg',
       });
 
       try {
-        var res = await state.api.entityRelations(entityId, graphId);
+        var res = await state.api.entityRelations(familyId, graphId);
         var relations = res.data || [];
 
         // Apply optional filter callback
@@ -1069,7 +967,7 @@ window.GraphExplorer = (function () {
           var otherAbsId = r.entity1_absolute_id === entity.absolute_id
             ? r.entity2_absolute_id : r.entity1_absolute_id;
           var otherEntity = _entityMap[otherAbsId] || entityCache[otherAbsId];
-          var otherName = otherEntity ? (otherEntity.name || otherEntity.entity_id || '-') : '-';
+          var otherName = otherEntity ? (otherEntity.name || otherEntity.family_id || '-') : '-';
           return '<tr>' +
             '<td style="max-width:250px;" title="' + escapeHtml(r.content || '') + '">' + escapeHtml(truncate(r.content || '-', 40)) + '</td>' +
             '<td style="max-width:120px;" title="' + escapeHtml(otherName) + '">' + escapeHtml(truncate(otherName, 20)) + '</td>' +
@@ -1103,7 +1001,6 @@ window.GraphExplorer = (function () {
 
     return {
       buildGraph: buildGraph,
-      fetchMultiHop: fetchMultiHop,
       focusOnEntity: focusOnEntity,
       exitFocus: exitFocus,
       showEntityDetail: showEntityDetail,
@@ -1112,6 +1009,11 @@ window.GraphExplorer = (function () {
       openVersionsModal: openVersionsModal,
       openRelationsModal: openRelationsModal,
       setEntityCache: function (cache) { _opts.entityCache = cache; },
+      setMainViewCache: function (relations, entities, inheritedIds) {
+        _mainViewRelations = relations || [];
+        _mainViewEntities = entities || {};
+        _mainViewInheritedRelationIds = inheritedIds || null;
+      },
       setVersionCounts: function (vc) { _versionCounts = vc; },
       setState: function (key, val) {
         if (key === 'relationScope') _relationScope = val;
@@ -1144,10 +1046,7 @@ window.GraphExplorer = (function () {
         _currentVersions = [];
         _currentVersionIdx = 0;
         _relationScope = 'accumulated';
-        _accumEntities = null;
-        _accumRelationsByRid = null;
-        _accumHopMap = null;
-        _accumFocusEntityId = null;
+        _session = null;
       },
     };
   }

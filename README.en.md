@@ -124,11 +124,27 @@ The Dream Agent is not a hardcoded loop — it is an **autonomous agent** that d
 ### Installation
 
 ```bash
-git clone https://github.com/ngyygm/deep-dream.git
+git clone --recurse-submodules https://github.com/ngyygm/deep-dream.git
 cd deep-dream
 pip install -r requirements.txt
 cp service_config.example.json service_config.json
 # Edit service_config.json: configure LLM and Embedding
+```
+
+### Install Claude Code CLI (required for chat)
+
+Chat functionality is provided through the Claude Code CLI. Ensure Claude Code (v2.1.90+) is installed:
+
+```bash
+# Verify Claude Code is installed
+claude --version
+```
+
+Claude Code automatically gains Deep Dream MCP tools via `--mcp-config`, no additional configuration needed.
+
+### Start the server
+
+```bash
 python -m server.api --config service_config.json
 ```
 
@@ -263,7 +279,7 @@ Deep Dream ships a Skill so any agent that supports skill invocation (Cursor, Cl
 | LLM | OpenAI-compatible protocol (GLM / Ollama / LM Studio) |
 | Embedding | Local model / HuggingFace |
 | Web | Flask + native SPA Dashboard |
-| Agent Pattern | Tool-based Agent Loop (inspired by claude-code-rev) |
+| Agent Pattern | Tool-based Agent Loop (powered by Claude Code + MCP) |
 
 ---
 

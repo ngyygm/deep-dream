@@ -186,8 +186,8 @@
             <div class="mono" style="font-size:1rem;font-weight:600;">${formatNumber(s.relations)}</div>
           </div>
           <div>
-            <div style="font-size:0.75rem;color:var(--text-muted);">${t('dashboard.memoryCache')}</div>
-            <div class="mono" style="font-size:1rem;font-weight:600;">${formatNumber(s.memory_caches)}</div>
+            <div style="font-size:0.75rem;color:var(--text-muted);">${t('dashboard.episodes')}</div>
+            <div class="mono" style="font-size:1rem;font-weight:600;">${formatNumber(s.episodes)}</div>
           </div>
         </div>
         ${(th.python_threads_total > 0) ? `<div style="margin-top:0.5rem;display:flex;flex-wrap:wrap;gap:0.5rem;font-size:0.7rem;">
@@ -666,9 +666,8 @@
     if (!graphId) { errEl.textContent = t('dashboard.graphIdRequired'); return; }
     errEl.textContent = '';
     try {
-      const res = await fetch('/api/v1/graphs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ graph_id: graphId }) });
-      const data = await res.json();
-      if (!res.ok) { errEl.textContent = data.error || data.message || 'Error'; return; }
+      const data = await state.api.createGraph(graphId);
+      if (data.error) { errEl.textContent = data.error; return; }
       document.getElementById('create-graph-overlay').remove();
       setGraphId(graphId);
       // 刷新 dashboard 图谱列表

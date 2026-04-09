@@ -18,6 +18,11 @@
   let searchRelationMap = {};
   let hopLevel = 0;
   let lastSearchQuery = '';
+  let pathLeftEntities = [];
+  let pathRightEntities = [];
+  let pathLeftSelected = 0;
+  let pathRightSelected = 0;
+  let pathResults = null;
 
   // ---- Path finder (delegated to shared PathFinder component) ----
 
@@ -62,7 +67,7 @@
     const map = {};
     if (!Array.isArray(entities)) return map;
     entities.forEach(e => {
-      map[e.absolute_id] = e.name || e.entity_id || '';
+      map[e.absolute_id] = e.name || e.family_id || '';
     });
     return map;
   }
@@ -116,7 +121,7 @@
               <input type="text" class="input multi-query-input" value="${escapeHtml(q)}"
                      placeholder="${t('search.query')} ${i + 1}" style="flex:1;">
               ${multiQueries.length > 1 ? `
-                <button class="btn btn-ghost btn-sm remove-query-btn" data-index="${i}" title="移除查询">
+                <button class="btn btn-ghost btn-sm remove-query-btn" data-index="${i}" title="${t('common.remove')}">
                   <i data-lucide="x" style="width:14px;height:14px;"></i>
                 </button>
               ` : ''}
@@ -136,7 +141,7 @@
         <div style="display:grid;grid-template-columns:1fr auto auto;gap:12px;align-items:end;">
           <div>
             <label class="form-label">${t('search.seedEntities')}</label>
-            <input type="text" id="traverse-seeds" class="input" placeholder="entity_id_1, entity_id_2, ...">
+            <input type="text" id="traverse-seeds" class="input" placeholder="family_id_1, family_id_2, ...">
           </div>
           <div>
             <label class="form-label">${t('search.maxDepth')}</label>
@@ -442,6 +447,19 @@
   function renderBatchResultContent(idx) {
     const res = batchResults[idx];
     if (!res) return emptyState(t('common.noData'));
+    // Show error if the query failed
+    if (res.error) {
+      return `
+        <div style="margin-top:12px;">
+          <div style="margin-bottom:10px;font-size:0.85rem;color:var(--text-muted);">
+            ${t('search.query')}: <strong>${escapeHtml(res.query || '-')}</strong>
+          </div>
+          <div class="card" style="border-left:3px solid var(--error);">
+            <p style="color:var(--error);font-size:0.85rem;">${escapeHtml(res.error)}</p>
+          </div>
+        </div>
+      `;
+    }
     const entities = res.entities || [];
     const relations = res.relations || [];
     const entityCount = entities.length;
@@ -969,7 +987,7 @@
           row.innerHTML = `
             <span class="mono" style="font-size:0.75rem;color:var(--text-muted);min-width:20px;">${idx + 1}.</span>
             <input type="text" class="input multi-query-input" value="" placeholder="${t('search.query')} ${idx + 1}" style="flex:1;">
-            <button class="btn btn-ghost btn-sm remove-query-btn" data-index="${idx}" title="移除查询">
+            <button class="btn btn-ghost btn-sm remove-query-btn" data-index="${idx}" title="${t('common.remove')}">
               <i data-lucide="x" style="width:14px;height:14px;"></i>
             </button>
           `;
@@ -1030,8 +1048,15 @@
     try {
       const res = await state.api.traverseGraph(seedIds, maxDepth, maxNodes, state.currentGraphId);
       const data = res.data || {};
-      const entities = data.entities || [];
-      const relations = data.relations || [];
+      // 后端 traverse 返回纯数组(只有entities)或带entities/relations的对象
+      let entities, relations;
+      if (Array.isArray(data)) {
+        entities = data;
+        relations = [];
+      } else {
+        entities = data.entities || [];
+        relations = data.relations || [];
+      }
       currentResults = { entities, relations };
       activeTab = 'entities';
       batchResults = {};

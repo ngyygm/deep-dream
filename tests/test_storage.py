@@ -20,7 +20,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from processor.storage.manager import StorageManager
-from processor.models import Entity, Relation, MemoryCache
+from processor.models import Entity, Relation, Episode
 from processor.storage.embedding import EmbeddingClient
 
 
@@ -35,46 +35,46 @@ def _now() -> datetime:
 
 def _make_entity(
     absolute_id: str = "abs_1",
-    entity_id: str = "eid_1",
+    family_id: str = "eid_1",
     name: str = "TestEntity",
     content: str = "A test entity description.",
     event_time: datetime | None = None,
     processed_time: datetime | None = None,
-    memory_cache_id: str = "mc_1",
+    episode_id: str = "mc_1",
     source_document: str = "test_doc.md",
 ) -> Entity:
     return Entity(
         absolute_id=absolute_id,
-        entity_id=entity_id,
+        family_id=family_id,
         name=name,
         content=content,
         event_time=event_time or _now(),
         processed_time=processed_time or _now(),
-        memory_cache_id=memory_cache_id,
+        episode_id=episode_id,
         source_document=source_document,
     )
 
 
 def _make_relation(
     absolute_id: str = "rabs_1",
-    relation_id: str = "rid_1",
+    family_id: str = "rid_1",
     entity1_absolute_id: str = "abs_1",
     entity2_absolute_id: str = "abs_2",
     content: str = "A test relation.",
     event_time: datetime | None = None,
     processed_time: datetime | None = None,
-    memory_cache_id: str = "mc_1",
+    episode_id: str = "mc_1",
     source_document: str = "test_doc.md",
 ) -> Relation:
     return Relation(
         absolute_id=absolute_id,
-        relation_id=relation_id,
+        family_id=family_id,
         entity1_absolute_id=entity1_absolute_id,
         entity2_absolute_id=entity2_absolute_id,
         content=content,
         event_time=event_time or _now(),
         processed_time=processed_time or _now(),
-        memory_cache_id=memory_cache_id,
+        episode_id=episode_id,
         source_document=source_document,
     )
 
@@ -86,8 +86,8 @@ def _make_memory_cache(
     doc_name: str = "test_doc.md",
     activity_type: str = "test",
     source_document: str = "test_doc.md",
-) -> MemoryCache:
-    return MemoryCache(
+) -> Episode:
+    return Episode(
         absolute_id=absolute_id,
         content=content,
         event_time=event_time or _now(),
@@ -115,20 +115,20 @@ def storage(tmp_path, embedding_client):
 # ===================================================================
 
 class TestEntityCRUD:
-    """save_entity / get_entity_by_id / get_entity_by_absolute_id"""
+    """save_entity / get_entity_by_family_id / get_entity_by_absolute_id"""
 
-    def test_save_and_get_by_entity_id(self, storage):
-        e = _make_entity(absolute_id="abs_A", entity_id="eid_A", name="Alice")
+    def test_save_and_get_by_family_id(self, storage):
+        e = _make_entity(absolute_id="abs_A", family_id="eid_A", name="Alice")
         storage.save_entity(e)
 
-        result = storage.get_entity_by_id("eid_A")
+        result = storage.get_entity_by_family_id("eid_A")
         assert result is not None
         assert result.absolute_id == "abs_A"
-        assert result.entity_id == "eid_A"
+        assert result.family_id == "eid_A"
         assert result.name == "Alice"
 
     def test_save_and_get_by_absolute_id(self, storage):
-        e = _make_entity(absolute_id="abs_B", entity_id="eid_B", name="Bob")
+        e = _make_entity(absolute_id="abs_B", family_id="eid_B", name="Bob")
         storage.save_entity(e)
 
         result = storage.get_entity_by_absolute_id("abs_B")
@@ -136,7 +136,7 @@ class TestEntityCRUD:
         assert result.name == "Bob"
 
     def test_get_nonexistent_entity_returns_none(self, storage):
-        assert storage.get_entity_by_id("no_such_id") is None
+        assert storage.get_entity_by_family_id("no_such_id") is None
         assert storage.get_entity_by_absolute_id("no_such_abs") is None
 
     def test_save_entity_preserves_all_fields(self, storage):
@@ -144,12 +144,12 @@ class TestEntityCRUD:
         t_proc = datetime(2025, 3, 15, 10, 31, 0)
         e = _make_entity(
             absolute_id="abs_full",
-            entity_id="eid_full",
+            family_id="eid_full",
             name="FullEntity",
             content="Detailed content here.",
             event_time=t_event,
             processed_time=t_proc,
-            memory_cache_id="mc_special",
+            episode_id="mc_special",
             source_document="special.md",
         )
         storage.save_entity(e)
@@ -158,7 +158,7 @@ class TestEntityCRUD:
         assert result is not None
         assert result.name == "FullEntity"
         assert result.content == "Detailed content here."
-        assert result.memory_cache_id == "mc_special"
+        assert result.episode_id == "mc_special"
         assert result.source_document == "special.md"
         # Datetime fields should round-trip correctly (ISO format)
         assert result.event_time.year == 2025
@@ -167,38 +167,38 @@ class TestEntityCRUD:
 
 
 class TestRelationCRUD:
-    """save_relation / get_relation_by_relation_id / get_relations_by_entities"""
+    """save_relation / get_relation_by_family_id / get_relations_by_entities"""
 
-    def test_save_and_get_by_relation_id(self, storage):
+    def test_save_and_get_by_family_id(self, storage):
         # Need entities that the relation references
-        e1 = _make_entity(absolute_id="abs_R1", entity_id="eid_R1", name="Entity1")
-        e2 = _make_entity(absolute_id="abs_R2", entity_id="eid_R2", name="Entity2")
+        e1 = _make_entity(absolute_id="abs_R1", family_id="eid_R1", name="Entity1")
+        e2 = _make_entity(absolute_id="abs_R2", family_id="eid_R2", name="Entity2")
         storage.save_entity(e1)
         storage.save_entity(e2)
 
         r = _make_relation(
             absolute_id="rabs_1",
-            relation_id="rid_1",
+            family_id="rid_1",
             entity1_absolute_id="abs_R1",
             entity2_absolute_id="abs_R2",
             content="Entity1 knows Entity2",
         )
         storage.save_relation(r)
 
-        result = storage.get_relation_by_relation_id("rid_1")
+        result = storage.get_relation_by_family_id("rid_1")
         assert result is not None
-        assert result.relation_id == "rid_1"
+        assert result.family_id == "rid_1"
         assert result.content == "Entity1 knows Entity2"
 
     def test_get_relations_by_entities(self, storage):
-        e1 = _make_entity(absolute_id="abs_S1", entity_id="eid_S1", name="Source1")
-        e2 = _make_entity(absolute_id="abs_S2", entity_id="eid_S2", name="Source2")
+        e1 = _make_entity(absolute_id="abs_S1", family_id="eid_S1", name="Source1")
+        e2 = _make_entity(absolute_id="abs_S2", family_id="eid_S2", name="Source2")
         storage.save_entity(e1)
         storage.save_entity(e2)
 
         r = _make_relation(
             absolute_id="rabs_S1",
-            relation_id="rid_S1",
+            family_id="rid_S1",
             entity1_absolute_id="abs_S1",
             entity2_absolute_id="abs_S2",
             content="S1 is related to S2",
@@ -210,10 +210,10 @@ class TestRelationCRUD:
         assert any(rel.content == "S1 is related to S2" for rel in relations)
 
     def test_get_nonexistent_relation_returns_none(self, storage):
-        assert storage.get_relation_by_relation_id("no_such_rid") is None
+        assert storage.get_relation_by_family_id("no_such_rid") is None
 
 
-class TestMemoryCacheCRUD:
+class TestEpisodeCRUD:
     """save_memory_cache / load_memory_cache"""
 
     def test_save_and_load_memory_cache(self, storage):
@@ -224,16 +224,16 @@ class TestMemoryCacheCRUD:
         )
         text = "Original document text for hashing."
         doc_hash = hashlib.md5(text.encode("utf-8")).hexdigest()[:12]
-        storage.save_memory_cache(mc, text=text, doc_hash=doc_hash)
+        storage.save_episode(mc, text=text, doc_hash=doc_hash)
 
-        loaded = storage.load_memory_cache("mc_test1")
+        loaded = storage.load_episode("mc_test1")
         assert loaded is not None
         assert loaded.absolute_id == "mc_test1"
         assert "Cached memory content" in loaded.content
         assert loaded.activity_type == "testing"
 
     def test_load_nonexistent_cache_returns_none(self, storage):
-        assert storage.load_memory_cache("nonexistent_mc") is None
+        assert storage.load_episode("nonexistent_mc") is None
 
 
 # ===================================================================
@@ -241,7 +241,7 @@ class TestMemoryCacheCRUD:
 # ===================================================================
 
 class TestEntityVersioning:
-    """Multiple entities with same entity_id but different absolute_id."""
+    """Multiple entities with same family_id but different absolute_id."""
 
     def test_version_count(self, storage):
         eid = "eid_versioned"
@@ -249,7 +249,7 @@ class TestEntityVersioning:
         for i in range(3):
             e = _make_entity(
                 absolute_id=f"abs_v{i}",
-                entity_id=eid,
+                family_id=eid,
                 name=f"VersionedEntity_v{i}",
                 content=f"Content v{i}",
                 processed_time=t0 + timedelta(seconds=i),
@@ -258,50 +258,50 @@ class TestEntityVersioning:
 
         assert storage.get_entity_version_count(eid) == 3
 
-    def test_get_entity_by_id_returns_latest(self, storage):
+    def test_get_entity_by_family_id_returns_latest(self, storage):
         eid = "eid_latest"
         t0 = datetime(2025, 1, 1, 12, 0, 0)
         for i in range(3):
             e = _make_entity(
                 absolute_id=f"abs_l{i}",
-                entity_id=eid,
+                family_id=eid,
                 name=f"LatestEntity_v{i}",
                 content=f"Content v{i}",
                 processed_time=t0 + timedelta(seconds=i),
             )
             storage.save_entity(e)
 
-        result = storage.get_entity_by_id(eid)
+        result = storage.get_entity_by_family_id(eid)
         assert result is not None
         # Should return the version with the latest processed_time
         assert result.name == "LatestEntity_v2"
 
-    def test_get_all_entities_returns_latest_per_entity_id(self, storage):
+    def test_get_all_entities_returns_latest_per_family_id(self, storage):
         t0 = datetime(2025, 6, 1, 8, 0, 0)
         # Entity A with 2 versions
         for i in range(2):
             storage.save_entity(_make_entity(
                 absolute_id=f"abs_ga_A{i}",
-                entity_id="eid_ga_A",
+                family_id="eid_ga_A",
                 name=f"GA_EntityA_v{i}",
                 processed_time=t0 + timedelta(seconds=i),
             ))
         # Entity B with 1 version
         storage.save_entity(_make_entity(
             absolute_id="abs_ga_B0",
-            entity_id="eid_ga_B",
+            family_id="eid_ga_B",
             name="GA_EntityB_v0",
             processed_time=t0 + timedelta(seconds=5),
         ))
 
         all_entities = storage.get_all_entities()
-        eid_set = {e.entity_id for e in all_entities}
+        eid_set = {e.family_id for e in all_entities}
         assert "eid_ga_A" in eid_set
         assert "eid_ga_B" in eid_set
         assert len(all_entities) == 2
 
         # The A entity should be the latest version
-        a_entity = next(e for e in all_entities if e.entity_id == "eid_ga_A")
+        a_entity = next(e for e in all_entities if e.family_id == "eid_ga_A")
         assert a_entity.name == "GA_EntityA_v1"
 
     def test_get_entity_versions_returns_all(self, storage):
@@ -310,7 +310,7 @@ class TestEntityVersioning:
         for i in range(4):
             storage.save_entity(_make_entity(
                 absolute_id=f"abs_versions_{i}",
-                entity_id=eid,
+                family_id=eid,
                 name=f"VEntity_v{i}",
                 processed_time=t0 + timedelta(seconds=i),
             ))
@@ -324,19 +324,19 @@ class TestEntityVersioning:
 # ===================================================================
 
 class TestRelationVersioning:
-    """Same pattern with relation_id."""
+    """Same pattern with family_id."""
 
     def test_multiple_relation_versions(self, storage):
         # Create entities
-        storage.save_entity(_make_entity(absolute_id="abs_rv_e1", entity_id="eid_rv_e1"))
-        storage.save_entity(_make_entity(absolute_id="abs_rv_e2", entity_id="eid_rv_e2"))
+        storage.save_entity(_make_entity(absolute_id="abs_rv_e1", family_id="eid_rv_e1"))
+        storage.save_entity(_make_entity(absolute_id="abs_rv_e2", family_id="eid_rv_e2"))
 
         rid = "rid_versioned"
         t0 = datetime(2025, 1, 1, 12, 0, 0)
         for i in range(3):
             r = _make_relation(
                 absolute_id=f"rabs_rv_{i}",
-                relation_id=rid,
+                family_id=rid,
                 entity1_absolute_id="abs_rv_e1",
                 entity2_absolute_id="abs_rv_e2",
                 content=f"Relation content v{i}",
@@ -344,21 +344,21 @@ class TestRelationVersioning:
             )
             storage.save_relation(r)
 
-        # get_relation_by_relation_id should return latest
-        latest = storage.get_relation_by_relation_id(rid)
+        # get_relation_by_family_id should return latest
+        latest = storage.get_relation_by_family_id(rid)
         assert latest is not None
         assert latest.content == "Relation content v2"
 
     def test_get_relation_versions_returns_all(self, storage):
-        storage.save_entity(_make_entity(absolute_id="abs_rv2_e1", entity_id="eid_rv2_e1"))
-        storage.save_entity(_make_entity(absolute_id="abs_rv2_e2", entity_id="eid_rv2_e2"))
+        storage.save_entity(_make_entity(absolute_id="abs_rv2_e1", family_id="eid_rv2_e1"))
+        storage.save_entity(_make_entity(absolute_id="abs_rv2_e2", family_id="eid_rv2_e2"))
 
         rid = "rid_versions2"
         t0 = datetime(2025, 1, 1, 12, 0, 0)
         for i in range(3):
             storage.save_relation(_make_relation(
                 absolute_id=f"rabs_rv2_{i}",
-                relation_id=rid,
+                family_id=rid,
                 entity1_absolute_id="abs_rv2_e1",
                 entity2_absolute_id="abs_rv2_e2",
                 content=f"Content v{i}",
@@ -379,19 +379,19 @@ class TestSearch:
     def test_search_entities_jaccard(self, storage):
         storage.save_entity(_make_entity(
             absolute_id="abs_search1",
-            entity_id="eid_search1",
+            family_id="eid_search1",
             name="Python Programming",
             content="A programming language.",
         ))
         storage.save_entity(_make_entity(
             absolute_id="abs_search2",
-            entity_id="eid_search2",
+            family_id="eid_search2",
             name="Java Programming",
             content="Another programming language.",
         ))
         storage.save_entity(_make_entity(
             absolute_id="abs_search3",
-            entity_id="eid_search3",
+            family_id="eid_search3",
             name="Cooking Recipes",
             content="How to cook Italian food.",
         ))
@@ -410,13 +410,13 @@ class TestSearch:
     def test_search_entities_jaccard_name_only_mode(self, storage):
         storage.save_entity(_make_entity(
             absolute_id="abs_nm1",
-            entity_id="eid_nm1",
+            family_id="eid_nm1",
             name="Alice Wonderland",
             content="A curious girl.",
         ))
         storage.save_entity(_make_entity(
             absolute_id="abs_nm2",
-            entity_id="eid_nm2",
+            family_id="eid_nm2",
             name="Bob Builder",
             content="Can he fix it.",
         ))
@@ -435,21 +435,21 @@ class TestSearch:
         for i in range(5):
             storage.save_entity(_make_entity(
                 absolute_id=f"abs_all_e{i}",
-                entity_id=f"eid_all_e{i}",
+                family_id=f"eid_all_e{i}",
                 name=f"Entity_{i}",
             ))
         all_entities = storage.get_all_entities()
         assert len(all_entities) == 5
 
     def test_get_all_relations_returns_results(self, storage):
-        storage.save_entity(_make_entity(absolute_id="abs_are1", entity_id="eid_are1"))
-        storage.save_entity(_make_entity(absolute_id="abs_are2", entity_id="eid_are2"))
-        storage.save_entity(_make_entity(absolute_id="abs_are3", entity_id="eid_are3"))
+        storage.save_entity(_make_entity(absolute_id="abs_are1", family_id="eid_are1"))
+        storage.save_entity(_make_entity(absolute_id="abs_are2", family_id="eid_are2"))
+        storage.save_entity(_make_entity(absolute_id="abs_are3", family_id="eid_are3"))
 
         for i in range(3):
             storage.save_relation(_make_relation(
                 absolute_id=f"rabs_are_{i}",
-                relation_id=f"rid_are_{i}",
+                family_id=f"rid_are_{i}",
                 entity1_absolute_id="abs_are1",
                 entity2_absolute_id="abs_are2" if i < 2 else "abs_are3",
                 content=f"Relation {i}",
@@ -464,74 +464,74 @@ class TestSearch:
 # ===================================================================
 
 class TestMergeOperations:
-    """merge_entity_ids and self-referential relations detection."""
+    """merge_family_ids and self-referential relations detection."""
 
-    def test_merge_entity_ids(self, storage):
+    def test_merge_family_ids(self, storage):
         t0 = datetime(2025, 1, 1, 12, 0, 0)
         # Target entity
         storage.save_entity(_make_entity(
             absolute_id="abs_target",
-            entity_id="eid_target",
+            family_id="eid_target",
             name="Target Entity",
             processed_time=t0,
         ))
         # Source entities (2)
         storage.save_entity(_make_entity(
             absolute_id="abs_src1",
-            entity_id="eid_src1",
+            family_id="eid_src1",
             name="Source Entity 1",
             processed_time=t0 + timedelta(seconds=1),
         ))
         storage.save_entity(_make_entity(
             absolute_id="abs_src2",
-            entity_id="eid_src2",
+            family_id="eid_src2",
             name="Source Entity 2",
             processed_time=t0 + timedelta(seconds=2),
         ))
 
-        result = storage.merge_entity_ids("eid_target", ["eid_src1", "eid_src2"])
+        result = storage.merge_entity_families("eid_target", ["eid_src1", "eid_src2"])
         assert result["entities_updated"] == 2
 
-        # After merge, get_entity_by_id("eid_target") should still return target entity
-        target = storage.get_entity_by_id("eid_target")
+        # After merge, get_entity_by_family_id("eid_target") should still return target entity
+        target = storage.get_entity_by_family_id("eid_target")
         assert target is not None
-        assert target.entity_id == "eid_target"
+        assert target.family_id == "eid_target"
 
-        # Source entity_ids should no longer exist as separate entities
-        # All their versions now have entity_id = "eid_target"
+        # Source family_ids should no longer exist as separate entities
+        # All their versions now have family_id = "eid_target"
         assert storage.get_entity_version_count("eid_target") == 3  # 1 target + 2 sources
-        assert storage.resolve_entity_id("eid_src1") == "eid_target"
-        assert storage.resolve_entity_id("eid_src2") == "eid_target"
-        assert storage.get_entity_by_id("eid_src1") is not None
-        assert storage.get_entity_by_id("eid_src1").entity_id == "eid_target"
+        assert storage.resolve_family_id("eid_src1") == "eid_target"
+        assert storage.resolve_family_id("eid_src2") == "eid_target"
+        assert storage.get_entity_by_family_id("eid_src1") is not None
+        assert storage.get_entity_by_family_id("eid_src1").family_id == "eid_target"
 
     def test_entity_redirect_chain_resolves_to_latest(self, storage):
         t0 = datetime(2025, 1, 1, 12, 0, 0)
         storage.save_entity(_make_entity(
             absolute_id="abs_chain_c",
-            entity_id="eid_chain_c",
+            family_id="eid_chain_c",
             name="Chain Target",
             processed_time=t0,
         ))
         storage.register_entity_redirect("eid_chain_a", "eid_chain_b")
         storage.register_entity_redirect("eid_chain_b", "eid_chain_c")
 
-        assert storage.resolve_entity_id("eid_chain_a") == "eid_chain_c"
-        resolved = storage.get_entity_by_id("eid_chain_a")
+        assert storage.resolve_family_id("eid_chain_a") == "eid_chain_c"
+        resolved = storage.get_entity_by_family_id("eid_chain_a")
         assert resolved is not None
-        assert resolved.entity_id == "eid_chain_c"
+        assert resolved.family_id == "eid_chain_c"
 
     def test_get_relations_by_entities_accepts_redirected_ids(self, storage):
         t0 = datetime(2025, 1, 1, 12, 0, 0)
-        e1 = _make_entity(absolute_id="abs_old_a", entity_id="eid_new_a", name="A", processed_time=t0)
-        e2 = _make_entity(absolute_id="abs_old_b", entity_id="eid_new_b", name="B", processed_time=t0 + timedelta(seconds=1))
+        e1 = _make_entity(absolute_id="abs_old_a", family_id="eid_new_a", name="A", processed_time=t0)
+        e2 = _make_entity(absolute_id="abs_old_b", family_id="eid_new_b", name="B", processed_time=t0 + timedelta(seconds=1))
         storage.save_entity(e1)
         storage.save_entity(e2)
         storage.register_entity_redirect("eid_old_a", "eid_new_a")
         storage.register_entity_redirect("eid_old_b", "eid_new_b")
         storage.save_relation(_make_relation(
             absolute_id="rid_abs_redirect",
-            relation_id="rid_redirect",
+            family_id="rid_redirect",
             entity1_absolute_id=e1.absolute_id,
             entity2_absolute_id=e2.absolute_id,
             content="redirect relation",
@@ -546,21 +546,21 @@ class TestMergeOperations:
         t0 = datetime(2025, 1, 1, 12, 0, 0)
         storage.save_entity(_make_entity(
             absolute_id="abs_sr_v0",
-            entity_id="eid_sr",
+            family_id="eid_sr",
             name="SelfRefEntity v0",
             processed_time=t0,
         ))
         storage.save_entity(_make_entity(
             absolute_id="abs_sr_v1",
-            entity_id="eid_sr",
+            family_id="eid_sr",
             name="SelfRefEntity v1",
             processed_time=t0 + timedelta(seconds=1),
         ))
 
-        # Create a self-referential relation (both ends point to same entity_id)
+        # Create a self-referential relation (both ends point to same family_id)
         storage.save_relation(_make_relation(
             absolute_id="rabs_sr",
-            relation_id="rid_sr",
+            family_id="rid_sr",
             entity1_absolute_id="abs_sr_v0",
             entity2_absolute_id="abs_sr_v1",
             content="Self-referential relation",
@@ -570,13 +570,13 @@ class TestMergeOperations:
         # Create a normal relation for contrast
         storage.save_entity(_make_entity(
             absolute_id="abs_sr_other",
-            entity_id="eid_sr_other",
+            family_id="eid_sr_other",
             name="Other Entity",
             processed_time=t0,
         ))
         storage.save_relation(_make_relation(
             absolute_id="rabs_sr_normal",
-            relation_id="rid_sr_normal",
+            family_id="rid_sr_normal",
             entity1_absolute_id="abs_sr_v0",
             entity2_absolute_id="abs_sr_other",
             content="Normal relation",
@@ -589,8 +589,8 @@ class TestMergeOperations:
         assert self_refs["eid_sr"][0]["content"] == "Self-referential relation"
 
     def test_merge_empty_source_list(self, storage):
-        storage.save_entity(_make_entity(absolute_id="abs_mt", entity_id="eid_mt"))
-        result = storage.merge_entity_ids("eid_mt", [])
+        storage.save_entity(_make_entity(absolute_id="abs_mt", family_id="eid_mt"))
+        result = storage.merge_entity_families("eid_mt", [])
         assert result["entities_updated"] == 0
 
 
@@ -608,7 +608,7 @@ class TestDocHashExtraction:
             activity_type="extraction",
         )
         doc_hash = hashlib.md5(doc_text.encode("utf-8")).hexdigest()[:12]
-        storage.save_memory_cache(mc, text=doc_text, doc_hash=doc_hash)
+        storage.save_episode(mc, text=doc_text, doc_hash=doc_hash)
         return doc_hash
 
     def test_save_and_load_extraction_result(self, storage):
@@ -639,7 +639,7 @@ class TestDocHashExtraction:
             content="Find cache test content",
             activity_type="finding",
         )
-        storage.save_memory_cache(mc, text=doc_text, doc_hash=doc_hash)
+        storage.save_episode(mc, text=doc_text, doc_hash=doc_hash)
 
         found = storage.find_cache_by_doc_hash(doc_hash)
         assert found is not None
@@ -659,7 +659,7 @@ class TestEdgeCases:
     def test_empty_content_string(self, storage):
         e = _make_entity(
             absolute_id="abs_empty",
-            entity_id="eid_empty",
+            family_id="eid_empty",
             name="EmptyContentEntity",
             content="",
         )
@@ -672,7 +672,7 @@ class TestEdgeCases:
         long_content = "X" * 15000  # 15000 chars
         e = _make_entity(
             absolute_id="abs_long",
-            entity_id="eid_long",
+            family_id="eid_long",
             name="LongContentEntity",
             content=long_content,
         )
@@ -687,7 +687,7 @@ class TestEdgeCases:
         emoji_content = "Unicode: \u4e2d\u6587\u30c6\u30b9\u30c8 \U0001f600\U0001f30d emoji \u00e9\u00e8\u00ea"
         e = _make_entity(
             absolute_id="abs_unicode",
-            entity_id="eid_unicode",
+            family_id="eid_unicode",
             name="Unicode Entity",
             content=emoji_content,
         )
@@ -701,7 +701,7 @@ class TestEdgeCases:
         malicious_name = "Robert'); DROP TABLE entities; --"
         e = _make_entity(
             absolute_id="abs_sqli",
-            entity_id="eid_sqli",
+            family_id="eid_sqli",
             name=malicious_name,
             content="Trying SQL injection",
         )
@@ -720,7 +720,7 @@ class TestEdgeCases:
         malicious_content = "'); INSERT INTO entities VALUES ('hack', 'hack', 'hack', 'hack', 'hack', 'hack', 'hack', 'hack', NULL); --"
         e = _make_entity(
             absolute_id="abs_sqli2",
-            entity_id="eid_sqli2",
+            family_id="eid_sqli2",
             name="SQLInjectionContent",
             content=malicious_content,
         )
@@ -730,18 +730,18 @@ class TestEdgeCases:
         assert result.content == malicious_content
 
     def test_empty_content_relation(self, storage):
-        storage.save_entity(_make_entity(absolute_id="abs_ecr1", entity_id="eid_ecr1"))
-        storage.save_entity(_make_entity(absolute_id="abs_ecr2", entity_id="eid_ecr2"))
+        storage.save_entity(_make_entity(absolute_id="abs_ecr1", family_id="eid_ecr1"))
+        storage.save_entity(_make_entity(absolute_id="abs_ecr2", family_id="eid_ecr2"))
 
         r = _make_relation(
             absolute_id="rabs_ecr",
-            relation_id="rid_ecr",
+            family_id="rid_ecr",
             entity1_absolute_id="abs_ecr1",
             entity2_absolute_id="abs_ecr2",
             content="",
         )
         storage.save_relation(r)
-        result = storage.get_relation_by_relation_id("rid_ecr")
+        result = storage.get_relation_by_family_id("rid_ecr")
         assert result is not None
         assert result.content == ""
 
@@ -766,7 +766,7 @@ class TestConcurrentAccess:
                 for j in range(entities_per_thread):
                     e = _make_entity(
                         absolute_id=f"abs_t{thread_idx}_e{j}",
-                        entity_id=f"eid_t{thread_idx}_e{j}",
+                        family_id=f"eid_t{thread_idx}_e{j}",
                         name=f"Thread{thread_idx}_Entity{j}",
                         content=f"Content from thread {thread_idx}, entity {j}",
                         processed_time=t0 + timedelta(
@@ -797,6 +797,6 @@ class TestConcurrentAccess:
         for ti in range(num_threads):
             for ej in [0, entities_per_thread - 1]:
                 eid = f"eid_t{ti}_e{ej}"
-                result = storage.get_entity_by_id(eid)
+                result = storage.get_entity_by_family_id(eid)
                 assert result is not None, f"Missing entity {eid}"
                 assert result.name == f"Thread{ti}_Entity{ej}"

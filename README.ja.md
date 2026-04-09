@@ -124,11 +124,27 @@ Dream Agent はハードコードされたループではなく、**自律的エ
 ### インストール
 
 ```bash
-git clone https://github.com/ngyygm/deep-dream.git
+git clone --recurse-submodules https://github.com/ngyygm/deep-dream.git
 cd deep-dream
 pip install -r requirements.txt
 cp service_config.example.json service_config.json
 # service_config.json を編集: LLM と Embedding を設定
+```
+
+### Claude Code CLI のインストール（チャット機能に必要）
+
+チャット機能は Claude Code CLI によって提供されます。Claude Code (v2.1.90+) がインストールされていることを確認してください：
+
+```bash
+# Claude Code がインストールされているか確認
+claude --version
+```
+
+Claude Code は `--mcp-config` で Deep Dream MCP ツールを自動取得します。追加設定は不要です。
+
+### サーバー起動
+
+```bash
 python -m server.api --config service_config.json
 ```
 
@@ -263,7 +279,7 @@ Deep Dream はスキルを提供し、スキル呼び出しをサポートする
 | LLM | OpenAI 互換プロトコル (GLM / Ollama / LM Studio) |
 | Embedding | ローカルモデル / HuggingFace |
 | Web | Flask + ネイティブ SPA ダッシュボード |
-| Agent パターン | Tool-based Agent Loop (claude-code-rev にインスパイア) |
+| Agent パターン | Tool-based Agent Loop (Claude Code + MCP ベース) |
 
 ---
 

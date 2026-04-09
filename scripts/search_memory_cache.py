@@ -47,7 +47,7 @@ def search_caches(storage, keywords, entity_names=None, max_results=20):
     # 如果指定了实体，优先搜索包含实体的缓存
     if entity_names:
         # 获取实体ID
-        entity_ids = set()
+        family_ids = set()
         for name in entity_names.split(','):
             name = name.strip()
             entities = storage.search_entities_by_similarity(
@@ -56,14 +56,14 @@ def search_caches(storage, keywords, entity_names=None, max_results=20):
                 max_results=1
             )
             if entities:
-                entity_ids.add(entities[0].entity_id)
+                family_ids.add(entities[0].family_id)
 
     matched_caches = []
     keywords_list = [k.lower() for k in keywords.split(',')]
 
     for cache_file in cache_files:
         try:
-            cache = storage.load_memory_cache(cache_file.stem)
+            cache = storage.load_episode(cache_file.stem)
             if cache:
                 content = cache.content.lower()
 

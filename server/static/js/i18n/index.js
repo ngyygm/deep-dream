@@ -43,9 +43,10 @@ window.I18N = {
 
     // Update page title
     const pageTitle = document.getElementById('page-title');
-    if (pageTitle && typeof pageTitles !== 'undefined') {
+    if (pageTitle && typeof _pageTitleKeys !== 'undefined') {
       const page = (window.location.hash || '#dashboard').slice(1).split('/')[0] || 'dashboard';
-      pageTitle.textContent = pageTitles[page] || page;
+      const key = _pageTitleKeys[page] || '';
+      pageTitle.textContent = this.t(key) || page;
     }
   },
 

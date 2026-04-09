@@ -1,0 +1,14 @@
+# 类型: logs
+# 来源: access_log
+# 描述: API 网关访问日志，包含请求路径、状态码、延迟
+
+2024-11-15T08:00:01.234Z [INFO] kong-gateway request_id=abc-123-def method=POST path=/api/v2/data/ingest status=200 latency=45ms client_ip=10.0.3.15 user_id=user_7823 source=sensor_001
+2024-11-15T08:00:01.456Z [INFO] kong-gateway request_id=ghi-456-jkl method=GET path=/api/v2/users/me status=200 latency=12ms client_ip=10.0.2.88 user_id=user_1294 source=web_app
+2024-11-15T08:00:01.789Z [WARN] kong-gateway request_id=mno-789-pqr method=POST path=/api/v2/data/ingest status=429 latency=3ms client_ip=10.0.3.15 user_id=user_7823 source=sensor_001 error="Rate limit exceeded: 100 req/min"
+2024-11-15T08:00:02.001Z [ERROR] kong-gateway request_id=stu-012-vwx method=POST path=/api/v2/users/register status=500 latency=2340ms client_ip=203.0.113.42 user_id=anonymous source=mobile_app error="Database connection timeout"
+2024-11-15T08:00:02.234Z [INFO] kong-gateway request_id=yza-345-bcd method=GET path=/api/v2/data/latest?metric_type=temperature&source=sensor_001 status=200 latency=67ms client_ip=10.0.1.200 user_id=user_4521 source=dashboard
+2024-11-15T08:00:03.567Z [INFO] kong-gateway request_id=efg-678-hij method=GET path=/health status=200 latency=2ms client_ip=10.0.0.1 user_id=kube-probe source=liveness_check
+2024-11-15T08:00:05.890Z [WARN] kong-gateway request_id=klm-901-nop method=POST path=/api/v2/data/ingest status=403 latency=8ms client_ip=10.0.5.33 user_id=user_0012 source=external_api error="Insufficient permissions: viewer cannot ingest"
+2024-11-15T08:00:06.123Z [INFO] kong-gateway request_id=qrs-234-tuv method=GET path=/api/v2/data/history?from=2024-11-14&to=2024-11-15&metric_type=humidity status=200 latency=145ms client_ip=10.0.1.200 user_id=user_4521 source=dashboard
+2024-11-15T08:00:07.456Z [INFO] kong-gateway request_id=wxy-567-zab method=POST path=/api/v2/users/login status=200 latency=89ms client_ip=203.0.113.100 user_id=user_9901 source=mobile_app
+2024-11-15T08:00:10.789Z [INFO] kong-gateway request_id=cde-890-fgh method=POST path=/api/v2/data/ingest status=200 latency=34ms client_ip=10.0.3.20 user_id=user_3344 source=sensor_002

@@ -36,6 +36,7 @@ coverage.xml
 *.egg-info/
 dist/
 build/
+*.whl
 
 # 流水线蒸馏输出（与 service_config.pipeline.distill_data_dir 默认一致）
 distill_pipeline/
@@ -43,3 +44,5 @@ distill_pipeline/
 # 日志与系统文件
 *.log
 .DS_Store
+.claude/ralph-loop.local.md
+.ralphrc

@@ -232,9 +232,9 @@ class TestEntityEndpoints:
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["success"] is True
-        assert isinstance(data["data"], list)
+        assert isinstance(data["data"]["entities"], list)
 
-    def test_get_entity_by_id_not_found(self, client, created_graph):
+    def test_get_entity_by_family_id_not_found(self, client, created_graph):
         resp = client.get(
             f"/api/v1/find/entities/nonexistent?graph_id={created_graph}"
         )
@@ -323,12 +323,16 @@ class TestEntityEndpoints:
         assert resp.status_code == 404
 
     def test_entity_version_counts_invalid_body(self, client, created_graph):
+        """空 body 返回空结果而非 400，服务器对缺失 family_ids 宽容处理。"""
         resp = client.post(
             f"/api/v1/find/entities/version-counts?graph_id={created_graph}",
             data=json.dumps({}),
             content_type="application/json",
         )
-        assert resp.status_code == 400
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["success"] is True
+        assert data["data"] == {}
 
 
 # ---------------------------------------------------------------------------
@@ -342,7 +346,7 @@ class TestRelationEndpoints:
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["success"] is True
-        assert isinstance(data["data"], list)
+        assert isinstance(data["data"]["relations"], list)
 
     def test_get_relation_by_absolute_id_not_found(self, client, created_graph):
         resp = client.get(
@@ -358,7 +362,7 @@ class TestRelationEndpoints:
         data = resp.get_json()
         assert data["success"] is True
 
-    def test_get_relations_by_entity_id(self, client, created_graph):
+    def test_get_relations_by_family_id(self, client, created_graph):
         resp = client.get(
             f"/api/v1/find/entities/noid/relations?graph_id={created_graph}"
         )
@@ -391,7 +395,7 @@ class TestRelationEndpoints:
     def test_relations_between_post(self, client, created_graph):
         resp = client.post(
             f"/api/v1/find/relations/between?graph_id={created_graph}",
-            data=json.dumps({"entity_id_a": "a", "entity_id_b": "b"}),
+            data=json.dumps({"family_id_a": "a", "family_id_b": "b"}),
             content_type="application/json",
         )
         assert resp.status_code == 200
@@ -416,28 +420,28 @@ class TestRelationEndpoints:
 # ---------------------------------------------------------------------------
 
 
-class TestMemoryCacheEndpoints:
+class TestEpisodeEndpoints:
     def test_get_latest_memory_cache_not_found(self, client, created_graph):
         resp = client.get(
-            f"/api/v1/find/memory-caches/latest?graph_id={created_graph}"
+            f"/api/v1/find/episodes/latest?graph_id={created_graph}"
         )
         assert resp.status_code == 404
 
     def test_get_latest_memory_cache_metadata_not_found(self, client, created_graph):
         resp = client.get(
-            f"/api/v1/find/memory-caches/latest/metadata?graph_id={created_graph}"
+            f"/api/v1/find/episodes/latest/metadata?graph_id={created_graph}"
         )
         assert resp.status_code == 404
 
     def test_get_memory_cache_by_id_not_found(self, client, created_graph):
         resp = client.get(
-            f"/api/v1/find/memory-caches/no-such-cache?graph_id={created_graph}"
+            f"/api/v1/find/episodes/no-such-cache?graph_id={created_graph}"
         )
         assert resp.status_code == 404
 
-    def test_get_memory_cache_text_not_found(self, client, created_graph):
+    def test_get_episode_text_not_found(self, client, created_graph):
         resp = client.get(
-            f"/api/v1/find/memory-caches/no-such-cache/text?graph_id={created_graph}"
+            f"/api/v1/find/episodes/no-such-cache/text?graph_id={created_graph}"
         )
         assert resp.status_code == 404
 
@@ -673,7 +677,7 @@ class TestStatisticsEndpoint:
         resp = client.get(f"/api/v1/find/stats?graph_id={created_graph}")
         assert resp.status_code == 200
         data = resp.get_json()
-        assert "total_memory_caches" in data["data"]
+        assert "total_episodes" in data["data"]
 
 
 # ---------------------------------------------------------------------------
@@ -844,7 +848,7 @@ class TestAPIRoutesIndex:
         data = resp.get_json()
         assert data["success"] is True
         # Verify the major sections are present
-        for section in ("health", "remember", "find", "entity", "relation", "memory_cache", "system"):
+        for section in ("health", "remember", "find", "entity", "relation", "episode", "system"):
             assert section in data["data"], f"Missing section: {section}"
 
 
@@ -1083,22 +1087,22 @@ class TestRelationsBetweenParams:
     def test_relations_between_get(self, client, created_graph):
         resp = client.get(
             f"/api/v1/find/relations/between?graph_id={created_graph}"
-            "&entity_id_a=a&entity_id_b=b"
+            "&family_id_a=a&family_id_b=b"
         )
         assert resp.status_code == 200
 
     def test_relations_between_only_one_param(self, client, created_graph):
         resp = client.get(
             f"/api/v1/find/relations/between?graph_id={created_graph}"
-            "&entity_id_a=a"
+            "&family_id_a=a"
         )
         assert resp.status_code == 400
 
     def test_relations_between_post_with_from_to(self, client, created_graph):
-        """Test the alternate param names from_entity_id / to_entity_id."""
+        """Test the alternate param names from_family_id / to_family_id."""
         resp = client.post(
             f"/api/v1/find/relations/between?graph_id={created_graph}",
-            data=json.dumps({"from_entity_id": "a", "to_entity_id": "b"}),
+            data=json.dumps({"from_family_id": "a", "to_family_id": "b"}),
             content_type="application/json",
         )
         assert resp.status_code == 200

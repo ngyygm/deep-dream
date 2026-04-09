@@ -16,7 +16,7 @@ import hashlib
 import numpy as np
 import difflib
 
-from ..models import MemoryCache, Entity, Relation
+from ..models import Episode, Entity, Relation
 from ..utils import clean_markdown_code_blocks, wprint
 
 
@@ -44,7 +44,7 @@ class StorageManager:
         self.docs_dir.mkdir(exist_ok=True)
 
         # 保留旧目录引用（用于迁移和向后兼容读取）
-        self.cache_dir = self.storage_path / "memory_caches"
+        self.cache_dir = self.storage_path / "episodes"
         self.cache_json_dir = self.cache_dir / "json"
         self.cache_md_dir = self.cache_dir / "md"
 
@@ -87,12 +87,12 @@ class StorageManager:
         c.execute("""
             CREATE TABLE IF NOT EXISTS entities (
                 id TEXT PRIMARY KEY,
-                entity_id TEXT NOT NULL,
+                family_id TEXT NOT NULL,
                 name TEXT NOT NULL,
                 content TEXT NOT NULL,
                 event_time TEXT NOT NULL,
                 processed_time TEXT NOT NULL,
-                memory_cache_id TEXT NOT NULL,
+                episode_id TEXT NOT NULL,
                 source_document TEXT DEFAULT '',
                 embedding BLOB
             )
@@ -100,33 +100,33 @@ class StorageManager:
         c.execute("""
             CREATE TABLE IF NOT EXISTS relations (
                 id TEXT PRIMARY KEY,
-                relation_id TEXT NOT NULL,
+                family_id TEXT NOT NULL,
                 entity1_absolute_id TEXT NOT NULL,
                 entity2_absolute_id TEXT NOT NULL,
                 content TEXT NOT NULL,
                 event_time TEXT NOT NULL,
                 processed_time TEXT NOT NULL,
-                memory_cache_id TEXT NOT NULL,
+                episode_id TEXT NOT NULL,
                 source_document TEXT DEFAULT '',
                 embedding BLOB
             )
         """)
         c.execute("""
             CREATE TABLE IF NOT EXISTS entity_redirects (
-                source_entity_id TEXT PRIMARY KEY,
-                target_entity_id TEXT NOT NULL,
+                source_family_id TEXT PRIMARY KEY,
+                target_family_id TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )
         """)
-        c.execute("CREATE INDEX IF NOT EXISTS idx_entity_id ON entities(entity_id)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_family_id ON entities(family_id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_entity_name ON entities(name)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_entity_event_time ON entities(event_time)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_entity_processed_time ON entities(processed_time)")
-        c.execute("CREATE INDEX IF NOT EXISTS idx_relation_id ON relations(relation_id)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_relation_id ON relations(family_id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_relation_entities ON relations(entity1_absolute_id, entity2_absolute_id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_relation_event_time ON relations(event_time)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_relation_processed_time ON relations(processed_time)")
-        c.execute("CREATE INDEX IF NOT EXISTS idx_entity_redirect_target ON entity_redirects(target_entity_id)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_entity_redirect_target ON entity_redirects(target_family_id)")
         # 为旧库自动添加缺失的 source_document 列（幂等）
         self._ensure_column(c, "entities", "source_document", "TEXT DEFAULT ''")
         self._ensure_column(c, "relations", "source_document", "TEXT DEFAULT ''")
@@ -145,7 +145,7 @@ class StorageManager:
                 uuid TEXT PRIMARY KEY,
                 target_type TEXT NOT NULL,
                 target_absolute_id TEXT NOT NULL,
-                target_entity_id TEXT NOT NULL,
+                target_family_id TEXT NOT NULL,
                 section_key TEXT NOT NULL,
                 change_type TEXT NOT NULL,
                 old_hash TEXT DEFAULT '',
@@ -156,14 +156,14 @@ class StorageManager:
             )
         """)
         c.execute("CREATE INDEX IF NOT EXISTS idx_cp_target_abs ON content_patches(target_absolute_id)")
-        c.execute("CREATE INDEX IF NOT EXISTS idx_cp_entity_id ON content_patches(target_entity_id)")
-        c.execute("CREATE INDEX IF NOT EXISTS idx_cp_section ON content_patches(target_entity_id, section_key)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_cp_family_id ON content_patches(target_family_id)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_cp_section ON content_patches(target_family_id, section_key)")
         # BM25 全文搜索虚拟表
         c.execute("""
-            CREATE VIRTUAL TABLE IF NOT EXISTS entity_fts USING fts5(name, content, entity_id UNINDEXED)
+            CREATE VIRTUAL TABLE IF NOT EXISTS entity_fts USING fts5(name, content, family_id UNINDEXED)
         """)
         c.execute("""
-            CREATE VIRTUAL TABLE IF NOT EXISTS relation_fts USING fts5(content, relation_id UNINDEXED)
+            CREATE VIRTUAL TABLE IF NOT EXISTS relation_fts USING fts5(content, family_id UNINDEXED)
         """)
         conn.commit()
 
@@ -223,32 +223,32 @@ class StorageManager:
             for p in patches:
                 cursor.execute("""
                     INSERT OR REPLACE INTO content_patches
-                    (uuid, target_type, target_absolute_id, target_entity_id,
+                    (uuid, target_type, target_absolute_id, target_family_id,
                      section_key, change_type, old_hash, new_hash, diff_summary,
                      source_document, event_time)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
-                    p.uuid, p.target_type, p.target_absolute_id, p.target_entity_id,
+                    p.uuid, p.target_type, p.target_absolute_id, p.target_family_id,
                     p.section_key, p.change_type, p.old_hash, p.new_hash,
                     p.diff_summary, p.source_document,
                     p.event_time.isoformat() if p.event_time else datetime.now().isoformat(),
                 ))
             conn.commit()
 
-    def get_content_patches(self, entity_id: str, section_key: str = None) -> list:
-        """查询指定 entity_id 的 ContentPatch 记录。"""
+    def get_content_patches(self, family_id: str, section_key: str = None) -> list:
+        """查询指定 family_id 的 ContentPatch 记录。"""
         from ..models import ContentPatch
         conn = self._get_conn()
         cursor = conn.cursor()
         if section_key:
             cursor.execute(
-                "SELECT * FROM content_patches WHERE target_entity_id = ? AND section_key = ? ORDER BY event_time DESC",
-                (entity_id, section_key),
+                "SELECT * FROM content_patches WHERE target_family_id = ? AND section_key = ? ORDER BY event_time DESC",
+                (family_id, section_key),
             )
         else:
             cursor.execute(
-                "SELECT * FROM content_patches WHERE target_entity_id = ? ORDER BY event_time DESC",
-                (entity_id,),
+                "SELECT * FROM content_patches WHERE target_family_id = ? ORDER BY event_time DESC",
+                (family_id,),
             )
         patches = []
         for row in cursor.fetchall():
@@ -256,7 +256,7 @@ class StorageManager:
                 uuid=row[0],
                 target_type=row[1],
                 target_absolute_id=row[2],
-                target_entity_id=row[3],
+                target_family_id=row[3],
                 section_key=row[4],
                 change_type=row[5],
                 old_hash=row[6] or "",
@@ -267,11 +267,11 @@ class StorageManager:
             ))
         return patches
 
-    def get_section_history(self, entity_id: str, section_key: str) -> list:
+    def get_section_history(self, family_id: str, section_key: str) -> list:
         """获取单个 section 的全版本变更历史。"""
-        return self.get_content_patches(entity_id, section_key=section_key)
+        return self.get_content_patches(family_id, section_key=section_key)
 
-    def get_version_diff(self, entity_id: str, v1: str, v2: str) -> dict:
+    def get_version_diff(self, family_id: str, v1: str, v2: str) -> dict:
         """获取两个版本之间的 section 级 diff。"""
         from ..content_schema import parse_markdown_sections, compute_section_diff
         conn = self._get_conn()
@@ -438,12 +438,12 @@ class StorageManager:
         """从数据库行构造 Entity 对象，自动适配新旧 schema。"""
         return Entity(
             absolute_id=row[0],
-            entity_id=row[1],
+            family_id=row[1],
             name=row[2],
             content=row[3],
             event_time=self._safe_parse_datetime(row[4]),
             processed_time=self._safe_parse_datetime(row[5]),
-            memory_cache_id=row[6],
+            episode_id=row[6],
             source_document=row[7] if len(row) > 7 else '',
             embedding=row[8] if len(row) > 8 else None,
             summary=row[9] if len(row) > 9 else None,
@@ -456,13 +456,13 @@ class StorageManager:
         """从数据库行构造 Relation 对象，自动适配新旧 schema。"""
         return Relation(
             absolute_id=row[0],
-            relation_id=row[1],
+            family_id=row[1],
             entity1_absolute_id=row[2] or "",
             entity2_absolute_id=row[3] or "",
             content=row[4],
             event_time=self._safe_parse_datetime(row[5]),
             processed_time=self._safe_parse_datetime(row[6]),
-            memory_cache_id=row[7],
+            episode_id=row[7],
             source_document=row[8] if len(row) > 8 else '',
             embedding=row[9] if len(row) > 9 else None,
             summary=row[10] if len(row) > 10 else None,
@@ -481,12 +481,12 @@ class StorageManager:
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS entities (
                 id TEXT PRIMARY KEY,
-                entity_id TEXT NOT NULL,
+                family_id TEXT NOT NULL,
                 name TEXT NOT NULL,
                 content TEXT NOT NULL,
                 event_time TEXT NOT NULL,
                 processed_time TEXT NOT NULL,
-                memory_cache_id TEXT NOT NULL,
+                episode_id TEXT NOT NULL,
                 source_document TEXT DEFAULT '',
                 embedding BLOB
             )
@@ -496,43 +496,43 @@ class StorageManager:
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS relations (
                 id TEXT PRIMARY KEY,
-                relation_id TEXT NOT NULL,
+                family_id TEXT NOT NULL,
                 entity1_absolute_id TEXT NOT NULL,
                 entity2_absolute_id TEXT NOT NULL,
                 content TEXT NOT NULL,
                 event_time TEXT NOT NULL,
                 processed_time TEXT NOT NULL,
-                memory_cache_id TEXT NOT NULL,
+                episode_id TEXT NOT NULL,
                 source_document TEXT DEFAULT '',
                 embedding BLOB
             )
         """)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS entity_redirects (
-                source_entity_id TEXT PRIMARY KEY,
-                target_entity_id TEXT NOT NULL,
+                source_family_id TEXT PRIMARY KEY,
+                target_family_id TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )
         """)
 
         # 创建索引
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_entity_id ON entities(entity_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_family_id ON entities(family_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_entity_name ON entities(name)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_entity_event_time ON entities(event_time)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_entity_processed_time ON entities(processed_time)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_relation_id ON relations(relation_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_relation_id ON relations(family_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_relation_entities ON relations(entity1_absolute_id, entity2_absolute_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_relation_event_time ON relations(event_time)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_relation_processed_time ON relations(processed_time)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_entity_redirect_target ON entity_redirects(target_entity_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_entity_redirect_target ON entity_redirects(target_family_id)")
 
         # 唯一索引：防止并行创建时产生重复版本
         try:
-            cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_entity_unique ON entities(entity_id, processed_time)")
+            cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_entity_unique ON entities(family_id, processed_time)")
         except sqlite3.OperationalError:
             pass  # 索引已存在或存在重复数据，忽略
         try:
-            cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_relation_unique ON relations(relation_id, processed_time)")
+            cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_relation_unique ON relations(family_id, processed_time)")
         except sqlite3.OperationalError:
             pass
 
@@ -563,7 +563,7 @@ class StorageManager:
                 uuid TEXT PRIMARY KEY,
                 target_type TEXT NOT NULL,
                 target_absolute_id TEXT NOT NULL,
-                target_entity_id TEXT NOT NULL,
+                target_family_id TEXT NOT NULL,
                 section_key TEXT NOT NULL,
                 change_type TEXT NOT NULL,
                 old_hash TEXT DEFAULT '',
@@ -574,8 +574,8 @@ class StorageManager:
             )
         """)
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_cp_target_abs ON content_patches(target_absolute_id)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_cp_entity_id ON content_patches(target_entity_id)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_cp_section ON content_patches(target_entity_id, section_key)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_cp_family_id ON content_patches(target_family_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_cp_section ON content_patches(target_family_id, section_key)")
 
         # Phase C: Episode mentions
         cursor.execute("""
@@ -606,25 +606,25 @@ class StorageManager:
 
         # BM25 全文搜索虚拟表
         cursor.execute("""
-            CREATE VIRTUAL TABLE IF NOT EXISTS entity_fts USING fts5(name, content, entity_id UNINDEXED)
+            CREATE VIRTUAL TABLE IF NOT EXISTS entity_fts USING fts5(name, content, family_id UNINDEXED)
         """)
         cursor.execute("""
-            CREATE VIRTUAL TABLE IF NOT EXISTS relation_fts USING fts5(content, relation_id UNINDEXED)
+            CREATE VIRTUAL TABLE IF NOT EXISTS relation_fts USING fts5(content, family_id UNINDEXED)
         """)
 
         conn.commit()
         conn.close()
 
-    def _resolve_entity_id_with_cursor(self, cursor, entity_id: str) -> str:
-        """沿 redirect 链解析到当前 canonical entity_id。"""
-        current_id = (entity_id or "").strip()
+    def _resolve_family_id_with_cursor(self, cursor, family_id: str) -> str:
+        """沿 redirect 链解析到当前 canonical family_id。"""
+        current_id = (family_id or "").strip()
         if not current_id:
             return ""
         seen: Set[str] = set()
         while current_id and current_id not in seen:
             seen.add(current_id)
             cursor.execute(
-                "SELECT target_entity_id FROM entity_redirects WHERE source_entity_id = ?",
+                "SELECT target_family_id FROM entity_redirects WHERE source_family_id = ?",
                 (current_id,),
             )
             row = cursor.fetchone()
@@ -633,33 +633,33 @@ class StorageManager:
             current_id = row[0]
         return current_id
 
-    def resolve_entity_id(self, entity_id: str) -> str:
-        """解析 entity_id 到当前 canonical id；不存在映射时原样返回。"""
+    def resolve_family_id(self, family_id: str) -> str:
+        """解析 family_id 到当前 canonical id；不存在映射时原样返回。"""
         conn = self._get_conn()
         cursor = conn.cursor()
-        return self._resolve_entity_id_with_cursor(cursor, entity_id)
+        return self._resolve_family_id_with_cursor(cursor, family_id)
 
-    def register_entity_redirect(self, source_entity_id: str, target_entity_id: str) -> str:
-        """登记旧 entity_id 到 canonical entity_id 的映射，支持链式合并。"""
-        source_id = (source_entity_id or "").strip()
-        target_id = (target_entity_id or "").strip()
+    def register_entity_redirect(self, source_family_id: str, target_family_id: str) -> str:
+        """登记旧 family_id 到 canonical family_id 的映射，支持链式合并。"""
+        source_id = (source_family_id or "").strip()
+        target_id = (target_family_id or "").strip()
         if not source_id or not target_id:
             return target_id
         with self._write_lock:
             conn = self._get_conn()
             cursor = conn.cursor()
-            canonical_target = self._resolve_entity_id_with_cursor(cursor, target_id)
+            canonical_target = self._resolve_family_id_with_cursor(cursor, target_id)
             if not canonical_target:
                 canonical_target = target_id
-            canonical_source = self._resolve_entity_id_with_cursor(cursor, source_id)
+            canonical_source = self._resolve_family_id_with_cursor(cursor, source_id)
             if canonical_source == canonical_target:
                 return canonical_target
             cursor.execute(
                 """
-                INSERT INTO entity_redirects (source_entity_id, target_entity_id, updated_at)
+                INSERT INTO entity_redirects (source_family_id, target_family_id, updated_at)
                 VALUES (?, ?, ?)
-                ON CONFLICT(source_entity_id) DO UPDATE SET
-                    target_entity_id = excluded.target_entity_id,
+                ON CONFLICT(source_family_id) DO UPDATE SET
+                    target_family_id = excluded.target_family_id,
                     updated_at = excluded.updated_at
                 """,
                 (source_id, canonical_target, datetime.now().isoformat()),
@@ -667,19 +667,19 @@ class StorageManager:
             conn.commit()
             return canonical_target
 
-    def register_entity_redirects(self, target_entity_id: str, source_entity_ids: List[str]) -> str:
-        """批量登记多个旧 entity_id 指向同一 canonical id。"""
-        canonical_target = (target_entity_id or "").strip()
+    def register_entity_redirects(self, target_family_id: str, source_family_ids: List[str]) -> str:
+        """批量登记多个旧 family_id 指向同一 canonical id。"""
+        canonical_target = (target_family_id or "").strip()
         if not canonical_target:
             return canonical_target
-        for source_id in source_entity_ids:
+        for source_id in source_family_ids:
             if source_id and source_id != canonical_target:
                 canonical_target = self.register_entity_redirect(source_id, canonical_target)
         return canonical_target
 
-    # ========== MemoryCache 操作 ==========
-    
-    def save_memory_cache(self, cache: MemoryCache, text: str = "", document_path: str = "", doc_hash: str = "") -> str:
+    # ========== Episode 操作 ==========
+
+    def save_episode(self, cache: Episode, text: str = "", document_path: str = "", doc_hash: str = "") -> str:
         """保存记忆缓存到 docs/{timestamp}_{doc_hash}/ 目录
 
         Args:
@@ -729,7 +729,7 @@ class StorageManager:
 
         return cache.absolute_id
     
-    def load_memory_cache(self, cache_id: str) -> Optional[MemoryCache]:
+    def load_episode(self, cache_id: str) -> Optional[Episode]:
         """加载记忆缓存（优先从 docs/ 新结构读取，兼容旧结构）"""
         metadata = None
         md_content = None
@@ -769,7 +769,7 @@ class StorageManager:
         # 清理 markdown 代码块标识符
         md_content = clean_markdown_code_blocks(md_content)
 
-        return MemoryCache(
+        return Episode(
             absolute_id=metadata.get("absolute_id") or metadata.get("id"),
             content=md_content,
             event_time=self._safe_parse_datetime(metadata.get("event_time"), datetime.now()),
@@ -778,18 +778,18 @@ class StorageManager:
         )
 
     def get_entity_count(self) -> int:
-        """返回实体总数（去重 entity_id）。"""
+        """返回实体总数（去重 family_id）。"""
         with self._conn() as conn:
-            row = conn.execute("SELECT COUNT(DISTINCT entity_id) AS cnt FROM entities").fetchone()
+            row = conn.execute("SELECT COUNT(DISTINCT family_id) AS cnt FROM entities").fetchone()
             return row["cnt"] if row else 0
 
     def get_relation_count(self) -> int:
-        """返回关系总数（去重 relation_id）。"""
+        """返回关系总数（去重 family_id）。"""
         with self._conn() as conn:
-            row = conn.execute("SELECT COUNT(DISTINCT relation_id) AS cnt FROM relations").fetchone()
+            row = conn.execute("SELECT COUNT(DISTINCT family_id) AS cnt FROM relations").fetchone()
             return row["cnt"] if row else 0
 
-    def delete_memory_cache(self, cache_id: str) -> int:
+    def delete_episode(self, cache_id: str) -> int:
         """删除记忆缓存，返回删除的文件数。0 表示未找到。"""
         import shutil
 
@@ -833,7 +833,7 @@ class StorageManager:
                 files = list(self.cache_dir.glob("*.json"))
         return files
 
-    def get_latest_memory_cache(self, activity_type: Optional[str] = None) -> Optional[MemoryCache]:
+    def get_latest_episode(self, activity_type: Optional[str] = None) -> Optional[Episode]:
         """获取最新的记忆缓存"""
         cache_files = self._iter_cache_meta_files()
         if not cache_files:
@@ -859,11 +859,11 @@ class StorageManager:
             cache_time = self._safe_parse_datetime(metadata.get("event_time"), datetime.now())
             if latest_time is None or cache_time > latest_time:
                 latest_time = cache_time
-                latest_cache = self.load_memory_cache(cache_id)
+                latest_cache = self.load_episode(cache_id)
 
         return latest_cache
 
-    def get_latest_memory_cache_metadata(self, activity_type: Optional[str] = None) -> Optional[Dict]:
+    def get_latest_episode_metadata(self, activity_type: Optional[str] = None) -> Optional[Dict]:
         """获取最新的记忆缓存元数据（用于断点续传）
 
         Returns:
@@ -899,7 +899,7 @@ class StorageManager:
 
         return latest_metadata
 
-    def search_memory_caches_by_bm25(self, query: str, limit: int = 20) -> List[MemoryCache]:
+    def search_episodes_by_bm25(self, query: str, limit: int = 20) -> List[Episode]:
         """简单文本搜索记忆缓存（遍历所有缓存，按内容匹配排序）。
 
         注意：这不是真正的 BM25，因为记忆缓存使用文件存储而非 SQLite FTS。
@@ -911,7 +911,7 @@ class StorageManager:
         results = []
         for cache_file in self._iter_cache_meta_files():
             try:
-                cache = self.load_memory_cache(
+                cache = self.load_episode(
                     cache_file.stem if cache_file.suffix == ".json" else
                     (cache_file.parent.name if cache_file.name == "meta.json" else cache_file.stem)
                 )
@@ -927,7 +927,7 @@ class StorageManager:
         results.sort(key=lambda x: x[0], reverse=True)
         return [c for _, c in results[:limit]]
 
-    def find_cache_by_doc_hash(self, doc_hash: str, document_path: str = "") -> Optional[MemoryCache]:
+    def find_cache_by_doc_hash(self, doc_hash: str, document_path: str = "") -> Optional[Episode]:
         """通过 doc_hash 查找已存在的缓存（断点续传复用）。
 
         Args:
@@ -935,7 +935,7 @@ class StorageManager:
             document_path: 可选，用于精确匹配同一文档的缓存
 
         Returns:
-            找到的 MemoryCache，未找到返回 None
+            找到的 Episode，未找到返回 None
         """
         if not doc_hash or not self.docs_dir.is_dir():
             return None
@@ -950,7 +950,7 @@ class StorageManager:
                 continue
             cache_id = metadata.get("absolute_id")
             if cache_id:
-                return self.load_memory_cache(cache_id)
+                return self.load_episode(cache_id)
         return None
 
     def _get_cache_dir_by_doc_hash(self, doc_hash: str, document_path: str = "") -> Optional[Path]:
@@ -1038,16 +1038,16 @@ class StorageManager:
             try:
                 cursor = conn.cursor()
                 cursor.execute("""
-                    INSERT INTO entities (id, entity_id, name, content, event_time, processed_time, memory_cache_id, source_document, embedding, valid_at, summary, attributes, confidence, content_format)
+                    INSERT INTO entities (id, family_id, name, content, event_time, processed_time, episode_id, source_document, embedding, valid_at, summary, attributes, confidence, content_format)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     entity.absolute_id,
-                    entity.entity_id,
+                    entity.family_id,
                     entity.name,
                     entity.content,
                     entity.event_time.isoformat(),
                     entity.processed_time.isoformat(),
-                    entity.memory_cache_id,
+                    entity.episode_id,
                     entity.source_document,
                     embedding_blob,
                     (entity.valid_at or entity.event_time).isoformat(),
@@ -1060,9 +1060,9 @@ class StorageManager:
                 # 同步写入 FTS 表
                 try:
                     cursor.execute("""
-                        INSERT INTO entity_fts(rowid, name, content, entity_id)
+                        INSERT INTO entity_fts(rowid, name, content, family_id)
                         VALUES (?, ?, ?, ?)
-                    """, (entity.absolute_id, entity.name, entity.content, entity.entity_id))
+                    """, (entity.absolute_id, entity.name, entity.content, entity.family_id))
                     conn.commit()
                 except Exception:
                     pass  # FTS 写入失败不影响主流程
@@ -1070,8 +1070,8 @@ class StorageManager:
                 try:
                     cursor.execute("""
                         UPDATE entities SET invalid_at = ?
-                        WHERE entity_id = ? AND id != ? AND invalid_at IS NULL
-                    """, (entity.event_time.isoformat(), entity.entity_id, entity.absolute_id))
+                        WHERE family_id = ? AND id != ? AND invalid_at IS NULL
+                    """, (entity.event_time.isoformat(), entity.family_id, entity.absolute_id))
                     conn.commit()
                 except Exception:
                     pass
@@ -1104,12 +1104,12 @@ class StorageManager:
             entity.embedding = embedding_blob
             rows.append((
                 entity.absolute_id,
-                entity.entity_id,
+                entity.family_id,
                 entity.name,
                 entity.content,
                 entity.event_time.isoformat(),
                 entity.processed_time.isoformat(),
-                entity.memory_cache_id,
+                entity.episode_id,
                 entity.source_document,
                 embedding_blob,
                 (entity.valid_at or entity.event_time).isoformat(),
@@ -1119,36 +1119,36 @@ class StorageManager:
             conn = self._get_conn()
             cursor = conn.cursor()
             cursor.executemany("""
-                INSERT OR IGNORE INTO entities (id, entity_id, name, content, event_time, processed_time, memory_cache_id, source_document, embedding, valid_at)
+                INSERT OR IGNORE INTO entities (id, family_id, name, content, event_time, processed_time, episode_id, source_document, embedding, valid_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, rows)
             conn.commit()
             # 同步写入 FTS 表
             try:
-                fts_rows = [(e.absolute_id, e.name, e.content, e.entity_id) for e in entities]
+                fts_rows = [(e.absolute_id, e.name, e.content, e.family_id) for e in entities]
                 cursor.executemany("""
-                    INSERT OR REPLACE INTO entity_fts(rowid, name, content, entity_id)
+                    INSERT OR REPLACE INTO entity_fts(rowid, name, content, family_id)
                     VALUES (?, ?, ?, ?)
                 """, fts_rows)
                 conn.commit()
             except Exception:
                 pass
 
-    def get_entity_by_entity_id(self, entity_id: str) -> Optional[Entity]:
-        """根据entity_id获取最新版本的实体"""
-        entity_id = self.resolve_entity_id(entity_id)
-        if not entity_id:
+    def get_entity_by_family_id(self, family_id: str) -> Optional[Entity]:
+        """根据family_id获取最新版本的实体"""
+        family_id = self.resolve_family_id(family_id)
+        if not family_id:
             return None
         conn = self._get_conn()
         cursor = conn.cursor()
-        
+
         cursor.execute("""
-            SELECT id, entity_id, name, content, event_time, processed_time, memory_cache_id, source_document, embedding, summary, attributes, confidence
+            SELECT id, family_id, name, content, event_time, processed_time, episode_id, source_document, embedding, summary, attributes, confidence
             FROM entities
-            WHERE entity_id = ?
+            WHERE family_id = ?
             ORDER BY processed_time DESC
             LIMIT 1
-        """, (entity_id,))
+        """, (family_id,))
 
         row = cursor.fetchone()
 
@@ -1157,25 +1157,18 @@ class StorageManager:
 
         return Entity(
             absolute_id=row[0],
-            entity_id=row[1],
+            family_id=row[1],
             name=row[2],
             content=row[3],
             event_time=self._safe_parse_datetime(row[4]),
             processed_time=self._safe_parse_datetime(row[5]),
-            memory_cache_id=row[6],
+            episode_id=row[6],
             source_document=row[7] if len(row) > 7 else '',
             embedding=row[8] if len(row) > 8 else None,
             summary=row[9] if len(row) > 9 else None,
             attributes=row[10] if len(row) > 10 else None,
             confidence=row[11] if len(row) > 11 else None,
         )
-    
-    # get_entity_by_id 是 get_entity_by_entity_id 的别名，兼容 pipeline 层调用
-    get_entity_by_id = get_entity_by_entity_id
-
-    def get_entity_by_id(self, entity_id: str) -> Optional[Entity]:
-        """根据entity_id获取实体（别名，等同于get_entity_by_entity_id）"""
-        return self.get_entity_by_entity_id(entity_id)
 
     def get_entity_by_absolute_id(self, absolute_id: str) -> Optional[Entity]:
         """根据绝对ID获取实体"""
@@ -1183,7 +1176,7 @@ class StorageManager:
         cursor = conn.cursor()
         
         cursor.execute("""
-            SELECT id, entity_id, name, content, event_time, processed_time, memory_cache_id, source_document, embedding
+            SELECT id, family_id, name, content, event_time, processed_time, episode_id, source_document, embedding
             FROM entities
             WHERE id = ?
         """, (absolute_id,))
@@ -1195,12 +1188,12 @@ class StorageManager:
 
         return Entity(
             absolute_id=row[0],
-            entity_id=row[1],
+            family_id=row[1],
             name=row[2],
             content=row[3],
             event_time=self._safe_parse_datetime(row[4]),
             processed_time=self._safe_parse_datetime(row[5]),
-            memory_cache_id=row[6],
+            episode_id=row[6],
             source_document=row[7] if len(row) > 7 else '',
             embedding=row[8] if len(row) > 8 else None
         )
@@ -1210,7 +1203,7 @@ class StorageManager:
         conn = self._get_conn()
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT id, relation_id, entity1_absolute_id, entity2_absolute_id, content, event_time, processed_time, memory_cache_id, source_document, embedding
+            SELECT id, family_id, entity1_absolute_id, entity2_absolute_id, content, event_time, processed_time, episode_id, source_document, embedding
             FROM relations
             WHERE id = ?
         """, (relation_absolute_id,))
@@ -1219,40 +1212,40 @@ class StorageManager:
             return None
         return Relation(
             absolute_id=row[0],
-            relation_id=row[1],
+            family_id=row[1],
             entity1_absolute_id=row[2] or "",
             entity2_absolute_id=row[3] or "",
             content=row[4],
             event_time=self._safe_parse_datetime(row[5]),
             processed_time=self._safe_parse_datetime(row[6]),
-            memory_cache_id=row[7],
+            episode_id=row[7],
             source_document=row[8] if len(row) > 8 else '',
             embedding=row[9] if len(row) > 9 else None
         )
     
-    def get_relation_by_relation_id(self, relation_id: str) -> Optional[Relation]:
-        """根据relation_id获取最新版本的关系"""
+    def get_relation_by_family_id(self, family_id: str) -> Optional[Relation]:
+        """根据family_id获取最新版本的关系"""
         conn = self._get_conn()
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT id, relation_id, entity1_absolute_id, entity2_absolute_id, content, event_time, processed_time, memory_cache_id, source_document, embedding
+            SELECT id, family_id, entity1_absolute_id, entity2_absolute_id, content, event_time, processed_time, episode_id, source_document, embedding
             FROM relations
-            WHERE relation_id = ?
+            WHERE family_id = ?
             ORDER BY processed_time DESC
             LIMIT 1
-        """, (relation_id,))
+        """, (family_id,))
         row = cursor.fetchone()
         if row is None:
             return None
         return Relation(
             absolute_id=row[0],
-            relation_id=row[1],
+            family_id=row[1],
             entity1_absolute_id=row[2],
             entity2_absolute_id=row[3],
             content=row[4],
             event_time=self._safe_parse_datetime(row[5]),
             processed_time=self._safe_parse_datetime(row[6]),
-            memory_cache_id=row[7],
+            episode_id=row[7],
             source_document=row[8] if len(row) > 8 else '',
             embedding=row[9] if len(row) > 9 else None
         )
@@ -1268,21 +1261,21 @@ class StorageManager:
         cursor.execute(f"SELECT id, name FROM entities WHERE id IN ({placeholders})", unique_ids)
         return {row[0]: row[1] or '' for row in cursor.fetchall()}
 
-    def get_entity_version_at_time(self, entity_id: str, time_point: datetime) -> Optional[Entity]:
+    def get_entity_version_at_time(self, family_id: str, time_point: datetime) -> Optional[Entity]:
         """获取实体在指定时间点的版本（该时间点之前或等于该时间点的最新版本）"""
-        entity_id = self.resolve_entity_id(entity_id)
-        if not entity_id:
+        family_id = self.resolve_family_id(family_id)
+        if not family_id:
             return None
         conn = self._get_conn()
         cursor = conn.cursor()
         
         cursor.execute("""
-            SELECT id, entity_id, name, content, event_time, processed_time, memory_cache_id, source_document, embedding, valid_at, invalid_at
+            SELECT id, family_id, name, content, event_time, processed_time, episode_id, source_document, embedding, valid_at, invalid_at
             FROM entities
-            WHERE entity_id = ? AND event_time <= ?
+            WHERE family_id = ? AND event_time <= ?
             ORDER BY processed_time DESC
             LIMIT 1
-        """, (entity_id, time_point.isoformat()))
+        """, (family_id, time_point.isoformat()))
 
         row = cursor.fetchone()
 
@@ -1291,12 +1284,12 @@ class StorageManager:
 
         return Entity(
             absolute_id=row[0],
-            entity_id=row[1],
+            family_id=row[1],
             name=row[2],
             content=row[3],
             event_time=self._safe_parse_datetime(row[4]),
             processed_time=self._safe_parse_datetime(row[5]),
-            memory_cache_id=row[6],
+            episode_id=row[6],
             source_document=row[7] if len(row) > 7 else '',
             embedding=row[8] if len(row) > 8 else None,
             valid_at=self._safe_parse_datetime(row[9]) if len(row) > 9 else None,
@@ -1347,32 +1340,32 @@ class StorageManager:
         except Exception:
             return None
     
-    def get_entity_versions(self, entity_id: str) -> List[Entity]:
+    def get_entity_versions(self, family_id: str) -> List[Entity]:
         """获取实体的所有版本"""
-        entity_id = self.resolve_entity_id(entity_id)
-        if not entity_id:
+        family_id = self.resolve_family_id(family_id)
+        if not family_id:
             return []
         conn = self._get_conn()
         cursor = conn.cursor()
         
         cursor.execute("""
-            SELECT id, entity_id, name, content, event_time, processed_time, memory_cache_id, source_document, embedding
+            SELECT id, family_id, name, content, event_time, processed_time, episode_id, source_document, embedding
             FROM entities
-            WHERE entity_id = ?
+            WHERE family_id = ?
             ORDER BY processed_time DESC
-        """, (entity_id,))
+        """, (family_id,))
 
         rows = cursor.fetchall()
 
         return [
             Entity(
                 absolute_id=row[0],
-                entity_id=row[1],
+                family_id=row[1],
                 name=row[2],
                 content=row[3],
                 event_time=datetime.fromisoformat(row[4]),
                 processed_time=datetime.fromisoformat(row[5]),
-                memory_cache_id=row[6],
+                episode_id=row[6],
                 source_document=row[7] if len(row) > 7 else '',
                 embedding=row[8] if len(row) > 8 else None
             )
@@ -1389,14 +1382,14 @@ class StorageManager:
         conn = self._get_conn()
         cursor = conn.cursor()
         
-        # 获取每个entity_id的最新版本及其embedding
+        # 获取每个family_id的最新版本及其embedding
         cursor.execute("""
-            SELECT id, entity_id, name, content, event_time, processed_time, memory_cache_id, source_document, embedding
+            SELECT id, family_id, name, content, event_time, processed_time, episode_id, source_document, embedding
             FROM entities e1
             WHERE e1.processed_time = (
                 SELECT MAX(e2.processed_time)
                 FROM entities e2
-                WHERE e2.entity_id = e1.entity_id
+                WHERE e2.family_id = e1.family_id
             )
         """)
 
@@ -1411,12 +1404,12 @@ class StorageManager:
                     embedding_array = None
             entity = Entity(
                 absolute_id=row[0],
-                entity_id=row[1],
+                family_id=row[1],
                 name=row[2],
                 content=row[3],
                 event_time=datetime.fromisoformat(row[4]),
                 processed_time=datetime.fromisoformat(row[5]),
-                memory_cache_id=row[6],
+                episode_id=row[6],
                 source_document=row[7] if len(row) > 7 else '',
                 embedding=row[8] if len(row) > 8 else None
             )
@@ -1429,17 +1422,17 @@ class StorageManager:
         snippet_length = content_snippet_length or self.entity_content_snippet_length
         entities_with_emb = self._get_entities_with_embeddings()
         version_counts = self.get_entity_version_counts([
-            e.entity_id for e, _ in entities_with_emb
+            e.family_id for e, _ in entities_with_emb
         ])
         results: List[Dict[str, Any]] = []
         for entity, embedding_array in entities_with_emb:
             results.append({
                 "entity": entity,
-                "entity_id": entity.entity_id,
+                "family_id": entity.family_id,
                 "name": entity.name,
                 "content": entity.content,
                 "content_snippet": entity.content[:snippet_length],
-                "version_count": version_counts.get(entity.entity_id, 1),
+                "version_count": version_counts.get(entity.family_id, 1),
                 "embedding_array": embedding_array,
             })
         return results
@@ -1452,8 +1445,8 @@ class StorageManager:
         cursor = conn.cursor()
         # FTS5 BM25 搜索，按 bm25 排序
         cursor.execute("""
-            SELECT e.id, e.entity_id, e.name, e.content, e.event_time, e.processed_time,
-                   e.memory_cache_id, e.source_document, e.embedding,
+            SELECT e.id, e.family_id, e.name, e.content, e.event_time, e.processed_time,
+                   e.episode_id, e.source_document, e.embedding,
                    fts.rank AS bm25_score
             FROM entity_fts AS fts
             JOIN entities AS e ON e.id = fts.rowid
@@ -1466,12 +1459,12 @@ class StorageManager:
         for row in cursor.fetchall():
             entities.append(Entity(
                 absolute_id=row[0],
-                entity_id=self.resolve_entity_id(row[1]),
+                family_id=self.resolve_family_id(row[1]),
                 name=row[2],
                 content=row[3],
                 event_time=self._safe_parse_datetime(row[4]),
                 processed_time=self._safe_parse_datetime(row[5]),
-                memory_cache_id=row[6],
+                episode_id=row[6],
                 source_document=row[7] or '',
                 embedding=row[8],
             ))
@@ -1484,9 +1477,9 @@ class StorageManager:
         conn = self._get_conn()
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT r.id, r.relation_id, r.entity1_absolute_id, r.entity2_absolute_id,
+            SELECT r.id, r.family_id, r.entity1_absolute_id, r.entity2_absolute_id,
                    r.content, r.event_time, r.processed_time,
-                   r.memory_cache_id, r.source_document, r.embedding,
+                   r.episode_id, r.source_document, r.embedding,
                    fts.rank AS bm25_score
             FROM relation_fts AS fts
             JOIN relations AS r ON r.id = fts.rowid
@@ -1499,13 +1492,13 @@ class StorageManager:
         for row in cursor.fetchall():
             relations.append(Relation(
                 absolute_id=row[0],
-                relation_id=row[1],
+                family_id=row[1],
                 entity1_absolute_id=row[2],
                 entity2_absolute_id=row[3],
                 content=row[4],
                 event_time=self._safe_parse_datetime(row[5]),
                 processed_time=self._safe_parse_datetime(row[6]),
-                memory_cache_id=row[7],
+                episode_id=row[7],
                 source_document=row[8] or '',
                 embedding=row[9],
             ))
@@ -1649,13 +1642,13 @@ class StorageManager:
         scored_entities = [(entity, sim) for entity, sim in similarities if sim >= threshold]
         scored_entities.sort(key=lambda x: x[1], reverse=True)
         
-        # 返回实体列表（去重，每个entity_id只保留一个，并限制最大数量）
+        # 返回实体列表（去重，每个family_id只保留一个，并限制最大数量）
         entities = []
         seen_ids = set()
         for entity, _ in scored_entities:
-            if entity.entity_id not in seen_ids:
+            if entity.family_id not in seen_ids:
                 entities.append(entity)
-                seen_ids.add(entity.entity_id)
+                seen_ids.add(entity.family_id)
                 # 达到最大数量后停止
                 if len(entities) >= max_results:
                     break
@@ -1730,13 +1723,13 @@ class StorageManager:
         # 按相似度排序
         scored_entities.sort(key=lambda x: x[1], reverse=True)
         
-        # 返回实体列表（去重，每个entity_id只保留一个，并限制最大数量）
+        # 返回实体列表（去重，每个family_id只保留一个，并限制最大数量）
         entities = []
         seen_ids = set()
         for entity, _ in scored_entities:
-            if entity.entity_id not in seen_ids:
+            if entity.family_id not in seen_ids:
                 entities.append(entity)
-                seen_ids.add(entity.entity_id)
+                seen_ids.add(entity.family_id)
                 # 达到最大数量后停止
                 if len(entities) >= max_results:
                     break
@@ -1773,17 +1766,17 @@ class StorageManager:
             try:
                 cursor = conn.cursor()
                 cursor.execute("""
-                    INSERT INTO relations (id, relation_id, entity1_absolute_id, entity2_absolute_id, content, event_time, processed_time, memory_cache_id, source_document, embedding, valid_at, summary, attributes, confidence, provenance, content_format)
+                    INSERT INTO relations (id, family_id, entity1_absolute_id, entity2_absolute_id, content, event_time, processed_time, episode_id, source_document, embedding, valid_at, summary, attributes, confidence, provenance, content_format)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     relation.absolute_id,
-                    relation.relation_id,
+                    relation.family_id,
                     relation.entity1_absolute_id,
                     relation.entity2_absolute_id,
                     relation.content,
                     relation.event_time.isoformat(),
                     relation.processed_time.isoformat(),
-                    relation.memory_cache_id,
+                    relation.episode_id,
                     relation.source_document,
                     embedding_blob,
                     (relation.valid_at or relation.event_time).isoformat(),
@@ -1797,9 +1790,9 @@ class StorageManager:
                 # 同步写入 FTS 表
                 try:
                     cursor.execute("""
-                        INSERT INTO relation_fts(rowid, content, relation_id)
+                        INSERT INTO relation_fts(rowid, content, family_id)
                         VALUES (?, ?, ?)
-                    """, (relation.absolute_id, relation.content, relation.relation_id))
+                    """, (relation.absolute_id, relation.content, relation.family_id))
                     conn.commit()
                 except Exception:
                     pass  # FTS 写入失败不影响主流程
@@ -1807,8 +1800,8 @@ class StorageManager:
                 try:
                     cursor.execute("""
                         UPDATE relations SET invalid_at = ?
-                        WHERE relation_id = ? AND id != ? AND invalid_at IS NULL
-                    """, (relation.event_time.isoformat(), relation.relation_id, relation.absolute_id))
+                        WHERE family_id = ? AND id != ? AND invalid_at IS NULL
+                    """, (relation.event_time.isoformat(), relation.family_id, relation.absolute_id))
                     conn.commit()
                 except Exception:
                     pass
@@ -1842,13 +1835,13 @@ class StorageManager:
             relation.embedding = embedding_blob
             rows.append((
                 relation.absolute_id,
-                relation.relation_id,
+                relation.family_id,
                 relation.entity1_absolute_id,
                 relation.entity2_absolute_id,
                 relation.content,
                 relation.event_time.isoformat(),
                 relation.processed_time.isoformat(),
-                relation.memory_cache_id,
+                relation.episode_id,
                 relation.source_document,
                 embedding_blob,
                 (relation.valid_at or relation.event_time).isoformat(),
@@ -1858,60 +1851,60 @@ class StorageManager:
             conn = self._get_conn()
             cursor = conn.cursor()
             cursor.executemany("""
-                INSERT INTO relations (id, relation_id, entity1_absolute_id, entity2_absolute_id, content, event_time, processed_time, memory_cache_id, source_document, embedding, valid_at)
+                INSERT INTO relations (id, family_id, entity1_absolute_id, entity2_absolute_id, content, event_time, processed_time, episode_id, source_document, embedding, valid_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, rows)
             conn.commit()
     
-    def get_relations_by_entities(self, from_entity_id: str, to_entity_id: str) -> List[Relation]:
-        """根据两个实体ID获取所有关系（通过entity_id查找，内部转换为绝对ID查询）
+    def get_relations_by_entities(self, from_family_id: str, to_family_id: str) -> List[Relation]:
+        """根据两个实体ID获取所有关系（通过family_id查找，内部转换为绝对ID查询）
 
-        每个 relation_id 只返回最新版本（与 get_entity_relations 保持一致的去重逻辑）。
+        每个 family_id 只返回最新版本（与 get_entity_relations 保持一致的去重逻辑）。
         """
-        from_entity_id = self.resolve_entity_id(from_entity_id)
-        to_entity_id = self.resolve_entity_id(to_entity_id)
-        if not from_entity_id or not to_entity_id:
+        from_family_id = self.resolve_family_id(from_family_id)
+        to_family_id = self.resolve_family_id(to_family_id)
+        if not from_family_id or not to_family_id:
             return []
-        # 先通过entity_id获取最新版本的绝对ID
-        from_entity = self.get_entity_by_entity_id(from_entity_id)
-        to_entity = self.get_entity_by_entity_id(to_entity_id)
+        # 先通过family_id获取最新版本的绝对ID
+        from_entity = self.get_entity_by_family_id(from_family_id)
+        to_entity = self.get_entity_by_family_id(to_family_id)
 
         if not from_entity or not to_entity:
             return []
 
-        # 获取所有具有相同entity_id的实体的绝对ID
+        # 获取所有具有相同family_id的实体的绝对ID
         conn = self._get_conn()
         cursor = conn.cursor()
 
         cursor.execute("""
-            SELECT id FROM entities WHERE entity_id = ?
-        """, (from_entity_id,))
+            SELECT id FROM entities WHERE family_id = ?
+        """, (from_family_id,))
         from_absolute_ids = [row[0] for row in cursor.fetchall()]
 
         cursor.execute("""
-            SELECT id FROM entities WHERE entity_id = ?
-        """, (to_entity_id,))
+            SELECT id FROM entities WHERE family_id = ?
+        """, (to_family_id,))
         to_absolute_ids = [row[0] for row in cursor.fetchall()]
 
         if not from_absolute_ids or not to_absolute_ids:
             return []
 
         # 查询关系（无向关系，考虑两个方向）
-        # 每个 relation_id 只返回最新版本（INNER JOIN MAX(processed_time) 去重）
+        # 每个 family_id 只返回最新版本（INNER JOIN MAX(processed_time) 去重）
         placeholders_from = ','.join(['?'] * len(from_absolute_ids))
         placeholders_to = ','.join(['?'] * len(to_absolute_ids))
 
         cursor.execute(f"""
-            SELECT r1.id, r1.relation_id, r1.entity1_absolute_id, r1.entity2_absolute_id,
-                   r1.content, r1.event_time, r1.processed_time, r1.memory_cache_id, r1.source_document, r1.embedding
+            SELECT r1.id, r1.family_id, r1.entity1_absolute_id, r1.entity2_absolute_id,
+                   r1.content, r1.event_time, r1.processed_time, r1.episode_id, r1.source_document, r1.embedding
             FROM relations r1
             INNER JOIN (
-                SELECT relation_id, MAX(processed_time) as max_time
+                SELECT family_id, MAX(processed_time) as max_time
                 FROM relations
                 WHERE (entity1_absolute_id IN ({placeholders_from}) AND entity2_absolute_id IN ({placeholders_to}))
                    OR (entity1_absolute_id IN ({placeholders_to}) AND entity2_absolute_id IN ({placeholders_from}))
-                GROUP BY relation_id
-            ) r2 ON r1.relation_id = r2.relation_id
+                GROUP BY family_id
+            ) r2 ON r1.family_id = r2.family_id
                 AND r1.processed_time = r2.max_time
                 AND ((r1.entity1_absolute_id IN ({placeholders_from}) AND r1.entity2_absolute_id IN ({placeholders_to}))
                   OR (r1.entity1_absolute_id IN ({placeholders_to}) AND r1.entity2_absolute_id IN ({placeholders_from})))
@@ -1924,13 +1917,13 @@ class StorageManager:
         return [
             Relation(
                 absolute_id=row[0],
-                relation_id=row[1],
+                family_id=row[1],
                 entity1_absolute_id=row[2] or "",
                 entity2_absolute_id=row[3] or "",
                 content=row[4],
                 event_time=datetime.fromisoformat(row[5]),
                 processed_time=datetime.fromisoformat(row[6]),
-                memory_cache_id=row[7],
+                episode_id=row[7],
                 source_document=row[8] if len(row) > 8 else '',
                 embedding=row[9] if len(row) > 9 else None
             )
@@ -1962,7 +1955,7 @@ class StorageManager:
                 _csnip = relation.content[:snippet_length]
             results.append({
                 "relation": relation,
-                "relation_id": relation.relation_id,
+                "family_id": relation.family_id,
                 "pair": tuple(sorted((relation.entity1_absolute_id, relation.entity2_absolute_id))),
                 "content": relation.content,
                 "content_snippet": _csnip,
@@ -1970,38 +1963,38 @@ class StorageManager:
             })
         return results
     
-    def get_relation_versions(self, relation_id: str) -> List[Relation]:
+    def get_relation_versions(self, family_id: str) -> List[Relation]:
         """获取关系的所有版本"""
         conn = self._get_conn()
         cursor = conn.cursor()
-        
+
         cursor.execute("""
-            SELECT id, relation_id, entity1_absolute_id, entity2_absolute_id, content, event_time, processed_time, memory_cache_id, source_document, embedding
+            SELECT id, family_id, entity1_absolute_id, entity2_absolute_id, content, event_time, processed_time, episode_id, source_document, embedding
             FROM relations
-            WHERE relation_id = ?
+            WHERE family_id = ?
             ORDER BY processed_time DESC
-        """, (relation_id,))
+        """, (family_id,))
 
         rows = cursor.fetchall()
 
         return [
             Relation(
                 absolute_id=row[0],
-                relation_id=row[1],
+                family_id=row[1],
                 entity1_absolute_id=row[2] or "",
                 entity2_absolute_id=row[3] or "",
                 content=row[4],
                 event_time=datetime.fromisoformat(row[5]),
                 processed_time=datetime.fromisoformat(row[6]),
-                memory_cache_id=row[7],
+                episode_id=row[7],
                 source_document=row[8] if len(row) > 8 else '',
                 embedding=row[9] if len(row) > 9 else None
             )
             for row in rows
         ]
     
-    def update_relation_memory_cache_id(self, relation_id: str, memory_cache_id: str):
-        """更新关系最新版本的 memory_cache_id"""
+    def update_relation_episode_id(self, family_id: str, episode_id: str):
+        """更新关系最新版本的 episode_id"""
         with self._write_lock:
             conn = self._get_conn()
             cursor = conn.cursor()
@@ -2009,58 +2002,58 @@ class StorageManager:
             # 获取最新版本的id
             cursor.execute("""
                 SELECT id FROM relations
-                WHERE relation_id = ?
+                WHERE family_id = ?
                 ORDER BY processed_time DESC
                 LIMIT 1
-            """, (relation_id,))
+            """, (family_id,))
 
             row = cursor.fetchone()
             if row:
                 latest_id = row[0]
                 cursor.execute("""
                     UPDATE relations
-                    SET memory_cache_id = ?
+                    SET episode_id = ?
                     WHERE id = ?
-                """, (memory_cache_id, latest_id))
+                """, (episode_id, latest_id))
                 conn.commit()
         
     
     def get_self_referential_relations(self) -> Dict[str, List[Dict]]:
-        """获取所有自指向的关系（两端指向同一个entity_id），按entity_id分组
-        
-        自指向关系的定义：关系的两端实体具有相同的entity_id
+        """获取所有自指向的关系（两端指向同一个family_id），按family_id分组
+
+        自指向关系的定义：关系的两端实体具有相同的family_id
         这包括两种情况：
         1. entity1_absolute_id == entity2_absolute_id（指向完全相同的版本）
-        2. entity1_absolute_id 和 entity2_absolute_id 不同，但它们对应的entity_id相同
-        
+        2. entity1_absolute_id 和 entity2_absolute_id 不同，但它们对应的family_id相同
+
         Returns:
-            字典，key为entity_id，value为该实体的所有自指向关系列表
-            每个关系包含：id, relation_id, content, processed_time
+            字典，key为family_id，value为该实体的所有自指向关系列表
+            每个关系包含：id, family_id, content, processed_time
         """
         conn = self._get_conn()
         cursor = conn.cursor()
         
-        # 查找所有自指向的关系（两端entity_id相同）
+        # 查找所有自指向的关系（两端family_id相同）
         cursor.execute("""
-            SELECT r.id, r.relation_id, r.content, r.processed_time, e1.entity_id
+            SELECT r.id, r.family_id, r.content, r.processed_time, e1.family_id
             FROM relations r
             JOIN entities e1 ON r.entity1_absolute_id = e1.id
             JOIN entities e2 ON r.entity2_absolute_id = e2.id
-            WHERE e1.entity_id = e2.entity_id
-            ORDER BY e1.entity_id, r.processed_time
+            WHERE e1.family_id = e2.family_id
+            ORDER BY e1.family_id, r.processed_time
         """)
         
         rows = cursor.fetchall()
         
-        # 按entity_id分组
+        # 按family_id分组
         result = {}
         for row in rows:
-            relation_id, relation_id_str, content, processed_time, entity_id = row
-            if entity_id not in result:
-                result[entity_id] = []
-            result[entity_id].append({
+            relation_id, family_id_str, content, processed_time, family_id = row
+            if family_id not in result:
+                result[family_id] = []
+            result[family_id].append({
                 'id': relation_id,
-                'relation_id': relation_id_str,
+                'family_id': family_id_str,
                 'content': content,
                 'processed_time': processed_time
             })
@@ -2068,7 +2061,7 @@ class StorageManager:
         return result
     
     def delete_self_referential_relations(self) -> int:
-        """删除所有自指向的关系（两端指向同一个entity_id）
+        """删除所有自指向的关系（两端指向同一个family_id）
 
         Returns:
             删除的关系数量
@@ -2077,12 +2070,12 @@ class StorageManager:
             conn = self._get_conn()
             cursor = conn.cursor()
 
-            # 查找所有自指向的关系（两端entity_id相同）
+            # 查找所有自指向的关系（两端family_id相同）
             cursor.execute("""
                 SELECT r.id FROM relations r
                 JOIN entities e1 ON r.entity1_absolute_id = e1.id
                 JOIN entities e2 ON r.entity2_absolute_id = e2.id
-                WHERE e1.entity_id = e2.entity_id
+                WHERE e1.family_id = e2.family_id
             """)
 
             rows = cursor.fetchall()
@@ -2101,47 +2094,47 @@ class StorageManager:
 
             return deleted_count
     
-    def get_self_referential_relations_for_entity(self, entity_id: str) -> List[Dict]:
-        """获取指定entity_id的自指向关系
-        
+    def get_self_referential_relations_for_entity(self, family_id: str) -> List[Dict]:
+        """获取指定family_id的自指向关系
+
         Args:
-            entity_id: 实体ID
-        
+            family_id: 实体ID
+
         Returns:
-            自指向关系列表，每个关系包含：id, relation_id, content, processed_time
+            自指向关系列表，每个关系包含：id, family_id, content, processed_time
         """
         conn = self._get_conn()
         cursor = conn.cursor()
         
-        # 查找该entity_id的自指向关系
+        # 查找该family_id的自指向关系
         cursor.execute("""
-            SELECT r.id, r.relation_id, r.content, r.processed_time
+            SELECT r.id, r.family_id, r.content, r.processed_time
             FROM relations r
             JOIN entities e1 ON r.entity1_absolute_id = e1.id
             JOIN entities e2 ON r.entity2_absolute_id = e2.id
-            WHERE e1.entity_id = ? AND e2.entity_id = ?
+            WHERE e1.family_id = ? AND e2.family_id = ?
             ORDER BY r.processed_time
-        """, (entity_id, entity_id))
-        
+        """, (family_id, family_id))
+
         rows = cursor.fetchall()
-        
+
         result = []
         for row in rows:
-            relation_id, relation_id_str, content, processed_time = row
+            relation_id, family_id_str, content, processed_time = row
             result.append({
                 'id': relation_id,
-                'relation_id': relation_id_str,
+                'family_id': family_id_str,
                 'content': content,
                 'processed_time': processed_time
             })
         
         return result
     
-    def delete_self_referential_relations_for_entity(self, entity_id: str) -> int:
-        """删除指定entity_id的自指向关系
+    def delete_self_referential_relations_for_entity(self, family_id: str) -> int:
+        """删除指定family_id的自指向关系
 
         Args:
-            entity_id: 实体ID
+            family_id: 实体ID
 
         Returns:
             删除的关系数量
@@ -2150,13 +2143,13 @@ class StorageManager:
             conn = self._get_conn()
             cursor = conn.cursor()
 
-            # 查找该entity_id的自指向关系
+            # 查找该family_id的自指向关系
             cursor.execute("""
                 SELECT r.id FROM relations r
                 JOIN entities e1 ON r.entity1_absolute_id = e1.id
                 JOIN entities e2 ON r.entity2_absolute_id = e2.id
-                WHERE e1.entity_id = ? AND e2.entity_id = ?
-            """, (entity_id, entity_id))
+                WHERE e1.family_id = ? AND e2.family_id = ?
+            """, (family_id, family_id))
 
             rows = cursor.fetchall()
             deleted_count = 0
@@ -2186,15 +2179,15 @@ class StorageManager:
         cursor = conn.cursor()
 
         emb_col = ", e1.embedding" if not exclude_embedding else ""
-        # 获取每个 entity_id 的最新版本
+        # 获取每个 family_id 的最新版本
         query = f"""
-            SELECT e1.id, e1.entity_id, e1.name, e1.content, e1.event_time, e1.processed_time, e1.memory_cache_id, e1.source_document{emb_col}
+            SELECT e1.id, e1.family_id, e1.name, e1.content, e1.event_time, e1.processed_time, e1.episode_id, e1.source_document{emb_col}
             FROM entities e1
             INNER JOIN (
-                SELECT entity_id, MAX(processed_time) as max_time
+                SELECT family_id, MAX(processed_time) as max_time
                 FROM entities
-                GROUP BY entity_id
-            ) e2 ON e1.entity_id = e2.entity_id AND e1.processed_time = e2.max_time
+                GROUP BY family_id
+            ) e2 ON e1.family_id = e2.family_id AND e1.processed_time = e2.max_time
             ORDER BY e1.processed_time DESC
         """
 
@@ -2210,12 +2203,12 @@ class StorageManager:
         return [
             Entity(
                 absolute_id=row[0],
-                entity_id=row[1],
+                family_id=row[1],
                 name=row[2],
                 content=row[3],
                 event_time=datetime.fromisoformat(row[4]),
                 processed_time=datetime.fromisoformat(row[5]),
-                memory_cache_id=row[6],
+                episode_id=row[6],
                 source_document=row[7] if len(row) > 7 and row[7] is not None else "",
                 embedding=row[8] if not exclude_embedding and len(row) > 8 else None
             )
@@ -2223,17 +2216,17 @@ class StorageManager:
         ]
 
     def count_unique_entities(self) -> int:
-        """轻量统计：返回不重复的 entity_id 数量（不加载任何实体数据）。"""
+        """轻量统计：返回不重复的 family_id 数量（不加载任何实体数据）。"""
         conn = self._get_conn()
         cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(DISTINCT entity_id) FROM entities")
+        cursor.execute("SELECT COUNT(DISTINCT family_id) FROM entities")
         return cursor.fetchone()[0]
 
     def count_unique_relations(self) -> int:
-        """轻量统计：返回不重复的 relation_id 数量（不加载任何关系数据）。"""
+        """轻量统计：返回不重复的 family_id 数量（不加载任何关系数据）。"""
         conn = self._get_conn()
         cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(DISTINCT relation_id) FROM relations")
+        cursor.execute("SELECT COUNT(DISTINCT family_id) FROM relations")
         return cursor.fetchone()[0]
 
     def get_all_entities_before_time(self, time_point: datetime, limit: Optional[int] = None,
@@ -2249,16 +2242,16 @@ class StorageManager:
         cursor = conn.cursor()
 
         emb_col = ", e1.embedding" if not exclude_embedding else ""
-        # 获取每个 entity_id 在指定时间点之前或等于该时间点的最新版本
+        # 获取每个 family_id 在指定时间点之前或等于该时间点的最新版本
         query = f"""
-            SELECT e1.id, e1.entity_id, e1.name, e1.content, e1.event_time, e1.processed_time, e1.memory_cache_id, e1.source_document{emb_col}
+            SELECT e1.id, e1.family_id, e1.name, e1.content, e1.event_time, e1.processed_time, e1.episode_id, e1.source_document{emb_col}
             FROM entities e1
             INNER JOIN (
-                SELECT entity_id, MAX(processed_time) as max_time
+                SELECT family_id, MAX(processed_time) as max_time
                 FROM entities
                 WHERE event_time <= ?
-                GROUP BY entity_id
-            ) e2 ON e1.entity_id = e2.entity_id AND e1.processed_time = e2.max_time
+                GROUP BY family_id
+            ) e2 ON e1.family_id = e2.family_id AND e1.processed_time = e2.max_time
             ORDER BY e1.processed_time DESC
         """
 
@@ -2272,12 +2265,12 @@ class StorageManager:
         return [
             Entity(
                 absolute_id=row[0],
-                entity_id=row[1],
+                family_id=row[1],
                 name=row[2],
                 content=row[3],
                 event_time=datetime.fromisoformat(row[4]),
                 processed_time=datetime.fromisoformat(row[5]),
-                memory_cache_id=row[6],
+                episode_id=row[6],
                 source_document=row[7] if len(row) > 7 and row[7] is not None else "",
                 embedding=row[8] if not exclude_embedding and len(row) > 8 else None
             )
@@ -2290,41 +2283,41 @@ class StorageManager:
         Args:
             entity_absolute_id: 实体的绝对ID
             limit: 限制返回的关系数量（按时间倒序），None表示不限制
-            time_point: 时间点（可选），如果提供，只返回该时间点之前或等于该时间点的关系，且每个relation_id只返回最新版本
+            time_point: 时间点（可选），如果提供，只返回该时间点之前或等于该时间点的关系，且每个family_id只返回最新版本
         """
         conn = self._get_conn()
         cursor = conn.cursor()
         
         if time_point:
-            # 获取每个relation_id在该时间点之前或等于该时间点的最新版本
+            # 获取每个family_id在该时间点之前或等于该时间点的最新版本
             query = """
-                SELECT r1.id, r1.relation_id, r1.entity1_absolute_id, r1.entity2_absolute_id, 
-                       r1.content, r1.event_time, r1.processed_time, r1.memory_cache_id, r1.source_document, r1.embedding
+                SELECT r1.id, r1.family_id, r1.entity1_absolute_id, r1.entity2_absolute_id, 
+                       r1.content, r1.event_time, r1.processed_time, r1.episode_id, r1.source_document, r1.embedding
                 FROM relations r1
                 INNER JOIN (
-                    SELECT relation_id, MAX(processed_time) as max_time
+                    SELECT family_id, MAX(processed_time) as max_time
                     FROM relations
                     WHERE (entity1_absolute_id = ? OR entity2_absolute_id = ?)
                     AND event_time <= ?
-                    GROUP BY relation_id
-                ) r2 ON r1.relation_id = r2.relation_id 
+                    GROUP BY family_id
+                ) r2 ON r1.family_id = r2.family_id 
                     AND r1.processed_time = r2.max_time
                     AND (r1.entity1_absolute_id = ? OR r1.entity2_absolute_id = ?)
                 ORDER BY r1.processed_time DESC
             """
             params = (entity_absolute_id, entity_absolute_id, time_point.isoformat(), entity_absolute_id, entity_absolute_id)
         else:
-            # 获取每个relation_id的最新版本
+            # 获取每个family_id的最新版本
             query = """
-                SELECT r1.id, r1.relation_id, r1.entity1_absolute_id, r1.entity2_absolute_id, 
-                       r1.content, r1.event_time, r1.processed_time, r1.memory_cache_id, r1.source_document, r1.embedding
+                SELECT r1.id, r1.family_id, r1.entity1_absolute_id, r1.entity2_absolute_id, 
+                       r1.content, r1.event_time, r1.processed_time, r1.episode_id, r1.source_document, r1.embedding
                 FROM relations r1
                 INNER JOIN (
-                    SELECT relation_id, MAX(processed_time) as max_time
+                    SELECT family_id, MAX(processed_time) as max_time
                     FROM relations
                     WHERE entity1_absolute_id = ? OR entity2_absolute_id = ?
-                    GROUP BY relation_id
-                ) r2 ON r1.relation_id = r2.relation_id 
+                    GROUP BY family_id
+                ) r2 ON r1.family_id = r2.family_id 
                     AND r1.processed_time = r2.max_time
                     AND (r1.entity1_absolute_id = ? OR r1.entity2_absolute_id = ?)
                 ORDER BY r1.processed_time DESC
@@ -2341,36 +2334,36 @@ class StorageManager:
         return [
             Relation(
                 absolute_id=row[0],
-                relation_id=row[1],
+                family_id=row[1],
                 entity1_absolute_id=row[2] or "",
                 entity2_absolute_id=row[3] or "",
                 content=row[4],
                 event_time=datetime.fromisoformat(row[5]),
                 processed_time=datetime.fromisoformat(row[6]),
-                memory_cache_id=row[7],
+                episode_id=row[7],
                 source_document=row[8] if len(row) > 8 and row[8] is not None else "",  # 向后兼容
                 embedding=row[9] if len(row) > 9 else None
             )
             for row in rows
         ]
     
-    def get_entity_relations_by_entity_id(self, entity_id: str, limit: Optional[int] = None, time_point: Optional[datetime] = None, max_version_absolute_id: Optional[str] = None) -> List[Relation]:
-        """获取与指定实体相关的所有关系（通过entity_id查找，包含该实体的所有版本）
-        
+    def get_entity_relations_by_family_id(self, family_id: str, limit: Optional[int] = None, time_point: Optional[datetime] = None, max_version_absolute_id: Optional[str] = None) -> List[Relation]:
+        """获取与指定实体相关的所有关系（通过family_id查找，包含该实体的所有版本）
+
         这个方法会查找该实体的所有版本（从最早版本开始）的所有关系，
-        然后按relation_id去重，保留每个relation_id的最新版本。
-        
+        然后按family_id去重，保留每个family_id的最新版本。
+
         Args:
-            entity_id: 实体的entity_id（不是absolute_id）
+            family_id: 实体的family_id（不是absolute_id）
             limit: 限制返回的关系数量（按时间倒序），None表示不限制
-            time_point: 时间点（可选），如果提供，只返回该时间点之前或等于该时间点的关系，且每个relation_id只返回最新版本
+            time_point: 时间点（可选），如果提供，只返回该时间点之前或等于该时间点的关系，且每个family_id只返回最新版本
             max_version_absolute_id: 最大版本absolute_id（可选），如果提供，只查询从最早版本到该版本的所有关系
         """
-        entity_id = self.resolve_entity_id(entity_id)
-        if not entity_id:
+        family_id = self.resolve_family_id(family_id)
+        if not family_id:
             return []
         # 先获取该实体的所有版本的absolute_id
-        versions = self.get_entity_versions(entity_id)
+        versions = self.get_entity_versions(family_id)
         if not versions:
             return []
         
@@ -2414,39 +2407,39 @@ class StorageManager:
         conn = self._get_conn()
         cursor = conn.cursor()
         
-        # 构建查询：查找所有版本的关系，按relation_id去重
+        # 构建查询：查找所有版本的关系，按family_id去重
         placeholders = ','.join(['?'] * len(entity_absolute_ids))
         
         if time_point:
-            # 获取每个relation_id在该时间点之前或等于该时间点的最新版本
+            # 获取每个family_id在该时间点之前或等于该时间点的最新版本
             query = f"""
-                SELECT r1.id, r1.relation_id, r1.entity1_absolute_id, r1.entity2_absolute_id, 
-                       r1.content, r1.event_time, r1.processed_time, r1.memory_cache_id, r1.source_document, r1.embedding
+                SELECT r1.id, r1.family_id, r1.entity1_absolute_id, r1.entity2_absolute_id, 
+                       r1.content, r1.event_time, r1.processed_time, r1.episode_id, r1.source_document, r1.embedding
                 FROM relations r1
                 INNER JOIN (
-                    SELECT relation_id, MAX(processed_time) as max_time
+                    SELECT family_id, MAX(processed_time) as max_time
                     FROM relations
                     WHERE (entity1_absolute_id IN ({placeholders}) OR entity2_absolute_id IN ({placeholders}))
                     AND event_time <= ?
-                    GROUP BY relation_id
-                ) r2 ON r1.relation_id = r2.relation_id 
+                    GROUP BY family_id
+                ) r2 ON r1.family_id = r2.family_id 
                     AND r1.processed_time = r2.max_time
                     AND (r1.entity1_absolute_id IN ({placeholders}) OR r1.entity2_absolute_id IN ({placeholders}))
                 ORDER BY r1.processed_time DESC
             """
             params = tuple(entity_absolute_ids * 2 + [time_point.isoformat()] + entity_absolute_ids * 2)
         else:
-            # 获取每个relation_id的最新版本
+            # 获取每个family_id的最新版本
             query = f"""
-            SELECT r1.id, r1.relation_id, r1.entity1_absolute_id, r1.entity2_absolute_id, 
-                   r1.content, r1.event_time, r1.processed_time, r1.memory_cache_id, r1.source_document, r1.embedding
+            SELECT r1.id, r1.family_id, r1.entity1_absolute_id, r1.entity2_absolute_id, 
+                   r1.content, r1.event_time, r1.processed_time, r1.episode_id, r1.source_document, r1.embedding
             FROM relations r1
             INNER JOIN (
-                SELECT relation_id, MAX(processed_time) as max_time
+                SELECT family_id, MAX(processed_time) as max_time
                 FROM relations
                 WHERE entity1_absolute_id IN ({placeholders}) OR entity2_absolute_id IN ({placeholders})
-                GROUP BY relation_id
-            ) r2 ON r1.relation_id = r2.relation_id 
+                GROUP BY family_id
+            ) r2 ON r1.family_id = r2.family_id 
                 AND r1.processed_time = r2.max_time
                 AND (r1.entity1_absolute_id IN ({placeholders}) OR r1.entity2_absolute_id IN ({placeholders}))
             ORDER BY r1.processed_time DESC
@@ -2463,13 +2456,13 @@ class StorageManager:
         return [
             Relation(
                 absolute_id=row[0],
-                relation_id=row[1],
+                family_id=row[1],
                 entity1_absolute_id=row[2] or "",
                 entity2_absolute_id=row[3] or "",
                 content=row[4],
                 event_time=datetime.fromisoformat(row[5]),
                 processed_time=datetime.fromisoformat(row[6]),
-                memory_cache_id=row[7],
+                episode_id=row[7],
                 source_document=row[8] if len(row) > 8 and row[8] is not None else "",  # 向后兼容
                 embedding=row[9] if len(row) > 9 else None
             )
@@ -2481,7 +2474,7 @@ class StorageManager:
         
         这个方法根据关系边中的 entity1_absolute_id 或 entity2_absolute_id 直接匹配，
         不使用时间过滤，只返回直接引用这些实体版本的关系边。
-        按 relation_id 去重，每个 relation_id 只返回一条记录（保留最新的）。
+        按 family_id 去重，每个 family_id 只返回一条记录（保留最新的）。
         
         Args:
             entity_absolute_ids: 实体版本的absolute_id列表
@@ -2499,8 +2492,8 @@ class StorageManager:
         # 构建查询：查找直接引用这些 entity_absolute_id 的关系边
         placeholders = ','.join(['?'] * len(entity_absolute_ids))
         query = f"""
-            SELECT id, relation_id, entity1_absolute_id, entity2_absolute_id, 
-                   content, event_time, processed_time, memory_cache_id, source_document, embedding
+            SELECT id, family_id, entity1_absolute_id, entity2_absolute_id, 
+                   content, event_time, processed_time, episode_id, source_document, embedding
             FROM relations
             WHERE entity1_absolute_id IN ({placeholders}) OR entity2_absolute_id IN ({placeholders})
             ORDER BY processed_time DESC
@@ -2511,23 +2504,23 @@ class StorageManager:
         
         rows = cursor.fetchall()
         
-        # 按 relation_id 去重，保留第一个（最新的）
-        seen_relation_ids = set()
+        # 按 family_id 去重，保留第一个（最新的）
+        seen_family_ids = set()
         result = []
         for row in rows:
-            relation_id = row[1]
-            if relation_id not in seen_relation_ids:
-                seen_relation_ids.add(relation_id)
+            family_id_val = row[1]
+            if family_id_val not in seen_family_ids:
+                seen_family_ids.add(family_id_val)
                 result.append(
                     Relation(
                         absolute_id=row[0],
-                        relation_id=row[1],
+                        family_id=row[1],
                         entity1_absolute_id=row[2] or "",
                         entity2_absolute_id=row[3] or "",
                         content=row[4],
                         event_time=datetime.fromisoformat(row[5]),
                         processed_time=datetime.fromisoformat(row[6]),
-                        memory_cache_id=row[7],
+                        episode_id=row[7],
                         source_document=row[8] if len(row) > 8 and row[8] is not None else "",  # 向后兼容
                         embedding=row[9] if len(row) > 9 else None
                     )
@@ -2537,17 +2530,17 @@ class StorageManager:
         
         return result
     
-    def get_entity_absolute_ids_up_to_version(self, entity_id: str, max_absolute_id: str) -> List[str]:
+    def get_entity_absolute_ids_up_to_version(self, family_id: str, max_absolute_id: str) -> List[str]:
         """获取指定实体从最早版本到指定版本的所有 absolute_id 列表
-        
+
         Args:
-            entity_id: 实体的 entity_id
+            family_id: 实体的 family_id
             max_absolute_id: 最大版本的 absolute_id（包含）
         
         Returns:
             从最早版本到指定版本的所有 absolute_id 列表（按时间顺序）
         """
-        versions = self.get_entity_versions(entity_id)
+        versions = self.get_entity_versions(family_id)
         if not versions:
             return []
         
@@ -2590,16 +2583,16 @@ class StorageManager:
         cursor = conn.cursor()
 
         emb_col = ", r1.embedding" if not exclude_embedding else ""
-        # 获取每个 relation_id 的最新版本
+        # 获取每个 family_id 的最新版本
         query = f"""
-            SELECT r1.id, r1.relation_id, r1.entity1_absolute_id, r1.entity2_absolute_id,
-                   r1.content, r1.event_time, r1.processed_time, r1.memory_cache_id, r1.source_document{emb_col}
+            SELECT r1.id, r1.family_id, r1.entity1_absolute_id, r1.entity2_absolute_id,
+                   r1.content, r1.event_time, r1.processed_time, r1.episode_id, r1.source_document{emb_col}
             FROM relations r1
             INNER JOIN (
-                SELECT relation_id, MAX(processed_time) as max_time
+                SELECT family_id, MAX(processed_time) as max_time
                 FROM relations
-                GROUP BY relation_id
-            ) r2 ON r1.relation_id = r2.relation_id AND r1.processed_time = r2.max_time
+                GROUP BY family_id
+            ) r2 ON r1.family_id = r2.family_id AND r1.processed_time = r2.max_time
             ORDER BY r1.processed_time DESC
         """
 
@@ -2615,13 +2608,13 @@ class StorageManager:
         return [
             Relation(
                 absolute_id=row[0],
-                relation_id=row[1],
+                family_id=row[1],
                 entity1_absolute_id=row[2] or "",
                 entity2_absolute_id=row[3] or "",
                 content=row[4],
                 event_time=datetime.fromisoformat(row[5]),
                 processed_time=datetime.fromisoformat(row[6]),
-                memory_cache_id=row[7],
+                episode_id=row[7],
                 source_document=row[8] if len(row) > 8 and row[8] is not None else "",
                 embedding=row[9] if not exclude_embedding and len(row) > 9 else None
             )
@@ -2638,15 +2631,15 @@ class StorageManager:
         conn = self._get_conn()
         cursor = conn.cursor()
         
-        # 获取每个relation_id的最新版本及其embedding
+        # 获取每个family_id的最新版本及其embedding
         cursor.execute("""
-            SELECT id, relation_id, entity1_absolute_id, entity2_absolute_id,
-                   content, event_time, processed_time, memory_cache_id, source_document, embedding
+            SELECT id, family_id, entity1_absolute_id, entity2_absolute_id,
+                   content, event_time, processed_time, episode_id, source_document, embedding
             FROM relations r1
             WHERE r1.processed_time = (
                 SELECT MAX(r2.processed_time)
                 FROM relations r2
-                WHERE r2.relation_id = r1.relation_id
+                WHERE r2.family_id = r1.family_id
             )
         """)
 
@@ -2661,13 +2654,13 @@ class StorageManager:
                     embedding_array = None
             relation = Relation(
                 absolute_id=row[0],
-                relation_id=row[1],
+                family_id=row[1],
                 entity1_absolute_id=row[2] or "",
                 entity2_absolute_id=row[3] or "",
                 content=row[4],
                 event_time=datetime.fromisoformat(row[5]),
                 processed_time=datetime.fromisoformat(row[6]),
-                memory_cache_id=row[7],
+                episode_id=row[7],
                 source_document=row[8] if len(row) > 8 else '',
                 embedding=row[9] if len(row) > 9 else None
             )
@@ -2736,13 +2729,13 @@ class StorageManager:
         # 按相似度排序
         similarities.sort(key=lambda x: x[1], reverse=True)
         
-        # 返回关系列表（去重，每个relation_id只保留一个，并限制最大数量）
+        # 返回关系列表（去重，每个family_id只保留一个，并限制最大数量）
         relations = []
         seen_ids = set()
         for relation, _ in similarities:
-            if relation.relation_id not in seen_ids:
+            if relation.family_id not in seen_ids:
                 relations.append(relation)
-                seen_ids.add(relation.relation_id)
+                seen_ids.add(relation.family_id)
                 if len(relations) >= max_results:
                     break
         
@@ -2771,13 +2764,13 @@ class StorageManager:
         # 按相似度排序
         scored_relations.sort(key=lambda x: x[1], reverse=True)
         
-        # 返回关系列表（去重，每个relation_id只保留一个，并限制最大数量）
+        # 返回关系列表（去重，每个family_id只保留一个，并限制最大数量）
         relations = []
         seen_ids = set()
         for relation, _ in scored_relations:
-            if relation.relation_id not in seen_ids:
+            if relation.family_id not in seen_ids:
                 relations.append(relation)
-                seen_ids.add(relation.relation_id)
+                seen_ids.add(relation.family_id)
                 if len(relations) >= max_results:
                     break
         
@@ -2786,10 +2779,10 @@ class StorageManager:
     # ========== 知识图谱整理操作 ==========
     
     def get_doc_hash_by_cache_id(self, cache_id: str) -> Optional[str]:
-        """根据 memory_cache_id 获取对应的文档目录名（doc_hash）。"""
+        """根据 episode_id 获取对应的文档目录名（doc_hash）。"""
         return self._id_to_doc_hash.get(cache_id)
 
-    def get_memory_cache_text(self, cache_id: str) -> Optional[str]:
+    def get_episode_text(self, cache_id: str) -> Optional[str]:
         """获取记忆缓存对应的原始文本内容（优先从 docs/ 读取，回退旧结构）"""
         # 1. 尝试从 docs/ 新结构读取
         doc_hash = self._id_to_doc_hash.get(cache_id)
@@ -2941,19 +2934,19 @@ class StorageManager:
                                            progress_callback: Optional[callable] = None) -> Dict[str, set]:
         """
         使用混合检索方式找到每个实体的关联实体
-        
-        每个 entity_id 只使用最新版本（processed_time 最新的）的实体来计算相似度
-        
+
+        每个 family_id 只使用最新版本（processed_time 最新的）的实体来计算相似度
+
         Args:
             similarity_threshold: 相似度阈值
             max_candidates: 每个实体返回的最大候选实体数
             use_mixed_search: 是否使用混合检索（多种模式和方法）
             content_snippet_length: 用于检索的content截取长度
-            
+
         Returns:
-            Dict[entity_id, set of candidate_entity_ids]
+            Dict[family_id, set of candidate_family_ids]
         """
-        # 获取所有实体及其embedding（已经按entity_id去重，每个entity_id只返回最新版本）
+        # 获取所有实体及其embedding（已经按family_id去重，每个family_id只返回最新版本）
         entities_with_embeddings = self._get_entities_with_embeddings()
         
         if not entities_with_embeddings:
@@ -2965,7 +2958,7 @@ class StorageManager:
             # 使用混合检索方式：为每个实体使用多种模式和方法检索，然后合并结果
             total_entities = len(entities_with_embeddings)
             for idx, (entity, _) in enumerate(entities_with_embeddings, 1):
-                entity_id = entity.entity_id
+                family_id = entity.family_id
                 candidate_ids = set()
                 
                 # 显示进度
@@ -3009,14 +3002,14 @@ class StorageManager:
                         similarity_method="text"
                     )
                     for candidate in candidates_name_text:
-                        if candidate.entity_id != entity_id:
-                            candidate_ids.add(candidate.entity_id)
-                
+                        if candidate.family_id != family_id:
+                            candidate_ids.add(candidate.family_id)
+
                 # 合并所有候选实体
                 for candidate in candidates_name_embedding + candidates_full_embedding:
-                    if candidate.entity_id != entity_id:
-                        candidate_ids.add(candidate.entity_id)
-                
+                    if candidate.family_id != family_id:
+                        candidate_ids.add(candidate.family_id)
+
                 # 如果候选数量不足，尝试使用Jaccard相似度补充
                 if len(candidate_ids) < max_candidates:
                     candidates_name_jaccard = self.search_entities_by_similarity(
@@ -3029,26 +3022,26 @@ class StorageManager:
                         similarity_method="jaccard"
                     )
                     for candidate in candidates_name_jaccard:
-                        if candidate.entity_id != entity_id and len(candidate_ids) < max_candidates:
-                            candidate_ids.add(candidate.entity_id)
-                
-                result[entity_id] = candidate_ids
+                        if candidate.family_id != family_id and len(candidate_ids) < max_candidates:
+                            candidate_ids.add(candidate.family_id)
+
+                result[family_id] = candidate_ids
         else:
             # 使用原来的批量embedding计算方式（更高效，但只使用embedding）
-            # 构建实体索引（确保每个entity_id只保留一个，使用最新版本）
-            # entity_index: entity_id -> (Entity, embedding_array, embedding_index_in_all_embeddings)
+            # 构建实体索引（确保每个family_id只保留一个，使用最新版本）
+            # entity_index: family_id -> (Entity, embedding_array, embedding_index_in_all_embeddings)
             entity_index = {}
             all_embeddings = []
-            entity_id_list = []  # 与all_embeddings对应的entity_id列表，用于快速查找
-            
+            family_id_list = []  # 与all_embeddings对应的family_id列表，用于快速查找
+
             for entity, embedding_array in entities_with_embeddings:
                 if embedding_array is not None:
-                    # 确保每个entity_id只保留一个（如果已存在，跳过，因为_get_entities_with_embeddings已经返回最新版本）
-                    if entity.entity_id not in entity_index:
+                    # 确保每个family_id只保留一个（如果已存在，跳过，因为_get_entities_with_embeddings已经返回最新版本）
+                    if entity.family_id not in entity_index:
                         embedding_idx = len(all_embeddings)
-                        entity_index[entity.entity_id] = (entity, embedding_array, embedding_idx)
+                        entity_index[entity.family_id] = (entity, embedding_array, embedding_idx)
                         all_embeddings.append(embedding_array)
-                        entity_id_list.append(entity.entity_id)
+                        family_id_list.append(entity.family_id)
             
             if not all_embeddings:
                 return {}
@@ -3058,36 +3051,36 @@ class StorageManager:
             
             # 计算每个实体与其他实体的相似度
             total_entities = len(entity_index)
-            for idx, (entity_id, (entity, embedding, embedding_idx)) in enumerate(entity_index.items(), 1):
+            for idx, (family_id, (entity, embedding, embedding_idx)) in enumerate(entity_index.items(), 1):
                 candidate_ids = set()
-                
+
                 # 显示进度
                 if progress_callback:
                     progress_callback(idx, total_entities, entity.name)
-                
+
                 # 计算与所有其他实体的余弦相似度
                 dot_products = np.dot(all_embeddings_array, embedding)
                 norms = np.linalg.norm(all_embeddings_array, axis=1)
                 norm_entity = np.linalg.norm(embedding)
                 similarities = dot_products / (norms * norm_entity + 1e-9)
-                
+
                 # 找到相似度高于阈值且不是自己的实体
-                similar_indices = np.where((similarities >= similarity_threshold) & 
+                similar_indices = np.where((similarities >= similarity_threshold) &
                                           (np.arange(len(similarities)) != embedding_idx))[0]
-                
+
                 # 按相似度排序
                 if len(similar_indices) > 0:
                     similar_scores = similarities[similar_indices]
                     sorted_order = np.argsort(similar_scores)[::-1]  # 降序
                     similar_indices = similar_indices[sorted_order]
-                    
+
                     # 取前 max_candidates 个
                     for i in similar_indices[:max_candidates]:
-                        candidate_entity_id = entity_id_list[i]
-                        if candidate_entity_id != entity_id:
-                            candidate_ids.add(candidate_entity_id)
-                
-                result[entity_id] = candidate_ids
+                        candidate_family_id = family_id_list[i]
+                        if candidate_family_id != family_id:
+                            candidate_ids.add(candidate_family_id)
+
+                result[family_id] = candidate_ids
         
         return result
     
@@ -3164,19 +3157,19 @@ class StorageManager:
         
         return result
     
-    def merge_entity_ids(self, target_entity_id: str, source_entity_ids: List[str]) -> Dict[str, Any]:
+    def merge_entity_families(self, target_family_id: str, source_family_ids: List[str]) -> Dict[str, Any]:
         """
-        将多个source_entity_id的记录合并到target_entity_id
-        
+        将多个source_family_id的记录合并到target_family_id
+
         Args:
-            target_entity_id: 目标实体ID（保留的ID）
-            source_entity_ids: 要合并的源实体ID列表
+            target_family_id: 目标实体ID（保留的ID）
+            source_family_ids: 要合并的源实体ID列表
             
         Returns:
             合并结果统计，包含更新的实体数量和关系数量
         """
-        target_entity_id = self.resolve_entity_id(target_entity_id)
-        if not target_entity_id or not source_entity_ids:
+        target_family_id = self.resolve_family_id(target_family_id)
+        if not target_family_id or not source_family_ids:
             return {"entities_updated": 0, "relations_updated": 0}
 
         with self._write_lock:
@@ -3190,34 +3183,34 @@ class StorageManager:
                 # 1. 先获取所有源实体的版本数量（在更新之前，用于验证）
                 source_version_counts = {}
                 canonical_source_ids: List[str] = []
-                for source_id in source_entity_ids:
-                    source_id = self._resolve_entity_id_with_cursor(cursor, source_id)
-                    if not source_id or source_id == target_entity_id or source_id in canonical_source_ids:
+                for source_id in source_family_ids:
+                    source_id = self._resolve_family_id_with_cursor(cursor, source_id)
+                    if not source_id or source_id == target_family_id or source_id in canonical_source_ids:
                         continue
                     canonical_source_ids.append(source_id)
                     cursor.execute("""
                         SELECT COUNT(*) FROM entities
-                        WHERE entity_id = ?
+                        WHERE family_id = ?
                     """, (source_id,))
                     count = cursor.fetchone()[0]
                     source_version_counts[source_id] = count
 
-                # 2. 更新entities表中的所有entity_id记录
-                # 这会更新所有使用source_entity_id的记录，包括所有版本
+                # 2. 更新entities表中的所有family_id记录
+                # 这会更新所有使用source_family_id的记录，包括所有版本
                 for source_id in canonical_source_ids:
                     cursor.execute("""
                         UPDATE entities
-                        SET entity_id = ?
-                        WHERE entity_id = ?
-                    """, (target_entity_id, source_id))
+                        SET family_id = ?
+                        WHERE family_id = ?
+                    """, (target_family_id, source_id))
                     entities_updated += cursor.rowcount
 
                 # 2.5. 验证：确保所有源实体的版本都被更新了
-                # 检查是否还有任何源entity_id的记录残留
+                # 检查是否还有任何源family_id的记录残留
                 for source_id in canonical_source_ids:
                     cursor.execute("""
                         SELECT COUNT(*) FROM entities
-                        WHERE entity_id = ?
+                        WHERE family_id = ?
                     """, (source_id,))
                     remaining_count = cursor.fetchone()[0]
                     if remaining_count > 0:
@@ -3228,14 +3221,13 @@ class StorageManager:
                             f"（预期应更新 {source_version_counts[source_id]} 条记录，实际更新了 {source_version_counts[source_id] - remaining_count} 条）"
                         )
 
-                # 3. 获取target_entity_id的最新版本的绝对ID
+                # 3. 获取target_family_id的最新版本的绝对ID
                 cursor.execute("""
                     SELECT id FROM entities
-                    WHERE entity_id = ?
+                    WHERE family_id = ?
                     ORDER BY processed_time DESC
                     LIMIT 1
-                """, (target_entity_id,))
-
+                """, (target_family_id,))
                 target_absolute_id_row = cursor.fetchone()
                 if not target_absolute_id_row:
                     conn.rollback()
@@ -3244,23 +3236,23 @@ class StorageManager:
                 target_absolute_id = target_absolute_id_row[0]
 
                 # 注意：关系边中的绝对ID保持不变，因为它们指向的是特定版本
-                # 合并实体后，这些关系仍然有效，只是entity_id变了
+                # 合并实体后，这些关系仍然有效，只是family_id变了
                 # 不需要更新relations表，因为：
-                # - 关系表只存储absolute_id，不存储entity_id
-                # - 通过absolute_id查询实体时，会得到更新后的entity_id
-                # - 所有使用entity_id查询的地方（如get_relations_by_entities）都会自动使用新的entity_id
+                # - 关系表只存储absolute_id，不存储family_id
+                # - 通过absolute_id查询实体时，会得到更新后的family_id
+                # - 所有使用family_id查询的地方（如get_relations_by_entities）都会自动使用新的family_id
 
                 now_iso = datetime.now().isoformat()
                 for source_id in canonical_source_ids:
                     cursor.execute(
                         """
-                        INSERT INTO entity_redirects (source_entity_id, target_entity_id, updated_at)
+                        INSERT INTO entity_redirects (source_family_id, target_family_id, updated_at)
                         VALUES (?, ?, ?)
-                        ON CONFLICT(source_entity_id) DO UPDATE SET
-                            target_entity_id = excluded.target_entity_id,
+                        ON CONFLICT(source_family_id) DO UPDATE SET
+                            target_family_id = excluded.target_family_id,
                             updated_at = excluded.updated_at
                         """,
-                        (source_id, target_entity_id, now_iso),
+                        (source_id, target_family_id, now_iso),
                     )
 
                 conn.commit()
@@ -3272,28 +3264,28 @@ class StorageManager:
             return {
                 "entities_updated": entities_updated,
                 "relations_updated": relations_updated,
-                "target_entity_id": target_entity_id,
+                "target_family_id": target_family_id,
                 "merged_source_ids": canonical_source_ids
             }
     
-    def get_entity_version_count(self, entity_id: str) -> int:
-        """获取指定entity_id的版本数量
-        
+    def get_entity_version_count(self, family_id: str) -> int:
+        """获取指定family_id的版本数量
+
         Args:
-            entity_id: 实体ID
-            
+            family_id: 实体ID
+
         Returns:
             版本数量
         """
-        entity_id = self.resolve_entity_id(entity_id)
-        if not entity_id:
+        family_id = self.resolve_family_id(family_id)
+        if not family_id:
             return 0
         conn = self._get_conn()
         cursor = conn.cursor()
         
         cursor.execute("""
-            SELECT COUNT(*) FROM entities WHERE entity_id = ?
-        """, (entity_id,))
+            SELECT COUNT(*) FROM entities WHERE family_id = ?
+        """, (family_id,))
         
         count = cursor.fetchone()[0]
         
@@ -3354,11 +3346,11 @@ class StorageManager:
             stats["isolated_entities"] = cursor.fetchone()[0]
 
             # 图密度 (实际边数 / 最大可能边数)
-            cursor.execute("SELECT COUNT(DISTINCT entity_id) FROM entities")
+            cursor.execute("SELECT COUNT(DISTINCT family_id) FROM entities")
             unique_entities = cursor.fetchone()[0]
             if unique_entities > 1:
                 max_possible = unique_entities * (unique_entities - 1) / 2
-                cursor.execute("SELECT COUNT(DISTINCT relation_id) FROM relations")
+                cursor.execute("SELECT COUNT(DISTINCT family_id) FROM relations")
                 unique_relations = cursor.fetchone()[0]
                 stats["graph_density"] = round(unique_relations / max_possible, 4)
             else:
@@ -3390,20 +3382,20 @@ class StorageManager:
 
         return stats
 
-    def get_entity_version_counts(self, entity_ids: List[str]) -> Dict[str, int]:
-        """批量获取多个entity_id的版本数量
+    def get_entity_version_counts(self, family_ids: List[str]) -> Dict[str, int]:
+        """批量获取多个family_id的版本数量
 
         Args:
-            entity_ids: 实体ID列表
+            family_ids: 实体ID列表
 
         Returns:
-            Dict[entity_id, version_count]
+            Dict[family_id, version_count]
         """
-        if not entity_ids:
+        if not family_ids:
             return {}
         canonical_ids = []
-        for entity_id in entity_ids:
-            canonical_id = self.resolve_entity_id(entity_id)
+        for family_id in family_ids:
+            canonical_id = self.resolve_family_id(family_id)
             if canonical_id and canonical_id not in canonical_ids:
                 canonical_ids.append(canonical_id)
         if not canonical_ids:
@@ -3415,108 +3407,108 @@ class StorageManager:
         # 使用IN子句批量查询
         placeholders = ','.join(['?'] * len(canonical_ids))
         cursor.execute(f"""
-            SELECT entity_id, COUNT(*) as version_count
+            SELECT family_id, COUNT(*) as version_count
             FROM entities
-            WHERE entity_id IN ({placeholders})
-            GROUP BY entity_id
+            WHERE family_id IN ({placeholders})
+            GROUP BY family_id
         """, canonical_ids)
         
         rows = cursor.fetchall()
         
         return {row[0]: row[1] for row in rows}
 
-    def entity_has_any_relation(self, entity_id: str) -> bool:
+    def entity_has_any_relation(self, family_id: str) -> bool:
         """检查实体是否在关系表中作为任一端出现（轻量查询，只查 COUNT）。"""
-        entity_id = self.resolve_entity_id(entity_id)
-        if not entity_id:
+        family_id = self.resolve_family_id(family_id)
+        if not family_id:
             return False
         conn = self._get_conn()
         cursor = conn.cursor()
         cursor.execute("""
             SELECT COUNT(*) FROM relations
-            WHERE entity1_absolute_id IN (SELECT id FROM entities WHERE entity_id = ?)
-               OR entity2_absolute_id IN (SELECT id FROM entities WHERE entity_id = ?)
-        """, (entity_id, entity_id))
+            WHERE entity1_absolute_id IN (SELECT id FROM entities WHERE family_id = ?)
+               OR entity2_absolute_id IN (SELECT id FROM entities WHERE family_id = ?)
+        """, (family_id, family_id))
         return cursor.fetchone()[0] > 0
 
-    def delete_orphan_entities(self, candidate_entity_ids: list) -> list:
+    def delete_orphan_entities(self, candidate_family_ids: list) -> list:
         """批量检查并删除没有关系的实体。
 
-        一条 SQL 找出候选列表中确实无关系的 entity_id，然后删除。
+        一条 SQL 找出候选列表中确实无关系的 family_id，然后删除。
 
         Args:
-            candidate_entity_ids: 待检查的 entity_id 列表
+            candidate_family_ids: 待检查的 family_id 列表
 
         Returns:
-            被删除的 entity_id 列表
+            被删除的 family_id 列表
         """
-        if not candidate_entity_ids:
+        if not candidate_family_ids:
             return []
         with self._write_lock:
             conn = self._get_conn()
             cursor = conn.cursor()
-            placeholders = ','.join(['?'] * len(candidate_entity_ids))
-            # 找出候选中没有任何关系的 entity_id
+            placeholders = ','.join(['?'] * len(candidate_family_ids))
+            # 找出候选中没有任何关系的 family_id
             cursor.execute(f"""
-                SELECT e.entity_id FROM entities e
-                WHERE e.entity_id IN ({placeholders})
+                SELECT e.family_id FROM entities e
+                WHERE e.family_id IN ({placeholders})
                   AND e.id NOT IN (
                       SELECT entity1_absolute_id FROM relations
                       UNION
                       SELECT entity2_absolute_id FROM relations
                   )
-                GROUP BY e.entity_id
-            """, candidate_entity_ids)
+                GROUP BY e.family_id
+            """, candidate_family_ids)
             orphan_ids = [row[0] for row in cursor.fetchall()]
             if orphan_ids:
                 ph2 = ','.join(['?'] * len(orphan_ids))
-                cursor.execute(f"DELETE FROM entities WHERE entity_id IN ({ph2})", orphan_ids)
+                cursor.execute(f"DELETE FROM entities WHERE family_id IN ({ph2})", orphan_ids)
             return orphan_ids
 
-    def delete_entity_by_id(self, entity_id: str) -> int:
+    def delete_entity_by_id(self, family_id: str) -> int:
         """删除实体的所有版本。返回删除的行数。"""
-        entity_id = self.resolve_entity_id(entity_id)
-        if not entity_id:
+        family_id = self.resolve_family_id(family_id)
+        if not family_id:
             return 0
         with self._write_lock:
             conn = self._get_conn()
             cursor = conn.cursor()
-            cursor.execute("DELETE FROM entities WHERE entity_id = ?", (entity_id,))
+            cursor.execute("DELETE FROM entities WHERE family_id = ?", (family_id,))
             # 清理 FTS 表
             try:
-                cursor.execute("DELETE FROM entity_fts WHERE entity_id = ?", (entity_id,))
+                cursor.execute("DELETE FROM entity_fts WHERE family_id = ?", (family_id,))
             except Exception:
                 pass
             return cursor.rowcount
 
-    def delete_relation_by_id(self, relation_id: str) -> int:
+    def delete_relation_by_id(self, family_id: str) -> int:
         """删除关系的所有版本。返回删除的行数。"""
         with self._write_lock:
             conn = self._get_conn()
             cursor = conn.cursor()
-            cursor.execute("DELETE FROM relations WHERE relation_id = ?", (relation_id,))
+            cursor.execute("DELETE FROM relations WHERE family_id = ?", (family_id,))
             count = cursor.rowcount
             # 清理 FTS 表
             try:
-                cursor.execute("DELETE FROM relation_fts WHERE relation_id = ?", (relation_id,))
+                cursor.execute("DELETE FROM relation_fts WHERE family_id = ?", (family_id,))
             except Exception:
                 pass
             conn.commit()
             return count
 
-    def delete_entity_all_versions(self, entity_id: str) -> int:
+    def delete_entity_all_versions(self, family_id: str) -> int:
         """删除实体的所有版本（含重定向解析）。返回删除的行数。"""
-        return self.delete_entity_by_id(entity_id)
+        return self.delete_entity_by_id(family_id)
 
-    def delete_relation_all_versions(self, relation_id: str) -> int:
+    def delete_relation_all_versions(self, family_id: str) -> int:
         """删除关系的所有版本。返回删除的行数。"""
-        return self.delete_relation_by_id(relation_id)
+        return self.delete_relation_by_id(family_id)
 
-    def get_entity_ids_by_names(self, names: list) -> dict:
-        """按名称批量查询实 entity_id（每个 name 取最新版本）。
+    def get_family_ids_by_names(self, names: list) -> dict:
+        """按名称批量查询实 family_id（每个 name 取最新版本）。
 
         Returns:
-            {name: entity_id} 仅包含能找到的名称。
+            {name: family_id} 仅包含能找到的名称。
         """
         if not names:
             return {}
@@ -3524,36 +3516,34 @@ class StorageManager:
         cursor = conn.cursor()
         placeholders = ','.join(['?'] * len(names))
         cursor.execute(f"""
-            SELECT name, entity_id FROM entities
+            SELECT name, family_id FROM entities
             WHERE name IN ({placeholders})
             ORDER BY processed_time DESC
         """, names)
         result = {}
         for name, eid in cursor.fetchall():
             if name not in result:
-                result[name] = self.resolve_entity_id(eid)
+                result[name] = self.resolve_family_id(eid)
         return result
 
     def get_total_entity_count(self) -> int:
-        """获取数据库中的实体总数（去重 entity_id 后的数量）。"""
+        """获取数据库中的实体总数（去重 family_id 后的数量）。"""
         try:
             conn = self._get_conn()
             cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(DISTINCT entity_id) FROM entities")
+            cursor.execute("SELECT COUNT(DISTINCT family_id) FROM entities")
             return cursor.fetchone()[0]
         except Exception:
             return 0
 
-    def find_shortest_paths(self, source_entity_id: str, target_entity_id: str,
+    def find_shortest_paths(self, source_family_id: str, target_family_id: str,
                             max_depth: int = 6, max_paths: int = 10) -> Dict[str, Any]:
         """使用 BFS 查找两个实体之间的所有最短路径。
 
-        在 entity_id 级别的无向图上执行 BFS，找到所有等长的最短路径，
-        然后重构路径中每对相邻实体之间的连接关系。
-
-        Args:
-            source_entity_id: 起始实体的 entity_id
-            target_entity_id: 目标实体的 entity_id
+        在 family_id 级别的无向图上执行 BFS，找到所有等长的最短路径，
+        然后重构路径中每对相邻实体之间的连接关系。        Args:
+            source_family_id: 起始实体的 family_id
+            target_family_id: 目标实体的 family_id
             max_depth: 最大搜索深度（默认6）
             max_paths: 最多返回的路径数量（默认10）
 
@@ -3579,8 +3569,8 @@ class StorageManager:
         }
 
         # 1. 验证实体存在
-        source_entity = self.get_entity_by_entity_id(source_entity_id)
-        target_entity = self.get_entity_by_entity_id(target_entity_id)
+        source_entity = self.get_entity_by_family_id(source_family_id)
+        target_entity = self.get_entity_by_family_id(target_family_id)
 
         if not source_entity or not target_entity:
             result_empty["source_entity"] = source_entity
@@ -3588,7 +3578,7 @@ class StorageManager:
             return result_empty
 
         # 同一实体
-        if source_entity_id == target_entity_id:
+        if source_family_id == target_family_id:
             return {
                 "source_entity": source_entity,
                 "target_entity": target_entity,
@@ -3608,13 +3598,13 @@ class StorageManager:
             result_empty["target_entity"] = target_entity
             return result_empty
 
-        # 3. 构建 absolute_id → entity_id 映射
+        # 3. 构建 absolute_id → family_id 映射
         conn = self._get_conn()
         cursor = conn.cursor()
-        cursor.execute("SELECT id, entity_id FROM entities")
+        cursor.execute("SELECT id, family_id FROM entities")
         abs_to_eid = {row[0]: row[1] for row in cursor.fetchall()}
 
-        # 4. 构建 entity_id 级邻接表 和 entity_pair → [Relation] 映射
+        # 4. 构建 family_id 级邻接表 和 entity_pair → [Relation] 映射
         adjacency: Dict[str, Set[str]] = {}
         pair_relations: Dict[Tuple[str, str], List[Relation]] = {}
 
@@ -3633,11 +3623,11 @@ class StorageManager:
             pair_relations.setdefault(pair_key, []).append(rel)
 
         # 5. 改进 BFS：记录所有最短路径父节点
-        # visited: entity_id → distance from source
-        # parents: entity_id → list of parent entity_ids on shortest paths
-        visited: Dict[str, int] = {source_entity_id: 0}
-        parents: Dict[str, List[str]] = {source_entity_id: []}
-        queue = [source_entity_id]
+        # visited: family_id → distance from source
+        # parents: family_id → list of parent family_ids on shortest paths
+        visited: Dict[str, int] = {source_family_id: 0}
+        parents: Dict[str, List[str]] = {source_family_id: []}
+        queue = [source_family_id]
         found_depth = None
 
         while queue and found_depth is None:
@@ -3651,7 +3641,7 @@ class StorageManager:
                         visited[neighbor] = current_dist + 1
                         parents[neighbor] = [current]
                         next_queue.append(neighbor)
-                        if neighbor == target_entity_id:
+                        if neighbor == target_family_id:
                             found_depth = current_dist + 1
                     elif visited[neighbor] == current_dist + 1:
                         # 另一条等长路径
@@ -3659,7 +3649,7 @@ class StorageManager:
             queue = next_queue
 
         # 未到达目标
-        if target_entity_id not in visited:
+        if target_family_id not in visited:
             result_empty["source_entity"] = source_entity
             result_empty["target_entity"] = target_entity
             return result_empty
@@ -3670,7 +3660,7 @@ class StorageManager:
         def backtrack(node: str, path: List[str]):
             if len(all_paths_eid) >= max_paths * 10:
                 return  # 防止爆炸
-            if node == source_entity_id:
+            if node == source_family_id:
                 all_paths_eid.append(list(reversed(path)))
                 return
             for parent in parents.get(node, []):
@@ -3678,7 +3668,7 @@ class StorageManager:
                 backtrack(parent, path)
                 path.pop()
 
-        backtrack(target_entity_id, [target_entity_id])
+        backtrack(target_family_id, [target_family_id])
         all_paths_eid.sort()  # 稳定排序
         total_shortest_paths = len(all_paths_eid)
         all_paths_eid = all_paths_eid[:max_paths]
@@ -3699,19 +3689,19 @@ class StorageManager:
         if needed_abs_ids:
             placeholders = ','.join('?' * len(needed_abs_ids))
             cursor.execute(f"""
-                SELECT id, entity_id, name, content, event_time, processed_time,
-                       memory_cache_id, source_document
+                SELECT id, family_id, name, content, event_time, processed_time,
+                       episode_id, source_document
                 FROM entities WHERE id IN ({placeholders})
             """, list(needed_abs_ids))
             for row in cursor.fetchall():
                 abs_entity_map[row[0]] = Entity(
                     absolute_id=row[0],
-                    entity_id=row[1],
+                    family_id=row[1],
                     name=row[2],
                     content=row[3],
                     event_time=self._safe_parse_datetime(row[4]),
                     processed_time=self._safe_parse_datetime(row[5]),
-                    memory_cache_id=row[6],
+                    episode_id=row[6],
                     source_document=row[7] if len(row) > 7 else '',
                 )
 
@@ -3761,7 +3751,7 @@ class StorageManager:
         cursor = conn.cursor()
 
         cursor.execute("""
-            SELECT id, entity_id, name, content, event_time, processed_time, memory_cache_id, source_document, valid_at, invalid_at
+            SELECT id, family_id, name, content, event_time, processed_time, episode_id, source_document, valid_at, invalid_at
             FROM entities
             WHERE (valid_at IS NULL OR valid_at <= ?)
               AND (invalid_at IS NULL OR invalid_at > ?)
@@ -3772,16 +3762,16 @@ class StorageManager:
         entities = []
         for row in cursor.fetchall():
             entities.append(Entity(
-                absolute_id=row[0], entity_id=row[1], name=row[2], content=row[3],
+                absolute_id=row[0], family_id=row[1], name=row[2], content=row[3],
                 event_time=self._safe_parse_datetime(row[4]),
                 processed_time=self._safe_parse_datetime(row[5]),
-                memory_cache_id=row[6], source_document=row[7] if len(row) > 7 else '',
+                episode_id=row[6], source_document=row[7] if len(row) > 7 else '',
                 valid_at=self._safe_parse_datetime(row[8]) if len(row) > 8 else None,
                 invalid_at=self._safe_parse_datetime(row[9]) if len(row) > 9 else None,
             ))
 
         cursor.execute("""
-            SELECT id, relation_id, entity1_absolute_id, entity2_absolute_id, content, event_time, processed_time, memory_cache_id, source_document, valid_at, invalid_at
+            SELECT id, family_id, entity1_absolute_id, entity2_absolute_id, content, event_time, processed_time, episode_id, source_document, valid_at, invalid_at
             FROM relations
             WHERE (valid_at IS NULL OR valid_at <= ?)
               AND (invalid_at IS NULL OR invalid_at > ?)
@@ -3792,11 +3782,11 @@ class StorageManager:
         relations = []
         for row in cursor.fetchall():
             relations.append(Relation(
-                absolute_id=row[0], relation_id=row[1],
+                absolute_id=row[0], family_id=row[1],
                 entity1_absolute_id=row[2], entity2_absolute_id=row[3],
                 content=row[4], event_time=self._safe_parse_datetime(row[5]),
                 processed_time=self._safe_parse_datetime(row[6]),
-                memory_cache_id=row[7], source_document=row[8] if len(row) > 8 else '',
+                episode_id=row[7], source_document=row[8] if len(row) > 8 else '',
                 valid_at=self._safe_parse_datetime(row[9]) if len(row) > 9 else None,
                 invalid_at=self._safe_parse_datetime(row[10]) if len(row) > 10 else None,
             ))
@@ -3811,7 +3801,7 @@ class StorageManager:
 
         # 新增/修改的实体
         cursor.execute("""
-            SELECT id, entity_id, name, content, event_time, processed_time, memory_cache_id, source_document, valid_at, invalid_at
+            SELECT id, family_id, name, content, event_time, processed_time, episode_id, source_document, valid_at, invalid_at
             FROM entities
             WHERE event_time >= ? AND event_time <= ?
             ORDER BY event_time DESC
@@ -3820,17 +3810,17 @@ class StorageManager:
         entities = []
         for row in cursor.fetchall():
             entities.append(Entity(
-                absolute_id=row[0], entity_id=row[1], name=row[2], content=row[3],
+                absolute_id=row[0], family_id=row[1], name=row[2], content=row[3],
                 event_time=self._safe_parse_datetime(row[4]),
                 processed_time=self._safe_parse_datetime(row[5]),
-                memory_cache_id=row[6], source_document=row[7] if len(row) > 7 else '',
+                episode_id=row[6], source_document=row[7] if len(row) > 7 else '',
                 valid_at=self._safe_parse_datetime(row[8]) if len(row) > 8 else None,
                 invalid_at=self._safe_parse_datetime(row[9]) if len(row) > 9 else None,
             ))
 
         # 新增/修改/失效的关系
         cursor.execute("""
-            SELECT id, relation_id, entity1_absolute_id, entity2_absolute_id, content, event_time, processed_time, memory_cache_id, source_document, valid_at, invalid_at
+            SELECT id, family_id, entity1_absolute_id, entity2_absolute_id, content, event_time, processed_time, episode_id, source_document, valid_at, invalid_at
             FROM relations
             WHERE event_time >= ? AND event_time <= ?
             ORDER BY event_time DESC
@@ -3839,26 +3829,26 @@ class StorageManager:
         relations = []
         for row in cursor.fetchall():
             relations.append(Relation(
-                absolute_id=row[0], relation_id=row[1],
+                absolute_id=row[0], family_id=row[1],
                 entity1_absolute_id=row[2], entity2_absolute_id=row[3],
                 content=row[4], event_time=self._safe_parse_datetime(row[5]),
                 processed_time=self._safe_parse_datetime(row[6]),
-                memory_cache_id=row[7], source_document=row[8] if len(row) > 8 else '',
+                episode_id=row[7], source_document=row[8] if len(row) > 8 else '',
                 valid_at=self._safe_parse_datetime(row[9]) if len(row) > 9 else None,
                 invalid_at=self._safe_parse_datetime(row[10]) if len(row) > 10 else None,
             ))
 
         return {"entities": entities, "relations": relations}
 
-    def invalidate_relation(self, relation_id: str, reason: str = "") -> int:
+    def invalidate_relation(self, family_id: str, reason: str = "") -> int:
         """标记关系为失效（不删除数据，保留历史记录）"""
         with self._write_lock:
             conn = self._get_conn()
             cursor = conn.cursor()
             cursor.execute("""
                 UPDATE relations SET invalid_at = ?
-                WHERE relation_id = ? AND invalid_at IS NULL
-            """, (datetime.now(timezone.utc).isoformat(), relation_id))
+                WHERE family_id = ? AND invalid_at IS NULL
+            """, (datetime.now(timezone.utc).isoformat(), family_id))
             conn.commit()
             return cursor.rowcount
 
@@ -3867,7 +3857,7 @@ class StorageManager:
         conn = self._get_conn()
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT id, relation_id, entity1_absolute_id, entity2_absolute_id, content, event_time, processed_time, memory_cache_id, source_document, valid_at, invalid_at
+            SELECT id, family_id, entity1_absolute_id, entity2_absolute_id, content, event_time, processed_time, episode_id, source_document, valid_at, invalid_at
             FROM relations
             WHERE invalid_at IS NOT NULL
             ORDER BY invalid_at DESC
@@ -3876,11 +3866,11 @@ class StorageManager:
         relations = []
         for row in cursor.fetchall():
             relations.append(Relation(
-                absolute_id=row[0], relation_id=row[1],
+                absolute_id=row[0], family_id=row[1],
                 entity1_absolute_id=row[2], entity2_absolute_id=row[3],
                 content=row[4], event_time=self._safe_parse_datetime(row[5]),
                 processed_time=self._safe_parse_datetime(row[6]),
-                memory_cache_id=row[7], source_document=row[8] if len(row) > 8 else '',
+                episode_id=row[7], source_document=row[8] if len(row) > 8 else '',
                 valid_at=self._safe_parse_datetime(row[9]) if len(row) > 9 else None,
                 invalid_at=self._safe_parse_datetime(row[10]) if len(row) > 10 else None,
             ))
@@ -3888,7 +3878,7 @@ class StorageManager:
 
     # ========== Phase A: 实体智能 ==========
 
-    def update_entity_summary(self, entity_id: str, summary: str):
+    def update_entity_summary(self, family_id: str, summary: str):
         """更新实体的摘要（最新版本）。"""
         with self._write_lock:
             conn = self._get_conn()
@@ -3897,13 +3887,13 @@ class StorageManager:
                 UPDATE entities SET summary = ?
                 WHERE id = (
                     SELECT id FROM entities
-                    WHERE entity_id = ?
+                    WHERE family_id = ?
                     ORDER BY processed_time DESC LIMIT 1
                 )
-            """, (summary, entity_id))
+            """, (summary, family_id))
             conn.commit()
 
-    def update_entity_attributes(self, entity_id: str, attributes: str):
+    def update_entity_attributes(self, family_id: str, attributes: str):
         """更新实体的属性字典（JSON 字符串）。"""
         with self._write_lock:
             conn = self._get_conn()
@@ -3912,13 +3902,13 @@ class StorageManager:
                 UPDATE entities SET attributes = ?
                 WHERE id = (
                     SELECT id FROM entities
-                    WHERE entity_id = ?
+                    WHERE family_id = ?
                     ORDER BY processed_time DESC LIMIT 1
                 )
-            """, (attributes, entity_id))
+            """, (attributes, family_id))
             conn.commit()
 
-    def update_entity_confidence(self, entity_id: str, confidence: float):
+    def update_entity_confidence(self, family_id: str, confidence: float):
         """更新实体的置信度评分。"""
         with self._write_lock:
             conn = self._get_conn()
@@ -3927,15 +3917,15 @@ class StorageManager:
                 UPDATE entities SET confidence = ?
                 WHERE id = (
                     SELECT id FROM entities
-                    WHERE entity_id = ?
+                    WHERE family_id = ?
                     ORDER BY processed_time DESC LIMIT 1
                 )
-            """, (confidence, entity_id))
+            """, (confidence, family_id))
             conn.commit()
 
-    def compute_entity_confidence(self, entity_id: str) -> float:
+    def compute_entity_confidence(self, family_id: str) -> float:
         """自动计算实体的置信度评分。"""
-        versions = self.get_entity_versions(entity_id)
+        versions = self.get_entity_versions(family_id)
         if not versions:
             return 0.0
         score = min(len(versions) * 0.1, 0.3)
@@ -3948,7 +3938,7 @@ class StorageManager:
                 score += 0.2
             else:
                 score += 0.1
-        mentions = self.get_entity_provenance(entity_id)
+        mentions = self.get_entity_provenance(family_id)
         if mentions:
             score += min(len(mentions) * 0.05, 0.3)
         content_len = len(latest.content)
@@ -3958,27 +3948,27 @@ class StorageManager:
 
     # ========== Phase B: 图遍历辅助 ==========
 
-    def get_relations_by_entity_ids(self, entity_ids: List[str], limit: Optional[int] = None) -> List[Relation]:
+    def get_relations_by_family_ids(self, family_ids: List[str], limit: Optional[int] = None) -> List[Relation]:
         """获取与指定实体 ID 列表相关的所有关系。"""
-        if not entity_ids:
+        if not family_ids:
             return []
         conn = self._get_conn()
         cursor = conn.cursor()
-        placeholders = ",".join("?" * len(entity_ids))
+        placeholders = ",".join("?" * len(family_ids))
         cursor.execute(f"""
-            SELECT entity_id, MAX(processed_time), id
+            SELECT family_id, MAX(processed_time), id
             FROM entities
-            WHERE entity_id IN ({placeholders})
-            GROUP BY entity_id
-        """, entity_ids)
+            WHERE family_id IN ({placeholders})
+            GROUP BY family_id
+        """, family_ids)
         abs_id_map = {row[0]: row[2] for row in cursor.fetchall()}
         abs_ids = list(abs_id_map.values())
         if not abs_ids:
             return []
         abs_placeholders = ",".join("?" * len(abs_ids))
         query = f"""
-            SELECT id, relation_id, entity1_absolute_id, entity2_absolute_id,
-                   content, event_time, processed_time, memory_cache_id, source_document, embedding
+            SELECT id, family_id, entity1_absolute_id, entity2_absolute_id,
+                   content, event_time, processed_time, episode_id, source_document, embedding
             FROM relations
             WHERE entity1_absolute_id IN ({abs_placeholders})
                OR entity2_absolute_id IN ({abs_placeholders})
@@ -3992,18 +3982,18 @@ class StorageManager:
         relations = []
         for row in cursor.fetchall():
             relations.append(Relation(
-                absolute_id=row[0], relation_id=row[1],
+                absolute_id=row[0], family_id=row[1],
                 entity1_absolute_id=row[2] or "", entity2_absolute_id=row[3] or "",
                 content=row[4], event_time=self._safe_parse_datetime(row[5]),
                 processed_time=self._safe_parse_datetime(row[6]),
-                memory_cache_id=row[7], source_document=row[8] if len(row) > 8 else '',
+                episode_id=row[7], source_document=row[8] if len(row) > 8 else '',
                 embedding=row[9] if len(row) > 9 else None,
             ))
         return relations
 
-    def get_entity_degree(self, entity_id: str) -> int:
+    def get_entity_degree(self, family_id: str) -> int:
         """获取实体的度（连接数）。"""
-        return len(self.get_relations_by_entity_ids([entity_id]))
+        return len(self.get_relations_by_family_ids([family_id]))
 
     # ========== Phase C: Episode MENTIONS ==========
 
@@ -4019,11 +4009,11 @@ class StorageManager:
                 """, (episode_id, abs_id, context))
             conn.commit()
 
-    def get_entity_provenance(self, entity_id: str) -> List[dict]:
+    def get_entity_provenance(self, family_id: str) -> List[dict]:
         """获取提及该实体的所有 Episode。"""
         conn = self._get_conn()
         cursor = conn.cursor()
-        cursor.execute("SELECT id FROM entities WHERE entity_id = ?", (entity_id,))
+        cursor.execute("SELECT id FROM entities WHERE family_id = ?", (family_id,))
         abs_ids = [row[0] for row in cursor.fetchall()]
         if not abs_ids:
             return []
@@ -4043,13 +4033,13 @@ class StorageManager:
         conn = self._get_conn()
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT em.entity_absolute_id, em.mention_context, e.name, e.entity_id
+            SELECT em.entity_absolute_id, em.mention_context, e.name, e.family_id
             FROM episode_mentions em
             LEFT JOIN entities e ON em.entity_absolute_id = e.id
             WHERE em.episode_id = ?
         """, (episode_id,))
         return [
-            {"absolute_id": row[0], "mention_context": row[1] or "", "name": row[2] or "", "entity_id": row[3] or ""}
+            {"absolute_id": row[0], "mention_context": row[1] or "", "name": row[2] or "", "family_id": row[3] or ""}
             for row in cursor.fetchall()
         ]
 
@@ -4063,7 +4053,7 @@ class StorageManager:
 
     # ========== Phase D: 关系溯源 ==========
 
-    def update_relation_provenance(self, relation_id: str, provenance: str):
+    def update_relation_provenance(self, family_id: str, provenance: str):
         """更新关系的溯源信息（JSON 字符串）。"""
         with self._write_lock:
             conn = self._get_conn()
@@ -4072,10 +4062,10 @@ class StorageManager:
                 UPDATE relations SET provenance = ?
                 WHERE id = (
                     SELECT id FROM relations
-                    WHERE relation_id = ?
+                    WHERE family_id = ?
                     ORDER BY processed_time DESC LIMIT 1
                 )
-            """, (provenance, relation_id))
+            """, (provenance, family_id))
             conn.commit()
 
     # ========== Phase E: Dream Logs ==========
@@ -4136,3 +4126,183 @@ class StorageManager:
             "connections": json.loads(row[7]) if row[7] else [],
             "consolidations": json.loads(row[8]) if row[8] else [],
         }
+
+    # ========== Version-Level CRUD (Phase 2) ==========
+
+    def update_entity_by_absolute_id(self, absolute_id: str, **fields) -> Optional[Entity]:
+        """根据绝对ID更新实体字段（name, content, summary, attributes, confidence）。"""
+        allowed = {"name", "content", "summary", "attributes", "confidence"}
+        updates = {k: v for k, v in fields.items() if k in allowed}
+        if not updates:
+            return self.get_entity_by_absolute_id(absolute_id)
+
+        with self._write_lock:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            for field, value in updates.items():
+                cursor.execute(
+                    f"UPDATE entities SET {field} = ? WHERE id = ?",
+                    (value, absolute_id),
+                )
+            conn.commit()
+
+        return self.get_entity_by_absolute_id(absolute_id)
+
+    def delete_entity_by_absolute_id(self, absolute_id: str) -> bool:
+        """根据绝对ID删除实体，同时清理 FTS 索引。"""
+        with self._write_lock:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            # Get family_id before deleting for FTS cleanup
+            cursor.execute(
+                "SELECT family_id FROM entities WHERE id = ?",
+                (absolute_id,),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return False
+            family_id = row[0]
+            # Delete FTS entry
+            cursor.execute(
+                "DELETE FROM entity_fts WHERE family_id = ?",
+                (family_id,),
+            )
+            # Delete entity
+            cursor.execute(
+                "DELETE FROM entities WHERE id = ?",
+                (absolute_id,),
+            )
+            affected = cursor.rowcount
+            conn.commit()
+            return affected > 0
+
+    def update_relation_by_absolute_id(self, absolute_id: str, **fields) -> Optional[Relation]:
+        """根据绝对ID更新关系字段（content, summary, attributes, confidence）。"""
+        allowed = {"content", "summary", "attributes", "confidence"}
+        updates = {k: v for k, v in fields.items() if k in allowed}
+        if not updates:
+            return self.get_relation_by_absolute_id(absolute_id)
+
+        with self._write_lock:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            for field, value in updates.items():
+                cursor.execute(
+                    f"UPDATE relations SET {field} = ? WHERE id = ?",
+                    (value, absolute_id),
+                )
+            conn.commit()
+
+        return self.get_relation_by_absolute_id(absolute_id)
+
+    def delete_relation_by_absolute_id(self, absolute_id: str) -> bool:
+        """根据绝对ID删除关系，同时清理 FTS 索引。"""
+        with self._write_lock:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            # Get family_id before deleting for FTS cleanup
+            cursor.execute(
+                "SELECT family_id FROM relations WHERE id = ?",
+                (absolute_id,),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return False
+            family_id = row[0]
+            # Delete FTS entry
+            cursor.execute(
+                "DELETE FROM relation_fts WHERE family_id = ?",
+                (family_id,),
+            )
+            # Delete relation
+            cursor.execute(
+                "DELETE FROM relations WHERE id = ?",
+                (absolute_id,),
+            )
+            affected = cursor.rowcount
+            conn.commit()
+            return affected > 0
+
+    def get_relations_referencing_absolute_id(self, absolute_id: str) -> List[Relation]:
+        """获取所有引用指定实体绝对ID的关系。"""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, family_id, entity1_absolute_id, entity2_absolute_id,
+                   content, event_time, processed_time, episode_id, source_document
+            FROM relations
+            WHERE entity1_absolute_id = ? OR entity2_absolute_id = ?
+        """, (absolute_id, absolute_id))
+        results = []
+        for row in cursor.fetchall():
+            results.append(Relation(
+                absolute_id=row[0],
+                family_id=row[1],
+                entity1_absolute_id=row[2] or "",
+                entity2_absolute_id=row[3] or "",
+                content=row[4],
+                event_time=self._safe_parse_datetime(row[5]),
+                processed_time=self._safe_parse_datetime(row[6]),
+                episode_id=row[7],
+                source_document=row[8] if len(row) > 8 else '',
+            ))
+        return results
+
+    def split_entity_version(self, absolute_id: str, new_family_id: str = "") -> Optional[Entity]:
+        """将实体版本从当前 family 拆分到新 family。"""
+        import uuid as _uuid
+        if not new_family_id:
+            new_family_id = f"ent_{_uuid.uuid4().hex[:12]}"
+
+        with self._write_lock:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            # Check existence and get old family_id
+            cursor.execute(
+                "SELECT family_id FROM entities WHERE id = ?",
+                (absolute_id,),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return None
+            # Update family_id
+            cursor.execute(
+                "UPDATE entities SET family_id = ? WHERE id = ?",
+                (new_family_id, absolute_id),
+            )
+            conn.commit()
+
+        return self.get_entity_by_absolute_id(absolute_id)
+
+    def redirect_relation(self, family_id: str, side: str, new_family_id: str) -> int:
+        """将指定 family 下所有关系的某一端重定向到新 family 的最新实体。"""
+        with self._write_lock:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            # Resolve new_family_id through redirect chain
+            resolved_family = self._resolve_family_id_with_cursor(cursor, new_family_id)
+            # Get latest entity absolute_id for the new family
+            cursor.execute(
+                "SELECT id FROM entities WHERE family_id = ? ORDER BY processed_time DESC LIMIT 1",
+                (resolved_family,),
+            )
+            entity_row = cursor.fetchone()
+            if entity_row is None:
+                return 0
+            new_absolute_id = entity_row[0]
+            # Update the specified side
+            if side == "entity1":
+                cursor.execute(
+                    "UPDATE relations SET entity1_absolute_id = ? WHERE family_id = ?",
+                    (new_absolute_id, family_id),
+                )
+            elif side == "entity2":
+                cursor.execute(
+                    "UPDATE relations SET entity2_absolute_id = ? WHERE family_id = ?",
+                    (new_absolute_id, family_id),
+                )
+            else:
+                return 0
+            affected = cursor.rowcount
+            conn.commit()
+            return affected

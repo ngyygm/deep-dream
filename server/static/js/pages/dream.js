@@ -1,355 +1,352 @@
-/* ==========================================
-   DeepDream Page - Memory Consolidation
-   ========================================== */
-registerPage('dream', (function () {
+// DeepDream / Butler Management Page
+// Module pattern - registers with app.js router
+registerPage('dream', (function() {
   'use strict';
 
-  let _container = null;
-  let _statusTimer = null;
+  let _refreshTimer = null;
 
-  // ---- Render ----
+  // ── Helpers ──────────────────────────────────────────────
+  function priorityClass(p) {
+    return { high: 'badge-error', medium: 'badge-warning', low: 'badge-info' }[p] || 'badge-primary';
+  }
 
+  function statusIcon(s) {
+    const m = {
+      done: '<span style="color:var(--success);">&#10003;</span>',
+      preview: '<span style="color:var(--warning);">&#128065;</span>',
+      skipped: '<span style="color:var(--text-muted);">&#8722;</span>',
+      unknown: '<span style="color:var(--error);">?</span>',
+    };
+    return m[s] || m.unknown;
+  }
+
+  // ── Render ──────────────────────────────────────────────
   async function render(container) {
-    _container = container;
-
     container.innerHTML = `
-      <div class="space-y-4">
-        <!-- Dream Control Panel -->
-        <div class="card">
-          <div class="card-header">
-            <h2 class="card-title" style="margin:0;">
-              <i data-lucide="sparkles" style="width:18px;height:18px;margin-right:6px;color:var(--primary);"></i>
-              ${t('deepDream.dreamControl')}
-            </h2>
-          </div>
-          <div style="padding:1rem 1.25rem;">
-            <!-- Status -->
-            <div id="dream-status-bar" style="margin-bottom:1rem;">
-              <div class="flex items-center gap-2">
-                <div class="spinner spinner-sm" id="dream-status-spinner"></div>
-                <span id="dream-status-text" style="font-size:0.85rem;color:var(--text-muted);">${t('deepDream.title')}</span>
-              </div>
-            </div>
-
-            <!-- Config -->
-            <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:1rem;margin-bottom:1rem;">
-              <div>
-                <label class="form-label">${t('deepDream.reviewWindowDays')}</label>
-                <input type="number" id="dream-review-window" class="input" value="30" min="1" max="365">
-              </div>
-              <div>
-                <label class="form-label">${t('deepDream.maxEntitiesPerCycle')}</label>
-                <input type="number" id="dream-max-entities" class="input" value="100" min="10" max="1000">
-              </div>
-              <div>
-                <label class="form-label">${t('deepDream.similarityThreshold')}</label>
-                <input type="number" id="dream-similarity" class="input" value="0.8" min="0.1" max="1.0" step="0.05">
-              </div>
-            </div>
-
-            <!-- Start Button -->
-            <button class="btn btn-primary" id="dream-start-btn">
-              <i data-lucide="play" style="width:16px;height:16px;margin-right:6px;"></i>
-              ${t('deepDream.startDream')}
+      <div class="page-enter" style="padding:1.5rem;max-width:960px;margin:0 auto;">
+        <!-- Header -->
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.5rem;">
+          <h2 style="font-size:1.25rem;font-weight:700;color:var(--text-primary);">${t('dream.title')}</h2>
+          <div style="display:flex;gap:0.5rem;">
+            <button id="dream-refresh-btn" class="btn btn-secondary btn-sm" onclick="window._dreamRefresh()">
+              <i data-lucide="refresh-cw" style="width:14px;height:14px;margin-right:4px;"></i>
+              <span>${t('common.refresh')}</span>
             </button>
           </div>
         </div>
 
-        <!-- Dream Narrative (shown after completion) -->
-        <div class="card" id="dream-narrative-card" style="display:none;">
-          <div class="card-header">
-            <h3 class="card-title" style="margin:0;">
-              <i data-lucide="book-open" style="width:16px;height:16px;margin-right:6px;color:var(--primary);"></i>
-              ${t('deepDream.dreamNarrative')}
-            </h3>
+        <!-- Health Cards -->
+        <div id="dream-health-cards" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:0.75rem;margin-bottom:1.5rem;">
+          ${spinnerHtml()}
+        </div>
+
+        <!-- Recommendations -->
+        <div id="dream-recommendations" style="margin-bottom:1.5rem;"></div>
+
+        <!-- Dream Status & Logs -->
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1.5rem;">
+          <!-- Dream Status -->
+          <div id="dream-status-panel" class="card" style="padding:1rem;">
+            <h3 style="font-size:0.9rem;font-weight:600;color:var(--text-secondary);margin-bottom:0.75rem;">${t('dream.status')}</h3>
+            <div id="dream-status-content">${spinnerHtml('sm')}</div>
           </div>
-          <div style="padding:1rem 1.25rem;">
-            <div id="dream-narrative-content" style="font-size:0.9rem;line-height:1.7;white-space:pre-wrap;word-break:break-word;color:var(--text-primary);"></div>
+          <!-- Quality Summary -->
+          <div id="dream-quality-panel" class="card" style="padding:1rem;">
+            <h3 style="font-size:0.9rem;font-weight:600;color:var(--text-secondary);margin-bottom:0.75rem;">${t('dream.qualityReport')}</h3>
+            <div id="dream-quality-content">${spinnerHtml('sm')}</div>
           </div>
         </div>
 
-        <!-- Dream Insights -->
-        <div class="card" id="dream-insights-card" style="display:none;">
-          <div class="card-header">
-            <h3 class="card-title" style="margin:0;">
-              <i data-lucide="lightbulb" style="width:16px;height:16px;margin-right:6px;color:var(--warning);"></i>
-              ${t('deepDream.dreamInsights')}
-            </h3>
-          </div>
-          <div style="padding:1rem 1.25rem;">
-            <div id="dream-insights-content"></div>
-          </div>
-        </div>
+        <!-- Action Buttons -->
+        <div id="dream-actions" style="margin-bottom:1.5rem;"></div>
 
-        <!-- Dream History -->
-        <div class="card">
-          <div class="card-header">
-            <h3 class="card-title" style="margin:0;">
-              <i data-lucide="history" style="width:16px;height:16px;margin-right:6px;"></i>
-              ${t('deepDream.dreamHistory')}
-            </h3>
+        <!-- Dream Logs -->
+        <div class="card" style="padding:1rem;">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.75rem;">
+            <h3 style="font-size:0.9rem;font-weight:600;color:var(--text-secondary);">${t('dream.logs')}</h3>
+            <button class="btn btn-ghost btn-sm" onclick="window._dreamLoadLogs()">${t('common.refresh')}</button>
           </div>
-          <div style="padding:1rem 1.25rem;">
-            <div id="dream-logs-list">
-              <div class="flex items-center justify-center p-4">${spinnerHtml()}</div>
-            </div>
-          </div>
+          <div id="dream-logs-list">${spinnerHtml('sm')}</div>
         </div>
       </div>
     `;
-
-    if (window.lucide) lucide.createIcons({ nodes: [container] });
-
-    // Bind events
-    const startBtn = container.querySelector('#dream-start-btn');
-    if (startBtn) {
-      startBtn.addEventListener('click', startDream);
-    }
-
-    // Load initial state
-    await Promise.all([
-      refreshStatus(),
-      loadDreamLogs(),
-    ]);
-
-    // Poll status every 3s if running
-    _statusTimer = setInterval(refreshStatus, 3000);
+    if (window.lucide) lucide.createIcons();
+    await loadAll();
+    _refreshTimer = setInterval(loadAll, 30000);
   }
-
-  // ---- Start Dream ----
-
-  async function startDream() {
-    const btn = _container.querySelector('#dream-start-btn');
-    if (!btn) return;
-    btn.disabled = true;
-    btn.innerHTML = `${spinnerHtml('spinner-sm')} ${t('deepDream.dreamRunning')}`;
-
-    try {
-      const reviewWindow = parseInt(document.getElementById('dream-review-window')?.value || '30', 10);
-      const maxEntities = parseInt(document.getElementById('dream-max-entities')?.value || '100', 10);
-      const similarity = parseFloat(document.getElementById('dream-similarity')?.value || '0.8');
-
-      await state.api.startDream(state.currentGraphId, {
-        reviewWindowDays: reviewWindow,
-        maxEntitiesPerCycle: maxEntities,
-        similarityThreshold: similarity,
-      });
-      showToast(t('dream.startSuccess'), 'success');
-      await refreshStatus();
-    } catch (err) {
-      showToast(t('dream.startFailed') + ': ' + err.message, 'error');
-    } finally {
-      btn.disabled = false;
-      btn.innerHTML = `<i data-lucide="play" style="width:16px;height:16px;margin-right:6px;"></i>${t('deepDream.startDream')}`;
-      if (window.lucide) lucide.createIcons({ nodes: [btn] });
-    }
-  }
-
-  // ---- Refresh Status ----
-
-  async function refreshStatus() {
-    const statusText = _container?.querySelector('#dream-status-text');
-    const statusSpinner = _container?.querySelector('#dream-status-spinner');
-
-    try {
-      const res = await state.api.dreamStatus(state.currentGraphId);
-      const data = res.data || {};
-      const status = data.status || 'idle';
-
-      if (statusText) {
-        const statusMap = {
-          idle: t('dream.statusIdle'),
-          running: t('dream.statusRunning'),
-          completed: t('dream.statusCompleted'),
-          failed: t('dream.statusFailed'),
-        };
-        statusText.textContent = statusMap[status] || status;
-
-        const colorMap = {
-          idle: 'var(--text-muted)',
-          running: 'var(--primary)',
-          completed: 'var(--success)',
-          failed: 'var(--error)',
-        };
-        statusText.style.color = colorMap[status] || 'var(--text-muted)';
-      }
-
-      if (statusSpinner) {
-        statusSpinner.style.display = status === 'running' ? '' : 'none';
-      }
-
-      // If completed, show narrative and insights
-      if (status === 'completed' && data.cycle_id) {
-        await showDreamDetail(data.cycle_id);
-      }
-    } catch (err) {
-      if (statusText) {
-        statusText.textContent = t('dream.loadStatusFailed');
-        statusText.style.color = 'var(--error)';
-      }
-      if (statusSpinner) statusSpinner.style.display = 'none';
-    }
-  }
-
-  // ---- Show Dream Detail ----
-
-  async function showDreamDetail(cycleId) {
-    try {
-      const res = await state.api.dreamLogDetail(cycleId, state.currentGraphId);
-      const data = res.data || {};
-
-      // Narrative
-      const narrativeCard = _container?.querySelector('#dream-narrative-card');
-      const narrativeContent = _container?.querySelector('#dream-narrative-content');
-      if (narrativeCard && narrativeContent && data.narrative) {
-        narrativeContent.textContent = data.narrative;
-        narrativeCard.style.display = '';
-      }
-
-      // Insights
-      const insightsCard = _container?.querySelector('#dream-insights-card');
-      const insightsContent = _container?.querySelector('#dream-insights-content');
-      if (insightsCard && insightsContent) {
-        const insights = data.insights || [];
-        const connections = data.connections || [];
-        const consolidations = data.consolidations || [];
-
-        if (insights.length === 0 && connections.length === 0 && consolidations.length === 0) {
-          insightsContent.innerHTML = `<p style="color:var(--text-muted);font-size:0.85rem;">${t('deepDream.noDreamLogs')}</p>`;
-        } else {
-          let html = '';
-          if (insights.length > 0) {
-            html += `<div style="margin-bottom:0.75rem;"><h4 style="font-size:0.85rem;margin-bottom:0.5rem;">${t('deepDream.dreamInsights')}</h4>`;
-            for (const ins of insights) {
-              html += `<div class="flex items-start gap-2 p-2 rounded mb-1" style="background:var(--bg-secondary);font-size:0.85rem;">
-                <i data-lucide="zap" style="width:14px;height:14px;color:var(--warning);flex-shrink:0;margin-top:2px;"></i>
-                <span>${escapeHtml(typeof ins === 'string' ? ins : JSON.stringify(ins))}</span>
-              </div>`;
-            }
-            html += '</div>';
-          }
-          if (connections.length > 0) {
-            html += `<div style="margin-bottom:0.75rem;"><h4 style="font-size:0.85rem;margin-bottom:0.5rem;">${t('deepDream.dreamConnections')}</h4>`;
-            for (const conn of connections) {
-              html += `<div class="flex items-start gap-2 p-2 rounded mb-1" style="background:var(--bg-secondary);font-size:0.85rem;">
-                <i data-lucide="link" style="width:14px;height:14px;color:var(--primary);flex-shrink:0;margin-top:2px;"></i>
-                <span>${escapeHtml(typeof conn === 'string' ? conn : JSON.stringify(conn))}</span>
-              </div>`;
-            }
-            html += '</div>';
-          }
-          if (consolidations.length > 0) {
-            html += `<div><h4 style="font-size:0.85rem;margin-bottom:0.5rem;">${t('deepDream.dreamConsolidations')}</h4>`;
-            for (const cons of consolidations) {
-              html += `<div class="flex items-start gap-2 p-2 rounded mb-1" style="background:var(--bg-secondary);font-size:0.85rem;">
-                <i data-lucide="merge" style="width:14px;height:14px;color:var(--success);flex-shrink:0;margin-top:2px;"></i>
-                <span>${escapeHtml(typeof cons === 'string' ? cons : JSON.stringify(cons))}</span>
-              </div>`;
-            }
-            html += '</div>';
-          }
-          insightsContent.innerHTML = html;
-        }
-        insightsCard.style.display = '';
-      }
-
-      if (window.lucide) lucide.createIcons({ nodes: [narrativeCard, insightsCard] });
-    } catch (err) {
-      // Silently ignore
-    }
-  }
-
-  // ---- Load Dream Logs ----
-
-  async function loadDreamLogs() {
-    const listEl = _container?.querySelector('#dream-logs-list');
-    if (!listEl) return;
-
-    try {
-      const res = await state.api.dreamLogs(20, state.currentGraphId);
-      const logs = res.data || [];
-
-      if (!Array.isArray(logs) || logs.length === 0) {
-        listEl.innerHTML = `<div style="color:var(--text-muted);font-size:0.85rem;text-align:center;padding:1rem;">${t('deepDream.noDreamLogs')}</div>`;
-        return;
-      }
-
-      let html = '<div class="space-y-2">';
-      for (const log of logs) {
-        const status = log.status || 'completed';
-        const statusBadge = status === 'completed'
-          ? '<span class="badge badge-success">completed</span>'
-          : status === 'failed'
-            ? '<span class="badge badge-error">failed</span>'
-            : '<span class="badge badge-info">' + escapeHtml(status) + '</span>';
-
-        html += `
-          <div class="p-3 rounded cursor-pointer" style="background:var(--bg-secondary);border:1px solid var(--border-color);"
-               onclick="window._dreamShowLog('${escapeAttr(log.cycle_id || log.id || '')}')">
-            <div class="flex items-center justify-between gap-2 mb-1">
-              <span class="mono text-xs" style="color:var(--text-muted);">${escapeHtml(log.cycle_id || log.id || '-')}</span>
-              ${statusBadge}
-            </div>
-            <div class="flex items-center gap-3 text-xs" style="color:var(--text-secondary);">
-              <span><i data-lucide="clock" style="width:12px;height:12px;display:inline;vertical-align:middle;margin-right:2px;"></i>${formatDate(log.start_time)}</span>
-              ${log.entities_processed != null ? `<span>${log.entities_processed} ${t('dream.entitiesProcessed')}</span>` : ''}
-            </div>
-          </div>`;
-      }
-      html += '</div>';
-      listEl.innerHTML = html;
-    } catch (err) {
-      listEl.innerHTML = `<div style="color:var(--error);font-size:0.85rem;text-align:center;padding:1rem;">${t('dream.loadLogsFailed')}</div>`;
-    }
-  }
-
-  // ---- Show Log Detail ----
-
-  window._dreamShowLog = async function (cycleId) {
-    if (!cycleId) return;
-    try {
-      const res = await state.api.dreamLogDetail(cycleId, state.currentGraphId);
-      const data = res.data || {};
-
-      let body = `<div style="display:flex;flex-direction:column;gap:0.75rem;">`;
-      body += `<div style="display:grid;grid-template-columns:auto 1fr;gap:0.25rem 0.75rem;font-size:0.85rem;">
-        <span style="color:var(--text-secondary);">Cycle ID:</span><span class="mono text-xs">${escapeHtml(data.cycle_id || cycleId)}</span>
-        <span style="color:var(--text-secondary);">${t('common.status')}:</span><span>${escapeHtml(data.status || '-')}</span>
-        <span style="color:var(--text-secondary);">${t('dream.startedAt')}:</span><span>${formatDate(data.start_time)}</span>
-        ${data.end_time ? `<span style="color:var(--text-secondary);">${t('dream.finishedAt')}:</span><span>${formatDate(data.end_time)}</span>` : ''}
-        ${data.entities_processed != null ? `<span style="color:var(--text-secondary);">${t('dream.entitiesProcessed')}:</span><span>${data.entities_processed}</span>` : ''}
-        ${data.merges_performed != null ? `<span style="color:var(--text-secondary);">${t('dream.mergesPerformed')}:</span><span>${data.merges_performed}</span>` : ''}
-      </div>`;
-
-      if (data.narrative) {
-        body += `<div>
-          <h4 style="margin-bottom:0.5rem;">${t('dream.narrative')}</h4>
-          <div style="max-height:300px;overflow-y:auto;background:var(--bg-secondary);padding:0.75rem;border-radius:0.5rem;font-size:0.85rem;line-height:1.7;white-space:pre-wrap;word-break:break-word;">${escapeHtml(data.narrative)}</div>
-        </div>`;
-      }
-
-      body += '</div>';
-
-      showModal({
-        title: t('dream.logDetail'),
-        content: body,
-        size: 'lg',
-      });
-    } catch (err) {
-      showToast(t('dream.loadLogsFailed') + ': ' + err.message, 'error');
-    }
-  };
-
-  // ---- Destroy ----
 
   function destroy() {
-    _container = null;
-    if (_statusTimer) {
-      clearInterval(_statusTimer);
-      _statusTimer = null;
-    }
-    delete window._dreamShowLog;
+    if (_refreshTimer) { clearInterval(_refreshTimer); _refreshTimer = null; }
   }
+
+  // ── Data Loading ────────────────────────────────────────
+  async function loadAll() {
+    const gid = state.currentGraphId;
+    await Promise.allSettled([
+      loadHealthCards(gid),
+      loadRecommendations(gid),
+      loadDreamStatus(gid),
+      loadQuality(gid),
+      loadActionButtons(gid),
+      loadDreamLogs(gid),
+    ]);
+  }
+
+  async function loadHealthCards(gid) {
+    const el = document.getElementById('dream-health-cards');
+    if (!el) return;
+    try {
+      const res = await state.api.findStats(gid);
+      const d = res.data || {};
+      const items = [
+        { label: t('dashboard.totalEntities'), value: formatNumber(d.total_entities), icon: 'circle-dot', color: 'var(--primary)' },
+        { label: t('dashboard.totalRelations'), value: formatNumber(d.total_relations), icon: 'git-branch', color: 'var(--accent)' },
+        { label: t('dream.episodes'), value: formatNumber(d.total_episodes), icon: 'film', color: 'var(--success)' },
+        { label: t('communities.communitiesCount'), value: formatNumber(d.total_communities || 0), icon: 'layout-grid', color: 'var(--warning)' },
+      ];
+      el.innerHTML = items.map(i => `
+        <div class="card" style="padding:0.75rem 1rem;display:flex;align-items:center;gap:0.75rem;">
+          <div style="width:36px;height:36px;border-radius:8px;display:flex;align-items:center;justify-content:center;background:${i.color}20;">
+            <i data-lucide="${i.icon}" style="width:18px;height:18px;color:${i.color};"></i>
+          </div>
+          <div>
+            <div style="font-size:1.25rem;font-weight:700;color:var(--text-primary);">${i.value}</div>
+            <div style="font-size:0.75rem;color:var(--text-muted);">${i.label}</div>
+          </div>
+        </div>
+      `).join('');
+      if (window.lucide) lucide.createIcons();
+    } catch { el.innerHTML = '<div style="color:var(--error);">Failed to load stats</div>'; }
+  }
+
+  async function loadRecommendations(gid) {
+    const el = document.getElementById('dream-recommendations');
+    if (!el) return;
+    try {
+      const res = await state.api.butlerReport(gid);
+      const recs = res.data?.recommendations || [];
+      if (!recs.length) {
+        el.innerHTML = `
+          <div class="card" style="padding:1rem;display:flex;align-items:center;gap:0.75rem;">
+            <i data-lucide="check-circle" style="width:20px;height:20px;color:var(--success);"></i>
+            <span style="color:var(--text-secondary);">${t('dream.noRecommendations')}</span>
+          </div>`;
+        if (window.lucide) lucide.createIcons();
+        return;
+      }
+      el.innerHTML = `
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.75rem;">
+          <h3 style="font-size:0.9rem;font-weight:600;color:var(--text-secondary);">${t('dream.recommendations')} (${recs.length})</h3>
+          <button class="btn btn-primary btn-sm" onclick="window._dreamExecuteAll()">
+            <i data-lucide="play" style="width:14px;height:14px;margin-right:4px;"></i>
+            ${t('dream.executeAll')}
+          </button>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:0.5rem;">
+          ${recs.map((r, i) => `
+            <div class="card" style="padding:0.75rem 1rem;display:flex;align-items:center;gap:0.75rem;">
+              <span class="badge ${priorityClass(r.priority)}" style="flex-shrink:0;">${escapeHtml(r.priority)}</span>
+              <div style="flex:1;min-width:0;">
+                <div style="font-size:0.85rem;font-weight:500;color:var(--text-primary);">${escapeHtml(r.description)}</div>
+                <div style="font-size:0.75rem;color:var(--text-muted);margin-top:2px;">${escapeHtml(r.estimated_impact || '')}</div>
+              </div>
+              <button class="btn btn-ghost btn-sm" onclick="window._dreamExecuteOne('${escapeHtml(r.action)}')" title="${t('dream.executeAction')}">
+                <i data-lucide="play" style="width:14px;height:14px;"></i>
+              </button>
+            </div>
+          `).join('')}
+        </div>
+      `;
+      if (window.lucide) lucide.createIcons();
+    } catch { el.innerHTML = ''; }
+  }
+
+  async function loadDreamStatus(gid) {
+    const el = document.getElementById('dream-status-content');
+    if (!el) return;
+    try {
+      const res = await state.api.dreamStatus(gid);
+      const d = res.data || {};
+      if (d.status === 'no_cycles' || d.status === 'not_available') {
+        el.innerHTML = `<div style="color:var(--text-muted);font-size:0.85rem;">${t('dream.noLogs')}</div>`;
+        return;
+      }
+      el.innerHTML = `
+        <div style="display:grid;grid-template-columns:auto 1fr;gap:0.25rem 0.75rem;font-size:0.85rem;">
+          <span style="color:var(--text-muted);">${t('dream.status')}:</span>
+          <span>${statusBadge(d.status || 'idle')}</span>
+          ${d.last_cycle_id ? `<span style="color:var(--text-muted);">${t('dream.cycleId')}:</span><span class="mono" style="font-size:0.8rem;">${escapeHtml(d.last_cycle_id)}</span>` : ''}
+          ${d.last_cycle_time ? `<span style="color:var(--text-muted);">${t('dream.startedAt')}:</span><span>${formatDate(d.last_cycle_time)}</span>` : ''}
+          ${d.entities_explored != null ? `<span style="color:var(--text-muted);">${t('dream.entitiesProcessed')}:</span><span>${d.entities_explored}</span>` : ''}
+          ${d.relations_created != null ? `<span style="color:var(--text-muted);">${t('dream.newInsights')}:</span><span>${d.relations_created}</span>` : ''}
+        </div>
+      `;
+    } catch { el.innerHTML = '<div style="color:var(--error);font-size:0.85rem;">Failed to load</div>'; }
+  }
+
+  async function loadQuality(gid) {
+    const el = document.getElementById('dream-quality-content');
+    if (!el) return;
+    try {
+      const res = await state.api.maintenanceHealth(gid);
+      const d = res.data || {};
+      const quality = d.quality || {};
+      const iso = d.isolated_entity_count || 0;
+      const stats = d.statistics || {};
+      el.innerHTML = `
+        <div style="display:grid;grid-template-columns:auto 1fr;gap:0.25rem 0.75rem;font-size:0.85rem;">
+          <span style="color:var(--text-muted);">${t('dream.validEntities')}:</span><span>${formatNumber(quality.valid_entities || stats.total_entities || 0)}</span>
+          <span style="color:var(--text-muted);">${t('dream.invalidatedEntities')}:</span><span style="color:${(quality.invalidated_entities || 0) > 0 ? 'var(--warning)' : ''};">${formatNumber(quality.invalidated_entities || 0)}</span>
+          <span style="color:var(--text-muted);">${t('dream.isolatedEntities')}:</span><span style="color:${iso > 0 ? 'var(--warning)' : ''};">${formatNumber(iso)}</span>
+          <span style="color:var(--text-muted);">${t('dream.validRelations')}:</span><span>${formatNumber(quality.valid_relations || stats.total_relations || 0)}</span>
+          <span style="color:var(--text-muted);">${t('dream.invalidatedRelations')}:</span><span style="color:${(quality.invalidated_relations || 0) > 0 ? 'var(--warning)' : ''};">${formatNumber(quality.invalidated_relations || 0)}</span>
+        </div>
+      `;
+    } catch { el.innerHTML = '<div style="color:var(--error);font-size:0.85rem;">Failed to load</div>'; }
+  }
+
+  async function loadActionButtons(gid) {
+    const el = document.getElementById('dream-actions');
+    if (!el) return;
+    el.innerHTML = `
+      <div style="display:flex;flex-wrap:wrap;gap:0.5rem;">
+        <button class="btn btn-secondary btn-sm" onclick="window._dreamCleanup()">
+          <i data-lucide="trash-2" style="width:14px;height:14px;margin-right:4px;"></i>
+          ${t('dream.cleanup')}
+        </button>
+        <button class="btn btn-secondary btn-sm" onclick="window._dreamDetectCommunities()">
+          <i data-lucide="layout-grid" style="width:14px;height:14px;margin-right:4px;"></i>
+          ${t('dream.detectCommunities')}
+        </button>
+        <button class="btn btn-secondary btn-sm" onclick="window._dreamEvolveSummaries()">
+          <i data-lucide="sparkles" style="width:14px;height:14px;margin-right:4px;"></i>
+          ${t('dream.evolveSummaries')}
+        </button>
+        <button class="btn btn-secondary btn-sm" onclick="window._dreamGetSeeds()">
+          <i data-lucide="dice-5" style="width:14px;height:14px;margin-right:4px;"></i>
+          ${t('dream.getSeeds')}
+        </button>
+      </div>
+    `;
+    if (window.lucide) lucide.createIcons();
+  }
+
+  async function loadDreamLogs(gid) {
+    const el = document.getElementById('dream-logs-list');
+    if (!el) return;
+    try {
+      const res = await state.api.dreamLogs(gid, 10);
+      const logs = Array.isArray(res.data) ? res.data : (res.data?.logs || []);
+      if (!logs.length) {
+        el.innerHTML = `<div style="color:var(--text-muted);font-size:0.85rem;padding:0.5rem;">${t('dream.noLogs')}</div>`;
+        return;
+      }
+      el.innerHTML = `
+        <div style="display:flex;flex-direction:column;gap:0.375rem;">
+          ${logs.map(l => `
+            <div style="display:flex;align-items:center;gap:0.75rem;padding:0.5rem 0.75rem;border-radius:0.5rem;background:var(--bg-secondary);font-size:0.85rem;cursor:pointer;" onclick="window._dreamLogDetail('${escapeHtml(l.cycle_id || l.id || '')}')">
+              <span class="badge ${statusBadge(l.status || 'completed').includes('success') ? 'badge-success' : 'badge-info'}">${escapeHtml(l.status || 'completed')}</span>
+              <span class="mono" style="flex-shrink:0;color:var(--text-muted);font-size:0.8rem;">${escapeHtml((l.cycle_id || l.id || '').slice(0, 12))}</span>
+              <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-secondary);">${escapeHtml(l.summary || l.narrative || '-')}</span>
+              <span style="flex-shrink:0;color:var(--text-muted);font-size:0.75rem;">${formatDate(l.started_at || l.created_at)}</span>
+            </div>
+          `).join('')}
+        </div>
+      `;
+    } catch { el.innerHTML = `<div style="color:var(--error);font-size:0.85rem;">${t('dream.loadLogsFailed')}</div>`; }
+  }
+
+  // ── Actions ──────────────────────────────────────────────
+  window._dreamRefresh = async function() {
+    await loadAll();
+  };
+
+  window._dreamCleanup = async function() {
+    const ok = await showConfirm({ message: t('dream.confirmCleanup'), destructive: true });
+    if (!ok) return;
+    try {
+      const gid = state.currentGraphId;
+      const res = await state.api.butlerExecute(['cleanup_isolated', 'cleanup_invalidated'], false, gid);
+      const d = res.data || {};
+      const results = d.actions || {};
+      showAlert({ title: t('dream.cleanupResult') || 'Cleanup', message: JSON.stringify(results, null, 2) });
+      await loadAll();
+    } catch (e) { showAlert({ title: t('dream.actionFailed') || 'Error', message: e.message }); }
+  };
+
+  window._dreamDetectCommunities = async function() {
+    try {
+      const gid = state.currentGraphId;
+      const res = await state.api.detectCommunities(gid);
+      const d = res.data || {};
+      showAlert({ title: t('dream.communitiesDetected') || 'Communities', message: String(d.communities_created || d.count || 0) });
+      await loadAll();
+    } catch (e) { showAlert({ title: t('dream.actionFailed') || 'Error', message: e.message }); }
+  };
+
+  window._dreamEvolveSummaries = async function() {
+    try {
+      const gid = state.currentGraphId;
+      const res = await state.api.butlerExecute(['evolve_summaries'], false, gid);
+      const d = res.data?.actions?.evolve_summaries || {};
+      showAlert({ title: t('dream.evolveResult') || 'Evolve', message: `evolved=${d.evolved || 0}, failed=${d.failed || 0}` });
+      await loadAll();
+    } catch (e) { showAlert({ title: t('dream.actionFailed') || 'Error', message: e.message }); }
+  };
+
+  window._dreamGetSeeds = async function() {
+    try {
+      const gid = state.currentGraphId;
+      const res = await state.api.dreamSeeds(gid, 'random', 5);
+      const seeds = res.data?.seeds || [];
+      if (!seeds.length) { showAlert({ message: t('common.noResults') || 'No results' }); return; }
+      const lines = seeds.map((s, i) => `${i + 1}. ${s.name || s.family_id} (degree: ${s.degree || '?'})`).join('\n');
+      showAlert({ title: t('dream.seedsFound') || 'Seeds', message: lines });
+    } catch (e) { showAlert({ title: t('dream.actionFailed') || 'Error', message: e.message }); }
+  };
+
+  window._dreamExecuteAll = async function() {
+    const ok = await showConfirm({ message: t('dream.confirmExecuteAll') });
+    if (!ok) return;
+    try {
+      const gid = state.currentGraphId;
+      const reportRes = await state.api.butlerReport(gid);
+      const recs = reportRes.data?.recommendations || [];
+      const actions = recs.map(r => r.action);
+      if (!actions.length) { showAlert({ message: t('dream.noRecommendations') || 'No recommendations' }); return; }
+      const res = await state.api.butlerExecute(actions, false, gid);
+      const d = res.data || {};
+      showAlert({ title: t('dream.executeResult') || 'Result', message: JSON.stringify(d.actions, null, 2) });
+      await loadAll();
+    } catch (e) { showAlert({ title: t('dream.actionFailed') || 'Error', message: e.message }); }
+  };
+
+  window._dreamExecuteOne = async function(action) {
+    try {
+      const gid = state.currentGraphId;
+      const res = await state.api.butlerExecute([action], false, gid);
+      const d = res.data?.actions?.[action] || {};
+      showAlert({ title: t('dream.executeResult') || 'Result', message: JSON.stringify(d, null, 2) });
+      await loadAll();
+    } catch (e) { showAlert({ title: t('dream.actionFailed') || 'Error', message: e.message }); }
+  };
+
+  window._dreamLogDetail = async function(cycleId) {
+    if (!cycleId) return;
+    try {
+      const gid = state.currentGraphId;
+      const res = await state.api.dreamLogDetail(cycleId, gid);
+      const d = res.data || {};
+      const content = d.narrative || d.summary || JSON.stringify(d, null, 2);
+      showModal({
+        title: t('dream.logDetail') || 'Dream Log',
+        content: `<div class="md-content" style="max-height:60vh;overflow-y:auto;white-space:pre-wrap;word-break:break-word;font-size:0.875rem;line-height:1.7;">${renderMarkdown(content)}</div>`,
+        size: 'lg',
+      });
+    } catch (e) { showAlert({ title: t('dream.loadLogsFailed') || 'Error', message: e.message }); }
+  };
+
+  window._dreamLoadLogs = function() { loadDreamLogs(state.currentGraphId); };
 
   return { render, destroy };
 })());

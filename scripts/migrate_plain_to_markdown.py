@@ -99,7 +99,7 @@ def migrate_entities(storage, llm_client, dry_run=False, batch_size=10):
                     content=markdown_content,
                     event_time=event_time,
                     processed_time=now(),
-                    memory_cache_id=entity.memory_cache_id,
+                    episode_id=entity.episode_id,
                     source_document=source_doc,
                     content_format="markdown",
                 )
@@ -195,7 +195,7 @@ def migrate_relations(storage, llm_client, dry_run=False, batch_size=10):
                     content=markdown_content,
                     event_time=event_time,
                     processed_time=now(),
-                    memory_cache_id=relation.memory_cache_id,
+                    episode_id=relation.episode_id,
                     source_document=source_doc,
                     content_format="markdown",
                 )

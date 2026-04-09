@@ -29,7 +29,7 @@ def test_build_entity_candidate_table_prefetched_skips_encode():
     storage = MagicMock()
     storage.get_latest_entities_projection.return_value = [
         {
-            "entity_id": "p1",
+            "family_id": "p1",
             "name": "n1",
             "content": "",
             "version_count": 1,

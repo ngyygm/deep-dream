@@ -19,7 +19,7 @@ class _ConsolidationMixin:
     """知识图谱整理相关的 LLM 操作（mixin，通过 LLMClient 多继承使用）。"""
 
     def analyze_entity_candidates_preliminary(self, entities_group: List[Dict[str, Any]],
-                                              content_snippet_length: int = 64,
+                                              content_snippet_length: int = 200,
                                               context_text: Optional[str] = None) -> Dict[str, Any]:
         """
         初步筛选：分析一组候选实体，返回可能需要合并或存在关系的候选列表
@@ -28,11 +28,11 @@ class _ConsolidationMixin:
 
         Args:
             entities_group: 候选实体组，每个实体包含:
-                - entity_id: 实体ID
+                - family_id: 实体ID
                 - name: 实体名称
                 - content: 实体内容描述
                 - version_count: 该实体的版本数量
-            content_snippet_length: 传入LLM的实体content最大长度（默认64字符）
+            content_snippet_length: 传入LLM的实体content最大长度（默认300字符）
             context_text: 可选的上下文文本（当前处理的文本片段或记忆缓存内容），
                           用于帮助理解实体出现的场景
 
@@ -53,7 +53,7 @@ class _ConsolidationMixin:
 
         entities_str += f"""
 【当前分析的实体】实体1:
-- entity_id: {current_entity.get('entity_id', '')}
+- family_id: {current_entity.get('family_id', '')}
 - name: {current_entity.get('name', '')}
 - version_count: {current_entity.get('version_count', 1)}
 - source_document: {current_entity.get('source_document', '') or '(当前文档)'}
@@ -66,7 +66,7 @@ class _ConsolidationMixin:
 
             entities_str += f"""
 【候选实体】实体{i}:
-- entity_id: {entity.get('entity_id', '')}
+- family_id: {entity.get('family_id', '')}
 - name: {entity.get('name', '')}
 - version_count: {entity.get('version_count', 1)}
 - source_document: {entity.get('source_document', '') or '(未知文档)'}
@@ -101,7 +101,7 @@ class _ConsolidationMixin:
 请分析每个候选实体，将它们分类到possible_merges、possible_relations或no_action中。
 
 **输出要求**：
-- 只需要输出entity_id列表，不需要其他字段
+- 只需要输出family_id列表，不需要其他字段
 - 每个候选实体只能出现在一个列表中（possible_merges、possible_relations或no_action中的一个）
 - 只输出一个 ```json ... ``` 代码块，不要包含任何其他文字或说明
 
@@ -129,11 +129,11 @@ class _ConsolidationMixin:
 
         except Exception as e:
             wprint(f"  初步筛选出错: {e}")
-            # 出错时返回所有候选都可能有关系，以便后续精细化判断
+            # 出错时默认 no_action，避免误合并
             return {
                 "possible_merges": [],
-                "possible_relations": [{"entity_id": e.get("entity_id"), "reason": "初步筛选出错，需要精细化判断"} for e in entities_group[1:]],
-                "no_action": [],
+                "possible_relations": [],
+                "no_action": [e.get("family_id") for e in entities_group[1:] if e.get("family_id")],
                 "error": str(e)
             }
 
@@ -149,13 +149,13 @@ class _ConsolidationMixin:
 
         Args:
             current_entity: 当前实体，包含:
-                - entity_id: 实体ID
+                - family_id: 实体ID
                 - name: 实体名称
                 - content: 完整的实体内容描述
                 - version_count: 版本数量
             candidate_entity: 候选实体，格式同上
             existing_relations: 两个实体之间已存在的关系列表，每个关系包含:
-                - relation_id: 关系ID
+                - family_id: 关系ID
                 - content: 关系描述
             context_text: 可选的上下文文本（当前处理的文本片段或记忆缓存内容），
                           用于帮助理解实体出现的场景和关系
@@ -165,7 +165,7 @@ class _ConsolidationMixin:
             - action: "merge" | "create_relation" | "no_action"
             - reason: 判断理由
             - relation_content: 如果action是create_relation，提供关系描述
-            - merge_target: 如果action是merge，提供目标entity_id
+            - merge_target: 如果action是merge，提供目标family_id
         """
         # 构建已有关系的提示
         existing_relations_note = ""
@@ -199,7 +199,7 @@ class _ConsolidationMixin:
 """
 
         prompt = f"""<当前实体>
-- entity_id: {current_entity.get('entity_id', '')}
+- family_id: {current_entity.get('family_id', '')}
 - name: {current_entity.get('name', '')}
 - version_count: {current_entity.get('version_count', 1)}
 - source_document: {current_entity.get('source_document', '') or '(当前文档)'}
@@ -207,7 +207,7 @@ class _ConsolidationMixin:
 </当前实体>
 
 <候选实体>
-- entity_id: {candidate_entity.get('entity_id', '')}
+- family_id: {candidate_entity.get('family_id', '')}
 - name: {candidate_entity.get('name', '')}
 - version_count: {candidate_entity.get('version_count', 1)}
 - source_document: {candidate_entity.get('source_document', '') or '(未知文档)'}
@@ -275,7 +275,7 @@ class _ConsolidationMixin:
         for idx, candidate in enumerate(candidates, 1):
             candidates_str.append(
                 f"""候选{idx}:
-- entity_id: {candidate.get('entity_id', '')}
+- family_id: {candidate.get('family_id', '')}
 - name: {candidate.get('name', '')}
 - version_count: {candidate.get('version_count', 1)}
 - source_document: {candidate.get('source_document', '') or '(未知文档)'}
@@ -285,7 +285,7 @@ class _ConsolidationMixin:
             )
 
         prompt = f"""<当前实体>
-- entity_id: {current_entity.get('entity_id', 'NEW_ENTITY')}
+- family_id: {current_entity.get('family_id', 'NEW_ENTITY')}
 - name: {current_entity.get('name', '')}
 - source_document: {current_entity.get('source_document', '') or '(当前文档)'}
 - content: {current_entity.get('content', '')}
@@ -297,12 +297,12 @@ class _ConsolidationMixin:
 
 请输出一个 ```json ... ``` 代码块，代码块内部为：
 {{
-  "match_existing_id": "若应合并到已有实体则填写 entity_id，否则为空字符串",
+  "match_existing_id": "若应合并到已有实体则填写 family_id，否则为空字符串",
   "update_mode": "reuse_existing | merge_into_latest | create_new",
   "merged_name": "若需要，给出最终名称，否则为空字符串",
   "merged_content": "若需要更新/合并，给出最终内容，否则为空字符串",
   "relations_to_create": [
-    {{"entity_id": "候选entity_id", "relation_content": "与当前实体的自然语言关系"}}
+    {{"family_id": "候选family_id", "relation_content": "与当前实体的自然语言关系"}}
   ],
   "confidence": 0.0
 }}
@@ -354,7 +354,7 @@ class _ConsolidationMixin:
             )
             return {
                 "action": "create_new",
-                "matched_relation_id": "",
+                "matched_family_id": "",
                 "merged_content": merged_content,
                 "confidence": 1.0,
             }
@@ -366,7 +366,7 @@ class _ConsolidationMixin:
             for i, content in enumerate(new_relation_contents)
         )
         existing_text = "\n".join(
-            f"- relation_id={rel.get('relation_id', '')} [source_document={rel.get('source_document', '') or '(未知文档)'}]: {rel.get('content', '')}"
+            f"- family_id={rel.get('family_id', '')} [source_document={rel.get('source_document', '') or '(未知文档)'}]: {rel.get('content', '')}"
             for rel in existing_relations
         )
         prompt = f"""<实体对>
@@ -385,7 +385,7 @@ class _ConsolidationMixin:
 请输出一个 ```json ... ``` 代码块（action 选 match_existing 或 create_new），代码块内部为：
 {{
   "action": "match_existing | create_new",
-  "matched_relation_id": "若命中已有关系则填写 relation_id，否则为空字符串",
+  "matched_family_id": "若命中已有关系则填写 family_id，否则为空字符串",
   "need_update": true,
   "merged_content": "若需要创建或更新，给出最终关系内容；否则为空字符串",
   "confidence": 0.0
@@ -399,7 +399,7 @@ class _ConsolidationMixin:
             if not isinstance(result, dict):
                 raise ValueError("响应格式不正确")
             result.setdefault("action", "create_new")
-            result.setdefault("matched_relation_id", "")
+            result.setdefault("matched_family_id", "")
             result.setdefault("need_update", result.get("action") == "create_new")
             result.setdefault("merged_content", "")
             result.setdefault("confidence", 0.0)
@@ -407,7 +407,7 @@ class _ConsolidationMixin:
         except Exception as e:
             return {
                 "action": "fallback",
-                "matched_relation_id": "",
+                "matched_family_id": "",
                 "need_update": False,
                 "merged_content": "",
                 "confidence": 0.0,
@@ -416,7 +416,7 @@ class _ConsolidationMixin:
 
     def analyze_entity_duplicates(self, entities_group: List[Dict[str, Any]],
                                   memory_contexts: Optional[Dict[str, str]] = None,
-                                  content_snippet_length: int = 64,
+                                  content_snippet_length: int = 300,
                                   existing_relations_between_entities: Optional[Dict[str, List[Dict]]] = None) -> Dict[str, Any]:
         """
         分析一组候选实体，判断是否为同一实体或存在别名关系（保留兼容性）
@@ -427,16 +427,16 @@ class _ConsolidationMixin:
 
         Args:
             entities_group: 候选实体组，每个实体包含:
-                - entity_id: 实体ID
+                - family_id: 实体ID
                 - name: 实体名称
                 - content: 实体内容描述
                 - version_count: 该实体的版本数量
-            memory_contexts: 可选的记忆上下文字典，key是entity_id，value是对应的缓存记忆文本
-            content_snippet_length: 传入LLM的实体content最大长度（默认64字符）
+            memory_contexts: 可选的记忆上下文字典，key是family_id，value是对应的缓存记忆文本
+            content_snippet_length: 传入LLM的实体content最大长度（默认300字符）
             existing_relations_between_entities: 已存在关系的实体对信息字典，
                 key为 "entity1_id|entity2_id" 格式（按字母序排序），
                 value为该实体对之间的关系列表，每个关系包含:
-                    - relation_id: 关系ID
+                    - family_id: 关系ID
                     - content: 关系描述
 
         Returns:
@@ -460,10 +460,10 @@ class _ConsolidationMixin:
 
 """
             for pair_key, relations in existing_relations_between_entities.items():
-                entity_ids = pair_key.split("|")
+                family_ids = pair_key.split("|")
                 if len(relations) > 0:
                     rel_contents = [r.get('content', '无描述')[:50] for r in relations[:3]]
-                    existing_relations_note += f"- 实体 {entity_ids[0]} 和 {entity_ids[1]} 之间已有关系：{'; '.join(rel_contents)}\n"
+                    existing_relations_note += f"- 实体 {family_ids[0]} 和 {family_ids[1]} 之间已有关系：{'; '.join(rel_contents)}\n"
 
         system_prompt = analyze_entity_duplicates_system_prompt(
             existing_relations_note
@@ -473,7 +473,7 @@ class _ConsolidationMixin:
         # 第一个实体是当前分析的实体，其他是候选实体
         entities_str = ""
         for i, entity in enumerate(entities_group, 1):
-            entity_id = entity.get('entity_id', '')
+            family_id = entity.get('family_id', '')
             name = entity.get('name', '')
             content = entity.get('content', '')
             version_count = entity.get('version_count', 1)
@@ -489,7 +489,7 @@ class _ConsolidationMixin:
 
             entities_str += f"""
 {entity_label} 实体 {i}:
-- entity_id: {entity_id}
+- family_id: {family_id}
 - name: {name}
 - version_count: {version_count}
 - content: {content_snippet}
@@ -561,12 +561,12 @@ class _ConsolidationMixin:
                     if isinstance(rel, dict):
                         entity1_id = rel.get("entity1_id")
                         entity2_id = rel.get("entity2_id")
-                        # 如果entity_id为空或None，跳过这个关系
+                        # 如果family_id为空或None，跳过这个关系
                         if entity1_id and entity2_id:
                             valid_alias_relations.append(rel)
                         else:
                             # 记录警告但不跳过，尝试后续通过名称查找
-                            wprint(f"    警告：alias_relation缺少entity_id: {rel}")
+                            wprint(f"    警告：alias_relation缺少family_id: {rel}")
                             valid_alias_relations.append(rel)
                 result["alias_relations"] = valid_alias_relations
 

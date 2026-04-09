@@ -85,6 +85,9 @@ class DreamSSEClient {
           }
         }
       }
+
+      // Stream body closed — ensure onDone fires even if server didn't send event: done
+      if (this.onDone) this.onDone();
     } catch (err) {
       if (err.name === 'AbortError') return; // cancelled — silent
       if (this.onError) this.onError(err);

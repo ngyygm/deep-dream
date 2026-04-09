@@ -9,7 +9,7 @@ import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, List, Optional
 
-from server.config import merge_llm_alignment, merge_llm_dream, resolve_embedding_model
+from server.config import merge_llm_alignment, resolve_embedding_model  # noqa: F401
 from processor.storage.embedding import EmbeddingClient
 from processor.storage import create_storage_manager
 from processor.pipeline.orchestrator import TemporalMemoryGraphProcessor
@@ -76,7 +76,7 @@ class GraphRegistry:
         """为单个 remember task 创建独立 Processor 实例。
 
         用于 load_cache_memory=False 的独立任务并行执行，避免共享
-        current_memory_cache 等运行时状态。
+        current_episode 等运行时状态。
         """
         with self._lock:
             storage_path = str(self._base_path / graph_id)
@@ -109,7 +109,6 @@ class GraphRegistry:
             "llm_model": llm.get("model", "gpt-4"),
             "llm_base_url": llm.get("base_url"),
             "alignment_llm": merge_llm_alignment(llm),
-            "dream_llm": merge_llm_dream(llm),
             "llm_think_mode": bool(llm.get("think", llm.get("think_mode", False))),
             "embedding_client": self._get_embedding_client(),
             "llm_max_tokens": llm.get("max_tokens"),
@@ -131,7 +130,7 @@ class GraphRegistry:
             kwargs["max_alignment_candidates"] = pipeline_alignment["max_alignment_candidates"]
         for key in (
             "extraction_rounds", "entity_extraction_rounds", "relation_extraction_rounds",
-            "entity_post_enhancement", "prompt_memory_cache_max_chars",
+            "entity_post_enhancement", "prompt_episode_max_chars",
             "compress_multi_round_extraction",
         ):
             if key in pipeline_extraction:
@@ -197,6 +196,39 @@ class GraphRegistry:
                     (child / "docs").is_dir()):
                 result.append(child.name)
         return result
+
+    # ------------------------------------------------------------------
+    # 图谱删除
+    # ------------------------------------------------------------------
+
+    def delete_graph(self, graph_id: str) -> None:
+        """删除指定图谱：停止任务队列、关闭 processor 连接、删除数据目录。
+
+        Raises:
+            KeyError: 如果 graph_id 不存在。
+        """
+        with self._lock:
+            # 1. 停止并移除任务队列
+            queue = self._queues.pop(graph_id, None)
+            if queue and hasattr(queue, "shutdown"):
+                try:
+                    queue.shutdown()
+                except Exception:
+                    pass
+
+            # 2. 移除 processor（关闭 DB 连接）
+            processor = self._processors.pop(graph_id, None)
+            if processor and hasattr(processor.storage, "close"):
+                try:
+                    processor.storage.close()
+                except Exception:
+                    pass
+
+            # 3. 删除数据目录
+            graph_dir = self._base_path / graph_id
+            if graph_dir.is_dir():
+                import shutil
+                shutil.rmtree(graph_dir)
 
     # ------------------------------------------------------------------
     # graph_id 校验

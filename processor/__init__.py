@@ -2,7 +2,7 @@
 Temporal Memory Graph - 时序记忆图谱系统
 """
 
-from .models import MemoryCache, Entity, Relation
+from .models import ContentPatch, Episode, Entity, Relation
 from .storage import StorageManager
 from .storage import EmbeddingClient
 from .storage import create_storage_manager
@@ -16,7 +16,8 @@ from .llm import ollama_chat, ollama_chat_stream, ollama_chat_stream_content, Ol
 __version__ = "0.1.0"
 
 __all__ = [
-    "MemoryCache",
+    "ContentPatch",
+    "Episode",
     "Entity",
     "Relation",
     "StorageManager",

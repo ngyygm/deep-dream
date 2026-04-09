@@ -146,9 +146,13 @@ class HybridSearcher:
 
         for results, weight in zip(result_lists, weights):
             for rank, item in enumerate(results):
-                # 使用 absolute_id 作为去重 key
-                key = item.absolute_id
+                # 使用 family_id 去重（同一实体不同版本只保留最高分）
+                fid = getattr(item, 'family_id', None)
+                key = fid if fid else item.absolute_id
                 rrf_score = weight / (k + rank + 1)
+                existing = scores.get(key)
+                if existing is not None and existing >= rrf_score:
+                    continue  # 已有更高分版本，跳过
                 scores[key] = scores.get(key, 0) + rrf_score
                 items[key] = item
 
@@ -242,7 +246,7 @@ class HybridSearcher:
 
         Args:
             items: [(Entity, score), ...] 原始排序
-            degree_map: {entity_id: degree} 实体度数字典
+            degree_map: {family_id: degree} 实体度数字典
             alpha: 度数影响因子（0-1）
 
         Returns:
@@ -256,7 +260,7 @@ class HybridSearcher:
 
         results = []
         for entity, score in items:
-            degree = degree_map.get(entity.entity_id, 0)
+            degree = degree_map.get(entity.family_id, 0)
             degree_factor = degree / max_degree
             adjusted = score * (1 - alpha) + degree_factor * alpha
             results.append((entity, round(adjusted, 6)))

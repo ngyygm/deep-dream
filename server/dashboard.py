@@ -130,7 +130,7 @@ class DeepDreamDashboard:
             stats_line = (
                 f"  [dim]E:{s['entities']}[/dim] "
                 f"[dim]R:{s['relations']}[/dim] "
-                f"[dim]C:{s['memory_caches']}[/dim]"
+                f"[dim]C:{s['episodes']}[/dim]"
             )
             if q["running_count"] > 0:
                 stats_line += f"  [green]Running:{q['running_count']}[/green]"

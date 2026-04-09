@@ -16,14 +16,14 @@ class GraphTraversalSearcher:
 
     def bfs_expand(
         self,
-        seed_entity_ids: List[str],
+        seed_family_ids: List[str],
         max_depth: int = 2,
         max_nodes: int = 50,
     ) -> List[Entity]:
         """从种子实体 BFS 扩展，返回发现的实体。
 
         Args:
-            seed_entity_ids: 种子实体的 entity_id 列表
+            seed_family_ids: 种子实体的 family_id 列表
             max_depth: 最大扩展深度（跳数）
             max_nodes: 最多返回的节点数
 
@@ -31,18 +31,18 @@ class GraphTraversalSearcher:
             发现的实体列表（包含种子实体）
         """
         visited: Set[str] = set()
-        queue: List[Tuple[str, int]] = []  # (entity_id, depth)
+        queue: List[Tuple[str, int]] = []  # (family_id, depth)
         result_entities: List[Entity] = []
 
-        for eid in seed_entity_ids:
-            resolved = self.storage.resolve_entity_id(eid)
+        for eid in seed_family_ids:
+            resolved = self.storage.resolve_family_id(eid)
             if resolved and resolved not in visited:
                 visited.add(resolved)
                 queue.append((resolved, 0))
 
         while queue and len(result_entities) < max_nodes:
             current_id, depth = queue.pop(0)
-            entity = self.storage.get_entity_by_entity_id(current_id)
+            entity = self.storage.get_entity_by_family_id(current_id)
             if entity:
                 result_entities.append(entity)
 
@@ -50,7 +50,7 @@ class GraphTraversalSearcher:
                 continue
 
             # 获取当前实体的关系
-            relations = self.storage.get_relations_by_entity_ids([current_id])
+            relations = self.storage.get_relations_by_family_ids([current_id])
             for rel in relations:
                 e1_id = rel.entity1_absolute_id
                 e2_id = rel.entity2_absolute_id
@@ -58,22 +58,22 @@ class GraphTraversalSearcher:
                 # 获取关系对端的实体
                 for abs_id in [e1_id, e2_id]:
                     neighbor = self.storage.get_entity_by_absolute_id(abs_id)
-                    if neighbor and neighbor.entity_id not in visited:
-                        visited.add(neighbor.entity_id)
-                        queue.append((neighbor.entity_id, depth + 1))
+                    if neighbor and neighbor.family_id not in visited:
+                        visited.add(neighbor.family_id)
+                        queue.append((neighbor.family_id, depth + 1))
 
         return result_entities[:max_nodes]
 
     def community_aware_search(
         self,
-        query_entity_ids: List[str],
+        query_family_ids: List[str],
         community_id: Optional[str] = None,
         max_results: int = 30,
     ) -> List[Tuple[Entity, float]]:
         """社区感知搜索：优先返回同社区实体。
 
         Args:
-            query_entity_ids: 查询实体 ID 列表
+            query_family_ids: 查询实体 ID 列表
             community_id: 目标社区 ID（可选，不传则自动检测查询实体所在社区）
             max_results: 最大返回数量
 
@@ -82,10 +82,10 @@ class GraphTraversalSearcher:
         """
         # 确定查询实体所在社区
         query_community = community_id
-        if not query_community and query_entity_ids:
+        if not query_community and query_family_ids:
             # 尝试从存储获取社区信息
-            for eid in query_entity_ids[:1]:
-                entity = self.storage.get_entity_by_entity_id(eid)
+            for eid in query_family_ids[:1]:
+                entity = self.storage.get_entity_by_family_id(eid)
                 if entity:
                     query_community = getattr(entity, 'community_id', None)
                     break
@@ -109,7 +109,7 @@ class GraphTraversalSearcher:
                 community_entities = self.storage.get_all_entities(limit=max_results, exclude_embedding=True)
         else:
             # 无社区信息，回退到 BFS 扩展
-            community_entities = self.bfs_expand(query_entity_ids, max_depth=1, max_nodes=max_results)
+            community_entities = self.bfs_expand(query_family_ids, max_depth=1, max_nodes=max_results)
 
         # 同社区实体排在前面
         results: List[Tuple[Entity, float]] = []
@@ -126,7 +126,7 @@ class GraphTraversalSearcher:
 
         return results[:max_results]
 
-    def get_entity_degree(self, entity_id: str) -> int:
+    def get_entity_degree(self, family_id: str) -> int:
         """获取实体的度（连接数）。"""
-        relations = self.storage.get_relations_by_entity_ids([entity_id])
+        relations = self.storage.get_relations_by_family_ids([family_id])
         return len(relations)

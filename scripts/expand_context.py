@@ -87,7 +87,7 @@ def expand_from_cache(storage, cache_id, expand_range=5):
     # 加载缓存内容
     results = []
     for cache_info in expanded_caches:
-        cache = storage.load_memory_cache(cache_info['id'])
+        cache = storage.load_episode(cache_info['id'])
         if cache:
             results.append(cache)
 
@@ -109,13 +109,13 @@ def expand_from_entity(storage, entity_name, expand_depth=2):
     entity = entities[0]
 
     # 获取关系
-    relations = storage.get_entity_relations_by_entity_id(
-        entity.entity_id,
+    relations = storage.get_entity_relations_by_family_id(
+        entity.family_id,
         limit=100
     )
 
     # 收集缓存
-    cache_ids = set(rel.memory_cache_id for rel in relations if rel.memory_cache_id)
+    cache_ids = set(rel.episode_id for rel in relations if rel.episode_id)
 
     # 如果需要更深层的扩展
     if expand_depth > 1:
@@ -124,18 +124,18 @@ def expand_from_entity(storage, entity_name, expand_depth=2):
             other_entity = storage.get_entity_by_absolute_id(other_id)
 
             if other_entity:
-                other_relations = storage.get_entity_relations_by_entity_id(
-                    other_entity.entity_id,
+                other_relations = storage.get_entity_relations_by_family_id(
+                    other_entity.family_id,
                     limit=20
                 )
                 for other_rel in other_relations:
-                    if other_rel.memory_cache_id:
-                        cache_ids.add(other_rel.memory_cache_id)
+                    if other_rel.episode_id:
+                        cache_ids.add(other_rel.episode_id)
 
     # 加载缓存
     results = []
     for cache_id in list(cache_ids)[:30]:
-        cache = storage.load_memory_cache(cache_id)
+        cache = storage.load_episode(cache_id)
         if cache:
             results.append(cache)
 
@@ -234,7 +234,7 @@ def auto_expand_and_search(storage, entity_name, max_iterations=3):
         return []
 
     entity = entities[0]
-    print(f"  → 找到实体: {entity.name} (ID: {entity.entity_id})")
+    print(f"  → 找到实体: {entity.name} (ID: {entity.family_id})")
 
     # 第二轮：获取关系和缓存
     print(f"第2轮: 获取相关缓存")

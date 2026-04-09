@@ -45,18 +45,18 @@ class DeepDreamQueryTool:
 
         print(f"   找到 {len(entities)} 个候选实体:")
         for i, e in enumerate(entities, 1):
-            print(f"   [{i}] {e.name} (ID: {e.entity_id})")
+            print(f"   [{i}] {e.name} (ID: {e.family_id})")
             print(f"       描述: {e.content[:80]}...")
             print(f"       时间: {e.event_time}")
 
         return entities
 
-    def find_relations(self, entity_id: str, time_point: datetime = None) -> list[Relation]:
+    def find_relations(self, family_id: str, time_point: datetime = None) -> list[Relation]:
         """查找实体的关系"""
-        print(f"\n🔗 Find阶段: 查询实体 {entity_id} 的关系")
+        print(f"\n🔗 Find阶段: 查询实体 {family_id} 的关系")
 
-        relations = self.storage.get_entity_relations_by_entity_id(
-            entity_id=entity_id,
+        relations = self.storage.get_entity_relations_by_family_id(
+            family_id=family_id,
             time_point=time_point,
             limit=50
         )
@@ -73,11 +73,11 @@ class DeepDreamQueryTool:
 
         return relations
 
-    def find_entity_at_time(self, entity_id: str, time_point: datetime) -> Entity:
+    def find_entity_at_time(self, family_id: str, time_point: datetime) -> Entity:
         """查找指定时间点的实体版本"""
-        print(f"\n⏰ Find阶段: 查询 {entity_id} 在 {time_point} 的版本")
+        print(f"\n⏰ Find阶段: 查询 {family_id} 在 {time_point} 的版本")
 
-        entity = self.storage.get_entity_version_at_time(entity_id, time_point)
+        entity = self.storage.get_entity_version_at_time(family_id, time_point)
 
         if entity:
             print(f"   ✓ 找到版本:")
@@ -108,7 +108,7 @@ class DeepDreamQueryTool:
                 "name": entity.name,
                 "content": entity.content,
                 "time": entity.event_time,
-                "entity_id": entity.entity_id
+                "family_id": entity.family_id
             }
             results["entities"].append(info)
 
@@ -169,8 +169,8 @@ class DeepDreamQueryTool:
             return {"answer": "无法找到其中一个或两个实体"}
 
         # 使用第一个匹配的实体
-        e1_id = entities1[0].entity_id
-        e2_id = entities2[0].entity_id
+        e1_id = entities1[0].family_id
+        e2_id = entities2[0].family_id
 
         # Find: 查询关系
         print(f"\n🔗 Find阶段: 查询 {entities1[0].name} 和 {entities2[0].name} 的关系")
@@ -202,10 +202,10 @@ class DeepDreamQueryTool:
         if not entities:
             return {"answer": "未找到相关实体"}
 
-        entity_id = entities[0].entity_id
+        family_id = entities[0].family_id
 
         # Find: 查询历史版本
-        entity = self.find_entity_at_time(entity_id, time_point)
+        entity = self.find_entity_at_time(family_id, time_point)
 
         # Select: 如果没有找到，返回最新版本并说明
         if not entity:
@@ -223,7 +223,7 @@ class DeepDreamQueryTool:
             return {"answer": "未找到相关实体"}
 
         center_entity = entities[0]
-        center_id = center_entity.entity_id
+        center_id = center_entity.family_id
 
         print(f"\n🕸️  构建记忆图 (深度={depth})")
 
@@ -236,25 +236,25 @@ class DeepDreamQueryTool:
         for d in range(depth):
             next_level = []
             for e_id in current_level:
-                relations = self.storage.get_entity_relations_by_entity_id(e_id)
+                relations = self.storage.get_entity_relations_by_family_id(e_id)
                 for rel in relations:
                     # 获取关系两端的实体
                     e1 = self.storage.get_entity_by_absolute_id(rel.entity1_absolute_id)
                     e2 = self.storage.get_entity_by_absolute_id(rel.entity2_absolute_id)
 
                     if e1 and e2:
-                        other_id = e2.entity_id if e1.entity_id == e_id else e1.entity_id
+                        other_id = e2.family_id if e1.family_id == e_id else e1.family_id
 
                         level_relations.append({
-                            "from": e1.entity_id,
-                            "to": e2.entity_id,
+                            "from": e1.family_id,
+                            "to": e2.family_id,
                             "content": rel.content
                         })
 
                         if other_id not in visited:
                             visited.add(other_id)
                             next_level.append(other_id)
-                            level_entities[other_id] = e2 if other_id == e2.entity_id else e1
+                            level_entities[other_id] = e2 if other_id == e2.family_id else e1
 
             current_level = next_level
 
@@ -276,7 +276,7 @@ class DeepDreamQueryTool:
 
         lines.append("## 实体\n")
         for eid, e in entities.items():
-            if eid == center.entity_id:
+            if eid == center.family_id:
                 lines.append(f"- **{e.name}** (中心): {e.content}")
             else:
                 lines.append(f"- {e.name}: {e.content[:50]}...")

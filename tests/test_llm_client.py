@@ -27,7 +27,7 @@ import pytest
 import processor.llm.client as client_module
 from processor.llm.client import LLMClient, PrioritySemaphore
 from processor.llm.errors import LLMContextBudgetExceeded
-from processor.models import MemoryCache
+from processor.models import Episode
 
 # 与 service_config.llm.context_window_tokens / server.config.DEFAULTS 对齐
 _TEST_CONTEXT_WINDOW_TOKENS = 8000
@@ -804,7 +804,7 @@ class TestSourceDocumentPromptContext:
             captured["prompt"] = prompt
             return json.dumps({
                 "action": "create_new",
-                "matched_relation_id": "",
+                "matched_family_id": "",
                 "need_update": True,
                 "merged_content": "合并后的关系",
                 "confidence": 0.9,
@@ -817,7 +817,7 @@ class TestSourceDocumentPromptContext:
             entity2_name="林黛玉",
             new_relation_contents=["二人发生互动"],
             existing_relations=[{
-                "relation_id": "rel_1",
+                "family_id": "rel_1",
                 "content": "二人曾经见面",
                 "source_document": "old_rel.txt",
             }],
@@ -868,7 +868,7 @@ class TestMultiRoundAcceptedAssistantHistory:
 
         client.call_llm_until_json_parses = fake_call_llm_until_json_parses
 
-        cache = MemoryCache(
+        cache = Episode(
             absolute_id="cache_test",
             content="memory",
             event_time=datetime(2025, 1, 1),
@@ -921,7 +921,7 @@ class TestMultiRoundAcceptedAssistantHistory:
 
         client.call_llm_until_json_parses = fake_call_llm_until_json_parses
 
-        cache = MemoryCache(
+        cache = Episode(
             absolute_id="cache_test",
             content="memory",
             event_time=datetime(2025, 1, 1),
@@ -968,7 +968,7 @@ class TestMultiRoundAcceptedAssistantHistory:
 
         client.call_llm_until_json_parses = fake_call_llm_until_json_parses
 
-        cache = MemoryCache(
+        cache = Episode(
             absolute_id="cache_test",
             content="memory",
             event_time=datetime(2025, 1, 1),
@@ -1011,7 +1011,7 @@ class TestMultiRoundAcceptedAssistantHistory:
             )
 
         client.call_llm_until_json_parses = fake_call_llm_until_json_parses
-        cache = MemoryCache(
+        cache = Episode(
             absolute_id="cache_test",
             content="memory",
             event_time=datetime(2025, 1, 1),
@@ -1036,7 +1036,7 @@ class TestMultiRoundAcceptedAssistantHistory:
             )
 
         client.call_llm_until_json_parses = fake_call_llm_until_json_parses
-        cache = MemoryCache(
+        cache = Episode(
             absolute_id="cache_test",
             content="memory",
             event_time=datetime(2025, 1, 1),
@@ -1058,7 +1058,9 @@ class TestMultiRoundAcceptedAssistantHistory:
         calls: list[int] = []
 
         def fake_resolve_request_max_tokens(messages, desired_max_tokens):
-            if messages and messages[-1].get("content") == "继续生成":
+            # 当消息以"继续"开头时触发预算超限（匹配多轮续抽 prompt）
+            last_content = messages[-1].get("content", "") if messages else ""
+            if last_content.startswith("继续"):
                 raise LLMContextBudgetExceeded(
                     "LLM 上下文预算超限：估算输入约 99999 tokens，已达到或超过模型总上限 8000。"
                 )
@@ -1071,7 +1073,7 @@ class TestMultiRoundAcceptedAssistantHistory:
 
         client._resolve_request_max_tokens = fake_resolve_request_max_tokens
         client.call_llm_until_json_parses = fake_call_llm_until_json_parses
-        cache = MemoryCache(
+        cache = Episode(
             absolute_id="cache_test",
             content="memory",
             event_time=datetime(2025, 1, 1),
@@ -1089,7 +1091,8 @@ class TestMultiRoundAcceptedAssistantHistory:
         calls: list[int] = []
 
         def fake_resolve_request_max_tokens(messages, desired_max_tokens):
-            if messages and messages[-1].get("content") == "继续生成":
+            last_content = messages[-1].get("content", "") if messages else ""
+            if last_content.startswith("继续从文本中抽取概念关系"):
                 raise LLMContextBudgetExceeded(
                     "LLM 上下文预算超限：估算输入约 99999 tokens，已达到或超过模型总上限 8000。"
                 )
@@ -1102,7 +1105,7 @@ class TestMultiRoundAcceptedAssistantHistory:
 
         client._resolve_request_max_tokens = fake_resolve_request_max_tokens
         client.call_llm_until_json_parses = fake_call_llm_until_json_parses
-        cache = MemoryCache(
+        cache = Episode(
             absolute_id="cache_test",
             content="memory",
             event_time=datetime(2025, 1, 1),
@@ -1126,7 +1129,8 @@ class TestMultiRoundAcceptedAssistantHistory:
         seen_messages = []
 
         def fake_resolve_request_max_tokens(messages, desired_max_tokens):
-            if messages and messages[-1].get("content") == "继续生成":
+            last_content = messages[-1].get("content", "") if messages else ""
+            if last_content.startswith("继续从文本中抽取概念关系"):
                 raise LLMContextBudgetExceeded(
                     "LLM 上下文预算超限：估算输入约 99999 tokens，已达到或超过模型总上限 8000。"
                 )
@@ -1143,7 +1147,7 @@ class TestMultiRoundAcceptedAssistantHistory:
 
         client._resolve_request_max_tokens = fake_resolve_request_max_tokens
         client.call_llm_until_json_parses = fake_call_llm_until_json_parses
-        cache = MemoryCache(
+        cache = Episode(
             absolute_id="cache_test",
             content="memory",
             event_time=datetime(2025, 1, 1),
@@ -1174,8 +1178,8 @@ class TestMultiRoundAcceptedAssistantHistory:
         assert "继续生成" not in seen_messages[1][-1]["content"]
 
     def test_prepare_memory_cache_for_prompt_truncates_long_cache(self):
-        client = _llm_client(prompt_memory_cache_max_chars=80)
-        cache = MemoryCache(
+        client = _llm_client(prompt_episode_max_chars=80)
+        cache = Episode(
             absolute_id="cache_test",
             content=("A" * 60) + ("B" * 60) + ("C" * 60),
             event_time=datetime(2025, 1, 1),
@@ -1183,7 +1187,7 @@ class TestMultiRoundAcceptedAssistantHistory:
             activity_type="文档处理",
         )
 
-        prepared = client._prepare_memory_cache_for_prompt(cache)
+        prepared = client._prepare_episode_for_prompt(cache)
 
         assert len(prepared) <= 80
         assert "A" * 20 in prepared
@@ -1191,112 +1195,5 @@ class TestMultiRoundAcceptedAssistantHistory:
         assert "记忆缓存过长，已截断" in prepared
 
 
-# ---------------------------------------------------------------------------
-# update_memory_cache in mock mode
-# ---------------------------------------------------------------------------
-
-
-class TestUpdateMemoryCache:
-    """Tests for update_memory_cache with mock LLM."""
-
-    def setup_method(self):
-        self.client = _llm_client()
-
-    def test_with_none_cache_creates_initial(self):
-        result = self.client.update_memory_cache(
-            current_cache=None,
-            input_text="这是第一段文本内容",
-            document_name="test.txt",
-        )
-        assert isinstance(result, MemoryCache)
-        assert result.content  # non-empty
-        assert result.source_document == "test.txt"
-        assert result.activity_type == "文档处理"
-        assert result.absolute_id.startswith("cache_")
-        assert isinstance(result.event_time, datetime)
-
-    def test_with_existing_cache_returns_new(self):
-        existing = MemoryCache(
-            absolute_id="cache_old",
-            content="旧内容",
-            event_time=datetime(2025, 1, 1),
-            source_document="old.txt",
-            activity_type="文档处理",
-        )
-        result = self.client.update_memory_cache(
-            current_cache=existing,
-            input_text="新的一段文本",
-            document_name="new.txt",
-        )
-        assert isinstance(result, MemoryCache)
-        assert result.content  # non-empty
-        # New cache has a different absolute_id
-        assert result.absolute_id != "cache_old"
-        assert result.source_document == "new.txt"
-
-    def test_custom_event_time(self):
-        custom_time = datetime(2025, 6, 15, 12, 0, 0)
-        result = self.client.update_memory_cache(
-            current_cache=None,
-            input_text="测试文本",
-            document_name="doc.txt",
-            event_time=custom_time,
-        )
-        assert result.event_time == custom_time
-
-    def test_source_document_extracts_filename(self):
-        result = self.client.update_memory_cache(
-            current_cache=None,
-            input_text="内容",
-            document_name="/path/to/my_doc.txt",
-        )
-        assert result.source_document == "my_doc.txt"
-
-
-# ---------------------------------------------------------------------------
-# create_document_overall_memory in mock mode
-# ---------------------------------------------------------------------------
-
-
-class TestCreateDocumentOverallMemory:
-    """Tests for create_document_overall_memory with mock LLM."""
-
-    def setup_method(self):
-        self.client = _llm_client()
-
-    def test_returns_memory_cache_with_correct_type(self):
-        result = self.client.create_document_overall_memory(
-            text_preview="文档开头预览内容",
-            document_name="example.txt",
-        )
-        assert isinstance(result, MemoryCache)
-        assert result.activity_type == "文档整体"
-        assert result.content  # non-empty
-        assert result.source_document == "example.txt"
-        assert result.absolute_id.startswith("overall_")
-        assert isinstance(result.event_time, datetime)
-
-    def test_custom_event_time(self):
-        custom_time = datetime(2025, 3, 1, 10, 30, 0)
-        result = self.client.create_document_overall_memory(
-            text_preview="预览",
-            document_name="doc.txt",
-            event_time=custom_time,
-        )
-        assert result.event_time == custom_time
-
-    def test_with_previous_overall_content(self):
-        result = self.client.create_document_overall_memory(
-            text_preview="新的文档预览",
-            document_name="second.txt",
-            previous_overall_content="上一文档的整体记忆内容",
-        )
-        assert isinstance(result, MemoryCache)
-        assert result.activity_type == "文档整体"
-
-    def test_source_document_extracts_filename(self):
-        result = self.client.create_document_overall_memory(
-            text_preview="预览",
-            document_name="/long/path/report.md",
-        )
-        assert result.source_document == "report.md"
+# NOTE: TestUpdateEpisode and TestCreateDocumentOverallMemory removed —
+# update_memory_cache and create_document_overall_memory were removed from LLMClient.
