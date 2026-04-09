@@ -14,6 +14,7 @@ from flask import Flask, render_template, jsonify
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from processor import StorageManager, EmbeddingClient
+from processor.utils import normalize_entity_pair
 from .visualizer import GraphVisualizer
 
 
@@ -368,7 +369,7 @@ class GraphWebServer:
                                     entity1_fid = entity1.family_id
                                     entity2_fid = entity2.family_id
 
-                                    normalized_pair = LLMClient._normalize_entity_pair(entity1_fid, entity2_fid)
+                                    normalized_pair = normalize_entity_pair(entity1_fid, entity2_fid)
                                     normalized_entity1_id = normalized_pair[0]
                                     normalized_entity2_id = normalized_pair[1]
 
@@ -545,7 +546,7 @@ class GraphWebServer:
                                     entity2_fid = entity2.family_id
 
                                     # 标准化实体对（按字母顺序排序，使关系无向化）
-                                    normalized_pair = LLMClient._normalize_entity_pair(entity1_fid, entity2_fid)
+                                    normalized_pair = normalize_entity_pair(entity1_fid, entity2_fid)
                                     normalized_entity1_id = normalized_pair[0]
                                     normalized_entity2_id = normalized_pair[1]
 
@@ -879,7 +880,7 @@ class GraphWebServer:
                             entity2_fid = entity2.family_id
 
                             # 标准化实体对（按字母顺序排序，使关系无向化）
-                            normalized_pair = LLMClient._normalize_entity_pair(entity1_fid, entity2_fid)
+                            normalized_pair = normalize_entity_pair(entity1_fid, entity2_fid)
                             normalized_entity1_id = normalized_pair[0]
                             normalized_entity2_id = normalized_pair[1]
                             

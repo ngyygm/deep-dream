@@ -955,7 +955,7 @@
             
             // 通过API获取完整信息（包括embedding_preview和episode_text）
             if (node.absolute_id) {
-                fetch('/api/entities/' + encodeURIComponent(currentEntityId) + '/version/' + encodeURIComponent(node.absolute_id))
+                fetch('/api/entities/' + encodeURIComponent(currentEntityId) + '/versions/' + encodeURIComponent(node.absolute_id))
                     .then(response => response.json())
                     .then(data => {
                         if (data.success) {
@@ -1215,7 +1215,7 @@
         }
         
         function switchEntityVersion(entityId, absoluteId) {
-            fetch('/api/entities/' + encodeURIComponent(entityId) + '/version/' + encodeURIComponent(absoluteId))
+            fetch('/api/entities/' + encodeURIComponent(entityId) + '/versions/' + encodeURIComponent(absoluteId))
                 .then(response => response.json())
                 .then(data => {
                     if (data.success) {
@@ -1302,7 +1302,7 @@
             var url = '/api/graphs/data?limit_entities=' + limitEntities +
                       '&limit_edges_per_entity=' + limitEdgesPerEntity +
                       '&hops=' + hops +
-                      '&focus_entity_id=' + encodeURIComponent(entityId) + 
+                      '&focus_family_id=' + encodeURIComponent(entityId) +
                       '&focus_absolute_id=' + encodeURIComponent(absoluteId);
             
             fetch(url)
@@ -1410,7 +1410,7 @@
             
             // 如果没有embedding_preview，通过API获取
             if (!edgeData.embedding_preview && edgeData.absolute_id && currentRelationId) {
-                fetch('/api/relations/' + encodeURIComponent(currentRelationId) + '/version/' + encodeURIComponent(edgeData.absolute_id))
+                fetch('/api/relations/' + encodeURIComponent(currentRelationId) + '/versions/' + encodeURIComponent(edgeData.absolute_id))
                     .then(response => response.json())
                     .then(data => {
                         if (data.success && data.relation.embedding_preview) {
@@ -1538,7 +1538,7 @@
         }
         
         function switchRelationVersion(relationId, absoluteId) {
-            fetch('/api/relations/' + encodeURIComponent(relationId) + '/version/' + encodeURIComponent(absoluteId))
+            fetch('/api/relations/' + encodeURIComponent(relationId) + '/versions/' + encodeURIComponent(absoluteId))
                 .then(response => response.json())
                 .then(data => {
                     if (data.success) {
