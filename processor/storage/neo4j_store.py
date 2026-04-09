@@ -2563,26 +2563,6 @@ class Neo4jStorageManager:
             )
             return [record["uuid"] for record in result]
 
-    def get_latest_relations_projection(self, content_snippet_length: Optional[int] = None) -> List[Dict[str, Any]]:
-        """获取最新关系投影。"""
-        snippet_length = (
-            self.relation_content_snippet_length
-            if content_snippet_length is None
-            else content_snippet_length
-        )
-        relations_with_emb = self._get_relations_with_embeddings()
-        results: List[Dict[str, Any]] = []
-        for relation, emb_array in relations_with_emb:
-            _csnip = relation.content if snippet_length is None or snippet_length <= 0 else relation.content[:snippet_length]
-            results.append({
-                "relation": relation,
-                "family_id": relation.family_id,
-                "pair": tuple(sorted((relation.entity1_absolute_id, relation.entity2_absolute_id))),
-                "content": relation.content,
-                "content_snippet": _csnip,
-                "embedding_array": emb_array,
-            })
-        return results
 
     def get_relation_versions(self, family_id: str) -> List[Relation]:
         """获取关系的所有版本。"""
@@ -3176,54 +3156,6 @@ class Neo4jStorageManager:
     # ------------------------------------------------------------------
     # 图遍历操作（Neo4j 原生优势）
     # ------------------------------------------------------------------
-
-    def find_related_entities_by_embedding(self, similarity_threshold: float = 0.7,
-                                            max_candidates: int = 50,
-                                            use_mixed_search: bool = False,
-                                            content_snippet_length: int = 50,
-                                            progress_callback: Optional[callable] = None) -> Dict[str, set]:
-        """通过 embedding 相似度查找相关实体（向量化计算）。"""
-        all_entities = self.get_all_entities(exclude_embedding=True)
-        if not all_entities:
-            return {}
-
-        if not self.embedding_client or not self.embedding_client.is_available():
-            return {}
-
-        # 编码所有实体
-        texts = [f"{e.name} {e.content[:content_snippet_length]}" for e in all_entities]
-        embeddings = self.embedding_client.encode(texts)
-        if embeddings is None:
-            return {}
-
-        n = len(all_entities)
-        if n < 2:
-            return {}
-
-        if progress_callback:
-            progress_callback(0, n)
-
-        # 向量化余弦相似度：构建矩阵，一次性计算
-        emb_matrix = np.array(embeddings, dtype=np.float32)
-        norms = np.linalg.norm(emb_matrix, axis=1, keepdims=True)
-        norms = np.maximum(norms, 1e-9)
-        emb_normed = emb_matrix / norms
-        sim_matrix = emb_normed @ emb_normed.T
-
-        # 上三角定位超过阈值的对
-        rows, cols = np.where(np.triu(sim_matrix >= similarity_threshold, k=1))
-
-        entity_pairs: Dict[str, set] = {}
-        for i, j in zip(rows, cols):
-            eid_i = all_entities[int(i)].family_id
-            eid_j = all_entities[int(j)].family_id
-            entity_pairs.setdefault(eid_i, set()).add(eid_j)
-            entity_pairs.setdefault(eid_j, set()).add(eid_i)
-
-        if progress_callback:
-            progress_callback(n, n)
-
-        return entity_pairs
 
     def merge_entity_families(self, target_family_id: str, source_family_ids: List[str],
                               skip_name_check: bool = False) -> Dict[str, Any]:
