@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Dict, List, Optional
 from datetime import datetime
 import hashlib
+import traceback
 import uuid
 
 from ..models import Episode
@@ -341,7 +342,6 @@ class _RelationOpsMixin:
         except Exception as e:
             if verbose:
                 wprint(f"        处理失败: {e}")
-            import traceback
             if verbose:
                 traceback.print_exc()
             return None
