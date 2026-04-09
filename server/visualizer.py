@@ -101,11 +101,12 @@ class GraphVisualizer:
                 shape="dot"
             )
 
-        # 添加关系边（通过绝对ID获取实体，无向关系）
+        # 添加关系边（通过预构建 absolute_id→entity 映射，避免 N+1 查询）
+        abs_to_entity = {e.absolute_id: e for e in entities}
         for relation in relations:
-            # 通过绝对ID获取实体
-            entity1 = self.storage.get_entity_by_absolute_id(relation.entity1_absolute_id)
-            entity2 = self.storage.get_entity_by_absolute_id(relation.entity2_absolute_id)
+            # 通过预构建映射查找实体，替代逐个 get_entity_by_absolute_id
+            entity1 = abs_to_entity.get(relation.entity1_absolute_id)
+            entity2 = abs_to_entity.get(relation.entity2_absolute_id)
 
             if entity1 and entity2:
                 entity1_id = entity1.family_id
@@ -178,11 +179,12 @@ class GraphVisualizer:
             family_id_to_name[entity.family_id] = entity.name
             G.add_node(entity.family_id, name=entity.name, content=entity.content)
 
-        # 添加边（通过绝对ID获取实体，无向关系）
+        # 添加边（通过预构建 absolute_id→entity 映射，避免 N+1 查询）
+        abs_to_entity = {e.absolute_id: e for e in entities}
         for relation in relations:
-            # 通过绝对ID获取实体
-            entity1 = self.storage.get_entity_by_absolute_id(relation.entity1_absolute_id)
-            entity2 = self.storage.get_entity_by_absolute_id(relation.entity2_absolute_id)
+            # 通过预构建映射查找实体
+            entity1 = abs_to_entity.get(relation.entity1_absolute_id)
+            entity2 = abs_to_entity.get(relation.entity2_absolute_id)
 
             if entity1 and entity2:
                 entity1_id = entity1.family_id
@@ -257,6 +259,9 @@ class GraphVisualizer:
         entities = self.storage.get_all_entities(exclude_embedding=True)
         relations = self.storage.get_all_relations(exclude_embedding=True)
 
+        # 预构建 absolute_id→entity 映射，避免 N+1 查询
+        abs_to_entity = {e.absolute_id: e for e in entities}
+
         data = {
             "entities": [
                 {
@@ -274,8 +279,8 @@ class GraphVisualizer:
                     "family_id": r.family_id,
                     "entity1_absolute_id": r.entity1_absolute_id,
                     "entity2_absolute_id": r.entity2_absolute_id,
-                    "entity1_family_id": (_e1 := self.storage.get_entity_by_absolute_id(r.entity1_absolute_id)).family_id if _e1 else None,
-                    "entity2_family_id": (_e2 := self.storage.get_entity_by_absolute_id(r.entity2_absolute_id)).family_id if _e2 else None,
+                    "entity1_family_id": (_e1 := abs_to_entity.get(r.entity1_absolute_id)).family_id if _e1 else None,
+                    "entity2_family_id": (_e2 := abs_to_entity.get(r.entity2_absolute_id)).family_id if _e2 else None,
                     "content": r.content,
                     "event_time": r.event_time.isoformat() if r.event_time else None,
                     "processed_time": r.processed_time.isoformat() if r.processed_time else None,
@@ -316,10 +321,11 @@ class GraphVisualizer:
         if relations:
             print("\n关系列表:")
             family_id_to_name = {e.family_id: e.name for e in entities}
+            abs_to_entity = {e.absolute_id: e for e in entities}
             for i, relation in enumerate(relations[:10], 1):  # 只显示前10个
-                # 通过绝对ID获取实体
-                entity1 = self.storage.get_entity_by_absolute_id(relation.entity1_absolute_id)
-                entity2 = self.storage.get_entity_by_absolute_id(relation.entity2_absolute_id)
+                # 通过预构建映射查找实体
+                entity1 = abs_to_entity.get(relation.entity1_absolute_id)
+                entity2 = abs_to_entity.get(relation.entity2_absolute_id)
 
                 if entity1 and entity2:
                     entity1_name = entity1.name

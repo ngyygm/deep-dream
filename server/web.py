@@ -879,51 +879,66 @@ class GraphWebServer:
                 entity_absolute_ids = set(matched_entity_absolute_ids)
                 family_id_to_name = {}
                 family_id_to_absolute_id = {}
-                
+
+                # 预收集所有关系（matched + 1跳），统一批量预加载端点实体
+                all_relations_for_preload = list(matched_relations)
+                entity_relation_map = {}  # entity.absolute_id -> [relations]
+                for entity in matched_entities:
+                    entity_rels = self.storage.get_entity_relations(entity.absolute_id, limit=None)
+                    entity_relation_map[entity.absolute_id] = entity_rels
+                    all_relations_for_preload.extend(entity_rels)
+
+                # 批量预加载所有关系端点实体
+                all_rel_abs_ids = set()
+                for rel in all_relations_for_preload:
+                    all_rel_abs_ids.add(rel.entity1_absolute_id)
+                    all_rel_abs_ids.add(rel.entity2_absolute_id)
+                batch_fn = getattr(self.storage, 'get_entities_by_absolute_ids', None)
+                abs_to_entity = {}
+                if batch_fn and all_rel_abs_ids:
+                    abs_to_entity = {e.absolute_id: e for e in batch_fn(list(all_rel_abs_ids)) if e}
+
                 # 2. 匹配关系对应的两个实体
                 for relation in matched_relations:
-                    entity1 = self.storage.get_entity_by_absolute_id(relation.entity1_absolute_id)
-                    entity2 = self.storage.get_entity_by_absolute_id(relation.entity2_absolute_id)
+                    entity1 = abs_to_entity.get(relation.entity1_absolute_id) or self.storage.get_entity_by_absolute_id(relation.entity1_absolute_id)
+                    entity2 = abs_to_entity.get(relation.entity2_absolute_id) or self.storage.get_entity_by_absolute_id(relation.entity2_absolute_id)
                     if entity1:
                         entity_absolute_ids.add(entity1.absolute_id)
                         family_id_to_name[entity1.family_id] = entity1.name
                         family_id_to_absolute_id[entity1.family_id] = entity1.absolute_id
+                        abs_to_entity[entity1.absolute_id] = entity1
                     if entity2:
                         entity_absolute_ids.add(entity2.absolute_id)
                         family_id_to_name[entity2.family_id] = entity2.name
                         family_id_to_absolute_id[entity2.family_id] = entity2.absolute_id
-                
+                        abs_to_entity[entity2.absolute_id] = entity2
+
                 # 3. 匹配实体相关联的边以及连接的另一个实体（1跳距离）
                 relation_absolute_ids = set(matched_relation_absolute_ids)
-                edges_seen = set()  # 用于去重，使用 (from_id, to_id, family_id) 作为唯一标识
+                edges_seen = set()
 
                 for entity in matched_entities:
-                    # 获取该实体的所有关系边（1跳距离，不限制数量）
-                    entity_relations = self.storage.get_entity_relations(entity.absolute_id, limit=None)
+                    entity_relations = entity_relation_map.get(entity.absolute_id, [])
 
                     for relation in entity_relations:
                         relation_absolute_ids.add(relation.absolute_id)
-                        
-                        # 通过绝对ID获取实体
-                        entity1 = self.storage.get_entity_by_absolute_id(relation.entity1_absolute_id)
-                        entity2 = self.storage.get_entity_by_absolute_id(relation.entity2_absolute_id)
-                        
+
+                        entity1 = abs_to_entity.get(relation.entity1_absolute_id)
+                        entity2 = abs_to_entity.get(relation.entity2_absolute_id)
+
                         if entity1 and entity2:
                             entity1_fid = entity1.family_id
                             entity2_fid = entity2.family_id
 
-                            # 标准化实体对（按字母顺序排序，使关系无向化）
                             normalized_pair = normalize_entity_pair(entity1_fid, entity2_fid)
                             normalized_entity1_id = normalized_pair[0]
                             normalized_entity2_id = normalized_pair[1]
-                            
-                            # 创建唯一标识符，避免重复添加同一条边（使用标准化后的实体对）
+
                             edge_key = (normalized_entity1_id, normalized_entity2_id, relation.family_id)
                             if edge_key in edges_seen:
                                 continue
                             edges_seen.add(edge_key)
-                            
-                            # 添加连接的实体（1跳距离）
+
                             if entity1.absolute_id not in entity_absolute_ids:
                                 entity_absolute_ids.add(entity1.absolute_id)
                                 family_id_to_name[normalized_entity1_id] = entity1.name
@@ -933,36 +948,41 @@ class GraphWebServer:
                                 entity_absolute_ids.add(entity2.absolute_id)
                                 family_id_to_name[normalized_entity2_id] = entity2.name
                                 family_id_to_absolute_id[normalized_entity2_id] = entity2.absolute_id
-                
+
                 # 构建节点数据（使用family_id去重，每个family_id只保留一个节点）
                 nodes = []
-                seen_family_ids = set()  # 用于去重，确保每个family_id只添加一次
-                family_id_to_latest_absolute_id = {}  # 记录每个family_id对应的最新absolute_id
+                family_id_to_latest_absolute_id = {}
 
-                # 首先收集所有family_id及其对应的最新absolute_id
+                # 批量预加载 entity_absolute_ids 中尚未加载的实体
+                unloaded_abs_ids = [aid for aid in entity_absolute_ids if aid not in abs_to_entity]
+                if batch_fn and unloaded_abs_ids:
+                    for e in batch_fn(unloaded_abs_ids):
+                        if e:
+                            abs_to_entity[e.absolute_id] = e
+
+                # 收集所有family_id及其对应的最新absolute_id
                 for entity_abs_id in entity_absolute_ids:
-                    entity = self.storage.get_entity_by_absolute_id(entity_abs_id)
+                    entity = abs_to_entity.get(entity_abs_id) or self.storage.get_entity_by_absolute_id(entity_abs_id)
                     if entity:
                         fid = entity.family_id
-                        # 如果这个family_id还没有记录，或者当前版本更新，则更新记录
                         if fid not in family_id_to_latest_absolute_id:
                             family_id_to_latest_absolute_id[fid] = entity_abs_id
                         else:
-                            # 比较时间，保留更新的版本
-                            existing_entity = self.storage.get_entity_by_absolute_id(family_id_to_latest_absolute_id[fid])
+                            existing_entity = abs_to_entity.get(family_id_to_latest_absolute_id[fid]) or self.storage.get_entity_by_absolute_id(family_id_to_latest_absolute_id[fid])
                             if existing_entity and entity.event_time > existing_entity.event_time:
                                 family_id_to_latest_absolute_id[fid] = entity_abs_id
 
-                # 然后为每个唯一的family_id创建一个节点
+                # 为每个唯一的family_id创建一个节点
                 for fid, entity_abs_id in family_id_to_latest_absolute_id.items():
-                    entity = self.storage.get_entity_by_absolute_id(entity_abs_id)
+                    entity = abs_to_entity.get(entity_abs_id) or self.storage.get_entity_by_absolute_id(entity_abs_id)
                     if entity:
                         # 判断是否为匹配的实体
                         is_matched = entity.family_id in matched_family_ids
                         
                         # 获取版本数量
-                        versions = self.storage.get_entity_versions(entity.family_id)
-                        version_count = len(versions)
+                        version_count = self.storage.get_entity_version_count(entity.family_id) \
+                            if hasattr(self.storage, 'get_entity_version_count') \
+                            else len(self.storage.get_entity_versions(entity.family_id))
                         
                         # 在标签中显示版本数量
                         label = f"{entity.name} ({version_count}版本)" if version_count > 1 else entity.name
@@ -989,8 +1009,8 @@ class GraphWebServer:
                 
                 # 1. 添加匹配关系对应的边
                 for relation in matched_relations:
-                    entity1 = self.storage.get_entity_by_absolute_id(relation.entity1_absolute_id)
-                    entity2 = self.storage.get_entity_by_absolute_id(relation.entity2_absolute_id)
+                    entity1 = abs_to_entity.get(relation.entity1_absolute_id) or self.storage.get_entity_by_absolute_id(relation.entity1_absolute_id)
+                    entity2 = abs_to_entity.get(relation.entity2_absolute_id) or self.storage.get_entity_by_absolute_id(relation.entity2_absolute_id)
 
                     if entity1 and entity2:
                         entity1_fid = entity1.family_id
@@ -1021,11 +1041,11 @@ class GraphWebServer:
                 
                 # 2. 添加匹配实体相关联的边（1跳距离）
                 for entity in matched_entities:
-                    entity_relations = self.storage.get_entity_relations(entity.absolute_id, limit=None)
+                    entity_relations = entity_relation_map.get(entity.absolute_id, [])
 
                     for relation in entity_relations:
-                        entity1 = self.storage.get_entity_by_absolute_id(relation.entity1_absolute_id)
-                        entity2 = self.storage.get_entity_by_absolute_id(relation.entity2_absolute_id)
+                        entity1 = abs_to_entity.get(relation.entity1_absolute_id) or self.storage.get_entity_by_absolute_id(relation.entity1_absolute_id)
+                        entity2 = abs_to_entity.get(relation.entity2_absolute_id) or self.storage.get_entity_by_absolute_id(relation.entity2_absolute_id)
                         
                         if entity1 and entity2:
                             entity1_fid = entity1.family_id
