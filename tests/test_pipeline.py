@@ -18,6 +18,7 @@ import pytest
 
 from processor.pipeline.orchestrator import TemporalMemoryGraphProcessor
 from processor.models import Episode, Entity
+from processor.llm.client import _mock_json_fence
 
 
 # ---------------------------------------------------------------------------
@@ -698,21 +699,46 @@ class TestVersionInflation:
             )
 
     def test_remember_different_text_creates_versions(self, tmp_path):
-        """Remembering different text about the same topic should create versions."""
+        """Different content about the same entity should create a new version.
+
+        Directly tests _create_entity_version — the core versioning logic —
+        without going through the full pipeline (avoids threading/mock complexity).
+        """
+        from datetime import datetime
         proc = _make_processor(tmp_path)
 
-        proc.remember_text(
-            "Bob is a data scientist at Analytics Inc.",
-            doc_name="doc1", verbose=False,
+        # Create initial entity version
+        v1 = proc.entity_processor._create_entity_version(
+            family_id="ent_bob",
+            name="Bob",
+            content="Bob is a data scientist at Analytics Inc.",
+            episode_id="ep1",
+            source_document="doc1",
+            old_content=None,
+            old_content_format=None,
+            skip_if_unchanged=True,
         )
-        proc.remember_text(
-            "Bob is a senior data scientist at Analytics Inc. He specializes in NLP.",
-            doc_name="doc2", verbose=False,
+        assert v1.family_id == "ent_bob"
+
+        # Create a second version with different content
+        v2 = proc.entity_processor._create_entity_version(
+            family_id="ent_bob",
+            name="Bob",
+            content="Bob is a senior data scientist at Analytics Inc. He specializes in NLP.",
+            episode_id="ep2",
+            source_document="doc2",
+            old_content=v1.content,
+            old_content_format="markdown",
+            skip_if_unchanged=True,
         )
 
-        # At least one entity should exist
-        entities = proc.storage.get_all_entities()
-        assert len(entities) > 0
+        # v2 should be a different version
+        assert v2.absolute_id != v1.absolute_id, \
+            "Different content should create a new version"
+
+        # Verify both versions exist
+        versions = proc.storage.get_entity_versions("ent_bob")
+        assert len(versions) == 2, f"Expected 2 versions, got {len(versions)}"
 
     def test_batch_merge_exact_content_no_version(self, tmp_path):
         """In the batch resolution path, merging with exact same content should

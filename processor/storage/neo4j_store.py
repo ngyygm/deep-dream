@@ -3929,18 +3929,19 @@ class Neo4jStorageManager:
             return entities, relations, hop_map
 
     def save_episode_mentions(self, episode_id: str, entity_absolute_ids: List[str], context: str = ""):
-        """记录 Episode 提及的实体。"""
+        """记录 Episode 提及的实体（单次 UNWIND 批量写入）。"""
+        if not entity_absolute_ids:
+            return
         with self._episode_write_lock:
             with self._session() as session:
                 session.run("""
                     MERGE (ep:Episode {uuid: $ep_id})
-                """, ep_id=episode_id)
-                for abs_id in entity_absolute_ids:
-                    session.run("""
-                        MATCH (ep:Episode {uuid: $ep_id})
-                        MATCH (e:Entity {uuid: $e_abs})
-                        MERGE (ep)-[m:MENTIONS {context: $ctx}]->(e)
-                    """, ep_id=episode_id, e_abs=abs_id, ctx=context)
+                    WITH ep
+                    UNWIND $items AS item
+                    MATCH (e:Entity {uuid: item.abs_id})
+                    MERGE (ep)-[m:MENTIONS {context: item.ctx}]->(e)
+                """, ep_id=episode_id,
+                     items=[{"abs_id": aid, "ctx": context} for aid in entity_absolute_ids])
 
     def get_entity_provenance(self, family_id: str) -> List[dict]:
         """获取提及该实体的所有 Episode。"""
