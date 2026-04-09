@@ -2656,16 +2656,15 @@ class StorageManager:
         conn = self._get_conn()
         cursor = conn.cursor()
         
-        # 获取每个family_id的最新版本及其embedding
+        # 使用窗口函数获取每个 family_id 的最新版本（O(N) 替代 O(N^2) 子查询）
         cursor.execute("""
             SELECT id, family_id, entity1_absolute_id, entity2_absolute_id,
                    content, event_time, processed_time, episode_id, source_document, embedding
-            FROM relations r1
-            WHERE r1.processed_time = (
-                SELECT MAX(r2.processed_time)
-                FROM relations r2
-                WHERE r2.family_id = r1.family_id
+            FROM (
+                SELECT *, ROW_NUMBER() OVER (PARTITION BY family_id ORDER BY processed_time DESC) AS rn
+                FROM relations
             )
+            WHERE rn = 1
         """)
 
         results = []
@@ -3112,75 +3111,66 @@ class StorageManager:
     def get_entities_grouped_by_similarity(self, similarity_threshold: float = 0.6) -> List[List[Entity]]:
         """
         获取按名称相似度分组的实体
-        
-        使用embedding向量计算实体之间的相似度，将相似的实体分组
-        
+
+        使用embedding向量计算实体之间的相似度，将相似的实体分组。
+        向量化余弦相似度计算，避免 Python 双重循环。
+
         Args:
             similarity_threshold: 相似度阈值，高于此值的实体会被分到同一组
-            
+
         Returns:
             实体分组列表，每组包含相似的实体
         """
-        # 获取所有实体及其embedding
         entities_with_embeddings = self._get_entities_with_embeddings()
-        
+
         if not entities_with_embeddings:
             return []
-        
-        # 构建相似度矩阵
-        n = len(entities_with_embeddings)
-        similarity_matrix = np.zeros((n, n))
-        
-        for i in range(n):
-            entity_i, embedding_i = entities_with_embeddings[i]
-            if embedding_i is None:
-                continue
-            
-            for j in range(i + 1, n):
-                entity_j, embedding_j = entities_with_embeddings[j]
-                if embedding_j is None:
-                    continue
-                
-                # 计算余弦相似度
-                dot_product = np.dot(embedding_i, embedding_j)
-                norm_i = np.linalg.norm(embedding_i)
-                norm_j = np.linalg.norm(embedding_j)
-                similarity = dot_product / (norm_i * norm_j + 1e-9)
-                
-                similarity_matrix[i][j] = similarity
-                similarity_matrix[j][i] = similarity
-        
-        # 使用并查集进行分组
+
+        # 分离有/无 embedding 的实体
+        valid = [(i, e, emb) for i, (e, emb) in enumerate(entities_with_embeddings) if emb is not None]
+        if not valid:
+            return []
+
+        n = len(valid)
+        if n < 2:
+            return []
+
+        # 批量构建 embedding 矩阵 (n, dim)
+        emb_matrix = np.array([emb for _, _, emb in valid], dtype=np.float32)
+        # 归一化
+        norms = np.linalg.norm(emb_matrix, axis=1, keepdims=True)
+        norms = np.maximum(norms, 1e-9)
+        emb_normed = emb_matrix / norms
+
+        # 一次性计算余弦相似度矩阵 (n, n)
+        sim_matrix = emb_normed @ emb_normed.T
+
+        # 使用并查集合并
         parent = list(range(n))
-        
+
         def find(x):
-            if parent[x] != x:
-                parent[x] = find(parent[x])
-            return parent[x]
-        
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
         def union(x, y):
             px, py = find(x), find(y)
             if px != py:
                 parent[px] = py
-        
-        # 根据相似度阈值合并
-        for i in range(n):
-            for j in range(i + 1, n):
-                if similarity_matrix[i][j] >= similarity_threshold:
-                    union(i, j)
-        
+
+        # 只遍历上三角，np.argwhere 高效定位超过阈值的对
+        rows, cols = np.where(np.triu(sim_matrix >= similarity_threshold, k=1))
+        for i, j in zip(rows, cols):
+            union(int(i), int(j))
+
         # 构建分组
-        groups = {}
-        for i in range(n):
-            root = find(i)
-            if root not in groups:
-                groups[root] = []
-            groups[root].append(entities_with_embeddings[i][0])  # 只添加Entity，不需要embedding
-        
-        # 只返回包含多个实体的组（单个实体不需要整理）
-        result = [group for group in groups.values() if len(group) > 1]
-        
-        return result
+        groups: Dict[int, List[Entity]] = {}
+        for idx_in_valid, entity, _ in valid:
+            root = find(idx_in_valid)
+            groups.setdefault(root, []).append(entity)
+
+        return [g for g in groups.values() if len(g) > 1]
     
     def merge_entity_families(self, target_family_id: str, source_family_ids: List[str]) -> Dict[str, Any]:
         """
