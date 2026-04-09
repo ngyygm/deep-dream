@@ -305,23 +305,6 @@ class GraphWebServer:
                 edges_seen = set()  # 用于去重，使用 (from_id, to_id, family_id) 作为唯一标识
                 all_related_family_ids = set()
                 
-                # 辅助函数：统计实体拥有的关系边数量（去重后）
-                def count_entity_relations(family_id, max_abs_id=None):
-                    """统计实体拥有的关系边数量（去重后）"""
-                    if max_abs_id:
-                        entity_abs_ids = self.storage.get_entity_absolute_ids_up_to_version(family_id, max_abs_id)
-                    else:
-                        versions = self.storage.get_entity_versions(family_id)
-                        entity_abs_ids = [v.absolute_id for v in versions]
-                    
-                    if not entity_abs_ids:
-                        return 0
-                    
-                    relations = self.storage.get_relations_by_entity_absolute_ids(entity_abs_ids, limit=None)
-                    # 按 family_id 去重
-                    unique_family_ids = set(r.family_id for r in relations)
-                    return len(unique_family_ids)
-                
                 # 在focus模式下，实现多跳逻辑
                 # 关键：从最早版本到当前版本的所有 absolute_id 关联的关系边
                 if focus_family_id and focus_absolute_id and hops > 0:
@@ -370,6 +353,13 @@ class GraphWebServer:
                             else:
                                 entity_by_abs = {}
 
+                            # 预计算端点实体的度数（用于排序）
+                            focus_degree_map = {}
+                            if hasattr(self.storage, 'batch_get_entity_degrees'):
+                                focus_end_fids = {e.family_id for e in entity_by_abs.values() if e}
+                                if focus_end_fids:
+                                    focus_degree_map = self.storage.batch_get_entity_degrees(list(focus_end_fids))
+
                             # 收集关系边和对应的另一端实体信息，用于排序
                             relation_candidates = []
 
@@ -395,7 +385,7 @@ class GraphWebServer:
                                         other_entity_fid = other_entity.family_id
                                         other_entity_abs_id = other_entity.absolute_id
 
-                                        other_entity_edge_count = count_entity_relations(other_entity_fid, other_entity_abs_id)
+                                        other_entity_edge_count = focus_degree_map.get(other_entity_fid, 0)
 
                                         relation_candidates.append({
                                             'relation': relation,
@@ -553,6 +543,18 @@ class GraphWebServer:
                     if batch_fn and all_rel_abs_ids:
                         entity_by_abs = {e.absolute_id: e for e in batch_fn(list(all_rel_abs_ids)) if e}
 
+                    # 预计算所有端点实体的度数（用于排序，替代逐个 count_entity_relations）
+                    all_end_fids = set()
+                    for _, rels, _ in all_entity_relations:
+                        for rel in rels:
+                            e1 = entity_by_abs.get(rel.entity1_absolute_id)
+                            e2 = entity_by_abs.get(rel.entity2_absolute_id)
+                            if e1: all_end_fids.add(e1.family_id)
+                            if e2: all_end_fids.add(e2.family_id)
+                    degree_map = {}
+                    if hasattr(self.storage, 'batch_get_entity_degrees') and all_end_fids:
+                        degree_map = self.storage.batch_get_entity_degrees(list(all_end_fids))
+
                     for entity, entity_relations, effective_time_point in all_entity_relations:
                         # 收集关系边和对应的另一端实体信息，用于排序
                         relation_candidates = []
@@ -564,7 +566,7 @@ class GraphWebServer:
                                 entity1_temp = self.storage.get_entity_by_absolute_id(relation.entity1_absolute_id)
                             if not entity2_temp:
                                 entity2_temp = self.storage.get_entity_by_absolute_id(relation.entity2_absolute_id)
-                            
+
                             if entity1_temp and entity2_temp:
                                 effective_time_point = focus_time_point if focus_family_id else time_point
                                 if effective_time_point:
@@ -589,8 +591,8 @@ class GraphWebServer:
                                         other_entity = entity2 if entity1_fid == entity.family_id else entity1
                                         other_entity_fid = other_entity.family_id
 
-                                        # 统计另一端实体拥有的关系边数量（去重后）
-                                        other_entity_edge_count = count_entity_relations(other_entity_fid)
+                                        # 使用预计算的度数（替代逐个 count_entity_relations）
+                                        other_entity_edge_count = degree_map.get(other_entity_fid, 0)
                                         
                                         relation_candidates.append({
                                             'relation': relation,
