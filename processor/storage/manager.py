@@ -1182,7 +1182,7 @@ class StorageManager:
         """根据绝对ID获取实体"""
         conn = self._get_conn()
         cursor = conn.cursor()
-        
+
         cursor.execute("""
             SELECT id, family_id, name, content, event_time, processed_time, episode_id, source_document, embedding
             FROM entities
@@ -1205,6 +1205,34 @@ class StorageManager:
             source_document=row[7] if len(row) > 7 else '',
             embedding=row[8] if len(row) > 8 else None
         )
+
+    def get_entities_by_absolute_ids(self, absolute_ids: List[str]) -> List[Entity]:
+        """根据绝对ID列表批量获取实体。"""
+        if not absolute_ids:
+            return []
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        placeholders = ",".join("?" * len(absolute_ids))
+        cursor.execute(f"""
+            SELECT id, family_id, name, content, event_time, processed_time, episode_id, source_document, embedding
+            FROM entities
+            WHERE id IN ({placeholders})
+        """, tuple(absolute_ids))
+        rows = cursor.fetchall()
+        return [
+            Entity(
+                absolute_id=row[0],
+                family_id=row[1],
+                name=row[2],
+                content=row[3],
+                event_time=self._safe_parse_datetime(row[4]),
+                processed_time=self._safe_parse_datetime(row[5]),
+                episode_id=row[6],
+                source_document=row[7] if len(row) > 7 else '',
+                embedding=row[8] if len(row) > 8 else None,
+            )
+            for row in rows
+        ]
 
     def get_relation_by_absolute_id(self, relation_absolute_id: str) -> Optional[Relation]:
         """根据关系行的主键 id（绝对ID）获取单条关系"""

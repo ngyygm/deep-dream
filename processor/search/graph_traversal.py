@@ -73,16 +73,33 @@ class GraphTraversalSearcher:
 
             # 获取当前实体的关系
             relations = self.storage.get_relations_by_family_ids([current_id])
-            for rel in relations:
-                e1_id = rel.entity1_absolute_id
-                e2_id = rel.entity2_absolute_id
 
-                # 获取关系对端的实体
-                for abs_id in [e1_id, e2_id]:
-                    neighbor = self.storage.get_entity_by_absolute_id(abs_id)
-                    if neighbor and neighbor.family_id not in visited:
-                        visited.add(neighbor.family_id)
-                        queue.append((neighbor.family_id, depth + 1))
+            # 收集所有 neighbor absolute_ids，批量获取
+            neighbor_abs_ids = set()
+            for rel in relations:
+                neighbor_abs_ids.add(rel.entity1_absolute_id)
+                neighbor_abs_ids.add(rel.entity2_absolute_id)
+
+            if not neighbor_abs_ids:
+                continue
+
+            # 批量获取 neighbor 实体
+            batch_fn = getattr(self.storage, 'get_entities_by_absolute_ids', None)
+            if batch_fn:
+                neighbor_entities = batch_fn(list(neighbor_abs_ids))
+                abs_to_family = {e.absolute_id: e.family_id for e in neighbor_entities if e}
+            else:
+                # 回退：逐个获取（兼容旧后端）
+                abs_to_family = {}
+                for aid in neighbor_abs_ids:
+                    ne = self.storage.get_entity_by_absolute_id(aid)
+                    if ne:
+                        abs_to_family[ne.absolute_id] = ne.family_id
+
+            for fid in abs_to_family.values():
+                if fid not in visited:
+                    visited.add(fid)
+                    queue.append((fid, depth + 1))
 
         return result_entities[:max_nodes]
 

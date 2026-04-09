@@ -4186,11 +4186,9 @@ def create_app(
             if entity is None:
                 return err(f"未找到实体: {family_id}", 404)
             relations = processor.storage.get_entity_relations_by_family_id(family_id)
-            version_count = 0
-            if hasattr(processor.storage, 'get_entity_version_count'):
-                version_count = processor.storage.get_entity_version_count(family_id)
-            else:
-                version_count = len(processor.storage.get_entity_versions(family_id))
+            version_count = processor.storage.get_entity_version_count(family_id) \
+                if hasattr(processor.storage, 'get_entity_version_count') \
+                else len(processor.storage.get_entity_versions(family_id))
             rels = [relation_to_dict(r) for r in relations]
             enrich_relations(rels, processor)
             return ok({
