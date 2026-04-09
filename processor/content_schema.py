@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 
 # ---------------------------------------------------------------------------
@@ -150,12 +150,3 @@ def has_any_change(diff: Dict[str, Dict[str, object]]) -> bool:
     return any(v.get("changed", False) for v in diff.values())
 
 
-def collect_changed_sections(
-    diff: Dict[str, Dict[str, object]],
-) -> List[Tuple[str, str, str]]:
-    """返回 [(key, old_body, new_body), ...] 仅包含变更的 section。"""
-    result = []
-    for key, info in diff.items():
-        if info.get("changed", False):
-            result.append((key, info.get("old", ""), info.get("new", "")))
-    return result

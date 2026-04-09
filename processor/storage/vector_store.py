@@ -173,12 +173,6 @@ class VectorStore:
             return None
         return _bytes_to_floats(row[0])
 
-    def count(self, table: str) -> int:
-        """返回表中向量总数。"""
-        conn = self._get_conn()
-        cursor = conn.execute(f"SELECT count(*) FROM {table}")
-        return cursor.fetchone()[0]
-
     def get_batch(self, table: str, uuids: List[str]) -> Dict[str, List[float]]:
         """批量获取向量。"""
         if not uuids:

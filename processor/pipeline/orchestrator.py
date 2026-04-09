@@ -3,8 +3,7 @@
 """
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor, as_completed, Future, wait, FIRST_COMPLETED
-import re
+from concurrent.futures import ThreadPoolExecutor, as_completed, Future
 import sys
 import threading
 import time
@@ -22,7 +21,7 @@ from ..storage.manager import StorageManager
 from ..storage import create_storage_manager
 from .entity import EntityProcessor
 from .relation import RelationProcessor
-from ..models import Episode, Entity
+from ..models import Episode
 from ..utils import (
     clear_parallel_log_context,
     compute_doc_hash,
