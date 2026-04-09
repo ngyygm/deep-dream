@@ -226,7 +226,7 @@ def _extract_candidate_ids(
 
     drop_entities = set()
     with _perf_timer("_extract_candidate_ids | time_filter"):
-        if (time_before_dt or time_after_dt) and hasattr(storage, 'get_entities_by_absolute_ids'):
+        if time_before_dt or time_after_dt:
             batch_entities = storage.get_entities_by_absolute_ids(list(entity_absolute_ids))
             for e in batch_entities:
                 if e and e.event_time:
@@ -234,14 +234,6 @@ def _extract_candidate_ids(
                         drop_entities.add(e.absolute_id)
                     elif time_after_dt and e.event_time < time_after_dt:
                         drop_entities.add(e.absolute_id)
-        else:
-            for eid in entity_absolute_ids:
-                e = storage.get_entity_by_absolute_id(eid)
-                if e and e.event_time:
-                    if time_before_dt and e.event_time > time_before_dt:
-                        drop_entities.add(eid)
-                    elif time_after_dt and e.event_time < time_after_dt:
-                        drop_entities.add(eid)
     entity_absolute_ids -= drop_entities
     return entity_absolute_ids, relation_absolute_ids
 
@@ -1366,7 +1358,7 @@ def create_app(
                     for abs_id in (r.entity1_absolute_id, r.entity2_absolute_id):
                         if abs_id not in entity_abs_ids:
                             missing_abs_ids.add(abs_id)
-                if missing_abs_ids and hasattr(storage, 'get_entities_by_absolute_ids'):
+                if missing_abs_ids:
                     batch_entities = storage.get_entities_by_absolute_ids(list(missing_abs_ids))
                     for e in batch_entities:
                         if e:
@@ -1388,7 +1380,7 @@ def create_app(
                         for abs_id in (r.entity1_absolute_id, r.entity2_absolute_id):
                             if abs_id not in entity_abs_ids:
                                 expand_missing.add(abs_id)
-                    if expand_missing and hasattr(storage, 'get_entities_by_absolute_ids'):
+                    if expand_missing:
                         batch_entities = storage.get_entities_by_absolute_ids(list(expand_missing))
                         for e in batch_entities:
                             if e:
@@ -1417,7 +1409,7 @@ def create_app(
                 final_relations.append(r)
 
             # --- 第六步：可选重排序 ---
-            if reranker == "node_degree" and hasattr(storage, 'batch_get_entity_degrees'):
+            if reranker == "node_degree":
                 degree_map = storage.batch_get_entity_degrees(
                     [e.family_id for e in final_entities]
                 )
@@ -1456,25 +1448,13 @@ def create_app(
             entities_data: List[Dict[str, Any]] = []
             relations_data: List[Dict[str, Any]] = []
             if include_entities:
-                if hasattr(storage, 'get_entities_by_absolute_ids'):
-                    batch = storage.get_entities_by_absolute_ids(list(family_ids))
-                    entities_data = [entity_to_dict(e) for e in batch if e]
-                else:
-                    for eid in family_ids:
-                        e = storage.get_entity_by_absolute_id(eid)
-                        if e:
-                            entities_data.append(entity_to_dict(e))
+                batch = storage.get_entities_by_absolute_ids(list(family_ids))
+                entities_data = [entity_to_dict(e) for e in batch if e]
             if include_relations:
-                if hasattr(storage, 'get_relations_by_entity_absolute_ids'):
-                    batch_rels = storage.get_relations_by_entity_absolute_ids(list(relation_family_ids))
-                    for r in batch_rels:
-                        if r.absolute_id in relation_family_ids:
-                            relations_data.append(relation_to_dict(r))
-                else:
-                    for rid in relation_family_ids:
-                        r = storage.get_relation_by_absolute_id(rid)
-                        if r:
-                            relations_data.append(relation_to_dict(r))
+                batch_rels = storage.get_relations_by_entity_absolute_ids(list(relation_family_ids))
+                for r in batch_rels:
+                    if r.absolute_id in relation_family_ids:
+                        relations_data.append(relation_to_dict(r))
             return ok({"entities": entities_data, "relations": relations_data})
         except Exception as e:
             return err(str(e), 500)
@@ -1774,12 +1754,7 @@ def create_app(
             if len(family_ids) > 100:
                 return err("单次批量删除上限 100 个", 400)
             cascade = body.get("cascade", False)
-            if hasattr(processor.storage, 'batch_delete_entities'):
-                total = processor.storage.batch_delete_entities(family_ids)
-            else:
-                total = 0
-                for eid in family_ids:
-                    total += processor.storage.delete_entity_all_versions(eid)
+            total = processor.storage.batch_delete_entities(family_ids)
             return ok({"message": f"已删除 {total} 个实体版本", "count": len(family_ids)})
         except Exception as e:
             return err(str(e), 500)
@@ -1827,12 +1802,7 @@ def create_app(
                     "family_ids": family_ids,
                     "dry_run": True,
                 })
-            if hasattr(processor.storage, 'batch_delete_entities'):
-                deleted = processor.storage.batch_delete_entities(family_ids)
-            else:
-                deleted = 0
-                for fid in family_ids:
-                    deleted += processor.storage.delete_entity_all_versions(fid)
+            deleted = processor.storage.batch_delete_entities(family_ids)
             return ok({
                 "message": f"已删除 {len(family_ids)} 个孤立实体（{deleted} 个版本）",
                 "deleted_families": len(family_ids),
@@ -2139,12 +2109,7 @@ def create_app(
                 return err("family_ids 需为非空数组", 400)
             if len(family_ids) > 100:
                 return err("单次批量删除上限 100 个", 400)
-            total = 0
-            if hasattr(processor.storage, 'batch_delete_relations'):
-                total = processor.storage.batch_delete_relations(family_ids)
-            else:
-                for rid in family_ids:
-                    total += processor.storage.delete_relation_all_versions(rid)
+            total = processor.storage.batch_delete_relations(family_ids)
             return ok({"message": f"已删除 {total} 个关系版本", "count": len(family_ids)})
         except Exception as e:
             return err(str(e), 500)
@@ -3030,8 +2995,6 @@ def create_app(
         """事实溯源：获取提及该实体的所有 Episode。"""
         try:
             processor = _get_processor()
-            if not hasattr(processor.storage, 'get_entity_provenance'):
-                return ok([])
             provenance = processor.storage.get_entity_provenance(family_id)
             return ok(provenance)
         except Exception as e:
@@ -3094,8 +3057,6 @@ def create_app(
         """查询梦境状态（最近一次）。"""
         try:
             processor = _get_processor()
-            if not hasattr(processor.storage, 'list_dream_logs'):
-                return ok({"status": "not_available"})
             logs = processor.storage.list_dream_logs(request.graph_id or "default", limit=1)
             if logs:
                 return ok(logs[0])
@@ -3108,8 +3069,6 @@ def create_app(
         """历史梦境日志列表。"""
         try:
             processor = _get_processor()
-            if not hasattr(processor.storage, 'list_dream_logs'):
-                return ok([])
             limit = request.args.get("limit", type=int, default=20)
             logs = processor.storage.list_dream_logs(request.graph_id or "default", limit=limit)
             return ok(logs)
@@ -3121,8 +3080,6 @@ def create_app(
         """单条梦境日志详情。"""
         try:
             processor = _get_processor()
-            if not hasattr(processor.storage, 'get_dream_log'):
-                return err("DeepDream 不可用", 404)
             log = processor.storage.get_dream_log(cycle_id)
             if log is None:
                 return err(f"未找到梦境日志: {cycle_id}", 404)
@@ -3154,8 +3111,6 @@ def create_app(
                 return err(f"无效策略: {strategy}，可选: {', '.join(valid_strategies)}", 400)
 
             processor = _get_processor()
-            if not hasattr(processor.storage, 'get_dream_seeds'):
-                return err("DeepDream 不可用", 404)
 
             seeds = processor.storage.get_dream_seeds(
                 strategy=strategy,
@@ -3249,8 +3204,6 @@ def create_app(
                 return err("content 为必填参数", 400)
 
             processor = _get_processor()
-            if not hasattr(processor.storage, 'save_dream_episode'):
-                return err("DeepDream 不可用", 404)
 
             result = processor.storage.save_dream_episode(
                 content=content,
@@ -3283,8 +3236,6 @@ def create_app(
             body = request.get_json(silent=True) or {}
 
             processor = _get_processor()
-            if not hasattr(processor.storage, 'get_dream_seeds'):
-                return err("DeepDream 不可用（需要 Neo4j 后端）", 404)
 
             from processor.dream import DreamOrchestrator, DreamConfig, VALID_STRATEGIES
 
@@ -3893,26 +3844,24 @@ def create_app(
             # 2. 数据质量
             quality = {"valid_entities": 0, "invalidated_entities": 0, "isolated_entities": 0,
                         "valid_relations": 0, "invalidated_relations": 0}
-            if hasattr(storage, 'get_data_quality_report'):
-                quality = storage.get_data_quality_report()
+            quality = storage.get_data_quality_report()
             if hasattr(storage, 'count_isolated_entities'):
                 quality["isolated_entities"] = storage.count_isolated_entities()
 
             # 3. 梦境状态
             dream_status = {"status": "not_available", "last_cycle_id": None, "last_cycle_time": None}
-            if hasattr(storage, 'list_dream_logs'):
-                logs = storage.list_dream_logs(request.graph_id or "default", limit=1)
-                if logs:
-                    last = logs[0]
-                    dream_status = {
-                        "status": last.get("status", "completed"),
-                        "last_cycle_id": last.get("cycle_id"),
-                        "last_cycle_time": last.get("started_at") or last.get("created_at"),
-                        "entities_explored": last.get("entities_explored", 0),
-                        "relations_created": last.get("relations_created", 0),
-                    }
-                else:
-                    dream_status["status"] = "no_cycles"
+            logs = storage.list_dream_logs(request.graph_id or "default", limit=1)
+            if logs:
+                last = logs[0]
+                dream_status = {
+                    "status": last.get("status", "completed"),
+                    "last_cycle_id": last.get("cycle_id"),
+                    "last_cycle_time": last.get("started_at") or last.get("created_at"),
+                    "entities_explored": last.get("entities_explored", 0),
+                    "relations_created": last.get("relations_created", 0),
+                }
+            else:
+                dream_status["status"] = "no_cycles"
 
             # 4. 推荐操作
             recommendations = []
@@ -3967,19 +3916,18 @@ def create_app(
                 })
 
             # 实体摘要进化建议
-            if hasattr(storage, 'get_all_entities'):
-                no_summary = 0
-                sample = storage.get_all_entities(limit=50, exclude_embedding=True)
-                for e in sample:
-                    if not getattr(e, 'summary', None):
-                        no_summary += 1
-                if no_summary > len(sample) * 0.5:
-                    recommendations.append({
-                        "action": "evolve_summaries",
-                        "priority": "low",
-                        "description": f"抽样显示 {no_summary}/{len(sample)} 个实体缺少摘要",
-                        "estimated_impact": "提升语义检索质量",
-                    })
+            no_summary = 0
+            sample = storage.get_all_entities(limit=50, exclude_embedding=True)
+            for e in sample:
+                if not getattr(e, 'summary', None):
+                    no_summary += 1
+            if no_summary > len(sample) * 0.5:
+                recommendations.append({
+                    "action": "evolve_summaries",
+                    "priority": "low",
+                    "description": f"抽样显示 {no_summary}/{len(sample)} 个实体缺少摘要",
+                    "estimated_impact": "提升语义检索质量",
+                })
 
             recommendations.sort(key=lambda r: {"high": 0, "medium": 1, "low": 2}.get(r["priority"], 3))
 
@@ -4016,21 +3964,13 @@ def create_app(
 
             for action in actions:
                 if action == "cleanup_isolated":
-                    if hasattr(storage, 'get_isolated_entities'):
-                        isolated = storage.get_isolated_entities(limit=10000)
-                        family_ids = list({e.family_id for e in isolated if e.family_id})
-                        if dry_run:
-                            results[action] = {"status": "preview", "count": len(family_ids), "family_ids": family_ids[:20]}
-                        else:
-                            if hasattr(storage, 'batch_delete_entities'):
-                                deleted = storage.batch_delete_entities(family_ids)
-                            else:
-                                deleted = 0
-                                for fid in family_ids:
-                                    deleted += storage.delete_entity_all_versions(fid)
-                            results[action] = {"status": "done", "deleted_families": len(family_ids), "deleted_versions": deleted}
+                    isolated = storage.get_isolated_entities(limit=10000)
+                    family_ids = list({e.family_id for e in isolated if e.family_id})
+                    if dry_run:
+                        results[action] = {"status": "preview", "count": len(family_ids), "family_ids": family_ids[:20]}
                     else:
-                        results[action] = {"status": "skipped", "reason": "当前存储后端不支持"}
+                        deleted = storage.batch_delete_entities(family_ids)
+                        results[action] = {"status": "done", "deleted_families": len(family_ids), "deleted_versions": deleted}
 
                 elif action == "cleanup_invalidated":
                     if hasattr(storage, 'cleanup_invalidated_versions'):
@@ -4222,9 +4162,7 @@ def create_app(
         try:
             processor = _get_processor()
             stats = processor.storage.get_graph_statistics()
-            quality = None
-            if hasattr(processor.storage, 'get_data_quality_report'):
-                quality = processor.storage.get_data_quality_report()
+            quality = processor.storage.get_data_quality_report()
             isolated_count = 0
             if hasattr(processor.storage, 'count_isolated_entities'):
                 isolated_count = processor.storage.count_isolated_entities()
@@ -4250,33 +4188,25 @@ def create_app(
                 results["invalidated_versions"] = processor.storage.cleanup_invalidated_versions(
                     dry_run=dry_run,
                 )
-            # 清理孤立实体（仅 Neo4j 后端支持）
-            if hasattr(processor.storage, 'get_isolated_entities'):
-                isolated = processor.storage.get_isolated_entities(limit=10000)
-                if isolated:
-                    family_ids = list({e.family_id for e in isolated if e.family_id})
-                    if dry_run:
-                        results["isolated_entities"] = {
-                            "message": f"预览：将删除 {len(family_ids)} 个孤立实体",
-                            "family_ids": family_ids,
-                            "dry_run": True,
-                        }
-                    else:
-                        if hasattr(processor.storage, 'batch_delete_entities'):
-                            deleted = processor.storage.batch_delete_entities(family_ids)
-                        else:
-                            deleted = 0
-                            for fid in family_ids:
-                                deleted += processor.storage.delete_entity_all_versions(fid)
-                        results["isolated_entities"] = {
-                            "message": f"已删除 {len(family_ids)} 个孤立实体（{deleted} 个版本）",
-                            "deleted_families": len(family_ids),
-                            "deleted_versions": deleted,
-                        }
+            # 清理孤立实体
+            isolated = processor.storage.get_isolated_entities(limit=10000)
+            if isolated:
+                family_ids = list({e.family_id for e in isolated if e.family_id})
+                if dry_run:
+                    results["isolated_entities"] = {
+                        "message": f"预览：将删除 {len(family_ids)} 个孤立实体",
+                        "family_ids": family_ids,
+                        "dry_run": True,
+                    }
                 else:
-                    results["isolated_entities"] = {"message": "没有孤立实体", "deleted": 0}
+                    deleted = processor.storage.batch_delete_entities(family_ids)
+                    results["isolated_entities"] = {
+                        "message": f"已删除 {len(family_ids)} 个孤立实体（{deleted} 个版本）",
+                        "deleted_families": len(family_ids),
+                        "deleted_versions": deleted,
+                    }
             else:
-                results["isolated_entities"] = {"message": "当前存储后端不支持孤立实体检测", "deleted": 0}
+                results["isolated_entities"] = {"message": "没有孤立实体", "deleted": 0}
             return ok(results)
         except Exception as e:
             return err(str(e), 500)
@@ -4447,42 +4377,21 @@ def create_app(
             if len(family_ids) > 20:
                 return err("Maximum 20 entities per batch", 400)
 
-            # Use batch method if available (eliminates N+1 queries)
-            if hasattr(processor.storage, 'batch_get_entity_profiles'):
-                batch_results = processor.storage.batch_get_entity_profiles(family_ids)
-                profiles = []
-                for item in batch_results:
-                    entity = item.get("entity")
-                    relations = item.get("relations", [])
-                    rel_dicts = [relation_to_dict(r) for r in relations]
-                    enrich_relations(rel_dicts, processor)
-                    profiles.append({
-                        "family_id": item["family_id"],
-                        "entity": entity_to_dict(entity) if entity else None,
-                        "relations": rel_dicts,
-                        "relation_count": len(rel_dicts),
-                        "version_count": item.get("version_count", 0),
-                    })
-            else:
-                # Fallback for non-Neo4j backends
-                profiles = []
-                for fid in family_ids:
-                    entity = processor.storage.get_entity_by_family_id(fid)
-                    if entity is None:
-                        profiles.append({"family_id": fid, "entity": None, "error": "not found",
-                                         "relations": [], "relation_count": 0, "version_count": 0})
-                        continue
-                    relations = processor.storage.get_entity_relations_by_family_id(fid)
-                    version_count = processor.storage.get_entity_version_count(fid)
-                    rel_dicts = [relation_to_dict(r) for r in relations]
-                    enrich_relations(rel_dicts, processor)
-                    profiles.append({
-                        "family_id": fid,
-                        "entity": entity_to_dict(entity),
-                        "relations": rel_dicts,
-                        "relation_count": len(rel_dicts),
-                        "version_count": version_count,
-                    })
+            # Use batch method (eliminates N+1 queries)
+            batch_results = processor.storage.batch_get_entity_profiles(family_ids)
+            profiles = []
+            for item in batch_results:
+                entity = item.get("entity")
+                relations = item.get("relations", [])
+                rel_dicts = [relation_to_dict(r) for r in relations]
+                enrich_relations(rel_dicts, processor)
+                profiles.append({
+                    "family_id": item["family_id"],
+                    "entity": entity_to_dict(entity) if entity else None,
+                    "relations": rel_dicts,
+                    "relation_count": len(rel_dicts),
+                    "version_count": item.get("version_count", 0),
+                })
             return ok({"profiles": profiles, "count": len(profiles)})
         except Exception as e:
             return err(str(e), 500)
@@ -4496,7 +4405,7 @@ def create_app(
             # Latest entities
             latest_entities = processor.storage.get_all_entities(limit=limit, exclude_embedding=True)
             # Latest relations
-            latest_relations = processor.storage.get_all_relations(limit=limit, exclude_embedding=True) if hasattr(processor.storage, 'get_all_relations') else []
+            latest_relations = processor.storage.get_all_relations(limit=limit, exclude_embedding=True)
             # Stats
             stats = processor.storage.get_graph_statistics()
 

@@ -355,10 +355,9 @@ class GraphWebServer:
 
                             # 预计算端点实体的度数（用于排序）
                             focus_degree_map = {}
-                            if hasattr(self.storage, 'batch_get_entity_degrees'):
-                                focus_end_fids = {e.family_id for e in entity_by_abs.values() if e}
-                                if focus_end_fids:
-                                    focus_degree_map = self.storage.batch_get_entity_degrees(list(focus_end_fids))
+                            focus_end_fids = {e.family_id for e in entity_by_abs.values() if e}
+                            if focus_end_fids:
+                                focus_degree_map = self.storage.batch_get_entity_degrees(list(focus_end_fids))
 
                             # 收集关系边和对应的另一端实体信息，用于排序
                             relation_candidates = []
@@ -552,7 +551,7 @@ class GraphWebServer:
                             if e1: all_end_fids.add(e1.family_id)
                             if e2: all_end_fids.add(e2.family_id)
                     degree_map = {}
-                    if hasattr(self.storage, 'batch_get_entity_degrees') and all_end_fids:
+                    if all_end_fids:
                         degree_map = self.storage.batch_get_entity_degrees(list(all_end_fids))
 
                     for entity, entity_relations, effective_time_point in all_entity_relations:
