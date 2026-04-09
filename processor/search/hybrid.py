@@ -6,7 +6,6 @@ HybridSearcher 封装了双路搜索（BM25 + embedding 余弦相似度），
 """
 
 import logging
-import math
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..models import Entity, Relation
@@ -166,78 +165,6 @@ class HybridSearcher:
     # ------------------------------------------------------------------
     # Phase B: MMR 多样性重排序 + Node Degree 重排序
     # ------------------------------------------------------------------
-
-    @staticmethod
-    def maximal_marginal_relevance(
-        items: List[Tuple[Any, float]],
-        embeddings: Dict[str, List[float]],
-        lambda_param: float = 0.5,
-        top_k: int = 20,
-    ) -> List[Tuple[Any, float]]:
-        """Maximal Marginal Relevance (MMR) 多样性重排序。
-
-        在保持相关性的同时，引入多样性，避免返回过于相似的候选。
-
-        Args:
-            items: [(item, score), ...] 按 score 降序排列的候选
-            embeddings: {item_key: embedding_vector} 嵌入向量字典
-            lambda_param: 相关性 vs 多样性的权衡（0=纯多样性，1=纯相关性）
-            top_k: 返回数量
-
-        Returns:
-            重排序后的 [(item, mmr_score), ...]
-        """
-        if not items or not embeddings:
-            return items[:top_k]
-
-        selected: List[str] = []
-        remaining = list(items)
-        result: List[Tuple[Any, float]] = []
-
-        for _ in range(min(top_k, len(items))):
-            best_idx = -1
-            best_mmr = -math.inf
-
-            for idx, (item, score) in enumerate(remaining):
-                key = item.absolute_id
-                relevance = score
-
-                if selected:
-                    # 计算与已选项目的最大相似度
-                    item_emb = embeddings.get(key)
-                    if item_emb is None:
-                        max_sim = 0.0
-                    else:
-                        max_sim = 0.0
-                        for sel_key in selected:
-                            sel_emb = embeddings.get(sel_key)
-                            if sel_emb:
-                                sim = HybridSearcher._cosine_sim(item_emb, sel_emb)
-                                max_sim = max(max_sim, sim)
-                else:
-                    max_sim = 0.0
-
-                mmr_score = lambda_param * relevance - (1 - lambda_param) * max_sim
-                if mmr_score > best_mmr:
-                    best_mmr = mmr_score
-                    best_idx = idx
-
-            if best_idx >= 0:
-                best_item, best_score = remaining.pop(best_idx)
-                selected.append(best_item.absolute_id)
-                result.append((best_item, best_mmr))
-
-        return result
-
-    @staticmethod
-    def _cosine_sim(a: List[float], b: List[float]) -> float:
-        """计算两个向量的余弦相似度。"""
-        dot = sum(x * y for x, y in zip(a, b))
-        norm_a = math.sqrt(sum(x * x for x in a))
-        norm_b = math.sqrt(sum(x * x for x in b))
-        if norm_a == 0 or norm_b == 0:
-            return 0.0
-        return dot / (norm_a * norm_b)
 
     def node_degree_rerank(
         self,

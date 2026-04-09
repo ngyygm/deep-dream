@@ -392,39 +392,6 @@ class _RelationExtractionMixin:
             name_order=catalog_name_order,
         )
 
-    def _resolve_relation_endpoint_for_extraction(
-        self,
-        raw: Optional[str],
-        valid_entity_names: set,
-        *,
-        catalog_name_order: Optional[List[str]] = None,
-    ) -> Optional[str]:
-        """
-        解析关系端点：映射到列表内规范名；无法达到 Jaccard 阈值时保留 LLM 原文供步骤4补全。
-        不再因「多候选分差过小」整条丢弃关系。
-        """
-        name = (raw or "").strip()
-        if not name:
-            return None
-        if not valid_entity_names:
-            return name
-        if name in valid_entity_names:
-            return name
-
-        norm = self._normalize_entity_name_to_original(name, valid_entity_names)
-        if norm in valid_entity_names:
-            return norm
-
-        matched = self._best_jaccard_entity_match(
-            name,
-            valid_entity_names,
-            self._relation_endpoint_jaccard_threshold(),
-            name_order=catalog_name_order,
-        )
-        if matched:
-            return matched
-        return name
-
     def _normalize_and_filter_relations_by_entities(
         self,
         relations: List[Dict[str, str]],
@@ -803,48 +770,6 @@ class _RelationExtractionMixin:
                 wprint(f"【步骤3】单次｜结果｜{len(result)}关系")
         return result
 
-    def _deduplicate_relations(self, relations: List[Dict[str, str]],
-                               seen_relations: set) -> List[Dict[str, str]]:
-        """
-        对关系进行去重（代码层面的去重规则）
-        关系是无向的，将(A,B)和(B,A)视为同一个关系
-
-        Args:
-            relations: 关系列表
-            seen_relations: 已见过的关系集合，元素是 (entity1_name, entity2_name, content_hash)
-
-        Returns:
-            去重后的关系列表
-        """
-        deduplicated = []
-        for rel in relations:
-            entity1_name = rel.get('entity1_name', '').strip()
-            entity2_name = rel.get('entity2_name', '').strip()
-            content = rel.get('content', '').strip()
-
-            if not entity1_name or not entity2_name or not content:
-                continue
-
-            # 标准化实体对（按字母顺序排序，使关系无向化）
-            normalized_pair = self._normalize_entity_pair(entity1_name, entity2_name)
-            normalized_entity1 = normalized_pair[0]
-            normalized_entity2 = normalized_pair[1]
-
-            # 使用关系内容的哈希值来去重（允许同一实体对存在多个不同关系）
-            content_hash = hash(content.lower())
-            # 使用标准化后的实体对作为key，使(A,B)和(B,A)被视为同一个关系
-            relation_key = (normalized_entity1, normalized_entity2, content_hash)
-
-            # 如果这个关系还没有见过，添加到结果中
-            if relation_key not in seen_relations:
-                # 确保输出的关系使用标准化后的实体对
-                rel_copy = rel.copy()
-                rel_copy['entity1_name'] = normalized_entity1
-                rel_copy['entity2_name'] = normalized_entity2
-                deduplicated.append(rel_copy)
-
-        return deduplicated
-
     def _parse_relations_response(
         self,
         response: str,
@@ -1113,7 +1038,6 @@ class _RelationExtractionMixin:
 
             # 尝试直接从响应中提取content字段的值（使用正则表达式）
             try:
-                import re
                 content_match = re.search(r'"content"\s*:\s*"([^"]*(?:\\.[^"]*)*)"', response)
                 if content_match:
                     content_value = content_match.group(1)

@@ -96,31 +96,6 @@ class EmbeddingClient:
             wprint(f"Embedding编码错误: {e}")
             return None
     
-    def compute_similarity(self, query_embedding: np.ndarray, 
-                          candidate_embeddings: np.ndarray) -> np.ndarray:
-        """
-        计算余弦相似度
-        
-        Args:
-            query_embedding: 查询向量
-            candidate_embeddings: 候选向量数组
-        
-        Returns:
-            相似度数组
-        """
-        if query_embedding is None or candidate_embeddings is None:
-            return None
-        
-        # 归一化
-        query_norm = query_embedding / (np.linalg.norm(query_embedding) + 1e-9)
-        candidate_norms = candidate_embeddings / (
-            np.linalg.norm(candidate_embeddings, axis=1, keepdims=True) + 1e-9
-        )
-        
-        # 计算余弦相似度
-        similarities = np.dot(candidate_norms, query_norm)
-        return similarities
-    
     def is_available(self) -> bool:
         """检查embedding模型是否可用"""
         return self.model is not None

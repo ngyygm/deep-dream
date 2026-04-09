@@ -16,7 +16,7 @@ import hashlib
 import numpy as np
 import difflib
 
-from ..models import Episode, Entity, Relation
+from ..models import ContentPatch, Episode, Entity, Relation
 from ..utils import clean_markdown_code_blocks, wprint
 
 
@@ -214,7 +214,7 @@ class StorageManager:
 
     def save_content_patches(self, patches: list):
         """批量保存 ContentPatch 记录到 SQLite。"""
-        from ..models import ContentPatch
+
         if not patches:
             return
         conn = self._get_conn()
@@ -237,7 +237,7 @@ class StorageManager:
 
     def get_content_patches(self, family_id: str, section_key: str = None) -> list:
         """查询指定 family_id 的 ContentPatch 记录。"""
-        from ..models import ContentPatch
+
         conn = self._get_conn()
         cursor = conn.cursor()
         if section_key:
@@ -433,44 +433,6 @@ class StorageManager:
         if getattr(t, 'tzinfo', None) is not None and t.tzinfo is not None:
             return t.astimezone(timezone.utc).replace(tzinfo=None)
         return t
-
-    def _row_to_entity(self, row) -> Entity:
-        """从数据库行构造 Entity 对象，自动适配新旧 schema。"""
-        return Entity(
-            absolute_id=row[0],
-            family_id=row[1],
-            name=row[2],
-            content=row[3],
-            event_time=self._safe_parse_datetime(row[4]),
-            processed_time=self._safe_parse_datetime(row[5]),
-            episode_id=row[6],
-            source_document=row[7] if len(row) > 7 else '',
-            embedding=row[8] if len(row) > 8 else None,
-            summary=row[9] if len(row) > 9 else None,
-            attributes=row[10] if len(row) > 10 else None,
-            confidence=float(row[11]) if len(row) > 11 and row[11] is not None else None,
-            content_format=row[14] if len(row) > 14 and row[14] else 'plain',
-        )
-
-    def _row_to_relation(self, row) -> Relation:
-        """从数据库行构造 Relation 对象，自动适配新旧 schema。"""
-        return Relation(
-            absolute_id=row[0],
-            family_id=row[1],
-            entity1_absolute_id=row[2] or "",
-            entity2_absolute_id=row[3] or "",
-            content=row[4],
-            event_time=self._safe_parse_datetime(row[5]),
-            processed_time=self._safe_parse_datetime(row[6]),
-            episode_id=row[7],
-            source_document=row[8] if len(row) > 8 else '',
-            embedding=row[9] if len(row) > 9 else None,
-            summary=row[10] if len(row) > 10 else None,
-            attributes=row[11] if len(row) > 11 else None,
-            confidence=float(row[12]) if len(row) > 12 and row[12] is not None else None,
-            provenance=row[13] if len(row) > 13 else None,
-            content_format=row[15] if len(row) > 15 and row[15] else 'plain',
-        )
 
     def _init_database(self):
         """初始化SQLite数据库（使用独立连接，此时线程池尚未启用）。"""
@@ -2878,8 +2840,7 @@ class StorageManager:
                                                threshold: float,
                                                max_results: int) -> List[Relation]:
         """使用文本相似度进行关系搜索"""
-        import difflib
-        
+
         # 计算相似度并筛选
         scored_relations = []
         for relation in all_relations:
@@ -3041,8 +3002,7 @@ class StorageManager:
                 try:
                     st = original_path.stat()
                     text_len = st.st_size
-                    from datetime import datetime as _dt
-                    processed_time_str = _dt.fromtimestamp(st.st_mtime).isoformat()
+                    processed_time_str = datetime.fromtimestamp(st.st_mtime).isoformat()
                 except Exception:
                     pass
 

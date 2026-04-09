@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Literal, Optional, Set, Tuple
 
 import numpy as np
 
-from ..models import Episode, Entity, Relation
+from ..models import ContentPatch, Episode, Entity, Relation
 from ..utils import clean_markdown_code_blocks, wprint
 from ..perf import _perf_timer
 from .cache import QueryCache
@@ -338,7 +338,7 @@ class Neo4jStorageManager:
 
     def save_content_patches(self, patches: list):
         """批量保存 ContentPatch 节点到 Neo4j。"""
-        from ..models import ContentPatch
+
         if not patches:
             return
         with self._entity_write_lock:
@@ -378,7 +378,7 @@ class Neo4jStorageManager:
 
     def get_content_patches(self, family_id: str, section_key: str = None) -> list:
         """查询指定 family_id 的 ContentPatch 记录。"""
-        from ..models import ContentPatch
+
         with self._session() as session:
             if section_key:
                 result = session.run(
@@ -3188,7 +3188,6 @@ class Neo4jStorageManager:
                     total = len(set(source_name) | set(target_name))
                     overlap = shared / total if total > 0 else 0
                     if overlap < 0.2:
-                        import logging
                         logging.getLogger(__name__).warning(
                             f"拒绝合并：名称差异过大 — "
                             f"target={target_name}({target_family_id}) "
@@ -3609,7 +3608,6 @@ class Neo4jStorageManager:
 
     def detect_communities(self, algorithm: str = 'louvain', resolution: float = 1.0) -> Dict:
         """从 Neo4j 加载图 → networkx Louvain → 写回 community_id。"""
-        import time
         import networkx as nx
         from networkx.algorithms.community import louvain_communities
 

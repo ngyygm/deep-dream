@@ -539,11 +539,6 @@ class DreamOrchestrator:
         self._scheduler_thread = None
 
     @property
-    def scheduler_running(self) -> bool:
-        """调度器是否正在运行。"""
-        return self._scheduler_thread is not None and self._scheduler_thread.is_alive()
-
-    @property
     def history(self) -> DreamHistory:
         """获取跨周期历史（用于调试/检查）。"""
         return self._history

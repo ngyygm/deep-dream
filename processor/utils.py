@@ -28,52 +28,6 @@ _SEPARATOR_TAG_RE = re.compile(
 )
 
 
-def fuzzy_match_family_id(name: str, entity_name_to_id: dict) -> str | None:
-    """模糊匹配实体名称到 family ID。
-
-    匹配策略（按优先级）：
-    1. 精确匹配
-    2. 去首尾空白 + 全小写
-    3. 去除所有空白字符
-    4. 包含关系（一方包含另一方，且长度比 >= 0.5）
-
-    Returns:
-        匹配到的 family_id，未找到返回 None。
-    """
-    if not name or not entity_name_to_id:
-        return None
-
-    # 1. 精确匹配
-    if name in entity_name_to_id:
-        return entity_name_to_id[name]
-
-    name_stripped = name.strip()
-
-    # 2. strip + lower
-    name_norm = name_stripped.lower()
-    for key, eid in entity_name_to_id.items():
-        if key.strip().lower() == name_norm:
-            return eid
-
-    # 3. 去除所有空白
-    name_nospace = re.sub(r'\s+', '', name)
-    for key, eid in entity_name_to_id.items():
-        if re.sub(r'\s+', '', key) == name_nospace:
-            return eid
-
-    # 4. 包含关系（至少2字符，长度比 >= 0.5）
-    if len(name_stripped) >= 2:
-        for key, eid in entity_name_to_id.items():
-            k = key.strip()
-            if len(k) < 2:
-                continue
-            if (name_stripped in k or k in name_stripped) and \
-               min(len(name_stripped), len(k)) / max(len(name_stripped), len(k)) >= 0.5:
-                return eid
-
-    return None
-
-
 def compute_doc_hash(text: str) -> str:
     """计算文本的 doc_hash（MD5 前12位），用于缓存去重和断点续传。"""
     return hashlib.md5(text.encode("utf-8")).hexdigest()[:12]

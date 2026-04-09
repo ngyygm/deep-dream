@@ -12,6 +12,7 @@ from datetime import datetime
 import heapq
 import json
 import os
+import re
 import threading
 import uuid
 import time
@@ -373,10 +374,6 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
             b = b[:-3]
         return b
 
-    def _get_ollama_base_url(self) -> str:
-        """兼容旧代码：仅根据主 base_url 规范化 Ollama 根地址。"""
-        return self._ollama_root_from(self.base_url)
-
     def _in_alignment_phase(self, priority: int) -> bool:
         return priority >= LLM_PRIORITY_STEP6
 
@@ -533,60 +530,6 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
         )
         return any(n in s for n in needles)
 
-    def _log_llm_messages_full(
-        self,
-        messages: List[Dict[str, Any]],
-        *,
-        title: str,
-        prompt_tokens: Optional[int] = None,
-        desired_max_tokens: Optional[int] = None,
-        resolved_max_tokens: Optional[int] = None,
-    ) -> None:
-        wprint(f"[DeepDream] {title}")
-        if prompt_tokens is not None:
-            extra = f"估算输入 tokens: {prompt_tokens}"
-            if desired_max_tokens is not None:
-                extra += f", 期望输出上限: {desired_max_tokens}"
-            if resolved_max_tokens is not None:
-                extra += f", 实际输出上限: {resolved_max_tokens}"
-            extra += f", 输入上限: {self.context_window_tokens}"
-            wprint(f"[DeepDream] {extra}")
-        for idx, msg in enumerate(messages, start=1):
-            role = msg.get("role", "")
-            content = self._stringify_message_content(msg.get("content", ""))
-            wprint(f"[DeepDream] 上下文[{idx}] role={role} BEGIN")
-            wprint(content)
-            wprint(f"[DeepDream] 上下文[{idx}] role={role} END")
-
-    @staticmethod
-    def _log_llm_response_full(response_text: str, *, title: str) -> None:
-        wprint(f"[DeepDream] {title} BEGIN")
-        wprint(response_text or "")
-        wprint(f"[DeepDream] {title} END")
-
-    @staticmethod
-    def _log_llm_error_full(err: BaseException, *, title: str) -> None:
-        wprint(f"[DeepDream] {title} BEGIN")
-        wprint(f"type: {type(err).__name__}")
-        wprint(f"str: {err}")
-        wprint(f"repr: {err!r}")
-        status_code = getattr(err, "status_code", None)
-        if status_code is not None:
-            wprint(f"status_code: {status_code}")
-        body = getattr(err, "body", None)
-        if body is not None:
-            wprint("body:")
-            wprint(str(body))
-        response = getattr(err, "response", None)
-        if response is not None:
-            text = getattr(response, "text", None)
-            if text:
-                wprint("response.text:")
-                wprint(str(text))
-            else:
-                wprint(f"response: {response!r}")
-        wprint(f"[DeepDream] {title} END")
-
     def _resolve_request_max_tokens(
         self,
         messages: List[Dict[str, Any]],
@@ -614,17 +557,6 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
         if self._use_alignment_llm_endpoint(p) and self.alignment_content_snippet_length is not None:
             return int(self.alignment_content_snippet_length)
         return int(self.content_snippet_length or 50)
-
-    def effective_relation_snippet_length(self) -> int:
-        """按当前线程优先级返回关系 content 截断长度（步骤7 可走 alignment 配置）。"""
-        p = getattr(self._priority_local, "priority", LLM_PRIORITY_STEP1)
-        if (
-            self.alignment_enabled
-            and p >= LLM_PRIORITY_STEP7
-            and self.alignment_relation_content_snippet_length is not None
-        ):
-            return int(self.alignment_relation_content_snippet_length)
-        return int(self.relation_content_snippet_length or 50)
 
     def _use_openai_compatible_url(self, url: Optional[str], api_key: Optional[str]) -> bool:
         """是否为 OpenAI 兼容接口；url / api_key 为本次请求实际使用的值。"""
@@ -1055,7 +987,6 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
         Returns:
             清理后的JSON字符串
         """
-        import re
         # 移除BOM标记
         json_str = json_str.lstrip('\ufeff')
         # 移除首尾空白
@@ -1081,7 +1012,6 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
         Returns:
             修复后的JSON字符串
         """
-        import re
         # 先进行基本清理
         json_str = self._clean_json_string(json_str)
         
@@ -1094,7 +1024,6 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
         # 使用正则表达式更健壮地修复无效的Unicode转义序列
         def fix_unicode_escapes_regex(text):
             """使用正则表达式修复无效的Unicode转义序列"""
-            import re
             # 匹配 \u 后面跟着0-3个十六进制字符，然后跟着非十六进制字符或字符串结尾的情况
             # 这包括：
             # - \u 后面直接跟着非十六进制字符（如 \uX, \uXX, \uXXX）

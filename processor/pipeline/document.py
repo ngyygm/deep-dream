@@ -178,9 +178,3 @@ class DocumentProcessor:
                 wprint(f"[断点续传] 警告：未找到匹配的断点位置，将从头开始处理")
             return document_paths, None
     
-    def get_document_chunks(self, document_path: str) -> List[str]:
-        """获取单个文档的所有窗口块（用于测试）"""
-        chunks = []
-        for chunk, _, _, _, _, _, _ in self.process_documents([document_path]):
-            chunks.append(chunk)
-        return chunks

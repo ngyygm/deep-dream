@@ -1538,15 +1538,3 @@ class EntityProcessor:
             ))
         return patches
 
-    def get_entity_by_name(self, entity_name: str) -> Optional[Entity]:
-        """根据名称获取实体（返回最新版本）"""
-        # 使用name_only模式，更精确
-        similar_entities = self.storage.search_entities_by_similarity(
-            entity_name,
-            text_mode="name_only",
-            similarity_method="embedding"
-        )
-        if similar_entities:
-            # 返回第一个（已经是最新的）
-            return similar_entities[0]
-        return None

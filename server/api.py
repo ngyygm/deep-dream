@@ -1827,9 +1827,12 @@ def create_app(
                     "family_ids": family_ids,
                     "dry_run": True,
                 })
-            deleted = 0
-            for fid in family_ids:
-                deleted += processor.storage.delete_entity_all_versions(fid)
+            if hasattr(processor.storage, 'batch_delete_entities'):
+                deleted = processor.storage.batch_delete_entities(family_ids)
+            else:
+                deleted = 0
+                for fid in family_ids:
+                    deleted += processor.storage.delete_entity_all_versions(fid)
             return ok({
                 "message": f"已删除 {len(family_ids)} 个孤立实体（{deleted} 个版本）",
                 "deleted_families": len(family_ids),
