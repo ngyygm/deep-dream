@@ -4710,6 +4710,28 @@ class Neo4jStorageManager:
             self._cache.invalidate("graph_stats")
             return deleted
 
+    def batch_delete_relation_versions_by_absolute_ids(self, absolute_ids: List[str]) -> int:
+        """批量删除指定关系版本，返回成功删除的数量。"""
+        if not absolute_ids:
+            return 0
+        with self._relation_write_lock:
+            with self._session() as session:
+                result = session.run(
+                    """
+                    MATCH (r:Relation) WHERE r.uuid IN $aids
+                    DETACH DELETE r
+                    RETURN count(r) AS deleted
+                    """,
+                    aids=absolute_ids,
+                )
+                record = result.single()
+                deleted = record["deleted"] if record else 0
+            if deleted > 0:
+                self._vector_store.delete_batch("relation_vectors", absolute_ids)
+            self._cache.invalidate("relation:")
+            self._cache.invalidate("graph_stats")
+            return deleted
+
     def get_relations_referencing_absolute_id(self, absolute_id: str) -> List[Relation]:
         """获取所有引用了指定 absolute_id 的关系。"""
         with self._session() as session:
@@ -4728,6 +4750,51 @@ class Neo4jStorageManager:
                 aid=absolute_id,
             )
             return [_neo4j_record_to_relation(r) for r in result]
+
+    def batch_get_relations_referencing_absolute_ids(self, absolute_ids: List[str]) -> Dict[str, List[Relation]]:
+        """批量获取引用指定实体绝对ID的关系（消除 N+1 查询）。"""
+        if not absolute_ids:
+            return {}
+        with self._session() as session:
+            result = session.run(
+                """
+                MATCH (r:Relation)
+                WHERE r.entity1_absolute_id IN $aids OR r.entity2_absolute_id IN $aids
+                RETURN r.uuid AS uuid, r.family_id AS family_id,
+                       r.entity1_absolute_id AS entity1_absolute_id,
+                       r.entity2_absolute_id AS entity2_absolute_id,
+                       r.content AS content, r.event_time AS event_time,
+                       r.processed_time AS processed_time,
+                       r.episode_id AS episode_id,
+                       r.source_document AS source_document
+                """,
+                aids=absolute_ids,
+            )
+            result_map: Dict[str, List[Relation]] = {aid: [] for aid in absolute_ids}
+            for record in result:
+                rel = _neo4j_record_to_relation(record)
+                if rel.entity1_absolute_id in result_map:
+                    result_map[rel.entity1_absolute_id].append(rel)
+                if rel.entity2_absolute_id in result_map:
+                    result_map[rel.entity2_absolute_id].append(rel)
+            return result_map
+
+    def batch_delete_entity_versions_by_absolute_ids(self, absolute_ids: List[str]) -> int:
+        """批量删除指定实体版本，返回成功删除的数量。"""
+        if not absolute_ids:
+            return 0
+        with self._write_lock:
+            with self._session() as session:
+                result = session.run(
+                    """
+                    MATCH (e:Entity) WHERE e.uuid IN $aids
+                    DETACH DELETE e
+                    RETURN count(e) AS deleted
+                    """,
+                    aids=absolute_ids,
+                )
+                record = result.single()
+                return record["deleted"] if record else 0
 
     def split_entity_version(self, absolute_id: str, new_family_id: str = "") -> Optional[Entity]:
         """将实体拆分到新的 family_id，返回更新后的 Entity。"""

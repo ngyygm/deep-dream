@@ -4461,6 +4461,36 @@ class StorageManager:
             conn.commit()
             return affected > 0
 
+    def batch_delete_relation_versions_by_absolute_ids(self, absolute_ids: List[str]) -> int:
+        """批量删除指定关系版本（带 FTS 清理），返回成功删除的数量。"""
+        if not absolute_ids:
+            return 0
+        with self._write_lock:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            placeholders = ",".join("?" * len(absolute_ids))
+            # Get family_ids for FTS cleanup
+            cursor.execute(
+                f"SELECT DISTINCT family_id FROM relations WHERE id IN ({placeholders})",
+                list(absolute_ids),
+            )
+            family_ids = [row[0] for row in cursor.fetchall()]
+            # Delete FTS entries
+            if family_ids:
+                fts_placeholders = ",".join("?" * len(family_ids))
+                cursor.execute(
+                    f"DELETE FROM relation_fts WHERE family_id IN ({fts_placeholders})",
+                    family_ids,
+                )
+            # Delete relations
+            cursor.execute(
+                f"DELETE FROM relations WHERE id IN ({placeholders})",
+                list(absolute_ids),
+            )
+            deleted = cursor.rowcount
+            conn.commit()
+            return deleted
+
     def get_relations_referencing_absolute_id(self, absolute_id: str) -> List[Relation]:
         """获取所有引用指定实体绝对ID的关系。"""
         conn = self._get_conn()
@@ -4485,6 +4515,69 @@ class StorageManager:
                 source_document=row[8] if len(row) > 8 else '',
             ))
         return results
+
+    def batch_get_relations_referencing_absolute_ids(self, absolute_ids: List[str]) -> Dict[str, List[Relation]]:
+        """批量获取引用指定实体绝对ID的关系（消除 N+1 查询）。"""
+        if not absolute_ids:
+            return {}
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        placeholders = ",".join("?" * len(absolute_ids))
+        params = list(absolute_ids) + list(absolute_ids)
+        cursor.execute(f"""
+            SELECT id, family_id, entity1_absolute_id, entity2_absolute_id,
+                   content, event_time, processed_time, episode_id, source_document
+            FROM relations
+            WHERE entity1_absolute_id IN ({placeholders}) OR entity2_absolute_id IN ({placeholders})
+        """, params)
+        result_map: Dict[str, List[Relation]] = {aid: [] for aid in absolute_ids}
+        for row in cursor.fetchall():
+            rel = Relation(
+                absolute_id=row[0],
+                family_id=row[1],
+                entity1_absolute_id=row[2] or "",
+                entity2_absolute_id=row[3] or "",
+                content=row[4],
+                event_time=self._safe_parse_datetime(row[5]),
+                processed_time=self._safe_parse_datetime(row[6]),
+                episode_id=row[7],
+                source_document=row[8] if len(row) > 8 else '',
+            )
+            if rel.entity1_absolute_id in result_map:
+                result_map[rel.entity1_absolute_id].append(rel)
+            if rel.entity2_absolute_id in result_map:
+                result_map[rel.entity2_absolute_id].append(rel)
+        return result_map
+
+    def batch_delete_entity_versions_by_absolute_ids(self, absolute_ids: List[str]) -> int:
+        """批量删除指定实体版本（带 FTS 清理），返回成功删除的数量。"""
+        if not absolute_ids:
+            return 0
+        with self._write_lock:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            placeholders = ",".join("?" * len(absolute_ids))
+            # Get family_ids for FTS cleanup
+            cursor.execute(
+                f"SELECT DISTINCT family_id FROM entities WHERE id IN ({placeholders})",
+                list(absolute_ids),
+            )
+            family_ids = [row[0] for row in cursor.fetchall()]
+            # Delete FTS entries
+            if family_ids:
+                fts_placeholders = ",".join("?" * len(family_ids))
+                cursor.execute(
+                    f"DELETE FROM entity_fts WHERE family_id IN ({fts_placeholders})",
+                    family_ids,
+                )
+            # Delete entities
+            cursor.execute(
+                f"DELETE FROM entities WHERE id IN ({placeholders})",
+                list(absolute_ids),
+            )
+            deleted = cursor.rowcount
+            conn.commit()
+            return deleted
 
     def split_entity_version(self, absolute_id: str, new_family_id: str = "") -> Optional[Entity]:
         """将实体版本从当前 family 拆分到新 family。"""
