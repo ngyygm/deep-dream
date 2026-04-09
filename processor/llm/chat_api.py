@@ -8,6 +8,8 @@
 """
 from __future__ import annotations
 
+import logging as _logging
+
 import atexit
 from dataclasses import dataclass
 import json
@@ -47,8 +49,8 @@ def _close_all_openai_shared_clients() -> None:
                 close = getattr(c, "close", None)
                 if callable(close):
                     close()
-            except Exception:
-                pass
+            except Exception as _e:
+                _logging.getLogger(__name__).debug("关闭 OpenAI 客户端失败: %s", _e)
         _openai_singletons.clear()
 
 

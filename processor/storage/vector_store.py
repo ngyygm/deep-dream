@@ -191,6 +191,6 @@ class VectorStore:
         if conn is not None:
             try:
                 conn.close()
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug("关闭向量数据库连接失败: %s", _e)
             self._local.conn = None

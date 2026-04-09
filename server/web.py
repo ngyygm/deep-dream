@@ -238,7 +238,8 @@ class GraphWebServer:
                             # 非focus实体只需计数，避免加载完整版本列表
                             try:
                                 version_count = self.storage.get_entity_version_count(entity.family_id)
-                            except Exception:
+                            except Exception as _vc_err:
+                                print(f"获取版本计数失败: {_vc_err}")
                                 version_count = 1
                         
                         # 在focus模式下，显示当前版本索引（如 "实体名 (3/5版本)"）

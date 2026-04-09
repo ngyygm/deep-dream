@@ -186,11 +186,12 @@ class StorageManager:
             try:
                 conn.execute("SELECT 1 FROM entities LIMIT 0")
                 return conn
-            except Exception:
+            except Exception as _conn_err:
+                logger.debug("连接健康检查失败，重建连接: %s", _conn_err)
                 try:
                     conn.close()
-                except Exception:
-                    pass
+                except Exception as _close_err:
+                    logger.debug("关闭失效连接失败: %s", _close_err)
                 self._local.conn = None
         # 确保目录存在
         self._ensure_dirs()

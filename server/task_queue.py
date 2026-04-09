@@ -367,7 +367,8 @@ class RememberJournal:
                             rec = json.loads(raw_line)
                             if rec.get("task_id") == tid:
                                 continue  # 移除旧行
-                        except Exception:
+                        except Exception as _json_err:
+                            logger.debug("任务日志行 JSON 解析失败: %s", _json_err)
                             pass  # 保留无法解析的行（ corrupted JSON ）
                         lines.append(raw_line)
             except Exception as e:
@@ -399,8 +400,9 @@ class RememberJournal:
                         rec = json.loads(raw_line)
                         if rec.get("task_id") == task_id:
                             return rec
-                    except Exception:
-                        continue  # 跳过损坏的 JSON 行
+                    except Exception as _json_err:
+                        logger.debug("跳过损坏的 JSON 行: %s", _json_err)
+                        continue
         except Exception as e:
             logger.debug("查找任务记录失败 %s: %s", task_id, e)
         return None
@@ -417,8 +419,9 @@ class RememberJournal:
                         continue
                     try:
                         out.append(json.loads(raw_line))
-                    except Exception:
-                        continue  # 跳过损坏的 JSON 行
+                    except Exception as _json_err:
+                        logger.debug("跳过损坏的 JSON 行: %s", _json_err)
+                        continue
         except Exception as e:
             logger.debug("遍历任务记录失败: %s", e)
         return out
@@ -736,8 +739,8 @@ class RememberTaskQueue:
                     try:
                         tdead = _remember_task_from_record(rec2, text="")
                         self._journal.write(tdead)
-                    except Exception:
-                        pass
+                    except Exception as _journal_err:
+                        logger.warning("写入恢复失败记录到日志失败: %s", _journal_err)
                     continue
                 task = _remember_task_from_record(rec, text=text)
                 task.status = "queued"

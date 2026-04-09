@@ -10,6 +10,7 @@ DeepDream Dashboard — 基于 rich 的实时终端监控仪表盘。
 """
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from typing import Optional
@@ -53,8 +54,8 @@ class DeepDreamDashboard:
         if self._live:
             try:
                 self._live.stop()
-            except Exception:
-                pass
+            except Exception as _e:
+                logging.getLogger(__name__).debug("停止仪表盘 Live 失败: %s", _e)
 
     def _run(self) -> None:
         """仪表盘主循环。"""
