@@ -3842,44 +3842,6 @@ class StorageManager:
             """, (attributes, family_id))
             conn.commit()
 
-    def update_entity_confidence(self, family_id: str, confidence: float):
-        """更新实体的置信度评分。"""
-        with self._write_lock:
-            conn = self._get_conn()
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE entities SET confidence = ?
-                WHERE id = (
-                    SELECT id FROM entities
-                    WHERE family_id = ?
-                    ORDER BY processed_time DESC LIMIT 1
-                )
-            """, (confidence, family_id))
-            conn.commit()
-
-    def compute_entity_confidence(self, family_id: str) -> float:
-        """自动计算实体的置信度评分。"""
-        versions = self.get_entity_versions(family_id)
-        if not versions:
-            return 0.0
-        score = min(len(versions) * 0.1, 0.3)
-        latest = versions[0]
-        if latest.processed_time:
-            days_since = (datetime.now(timezone.utc).replace(tzinfo=None) - latest.processed_time).days
-            if days_since <= 30:
-                score += 0.3
-            elif days_since <= 90:
-                score += 0.2
-            else:
-                score += 0.1
-        mentions = self.get_entity_provenance(family_id)
-        if mentions:
-            score += min(len(mentions) * 0.05, 0.3)
-        content_len = len(latest.content)
-        if content_len > 200:
-            score += 0.1
-        return min(score, 1.0)
-
     # ========== Phase B: 图遍历辅助 ==========
 
     def get_relations_by_family_ids(self, family_ids: List[str], limit: Optional[int] = None) -> List[Relation]:
@@ -3927,17 +3889,16 @@ class StorageManager:
 
     def get_entity_degree(self, family_id: str) -> int:
         """获取实体的度（连接数）。"""
-        with self._read_lock:
-            conn = self._get_conn()
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT COUNT(*) FROM relations WHERE "
-                "(entity1_absolute_id IN (SELECT absolute_id FROM entities WHERE family_id = ?) "
-                "OR entity2_absolute_id IN (SELECT absolute_id FROM entities WHERE family_id = ?)) "
-                "AND invalid_at IS NULL",
-                (family_id, family_id)
-            )
-            return cursor.fetchone()[0]
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT COUNT(*) FROM relations WHERE "
+            "(entity1_absolute_id IN (SELECT absolute_id FROM entities WHERE family_id = ?) "
+            "OR entity2_absolute_id IN (SELECT absolute_id FROM entities WHERE family_id = ?)) "
+            "AND invalid_at IS NULL",
+            (family_id, family_id)
+        )
+        return cursor.fetchone()[0]
 
     # ========== Phase C: Episode MENTIONS ==========
 
@@ -3996,21 +3957,6 @@ class StorageManager:
             conn.commit()
 
     # ========== Phase D: 关系溯源 ==========
-
-    def update_relation_provenance(self, family_id: str, provenance: str):
-        """更新关系的溯源信息（JSON 字符串）。"""
-        with self._write_lock:
-            conn = self._get_conn()
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE relations SET provenance = ?
-                WHERE id = (
-                    SELECT id FROM relations
-                    WHERE family_id = ?
-                    ORDER BY processed_time DESC LIMIT 1
-                )
-            """, (provenance, family_id))
-            conn.commit()
 
     # ========== Phase E: Dream Logs ==========
 
