@@ -671,8 +671,6 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
         def _safe_progress(progress, label, message, chain_id="step6"):
             if not progress_callback:
                 return
-            with _progress_lock:
-                pass
             progress_callback(progress, label, message, chain_id)
 
         def _run_with_progress_heartbeat(
@@ -2131,7 +2129,10 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
                         if verbose:
                             wprint(f"      合并多个实体到目标实体:")
                             wprint(f"        目标: {target_name} ({final_target_id}, 版本数: {final_target_versions})")
-                            merge_names = [f"{self.storage.get_entity_by_family_id(sid).name} ({sid})" if self.storage.get_entity_by_family_id(sid) else sid for sid in final_source_ids]
+                            merge_names = []
+                            for sid in final_source_ids:
+                                ent = self.storage.get_entity_by_family_id(sid)
+                                merge_names.append(f"{ent.name} ({sid})" if ent else sid)
                             wprint(f"        源实体: {', '.join(merge_names)}")
                             wprint(f"        原因: {combined_reason}")
                         

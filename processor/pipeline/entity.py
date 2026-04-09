@@ -2,6 +2,7 @@
 实体处理模块：实体搜索、对齐、更新/新建
 """
 from typing import List, Dict, Optional, Tuple, Any
+import re
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed, Future
 import threading
@@ -201,8 +202,6 @@ class EntityProcessor:
         total_entities = len(extracted_entities)
         _skipped_orphans = 0
         for idx, extracted_entity in enumerate(extracted_entities, 1):
-            # 孤立实体（无关系关联）：仍然处理，但优先匹配已有实体以减少冗余
-            pass
             candidates = candidate_table.get(idx - 1, [])
             entity, relations, name_mapping, to_persist = self._process_single_entity_batch(
                 extracted_entity=extracted_entity,
@@ -826,9 +825,8 @@ class EntityProcessor:
         embedding_full_threshold = embedding_full_search_threshold if embedding_full_search_threshold is not None else min(similarity_threshold, 0.6)
 
         # 名称规范化：去除常见称谓后缀，用于补充搜索
-        import re as _re
         _TITLE_SUFFIXES = r'(?:教授|博士|先生|女士|同学|老师|工程师|经理|总监|院长|所长|主任|校长|站长|馆长|主编|首席|总裁|部长|省长|市长|县长|区长|镇长|村长|将军|上校|中校|少校|大校|司令|参谋|政委|舰长|机长)$'
-        _core_name = _re.sub(_TITLE_SUFFIXES, '', entity_name).strip()
+        _core_name = re.sub(_TITLE_SUFFIXES, '', entity_name).strip()
         _has_title_suffix = _core_name != entity_name and len(_core_name) >= 2
 
         # 模式0：只用name检索（使用jaccard）
@@ -929,12 +927,7 @@ class EntityProcessor:
             similar_entities = filtered_similar_entities
             if self._entity_tree_log() and skipped_count > 0:
                 wprint(f"  │  跳过 {skipped_count} 个已在当前抽取列表且已存在关系的候选实体（步骤3已处理）")
-        
-        # # 如果合并后超过最大数量，按物理时间排序，保留最新的
-        # if len(similar_entities) > self.max_similar_entities:
-        #     similar_entities.sort(key=lambda e: e.processed_time, reverse=True)
-        #     similar_entities = similar_entities[:self.max_similar_entities]
-        
+
         if not similar_entities:
             # 没有找到相似实体，直接新建
             new_entity = self._create_new_entity(entity_name, entity_content, episode_id, source_document, base_time=base_time)
@@ -1091,13 +1084,10 @@ class EntityProcessor:
                 "name": candidate_entity.name,
                 "content": candidate_entity.content,
                 "source_document": candidate_entity.source_document,
-                "version_count": len(self.storage.get_entity_versions(cid))
+                "version_count": self.storage.get_entity_version_counts([cid]).get(cid, 0) if hasattr(self.storage, 'get_entity_version_counts') else len(self.storage.get_entity_versions(cid))
             }
-            
-            # 获取两个实体之间的已有关系
-            existing_rels = self.storage.get_relations_by_entities("NEW_ENTITY", cid)
-            # 由于NEW_ENTITY不存在，需要检查已有实体之间的关系
-            # 这里简化处理，只检查候选实体与其他已有实体之间的关系
+
+            # 新实体暂无已有关系
             existing_relations_list = []
             
             # 调用精细化判断（传入上下文文本）
@@ -1193,10 +1183,13 @@ class EntityProcessor:
                 else:
                     # 如果有多个不同的目标，选择版本数最多的作为主要目标
                     target_version_counts = {}
-                    for tid in target_family_ids:
-                        if tid not in target_version_counts:
-                            versions = self.storage.get_entity_versions(tid)
-                            target_version_counts[tid] = len(versions)
+                    if hasattr(self.storage, 'get_entity_version_counts'):
+                        counts = self.storage.get_entity_version_counts(target_family_ids)
+                        target_version_counts = {tid: counts.get(tid, 0) for tid in target_family_ids}
+                    else:
+                        for tid in target_family_ids:
+                            if tid not in target_version_counts:
+                                target_version_counts[tid] = len(self.storage.get_entity_versions(tid))
                     
                     primary_target_id = max(target_family_ids, key=lambda tid: target_version_counts.get(tid, 0))
                     
