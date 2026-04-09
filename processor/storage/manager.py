@@ -2573,7 +2573,84 @@ class StorageManager:
             )
             for row in rows
         ]
-    
+
+    def get_entity_relations_timeline(self, family_id: str, version_abs_ids: List[str]) -> List[Dict]:
+        """批量获取实体在各版本时间点的关系（消除 N+1 查询）。
+
+        与 Neo4j 后端保持一致的接口：获取该实体所有版本关联的关系，
+        按每个版本的 processed_time 过滤，只返回在该版本时间点之前出现的关系。
+        """
+        family_id = self.resolve_family_id(family_id)
+        if not family_id or not version_abs_ids:
+            return []
+
+        conn = self._get_conn()
+        cursor = conn.cursor()
+
+        # 获取各版本的 processed_time
+        placeholders = ",".join("?" * len(version_abs_ids))
+        cursor.execute(
+            f"SELECT id, processed_time FROM entities WHERE id IN ({placeholders})",
+            tuple(version_abs_ids),
+        )
+        version_times = []
+        for row in cursor.fetchall():
+            pt = row[1]
+            if pt:
+                pt = datetime.fromisoformat(pt) if isinstance(pt, str) else pt
+            version_times.append((row[0], pt))
+        if not version_times:
+            return []
+
+        # 获取该实体的所有 absolute_id
+        all_abs_ids = self.get_entity_absolute_ids_up_to_version(
+            family_id, max(version_abs_ids)
+        )
+        if not all_abs_ids:
+            all_abs_ids = version_abs_ids[:]
+
+        # 一次查询获取所有相关关系（按 family_id 去重，保留最新版本）
+        placeholders = ",".join("?" * len(all_abs_ids))
+        cursor.execute(
+            f"""
+            SELECT r.id, r.family_id, r.content, r.event_time, r.processed_time
+            FROM relations r
+            INNER JOIN (
+                SELECT family_id, MAX(processed_time) AS max_pt
+                FROM relations
+                WHERE (entity1_absolute_id IN ({placeholders}) OR entity2_absolute_id IN ({placeholders}))
+                  AND invalid_at IS NULL
+                GROUP BY family_id
+            ) latest ON r.family_id = latest.family_id AND r.processed_time = latest.max_pt
+            WHERE (r.entity1_absolute_id IN ({placeholders}) OR r.entity2_absolute_id IN ({placeholders}))
+              AND r.invalid_at IS NULL
+            ORDER BY r.processed_time ASC
+            """,
+            tuple(all_abs_ids) * 4,
+        )
+
+        timeline = []
+        seen = set()
+        for row in cursor.fetchall():
+            rel_uuid = row[0]
+            if rel_uuid in seen:
+                continue
+            rel_pt = row[4]
+            if rel_pt:
+                rel_pt = datetime.fromisoformat(rel_pt) if isinstance(rel_pt, str) else rel_pt
+            # 检查关系是否出现在某个版本之前
+            for _, v_pt in version_times:
+                if rel_pt and v_pt and rel_pt <= v_pt:
+                    seen.add(rel_uuid)
+                    timeline.append({
+                        "family_id": row[1],
+                        "content": row[2],
+                        "event_time": row[3],
+                        "absolute_id": rel_uuid,
+                    })
+                    break
+        return timeline
+
     def get_relations_by_entity_absolute_ids(self, entity_absolute_ids: List[str], limit: Optional[int] = None) -> List[Relation]:
         """获取与指定实体版本列表直接关联的所有关系（通过entity_absolute_id直接匹配）
         

@@ -2747,32 +2747,18 @@ def create_app(
             if not versions:
                 return err(f"未找到实体: {family_id}", 404)
 
-            # 获取关联关系的版本（批量优化：获取所有版本的关系，按 processed_time 过滤）
+            # 获取关联关系的版本（批量查询：获取所有版本的关系，按 processed_time 过滤）
             relations_timeline = []
-            if hasattr(processor.storage, 'get_entity_relations_timeline'):
-                timeline_data = processor.storage.get_entity_relations_timeline(
-                    family_id, [v.absolute_id for v in versions]
-                )
-                for item in timeline_data:
-                    relations_timeline.append({
-                        "family_id": item.get("relation_id") or item.get("family_id"),
-                        "content": item["content"],
-                        "event_time": item["event_time"],
-                        "absolute_id": item["absolute_id"],
-                    })
-            else:
-                # 回退到逐版本查询
-                for v in versions:
-                    rels = processor.storage.get_entity_relations_by_family_id(
-                        family_id=family_id, max_version_absolute_id=v.absolute_id,
-                    )
-                    for r in rels:
-                        relations_timeline.append({
-                            "family_id": r.family_id,
-                            "content": r.content,
-                            "event_time": r.event_time.isoformat() if r.event_time else None,
-                            "absolute_id": r.absolute_id,
-                        })
+            timeline_data = processor.storage.get_entity_relations_timeline(
+                family_id, [v.absolute_id for v in versions]
+            )
+            for item in timeline_data:
+                relations_timeline.append({
+                    "family_id": item.get("relation_id") or item.get("family_id"),
+                    "content": item["content"],
+                    "event_time": item["event_time"],
+                    "absolute_id": item["absolute_id"],
+                })
 
             # 去重
             seen = set()
