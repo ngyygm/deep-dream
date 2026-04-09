@@ -1337,6 +1337,124 @@ class Neo4jStorageManager:
             )
             return {record["family_id"]: record["cnt"] for record in result}
 
+    def batch_get_entity_profiles(self, family_ids: List[str]) -> List[Dict[str, Any]]:
+        """批量获取实体档案（entity + relations + version_count），一次查询。
+
+        替代对每个 family_id 分别调用 get_entity_by_family_id +
+        get_entity_relations_by_family_id + get_entity_version_count 的 N+1 模式。
+
+        Returns:
+            [{"family_id", "entity", "relations", "version_count"}, ...]
+        """
+        if not family_ids:
+            return []
+
+        # 去重 + 解析 canonical IDs
+        canonical_map: Dict[str, str] = {}  # original -> canonical
+        canonical_set: List[str] = []
+        for fid in family_ids:
+            resolved = self.resolve_family_id(fid)
+            if resolved and resolved not in canonical_map.values():
+                canonical_map[fid] = resolved
+                canonical_set.append(resolved)
+
+        if not canonical_set:
+            return [{"family_id": fid, "entity": None, "relations": [], "version_count": 0} for fid in family_ids]
+
+        # Session 1: 批量获取实体 + 版本数
+        with self._session() as session:
+            result = session.run(
+                f"""
+                MATCH (e:Entity)
+                WHERE e.family_id IN $fids AND e.invalid_at IS NULL
+                WITH e.family_id AS fid, COLLECT(e) AS ents
+                UNWIND ents AS e
+                WITH fid, e ORDER BY e.processed_time DESC
+                WITH fid, HEAD(COLLECT(e)) AS latest, COUNT(e) AS vcnt
+                RETURN {_ENTITY_RETURN_FIELDS}, vcnt
+                ORDER BY e.processed_time DESC
+                """,
+                fids=canonical_set,
+            )
+            records = list(result)
+
+        entity_map: Dict[str, tuple] = {}  # family_id -> (entity, version_count)
+        for record in records:
+            entity = _neo4j_record_to_entity(record)
+            vc = record.get("vcnt", 1)
+            entity_map[entity.family_id] = (entity, vc)
+
+        # Session 2: 批量获取所有相关关系
+        all_aids = set()
+        for entity, _ in entity_map.values():
+            # 获取每个实体的所有 absolute_id
+            all_aids.add(entity.absolute_id)
+
+        # 还需要每个实体的所有版本 ID 才能找到关系
+        with self._session() as session:
+            result = session.run(
+                """
+                MATCH (e:Entity)
+                WHERE e.family_id IN $fids AND e.invalid_at IS NULL
+                RETURN e.family_id AS fid, e.uuid AS uuid
+                """,
+                fids=canonical_set,
+            )
+            fid_to_aids: Dict[str, List[str]] = {}
+            for record in result:
+                fid_to_aids.setdefault(record["fid"], []).append(record["uuid"])
+
+        all_aids = set()
+        for aids in fid_to_aids.values():
+            all_aids.update(aids)
+
+        relations_map: Dict[str, List] = {fid: [] for fid in canonical_set}
+        if all_aids:
+            with self._session() as session:
+                result = session.run(
+                    """
+                    MATCH (r:Relation)
+                    WHERE (r.entity1_absolute_id IN $aids OR r.entity2_absolute_id IN $aids)
+                      AND r.invalid_at IS NULL
+                    RETURN r.uuid AS uuid, r.family_id AS family_id,
+                           r.entity1_absolute_id AS entity1_absolute_id,
+                           r.entity2_absolute_id AS entity2_absolute_id,
+                           r.content AS content, r.event_time AS event_time,
+                           r.processed_time AS processed_time, r.episode_id AS episode_id,
+                           r.source_document AS source_document
+                    """,
+                    aids=list(all_aids),
+                )
+                all_rels = [_neo4j_record_to_relation(rec) for rec in result]
+
+            # 分配关系到对应的 family_id
+            for rel in all_rels:
+                for fid, aids in fid_to_aids.items():
+                    if rel.entity1_absolute_id in aids or rel.entity2_absolute_id in aids:
+                        relations_map[fid].append(rel)
+
+        # 组装结果
+        results = []
+        seen_fids = set()
+        for fid in family_ids:
+            canonical = canonical_map.get(fid, fid)
+            if canonical in seen_fids:
+                results.append({"family_id": fid, "entity": None, "relations": [], "version_count": 0})
+                continue
+            seen_fids.add(canonical)
+            if canonical in entity_map:
+                entity, vc = entity_map[canonical]
+                results.append({
+                    "family_id": canonical,
+                    "entity": entity,
+                    "relations": relations_map.get(canonical, []),
+                    "version_count": vc,
+                })
+            else:
+                results.append({"family_id": fid, "entity": None, "relations": [], "version_count": 0})
+
+        return results
+
     def get_graph_statistics(self) -> Dict[str, Any]:
         """返回图谱结构统计数据（仅统计有效版本，排除已失效的旧版本节点）"""
         cached = self._cache.get("graph_stats")
@@ -2791,7 +2909,9 @@ class Neo4jStorageManager:
                 if emb_list:
                     rel.embedding = np.array(emb_list, dtype=np.float32).tobytes()
 
-        return relations(self) -> List[tuple]:
+        return relations
+
+    def _get_relations_with_embeddings(self) -> List[tuple]:
         """获取所有关系的最新版本及其 embedding。"""
         with _perf_timer("_get_relations_with_embeddings"):
             return self._get_relations_with_embeddings_impl()

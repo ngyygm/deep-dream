@@ -4449,25 +4449,44 @@ def create_app(
             if len(family_ids) > 20:
                 return err("Maximum 20 entities per batch", 400)
 
-            profiles = []
-            for fid in family_ids:
-                entity = processor.storage.get_entity_by_family_id(fid)
-                if entity is None:
-                    profiles.append({"family_id": fid, "entity": None, "error": "not found"})
-                    continue
-                relations = processor.storage.get_entity_relations_by_family_id(fid)
-                version_count = 0
-                if hasattr(processor.storage, 'get_entity_version_count'):
-                    version_count = processor.storage.get_entity_version_count(fid)
-                rel_dicts = [relation_to_dict(r) for r in relations]
-                enrich_relations(rel_dicts, processor)
-                profiles.append({
-                    "family_id": fid,
-                    "entity": entity_to_dict(entity),
-                    "relations": rel_dicts,
-                    "relation_count": len(rel_dicts),
-                    "version_count": version_count,
-                })
+            # Use batch method if available (eliminates N+1 queries)
+            if hasattr(processor.storage, 'batch_get_entity_profiles'):
+                batch_results = processor.storage.batch_get_entity_profiles(family_ids)
+                profiles = []
+                for item in batch_results:
+                    entity = item.get("entity")
+                    relations = item.get("relations", [])
+                    rel_dicts = [relation_to_dict(r) for r in relations]
+                    enrich_relations(rel_dicts, processor)
+                    profiles.append({
+                        "family_id": item["family_id"],
+                        "entity": entity_to_dict(entity) if entity else None,
+                        "relations": rel_dicts,
+                        "relation_count": len(rel_dicts),
+                        "version_count": item.get("version_count", 0),
+                    })
+            else:
+                # Fallback for non-Neo4j backends
+                profiles = []
+                for fid in family_ids:
+                    entity = processor.storage.get_entity_by_family_id(fid)
+                    if entity is None:
+                        profiles.append({"family_id": fid, "entity": None, "error": "not found",
+                                         "relations": [], "relation_count": 0, "version_count": 0})
+                        continue
+                    relations = processor.storage.get_entity_relations_by_family_id(fid)
+                    version_count = 0
+                    if hasattr(processor.storage, 'get_entity_version_count'):
+                        version_count = processor.storage.get_entity_version_count(fid)
+                    rel_dicts = [relation_to_dict(r) for r in relations]
+                    enrich_relations(rel_dicts, processor)
+                    profiles.append({
+                        "family_id": fid,
+                        "entity": entity_to_dict(entity),
+                        "relations": rel_dicts,
+                        "relation_count": len(rel_dicts),
+                        "version_count": version_count,
+                    })
             return ok({"profiles": profiles, "count": len(profiles)})
         except Exception as e:
             return err(str(e), 500)
