@@ -18,7 +18,6 @@ from ..content_schema import (
     content_to_sections,
     compute_section_diff,
     has_any_change,
-    collect_changed_sections,
     render_markdown_sections,
     section_hash,
 )

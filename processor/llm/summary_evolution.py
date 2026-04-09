@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from typing import Optional
 
-from ..models import Entity, Relation
+from ..models import Entity
 from ..utils import wprint
 
 EVOLVE_ENTITY_SUMMARY_SYSTEM_PROMPT = """你是一个知识图谱维护助手。你的任务是基于实体的新旧版本信息，生成一个简洁、准确的进化后摘要。
@@ -14,15 +14,6 @@ EVOLVE_ENTITY_SUMMARY_SYSTEM_PROMPT = """你是一个知识图谱维护助手。
 2. 保留重要的历史信息
 3. 简洁明了，不超过 200 字
 4. 使用第三人称描述
-
-请只输出一个 ```json ... ``` 代码块，包含键 "summary"（值为进化后的摘要字符串）。"""
-
-EVOLVE_RELATION_SUMMARY_SYSTEM_PROMPT = """你是一个知识图谱维护助手。你的任务是基于关系的新旧版本信息，生成一个简洁准确的进化后摘要。
-
-摘要应该：
-1. 描述两个实体之间的关系本质
-2. 包含关键细节
-3. 简洁明了，不超过 150 字
 
 请只输出一个 ```json ... ``` 代码块，包含键 "summary"（值为进化后的摘要字符串）。"""
 
@@ -70,43 +61,6 @@ class SummaryEvolutionMixin:
         except Exception as e:
             wprint(f"摘要进化失败，使用截断内容: {e}")
             return entity.content[:200]
-
-    async def evolve_relation_summary(self, relation: Relation, old_version: Optional[Relation] = None) -> str:
-        """基于关系新旧版本生成进化后的摘要。
-
-        Args:
-            relation: 当前最新版关系
-            old_version: 上一个版本（可选）
-
-        Returns:
-            进化后的摘要字符串
-        """
-        old_info = ""
-        if old_version and old_version.content != relation.content:
-            old_info = f"\n<旧版本内容>\n{old_version.content[:500]}\n</旧版本内容>"
-
-        prompt = f"""<关系内容>
-{relation.content[:800]}
-</关系内容>
-{old_info}
-
-请为该关系生成一个进化后的摘要："""
-
-        messages = [
-            {"role": "system", "content": EVOLVE_RELATION_SUMMARY_SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
-        ]
-
-        try:
-            result, _ = self.call_llm_until_json_parses(
-                messages,
-                parse_fn=lambda r: self._parse_summary_response(r),
-                json_parse_retries=2,
-            )
-            return result
-        except Exception as e:
-            wprint(f"关系摘要进化失败，使用截断内容: {e}")
-            return relation.content[:150]
 
     def _parse_summary_response(self, response: str) -> str:
         """解析摘要进化的 LLM 响应。"""

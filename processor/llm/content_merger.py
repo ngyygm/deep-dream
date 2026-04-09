@@ -6,7 +6,6 @@ from typing import Any, Dict, List, Optional
 from ..utils import clean_markdown_code_blocks, wprint
 from .prompts import (
     JUDGE_CONTENT_NEED_UPDATE_SYSTEM_PROMPT,
-    MERGE_ENTITY_CONTENT_SYSTEM_PROMPT,
     MERGE_ENTITY_NAME_SYSTEM_PROMPT,
     JUDGE_RELATION_MATCH_SYSTEM_PROMPT,
     MERGE_RELATION_CONTENT_SYSTEM_PROMPT,
@@ -94,67 +93,6 @@ class _ContentMergerMixin:
                 return True
             # 兜底：模糊响应默认不更新，避免版本膨胀
             return False
-
-    def merge_entity_content(
-        self,
-        old_content: str,
-        new_content: str,
-        *,
-        old_source_document: str = "",
-        new_source_document: str = "",
-        old_name: str = "",
-        new_name: str = "",
-    ) -> str:
-        """
-        合并实体内容（更新时使用）
-
-        Args:
-            old_content: 旧的内容
-            new_content: 新的内容
-
-        Returns:
-            合并后的内容
-        """
-        system_prompt = MERGE_ENTITY_CONTENT_SYSTEM_PROMPT
-
-        prompt = f"""<旧版本实体>
-- name: {old_name or '(未提供名称)'}
-- source_document: {self._source_doc_label(old_source_document)}
-- content:
-{old_content}
-</旧版本实体>
-
-<新版本实体>
-- name: {new_name or old_name or '(未提供名称)'}
-- source_document: {self._source_doc_label(new_source_document)}
-- content:
-{new_content}
-</新版本实体>
-
-请重新总结，只输出一个 ```json ... ``` 代码块；代码块内部格式为：{{"content": "重新总结后的完整实体描述"}}"""
-
-        response = self._call_llm(prompt, system_prompt)
-
-        # 尝试解析JSON响应
-        try:
-            result = self._parse_json_response(response)
-
-            # 提取content字段
-            if isinstance(result, dict) and 'content' in result:
-                merged_content = str(result['content']).strip()
-                # 如果content不为空，返回合并后的内容
-                if merged_content:
-                    return merged_content
-
-            # 如果JSON格式不正确或content为空，回退到原始响应
-            wprint(f"警告：实体内容合并返回的JSON格式不正确或content为空，使用原始响应")
-            return response.strip()
-
-        except Exception as e:
-            # JSON解析失败
-            wprint(f"警告：实体内容合并JSON解析失败，使用原始响应: {e}")
-            cleaned_response = clean_markdown_code_blocks(response)
-            return cleaned_response.strip()
 
     def merge_entity_name(self, old_name: str, new_name: str) -> str:
         """
