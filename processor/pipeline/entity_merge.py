@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Dict, List
+import re
 import uuid
 
 from ..models import Entity
@@ -73,7 +74,6 @@ class _EntityMergeMixin:
         content = relation_content
 
         # 高置信度关键词（严格匹配，避免 "就是" 等极常见词误触发）
-        import re
         high_confidence_phrases = [
             "同一实体", "同一个", "同一人", "同一物", "同一对象",
             r"是同一(?:个|人|物|实体|对象)",

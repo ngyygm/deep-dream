@@ -4,6 +4,8 @@ from __future__ import annotations
 from typing import Any, Callable, Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed, Future
 import threading
+import time
+import traceback
 import uuid
 
 from ..models import Episode, Entity
@@ -1107,7 +1109,6 @@ class _ConsolidationMixin:
         Returns:
             整理结果统计
         """
-        import threading
         from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
         from queue import Queue
 
@@ -1602,7 +1603,6 @@ class _ConsolidationMixin:
             except Exception as e:
                 if verbose:
                     wprint(f"    处理实体 {entity.name} 失败: {e}")
-                import traceback
                 traceback.print_exc()
                 return task_result
 
@@ -1631,7 +1631,6 @@ class _ConsolidationMixin:
                         if not pending_entities:
                             break
                         # 还有待处理的实体但都在冲突中，等待一下
-                    import time
                     time.sleep(0.1)
                     continue
 

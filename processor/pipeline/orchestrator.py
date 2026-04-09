@@ -4,9 +4,11 @@
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed, Future
+import re
 import sys
 import threading
 import time
+import traceback
 import uuid
 
 from .document import DocumentProcessor
@@ -799,7 +801,6 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
                     _success = True
                 except Exception as e:
                     if _record_window_error("step6", i, e):
-                        import traceback
                         traceback.print_exc()
                 finally:
                     with self._runtime_lock:
@@ -881,7 +882,6 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
                     _window_has_entities = bool(ar.unique_entities)
                 except Exception as e:
                     if _record_window_error("step7", i, e):
-                        import traceback
                         traceback.print_exc()
                 finally:
                     with self._runtime_lock:
@@ -1096,7 +1096,6 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
                                 _success_main = True
                             except Exception as e:
                                 if _record_window_error("extract", idx, e):
-                                    import traceback
                                     traceback.print_exc()
                             finally:
                                 with self._runtime_lock:
@@ -1119,7 +1118,6 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
         except Exception as e:
             with errors_lock:
                 errors.append(("main", 0, e))
-            import traceback
             traceback.print_exc()
         finally:
             clear_parallel_log_context()
@@ -2383,7 +2381,6 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
         Returns:
             整理结果统计
         """
-        import threading
         from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
         from queue import Queue
         
@@ -2867,7 +2864,6 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
             except Exception as e:
                 if verbose:
                     wprint(f"    处理实体 {entity.name} 失败: {e}")
-                import traceback
                 traceback.print_exc()
                 return task_result
         
@@ -2896,7 +2892,6 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
                         if not pending_entities:
                             break
                         # 还有待处理的实体但都在冲突中，等待一下
-                    import time
                     time.sleep(0.1)
                     continue
                 
@@ -3031,7 +3026,6 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
         content = relation_content
 
         # 高置信度关键词（严格匹配，避免 "就是" 等极常见词误触发）
-        import re
         high_confidence_phrases = [
             "同一实体", "同一个", "同一人", "同一物", "同一对象",
             r"是同一(?:个|人|物|实体|对象)",
@@ -3592,7 +3586,6 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
         except Exception as e:
             if verbose:
                 wprint(f"        处理失败: {e}")
-            import traceback
             if verbose:
                 traceback.print_exc()
             return None
