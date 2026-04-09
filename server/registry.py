@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import logging
 import re
 import threading
 from pathlib import Path
@@ -213,16 +214,16 @@ class GraphRegistry:
             if queue and hasattr(queue, "shutdown"):
                 try:
                     queue.shutdown()
-                except Exception:
-                    pass
+                except Exception as _e:
+                    logging.getLogger(__name__).warning("关闭 graph %s 任务队列失败: %s", graph_id, _e)
 
             # 2. 移除 processor（关闭 DB 连接）
             processor = self._processors.pop(graph_id, None)
             if processor and hasattr(processor.storage, "close"):
                 try:
                     processor.storage.close()
-                except Exception:
-                    pass
+                except Exception as _e:
+                    logging.getLogger(__name__).warning("关闭 graph %s 存储连接失败: %s", graph_id, _e)
 
             # 3. 删除数据目录
             graph_dir = self._base_path / graph_id

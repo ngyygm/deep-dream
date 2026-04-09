@@ -4280,7 +4280,8 @@ class Neo4jStorageManager:
             }
             try:
                 old_prov = _json.loads(latest.provenance) if latest.provenance else []
-            except Exception:
+            except Exception as _prov_err:
+                logger.warning("provenance JSON 解析失败，丢弃旧历史: %s", _prov_err)
                 old_prov = []
             old_prov.append(new_prov_entry)
 

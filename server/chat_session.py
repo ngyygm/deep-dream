@@ -10,6 +10,7 @@ Session metadata persisted in SQLite.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import queue
 import sqlite3
@@ -396,8 +397,8 @@ class SessionManager:
             except subprocess.TimeoutExpired:
                 session.process.kill()
                 session.process.wait(timeout=2)
-            except Exception:
-                pass
+            except Exception as _e:
+                logging.getLogger(__name__).warning("终止 claude 进程失败: %s", _e)
             session.process = None
 
     def _read_stdout(self, session: ChatSession):
