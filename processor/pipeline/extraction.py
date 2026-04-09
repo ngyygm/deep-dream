@@ -1756,7 +1756,7 @@ class _ExtractionMixin:
                 f"实体对齐完成，共 {len(unique_entities)} 个实体")
 
         # Phase C: 记录 Episode → Entity MENTIONS
-        if unique_entities and hasattr(self.storage, 'save_episode_mentions'):
+        if unique_entities:
             try:
                 abs_ids = [e.absolute_id for e in unique_entities]
                 self.storage.save_episode_mentions(new_episode.absolute_id, abs_ids)

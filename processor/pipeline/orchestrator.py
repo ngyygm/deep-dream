@@ -1293,37 +1293,39 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
                 - family_id: 关系家族ID
                 - content: 关系描述
         """
+        # 生成所有实体对并一次性批量查询，替代 O(K^2) 逐对查询
+        all_pairs = [
+            tuple(sorted((family_ids[i], family_ids[j])))
+            for i in range(len(family_ids))
+            for j in range(i + 1, len(family_ids))
+        ]
+        if not all_pairs:
+            return {}
+
+        batch_result = self.storage.get_relations_by_entity_pairs(all_pairs)
+
         existing_relations = {}
+        for pair_key, relations in batch_result.items():
+            if not relations:
+                continue
+            str_key = f"{pair_key[0]}|{pair_key[1]}"
 
-        # 遍历所有实体对
-        for i, entity1_id in enumerate(family_ids):
-            for entity2_id in family_ids[i+1:]:
-                # 检查两个实体之间是否存在关系
-                relations = self.storage.get_relations_by_entities(entity1_id, entity2_id)
+            # 按 family_id 分组，每个 family_id 只保留最新版本
+            relation_dict = {}
+            for rel in relations:
+                if rel.family_id not in relation_dict:
+                    relation_dict[rel.family_id] = rel
+                elif rel.processed_time > relation_dict[rel.family_id].processed_time:
+                    relation_dict[rel.family_id] = rel
 
-                if relations:
-                    # 按字母序排序实体ID作为key
-                    sorted_ids = sorted([entity1_id, entity2_id])
-                    pair_key = f"{sorted_ids[0]}|{sorted_ids[1]}"
+            existing_relations[str_key] = [
+                {
+                    'family_id': r.family_id,
+                    'content': r.content
+                }
+                for r in relation_dict.values()
+            ]
 
-                    # 按 family_id 分组，每个 family_id 只保留最新版本
-                    relation_dict = {}
-                    for rel in relations:
-                        if rel.family_id not in relation_dict:
-                            relation_dict[rel.family_id] = rel
-                        else:
-                            if rel.processed_time > relation_dict[rel.family_id].processed_time:
-                                relation_dict[rel.family_id] = rel
-
-                    # 提取关系信息
-                    existing_relations[pair_key] = [
-                        {
-                            'family_id': r.family_id,
-                            'content': r.content
-                        }
-                        for r in relation_dict.values()
-                    ]
-        
         return existing_relations
     
     def _is_relation_indicating_same_entity(self, relation_content: str) -> bool:

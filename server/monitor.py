@@ -210,14 +210,8 @@ class GraphMonitor:
         try:
             # 优先使用 count 方法（O(1) 查询），避免加载全部实体/关系
             storage = self._processor.storage
-            if hasattr(storage, 'count_unique_entities'):
-                total_entities = storage.count_unique_entities()
-            else:
-                total_entities = len(storage.get_all_entities(limit=None, exclude_embedding=True))
-            if hasattr(storage, 'count_unique_relations'):
-                total_relations = storage.count_unique_relations()
-            else:
-                total_relations = len(storage.get_all_relations(exclude_embedding=True))
+            total_entities = storage.count_unique_entities()
+            total_relations = storage.count_unique_relations()
             cache_json_dir = storage.cache_json_dir
             cache_dir = storage.cache_dir
             # 优先从 docs/ 新结构计数

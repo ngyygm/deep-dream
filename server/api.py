@@ -2953,8 +2953,7 @@ def create_app(
         """删除 Episode。"""
         try:
             processor = _get_processor()
-            if hasattr(processor.storage, 'delete_episode_mentions'):
-                processor.storage.delete_episode_mentions(cache_id)
+            processor.storage.delete_episode_mentions(cache_id)
             count = processor.storage.delete_episode(cache_id)
             if count == 0:
                 return err(f"未找到 Episode: {cache_id}", 404)

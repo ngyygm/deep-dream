@@ -1191,13 +1191,8 @@ class EntityProcessor:
                 else:
                     # 如果有多个不同的目标，选择版本数最多的作为主要目标
                     target_version_counts = {}
-                    if hasattr(self.storage, 'get_entity_version_counts'):
-                        counts = self.storage.get_entity_version_counts(target_family_ids)
-                        target_version_counts = {tid: counts.get(tid, 0) for tid in target_family_ids}
-                    else:
-                        for tid in target_family_ids:
-                            if tid not in target_version_counts:
-                                target_version_counts[tid] = len(self.storage.get_entity_versions(tid))
+                    counts = self.storage.get_entity_version_counts(target_family_ids)
+                    target_version_counts = {tid: counts.get(tid, 0) for tid in target_family_ids}
                     
                     primary_target_id = max(target_family_ids, key=lambda tid: target_version_counts.get(tid, 0))
                     

@@ -332,6 +332,7 @@ class DreamOrchestrator:
                 future = executor.submit(
                     self._judge_pair,
                     seed_fid, seed_name, nb_fid, nb_name, config,
+                    entity_lookup,
                 )
                 futures[future] = pair
 
@@ -383,6 +384,7 @@ class DreamOrchestrator:
         nb_fid: str,
         nb_name: str,
         config: DreamConfig,
+        entity_lookup: Optional[Dict[str, Dict[str, str]]] = None,
     ) -> Optional[Dict[str, Any]]:
         """判断一对实体是否存在隐含关联。
 
@@ -391,25 +393,38 @@ class DreamOrchestrator:
         """
         # 检查是否已有关系
         try:
-            existing = self.storage.get_relations_by_entities(seed_fid, nb_fid) \
-                if hasattr(self.storage, 'get_relations_by_entities') else []
+            existing = self.storage.get_relations_by_entities(seed_fid, nb_fid)
             if existing:
                 return None
         except Exception as exc:
             logger.debug("Dream: existing relation check failed for %s↔%s: %s", seed_fid, nb_fid, exc)
 
-        # 获取实体详情
-        seed_entity = self.storage.get_entity_by_family_id(seed_fid)
-        nb_entity = self.storage.get_entity_by_family_id(nb_fid)
-        if not seed_entity or not nb_entity:
-            return None
+        # 优先从 entity_lookup 获取实体详情，避免重复 DB 查询
+        if entity_lookup:
+            seed_info = entity_lookup.get(seed_fid)
+            nb_info = entity_lookup.get(nb_fid)
+            if not seed_info or not nb_info:
+                return None
+            seed_name = seed_info.get("name", seed_name)
+            seed_content = seed_info.get("content", "")
+            nb_name = nb_info.get("name", nb_name)
+            nb_content = nb_info.get("content", "")
+        else:
+            seed_entity = self.storage.get_entity_by_family_id(seed_fid)
+            nb_entity = self.storage.get_entity_by_family_id(nb_fid)
+            if not seed_entity or not nb_entity:
+                return None
+            seed_name = seed_entity.name
+            seed_content = (seed_entity.content or "")[:500]
+            nb_name = nb_entity.name
+            nb_content = (nb_entity.content or "")[:500]
 
         # LLM 判断
         judge_messages = [
             {"role": "system", "content": JUDGE_NEED_CREATE_RELATION_SYSTEM_PROMPT},
             {"role": "user", "content": (
-                f"实体A: {seed_entity.name}\n描述: {(seed_entity.content or '')[:500]}\n\n"
-                f"实体B: {nb_entity.name}\n描述: {(nb_entity.content or '')[:500]}\n\n"
+                f"实体A: {seed_name}\n描述: {seed_content}\n\n"
+                f"实体B: {nb_name}\n描述: {nb_content}\n\n"
                 f"判断这两个实体之间是否存在明确的、有意义的关联。"
             )},
         ]
@@ -428,8 +443,8 @@ class DreamOrchestrator:
         rel_messages = [
             {"role": "system", "content": GENERATE_RELATION_CONTENT_SYSTEM_PROMPT},
             {"role": "user", "content": (
-                f"实体A: {seed_entity.name}\n描述: {(seed_entity.content or '')[:500]}\n\n"
-                f"实体B: {nb_entity.name}\n描述: {(nb_entity.content or '')[:500]}\n\n"
+                f"实体A: {seed_name}\n描述: {seed_content}\n\n"
+                f"实体B: {nb_name}\n描述: {nb_content}\n\n"
                 f"请生成描述这两个实体之间关系的自然语言。"
             )},
         ]
