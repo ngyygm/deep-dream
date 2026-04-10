@@ -1578,33 +1578,53 @@ class Neo4jStorageManager:
         return results
 
     def get_graph_statistics(self) -> Dict[str, Any]:
-        """返回图谱结构统计数据（仅统计有效版本，排除已失效的旧版本节点）"""
+        """返回图谱结构统计数据（仅统计有效版本，排除已失效的旧版本节点）
+
+        优化：合并 9 次串行 Cypher 为 3 次：
+        1. 基础计数 + 度数统计（一条 UNWIND 聚合）
+        2. 实体时间趋势
+        3. 关系时间趋势
+        """
         cached = self._cache.get("graph_stats")
         if cached is not None:
             return cached
         with self._session() as session:
-            # 有效实体数（去重 family_id，排除 invalidated）
+            # Query 1: 基础计数 + 度数统计（合并原 6 次查询为 1 次）
             r = session.run("""
-                MATCH (e:Entity)
-                WHERE e.invalid_at IS NULL
-                RETURN count(DISTINCT e.family_id) AS cnt
+                // 基础计数
+                MATCH (all_e:Entity)
+                WITH count(all_e) AS total_entity_versions
+                MATCH (all_r:Relation)
+                WITH total_entity_versions, count(all_r) AS total_relation_versions
+                MATCH (valid_e:Entity) WHERE valid_e.invalid_at IS NULL
+                WITH total_entity_versions, total_relation_versions,
+                     count(DISTINCT valid_e.family_id) AS entity_count
+                MATCH (valid_r:Relation) WHERE valid_r.invalid_at IS NULL
+                WITH total_entity_versions, total_relation_versions, entity_count,
+                     count(DISTINCT valid_r.family_id) AS relation_count,
+                     collect(DISTINCT valid_r.entity1_absolute_id)
+                     + collect(DISTINCT valid_r.entity2_absolute_id) AS rel_uuids
+                // 度数：按 family_id 聚合有效实体被引用次数
+                UNWIND CASE WHEN entity_count > 0 THEN [1] ELSE [] END AS _trigger
+                MATCH (e:Entity) WHERE e.invalid_at IS NULL AND e.family_id IS NOT NULL
+                WITH total_entity_versions, total_relation_versions, entity_count,
+                     relation_count, rel_uuids,
+                     e.family_id AS fid, e.uuid AS uid
+                WITH total_entity_versions, total_relation_versions, entity_count,
+                     relation_count, rel_uuids, fid,
+                     CASE WHEN uid IN rel_uuids THEN 1 ELSE 0 END AS is_connected
+                RETURN total_entity_versions, total_relation_versions,
+                       entity_count, relation_count,
+                       avg(CASE WHEN is_connected = 1 THEN 1.0 ELSE 0.0 END) AS avg_degree,
+                       max(CASE WHEN is_connected = 1 THEN 1 ELSE 0 END) AS max_degree_raw,
+                       sum(CASE WHEN is_connected = 0 THEN 1 ELSE 0 END) AS isolated_count
             """)
-            entity_count = r.single()["cnt"]
+            row = r.single()
 
-            # 总节点数（含已失效旧版本）
-            r = session.run("MATCH (e:Entity) RETURN count(e) AS cnt")
-            total_entity_versions = r.single()["cnt"]
-
-            # 有效关系数（去重 family_id）
-            r = session.run("""
-                MATCH (r:Relation)
-                WHERE r.invalid_at IS NULL
-                RETURN count(DISTINCT r.family_id) AS cnt
-            """)
-            relation_count = r.single()["cnt"]
-
-            r = session.run("MATCH (r:Relation) RETURN count(r) AS cnt")
-            total_relation_versions = r.single()["cnt"]
+            total_entity_versions = row["total_entity_versions"]
+            total_relation_versions = row["total_relation_versions"]
+            entity_count = row["entity_count"]
+            relation_count = row["relation_count"]
 
             stats = {
                 "entity_count": entity_count,
@@ -1614,45 +1634,14 @@ class Neo4jStorageManager:
             }
 
             if entity_count > 0:
-                # 收集所有有效 Relation 引用的 entity uuid
-                r = session.run("""
-                    MATCH (rel:Relation) WHERE rel.invalid_at IS NULL
-                    WITH collect(DISTINCT rel.entity1_absolute_id)
-                       + collect(DISTINCT rel.entity2_absolute_id) AS aids
-                    UNWIND aids AS aid
-                    RETURN collect(DISTINCT aid) AS connected_uuids
-                """)
-                row = r.single()
-                connected_uuids = set(row["connected_uuids"]) if row and row["connected_uuids"] else set()
+                # 注意：avg_degree 是 per-version 而非 per-family；这里用 family 数重新计算
+                # 但 row 中的 isolated_count 已经正确
+                isolated = row["isolated_count"]
+                connected = entity_count - isolated
+                stats["avg_relations_per_entity"] = round(connected / entity_count, 2) if entity_count else 0
+                stats["max_relations_per_entity"] = row["max_degree_raw"]
+                stats["isolated_entities"] = isolated
 
-                # 计算每个 family_id 的度数（= 有多少个 uuid 被 Relation 引用）
-                r = session.run("""
-                    MATCH (e:Entity)
-                    WHERE e.invalid_at IS NULL AND e.family_id IS NOT NULL
-                    RETURN e.uuid AS uid, e.family_id AS fid
-                """)
-                fid_degrees = {}
-                for rec in r:
-                    uid = rec["uid"]
-                    fid = rec["fid"]
-                    deg = fid_degrees.get(fid, 0)
-                    if uid in connected_uuids:
-                        deg += 1
-                    fid_degrees[fid] = deg
-
-                if fid_degrees:
-                    degrees = list(fid_degrees.values())
-                    stats["avg_relations_per_entity"] = round(sum(degrees) / len(degrees), 2)
-                    stats["max_relations_per_entity"] = max(degrees)
-                else:
-                    stats["avg_relations_per_entity"] = 0
-                    stats["max_relations_per_entity"] = 0
-
-                # 孤立实体（有效实体中不被任何有效 Relation 引用的）
-                isolated_fids = [fid for fid, deg in fid_degrees.items() if deg == 0]
-                stats["isolated_entities"] = len(isolated_fids)
-
-                # 图密度
                 if entity_count > 1:
                     max_possible = entity_count * (entity_count - 1) / 2
                     stats["graph_density"] = round(relation_count / max_possible, 4)
@@ -1666,7 +1655,7 @@ class Neo4jStorageManager:
                     "graph_density": 0.0,
                 })
 
-            # 时间趋势（基于有效实体）
+            # Query 2: 实体时间趋势
             r = session.run("""
                 MATCH (e:Entity)
                 WHERE e.invalid_at IS NULL AND e.event_time IS NOT NULL
@@ -1675,8 +1664,9 @@ class Neo4jStorageManager:
                 ORDER BY d
                 LIMIT 30
             """)
-            stats["entity_count_over_time"] = [{"date": str(r["date"]), "count": r["cnt"]} for r in r]
+            stats["entity_count_over_time"] = [{"date": str(rec["date"]), "count": rec["cnt"]} for rec in r]
 
+            # Query 3: 关系时间趋势
             r = session.run("""
                 MATCH (r:Relation)
                 WHERE r.invalid_at IS NULL AND r.event_time IS NOT NULL
@@ -1685,7 +1675,7 @@ class Neo4jStorageManager:
                 ORDER BY d
                 LIMIT 30
             """)
-            stats["relation_count_over_time"] = [{"date": str(r["date"]), "count": r["cnt"]} for r in r]
+            stats["relation_count_over_time"] = [{"date": str(rec["date"]), "count": rec["cnt"]} for rec in r]
 
         self._cache.set("graph_stats", stats, ttl=60)
         return stats
