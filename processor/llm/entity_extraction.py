@@ -127,6 +127,11 @@ class _EntityExtractionMixin:
         system_prompt = EXTRACT_ENTITIES_RELATIONS_STRICT_SYSTEM_PROMPT if strict else EXTRACT_ENTITIES_AND_RELATIONS_SYSTEM_PROMPT
         prompt_episode = self._prepare_episode_for_prompt(episode)
 
+        _strict_hint = (
+            "请从文本中精准抽取有具体指代的命名实体和实体间关系，每个实体和关系都必须有明确的文本依据。"
+            if strict else
+            "请从文本中同时抽取所有概念实体和实体间关系（越多越好）："
+        )
         first_prompt = f"""<记忆缓存>
 {prompt_episode}
 </记忆缓存>
@@ -135,7 +140,7 @@ class _EntityExtractionMixin:
 {input_text}
 </输入文本>
 
-请从文本中同时抽取所有概念实体和实体间关系（越多越好）："""
+{_strict_hint}"""
 
         all_entities: List[Dict[str, str]] = []
         all_relations: List[Dict[str, str]] = []
