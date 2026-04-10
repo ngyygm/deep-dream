@@ -618,6 +618,7 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
         input_texts = [None] * N
         extract_results = [None] * N   # (entities, relations) 元组
         align_results = [None] * N     # _AlignResult
+        step7_results = [None] * N     # List[Relation] from _align_relations
 
         # 同步事件
         extract_done = [threading.Event() for _ in range(N)]
@@ -872,7 +873,7 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
                     _g_hi = (_wi + 1) / total_chunks
                     _span = _g_hi - _g_lo
                     _pr_step7 = (_g_lo + _span * (6.0 / 7.0), _g_hi)
-                    self._align_relations(
+                    processed_rels = self._align_relations(
                         ar, mc, input_texts[i], doc_name,
                         verbose=verbose, verbose_steps=verbose_steps, event_time=event_time,
                         progress_callback=lambda p, l, m: _safe_progress(p, l, m, "step7"),
@@ -881,6 +882,7 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
                         prepared_relations_by_pair=prepared_relations_by_pair,
                         step7_inputs_cache=step7_inputs_cache,
                     )
+                    step7_results[i] = processed_rels
                     _success = True
                     _window_has_entities = bool(ar.unique_entities)
                 except Exception as e:
@@ -1147,10 +1149,19 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
             raise exc
 
         storage_path = str(self.storage.storage_path)
+        # Aggregate entity/relation counts from all windows
+        total_entities = sum(
+            len(ar.unique_entities) for ar in align_results if ar is not None
+        )
+        total_relations = sum(
+            len(rl) for rl in step7_results if rl is not None
+        )
         return {
             "episode_id": last_episode_id,
             "chunks_processed": total_chunks,
             "storage_path": storage_path,
+            "entities": total_entities,
+            "relations": total_relations,
         }
 
     def remember_phase1_overall(self, text: str, doc_name: str = "api_input",
