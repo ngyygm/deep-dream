@@ -333,9 +333,33 @@ class EntityProcessor:
                         name_to_ids.setdefault(name, set()).add(eid)
 
         entity_name_to_id: Dict[str, str] = {}
+        # 批量预检查哪些 eid 在数据库中存在（避免逐条 get_entity_by_family_id）
+        all_candidate_eids = set()
+        for ids in name_to_ids.values():
+            all_candidate_eids.update(ids)
+        if all_candidate_eids:
+            # resolve_family_ids 返回存在的映射；不存在的 eid 会被过滤
+            try:
+                resolve_fn = getattr(self.storage, 'resolve_family_ids', None)
+                if resolve_fn:
+                    resolved_map = resolve_fn(list(all_candidate_eids)) or {}
+                    existing_eids = set(resolved_map.keys()) | set(resolved_map.values())
+                else:
+                    existing_eids = set()
+                    for eid in all_candidate_eids:
+                        if self.storage.get_entity_by_family_id(eid) is not None:
+                            existing_eids.add(eid)
+            except Exception:
+                existing_eids = set()
+                for eid in all_candidate_eids:
+                    if self.storage.get_entity_by_family_id(eid) is not None:
+                        existing_eids.add(eid)
+        else:
+            existing_eids = set()
+
         for name, ids in name_to_ids.items():
             # 优先使用数据库中已存在的 family_id（同名实体被多个线程分别匹配到不同候选）
-            in_storage = [eid for eid in ids if self.storage.get_entity_by_family_id(eid) is not None]
+            in_storage = [eid for eid in ids if eid in existing_eids]
             if in_storage:
                 entity_name_to_id[name] = in_storage[0]
             else:
