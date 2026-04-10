@@ -2,7 +2,53 @@
 
 > 每轮迭代记录实际完成的功能和改进。按时间倒序排列。
 
+## 2026-04-11
+
+### [已完成] perf: save_episode_mentions N+1 → executemany batch INSERT
+- `save_episode_mentions` 从逐行 INSERT 循环改为 `cursor.executemany()` 批量插入
+- 影响：`processor/storage/manager.py`
+- 测试：57 项新测试全部通过（含并发批量插入验证）
+
+### [已完成] perf: merge_entity_families N+1 → batch SQL
+- 版本计数查询：逐个 `SELECT COUNT(*)` → 单次 `GROUP BY family_id`
+- 实体更新：逐个 `UPDATE` → 单次 `UPDATE ... IN (?)`
+- 验证查询：逐个检查 → 单次 `GROUP BY`
+- 重定向插入：逐个 `INSERT` → `executemany()`
+- 影响：`processor/storage/manager.py`
+
+### [已完成] fix: get_relations_by_entity_pairs 硬编码列 → 完整15列（含embedding）
+- 原先硬编码14列缺少 `embedding`，导致 `_row_to_relation` 依赖 `len(row)` 守卫
+- 改为显式15列 SELECT（与 `_RELATION_SELECT` 列顺序一致）
+- 影响：`processor/storage/manager.py`
+
+### [已完成] perf: lru_cache 纯函数缓存
+- `_is_valid_entity_name`（extraction.py）：添加 `@lru_cache(maxsize=4096)`
+- `_normalize_entity_name_for_matching`（entity.py）：添加 `@lru_cache(maxsize=4096)`
+- 重复实体名称的候选匹配阶段性能提升
+
+### [已完成] fix: 旧实体对齐路径 LLM 调用错误处理
+- `_process_single_entity` 中 `analyze_entity_candidates_preliminary` 和 `analyze_entity_pair_detailed` 调用添加 try/except
+- LLM 失败时 fallback 到 no_action / skip candidate，不再导致整个实体处理管道中断
+- 影响：`processor/pipeline/entity.py`
+
+### [已完成] test: 57项综合测试 — 4维度全覆盖
+- 新增 `tests/test_improvements.py`
+- 维度1：batch SQL 正确性（7 提及 + 6 合并测试，含并发和Unicode）
+- 维度2：LRU缓存行为（8 测试，含中英文特殊字符）
+- 维度3：LLM错误处理（3 测试，fallback验证）
+- 维度4：列一致性（4 测试，embedding字段验证）
+- 维度5：实体名称验证（30+ 测试，含参数化中英文混合）
+
 ## 2026-04-10
+
+### [已完成] fix: over-extraction 三连修复 — strict prompt + proportional cap + dedup
+- commit: 72ac369
+- 问题：古文530字→64实体（10.2/100字），Step6 LLM输出截断→GLM-4-flash死循环→771s
+- 修复1：user prompt 对齐 strict system prompt（"宁缺毋滥" vs 之前的"越多越好"）
+- 修复2：Step 2.9 按比例限制实体数量（max 5/100字，下限15），优先保留有关系连接的
+- 修复3：Step6 preliminary analysis 结果去重（GLM-4-flash 截断时重复同一ID数百次）
+- 验证：古文524字→27实体→99.7s（7.7x加速）
+- 影响：`processor/llm/entity_extraction.py`, `processor/pipeline/extraction.py`, `processor/pipeline/entity.py`
 
 ### [已完成] fix: 实体候选匹配添加核心名称规范化
 - commit: 395e523
@@ -212,3 +258,22 @@
 - [x] ~~**Schema初始化去重**: _init_database与_ensure_tables重复~~ (fffb8dd)
 - [x] ~~**Neo4j _RELATION_RETURN_FIELDS**: 22个方法重复字段列表~~ (6d7d0da)
 - [x] ~~**api.py分模块**: ~5000行单文件，需按领域拆分~~ (7 Blueprint 模块 + 350 行工厂)
+
+### P4 性能（2026-04-11）
+- [x] ~~**save_episode_mentions N+1**: 逐行INSERT → executemany批量~~
+- [x] ~~**merge_entity_families N+1**: 逐个SQL → batch SQL~~
+- [x] ~~**get_relations_by_entity_pairs 硬编码列**: 缺少embedding → 完整15列~~
+- [x] ~~**lru_cache纯函数**: _is_valid_entity_name + _normalize_entity_name_for_matching~~
+
+### P5 健壮性（2026-04-11）
+- [x] ~~**旧实体对齐路径LLM错误处理**: 无try/except → fallback no_action~~
+
+### 待改进项
+
+#### P1 架构
+- [ ] **manager.py 分模块**: 4884行单类 → mixin 模式拆分（entity_store, relation_store, episode_store, concept_store）
+
+#### P2 功能对齐（vision.md）
+- [ ] **置信度引擎**: 置信度随证据增减动态调整（当前固定0.7）
+- [ ] **矛盾检测**: 版本间语义冲突检测与修正标注
+- [ ] **Dream 候选层**: Dream产物默认写入候选层，需证据/复核提升为事实

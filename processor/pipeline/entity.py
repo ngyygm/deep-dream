@@ -5,9 +5,13 @@ from typing import List, Dict, Optional, Tuple, Any
 import re
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed, Future
+from functools import lru_cache
 import threading
 import uuid
 import numpy as np
+import logging
+
+logger = logging.getLogger(__name__)
 
 from ..models import Entity, Episode, ContentPatch
 from ..storage.manager import StorageManager
@@ -422,6 +426,7 @@ class EntityProcessor:
     )
 
     @staticmethod
+    @lru_cache(maxsize=4096)
     def _normalize_entity_name_for_matching(name: str) -> str:
         """去掉括号注释和称谓后缀，返回用于匹配的核心名称。
 
@@ -1068,11 +1073,15 @@ class EntityProcessor:
             wprint(f"  │  调用LLM分析（候选数: {len(unique_entities)}）")
         
         # 阶段1：初步筛选（使用content snippet快速筛选）
-        preliminary_result = self.llm_client.analyze_entity_candidates_preliminary(
-            entities_group,
-            content_snippet_length=self.llm_client.effective_entity_snippet_length(),
-            context_text=context_text
-        )
+        try:
+            preliminary_result = self.llm_client.analyze_entity_candidates_preliminary(
+                entities_group,
+                content_snippet_length=self.llm_client.effective_entity_snippet_length(),
+                context_text=context_text
+            )
+        except Exception as e:
+            logger.warning("LLM preliminary analysis failed for '%s': %s — falling back to no_action", entity_name, e)
+            preliminary_result = {"possible_merges": [], "possible_relations": [], "no_action": []}
         
         possible_merges = preliminary_result.get("possible_merges", [])
         possible_relations = preliminary_result.get("possible_relations", [])
@@ -1166,12 +1175,16 @@ class EntityProcessor:
             existing_relations_list = []
             
             # 调用精细化判断（传入上下文文本）
-            detailed_result = self.llm_client.analyze_entity_pair_detailed(
-                current_entity_info,
-                candidate_info,
-                existing_relations_list,
-                context_text=context_text
-            )
+            try:
+                detailed_result = self.llm_client.analyze_entity_pair_detailed(
+                    current_entity_info,
+                    candidate_info,
+                    existing_relations_list,
+                    context_text=context_text
+                )
+            except Exception as e:
+                logger.warning("LLM detailed analysis failed for '%s' vs '%s': %s — skipping", entity_name, candidate_entity.name, e)
+                continue
             
             action = detailed_result.get("action", "no_action")
             reason = detailed_result.get("reason", "")
