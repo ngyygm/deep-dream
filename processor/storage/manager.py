@@ -3543,6 +3543,111 @@ class StorageManager:
             """, (attributes, family_id))
             conn.commit()
 
+    def update_entity_confidence(self, family_id: str, confidence: float):
+        """更新实体最新版本的置信度。
+
+        置信度调整规则（vision.md "置信度"）：
+        - 多个独立来源印证同一事实 → 置信度上升
+        - 新证据与之矛盾 → 置信度下降
+        - 值域 [0.0, 1.0]，超出范围截断
+        """
+        confidence = max(0.0, min(1.0, confidence))
+        with self._write_lock:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE entities SET confidence = ?
+                WHERE id = (
+                    SELECT id FROM entities
+                    WHERE family_id = ?
+                    ORDER BY processed_time DESC LIMIT 1
+                )
+            """, (confidence, family_id))
+            conn.commit()
+
+    def update_relation_confidence(self, family_id: str, confidence: float):
+        """更新关系最新版本的置信度。"""
+        confidence = max(0.0, min(1.0, confidence))
+        with self._write_lock:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE relations SET confidence = ?
+                WHERE id = (
+                    SELECT id FROM relations
+                    WHERE family_id = ?
+                    ORDER BY processed_time DESC LIMIT 1
+                )
+            """, (confidence, family_id))
+            conn.commit()
+
+    def adjust_confidence_on_corroboration(self, family_id: str, source_type: str = "entity",
+                                            is_dream: bool = False):
+        """独立来源印证时提升置信度。
+
+        使用 Bayesian-inspired 增量调整：
+        - 每次印证 +0.05，上限 1.0
+        - Dream 来源印证权重减半 (+0.025)
+
+        Args:
+            family_id: 实体或关系的 family_id
+            source_type: "entity" 或 "relation"，决定查询哪个表
+            is_dream: 是否来自 Dream 产物，Dream 权重减半
+        """
+        table = "entities" if source_type == "entity" else "relations"
+        with self._write_lock:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            cursor.execute(f"""
+                SELECT confidence FROM {table}
+                WHERE family_id = ?
+                ORDER BY processed_time DESC LIMIT 1
+            """, (family_id,))
+            row = cursor.fetchone()
+            if not row or row[0] is None:
+                return
+            current = row[0]
+            delta = 0.025 if is_dream else 0.05
+            new_conf = min(1.0, current + delta)
+            cursor.execute(f"""
+                UPDATE {table} SET confidence = ?
+                WHERE id = (
+                    SELECT id FROM {table}
+                    WHERE family_id = ?
+                    ORDER BY processed_time DESC LIMIT 1
+                )
+            """, (new_conf, family_id))
+            conn.commit()
+
+    def adjust_confidence_on_contradiction(self, family_id: str, source_type: str = "entity"):
+        """矛盾证据时降低置信度。
+
+        - 每次矛盾 -0.1，下限 0.0
+        """
+        table = "entities" if source_type == "entity" else "relations"
+        with self._write_lock:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            cursor.execute(f"""
+                SELECT confidence FROM {table}
+                WHERE family_id = ?
+                ORDER BY processed_time DESC LIMIT 1
+            """, (family_id,))
+            row = cursor.fetchone()
+            if not row or row[0] is None:
+                return
+            current = row[0]
+            new_conf = max(0.0, current - 0.1)
+            cursor.execute(f"""
+                UPDATE {table} SET confidence = ?
+                WHERE id = (
+                    SELECT id FROM {table}
+                    WHERE family_id = ?
+                    ORDER BY processed_time DESC LIMIT 1
+                )
+            """, (new_conf, family_id))
+            conn.commit()
+
     # ========== Phase B: 图遍历辅助 ==========
 
     def get_relations_by_family_ids(self, family_ids: List[str], limit: Optional[int] = None) -> List[Relation]:

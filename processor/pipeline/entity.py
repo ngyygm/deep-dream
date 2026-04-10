@@ -1580,6 +1580,9 @@ class EntityProcessor:
         entity = self._build_entity_version(family_id, name, content, episode_id, source_document, base_time=base_time)
         self.storage.save_entity(entity)
 
+        # 置信度演化：新版本 = 独立来源印证 → 置信度提升
+        self.storage.adjust_confidence_on_corroboration(family_id, source_type="entity")
+
         # 计算 section patches
         _source_document_only = source_document.split('/')[-1] if source_document else ""
         if old_content:

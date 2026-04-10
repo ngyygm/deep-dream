@@ -817,4 +817,6 @@ class RelationProcessor:
         )
         if relation:
             self.storage.save_relation(relation)
+            # 置信度演化：关系被新文本再次提及 → 独立来源印证 → 置信度提升
+            self.storage.adjust_confidence_on_corroboration(family_id, source_type="relation")
         return relation

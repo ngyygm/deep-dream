@@ -774,6 +774,29 @@ def get_entity_provenance(family_id: str):
         return err(str(e), 500)
 
 
+@entities_bp.route("/api/v1/find/entities/<family_id>/confidence", methods=["PUT"])
+def update_entity_confidence(family_id: str):
+    """手动设置实体置信度（覆盖自动演化值）。"""
+    try:
+        body = request.get_json(silent=True) or {}
+        confidence = body.get("confidence")
+        if confidence is None:
+            return err("confidence 为必填字段", 400)
+        confidence = float(confidence)
+        if not (0.0 <= confidence <= 1.0):
+            return err("confidence 必须在 0.0 ~ 1.0 之间", 400)
+        processor = _get_processor()
+        entity = processor.storage.get_entity_by_family_id(family_id)
+        if not entity:
+            return err(f"实体不存在: {family_id}", 404)
+        processor.storage.update_entity_confidence(family_id, confidence)
+        updated = processor.storage.get_entity_by_family_id(family_id)
+        h = _helpers()
+        return ok(h.entity_to_dict(updated))
+    except Exception as e:
+        return err(str(e), 500)
+
+
 @entities_bp.route("/api/v1/find/entities/<family_id>/contradictions", methods=["GET"])
 def get_entity_contradictions(family_id: str):
     try:

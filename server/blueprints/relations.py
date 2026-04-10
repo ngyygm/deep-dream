@@ -806,6 +806,29 @@ def redirect_relation():
         return err(str(e), 500)
 
 
+@relations_bp.route("/api/v1/find/relations/<family_id>/confidence", methods=["PUT"])
+def update_relation_confidence(family_id: str):
+    """手动设置关系置信度（覆盖自动演化值）。"""
+    try:
+        processor = _get_processor()
+        body = request.get_json(silent=True) or {}
+        confidence = body.get("confidence")
+        if confidence is None:
+            return err("confidence 为必填字段", 400)
+        confidence = float(confidence)
+        if not (0.0 <= confidence <= 1.0):
+            return err("confidence 必须在 0.0 ~ 1.0 之间", 400)
+        relation = processor.storage.get_relation_by_family_id(family_id)
+        if not relation:
+            return err(f"关系不存在: {family_id}", 404)
+        processor.storage.update_relation_confidence(family_id, confidence)
+        updated = processor.storage.get_relation_by_family_id(family_id)
+        from server.blueprints.helpers import relation_to_dict
+        return ok(relation_to_dict(updated))
+    except Exception as e:
+        return err(str(e), 500)
+
+
 @relations_bp.route("/api/v1/find/relations/<family_id>/invalidate", methods=["POST"])
 def invalidate_relation(family_id: str):
     """标记关系为失效（不删除，保留历史）"""
