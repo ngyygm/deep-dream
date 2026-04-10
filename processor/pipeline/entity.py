@@ -1053,37 +1053,22 @@ class EntityProcessor:
             if cid != 'NEW_ENTITY':
                 candidates_to_analyze[cid] = {"type": "merge", "reason": item.get("reason", "") if isinstance(item, dict) else ""}
 
-        # 对于被判断为关系的候选，先检查是否已有关系，如果有则跳过精细化判断
-        skipped_relations_count = 0
-        skipped_entity_names = []  # 记录跳过的实体名称
+        # 对于被判断为关系的候选，直接进入精细化判断
+        # 注意：当前实体是 NEW_ENTITY（尚未保存），get_relations_by_entities("NEW_ENTITY", cid)
+        # 总是返回空列表，因此跳过该 DB 调用，直接进入精细化判断
         for item in possible_relations:
             cid = item.get("family_id") if isinstance(item, dict) else item
             if cid != 'NEW_ENTITY':
-                # 注意：由于当前实体是 NEW_ENTITY（尚未保存），无法直接查询关系
-                # 但为了保持代码一致性，仍然进行检查（应该总是返回空）
-                # 如果未来支持检查候选实体之间的关系，可以在这里扩展
-                existing_rels = self.storage.get_relations_by_entities("NEW_ENTITY", cid)
-                if existing_rels and len(existing_rels) > 0:
-                    # 已有关系，跳过精细化判断
-                    skipped_relations_count += 1
-                    candidate_entity = next((e for e in unique_entities if e.family_id == cid), None)
-                    if candidate_entity:
-                        skipped_entity_names.append(candidate_entity.name)
+                if cid not in candidates_to_analyze:
+                    candidates_to_analyze[cid] = {"type": "relation", "reason": item.get("reason", "") if isinstance(item, dict) else ""}
                 else:
-                    # 没有关系，需要精细化判断
-                    if cid not in candidates_to_analyze:
-                        candidates_to_analyze[cid] = {"type": "relation", "reason": item.get("reason", "") if isinstance(item, dict) else ""}
-                    else:
-                        # 如果同时出现在merge和relation中，优先考虑relation（更保守）
-                        candidates_to_analyze[cid]["type"] = "relation"
+                    # 如果同时出现在merge和relation中，优先考虑relation（更保守）
+                    candidates_to_analyze[cid]["type"] = "relation"
         
         # 输出初步筛选结果（只统计需要精细化判断的候选）
         if self._entity_tree_log():
             relation_count = len([c for c in candidates_to_analyze.values() if c['type'] == 'relation'])
-            if skipped_relations_count > 0:
-                wprint(f"  │  ├─ 初步筛选: 合并 {len([c for c in candidates_to_analyze.values() if c['type'] == 'merge'])} 个, 关系 {relation_count} 个 (跳过已有关系: {skipped_relations_count} 个), 跳过 {len(no_action)} 个")
-            else:
-                wprint(f"  │  ├─ 初步筛选: 合并 {len([c for c in candidates_to_analyze.values() if c['type'] == 'merge'])} 个, 关系 {relation_count} 个, 跳过 {len(no_action)} 个")
+            wprint(f"  │  ├─ 初步筛选: 合并 {len([c for c in candidates_to_analyze.values() if c['type'] == 'merge'])} 个, 关系 {relation_count} 个, 跳过 {len(no_action)} 个")
         
         # 准备当前实体信息（新实体）
         current_entity_info = {
@@ -1100,11 +1085,8 @@ class EntityProcessor:
         
         # 如果有需要精细化判断的候选，先打印开始提示
         if candidates_to_analyze:
-            skipped_info = ""
-            if skipped_entity_names:
-                skipped_info = f"，跳过已有关系: {', '.join(skipped_entity_names)}"
             if self._entity_tree_log():
-                wprint(f"  │  ├─ 精细化判断开始（共 {len(candidates_to_analyze)} 个候选{skipped_info}）")
+                wprint(f"  │  ├─ 精细化判断开始（共 {len(candidates_to_analyze)} 个候选）")
         
         for cid, info in candidates_to_analyze.items():
             candidate_entity = next((e for e in unique_entities if e.family_id == cid), None)

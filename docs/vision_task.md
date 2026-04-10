@@ -4,6 +4,30 @@
 
 ## 2026-04-10
 
+### [已完成] fix: Blueprint `request.app` → `current_app` — Flask测试兼容性
+- Blueprint拆分后所有模块使用 `request.app.config[...]` 访问 app config
+- Flask test client 中 `Request` 对象无 `.app` 属性，导致全部 API 测试 500
+- 修复：5个Blueprint模块 + helpers.py 统一改用 `current_app.config[...]`
+- 受影响文件：entities.py, system.py, remember.py, concepts.py, helpers.py
+- 101项集成测试全部通过
+
+### [已完成] perf: Neo4j get_entities_by_family_ids N+1 embedding → 批量get_batch
+- `get_entities_by_family_ids` 中逐个 `_vector_store.get()` → 批量 `_vector_store.get_batch()`
+- 一次查询获取所有 embedding，消除 R 次独立向量查找
+
+### [已完成] perf: SQLite batch_get_entity_profiles N+1 resolve → 批量resolve_family_ids
+- `batch_get_entity_profiles` 中逐个 `resolve_family_id()` → 批量 `resolve_family_ids()`
+- 消除 N 次独立 SQL 查询
+
+### [已完成] fix: entity.py 移除NEW_ENTITY无效DB调用
+- `_process_single_entity` 中对未保存实体("NEW_ENTITY")调用 `get_relations_by_entities("NEW_ENTITY", cid)`
+- 此查询始终返回空列表（实体未入库），是无效DB调用
+- 移除该调用及相关 dead code（skipped_relations_count, skipped_entity_names）
+
+### [已完成] fix: Neo4j get_relations_for_entities 模板字面量bug
+- 第22处遗漏的 `RETURN {_RELATION_RETURN_FIELDS}` 未使用 `_expand_cypher()` 展开
+- `_q()` 重命名为 `_expand_cypher()`，同时支持 `__ENT_FIELDS__` 和 `__REL_FIELDS__` 占位符
+
 ### [已完成] fix: Neo4j _RELATION_RETURN_FIELDS 模板字面量bug — 20处Cypher查询字段未展开
 - `_RELATION_RETURN_FIELDS` 是模块级常量字符串，包含完整的 Relation 字段列表
 - 20处 Cypher 查询中 `RETURN {_RELATION_RETURN_FIELDS}` 写在普通三引号字符串内

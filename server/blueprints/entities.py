@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from flask import Blueprint, request
+from flask import Blueprint, current_app, request
 
 from processor.models import Entity
 from processor.perf import _perf_timer
@@ -25,7 +25,7 @@ entities_bp = Blueprint("entities", __name__)
 # ── Shared helpers (imported from helpers) ─────────────────────────────────
 
 def _get_processor():
-    return request.app.config["registry"].get_processor(request.graph_id)
+    return current_app.config["registry"].get_processor(request.graph_id)
 
 
 def ok(data: Any) -> tuple:

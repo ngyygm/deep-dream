@@ -3638,16 +3638,15 @@ class StorageManager:
         if not family_ids:
             return []
 
-        # Step 1: 解析 canonical family_ids
+        # Step 1: 解析 canonical family_ids（批量 resolve）
         canonical_map: Dict[str, str] = {}  # original -> canonical
         canonical_set: List[str] = []
+        batch_resolved = self.resolve_family_ids(family_ids) or {}
         for fid in family_ids:
-            resolved = self.resolve_family_id(fid)
-            canonical = resolved if resolved else fid
+            canonical = batch_resolved.get(fid) or fid
             canonical_map[fid] = canonical
-            if canonical not in canonical_map.values() or canonical == canonical_map.get(fid):
-                if canonical not in canonical_set:
-                    canonical_set.append(canonical)
+            if canonical not in canonical_set:
+                canonical_set.append(canonical)
 
         if not canonical_set:
             return [{"family_id": fid, "entity": None, "relations": [], "version_count": 0} for fid in family_ids]

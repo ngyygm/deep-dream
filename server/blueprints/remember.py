@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, Optional
 
-from flask import Blueprint, jsonify, make_response, request
+from flask import Blueprint, current_app, jsonify, make_response, request
 
 from server.blueprints.helpers import (
     _get_processor,
@@ -25,7 +25,7 @@ remember_bp = Blueprint("remember", __name__)
 
 def _get_system_monitor():
     """Retrieve the SystemMonitor stored on the Flask app config."""
-    return request.app.config.get("system_monitor")
+    return current_app.config.get("system_monitor")
 
 
 # ── POST /api/v1/remember ─────────────────────────────────────────────────

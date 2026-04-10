@@ -11,7 +11,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from flask import jsonify, request
+from flask import current_app, jsonify, request
 
 from processor.models import Entity, Episode, Relation
 from processor.perf import _perf_timer
@@ -131,12 +131,12 @@ def _get_graph_id() -> str:
 
 def _get_processor():
     """获取当前请求对应的 Processor。"""
-    return request.app.config["registry"].get_processor(request.graph_id)
+    return current_app.config["registry"].get_processor(request.graph_id)
 
 
 def _get_queue():
     """获取当前请求对应的 RememberTaskQueue。"""
-    return request.app.config["registry"].get_queue(request.graph_id)
+    return current_app.config["registry"].get_queue(request.graph_id)
 
 
 # ── Time parsing helpers ─────────────────────────────────────────────────

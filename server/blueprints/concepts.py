@@ -8,7 +8,7 @@ import logging
 import threading
 from typing import Any, Dict
 
-from flask import Blueprint, request
+from flask import Blueprint, current_app, request
 
 from server.blueprints.helpers import (
     ok,
@@ -238,7 +238,7 @@ def handle_graphs():
             from server.registry import GraphRegistry
             data = request.get_json(force=True) or {}
             graph_id = (data.get("graph_id") or "").strip()
-            registry = request.app.config["registry"]
+            registry = current_app.config["registry"]
             GraphRegistry.validate_graph_id(graph_id)
             # 检查是否已存在
             existing = registry.list_graphs()
@@ -252,7 +252,7 @@ def handle_graphs():
         except Exception as e:
             return err(str(e), 500)
     try:
-        registry = request.app.config["registry"]
+        registry = current_app.config["registry"]
         graphs = registry.list_graphs()
         return ok({"graphs": graphs, "count": len(graphs)})
     except Exception as e:
@@ -264,7 +264,7 @@ def delete_graph(graph_id: str):
     """删除指定图谱（含所有数据）。"""
     try:
         from server.registry import GraphRegistry
-        registry = request.app.config["registry"]
+        registry = current_app.config["registry"]
         GraphRegistry.validate_graph_id(graph_id)
         existing = registry.list_graphs()
         if graph_id not in existing:

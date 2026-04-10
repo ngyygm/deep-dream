@@ -56,14 +56,21 @@ r.invalid_at AS invalid_at, r.summary AS summary,
 r.attributes AS attributes, r.confidence AS confidence,
 r.provenance AS provenance"""
 
-# 占位符：在普通字符串中写 RETURN __REL_FIELDS__，_q() 展开为实际字段列表
-_REL_FIELDS_PLACEHOLDER = "__REL_FIELDS__"
+# 占位符：在普通字符串中写 RETURN __ENT_FIELDS__ / __REL_FIELDS__，
+# _expand_cypher() 展开为实际字段列表
+_ENT_FIELDS_RETURN = f"RETURN {_ENTITY_RETURN_FIELDS}"
 _REL_FIELDS_RETURN = f"RETURN {_RELATION_RETURN_FIELDS}"
 
 
-def _q(cypher: str) -> str:
-    """展开 Cypher 查询中的 __REL_FIELDS__ 占位符为实际 Relation RETURN 字段。"""
-    return cypher.replace(f"RETURN {_REL_FIELDS_PLACEHOLDER}", _REL_FIELDS_RETURN)
+def _expand_cypher(cypher: str) -> str:
+    """展开 Cypher 查询中的 __ENT_FIELDS__ / __REL_FIELDS__ 占位符为实际 RETURN 字段。"""
+    cypher = cypher.replace("RETURN __ENT_FIELDS__", _ENT_FIELDS_RETURN)
+    cypher = cypher.replace("RETURN __REL_FIELDS__", _REL_FIELDS_RETURN)
+    return cypher
+
+
+# 向后兼容旧名
+_q = _expand_cypher
 
 
 # ---------------------------------------------------------------------------
@@ -1191,14 +1198,17 @@ class Neo4jStorageManager:
                     f"RETURN latest"
                 )
                 records = session.run(cypher, fids=list(uncached)).data()
-                for rec in records:
-                    latest = rec["latest"]
-                    entity = _neo4j_record_to_entity(latest)
-                    emb = self._vector_store.get("entity_vectors", entity.absolute_id)
-                    if emb:
-                        entity.embedding = np.array(emb, dtype=np.float32).tobytes()
-                    result[entity.family_id] = entity
-                    self._cache.set(f"entity:by_fid:{entity.family_id}", entity, ttl=60)
+                entities = [_neo4j_record_to_entity(rec["latest"]) for rec in records]
+                # 批量获取 embedding（替代逐个 _vector_store.get）
+                if entities:
+                    uuids = [e.absolute_id for e in entities]
+                    emb_map = self._vector_store.get_batch("entity_vectors", uuids)
+                    for entity in entities:
+                        emb = emb_map.get(entity.absolute_id)
+                        if emb:
+                            entity.embedding = np.array(emb, dtype=np.float32).tobytes()
+                        result[entity.family_id] = entity
+                        self._cache.set(f"entity:by_fid:{entity.family_id}", entity, ttl=60)
         # 映射原始 ID → 实体
         for orig_fid, resolved_fid in resolved_map.items():
             if resolved_fid in result and orig_fid not in result:
@@ -3774,7 +3784,7 @@ class Neo4jStorageManager:
             return []
         with self._session() as session:
             # 单次查询：解析 family_id → 最新 absolute_id，再查找关联关系
-            result = session.run("""
+            result = session.run(_expand_cypher("""
                 MATCH (e:Entity)
                 WHERE e.family_id IN $family_ids AND e.invalid_at IS NULL
                 WITH collect(DISTINCT e.uuid) AS abs_ids
@@ -3782,9 +3792,9 @@ class Neo4jStorageManager:
                 MATCH (r:Relation)
                 WHERE (r.entity1_absolute_id = aid OR r.entity2_absolute_id = aid)
                   AND r.invalid_at IS NULL
-                RETURN DISTINCT {_RELATION_RETURN_FIELDS}
+                RETURN DISTINCT __REL_FIELDS__
                 LIMIT $limit
-            """, family_ids=family_ids, limit=limit)
+            """), family_ids=family_ids, limit=limit)
             return [_neo4j_record_to_relation(r) for r in result]
 
     def batch_get_entity_degrees(self, family_ids: List[str]) -> Dict[str, int]:

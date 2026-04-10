@@ -7,7 +7,7 @@ import logging
 import time
 from typing import Any, Optional
 
-from flask import Blueprint, request
+from flask import Blueprint, current_app, request
 
 from processor.llm.client import LLM_PRIORITY_STEP6
 
@@ -18,12 +18,12 @@ system_bp = Blueprint("system", __name__)
 
 def _get_system_monitor():
     """Get the SystemMonitor from app config."""
-    return request.app.config.get("system_monitor")
+    return current_app.config.get("system_monitor")
 
 
 def _get_processor():
     """Get processor for current graph_id."""
-    return request.app.config["registry"].get_processor(request.graph_id)
+    return current_app.config["registry"].get_processor(request.graph_id)
 
 
 def _call_llm_with_backoff(
