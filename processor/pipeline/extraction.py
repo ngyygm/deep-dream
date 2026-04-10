@@ -1362,6 +1362,7 @@ class _ExtractionMixin:
         # 某些并行实体对齐分支可能留下只存在于内存中的临时 family_id；
         # Step7 开始前按名称刷新一次，避免关系写入时再命中”family_id 不存在”。
         eids_to_resolve = [(name, eid) for name, eid in entity_name_to_id.items() if eid]
+        valid_eids = set()
         if eids_to_resolve:
             resolve_fn = getattr(self.storage, 'resolve_family_ids', None)
             if resolve_fn:
@@ -1370,6 +1371,8 @@ class _ExtractionMixin:
                     resolved_map = resolve_fn(unique_eids) or {}
                     for name, eid in eids_to_resolve:
                         entity_name_to_id[name] = resolved_map.get(eid, eid)
+                    # resolve_family_ids 返回存在的映射，有效 ID = 键 ∪ 值
+                    valid_eids = set(resolved_map.keys()) | set(resolved_map.values())
                 except Exception:
                     for name, eid in eids_to_resolve:
                         entity_name_to_id[name] = self.storage.resolve_family_id(eid)
@@ -1377,26 +1380,11 @@ class _ExtractionMixin:
                 for name, eid in eids_to_resolve:
                     entity_name_to_id[name] = self.storage.resolve_family_id(eid)
 
-        # 批量检查哪些 eid 仍然有效
-        valid_eids_to_check = set(eid for eid in entity_name_to_id.values() if eid)
-        if valid_eids_to_check:
-            try:
-                resolve_fn = getattr(self.storage, 'resolve_family_ids', None)
-                if resolve_fn:
-                    resolved_valid = resolve_fn(list(valid_eids_to_check)) or {}
-                    valid_eids = set(resolved_valid.keys()) | set(resolved_valid.values())
-                else:
-                    valid_eids = set()
-                    for eid in valid_eids_to_check:
-                        if self.storage.get_entity_by_family_id(eid) is not None:
-                            valid_eids.add(eid)
-            except Exception:
-                valid_eids = set()
-                for eid in valid_eids_to_check:
-                    if self.storage.get_entity_by_family_id(eid) is not None:
-                        valid_eids.add(eid)
-        else:
-            valid_eids = set()
+        if not valid_eids:
+            # Fallback: 逐条检查有效性
+            for eid in set(eid for eid in entity_name_to_id.values() if eid):
+                if self.storage.get_entity_by_family_id(eid) is not None:
+                    valid_eids.add(eid)
 
         invalid_names = [
             name for name, eid in entity_name_to_id.items()

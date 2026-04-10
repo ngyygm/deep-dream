@@ -4,6 +4,7 @@
 """
 import sys
 import json
+import logging
 import os
 from collections import deque
 from pathlib import Path
@@ -12,6 +13,8 @@ from flask import Flask, render_template, jsonify
 
 # 添加项目根目录到 sys.path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+logger = logging.getLogger(__name__)
 
 from processor import StorageManager, EmbeddingClient
 from processor.utils import normalize_entity_pair
@@ -81,9 +84,9 @@ class GraphWebServer:
                 # 重新初始化存储
                 self.storage = StorageManager(str(target), embedding_client=self.embedding_client)
                 self._current_storage_path = str(target)
-                print(f"✅ 已切换到新的存储路径: {target}")
+                logger.info("已切换到新的存储路径: %s", target)
             except Exception as e:
-                print(f"❌ 切换存储路径失败: {str(e)}")
+                logger.error("切换存储路径失败: %s", e)
                 raise
     
     def _setup_routes(self):
@@ -225,7 +228,7 @@ class GraphWebServer:
                     try:
                         # 防御性检查：确保实体有必要的属性
                         if not entity or not hasattr(entity, 'family_id') or not hasattr(entity, 'absolute_id'):
-                            print(f"⚠️  跳过无效实体: {entity}")
+                            logger.debug("跳过无效实体: %s", entity)
                             continue
                         
                         family_id_to_name[entity.family_id] = entity.name
@@ -242,7 +245,7 @@ class GraphWebServer:
                                 versions = self.storage.get_entity_versions(entity.family_id)
                                 version_count = len(versions) if versions else 0
                             except Exception as e:
-                                print(f"⚠️  获取实体版本失败 (family_id={entity.family_id}): {str(e)}")
+                                logger.warning("获取实体版本失败 (family_id=%s): %s", entity.family_id, e)
                                 versions = []
                                 version_count = 1
                         else:
@@ -270,7 +273,7 @@ class GraphWebServer:
                                 else:
                                     label = f"{entity.name} ({version_count}版本)" if version_count > 1 else entity.name
                             except Exception as e:
-                                print(f"⚠️  处理版本索引时出错 (family_id={entity.family_id}): {str(e)}")
+                                logger.warning("处理版本索引时出错 (family_id=%s): %s", entity.family_id, e)
                                 label = f"{entity.name} ({version_count}版本)" if version_count > 1 else entity.name
                         else:
                             # 在标签中显示版本数量
@@ -285,7 +288,7 @@ class GraphWebServer:
                             event_time_str = entity.event_time.isoformat() if entity.event_time else None
                             processed_time_str = entity.processed_time.isoformat() if entity.processed_time else None
                         except Exception as e:
-                            print(f"⚠️  实体时间格式错误 (family_id={entity.family_id}): {str(e)}")
+                            logger.warning("实体时间格式错误 (family_id=%s): %s", entity.family_id, e)
                             event_time_str = None
                             processed_time_str = None
 
@@ -309,9 +312,7 @@ class GraphWebServer:
                             'font': {'color': 'white'}
                         })
                     except Exception as e:
-                        import traceback
-                        print(f"⚠️  处理实体时发生错误 (entity={entity}): {str(e)}")
-                        print(traceback.format_exc())
+                        logger.error("处理实体时发生错误 (entity=%s): %s", entity, e, exc_info=True)
                         continue  # 跳过有问题的实体，继续处理其他实体
                 
                 # 为每个实体获取关系边（限制数量）
@@ -770,12 +771,7 @@ class GraphWebServer:
                     }
                 })
             except Exception as e:
-                import traceback
-                error_traceback = traceback.format_exc()
-                print(f"❌ [API错误] /api/graphs/data 发生异常:")
-                print(f"   错误类型: {type(e).__name__}")
-                print(f"   错误消息: {str(e)}")
-                print(f"   错误堆栈:\n{error_traceback}")
+                logger.error("/api/graphs/data 异常: %s: %s", type(e).__name__, e, exc_info=True)
                 return jsonify({
                     'success': False,
                     'error': str(e),
@@ -867,8 +863,8 @@ class GraphWebServer:
                 # 设置较低的阈值以支持更灵活的匹配
                 # 如果embedding不可用，会自动回退到文本相似度搜索
                 try:
-                    print(f"[搜索API] 开始搜索，查询: {query}, 最大结果数: {max_results}")
-                    print(f"[搜索API] Embedding客户端可用: {self.embedding_client.is_available() if self.embedding_client else False}")
+                    logger.debug("搜索查询: %s, 最大结果数: %d", query, max_results)
+                    logger.debug("Embedding客户端可用: %s", self.embedding_client.is_available() if self.embedding_client else False)
                     
                     # 同时搜索实体和关系
                     matched_entities = self.storage.search_entities_by_similarity(
@@ -885,7 +881,7 @@ class GraphWebServer:
                         max_results=max_results  # 先搜索max_results个关系
                     )
                     
-                    print(f"[搜索API] 搜索完成，找到 {len(matched_entities)} 个匹配实体，{len(matched_relations)} 个匹配关系")
+                    logger.debug("搜索完成，%d 实体, %d 关系", len(matched_entities), len(matched_relations))
                     
                     # 合并实体和关系，去重（同ID只保留最新版本）
                     # 收集匹配的实体ID和关系ID
@@ -897,16 +893,14 @@ class GraphWebServer:
                     matched_relation_ids = {relation.family_id for relation in matched_relations}
                     
                 except Exception as e:
-                    import traceback
-                    print(f"[搜索API] 搜索错误: {str(e)}")
-                    print(traceback.format_exc())
+                    logger.error("搜索错误: %s", e, exc_info=True)
                     return jsonify({
                         'success': False,
                         'error': f'搜索过程中发生错误: {str(e)}'
                     }), 500
                 
                 if not matched_entities and not matched_relations:
-                    print("[搜索API] 未找到匹配的实体或关系")
+                    logger.debug("搜索未找到匹配")
                     return jsonify({
                         'success': True,
                         'nodes': [],

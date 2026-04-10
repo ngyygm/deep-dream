@@ -1490,18 +1490,20 @@ class EntityProcessor:
                               skip_if_unchanged: bool = False) -> Entity:
         """创建实体的新版本，并记录 section 级 patches。"""
         # 如果启用了 skip_if_unchanged，检查内容是否真的变化了
+        _fetched_versions = None
         if skip_if_unchanged and content:
             if not old_content:
                 # 尝试从存储获取最新版本的内容
-                versions = self.storage.get_entity_versions(family_id)
-                if versions:
-                    old_content = versions[0].content or ""
-                    old_content_format = versions[0].content_format or "plain"
+                _fetched_versions = self.storage.get_entity_versions(family_id)
+                if _fetched_versions:
+                    old_content = _fetched_versions[0].content or ""
+                    old_content_format = _fetched_versions[0].content_format or "plain"
             # 精确匹配：内容完全相同则跳过
             if old_content and old_content.strip() == content.strip():
-                versions = self.storage.get_entity_versions(family_id)
-                if versions:
-                    return versions[0]
+                if _fetched_versions is None:
+                    _fetched_versions = self.storage.get_entity_versions(family_id)
+                if _fetched_versions:
+                    return _fetched_versions[0]
 
         entity = self._build_entity_version(family_id, name, content, episode_id, source_document, base_time=base_time)
         self.storage.save_entity(entity)
