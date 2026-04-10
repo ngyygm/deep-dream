@@ -2,7 +2,30 @@
 
 > 每轮迭代记录实际完成的功能和改进。按时间倒序排列。
 
+## 2026-04-12
+
+### [已完成] refactor: manager.py 4963行→1269行 + 4 mixin模块 (mixin decomposition)
+- StorageManager 从 4963 行单类重构为 mixin 组合模式
+- 新增4个 mixin 模块:
+  - `processor/storage/mixins/entity_store.py` (1078行, 34方法) — 实体 CRUD/搜索/合并/版本管理
+  - `processor/storage/mixins/relation_store.py` (1429行, 38方法) — 关系 CRUD/搜索/时间线查询
+  - `processor/storage/mixins/episode_store.py` (810行, 28方法) — Episode管理/迁移/搜索
+  - `processor/storage/mixins/concept_store.py` (683行, 21方法) — 统一概念查询/双写/迁移
+- `StorageManager` 继承顺序: `EntityStoreMixin, RelationStoreMixin, EpisodeStoreMixin, ConceptStoreMixin`
+- manager.py 保留核心职责: 连接管理、行转换、family_id解析、跨域查询(graph_statistics/shortest_path)、embedding缓存失效
+- 287+项测试全部通过（storage 34 + improvements/contradiction/confidence 119 + extraction 47 + queue/config 12 + llm 75 + prefetch 3）
+
 ## 2026-04-11
+
+### [已完成] feat: contradiction detection pipeline — auto-detect version conflicts & penalize confidence
+- commit: 8c1f330
+- `_detect_and_apply_contradictions` 方法添加到 `_ExtractionMixin`:
+  - 遍历多版本实体，调用 LLM detect_contradictions 检测版本间矛盾
+  - medium/high 严重性矛盾自动调用 adjust_confidence_on_contradiction 降低置信度
+  - 错误容忍：LLM 失败不阻断流水线
+- Pipeline集成: `_align_entities` (步骤6) 中自动对版本数≥2的实体运行矛盾检测
+- 测试: 27项测试覆盖4维度（核心检测逻辑7 + 置信度惩罚8 + 流水线集成5 + 错误恢复9），119项总测试全部通过
+- 影响: `processor/pipeline/extraction.py`, `tests/test_contradiction_detection.py`
 
 ### [已完成] feat: confidence engine — Bayesian-inspired evidence-driven confidence evolution
 - commit: 8a07c7d
@@ -287,5 +310,5 @@
 
 #### P2 功能对齐（vision.md）
 - [x] ~~**置信度引擎**: 置信度随证据增减动态调整~~ (8a07c7d)
-- [ ] **矛盾检测**: 版本间语义冲突检测与修正标注
+- [x] ~~**矛盾检测**: 版本间语义冲突检测与修正标注~~ (8c1f330)
 - [ ] **Dream 候选层**: Dream产物默认写入候选层，需证据/复核提升为事实
