@@ -117,6 +117,8 @@ class StorageManager:
         self._entity_emb_cache_ts: float = 0.0
         self._relation_emb_cache: Optional[List[tuple]] = None
         self._relation_emb_cache_ts: float = 0.0
+        self._concept_emb_cache: Optional[List[tuple]] = None
+        self._concept_emb_cache_ts: float = 0.0
         self._emb_cache_ttl: float = 5.0  # 秒
 
         # 初始化数据库
@@ -1447,6 +1449,8 @@ class StorageManager:
         self._entity_emb_cache_ts = 0.0
         self._relation_emb_cache = None
         self._relation_emb_cache_ts = 0.0
+        self._concept_emb_cache = None
+        self._concept_emb_cache_ts = 0.0
 
     def _get_entities_with_embeddings(self) -> List[tuple]:
         """
@@ -4442,6 +4446,66 @@ class StorageManager:
         except Exception as exc:
             logger.debug("concept delete by family failed: %s", exc)
 
+    def _get_latest_concepts_with_embeddings(self, role: Optional[str] = None) -> List[tuple]:
+        """获取概念的最新版本及其 embedding（带短 TTL 缓存）。
+
+        Returns:
+            List of (concept_dict, embedding_array) tuples. embedding_array 为 None 表示没有 embedding。
+        """
+        now = time.time()
+        if self._concept_emb_cache is not None and (now - self._concept_emb_cache_ts) < self._emb_cache_ttl:
+            if role is None:
+                return self._concept_emb_cache
+            # 缓存不区分 role，在内存中过滤
+            return [(c, e) for c, e in self._concept_emb_cache if role is None or c.get('role') == role]
+
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        # ROW_NUMBER 窗口函数获取每个 family_id 的最新版本
+        cursor.execute("""
+            SELECT id, family_id, role, name, content, event_time, processed_time,
+                   source_document, episode_id, embedding, connects,
+                   summary, attributes, confidence, content_format
+            FROM (
+                SELECT *, ROW_NUMBER() OVER (PARTITION BY family_id ORDER BY processed_time DESC) AS rn
+                FROM concepts
+            )
+            WHERE rn = 1
+        """)
+
+        results = []
+        for row in cursor.fetchall():
+            embedding_array = None
+            if row[9] is not None:  # embedding column
+                try:
+                    embedding_array = np.frombuffer(row[9], dtype=np.float32)
+                except (ValueError, TypeError):
+                    pass
+            concept = {
+                'id': row[0],
+                'family_id': row[1],
+                'role': row[2],
+                'name': row[3] or '',
+                'content': row[4] or '',
+                'event_time': row[5],
+                'processed_time': row[6],
+                'source_document': row[7] or '',
+                'episode_id': row[8] or '',
+                'connects': row[10] or '',
+                'summary': row[11],
+                'attributes': row[12],
+                'confidence': row[13],
+                'content_format': row[14] or 'plain',
+            }
+            results.append((concept, embedding_array))
+
+        self._concept_emb_cache = results
+        self._concept_emb_cache_ts = time.time()
+
+        if role is not None:
+            return [(c, e) for c, e in results if c.get('role') == role]
+        return results
+
     def migrate_to_concepts(self):
         """Migrate existing entities + relations + episodes to concepts table (idempotent)."""
         conn = self._get_conn()
@@ -4576,10 +4640,72 @@ class StorageManager:
 
     def search_concepts_by_similarity(self, query_text: str, role: str = None,
                                        threshold: float = 0.5, max_results: int = 10) -> List[dict]:
-        """语义相似度搜索（需要 embedding 支撑）。
+        """语义相似度搜索：使用 embedding 余弦相似度，回退到 BM25。
 
-        当前回退到 BM25；后续接入 embedding 向量后替换为余弦相似度搜索。
+        当 embedding 客户端可用时，编码查询文本并与 concepts 表中存储的
+        embedding BLOB 进行余弦相似度比较。无 embedding 或编码失败时回退 BM25。
         """
+        if not query_text:
+            return []
+
+        # 尝试 embedding 搜索
+        if self.embedding_client and self.embedding_client.is_available():
+            concepts_with_emb = self._get_latest_concepts_with_embeddings(role=role)
+            if not concepts_with_emb:
+                return []
+
+            # 检查是否有任何概念有 embedding
+            has_any_embedding = any(emb is not None for _, emb in concepts_with_emb)
+            if not has_any_embedding:
+                return self.search_concepts_by_bm25(query_text, role=role, limit=max_results)
+
+            query_embedding = self.embedding_client.encode(query_text)
+            if query_embedding is None:
+                return self.search_concepts_by_bm25(query_text, role=role, limit=max_results)
+
+            query_vec = np.array(query_embedding[0] if isinstance(query_embedding, (list, np.ndarray)) else query_embedding, dtype=np.float32)
+            query_norm = np.linalg.norm(query_vec)
+            if query_norm == 0:
+                return self.search_concepts_by_bm25(query_text, role=role, limit=max_results)
+            query_vec = query_vec / query_norm
+
+            # 向量化计算：构建存储的 embedding 矩阵
+            stored_rows = []
+            stored_concepts = []
+            for concept, emb in concepts_with_emb:
+                if emb is not None and len(emb) > 0:
+                    stored_rows.append(emb)
+                    stored_concepts.append(concept)
+
+            if not stored_rows:
+                return self.search_concepts_by_bm25(query_text, role=role, limit=max_results)
+
+            stored_matrix = np.stack(stored_rows)  # (M, D)
+            norms = np.linalg.norm(stored_matrix, axis=1, keepdims=True)
+            norms = np.where(norms == 0, 1.0, norms)
+            stored_matrix = stored_matrix / norms
+
+            # 余弦相似度 = 归一化后的点积
+            similarities = stored_matrix @ query_vec  # (M,)
+
+            # 收集超过阈值的结果
+            scored = []
+            for i, sim in enumerate(similarities):
+                if sim >= threshold:
+                    scored.append((float(sim), stored_concepts[i]))
+            scored.sort(key=lambda x: x[0], reverse=True)
+
+            results = []
+            for sim, concept in scored[:max_results]:
+                concept['_similarity_score'] = sim
+                results.append(concept)
+
+            if results:
+                return results
+            # embedding 搜索无结果，回退 BM25
+            return self.search_concepts_by_bm25(query_text, role=role, limit=max_results)
+
+        # 无 embedding 客户端，回退 BM25
         return self.search_concepts_by_bm25(query_text, role=role, limit=max_results)
 
     def get_concept_neighbors(self, family_id: str, max_depth: int = 1) -> List[dict]:
@@ -4620,17 +4746,17 @@ class StorageManager:
             if connects:
                 try:
                     abs_ids = json.loads(connects) if isinstance(connects, str) else connects
-                    # Resolve absolute_ids to family_ids
+                    # Batch resolve absolute_ids to family_ids (replacing N+1 loop)
                     entity_fids = set()
-                    conn = self._get_conn()
-                    cursor = conn.cursor()
-                    for aid in abs_ids:
+                    if abs_ids:
+                        conn = self._get_conn()
+                        cursor = conn.cursor()
+                        placeholders = ','.join('?' * len(abs_ids))
                         cursor.execute(
-                            "SELECT family_id FROM concepts WHERE id = ?", (aid,)
+                            f"SELECT DISTINCT family_id FROM concepts WHERE id IN ({placeholders})",
+                            abs_ids
                         )
-                        row = cursor.fetchone()
-                        if row:
-                            entity_fids.add(row[0])
+                        entity_fids = set(r[0] for r in cursor.fetchall())
                     if entity_fids:
                         ent_concepts = self.get_concepts_by_family_ids(list(entity_fids))
                         results.extend(ent_concepts.values())

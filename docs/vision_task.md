@@ -4,6 +4,21 @@
 
 ## 2026-04-10
 
+### [已完成] feat: Concept语义搜索 — embedding余弦相似度替代BM25 stub
+- `search_concepts_by_similarity` 从纯BM25回退改为真正的embedding向量搜索
+- 新增 `_get_latest_concepts_with_embeddings`：带TTL缓存的Concept embedding批量加载器
+  - ROW_NUMBER()窗口函数取每个family_id最新版本
+  - embedding BLOB → numpy数组解码
+- 搜索流程：encode查询文本 → 构建归一化存储矩阵 → 矩阵乘法批量余弦相似度 → 阈值过滤 + 排序
+- 无embedding客户端或无结果时自动回退BM25
+- 结果附带 `_similarity_score` 字段
+- 新增 `_concept_emb_cache` / `_concept_emb_cache_ts` 缓存，随 `_invalidate_emb_cache()` 统一失效
+- 对齐 vision.md "语义是一等公民" 原则
+
+### [已完成] perf: get_concept_neighbors relation角色 N+1→批量查询
+- relation角色邻居解析：逐个 `SELECT family_id FROM concepts WHERE id = ?` → 单次 `IN (?)` 批量查询
+- 与entity角色、observation角色的批量模式对齐
+
 ### [已完成] feat: extraction pipeline填充summary/confidence/content_format
 - commit: f12fe40
 - Entity: _build_new_entity/_build_entity_version 添加 summary(内容首行)、confidence=0.7、content_format="markdown"
