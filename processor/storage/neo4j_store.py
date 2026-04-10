@@ -3877,50 +3877,116 @@ class Neo4jStorageManager:
 
             return entities, relations, hop_map
 
-    def save_episode_mentions(self, episode_id: str, entity_absolute_ids: List[str], context: str = ""):
-        """记录 Episode 提及的实体（单次 UNWIND 批量写入）。"""
+    def save_episode_mentions(self, episode_id: str, entity_absolute_ids: List[str],
+                              context: str = "", target_type: str = "entity"):
+        """记录 Episode 提及的实体或关系（单次 UNWIND 批量写入）。
+
+        Args:
+            episode_id: Episode 节点的 uuid。
+            entity_absolute_ids: 目标节点（Entity 或 Relation）的 absolute_id 列表。
+            context: 提及上下文描述。
+            target_type: "entity" 创建 (ep)-[:MENTIONS]->(e:Entity)，
+                         "relation" 创建 (ep)-[:MENTIONS]->(r:Relation)。
+        """
         if not entity_absolute_ids:
             return
         with self._episode_write_lock:
             with self._session() as session:
-                session.run("""
-                    MERGE (ep:Episode {uuid: $ep_id})
-                    WITH ep
-                    UNWIND $items AS item
-                    MATCH (e:Entity {uuid: item.abs_id})
-                    MERGE (ep)-[m:MENTIONS {context: item.ctx}]->(e)
-                """, ep_id=episode_id,
-                     items=[{"abs_id": aid, "ctx": context} for aid in entity_absolute_ids])
+                if target_type == "relation":
+                    session.run("""
+                        MERGE (ep:Episode {uuid: $ep_id})
+                        WITH ep
+                        UNWIND $items AS item
+                        MATCH (r:Relation {uuid: item.abs_id})
+                        MERGE (ep)-[m:MENTIONS {context: item.ctx}]->(r)
+                    """, ep_id=episode_id,
+                         items=[{"abs_id": aid, "ctx": context} for aid in entity_absolute_ids])
+                else:
+                    session.run("""
+                        MERGE (ep:Episode {uuid: $ep_id})
+                        WITH ep
+                        UNWIND $items AS item
+                        MATCH (e:Entity {uuid: item.abs_id})
+                        MERGE (ep)-[m:MENTIONS {context: item.ctx}]->(e)
+                    """, ep_id=episode_id,
+                         items=[{"abs_id": aid, "ctx": context} for aid in entity_absolute_ids])
 
     def get_entity_provenance(self, family_id: str) -> List[dict]:
-        """获取提及该实体的所有 Episode。"""
+        """获取提及该实体的所有 Episode。
+
+        先查找 Episode->Entity 的直接 MENTIONS；如果无结果，
+        再查找通过该实体参与的关系（Episode->Relation 的 MENTIONS）间接关联的 Episode。
+        """
         entity = self.get_entity_by_family_id(family_id)
         if not entity:
             return []
         with self._session() as session:
+            # 1. 直接 MENTIONS: Episode -> Entity
             result = session.run("""
                 MATCH (ep:Episode)-[m:MENTIONS]->(e:Entity {uuid: $abs_id})
                 RETURN ep.uuid AS episode_id, m.context AS context
             """, abs_id=entity.absolute_id)
-            return [{"episode_id": r["episode_id"], "context": r.get("context", "")} for r in result]
+            provenance = [{"episode_id": r["episode_id"], "context": r.get("context", "")} for r in result]
+
+            if provenance:
+                return provenance
+
+            # 2. 间接 MENTIONS: Episode -> Relation（该实体参与的关系）
+            abs_ids = self._get_all_absolute_ids_for_entity(family_id)
+            if abs_ids:
+                result = session.run("""
+                    MATCH (ep:Episode)-[m:MENTIONS]->(r:Relation)
+                    WHERE r.entity1_absolute_id IN $abs_ids OR r.entity2_absolute_id IN $abs_ids
+                    RETURN DISTINCT ep.uuid AS episode_id, m.context AS context
+                """, abs_ids=abs_ids)
+                provenance = [{"episode_id": r["episode_id"], "context": r.get("context", "")} for r in result]
+
+            return provenance
 
     def get_episode_entities(self, episode_id: str) -> List[dict]:
-        """获取 Episode 关联的所有实体。"""
+        """获取 Episode 通过 MENTIONS 边关联的所有实体和关系。
+
+        Returns:
+            列表中每项包含:
+              - absolute_id: 目标节点 uuid
+              - target_type: "entity" 或 "relation"
+              - name: 目标名称（relation 使用 family_id）
+              - family_id: 目标 family_id
+              - mention_context: MENTIONS 边的 context 属性
+        """
+        results = []
         with self._session() as session:
-            result = session.run("""
+            # Entity targets
+            ent_result = session.run("""
                 MATCH (ep:Episode {uuid: $ep_id})-[m:MENTIONS]->(e:Entity)
-                RETURN e.uuid AS entity_absolute_id, e.family_id AS family_id,
-                       e.name AS name, m.context AS context
+                RETURN e.uuid AS absolute_id, e.family_id AS family_id,
+                       e.name AS name, m.context AS mention_context
             """, ep_id=episode_id)
-            return [
-                {
-                    "entity_absolute_id": r["entity_absolute_id"],
-                    "family_id": r.get("family_id", ""),
+            for r in ent_result:
+                results.append({
+                    "absolute_id": r["absolute_id"],
+                    "target_type": "entity",
                     "name": r.get("name", ""),
-                    "context": r.get("context", ""),
-                }
-                for r in result
-            ]
+                    "family_id": r.get("family_id", ""),
+                    "mention_context": r.get("mention_context", ""),
+                })
+
+            # Relation targets
+            rel_result = session.run("""
+                MATCH (ep:Episode {uuid: $ep_id})-[m:MENTIONS]->(r:Relation)
+                RETURN r.uuid AS absolute_id, r.family_id AS family_id,
+                       r.family_id AS name, m.context AS mention_context
+            """, ep_id=episode_id)
+            for r in rel_result:
+                results.append({
+                    "absolute_id": r["absolute_id"],
+                    "target_type": "relation",
+                    "name": r.get("name", ""),
+                    "family_id": r.get("family_id", ""),
+                    "mention_context": r.get("mention_context", ""),
+                })
+
+        return results
 
     def delete_episode_mentions(self, episode_id: str):
         """删除 Episode 的所有 MENTIONS 边。"""

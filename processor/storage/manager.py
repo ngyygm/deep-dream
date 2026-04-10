@@ -74,6 +74,9 @@ class StorageManager:
         # 自动迁移旧目录结构
         self._migrate_storage()
 
+        # Phase 1: 将已有 Episode 文件元数据迁移到 SQLite
+        self._migrate_episodes_from_files()
+
     # ------------------------------------------------------------------
     # 连接管理
     # ------------------------------------------------------------------
@@ -177,16 +180,37 @@ class StorageManager:
         c.execute("CREATE INDEX IF NOT EXISTS idx_cp_target_abs ON content_patches(target_absolute_id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_cp_family_id ON content_patches(target_family_id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_cp_section ON content_patches(target_family_id, section_key)")
-        # Episode mentions
+        # Episodes (Phase 1: Episode 入库，支持图查询)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS episodes (
+                id TEXT PRIMARY KEY,
+                family_id TEXT NOT NULL,
+                content TEXT NOT NULL,
+                event_time TEXT NOT NULL,
+                processed_time TEXT NOT NULL,
+                source_document TEXT DEFAULT '',
+                activity_type TEXT DEFAULT '',
+                episode_type TEXT DEFAULT '',
+                doc_hash TEXT DEFAULT '',
+                embedding BLOB
+            )
+        """)
+        c.execute("CREATE INDEX IF NOT EXISTS idx_episodes_family ON episodes(family_id)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_episodes_event_time ON episodes(event_time)")
+        # Episode mentions (Phase 1: 扩展为 entity + relation)
         c.execute("""
             CREATE TABLE IF NOT EXISTS episode_mentions (
                 episode_id TEXT NOT NULL,
-                entity_absolute_id TEXT NOT NULL,
+                target_absolute_id TEXT NOT NULL,
+                target_type TEXT NOT NULL DEFAULT 'entity',
                 mention_context TEXT DEFAULT '',
-                PRIMARY KEY (episode_id, entity_absolute_id)
+                PRIMARY KEY (episode_id, target_absolute_id, target_type)
             )
         """)
-        c.execute("CREATE INDEX IF NOT EXISTS idx_episode_mentions_entity ON episode_mentions(entity_absolute_id)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_episode_mentions_target ON episode_mentions(target_absolute_id)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_episode_mentions_episode ON episode_mentions(episode_id)")
+        # 兼容旧表：如果存在旧 episode_mentions 表只有 (episode_id, entity_absolute_id) 列
+        self._migrate_episode_mentions(c)
         # Dream logs
         c.execute("""
             CREATE TABLE IF NOT EXISTS dream_logs (
@@ -645,6 +669,9 @@ class StorageManager:
 
         # 更新缓存映射（用目录名而非纯 hash，以支持新命名）
         self._id_to_doc_hash[cache.absolute_id] = dir_name
+
+        # 同步写入 SQLite episodes 表（Phase 1）
+        self._save_episode_to_db(cache, doc_hash=dir_name)
 
         return cache.absolute_id
     
@@ -3858,16 +3885,147 @@ class StorageManager:
 
     # ========== Phase C: Episode MENTIONS ==========
 
-    def save_episode_mentions(self, episode_id: str, entity_absolute_ids: List[str], context: str = ""):
-        """记录 Episode 中提及的实体。"""
+    def _migrate_episode_mentions(self, cursor):
+        """迁移旧 episode_mentions 表到新 schema（幂等）。
+
+        旧表: (episode_id, entity_absolute_id, mention_context)
+        新表: (episode_id, target_absolute_id, target_type, mention_context)
+
+        SQLite 的 CREATE TABLE IF NOT EXISTS 不会修改已存在表的列。
+        因此需要：检测旧 schema → rename → 创建新表 → 迁移数据 → drop 旧表。
+        """
+        try:
+            cursor.execute("PRAGMA table_info(episode_mentions)")
+            columns = {row[1] for row in cursor.fetchall()}
+            if "entity_absolute_id" in columns and "target_type" not in columns:
+                # 旧表结构：rename → 创建新表 → 迁移 → 删除旧表
+                cursor.execute(
+                    "ALTER TABLE episode_mentions RENAME TO episode_mentions_old"
+                )
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS episode_mentions (
+                        episode_id TEXT NOT NULL,
+                        target_absolute_id TEXT NOT NULL,
+                        target_type TEXT NOT NULL DEFAULT 'entity',
+                        mention_context TEXT DEFAULT '',
+                        PRIMARY KEY (episode_id, target_absolute_id, target_type)
+                    )
+                """)
+                cursor.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_episode_mentions_target "
+                    "ON episode_mentions(target_absolute_id)"
+                )
+                cursor.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_episode_mentions_episode "
+                    "ON episode_mentions(episode_id)"
+                )
+                cursor.execute("""
+                    INSERT OR IGNORE INTO episode_mentions
+                        (episode_id, target_absolute_id, target_type, mention_context)
+                    SELECT episode_id, entity_absolute_id, 'entity', mention_context
+                    FROM episode_mentions_old
+                """)
+                cursor.execute("DROP TABLE episode_mentions_old")
+                logger.info("episode_mentions: 旧表迁移到新 schema 完成")
+        except Exception as exc:
+            logger.debug("episode_mentions migration skipped: %s", exc)
+
+    def _save_episode_to_db(self, cache: Episode, doc_hash: str = ""):
+        """将 Episode 元数据写入 SQLite episodes 表。"""
+        try:
+            conn = self._get_conn()
+            with self._write_lock:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    INSERT OR REPLACE INTO episodes
+                    (id, family_id, content, event_time, processed_time,
+                     source_document, activity_type, episode_type, doc_hash)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    cache.absolute_id,
+                    cache.absolute_id,  # family_id = absolute_id（Episode 当前不可版本化）
+                    cache.content,
+                    cache.event_time.isoformat(),
+                    datetime.now().isoformat(),
+                    cache.source_document,
+                    cache.activity_type or "",
+                    getattr(cache, 'episode_type', '') or "",
+                    doc_hash,
+                ))
+                conn.commit()
+        except Exception as exc:
+            logger.warning("episode SQLite write failed: %s", exc)
+
+    def _migrate_episodes_from_files(self):
+        """启动时将 docs/ 目录中的 Episode 元数据迁移到 SQLite（幂等）。"""
+        if not self.docs_dir.is_dir():
+            return
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM episodes")
+        existing = cursor.fetchone()[0]
+        if existing > 0:
+            return  # 已迁移过
+        migrated = 0
+        for doc_dir in self.docs_dir.iterdir():
+            if not doc_dir.is_dir():
+                continue
+            meta_path = doc_dir / "meta.json"
+            if not meta_path.exists():
+                continue
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                cache_id = meta.get("absolute_id") or meta.get("id")
+                if not cache_id:
+                    continue
+                cache_md_path = doc_dir / "cache.md"
+                content = ""
+                if cache_md_path.exists():
+                    content = cache_md_path.read_text(encoding="utf-8")
+                cursor.execute("""
+                    INSERT OR IGNORE INTO episodes
+                    (id, family_id, content, event_time, processed_time,
+                     source_document, activity_type, episode_type, doc_hash)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    cache_id,
+                    cache_id,
+                    content,
+                    meta.get("event_time", ""),
+                    meta.get("event_time", ""),
+                    meta.get("source_document", ""),
+                    meta.get("activity_type", ""),
+                    "",
+                    doc_dir.name,
+                ))
+                migrated += 1
+            except Exception as exc:
+                logger.debug("episode migration skip: %s", exc)
+        if migrated:
+            conn.commit()
+            logger.info("episodes 表迁移完成: %d 条", migrated)
+
+    def save_episode_mentions(self, episode_id: str, target_absolute_ids: List[str],
+                              context: str = "", target_type: str = "entity"):
+        """记录 Episode 中提及的概念（entity / relation）。
+
+        Args:
+            episode_id: Episode 的 absolute_id
+            target_absolute_ids: 被提及概念的 absolute_id 列表
+            context: 提及上下文
+            target_type: "entity" | "relation"
+        """
+        if not target_absolute_ids:
+            return
         with self._write_lock:
             conn = self._get_conn()
             cursor = conn.cursor()
-            for abs_id in entity_absolute_ids:
+            for abs_id in target_absolute_ids:
                 cursor.execute("""
-                    INSERT OR REPLACE INTO episode_mentions (episode_id, entity_absolute_id, mention_context)
-                    VALUES (?, ?, ?)
-                """, (episode_id, abs_id, context))
+                    INSERT OR REPLACE INTO episode_mentions
+                    (episode_id, target_absolute_id, target_type, mention_context)
+                    VALUES (?, ?, ?, ?)
+                """, (episode_id, abs_id, target_type, context))
             conn.commit()
 
     def get_entity_provenance(self, family_id: str) -> List[dict]:
@@ -3880,29 +4038,49 @@ class StorageManager:
             return []
         placeholders = ",".join("?" * len(abs_ids))
         cursor.execute(f"""
-            SELECT episode_id, entity_absolute_id, mention_context
+            SELECT episode_id, target_absolute_id, target_type, mention_context
             FROM episode_mentions
-            WHERE entity_absolute_id IN ({placeholders})
+            WHERE target_absolute_id IN ({placeholders})
         """, abs_ids)
         return [
-            {"episode_id": row[0], "entity_absolute_id": row[1], "mention_context": row[2] or ""}
+            {"episode_id": row[0], "entity_absolute_id": row[1],
+             "target_type": row[2], "mention_context": row[3] or ""}
             for row in cursor.fetchall()
         ]
 
     def get_episode_entities(self, episode_id: str) -> List[dict]:
-        """获取 Episode 中提及的所有实体。"""
+        """获取 Episode 中提及的所有实体和关系。"""
         conn = self._get_conn()
         cursor = conn.cursor()
+        # Entity targets
         cursor.execute("""
-            SELECT em.entity_absolute_id, em.mention_context, e.name, e.family_id
+            SELECT em.target_absolute_id, em.target_type, em.mention_context,
+                   e.name, e.family_id
             FROM episode_mentions em
-            LEFT JOIN entities e ON em.entity_absolute_id = e.id
-            WHERE em.episode_id = ?
+            LEFT JOIN entities e ON em.target_absolute_id = e.id
+            WHERE em.episode_id = ? AND em.target_type = 'entity'
         """, (episode_id,))
-        return [
-            {"absolute_id": row[0], "mention_context": row[1] or "", "name": row[2] or "", "family_id": row[3] or ""}
+        results = [
+            {"absolute_id": row[0], "target_type": row[1] or "entity",
+             "mention_context": row[2] or "", "name": row[3] or "",
+             "family_id": row[4] or ""}
             for row in cursor.fetchall()
         ]
+        # Relation targets
+        cursor.execute("""
+            SELECT em.target_absolute_id, em.target_type, em.mention_context,
+                   r.family_id
+            FROM episode_mentions em
+            LEFT JOIN relations r ON em.target_absolute_id = r.id
+            WHERE em.episode_id = ? AND em.target_type = 'relation'
+        """, (episode_id,))
+        for row in cursor.fetchall():
+            results.append({
+                "absolute_id": row[0], "target_type": "relation",
+                "mention_context": row[2] or "", "name": row[3] or "",
+                "family_id": row[3] or "",
+            })
+        return results
 
     def delete_episode_mentions(self, episode_id: str):
         """删除 Episode 的所有提及记录。"""
@@ -3911,6 +4089,60 @@ class StorageManager:
             cursor = conn.cursor()
             cursor.execute("DELETE FROM episode_mentions WHERE episode_id = ?", (episode_id,))
             conn.commit()
+
+    def get_episode_from_db(self, episode_id: str) -> Optional[Dict]:
+        """从 SQLite episodes 表获取 Episode 元数据。"""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM episodes WHERE id = ?", (episode_id,))
+        row = cursor.fetchone()
+        if not row:
+            return None
+        cols = [desc[0] for desc in cursor.description]
+        return dict(zip(cols, row))
+
+    def list_episodes_from_db(self, limit: int = 50, offset: int = 0) -> List[Dict]:
+        """从 SQLite episodes 表列出 Episode（按时间倒序）。"""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM episodes ORDER BY event_time DESC LIMIT ? OFFSET ?",
+            (limit, offset),
+        )
+        cols = [desc[0] for desc in cursor.description]
+        return [dict(zip(cols, row)) for row in cursor.fetchall()]
+
+    def list_episodes(self, limit: int = 20, offset: int = 0) -> List[Dict]:
+        """分页列出 Episode（兼容 Neo4j 接口）。"""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id, content, source_document, event_time, activity_type "
+            "FROM episodes ORDER BY event_time DESC LIMIT ? OFFSET ?",
+            (limit, offset),
+        )
+        episodes = []
+        for row in cursor.fetchall():
+            episodes.append({
+                "uuid": row[0],
+                "content": row[1] or "",
+                "source_document": row[2] or "",
+                "event_time": row[3] or "",
+                "activity_type": row[4] or "",
+                "created_at": row[3] or "",
+            })
+        return episodes
+
+    def count_episodes(self) -> int:
+        """统计 Episode 总数。"""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM episodes")
+        return cursor.fetchone()[0]
+
+    def get_episode(self, episode_id: str) -> Optional[Dict]:
+        """获取单个 Episode 详情（兼容 Neo4j 接口）。"""
+        return self.get_episode_from_db(episode_id)
 
     # ========== Phase D: 关系溯源 ==========
 

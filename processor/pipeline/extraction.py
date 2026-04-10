@@ -1774,14 +1774,33 @@ class _ExtractionMixin:
                 f"{_win_label} · 步骤6/7: 实体对齐",
                 f"实体对齐完成，共 {len(unique_entities)} 个实体")
 
-        # Phase C: 记录 Episode → Entity MENTIONS
-        if unique_entities:
-            try:
-                abs_ids = [e.absolute_id for e in unique_entities]
-                self.storage.save_episode_mentions(new_episode.absolute_id, abs_ids)
-            except Exception as e:
-                if verbose:
-                    wprint(f"【步骤6】MENTIONS｜失败｜{e}")
+        # Phase C: 记录 Episode → Entity MENTIONS（无条件：所有提及的实体，包括新建和已存在的）
+        try:
+            # entity_name_to_id 映射中包含所有被提及的实体 family_id（新建 + 已存在）
+            all_mentioned_fids = list(set(
+                eid for eid in entity_name_to_id.values() if eid
+            ))
+            if all_mentioned_fids:
+                # 将 family_id 批量转为 absolute_id
+                if hasattr(self.storage, 'get_entities_by_family_ids'):
+                    ent_map = self.storage.get_entities_by_family_ids(all_mentioned_fids)
+                    all_mentioned_entity_ids = list(set(
+                        e.absolute_id for e in ent_map.values() if e and e.absolute_id
+                    ))
+                else:
+                    all_mentioned_entity_ids = []
+                    for fid in all_mentioned_fids:
+                        ent = self.storage.get_entity_by_family_id(fid)
+                        if ent and ent.absolute_id:
+                            all_mentioned_entity_ids.append(ent.absolute_id)
+                if all_mentioned_entity_ids:
+                    self.storage.save_episode_mentions(
+                        new_episode.absolute_id, all_mentioned_entity_ids,
+                        target_type="entity",
+                    )
+        except Exception as e:
+            if verbose:
+                wprint(f"【步骤6】MENTIONS｜Entity｜失败｜{e}")
 
         return _AlignResult(
             entity_name_to_id=entity_name_to_id,
@@ -2054,6 +2073,21 @@ class _ExtractionMixin:
             progress_range=(p2_end, progress_range[1]),
             window_index=window_index, total_windows=total_windows,
         )
+
+        # Phase C-2: 记录 Episode → Relation MENTIONS（无条件：所有新建的关系）
+        if processed_relations:
+            try:
+                rel_abs_ids = list(set(
+                    r.absolute_id for r in processed_relations if r.absolute_id
+                ))
+                if rel_abs_ids:
+                    self.storage.save_episode_mentions(
+                        new_episode.absolute_id, rel_abs_ids,
+                        target_type="relation",
+                    )
+            except Exception as e:
+                if verbose:
+                    wprint(f"【步骤7】MENTIONS｜Relation｜失败｜{e}")
 
         # 步骤8: 纯代码校验
         self._verify_window_results(
