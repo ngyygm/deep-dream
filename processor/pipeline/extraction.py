@@ -1363,13 +1363,46 @@ class _ExtractionMixin:
 
         # 某些并行实体对齐分支可能留下只存在于内存中的临时 family_id；
         # Step7 开始前按名称刷新一次，避免关系写入时再命中”family_id 不存在”。
-        for name, eid in list(entity_name_to_id.items()):
-            if eid:
-                entity_name_to_id[name] = self.storage.resolve_family_id(eid)
+        eids_to_resolve = [(name, eid) for name, eid in entity_name_to_id.items() if eid]
+        if eids_to_resolve:
+            resolve_fn = getattr(self.storage, 'resolve_family_ids', None)
+            if resolve_fn:
+                try:
+                    unique_eids = list(set(eid for _, eid in eids_to_resolve))
+                    resolved_map = resolve_fn(unique_eids) or {}
+                    for name, eid in eids_to_resolve:
+                        entity_name_to_id[name] = resolved_map.get(eid, eid)
+                except Exception:
+                    for name, eid in eids_to_resolve:
+                        entity_name_to_id[name] = self.storage.resolve_family_id(eid)
+            else:
+                for name, eid in eids_to_resolve:
+                    entity_name_to_id[name] = self.storage.resolve_family_id(eid)
+
+        # 批量检查哪些 eid 仍然有效
+        valid_eids_to_check = set(eid for eid in entity_name_to_id.values() if eid)
+        if valid_eids_to_check:
+            try:
+                resolve_fn = getattr(self.storage, 'resolve_family_ids', None)
+                if resolve_fn:
+                    resolved_valid = resolve_fn(list(valid_eids_to_check)) or {}
+                    valid_eids = set(resolved_valid.keys()) | set(resolved_valid.values())
+                else:
+                    valid_eids = set()
+                    for eid in valid_eids_to_check:
+                        if self.storage.get_entity_by_family_id(eid) is not None:
+                            valid_eids.add(eid)
+            except Exception:
+                valid_eids = set()
+                for eid in valid_eids_to_check:
+                    if self.storage.get_entity_by_family_id(eid) is not None:
+                        valid_eids.add(eid)
+        else:
+            valid_eids = set()
 
         invalid_names = [
             name for name, eid in entity_name_to_id.items()
-            if eid and self.storage.get_entity_by_family_id(eid) is None
+            if eid and eid not in valid_eids
         ]
         if invalid_names:
             refreshed_map = self.storage.get_family_ids_by_names(invalid_names)
