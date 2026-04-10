@@ -2376,6 +2376,12 @@ class Neo4jStorageManager:
                     "processed_time": relation.processed_time.isoformat(),
                     "cache_id": relation.episode_id,
                     "source": relation.source_document,
+                    "summary": getattr(relation, 'summary', None),
+                    "attributes": json.dumps(getattr(relation, 'attributes', None)) if isinstance(getattr(relation, 'attributes', None), dict) else getattr(relation, 'attributes', None),
+                    "confidence": getattr(relation, 'confidence', None),
+                    "provenance": getattr(relation, 'provenance', None),
+                    "content_format": getattr(relation, 'content_format', None),
+                    "valid_at": (relation.valid_at or relation.event_time).isoformat() if relation.valid_at or relation.event_time else None,
                 })
 
                 if embedding_blob:
@@ -2396,7 +2402,13 @@ class Neo4jStorageManager:
                         r.event_time = datetime(row.event_time),
                         r.processed_time = datetime(row.processed_time),
                         r.episode_id = row.cache_id,
-                        r.source_document = row.source
+                        r.source_document = row.source,
+                        r.summary = row.summary,
+                        r.attributes = row.attributes,
+                        r.confidence = row.confidence,
+                        r.provenance = row.provenance,
+                        r.content_format = row.content_format,
+                        r.valid_at = CASE WHEN row.valid_at IS NOT NULL THEN datetime(row.valid_at) ELSE NULL END
                     WITH row
                     MATCH (n1:Entity {uuid: row.e1_abs})
                     MATCH (n2:Entity {uuid: row.e2_abs})
@@ -3429,34 +3441,6 @@ class Neo4jStorageManager:
                     "created_at": _fmt_dt(r["created_at"]),
                 })
             return episodes
-
-    def get_episode_entities(self, uuid: str) -> List[Dict]:
-        """通过 episode_id 关联查出 Episode 下的实体。"""
-        with self._session() as session:
-            episode = session.run(
-                "MATCH (ep:Episode {uuid: $uuid}) RETURN ep.episode_id AS mcid",
-                uuid=uuid,
-            ).single()
-            if not episode or not episode["mcid"]:
-                return []
-            mcid = episode["mcid"]
-            result = session.run(
-                "MATCH (e:Entity {episode_id: $mcid}) "
-                "RETURN e.uuid AS uuid, e.family_id AS family_id, e.name AS name, "
-                "e.content AS content, e.event_time AS event_time "
-                "ORDER BY e.processed_time DESC LIMIT 200",
-                mcid=mcid,
-            )
-            entities = []
-            for r in result:
-                entities.append({
-                    "uuid": r["uuid"],
-                    "family_id": r["family_id"],
-                    "name": r["name"],
-                    "content": r["content"] or "",
-                    "event_time": r["event_time"].isoformat() if r["event_time"] else None,
-                })
-            return entities
 
     # ------------------------------------------------------------------
     # 社区检测

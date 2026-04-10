@@ -22,6 +22,57 @@ from ..utils import clean_markdown_code_blocks, wprint
 class StorageManager:
     """存储管理器"""
 
+    # SELECT column lists — single source of truth for Entity/Relation reads
+    _ENTITY_SELECT = (
+        "id, family_id, name, content, event_time, processed_time, "
+        "episode_id, source_document, embedding, summary, attributes, "
+        "confidence, valid_at, invalid_at"
+    )
+    _RELATION_SELECT = (
+        "id, family_id, entity1_absolute_id, entity2_absolute_id, "
+        "content, event_time, processed_time, episode_id, source_document, "
+        "embedding, summary, attributes, confidence, valid_at, invalid_at"
+    )
+
+    def _row_to_entity(self, row) -> Entity:
+        """Convert a SELECT row tuple to an Entity object using _ENTITY_SELECT column order."""
+        return Entity(
+            absolute_id=row[0],
+            family_id=row[1],
+            name=row[2],
+            content=row[3],
+            event_time=self._safe_parse_datetime(row[4]),
+            processed_time=self._safe_parse_datetime(row[5]),
+            episode_id=row[6],
+            source_document=row[7] if len(row) > 7 else '',
+            embedding=row[8] if len(row) > 8 else None,
+            summary=row[9] if len(row) > 9 else None,
+            attributes=row[10] if len(row) > 10 else None,
+            confidence=row[11] if len(row) > 11 else None,
+            valid_at=self._safe_parse_datetime(row[12]) if len(row) > 12 and row[12] else None,
+            invalid_at=self._safe_parse_datetime(row[13]) if len(row) > 13 and row[13] else None,
+        )
+
+    def _row_to_relation(self, row) -> Relation:
+        """Convert a SELECT row tuple to a Relation object using _RELATION_SELECT column order."""
+        return Relation(
+            absolute_id=row[0],
+            family_id=row[1],
+            entity1_absolute_id=row[2],
+            entity2_absolute_id=row[3],
+            content=row[4],
+            event_time=self._safe_parse_datetime(row[5]),
+            processed_time=self._safe_parse_datetime(row[6]),
+            episode_id=row[7],
+            source_document=row[8] if len(row) > 8 else '',
+            embedding=row[9] if len(row) > 9 else None,
+            summary=row[10] if len(row) > 10 else None,
+            attributes=row[11] if len(row) > 11 else None,
+            confidence=row[12] if len(row) > 12 else None,
+            valid_at=self._safe_parse_datetime(row[13]) if len(row) > 13 and row[13] else None,
+            invalid_at=self._safe_parse_datetime(row[14]) if len(row) > 14 and row[14] else None,
+        )
+
     def __init__(self, storage_path: str, embedding_client=None,
                  entity_content_snippet_length: int = 50,
                  relation_content_snippet_length: int = 50):
@@ -1074,12 +1125,12 @@ class StorageManager:
                     getattr(entity, 'confidence', None),
                     getattr(entity, 'content_format', 'plain'),
                 ))
-                # 同步写入 FTS 表
+                # 同步写入 FTS 表（使用整数 rowid，非文本 id）
                 try:
                     cursor.execute("""
                         INSERT INTO entity_fts(rowid, name, content, family_id)
                         VALUES (?, ?, ?, ?)
-                    """, (entity.absolute_id, entity.name, entity.content, entity.family_id))
+                    """, (cursor.lastrowid, entity.name, entity.content, entity.family_id))
                 except Exception as exc:
                     logger.warning("FTS entity write failed: %s", exc)
                 # 设置旧版本 invalid_at
@@ -1134,26 +1185,49 @@ class StorageManager:
                 entity.source_document,
                 embedding_blob,
                 (entity.valid_at or entity.event_time).isoformat(),
+                getattr(entity, 'summary', None),
+                getattr(entity, 'attributes', None),
+                getattr(entity, 'confidence', None),
+                getattr(entity, 'content_format', 'plain'),
             ))
 
         with self._write_lock:
             conn = self._get_conn()
-            cursor = conn.cursor()
-            cursor.executemany("""
-                INSERT OR IGNORE INTO entities (id, family_id, name, content, event_time, processed_time, episode_id, source_document, embedding, valid_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, rows)
-            conn.commit()
-            # 同步写入 FTS 表
             try:
-                fts_rows = [(e.absolute_id, e.name, e.content, e.family_id) for e in entities]
+                cursor = conn.cursor()
                 cursor.executemany("""
-                    INSERT OR REPLACE INTO entity_fts(rowid, name, content, family_id)
-                    VALUES (?, ?, ?, ?)
-                """, fts_rows)
+                    INSERT OR IGNORE INTO entities (id, family_id, name, content, event_time, processed_time, episode_id, source_document, embedding, valid_at, summary, attributes, confidence, content_format)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, rows)
+                # 同步写入 FTS 表（使用整数 rowid）
+                try:
+                    # 查询刚插入的实体的整数 rowid
+                    aids = [e.absolute_id for e in entities]
+                    placeholders = ",".join("?" * len(aids))
+                    cursor.execute(f"SELECT rowid, id FROM entities WHERE id IN ({placeholders})", aids)
+                    id_to_rowid = {r[1]: r[0] for r in cursor.fetchall()}
+                    fts_rows = [(id_to_rowid.get(e.absolute_id), e.name, e.content, e.family_id) for e in entities if id_to_rowid.get(e.absolute_id)]
+                    if fts_rows:
+                        cursor.executemany("""
+                            INSERT OR REPLACE INTO entity_fts(rowid, name, content, family_id)
+                            VALUES (?, ?, ?, ?)
+                        """, fts_rows)
+                except Exception as exc:
+                    logger.debug("FTS bulk entity write failed: %s", exc)
+                # 设置旧版本 invalid_at + Phase 2 dual-write
+                for entity in entities:
+                    try:
+                        cursor.execute("""
+                            UPDATE entities SET invalid_at = ?
+                            WHERE family_id = ? AND id != ? AND invalid_at IS NULL
+                        """, (entity.event_time.isoformat(), entity.family_id, entity.absolute_id))
+                    except Exception as exc:
+                        logger.debug("bulk invalid_at update failed: %s", exc)
+                    self._write_concept_from_entity(entity, cursor)
                 conn.commit()
-            except Exception as exc:
-                logger.debug("embedding decode failed: %s", exc)
+            except Exception:
+                conn.rollback()
+                raise
 
     def get_entity_by_family_id(self, family_id: str) -> Optional[Entity]:
         """根据family_id获取最新版本的实体"""
@@ -1163,8 +1237,8 @@ class StorageManager:
         conn = self._get_conn()
         cursor = conn.cursor()
 
-        cursor.execute("""
-            SELECT id, family_id, name, content, event_time, processed_time, episode_id, source_document, embedding, summary, attributes, confidence
+        cursor.execute(f"""
+            SELECT {self._ENTITY_SELECT}
             FROM entities
             WHERE family_id = ?
             ORDER BY processed_time DESC
@@ -1176,20 +1250,7 @@ class StorageManager:
         if row is None:
             return None
 
-        return Entity(
-            absolute_id=row[0],
-            family_id=row[1],
-            name=row[2],
-            content=row[3],
-            event_time=self._safe_parse_datetime(row[4]),
-            processed_time=self._safe_parse_datetime(row[5]),
-            episode_id=row[6],
-            source_document=row[7] if len(row) > 7 else '',
-            embedding=row[8] if len(row) > 8 else None,
-            summary=row[9] if len(row) > 9 else None,
-            attributes=row[10] if len(row) > 10 else None,
-            confidence=row[11] if len(row) > 11 else None,
-        )
+        return self._row_to_entity(row)
 
     def get_entities_by_family_ids(self, family_ids: List[str]) -> Dict[str, Entity]:
         """批量根据 family_id 获取最新版本实体，返回 {family_id: Entity}。"""
@@ -1204,7 +1265,7 @@ class StorageManager:
         cursor = conn.cursor()
         placeholders = ",".join("?" * len(valid_fids))
         cursor.execute(f"""
-            SELECT id, family_id, name, content, event_time, processed_time, episode_id, source_document, embedding, summary, attributes, confidence
+            SELECT {self._ENTITY_SELECT}
             FROM entities
             WHERE family_id IN ({placeholders})
             ORDER BY processed_time DESC
@@ -1216,20 +1277,7 @@ class StorageManager:
             if fid in seen:
                 continue
             seen.add(fid)
-            entity = Entity(
-                absolute_id=row[0],
-                family_id=fid,
-                name=row[2],
-                content=row[3],
-                event_time=self._safe_parse_datetime(row[4]),
-                processed_time=self._safe_parse_datetime(row[5]),
-                episode_id=row[6],
-                source_document=row[7] if len(row) > 7 else '',
-                embedding=row[8] if len(row) > 8 else None,
-                summary=row[9] if len(row) > 9 else None,
-                attributes=row[10] if len(row) > 10 else None,
-                confidence=row[11] if len(row) > 11 else None,
-            )
+            entity = self._row_to_entity(row)
             result[fid] = entity
             # 如果原始 family_id != resolved，也映射原始 ID
             for orig_fid, resolved_fid in resolved_map.items():
@@ -1242,8 +1290,8 @@ class StorageManager:
         conn = self._get_conn()
         cursor = conn.cursor()
 
-        cursor.execute("""
-            SELECT id, family_id, name, content, event_time, processed_time, episode_id, source_document, embedding
+        cursor.execute(f"""
+            SELECT {self._ENTITY_SELECT}
             FROM entities
             WHERE id = ?
         """, (absolute_id,))
@@ -1253,17 +1301,7 @@ class StorageManager:
         if row is None:
             return None
 
-        return Entity(
-            absolute_id=row[0],
-            family_id=row[1],
-            name=row[2],
-            content=row[3],
-            event_time=self._safe_parse_datetime(row[4]),
-            processed_time=self._safe_parse_datetime(row[5]),
-            episode_id=row[6],
-            source_document=row[7] if len(row) > 7 else '',
-            embedding=row[8] if len(row) > 8 else None
-        )
+        return self._row_to_entity(row)
 
     def get_entities_by_absolute_ids(self, absolute_ids: List[str]) -> List[Entity]:
         """根据绝对ID列表批量获取实体。"""
@@ -1273,77 +1311,38 @@ class StorageManager:
         cursor = conn.cursor()
         placeholders = ",".join("?" * len(absolute_ids))
         cursor.execute(f"""
-            SELECT id, family_id, name, content, event_time, processed_time, episode_id, source_document, embedding
+            SELECT {self._ENTITY_SELECT}
             FROM entities
             WHERE id IN ({placeholders})
         """, tuple(absolute_ids))
         rows = cursor.fetchall()
-        return [
-            Entity(
-                absolute_id=row[0],
-                family_id=row[1],
-                name=row[2],
-                content=row[3],
-                event_time=self._safe_parse_datetime(row[4]),
-                processed_time=self._safe_parse_datetime(row[5]),
-                episode_id=row[6],
-                source_document=row[7] if len(row) > 7 else '',
-                embedding=row[8] if len(row) > 8 else None,
-            )
-            for row in rows
-        ]
+        return [self._row_to_entity(row) for row in rows]
 
     def get_relation_by_absolute_id(self, relation_absolute_id: str) -> Optional[Relation]:
         """根据关系行的主键 id（绝对ID）获取单条关系"""
         conn = self._get_conn()
         cursor = conn.cursor()
-        cursor.execute("""
-            SELECT id, family_id, entity1_absolute_id, entity2_absolute_id, content, event_time, processed_time, episode_id, source_document, embedding
-            FROM relations
-            WHERE id = ?
-        """, (relation_absolute_id,))
+        cursor.execute(
+            f"SELECT {self._RELATION_SELECT} FROM relations WHERE id = ?",
+            (relation_absolute_id,),
+        )
         row = cursor.fetchone()
         if row is None:
             return None
-        return Relation(
-            absolute_id=row[0],
-            family_id=row[1],
-            entity1_absolute_id=row[2] or "",
-            entity2_absolute_id=row[3] or "",
-            content=row[4],
-            event_time=self._safe_parse_datetime(row[5]),
-            processed_time=self._safe_parse_datetime(row[6]),
-            episode_id=row[7],
-            source_document=row[8] if len(row) > 8 else '',
-            embedding=row[9] if len(row) > 9 else None
-        )
+        return self._row_to_relation(row)
     
     def get_relation_by_family_id(self, family_id: str) -> Optional[Relation]:
         """根据family_id获取最新版本的关系"""
         conn = self._get_conn()
         cursor = conn.cursor()
-        cursor.execute("""
-            SELECT id, family_id, entity1_absolute_id, entity2_absolute_id, content, event_time, processed_time, episode_id, source_document, embedding
-            FROM relations
-            WHERE family_id = ?
-            ORDER BY processed_time DESC
-            LIMIT 1
-        """, (family_id,))
+        cursor.execute(
+            f"SELECT {self._RELATION_SELECT} FROM relations WHERE family_id = ? ORDER BY processed_time DESC LIMIT 1",
+            (family_id,),
+        )
         row = cursor.fetchone()
         if row is None:
             return None
-        return Relation(
-            absolute_id=row[0],
-            family_id=row[1],
-            entity1_absolute_id=row[2],
-            entity2_absolute_id=row[3],
-            content=row[4],
-            event_time=self._safe_parse_datetime(row[5]),
-            processed_time=self._safe_parse_datetime(row[6]),
-            episode_id=row[7],
-            source_document=row[8] if len(row) > 8 else '',
-            embedding=row[9] if len(row) > 9 else None
-        )
+        return self._row_to_relation(row)
 
     def get_entity_names_by_absolute_ids(self, absolute_ids: List[str]) -> Dict[str, str]:
         """批量根据 absolute_id 查询实体名称"""
@@ -1364,8 +1363,8 @@ class StorageManager:
         conn = self._get_conn()
         cursor = conn.cursor()
         
-        cursor.execute("""
-            SELECT id, family_id, name, content, event_time, processed_time, episode_id, source_document, embedding, valid_at, invalid_at
+        cursor.execute(f"""
+            SELECT {self._ENTITY_SELECT}
             FROM entities
             WHERE family_id = ? AND event_time <= ?
             ORDER BY processed_time DESC
@@ -1377,19 +1376,7 @@ class StorageManager:
         if row is None:
             return None
 
-        return Entity(
-            absolute_id=row[0],
-            family_id=row[1],
-            name=row[2],
-            content=row[3],
-            event_time=self._safe_parse_datetime(row[4]),
-            processed_time=self._safe_parse_datetime(row[5]),
-            episode_id=row[6],
-            source_document=row[7] if len(row) > 7 else '',
-            embedding=row[8] if len(row) > 8 else None,
-            valid_at=self._safe_parse_datetime(row[9]) if len(row) > 9 else None,
-            invalid_at=self._safe_parse_datetime(row[10]) if len(row) > 10 else None
-        )
+        return self._row_to_entity(row)
     
     def get_entity_embedding_preview(self, absolute_id: str, num_values: int = 5) -> Optional[List[float]]:
         """获取实体embedding向量的前N个值"""
@@ -1445,29 +1432,14 @@ class StorageManager:
         conn = self._get_conn()
         cursor = conn.cursor()
         
-        cursor.execute("""
-            SELECT id, family_id, name, content, event_time, processed_time, episode_id, source_document, embedding
-            FROM entities
-            WHERE family_id = ?
-            ORDER BY processed_time DESC
-        """, (family_id,))
+        cursor.execute(
+            f"SELECT {self._ENTITY_SELECT} FROM entities WHERE family_id = ? ORDER BY processed_time DESC",
+            (family_id,),
+        )
 
         rows = cursor.fetchall()
 
-        return [
-            Entity(
-                absolute_id=row[0],
-                family_id=row[1],
-                name=row[2],
-                content=row[3],
-                event_time=datetime.fromisoformat(row[4]),
-                processed_time=datetime.fromisoformat(row[5]),
-                episode_id=row[6],
-                source_document=row[7] if len(row) > 7 else '',
-                embedding=row[8] if len(row) > 8 else None
-            )
-            for row in rows
-        ]
+        return [self._row_to_entity(row) for row in rows]
     
     def _invalidate_emb_cache(self):
         """清除 embedding 缓存（在实体/关系写入时调用）。"""
@@ -1502,24 +1474,13 @@ class StorageManager:
 
         results = []
         for row in cursor.fetchall():
-            # 解析embedding
             embedding_array = None
             if len(row) > 8 and row[8] is not None:
                 try:
                     embedding_array = np.frombuffer(row[8], dtype=np.float32)
                 except (ValueError, TypeError):
                     embedding_array = None
-            entity = Entity(
-                absolute_id=row[0],
-                family_id=row[1],
-                name=row[2],
-                content=row[3],
-                event_time=datetime.fromisoformat(row[4]),
-                processed_time=datetime.fromisoformat(row[5]),
-                episode_id=row[6],
-                source_document=row[7] if len(row) > 7 else '',
-                embedding=row[8] if len(row) > 8 else None
-            )
+            entity = self._row_to_entity(row)
             results.append((entity, embedding_array))
 
         self._entity_emb_cache = results
@@ -1553,35 +1514,36 @@ class StorageManager:
         conn = self._get_conn()
         cursor = conn.cursor()
         # FTS5 BM25 搜索，按 bm25 排序
-        cursor.execute("""
-            SELECT e.id, e.family_id, e.name, e.content, e.event_time, e.processed_time,
-                   e.episode_id, e.source_document, e.embedding,
+        ent_cols = ", e.".join(self._ENTITY_SELECT.split(", "))
+        cursor.execute(f"""
+            SELECT e.{ent_cols},
                    fts.rank AS bm25_score
             FROM entity_fts AS fts
-            JOIN entities AS e ON e.id = fts.rowid
+            JOIN entities AS e ON e.rowid = fts.rowid
             WHERE entity_fts MATCH ?
             ORDER BY fts.rank
             LIMIT ?
         """, (query, limit))
 
         rows = cursor.fetchall()
-        # 批量解析 family_id 重定向
         raw_fids = [row[1] for row in rows]
         resolved_map = self.resolve_family_ids(raw_fids) if raw_fids else {}
 
         entities = []
         for row in rows:
-            entities.append(Entity(
-                absolute_id=row[0],
-                family_id=resolved_map.get(row[1], row[1]),
-                name=row[2],
-                content=row[3],
-                event_time=self._safe_parse_datetime(row[4]),
-                processed_time=self._safe_parse_datetime(row[5]),
-                episode_id=row[6],
-                source_document=row[7] or '',
-                embedding=row[8],
-            ))
+            ent = self._row_to_entity(row)
+            if resolved_map.get(row[1], row[1]) != row[1]:
+                ent = Entity(
+                    absolute_id=ent.absolute_id,
+                    family_id=resolved_map.get(row[1], row[1]),
+                    name=ent.name, content=ent.content,
+                    event_time=ent.event_time, processed_time=ent.processed_time,
+                    episode_id=ent.episode_id, source_document=ent.source_document,
+                    embedding=ent.embedding, summary=ent.summary,
+                    attributes=ent.attributes, confidence=ent.confidence,
+                    valid_at=ent.valid_at, invalid_at=ent.invalid_at,
+                )
+            entities.append(ent)
         return entities
 
     def search_relations_by_bm25(self, query: str, limit: int = 20) -> List[Relation]:
@@ -1590,13 +1552,12 @@ class StorageManager:
             return []
         conn = self._get_conn()
         cursor = conn.cursor()
-        cursor.execute("""
-            SELECT r.id, r.family_id, r.entity1_absolute_id, r.entity2_absolute_id,
-                   r.content, r.event_time, r.processed_time,
-                   r.episode_id, r.source_document, r.embedding,
+        rel_cols = ", r.".join(self._RELATION_SELECT.split(", "))
+        cursor.execute(f"""
+            SELECT r.{rel_cols},
                    fts.rank AS bm25_score
             FROM relation_fts AS fts
-            JOIN relations AS r ON r.id = fts.rowid
+            JOIN relations AS r ON r.rowid = fts.rowid
             WHERE relation_fts MATCH ?
             ORDER BY fts.rank
             LIMIT ?
@@ -1604,18 +1565,7 @@ class StorageManager:
 
         relations = []
         for row in cursor.fetchall():
-            relations.append(Relation(
-                absolute_id=row[0],
-                family_id=row[1],
-                entity1_absolute_id=row[2],
-                entity2_absolute_id=row[3],
-                content=row[4],
-                event_time=self._safe_parse_datetime(row[5]),
-                processed_time=self._safe_parse_datetime(row[6]),
-                episode_id=row[7],
-                source_document=row[8] or '',
-                embedding=row[9],
-            ))
+            relations.append(self._row_to_relation(row))
         return relations
 
     def search_entities_by_similarity(self, query_name: str, query_content: Optional[str] = None,
@@ -1909,12 +1859,12 @@ class StorageManager:
                     getattr(relation, 'provenance', None),
                     getattr(relation, 'content_format', 'plain'),
                 ))
-                # 同步写入 FTS 表
+                # 同步写入 FTS 表（使用整数 rowid）
                 try:
                     cursor.execute("""
                         INSERT INTO relation_fts(rowid, content, family_id)
                         VALUES (?, ?, ?)
-                    """, (relation.absolute_id, relation.content, relation.family_id))
+                    """, (cursor.lastrowid, relation.content, relation.family_id))
                 except Exception as exc:
                     logger.warning("FTS relation write failed: %s", exc)
                 # 设置旧版本 invalid_at
@@ -1970,16 +1920,49 @@ class StorageManager:
                 relation.source_document,
                 embedding_blob,
                 (relation.valid_at or relation.event_time).isoformat(),
+                getattr(relation, 'summary', None),
+                getattr(relation, 'attributes', None),
+                getattr(relation, 'confidence', None),
+                getattr(relation, 'provenance', None),
+                getattr(relation, 'content_format', 'plain'),
             ))
 
         with self._write_lock:
             conn = self._get_conn()
-            cursor = conn.cursor()
-            cursor.executemany("""
-                INSERT INTO relations (id, family_id, entity1_absolute_id, entity2_absolute_id, content, event_time, processed_time, episode_id, source_document, embedding, valid_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, rows)
-            conn.commit()
+            try:
+                cursor = conn.cursor()
+                cursor.executemany("""
+                    INSERT INTO relations (id, family_id, entity1_absolute_id, entity2_absolute_id, content, event_time, processed_time, episode_id, source_document, embedding, valid_at, summary, attributes, confidence, provenance, content_format)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, rows)
+                # 同步写入 FTS 表（使用整数 rowid）
+                try:
+                    aids = [r.absolute_id for r in relations]
+                    placeholders = ",".join("?" * len(aids))
+                    cursor.execute(f"SELECT rowid, id FROM relations WHERE id IN ({placeholders})", aids)
+                    id_to_rowid = {r[1]: r[0] for r in cursor.fetchall()}
+                    fts_rows = [(id_to_rowid.get(r.absolute_id), r.content, r.family_id) for r in relations if id_to_rowid.get(r.absolute_id)]
+                    if fts_rows:
+                        cursor.executemany("""
+                            INSERT OR REPLACE INTO relation_fts(rowid, content, family_id)
+                            VALUES (?, ?, ?)
+                        """, fts_rows)
+                except Exception as exc:
+                    logger.debug("FTS bulk relation write failed: %s", exc)
+                # 设置旧版本 invalid_at + Phase 2 dual-write
+                for relation in relations:
+                    try:
+                        cursor.execute("""
+                            UPDATE relations SET invalid_at = ?
+                            WHERE family_id = ? AND id != ? AND invalid_at IS NULL
+                        """, (relation.event_time.isoformat(), relation.family_id, relation.absolute_id))
+                    except Exception as exc:
+                        logger.debug("bulk relation invalid_at update failed: %s", exc)
+                    self._write_concept_from_relation(relation, cursor)
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
     
     def get_relations_by_entities(self, from_family_id: str, to_family_id: str) -> List[Relation]:
         """根据两个实体ID获取所有关系（通过family_id查找，内部转换为绝对ID查询）
@@ -2019,9 +2002,9 @@ class StorageManager:
         placeholders_from = ','.join(['?'] * len(from_absolute_ids))
         placeholders_to = ','.join(['?'] * len(to_absolute_ids))
 
+        r1_cols = ", r1.".join(self._RELATION_SELECT.split(", "))
         cursor.execute(f"""
-            SELECT r1.id, r1.family_id, r1.entity1_absolute_id, r1.entity2_absolute_id,
-                   r1.content, r1.event_time, r1.processed_time, r1.episode_id, r1.source_document, r1.embedding
+            SELECT r1.{r1_cols}
             FROM relations r1
             INNER JOIN (
                 SELECT family_id, MAX(processed_time) as max_time
@@ -2039,21 +2022,7 @@ class StorageManager:
 
         rows = cursor.fetchall()
 
-        return [
-            Relation(
-                absolute_id=row[0],
-                family_id=row[1],
-                entity1_absolute_id=row[2] or "",
-                entity2_absolute_id=row[3] or "",
-                content=row[4],
-                event_time=datetime.fromisoformat(row[5]),
-                processed_time=datetime.fromisoformat(row[6]),
-                episode_id=row[7],
-                source_document=row[8] if len(row) > 8 else '',
-                embedding=row[9] if len(row) > 9 else None
-            )
-            for row in rows
-        ]
+        return [self._row_to_relation(row) for row in rows]
 
     def get_relations_by_entity_pairs(self, entity_pairs: List[Tuple[str, str]]) -> Dict[Tuple[str, str], List[Relation]]:
         """批量获取多个实体对的关系，按无向 pair 返回。
@@ -2115,7 +2084,8 @@ class StorageManager:
         aid_placeholders = ",".join("?" * len(all_aids))
         cursor.execute(f"""
             SELECT r.id, r.family_id, r.entity1_absolute_id, r.entity2_absolute_id,
-                   r.content, r.event_time, r.processed_time, r.episode_id, r.source_document
+                   r.content, r.event_time, r.processed_time, r.episode_id, r.source_document,
+                   r.summary, r.attributes, r.confidence, r.valid_at, r.invalid_at
             FROM relations r
             WHERE (r.entity1_absolute_id IN ({aid_placeholders})
                 OR r.entity2_absolute_id IN ({aid_placeholders}))
@@ -2124,13 +2094,7 @@ class StorageManager:
 
         all_rels = []
         for row in cursor.fetchall():
-            all_rels.append(Relation(
-                absolute_id=row[0], family_id=row[1] or "",
-                entity1_absolute_id=row[2] or "", entity2_absolute_id=row[3] or "",
-                content=row[4], event_time=self._safe_parse_datetime(row[5]),
-                processed_time=self._safe_parse_datetime(row[6]),
-                episode_id=row[7], source_document=row[8] if len(row) > 8 else '',
-            ))
+            all_rels.append(self._row_to_relation(row))
 
         # 按 canonical pair 分组 — O(R) 用 reverse lookup dict 替代 O(R*F) 嵌套循环
         aid_to_fid: Dict[str, str] = {}
@@ -2159,30 +2123,14 @@ class StorageManager:
         conn = self._get_conn()
         cursor = conn.cursor()
 
-        cursor.execute("""
-            SELECT id, family_id, entity1_absolute_id, entity2_absolute_id, content, event_time, processed_time, episode_id, source_document, embedding
-            FROM relations
-            WHERE family_id = ?
-            ORDER BY processed_time DESC
-        """, (family_id,))
+        cursor.execute(
+            f"SELECT {self._RELATION_SELECT} FROM relations WHERE family_id = ? ORDER BY processed_time DESC",
+            (family_id,),
+        )
 
         rows = cursor.fetchall()
 
-        return [
-            Relation(
-                absolute_id=row[0],
-                family_id=row[1],
-                entity1_absolute_id=row[2] or "",
-                entity2_absolute_id=row[3] or "",
-                content=row[4],
-                event_time=datetime.fromisoformat(row[5]),
-                processed_time=datetime.fromisoformat(row[6]),
-                episode_id=row[7],
-                source_document=row[8] if len(row) > 8 else '',
-                embedding=row[9] if len(row) > 9 else None
-            )
-            for row in rows
-        ]
+        return [self._row_to_relation(row) for row in rows]
     
     
     def get_all_entities(self, limit: Optional[int] = None, offset: Optional[int] = None, exclude_embedding: bool = False) -> List[Entity]:
@@ -2196,10 +2144,11 @@ class StorageManager:
         conn = self._get_conn()
         cursor = conn.cursor()
 
-        emb_col = ", e1.embedding" if not exclude_embedding else ""
-        # 获取每个 family_id 的最新版本
+        e1_cols = ", e1.".join(self._ENTITY_SELECT.split(", "))
+        if exclude_embedding:
+            e1_cols = e1_cols.replace("e1.embedding", "NULL AS e1__embedding")
         query = f"""
-            SELECT e1.id, e1.family_id, e1.name, e1.content, e1.event_time, e1.processed_time, e1.episode_id, e1.source_document{emb_col}
+            SELECT e1.{e1_cols}
             FROM entities e1
             INNER JOIN (
                 SELECT family_id, MAX(processed_time) as max_time
@@ -2218,20 +2167,7 @@ class StorageManager:
 
         rows = cursor.fetchall()
 
-        return [
-            Entity(
-                absolute_id=row[0],
-                family_id=row[1],
-                name=row[2],
-                content=row[3],
-                event_time=datetime.fromisoformat(row[4]),
-                processed_time=datetime.fromisoformat(row[5]),
-                episode_id=row[6],
-                source_document=row[7] if len(row) > 7 and row[7] is not None else "",
-                embedding=row[8] if not exclude_embedding and len(row) > 8 else None
-            )
-            for row in rows
-        ]
+        return [self._row_to_entity(row) for row in rows]
 
     def count_unique_entities(self) -> int:
         """轻量统计：返回不重复的 family_id 数量（不加载任何实体数据）。"""
@@ -2259,10 +2195,11 @@ class StorageManager:
         conn = self._get_conn()
         cursor = conn.cursor()
 
-        emb_col = ", e1.embedding" if not exclude_embedding else ""
-        # 获取每个 family_id 在指定时间点之前或等于该时间点的最新版本
+        e1_cols = ", e1.".join(self._ENTITY_SELECT.split(", "))
+        if exclude_embedding:
+            e1_cols = e1_cols.replace("e1.embedding", "NULL AS e1__embedding")
         query = f"""
-            SELECT e1.id, e1.family_id, e1.name, e1.content, e1.event_time, e1.processed_time, e1.episode_id, e1.source_document{emb_col}
+            SELECT e1.{e1_cols}
             FROM entities e1
             INNER JOIN (
                 SELECT family_id, MAX(processed_time) as max_time
@@ -2280,20 +2217,7 @@ class StorageManager:
 
         rows = cursor.fetchall()
 
-        return [
-            Entity(
-                absolute_id=row[0],
-                family_id=row[1],
-                name=row[2],
-                content=row[3],
-                event_time=datetime.fromisoformat(row[4]),
-                processed_time=datetime.fromisoformat(row[5]),
-                episode_id=row[6],
-                source_document=row[7] if len(row) > 7 and row[7] is not None else "",
-                embedding=row[8] if not exclude_embedding and len(row) > 8 else None
-            )
-            for row in rows
-        ]
+        return [self._row_to_entity(row) for row in rows]
     
     def get_entity_relations(self, entity_absolute_id: str, limit: Optional[int] = None, time_point: Optional[datetime] = None) -> List[Relation]:
         """获取与指定实体相关的所有关系（作为起点或终点）
@@ -2306,11 +2230,11 @@ class StorageManager:
         conn = self._get_conn()
         cursor = conn.cursor()
         
+        r1_cols = ", r1.".join(self._RELATION_SELECT.split(", "))
         if time_point:
             # 获取每个family_id在该时间点之前或等于该时间点的最新版本
-            query = """
-                SELECT r1.id, r1.family_id, r1.entity1_absolute_id, r1.entity2_absolute_id, 
-                       r1.content, r1.event_time, r1.processed_time, r1.episode_id, r1.source_document, r1.embedding
+            query = f"""
+                SELECT r1.{r1_cols}
                 FROM relations r1
                 INNER JOIN (
                     SELECT family_id, MAX(processed_time) as max_time
@@ -2318,7 +2242,7 @@ class StorageManager:
                     WHERE (entity1_absolute_id = ? OR entity2_absolute_id = ?)
                     AND event_time <= ?
                     GROUP BY family_id
-                ) r2 ON r1.family_id = r2.family_id 
+                ) r2 ON r1.family_id = r2.family_id
                     AND r1.processed_time = r2.max_time
                     AND (r1.entity1_absolute_id = ? OR r1.entity2_absolute_id = ?)
                 ORDER BY r1.processed_time DESC
@@ -2326,44 +2250,29 @@ class StorageManager:
             params = (entity_absolute_id, entity_absolute_id, time_point.isoformat(), entity_absolute_id, entity_absolute_id)
         else:
             # 获取每个family_id的最新版本
-            query = """
-                SELECT r1.id, r1.family_id, r1.entity1_absolute_id, r1.entity2_absolute_id, 
-                       r1.content, r1.event_time, r1.processed_time, r1.episode_id, r1.source_document, r1.embedding
+            query = f"""
+                SELECT r1.{r1_cols}
                 FROM relations r1
                 INNER JOIN (
                     SELECT family_id, MAX(processed_time) as max_time
                     FROM relations
                     WHERE entity1_absolute_id = ? OR entity2_absolute_id = ?
                     GROUP BY family_id
-                ) r2 ON r1.family_id = r2.family_id 
+                ) r2 ON r1.family_id = r2.family_id
                     AND r1.processed_time = r2.max_time
                     AND (r1.entity1_absolute_id = ? OR r1.entity2_absolute_id = ?)
                 ORDER BY r1.processed_time DESC
             """
             params = (entity_absolute_id, entity_absolute_id, entity_absolute_id, entity_absolute_id)
-        
+
         if limit is not None:
             query += f" LIMIT {int(limit)}"
-        
+
         cursor.execute(query, params)
-        
+
         rows = cursor.fetchall()
-        
-        return [
-            Relation(
-                absolute_id=row[0],
-                family_id=row[1],
-                entity1_absolute_id=row[2] or "",
-                entity2_absolute_id=row[3] or "",
-                content=row[4],
-                event_time=datetime.fromisoformat(row[5]),
-                processed_time=datetime.fromisoformat(row[6]),
-                episode_id=row[7],
-                source_document=row[8] if len(row) > 8 and row[8] is not None else "",  # 向后兼容
-                embedding=row[9] if len(row) > 9 else None
-            )
-            for row in rows
-        ]
+
+        return [self._row_to_relation(row) for row in rows]
     
     def get_entity_relations_by_family_id(self, family_id: str, limit: Optional[int] = None, time_point: Optional[datetime] = None, max_version_absolute_id: Optional[str] = None) -> List[Relation]:
         """获取与指定实体相关的所有关系（通过family_id查找，包含该实体的所有版本）
@@ -2436,9 +2345,9 @@ class StorageManager:
         
         if time_point:
             # 获取每个family_id在该时间点之前或等于该时间点的最新版本
+            r1_cols = ", r1.".join(self._RELATION_SELECT.split(", "))
             query = f"""
-                SELECT r1.id, r1.family_id, r1.entity1_absolute_id, r1.entity2_absolute_id, 
-                       r1.content, r1.event_time, r1.processed_time, r1.episode_id, r1.source_document, r1.embedding
+                SELECT r1.{r1_cols}
                 FROM relations r1
                 INNER JOIN (
                     SELECT family_id, MAX(processed_time) as max_time
@@ -2454,9 +2363,9 @@ class StorageManager:
             params = tuple(entity_absolute_ids * 2 + [time_point.isoformat()] + entity_absolute_ids * 2)
         else:
             # 获取每个family_id的最新版本
+            r1_cols = ", r1.".join(self._RELATION_SELECT.split(", "))
             query = f"""
-            SELECT r1.id, r1.family_id, r1.entity1_absolute_id, r1.entity2_absolute_id, 
-                   r1.content, r1.event_time, r1.processed_time, r1.episode_id, r1.source_document, r1.embedding
+            SELECT r1.{r1_cols}
             FROM relations r1
             INNER JOIN (
                 SELECT family_id, MAX(processed_time) as max_time
@@ -2477,21 +2386,7 @@ class StorageManager:
         
         rows = cursor.fetchall()
         
-        return [
-            Relation(
-                absolute_id=row[0],
-                family_id=row[1],
-                entity1_absolute_id=row[2] or "",
-                entity2_absolute_id=row[3] or "",
-                content=row[4],
-                event_time=datetime.fromisoformat(row[5]),
-                processed_time=datetime.fromisoformat(row[6]),
-                episode_id=row[7],
-                source_document=row[8] if len(row) > 8 and row[8] is not None else "",  # 向后兼容
-                embedding=row[9] if len(row) > 9 else None
-            )
-            for row in rows
-        ]
+        return [self._row_to_relation(row) for row in rows]
 
     def get_entity_relations_timeline(self, family_id: str, version_abs_ids: List[str]) -> List[Dict]:
         """批量获取实体在各版本时间点的关系（消除 N+1 查询）。
@@ -2593,8 +2488,7 @@ class StorageManager:
         # 构建查询：查找直接引用这些 entity_absolute_id 的关系边
         placeholders = ','.join(['?'] * len(entity_absolute_ids))
         query = f"""
-            SELECT id, family_id, entity1_absolute_id, entity2_absolute_id, 
-                   content, event_time, processed_time, episode_id, source_document, embedding
+            SELECT {self._RELATION_SELECT}
             FROM relations
             WHERE entity1_absolute_id IN ({placeholders}) OR entity2_absolute_id IN ({placeholders})
             ORDER BY processed_time DESC
@@ -2612,20 +2506,7 @@ class StorageManager:
             family_id_val = row[1]
             if family_id_val not in seen_family_ids:
                 seen_family_ids.add(family_id_val)
-                result.append(
-                    Relation(
-                        absolute_id=row[0],
-                        family_id=row[1],
-                        entity1_absolute_id=row[2] or "",
-                        entity2_absolute_id=row[3] or "",
-                        content=row[4],
-                        event_time=datetime.fromisoformat(row[5]),
-                        processed_time=datetime.fromisoformat(row[6]),
-                        episode_id=row[7],
-                        source_document=row[8] if len(row) > 8 and row[8] is not None else "",  # 向后兼容
-                        embedding=row[9] if len(row) > 9 else None
-                    )
-                )
+                result.append(self._row_to_relation(row))
                 if limit is not None and len(result) >= limit:
                     break
         
@@ -2683,11 +2564,11 @@ class StorageManager:
         conn = self._get_conn()
         cursor = conn.cursor()
 
-        emb_col = ", r1.embedding" if not exclude_embedding else ""
-        # 获取每个 family_id 的最新版本
+        r1_cols = ", r1.".join(self._RELATION_SELECT.split(", "))
+        if exclude_embedding:
+            r1_cols = r1_cols.replace("r1.embedding", "NULL AS r1__embedding")
         query = f"""
-            SELECT r1.id, r1.family_id, r1.entity1_absolute_id, r1.entity2_absolute_id,
-                   r1.content, r1.event_time, r1.processed_time, r1.episode_id, r1.source_document{emb_col}
+            SELECT r1.{r1_cols}
             FROM relations r1
             INNER JOIN (
                 SELECT family_id, MAX(processed_time) as max_time
@@ -2706,21 +2587,7 @@ class StorageManager:
 
         rows = cursor.fetchall()
 
-        return [
-            Relation(
-                absolute_id=row[0],
-                family_id=row[1],
-                entity1_absolute_id=row[2] or "",
-                entity2_absolute_id=row[3] or "",
-                content=row[4],
-                event_time=datetime.fromisoformat(row[5]),
-                processed_time=datetime.fromisoformat(row[6]),
-                episode_id=row[7],
-                source_document=row[8] if len(row) > 8 and row[8] is not None else "",
-                embedding=row[9] if not exclude_embedding and len(row) > 9 else None
-            )
-            for row in rows
-        ]
+        return [self._row_to_relation(row) for row in rows]
     
     def _get_relations_with_embeddings(self) -> List[tuple]:
         """
@@ -2737,9 +2604,8 @@ class StorageManager:
         cursor = conn.cursor()
         
         # 使用窗口函数获取每个 family_id 的最新版本（O(N) 替代 O(N^2) 子查询）
-        cursor.execute("""
-            SELECT id, family_id, entity1_absolute_id, entity2_absolute_id,
-                   content, event_time, processed_time, episode_id, source_document, embedding
+        cursor.execute(f"""
+            SELECT {self._RELATION_SELECT}
             FROM (
                 SELECT *, ROW_NUMBER() OVER (PARTITION BY family_id ORDER BY processed_time DESC) AS rn
                 FROM relations
@@ -2756,18 +2622,7 @@ class StorageManager:
                     embedding_array = np.frombuffer(row[9], dtype=np.float32)
                 except (ValueError, TypeError):
                     embedding_array = None
-            relation = Relation(
-                absolute_id=row[0],
-                family_id=row[1],
-                entity1_absolute_id=row[2] or "",
-                entity2_absolute_id=row[3] or "",
-                content=row[4],
-                event_time=datetime.fromisoformat(row[5]),
-                processed_time=datetime.fromisoformat(row[6]),
-                episode_id=row[7],
-                source_document=row[8] if len(row) > 8 else '',
-                embedding=row[9] if len(row) > 9 else None
-            )
+            relation = self._row_to_relation(row)
             results.append((relation, embedding_array))
 
         self._relation_emb_cache = results
@@ -3550,21 +3405,11 @@ class StorageManager:
         if needed_abs_ids:
             placeholders = ','.join('?' * len(needed_abs_ids))
             cursor.execute(f"""
-                SELECT id, family_id, name, content, event_time, processed_time,
-                       episode_id, source_document
+                SELECT {self._ENTITY_SELECT}
                 FROM entities WHERE id IN ({placeholders})
             """, list(needed_abs_ids))
             for row in cursor.fetchall():
-                abs_entity_map[row[0]] = Entity(
-                    absolute_id=row[0],
-                    family_id=row[1],
-                    name=row[2],
-                    content=row[3],
-                    event_time=self._safe_parse_datetime(row[4]),
-                    processed_time=self._safe_parse_datetime(row[5]),
-                    episode_id=row[6],
-                    source_document=row[7] if len(row) > 7 else '',
-                )
+                abs_entity_map[row[0]] = self._row_to_entity(row)
 
         paths_result = []
         for path_eids in all_paths_eid:
@@ -3611,8 +3456,8 @@ class StorageManager:
         conn = self._get_conn()
         cursor = conn.cursor()
 
-        cursor.execute("""
-            SELECT id, family_id, name, content, event_time, processed_time, episode_id, source_document, valid_at, invalid_at
+        cursor.execute(f"""
+            SELECT {self._ENTITY_SELECT}
             FROM entities
             WHERE (valid_at IS NULL OR valid_at <= ?)
               AND (invalid_at IS NULL OR invalid_at > ?)
@@ -3620,19 +3465,10 @@ class StorageManager:
             LIMIT ?
         """, (time_point.isoformat(), time_point.isoformat(), limit or 10000))
 
-        entities = []
-        for row in cursor.fetchall():
-            entities.append(Entity(
-                absolute_id=row[0], family_id=row[1], name=row[2], content=row[3],
-                event_time=self._safe_parse_datetime(row[4]),
-                processed_time=self._safe_parse_datetime(row[5]),
-                episode_id=row[6], source_document=row[7] if len(row) > 7 else '',
-                valid_at=self._safe_parse_datetime(row[8]) if len(row) > 8 else None,
-                invalid_at=self._safe_parse_datetime(row[9]) if len(row) > 9 else None,
-            ))
+        entities = [self._row_to_entity(row) for row in cursor.fetchall()]
 
-        cursor.execute("""
-            SELECT id, family_id, entity1_absolute_id, entity2_absolute_id, content, event_time, processed_time, episode_id, source_document, valid_at, invalid_at
+        cursor.execute(f"""
+            SELECT {self._RELATION_SELECT}
             FROM relations
             WHERE (valid_at IS NULL OR valid_at <= ?)
               AND (invalid_at IS NULL OR invalid_at > ?)
@@ -3640,17 +3476,7 @@ class StorageManager:
             LIMIT ?
         """, (time_point.isoformat(), time_point.isoformat(), limit or 10000))
 
-        relations = []
-        for row in cursor.fetchall():
-            relations.append(Relation(
-                absolute_id=row[0], family_id=row[1],
-                entity1_absolute_id=row[2], entity2_absolute_id=row[3],
-                content=row[4], event_time=self._safe_parse_datetime(row[5]),
-                processed_time=self._safe_parse_datetime(row[6]),
-                episode_id=row[7], source_document=row[8] if len(row) > 8 else '',
-                valid_at=self._safe_parse_datetime(row[9]) if len(row) > 9 else None,
-                invalid_at=self._safe_parse_datetime(row[10]) if len(row) > 10 else None,
-            ))
+        relations = [self._row_to_relation(row) for row in cursor.fetchall()]
 
         return {"entities": entities, "relations": relations}
 
@@ -3661,43 +3487,24 @@ class StorageManager:
         until_str = until.isoformat() if until else datetime.now(timezone.utc).isoformat()
 
         # 新增/修改的实体
-        cursor.execute("""
-            SELECT id, family_id, name, content, event_time, processed_time, episode_id, source_document, valid_at, invalid_at
+        cursor.execute(f"""
+            SELECT {self._ENTITY_SELECT}
             FROM entities
             WHERE event_time >= ? AND event_time <= ?
             ORDER BY event_time DESC
         """, (since.isoformat(), until_str))
 
-        entities = []
-        for row in cursor.fetchall():
-            entities.append(Entity(
-                absolute_id=row[0], family_id=row[1], name=row[2], content=row[3],
-                event_time=self._safe_parse_datetime(row[4]),
-                processed_time=self._safe_parse_datetime(row[5]),
-                episode_id=row[6], source_document=row[7] if len(row) > 7 else '',
-                valid_at=self._safe_parse_datetime(row[8]) if len(row) > 8 else None,
-                invalid_at=self._safe_parse_datetime(row[9]) if len(row) > 9 else None,
-            ))
+        entities = [self._row_to_entity(row) for row in cursor.fetchall()]
 
         # 新增/修改/失效的关系
-        cursor.execute("""
-            SELECT id, family_id, entity1_absolute_id, entity2_absolute_id, content, event_time, processed_time, episode_id, source_document, valid_at, invalid_at
+        cursor.execute(f"""
+            SELECT {self._RELATION_SELECT}
             FROM relations
             WHERE event_time >= ? AND event_time <= ?
             ORDER BY event_time DESC
         """, (since.isoformat(), until_str))
 
-        relations = []
-        for row in cursor.fetchall():
-            relations.append(Relation(
-                absolute_id=row[0], family_id=row[1],
-                entity1_absolute_id=row[2], entity2_absolute_id=row[3],
-                content=row[4], event_time=self._safe_parse_datetime(row[5]),
-                processed_time=self._safe_parse_datetime(row[6]),
-                episode_id=row[7], source_document=row[8] if len(row) > 8 else '',
-                valid_at=self._safe_parse_datetime(row[9]) if len(row) > 9 else None,
-                invalid_at=self._safe_parse_datetime(row[10]) if len(row) > 10 else None,
-            ))
+        relations = [self._row_to_relation(row) for row in cursor.fetchall()]
 
         return {"entities": entities, "relations": relations}
 
@@ -3717,25 +3524,14 @@ class StorageManager:
         """列出所有已失效的关系"""
         conn = self._get_conn()
         cursor = conn.cursor()
-        cursor.execute("""
-            SELECT id, family_id, entity1_absolute_id, entity2_absolute_id, content, event_time, processed_time, episode_id, source_document, valid_at, invalid_at
+        cursor.execute(f"""
+            SELECT {self._RELATION_SELECT}
             FROM relations
             WHERE invalid_at IS NOT NULL
             ORDER BY invalid_at DESC
             LIMIT ?
         """, (limit,))
-        relations = []
-        for row in cursor.fetchall():
-            relations.append(Relation(
-                absolute_id=row[0], family_id=row[1],
-                entity1_absolute_id=row[2], entity2_absolute_id=row[3],
-                content=row[4], event_time=self._safe_parse_datetime(row[5]),
-                processed_time=self._safe_parse_datetime(row[6]),
-                episode_id=row[7], source_document=row[8] if len(row) > 8 else '',
-                valid_at=self._safe_parse_datetime(row[9]) if len(row) > 9 else None,
-                invalid_at=self._safe_parse_datetime(row[10]) if len(row) > 10 else None,
-            ))
-        return relations
+        return [self._row_to_relation(row) for row in cursor.fetchall()]
 
     # ========== Phase A: 实体智能 ==========
 
@@ -3790,8 +3586,7 @@ class StorageManager:
             return []
         abs_placeholders = ",".join("?" * len(abs_ids))
         query = f"""
-            SELECT id, family_id, entity1_absolute_id, entity2_absolute_id,
-                   content, event_time, processed_time, episode_id, source_document, embedding
+            SELECT {self._RELATION_SELECT}
             FROM relations
             WHERE entity1_absolute_id IN ({abs_placeholders})
                OR entity2_absolute_id IN ({abs_placeholders})
@@ -3802,17 +3597,7 @@ class StorageManager:
             query += " LIMIT ?"
             params.append(int(limit))
         cursor.execute(query, params)
-        relations = []
-        for row in cursor.fetchall():
-            relations.append(Relation(
-                absolute_id=row[0], family_id=row[1],
-                entity1_absolute_id=row[2] or "", entity2_absolute_id=row[3] or "",
-                content=row[4], event_time=self._safe_parse_datetime(row[5]),
-                processed_time=self._safe_parse_datetime(row[6]),
-                episode_id=row[7], source_document=row[8] if len(row) > 8 else '',
-                embedding=row[9] if len(row) > 9 else None,
-            ))
-        return relations
+        return [self._row_to_relation(row) for row in cursor.fetchall()]
 
     def batch_get_entity_degrees(self, family_ids: List[str]) -> Dict[str, int]:
         """批量获取实体度数 — 单次查询替代 N 次 get_entity_degree。"""
@@ -3880,16 +3665,7 @@ class StorageManager:
         entity_map: Dict[str, Entity] = {}
         for row in cursor.fetchall():
             fid = row[1]
-            entity_map[fid] = Entity(
-                absolute_id=row[0], family_id=row[1], name=row[2], content=row[3],
-                event_time=self._safe_parse_datetime(row[4]),
-                processed_time=self._safe_parse_datetime(row[5]),
-                episode_id=row[6], source_document=row[7] if len(row) > 7 else '',
-                embedding=row[8] if len(row) > 8 else None,
-                summary=row[9] if len(row) > 9 else None,
-                attributes=row[10] if len(row) > 10 else None,
-                confidence=row[11] if len(row) > 11 else None,
-            )
+            entity_map[fid] = self._row_to_entity(row)
 
         # Step 3: 批量获取版本数
         version_counts = self.get_entity_version_counts(canonical_set)
@@ -3910,23 +3686,14 @@ class StorageManager:
         if all_aids:
             aid_placeholders = ",".join("?" * len(all_aids))
             cursor.execute(f"""
-                SELECT id, family_id, entity1_absolute_id, entity2_absolute_id,
-                       content, event_time, processed_time, episode_id, source_document
+                SELECT {self._RELATION_SELECT}
                 FROM relations
                 WHERE (entity1_absolute_id IN ({aid_placeholders})
                     OR entity2_absolute_id IN ({aid_placeholders}))
                   AND invalid_at IS NULL
             """, tuple(all_aids) * 2)
 
-            all_rels = []
-            for row in cursor.fetchall():
-                all_rels.append(Relation(
-                    absolute_id=row[0], family_id=row[1] or "",
-                    entity1_absolute_id=row[2] or "", entity2_absolute_id=row[3] or "",
-                    content=row[4], event_time=self._safe_parse_datetime(row[5]),
-                    processed_time=self._safe_parse_datetime(row[6]),
-                    episode_id=row[7], source_document=row[8] if len(row) > 8 else '',
-                ))
+            all_rels = [self._row_to_relation(row) for row in cursor.fetchall()]
 
             # 分配关系到对应的 family_id — O(R) 用 reverse lookup 替代 O(R*F)
             aid_to_fid: Dict[str, str] = {}
@@ -4321,9 +4088,9 @@ class StorageManager:
             )
             if cursor.fetchone() is None:
                 return False
-            # Delete FTS entry for this specific version (rowid = absolute_id)
+            # Delete FTS entry (using integer rowid)
             cursor.execute(
-                "DELETE FROM entity_fts WHERE rowid = ?",
+                "DELETE FROM entity_fts WHERE rowid = (SELECT rowid FROM entities WHERE id = ?)",
                 (absolute_id,),
             )
             # Delete entity version
@@ -4368,9 +4135,9 @@ class StorageManager:
             )
             if cursor.fetchone() is None:
                 return False
-            # Delete FTS entry for this specific version (rowid = absolute_id)
+            # Delete FTS entry (using integer rowid)
             cursor.execute(
-                "DELETE FROM relation_fts WHERE rowid = ?",
+                "DELETE FROM relation_fts WHERE rowid = (SELECT rowid FROM relations WHERE id = ?)",
                 (absolute_id,),
             )
             # Delete relation version
@@ -4392,9 +4159,9 @@ class StorageManager:
             conn = self._get_conn()
             cursor = conn.cursor()
             placeholders = ",".join("?" * len(absolute_ids))
-            # Delete FTS entries for these specific versions (rowid = absolute_id)
+            # Delete FTS entries (using integer rowids)
             cursor.execute(
-                f"DELETE FROM relation_fts WHERE rowid IN ({placeholders})",
+                f"DELETE FROM relation_fts WHERE rowid IN (SELECT rowid FROM relations WHERE id IN ({placeholders}))",
                 list(absolute_ids),
             )
             # Delete relation versions
@@ -4410,26 +4177,11 @@ class StorageManager:
         """获取所有引用指定实体绝对ID的关系。"""
         conn = self._get_conn()
         cursor = conn.cursor()
-        cursor.execute("""
-            SELECT id, family_id, entity1_absolute_id, entity2_absolute_id,
-                   content, event_time, processed_time, episode_id, source_document
-            FROM relations
-            WHERE entity1_absolute_id = ? OR entity2_absolute_id = ?
-        """, (absolute_id, absolute_id))
-        results = []
-        for row in cursor.fetchall():
-            results.append(Relation(
-                absolute_id=row[0],
-                family_id=row[1],
-                entity1_absolute_id=row[2] or "",
-                entity2_absolute_id=row[3] or "",
-                content=row[4],
-                event_time=self._safe_parse_datetime(row[5]),
-                processed_time=self._safe_parse_datetime(row[6]),
-                episode_id=row[7],
-                source_document=row[8] if len(row) > 8 else '',
-            ))
-        return results
+        cursor.execute(
+            f"SELECT {self._RELATION_SELECT} FROM relations WHERE entity1_absolute_id = ? OR entity2_absolute_id = ?",
+            (absolute_id, absolute_id),
+        )
+        return [self._row_to_relation(row) for row in cursor.fetchall()]
 
     def batch_get_relations_referencing_absolute_ids(self, absolute_ids: List[str]) -> Dict[str, List[Relation]]:
         """批量获取引用指定实体绝对ID的关系（消除 N+1 查询）。"""
@@ -4440,24 +4192,13 @@ class StorageManager:
         placeholders = ",".join("?" * len(absolute_ids))
         params = list(absolute_ids) + list(absolute_ids)
         cursor.execute(f"""
-            SELECT id, family_id, entity1_absolute_id, entity2_absolute_id,
-                   content, event_time, processed_time, episode_id, source_document
+            SELECT {self._RELATION_SELECT}
             FROM relations
             WHERE entity1_absolute_id IN ({placeholders}) OR entity2_absolute_id IN ({placeholders})
         """, params)
         result_map: Dict[str, List[Relation]] = {aid: [] for aid in absolute_ids}
         for row in cursor.fetchall():
-            rel = Relation(
-                absolute_id=row[0],
-                family_id=row[1],
-                entity1_absolute_id=row[2] or "",
-                entity2_absolute_id=row[3] or "",
-                content=row[4],
-                event_time=self._safe_parse_datetime(row[5]),
-                processed_time=self._safe_parse_datetime(row[6]),
-                episode_id=row[7],
-                source_document=row[8] if len(row) > 8 else '',
-            )
+            rel = self._row_to_relation(row)
             if rel.entity1_absolute_id in result_map:
                 result_map[rel.entity1_absolute_id].append(rel)
             if rel.entity2_absolute_id in result_map:
@@ -4472,9 +4213,9 @@ class StorageManager:
             conn = self._get_conn()
             cursor = conn.cursor()
             placeholders = ",".join("?" * len(absolute_ids))
-            # Delete FTS entries for these specific versions (rowid = absolute_id)
+            # Delete FTS entries (using integer rowids)
             cursor.execute(
-                f"DELETE FROM entity_fts WHERE rowid IN ({placeholders})",
+                f"DELETE FROM entity_fts WHERE rowid IN (SELECT rowid FROM entities WHERE id IN ({placeholders}))",
                 list(absolute_ids),
             )
             # Delete entity versions
