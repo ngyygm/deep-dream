@@ -4,6 +4,18 @@
 
 ## 2026-04-11
 
+### [已完成] feat: confidence engine — Bayesian-inspired evidence-driven confidence evolution
+- commit: 8a07c7d
+- Storage 4个新方法: `update_entity_confidence`, `update_relation_confidence`, `adjust_confidence_on_corroboration`, `adjust_confidence_on_contradiction`
+  - 印证: 每次独立来源 +0.05, Dream来源减半 (+0.025), 上限1.0
+  - 矛盾: 每次冲突 -0.1, 下限0.0
+  - 手动覆盖: 直接设置 [0.0, 1.0] 区间, 超出自动截断
+- Pipeline集成: `entity._create_entity_version` 和 `relation._create_relation_version` 自动调用 `adjust_confidence_on_corroboration`
+- API端点: `PUT /api/v1/find/entities/<fid>/confidence` + `PUT /api/v1/find/relations/<fid>/confidence`
+- Fix: `adjust_confidence_on_corroboration` source_type与is_dream参数解耦（原先source_type="dream"会查错表）
+- 测试: 35项测试覆盖4维度（印证增长、矛盾降低、手动覆盖、Dream权重），92项总测试全部通过
+- 影响: `processor/storage/manager.py`, `processor/pipeline/entity.py`, `processor/pipeline/relation.py`, `server/blueprints/entities.py`, `server/blueprints/relations.py`
+
 ### [已完成] perf: save_episode_mentions N+1 → executemany batch INSERT
 - `save_episode_mentions` 从逐行 INSERT 循环改为 `cursor.executemany()` 批量插入
 - 影响：`processor/storage/manager.py`
@@ -274,6 +286,6 @@
 - [ ] **manager.py 分模块**: 4884行单类 → mixin 模式拆分（entity_store, relation_store, episode_store, concept_store）
 
 #### P2 功能对齐（vision.md）
-- [ ] **置信度引擎**: 置信度随证据增减动态调整（当前固定0.7）
+- [x] ~~**置信度引擎**: 置信度随证据增减动态调整~~ (8a07c7d)
 - [ ] **矛盾检测**: 版本间语义冲突检测与修正标注
 - [ ] **Dream 候选层**: Dream产物默认写入候选层，需证据/复核提升为事实

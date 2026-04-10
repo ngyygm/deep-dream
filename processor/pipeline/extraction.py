@@ -919,6 +919,41 @@ class _AlignResult:
 class _ExtractionMixin:
     """抽取相关流水线步骤（mixin，通过 TemporalMemoryGraphProcessor 多继承使用）。"""
 
+    def _detect_and_apply_contradictions(self, family_ids: List[str], verbose: bool = False):
+        """对多版本实体运行矛盾检测，发现高严重性矛盾时自动降低置信度。
+
+        这是 remember 流水线的自动矛盾检测步骤：
+        1. 对每个 family_id 获取版本历史
+        2. 调用 LLM detect_contradictions 检测矛盾
+        3. 对 medium/high 严重性矛盾调用 adjust_confidence_on_contradiction
+        """
+        import asyncio
+        for fid in family_ids:
+            try:
+                versions = self.storage.get_entity_versions(fid)
+                if len(versions) < 2:
+                    continue
+                loop = asyncio.new_event_loop()
+                try:
+                    contradictions = loop.run_until_complete(
+                        self.llm_client.detect_contradictions(fid, versions)
+                    )
+                finally:
+                    loop.close()
+                if not contradictions:
+                    continue
+                # 只对 medium/high 严重性矛盾降低置信度
+                high_severity = [c for c in contradictions
+                                 if c.get("severity") in ("high", "medium")]
+                if high_severity:
+                    self.storage.adjust_confidence_on_contradiction(fid, source_type="entity")
+                    if verbose:
+                        wprint(f"【矛盾检测】{fid}: 发现 {len(high_severity)} 个中/高严重性矛盾，降低置信度")
+            except Exception as e:
+                # 矛盾检测失败不应阻断流水线
+                if verbose:
+                    wprint(f"【矛盾检测】{fid}: 检测失败 ({e})")
+
     def _update_cache(self, input_text: str, document_name: str,
                       text_start_pos: int = 0, text_end_pos: int = 0,
                       total_text_length: int = 0, verbose: bool = True,
@@ -1806,6 +1841,19 @@ class _ExtractionMixin:
             dbg(f"  跳过: {_sr}")
 
         self.llm_client._current_distill_step = None
+
+        # Phase B+: 自动矛盾检测 — 对刚创建新版本的实体检查版本间矛盾
+        # 仅对版本数 ≥ 2 的实体运行，发现高严重性矛盾时自动降低置信度
+        _versioned_fids = []
+        for entity in unique_entities:
+            fid = entity.family_id
+            vc = self.storage.get_entity_version_counts([fid])
+            if vc.get(fid, 0) >= 2:
+                _versioned_fids.append(fid)
+        if _versioned_fids:
+            self._detect_and_apply_contradictions(
+                _versioned_fids, verbose=verbose,
+            )
 
         if progress_callback:
             progress_callback(p_hi,
