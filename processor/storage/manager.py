@@ -1463,8 +1463,8 @@ class StorageManager:
         cursor = conn.cursor()
 
         # 使用窗口函数获取每个 family_id 的最新版本（O(N) 替代 O(N^2) 子查询）
-        cursor.execute("""
-            SELECT id, family_id, name, content, event_time, processed_time, episode_id, source_document, embedding
+        cursor.execute(f"""
+            SELECT {self._ENTITY_SELECT}
             FROM (
                 SELECT *, ROW_NUMBER() OVER (PARTITION BY family_id ORDER BY processed_time DESC) AS rn
                 FROM entities
