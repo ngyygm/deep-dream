@@ -306,7 +306,7 @@
 ### 待改进项
 
 #### P1 架构
-- [ ] **manager.py 分模块**: 4884行单类 → mixin 模式拆分（entity_store, relation_store, episode_store, concept_store）
+- [x] ~~**manager.py 分模块**: 4884行单类 → mixin 模式拆分（entity_store, relation_store, episode_store, concept_store）~~ (472bb4e)
 
 #### P2 功能对齐（vision.md）
 - [x] ~~**置信度引擎**: 置信度随证据增减动态调整~~ (8a07c7d)

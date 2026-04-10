@@ -927,14 +927,13 @@ class TestEntityAlignmentMergeGuards:
         """Verify _build_entity_candidate_table sets merge_safe correctly."""
         proc = _make_processor(tmp_path)
 
-        # Test Jaccard computation
+        # Test Jaccard computation (bigram-based)
         j = proc.entity_processor._calculate_jaccard_similarity("苹果公司", "苹果（水果）")
-        # "苹果公司" chars: {苹,果,公,司}, "苹果（水果）" chars: {苹,果,（,水,）}
-        # intersection: {苹,果} = 2, union = 6 (deduped: {苹,果,公,司,（,水,）})
-        # Actually: set("苹果公司") = {苹,果,公,司}, set("苹果（水果）") = {苹,果,（,水,）}
-        # intersection = {苹,果} = 2, union = {苹,果,公,司,（,水,）} = 6
-        # Jaccard = 2/6 ≈ 0.33 — just above 0.3, so name alone doesn't block merge
-        assert 0.25 < j < 0.45, f"Expected Jaccard ≈ 0.33, got {j}"
+        # "苹果公司" bigrams: {苹果, 果公, 公司} (3)
+        # "苹果（水果）" bigrams: {苹果, 果（, （水, 水果} (4)
+        # intersection: {苹果} = 1, union = 6 (total unique: {苹果,果公,公司,果（,（水,水果})
+        # Jaccard = 1/6 ≈ 0.143
+        assert 0.05 < j < 0.25, f"Expected bigram Jaccard ≈ 0.14, got {j}"
 
     def test_jaccard_completely_different_names(self, tmp_path):
         """Verify Jaccard < 0.3 for completely different entity names."""
@@ -948,6 +947,6 @@ class TestEntityAlignmentMergeGuards:
         j2 = proc.entity_processor._calculate_jaccard_similarity("Alice", "Bob")
         assert j2 == 0.0, f"Expected Jaccard = 0 for Alice vs Bob, got {j2}"
 
-        # "苹果公司" vs "苹果科技": significant overlap (共享 苹,果,公 → Jaccard > 0.3)
+        # "苹果公司" vs "苹果科技": bigrams {苹果,果公,公司} ∩ {苹果,果科,科技} = {苹果} → 1/5 = 0.2
         j3 = proc.entity_processor._calculate_jaccard_similarity("苹果公司", "苹果科技")
-        assert j3 >= 0.3, f"Expected Jaccard >= 0.3 for 苹果公司 vs 苹果科技, got {j3}"
+        assert 0.1 < j3 < 0.3, f"Expected bigram Jaccard ≈ 0.2 for 苹果公司 vs 苹果科技, got {j3}"

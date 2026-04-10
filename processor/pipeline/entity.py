@@ -592,6 +592,16 @@ class EntityProcessor:
             candidate_table[idx] = candidate_rows[:limit]
         return candidate_table
 
+    @staticmethod
+    def _mark_versioned(family_id: str, already_versioned: Optional[set], lock: Optional[Any] = None):
+        """线程安全地标记 family_id 已创建版本，防止同窗口重复版本化。"""
+        if already_versioned is not None:
+            if lock:
+                with lock:
+                    already_versioned.add(family_id)
+            else:
+                already_versioned.add(family_id)
+
     def _process_single_entity_batch(self,
                                      extracted_entity: Dict[str, str],
                                      candidates: List[Dict[str, Any]],
@@ -625,13 +635,7 @@ class EntityProcessor:
             new_entity = self._build_new_entity(entity_name, entity_content, episode_id, source_document, base_time=base_time)
             if self._entity_tree_log():
                 wprint(f"  │  未找到候选实体，批量路径创建新实体: {new_entity.family_id}")
-            # 标记新实体的 family_id 已创建版本
-            if already_versioned_family_ids is not None:
-                if _version_lock:
-                    with _version_lock:
-                        already_versioned_family_ids.add(new_entity.family_id)
-                else:
-                    already_versioned_family_ids.add(new_entity.family_id)
+            self._mark_versioned(new_entity.family_id, already_versioned_family_ids, _version_lock)
             return new_entity, [], {entity_name: new_entity.family_id, new_entity.name: new_entity.family_id}, new_entity
 
         if self._entity_tree_log():
@@ -647,12 +651,7 @@ class EntityProcessor:
             if latest:
                 if self._entity_tree_log():
                     wprint(f"  │  快捷路径：精确名称+高相似度({top.get('combined_score', 0):.2f})→复用 {latest.family_id}")
-                if already_versioned_family_ids is not None:
-                    if _version_lock:
-                        with _version_lock:
-                            already_versioned_family_ids.add(latest.family_id)
-                    else:
-                        already_versioned_family_ids.add(latest.family_id)
+                self._mark_versioned(latest.family_id, already_versioned_family_ids, _version_lock)
                 return latest, [], {entity_name: latest.family_id, latest.name: latest.family_id}, None
 
         # ---- Fix 2b: 全部候选低相似度 → 直接新建，跳过LLM ----
@@ -660,12 +659,8 @@ class EntityProcessor:
             if self._entity_tree_log():
                 wprint(f"  │  快捷路径：候选相似度过低({candidates[0].get('combined_score', 0):.2f})→新建")
             new_entity = self._build_new_entity(entity_name, entity_content, episode_id, source_document, base_time=base_time)
-            if new_entity and already_versioned_family_ids is not None:
-                if _version_lock:
-                    with _version_lock:
-                        already_versioned_family_ids.add(new_entity.family_id)
-                else:
-                    already_versioned_family_ids.add(new_entity.family_id)
+            if new_entity:
+                self._mark_versioned(new_entity.family_id, already_versioned_family_ids, _version_lock)
             if new_entity:
                 return new_entity, [], {entity_name: new_entity.family_id, new_entity.name: new_entity.family_id}, new_entity
 
@@ -807,12 +802,7 @@ class EntityProcessor:
                         base_time=base_time,
                     )
                     # 标记该 family_id 已创建版本，防止同窗口重复版本化
-                    if already_versioned_family_ids is not None:
-                        if _version_lock:
-                            with _version_lock:
-                                already_versioned_family_ids.add(latest_entity.family_id)
-                        else:
-                            already_versioned_family_ids.add(latest_entity.family_id)
+                    self._mark_versioned(latest_entity.family_id, already_versioned_family_ids, _version_lock)
                     if self._entity_tree_log():
                         wprint(f"  │  批量裁决: 合并到已有实体 {latest_entity.family_id} 并生成新版本")
                     return entity_version, relations_to_create, {
@@ -838,12 +828,7 @@ class EntityProcessor:
         merged_content = (batch_result.get("merged_content") or entity_content).strip() or entity_content
         new_entity = self._build_new_entity(merged_name, merged_content, episode_id, source_document, base_time=base_time)
         # 标记新实体的 family_id 已创建版本
-        if already_versioned_family_ids is not None:
-            if _version_lock:
-                with _version_lock:
-                    already_versioned_family_ids.add(new_entity.family_id)
-            else:
-                already_versioned_family_ids.add(new_entity.family_id)
+        self._mark_versioned(new_entity.family_id, already_versioned_family_ids, _version_lock)
         if self._entity_tree_log():
             wprint(f"  │  批量裁决: 创建新实体 {new_entity.family_id}")
         return new_entity, relations_to_create, {
@@ -1400,12 +1385,7 @@ class EntityProcessor:
                                 skip_if_unchanged=True,
                             )
                             # 标记该 family_id 已创建版本，防止同窗口重复版本化
-                            if already_versioned_family_ids is not None:
-                                if _version_lock:
-                                    with _version_lock:
-                                        already_versioned_family_ids.add(primary_target_id)
-                                else:
-                                    already_versioned_family_ids.add(primary_target_id)
+                            self._mark_versioned(primary_target_id, already_versioned_family_ids, _version_lock)
                         else:
                             final_entity = latest_entity
 
