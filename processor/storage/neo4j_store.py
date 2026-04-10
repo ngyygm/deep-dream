@@ -4050,12 +4050,12 @@ class Neo4jStorageManager:
 
         exclude_uuids = set()
         if exclude_ids:
-            for eid in exclude_ids:
-                resolved = self.resolve_family_id(eid)
-                if resolved:
-                    entity = self.get_entity_by_family_id(resolved)
-                    if entity:
-                        exclude_uuids.add(entity.absolute_id)
+            resolved_map = self.resolve_family_ids(exclude_ids)
+            canonical_fids = list(set(v for v in resolved_map.values() if v))
+            if canonical_fids:
+                entities_map = self.get_entities_by_family_ids(canonical_fids)
+                for entity in entities_map.values():
+                    exclude_uuids.add(entity.absolute_id)
 
         strategies = {
             "random": self._dream_seeds_random,
