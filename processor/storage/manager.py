@@ -4750,3 +4750,270 @@ class StorageManager:
             except Exception as exc:
                 logger.warning("concepts 迁移失败: %s", exc)
                 conn.rollback()
+
+    # ========== Phase 3: 统一概念查询接口 ==========
+
+    def get_concept_by_family_id(self, family_id: str) -> Optional[dict]:
+        """获取任意 role 的概念最新版本。"""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM concepts WHERE family_id = ? ORDER BY processed_time DESC LIMIT 1",
+            (family_id,)
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        cols = [desc[0] for desc in cursor.description]
+        return dict(zip(cols, row))
+
+    def get_concepts_by_family_ids(self, family_ids: List[str]) -> Dict[str, dict]:
+        """批量获取概念最新版本。"""
+        if not family_ids:
+            return {}
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        placeholders = ','.join('?' * len(family_ids))
+        # Get latest version of each family_id using a subquery
+        cursor.execute(f"""
+            SELECT c.* FROM concepts c
+            INNER JOIN (
+                SELECT family_id, MAX(processed_time) as max_pt
+                FROM concepts WHERE family_id IN ({placeholders})
+                GROUP BY family_id
+            ) latest ON c.family_id = latest.family_id AND c.processed_time = latest.max_pt
+        """, family_ids)
+        cols = [desc[0] for desc in cursor.description]
+        result = {}
+        for row in cursor.fetchall():
+            d = dict(zip(cols, row))
+            result[d['family_id']] = d
+        return result
+
+    def search_concepts_by_bm25(self, query: str, role: str = None, limit: int = 20) -> List[dict]:
+        """BM25 搜索概念，可选按 role 过滤。"""
+        if not query:
+            return []
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        try:
+            if role:
+                cursor.execute("""
+                    SELECT c.* FROM concepts c
+                    JOIN concept_fts f ON c.rowid = f.rowid
+                    WHERE concept_fts MATCH ? AND c.role = ?
+                    ORDER BY f.rank
+                    LIMIT ?
+                """, (query, role, limit))
+            else:
+                cursor.execute("""
+                    SELECT c.* FROM concepts c
+                    JOIN concept_fts f ON c.rowid = f.rowid
+                    WHERE concept_fts MATCH ?
+                    ORDER BY f.rank
+                    LIMIT ?
+                """, (query, limit))
+            cols = [desc[0] for desc in cursor.description]
+            return [dict(zip(cols, row)) for row in cursor.fetchall()]
+        except Exception:
+            # FTS match syntax error -- fallback to LIKE
+            query_lower = query.lower()
+            q = f"%{query_lower}%"
+            if role:
+                cursor.execute(
+                    "SELECT * FROM concepts WHERE LOWER(content) LIKE ? AND role = ? "
+                    "ORDER BY processed_time DESC LIMIT ?",
+                    (q, role, limit)
+                )
+            else:
+                cursor.execute(
+                    "SELECT * FROM concepts WHERE LOWER(content) LIKE ? "
+                    "ORDER BY processed_time DESC LIMIT ?",
+                    (q, limit)
+                )
+            cols = [desc[0] for desc in cursor.description]
+            return [dict(zip(cols, row)) for row in cursor.fetchall()]
+
+    def search_concepts_by_similarity(self, query_text: str, role: str = None,
+                                       threshold: float = 0.5, max_results: int = 10) -> List[dict]:
+        """语义相似度搜索（需要 embedding 支撑）。
+
+        当前回退到 BM25；后续接入 embedding 向量后替换为余弦相似度搜索。
+        """
+        return self.search_concepts_by_bm25(query_text, role=role, limit=max_results)
+
+    def get_concept_neighbors(self, family_id: str, max_depth: int = 1) -> List[dict]:
+        """获取概念的邻居（无论 role）。
+
+        - entity: 返回关联的 relation（通过 connects 字段包含该 entity family_id 的任意版本的 absolute_id）
+        - relation: 返回它连接的 entity
+        - observation: 返回它 MENTIONS 的所有 concept
+        """
+        concept = self.get_concept_by_family_id(family_id)
+        if not concept:
+            return []
+        role = concept.get('role', 'entity')
+        results = []
+
+        if role == 'entity':
+            # Find all absolute_ids for this entity family
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT id FROM entities WHERE family_id = ?", (family_id,)
+            )
+            abs_ids = [row[0] for row in cursor.fetchall()]
+            if abs_ids:
+                placeholders = ','.join('?' * len(abs_ids))
+                # Find relations that connect to this entity
+                cursor.execute(f"""
+                    SELECT DISTINCT c.family_id FROM concepts c, json_each(c.connects) je
+                    WHERE c.role = 'relation' AND je.value IN ({placeholders})
+                """, abs_ids)
+                rel_fids = list(set(r[0] for r in cursor.fetchall()))
+                if rel_fids:
+                    rel_concepts = self.get_concepts_by_family_ids(rel_fids)
+                    results.extend(rel_concepts.values())
+
+        elif role == 'relation':
+            connects = concept.get('connects', '')
+            if connects:
+                try:
+                    abs_ids = json.loads(connects) if isinstance(connects, str) else connects
+                    # Resolve absolute_ids to family_ids
+                    entity_fids = set()
+                    conn = self._get_conn()
+                    cursor = conn.cursor()
+                    for aid in abs_ids:
+                        cursor.execute(
+                            "SELECT family_id FROM concepts WHERE id = ?", (aid,)
+                        )
+                        row = cursor.fetchone()
+                        if row:
+                            entity_fids.add(row[0])
+                    if entity_fids:
+                        ent_concepts = self.get_concepts_by_family_ids(list(entity_fids))
+                        results.extend(ent_concepts.values())
+                except (json.JSONDecodeError, Exception):
+                    pass
+
+        elif role == 'observation':
+            # Get concepts mentioned by this episode
+            abs_id = concept['id']
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT target_absolute_id FROM episode_mentions
+                WHERE episode_id = ?
+            """, (abs_id,))
+            target_abs_ids = list(set(r[0] for r in cursor.fetchall()))
+            # Resolve to family_ids
+            if target_abs_ids:
+                placeholders = ','.join('?' * len(target_abs_ids))
+                cursor.execute(f"""
+                    SELECT family_id, id FROM concepts WHERE id IN ({placeholders})
+                """, target_abs_ids)
+                fid_set = set()
+                for row in cursor.fetchall():
+                    fid_set.add(row[0])
+                if fid_set:
+                    mentioned = self.get_concepts_by_family_ids(list(fid_set))
+                    results.extend(mentioned.values())
+
+        return results
+
+    def get_concept_provenance(self, family_id: str) -> List[dict]:
+        """溯源：返回所有提及此概念的 observation。"""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id FROM entities WHERE family_id = ?", (family_id,)
+        )
+        abs_ids = [row[0] for row in cursor.fetchall()]
+        if not abs_ids:
+            return []
+        placeholders = ','.join('?' * len(abs_ids))
+        cursor.execute(f"""
+            SELECT DISTINCT ep.id, ep.content, ep.event_time, ep.source_document
+            FROM episodes ep
+            JOIN episode_mentions em ON ep.id = em.episode_id
+            WHERE em.target_absolute_id IN ({placeholders})
+            ORDER BY ep.event_time DESC
+        """, abs_ids)
+        return [
+            {"episode_id": row[0], "content": row[1] or "",
+             "event_time": row[2] or "", "source_document": row[3] or ""}
+            for row in cursor.fetchall()
+        ]
+
+    def get_concept_mentions(self, family_id: str) -> List[dict]:
+        """获取提及此概念的所有 Episode。"""
+        return self.get_concept_provenance(family_id)
+
+    def get_episode_concepts(self, episode_id: str) -> List[dict]:
+        """获取 Episode 提及的所有概念（entity + relation）。"""
+        return self.get_episode_entities(episode_id)
+
+    def traverse_concepts(self, start_family_ids: List[str], max_depth: int = 2) -> dict:
+        """BFS 遍历概念图。"""
+        visited = set()
+        queue = list(start_family_ids)
+        all_concepts = {}
+        all_relations_info = []
+
+        for _ in range(max_depth):
+            next_queue = []
+            for fid in queue:
+                if fid in visited:
+                    continue
+                visited.add(fid)
+                concept = self.get_concept_by_family_id(fid)
+                if not concept:
+                    continue
+                all_concepts[fid] = concept
+                neighbors = self.get_concept_neighbors(fid)
+                for n in neighbors:
+                    nfid = n.get('family_id', '')
+                    if nfid and nfid not in visited:
+                        next_queue.append(nfid)
+                        # Track relation connections
+                        if n.get('role') == 'relation' and n.get('connects'):
+                            all_relations_info.append({
+                                "family_id": nfid,
+                                "connects": n.get('connects', ''),
+                                "content": n.get('content', ''),
+                            })
+            queue = next_queue
+
+        return {
+            "concepts": all_concepts,
+            "relations": all_relations_info,
+            "visited_count": len(visited),
+        }
+
+    def list_concepts(self, role: str = None, limit: int = 50, offset: int = 0) -> List[dict]:
+        """列出概念（分页 + 可选 role 过滤）。"""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        if role:
+            cursor.execute(
+                "SELECT * FROM concepts WHERE role = ? ORDER BY processed_time DESC LIMIT ? OFFSET ?",
+                (role, limit, offset)
+            )
+        else:
+            cursor.execute(
+                "SELECT * FROM concepts ORDER BY processed_time DESC LIMIT ? OFFSET ?",
+                (limit, offset)
+            )
+        cols = [desc[0] for desc in cursor.description]
+        return [dict(zip(cols, row)) for row in cursor.fetchall()]
+
+    def count_concepts(self, role: str = None) -> int:
+        """统计概念数量。"""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        if role:
+            cursor.execute("SELECT COUNT(*) FROM concepts WHERE role = ?", (role,))
+        else:
+            cursor.execute("SELECT COUNT(*) FROM concepts")
+        return cursor.fetchone()[0]
