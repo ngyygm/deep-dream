@@ -4,6 +4,17 @@
 
 ## 2026-04-10
 
+### [已完成] fix: Neo4j _RELATION_RETURN_FIELDS 模板字面量bug — 20处Cypher查询字段未展开
+- `_RELATION_RETURN_FIELDS` 是模块级常量字符串，包含完整的 Relation 字段列表
+- 20处 Cypher 查询中 `RETURN {_RELATION_RETURN_FIELDS}` 写在普通三引号字符串内
+  - Python 不会展开普通字符串中的 `{...}`，导致字面文本发送给 Neo4j
+  - 仅 1 处正确使用 f-string（`update_relation_by_absolute_id`）
+- 修复方案：引入 `_q()` 辅助函数 + `__REL_FIELDS__` 占位符
+  - 所有查询中改为 `RETURN __REL_FIELDS__`，用 `_q("""...""")` 包装
+  - 无需转义 Cypher 自身的 `{...}`（如 `{uuid: $uuid}`），避免 f-string 逃逸风险
+- 21 个方法受影响：get_relation_by_absolute_id, get_relation_versions, get_all_relations 等
+- 现有 18 项集成测试全部通过
+
 ### [已完成] feat: Concept语义搜索 — embedding余弦相似度替代BM25 stub
 - `search_concepts_by_similarity` 从纯BM25回退改为真正的embedding向量搜索
 - 新增 `_get_latest_concepts_with_embeddings`：带TTL缓存的Concept embedding批量加载器

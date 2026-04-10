@@ -56,6 +56,16 @@ r.invalid_at AS invalid_at, r.summary AS summary,
 r.attributes AS attributes, r.confidence AS confidence,
 r.provenance AS provenance"""
 
+# 占位符：在普通字符串中写 RETURN __REL_FIELDS__，_q() 展开为实际字段列表
+_REL_FIELDS_PLACEHOLDER = "__REL_FIELDS__"
+_REL_FIELDS_RETURN = f"RETURN {_RELATION_RETURN_FIELDS}"
+
+
+def _q(cypher: str) -> str:
+    """展开 Cypher 查询中的 __REL_FIELDS__ 占位符为实际 Relation RETURN 字段。"""
+    return cypher.replace(f"RETURN {_REL_FIELDS_PLACEHOLDER}", _REL_FIELDS_RETURN)
+
+
 # ---------------------------------------------------------------------------
 # Neo4j 节点 / 边 属性 → Entity / Relation 转换
 # ---------------------------------------------------------------------------
@@ -1565,13 +1575,12 @@ class Neo4jStorageManager:
         relations_map: Dict[str, List] = {fid: [] for fid in canonical_set}
         if all_aids:
             with self._session() as session:
-                result = session.run(
-                    """
+                result = session.run(_q("""
                     MATCH (r:Relation)
                     WHERE (r.entity1_absolute_id IN $aids OR r.entity2_absolute_id IN $aids)
                       AND r.invalid_at IS NULL
-                    RETURN {_RELATION_RETURN_FIELDS}
-                    """,
+                    RETURN __REL_FIELDS__
+                    """),
                     aids=list(all_aids),
                 )
                 all_rels = [_neo4j_record_to_relation(rec) for rec in result]
@@ -2427,11 +2436,10 @@ class Neo4jStorageManager:
     def get_relation_by_absolute_id(self, relation_absolute_id: str) -> Optional[Relation]:
         """根据 absolute_id 获取关系。"""
         with self._session() as session:
-            result = session.run(
-                """
+            result = session.run(_q("""
                 MATCH (r:Relation {uuid: $uuid})
-                RETURN {_RELATION_RETURN_FIELDS}
-                """,
+                RETURN __REL_FIELDS__
+                """),
                 uuid=relation_absolute_id,
             )
             record = result.single()
@@ -2448,24 +2456,22 @@ class Neo4jStorageManager:
         if not absolute_ids:
             return []
         with self._session() as session:
-            result = session.run(
-                """
+            result = session.run(_q("""
                 MATCH (r:Relation)
                 WHERE r.uuid IN $uuids
-                RETURN {_RELATION_RETURN_FIELDS}
-                """,
+                RETURN __REL_FIELDS__
+                """),
                 uuids=absolute_ids,
             )
             return [_neo4j_record_to_relation(r) for r in result]
 
     def get_relation_by_family_id(self, family_id: str) -> Optional[Relation]:
         with self._session() as session:
-            result = session.run(
-                """
+            result = session.run(_q("""
                 MATCH (r:Relation {family_id: $fid})
-                RETURN {_RELATION_RETURN_FIELDS}
+                RETURN __REL_FIELDS__
                 ORDER BY r.processed_time DESC LIMIT 1
-                """,
+                """),
                 fid=family_id,
             )
             record = result.single()
@@ -2512,7 +2518,7 @@ class Neo4jStorageManager:
 
             # Step 2: 查询关系
             result = session.run(
-                """
+                _q("""
                 MATCH (r:Relation)
                 WHERE (r.entity1_absolute_id IN $from_ids AND r.entity2_absolute_id IN $to_ids)
                    OR (r.entity1_absolute_id IN $to_ids AND r.entity2_absolute_id IN $from_ids)
@@ -2520,9 +2526,9 @@ class Neo4jStorageManager:
                 UNWIND rels AS r
                 WITH fid, r ORDER BY r.processed_time DESC
                 WITH fid, HEAD(COLLECT(r)) AS r
-                RETURN {_RELATION_RETURN_FIELDS}
+                RETURN __REL_FIELDS__
                 ORDER BY r.processed_time DESC
-                """,
+                """),
                 from_ids=from_ids,
                 to_ids=to_ids,
             )
@@ -2559,13 +2565,12 @@ class Neo4jStorageManager:
 
         # 单次查询获取所有相关关系
         with self._session() as session:
-            result = session.run(
-                """
+            result = session.run(_q("""
                 MATCH (r:Relation)
                 WHERE (r.entity1_absolute_id IN $aids OR r.entity2_absolute_id IN $aids)
                   AND r.invalid_at IS NULL
-                RETURN {_RELATION_RETURN_FIELDS}
-                """,
+                RETURN __REL_FIELDS__
+                """),
                 aids=list(all_aids),
             )
             all_relations = [_neo4j_record_to_relation(rec) for rec in result]
@@ -2600,12 +2605,11 @@ class Neo4jStorageManager:
     def get_relation_versions(self, family_id: str) -> List[Relation]:
         """获取关系的所有版本。"""
         with self._session() as session:
-            result = session.run(
-                """
+            result = session.run(_q("""
                 MATCH (r:Relation {family_id: $fid})
-                RETURN {_RELATION_RETURN_FIELDS}
+                RETURN __REL_FIELDS__
                 ORDER BY r.processed_time ASC
-                """,
+                """),
                 fid=family_id,
             )
             return [_neo4j_record_to_relation(r) for r in result]
@@ -2616,7 +2620,7 @@ class Neo4jStorageManager:
         """获取与指定实体相关的所有关系。"""
         with self._session() as session:
             if time_point:
-                query = """
+                query = _q("""
                     MATCH (r:Relation)
                     WHERE (r.entity1_absolute_id = $abs_id OR r.entity2_absolute_id = $abs_id)
                     AND r.event_time <= datetime($tp)
@@ -2624,21 +2628,21 @@ class Neo4jStorageManager:
                     UNWIND rels AS r
                     WITH fid, r ORDER BY r.processed_time DESC
                     WITH fid, HEAD(COLLECT(r)) AS r
-                    RETURN {_RELATION_RETURN_FIELDS}
+                    RETURN __REL_FIELDS__
                     ORDER BY r.processed_time DESC
-                """
+                """)
                 params = {"abs_id": entity_absolute_id, "tp": time_point.isoformat()}
             else:
-                query = """
+                query = _q("""
                     MATCH (r:Relation)
                     WHERE (r.entity1_absolute_id = $abs_id OR r.entity2_absolute_id = $abs_id)
                     WITH r.family_id AS fid, COLLECT(r) AS rels
                     UNWIND rels AS r
                     WITH fid, r ORDER BY r.processed_time DESC
                     WITH fid, HEAD(COLLECT(r)) AS r
-                    RETURN {_RELATION_RETURN_FIELDS}
+                    RETURN __REL_FIELDS__
                     ORDER BY r.processed_time DESC
-                """
+                """)
                 params = {"abs_id": entity_absolute_id}
 
             if limit is not None:
@@ -2690,7 +2694,7 @@ class Neo4jStorageManager:
 
         with self._session() as session:
             if time_point:
-                query = """
+                query = _q("""
                     MATCH (r:Relation)
                     WHERE (r.entity1_absolute_id IN $abs_ids OR r.entity2_absolute_id IN $abs_ids)
                     AND r.event_time <= datetime($tp)
@@ -2698,21 +2702,21 @@ class Neo4jStorageManager:
                     UNWIND rels AS r
                     WITH fid, r ORDER BY r.processed_time DESC
                     WITH fid, HEAD(COLLECT(r)) AS r
-                    RETURN {_RELATION_RETURN_FIELDS}
+                    RETURN __REL_FIELDS__
                     ORDER BY r.processed_time DESC
-                """
+                """)
                 params = {"abs_ids": abs_ids, "tp": time_point.isoformat()}
             else:
-                query = """
+                query = _q("""
                     MATCH (r:Relation)
                     WHERE (r.entity1_absolute_id IN $abs_ids OR r.entity2_absolute_id IN $abs_ids)
                     WITH r.family_id AS fid, COLLECT(r) AS rels
                     UNWIND rels AS r
                     WITH fid, r ORDER BY r.processed_time DESC
                     WITH fid, HEAD(COLLECT(r)) AS r
-                    RETURN {_RELATION_RETURN_FIELDS}
+                    RETURN __REL_FIELDS__
                     ORDER BY r.processed_time DESC
-                """
+                """)
                 params = {"abs_ids": abs_ids}
 
             if limit is not None:
@@ -2745,17 +2749,16 @@ class Neo4jStorageManager:
                 return []
 
             # 获取所有相关关系（一次查询）
-            result = session.run(
-                """
+            result = session.run(_q("""
                 MATCH (r:Relation)
                 WHERE (r.entity1_absolute_id IN $abs_ids OR r.entity2_absolute_id IN $abs_ids)
                 WITH r.family_id AS fid, COLLECT(r) AS rels
                 UNWIND rels AS r
                 WITH fid, r ORDER BY r.processed_time DESC
                 WITH fid, HEAD(COLLECT(r)) AS r
-                RETURN {_RELATION_RETURN_FIELDS}
+                RETURN __REL_FIELDS__
                 ORDER BY r.processed_time ASC
-                """,
+                """),
                 abs_ids=abs_ids,
             )
 
@@ -2784,16 +2787,16 @@ class Neo4jStorageManager:
         if not entity_absolute_ids:
             return []
         with self._session() as session:
-            query = """
+            query = _q("""
                 MATCH (r:Relation)
                 WHERE (r.entity1_absolute_id IN $abs_ids OR r.entity2_absolute_id IN $abs_ids)
                 WITH r.family_id AS fid, COLLECT(r) AS rels
                 UNWIND rels AS r
                 WITH fid, r ORDER BY r.processed_time DESC
                 WITH fid, HEAD(COLLECT(r)) AS r
-                RETURN {_RELATION_RETURN_FIELDS}
+                RETURN __REL_FIELDS__
                 ORDER BY r.processed_time DESC
-            """
+            """)
             if limit is not None:
                 query += f" LIMIT {int(limit)}"
             result = session.run(query, abs_ids=entity_absolute_ids)
@@ -2823,15 +2826,15 @@ class Neo4jStorageManager:
                            exclude_embedding: bool = False) -> List[Relation]:
         """获取所有关系的最新版本。"""
         with self._session() as session:
-            query = """
+            query = _q("""
                 MATCH (r:Relation)
                 WITH r.family_id AS fid, COLLECT(r) AS rels
                 UNWIND rels AS r
                 WITH fid, r ORDER BY r.processed_time DESC
                 WITH fid, HEAD(COLLECT(r)) AS r
-                RETURN {_RELATION_RETURN_FIELDS}
+                RETURN __REL_FIELDS__
                 ORDER BY r.processed_time DESC
-            """
+            """)
             if offset is not None and offset > 0:
                 query += f" SKIP {int(offset)}"
             if limit is not None:
@@ -2866,16 +2869,15 @@ class Neo4jStorageManager:
     def _get_relations_with_embeddings_impl(self) -> List[tuple]:
         """获取所有关系的最新版本及其 embedding（实际实现）。"""
         with self._session() as session:
-            result = session.run(
-                """
+            result = session.run(_q("""
                 MATCH (r:Relation)
                 WITH r.family_id AS fid, COLLECT(r) AS rels
                 UNWIND rels AS r
                 WITH fid, r ORDER BY r.processed_time DESC
                 WITH fid, HEAD(COLLECT(r)) AS r
-                RETURN {_RELATION_RETURN_FIELDS}
+                RETURN __REL_FIELDS__
                 ORDER BY r.processed_time DESC
-                """
+                """)
             )
             records = list(result)
 
@@ -3204,12 +3206,11 @@ class Neo4jStorageManager:
 
             rel_map: Dict[str, Relation] = {}
             if needed_rel_ids:
-                res = session.run(
-                    """
+                res = session.run(_q("""
                     MATCH (r:Relation)
                     WHERE r.uuid IN $uuids
-                    RETURN {_RELATION_RETURN_FIELDS}
-                    """,
+                    RETURN __REL_FIELDS__
+                    """),
                     uuids=list(needed_rel_ids),
                 )
                 for r in res:
@@ -3673,14 +3674,14 @@ class Neo4jStorageManager:
             """, time=time_point.isoformat(), limit=limit or 10000)
             entities = [_neo4j_record_to_entity(r) for r in result]
 
-            result = session.run("""
+            result = session.run(_q("""
                 MATCH (r:Relation)
                 WHERE (r.valid_at IS NULL OR r.valid_at <= $time)
                   AND (r.invalid_at IS NULL OR r.invalid_at > $time)
-                RETURN {_RELATION_RETURN_FIELDS}
+                RETURN __REL_FIELDS__
                 ORDER BY r.event_time DESC
                 LIMIT $limit
-            """, time=time_point.isoformat(), limit=limit or 10000)
+            """), time=time_point.isoformat(), limit=limit or 10000)
             relations = [_neo4j_record_to_relation(r) for r in result]
 
         return {"entities": entities, "relations": relations}
@@ -3698,12 +3699,12 @@ class Neo4jStorageManager:
             """, since=since.isoformat(), until=until.isoformat())
             entities = [_neo4j_record_to_entity(r) for r in result]
 
-            result = session.run("""
+            result = session.run(_q("""
                 MATCH (r:Relation)
                 WHERE r.event_time >= $since AND r.event_time <= $until
-                RETURN {_RELATION_RETURN_FIELDS}
+                RETURN __REL_FIELDS__
                 ORDER BY r.event_time DESC
-            """, since=since.isoformat(), until=until.isoformat())
+            """), since=since.isoformat(), until=until.isoformat())
             relations = [_neo4j_record_to_relation(r) for r in result]
 
         return {"entities": entities, "relations": relations}
@@ -3724,13 +3725,13 @@ class Neo4jStorageManager:
     def get_invalidated_relations(self, limit: int = 100) -> List[Relation]:
         """列出已失效的关系"""
         with self._session() as session:
-            result = session.run("""
+            result = session.run(_q("""
                 MATCH (r:Relation)
                 WHERE r.invalid_at IS NOT NULL
-                RETURN {_RELATION_RETURN_FIELDS}
+                RETURN __REL_FIELDS__
                 ORDER BY r.invalid_at DESC
                 LIMIT $limit
-            """, limit=limit)
+            """), limit=limit)
             return [_neo4j_record_to_relation(r) for r in result]
 
     # ------------------------------------------------------------------
@@ -4586,12 +4587,11 @@ class Neo4jStorageManager:
     def get_relations_referencing_absolute_id(self, absolute_id: str) -> List[Relation]:
         """获取所有引用了指定 absolute_id 的关系。"""
         with self._session() as session:
-            result = session.run(
-                """
+            result = session.run(_q("""
                 MATCH (r:Relation)
                 WHERE r.entity1_absolute_id = $aid OR r.entity2_absolute_id = $aid
-                RETURN {_RELATION_RETURN_FIELDS}
-                """,
+                RETURN __REL_FIELDS__
+                """),
                 aid=absolute_id,
             )
             return [_neo4j_record_to_relation(r) for r in result]
@@ -4601,12 +4601,11 @@ class Neo4jStorageManager:
         if not absolute_ids:
             return {}
         with self._session() as session:
-            result = session.run(
-                """
+            result = session.run(_q("""
                 MATCH (r:Relation)
                 WHERE r.entity1_absolute_id IN $aids OR r.entity2_absolute_id IN $aids
-                RETURN {_RELATION_RETURN_FIELDS}
-                """,
+                RETURN __REL_FIELDS__
+                """),
                 aids=absolute_ids,
             )
             result_map: Dict[str, List[Relation]] = {aid: [] for aid in absolute_ids}
