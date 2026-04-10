@@ -694,6 +694,9 @@ class RelationProcessor:
             processed_time=processed_time,
             episode_id=episode_id,
             source_document=source_document_only,
+            content_format="markdown",
+            summary=content[:200].strip(),
+            confidence=0.7,
         )
         return relation
 
@@ -780,7 +783,10 @@ class RelationProcessor:
             event_time=ts,
             processed_time=processed_time,
             episode_id=episode_id,
-            source_document=source_document_only
+            source_document=source_document_only,
+            content_format="markdown",
+            summary=content[:200].strip(),
+            confidence=0.7,
         )
         return relation
 

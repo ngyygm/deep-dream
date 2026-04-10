@@ -1429,6 +1429,18 @@ class EntityProcessor:
         
         return final_entity, updated_relations, entity_name_to_id
     
+    @staticmethod
+    def _extract_summary(name: str, content: str) -> str:
+        """从实体名称和内容中提取简短摘要（无需额外LLM调用）。"""
+        # 跳过 markdown 标题行，取第一行非空正文
+        for line in content.split('\n'):
+            stripped = line.strip()
+            if not stripped or stripped.startswith('#'):
+                continue
+            return stripped[:200] if len(stripped) > 200 else stripped
+        # 回退到名称
+        return name[:100]
+
     def _build_new_entity(self, name: str, content: str, episode_id: str,
                           source_document: str = "", base_time: Optional[datetime] = None) -> Entity:
         """构建新实体对象，但不立即写库。"""
@@ -1449,6 +1461,8 @@ class EntityProcessor:
             episode_id=episode_id,
             source_document=source_document_only,
             content_format="markdown",
+            summary=self._extract_summary(name, content),
+            confidence=0.7,
         )
         return entity
 
@@ -1479,6 +1493,8 @@ class EntityProcessor:
             episode_id=episode_id,
             source_document=source_document_only,
             content_format="markdown",
+            summary=self._extract_summary(name, content),
+            confidence=0.7,
         )
         return entity
 
