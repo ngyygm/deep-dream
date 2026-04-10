@@ -3654,8 +3654,7 @@ class StorageManager:
 
         # Step 2: 批量获取最新实体（窗口函数取每组最新一条）
         cursor.execute(f"""
-            SELECT id, family_id, name, content, event_time, processed_time,
-                   episode_id, source_document, embedding, summary, attributes, confidence
+            SELECT {self._ENTITY_SELECT}
             FROM (
                 SELECT *, ROW_NUMBER() OVER (PARTITION BY family_id ORDER BY processed_time DESC) AS rn
                 FROM entities WHERE family_id IN ({placeholders})
