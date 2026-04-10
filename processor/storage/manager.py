@@ -133,9 +133,22 @@ class StorageManager:
         c.execute("CREATE INDEX IF NOT EXISTS idx_relation_event_time ON relations(event_time)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_relation_processed_time ON relations(processed_time)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_entity_redirect_target ON entity_redirects(target_family_id)")
-        # 为旧库自动添加缺失的 source_document 列（幂等）
+        # 唯一索引：防止并行创建时产生重复版本
+        try:
+            c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_entity_unique ON entities(family_id, processed_time)")
+        except sqlite3.OperationalError:
+            pass  # 索引已存在或存在重复数据，忽略
+        try:
+            c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_relation_unique ON relations(family_id, processed_time)")
+        except sqlite3.OperationalError:
+            pass
+        # 为旧库自动添加缺失列（幂等）
         self._ensure_column(c, "entities", "source_document", "TEXT DEFAULT ''")
         self._ensure_column(c, "relations", "source_document", "TEXT DEFAULT ''")
+        self._ensure_column(c, "entities", "valid_at", "TEXT")
+        self._ensure_column(c, "entities", "invalid_at", "TEXT")
+        self._ensure_column(c, "relations", "valid_at", "TEXT")
+        self._ensure_column(c, "relations", "invalid_at", "TEXT")
         self._ensure_column(c, "entities", "summary", "TEXT")
         self._ensure_column(c, "entities", "attributes", "TEXT")
         self._ensure_column(c, "entities", "confidence", "REAL")
@@ -143,9 +156,9 @@ class StorageManager:
         self._ensure_column(c, "relations", "attributes", "TEXT")
         self._ensure_column(c, "relations", "confidence", "REAL")
         self._ensure_column(c, "relations", "provenance", "TEXT")
-        # ContentPatch: section 级变更记录
         self._ensure_column(c, "entities", "content_format", "TEXT DEFAULT 'plain'")
         self._ensure_column(c, "relations", "content_format", "TEXT DEFAULT 'plain'")
+        # ContentPatch: section 级变更记录
         c.execute("""
             CREATE TABLE IF NOT EXISTS content_patches (
                 uuid TEXT PRIMARY KEY,
@@ -164,6 +177,31 @@ class StorageManager:
         c.execute("CREATE INDEX IF NOT EXISTS idx_cp_target_abs ON content_patches(target_absolute_id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_cp_family_id ON content_patches(target_family_id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_cp_section ON content_patches(target_family_id, section_key)")
+        # Episode mentions
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS episode_mentions (
+                episode_id TEXT NOT NULL,
+                entity_absolute_id TEXT NOT NULL,
+                mention_context TEXT DEFAULT '',
+                PRIMARY KEY (episode_id, entity_absolute_id)
+            )
+        """)
+        c.execute("CREATE INDEX IF NOT EXISTS idx_episode_mentions_entity ON episode_mentions(entity_absolute_id)")
+        # Dream logs
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS dream_logs (
+                cycle_id TEXT PRIMARY KEY,
+                graph_id TEXT NOT NULL,
+                start_time TEXT NOT NULL,
+                end_time TEXT,
+                status TEXT DEFAULT 'running',
+                narrative TEXT DEFAULT '',
+                insights_json TEXT DEFAULT '[]',
+                connections_json TEXT DEFAULT '[]',
+                consolidations_json TEXT DEFAULT '[]',
+                config_json TEXT DEFAULT '{}'
+            )
+        """)
         # BM25 全文搜索虚拟表
         c.execute("""
             CREATE VIRTUAL TABLE IF NOT EXISTS entity_fts USING fts5(name, content, family_id UNINDEXED)
@@ -444,144 +482,7 @@ class StorageManager:
     def _init_database(self):
         """初始化SQLite数据库（使用独立连接，此时线程池尚未启用）。"""
         conn = sqlite3.connect(str(self.db_path))
-        cursor = conn.cursor()
-        
-        # 创建实体表
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS entities (
-                id TEXT PRIMARY KEY,
-                family_id TEXT NOT NULL,
-                name TEXT NOT NULL,
-                content TEXT NOT NULL,
-                event_time TEXT NOT NULL,
-                processed_time TEXT NOT NULL,
-                episode_id TEXT NOT NULL,
-                source_document TEXT DEFAULT '',
-                embedding BLOB
-            )
-        """)
-
-        # 创建关系表（只使用绝对ID，无向关系）
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS relations (
-                id TEXT PRIMARY KEY,
-                family_id TEXT NOT NULL,
-                entity1_absolute_id TEXT NOT NULL,
-                entity2_absolute_id TEXT NOT NULL,
-                content TEXT NOT NULL,
-                event_time TEXT NOT NULL,
-                processed_time TEXT NOT NULL,
-                episode_id TEXT NOT NULL,
-                source_document TEXT DEFAULT '',
-                embedding BLOB
-            )
-        """)
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS entity_redirects (
-                source_family_id TEXT PRIMARY KEY,
-                target_family_id TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )
-        """)
-
-        # 创建索引
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_family_id ON entities(family_id)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_entity_name ON entities(name)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_entity_event_time ON entities(event_time)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_entity_processed_time ON entities(processed_time)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_relation_id ON relations(family_id)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_relation_entities ON relations(entity1_absolute_id, entity2_absolute_id)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_relation_event_time ON relations(event_time)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_relation_processed_time ON relations(processed_time)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_entity_redirect_target ON entity_redirects(target_family_id)")
-
-        # 唯一索引：防止并行创建时产生重复版本
-        try:
-            cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_entity_unique ON entities(family_id, processed_time)")
-        except sqlite3.OperationalError:
-            pass  # 索引已存在或存在重复数据，忽略
-        try:
-            cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_relation_unique ON relations(family_id, processed_time)")
-        except sqlite3.OperationalError:
-            pass
-
-        # 旧库迁移：自动添加 source_document 列（幂等）
-        self._ensure_column(cursor, "entities", "source_document", "TEXT DEFAULT ''")
-        self._ensure_column(cursor, "relations", "source_document", "TEXT DEFAULT ''")
-
-        # 旧库迁移：为 Phase 3 添加 valid_at / invalid_at 列（幂等）
-        self._ensure_column(cursor, "entities", "valid_at", "TEXT")
-        self._ensure_column(cursor, "entities", "invalid_at", "TEXT")
-        self._ensure_column(cursor, "relations", "valid_at", "TEXT")
-        self._ensure_column(cursor, "relations", "invalid_at", "TEXT")
-
-        # Phase A: 摘要、属性、置信度
-        self._ensure_column(cursor, "entities", "summary", "TEXT")
-        self._ensure_column(cursor, "entities", "attributes", "TEXT")
-        self._ensure_column(cursor, "entities", "confidence", "REAL")
-        self._ensure_column(cursor, "relations", "summary", "TEXT")
-        self._ensure_column(cursor, "relations", "attributes", "TEXT")
-        self._ensure_column(cursor, "relations", "confidence", "REAL")
-        self._ensure_column(cursor, "relations", "provenance", "TEXT")
-
-        # ContentPatch: section 级变更记录
-        self._ensure_column(cursor, "entities", "content_format", "TEXT DEFAULT 'plain'")
-        self._ensure_column(cursor, "relations", "content_format", "TEXT DEFAULT 'plain'")
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS content_patches (
-                uuid TEXT PRIMARY KEY,
-                target_type TEXT NOT NULL,
-                target_absolute_id TEXT NOT NULL,
-                target_family_id TEXT NOT NULL,
-                section_key TEXT NOT NULL,
-                change_type TEXT NOT NULL,
-                old_hash TEXT DEFAULT '',
-                new_hash TEXT DEFAULT '',
-                diff_summary TEXT DEFAULT '',
-                source_document TEXT DEFAULT '',
-                event_time TEXT NOT NULL
-            )
-        """)
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_cp_target_abs ON content_patches(target_absolute_id)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_cp_family_id ON content_patches(target_family_id)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_cp_section ON content_patches(target_family_id, section_key)")
-
-        # Phase C: Episode mentions
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS episode_mentions (
-                episode_id TEXT NOT NULL,
-                entity_absolute_id TEXT NOT NULL,
-                mention_context TEXT DEFAULT '',
-                PRIMARY KEY (episode_id, entity_absolute_id)
-            )
-        """)
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_episode_mentions_entity ON episode_mentions(entity_absolute_id)")
-
-        # Phase E: Dream logs
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS dream_logs (
-                cycle_id TEXT PRIMARY KEY,
-                graph_id TEXT NOT NULL,
-                start_time TEXT NOT NULL,
-                end_time TEXT,
-                status TEXT DEFAULT 'running',
-                narrative TEXT DEFAULT '',
-                insights_json TEXT DEFAULT '[]',
-                connections_json TEXT DEFAULT '[]',
-                consolidations_json TEXT DEFAULT '[]',
-                config_json TEXT DEFAULT '{}'
-            )
-        """)
-
-        # BM25 全文搜索虚拟表
-        cursor.execute("""
-            CREATE VIRTUAL TABLE IF NOT EXISTS entity_fts USING fts5(name, content, family_id UNINDEXED)
-        """)
-        cursor.execute("""
-            CREATE VIRTUAL TABLE IF NOT EXISTS relation_fts USING fts5(content, family_id UNINDEXED)
-        """)
-
-        conn.commit()
+        self._ensure_tables(conn)
         conn.close()
 
     def _resolve_family_id_with_cursor(self, cursor, family_id: str) -> str:
