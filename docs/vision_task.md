@@ -4,6 +4,21 @@
 
 ## 2026-04-10
 
+### [已完成] fix: FTS rowid整数 + SELECT列常量化 + exclude_embedding偏移
+- commit: deb73eb
+- FTS5 rowid必须为整数，但entity/relation的id列是TEXT PRIMARY KEY
+  - save_entity/save_relation: cursor.lastrowid替代absolute_id
+  - bulk_save: 先查整数rowid再写入FTS
+  - BM25 JOIN: e.id=fts.rowid → e.rowid=fts.rowid
+  - FTS DELETE: 子查询SELECT rowid替代文本ID
+- _ENTITY_SELECT/_RELATION_SELECT常量 + _row_to_entity/_row_to_relation辅助方法
+  - 20+处SELECT列名和Entity/Relation构造消除重复
+  - 单一数据源保证列顺序一致
+- exclude_embedding列偏移: 移除embedding列导致summary等字段索引错位
+  - 改为NULL占位替代列移除，保持列顺序
+- Neo4j bulk_save_relations补齐summary/attributes/confidence等6个字段
+- 18项集成测试全部通过
+
 ### [已完成] refactor: api.py 4980行→Blueprint 7模块 + 350行工厂
 - server/api.py 从 4980 行单体拆分为 7 个 Blueprint 模块 + 350 行应用工厂
 - 新增文件:
