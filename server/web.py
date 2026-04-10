@@ -669,7 +669,8 @@ class GraphWebServer:
                                 })
                 
                 # 批量预取关联实体的版本计数
-                related_fids_to_prefetch = [fid for fid in all_related_family_ids if fid not in [n['id'] for n in nodes]]
+                existing_node_ids = {n['id'] for n in nodes}
+                related_fids_to_prefetch = [fid for fid in all_related_family_ids if fid not in existing_node_ids]
                 try:
                     related_version_counts = self.storage.get_entity_version_counts(related_fids_to_prefetch) or {}
                 except Exception:
@@ -694,7 +695,7 @@ class GraphWebServer:
 
                 # 添加关联实体节点（如果还没有添加）
                 for fid in all_related_family_ids:
-                    if fid not in [node['id'] for node in nodes]:
+                    if fid not in existing_node_ids:
                         # 在 focus 模式下，直接使用记录的 absolute_id 获取实体版本
                         # 这确保我们显示的是关系边直接引用的实体版本
                         absolute_id = family_id_to_absolute_id.get(fid)
