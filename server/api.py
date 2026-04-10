@@ -559,9 +559,9 @@ def create_app(
                 if system_monitor.mode == LOG_MODE_DETAIL:
                     system_monitor.event_log.info("Remember", f"内容预览: {preview!r}")
             else:
-                print(
-                    f"[Remember] 收到({request.method}): source_name={source_name!r}, "
-                    f"文本长度={len(text)} 字符, event_time={event_time_display}"
+                logger.debug(
+                    "[Remember] 收到(%s): source_name=%r, 文本长度=%d 字符, event_time=%s",
+                    request.method, source_name, len(text), event_time_display,
                 )
 
             task_id = uuid.uuid4().hex

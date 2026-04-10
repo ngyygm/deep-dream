@@ -724,7 +724,8 @@ class RelationProcessor:
                                  entity1_name: str = "",
                                  entity2_name: str = "",
                                  base_time: Optional[datetime] = None,
-                                 entity_lookup: Optional[Dict[str, Any]] = None) -> Optional[Relation]:
+                                 entity_lookup: Optional[Dict[str, Any]] = None,
+                                 _existing_relation: Optional[Relation] = None) -> Optional[Relation]:
         """构建关系新版本对象，但不立即写库。"""
 
         # 内容校验：过短的内容不是有效关系描述
@@ -733,8 +734,8 @@ class RelationProcessor:
                 wprint(f"[关系操作] ⚠️  跳过版本: 内容过短 ({len(content.strip()) if content else 0}字符): {family_id}")
             return None
 
-        # 内容未变化则跳过版本创建，避免版本膨胀
-        existing_relation = self.storage.get_relation_by_family_id(family_id)
+        # 内容未变化则跳过版本创建，避免版本膨胀（优先使用传入的已有关系）
+        existing_relation = _existing_relation or self.storage.get_relation_by_family_id(family_id)
         if existing_relation and existing_relation.content:
             if content.strip() == existing_relation.content.strip() or \
                content.replace(' ', '').replace('\n', '') == existing_relation.content.replace(' ', '').replace('\n', ''):
@@ -791,19 +792,22 @@ class RelationProcessor:
                                  entity1_name: str = "",
                                  entity2_name: str = "",
                                  base_time: Optional[datetime] = None,
-                                 skip_if_unchanged: bool = False) -> Optional[Relation]:
+                                 skip_if_unchanged: bool = False,
+                                 entity_lookup: Optional[Dict[str, Any]] = None) -> Optional[Relation]:
         """创建关系的新版本"""
         # 如果启用 skip_if_unchanged，检查内容是否真正变化
+        _existing_relation = None
         if skip_if_unchanged and content:
-            versions = self.storage.get_relation_versions(family_id)
-            if versions:
-                old_content = versions[0].content or ""
-                if old_content.strip() == content.strip():
-                    return versions[0]
+            _existing_relation = self.storage.get_relation_by_family_id(family_id)
+            if _existing_relation and _existing_relation.content:
+                if content.strip() == _existing_relation.content.strip():
+                    return _existing_relation
         relation = self._build_relation_version(
             family_id, entity1_id, entity2_id, content, episode_id,
             verbose_relation=verbose_relation, source_document=source_document,
             entity1_name=entity1_name, entity2_name=entity2_name, base_time=base_time,
+            entity_lookup=entity_lookup,
+            _existing_relation=_existing_relation,
         )
         if relation:
             self.storage.save_relation(relation)
