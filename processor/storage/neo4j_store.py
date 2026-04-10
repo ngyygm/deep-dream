@@ -43,6 +43,20 @@ e.event_time AS event_time, e.processed_time AS processed_time,
 e.episode_id AS episode_id, e.source_document AS source_document"""
 
 # ---------------------------------------------------------------------------
+# Cypher RETURN 子句片段 — 所有 Relation 查询共用
+# ---------------------------------------------------------------------------
+_RELATION_RETURN_FIELDS = """\
+r.uuid AS uuid, r.family_id AS family_id,
+r.entity1_absolute_id AS entity1_absolute_id,
+r.entity2_absolute_id AS entity2_absolute_id,
+r.content AS content, r.event_time AS event_time,
+r.processed_time AS processed_time, r.episode_id AS episode_id,
+r.source_document AS source_document, r.valid_at AS valid_at,
+r.invalid_at AS invalid_at, r.summary AS summary,
+r.attributes AS attributes, r.confidence AS confidence,
+r.provenance AS provenance"""
+
+# ---------------------------------------------------------------------------
 # Neo4j 节点 / 边 属性 → Entity / Relation 转换
 # ---------------------------------------------------------------------------
 
@@ -1529,12 +1543,7 @@ class Neo4jStorageManager:
                     MATCH (r:Relation)
                     WHERE (r.entity1_absolute_id IN $aids OR r.entity2_absolute_id IN $aids)
                       AND r.invalid_at IS NULL
-                    RETURN r.uuid AS uuid, r.family_id AS family_id,
-                           r.entity1_absolute_id AS entity1_absolute_id,
-                           r.entity2_absolute_id AS entity2_absolute_id,
-                           r.content AS content, r.event_time AS event_time,
-                           r.processed_time AS processed_time, r.episode_id AS episode_id,
-                           r.source_document AS source_document
+                    RETURN {_RELATION_RETURN_FIELDS}
                     """,
                     aids=list(all_aids),
                 )
@@ -2390,12 +2399,7 @@ class Neo4jStorageManager:
             result = session.run(
                 """
                 MATCH (r:Relation {uuid: $uuid})
-                RETURN r.uuid AS uuid, r.family_id AS family_id,
-                       r.entity1_absolute_id AS entity1_absolute_id,
-                       r.entity2_absolute_id AS entity2_absolute_id,
-                       r.content AS content, r.event_time AS event_time,
-                       r.processed_time AS processed_time, r.episode_id AS episode_id,
-                       r.source_document AS source_document
+                RETURN {_RELATION_RETURN_FIELDS}
                 """,
                 uuid=relation_absolute_id,
             )
@@ -2417,12 +2421,7 @@ class Neo4jStorageManager:
                 """
                 MATCH (r:Relation)
                 WHERE r.uuid IN $uuids
-                RETURN r.uuid AS uuid, r.family_id AS family_id,
-                       r.entity1_absolute_id AS entity1_absolute_id,
-                       r.entity2_absolute_id AS entity2_absolute_id,
-                       r.content AS content, r.event_time AS event_time,
-                       r.processed_time AS processed_time, r.episode_id AS episode_id,
-                       r.source_document AS source_document
+                RETURN {_RELATION_RETURN_FIELDS}
                 """,
                 uuids=absolute_ids,
             )
@@ -2433,12 +2432,7 @@ class Neo4jStorageManager:
             result = session.run(
                 """
                 MATCH (r:Relation {family_id: $fid})
-                RETURN r.uuid AS uuid, r.family_id AS family_id,
-                       r.entity1_absolute_id AS entity1_absolute_id,
-                       r.entity2_absolute_id AS entity2_absolute_id,
-                       r.content AS content, r.event_time AS event_time,
-                       r.processed_time AS processed_time, r.episode_id AS episode_id,
-                       r.source_document AS source_document
+                RETURN {_RELATION_RETURN_FIELDS}
                 ORDER BY r.processed_time DESC LIMIT 1
                 """,
                 fid=family_id,
@@ -2495,12 +2489,7 @@ class Neo4jStorageManager:
                 UNWIND rels AS r
                 WITH fid, r ORDER BY r.processed_time DESC
                 WITH fid, HEAD(COLLECT(r)) AS r
-                RETURN r.uuid AS uuid, r.family_id AS family_id,
-                       r.entity1_absolute_id AS entity1_absolute_id,
-                       r.entity2_absolute_id AS entity2_absolute_id,
-                       r.content AS content, r.event_time AS event_time,
-                       r.processed_time AS processed_time, r.episode_id AS episode_id,
-                       r.source_document AS source_document
+                RETURN {_RELATION_RETURN_FIELDS}
                 ORDER BY r.processed_time DESC
                 """,
                 from_ids=from_ids,
@@ -2544,12 +2533,7 @@ class Neo4jStorageManager:
                 MATCH (r:Relation)
                 WHERE (r.entity1_absolute_id IN $aids OR r.entity2_absolute_id IN $aids)
                   AND r.invalid_at IS NULL
-                RETURN r.uuid AS uuid, r.family_id AS family_id,
-                       r.entity1_absolute_id AS entity1_absolute_id,
-                       r.entity2_absolute_id AS entity2_absolute_id,
-                       r.content AS content, r.event_time AS event_time,
-                       r.processed_time AS processed_time, r.episode_id AS episode_id,
-                       r.source_document AS source_document
+                RETURN {_RELATION_RETURN_FIELDS}
                 """,
                 aids=list(all_aids),
             )
@@ -2588,12 +2572,7 @@ class Neo4jStorageManager:
             result = session.run(
                 """
                 MATCH (r:Relation {family_id: $fid})
-                RETURN r.uuid AS uuid, r.family_id AS family_id,
-                       r.entity1_absolute_id AS entity1_absolute_id,
-                       r.entity2_absolute_id AS entity2_absolute_id,
-                       r.content AS content, r.event_time AS event_time,
-                       r.processed_time AS processed_time, r.episode_id AS episode_id,
-                       r.source_document AS source_document
+                RETURN {_RELATION_RETURN_FIELDS}
                 ORDER BY r.processed_time ASC
                 """,
                 fid=family_id,
@@ -2614,12 +2593,7 @@ class Neo4jStorageManager:
                     UNWIND rels AS r
                     WITH fid, r ORDER BY r.processed_time DESC
                     WITH fid, HEAD(COLLECT(r)) AS r
-                    RETURN r.uuid AS uuid, r.family_id AS family_id,
-                           r.entity1_absolute_id AS entity1_absolute_id,
-                           r.entity2_absolute_id AS entity2_absolute_id,
-                           r.content AS content, r.event_time AS event_time,
-                           r.processed_time AS processed_time, r.episode_id AS episode_id,
-                           r.source_document AS source_document
+                    RETURN {_RELATION_RETURN_FIELDS}
                     ORDER BY r.processed_time DESC
                 """
                 params = {"abs_id": entity_absolute_id, "tp": time_point.isoformat()}
@@ -2631,12 +2605,7 @@ class Neo4jStorageManager:
                     UNWIND rels AS r
                     WITH fid, r ORDER BY r.processed_time DESC
                     WITH fid, HEAD(COLLECT(r)) AS r
-                    RETURN r.uuid AS uuid, r.family_id AS family_id,
-                           r.entity1_absolute_id AS entity1_absolute_id,
-                           r.entity2_absolute_id AS entity2_absolute_id,
-                           r.content AS content, r.event_time AS event_time,
-                           r.processed_time AS processed_time, r.episode_id AS episode_id,
-                           r.source_document AS source_document
+                    RETURN {_RELATION_RETURN_FIELDS}
                     ORDER BY r.processed_time DESC
                 """
                 params = {"abs_id": entity_absolute_id}
@@ -2698,12 +2667,7 @@ class Neo4jStorageManager:
                     UNWIND rels AS r
                     WITH fid, r ORDER BY r.processed_time DESC
                     WITH fid, HEAD(COLLECT(r)) AS r
-                    RETURN r.uuid AS uuid, r.family_id AS family_id,
-                           r.entity1_absolute_id AS entity1_absolute_id,
-                           r.entity2_absolute_id AS entity2_absolute_id,
-                           r.content AS content, r.event_time AS event_time,
-                           r.processed_time AS processed_time, r.episode_id AS episode_id,
-                           r.source_document AS source_document
+                    RETURN {_RELATION_RETURN_FIELDS}
                     ORDER BY r.processed_time DESC
                 """
                 params = {"abs_ids": abs_ids, "tp": time_point.isoformat()}
@@ -2715,12 +2679,7 @@ class Neo4jStorageManager:
                     UNWIND rels AS r
                     WITH fid, r ORDER BY r.processed_time DESC
                     WITH fid, HEAD(COLLECT(r)) AS r
-                    RETURN r.uuid AS uuid, r.family_id AS family_id,
-                           r.entity1_absolute_id AS entity1_absolute_id,
-                           r.entity2_absolute_id AS entity2_absolute_id,
-                           r.content AS content, r.event_time AS event_time,
-                           r.processed_time AS processed_time, r.episode_id AS episode_id,
-                           r.source_document AS source_document
+                    RETURN {_RELATION_RETURN_FIELDS}
                     ORDER BY r.processed_time DESC
                 """
                 params = {"abs_ids": abs_ids}
@@ -2763,11 +2722,7 @@ class Neo4jStorageManager:
                 UNWIND rels AS r
                 WITH fid, r ORDER BY r.processed_time DESC
                 WITH fid, HEAD(COLLECT(r)) AS r
-                RETURN r.uuid AS uuid, r.family_id AS family_id,
-                       r.entity1_absolute_id AS entity1_absolute_id,
-                       r.entity2_absolute_id AS entity2_absolute_id,
-                       r.content AS content, r.event_time AS event_time,
-                       r.processed_time AS processed_time
+                RETURN {_RELATION_RETURN_FIELDS}
                 ORDER BY r.processed_time ASC
                 """,
                 abs_ids=abs_ids,
@@ -2805,12 +2760,7 @@ class Neo4jStorageManager:
                 UNWIND rels AS r
                 WITH fid, r ORDER BY r.processed_time DESC
                 WITH fid, HEAD(COLLECT(r)) AS r
-                RETURN r.uuid AS uuid, r.family_id AS family_id,
-                       r.entity1_absolute_id AS entity1_absolute_id,
-                       r.entity2_absolute_id AS entity2_absolute_id,
-                       r.content AS content, r.event_time AS event_time,
-                       r.processed_time AS processed_time, r.episode_id AS episode_id,
-                       r.source_document AS source_document
+                RETURN {_RELATION_RETURN_FIELDS}
                 ORDER BY r.processed_time DESC
             """
             if limit is not None:
@@ -2848,12 +2798,7 @@ class Neo4jStorageManager:
                 UNWIND rels AS r
                 WITH fid, r ORDER BY r.processed_time DESC
                 WITH fid, HEAD(COLLECT(r)) AS r
-                RETURN r.uuid AS uuid, r.family_id AS family_id,
-                       r.entity1_absolute_id AS entity1_absolute_id,
-                       r.entity2_absolute_id AS entity2_absolute_id,
-                       r.content AS content, r.event_time AS event_time,
-                       r.processed_time AS processed_time, r.episode_id AS episode_id,
-                       r.source_document AS source_document
+                RETURN {_RELATION_RETURN_FIELDS}
                 ORDER BY r.processed_time DESC
             """
             if offset is not None and offset > 0:
@@ -2897,12 +2842,7 @@ class Neo4jStorageManager:
                 UNWIND rels AS r
                 WITH fid, r ORDER BY r.processed_time DESC
                 WITH fid, HEAD(COLLECT(r)) AS r
-                RETURN r.uuid AS uuid, r.family_id AS family_id,
-                       r.entity1_absolute_id AS entity1_absolute_id,
-                       r.entity2_absolute_id AS entity2_absolute_id,
-                       r.content AS content, r.event_time AS event_time,
-                       r.processed_time AS processed_time, r.episode_id AS episode_id,
-                       r.source_document AS source_document
+                RETURN {_RELATION_RETURN_FIELDS}
                 ORDER BY r.processed_time DESC
                 """
             )
@@ -3237,12 +3177,7 @@ class Neo4jStorageManager:
                     """
                     MATCH (r:Relation)
                     WHERE r.uuid IN $uuids
-                    RETURN r.uuid AS uuid, r.family_id AS family_id,
-                           r.entity1_absolute_id AS entity1_absolute_id,
-                           r.entity2_absolute_id AS entity2_absolute_id,
-                           r.content AS content, r.event_time AS event_time,
-                           r.processed_time AS processed_time, r.episode_id AS episode_id,
-                           r.source_document AS source_document
+                    RETURN {_RELATION_RETURN_FIELDS}
                     """,
                     uuids=list(needed_rel_ids),
                 )
@@ -3739,13 +3674,7 @@ class Neo4jStorageManager:
                 MATCH (r:Relation)
                 WHERE (r.valid_at IS NULL OR r.valid_at <= $time)
                   AND (r.invalid_at IS NULL OR r.invalid_at > $time)
-                RETURN r.uuid AS uuid, r.family_id AS family_id,
-                       r.entity1_absolute_id AS entity1_absolute_id,
-                       r.entity2_absolute_id AS entity2_absolute_id,
-                       r.content AS content, r.event_time AS event_time,
-                       r.processed_time AS processed_time, r.episode_id AS episode_id,
-                       r.source_document AS source_document, r.valid_at AS valid_at,
-                       r.invalid_at AS invalid_at
+                RETURN {_RELATION_RETURN_FIELDS}
                 ORDER BY r.event_time DESC
                 LIMIT $limit
             """, time=time_point.isoformat(), limit=limit or 10000)
@@ -3769,13 +3698,7 @@ class Neo4jStorageManager:
             result = session.run("""
                 MATCH (r:Relation)
                 WHERE r.event_time >= $since AND r.event_time <= $until
-                RETURN r.uuid AS uuid, r.family_id AS family_id,
-                       r.entity1_absolute_id AS entity1_absolute_id,
-                       r.entity2_absolute_id AS entity2_absolute_id,
-                       r.content AS content, r.event_time AS event_time,
-                       r.processed_time AS processed_time, r.episode_id AS episode_id,
-                       r.source_document AS source_document, r.valid_at AS valid_at,
-                       r.invalid_at AS invalid_at
+                RETURN {_RELATION_RETURN_FIELDS}
                 ORDER BY r.event_time DESC
             """, since=since.isoformat(), until=until.isoformat())
             relations = [_neo4j_record_to_relation(r) for r in result]
@@ -3801,13 +3724,7 @@ class Neo4jStorageManager:
             result = session.run("""
                 MATCH (r:Relation)
                 WHERE r.invalid_at IS NOT NULL
-                RETURN r.uuid AS uuid, r.family_id AS family_id,
-                       r.entity1_absolute_id AS entity1_absolute_id,
-                       r.entity2_absolute_id AS entity2_absolute_id,
-                       r.content AS content, r.event_time AS event_time,
-                       r.processed_time AS processed_time, r.episode_id AS episode_id,
-                       r.source_document AS source_document, r.valid_at AS valid_at,
-                       r.invalid_at AS invalid_at
+                RETURN {_RELATION_RETURN_FIELDS}
                 ORDER BY r.invalid_at DESC
                 LIMIT $limit
             """, limit=limit)
@@ -3861,15 +3778,7 @@ class Neo4jStorageManager:
                 MATCH (r:Relation)
                 WHERE (r.entity1_absolute_id = aid OR r.entity2_absolute_id = aid)
                   AND r.invalid_at IS NULL
-                RETURN DISTINCT r.uuid AS uuid, r.family_id AS family_id,
-                       r.entity1_absolute_id AS entity1_absolute_id,
-                       r.entity2_absolute_id AS entity2_absolute_id,
-                       r.content AS content, r.event_time AS event_time,
-                       r.processed_time AS processed_time, r.episode_id AS episode_id,
-                       r.source_document AS source_document, r.valid_at AS valid_at,
-                       r.invalid_at AS invalid_at, r.summary AS summary,
-                       r.attributes AS attributes, r.confidence AS confidence,
-                       r.provenance AS provenance
+                RETURN DISTINCT {_RELATION_RETURN_FIELDS}
                 LIMIT $limit
             """, family_ids=family_ids, limit=limit)
             return [_neo4j_record_to_relation(r) for r in result]
@@ -4557,12 +4466,7 @@ class Neo4jStorageManager:
                 cypher = (
                     f"MATCH (r:Relation {{uuid: $aid}}) "
                     f"SET {set_clauses} "
-                    f"RETURN r.uuid AS uuid, r.family_id AS family_id, "
-                    f"r.entity1_absolute_id AS entity1_absolute_id, "
-                    f"r.entity2_absolute_id AS entity2_absolute_id, "
-                    f"r.content AS content, r.event_time AS event_time, "
-                    f"r.processed_time AS processed_time, r.episode_id AS episode_id, "
-                    f"r.source_document AS source_document"
+                    f"RETURN {_RELATION_RETURN_FIELDS}"
                 )
                 result = session.run(cypher, **params)
                 record = result.single()
@@ -4617,13 +4521,7 @@ class Neo4jStorageManager:
                 """
                 MATCH (r:Relation)
                 WHERE r.entity1_absolute_id = $aid OR r.entity2_absolute_id = $aid
-                RETURN r.uuid AS uuid, r.family_id AS family_id,
-                       r.entity1_absolute_id AS entity1_absolute_id,
-                       r.entity2_absolute_id AS entity2_absolute_id,
-                       r.content AS content, r.event_time AS event_time,
-                       r.processed_time AS processed_time,
-                       r.episode_id AS episode_id,
-                       r.source_document AS source_document
+                RETURN {_RELATION_RETURN_FIELDS}
                 """,
                 aid=absolute_id,
             )
@@ -4638,13 +4536,7 @@ class Neo4jStorageManager:
                 """
                 MATCH (r:Relation)
                 WHERE r.entity1_absolute_id IN $aids OR r.entity2_absolute_id IN $aids
-                RETURN r.uuid AS uuid, r.family_id AS family_id,
-                       r.entity1_absolute_id AS entity1_absolute_id,
-                       r.entity2_absolute_id AS entity2_absolute_id,
-                       r.content AS content, r.event_time AS event_time,
-                       r.processed_time AS processed_time,
-                       r.episode_id AS episode_id,
-                       r.source_document AS source_document
+                RETURN {_RELATION_RETURN_FIELDS}
                 """,
                 aids=absolute_ids,
             )
