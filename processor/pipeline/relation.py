@@ -94,6 +94,29 @@ class RelationProcessor:
             dbg(f"process_relations_batch: 第二次过滤 {_batch_filtered} 个, 剩余 {len(relations_by_pair)} 个实体对")
 
         existing_relations_by_pair = self.storage.get_relations_by_entity_pairs(list(relations_by_pair.keys()))
+
+        # 批量预取所有涉及的实体，避免 _build_new_relation/_build_relation_version 中逐对查询
+        unique_eids = set()
+        for e1, e2 in relations_by_pair:
+            unique_eids.add(e1)
+            unique_eids.add(e2)
+        entity_lookup: Dict[str, Any] = {}
+        if unique_eids:
+            batch_fn = getattr(self.storage, 'get_entities_by_family_ids', None)
+            if batch_fn:
+                try:
+                    entity_lookup = batch_fn(list(unique_eids)) or {}
+                except Exception:
+                    for eid in unique_eids:
+                        ent = self.storage.get_entity_by_family_id(eid)
+                        if ent:
+                            entity_lookup[eid] = ent
+            else:
+                for eid in unique_eids:
+                    ent = self.storage.get_entity_by_family_id(eid)
+                    if ent:
+                        entity_lookup[eid] = ent
+
         processed_relations: List[Relation] = []
         relations_to_persist: List[Relation] = []
 
@@ -125,6 +148,7 @@ class RelationProcessor:
                     base_time=base_time,
                     fallback_to_single=fallback_to_single,
                     verbose_relation=verbose_relation,
+                    entity_lookup=entity_lookup,
                 )
 
             with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="tmg-llm") as executor:
@@ -163,6 +187,7 @@ class RelationProcessor:
                     base_time=base_time,
                     fallback_to_single=fallback_to_single,
                     verbose_relation=verbose_relation,
+                    entity_lookup=entity_lookup,
                 )
                 if proc:
                     processed_relations.extend(proc)
@@ -186,7 +211,8 @@ class RelationProcessor:
                                    source_document: str = "",
                                    base_time: Optional[datetime] = None,
                                    fallback_to_single: bool = True,
-                                   verbose_relation: bool = True) -> Tuple[List[Relation], List[Relation]]:
+                                   verbose_relation: bool = True,
+                                   entity_lookup: Optional[Dict[str, Any]] = None) -> Tuple[List[Relation], List[Relation]]:
         """处理单个实体对的关系，返回 (processed_relations, relations_to_persist)。"""
         entity1_id, entity2_id = pair_key
         processed_relations: List[Relation] = []
@@ -219,6 +245,7 @@ class RelationProcessor:
                 entity1_id, entity2_id, merged_content, episode_id,
                 entity1_name=entity1_name, entity2_name=entity2_name,
                 source_document=source_document, base_time=base_time,
+                entity_lookup=entity_lookup,
             )
             if new_rel:
                 processed_relations.append(new_rel)
@@ -272,6 +299,7 @@ class RelationProcessor:
                     entity1_name=entity1_name,
                     entity2_name=entity2_name,
                     base_time=base_time,
+                    entity_lookup=entity_lookup,
                 )
                 if new_relation is not None:
                     relations_to_persist.append(new_relation)
@@ -295,6 +323,7 @@ class RelationProcessor:
                     entity2_name=entity2_name,
                     source_document=source_document,
                     base_time=base_time,
+                    entity_lookup=entity_lookup,
                 )
                 if new_relation is not None:
                     relations_to_persist.append(new_relation)
@@ -316,6 +345,7 @@ class RelationProcessor:
                 entity2_name=entity2_name,
                 source_document=source_document,
                 base_time=base_time,
+                entity_lookup=entity_lookup,
             )
             if new_relation is not None:
                 relations_to_persist.append(new_relation)
@@ -558,9 +588,9 @@ class RelationProcessor:
             
             if need_update:
                 # 需要更新：合并内容
-                # 获取数据库中该 family_id 的记录数
-                current_versions = self.storage.get_relation_versions(family_id)
-                record_count = len(current_versions)
+                if verbose_relation:
+                    current_versions = self.storage.get_relation_versions(family_id)
+                    record_count = len(current_versions)
 
                 # 合并内容
                 merged_content = self.llm_client.merge_relation_content(
@@ -571,11 +601,11 @@ class RelationProcessor:
                     entity1_name=entity1_name,
                     entity2_name=entity2_name,
                 )
-                
+
                 # 创建新版本
                 if verbose_relation:
                     wprint(f"[关系操作] 🔄 更新关系: {entity1_name} <-> {entity2_name} (family_id: {family_id}, 版本数: {record_count})")
-                
+
                 new_relation = self._create_relation_version(
                     family_id,
                     entity1_id,
@@ -589,7 +619,7 @@ class RelationProcessor:
                     base_time=base_time,
                     skip_if_unchanged=True,
                 )
-                
+
                 return new_relation
             else:
                 # 不需要更新，返回最新版本
@@ -616,7 +646,8 @@ class RelationProcessor:
                             content: str, episode_id: str,
                             entity1_name: str = "", entity2_name: str = "",
                             verbose_relation: bool = True, source_document: str = "",
-                            base_time: Optional[datetime] = None) -> Optional[Relation]:
+                            base_time: Optional[datetime] = None,
+                            entity_lookup: Optional[Dict[str, Any]] = None) -> Optional[Relation]:
         """构建新关系对象，但不立即写库。"""
         # 内容校验：过短的内容（< 5字符）不是有效关系描述
         if not content or len(content.strip()) < 5:
@@ -624,9 +655,9 @@ class RelationProcessor:
                 wprint(f"[关系操作] ⚠️  跳过: 关系内容过短 ({len(content.strip()) if content else 0}字符): {entity1_name} <-> {entity2_name}")
             return None
 
-        # 通过 family_id 获取实体的最新版本
-        entity1 = self.storage.get_entity_by_family_id(entity1_id)
-        entity2 = self.storage.get_entity_by_family_id(entity2_id)
+        # 通过 family_id 获取实体的最新版本（优先使用预取缓存）
+        entity1 = (entity_lookup or {}).get(entity1_id) or self.storage.get_entity_by_family_id(entity1_id)
+        entity2 = (entity_lookup or {}).get(entity2_id) or self.storage.get_entity_by_family_id(entity2_id)
         
         if not entity1 or not entity2:
             missing_info = []
@@ -692,7 +723,8 @@ class RelationProcessor:
                                  source_document: str = "",
                                  entity1_name: str = "",
                                  entity2_name: str = "",
-                                 base_time: Optional[datetime] = None) -> Optional[Relation]:
+                                 base_time: Optional[datetime] = None,
+                                 entity_lookup: Optional[Dict[str, Any]] = None) -> Optional[Relation]:
         """构建关系新版本对象，但不立即写库。"""
 
         # 内容校验：过短的内容不是有效关系描述
@@ -710,9 +742,9 @@ class RelationProcessor:
                     wprint(f"[关系操作] 内容未变化，跳过版本创建: {family_id}")
                 return None
 
-        # 通过 family_id 获取实体的最新版本
-        entity1 = self.storage.get_entity_by_family_id(entity1_id)
-        entity2 = self.storage.get_entity_by_family_id(entity2_id)
+        # 通过 family_id 获取实体的最新版本（优先使用预取缓存）
+        entity1 = (entity_lookup or {}).get(entity1_id) or self.storage.get_entity_by_family_id(entity1_id)
+        entity2 = (entity_lookup or {}).get(entity2_id) or self.storage.get_entity_by_family_id(entity2_id)
         
         if not entity1 or not entity2:
             missing_info = []

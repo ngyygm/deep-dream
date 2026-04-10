@@ -1188,6 +1188,52 @@ class StorageManager:
             confidence=row[11] if len(row) > 11 else None,
         )
 
+    def get_entities_by_family_ids(self, family_ids: List[str]) -> Dict[str, Entity]:
+        """批量根据 family_id 获取最新版本实体，返回 {family_id: Entity}。"""
+        if not family_ids:
+            return {}
+        # 先 resolve 所有 family_id
+        resolved_map = self.resolve_family_ids(list(family_ids))
+        valid_fids = set(resolved_map.keys()) | set(resolved_map.values())
+        if not valid_fids:
+            return {}
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        placeholders = ",".join("?" * len(valid_fids))
+        cursor.execute(f"""
+            SELECT id, family_id, name, content, event_time, processed_time, episode_id, source_document, embedding, summary, attributes, confidence
+            FROM entities
+            WHERE family_id IN ({placeholders})
+            ORDER BY processed_time DESC
+        """, list(valid_fids))
+        seen = set()
+        result: Dict[str, Entity] = {}
+        for row in cursor.fetchall():
+            fid = row[1]
+            if fid in seen:
+                continue
+            seen.add(fid)
+            entity = Entity(
+                absolute_id=row[0],
+                family_id=fid,
+                name=row[2],
+                content=row[3],
+                event_time=self._safe_parse_datetime(row[4]),
+                processed_time=self._safe_parse_datetime(row[5]),
+                episode_id=row[6],
+                source_document=row[7] if len(row) > 7 else '',
+                embedding=row[8] if len(row) > 8 else None,
+                summary=row[9] if len(row) > 9 else None,
+                attributes=row[10] if len(row) > 10 else None,
+                confidence=row[11] if len(row) > 11 else None,
+            )
+            result[fid] = entity
+            # 如果原始 family_id != resolved，也映射原始 ID
+            for orig_fid, resolved_fid in resolved_map.items():
+                if resolved_fid == fid:
+                    result[orig_fid] = entity
+        return result
+
     def get_entity_by_absolute_id(self, absolute_id: str) -> Optional[Entity]:
         """根据绝对ID获取实体"""
         conn = self._get_conn()

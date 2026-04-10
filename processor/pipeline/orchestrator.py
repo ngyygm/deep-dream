@@ -5,9 +5,9 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed, Future
 import sys
+import logging
 import threading
 import time
-import traceback
 import uuid
 
 from .document import DocumentProcessor
@@ -31,6 +31,8 @@ from ..utils import (
     wprint,
 )
 from .extraction import _ExtractionMixin, _AlignResult, dedupe_extraction_lists
+
+logger = logging.getLogger(__name__)
 
 
 class RememberControlFlow(Exception):
@@ -800,7 +802,7 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
                     _success = True
                 except Exception as e:
                     if _record_window_error("step6", i, e):
-                        traceback.print_exc()
+                        logger.error("step6 window %d error: %s", i, e, exc_info=True)
                 finally:
                     with self._runtime_lock:
                         self._active_step6 = max(0, self._active_step6 - 1)
@@ -883,7 +885,7 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
                     _window_has_entities = bool(ar.unique_entities)
                 except Exception as e:
                     if _record_window_error("step7", i, e):
-                        traceback.print_exc()
+                        logger.error("step7 window %d error: %s", i, e, exc_info=True)
                 finally:
                     with self._runtime_lock:
                         self._active_step7 = max(0, self._active_step7 - 1)
@@ -1097,7 +1099,7 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
                                 _success_main = True
                             except Exception as e:
                                 if _record_window_error("extract", idx, e):
-                                    traceback.print_exc()
+                                    logger.error("extract window %d error: %s", idx, e, exc_info=True)
                             finally:
                                 with self._runtime_lock:
                                     self._active_window_extractions = max(0, self._active_window_extractions - 1)
@@ -1119,7 +1121,7 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
         except Exception as e:
             with errors_lock:
                 errors.append(("main", 0, e))
-            traceback.print_exc()
+            logger.error("main pipeline error: %s", e, exc_info=True)
         finally:
             clear_parallel_log_context()
 

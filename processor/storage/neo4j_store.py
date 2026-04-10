@@ -1112,6 +1112,48 @@ class Neo4jStorageManager:
                 self._cache.set(cache_key, entity, ttl=60)
                 return entity
 
+    def get_entities_by_family_ids(self, family_ids: List[str]) -> Dict[str, "Entity"]:
+        """批量根据 family_id 获取最新版本实体，返回 {family_id: Entity}。"""
+        if not family_ids:
+            return {}
+        # 先 resolve，利用缓存
+        resolved_map = self.resolve_family_ids(list(family_ids))
+        valid_fids = set(resolved_map.keys()) | set(resolved_map.values())
+        if not valid_fids:
+            return {}
+        # 检查缓存
+        result: Dict[str, "Entity"] = {}
+        uncached = set()
+        for fid in valid_fids:
+            cached = self._cache.get(f"entity:by_fid:{fid}")
+            if cached is not None:
+                result[fid] = cached
+            else:
+                uncached.add(fid)
+        # 批量查询未命中缓存的
+        if uncached:
+            with self._session() as session:
+                cypher = (
+                    f"MATCH (e:Entity) WHERE e.family_id IN $fids "
+                    f"WITH e ORDER BY e.processed_time DESC "
+                    f"WITH e.family_id AS fid, collect(e)[0] AS latest "
+                    f"RETURN latest"
+                )
+                records = session.run(cypher, fids=list(uncached)).data()
+                for rec in records:
+                    latest = rec["latest"]
+                    entity = _neo4j_record_to_entity(latest)
+                    emb = self._vector_store.get("entity_vectors", entity.absolute_id)
+                    if emb:
+                        entity.embedding = np.array(emb, dtype=np.float32).tobytes()
+                    result[entity.family_id] = entity
+                    self._cache.set(f"entity:by_fid:{entity.family_id}", entity, ttl=60)
+        # 映射原始 ID → 实体
+        for orig_fid, resolved_fid in resolved_map.items():
+            if resolved_fid in result and orig_fid not in result:
+                result[orig_fid] = result[resolved_fid]
+        return result
+
     def get_entity_by_absolute_id(self, absolute_id: str) -> Optional[Entity]:
         """根据 absolute_id 获取实体。"""
         cache_key = f"entity:by_abs:{absolute_id}"

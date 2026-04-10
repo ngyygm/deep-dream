@@ -3299,7 +3299,7 @@ def create_app(
                     if ec and getattr(ec, 'is_available', lambda: False)():
                         query_embedding = ec.encode([query_text])[0]
                 except Exception as _emb_err:
-                    import logging as _l; _l.getLogger(__name__).warning("search_graph embedding 失败: %s", _emb_err)
+                    logger.warning("search_graph embedding 失败: %s", _emb_err)
                 searcher = HybridSearcher(processor.storage)
                 entity_hits = searcher.search_entities(query_text=query_text, query_embedding=query_embedding, top_k=20)
                 relation_hits = searcher.search_relations(query_text=query_text, query_embedding=query_embedding, top_k=10)
@@ -3319,7 +3319,7 @@ def create_app(
                 answer = processor.llm_client.synthesize_answer(question, entity_dicts, relation_dicts)
                 result["answer"] = answer
             except Exception as _synth_err:
-                import logging as _l; _l.getLogger(__name__).warning("synthesize_answer 失败: %s", _synth_err)
+                logger.warning("synthesize_answer 失败: %s", _synth_err)
 
             return ok(result)
         except Exception as e:
@@ -3390,7 +3390,7 @@ def create_app(
                             if ec and getattr(ec, 'is_available', lambda: False)():
                                 query_embedding = ec.encode([query_text])[0]
                         except Exception as _emb_err:
-                            import logging as _l; _l.getLogger(__name__).warning("stream search embedding 失败: %s", _emb_err)
+                            logger.warning("stream search embedding 失败: %s", _emb_err)
                         searcher = HybridSearcher(processor.storage)
                         entity_hits = searcher.search_entities(query_text=query_text, query_embedding=query_embedding, top_k=20)
                         relation_hits = searcher.search_relations(query_text=query_text, query_embedding=query_embedding, top_k=10)
@@ -3420,7 +3420,7 @@ def create_app(
                         try:
                             answer = processor.llm_client.synthesize_answer(question, entity_dicts, relation_dicts)
                         except Exception as _synth_err:
-                            import logging as _l; _l.getLogger(__name__).warning("stream synthesize_answer 失败: %s", _synth_err)
+                            logger.warning("stream synthesize_answer 失败: %s", _synth_err)
                             # 回退：简单拼接
                             parts = [f"基于「{query_text}」的检索结果："]
                             if entities:
@@ -3446,7 +3446,7 @@ def create_app(
                     }))
 
                 except Exception as e:
-                    import traceback; traceback.print_exc()
+                    logger.error("stream search error: %s", e, exc_info=True)
                     q.put(sse_event("error", {"message": str(e)}))
                 finally:
                     q.put(sse_event("done", {"status": "completed"}))
