@@ -675,6 +675,23 @@ class GraphWebServer:
                 except Exception:
                     related_version_counts = {}
 
+                # 批量预取关联实体（有 absolute_id 的）
+                related_abs_to_fetch = {
+                    family_id_to_absolute_id[fid]: fid
+                    for fid in related_fids_to_prefetch
+                    if family_id_to_absolute_id.get(fid)
+                }
+                related_entity_cache = {}
+                if related_abs_to_fetch:
+                    try:
+                        batch_fn = getattr(self.storage, 'get_entities_by_absolute_ids', None)
+                        if batch_fn:
+                            for e in batch_fn(list(related_abs_to_fetch.keys())):
+                                if e:
+                                    related_entity_cache[e.absolute_id] = e
+                    except Exception:
+                        pass
+
                 # 添加关联实体节点（如果还没有添加）
                 for fid in all_related_family_ids:
                     if fid not in [node['id'] for node in nodes]:
@@ -682,7 +699,7 @@ class GraphWebServer:
                         # 这确保我们显示的是关系边直接引用的实体版本
                         absolute_id = family_id_to_absolute_id.get(fid)
                         if absolute_id:
-                            related_entity = self.storage.get_entity_by_absolute_id(absolute_id)
+                            related_entity = related_entity_cache.get(absolute_id) or self.storage.get_entity_by_absolute_id(absolute_id)
                         else:
                             # 回退：如果没有记录 absolute_id，使用时间点
                             effective_time_point = focus_time_point if focus_family_id else time_point

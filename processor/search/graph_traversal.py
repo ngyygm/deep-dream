@@ -56,11 +56,29 @@ class GraphTraversalSearcher:
         queue: List[Tuple[str, int]] = []  # (family_id, depth)
         result_entities: List[Entity] = []
 
-        for eid in seed_family_ids:
-            resolved = self.storage.resolve_family_id(eid)
-            if resolved and resolved not in visited:
-                visited.add(resolved)
-                queue.append((resolved, 0))
+        # 批量 resolve 种子 family_ids
+        resolve_fn = getattr(self.storage, 'resolve_family_ids', None)
+        if resolve_fn:
+            try:
+                resolved_map = resolve_fn(seed_family_ids) or {}
+                for eid in seed_family_ids:
+                    resolved = resolved_map.get(eid, eid)
+                    if resolved and resolved not in visited:
+                        visited.add(resolved)
+                        queue.append((resolved, 0))
+            except Exception as exc:
+                logger.debug("resolve_family_ids failed, fallback: %s", exc)
+                for eid in seed_family_ids:
+                    resolved = self.storage.resolve_family_id(eid)
+                    if resolved and resolved not in visited:
+                        visited.add(resolved)
+                        queue.append((resolved, 0))
+        else:
+            for eid in seed_family_ids:
+                resolved = self.storage.resolve_family_id(eid)
+                if resolved and resolved not in visited:
+                    visited.add(resolved)
+                    queue.append((resolved, 0))
 
         while queue and len(result_entities) < max_nodes:
             current_id, depth = queue.pop(0)
