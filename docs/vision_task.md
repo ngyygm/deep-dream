@@ -4,6 +4,20 @@
 
 ## 2026-04-10
 
+### [已完成] feat: Phase 3-4 — Neo4j统一查询 + API端点
+- commit: e42005f
+- Neo4j: 9个统一概念查询方法（get_concept_by_family_id, search_concepts_by_bm25, get_concept_neighbors 等）
+- API: 7个 /api/v1/concepts/* 端点（search, list, get, neighbors, provenance, traverse, mentions）
+
+### [已完成] feat: Phase 3 (SQLite) — 统一概念查询接口
+- commit: a404b43
+- 11个基于Concept的统一查询方法（get_concept_*, search_concepts_*, traverse_concepts 等）
+
+### [已完成] feat: Phase 2 — concepts统一表 + 双写适配
+- commit: 6abcc1b
+- SQLite: concepts表 + concept_fts + 双写 + 启动迁移
+- Neo4j: 所有写入路径添加 :Concept 标签 + role 属性
+
 ### [已完成] perf: search_episodes_by_bm25 文件遍历→SQLite LIKE过滤
 - commit: ce40b7a
 - episodes表有数据时SQL LIKE过滤候选集→Python评分→只加载top-N完整Episode
@@ -73,11 +87,12 @@
 
 ### P2 架构对齐（Concept统一）
 - [x] ~~**Phase 1: MENTIONS补全 + Episode入库**: extraction.py MENTIONS无条件建立 + episodes SQLite表~~ (3a7059b)
-- [ ] **Phase 2: concepts统一表 + 双写**: 新增concepts表 + concept_fts + 双写适配
-- [ ] **Phase 3: 统一查询接口**: get_concept_* / search_concepts_* / traverse_concepts
-- [ ] **Phase 4: API统一**: /concepts/* 端点 + MCP工具 + 旧端点兼容
+- [x] ~~**Phase 2: concepts统一表 + 双写**: 新增concepts表 + concept_fts + 双写适配~~ (6abcc1b)
+- [x] ~~**Phase 3: 统一查询接口**: get_concept_* / search_concepts_* / traverse_concepts~~ (a404b43, e42005f)
+- [x] ~~**Phase 4: API统一**: /concepts/* 端点 + Neo4j统一查询~~ (e42005f)
+- [ ] **Phase 4.1: MCP工具**: 新增 concept_* MCP 工具映射到统一 API
 
 ### P3 代码质量
 - [x] ~~**Schema初始化去重**: _init_database与_ensure_tables重复~~ (fffb8dd)
 - [x] ~~**Neo4j _RELATION_RETURN_FIELDS**: 22个方法重复字段列表~~ (6d7d0da)
-- [ ] **api.py分模块**: 4867行单文件，需按领域拆分（server/api.py）
+- [ ] **api.py分模块**: ~5000行单文件，需按领域拆分（server/api.py）
