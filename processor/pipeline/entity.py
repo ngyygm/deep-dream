@@ -415,6 +415,24 @@ class EntityProcessor:
 
         return processed_entities, pending_relations, entity_name_to_id
     
+    # 名称规范化：去除括号注释和称谓后缀，用于候选匹配
+    _TITLE_SUFFIXES_RE = re.compile(
+        r'(?:教授|博士|先生|女士|同学|老师|工程师|经理|总监|院长|所长|主任|校长|站长|馆长|主编|首席|总裁'
+        r'|部长|省长|市长|县长|区长|镇长|村长|将军|上校|中校|少校|大校|司令|参谋|政委|舰长|机长)$'
+    )
+
+    @staticmethod
+    def _normalize_entity_name_for_matching(name: str) -> str:
+        """去掉括号注释和称谓后缀，返回用于匹配的核心名称。
+
+        例：'张伟教授' → '张伟', '张伟（北京大学教授）' → '张伟'
+        """
+        # 先去括号（全角/半角）
+        core = re.sub(r'[（(][^）)]+[）)]', '', name).strip()
+        # 再去称谓后缀
+        core = EntityProcessor._TITLE_SUFFIXES_RE.sub('', core).strip()
+        return core
+
     def _calculate_jaccard_similarity(self, text1: str, text2: str) -> float:
         s1 = (text1 or "").lower().strip()
         s2 = (text2 or "").lower().strip()
@@ -523,8 +541,18 @@ class EntityProcessor:
         candidate_table: Dict[int, List[Dict[str, Any]]] = {}
         for idx, extracted_entity in enumerate(extracted_entities):
             candidate_rows: List[Dict[str, Any]] = []
+            ext_name = extracted_entity["name"]
+            ext_core = self._normalize_entity_name_for_matching(ext_name)
             for j, projection in enumerate(projections):
-                lexical_score = self._calculate_jaccard_similarity(extracted_entity["name"], projection["name"])
+                lexical_score = self._calculate_jaccard_similarity(ext_name, projection["name"])
+                # 核心名称 Jaccard：处理 "张伟教授" vs "张伟" 等变体
+                if lexical_score < jaccard_threshold:
+                    proj_core = self._normalize_entity_name_for_matching(projection["name"])
+                    core_score = self._calculate_jaccard_similarity(ext_core, proj_core)
+                    # 核心名称精确匹配直接给高分
+                    if ext_core and proj_core and ext_core == proj_core:
+                        core_score = max(core_score, 0.85)
+                    lexical_score = max(lexical_score, core_score)
 
                 # Use precomputed matrix values (O(1) lookup) instead of per-pair dot product
                 dense_name_score = float(name_sim_matrix[idx, j]) if name_sim_matrix is not None else 0.0
@@ -536,6 +564,11 @@ class EntityProcessor:
                     or dense_full_score >= embedding_full_threshold
                 ):
                     best_dense = max(dense_name_score, dense_full_score)
+                    # 核心名称匹配时放宽 merge_safe 条件
+                    core_name_match = (
+                        ext_core
+                        and self._normalize_entity_name_for_matching(projection["name"]) == ext_core
+                    )
                     candidate_rows.append({
                         "family_id": projection["family_id"],
                         "name": projection["name"],
@@ -546,7 +579,7 @@ class EntityProcessor:
                         "lexical_score": lexical_score,
                         "dense_score": best_dense,
                         "combined_score": max(lexical_score, dense_name_score, dense_full_score),
-                        "merge_safe": best_dense >= 0.55 and lexical_score >= 0.4,
+                        "merge_safe": core_name_match or (best_dense >= 0.55 and lexical_score >= 0.4),
                     })
 
             candidate_rows.sort(key=lambda row: row["combined_score"], reverse=True)
