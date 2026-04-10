@@ -4,6 +4,17 @@
 
 ## 2026-04-10
 
+### [已完成] feat: extraction pipeline填充summary/confidence/content_format
+- commit: f12fe40
+- Entity: _build_new_entity/_build_entity_version 添加 summary(内容首行)、confidence=0.7、content_format="markdown"
+- Relation: _build_new_relation/_build_relation_version 添加 summary(content截断200字符)、confidence=0.7、content_format="markdown"
+- 新增 EntityProcessor._extract_summary: 跳过标题行取首行正文，回退到name
+
+### [已完成] fix: _get_entities_with_embeddings 使用_ENTITY_SELECT替代硬编码列
+- commit: 2f9e28a
+- 之前仅加载9列(id~embedding)，summary/attributes/confidence等全部为None
+- 与_get_relations_with_embeddings(已使用_RELATION_SELECT)对齐
+
 ### [已完成] fix: FTS rowid整数 + SELECT列常量化 + exclude_embedding偏移
 - commit: deb73eb
 - FTS5 rowid必须为整数，但entity/relation的id列是TEXT PRIMARY KEY
