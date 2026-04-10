@@ -1895,6 +1895,8 @@ class Neo4jStorageManager:
         """删除关系的所有版本。返回删除的行数。"""
         with self._relation_write_lock:
             with self._session() as session:
+                # 先收集 absolute_ids（DETACH DELETE 后就查不到了）
+                abs_ids = [r.absolute_id for r in self.get_relation_versions(family_id)]
                 # 删除关系节点
                 result = session.run(
                     "MATCH (r:Relation {family_id: $fid}) DETACH DELETE r RETURN count(r) AS cnt",
@@ -1904,11 +1906,9 @@ class Neo4jStorageManager:
                 count = record["cnt"] if record else 0
                 # 清理向量存储
                 try:
-                    self._vector_store.delete_batch("relation_vectors",
-                        [r.absolute_id for r in self.get_relation_versions(family_id)])
+                    self._vector_store.delete_batch("relation_vectors", abs_ids)
                 except Exception as e:
                     logger.warning("Failed to clean up relation vectors for %s: %s", family_id, e)
-                    pass
                 self._cache.invalidate("relation:")
                 self._cache.invalidate("graph_stats")
                 return count
@@ -1919,6 +1919,8 @@ class Neo4jStorageManager:
         if not family_id:
             return 0
         with self._write_lock:
+            # 先收集 absolute_ids（DETACH DELETE 后就查不到了）
+            abs_ids = [e.absolute_id for e in self.get_entity_versions(family_id)]
             with self._session() as session:
                 # 删除相关关系
                 session.run(
@@ -1935,8 +1937,7 @@ class Neo4jStorageManager:
                 count = record["cnt"] if record else 0
                 # 清理向量存储
                 try:
-                    self._vector_store.delete_batch("entity_vectors",
-                        [e.absolute_id for e in self.get_entity_versions(family_id)])
+                    self._vector_store.delete_batch("entity_vectors", abs_ids)
                 except Exception as e:
                     logger.warning("Failed to clean up entity vectors for %s: %s", family_id, e)
                 self._cache.invalidate("entity:")
