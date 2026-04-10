@@ -4,6 +4,24 @@
 
 ## 2026-04-10
 
+### [已完成] perf: search_episodes_by_bm25 文件遍历→SQLite LIKE过滤
+- commit: ce40b7a
+- episodes表有数据时SQL LIKE过滤候选集→Python评分→只加载top-N完整Episode
+- episodes表为空时自动回退到旧的文件遍历逻辑
+
+### [已完成] feat: Phase 1 — MENTIONS补全 + Episode入库SQLite
+- commit: 3a7059b
+- extraction.py: Entity MENTIONS无条件建立（含已存在的实体），新增Relation MENTIONS
+- manager.py: 新增episodes表 + episode_mentions schema升级（target_type列）
+  - 启动时从docs/目录迁移已有Episode元数据到SQLite（幂等）
+  - save_episode同步写SQLite，get_episode/list_episodes兼容Neo4j接口
+  - get_episode_entities支持relation目标（LEFT JOIN entities + relations）
+  - 旧episode_mentions表自动迁移到新schema（rename→create→insert→drop）
+- neo4j_store.py: save_episode_mentions支持target_type="relation"
+  - get_entity_provenance扩展间接MENTIONS查询（通过Relation反查Episode）
+  - get_episode_entities同时返回entity + relation目标
+- api.py: episode端点兼容SQLite后端
+
 ### [已完成] docs: Concept统一设计文档
 - 文件: docs/design/concept-unification.md
 - 分析vision.md与现有实现的4大差距，规划4-Phase渐进式迁移方案
@@ -51,10 +69,10 @@
 - [x] ~~**get_entity_relations_by_family_id**: 加载全量BLOB仅取ID→轻量SELECT~~ (ea3d611)
 - [x] ~~**get_graph_statistics 9次串行Cypher**: 合并为3个查询~~ (c2b541b)
 - [x] ~~**get_dream_seeds N+1**: 排除ID逐个resolve→批量~~ (b22de57)
-- [ ] **search_episodes_by_bm25 2N文件读取**: 需FTS5虚拟表或内存索引（manager.py ~914-941）
+- [x] ~~**search_episodes_by_bm25 2N文件读取**: SQL LIKE过滤→Python评分→top-N加载~~ (ce40b7a)
 
 ### P2 架构对齐（Concept统一）
-- [ ] **Phase 1: MENTIONS补全 + Episode入库**: extraction.py MENTIONS无条件建立 + episodes SQLite表
+- [x] ~~**Phase 1: MENTIONS补全 + Episode入库**: extraction.py MENTIONS无条件建立 + episodes SQLite表~~ (3a7059b)
 - [ ] **Phase 2: concepts统一表 + 双写**: 新增concepts表 + concept_fts + 双写适配
 - [ ] **Phase 3: 统一查询接口**: get_concept_* / search_concepts_* / traverse_concepts
 - [ ] **Phase 4: API统一**: /concepts/* 端点 + MCP工具 + 旧端点兼容
