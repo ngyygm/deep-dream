@@ -4084,21 +4084,19 @@ class StorageManager:
         with self._write_lock:
             conn = self._get_conn()
             cursor = conn.cursor()
-            # Get family_id before deleting for FTS cleanup
+            # Check existence
             cursor.execute(
-                "SELECT family_id FROM entities WHERE id = ?",
+                "SELECT 1 FROM entities WHERE id = ?",
                 (absolute_id,),
             )
-            row = cursor.fetchone()
-            if row is None:
+            if cursor.fetchone() is None:
                 return False
-            family_id = row[0]
-            # Delete FTS entry
+            # Delete FTS entry for this specific version (rowid = absolute_id)
             cursor.execute(
-                "DELETE FROM entity_fts WHERE family_id = ?",
-                (family_id,),
+                "DELETE FROM entity_fts WHERE rowid = ?",
+                (absolute_id,),
             )
-            # Delete entity
+            # Delete entity version
             cursor.execute(
                 "DELETE FROM entities WHERE id = ?",
                 (absolute_id,),
@@ -4131,21 +4129,19 @@ class StorageManager:
         with self._write_lock:
             conn = self._get_conn()
             cursor = conn.cursor()
-            # Get family_id before deleting for FTS cleanup
+            # Check existence
             cursor.execute(
-                "SELECT family_id FROM relations WHERE id = ?",
+                "SELECT 1 FROM relations WHERE id = ?",
                 (absolute_id,),
             )
-            row = cursor.fetchone()
-            if row is None:
+            if cursor.fetchone() is None:
                 return False
-            family_id = row[0]
-            # Delete FTS entry
+            # Delete FTS entry for this specific version (rowid = absolute_id)
             cursor.execute(
-                "DELETE FROM relation_fts WHERE family_id = ?",
-                (family_id,),
+                "DELETE FROM relation_fts WHERE rowid = ?",
+                (absolute_id,),
             )
-            # Delete relation
+            # Delete relation version
             cursor.execute(
                 "DELETE FROM relations WHERE id = ?",
                 (absolute_id,),
@@ -4162,20 +4158,12 @@ class StorageManager:
             conn = self._get_conn()
             cursor = conn.cursor()
             placeholders = ",".join("?" * len(absolute_ids))
-            # Get family_ids for FTS cleanup
+            # Delete FTS entries for these specific versions (rowid = absolute_id)
             cursor.execute(
-                f"SELECT DISTINCT family_id FROM relations WHERE id IN ({placeholders})",
+                f"DELETE FROM relation_fts WHERE rowid IN ({placeholders})",
                 list(absolute_ids),
             )
-            family_ids = [row[0] for row in cursor.fetchall()]
-            # Delete FTS entries
-            if family_ids:
-                fts_placeholders = ",".join("?" * len(family_ids))
-                cursor.execute(
-                    f"DELETE FROM relation_fts WHERE family_id IN ({fts_placeholders})",
-                    family_ids,
-                )
-            # Delete relations
+            # Delete relation versions
             cursor.execute(
                 f"DELETE FROM relations WHERE id IN ({placeholders})",
                 list(absolute_ids),
@@ -4250,20 +4238,12 @@ class StorageManager:
             conn = self._get_conn()
             cursor = conn.cursor()
             placeholders = ",".join("?" * len(absolute_ids))
-            # Get family_ids for FTS cleanup
+            # Delete FTS entries for these specific versions (rowid = absolute_id)
             cursor.execute(
-                f"SELECT DISTINCT family_id FROM entities WHERE id IN ({placeholders})",
+                f"DELETE FROM entity_fts WHERE rowid IN ({placeholders})",
                 list(absolute_ids),
             )
-            family_ids = [row[0] for row in cursor.fetchall()]
-            # Delete FTS entries
-            if family_ids:
-                fts_placeholders = ",".join("?" * len(family_ids))
-                cursor.execute(
-                    f"DELETE FROM entity_fts WHERE family_id IN ({fts_placeholders})",
-                    family_ids,
-                )
-            # Delete entities
+            # Delete entity versions
             cursor.execute(
                 f"DELETE FROM entities WHERE id IN ({placeholders})",
                 list(absolute_ids),
