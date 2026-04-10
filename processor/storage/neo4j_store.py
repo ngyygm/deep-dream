@@ -219,6 +219,9 @@ class Neo4jStorageManager:
         # 初始化 Neo4j 约束和索引
         self._init_schema()
 
+        # 为已有节点添加 :Concept 标签和 role 属性（幂等）
+        self.migrate_to_concepts()
+
         # 构建缓存映射
         self._build_doc_hash_cache()
 
@@ -331,6 +334,26 @@ class Neo4jStorageManager:
                     session.run(idx)
                 except Exception as e:
                     logger.debug("Performance index creation skipped: %s", e)
+
+    def migrate_to_concepts(self):
+        """Add :Concept label and role property to all existing nodes (idempotent).
+
+        Runs once on startup. Skips if any :Concept nodes already exist,
+        which means the migration was previously applied.
+        """
+        try:
+            with self._session() as session:
+                result = session.run("MATCH (c:Concept) RETURN count(c) AS cnt LIMIT 1")
+                cnt = result.single()["cnt"]
+                if cnt > 0:
+                    logger.debug("migrate_to_concepts: skipped (%d Concept nodes already exist)", cnt)
+                    return
+                session.run("MATCH (e:Entity) SET e:Concept, e.role = 'entity'")
+                session.run("MATCH (r:Relation) SET r:Concept, r.role = 'relation'")
+                session.run("MATCH (ep:Episode) SET ep:Concept, ep.role = 'observation'")
+                logger.info("migrate_to_concepts: applied :Concept label and role to all nodes")
+        except Exception as e:
+            logger.warning("migrate_to_concepts failed (non-fatal): %s", e)
 
     def _build_doc_hash_cache(self):
         """从 docs/ 目录构建 cache_id → doc_hash 映射。"""
@@ -647,7 +670,8 @@ class Neo4jStorageManager:
             session.run(
                 """
                 MERGE (ep:Episode {uuid: $uuid})
-                SET ep.content = $content,
+                SET ep:Concept, ep.role = 'observation',
+                    ep.content = $content,
                     ep.source_document = $source,
                     ep.event_time = $event_time,
                     ep.episode_type = $episode_type,
@@ -690,7 +714,8 @@ class Neo4jStorageManager:
                 """
                 UNWIND $rows AS row
                 MERGE (ep:Episode {uuid: row.uuid})
-                SET ep.content = row.content,
+                SET ep:Concept, ep.role = 'observation',
+                    ep.content = row.content,
                     ep.source_document = row.source,
                     ep.event_time = row.event_time,
                     ep.episode_type = row.episode_type,
@@ -971,7 +996,8 @@ class Neo4jStorageManager:
                     session.run(
                         """
                         MERGE (e:Entity {uuid: $uuid})
-                        SET e.family_id = $family_id,
+                        SET e:Concept, e.role = 'entity',
+                            e.family_id = $family_id,
                             e.name = $name,
                             e.content = $content,
                             e.event_time = datetime($event_time),
@@ -1070,7 +1096,8 @@ class Neo4jStorageManager:
                         """
                         UNWIND $rows AS row
                         MERGE (e:Entity {uuid: row.uuid})
-                        SET e.family_id = row.family_id,
+                        SET e:Concept, e.role = 'entity',
+                            e.family_id = row.family_id,
                             e.name = row.name,
                             e.content = row.content,
                             e.event_time = datetime(row.event_time),
@@ -2259,7 +2286,8 @@ class Neo4jStorageManager:
                 session.run(
                     """
                     MERGE (r:Relation {uuid: $uuid})
-                    SET r.family_id = $family_id,
+                    SET r:Concept, r.role = 'relation',
+                        r.family_id = $family_id,
                         r.entity1_absolute_id = $e1_abs,
                         r.entity2_absolute_id = $e2_abs,
                         r.content = $content,
@@ -2360,7 +2388,8 @@ class Neo4jStorageManager:
                     """
                     UNWIND $rows AS row
                     MERGE (r:Relation {uuid: row.uuid})
-                    SET r.family_id = row.family_id,
+                    SET r:Concept, r.role = 'relation',
+                        r.family_id = row.family_id,
                         r.entity1_absolute_id = row.e1_abs,
                         r.entity2_absolute_id = row.e2_abs,
                         r.content = row.content,

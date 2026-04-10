@@ -77,6 +77,9 @@ class StorageManager:
         # Phase 1: 将已有 Episode 文件元数据迁移到 SQLite
         self._migrate_episodes_from_files()
 
+        # Phase 2: 将已有 entities/relations/episodes 迁移到 concepts 统一表
+        self.migrate_to_concepts()
+
     # ------------------------------------------------------------------
     # 连接管理
     # ------------------------------------------------------------------
@@ -232,6 +235,41 @@ class StorageManager:
         """)
         c.execute("""
             CREATE VIRTUAL TABLE IF NOT EXISTS relation_fts USING fts5(content, family_id UNINDEXED)
+        """)
+        # Phase 2: 统一 concepts 表（entity + relation + observation 三合一）
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS concepts (
+                id TEXT PRIMARY KEY,
+                family_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                name TEXT DEFAULT '',
+                content TEXT NOT NULL,
+                event_time TEXT NOT NULL,
+                processed_time TEXT NOT NULL,
+                source_document TEXT DEFAULT '',
+                episode_id TEXT DEFAULT '',
+                embedding BLOB,
+                connects TEXT DEFAULT '',
+                activity_type TEXT DEFAULT '',
+                episode_type TEXT DEFAULT '',
+                valid_at TEXT,
+                invalid_at TEXT,
+                summary TEXT,
+                attributes TEXT,
+                confidence REAL,
+                content_format TEXT DEFAULT 'plain',
+                provenance TEXT DEFAULT ''
+            )
+        """)
+        c.execute("CREATE INDEX IF NOT EXISTS idx_concepts_family ON concepts(family_id)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_concepts_role ON concepts(role)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_concepts_name ON concepts(name)")
+        try:
+            c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_concepts_unique ON concepts(family_id, processed_time)")
+        except sqlite3.OperationalError:
+            pass  # 索引已存在或存在重复数据，忽略
+        c.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS concept_fts USING fts5(name, content, content='concepts', content_rowid='rowid')
         """)
         conn.commit()
 
@@ -1052,6 +1090,8 @@ class StorageManager:
                     """, (entity.event_time.isoformat(), entity.family_id, entity.absolute_id))
                 except Exception as exc:
                     logger.warning("FTS invalid_at update failed: %s", exc)
+                # Phase 2: dual-write to concepts
+                self._write_concept_from_entity(entity, cursor)
                 # 单次 commit 包含所有写操作
                 conn.commit()
             except Exception:
@@ -1885,6 +1925,8 @@ class StorageManager:
                     """, (relation.event_time.isoformat(), relation.family_id, relation.absolute_id))
                 except Exception as exc:
                     logger.warning("FTS relation invalid_at update failed: %s", exc)
+                # Phase 2: dual-write to concepts
+                self._write_concept_from_relation(relation, cursor)
                 # 单次 commit 包含所有写操作
                 conn.commit()
             except Exception:
@@ -3268,6 +3310,8 @@ class StorageManager:
                 cursor.execute("DELETE FROM entity_fts WHERE family_id = ?", (family_id,))
             except Exception as exc:
                 logger.warning("FTS delete failed: %s", exc)
+            # Phase 2: cleanup concepts
+            self._delete_concepts_by_family(family_id, cursor)
             return cursor.rowcount
 
     def delete_relation_by_id(self, family_id: str) -> int:
@@ -3282,6 +3326,8 @@ class StorageManager:
                 cursor.execute("DELETE FROM relation_fts WHERE family_id = ?", (family_id,))
             except Exception as exc:
                 logger.warning("FTS delete failed: %s", exc)
+            # Phase 2: cleanup concepts
+            self._delete_concepts_by_family(family_id, cursor)
             conn.commit()
             return count
 
@@ -3987,6 +4033,8 @@ class StorageManager:
                     getattr(cache, 'episode_type', '') or "",
                     doc_hash,
                 ))
+                # Phase 2: dual-write to concepts
+                self._write_concept_from_episode(cache, doc_hash, cursor)
                 conn.commit()
         except Exception as exc:
             logger.warning("episode SQLite write failed: %s", exc)
@@ -4284,6 +4332,8 @@ class StorageManager:
                 (absolute_id,),
             )
             affected = cursor.rowcount
+            # Phase 2: cleanup concepts
+            self._delete_concept_by_id(absolute_id, cursor)
             conn.commit()
             return affected > 0
 
@@ -4329,6 +4379,8 @@ class StorageManager:
                 (absolute_id,),
             )
             affected = cursor.rowcount
+            # Phase 2: cleanup concepts
+            self._delete_concept_by_id(absolute_id, cursor)
             conn.commit()
             return affected > 0
 
@@ -4492,3 +4544,209 @@ class StorageManager:
             affected = cursor.rowcount
             conn.commit()
             return affected
+
+    # ========== Phase 2: concepts 统一表双写 ==========
+
+    def _write_concept_from_entity(self, entity: Entity, cursor):
+        """Dual-write: write Entity to concepts table (called within existing write transaction)."""
+        try:
+            cursor.execute("""
+                INSERT OR IGNORE INTO concepts
+                (id, family_id, role, name, content, event_time, processed_time,
+                 source_document, episode_id, embedding, valid_at, invalid_at,
+                 summary, attributes, confidence, content_format, provenance)
+                VALUES (?, ?, 'entity', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '')
+            """, (
+                entity.absolute_id,
+                entity.family_id,
+                entity.name,
+                entity.content,
+                entity.event_time.isoformat(),
+                entity.processed_time.isoformat(),
+                entity.source_document or '',
+                entity.episode_id or '',
+                entity.embedding,
+                (entity.valid_at or entity.event_time).isoformat(),
+                getattr(entity, 'invalid_at', None),
+                getattr(entity, 'summary', None),
+                json.dumps(getattr(entity, 'attributes', None)) if isinstance(getattr(entity, 'attributes', None), dict) else getattr(entity, 'attributes', None),
+                getattr(entity, 'confidence', None),
+                getattr(entity, 'content_format', 'plain'),
+            ))
+            # FTS (content-sync: use integer rowid from concepts table)
+            try:
+                cursor.execute(
+                    "SELECT rowid FROM concepts WHERE id = ?", (entity.absolute_id,)
+                )
+                _row = cursor.fetchone()
+                if _row:
+                    cursor.execute("""
+                        INSERT INTO concept_fts(rowid, name, content)
+                        VALUES (?, ?, ?)
+                    """, (_row[0], entity.name, entity.content))
+            except Exception as exc:
+                logger.debug("concept_fts entity write failed: %s", exc)
+        except Exception as exc:
+            logger.debug("concept entity dual-write failed: %s", exc)
+
+    def _write_concept_from_relation(self, relation: Relation, cursor):
+        """Dual-write: write Relation to concepts table (called within existing write transaction)."""
+        try:
+            connects = json.dumps([relation.entity1_absolute_id, relation.entity2_absolute_id])
+            cursor.execute("""
+                INSERT OR IGNORE INTO concepts
+                (id, family_id, role, name, content, event_time, processed_time,
+                 source_document, episode_id, embedding, valid_at, invalid_at,
+                 summary, attributes, confidence, content_format, provenance, connects)
+                VALUES (?, ?, 'relation', '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                relation.absolute_id,
+                relation.family_id,
+                relation.content,
+                relation.event_time.isoformat(),
+                relation.processed_time.isoformat(),
+                relation.source_document or '',
+                relation.episode_id or '',
+                relation.embedding,
+                (relation.valid_at or relation.event_time).isoformat(),
+                getattr(relation, 'invalid_at', None),
+                getattr(relation, 'summary', None),
+                json.dumps(getattr(relation, 'attributes', None)) if isinstance(getattr(relation, 'attributes', None), dict) else getattr(relation, 'attributes', None),
+                getattr(relation, 'confidence', None),
+                getattr(relation, 'content_format', 'plain'),
+                getattr(relation, 'provenance', '') or '',
+                connects,
+            ))
+            # FTS (content-sync: use integer rowid from concepts table)
+            try:
+                cursor.execute(
+                    "SELECT rowid FROM concepts WHERE id = ?", (relation.absolute_id,)
+                )
+                _row = cursor.fetchone()
+                if _row:
+                    cursor.execute("""
+                        INSERT INTO concept_fts(rowid, name, content)
+                        VALUES (?, '', ?)
+                    """, (_row[0], relation.content))
+            except Exception as exc:
+                logger.debug("concept_fts relation write failed: %s", exc)
+        except Exception as exc:
+            logger.debug("concept relation dual-write failed: %s", exc)
+
+    def _write_concept_from_episode(self, cache: Episode, doc_hash: str, cursor):
+        """Dual-write: write Episode to concepts table as 'observation' (called within existing write transaction)."""
+        try:
+            cursor.execute("""
+                INSERT OR IGNORE INTO concepts
+                (id, family_id, role, name, content, event_time, processed_time,
+                 source_document, activity_type, episode_type, provenance)
+                VALUES (?, ?, 'observation', '', ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                cache.absolute_id,
+                cache.absolute_id,  # family_id = absolute_id for episodes
+                cache.content,
+                cache.event_time.isoformat(),
+                datetime.now().isoformat(),
+                cache.source_document or '',
+                cache.activity_type or '',
+                getattr(cache, 'episode_type', '') or '',
+                json.dumps({"doc_hash": doc_hash}) if doc_hash else '',
+            ))
+            # FTS (content-sync: use integer rowid from concepts table)
+            try:
+                cursor.execute(
+                    "SELECT rowid FROM concepts WHERE id = ?", (cache.absolute_id,)
+                )
+                _row = cursor.fetchone()
+                if _row:
+                    cursor.execute("""
+                        INSERT INTO concept_fts(rowid, name, content)
+                        VALUES (?, '', ?)
+                    """, (_row[0], cache.content))
+            except Exception as exc:
+                logger.debug("concept_fts episode write failed: %s", exc)
+        except Exception as exc:
+            logger.debug("concept episode dual-write failed: %s", exc)
+
+    def _delete_concept_by_id(self, absolute_id: str, cursor):
+        """Delete a concept version by absolute_id (called within existing write transaction)."""
+        try:
+            # Get integer rowid before delete for FTS cleanup
+            cursor.execute("SELECT rowid FROM concepts WHERE id = ?", (absolute_id,))
+            _row = cursor.fetchone()
+            if _row:
+                try:
+                    cursor.execute("DELETE FROM concept_fts WHERE rowid = ?", (_row[0],))
+                except Exception as exc:
+                    logger.debug("concept_fts delete by id failed: %s", exc)
+            cursor.execute("DELETE FROM concepts WHERE id = ?", (absolute_id,))
+        except Exception as exc:
+            logger.debug("concept delete by id failed: %s", exc)
+
+    def _delete_concepts_by_family(self, family_id: str, cursor):
+        """Delete all concept versions by family_id (called within existing write transaction)."""
+        try:
+            # Collect integer rowids before delete for FTS cleanup
+            cursor.execute("SELECT rowid FROM concepts WHERE family_id = ?", (family_id,))
+            _rowids = [r[0] for r in cursor.fetchall()]
+            if _rowids:
+                try:
+                    placeholders = ",".join("?" * len(_rowids))
+                    cursor.execute(
+                        f"DELETE FROM concept_fts WHERE rowid IN ({placeholders})",
+                        _rowids,
+                    )
+                except Exception as exc:
+                    logger.debug("concept_fts delete by family failed: %s", exc)
+            cursor.execute("DELETE FROM concepts WHERE family_id = ?", (family_id,))
+        except Exception as exc:
+            logger.debug("concept delete by family failed: %s", exc)
+
+    def migrate_to_concepts(self):
+        """Migrate existing entities + relations + episodes to concepts table (idempotent)."""
+        conn = self._get_conn()
+        with self._write_lock:
+            cursor = conn.cursor()
+            try:
+                cursor.execute("SELECT COUNT(*) FROM concepts")
+                if cursor.fetchone()[0] > 0:
+                    return  # already migrated
+                # entities -> concepts
+                cursor.execute("""
+                    INSERT OR IGNORE INTO concepts
+                    (id, family_id, role, name, content, event_time, processed_time,
+                     source_document, episode_id, embedding, valid_at, invalid_at,
+                     summary, attributes, confidence, content_format)
+                    SELECT id, family_id, 'entity', name, content, event_time, processed_time,
+                           source_document, episode_id, embedding, valid_at, invalid_at,
+                           summary, attributes, confidence, content_format
+                    FROM entities
+                """)
+                # relations -> concepts
+                cursor.execute("""
+                    INSERT OR IGNORE INTO concepts
+                    (id, family_id, role, content, event_time, processed_time,
+                     source_document, episode_id, embedding, valid_at, invalid_at,
+                     summary, attributes, confidence, content_format, connects)
+                    SELECT id, family_id, 'relation', content, event_time, processed_time,
+                           source_document, episode_id, embedding, valid_at, invalid_at,
+                           summary, attributes, confidence, content_format,
+                           json_array(entity1_absolute_id, entity2_absolute_id)
+                    FROM relations
+                """)
+                # episodes -> concepts
+                cursor.execute("""
+                    INSERT OR IGNORE INTO concepts
+                    (id, family_id, role, content, event_time, processed_time,
+                     source_document, activity_type, episode_type)
+                    SELECT id, family_id, 'observation', content, event_time, processed_time,
+                           source_document, activity_type, episode_type
+                    FROM episodes
+                """)
+                # Rebuild concept_fts（content-sync FTS5 使用 rebuild 命令）
+                cursor.execute("INSERT INTO concept_fts(concept_fts) VALUES('rebuild')")
+                conn.commit()
+                logger.info("concepts 表迁移完成")
+            except Exception as exc:
+                logger.warning("concepts 迁移失败: %s", exc)
+                conn.rollback()
