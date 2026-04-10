@@ -4,6 +4,22 @@
 
 ## 2026-04-10
 
+### [已完成] refactor: api.py 4980行→Blueprint 7模块 + 350行工厂
+- server/api.py 从 4980 行单体拆分为 7 个 Blueprint 模块 + 350 行应用工厂
+- 新增文件:
+  - server/blueprints/__init__.py — 包标记
+  - server/blueprints/helpers.py — 共享工具 (序列化、响应、时间解析)
+  - server/blueprints/system.py — 健康检查、统计、系统监控 (12 routes)
+  - server/blueprints/remember.py — Remember 任务管理 (6 routes)
+  - server/blueprints/entities.py — 实体 CRUD、搜索、智能 (37 routes)
+  - server/blueprints/relations.py — 关系 CRUD、路径、统一搜索 (26 routes)
+  - server/blueprints/episodes.py — Episode 管理、快照、变更 (17 routes)
+  - server/blueprints/dream.py — Dream 探索、Ask、Butler (17 routes)
+  - server/blueprints/concepts.py — 概念、社区、图谱管理、聊天 (21 routes)
+- api.py 保留: create_app() 中间件/CORS/限流/graph_id解析、build_processor()、main()、SPA 路由
+- 126 个唯一路径、148 个路由方法，无重复注册
+- 所有路由路径完全兼容原有 API
+
 ### [已完成] feat: Phase 4.1 — MCP concept_* 统一工具
 - commit: 8e72559
 - 新增7个MCP工具: search_concepts, list_concepts, get_concept, get_concept_neighbors, get_concept_provenance, traverse_concepts, get_concept_mentions
@@ -99,4 +115,4 @@
 ### P3 代码质量
 - [x] ~~**Schema初始化去重**: _init_database与_ensure_tables重复~~ (fffb8dd)
 - [x] ~~**Neo4j _RELATION_RETURN_FIELDS**: 22个方法重复字段列表~~ (6d7d0da)
-- [ ] **api.py分模块**: ~5000行单文件，需按领域拆分（server/api.py）
+- [x] ~~**api.py分模块**: ~5000行单文件，需按领域拆分~~ (7 Blueprint 模块 + 350 行工厂)
