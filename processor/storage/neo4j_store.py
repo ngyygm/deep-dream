@@ -4721,3 +4721,165 @@ class Neo4jStorageManager:
                 count = update_record["cnt"] if update_record else 0
             self._cache.invalidate("relation:")
             return count
+
+    # ------------------------------------------------------------------
+    # Concept 统一查询方法（Phase 2: 所有节点共享 :Concept 标签 + role 属性）
+    # ------------------------------------------------------------------
+
+    def get_concept_by_family_id(self, family_id: str) -> Optional[dict]:
+        """获取任意 role 的概念最新版本。"""
+        with self._session() as session:
+            result = session.run("""
+                MATCH (c:Concept {family_id: $fid})
+                RETURN c.uuid AS id, c.family_id AS family_id, c.role AS role,
+                       c.name AS name, c.content AS content,
+                       c.event_time AS event_time, c.processed_time AS processed_time,
+                       c.source_document AS source_document, c.summary AS summary,
+                       c.confidence AS confidence
+                ORDER BY c.processed_time DESC LIMIT 1
+            """, fid=family_id)
+            r = result.single()
+            if not r:
+                return None
+            return dict(r)
+
+    def search_concepts_by_bm25(self, query: str, role: str = None, limit: int = 20) -> List[dict]:
+        """搜索概念（Neo4j全文索引或CONTAINS）。"""
+        if not query:
+            return []
+        with self._session() as session:
+            if role:
+                result = session.run("""
+                    MATCH (c:Concept)
+                    WHERE c.role = $role AND (c.content CONTAINS $q OR c.name CONTAINS $q)
+                    RETURN c.uuid AS id, c.family_id AS family_id, c.role AS role,
+                           c.name AS name, c.content AS content,
+                           c.event_time AS event_time, c.processed_time AS processed_time
+                    ORDER BY c.processed_time DESC LIMIT $limit
+                """, q=query, role=role, limit=limit)
+            else:
+                result = session.run("""
+                    MATCH (c:Concept)
+                    WHERE c.content CONTAINS $q OR c.name CONTAINS $q
+                    RETURN c.uuid AS id, c.family_id AS family_id, c.role AS role,
+                           c.name AS name, c.content AS content,
+                           c.event_time AS event_time, c.processed_time AS processed_time
+                    ORDER BY c.processed_time DESC LIMIT $limit
+                """, q=query, limit=limit)
+            return [dict(r) for r in result]
+
+    def get_concept_neighbors(self, family_id: str, max_depth: int = 1) -> List[dict]:
+        """获取概念的邻居（无论 role）。"""
+        with self._session() as session:
+            # Get the concept
+            concept_result = session.run("""
+                MATCH (c:Concept {family_id: $fid})
+                RETURN c.uuid AS id, c.role AS role LIMIT 1
+            """, fid=family_id)
+            concept = concept_result.single()
+            if not concept:
+                return []
+            role = concept["role"]
+            abs_id = concept["id"]
+
+            if role == 'entity':
+                # Find relations this entity participates in, and other connected entities
+                result = session.run("""
+                    MATCH (e:Entity {uuid: $abs_id})-[r:RELATES_TO]-(other:Entity)
+                    RETURN DISTINCT other.family_id AS family_id, other.uuid AS id,
+                           other.name AS name, 'entity' AS role, other.content AS content
+                """, abs_id=abs_id)
+            elif role == 'relation':
+                # Find the two entities this relation connects
+                result = session.run("""
+                    MATCH (r:Relation {uuid: $abs_id})
+                    MATCH (e:Entity)
+                    WHERE e.uuid = r.entity1_absolute_id OR e.uuid = r.entity2_absolute_id
+                    RETURN DISTINCT e.family_id AS family_id, e.uuid AS id,
+                           e.name AS name, 'entity' AS role, e.content AS content
+                """, abs_id=abs_id)
+            elif role == 'observation':
+                # Find all concepts this episode mentions
+                result = session.run("""
+                    MATCH (ep:Episode {uuid: $abs_id})-[:MENTIONS]->(c:Concept)
+                    RETURN DISTINCT c.family_id AS family_id, c.uuid AS id,
+                           c.name AS name, c.role AS role, c.content AS content
+                """, abs_id=abs_id)
+            else:
+                return []
+            return [dict(r) for r in result]
+
+    def get_concept_provenance(self, family_id: str) -> List[dict]:
+        """溯源：返回所有提及此概念的 observation。"""
+        # Use existing get_entity_provenance which already handles both direct and indirect
+        return self.get_entity_provenance(family_id)
+
+    def traverse_concepts(self, start_family_ids: List[str], max_depth: int = 2) -> dict:
+        """BFS 遍历概念图。"""
+        visited = set()
+        queue = list(start_family_ids)
+        all_concepts = {}
+        all_relations = []
+
+        for _ in range(max_depth):
+            next_queue = []
+            for fid in queue:
+                if fid in visited:
+                    continue
+                visited.add(fid)
+                concept = self.get_concept_by_family_id(fid)
+                if not concept:
+                    continue
+                all_concepts[fid] = concept
+                neighbors = self.get_concept_neighbors(fid)
+                for n in neighbors:
+                    nfid = n.get('family_id', '')
+                    if nfid and nfid not in visited:
+                        next_queue.append(nfid)
+                        if n.get('role') == 'entity':
+                            all_relations.append(n)
+            queue = next_queue
+
+        return {
+            "concepts": all_concepts,
+            "relations": all_relations,
+            "visited_count": len(visited),
+        }
+
+    def list_concepts(self, role: str = None, limit: int = 50, offset: int = 0) -> List[dict]:
+        """列出概念（分页 + 可选 role 过滤）。"""
+        with self._session() as session:
+            if role:
+                result = session.run("""
+                    MATCH (c:Concept {role: $role})
+                    RETURN c.uuid AS id, c.family_id AS family_id, c.role AS role,
+                           c.name AS name, c.content AS content,
+                           c.event_time AS event_time, c.processed_time AS processed_time
+                    ORDER BY c.processed_time DESC SKIP $offset LIMIT $limit
+                """, role=role, offset=offset, limit=limit)
+            else:
+                result = session.run("""
+                    MATCH (c:Concept)
+                    RETURN c.uuid AS id, c.family_id AS family_id, c.role AS role,
+                           c.name AS name, c.content AS content,
+                           c.event_time AS event_time, c.processed_time AS processed_time
+                    ORDER BY c.processed_time DESC SKIP $offset LIMIT $limit
+                """, offset=offset, limit=limit)
+            return [dict(r) for r in result]
+
+    def count_concepts(self, role: str = None) -> int:
+        """统计概念数量。"""
+        with self._session() as session:
+            if role:
+                result = session.run("MATCH (c:Concept {role: $role}) RETURN count(c) AS cnt", role=role)
+            else:
+                result = session.run("MATCH (c:Concept) RETURN count(c) AS cnt")
+            return result.single()["cnt"]
+
+    def get_concept_mentions(self, family_id: str) -> List[dict]:
+        """获取提及此概念的所有 Episode。"""
+        return self.get_concept_provenance(family_id)
+
+    def get_episode_concepts(self, episode_id: str) -> List[dict]:
+        """获取 Episode 提及的所有概念。"""
+        return self.get_episode_entities(episode_id)

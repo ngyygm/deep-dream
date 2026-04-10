@@ -3790,6 +3790,119 @@ def create_app(
             return err(str(e), 500)
 
     # =========================================================
+    # Concepts — 统一概念查询接口（Phase 4）
+    # =========================================================
+
+    @app.route("/api/v1/concepts/search", methods=["POST"])
+    def search_concepts():
+        """统一概念搜索（可选 role 过滤）。"""
+        try:
+            processor = _get_processor()
+            storage = processor.storage
+            if not hasattr(storage, 'search_concepts_by_bm25'):
+                return err("此功能需要 SQLite >= Phase 3 或 Neo4j 后端", 400)
+            body = request.get_json(silent=True) or {}
+            query = (body.get("query") or "").strip()
+            if not query:
+                return err("query 不能为空", 400)
+            role = body.get("role") or None
+            limit = min(max(int(body.get("limit", 20)), 1), 100)
+            results = storage.search_concepts_by_bm25(query, role=role, limit=limit)
+            return ok({"concepts": results, "total": len(results)})
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/v1/concepts", methods=["GET"])
+    def list_concepts():
+        """列出概念（分页 + 可选 role 过滤）。"""
+        try:
+            processor = _get_processor()
+            storage = processor.storage
+            if not hasattr(storage, 'list_concepts'):
+                return err("此功能需要 SQLite >= Phase 3 或 Neo4j 后端", 400)
+            role = request.args.get("role") or None
+            limit = min(max(int(request.args.get('limit', 50)), 1), 100)
+            offset = max(int(request.args.get('offset', 0)), 0)
+            concepts = storage.list_concepts(role=role, limit=limit, offset=offset)
+            total = storage.count_concepts(role=role) if hasattr(storage, 'count_concepts') else len(concepts)
+            return ok({"concepts": concepts, "total": total, "limit": limit, "offset": offset})
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/v1/concepts/<family_id>", methods=["GET"])
+    def get_concept(family_id: str):
+        """获取概念（任意 role）。"""
+        try:
+            processor = _get_processor()
+            storage = processor.storage
+            if not hasattr(storage, 'get_concept_by_family_id'):
+                return err("此功能需要 SQLite >= Phase 3 或 Neo4j 后端", 400)
+            concept = storage.get_concept_by_family_id(family_id)
+            if concept is None:
+                return err("概念不存在", 404)
+            return ok(concept)
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/v1/concepts/<family_id>/neighbors", methods=["GET"])
+    def get_concept_neighbors(family_id: str):
+        """获取概念邻居（无论 role）。"""
+        try:
+            processor = _get_processor()
+            storage = processor.storage
+            if not hasattr(storage, 'get_concept_neighbors'):
+                return err("此功能需要 SQLite >= Phase 3 或 Neo4j 后端", 400)
+            max_depth = min(max(int(request.args.get('max_depth', 1)), 1), 3)
+            neighbors = storage.get_concept_neighbors(family_id, max_depth=max_depth)
+            return ok({"family_id": family_id, "neighbors": neighbors})
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/v1/concepts/<family_id>/provenance", methods=["GET"])
+    def get_concept_provenance(family_id: str):
+        """溯源：返回所有提及此概念的 observation。"""
+        try:
+            processor = _get_processor()
+            storage = processor.storage
+            if not hasattr(storage, 'get_concept_provenance'):
+                return err("此功能需要 SQLite >= Phase 3 或 Neo4j 后端", 400)
+            provenance = storage.get_concept_provenance(family_id)
+            return ok({"family_id": family_id, "provenance": provenance})
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/v1/concepts/traverse", methods=["POST"])
+    def traverse_concepts():
+        """BFS 遍历概念图。"""
+        try:
+            processor = _get_processor()
+            storage = processor.storage
+            if not hasattr(storage, 'traverse_concepts'):
+                return err("此功能需要 SQLite >= Phase 3 或 Neo4j 后端", 400)
+            body = request.get_json(silent=True) or {}
+            start_ids = body.get("start_family_ids") or []
+            if not start_ids:
+                return err("start_family_ids 不能为空", 400)
+            max_depth = min(max(int(body.get('max_depth', 2)), 1), 5)
+            result = storage.traverse_concepts(start_ids, max_depth=max_depth)
+            return ok(result)
+        except Exception as e:
+            return err(str(e), 500)
+
+    @app.route("/api/v1/concepts/<family_id>/mentions", methods=["GET"])
+    def get_concept_mentions(family_id: str):
+        """获取提及此概念的所有 Episode。"""
+        try:
+            processor = _get_processor()
+            storage = processor.storage
+            if not hasattr(storage, 'get_concept_mentions'):
+                return err("此功能需要 SQLite >= Phase 3 或 Neo4j 后端", 400)
+            mentions = storage.get_concept_mentions(family_id)
+            return ok({"family_id": family_id, "mentions": mentions})
+        except Exception as e:
+            return err(str(e), 500)
+
+    # =========================================================
     # Butler: 管家式管理 — 一键健康分析 + 维护操作
     # =========================================================
 
