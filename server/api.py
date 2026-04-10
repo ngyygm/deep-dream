@@ -3647,11 +3647,11 @@ def create_app(
     # =========================================================
     @app.route("/api/v1/episodes", methods=["GET"])
     def list_episodes():
-        """分页列出 Episodes（Neo4j 专属）。"""
+        """分页列出 Episodes。"""
         try:
             processor = _get_processor()
             if not hasattr(processor.storage, 'list_episodes'):
-                return err("此功能需要 Neo4j 后端", 400)
+                return err("此功能需要 Neo4j 或 SQLite 后端", 400)
             limit = min(max(int(request.args.get('limit', 20)), 1), 100)
             offset = max(int(request.args.get('offset', 0)), 0)
             episodes = processor.storage.list_episodes(limit=limit, offset=offset)
@@ -3662,11 +3662,11 @@ def create_app(
 
     @app.route("/api/v1/episodes/<uuid>", methods=["GET"])
     def get_episode(uuid: str):
-        """获取 Episode 详情（Neo4j 专属）。"""
+        """获取 Episode 详情。"""
         try:
             processor = _get_processor()
             if not hasattr(processor.storage, 'get_episode'):
-                return err("此功能需要 Neo4j 后端", 400)
+                return err("此功能需要 Neo4j 或 SQLite 后端", 400)
             episode = processor.storage.get_episode(uuid)
             if episode is None:
                 return err("Episode 不存在", 404)
@@ -3676,11 +3676,11 @@ def create_app(
 
     @app.route("/api/v1/episodes/<uuid>/entities", methods=["GET"])
     def get_episode_entities(uuid: str):
-        """获取 Episode 关联实体（Neo4j 专属）。"""
+        """获取 Episode 关联实体和关系。"""
         try:
             processor = _get_processor()
             if not hasattr(processor.storage, 'get_episode_entities'):
-                return err("此功能需要 Neo4j 后端", 400)
+                return err("此功能需要 Neo4j 或 SQLite 后端", 400)
             entities = processor.storage.get_episode_entities(uuid)
             return ok({"entities": entities})
         except Exception as e:
