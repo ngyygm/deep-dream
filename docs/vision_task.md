@@ -4,6 +4,26 @@
 
 ## 2026-04-10
 
+### [已完成] fix: 实体候选匹配添加核心名称规范化
+- commit: 395e523
+- 问题：同一实体因LLM返回不同名称变体（"张伟"/"张伟教授"/"张伟（北京大学教授）"）创建多个family_id
+- 原因：Jaccard bigram相似度低于0.6阈值，候选搜索无法找到匹配
+- 修复：`_normalize_entity_name_for_matching` 去除括号注释+称谓后缀
+- 核心名称精确匹配时 lexical_score=0.85 + merge_safe=True
+- GLM-4-flash测试验证：三次变体调用成功合并为单个实体
+
+### [已完成] fix: remember_text() return dict 添加 entities/relations 计数
+- commit: 37d618d
+- `remember_text()` 返回值原先缺少实体/关系计数（始终为0）
+- 新增 `step7_results` 数组捕获 `_align_relations` 返回值
+- 聚合 `align_results` 和 `step7_results` 到返回dict
+
+### [已完成] test: GLM-4-flash remember质量测试
+- 8种文本类型×不同长度实测：短句(17字)→长文(379字)，中英文，对话，列表
+- 结果：每100字提取~4-5实体、3-4关系，对话和列表格式提取更多
+- 长文本295字耗时67s（step6实体对齐是瓶颈）
+- 发现并修复dedup问题（见上方commit）
+
 ### [已完成] fix: Blueprint `request.app` → `current_app` — Flask测试兼容性
 - Blueprint拆分后所有模块使用 `request.app.config[...]` 访问 app config
 - Flask test client 中 `Request` 对象无 `.app` 属性，导致全部 API 测试 500
