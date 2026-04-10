@@ -102,17 +102,8 @@ class GraphTraversalSearcher:
                 continue
 
             # 批量获取 neighbor 实体
-            batch_fn = getattr(self.storage, 'get_entities_by_absolute_ids', None)
-            if batch_fn:
-                neighbor_entities = batch_fn(list(neighbor_abs_ids))
-                abs_to_family = {e.absolute_id: e.family_id for e in neighbor_entities if e}
-            else:
-                # 回退：逐个获取（兼容旧后端）
-                abs_to_family = {}
-                for aid in neighbor_abs_ids:
-                    ne = self.storage.get_entity_by_absolute_id(aid)
-                    if ne:
-                        abs_to_family[ne.absolute_id] = ne.family_id
+            neighbor_entities = self.storage.get_entities_by_absolute_ids(list(neighbor_abs_ids))
+            abs_to_family = {e.absolute_id: e.family_id for e in neighbor_entities if e}
 
             for fid in abs_to_family.values():
                 if fid not in visited:

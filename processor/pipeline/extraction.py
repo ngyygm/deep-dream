@@ -1,7 +1,6 @@
 """抽取流水线 mixin：从 orchestrator.py 提取。"""
 from __future__ import annotations
 
-import hashlib
 import re
 import time
 import uuid
@@ -9,7 +8,6 @@ from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed, Future
 from dataclasses import dataclass, field
-import threading
 
 from ..models import Episode, Entity
 from ..debug_log import log as dbg, log_section as dbg_section

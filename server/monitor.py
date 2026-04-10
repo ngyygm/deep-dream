@@ -13,7 +13,7 @@ import threading
 import time
 import logging
 from collections import Counter, deque
-from typing import Any, Deque, Dict, List, Optional
+from typing import Deque, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 

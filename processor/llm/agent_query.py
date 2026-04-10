@@ -1,7 +1,6 @@
 """Agent-First API - 元查询、解释、置信度、建议。"""
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any, Dict, List, Optional
 

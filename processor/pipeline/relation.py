@@ -6,7 +6,7 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import uuid
 
-from ..models import Relation, ContentPatch
+from ..models import Relation
 from ..storage.manager import StorageManager
 from ..llm.client import LLMClient
 from ..debug_log import log as dbg, log_section as dbg_section
