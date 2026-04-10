@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 import time
+from functools import lru_cache
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime
@@ -40,6 +41,7 @@ _MAX_ENTITY_NAME_LENGTH = 30
 _MIN_ENTITY_NAME_LENGTH = 2
 
 
+@lru_cache(maxsize=4096)
 def _is_valid_entity_name(name: str) -> bool:
     """检查实体名称是否是有效的概念实体名称（而非文本片段或无意义词）。
 

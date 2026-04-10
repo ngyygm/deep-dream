@@ -2084,12 +2084,13 @@ class StorageManager:
         if not all_aids:
             return {pk: [] for pk in unique_pairs}
 
-        # 单次查询所有相关关系
+        # 单次查询所有相关关系 — 使用完整的 _RELATION_SELECT 列表（含 embedding）
+        _REL_COLS = "r.id, r.family_id, r.entity1_absolute_id, r.entity2_absolute_id, " \
+                     "r.content, r.event_time, r.processed_time, r.episode_id, r.source_document, " \
+                     "r.embedding, r.summary, r.attributes, r.confidence, r.valid_at, r.invalid_at"
         aid_placeholders = ",".join("?" * len(all_aids))
         cursor.execute(f"""
-            SELECT r.id, r.family_id, r.entity1_absolute_id, r.entity2_absolute_id,
-                   r.content, r.event_time, r.processed_time, r.episode_id, r.source_document,
-                   r.summary, r.attributes, r.confidence, r.valid_at, r.invalid_at
+            SELECT {_REL_COLS}
             FROM relations r
             WHERE (r.entity1_absolute_id IN ({aid_placeholders})
                 OR r.entity2_absolute_id IN ({aid_placeholders}))
@@ -2914,80 +2915,53 @@ class StorageManager:
             relations_updated = 0
 
             try:
-                # 1. 先获取所有源实体的版本数量（在更新之前，用于验证）
-                source_version_counts = {}
+                # 1. Resolve all source family_ids → canonical IDs (batch)
                 canonical_source_ids: List[str] = []
                 for source_id in source_family_ids:
                     source_id = self._resolve_family_id_with_cursor(cursor, source_id)
                     if not source_id or source_id == target_family_id or source_id in canonical_source_ids:
                         continue
                     canonical_source_ids.append(source_id)
-                    cursor.execute("""
-                        SELECT COUNT(*) FROM entities
-                        WHERE family_id = ?
-                    """, (source_id,))
-                    count = cursor.fetchone()[0]
-                    source_version_counts[source_id] = count
 
-                # 2. 更新entities表中的所有family_id记录
-                # 这会更新所有使用source_family_id的记录，包括所有版本
-                for source_id in canonical_source_ids:
-                    cursor.execute("""
-                        UPDATE entities
-                        SET family_id = ?
-                        WHERE family_id = ?
-                    """, (target_family_id, source_id))
-                    entities_updated += cursor.rowcount
+                if not canonical_source_ids:
+                    return {"entities_updated": 0, "relations_updated": 0}
 
-                # 2.5. 验证：确保所有源实体的版本都被更新了
-                # 检查是否还有任何源family_id的记录残留
-                for source_id in canonical_source_ids:
-                    cursor.execute("""
-                        SELECT COUNT(*) FROM entities
-                        WHERE family_id = ?
-                    """, (source_id,))
-                    remaining_count = cursor.fetchone()[0]
-                    if remaining_count > 0:
-                        # 如果还有残留记录，说明更新失败，回滚事务
-                        conn.rollback()
-                        raise ValueError(
-                            f"合并失败：源实体 {source_id} 仍有 {remaining_count} 条记录未被更新 "
-                            f"（预期应更新 {source_version_counts[source_id]} 条记录，实际更新了 {source_version_counts[source_id] - remaining_count} 条）"
-                        )
+                # 2. Batch: get version counts for verification
+                ph = ",".join("?" * len(canonical_source_ids))
+                cursor.execute(
+                    f"SELECT family_id, COUNT(*) FROM entities WHERE family_id IN ({ph}) GROUP BY family_id",
+                    tuple(canonical_source_ids),
+                )
+                source_version_counts = {row[0]: row[1] for row in cursor.fetchall()}
 
-                # 3. 获取target_family_id的最新版本的绝对ID
-                cursor.execute("""
-                    SELECT id FROM entities
-                    WHERE family_id = ?
-                    ORDER BY processed_time DESC
-                    LIMIT 1
-                """, (target_family_id,))
-                target_absolute_id_row = cursor.fetchone()
-                if not target_absolute_id_row:
+                # 3. Batch UPDATE: move all source entities to target
+                cursor.execute(
+                    f"UPDATE entities SET family_id = ? WHERE family_id IN ({ph})",
+                    (target_family_id, *canonical_source_ids),
+                )
+                entities_updated = cursor.rowcount
+
+                # 4. Batch verify: check for residual records
+                cursor.execute(
+                    f"SELECT family_id, COUNT(*) FROM entities WHERE family_id IN ({ph}) GROUP BY family_id",
+                    tuple(canonical_source_ids),
+                )
+                residuals = cursor.fetchall()
+                if residuals:
                     conn.rollback()
-                    return {"entities_updated": 0, "relations_updated": 0, "error": "目标实体不存在"}
+                    residual_info = ", ".join(f"{r[0]}: {r[1]}" for r in residuals)
+                    raise ValueError(f"合并失败：仍有残留记录 — {residual_info}")
 
-                target_absolute_id = target_absolute_id_row[0]
-
-                # 注意：关系边中的绝对ID保持不变，因为它们指向的是特定版本
-                # 合并实体后，这些关系仍然有效，只是family_id变了
-                # 不需要更新relations表，因为：
-                # - 关系表只存储absolute_id，不存储family_id
-                # - 通过absolute_id查询实体时，会得到更新后的family_id
-                # - 所有使用family_id查询的地方（如get_relations_by_entities）都会自动使用新的family_id
-
+                # 5. Batch INSERT redirects
                 now_iso = datetime.now().isoformat()
-                for source_id in canonical_source_ids:
-                    cursor.execute(
-                        """
-                        INSERT INTO entity_redirects (source_family_id, target_family_id, updated_at)
-                        VALUES (?, ?, ?)
-                        ON CONFLICT(source_family_id) DO UPDATE SET
-                            target_family_id = excluded.target_family_id,
-                            updated_at = excluded.updated_at
-                        """,
-                        (source_id, target_family_id, now_iso),
-                    )
+                cursor.executemany(
+                    "INSERT INTO entity_redirects (source_family_id, target_family_id, updated_at) "
+                    "VALUES (?, ?, ?) "
+                    "ON CONFLICT(source_family_id) DO UPDATE SET "
+                    "  target_family_id = excluded.target_family_id, "
+                    "  updated_at = excluded.updated_at",
+                    [(sid, target_family_id, now_iso) for sid in canonical_source_ids],
+                )
 
                 conn.commit()
 
@@ -3872,12 +3846,12 @@ class StorageManager:
         with self._write_lock:
             conn = self._get_conn()
             cursor = conn.cursor()
-            for abs_id in target_absolute_ids:
-                cursor.execute("""
-                    INSERT OR REPLACE INTO episode_mentions
-                    (episode_id, target_absolute_id, target_type, mention_context)
-                    VALUES (?, ?, ?, ?)
-                """, (episode_id, abs_id, target_type, context))
+            cursor.executemany(
+                "INSERT OR REPLACE INTO episode_mentions "
+                "(episode_id, target_absolute_id, target_type, mention_context) "
+                "VALUES (?, ?, ?, ?)",
+                [(episode_id, abs_id, target_type, context) for abs_id in target_absolute_ids],
+            )
             conn.commit()
 
     def get_entity_provenance(self, family_id: str) -> List[dict]:
