@@ -840,13 +840,49 @@ class StorageManager:
         return latest_metadata
 
     def search_episodes_by_bm25(self, query: str, limit: int = 20) -> List[Episode]:
-        """简单文本搜索记忆缓存（遍历所有缓存，按内容匹配排序）。
+        """搜索 Episode（优先使用 SQLite，回退到文件遍历）。
 
-        注意：这不是真正的 BM25，因为记忆缓存使用文件存储而非 SQLite FTS。
-        对于生产环境的大规模数据，应使用向量搜索或专用全文索引。
+        当 episodes 表有数据时，先在 SQL 层用 LIKE 过滤匹配，
+        再用 Python 评分排序，只加载 top-N 的完整 Episode 对象。
         """
         if not query:
             return []
+        # 优先使用 SQLite episodes 表
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM episodes")
+        if cursor.fetchone()[0] > 0:
+            query_lower = query.lower()
+            escaped = query_lower.replace('"', '""')
+            # SQL LIKE 过滤候选，再在 Python 中精确评分
+            cursor.execute(
+                'SELECT id, content, source_document, event_time, activity_type '
+                'FROM episodes WHERE LOWER(content) LIKE ? '
+                'ORDER BY event_time DESC',
+                (f'%{escaped}%',)
+            )
+            scored = []
+            for row in cursor.fetchall():
+                content = row[1] or ""
+                score = content.lower().count(query_lower)
+                scored.append((score, row))
+            scored.sort(key=lambda x: x[0], reverse=True)
+            # 只对 top-N 加载完整 Episode（可能从文件系统）
+            results = []
+            for score, row in scored[:limit]:
+                cache = self.load_episode(row[0])
+                if cache:
+                    results.append(cache)
+                else:
+                    results.append(Episode(
+                        absolute_id=row[0],
+                        content=row[1] or "",
+                        source_document=row[2] or "",
+                        event_time=datetime.fromisoformat(row[3]) if row[3] else datetime.now(),
+                        activity_type=row[4] or "",
+                    ))
+            return results
+        # 回退：文件遍历（旧逻辑，episodes 表为空时）
         query_lower = query.lower()
         results = []
         for cache_file in self._iter_cache_meta_files():
@@ -860,7 +896,6 @@ class StorageManager:
                 continue
             if cache is None:
                 continue
-            # 简单的子串匹配评分
             content_lower = (cache.content or "").lower()
             if query_lower in content_lower:
                 score = content_lower.count(query_lower)
