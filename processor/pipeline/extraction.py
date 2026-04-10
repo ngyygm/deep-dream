@@ -1173,6 +1173,42 @@ class _ExtractionMixin:
                 f"步骤2.8关系端点清洗: {_before_rel_cleanup} → {len(extracted_relations)}"
             )
 
+        # ========== 步骤2.9：按比例限制实体数量 ==========
+        # 防止过度抽取（如古文530字产生64个实体）。经验上每100字符约3-5个实体。
+        # 优先保留有关系连接的实体；无关系实体按content长度排序保留。
+        _MAX_ENTITIES_PER_100_CHARS = 5
+        _max_entities = max(15, _text_len * _MAX_ENTITIES_PER_100_CHARS // 100)
+        if len(extracted_entities) > _max_entities:
+            _before_cap = len(extracted_entities)
+            # 收集关系端点名
+            _rel_endpoint_names: set = set()
+            for _rel in extracted_relations:
+                for _rk in ('entity1_name', 'entity2_name'):
+                    _rn = _rel.get(_rk, '').strip()
+                    if _rn:
+                        _rel_endpoint_names.add(_rn)
+            # 分为有关系和无关系两组
+            _with_rel = [e for e in extracted_entities if e.get('name', '') in _rel_endpoint_names]
+            _without_rel = [e for e in extracted_entities if e.get('name', '') not in _rel_endpoint_names]
+            # 优先保留有关系的；无关系的按content长度排序保留
+            if len(_with_rel) >= _max_entities:
+                extracted_entities = _with_rel[:_max_entities]
+            else:
+                _remaining = _max_entities - len(_with_rel)
+                _without_rel.sort(key=lambda e: len(e.get('content', '')), reverse=True)
+                extracted_entities = _with_rel + _without_rel[:_remaining]
+            # 同时清洗引用了被移除实体的关系
+            _kept_names = {e['name'] for e in extracted_entities}
+            _kept_core = {_core_entity_name(n) for n in _kept_names}
+            extracted_relations = [
+                r for r in extracted_relations
+                if (r.get('entity1_name', '') in _kept_names or _core_entity_name(r.get('entity1_name', '')) in _kept_core)
+                and (r.get('entity2_name', '') in _kept_names or _core_entity_name(r.get('entity2_name', '')) in _kept_core)
+            ]
+            if verbose or verbose_steps:
+                wprint(f"【步骤2.9】数量限制｜{_before_cap}→{len(extracted_entities)}实体（上限{_max_entities}，文本{_text_len}字）")
+            dbg(f"步骤2.9实体数量限制: {_before_cap} → {len(extracted_entities)} (max={_max_entities})")
+
         # 步骤3 后：记录统计信息
         if extracted_relations:
             _relation_endpoint_names: set[str] = set()

@@ -1077,6 +1077,34 @@ class EntityProcessor:
         possible_merges = preliminary_result.get("possible_merges", [])
         possible_relations = preliminary_result.get("possible_relations", [])
         no_action = preliminary_result.get("no_action", [])
+
+        # 去重：GLM-4-flash 截断时可能在 no_action 中重复同一个 ID 数百次
+        _seen_prelim_ids = set()
+        deduped_merges = []
+        for item in possible_merges:
+            cid = item.get("family_id") if isinstance(item, dict) else item
+            if cid not in _seen_prelim_ids:
+                _seen_prelim_ids.add(cid)
+                deduped_merges.append(item)
+        possible_merges = deduped_merges
+
+        deduped_relations = []
+        for item in possible_relations:
+            cid = item.get("family_id") if isinstance(item, dict) else item
+            if cid not in _seen_prelim_ids:
+                _seen_prelim_ids.add(cid)
+                deduped_relations.append(item)
+        possible_relations = deduped_relations
+
+        # no_action 去重（仅影响日志，不影响逻辑）
+        _deduped_no_action_ids = set()
+        deduped_no_action = []
+        for item in no_action:
+            cid = item.get("family_id") if isinstance(item, dict) else item
+            if cid not in _deduped_no_action_ids:
+                _deduped_no_action_ids.add(cid)
+                deduped_no_action.append(item)
+        no_action = deduped_no_action
         
         # 阶段2：精细化判断（对筛选出的候选使用完整content进行精确判断）
         # 收集需要精细化判断的候选（只处理merge和relation，no_action不处理）
