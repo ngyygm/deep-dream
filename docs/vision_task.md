@@ -4,6 +4,10 @@
 
 ## 2026-04-10
 
+### [已完成] feat: Phase 4.1 — MCP concept_* 统一工具
+- commit: 8e72559
+- 新增7个MCP工具: search_concepts, list_concepts, get_concept, get_concept_neighbors, get_concept_provenance, traverse_concepts, get_concept_mentions
+
 ### [已完成] feat: Phase 3-4 — Neo4j统一查询 + API端点
 - commit: e42005f
 - Neo4j: 9个统一概念查询方法（get_concept_by_family_id, search_concepts_by_bm25, get_concept_neighbors 等）
@@ -90,7 +94,7 @@
 - [x] ~~**Phase 2: concepts统一表 + 双写**: 新增concepts表 + concept_fts + 双写适配~~ (6abcc1b)
 - [x] ~~**Phase 3: 统一查询接口**: get_concept_* / search_concepts_* / traverse_concepts~~ (a404b43, e42005f)
 - [x] ~~**Phase 4: API统一**: /concepts/* 端点 + Neo4j统一查询~~ (e42005f)
-- [ ] **Phase 4.1: MCP工具**: 新增 concept_* MCP 工具映射到统一 API
+- [x] ~~**Phase 4.1: MCP工具**: 7个 concept_* MCP 工具~~ (8e72559)
 
 ### P3 代码质量
 - [x] ~~**Schema初始化去重**: _init_database与_ensure_tables重复~~ (fffb8dd)
