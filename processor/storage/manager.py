@@ -2127,16 +2127,16 @@ class StorageManager:
                 episode_id=row[7], source_document=row[8] if len(row) > 8 else '',
             ))
 
-        # 按 canonical pair 分组
+        # 按 canonical pair 分组 — O(R) 用 reverse lookup dict 替代 O(R*F) 嵌套循环
+        aid_to_fid: Dict[str, str] = {}
+        for fid, aids in fid_to_aids.items():
+            for aid in aids:
+                aid_to_fid[aid] = fid
+
         canonical_rels: Dict[Tuple[str, str], List[Relation]] = {cp: [] for cp in canonical_pairs}
         for rel in all_rels:
-            e1_fid = None
-            e2_fid = None
-            for fid, aids in fid_to_aids.items():
-                if rel.entity1_absolute_id in aids:
-                    e1_fid = fid
-                if rel.entity2_absolute_id in aids:
-                    e2_fid = fid
+            e1_fid = aid_to_fid.get(rel.entity1_absolute_id)
+            e2_fid = aid_to_fid.get(rel.entity2_absolute_id)
             if e1_fid and e2_fid:
                 pair = tuple(sorted((e1_fid, e2_fid)))
                 if pair in canonical_rels:
@@ -2375,47 +2375,53 @@ class StorageManager:
         family_id = self.resolve_family_id(family_id)
         if not family_id:
             return []
-        # 先获取该实体的所有版本的absolute_id
-        versions = self.get_entity_versions(family_id)
-        if not versions:
+        # 轻量查询：只取 id 和 processed_time，避免加载 content/embedding BLOB
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id, processed_time FROM entities WHERE family_id = ? ORDER BY processed_time",
+            (family_id,),
+        )
+        version_rows = cursor.fetchall()
+        if not version_rows:
             return []
-        
+
         # 如果指定了max_version_absolute_id，只取到该版本为止的所有版本
         if max_version_absolute_id:
             # 按时间排序，找到max_version_absolute_id对应的版本
-            versions_sorted = sorted(
-                versions,
-                key=lambda v: self._normalize_datetime_for_compare(v.processed_time),
-            )
             max_version = None
-            for v in versions_sorted:
-                if v.absolute_id == max_version_absolute_id:
-                    max_version = v
+            for vid, pt in version_rows:
+                if vid == max_version_absolute_id:
+                    max_version = (vid, pt)
                     break
-            
+
             if max_version:
-                t_max = self._normalize_datetime_for_compare(max_version.processed_time)
+                t_max = self._normalize_datetime_for_compare(
+                    self._safe_parse_datetime(max_version[1])
+                )
                 # 只取到该版本（包含）为止的所有版本
                 entity_absolute_ids = [
-                    v.absolute_id for v in versions_sorted
-                    if self._normalize_datetime_for_compare(v.processed_time) <= t_max
+                    vid for vid, pt in version_rows
+                    if self._normalize_datetime_for_compare(
+                        self._safe_parse_datetime(pt)
+                    ) <= t_max
                 ]
                 # 同时设置time_point为该版本的时间点
                 if not time_point:
-                    time_point = max_version.processed_time
+                    time_point = self._safe_parse_datetime(max_version[1])
                 else:
                     # 如果已经设置了time_point，取较小值（避免 naive/aware 无法比较）
                     nt = self._normalize_datetime_for_compare(time_point)
                     if nt <= t_max:
                         pass  # 保持 time_point
                     else:
-                        time_point = max_version.processed_time
+                        time_point = self._safe_parse_datetime(max_version[1])
             else:
                 # 如果找不到指定的版本，使用所有版本
-                entity_absolute_ids = [v.absolute_id for v in versions]
+                entity_absolute_ids = [vid for vid, _ in version_rows]
         else:
             # 收集所有版本的absolute_id
-            entity_absolute_ids = [v.absolute_id for v in versions]
+            entity_absolute_ids = [vid for vid, _ in version_rows]
         
         conn = self._get_conn()
         cursor = conn.cursor()
@@ -3913,11 +3919,19 @@ class StorageManager:
                     episode_id=row[7], source_document=row[8] if len(row) > 8 else '',
                 ))
 
-            # 分配关系到对应的 family_id
+            # 分配关系到对应的 family_id — O(R) 用 reverse lookup 替代 O(R*F)
+            aid_to_fid: Dict[str, str] = {}
+            for fid, aids in fid_to_aids.items():
+                for aid in aids:
+                    aid_to_fid[aid] = fid
+
             for rel in all_rels:
-                for fid, aids in fid_to_aids.items():
-                    if rel.entity1_absolute_id in aids or rel.entity2_absolute_id in aids:
-                        relations_map[fid].append(rel)
+                fid1 = aid_to_fid.get(rel.entity1_absolute_id)
+                fid2 = aid_to_fid.get(rel.entity2_absolute_id)
+                if fid1:
+                    relations_map[fid1].append(rel)
+                if fid2 and fid2 != fid1:
+                    relations_map[fid2].append(rel)
 
         # Step 5: 组装结果
         results = []
