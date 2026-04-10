@@ -208,6 +208,17 @@ class GraphWebServer:
                 # 记录每个实体所在的跳数层级（用于颜色区分）
                 family_id_to_hop_level = {}
                 
+                # 批量预取版本计数（非focus实体），避免循环中逐条查询
+                non_focus_fids = [
+                    e.family_id for e in entities
+                    if hasattr(e, 'family_id') and e.family_id
+                    and not (focus_family_id and focus_family_id == e.family_id and focus_absolute_id)
+                ]
+                try:
+                    batch_version_counts = self.storage.get_entity_version_counts(non_focus_fids) or {}
+                except Exception:
+                    batch_version_counts = {}
+
                 # 构建初始节点数据
                 nodes = []
                 for entity in entities:
@@ -235,12 +246,8 @@ class GraphWebServer:
                                 versions = []
                                 version_count = 1
                         else:
-                            # 非focus实体只需计数，避免加载完整版本列表
-                            try:
-                                version_count = self.storage.get_entity_version_count(entity.family_id)
-                            except Exception as _vc_err:
-                                print(f"获取版本计数失败: {_vc_err}")
-                                version_count = 1
+                            # 非focus实体：使用批量预取的计数
+                            version_count = batch_version_counts.get(entity.family_id, 1) or 1
                         
                         # 在focus模式下，显示当前版本索引（如 "实体名 (3/5版本)"）
                         # 否则显示总版本数（如 "实体名 (5版本)"）
@@ -661,6 +668,13 @@ class GraphWebServer:
                                     'arrows': ''
                                 })
                 
+                # 批量预取关联实体的版本计数
+                related_fids_to_prefetch = [fid for fid in all_related_family_ids if fid not in [n['id'] for n in nodes]]
+                try:
+                    related_version_counts = self.storage.get_entity_version_counts(related_fids_to_prefetch) or {}
+                except Exception:
+                    related_version_counts = {}
+
                 # 添加关联实体节点（如果还没有添加）
                 for fid in all_related_family_ids:
                     if fid not in [node['id'] for node in nodes]:
@@ -685,7 +699,7 @@ class GraphWebServer:
                                 versions = self.storage.get_entity_versions(related_entity.family_id)
                                 version_count = len(versions)
                             else:
-                                version_count = self.storage.get_entity_version_count(related_entity.family_id)
+                                version_count = related_version_counts.get(related_entity.family_id, 1) or 1
 
                             # 在focus模式下，显示该实体版本的索引
                             if focus_family_id and absolute_id:
@@ -986,6 +1000,12 @@ class GraphWebServer:
                             if existing_entity and entity.event_time > existing_entity.event_time:
                                 family_id_to_latest_absolute_id[fid] = entity_abs_id
 
+                # 批量预取版本计数
+                try:
+                    search_version_counts = self.storage.get_entity_version_counts(list(family_id_to_latest_absolute_id.keys())) or {}
+                except Exception:
+                    search_version_counts = {}
+
                 # 为每个唯一的family_id创建一个节点
                 for fid, entity_abs_id in family_id_to_latest_absolute_id.items():
                     entity = abs_to_entity.get(entity_abs_id) or self.storage.get_entity_by_absolute_id(entity_abs_id)
@@ -993,8 +1013,8 @@ class GraphWebServer:
                         # 判断是否为匹配的实体
                         is_matched = entity.family_id in matched_family_ids
                         
-                        # 获取版本数量
-                        version_count = self.storage.get_entity_version_count(entity.family_id)
+                        # 获取版本数量（使用批量预取结果）
+                        version_count = search_version_counts.get(entity.family_id, 1) or 1
                         
                         # 在标签中显示版本数量
                         label = f"{entity.name} ({version_count}版本)" if version_count > 1 else entity.name

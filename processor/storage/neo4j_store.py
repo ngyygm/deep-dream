@@ -1419,11 +1419,12 @@ class Neo4jStorageManager:
         if not family_ids:
             return []
 
-        # 去重 + 解析 canonical IDs
+        # 去重 + 解析 canonical IDs（批量解析）
+        resolved_map = self.resolve_family_ids(family_ids)
         canonical_map: Dict[str, str] = {}  # original -> canonical
         canonical_set: List[str] = []
         for fid in family_ids:
-            resolved = self.resolve_family_id(fid)
+            resolved = resolved_map.get(fid, fid)
             if resolved and resolved not in canonical_map.values():
                 canonical_map[fid] = resolved
                 canonical_set.append(resolved)
@@ -1956,12 +1957,18 @@ class Neo4jStorageManager:
                 """,
                 names=names,
             )
-            output = {}
+            # 收集所有唯一的 family_ids
+            raw_output = {}
+            unique_fids = set()
             for record in result:
                 name = record["name"]
-                if name not in output:
-                    output[name] = self.resolve_family_id(record["family_id"])
-            return output
+                fid = record["family_id"]
+                if name not in raw_output:
+                    raw_output[name] = fid
+                    unique_fids.add(fid)
+            # 批量解析
+            resolved_map = self.resolve_family_ids(list(unique_fids)) if unique_fids else {}
+            return {name: resolved_map.get(fid, fid) for name, fid in raw_output.items()}
 
     def find_entity_by_name_prefix(self, prefix: str, limit: int = 5) -> list:
         """查找名称以 prefix 开头的实体（处理消歧括号场景）。
