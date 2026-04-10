@@ -997,6 +997,43 @@ _t("recent_activity", "Get a snapshot of recent graph activity: newest entities,
 })
 
 
+# ── Concepts — 统一概念查询 (7) ──────────────────────────────────────────
+
+_t("search_concepts", "Unified concept search across all roles (entity, relation, observation). Searches the unified concept space using BM25 text matching. Optionally filter by role. Returns concepts with their role, family_id, and content.", {
+    "query": {"type": "string", "description": "Search query text"},
+    "role": {"type": "string", "description": "Optional role filter: 'entity', 'relation', or 'observation'"},
+    "limit": {"type": "integer", "description": "Max results (default 20, max 100)"},
+}, ["query"])
+
+_t("list_concepts", "List concepts with pagination and optional role filter. Returns concepts from the unified concept table across all roles.", {
+    "role": {"type": "string", "description": "Optional role filter: 'entity', 'relation', or 'observation'"},
+    "limit": {"type": "integer", "description": "Max results per page (default 50, max 100)"},
+    "offset": {"type": "integer", "description": "Pagination offset (default 0)"},
+})
+
+_t("get_concept", "Get a concept by family_id. Works for any role — entity, relation, or observation. Returns the latest version of the concept.", {
+    "family_id": {"type": "string", "description": "Concept family ID (e.g. 'ent_abc123', 'rel_abc123', or episode ID)"},
+}, ["family_id"])
+
+_t("get_concept_neighbors", "Get neighbors of a concept, regardless of its role. For entities: returns connected relations. For relations: returns connected entities. For observations: returns mentioned concepts.", {
+    "family_id": {"type": "string", "description": "Concept family ID"},
+    "max_depth": {"type": "integer", "description": "Neighbor depth (default 1, max 3)"},
+}, ["family_id"])
+
+_t("get_concept_provenance", "Trace a concept back to its source observations. Returns all episodes (observations) that mention this concept, enabling full provenance tracking.", {
+    "family_id": {"type": "string", "description": "Concept family ID"},
+}, ["family_id"])
+
+_t("traverse_concepts", "BFS traverse the concept graph starting from one or more seed concepts. Discovers connected concepts across all roles in a unified graph traversal.", {
+    "start_family_ids": {"type": "array", "items": {"type": "string"}, "description": "List of starting concept family IDs"},
+    "max_depth": {"type": "integer", "description": "Max traversal depth (default 2, max 5)"},
+}, ["start_family_ids"])
+
+_t("get_concept_mentions", "Get all episodes that mention a given concept. Alias for get_concept_provenance but with a clearer name for the 'which episodes mention this concept' use case.", {
+    "family_id": {"type": "string", "description": "Concept family ID"},
+}, ["family_id"])
+
+
 # ── Tool dispatch ─────────────────────────────────────────────────────────
 
 _TOOL_MAP = {}
@@ -2725,6 +2762,112 @@ def recent_activity(args):
         r_count = len(relations) if isinstance(relations, list) else 0
         if e_count or r_count:
             hint = f"\n→ Recent: {e_count} new entities, {r_count} new relations. Use entity_profile to explore any item."
+            _hint(data, hint)
+    return _result(data, code)
+
+
+# ── Concepts — 统一概念查询处理函数 ──────────────────────────────────────
+
+@_register
+def search_concepts(args):
+    query = _req(args, "query")
+    body = {"query": query}
+    if _arg(args, "role"):
+        body["role"] = args["role"]
+    if _arg(args, "limit"):
+        body["limit"] = int(args["limit"])
+    data, code = _post("/api/v1/concepts/search", body)
+    if code < 400 and isinstance(data, dict):
+        inner = _inner(data)
+        concepts = inner.get("concepts", [])
+        if isinstance(concepts, list) and len(concepts) > 0:
+            roles = {}
+            for c in concepts:
+                r = c.get("role", "unknown")
+                roles[r] = roles.get(r, 0) + 1
+            parts = [f"{v} {k}(s)" for k, v in sorted(roles.items())]
+            hint = f"\n→ Found {len(concepts)} concepts: {', '.join(parts)}. Use get_concept to explore any item."
+            _hint(data, hint)
+    return _result(data, code)
+
+
+@_register
+def list_concepts(args):
+    qp = {}
+    if _arg(args, "role"):
+        qp["role"] = args["role"]
+    if _arg(args, "limit"):
+        qp["limit"] = str(args["limit"])
+    if _arg(args, "offset"):
+        qp["offset"] = str(args["offset"])
+    data, code = _get("/api/v1/concepts", **qp)
+    return _result(data, code)
+
+
+@_register
+def get_concept(args):
+    family_id = _req(args, "family_id")
+    data, code = _get(f"/api/v1/concepts/{family_id}")
+    if code < 400 and isinstance(data, dict):
+        inner = _inner(data)
+        role = inner.get("role", "unknown")
+        name = inner.get("name", "")
+        hint = f"\n→ Concept (role={role}"
+        if name:
+            hint += f", name={name}"
+        hint += f"). Use get_concept_neighbors(family_id='{family_id}') to explore connections."
+        _hint(data, hint)
+    return _result(data, code)
+
+
+@_register
+def get_concept_neighbors(args):
+    family_id = _req(args, "family_id")
+    max_depth = args.get("max_depth", 1)
+    data, code = _get(f"/api/v1/concepts/{family_id}/neighbors", max_depth=str(max_depth))
+    if code < 400 and isinstance(data, dict):
+        inner = _inner(data)
+        neighbors = inner.get("neighbors", [])
+        if isinstance(neighbors, list) and len(neighbors) > 0:
+            hint = f"\n→ {len(neighbors)} neighbors found. Use get_concept to explore any neighbor."
+            _hint(data, hint)
+    return _result(data, code)
+
+
+@_register
+def get_concept_provenance(args):
+    family_id = _req(args, "family_id")
+    data, code = _get(f"/api/v1/concepts/{family_id}/provenance")
+    if code < 400 and isinstance(data, dict):
+        inner = _inner(data)
+        prov = inner.get("provenance", [])
+        if isinstance(prov, list) and len(prov) > 0:
+            hint = f"\n→ {len(prov)} source observations found."
+            _hint(data, hint)
+    return _result(data, code)
+
+
+@_register
+def traverse_concepts(args):
+    start_ids = _req(args, "start_family_ids")
+    if not isinstance(start_ids, list) or not start_ids:
+        raise ValueError("start_family_ids must be a non-empty list of concept family IDs")
+    body = {"start_family_ids": start_ids}
+    if _arg(args, "max_depth"):
+        body["max_depth"] = int(args["max_depth"])
+    data, code = _post("/api/v1/concepts/traverse", body)
+    return _result(data, code)
+
+
+@_register
+def get_concept_mentions(args):
+    family_id = _req(args, "family_id")
+    data, code = _get(f"/api/v1/concepts/{family_id}/mentions")
+    if code < 400 and isinstance(data, dict):
+        inner = _inner(data)
+        mentions = inner.get("mentions", [])
+        if isinstance(mentions, list) and len(mentions) > 0:
+            hint = f"\n→ Mentioned in {len(mentions)} episodes."
             _hint(data, hint)
     return _result(data, code)
 
