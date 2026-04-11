@@ -1125,6 +1125,14 @@ class RelationStoreMixin:
                     ORDER BY processed_time DESC LIMIT 1
                 )
             """, (confidence, family_id))
+            # Sync to concepts table
+            cursor.execute(
+                "SELECT id FROM relations WHERE family_id = ? ORDER BY processed_time DESC LIMIT 1",
+                (family_id,),
+            )
+            row = cursor.fetchone()
+            if row:
+                self._sync_concept_relation_fields(row[0], {"confidence": confidence}, cursor)
             conn.commit()
 
     # ------------------------------------------------------------------
@@ -1341,6 +1349,8 @@ class RelationStoreMixin:
                     f"UPDATE relations SET {field} = ? WHERE id = ?",
                     (value, absolute_id),
                 )
+            # Sync to concepts table
+            self._sync_concept_relation_fields(absolute_id, updates, cursor)
             conn.commit()
 
         return self.get_relation_by_absolute_id(absolute_id)

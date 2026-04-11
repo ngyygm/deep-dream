@@ -16,7 +16,7 @@ import json
 import logging
 import time
 from datetime import datetime
-from typing import Optional, List, Dict
+from typing import Any, Optional, List, Dict
 
 import numpy as np
 
@@ -250,6 +250,75 @@ class ConceptStoreMixin:
             cursor.execute("DELETE FROM concepts WHERE family_id = ?", (family_id,))
         except Exception as exc:
             logger.debug("concept delete by family failed: %s", exc)
+
+    def _sync_concept_entity_fields(self, absolute_id: str, updates: Dict[str, Any], cursor):
+        """Sync updated entity fields to the concepts table (called within existing write transaction).
+
+        Args:
+            absolute_id: Entity absolute_id (maps to concepts.id)
+            updates: Dict of field_name -> new_value for fields that changed
+        """
+        if not updates:
+            return
+        # Map entity field names to concept column names
+        concept_fields = {k: v for k, v in updates.items()
+                         if k in {'name', 'content', 'summary', 'attributes', 'confidence'}}
+        if not concept_fields:
+            return
+        try:
+            set_clause = ", ".join(f"{k} = ?" for k in concept_fields)
+            values = list(concept_fields.values()) + [absolute_id]
+            cursor.execute(
+                f"UPDATE concepts SET {set_clause} WHERE id = ?",
+                values,
+            )
+            # Also update concept_fts if name or content changed
+            if 'name' in concept_fields or 'content' in concept_fields:
+                try:
+                    cursor.execute("SELECT rowid FROM concepts WHERE id = ?", (absolute_id,))
+                    _row = cursor.fetchone()
+                    if _row:
+                        name_val = concept_fields.get('name', '')
+                        content_val = concept_fields.get('content', '')
+                        if name_val or content_val:
+                            cursor.execute(
+                                "INSERT OR REPLACE INTO concept_fts(rowid, name, content) VALUES (?, ?, ?)",
+                                (_row[0], name_val, content_val),
+                            )
+                except Exception as exc:
+                    logger.debug("concept_fts sync failed: %s", exc)
+        except Exception as exc:
+            logger.debug("concept entity sync failed: %s", exc)
+
+    def _sync_concept_relation_fields(self, absolute_id: str, updates: Dict[str, Any], cursor):
+        """Sync updated relation fields to the concepts table (called within existing write transaction)."""
+        if not updates:
+            return
+        concept_fields = {k: v for k, v in updates.items()
+                         if k in {'content', 'summary', 'attributes', 'confidence'}}
+        if not concept_fields:
+            return
+        try:
+            set_clause = ", ".join(f"{k} = ?" for k in concept_fields)
+            values = list(concept_fields.values()) + [absolute_id]
+            cursor.execute(
+                f"UPDATE concepts SET {set_clause} WHERE id = ?",
+                values,
+            )
+            # Also update concept_fts if content changed
+            if 'content' in concept_fields:
+                try:
+                    cursor.execute("SELECT rowid FROM concepts WHERE id = ?", (absolute_id,))
+                    _row = cursor.fetchone()
+                    if _row:
+                        cursor.execute(
+                            "INSERT OR REPLACE INTO concept_fts(rowid, name, content) VALUES (?, '', ?)",
+                            (_row[0], concept_fields['content']),
+                        )
+                except Exception as exc:
+                    logger.debug("concept_fts relation sync failed: %s", exc)
+        except Exception as exc:
+            logger.debug("concept relation sync failed: %s", exc)
 
     def _get_latest_concepts_with_embeddings(self, role: Optional[str] = None) -> List[tuple]:
         """获取概念的最新版本及其 embedding（带短 TTL 缓存）。

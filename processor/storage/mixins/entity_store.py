@@ -968,6 +968,14 @@ class EntityStoreMixin:
                     ORDER BY processed_time DESC LIMIT 1
                 )
             """, (summary, family_id))
+            # Sync to concepts
+            cursor.execute(
+                "SELECT id FROM entities WHERE family_id = ? ORDER BY processed_time DESC LIMIT 1",
+                (family_id,),
+            )
+            row = cursor.fetchone()
+            if row:
+                self._sync_concept_entity_fields(row[0], {"summary": summary}, cursor)
             conn.commit()
 
     def update_entity_attributes(self, family_id: str, attributes: str):
@@ -983,6 +991,13 @@ class EntityStoreMixin:
                     ORDER BY processed_time DESC LIMIT 1
                 )
             """, (attributes, family_id))
+            cursor.execute(
+                "SELECT id FROM entities WHERE family_id = ? ORDER BY processed_time DESC LIMIT 1",
+                (family_id,),
+            )
+            row = cursor.fetchone()
+            if row:
+                self._sync_concept_entity_fields(row[0], {"attributes": attributes}, cursor)
             conn.commit()
 
     def update_entity_confidence(self, family_id: str, confidence: float):
@@ -1005,6 +1020,13 @@ class EntityStoreMixin:
                     ORDER BY processed_time DESC LIMIT 1
                 )
             """, (confidence, family_id))
+            cursor.execute(
+                "SELECT id FROM entities WHERE family_id = ? ORDER BY processed_time DESC LIMIT 1",
+                (family_id,),
+            )
+            row = cursor.fetchone()
+            if row:
+                self._sync_concept_entity_fields(row[0], {"confidence": confidence}, cursor)
             conn.commit()
 
     def adjust_confidence_on_corroboration(self, family_id: str, source_type: str = "entity",
@@ -1025,24 +1047,23 @@ class EntityStoreMixin:
             conn = self._get_conn()
             cursor = conn.cursor()
             cursor.execute(f"""
-                SELECT confidence FROM {table}
+                SELECT id, confidence FROM {table}
                 WHERE family_id = ?
                 ORDER BY processed_time DESC LIMIT 1
             """, (family_id,))
             row = cursor.fetchone()
-            if not row or row[0] is None:
+            if not row or row[1] is None:
                 return
-            current = row[0]
+            abs_id, current = row[0], row[1]
             delta = 0.025 if is_dream else 0.05
             new_conf = min(1.0, current + delta)
             cursor.execute(f"""
                 UPDATE {table} SET confidence = ?
-                WHERE id = (
-                    SELECT id FROM {table}
-                    WHERE family_id = ?
-                    ORDER BY processed_time DESC LIMIT 1
-                )
-            """, (new_conf, family_id))
+                WHERE id = ?
+            """, (new_conf, abs_id))
+            # Sync to concepts table
+            sync_fn = self._sync_concept_entity_fields if source_type == "entity" else self._sync_concept_relation_fields
+            sync_fn(abs_id, {"confidence": new_conf}, cursor)
             conn.commit()
 
     def adjust_confidence_on_contradiction(self, family_id: str, source_type: str = "entity"):
@@ -1055,23 +1076,22 @@ class EntityStoreMixin:
             conn = self._get_conn()
             cursor = conn.cursor()
             cursor.execute(f"""
-                SELECT confidence FROM {table}
+                SELECT id, confidence FROM {table}
                 WHERE family_id = ?
                 ORDER BY processed_time DESC LIMIT 1
             """, (family_id,))
             row = cursor.fetchone()
-            if not row or row[0] is None:
+            if not row or row[1] is None:
                 return
-            current = row[0]
+            abs_id, current = row[0], row[1]
             new_conf = max(0.0, current - 0.1)
             cursor.execute(f"""
                 UPDATE {table} SET confidence = ?
-                WHERE id = (
-                    SELECT id FROM {table}
-                    WHERE family_id = ?
-                    ORDER BY processed_time DESC LIMIT 1
-                )
-            """, (new_conf, family_id))
+                WHERE id = ?
+            """, (new_conf, abs_id))
+            # Sync to concepts table
+            sync_fn = self._sync_concept_entity_fields if source_type == "entity" else self._sync_concept_relation_fields
+            sync_fn(abs_id, {"confidence": new_conf}, cursor)
             conn.commit()
 
     # ------------------------------------------------------------------
@@ -1093,6 +1113,8 @@ class EntityStoreMixin:
                     f"UPDATE entities SET {field} = ? WHERE id = ?",
                     (value, absolute_id),
                 )
+            # Sync to concepts table
+            self._sync_concept_entity_fields(absolute_id, updates, cursor)
             conn.commit()
 
         return self.get_entity_by_absolute_id(absolute_id)
