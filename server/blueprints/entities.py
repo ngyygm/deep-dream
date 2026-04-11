@@ -210,11 +210,12 @@ def find_entities_search():
             )
         elif search_mode == "hybrid":
             searcher = HybridSearcher(processor.storage)
-            entities = searcher.search_entities(
+            hybrid_ents = searcher.search_entities(
                 query_text=query_name,
                 top_k=max_results,
                 semantic_threshold=threshold,
             )
+            entities = [e for e, _ in hybrid_ents]
         else:
             entities = processor.storage.search_entities_by_similarity(
                 query_name=query_name,

@@ -84,11 +84,13 @@ def find_unified():
                 )
             elif search_mode == "hybrid":
                 searcher = HybridSearcher(storage)
-                matched_entities = searcher.search_entities(
+                hybrid_entities = searcher.search_entities(
                     query_text=query,
                     top_k=max_entities,
                     semantic_threshold=similarity_threshold,
                 )
+                # HybridSearcher returns List[Tuple[Entity, float]], unpack
+                matched_entities = [e for e, _ in hybrid_entities]
             else:
                 matched_entities = storage.search_entities_by_similarity(
                     query_name=query,
@@ -107,11 +109,13 @@ def find_unified():
                 )
             elif search_mode == "hybrid":
                 searcher = HybridSearcher(storage)
-                matched_relations = searcher.search_relations(
+                hybrid_relations = searcher.search_relations(
                     query_text=query,
                     top_k=max_relations,
                     semantic_threshold=similarity_threshold,
                 )
+                # HybridSearcher returns List[Tuple[Relation, float]], unpack
+                matched_relations = [r for r, _ in hybrid_relations]
             else:
                 matched_relations = storage.search_relations_by_similarity(
                     query_text=query,
@@ -288,11 +292,12 @@ def find_relations_search():
             )
         elif search_mode == "hybrid":
             searcher = HybridSearcher(processor.storage)
-            relations = searcher.search_relations(
+            hybrid_rels = searcher.search_relations(
                 query_text=query_text,
                 top_k=max_results,
                 semantic_threshold=threshold,
             )
+            relations = [r for r, _ in hybrid_rels]
         else:
             relations = processor.storage.search_relations_by_similarity(
                 query_text=query_text,
