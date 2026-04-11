@@ -41,6 +41,16 @@ class EntityStoreMixin:
     # Helper
     # ------------------------------------------------------------------
 
+    _VALID_TABLES = frozenset({"entities", "relations"})
+
+    @classmethod
+    def _validate_table_name(cls, source_type: str) -> str:
+        """Allowlist-validated table name to prevent SQL injection."""
+        table = "entities" if source_type == "entity" else "relations"
+        if table not in cls._VALID_TABLES:
+            raise ValueError(f"Invalid source_type: {source_type}")
+        return table
+
     def _row_to_entity(self, row) -> Entity:
         """Convert a SELECT row tuple to an Entity object using _ENTITY_SELECT column order."""
         return Entity(
@@ -877,6 +887,22 @@ class EntityStoreMixin:
                     [(sid, target_family_id, now_iso) for sid in canonical_source_ids],
                 )
 
+                # 6. Count relations now reachable through the merged target family
+                cursor.execute(
+                    "SELECT id FROM entities WHERE family_id = ?",
+                    (target_family_id,),
+                )
+                all_target_abs = [row[0] for row in cursor.fetchall()]
+                if all_target_abs:
+                    ph = ",".join("?" * len(all_target_abs))
+                    cursor.execute(
+                        f"SELECT COUNT(DISTINCT id) FROM relations "
+                        f"WHERE entity1_absolute_id IN ({ph}) "
+                        f"   OR entity2_absolute_id IN ({ph})",
+                        (*all_target_abs, *all_target_abs),
+                    )
+                    relations_updated = cursor.fetchone()[0]
+
                 conn.commit()
 
             except Exception as e:
@@ -985,7 +1011,7 @@ class EntityStoreMixin:
             source_type: "entity" 或 "relation"，决定查询哪个表
             is_dream: 是否来自 Dream 产物，Dream 权重减半
         """
-        table = "entities" if source_type == "entity" else "relations"
+        table = self._validate_table_name(source_type)
         with self._write_lock:
             conn = self._get_conn()
             cursor = conn.cursor()
@@ -1015,7 +1041,7 @@ class EntityStoreMixin:
 
         - 每次矛盾 -0.1，下限 0.0
         """
-        table = "entities" if source_type == "entity" else "relations"
+        table = self._validate_table_name(source_type)
         with self._write_lock:
             conn = self._get_conn()
             cursor = conn.cursor()

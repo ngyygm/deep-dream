@@ -414,6 +414,8 @@ class StorageManager(EntityStoreMixin, RelationStoreMixin, EpisodeStoreMixin, Co
             vec_db_path = str(self.storage_path / "vectors.db")
             self._vector_store = VectorStore(vec_db_path, dim=dim)
             logger.info("VectorStore 初始化完成 (dim=%d, path=%s)", dim, vec_db_path)
+            # Backfill existing embeddings on first init
+            self._vector_store_backfill()
             return self._vector_store
         except Exception as e:
             logger.debug("VectorStore 初始化失败，回退暴力搜索: %s", e)
@@ -429,6 +431,38 @@ class StorageManager(EntityStoreMixin, RelationStoreMixin, EpisodeStoreMixin, Co
             vs.upsert("entity_vectors", absolute_id, emb_list)
         except Exception as e:
             logger.debug("_vector_store_upsert_entity failed: %s", e)
+
+    def _vector_store_backfill(self) -> int:
+        """Backfill VectorStore with existing embeddings from main DB.
+
+        Called once after VectorStore initialization. Returns count of items backfilled.
+        """
+        vs = self._vector_store
+        if vs is None:
+            return 0
+        count = 0
+        try:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            # Backfill entity embeddings
+            cursor.execute("SELECT absolute_id, embedding FROM entities WHERE embedding IS NOT NULL")
+            for abs_id, emb_blob in cursor.fetchall():
+                if emb_blob:
+                    emb_list = np.frombuffer(emb_blob, dtype=np.float32).tolist()
+                    vs.upsert("entity_vectors", abs_id, emb_list)
+                    count += 1
+            # Backfill relation embeddings
+            cursor.execute("SELECT absolute_id, embedding FROM relations WHERE embedding IS NOT NULL")
+            for abs_id, emb_blob in cursor.fetchall():
+                if emb_blob:
+                    emb_list = np.frombuffer(emb_blob, dtype=np.float32).tolist()
+                    vs.upsert("relation_vectors", abs_id, emb_list)
+                    count += 1
+            if count > 0:
+                logger.info("VectorStore backfill: %d embeddings indexed", count)
+        except Exception as e:
+            logger.debug("VectorStore backfill failed: %s", e)
+        return count
 
     def _vector_store_upsert_relation(self, absolute_id: str, embedding) -> None:
         """将关系 embedding 写入 VectorStore（非阻塞，失败静默）。"""
