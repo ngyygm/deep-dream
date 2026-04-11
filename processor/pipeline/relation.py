@@ -200,6 +200,20 @@ class RelationProcessor:
 
         if relations_to_persist:
             self.storage.bulk_save_relations(relations_to_persist)
+
+        # Dream 候选层佐证：remember 提取的关系与 dream 候选关系匹配时，自动佐证
+        corroborated_pairs = set()
+        for pair_key in relations_by_pair:
+            if pair_key in corroborated_pairs:
+                continue
+            corroborated_pairs.add(pair_key)
+            try:
+                self.storage.corroborate_dream_relation(
+                    pair_key[0], pair_key[1], corroboration_source="remember",
+                )
+            except Exception:
+                pass  # 佐证失败不阻断 pipeline
+
         return processed_relations
 
     def _process_one_relation_pair(self,

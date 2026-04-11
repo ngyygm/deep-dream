@@ -462,6 +462,16 @@ class DreamStoreMixin:
             source_doc = f"dream:{dream_cycle_id}" if dream_cycle_id else "dream"
             merged_content = f"{latest.content}\n[Dream update] {content}" if content != latest.content else latest.content
 
+            # Preserve existing attributes (tier, status, corroboration state)
+            try:
+                merged_attrs = json.loads(latest.attributes) if latest.attributes else {}
+            except (json.JSONDecodeError, TypeError):
+                merged_attrs = {}
+            # Track additional dream cycle
+            if dream_cycle_id:
+                merged_attrs.setdefault("additional_dream_cycles", [])
+                merged_attrs["additional_dream_cycles"].append(dream_cycle_id)
+
             relation = Relation(
                 absolute_id=record_id,
                 family_id=latest.family_id,
@@ -473,6 +483,7 @@ class DreamStoreMixin:
                 episode_id=episode_id or latest.episode_id or "",
                 source_document=source_doc,
                 confidence=new_confidence,
+                attributes=json.dumps(merged_attrs) if merged_attrs else None,
             )
             self.save_relation(relation)
             return {
@@ -548,8 +559,8 @@ class DreamStoreMixin:
             status_filter = " AND json_extract(attributes, '$.status') = ?"
             params.append(status)
 
-        # When status is specified, match any dream relation (tier may have changed)
-        tier_clause = "AND json_extract(attributes, '$.tier') = 'candidate'" if not status else "AND json_extract(attributes, '$.tier') IN ('candidate', 'verified', 'rejected')"
+        # Match all dream candidate layer relations (tier may have changed via promote/demote)
+        tier_clause = "AND json_extract(attributes, '$.tier') IN ('candidate', 'verified', 'rejected')"
 
         cursor.execute(f"""
             SELECT {self._RELATION_SELECT}
@@ -579,9 +590,8 @@ class DreamStoreMixin:
             status_filter = " AND json_extract(attributes, '$.status') = ?"
             params.append(status)
 
-        # When status is specified, match any dream relation with that status
-        # (tier may have changed from 'candidate' to 'verified'/'rejected')
-        tier_clause = "AND json_extract(attributes, '$.tier') = 'candidate'" if not status else "AND json_extract(attributes, '$.tier') IN ('candidate', 'verified', 'rejected')"
+        # Match all dream candidate layer relations (tier may have changed via promote/demote)
+        tier_clause = "AND json_extract(attributes, '$.tier') IN ('candidate', 'verified', 'rejected')"
 
         cursor.execute(f"""
             SELECT COUNT(DISTINCT family_id)
