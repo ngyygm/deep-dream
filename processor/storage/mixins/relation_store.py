@@ -141,6 +141,8 @@ class RelationStoreMixin:
                 self._write_concept_from_relation(relation, cursor)
                 # 单次 commit 包含所有写操作
                 conn.commit()
+                # 同步到 VectorStore（非阻塞，失败静默）
+                self._vector_store_upsert_relation(relation.absolute_id, embedding_blob)
             except Exception:
                 conn.rollback()
                 raise
@@ -222,13 +224,13 @@ class RelationStoreMixin:
                         logger.debug("bulk relation invalid_at update failed: %s", exc)
                     self._write_concept_from_relation(relation, cursor)
                 conn.commit()
+                # 同步到 VectorStore（非阻塞，失败静默）
+                for relation in relations:
+                    if relation.embedding:
+                        self._vector_store_upsert_relation(relation.absolute_id, relation.embedding)
             except Exception:
                 conn.rollback()
                 raise
-
-    # ------------------------------------------------------------------
-    # Read operations — single relation lookups
-    # ------------------------------------------------------------------
 
     def get_relation_by_absolute_id(self, relation_absolute_id: str) -> Optional[Relation]:
         """根据关系行的主键 id（绝对ID）获取单条关系"""

@@ -751,13 +751,10 @@ def evolve_entity_summary(family_id: str):
         versions = processor.storage.get_entity_versions(family_id)
         old_version = versions[1] if len(versions) > 1 else None
 
-        loop = asyncio.new_event_loop()
-        try:
-            summary = loop.run_until_complete(
-                processor.llm_client.evolve_entity_summary(entity, old_version)
-            )
-        finally:
-            loop.close()
+        from server.blueprints.helpers import run_async
+        summary = run_async(
+            processor.llm_client.evolve_entity_summary(entity, old_version)
+        )
 
         processor.storage.update_entity_summary(family_id, summary)
         return ok({"family_id": family_id, "summary": summary})
@@ -806,13 +803,10 @@ def get_entity_contradictions(family_id: str):
         if len(versions) < 2:
             return ok([])
 
-        loop = asyncio.new_event_loop()
-        try:
-            contradictions = loop.run_until_complete(
-                processor.llm_client.detect_contradictions(family_id, versions)
-            )
-        finally:
-            loop.close()
+        from server.blueprints.helpers import run_async
+        contradictions = run_async(
+            processor.llm_client.detect_contradictions(family_id, versions)
+        )
 
         return ok(contradictions)
     except Exception as e:
@@ -828,13 +822,10 @@ def resolve_entity_contradiction(family_id: str):
             return err("contradiction 为必填字段", 400)
 
         processor = _get_processor()
-        loop = asyncio.new_event_loop()
-        try:
-            resolution = loop.run_until_complete(
-                processor.llm_client.resolve_contradiction(contradiction)
-            )
-        finally:
-            loop.close()
+        from server.blueprints.helpers import run_async
+        resolution = run_async(
+            processor.llm_client.resolve_contradiction(contradiction)
+        )
 
         return ok(resolution)
     except Exception as e:

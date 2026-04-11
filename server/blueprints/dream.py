@@ -37,12 +37,13 @@ def _call_llm_with_backoff(
     prompt: str,
     timeout: int = 60,
     max_waits: int = 5,
-    backoff_base_seconds: int = 3,
+    backoff_base_seconds: int = 2,
 ) -> str:
     """
-    调用 LLM（指数退避重试）。
-    等待序列：3, 9, 27, 81, 243 秒（最多等待 max_waits 次）。
+    调用 LLM（指数退避重试 + 抖动）。
+    等待序列：2, 4, 8, 16, 32 秒（加随机抖动 ±25%）。
     """
+    import random
     last_error: Optional[str] = None
     max_attempts = max_waits + 1
     for attempt in range(1, max_attempts + 1):
@@ -60,9 +61,10 @@ def _call_llm_with_backoff(
             last_error = str(e)
 
         if attempt <= max_waits:
-            wait_seconds = backoff_base_seconds ** attempt
-            print(f"[LLM] 访问失败，第 {attempt} 次重试前等待 {wait_seconds}s；错误: {last_error}")
-            time.sleep(wait_seconds)
+            wait_seconds = min(backoff_base_seconds ** attempt, 32)
+            jitter = wait_seconds * (0.75 + random.random() * 0.5)
+            print(f"[LLM] 访问失败，第 {attempt} 次重试前等待 {jitter:.1f}s；错误: {last_error}")
+            time.sleep(jitter)
 
     raise RuntimeError(f"重试 {max_attempts} 次仍失败: {last_error or '未知错误'}")
 
@@ -308,14 +310,10 @@ def agent_ask():
             return err("question 为必填", 400)
 
         processor = _get_processor()
-        import asyncio
-        loop = asyncio.new_event_loop()
-        try:
-            result = loop.run_until_complete(
-                processor.llm_client.agent_meta_query(question, request.graph_id or "default")
-            )
-        finally:
-            loop.close()
+        from server.blueprints.helpers import run_async
+        result = run_async(
+            processor.llm_client.agent_meta_query(question, request.graph_id or "default")
+        )
 
         # 根据 query_plan 执行实际搜索
         intent = result.get("query_plan", {})
@@ -390,16 +388,12 @@ def agent_ask_stream():
         _graph_id = request.graph_id or "default"
 
         def _run():
-            import asyncio
             from server.sse import sse_event
+            from server.blueprints.helpers import run_async
             try:
-                loop = asyncio.new_event_loop()
-                try:
-                    result = loop.run_until_complete(
-                        processor.llm_client.agent_meta_query(question, _graph_id)
-                    )
-                finally:
-                    loop.close()
+                result = run_async(
+                    processor.llm_client.agent_meta_query(question, _graph_id)
+                )
 
                 intent = result.get("query_plan", {})
                 query_type = intent.get("query_type", "hybrid")
@@ -523,14 +517,10 @@ def explain_entity():
         if entity is None:
             return err(f"未找到实体: {family_id}", 404)
 
-        import asyncio
-        loop = asyncio.new_event_loop()
-        try:
-            explanation = loop.run_until_complete(
-                processor.llm_client.explain_entity(entity, aspect)
-            )
-        finally:
-            loop.close()
+        from server.blueprints.helpers import run_async
+        explanation = run_async(
+            processor.llm_client.explain_entity(entity, aspect)
+        )
 
         return ok({"family_id": family_id, "aspect": aspect, "explanation": explanation})
     except Exception as e:
@@ -546,14 +536,10 @@ def get_suggestions():
         entity_count = processor.storage.count_unique_entities()
         relation_count = processor.storage.count_unique_relations()
 
-        import asyncio
-        loop = asyncio.new_event_loop()
-        try:
-            suggestions = loop.run_until_complete(
-                processor.llm_client.generate_suggestions(entities, entity_count, relation_count)
-            )
-        finally:
-            loop.close()
+        from server.blueprints.helpers import run_async
+        suggestions = run_async(
+            processor.llm_client.generate_suggestions(entities, entity_count, relation_count)
+        )
 
         return ok(suggestions)
     except Exception as e:
@@ -834,14 +820,10 @@ def butler_execute():
                 for e in sample:
                     if not getattr(e, 'summary', None):
                         try:
-                            import asyncio
-                            loop = asyncio.new_event_loop()
-                            try:
-                                summary = loop.run_until_complete(
-                                    processor.llm_client.evolve_entity_summary(e)
-                                )
-                            finally:
-                                loop.close()
+                            from server.blueprints.helpers import run_async
+                            summary = run_async(
+                                processor.llm_client.evolve_entity_summary(e)
+                            )
                             storage.update_entity_summary(e.family_id, summary)
                             evolved += 1
                         except Exception as ex:

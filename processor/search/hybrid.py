@@ -156,6 +156,7 @@ class HybridSearcher:
         """
         scores: Dict[str, float] = {}
         items: Dict[str, Any] = {}
+        item_scores: Dict[str, float] = {}  # track per-item best score
 
         for results, weight in zip(result_lists, weights):
             for rank, item in enumerate(results):
@@ -168,9 +169,10 @@ class HybridSearcher:
                 if key not in scores:
                     scores[key] = 0.0
                 scores[key] += rrf_score
-                # 保留排名最高的版本（最近出现的那条）
-                if key not in items:
+                # 保留本轮贡献最高的版本
+                if key not in items or rrf_score > item_scores.get(key, 0):
                     items[key] = item
+                    item_scores[key] = rrf_score
 
         # 按融合分数降序排列
         sorted_items = sorted(scores.items(), key=lambda x: x[1], reverse=True)

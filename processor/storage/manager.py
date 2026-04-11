@@ -26,6 +26,7 @@ from .mixins.entity_store import EntityStoreMixin
 from .mixins.relation_store import RelationStoreMixin
 from .mixins.episode_store import EpisodeStoreMixin
 from .mixins.concept_store import ConceptStoreMixin
+from .vector_store import VectorStore
 
 
 class StorageManager(EntityStoreMixin, RelationStoreMixin, EpisodeStoreMixin, ConceptStoreMixin):
@@ -142,6 +143,10 @@ class StorageManager(EntityStoreMixin, RelationStoreMixin, EpisodeStoreMixin, Co
 
         # 初始化数据库
         self._init_database()
+
+        # 初始化 VectorStore（sqlite-vec KNN 后端，惰性创建）
+        self._vector_store: Optional[VectorStore] = None
+        self._vec_dim: Optional[int] = None
 
         # 自动迁移旧目录结构
         self._migrate_storage()
@@ -388,6 +393,79 @@ class StorageManager(EntityStoreMixin, RelationStoreMixin, EpisodeStoreMixin, Co
                     time.sleep(0.1 * (attempt + 1))
                     self._ensure_dirs()
         raise last_err  # type: ignore[misc]
+
+    def _get_vector_store(self) -> Optional[VectorStore]:
+        """获取或惰性初始化 VectorStore（sqlite-vec KNN 后端）。
+
+        需要同时满足：embedding_client 可用 + sqlite-vec 已安装。
+        如果不可用则返回 None（调用方回退到暴力搜索）。
+        """
+        if self._vector_store is not None:
+            return self._vector_store
+        if self.embedding_client is None or not self.embedding_client.is_available():
+            return None
+        try:
+            # 探测 embedding 维度
+            test_emb = self.embedding_client.encode("test")
+            if test_emb is None:
+                return None
+            dim = test_emb.shape[-1] if hasattr(test_emb, 'shape') else len(test_emb)
+            self._vec_dim = dim
+            vec_db_path = str(self.storage_path / "vectors.db")
+            self._vector_store = VectorStore(vec_db_path, dim=dim)
+            logger.info("VectorStore 初始化完成 (dim=%d, path=%s)", dim, vec_db_path)
+            return self._vector_store
+        except Exception as e:
+            logger.debug("VectorStore 初始化失败，回退暴力搜索: %s", e)
+            return None
+
+    def _vector_store_upsert_entity(self, absolute_id: str, embedding) -> None:
+        """将实体 embedding 写入 VectorStore（非阻塞，失败静默）。"""
+        vs = self._get_vector_store()
+        if vs is None or embedding is None:
+            return
+        try:
+            emb_list = np.frombuffer(embedding, dtype=np.float32).tolist() if isinstance(embedding, bytes) else list(embedding)
+            vs.upsert("entity_vectors", absolute_id, emb_list)
+        except Exception as e:
+            logger.debug("_vector_store_upsert_entity failed: %s", e)
+
+    def _vector_store_upsert_relation(self, absolute_id: str, embedding) -> None:
+        """将关系 embedding 写入 VectorStore（非阻塞，失败静默）。"""
+        vs = self._get_vector_store()
+        if vs is None or embedding is None:
+            return
+        try:
+            emb_list = np.frombuffer(embedding, dtype=np.float32).tolist() if isinstance(embedding, bytes) else list(embedding)
+            vs.upsert("relation_vectors", absolute_id, emb_list)
+        except Exception as e:
+            logger.debug("_vector_store_upsert_relation failed: %s", e)
+
+    def _vector_knn_search(
+        self, table: str, query_embedding, limit: int = 20, threshold: float = 0.0
+    ) -> List[Tuple[str, float]]:
+        """使用 VectorStore KNN 搜索，返回 [(absolute_id, cosine_similarity), ...]。
+
+        Returns empty list if VectorStore unavailable.
+        """
+        vs = self._get_vector_store()
+        if vs is None:
+            return []
+        try:
+            emb_list = query_embedding.tolist() if hasattr(query_embedding, 'tolist') else list(query_embedding)
+            raw = vs.search(table, emb_list, limit=limit * 2)
+            # Convert L2 distance to cosine similarity (vectors are L2-normalized)
+            # cos_sim = 1 - distance/2 for unit vectors
+            results = []
+            for uuid, dist in raw:
+                cos_sim = 1.0 - dist / 2.0
+                if cos_sim >= threshold:
+                    results.append((uuid, cos_sim))
+            results.sort(key=lambda x: x[1], reverse=True)
+            return results[:limit]
+        except Exception as e:
+            logger.debug("_vector_knn_search failed: %s", e)
+            return []
 
     # ========== ContentPatch 操作 ==========
 
@@ -744,89 +822,105 @@ class StorageManager(EntityStoreMixin, RelationStoreMixin, EpisodeStoreMixin, Co
             self._concept_emb_cache_ts = 0.0
 
 
-    def _search_with_embedding(self, query_text: str, entities_with_embeddings: List[tuple], 
-                               threshold: float, use_content: bool = False, 
+    def _search_with_embedding(self, query_text: str, entities_with_embeddings: List[tuple],
+                               threshold: float, use_content: bool = False,
                                max_results: int = 10, content_snippet_length: int = 50,
                                text_mode: Literal["name_only", "content_only", "name_and_content"] = "name_and_content") -> List[Entity]:
-        """使用embedding向量进行相似度搜索（优先使用已存储的embedding）"""
+        """使用embedding向量进行相似度搜索（优先使用 VectorStore KNN，回退暴力扫描）"""
         # 编码查询文本
         query_embedding = self.embedding_client.encode(query_text)
         if query_embedding is None:
-            # 如果编码失败，回退到文本相似度
             all_entities = [e for e, _ in entities_with_embeddings]
             return self._search_with_text_similarity(
                 query_text, all_entities, threshold, use_content, max_results, content_snippet_length, text_mode, "text"
             )
-        
+
         query_embedding_array = np.array(query_embedding[0] if isinstance(query_embedding, (list, np.ndarray)) else query_embedding, dtype=np.float32)
-        
-        # 收集已存储的embedding和需要重新计算的实体
+
+        # --- 快速路径：VectorStore KNN ---
+        knn_results = self._vector_knn_search("entity_vectors", query_embedding_array, limit=max_results * 2, threshold=threshold)
+        if knn_results:
+            # KNN 返回 absolute_ids，需要转换为 Entity 对象
+            abs_ids = [aid for aid, _ in knn_results]
+            score_map = {aid: score for aid, score in knn_results}
+            entities = self.get_entities_by_absolute_ids(abs_ids)
+            # 按分数排序 + family_id 去重
+            entity_scores = []
+            for e in entities:
+                if e and e.family_id:
+                    entity_scores.append((e, score_map.get(e.absolute_id, 0.0)))
+            entity_scores.sort(key=lambda x: x[1], reverse=True)
+
+            seen = set()
+            result = []
+            for entity, _ in entity_scores:
+                if entity.family_id not in seen:
+                    result.append(entity)
+                    seen.add(entity.family_id)
+                    if len(result) >= max_results:
+                        break
+            if result:
+                return result
+            # KNN 无有效结果，继续暴力扫描
+
+        # --- 回退路径：暴力 numpy 扫描 ---
         stored_embeddings = []
         entities_to_encode = []
         entity_indices = []
-        
+
         for idx, (entity, stored_embedding) in enumerate(entities_with_embeddings):
             if stored_embedding is not None:
                 stored_embeddings.append((idx, stored_embedding))
             else:
                 entities_to_encode.append(entity)
                 entity_indices.append(idx)
-        
-        # 如果有需要重新计算的实体，进行编码
+
         if entities_to_encode:
-            # 根据text_mode构建实体文本
             entity_texts = []
             for entity in entities_to_encode:
                 if text_mode == "name_only":
                     entity_texts.append(entity.name)
                 elif text_mode == "content_only":
                     entity_texts.append(entity.content[:content_snippet_length])
-                else:  # name_and_content
+                else:
                     if use_content:
                         entity_texts.append(f"{entity.name} {entity.content[:content_snippet_length]}")
                     else:
                         entity_texts.append(entity.name)
-            
+
             new_embeddings = self.embedding_client.encode(entity_texts)
             if new_embeddings is not None:
-                # 将新计算的embedding添加到存储列表中
                 for i, entity in enumerate(entities_to_encode):
                     embedding_array = np.array(new_embeddings[i] if isinstance(new_embeddings, (list, np.ndarray)) else new_embeddings, dtype=np.float32)
                     stored_embeddings.append((entity_indices[i], embedding_array))
-        
+
         if not stored_embeddings:
-            # 如果没有可用的embedding，回退到文本相似度
             all_entities = [e for e, _ in entities_with_embeddings]
             return self._search_with_text_similarity(
                 query_text, all_entities, threshold, use_content, max_results, content_snippet_length, text_mode, "text"
             )
-        
-        # 计算相似度
+
         similarities = []
         for idx, stored_embedding in stored_embeddings:
-            # 计算余弦相似度
             dot_product = np.dot(query_embedding_array, stored_embedding)
             norm_query = np.linalg.norm(query_embedding_array)
             norm_stored = np.linalg.norm(stored_embedding)
             similarity = dot_product / (norm_query * norm_stored + 1e-9)
             entity = entities_with_embeddings[idx][0]
             similarities.append((entity, float(similarity)))
-        
-        # 筛选和排序
+
         scored_entities = [(entity, sim) for entity, sim in similarities if sim >= threshold]
         scored_entities.sort(key=lambda x: x[1], reverse=True)
-        
-        # 返回实体列表（去重，每个family_id只保留一个，并限制最大数量）
+
         entities = []
         seen_ids = set()
         for entity, _ in scored_entities:
             if entity.family_id not in seen_ids:
                 entities.append(entity)
                 seen_ids.add(entity.family_id)
-                # 达到最大数量后停止
                 if len(entities) >= max_results:
                     break
-        
+
         return entities
     
     def _calculate_jaccard_similarity(self, text1: str, text2: str) -> float:

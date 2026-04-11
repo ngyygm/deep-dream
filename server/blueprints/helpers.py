@@ -6,6 +6,7 @@ as well as common response helpers and serialization functions.
 """
 from __future__ import annotations
 
+import asyncio
 import time
 import logging
 from datetime import datetime, timezone
@@ -41,6 +42,25 @@ def err(message: str, status: int = 400) -> tuple:
     except RuntimeError:
         pass
     return jsonify(out), status
+
+
+# ── Async sync bridge ────────────────────────────────────────────────────
+
+# Module-level shared event loop for running async functions from sync Flask routes.
+# Avoids creating and destroying a new loop per request.
+_shared_loop: Optional[asyncio.AbstractEventLoop] = None
+
+
+def run_async(coro):
+    """Run an async coroutine from synchronous Flask route handlers.
+
+    Uses a shared event loop to avoid creating/destroying per-request,
+    which is wasteful and can leak resources on exceptions.
+    """
+    global _shared_loop
+    if _shared_loop is None or _shared_loop.is_closed():
+        _shared_loop = asyncio.new_event_loop()
+    return _shared_loop.run_until_complete(coro)
 
 
 # ── Serialization helpers ─────────────────────────────────────────────────

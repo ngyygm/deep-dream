@@ -77,14 +77,16 @@ def find_unified():
         storage = processor.storage
 
         # --- 第一步：按 search_mode 召回实体 ---
+        # 创建 HybridSearcher 一次，共享给实体和关系搜索
+        _hybrid_searcher = HybridSearcher(storage) if search_mode == "hybrid" else None
+
         with _perf_timer("find_unified | step1_entity_recall"):
             if search_mode == "bm25":
                 matched_entities = storage.search_entities_by_bm25(
                     query, limit=max_entities
                 )
             elif search_mode == "hybrid":
-                searcher = HybridSearcher(storage)
-                hybrid_entities = searcher.search_entities(
+                hybrid_entities = _hybrid_searcher.search_entities(
                     query_text=query,
                     top_k=max_entities,
                     semantic_threshold=similarity_threshold,
@@ -108,8 +110,7 @@ def find_unified():
                     query, limit=max_relations
                 )
             elif search_mode == "hybrid":
-                searcher = HybridSearcher(storage)
-                hybrid_relations = searcher.search_relations(
+                hybrid_relations = _hybrid_searcher.search_relations(
                     query_text=query,
                     top_k=max_relations,
                     semantic_threshold=similarity_threshold,

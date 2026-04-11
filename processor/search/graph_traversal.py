@@ -1,6 +1,7 @@
 """图遍历搜索 - BFS 扩展 + 社区感知搜索。"""
 
 import logging
+from collections import deque
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ..models import Entity, Relation
@@ -53,7 +54,7 @@ class GraphTraversalSearcher:
     ) -> List[Entity]:
         """逐节点 BFS 扩展（兼容 SQLite 后端）。"""
         visited: Set[str] = set()
-        queue: List[Tuple[str, int]] = []  # (family_id, depth)
+        queue: deque[Tuple[str, int]] = deque()  # (family_id, depth)
         result_entities: List[Entity] = []
 
         # 批量 resolve 种子 family_ids
@@ -81,7 +82,7 @@ class GraphTraversalSearcher:
                     queue.append((resolved, 0))
 
         while queue and len(result_entities) < max_nodes:
-            current_id, depth = queue.pop(0)
+            current_id, depth = queue.popleft()
             entity = self.storage.get_entity_by_family_id(current_id)
             if entity:
                 result_entities.append(entity)

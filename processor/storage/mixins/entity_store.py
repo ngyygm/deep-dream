@@ -134,6 +134,8 @@ class EntityStoreMixin:
                 self._write_concept_from_entity(entity, cursor)
                 # 单次 commit 包含所有写操作
                 conn.commit()
+                # 同步到 VectorStore（非阻塞，失败静默）
+                self._vector_store_upsert_entity(entity.absolute_id, embedding_blob)
             except Exception:
                 conn.rollback()
                 raise
@@ -214,6 +216,10 @@ class EntityStoreMixin:
                         logger.debug("bulk invalid_at update failed: %s", exc)
                     self._write_concept_from_entity(entity, cursor)
                 conn.commit()
+                # 同步到 VectorStore（非阻塞，失败静默）
+                for entity in entities:
+                    if entity.embedding:
+                        self._vector_store_upsert_entity(entity.absolute_id, entity.embedding)
             except Exception:
                 conn.rollback()
                 raise
