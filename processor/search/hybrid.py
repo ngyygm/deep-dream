@@ -1,8 +1,9 @@
 """
-混合搜索：BM25 全文搜索 + 向量语义搜索 + RRF 融合排序。
+混合搜索：BM25 全文搜索 + 向量语义搜索 + 图上下文扩展 + RRF 融合排序。
 
-HybridSearcher 封装了双路搜索（BM25 + embedding 余弦相似度），
-使用 Reciprocal Rank Fusion (RRF) 将两路结果合并为统一排序列表。
+HybridSearcher 封装了三路搜索（BM25 + embedding + graph-context），
+使用 Reciprocal Rank Fusion (RRF) 将多路结果合并为统一排序列表。
+可选 confidence 加权重排序，确保低置信度实体排名靠后。
 """
 
 import logging
@@ -14,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 class HybridSearcher:
-    """混合搜索引擎：BM25 + 向量搜索 + RRF 融合。"""
+    """混合搜索引擎：BM25 + 向量搜索 + 图上下文扩展 + RRF 融合。"""
 
     def __init__(self, storage: Any):
         """
@@ -33,6 +34,33 @@ class HybridSearcher:
                 logger.debug("Embedding computation failed: %s", e)
         return None
 
+    def _graph_context_expand(
+        self,
+        seed_family_ids: List[str],
+        max_depth: int = 1,
+        max_nodes: int = 30,
+    ) -> List[Entity]:
+        """图上下文扩展：从种子实体出发 BFS 1-2 跳，发现结构关联实体。
+
+        Args:
+            seed_family_ids: 种子实体的 family_id 列表
+            max_depth: BFS 扩展深度（默认1跳）
+            max_nodes: 最多返回的节点数
+
+        Returns:
+            通过图结构发现的关联实体列表
+        """
+        if not seed_family_ids:
+            return []
+
+        try:
+            from .graph_traversal import GraphTraversalSearcher
+            traverser = GraphTraversalSearcher(self.storage)
+            return traverser.bfs_expand(seed_family_ids, max_depth=max_depth, max_nodes=max_nodes)
+        except Exception as e:
+            logger.debug("Graph context expansion failed: %s", e)
+            return []
+
     def search_entities(
         self,
         query_text: str,
@@ -40,10 +68,15 @@ class HybridSearcher:
         top_k: int = 20,
         vector_weight: float = 0.7,
         bm25_weight: float = 0.3,
+        graph_weight: float = 0.15,
         semantic_threshold: float = 0.5,
         semantic_max_results: int = 50,
+        enable_graph_expansion: bool = True,
+        graph_depth: int = 1,
     ) -> List[Tuple[Entity, float]]:
         """混合搜索实体。
+
+        三路搜索: BM25 + 向量语义 + 图上下文扩展
 
         Args:
             query_text: 搜索文本（用于 BM25）
@@ -51,8 +84,11 @@ class HybridSearcher:
             top_k: 最终返回数量
             vector_weight: 向量搜索权重
             bm25_weight: BM25 搜索权重
+            graph_weight: 图上下文扩展权重
             semantic_threshold: 语义搜索相似度阈值
             semantic_max_results: 语义搜索最大候选数
+            enable_graph_expansion: 是否启用图上下文扩展
+            graph_depth: 图扩展深度（1或2）
 
         Returns:
             [(Entity, fusion_score), ...] 按 fusion_score 降序排列
@@ -85,6 +121,24 @@ class HybridSearcher:
                     weights.append(vector_weight)
             except Exception as e:
                 logger.debug("Vector search failed: %s", e)
+
+        # 路径 3: 图上下文扩展 — 从前两路 top 结果出发，BFS 发现结构关联实体
+        if enable_graph_expansion and (result_lists):
+            try:
+                # 从前两路融合结果的 top 种子出发
+                seed_fids = []
+                if result_lists:
+                    pre_fused = self.reciprocal_rank_fusion(result_lists, weights[:len(result_lists)])
+                    seed_fids = [e.family_id for e, _ in pre_fused[:5] if e.family_id]
+                if seed_fids:
+                    graph_entities = self._graph_context_expand(
+                        seed_fids, max_depth=graph_depth, max_nodes=semantic_max_results
+                    )
+                    if graph_entities:
+                        result_lists.append(graph_entities)
+                        weights.append(graph_weight)
+            except Exception as e:
+                logger.debug("Graph expansion failed: %s", e)
 
         if not result_lists:
             return []
@@ -210,6 +264,38 @@ class HybridSearcher:
             degree_factor = degree / max_degree
             adjusted = score * (1 - alpha) + degree_factor * alpha
             results.append((entity, round(adjusted, 6)))
+
+        results.sort(key=lambda x: x[1], reverse=True)
+        return results
+
+    # ------------------------------------------------------------------
+    # Phase C: Confidence-weighted reranking
+    # ------------------------------------------------------------------
+
+    def confidence_rerank(
+        self,
+        items: List[Tuple[Any, float]],
+        alpha: float = 0.2,
+    ) -> List[Tuple[Any, float]]:
+        """置信度加权重排序：低置信度实体排名靠后。
+
+        final_score = rrf_score * (1 - alpha + alpha * confidence)
+
+        Args:
+            items: [(Entity/Relation, score), ...] 原始排序
+            alpha: 置信度影响因子（0-1）
+
+        Returns:
+            重排序后的 [(item, adjusted_score), ...]
+        """
+        if not items:
+            return items
+
+        results = []
+        for item, score in items:
+            confidence = getattr(item, 'confidence', None) or 0.5  # default 0.5 if unset
+            adjusted = score * (1 - alpha + alpha * confidence)
+            results.append((item, round(adjusted, 6)))
 
         results.sort(key=lambda x: x[1], reverse=True)
         return results
