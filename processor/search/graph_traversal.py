@@ -34,17 +34,32 @@ class GraphTraversalSearcher:
         Returns:
             发现的实体列表（包含种子实体）
         """
+        entities, relations, _ = self.bfs_expand_with_relations(
+            seed_family_ids, max_depth=max_depth, max_nodes=max_nodes)
+        return entities[:max_nodes]
+
+    def bfs_expand_with_relations(
+        self,
+        seed_family_ids: List[str],
+        max_depth: int = 2,
+        max_nodes: int = 50,
+    ) -> Tuple[List[Entity], List[Relation], Set[str]]:
+        """从种子实体 BFS 扩展，返回实体 + 关系 + 访问集合。
+
+        Returns:
+            (entities, relations, visited_family_ids)
+        """
         # 优先使用批量 BFS（Neo4j 后端）
         if hasattr(self.storage, 'batch_bfs_traverse'):
             try:
-                entities, _, _ = self.storage.batch_bfs_traverse(
+                entities, relations, visited = self.storage.batch_bfs_traverse(
                     seed_family_ids, max_depth=max_depth, max_nodes=max_nodes)
-                return entities[:max_nodes]
+                return entities[:max_nodes], relations, visited
             except Exception as e:
                 logger.debug("batch_bfs_traverse failed, fallback to iterative: %s", e)
 
         # 回退：逐节点扩展（SQLite 后端）
-        return self._iterative_bfs(seed_family_ids, max_depth, max_nodes)
+        return self._iterative_bfs_with_relations(seed_family_ids, max_depth, max_nodes)
 
     def _iterative_bfs(
         self,
@@ -53,9 +68,22 @@ class GraphTraversalSearcher:
         max_nodes: int = 50,
     ) -> List[Entity]:
         """逐节点 BFS 扩展（兼容 SQLite 后端）。"""
+        entities, _, _ = self._iterative_bfs_with_relations(
+            seed_family_ids, max_depth, max_nodes)
+        return entities
+
+    def _iterative_bfs_with_relations(
+        self,
+        seed_family_ids: List[str],
+        max_depth: int = 2,
+        max_nodes: int = 50,
+    ) -> Tuple[List[Entity], List[Relation], Set[str]]:
+        """逐节点 BFS 扩展，同时收集关系（兼容 SQLite 后端）。"""
         visited: Set[str] = set()
         queue: deque[Tuple[str, int]] = deque()  # (family_id, depth)
         result_entities: List[Entity] = []
+        result_relations: List[Relation] = []
+        seen_rel_fids: Set[str] = set()
 
         # 批量 resolve 种子 family_ids
         resolve_fn = getattr(self.storage, 'resolve_family_ids', None)
@@ -93,9 +121,12 @@ class GraphTraversalSearcher:
             # 获取当前实体的关系
             relations = self.storage.get_relations_by_family_ids([current_id])
 
-            # 收集所有 neighbor absolute_ids，批量获取
+            # 收集关系 + neighbor absolute_ids
             neighbor_abs_ids = set()
             for rel in relations:
+                if rel.family_id not in seen_rel_fids:
+                    seen_rel_fids.add(rel.family_id)
+                    result_relations.append(rel)
                 neighbor_abs_ids.add(rel.entity1_absolute_id)
                 neighbor_abs_ids.add(rel.entity2_absolute_id)
 
@@ -111,5 +142,5 @@ class GraphTraversalSearcher:
                     visited.add(fid)
                     queue.append((fid, depth + 1))
 
-        return result_entities[:max_nodes]
+        return result_entities[:max_nodes], result_relations, visited
 

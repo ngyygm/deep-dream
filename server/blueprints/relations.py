@@ -928,10 +928,18 @@ def traverse_graph():
 
         processor = _get_processor()
         searcher = GraphTraversalSearcher(processor.storage)
-        entities = searcher.bfs_expand(seed_ids, max_depth=max_depth, max_nodes=max_nodes)
-        dicts = [entity_to_dict(e) for e in entities]
-        enrich_entity_version_counts(dicts, processor.storage)
-        return ok(dicts)
+        entities, relations, visited = searcher.bfs_expand_with_relations(
+            seed_ids, max_depth=max_depth, max_nodes=max_nodes)
+        ent_dicts = [entity_to_dict(e) for e in entities]
+        rel_dicts = [relation_to_dict(r) for r in relations]
+        enrich_entity_version_counts(ent_dicts, processor.storage)
+        enrich_relation_version_counts(rel_dicts, processor.storage)
+        enrich_relations(rel_dicts, processor)
+        return ok({
+            "entities": ent_dicts,
+            "relations": rel_dicts,
+            "visited_count": len(visited),
+        })
     except Exception as e:
         return err(str(e), 500)
 

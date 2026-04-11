@@ -626,8 +626,10 @@ class ConceptStoreMixin:
         queue = list(start_family_ids)
         all_concepts = {}
         all_relations_info = []
+        seen_rel_fids = set()
 
-        for _ in range(max_depth):
+        depth = 0
+        while queue and depth <= max_depth:
             next_queue = []
             for fid in queue:
                 if fid in visited:
@@ -635,6 +637,8 @@ class ConceptStoreMixin:
                 visited.add(fid)
                 concept = self.get_concept_by_family_id(fid)
                 if not concept:
+                    # Not a real concept — remove from visited
+                    visited.discard(fid)
                     continue
                 all_concepts[fid] = concept
                 neighbors = self.get_concept_neighbors(fid)
@@ -642,14 +646,12 @@ class ConceptStoreMixin:
                     nfid = n.get('family_id', '')
                     if nfid and nfid not in visited:
                         next_queue.append(nfid)
-                        # Track relation connections
-                        if n.get('role') == 'relation' and n.get('connects'):
-                            all_relations_info.append({
-                                "family_id": nfid,
-                                "connects": n.get('connects', ''),
-                                "content": n.get('content', ''),
-                            })
+                    # Track relation concepts with full metadata
+                    if n.get('role') == 'relation' and nfid not in seen_rel_fids:
+                        seen_rel_fids.add(nfid)
+                        all_relations_info.append(n)
             queue = next_queue
+            depth += 1
 
         return {
             "concepts": all_concepts,
