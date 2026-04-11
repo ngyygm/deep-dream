@@ -1474,17 +1474,15 @@ class EntityProcessor:
         # 回退到名称
         return name[:100]
 
-    def _build_new_entity(self, name: str, content: str, episode_id: str,
-                          source_document: str = "", base_time: Optional[datetime] = None) -> Entity:
-        """构建新实体对象，但不立即写库。"""
+    def _construct_entity(self, name: str, content: str, episode_id: str,
+                          family_id: str, source_document: str = "",
+                          base_time: Optional[datetime] = None) -> Entity:
+        """Shared helper: construct an Entity object with standard fields."""
         event_time = base_time if base_time is not None else datetime.now()
         processed_time = datetime.now()
-        family_id = f"ent_{uuid.uuid4().hex[:12]}"
         entity_record_id = f"entity_{processed_time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
-
         source_document_only = source_document.split('/')[-1] if source_document else ""
-
-        entity = Entity(
+        return Entity(
             absolute_id=entity_record_id,
             family_id=family_id,
             name=name,
@@ -1497,7 +1495,15 @@ class EntityProcessor:
             summary=self._extract_summary(name, content),
             confidence=0.7,
         )
-        return entity
+
+    def _build_new_entity(self, name: str, content: str, episode_id: str,
+                          source_document: str = "", base_time: Optional[datetime] = None) -> Entity:
+        """构建新实体对象，但不立即写库。"""
+        return self._construct_entity(
+            name, content, episode_id,
+            family_id=f"ent_{uuid.uuid4().hex[:12]}",
+            source_document=source_document, base_time=base_time,
+        )
 
     def _create_new_entity(self, name: str, content: str, episode_id: str,
                            source_document: str = "", base_time: Optional[datetime] = None) -> Entity:
@@ -1510,26 +1516,11 @@ class EntityProcessor:
                               episode_id: str, source_document: str = "",
                               base_time: Optional[datetime] = None) -> Entity:
         """构建实体新版本对象，但不立即写库。"""
-        event_time = base_time if base_time is not None else datetime.now()
-        processed_time = datetime.now()
-        entity_record_id = f"entity_{processed_time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
-
-        source_document_only = source_document.split('/')[-1] if source_document else ""
-
-        entity = Entity(
-            absolute_id=entity_record_id,
+        return self._construct_entity(
+            name, content, episode_id,
             family_id=family_id,
-            name=name,
-            content=content,
-            event_time=event_time,
-            processed_time=processed_time,
-            episode_id=episode_id,
-            source_document=source_document_only,
-            content_format="markdown",
-            summary=self._extract_summary(name, content),
-            confidence=0.7,
+            source_document=source_document, base_time=base_time,
         )
-        return entity
 
     def _create_entity_version(self, family_id: str, name: str, content: str,
                               episode_id: str, source_document: str = "",
