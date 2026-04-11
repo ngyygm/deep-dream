@@ -23,6 +23,16 @@ class HybridSearcher:
         """
         self.storage = storage
 
+    def _get_embedding(self, text: str) -> Optional[List[float]]:
+        """Compute embedding via storage's embedding_client if available."""
+        emb_client = getattr(self.storage, 'embedding_client', None)
+        if emb_client and getattr(emb_client, 'is_available', lambda: False)():
+            try:
+                return emb_client.encode(text)
+            except Exception as e:
+                logger.debug("Embedding computation failed: %s", e)
+        return None
+
     def search_entities(
         self,
         query_text: str,
@@ -37,7 +47,7 @@ class HybridSearcher:
 
         Args:
             query_text: 搜索文本（用于 BM25）
-            query_embedding: 查询向量（用于语义搜索，可选）
+            query_embedding: 查询向量（用于语义搜索，为 None 时自动计算）
             top_k: 最终返回数量
             vector_weight: 向量搜索权重
             bm25_weight: BM25 搜索权重
@@ -59,7 +69,9 @@ class HybridSearcher:
         except Exception as e:
             logger.debug("BM25 search failed: %s", e)
 
-        # 路径 2: 向量语义搜索
+        # 路径 2: 向量语义搜索（自动计算 embedding）
+        if query_embedding is None:
+            query_embedding = self._get_embedding(query_text)
         if query_embedding is not None:
             try:
                 vector_results = self.storage.search_entities_by_similarity(
@@ -104,7 +116,9 @@ class HybridSearcher:
         except Exception as e:
             logger.debug("BM25 search failed: %s", e)
 
-        # 路径 2: 向量语义搜索
+        # 路径 2: 向量语义搜索（自动计算 embedding）
+        if query_embedding is None:
+            query_embedding = self._get_embedding(query_text)
         if query_embedding is not None:
             try:
                 vector_results = self.storage.search_relations_by_similarity(

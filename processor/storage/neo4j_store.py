@@ -325,10 +325,10 @@ class Neo4jStorageManager:
                     session.run(idx)
                 except Exception as e:
                     logger.debug("Index creation skipped: %s", e)
-            # BM25 全文搜索索引（Neo4j 5.x）
+            # BM25 全文搜索索引（Neo4j 4.x/5.x 兼容语法）
             fulltext_indexes = [
-                ("entityFulltext", "CREATE FULLTEXT INDEX entityFulltext IF NOT EXISTS FOR (e:Entity) ON (e.name, e.content)"),
-                ("relationFulltext", "CREATE FULLTEXT INDEX relationFulltext IF NOT EXISTS FOR (r:Relation) ON (r.content)"),
+                ("entityFulltext", "CREATE FULLTEXT INDEX entityFulltext IF NOT EXISTS FOR (e:Entity) ON EACH [e.name, e.content]"),
+                ("relationFulltext", "CREATE FULLTEXT INDEX relationFulltext IF NOT EXISTS FOR (r:Relation) ON EACH [r.content]"),
             ]
             for idx_name, idx_cypher in fulltext_indexes:
                 try:

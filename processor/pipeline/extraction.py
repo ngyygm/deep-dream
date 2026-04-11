@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+import hashlib
 import time
 from functools import lru_cache
 import uuid
@@ -568,7 +569,7 @@ def dedupe_extracted_relations(relations: Optional[List[Dict[str, Any]]]) -> Lis
         if not _is_valid_relation_content(content, e1, e2):
             continue
         n1, n2 = _normalize_pair_for_relation(e1, e2)
-        key = (n1, n2, hash(content.lower()))
+        key = (n1, n2, hashlib.md5(content.lower().encode()).hexdigest()[:12])
         if key in seen:
             continue
         seen.add(key)
@@ -1504,7 +1505,7 @@ class _ExtractionMixin:
             content = rel.get("content", "")
             if entity1_id and entity2_id:
                 pair_key = tuple(sorted([entity1_id, entity2_id]))
-                content_hash = hash(content.strip().lower())
+                content_hash = hashlib.md5(content.strip().lower().encode()).hexdigest()[:12]
                 relation_key = (pair_key, content_hash)
                 if relation_key not in seen_relations:
                     seen_relations.add(relation_key)

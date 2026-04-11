@@ -465,6 +465,7 @@ class EntityStoreMixin:
             FROM entity_fts AS fts
             JOIN entities AS e ON e.rowid = fts.rowid
             WHERE entity_fts MATCH ?
+              AND e.invalid_at IS NULL
             ORDER BY fts.rank
             LIMIT ?
         """, (query, limit))

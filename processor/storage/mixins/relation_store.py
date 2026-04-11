@@ -310,6 +310,7 @@ class RelationStoreMixin:
             FROM relation_fts AS fts
             JOIN relations AS r ON r.rowid = fts.rowid
             WHERE relation_fts MATCH ?
+              AND r.invalid_at IS NULL
             ORDER BY fts.rank
             LIMIT ?
         """, (query, limit))
