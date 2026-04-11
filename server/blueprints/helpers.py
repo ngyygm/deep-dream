@@ -174,6 +174,7 @@ def episode_to_dict(c: Episode) -> Dict[str, Any]:
         "absolute_id": c.absolute_id,
         "content": c.content,
         "event_time": c.event_time.isoformat() if c.event_time else None,
+        "processed_time": c.processed_time.isoformat() if hasattr(c, 'processed_time') and c.processed_time else None,
         "source_document": getattr(c, "source_document", "") or getattr(c, "doc_name", "") or "",
         "doc_name": getattr(c, "source_document", "") or getattr(c, "doc_name", "") or "",
         "activity_type": getattr(c, "activity_type", None),
