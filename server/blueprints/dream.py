@@ -21,6 +21,8 @@ from server.blueprints.helpers import (
     entity_to_dict,
     relation_to_dict,
     enrich_relations,
+    enrich_entity_version_counts,
+    enrich_relation_version_counts,
     parse_time_point,
 )
 from server.sse import sse_response, queue_to_generator
@@ -355,6 +357,8 @@ def agent_ask():
 
         entity_dicts = [entity_to_dict(e, _score=entity_score_map.get(e.absolute_id)) for e in entities]
         relation_dicts = [relation_to_dict(r, _score=relation_score_map.get(r.absolute_id)) for r in relations]
+        enrich_entity_version_counts(entity_dicts, processor.storage)
+        enrich_relation_version_counts(relation_dicts, processor.storage)
         result["results"] = {
             "entities": entity_dicts,
             "relations": relation_dicts,
@@ -459,6 +463,8 @@ def agent_ask_stream():
                 # Generate summary answer using LLM synthesis
                 entity_dicts = [entity_to_dict(e, _score=entity_score_map.get(e.absolute_id)) for e in entities]
                 relation_dicts = [relation_to_dict(r, _score=relation_score_map.get(r.absolute_id)) for r in relations]
+                enrich_entity_version_counts(entity_dicts, processor.storage)
+                enrich_relation_version_counts(relation_dicts, processor.storage)
                 result["results"] = {
                     "entities": entity_dicts,
                     "relations": relation_dicts,

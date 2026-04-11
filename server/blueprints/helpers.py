@@ -66,7 +66,8 @@ def run_async(coro):
 # ── Serialization helpers ─────────────────────────────────────────────────
 
 def entity_to_dict(e: Entity, max_content_length: int = 2000,
-                   _score: Optional[float] = None) -> Dict[str, Any]:
+                   _score: Optional[float] = None,
+                   version_count: Optional[int] = None) -> Dict[str, Any]:
     from processor.content_schema import parse_markdown_sections
     sections = parse_markdown_sections(e.content) if e.content else {}
     content = e.content or ""
@@ -93,10 +94,13 @@ def entity_to_dict(e: Entity, max_content_length: int = 2000,
     }
     if _score is not None:
         d["_score"] = round(_score, 4)
+    if version_count is not None:
+        d["version_count"] = version_count
     return d
 
 
-def relation_to_dict(r: Relation, _score: Optional[float] = None) -> Dict[str, Any]:
+def relation_to_dict(r: Relation, _score: Optional[float] = None,
+                     version_count: Optional[int] = None) -> Dict[str, Any]:
     d: Dict[str, Any] = {
         "id": r.absolute_id,  # 向后兼容
         "absolute_id": r.absolute_id,
@@ -116,6 +120,8 @@ def relation_to_dict(r: Relation, _score: Optional[float] = None) -> Dict[str, A
     }
     if _score is not None:
         d["_score"] = round(_score, 4)
+    if version_count is not None:
+        d["version_count"] = version_count
     return d
 
 
@@ -134,6 +140,32 @@ def enrich_relations(relations_dicts, processor):
         rd['entity1_name'] = name_map.get(rd.get('entity1_absolute_id'), '')
         rd['entity2_name'] = name_map.get(rd.get('entity2_absolute_id'), '')
     return relations_dicts
+
+
+def enrich_entity_version_counts(entity_dicts, storage):
+    """批量补充实体 version_count（按 family_id 批量查询）。"""
+    family_ids = [d["family_id"] for d in entity_dicts if d.get("family_id")]
+    if not family_ids:
+        return entity_dicts
+    counts = storage.get_entity_version_counts(family_ids)
+    for d in entity_dicts:
+        fid = d.get("family_id")
+        if fid and fid in counts:
+            d["version_count"] = counts[fid]
+    return entity_dicts
+
+
+def enrich_relation_version_counts(relation_dicts, storage):
+    """批量补充关系 version_count（按 family_id 批量查询）。"""
+    family_ids = [d["family_id"] for d in relation_dicts if d.get("family_id")]
+    if not family_ids:
+        return relation_dicts
+    counts = storage.get_relation_version_counts(family_ids)
+    for d in relation_dicts:
+        fid = d.get("family_id")
+        if fid and fid in counts:
+            d["version_count"] = counts[fid]
+    return relation_dicts
 
 
 def episode_to_dict(c: Episode) -> Dict[str, Any]:

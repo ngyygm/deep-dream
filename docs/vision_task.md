@@ -4,6 +4,22 @@
 
 ## 2026-04-12
 
+### [已完成] feat: Find query contract — version_count in all search API responses
+- entity_to_dict / relation_to_dict 新增 `version_count` 可选参数
+- 新增 Storage 批量方法: `get_relation_version_counts(family_ids)` (SQLite, GROUP BY batch query)
+- 新增 helpers: `enrich_entity_version_counts` / `enrich_relation_version_counts` — 批量补充 version_count
+- 7个搜索端点集成 version_count enrichment:
+  - entities.py find_entities_search (semantic/bm25/hybrid)
+  - entities.py entity_profile (使用 entity_to_dict version_count 参数)
+  - relations.py find_unified (entity + relation)
+  - relations.py find_relations_search (semantic/bm25/hybrid)
+  - relations.py quick_search (entity + relation)
+  - relations.py traverse_graph
+  - dream.py agent_ask / stream_ask (entity + relation)
+- 非搜索端点不包含 version_count（向后兼容）
+- 36项测试覆盖4维度（序列化9 + 存储批量方法9 + enrichment辅助9 + 端点模拟9），72项总测试全部通过
+- 影响: server/blueprints/helpers.py, entities.py, relations.py, dream.py, processor/storage/mixins/relation_store.py
+
 ### [已完成] feat: Find query contract — similarity/fusion scores in all search API responses
 - entity_to_dict / relation_to_dict 新增 `_score` 可选参数，四舍五入到4位小数
 - 10处 HybridSearcher 分数丢弃修复，分数现在通过 serialization 传递到 API 响应：
