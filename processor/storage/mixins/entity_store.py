@@ -106,8 +106,8 @@ class EntityStoreMixin:
             try:
                 cursor = conn.cursor()
                 cursor.execute("""
-                    INSERT INTO entities (id, family_id, name, content, event_time, processed_time, episode_id, source_document, embedding, valid_at, summary, attributes, confidence, content_format)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO entities (id, family_id, name, content, event_time, processed_time, episode_id, source_document, embedding, valid_at, invalid_at, summary, attributes, confidence, content_format)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     entity.absolute_id,
                     entity.family_id,
@@ -119,6 +119,7 @@ class EntityStoreMixin:
                     entity.source_document,
                     embedding_blob,
                     (entity.valid_at or entity.event_time).isoformat(),
+                    getattr(entity, 'invalid_at', None),
                     getattr(entity, 'summary', None),
                     getattr(entity, 'attributes', None),
                     getattr(entity, 'confidence', None),
@@ -186,6 +187,7 @@ class EntityStoreMixin:
                 entity.source_document,
                 embedding_blob,
                 (entity.valid_at or entity.event_time).isoformat(),
+                getattr(entity, 'invalid_at', None),
                 getattr(entity, 'summary', None),
                 getattr(entity, 'attributes', None),
                 getattr(entity, 'confidence', None),
@@ -197,8 +199,8 @@ class EntityStoreMixin:
             try:
                 cursor = conn.cursor()
                 cursor.executemany("""
-                    INSERT OR IGNORE INTO entities (id, family_id, name, content, event_time, processed_time, episode_id, source_document, embedding, valid_at, summary, attributes, confidence, content_format)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT OR IGNORE INTO entities (id, family_id, name, content, event_time, processed_time, episode_id, source_document, embedding, valid_at, invalid_at, summary, attributes, confidence, content_format)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, rows)
                 # 同步写入 FTS 表（使用整数 rowid）
                 try:

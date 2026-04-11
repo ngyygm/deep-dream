@@ -101,8 +101,8 @@ class RelationStoreMixin:
             try:
                 cursor = conn.cursor()
                 cursor.execute("""
-                    INSERT INTO relations (id, family_id, entity1_absolute_id, entity2_absolute_id, content, event_time, processed_time, episode_id, source_document, embedding, valid_at, summary, attributes, confidence, provenance, content_format)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO relations (id, family_id, entity1_absolute_id, entity2_absolute_id, content, event_time, processed_time, episode_id, source_document, embedding, valid_at, invalid_at, summary, attributes, confidence, provenance, content_format)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     relation.absolute_id,
                     relation.family_id,
@@ -115,6 +115,7 @@ class RelationStoreMixin:
                     relation.source_document,
                     embedding_blob,
                     (relation.valid_at or relation.event_time).isoformat(),
+                    getattr(relation, 'invalid_at', None),
                     getattr(relation, 'summary', None),
                     getattr(relation, 'attributes', None),
                     getattr(relation, 'confidence', None),
@@ -184,6 +185,7 @@ class RelationStoreMixin:
                 relation.source_document,
                 embedding_blob,
                 (relation.valid_at or relation.event_time).isoformat(),
+                getattr(relation, 'invalid_at', None),
                 getattr(relation, 'summary', None),
                 getattr(relation, 'attributes', None),
                 getattr(relation, 'confidence', None),
@@ -196,8 +198,8 @@ class RelationStoreMixin:
             try:
                 cursor = conn.cursor()
                 cursor.executemany("""
-                    INSERT INTO relations (id, family_id, entity1_absolute_id, entity2_absolute_id, content, event_time, processed_time, episode_id, source_document, embedding, valid_at, summary, attributes, confidence, provenance, content_format)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO relations (id, family_id, entity1_absolute_id, entity2_absolute_id, content, event_time, processed_time, episode_id, source_document, embedding, valid_at, invalid_at, summary, attributes, confidence, provenance, content_format)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, rows)
                 # 同步写入 FTS 表（使用整数 rowid）
                 try:

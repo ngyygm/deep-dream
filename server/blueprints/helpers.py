@@ -91,6 +91,8 @@ def entity_to_dict(e: Entity, max_content_length: int = 2000,
         "attributes": getattr(e, "attributes", None),
         "confidence": getattr(e, "confidence", None),
         "community_id": getattr(e, "community_id", None),
+        "valid_at": e.valid_at.isoformat() if getattr(e, "valid_at", None) else None,
+        "invalid_at": e.invalid_at.isoformat() if getattr(e, "invalid_at", None) else None,
     }
     if _score is not None:
         d["_score"] = round(_score, 4)
@@ -117,6 +119,8 @@ def relation_to_dict(r: Relation, _score: Optional[float] = None,
         "summary": getattr(r, "summary", None),
         "attributes": getattr(r, "attributes", None),
         "confidence": getattr(r, "confidence", None),
+        "valid_at": r.valid_at.isoformat() if getattr(r, "valid_at", None) else None,
+        "invalid_at": r.invalid_at.isoformat() if getattr(r, "invalid_at", None) else None,
     }
     if _score is not None:
         d["_score"] = round(_score, 4)
