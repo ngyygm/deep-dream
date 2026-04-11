@@ -509,6 +509,10 @@ def dedupe_extracted_entities(entities: Optional[List[Dict[str, Any]]]) -> List[
     return out
 
 
+# 关系内容最小字符数 — extraction 和 relation 模块统一使用
+MIN_RELATION_CONTENT_LENGTH = 8
+
+
 def _is_valid_relation_content(content: str, entity1_name: str = "", entity2_name: str = "") -> bool:
     """检查关系内容是否是有效的关系描述。
 

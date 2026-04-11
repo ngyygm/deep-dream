@@ -68,33 +68,47 @@ class EmbeddingClient:
     
     def encode(self, texts: Union[str, List[str]], batch_size: int = 32) -> np.ndarray:
         """
-        编码文本为向量
-        
+        编码文本为向量（线程安全）
+
         Args:
             texts: 单个文本或文本列表
             batch_size: 批处理大小
-        
+
         Returns:
             向量数组（numpy array）
         """
         if self.model is None:
-            # 如果没有embedding模型，返回None
             return None
-        
+
         if isinstance(texts, str):
             texts = [texts]
-        
-        try:
-            embeddings = self.model.encode(
-                texts,
-                batch_size=batch_size,
-                show_progress_bar=False,
-                convert_to_numpy=True
-            )
-            return embeddings
-        except Exception as e:
-            wprint(f"Embedding编码错误: {e}")
-            return None
+
+        # 分批处理，防止大列表导致OOM
+        if len(texts) > batch_size:
+            chunks = [texts[i:i + batch_size] for i in range(0, len(texts), batch_size)]
+            results = []
+            for chunk in chunks:
+                emb = self._encode_chunk(chunk, batch_size)
+                if emb is None:
+                    return None
+                results.append(emb)
+            return np.concatenate(results, axis=0)
+
+        return self._encode_chunk(texts, batch_size)
+
+    def _encode_chunk(self, texts: List[str], batch_size: int) -> Optional[np.ndarray]:
+        """编码单批文本，使用锁保证线程安全。"""
+        with self._encode_lock:
+            try:
+                return self.model.encode(
+                    texts,
+                    batch_size=batch_size,
+                    show_progress_bar=False,
+                    convert_to_numpy=True
+                )
+            except Exception as e:
+                wprint(f"Embedding编码错误: {e}")
+                return None
     
     def is_available(self) -> bool:
         """检查embedding模型是否可用"""

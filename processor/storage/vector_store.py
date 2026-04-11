@@ -107,8 +107,10 @@ class VectorStore:
         """
         conn = self._get_conn()
         emb_bytes = _floats_to_bytes(embedding)
+        # vec0 虚拟表不支持 INSERT OR REPLACE，需先 DELETE 再 INSERT
+        conn.execute(f"DELETE FROM {table} WHERE uuid = ?", (uuid,))
         conn.execute(
-            f"INSERT OR REPLACE INTO {table}(uuid, embedding) VALUES(?, ?)",
+            f"INSERT INTO {table}(uuid, embedding) VALUES(?, ?)",
             (uuid, emb_bytes),
         )
         conn.commit()
@@ -118,9 +120,12 @@ class VectorStore:
         if not items:
             return
         conn = self._get_conn()
+        # vec0 虚拟表不支持 INSERT OR REPLACE，需先批量删除再插入
+        uuids = [(uuid,) for uuid, _ in items]
+        conn.executemany(f"DELETE FROM {table} WHERE uuid = ?", uuids)
         rows = [(uuid, _floats_to_bytes(emb)) for uuid, emb in items]
         conn.executemany(
-            f"INSERT OR REPLACE INTO {table}(uuid, embedding) VALUES(?, ?)",
+            f"INSERT INTO {table}(uuid, embedding) VALUES(?, ?)",
             rows,
         )
         conn.commit()

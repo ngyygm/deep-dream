@@ -11,6 +11,7 @@ from ..storage.manager import StorageManager
 from ..llm.client import LLMClient
 from ..debug_log import log as dbg, log_section as dbg_section
 from ..utils import wprint, normalize_entity_pair
+from .extraction import MIN_RELATION_CONTENT_LENGTH
 
 
 class RelationProcessor:
@@ -649,8 +650,8 @@ class RelationProcessor:
                             base_time: Optional[datetime] = None,
                             entity_lookup: Optional[Dict[str, Any]] = None) -> Optional[Relation]:
         """构建新关系对象，但不立即写库。"""
-        # 内容校验：过短的内容（< 5字符）不是有效关系描述
-        if not content or len(content.strip()) < 5:
+        # 内容校验：过短的内容不是有效关系描述
+        if not content or len(content.strip()) < MIN_RELATION_CONTENT_LENGTH:
             if verbose_relation:
                 wprint(f"[关系操作] ⚠️  跳过: 关系内容过短 ({len(content.strip()) if content else 0}字符): {entity1_name} <-> {entity2_name}")
             return None
@@ -732,7 +733,7 @@ class RelationProcessor:
         """构建关系新版本对象，但不立即写库。"""
 
         # 内容校验：过短的内容不是有效关系描述
-        if not content or len(content.strip()) < 5:
+        if not content or len(content.strip()) < MIN_RELATION_CONTENT_LENGTH:
             if verbose_relation:
                 wprint(f"[关系操作] ⚠️  跳过版本: 内容过短 ({len(content.strip()) if content else 0}字符): {family_id}")
             return None
