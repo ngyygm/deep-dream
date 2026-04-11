@@ -215,7 +215,7 @@ def find_entities_search():
                 top_k=max_results,
                 semantic_threshold=threshold,
             )
-            entities = [e for e, _ in hybrid_ents]
+            return ok([h.entity_to_dict(e, _score=score) for e, score in hybrid_ents])
         else:
             entities = processor.storage.search_entities_by_similarity(
                 query_name=query_name,

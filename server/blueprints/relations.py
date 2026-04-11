@@ -81,6 +81,8 @@ def find_unified():
         _hybrid_searcher = HybridSearcher(storage) if search_mode == "hybrid" else None
 
         with _perf_timer("find_unified | step1_entity_recall"):
+            # Track scores from hybrid search for entity serialization
+            entity_score_map: Dict[str, float] = {}
             if search_mode == "bm25":
                 matched_entities = storage.search_entities_by_bm25(
                     query, limit=max_entities
@@ -91,8 +93,10 @@ def find_unified():
                     top_k=max_entities,
                     semantic_threshold=similarity_threshold,
                 )
-                # HybridSearcher returns List[Tuple[Entity, float]], unpack
-                matched_entities = [e for e, _ in hybrid_entities]
+                matched_entities = []
+                for e, score in hybrid_entities:
+                    matched_entities.append(e)
+                    entity_score_map[e.absolute_id] = score
             else:
                 matched_entities = storage.search_entities_by_similarity(
                     query_name=query,
@@ -104,6 +108,8 @@ def find_unified():
                 )
 
         # --- 第二步：按 search_mode 召回关系 ---
+        # Track scores from hybrid search for relation serialization
+        relation_score_map: Dict[str, float] = {}
         with _perf_timer("find_unified | step2_relation_recall"):
             if search_mode == "bm25":
                 matched_relations = storage.search_relations_by_bm25(
@@ -115,8 +121,10 @@ def find_unified():
                     top_k=max_relations,
                     semantic_threshold=similarity_threshold,
                 )
-                # HybridSearcher returns List[Tuple[Relation, float]], unpack
-                matched_relations = [r for r, _ in hybrid_relations]
+                matched_relations = []
+                for r, score in hybrid_relations:
+                    matched_relations.append(r)
+                    relation_score_map[r.absolute_id] = score
             else:
                 matched_relations = storage.search_relations_by_similarity(
                     query_text=query,
@@ -191,14 +199,14 @@ def find_unified():
                 [e.family_id for e in final_entities]
             )
             searcher_hybrid = HybridSearcher(storage)
-            scored = [(e, 1.0) for e in final_entities]
+            scored = [(e, entity_score_map.get(e.absolute_id, 1.0)) for e in final_entities]
             reranked = searcher_hybrid.node_degree_rerank(scored, degree_map)
             final_entities = [e for e, _ in reranked[:max_entities]]
 
         result: Dict[str, Any] = {
             "query": query,
-            "entities": [entity_to_dict(e) for e in final_entities],
-            "relations": [relation_to_dict(r) for r in final_relations],
+            "entities": [entity_to_dict(e, _score=entity_score_map.get(e.absolute_id)) for e in final_entities],
+            "relations": [relation_to_dict(r, _score=relation_score_map.get(r.absolute_id)) for r in final_relations],
             "entity_count": len(final_entities),
             "relation_count": len(final_relations),
         }
@@ -291,6 +299,7 @@ def find_relations_search():
             relations = processor.storage.search_relations_by_bm25(
                 query_text, limit=max_results
             )
+            dicts = [relation_to_dict(r) for r in relations]
         elif search_mode == "hybrid":
             searcher = HybridSearcher(processor.storage)
             hybrid_rels = searcher.search_relations(
@@ -298,14 +307,14 @@ def find_relations_search():
                 top_k=max_results,
                 semantic_threshold=threshold,
             )
-            relations = [r for r, _ in hybrid_rels]
+            dicts = [relation_to_dict(r, _score=score) for r, score in hybrid_rels]
         else:
             relations = processor.storage.search_relations_by_similarity(
                 query_text=query_text,
                 threshold=threshold,
                 max_results=max_results,
             )
-        dicts = [relation_to_dict(r) for r in relations]
+            dicts = [relation_to_dict(r) for r in relations]
         enrich_relations(dicts, processor)
         return ok(dicts)
     except Exception as e:
@@ -961,11 +970,13 @@ def quick_search():
             top_k=max_entities,
             semantic_threshold=threshold,
         )
-        # Dedup: skip entities already found by exact match
+        # Dedup: skip entities already found by exact match, preserve scores
+        entity_score_map: Dict[str, float] = {}
         rrf_entities = []
         for ent, score in fused_entities:
             if ent.family_id not in seen_fids:
                 rrf_entities.append(ent)
+                entity_score_map[ent.absolute_id] = score
                 seen_fids.add(ent.family_id)
 
         entities = exact_entities + rrf_entities
@@ -977,10 +988,11 @@ def quick_search():
             top_k=max_relations,
             semantic_threshold=max(0.2, threshold - 0.1),
         )
+        relation_score_map: Dict[str, float] = {r.absolute_id: score for r, score in fused_relations}
         relations = [r for r, _ in fused_relations]
 
-        entity_dicts = [entity_to_dict(e) for e in entities]
-        rel_dicts = [relation_to_dict(r) for r in relations]
+        entity_dicts = [entity_to_dict(e, _score=entity_score_map.get(e.absolute_id)) for e in entities]
+        rel_dicts = [relation_to_dict(r, _score=relation_score_map.get(r.absolute_id)) for r in relations]
         enrich_relations(rel_dicts, processor)
 
         return ok({

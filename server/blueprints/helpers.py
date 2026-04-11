@@ -65,13 +65,14 @@ def run_async(coro):
 
 # ── Serialization helpers ─────────────────────────────────────────────────
 
-def entity_to_dict(e: Entity, max_content_length: int = 2000) -> Dict[str, Any]:
+def entity_to_dict(e: Entity, max_content_length: int = 2000,
+                   _score: Optional[float] = None) -> Dict[str, Any]:
     from processor.content_schema import parse_markdown_sections
     sections = parse_markdown_sections(e.content) if e.content else {}
     content = e.content or ""
     truncated = len(content) > max_content_length
     content_display = content[:max_content_length] + ("..." if truncated else "")
-    return {
+    d: Dict[str, Any] = {
         "id": e.absolute_id,  # 向后兼容
         "absolute_id": e.absolute_id,
         "family_id": e.family_id,
@@ -90,10 +91,13 @@ def entity_to_dict(e: Entity, max_content_length: int = 2000) -> Dict[str, Any]:
         "confidence": getattr(e, "confidence", None),
         "community_id": getattr(e, "community_id", None),
     }
+    if _score is not None:
+        d["_score"] = round(_score, 4)
+    return d
 
 
-def relation_to_dict(r: Relation) -> Dict[str, Any]:
-    return {
+def relation_to_dict(r: Relation, _score: Optional[float] = None) -> Dict[str, Any]:
+    d: Dict[str, Any] = {
         "id": r.absolute_id,  # 向后兼容
         "absolute_id": r.absolute_id,
         "family_id": r.family_id,
@@ -110,6 +114,9 @@ def relation_to_dict(r: Relation) -> Dict[str, Any]:
         "attributes": getattr(r, "attributes", None),
         "confidence": getattr(r, "confidence", None),
     }
+    if _score is not None:
+        d["_score"] = round(_score, 4)
+    return d
 
 
 def enrich_relations(relations_dicts, processor):

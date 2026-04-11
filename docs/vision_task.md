@@ -4,6 +4,33 @@
 
 ## 2026-04-12
 
+### [已完成] feat: Find query contract — similarity/fusion scores in all search API responses
+- entity_to_dict / relation_to_dict 新增 `_score` 可选参数，四舍五入到4位小数
+- 10处 HybridSearcher 分数丢弃修复，分数现在通过 serialization 传递到 API 响应：
+  - entities.py find_entities_search (hybrid mode)
+  - relations.py find_unified (entity + relation hybrid mode)
+  - relations.py find_relations_search (hybrid mode)
+  - relations.py quick_search (entity + relation RRF fusion)
+  - dream.py search_graph / agent_ask (entity + relation hybrid)
+  - dream.py stream_ask (entity + relation hybrid)
+- 修复 find_relations_search bm25 分支 UnboundLocalError（dicts 变量未定义）
+- 非混合模式（semantic/bm25）不包含 _score 字段（向后兼容）
+- 36项测试覆盖4维度（序列化参数9 + 实体搜索9 + 关系搜索9 + Dream端点9），236项总测试全部通过
+- 影响: server/blueprints/helpers.py, entities.py, relations.py, dream.py
+
+### [已完成] feat: Dream pipeline corroboration integration + candidate layer fixes
+- commit: f40187d
+- RelationProcessor.process_relations_batch 自动对 dream 候选关系进行佐证
+- 修复 save_dream_relation 合并时保留 attributes（tier/status/corroboration state）
+- 修复 get_candidate_relations/count_candidate_relations 始终包含所有 tier（candidate/verified/rejected）
+- 36 项 pipeline 集成测试（4维度），152 项总测试全部通过
+
+### [已完成] feat: Dream Candidate Layer — promotion, demotion, corroboration, batch operations
+- commit: 4b25d5d
+- DreamStoreMixin 新增: promote_candidate_relation, demote_candidate_relation, corroborate_dream_relation, reject_dream_cycle_relations
+- get_candidate_relations/count_candidate_relations 支持 status 过滤和分页
+- 36 项候选层测试 + 44 项 Dream Store 测试全部通过
+
 ### [已完成] refactor: manager.py 4963行→1269行 + 4 mixin模块 (mixin decomposition)
 - StorageManager 从 4963 行单类重构为 mixin 组合模式
 - 新增4个 mixin 模块:
@@ -311,4 +338,4 @@
 #### P2 功能对齐（vision.md）
 - [x] ~~**置信度引擎**: 置信度随证据增减动态调整~~ (8a07c7d)
 - [x] ~~**矛盾检测**: 版本间语义冲突检测与修正标注~~ (8c1f330)
-- [ ] **Dream 候选层**: Dream产物默认写入候选层，需证据/复核提升为事实
+- [x] ~~**Dream 候选层**: Dream产物默认写入候选层，需证据/复核提升为事实~~ (f40187d)

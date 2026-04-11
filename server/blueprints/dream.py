@@ -322,6 +322,8 @@ def agent_ask():
 
         entities = []
         relations = []
+        entity_score_map: Dict[str, float] = {}
+        relation_score_map: Dict[str, float] = {}
 
         if query_type == "traverse":
             entity_name = intent.get("entity_name", "")
@@ -345,12 +347,14 @@ def agent_ask():
             searcher = HybridSearcher(processor.storage)
             entity_hits = searcher.search_entities(query_text=query_text, query_embedding=query_embedding, top_k=20)
             relation_hits = searcher.search_relations(query_text=query_text, query_embedding=query_embedding, top_k=10)
-            # HybridSearcher returns List[Tuple[Entity/Relation, float]] — unpack
+            # Preserve scores from hybrid search
+            entity_score_map = {e.absolute_id: score for e, score in entity_hits}
+            relation_score_map = {r.absolute_id: score for r, score in relation_hits}
             entities = [e for e, _ in entity_hits]
             relations = [r for r, _ in relation_hits]
 
-        entity_dicts = [entity_to_dict(e) for e in entities]
-        relation_dicts = [relation_to_dict(r) for r in relations]
+        entity_dicts = [entity_to_dict(e, _score=entity_score_map.get(e.absolute_id)) for e in entities]
+        relation_dicts = [relation_to_dict(r, _score=relation_score_map.get(r.absolute_id)) for r in relations]
         result["results"] = {
             "entities": entity_dicts,
             "relations": relation_dicts,
@@ -412,6 +416,8 @@ def agent_ask_stream():
 
                 entities = []
                 relations = []
+                entity_score_map: Dict[str, float] = {}
+                relation_score_map: Dict[str, float] = {}
 
                 if query_type == "traverse":
                     entity_name = intent.get("entity_name", "")
@@ -435,7 +441,9 @@ def agent_ask_stream():
                     searcher = HybridSearcher(processor.storage)
                     entity_hits = searcher.search_entities(query_text=query_text, query_embedding=query_embedding, top_k=20)
                     relation_hits = searcher.search_relations(query_text=query_text, query_embedding=query_embedding, top_k=10)
-                    # HybridSearcher returns List[Tuple[Entity/Relation, float]] — unpack
+                    # Preserve scores from hybrid search
+                    entity_score_map = {e.absolute_id: score for e, score in entity_hits}
+                    relation_score_map = {r.absolute_id: score for r, score in relation_hits}
                     entities = [e for e, _ in entity_hits]
                     relations = [r for r, _ in relation_hits]
 
@@ -449,8 +457,8 @@ def agent_ask_stream():
                 }))
 
                 # Generate summary answer using LLM synthesis
-                entity_dicts = [entity_to_dict(e) for e in entities]
-                relation_dicts = [relation_to_dict(r) for r in relations]
+                entity_dicts = [entity_to_dict(e, _score=entity_score_map.get(e.absolute_id)) for e in entities]
+                relation_dicts = [relation_to_dict(r, _score=relation_score_map.get(r.absolute_id)) for r in relations]
                 result["results"] = {
                     "entities": entity_dicts,
                     "relations": relation_dicts,
