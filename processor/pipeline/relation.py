@@ -643,49 +643,39 @@ class RelationProcessor:
                 base_time=base_time,
             )
     
-    def _build_new_relation(self, entity1_id: str, entity2_id: str,
+    def _construct_relation(self, entity1_id: str, entity2_id: str,
                             content: str, episode_id: str,
+                            family_id: str,
                             entity1_name: str = "", entity2_name: str = "",
                             verbose_relation: bool = True, source_document: str = "",
                             base_time: Optional[datetime] = None,
-                            entity_lookup: Optional[Dict[str, Any]] = None) -> Optional[Relation]:
-        """构建新关系对象，但不立即写库。"""
-        # 内容校验：过短的内容不是有效关系描述
-        if not content or len(content.strip()) < MIN_RELATION_CONTENT_LENGTH:
-            if verbose_relation:
-                wprint(f"[关系操作] ⚠️  跳过: 关系内容过短 ({len(content.strip()) if content else 0}字符): {entity1_name} <-> {entity2_name}")
-            return None
-
-        # 通过 family_id 获取实体的最新版本（优先使用预取缓存）
+                            entity_lookup: Optional[Dict[str, Any]] = None,
+                            skip_label: str = "关系创建") -> Optional[Relation]:
+        """Shared helper: resolve entities, validate, and construct a Relation object."""
         entity1 = (entity_lookup or {}).get(entity1_id) or self.storage.get_entity_by_family_id(entity1_id)
         entity2 = (entity_lookup or {}).get(entity2_id) or self.storage.get_entity_by_family_id(entity2_id)
-        
+
         if not entity1 or not entity2:
             missing_info = []
             if not entity1:
                 missing_info.append(f"entity1: {entity1_name or '(未提供名称)'} (family_id: {entity1_id})")
             if not entity2:
                 missing_info.append(f"entity2: {entity2_name or '(未提供名称)'} (family_id: {entity2_id})")
-            
             if verbose_relation:
-                wprint(f"[关系操作] ⚠️  警告: 无法找到实体: {', '.join(missing_info)}，跳过关系创建")
+                wprint(f"[关系操作] ⚠️  警告: 无法找到实体: {', '.join(missing_info)}，跳过{skip_label}")
             return None
-        
+
         ts = base_time if base_time is not None else datetime.now()
         processed_time = datetime.now()
-        family_id = f"rel_{uuid.uuid4().hex[:12]}"
         relation_record_id = f"relation_{processed_time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
 
         if entity1.name <= entity2.name:
-            entity1_absolute_id = entity1.absolute_id
-            entity2_absolute_id = entity2.absolute_id
+            entity1_absolute_id, entity2_absolute_id = entity1.absolute_id, entity2.absolute_id
         else:
-            entity1_absolute_id = entity2.absolute_id
-            entity2_absolute_id = entity1.absolute_id
+            entity1_absolute_id, entity2_absolute_id = entity2.absolute_id, entity1.absolute_id
 
         source_document_only = source_document.split('/')[-1] if source_document else ""
-
-        relation = Relation(
+        return Relation(
             absolute_id=relation_record_id,
             family_id=family_id,
             entity1_absolute_id=entity1_absolute_id,
@@ -699,7 +689,27 @@ class RelationProcessor:
             summary=content[:200].strip(),
             confidence=0.7,
         )
-        return relation
+
+    def _build_new_relation(self, entity1_id: str, entity2_id: str,
+                            content: str, episode_id: str,
+                            entity1_name: str = "", entity2_name: str = "",
+                            verbose_relation: bool = True, source_document: str = "",
+                            base_time: Optional[datetime] = None,
+                            entity_lookup: Optional[Dict[str, Any]] = None) -> Optional[Relation]:
+        """构建新关系对象，但不立即写库。"""
+        if not content or len(content.strip()) < MIN_RELATION_CONTENT_LENGTH:
+            if verbose_relation:
+                wprint(f"[关系操作] ⚠️  跳过: 关系内容过短 ({len(content.strip()) if content else 0}字符): {entity1_name} <-> {entity2_name}")
+            return None
+
+        return self._construct_relation(
+            entity1_id, entity2_id, content, episode_id,
+            family_id=f"rel_{uuid.uuid4().hex[:12]}",
+            entity1_name=entity1_name, entity2_name=entity2_name,
+            verbose_relation=verbose_relation, source_document=source_document,
+            base_time=base_time, entity_lookup=entity_lookup,
+            skip_label="关系创建",
+        )
 
     def _create_new_relation(self, entity1_id: str, entity2_id: str,
                             content: str, episode_id: str,
@@ -731,14 +741,12 @@ class RelationProcessor:
                                  entity_lookup: Optional[Dict[str, Any]] = None,
                                  _existing_relation: Optional[Relation] = None) -> Optional[Relation]:
         """构建关系新版本对象，但不立即写库。"""
-
-        # 内容校验：过短的内容不是有效关系描述
         if not content or len(content.strip()) < MIN_RELATION_CONTENT_LENGTH:
             if verbose_relation:
                 wprint(f"[关系操作] ⚠️  跳过版本: 内容过短 ({len(content.strip()) if content else 0}字符): {family_id}")
             return None
 
-        # 内容未变化则跳过版本创建，避免版本膨胀（优先使用传入的已有关系）
+        # 内容未变化则跳过版本创建，避免版本膨胀
         existing_relation = _existing_relation or self.storage.get_relation_by_family_id(family_id)
         if existing_relation and existing_relation.content:
             if content.strip() == existing_relation.content.strip() or \
@@ -747,49 +755,14 @@ class RelationProcessor:
                     wprint(f"[关系操作] 内容未变化，跳过版本创建: {family_id}")
                 return None
 
-        # 通过 family_id 获取实体的最新版本（优先使用预取缓存）
-        entity1 = (entity_lookup or {}).get(entity1_id) or self.storage.get_entity_by_family_id(entity1_id)
-        entity2 = (entity_lookup or {}).get(entity2_id) or self.storage.get_entity_by_family_id(entity2_id)
-        
-        if not entity1 or not entity2:
-            missing_info = []
-            if not entity1:
-                missing_info.append(f"entity1: {entity1_name or '(未提供名称)'} (family_id: {entity1_id})")
-            if not entity2:
-                missing_info.append(f"entity2: {entity2_name or '(未提供名称)'} (family_id: {entity2_id})")
-            
-            if verbose_relation:
-                wprint(f"[关系操作] ⚠️  警告: 无法找到实体: {', '.join(missing_info)}，跳过关系版本创建")
-            return None
-        
-        ts = base_time if base_time is not None else datetime.now()
-        processed_time = datetime.now()
-        relation_record_id = f"relation_{processed_time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
-
-        if entity1.name <= entity2.name:
-            entity1_absolute_id = entity1.absolute_id
-            entity2_absolute_id = entity2.absolute_id
-        else:
-            entity1_absolute_id = entity2.absolute_id
-            entity2_absolute_id = entity1.absolute_id
-
-        source_document_only = source_document.split('/')[-1] if source_document else ""
-
-        relation = Relation(
-            absolute_id=relation_record_id,
+        return self._construct_relation(
+            entity1_id, entity2_id, content, episode_id,
             family_id=family_id,
-            entity1_absolute_id=entity1_absolute_id,
-            entity2_absolute_id=entity2_absolute_id,
-            content=content,
-            event_time=ts,
-            processed_time=processed_time,
-            episode_id=episode_id,
-            source_document=source_document_only,
-            content_format="markdown",
-            summary=content[:200].strip(),
-            confidence=0.7,
+            entity1_name=entity1_name, entity2_name=entity2_name,
+            verbose_relation=verbose_relation, source_document=source_document,
+            base_time=base_time, entity_lookup=entity_lookup,
+            skip_label="关系版本创建",
         )
-        return relation
 
     def _create_relation_version(self, family_id: str, entity1_id: str,
                                  entity2_id: str, content: str,
