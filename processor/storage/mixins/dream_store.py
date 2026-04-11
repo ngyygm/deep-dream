@@ -505,7 +505,14 @@ class DreamStoreMixin:
             processed_time=now,
             episode_id=episode_id or "",
             source_document=source_doc,
-            confidence=confidence,
+            confidence=min(confidence, 0.5),
+            attributes=json.dumps({
+                "tier": "candidate",
+                "status": "hypothesized",
+                "corroboration_count": 0,
+                "created_by_dream": dream_cycle_id or "unknown",
+                "created_at": now.isoformat(),
+            }),
         )
 
         self.save_relation(relation)
@@ -517,6 +524,321 @@ class DreamStoreMixin:
             "entity1_name": entity1.name,
             "entity2_name": entity2.name,
             "action": "created",
+        }
+
+    # ------------------------------------------------------------------
+    # Dream Candidate Layer — promotion / demotion / listing
+    # ------------------------------------------------------------------
+
+    def get_candidate_relations(self, limit: int = 50, offset: int = 0,
+                                 status: str = None) -> List[Relation]:
+        """获取候选层关系（包括已提升/已拒绝的 dream 关系）。
+
+        Args:
+            limit: 最大返回数
+            offset: 分页偏移
+            status: 可选过滤 "hypothesized" | "verified" | "rejected"
+        """
+        conn = self._get_conn()
+        cursor = conn.cursor()
+
+        status_filter = ""
+        params: list = []
+        if status:
+            status_filter = " AND json_extract(attributes, '$.status') = ?"
+            params.append(status)
+
+        # When status is specified, match any dream relation (tier may have changed)
+        tier_clause = "AND json_extract(attributes, '$.tier') = 'candidate'" if not status else "AND json_extract(attributes, '$.tier') IN ('candidate', 'verified', 'rejected')"
+
+        cursor.execute(f"""
+            SELECT {self._RELATION_SELECT}
+            FROM (
+                SELECT *, ROW_NUMBER() OVER (PARTITION BY family_id ORDER BY processed_time DESC) AS rn
+                FROM relations
+                WHERE invalid_at IS NULL
+                  AND source_document LIKE 'dream%%'
+                  {tier_clause}
+                  {status_filter}
+            )
+            WHERE rn = 1
+            ORDER BY processed_time DESC
+            LIMIT ? OFFSET ?
+        """, params + [limit, offset])
+
+        return [self._row_to_relation(row) for row in cursor.fetchall()]
+
+    def count_candidate_relations(self, status: str = None) -> int:
+        """统计候选层关系数量（包括已提升/已拒绝的 dream 关系）。"""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+
+        status_filter = ""
+        params: list = []
+        if status:
+            status_filter = " AND json_extract(attributes, '$.status') = ?"
+            params.append(status)
+
+        # When status is specified, match any dream relation with that status
+        # (tier may have changed from 'candidate' to 'verified'/'rejected')
+        tier_clause = "AND json_extract(attributes, '$.tier') = 'candidate'" if not status else "AND json_extract(attributes, '$.tier') IN ('candidate', 'verified', 'rejected')"
+
+        cursor.execute(f"""
+            SELECT COUNT(DISTINCT family_id)
+            FROM relations
+            WHERE invalid_at IS NULL
+              AND source_document LIKE 'dream%%'
+              {tier_clause}
+              {status_filter}
+        """, params)
+        return cursor.fetchone()[0]
+
+    def promote_candidate_relation(self, family_id: str,
+                                    evidence_source: str = "manual",
+                                    new_confidence: float = None) -> Dict[str, Any]:
+        """将候选关系提升为已验证状态。
+
+        Args:
+            family_id: 关系 family_id
+            evidence_source: 提升来源 ("manual" | "remember" | "dream_corroboration")
+            new_confidence: 可选的新置信度（不传则自动提升到 0.7）
+
+        Returns:
+            {"family_id": "...", "old_status": "...", "new_status": "verified", "confidence": ...}
+        """
+        resolved = self.resolve_family_id(family_id)
+        if not resolved:
+            raise ValueError(f"关系不存在: {family_id}")
+
+        rel = self.get_relation_by_family_id(resolved)
+        if not rel:
+            raise ValueError(f"关系不存在: {family_id}")
+
+        # Parse current attributes
+        try:
+            attrs = json.loads(rel.attributes) if rel.attributes else {}
+        except (json.JSONDecodeError, TypeError):
+            attrs = {}
+
+        old_status = attrs.get("status", "unknown")
+        old_tier = attrs.get("tier", "unknown")
+
+        # Update attributes
+        attrs["tier"] = "verified"
+        attrs["status"] = "verified"
+        attrs["promoted_by"] = evidence_source
+        attrs["promoted_at"] = datetime.now().isoformat()
+        attrs["corroboration_count"] = attrs.get("corroboration_count", 0) + 1
+
+        # Create new version with updated attributes and confidence
+        now = datetime.now()
+        record_id = f"relation_{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+        new_conf = new_confidence if new_confidence is not None else max(rel.confidence or 0.5, 0.7)
+
+        relation = Relation(
+            absolute_id=record_id,
+            family_id=rel.family_id,
+            entity1_absolute_id=rel.entity1_absolute_id,
+            entity2_absolute_id=rel.entity2_absolute_id,
+            content=rel.content,
+            event_time=now,
+            processed_time=now,
+            episode_id=rel.episode_id,
+            source_document=rel.source_document,
+            confidence=new_conf,
+            attributes=json.dumps(attrs),
+        )
+        self.save_relation(relation)
+
+        return {
+            "family_id": resolved,
+            "old_status": old_status,
+            "old_tier": old_tier,
+            "new_status": "verified",
+            "new_tier": "verified",
+            "confidence": new_conf,
+        }
+
+    def demote_candidate_relation(self, family_id: str,
+                                   reason: str = "") -> Dict[str, Any]:
+        """将候选关系降级为已拒绝状态。
+
+        Args:
+            family_id: 关系 family_id
+            reason: 拒绝原因
+
+        Returns:
+            {"family_id": "...", "old_status": "...", "new_status": "rejected"}
+        """
+        resolved = self.resolve_family_id(family_id)
+        if not resolved:
+            raise ValueError(f"关系不存在: {family_id}")
+
+        rel = self.get_relation_by_family_id(resolved)
+        if not rel:
+            raise ValueError(f"关系不存在: {family_id}")
+
+        # Parse current attributes
+        try:
+            attrs = json.loads(rel.attributes) if rel.attributes else {}
+        except (json.JSONDecodeError, TypeError):
+            attrs = {}
+
+        old_status = attrs.get("status", "unknown")
+
+        # Update attributes
+        attrs["status"] = "rejected"
+        attrs["rejected_reason"] = reason
+        attrs["rejected_at"] = datetime.now().isoformat()
+
+        # Create new version with lower confidence
+        now = datetime.now()
+        record_id = f"relation_{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+
+        relation = Relation(
+            absolute_id=record_id,
+            family_id=rel.family_id,
+            entity1_absolute_id=rel.entity1_absolute_id,
+            entity2_absolute_id=rel.entity2_absolute_id,
+            content=rel.content,
+            event_time=now,
+            processed_time=now,
+            episode_id=rel.episode_id,
+            source_document=rel.source_document,
+            confidence=min(rel.confidence or 0.3, 0.2),
+            attributes=json.dumps(attrs),
+        )
+        self.save_relation(relation)
+
+        return {
+            "family_id": resolved,
+            "old_status": old_status,
+            "new_status": "rejected",
+            "confidence": relation.confidence,
+        }
+
+    def corroborate_dream_relation(self, entity1_family_id: str, entity2_family_id: str,
+                                    corroboration_source: str = "remember") -> Optional[Dict[str, Any]]:
+        """当 remember 提取的关系与 dream 候选关系匹配时，自动增加佐证并可能提升。
+
+        Args:
+            entity1_family_id: 实体1 family_id
+            entity2_family_id: 实体2 family_id
+            corroboration_source: 佐证来源 ("remember" | "dream")
+
+        Returns:
+            提升结果 dict，或 None（未找到匹配的候选关系）
+        """
+        # Find candidate relation between these entities
+        rels = self.get_relations_by_entities(entity1_family_id, entity2_family_id)
+        if not rels:
+            return None
+
+        for rel in rels:
+            try:
+                attrs = json.loads(rel.attributes) if rel.attributes else {}
+            except (json.JSONDecodeError, TypeError):
+                attrs = {}
+
+            # Only corroborate candidate-tier dream relations
+            if (attrs.get("tier") == "candidate" and
+                attrs.get("status") == "hypothesized" and
+                rel.source_document and rel.source_document.startswith("dream")):
+
+                # Increment corroboration count
+                count = attrs.get("corroboration_count", 0) + 1
+                attrs["corroboration_count"] = count
+                attrs.setdefault("corroboration_sources", []).append(corroboration_source)
+
+                # Auto-promote after 2 corroborations
+                if count >= 2:
+                    # First save updated attributes so promote reads them
+                    now = datetime.now()
+                    record_id = f"relation_{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+                    new_conf = min((rel.confidence or 0.5) + 0.1, 0.69)
+
+                    pre_promote = Relation(
+                        absolute_id=record_id,
+                        family_id=rel.family_id,
+                        entity1_absolute_id=rel.entity1_absolute_id,
+                        entity2_absolute_id=rel.entity2_absolute_id,
+                        content=rel.content,
+                        event_time=now,
+                        processed_time=now,
+                        episode_id=rel.episode_id,
+                        source_document=rel.source_document,
+                        confidence=new_conf,
+                        attributes=json.dumps(attrs),
+                    )
+                    self.save_relation(pre_promote)
+
+                    return self.promote_candidate_relation(
+                        rel.family_id,
+                        evidence_source=f"auto:{corroboration_source}",
+                    )
+                else:
+                    # Update attributes but don't promote yet
+                    now = datetime.now()
+                    record_id = f"relation_{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+                    new_conf = min((rel.confidence or 0.5) + 0.1, 0.69)  # cap below 0.7 until promoted
+
+                    updated = Relation(
+                        absolute_id=record_id,
+                        family_id=rel.family_id,
+                        entity1_absolute_id=rel.entity1_absolute_id,
+                        entity2_absolute_id=rel.entity2_absolute_id,
+                        content=rel.content,
+                        event_time=now,
+                        processed_time=now,
+                        episode_id=rel.episode_id,
+                        source_document=rel.source_document,
+                        confidence=new_conf,
+                        attributes=json.dumps(attrs),
+                    )
+                    self.save_relation(updated)
+
+                    return {
+                        "family_id": rel.family_id,
+                        "corroboration_count": count,
+                        "status": "hypothesized",
+                        "confidence": new_conf,
+                        "message": f"佐证计数: {count}/2，需要2次佐证才能提升",
+                    }
+
+        return None
+
+    def reject_dream_cycle_relations(self, dream_cycle_id: str) -> Dict[str, Any]:
+        """批量拒绝指定 Dream 周期产生的所有未验证候选关系。
+
+        Returns:
+            {"rejected_count": N, "cycle_id": "..."}
+        """
+        conn = self._get_conn()
+        cursor = conn.cursor()
+
+        # Find all candidate relations from this cycle
+        cursor.execute(f"""
+            SELECT DISTINCT family_id
+            FROM relations
+            WHERE source_document = ?
+              AND json_extract(attributes, '$.tier') = 'candidate'
+              AND json_extract(attributes, '$.status') = 'hypothesized'
+              AND invalid_at IS NULL
+        """, [f"dream:{dream_cycle_id}"])
+
+        family_ids = [row[0] for row in cursor.fetchall()]
+
+        rejected = 0
+        for fid in family_ids:
+            try:
+                self.demote_candidate_relation(fid, reason=f"批量拒绝: dream cycle {dream_cycle_id}")
+                rejected += 1
+            except Exception:
+                pass
+
+        return {
+            "rejected_count": rejected,
+            "cycle_id": dream_cycle_id,
         }
 
     # ------------------------------------------------------------------
