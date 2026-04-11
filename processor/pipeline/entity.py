@@ -840,6 +840,112 @@ class EntityProcessor:
             new_entity.name: new_entity.family_id,
         }, new_entity
 
+    def _search_entity_candidates(
+        self,
+        entity_name: str,
+        entity_content: str,
+        similarity_threshold: float,
+        jaccard_search_threshold: Optional[float] = None,
+        embedding_name_search_threshold: Optional[float] = None,
+        embedding_full_search_threshold: Optional[float] = None,
+        extracted_entity_names: Optional[set] = None,
+        extracted_relation_pairs: Optional[set] = None,
+    ) -> List[Entity]:
+        """混合搜索候选实体：Jaccard + Embedding（name / name+content），去重合并后返回。"""
+        jaccard_threshold = jaccard_search_threshold if jaccard_search_threshold is not None else min(similarity_threshold, 0.6)
+        embedding_name_threshold = embedding_name_search_threshold if embedding_name_search_threshold is not None else min(similarity_threshold, 0.6)
+        embedding_full_threshold = embedding_full_search_threshold if embedding_full_search_threshold is not None else min(similarity_threshold, 0.6)
+
+        snippet_len = self.llm_client.effective_entity_snippet_length()
+
+        # 模式0：name-only Jaccard
+        candidates_jaccard = self.storage.search_entities_by_similarity(
+            entity_name, query_content=None, threshold=jaccard_threshold,
+            max_results=self.max_similar_entities,
+            content_snippet_length=snippet_len,
+            text_mode="name_only", similarity_method="jaccard"
+        )
+
+        # 补充搜索：去称谓核心名称
+        _core_name = self._TITLE_SUFFIXES_RE.sub('', entity_name).strip()
+        _has_title_suffix = _core_name != entity_name and len(_core_name) >= 2
+        candidates_core_jaccard = []
+        if _has_title_suffix:
+            candidates_core_jaccard = self.storage.search_entities_by_similarity(
+                _core_name, query_content=None, threshold=jaccard_threshold,
+                max_results=self.max_similar_entities,
+                content_snippet_length=snippet_len,
+                text_mode="name_only", similarity_method="jaccard"
+            )
+
+        # 模式1：name-only Embedding
+        candidates_name_embedding = self.storage.search_entities_by_similarity(
+            entity_name, query_content=None, threshold=embedding_name_threshold,
+            max_results=self.max_similar_entities,
+            content_snippet_length=snippet_len,
+            text_mode="name_only", similarity_method="embedding"
+        )
+
+        # 模式2：name+content Embedding
+        candidates_full_embedding = self.storage.search_entities_by_similarity(
+            entity_name, query_content=entity_content, threshold=embedding_full_threshold,
+            max_results=self.max_similar_entities,
+            content_snippet_length=snippet_len,
+            text_mode="name_and_content", similarity_method="embedding"
+        )
+
+        if self._entity_tree_log():
+            wprint(f"  │  ├─ Jaccard搜索（name_only）: {len(candidates_jaccard)} 个")
+            if _has_title_suffix:
+                wprint(f"  │  ├─ 核心名称Jaccard搜索（{_core_name}）: {len(candidates_core_jaccard)} 个")
+            wprint(f"  │  ├─ Embedding搜索（name_only）: {len(candidates_name_embedding)} 个")
+            wprint(f"  │  ├─ Embedding搜索（name+content）: {len(candidates_full_embedding)} 个")
+
+        # 按 family_id 去重，保留最新版本
+        entity_dict: Dict[str, Entity] = {}
+        all_candidates = candidates_jaccard + candidates_core_jaccard + candidates_name_embedding + candidates_full_embedding
+        for entity in all_candidates:
+            existing = entity_dict.get(entity.family_id)
+            if existing is None or entity.processed_time > existing.processed_time:
+                entity_dict[entity.family_id] = entity
+        similar_entities = list(entity_dict.values())
+
+        # 过滤：已在当前抽取列表且已有关系的候选跳过
+        if extracted_entity_names and extracted_relation_pairs:
+            similar_entities = self._filter_candidates_by_existing_relations(
+                similar_entities, entity_name,
+                extracted_entity_names, extracted_relation_pairs,
+            )
+
+        return similar_entities
+
+    def _filter_candidates_by_existing_relations(
+        self,
+        candidates: List[Entity],
+        entity_name: str,
+        extracted_entity_names: set,
+        extracted_relation_pairs: set,
+    ) -> List[Entity]:
+        """过滤掉已有关系的候选实体（步骤3已处理）。"""
+        filtered = []
+        skipped = 0
+        for candidate in candidates:
+            if candidate.name == entity_name:
+                filtered.append(candidate)
+            elif candidate.name not in extracted_entity_names:
+                filtered.append(candidate)
+            else:
+                pair_key = tuple(sorted([entity_name, candidate.name]))
+                if any(pair[0] == pair_key for pair in extracted_relation_pairs):
+                    skipped += 1
+                    if self._entity_tree_log():
+                        wprint(f"  │  │  ├─ {candidate.name}: 跳过已有关系（步骤3已处理）")
+                else:
+                    filtered.append(candidate)
+        if self._entity_tree_log() and skipped > 0:
+            wprint(f"  │  跳过 {skipped} 个已在当前抽取列表且已存在关系的候选实体（步骤3已处理）")
+        return filtered
+
     def _process_single_entity(self, extracted_entity: Dict[str, str],
                                episode_id: str,
                                similarity_threshold: float,
@@ -858,134 +964,32 @@ class EntityProcessor:
                                _version_lock: Optional[Any] = None) -> Tuple[Optional[Entity], List[Dict], Dict[str, str]]:
         """
         处理单个实体
-        
+
         流程：
         6.1 初步筛选：判断当前抽取的实体与检索到的实体列表，是否需要合并或存在关系
         6.2 精细化判断：对需要处理的候选进行详细判断，决定合并/创建关系/新建实体
         6.3 创建新实体并分配ID，更新关系边中的实体名称到ID映射
-        
+
         Returns:
             Tuple[处理后的实体, 待处理的关系列表（使用实体名称）, 实体名称到ID的映射]
         """
         entity_name = extracted_entity['name']
         entity_content = extracted_entity['content']
-        
+
         # 显示进度信息
         if self._entity_tree_log():
             if total_entities > 0:
                 wprint(f"  ├─ 处理实体 [{entity_index}/{total_entities}]: {entity_name}")
             else:
                 wprint(f"  ├─ 处理实体: {entity_name}")
-        
-        # 步骤1：使用混合搜索策略搜索相关实体并合并结果
-        # 为三种搜索方法分别设置阈值（如果未指定，使用默认的similarity_threshold）
-        jaccard_threshold = jaccard_search_threshold if jaccard_search_threshold is not None else min(similarity_threshold, 0.6)
-        embedding_name_threshold = embedding_name_search_threshold if embedding_name_search_threshold is not None else min(similarity_threshold, 0.6)
-        embedding_full_threshold = embedding_full_search_threshold if embedding_full_search_threshold is not None else min(similarity_threshold, 0.6)
 
-        # 名称规范化：去除常见称谓后缀，用于补充搜索
-        _TITLE_SUFFIXES = r'(?:教授|博士|先生|女士|同学|老师|工程师|经理|总监|院长|所长|主任|校长|站长|馆长|主编|首席|总裁|部长|省长|市长|县长|区长|镇长|村长|将军|上校|中校|少校|大校|司令|参谋|政委|舰长|机长)$'
-        _core_name = re.sub(_TITLE_SUFFIXES, '', entity_name).strip()
-        _has_title_suffix = _core_name != entity_name and len(_core_name) >= 2
-
-        # 模式0：只用name检索（使用jaccard）
-        candidates_jaccard = self.storage.search_entities_by_similarity(
-            entity_name,
-            query_content=None,
-            threshold=jaccard_threshold,
-            max_results=self.max_similar_entities,
-            content_snippet_length=self.llm_client.effective_entity_snippet_length(),
-            text_mode="name_only",
-            similarity_method="jaccard"
+        # 步骤1：混合搜索候选实体
+        similar_entities = self._search_entity_candidates(
+            entity_name, entity_content, similarity_threshold,
+            jaccard_search_threshold, embedding_name_search_threshold,
+            embedding_full_search_threshold,
+            extracted_entity_names, extracted_relation_pairs,
         )
-
-        # 补充搜索：用去除称谓后的核心名称再搜一轮（如 "张伟教授" → "张伟"）
-        candidates_core_jaccard = []
-        if _has_title_suffix:
-            candidates_core_jaccard = self.storage.search_entities_by_similarity(
-                _core_name,
-                query_content=None,
-                threshold=jaccard_threshold,
-                max_results=self.max_similar_entities,
-                content_snippet_length=self.llm_client.effective_entity_snippet_length(),
-                text_mode="name_only",
-                similarity_method="jaccard"
-            )
-
-        # 模式1：只用name检索（使用embedding）
-        candidates_name_embedding = self.storage.search_entities_by_similarity(
-            entity_name,
-            query_content=None,
-            threshold=embedding_name_threshold,
-            max_results=self.max_similar_entities,
-            content_snippet_length=self.llm_client.effective_entity_snippet_length(),
-            text_mode="name_only",
-            similarity_method="embedding"
-        )
-        
-        # 模式2：使用name+content检索（使用embedding）
-        candidates_full_embedding = self.storage.search_entities_by_similarity(
-            entity_name,
-            query_content=entity_content,
-            threshold=embedding_full_threshold,
-            max_results=self.max_similar_entities,
-            content_snippet_length=self.llm_client.effective_entity_snippet_length(),
-            text_mode="name_and_content",
-            similarity_method="embedding"
-        )
-        
-        # 输出搜索方法的结果
-        if self._entity_tree_log():
-            wprint(f"  │  ├─ Jaccard搜索（name_only）: {len(candidates_jaccard)} 个")
-            if _has_title_suffix:
-                wprint(f"  │  ├─ 核心名称Jaccard搜索（{_core_name}）: {len(candidates_core_jaccard)} 个")
-            wprint(f"  │  ├─ Embedding搜索（name_only）: {len(candidates_name_embedding)} 个")
-            wprint(f"  │  ├─ Embedding搜索（name+content）: {len(candidates_full_embedding)} 个")
-
-        # 合并结果并去重（按family_id去重，保留每个family_id的最新版本）
-        entity_dict = {}
-        for entity in candidates_jaccard + candidates_core_jaccard + candidates_name_embedding + candidates_full_embedding:
-            if entity.family_id not in entity_dict:
-                entity_dict[entity.family_id] = entity
-            else:
-                # 保留物理时间最新的
-                if entity.processed_time > entity_dict[entity.family_id].processed_time:
-                    entity_dict[entity.family_id] = entity
-
-        similar_entities = list(entity_dict.values())
-
-        # 过滤候选实体：如果候选实体在当前抽取列表中，且与当前实体已经存在关系，则跳过
-        # 因为步骤3（关系抽取）应该已经处理过这些实体之间的关系了
-        if extracted_entity_names and extracted_relation_pairs:
-            filtered_similar_entities = []
-            skipped_count = 0
-            for candidate in similar_entities:
-                # 如果候选实体的name与当前实体name相同，保留（可能是合并的情况）
-                if candidate.name == entity_name:
-                    filtered_similar_entities.append(candidate)
-                # 如果候选实体的name不在当前抽取列表中，保留（需要判断是否与新实体有关系）
-                elif candidate.name not in extracted_entity_names:
-                    filtered_similar_entities.append(candidate)
-                else:
-                    # 候选实体的name在当前抽取列表中，且与当前实体name不同
-                    # 检查是否在步骤3的关系中已经存在这两个实体之间的关系
-                    pair_key = tuple(sorted([entity_name, candidate.name]))
-                    # 检查是否有任何关系（不检查内容哈希，因为可能有不同的关系描述）
-                    has_relation = any(
-                        pair[0] == pair_key for pair in extracted_relation_pairs
-                    )
-                    if has_relation:
-                        # 已经存在关系，跳过
-                        skipped_count += 1
-                        if self._entity_tree_log():
-                            wprint(f"  │  │  ├─ {candidate.name}: 跳过已有关系（步骤3已处理）")
-                    else:
-                        # 虽然都在当前列表中，但还没有关系，需要判断
-                        filtered_similar_entities.append(candidate)
-            
-            similar_entities = filtered_similar_entities
-            if self._entity_tree_log() and skipped_count > 0:
-                wprint(f"  │  跳过 {skipped_count} 个已在当前抽取列表且已存在关系的候选实体（步骤3已处理）")
 
         if not similar_entities:
             # 没有找到相似实体，直接新建
@@ -1001,20 +1005,9 @@ class EntityProcessor:
         
         if self._entity_tree_log():
             wprint(f"  │  找到 {len(similar_entities)} 个候选实体")
-        
-        # 步骤2：找到同ID下最新的实体（去重）
-        # 按family_id分组，每个family_id只保留最新版本
-        entity_dict = {}
-        for entity in similar_entities:
-            if entity.family_id not in entity_dict:
-                entity_dict[entity.family_id] = entity
-            else:
-                # 保留物理时间最新的
-                if entity.processed_time > entity_dict[entity.family_id].processed_time:
-                    entity_dict[entity.family_id] = entity
-        
-        unique_entities = list(entity_dict.values())
-        
+
+        unique_entities = similar_entities  # already deduped by _search_entity_candidates
+
         # 步骤3：准备已有实体信息供LLM分析
         # 构建实体组：当前抽取的实体（作为第一个，即"当前分析的实体"）+ 候选实体
         entities_group = [
