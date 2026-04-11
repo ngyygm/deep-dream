@@ -1017,7 +1017,12 @@ class StorageManager(EntityStoreMixin, RelationStoreMixin, EpisodeStoreMixin, Co
         """使用 BFS 查找两个实体之间的所有最短路径。
 
         在 family_id 级别的无向图上执行 BFS，找到所有等长的最短路径，
-        然后重构路径中每对相邻实体之间的连接关系。        Args:
+        然后重构路径中每对相邻实体之间的连接关系。
+
+        使用 bounded neighborhood-expansion BFS，每次只查询当前 frontier 的邻居，
+        避免加载全量关系到内存中。
+
+        Args:
             source_family_id: 起始实体的 family_id
             target_family_id: 目标实体的 family_id
             max_depth: 最大搜索深度（默认6）
@@ -1067,62 +1072,107 @@ class StorageManager(EntityStoreMixin, RelationStoreMixin, EpisodeStoreMixin, Co
                 }],
             }
 
-        # 2. 加载全量最新关系（路径查找不需要 embedding）
-        all_relations = self.get_all_relations(exclude_embedding=True)
-        if not all_relations:
-            result_empty["source_entity"] = source_entity
-            result_empty["target_entity"] = target_entity
-            return result_empty
-
-        # 3. 构建 absolute_id → family_id 映射
+        # 2. Bounded BFS: expand neighbors level-by-level using SQL queries
+        # instead of loading all relations into memory.
         conn = self._get_conn()
         cursor = conn.cursor()
-        cursor.execute("SELECT id, family_id FROM entities")
-        abs_to_eid = {row[0]: row[1] for row in cursor.fetchall()}
 
-        # 4. 构建 family_id 级邻接表 和 entity_pair → [Relation] 映射
-        adjacency: Dict[str, Set[str]] = {}
-        pair_relations: Dict[Tuple[str, str], List[Relation]] = {}
-
-        for rel in all_relations:
-            eid1 = abs_to_eid.get(rel.entity1_absolute_id)
-            eid2 = abs_to_eid.get(rel.entity2_absolute_id)
-            if not eid1 or not eid2 or eid1 == eid2:
-                continue  # 跳过无法解析或自指向的关系
-
-            # 无向邻接
-            adjacency.setdefault(eid1, set()).add(eid2)
-            adjacency.setdefault(eid2, set()).add(eid1)
-
-            # 有序 pair → relations 映射
-            pair_key = tuple(sorted((eid1, eid2)))
-            pair_relations.setdefault(pair_key, []).append(rel)
-
-        # 5. 改进 BFS：记录所有最短路径父节点
         # visited: family_id → distance from source
         # parents: family_id → list of parent family_ids on shortest paths
         visited: Dict[str, int] = {source_family_id: 0}
         parents: Dict[str, List[str]] = {source_family_id: []}
+        # Cache: family_id → set of absolute_ids for each visited family_id
+        family_abs_ids: Dict[str, List[str]] = {}
+        # Cache: sorted_pair → [Relation] for explored edges
+        pair_relations: Dict[Tuple[str, str], List[Relation]] = {}
+
+        # Pre-load source entity's absolute_ids
+        cursor.execute("SELECT id FROM entities WHERE family_id = ?", (source_family_id,))
+        family_abs_ids[source_family_id] = [r[0] for r in cursor.fetchall()]
+
         queue = [source_family_id]
         found_depth = None
 
-        while queue and found_depth is None:
-            next_queue = []
-            for current in queue:
-                current_dist = visited[current]
-                if current_dist >= max_depth:
+        for _depth in range(max_depth):
+            if not queue or found_depth is not None:
+                break
+
+            # Collect all absolute_ids in current frontier
+            frontier_aids: List[str] = []
+            for fid in queue:
+                frontier_aids.extend(family_abs_ids.get(fid, []))
+
+            if not frontier_aids:
+                break
+
+            # Single query: get all relations touching frontier entities
+            # Returns (entity1_absolute_id, entity2_absolute_id) + relation columns
+            placeholders = ",".join("?" * len(frontier_aids))
+            cursor.execute(f"""
+                SELECT {self._RELATION_SELECT}
+                FROM relations
+                WHERE (entity1_absolute_id IN ({placeholders})
+                    OR entity2_absolute_id IN ({placeholders}))
+                  AND invalid_at IS NULL
+            """, tuple(frontier_aids) * 2)
+
+            frontier_rels = cursor.fetchall()
+
+            # Resolve absolute_ids → family_ids for all relation endpoints
+            all_rel_aids: Set[str] = set()
+            for row in frontier_rels:
+                all_rel_aids.add(row[2])  # entity1_absolute_id
+                all_rel_aids.add(row[3])  # entity2_absolute_id
+
+            # Batch resolve only the new absolute_ids we haven't seen
+            unresolved = all_rel_aids - set(aid for aids in family_abs_ids.values() for aid in aids)
+            aid_to_fid: Dict[str, str] = {}
+            if unresolved:
+                ph = ",".join("?" * len(unresolved))
+                cursor.execute(f"SELECT id, family_id FROM entities WHERE id IN ({ph})", list(unresolved))
+                for r in cursor.fetchall():
+                    aid_to_fid[r[0]] = r[1]
+
+            # Add already-known mappings
+            for fid, aids in family_abs_ids.items():
+                for aid in aids:
+                    aid_to_fid[aid] = fid
+
+            # Build adjacency for this frontier level + collect pair_relations
+            next_queue_set: Set[str] = set()
+            new_fids_to_load: Set[str] = set()
+
+            for row in frontier_rels:
+                rel = self._row_to_relation(row)
+                fid1 = aid_to_fid.get(rel.entity1_absolute_id)
+                fid2 = aid_to_fid.get(rel.entity2_absolute_id)
+                if not fid1 or not fid2 or fid1 == fid2:
                     continue
-                for neighbor in adjacency.get(current, []):
-                    if neighbor not in visited:
-                        visited[neighbor] = current_dist + 1
-                        parents[neighbor] = [current]
-                        next_queue.append(neighbor)
-                        if neighbor == target_family_id:
-                            found_depth = current_dist + 1
-                    elif visited[neighbor] == current_dist + 1:
-                        # 另一条等长路径
-                        parents[neighbor].append(current)
-            queue = next_queue
+
+                pair_key = tuple(sorted((fid1, fid2)))
+                pair_relations.setdefault(pair_key, []).append(rel)
+
+                # If one end is in the frontier and the other is new/at same depth
+                for near_fid, far_fid in [(fid1, fid2), (fid2, fid1)]:
+                    if near_fid in visited and visited[near_fid] == _depth:
+                        if far_fid not in visited:
+                            visited[far_fid] = _depth + 1
+                            parents[far_fid] = [near_fid]
+                            next_queue_set.add(far_fid)
+                            new_fids_to_load.add(far_fid)
+                            if far_fid == target_family_id:
+                                found_depth = _depth + 1
+                        elif visited.get(far_fid) == _depth + 1 and near_fid not in parents.get(far_fid, []):
+                            parents.setdefault(far_fid, []).append(near_fid)
+
+            # Batch load absolute_ids for newly discovered family_ids
+            if new_fids_to_load:
+                ph = ",".join("?" * len(new_fids_to_load))
+                cursor.execute(f"SELECT family_id, id FROM entities WHERE family_id IN ({ph})", list(new_fids_to_load))
+                for r in cursor.fetchall():
+                    family_abs_ids.setdefault(r[0], []).append(r[1])
+
+            queue = list(next_queue_set)
 
         # 未到达目标
         if target_family_id not in visited:
@@ -1130,7 +1180,7 @@ class StorageManager(EntityStoreMixin, RelationStoreMixin, EpisodeStoreMixin, Co
             result_empty["target_entity"] = target_entity
             return result_empty
 
-        # 6. 回溯重构所有最短路径（DFS on parents）
+        # 3. 回溯重构所有最短路径（DFS on parents）
         all_paths_eid: List[List[str]] = []
 
         def backtrack(node: str, path: List[str]):
@@ -1149,9 +1199,7 @@ class StorageManager(EntityStoreMixin, RelationStoreMixin, EpisodeStoreMixin, Co
         total_shortest_paths = len(all_paths_eid)
         all_paths_eid = all_paths_eid[:max_paths]
 
-        # 7. 构建返回结果
-        # 使用关系实际引用的 absolute_id 查找对应版本的实体，
-        # 确保前端 buildEdges() 的 nodeIds 过滤不会因版本不匹配而丢弃边。
+        # 4. 构建返回结果
         needed_abs_ids: Set[str] = set()
         for path_eids in all_paths_eid:
             for i in range(len(path_eids) - 1):
@@ -1171,6 +1219,12 @@ class StorageManager(EntityStoreMixin, RelationStoreMixin, EpisodeStoreMixin, Co
             for row in cursor.fetchall():
                 abs_entity_map[row[0]] = self._row_to_entity(row)
 
+        # Build abs_to_eid only for needed entities
+        abs_to_eid: Dict[str, str] = {}
+        for fid in set(fid for path in all_paths_eid for fid in path):
+            for aid in family_abs_ids.get(fid, []):
+                abs_to_eid[aid] = fid
+
         paths_result = []
         for path_eids in all_paths_eid:
             path_entities = []
@@ -1183,7 +1237,6 @@ class StorageManager(EntityStoreMixin, RelationStoreMixin, EpisodeStoreMixin, Co
                 if rels:
                     rel = rels[0]
                     path_relations.append(rel)
-                    # 按路径方向确定实体顺序
                     e1_eid = abs_to_eid.get(rel.entity1_absolute_id)
                     first_abs = rel.entity1_absolute_id if e1_eid == path_eids[i] else rel.entity2_absolute_id
                     second_abs = rel.entity2_absolute_id if first_abs == rel.entity1_absolute_id else rel.entity1_absolute_id
