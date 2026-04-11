@@ -215,7 +215,9 @@ def find_entities_search():
                 top_k=max_results,
                 semantic_threshold=threshold,
             )
-            return ok([h.entity_to_dict(e, _score=score) for e, score in hybrid_ents])
+            dicts = [h.entity_to_dict(e, _score=score) for e, score in hybrid_ents]
+            h.enrich_entity_version_counts(dicts, processor.storage)
+            return ok(dicts)
         else:
             entities = processor.storage.search_entities_by_similarity(
                 query_name=query_name,
@@ -226,7 +228,9 @@ def find_entities_search():
                 text_mode=text_mode,
                 similarity_method=similarity_method,
             )
-        return ok([h.entity_to_dict(e) for e in entities])
+        dicts = [h.entity_to_dict(e) for e in entities]
+        h.enrich_entity_version_counts(dicts, processor.storage)
+        return ok(dicts)
     except Exception as e:
         return err(str(e), 500)
 
@@ -863,7 +867,7 @@ def entity_profile(family_id: str):
         rels = [h.relation_to_dict(r) for r in relations]
         h.enrich_relations(rels, processor)
         return ok({
-            "entity": h.entity_to_dict(entity),
+            "entity": h.entity_to_dict(entity, version_count=version_count),
             "relations": rels,
             "relation_count": len(rels),
             "version_count": version_count,

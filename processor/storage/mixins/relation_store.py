@@ -488,6 +488,39 @@ class RelationStoreMixin:
         cursor.execute("SELECT COUNT(DISTINCT family_id) FROM relations")
         return cursor.fetchone()[0]
 
+    def get_relation_version_counts(self, family_ids: List[str]) -> Dict[str, int]:
+        """批量获取多个family_id的版本数量。
+
+        Args:
+            family_ids: 关系ID列表
+
+        Returns:
+            Dict[family_id, version_count]
+        """
+        if not family_ids:
+            return {}
+        resolved_map = self.resolve_family_ids(family_ids)
+        canonical_ids = []
+        seen_canonical = set()
+        for family_id in family_ids:
+            canonical_id = resolved_map.get(family_id, family_id)
+            if canonical_id and canonical_id not in seen_canonical:
+                seen_canonical.add(canonical_id)
+                canonical_ids.append(canonical_id)
+        if not canonical_ids:
+            return {}
+
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        placeholders = ','.join(['?'] * len(canonical_ids))
+        cursor.execute(f"""
+            SELECT family_id, COUNT(*) as version_count
+            FROM relations
+            WHERE family_id IN ({placeholders})
+            GROUP BY family_id
+        """, canonical_ids)
+        return {row[0]: row[1] for row in cursor.fetchall()}
+
     # ------------------------------------------------------------------
     # Read operations — by entities
     # ------------------------------------------------------------------

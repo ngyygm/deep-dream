@@ -21,6 +21,7 @@ from processor.perf import _perf_timer
 from server.blueprints.helpers import (
     ok, err, _get_processor, _get_graph_id,
     entity_to_dict, relation_to_dict, enrich_relations,
+    enrich_entity_version_counts, enrich_relation_version_counts,
     parse_time_point, _normalize_time_for_compare, _extract_candidate_ids,
 )
 
@@ -210,6 +211,8 @@ def find_unified():
             "entity_count": len(final_entities),
             "relation_count": len(final_relations),
         }
+        enrich_entity_version_counts(result["entities"], processor.storage)
+        enrich_relation_version_counts(result["relations"], processor.storage)
         enrich_relations(result["relations"], processor)
         return ok(result)
     except Exception as e:
@@ -315,6 +318,7 @@ def find_relations_search():
                 max_results=max_results,
             )
             dicts = [relation_to_dict(r) for r in relations]
+        enrich_relation_version_counts(dicts, processor.storage)
         enrich_relations(dicts, processor)
         return ok(dicts)
     except Exception as e:
@@ -925,7 +929,9 @@ def traverse_graph():
         processor = _get_processor()
         searcher = GraphTraversalSearcher(processor.storage)
         entities = searcher.bfs_expand(seed_ids, max_depth=max_depth, max_nodes=max_nodes)
-        return ok([entity_to_dict(e) for e in entities])
+        dicts = [entity_to_dict(e) for e in entities]
+        enrich_entity_version_counts(dicts, processor.storage)
+        return ok(dicts)
     except Exception as e:
         return err(str(e), 500)
 
@@ -993,6 +999,8 @@ def quick_search():
 
         entity_dicts = [entity_to_dict(e, _score=entity_score_map.get(e.absolute_id)) for e in entities]
         rel_dicts = [relation_to_dict(r, _score=relation_score_map.get(r.absolute_id)) for r in relations]
+        enrich_entity_version_counts(entity_dicts, processor.storage)
+        enrich_relation_version_counts(rel_dicts, processor.storage)
         enrich_relations(rel_dicts, processor)
 
         return ok({
