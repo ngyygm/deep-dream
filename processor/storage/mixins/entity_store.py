@@ -388,13 +388,15 @@ class EntityStoreMixin:
     def _get_entities_with_embeddings(self) -> List[tuple]:
         """
         获取所有实体的最新版本及其embedding（带短 TTL 缓存）。
+        线程安全：使用 _emb_cache_lock 保护缓存的读写。
 
         Returns:
             List of (Entity, embedding_array) tuples, embedding_array为None表示没有embedding
         """
         now = time.time()
-        if self._entity_emb_cache is not None and (now - self._entity_emb_cache_ts) < self._emb_cache_ttl:
-            return self._entity_emb_cache
+        with self._emb_cache_lock:
+            if self._entity_emb_cache is not None and (now - self._entity_emb_cache_ts) < self._emb_cache_ttl:
+                return self._entity_emb_cache
 
         conn = self._get_conn()
         cursor = conn.cursor()
@@ -420,8 +422,9 @@ class EntityStoreMixin:
             entity = self._row_to_entity(row)
             results.append((entity, embedding_array))
 
-        self._entity_emb_cache = results
-        self._entity_emb_cache_ts = time.time()
+        with self._emb_cache_lock:
+            self._entity_emb_cache = results
+            self._entity_emb_cache_ts = time.time()
         return results
 
     def get_latest_entities_projection(self, content_snippet_length: Optional[int] = None) -> List[Dict[str, Any]]:

@@ -993,8 +993,9 @@ class RelationStoreMixin:
             List of (Relation, embedding_array) tuples, embedding_array为None表示没有embedding
         """
         now = time.time()
-        if self._relation_emb_cache is not None and (now - self._relation_emb_cache_ts) < self._emb_cache_ttl:
-            return self._relation_emb_cache
+        with self._emb_cache_lock:
+            if self._relation_emb_cache is not None and (now - self._relation_emb_cache_ts) < self._emb_cache_ttl:
+                return self._relation_emb_cache
 
         conn = self._get_conn()
         cursor = conn.cursor()
@@ -1021,8 +1022,9 @@ class RelationStoreMixin:
             relation = self._row_to_relation(row)
             results.append((relation, embedding_array))
 
-        self._relation_emb_cache = results
-        self._relation_emb_cache_ts = time.time()
+        with self._emb_cache_lock:
+            self._relation_emb_cache = results
+            self._relation_emb_cache_ts = time.time()
         return results
 
     # ------------------------------------------------------------------

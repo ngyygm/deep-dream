@@ -251,11 +251,12 @@ class ConceptStoreMixin:
             List of (concept_dict, embedding_array) tuples. embedding_array 为 None 表示没有 embedding。
         """
         now = time.time()
-        if self._concept_emb_cache is not None and (now - self._concept_emb_cache_ts) < self._emb_cache_ttl:
-            if role is None:
-                return self._concept_emb_cache
-            # 缓存不区分 role，在内存中过滤
-            return [(c, e) for c, e in self._concept_emb_cache if role is None or c.get('role') == role]
+        with self._emb_cache_lock:
+            if self._concept_emb_cache is not None and (now - self._concept_emb_cache_ts) < self._emb_cache_ttl:
+                if role is None:
+                    return self._concept_emb_cache
+                # 缓存不区分 role，在内存中过滤
+                return [(c, e) for c, e in self._concept_emb_cache if role is None or c.get('role') == role]
 
         conn = self._get_conn()
         cursor = conn.cursor()
@@ -297,8 +298,9 @@ class ConceptStoreMixin:
             }
             results.append((concept, embedding_array))
 
-        self._concept_emb_cache = results
-        self._concept_emb_cache_ts = time.time()
+        with self._emb_cache_lock:
+            self._concept_emb_cache = results
+            self._concept_emb_cache_ts = time.time()
 
         if role is not None:
             return [(c, e) for c, e in results if c.get('role') == role]

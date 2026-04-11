@@ -138,6 +138,7 @@ class StorageManager(EntityStoreMixin, RelationStoreMixin, EpisodeStoreMixin, Co
         self._concept_emb_cache: Optional[List[tuple]] = None
         self._concept_emb_cache_ts: float = 0.0
         self._emb_cache_ttl: float = 5.0  # 秒
+        self._emb_cache_lock = threading.Lock()
 
         # 初始化数据库
         self._init_database()
@@ -734,12 +735,13 @@ class StorageManager(EntityStoreMixin, RelationStoreMixin, EpisodeStoreMixin, Co
 
     def _invalidate_emb_cache(self):
         """清除 embedding 缓存（在实体/关系写入时调用）。"""
-        self._entity_emb_cache = None
-        self._entity_emb_cache_ts = 0.0
-        self._relation_emb_cache = None
-        self._relation_emb_cache_ts = 0.0
-        self._concept_emb_cache = None
-        self._concept_emb_cache_ts = 0.0
+        with self._emb_cache_lock:
+            self._entity_emb_cache = None
+            self._entity_emb_cache_ts = 0.0
+            self._relation_emb_cache = None
+            self._relation_emb_cache_ts = 0.0
+            self._concept_emb_cache = None
+            self._concept_emb_cache_ts = 0.0
 
 
     def _search_with_embedding(self, query_text: str, entities_with_embeddings: List[tuple], 
