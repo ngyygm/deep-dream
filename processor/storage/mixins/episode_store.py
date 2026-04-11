@@ -594,11 +594,29 @@ class EpisodeStoreMixin:
             logger.debug("episode_mentions migration skipped: %s", exc)
 
     def _save_episode_to_db(self, cache: Episode, doc_hash: str = ""):
-        """将 Episode 元数据写入 SQLite episodes 表。"""
+        """将 Episode 元数据写入 SQLite episodes 表。
+
+        Vision 原则「Observation 也会演化」：同一 source_document 再次处理时，
+        复用已有 family_id 作为新版本（而非独立概念）。
+        """
         try:
             conn = self._get_conn()
             with self._write_lock:
                 cursor = conn.cursor()
+
+                # Resolve family_id: reuse from existing episode with same source_document
+                resolved_family_id = cache.absolute_id  # default: new standalone
+                source_doc = getattr(cache, 'source_document', '') or ''
+                if source_doc:
+                    cursor.execute(
+                        "SELECT family_id FROM episodes WHERE source_document = ? "
+                        "ORDER BY processed_time DESC LIMIT 1",
+                        (source_doc,)
+                    )
+                    existing = cursor.fetchone()
+                    if existing and existing[0]:
+                        resolved_family_id = existing[0]
+
                 cursor.execute("""
                     INSERT OR REPLACE INTO episodes
                     (id, family_id, content, event_time, processed_time,
@@ -606,7 +624,7 @@ class EpisodeStoreMixin:
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     cache.absolute_id,
-                    cache.absolute_id,  # family_id = absolute_id（Episode 当前不可版本化）
+                    resolved_family_id,
                     cache.content,
                     cache.event_time.isoformat(),
                     datetime.now().isoformat(),
@@ -615,8 +633,9 @@ class EpisodeStoreMixin:
                     getattr(cache, 'episode_type', '') or "",
                     doc_hash,
                 ))
-                # Phase 2: dual-write to concepts
-                self._write_concept_from_episode(cache, doc_hash, cursor)
+                # Phase 2: dual-write to concepts (use resolved family_id)
+                self._write_concept_from_episode(cache, doc_hash, cursor,
+                                                  family_id=resolved_family_id)
                 conn.commit()
         except Exception as exc:
             logger.warning("episode SQLite write failed: %s", exc)

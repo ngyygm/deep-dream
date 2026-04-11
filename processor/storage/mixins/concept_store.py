@@ -175,9 +175,16 @@ class ConceptStoreMixin:
         except Exception as exc:
             logger.debug("concept relation dual-write failed: %s", exc)
 
-    def _write_concept_from_episode(self, cache: Episode, doc_hash: str, cursor):
-        """Dual-write: write Episode to concepts table as 'observation' (called within existing write transaction)."""
+    def _write_concept_from_episode(self, cache: Episode, doc_hash: str, cursor,
+                                     family_id: str = None):
+        """Dual-write: write Episode to concepts table as 'observation' (called within existing write transaction).
+
+        Args:
+            family_id: Optional resolved family_id. If provided, uses it for versioning.
+                       Falls back to cache.absolute_id for standalone observations.
+        """
         try:
+            fid = family_id or cache.absolute_id
             cursor.execute("""
                 INSERT OR IGNORE INTO concepts
                 (id, family_id, role, name, content, event_time, processed_time,
@@ -185,7 +192,7 @@ class ConceptStoreMixin:
                 VALUES (?, ?, 'observation', '', ?, ?, ?, ?, ?, ?, ?)
             """, (
                 cache.absolute_id,
-                cache.absolute_id,  # family_id = absolute_id for episodes
+                fid,
                 cache.content,
                 cache.event_time.isoformat(),
                 datetime.now().isoformat(),
@@ -613,8 +620,14 @@ class ConceptStoreMixin:
             )
             abs_ids = [row[0] for row in cursor.fetchall()]
         elif role == 'observation':
-            # observation 的 family_id = absolute_id
-            abs_ids = [concept['id']]
+            # observation: query episodes table by family_id for all versions
+            cursor.execute(
+                "SELECT id FROM episodes WHERE family_id = ?", (family_id,)
+            )
+            abs_ids = [row[0] for row in cursor.fetchall()]
+            if not abs_ids:
+                # Fallback: standalone observation (no versioning yet)
+                abs_ids = [concept['id']]
 
         if not abs_ids:
             return []
