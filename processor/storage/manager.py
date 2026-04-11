@@ -26,10 +26,11 @@ from .mixins.entity_store import EntityStoreMixin
 from .mixins.relation_store import RelationStoreMixin
 from .mixins.episode_store import EpisodeStoreMixin
 from .mixins.concept_store import ConceptStoreMixin
+from .mixins.dream_store import DreamStoreMixin
 from .vector_store import VectorStore
 
 
-class StorageManager(EntityStoreMixin, RelationStoreMixin, EpisodeStoreMixin, ConceptStoreMixin):
+class StorageManager(EntityStoreMixin, RelationStoreMixin, EpisodeStoreMixin, ConceptStoreMixin, DreamStoreMixin):
     """存储管理器 — composed from four domain-specific mixins.
 
     Core responsibilities kept here:
