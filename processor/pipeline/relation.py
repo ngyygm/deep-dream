@@ -201,6 +201,16 @@ class RelationProcessor:
         if relations_to_persist:
             self.storage.bulk_save_relations(relations_to_persist)
 
+        # Vision 原则「内容版本和关联解耦」：MENTIONS 必须无条件建立。
+        # processed_relations 可能不包含所有 resolved pair 的关系（如 _build_new_relation 返回 None）。
+        # 从 existing_relations_by_pair 补充缺失的 relation absolute_ids。
+        seen_abs_ids = {r.absolute_id for r in processed_relations if r and r.absolute_id}
+        for pair_key, existing in existing_relations_by_pair.items():
+            for r in existing:
+                if r.absolute_id and r.absolute_id not in seen_abs_ids:
+                    processed_relations.append(r)
+                    seen_abs_ids.add(r.absolute_id)
+
         # Dream 候选层佐证：remember 提取的关系与 dream 候选关系匹配时，自动佐证
         corroborated_pairs = set()
         for pair_key in relations_by_pair:
