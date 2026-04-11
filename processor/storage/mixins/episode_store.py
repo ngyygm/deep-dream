@@ -131,8 +131,13 @@ class EpisodeStoreMixin:
         )
 
     def delete_episode(self, cache_id: str) -> int:
-        """删除记忆缓存，返回删除的文件数。0 表示未找到。"""
+        """删除记忆缓存，返回删除的文件数。0 表示未找到。
+
+        同时清理 SQLite episodes 表、episode_mentions 和 concepts 表。
+        """
         import shutil
+
+        deleted = 0
 
         # 1. 尝试 docs/ 新结构
         doc_hash = self._id_to_doc_hash.get(cache_id)
@@ -141,23 +146,42 @@ class EpisodeStoreMixin:
             if doc_dir.is_dir():
                 shutil.rmtree(doc_dir, ignore_errors=True)
                 self._id_to_doc_hash.pop(cache_id, None)
-                return 1
+                deleted = 1
 
         # 2. 回退到旧结构
-        for base_dir in (self.cache_json_dir, self.cache_dir):
-            meta_path = base_dir / f"{cache_id}.json"
-            if meta_path.exists():
-                with open(meta_path, "r", encoding="utf-8") as f:
-                    metadata = json.load(f)
-                meta_path.unlink(missing_ok=True)
-                # 尝试删除对应的 .md 文件
-                filename = metadata.get("filename", f"{cache_id}.md")
-                for md_dir in (self.cache_md_dir, self.cache_dir):
-                    filepath = md_dir / filename
-                    if filepath.exists():
-                        filepath.unlink()
-                        return 1
-        return 0
+        if not deleted:
+            for base_dir in (self.cache_json_dir, self.cache_dir):
+                meta_path = base_dir / f"{cache_id}.json"
+                if meta_path.exists():
+                    with open(meta_path, "r", encoding="utf-8") as f:
+                        metadata = json.load(f)
+                    meta_path.unlink(missing_ok=True)
+                    # 尝试删除对应的 .md 文件
+                    filename = metadata.get("filename", f"{cache_id}.md")
+                    for md_dir in (self.cache_md_dir, self.cache_dir):
+                        filepath = md_dir / filename
+                        if filepath.exists():
+                            filepath.unlink()
+                            deleted = 1
+                            break
+
+        # 3. 清理 SQLite: episodes + episode_mentions + concepts
+        if deleted:
+            try:
+                with self._write_lock:
+                    conn = self._get_conn()
+                    cursor = conn.cursor()
+                    # Delete mentions referencing this episode
+                    cursor.execute("DELETE FROM episode_mentions WHERE episode_id = ?", (cache_id,))
+                    # Delete concept observation row
+                    self._delete_concept_by_id(cache_id, cursor)
+                    # Delete episode row
+                    cursor.execute("DELETE FROM episodes WHERE id = ?", (cache_id,))
+                    conn.commit()
+            except Exception as exc:
+                logger.debug("episode DB cleanup failed: %s", exc)
+
+        return deleted
 
     def _iter_cache_meta_files(self) -> List[Path]:
         """迭代所有 cache 元数据文件（优先 docs/ 子目录，回退旧结构）"""

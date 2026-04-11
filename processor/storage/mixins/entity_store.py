@@ -887,7 +887,14 @@ class EntityStoreMixin:
                     [(sid, target_family_id, now_iso) for sid in canonical_source_ids],
                 )
 
-                # 6. Count relations now reachable through the merged target family
+                # 6. Update concepts table: move source family_ids to target
+                cursor.execute(
+                    f"UPDATE concepts SET family_id = ? WHERE family_id IN ({ph}) AND role = 'entity'",
+                    (target_family_id, *canonical_source_ids),
+                )
+                concepts_updated = cursor.rowcount
+
+                # 7. Count relations now reachable through the merged target family
                 cursor.execute(
                     "SELECT id FROM entities WHERE family_id = ?",
                     (target_family_id,),
