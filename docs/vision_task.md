@@ -4,6 +4,13 @@
 
 ## 2026-04-12
 
+### [已完成] fix: Relation MENTIONS unconditional — existing relations always included in processed_results
+- Vision 原则「内容版本和关联解耦」：MENTIONS 必须无条件建立
+- `process_relations_batch` 后处理：从 `existing_relations_by_pair` 补充未在 `processed_relations` 中的已有关系
+- 确保即使 `_build_new_relation` 返回 None（内容过短），已有关系仍返回 absolute_ids 供 MENTION 使用
+- 36项测试覆盖4维度（新关系9 + 已有关系9 + 溯源往返9 + 跨切面9），165项总测试全部通过
+- 影响: processor/pipeline/relation.py, tests/test_relation_mentions_unconditional.py
+
 ### [已完成] fix: Provenance for relation concepts + episode processed_time + candidate API
 - `get_concept_provenance` 修复：支持 entity/relation/observation 三种 role 的溯源查询
   - 之前只查 entities 表，relation-role 概念溯源静默返回空
