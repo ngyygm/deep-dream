@@ -33,7 +33,9 @@ class EntityProcessor:
                  max_similar_entities: int = 10, content_snippet_length: int = 50,
                  max_alignment_candidates: Optional[int] = None,
                  verbose: bool = True,
-                 entity_progress_verbose: bool = False):
+                 entity_progress_verbose: bool = False,
+                 merge_safe_embedding_threshold: float = 0.55,
+                 merge_safe_jaccard_threshold: float = 0.4):
         self.storage = storage
         self.llm_client = llm_client
         self.max_similar_entities = max_similar_entities
@@ -44,6 +46,8 @@ class EntityProcessor:
         self.verbose = verbose
         # 逐实体树状进度（处理实体 x/y、批量候选等）；默认关闭以免服务/API 控制台刷屏
         self.entity_progress_verbose = entity_progress_verbose
+        self.merge_safe_embedding_threshold = merge_safe_embedding_threshold
+        self.merge_safe_jaccard_threshold = merge_safe_jaccard_threshold
 
     def _entity_tree_log(self) -> bool:
         return self.verbose and self.entity_progress_verbose
@@ -584,7 +588,7 @@ class EntityProcessor:
                         "lexical_score": lexical_score,
                         "dense_score": best_dense,
                         "combined_score": max(lexical_score, dense_name_score, dense_full_score),
-                        "merge_safe": core_name_match or (best_dense >= 0.55 and lexical_score >= 0.4),
+                        "merge_safe": core_name_match or (best_dense >= self.merge_safe_embedding_threshold and lexical_score >= self.merge_safe_jaccard_threshold),
                     })
 
             candidate_rows.sort(key=lambda row: row["combined_score"], reverse=True)

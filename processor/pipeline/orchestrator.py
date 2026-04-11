@@ -1292,6 +1292,19 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
             "storage_path": str(self.storage.storage_path)
         }
 
+    def close(self):
+        """释放资源：关闭线程池和存储连接。"""
+        if hasattr(self, '_extraction_executor') and self._extraction_executor:
+            self._extraction_executor.shutdown(wait=False)
+        if hasattr(self, 'storage') and self.storage and hasattr(self.storage, 'close'):
+            self.storage.close()
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
+
 
 
 
