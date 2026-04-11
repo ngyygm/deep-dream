@@ -851,3 +851,81 @@ def butler_execute():
         return ok({"actions": results, "dry_run": dry_run})
     except Exception as e:
         return err(str(e), 500)
+
+
+# =========================================================
+# Dream Candidate Layer — review, promote, demote candidates
+# =========================================================
+@dream_bp.route("/api/v1/dream/candidates", methods=["GET"])
+def list_dream_candidates():
+    """列出 Dream 候选层关系。"""
+    try:
+        processor = _get_processor()
+        limit = request.args.get("limit", type=int, default=50)
+        offset = request.args.get("offset", type=int, default=0)
+        status = request.args.get("status")  # hypothesized | verified | rejected
+        relations = processor.storage.get_candidate_relations(
+            limit=limit, offset=offset, status=status)
+        total = processor.storage.count_candidate_relations(status=status)
+        dicts = [relation_to_dict(r) for r in relations]
+        enrich_relations(dicts, processor)
+        enrich_relation_version_counts(dicts, processor.storage)
+        return ok({
+            "relations": dicts,
+            "total": total,
+            "offset": offset,
+            "limit": limit,
+        })
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@dream_bp.route("/api/v1/dream/candidates/<family_id>/promote", methods=["POST"])
+def promote_dream_candidate(family_id: str):
+    """将候选关系提升为已验证状态。"""
+    try:
+        processor = _get_processor()
+        body = request.get_json(silent=True) or {}
+        evidence_source = body.get("evidence_source", "manual")
+        new_confidence = body.get("confidence")
+        if new_confidence is not None:
+            new_confidence = float(new_confidence)
+        result = processor.storage.promote_candidate_relation(
+            family_id, evidence_source=evidence_source, new_confidence=new_confidence)
+        return ok(result)
+    except ValueError as ve:
+        return err(str(ve), 404)
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@dream_bp.route("/api/v1/dream/candidates/<family_id>/demote", methods=["POST"])
+def demote_dream_candidate(family_id: str):
+    """将候选关系降级为已拒绝状态。"""
+    try:
+        processor = _get_processor()
+        body = request.get_json(silent=True) or {}
+        reason = body.get("reason", "")
+        result = processor.storage.demote_candidate_relation(family_id, reason=reason)
+        return ok(result)
+    except ValueError as ve:
+        return err(str(ve), 404)
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@dream_bp.route("/api/v1/dream/candidates/corroborate", methods=["POST"])
+def corroborate_dream_candidate():
+    """对 Dream 候选关系进行佐证检查。"""
+    try:
+        processor = _get_processor()
+        body = request.get_json(silent=True) or {}
+        entity1_family_id = body.get("entity1_family_id", "")
+        entity2_family_id = body.get("entity2_family_id", "")
+        if not entity1_family_id or not entity2_family_id:
+            return err("entity1_family_id 和 entity2_family_id 为必填", 400)
+        result = processor.storage.corroborate_dream_relation(
+            entity1_family_id, entity2_family_id)
+        return ok(result)
+    except Exception as e:
+        return err(str(e), 500)

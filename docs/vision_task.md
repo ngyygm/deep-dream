@@ -4,6 +4,19 @@
 
 ## 2026-04-12
 
+### [已完成] fix: Provenance for relation concepts + episode processed_time + candidate API
+- `get_concept_provenance` 修复：支持 entity/relation/observation 三种 role 的溯源查询
+  - 之前只查 entities 表，relation-role 概念溯源静默返回空
+  - 现在先检查 role，再从对应表查询 absolute_ids
+- `episode_to_dict` 新增 `processed_time` 字段（vision 原则：时间不可省略）
+- Dream 候选层新增 4 个 API 端点：
+  - `GET /api/v1/dream/candidates` — 列出候选关系（支持 status 过滤和分页）
+  - `POST /api/v1/dream/candidates/<family_id>/promote` — 提升为已验证
+  - `POST /api/v1/dream/candidates/<family_id>/demote` — 降级为已拒绝
+  - `POST /api/v1/dream/candidates/corroborate` — 佐证检查
+- 36项测试覆盖4维度（溯源9 + Episode序列化9 + 候选层API 9 + 边缘案例9），379项总测试全部通过
+- 影响: processor/storage/mixins/concept_store.py, server/blueprints/helpers.py, server/blueprints/dream.py
+
 ### [已完成] feat: Traversal enrichment — entities + relations + full metadata in traversal results
 - `GraphTraversalSearcher.bfs_expand_with_relations` 新增方法，返回 `(entities, relations, visited_set)`
 - 原有 `bfs_expand` 保留为向后兼容包装

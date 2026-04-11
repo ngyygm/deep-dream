@@ -589,13 +589,33 @@ class ConceptStoreMixin:
         return results
 
     def get_concept_provenance(self, family_id: str) -> List[dict]:
-        """溯源：返回所有提及此概念的 observation。"""
+        """溯源：返回所有提及此概念的 observation。
+
+        支持所有 role：entity、relation、observation。
+        先确定概念的 role，再从对应表查询 absolute_ids。
+        """
+        concept = self.get_concept_by_family_id(family_id)
+        if not concept:
+            return []
+        role = concept.get('role', 'entity')
         conn = self._get_conn()
         cursor = conn.cursor()
-        cursor.execute(
-            "SELECT id FROM entities WHERE family_id = ?", (family_id,)
-        )
-        abs_ids = [row[0] for row in cursor.fetchall()]
+
+        abs_ids = []
+        if role == 'entity':
+            cursor.execute(
+                "SELECT id FROM entities WHERE family_id = ?", (family_id,)
+            )
+            abs_ids = [row[0] for row in cursor.fetchall()]
+        elif role == 'relation':
+            cursor.execute(
+                "SELECT id FROM relations WHERE family_id = ?", (family_id,)
+            )
+            abs_ids = [row[0] for row in cursor.fetchall()]
+        elif role == 'observation':
+            # observation 的 family_id = absolute_id
+            abs_ids = [concept['id']]
+
         if not abs_ids:
             return []
         placeholders = ','.join('?' * len(abs_ids))
