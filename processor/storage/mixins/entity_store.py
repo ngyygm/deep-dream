@@ -407,6 +407,7 @@ class EntityStoreMixin:
             FROM (
                 SELECT *, ROW_NUMBER() OVER (PARTITION BY family_id ORDER BY processed_time DESC) AS rn
                 FROM entities
+                WHERE invalid_at IS NULL
             )
             WHERE rn = 1
         """)

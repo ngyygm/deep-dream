@@ -2130,16 +2130,36 @@ class Neo4jStorageManager:
                     search_query=query, raw_limit=raw_limit,
                 )
                 seen_fids = set()
-                entities = []
+                raw_entities = []
                 for record in result:
                     fid = record.get("family_id")
                     if fid and fid in seen_fids:
                         continue
                     if fid:
                         seen_fids.add(fid)
-                    entities.append(_neo4j_record_to_entity(record))
-                    if len(entities) >= limit:
+                    raw_entities.append((fid, _neo4j_record_to_entity(record)))
+                    if len(raw_entities) >= limit:
                         break
+
+                # Resolve family_id redirects (merged entities point to canonical id)
+                raw_fids = [fid for fid, _ in raw_entities if fid]
+                resolved_map = self.resolve_family_ids(raw_fids) if raw_fids else {}
+
+                entities = []
+                for fid, ent in raw_entities:
+                    resolved_fid = resolved_map.get(fid, fid) if fid else fid
+                    if resolved_fid != fid:
+                        ent = Entity(
+                            absolute_id=ent.absolute_id,
+                            family_id=resolved_fid,
+                            name=ent.name, content=ent.content,
+                            event_time=ent.event_time, processed_time=ent.processed_time,
+                            episode_id=ent.episode_id, source_document=ent.source_document,
+                            embedding=ent.embedding, summary=ent.summary,
+                            attributes=ent.attributes, confidence=ent.confidence,
+                            valid_at=ent.valid_at, invalid_at=ent.invalid_at,
+                        )
+                    entities.append(ent)
                 return entities
         except Exception as e:
             logger.warning("BM25 search failed, falling back to empty: %s", e)

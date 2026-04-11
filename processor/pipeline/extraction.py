@@ -866,7 +866,8 @@ def _is_self_consistent_entity(name: str, content: str, all_entities: List[Dict[
                         return True
             # 名称不在源文本中，且名称足够短（<=4字），很可能是LLM幻觉的泛化概念
             # 放宽阈值到4字（原8字过于激进，过滤了有效实体如"潘建伟"、"九章"等）
-            if len(_core_clean) <= 4:
+            # 但如果 content 足够长（>40字），说明 LLM 提供了充分描述，可能是有效的隐含概念
+            if len(_core_clean) <= 4 and len(content) <= 40:
                 return False
             # 较长名称（>4字）可能是描述性实体，不做锚定检查
 
