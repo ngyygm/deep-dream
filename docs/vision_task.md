@@ -4,6 +4,16 @@
 
 ## 2026-04-12
 
+### [已完成] feat: Traversal enrichment — entities + relations + full metadata in traversal results
+- `GraphTraversalSearcher.bfs_expand_with_relations` 新增方法，返回 `(entities, relations, visited_set)`
+- 原有 `bfs_expand` 保留为向后兼容包装
+- `traverse_graph` 端点完全重写：返回 entities + relations + version_count + entity names
+- `traverse_concepts` 增强：relations 包含完整 metadata（event_time, confidence, summary 等）
+- `traverse_concepts` 修复：不存在的 seed 不再计入 visited_count
+- `traverse_concepts` 修复：BFS depth 语义修正（depth 0..max_depth 而非 max_depth 次迭代）
+- 36项测试覆盖4维度（BFS扩展9 + 端点序列化9 + 概念遍历9 + 边缘案例9），346项总测试全部通过
+- 影响: processor/search/graph_traversal.py, processor/storage/mixins/concept_store.py, server/blueprints/relations.py
+
 ### [已完成] feat: Find query contract — version_count in all search API responses
 - entity_to_dict / relation_to_dict 新增 `version_count` 可选参数
 - 新增 Storage 批量方法: `get_relation_version_counts(family_ids)` (SQLite, GROUP BY batch query)
