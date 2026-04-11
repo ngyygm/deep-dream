@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 from ..models import Entity, Episode, ContentPatch
 from ..storage.manager import StorageManager
 from ..llm.client import LLMClient
-from ..utils import wprint
+from ..utils import wprint, calculate_jaccard_similarity
 from ..content_schema import (
     ENTITY_SECTIONS,
     content_to_sections,
@@ -443,24 +443,7 @@ class EntityProcessor:
         return core
 
     def _calculate_jaccard_similarity(self, text1: str, text2: str) -> float:
-        s1 = (text1 or "").lower().strip()
-        s2 = (text2 or "").lower().strip()
-        if not s1 or not s2:
-            return 0.0
-        # 精确匹配直接返回 1.0
-        if s1 == s2:
-            return 1.0
-        # 使用 bigram 集合替代字符集合，更精确地衡量名称相似度
-        # 字符级 Jaccard 对 "Python"/"Jython" 过于宽松（0.83）
-        set1 = {s1[i:i+2] for i in range(len(s1) - 1)}
-        set2 = {s2[i:i+2] for i in range(len(s2) - 1)}
-        # 极短名称（单字符）无法生成 bigram，退回字符集比较
-        if not set1 or not set2:
-            cs1, cs2 = set(s1), set(s2)
-            union = len(cs1 | cs2)
-            return len(cs1 & cs2) / union if union else 0.0
-        union = len(set1 | set2)
-        return len(set1 & set2) / union
+        return calculate_jaccard_similarity(text1, text2)
 
     def _cosine_similarity(self, embedding1: Optional[np.ndarray], embedding2: Optional[np.ndarray]) -> float:
         if embedding1 is None or embedding2 is None:

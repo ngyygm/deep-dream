@@ -28,6 +28,27 @@ _SEPARATOR_TAG_RE = re.compile(
 )
 
 
+def calculate_jaccard_similarity(text1: str, text2: str) -> float:
+    """计算 Jaccard 相似度（基于 bigram 集合）。
+
+    被 StorageManager 和 EntityProcessor 共用的纯函数。
+    """
+    s1 = (text1 or "").lower().strip()
+    s2 = (text2 or "").lower().strip()
+    if not s1 or not s2:
+        return 0.0
+    if s1 == s2:
+        return 1.0
+    set1 = {s1[i:i+2] for i in range(len(s1) - 1)}
+    set2 = {s2[i:i+2] for i in range(len(s2) - 1)}
+    if not set1 or not set2:
+        cs1, cs2 = set(s1), set(s2)
+        union = len(cs1 | cs2)
+        return len(cs1 & cs2) / union if union else 0.0
+    union = len(set1 | set2)
+    return len(set1 & set2) / union
+
+
 def compute_doc_hash(text: str) -> str:
     """计算文本的 doc_hash（MD5 前12位），用于缓存去重和断点续传。"""
     return hashlib.md5(text.encode("utf-8")).hexdigest()[:12]
