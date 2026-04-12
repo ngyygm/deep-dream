@@ -26,70 +26,16 @@ def _get_processor():
     return current_app.config["registry"].get_processor(request.graph_id)
 
 
-def _call_llm_with_backoff(
-    processor,
-    prompt: str,
-    timeout: int = 60,
-    max_waits: int = 5,
-    backoff_base_seconds: int = 3,
-) -> str:
-    """
-    调用 LLM（指数退避重试）。
-    等待序列：3, 9, 27, 81, 243 秒（最多等待 max_waits 次）。
-    """
-    last_error: Optional[str] = None
-    max_attempts = max_waits + 1
-    for attempt in range(1, max_attempts + 1):
-        try:
-            response = processor.llm_client._call_llm(
-                prompt,
-                max_retries=0,
-                timeout=timeout,
-                allow_mock_fallback=False,
-            )
-            if response is not None and isinstance(response, str) and len(response.strip()) > 0:
-                return response
-            last_error = "大模型未返回有效结果"
-        except Exception as e:
-            last_error = str(e)
-
-        if attempt <= max_waits:
-            wait_seconds = backoff_base_seconds ** attempt
-            print(f"[LLM] 访问失败，第 {attempt} 次重试前等待 {wait_seconds}s；错误: {last_error}")
-            time.sleep(wait_seconds)
-
-    raise RuntimeError(f"重试 {max_attempts} 次仍失败: {last_error or '未知错误'}")
+def _call_llm_with_backoff(processor, prompt, timeout=60, max_waits=5, backoff_base_seconds=3):
+    """调用 LLM（指数退避重试）—— 代理到共享模块。"""
+    from server.llm_utils import call_llm_with_backoff
+    return call_llm_with_backoff(processor, prompt, timeout=timeout, max_waits=max_waits, backoff_base_seconds=backoff_base_seconds)
 
 
 def _check_llm_available(processor) -> tuple[bool, str | None]:
-    """启动前握手：检查上游 LLM；若启用 alignment 专用通道，再按步骤 6/7 优先级检查对齐端点。"""
-    try:
-        _ = _call_llm_with_backoff(
-            processor,
-            "请只回复一个词：OK",
-            timeout=60,
-        )
-        lc = processor.llm_client
-        if getattr(lc, "alignment_enabled", False):
-            _old_pri = getattr(lc._priority_local, "priority", None)
-            lc._priority_local.priority = LLM_PRIORITY_STEP6
-            try:
-                _ = _call_llm_with_backoff(
-                    processor,
-                    "请只回复一个词：OK",
-                    timeout=60,
-                )
-            finally:
-                if _old_pri is not None:
-                    lc._priority_local.priority = _old_pri
-                else:
-                    try:
-                        del lc._priority_local.priority
-                    except AttributeError:
-                        pass
-        return True, None
-    except Exception as e:
-        return False, f"大模型不可用: {e}"
+    """启动前握手：检查上游 LLM。"""
+    from server.llm_utils import check_llm_available
+    return check_llm_available(processor, priority_steps=[6])
 
 
 # ── Shared response helpers (imported from helpers) ─────────────────────

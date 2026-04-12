@@ -34,7 +34,7 @@ RESOLVE_CONTRADICTION_SYSTEM_PROMPT = """你是一个知识图谱矛盾裁决助
 class ContradictionDetectionMixin:
     """矛盾检测 mixin，通过 LLMClient 多继承使用。"""
 
-    async def detect_contradictions(
+    def detect_contradictions(
         self,
         family_id: str,
         versions: list,
@@ -85,7 +85,7 @@ class ContradictionDetectionMixin:
             wprint(f"矛盾检测失败: {e}")
             return []
 
-    async def resolve_contradiction(self, contradiction: dict) -> dict:
+    def resolve_contradiction(self, contradiction: dict) -> dict:
         """LLM 裁决矛盾，返回解决方案。
 
         Args:

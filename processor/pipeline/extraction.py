@@ -933,19 +933,12 @@ class _ExtractionMixin:
         2. 调用 LLM detect_contradictions 检测矛盾
         3. 对 medium/high 严重性矛盾调用 adjust_confidence_on_contradiction
         """
-        import asyncio
         for fid in family_ids:
             try:
                 versions = self.storage.get_entity_versions(fid)
                 if len(versions) < 2:
                     continue
-                loop = asyncio.new_event_loop()
-                try:
-                    contradictions = loop.run_until_complete(
-                        self.llm_client.detect_contradictions(fid, versions)
-                    )
-                finally:
-                    loop.close()
+                contradictions = self.llm_client.detect_contradictions(fid, versions)
                 if not contradictions:
                     continue
                 # 只对 medium/high 严重性矛盾降低置信度
@@ -968,19 +961,12 @@ class _ExtractionMixin:
         2. 调用 LLM detect_contradictions(concept_type="relation") 检测矛盾
         3. 对 medium/high 严重性矛盾调用 adjust_confidence_on_contradiction
         """
-        import asyncio
         for fid in family_ids:
             try:
                 versions = self.storage.get_relation_versions(fid)
                 if len(versions) < 2:
                     continue
-                loop = asyncio.new_event_loop()
-                try:
-                    contradictions = loop.run_until_complete(
-                        self.llm_client.detect_contradictions(fid, versions, concept_type="relation")
-                    )
-                finally:
-                    loop.close()
+                contradictions = self.llm_client.detect_contradictions(fid, versions, concept_type="relation")
                 if not contradictions:
                     continue
                 high_severity = [c for c in contradictions

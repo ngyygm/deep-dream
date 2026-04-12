@@ -796,14 +796,14 @@ class GraphWebServer:
         def get_stats():
             """获取统计信息 API"""
             try:
-                entities = self.storage.get_all_entities(exclude_embedding=True)
-                relations = self.storage.get_all_relations(exclude_embedding=True)
+                total_entities = self.storage.count_unique_entities()
+                total_relations = self.storage.count_unique_relations()
 
                 return jsonify({
                     'success': True,
                     'stats': {
-                        'total_entities': len(entities),
-                        'total_relations': len(relations)
+                        'total_entities': total_entities,
+                        'total_relations': total_relations
                     }
                 })
             except Exception as e:

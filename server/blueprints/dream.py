@@ -34,41 +34,10 @@ dream_bp = Blueprint("dream", __name__)
 
 # ── LLM backoff helper (used by ask / explain / dream) ────────────────────
 
-def _call_llm_with_backoff(
-    processor,
-    prompt: str,
-    timeout: int = 60,
-    max_waits: int = 5,
-    backoff_base_seconds: int = 2,
-) -> str:
-    """
-    调用 LLM（指数退避重试 + 抖动）。
-    等待序列：2, 4, 8, 16, 32 秒（加随机抖动 ±25%）。
-    """
-    import random
-    last_error: Optional[str] = None
-    max_attempts = max_waits + 1
-    for attempt in range(1, max_attempts + 1):
-        try:
-            response = processor.llm_client._call_llm(
-                prompt,
-                max_retries=0,
-                timeout=timeout,
-                allow_mock_fallback=False,
-            )
-            if response is not None and isinstance(response, str) and len(response.strip()) > 0:
-                return response
-            last_error = "大模型未返回有效结果"
-        except Exception as e:
-            last_error = str(e)
-
-        if attempt <= max_waits:
-            wait_seconds = min(backoff_base_seconds ** attempt, 32)
-            jitter = wait_seconds * (0.75 + random.random() * 0.5)
-            print(f"[LLM] 访问失败，第 {attempt} 次重试前等待 {jitter:.1f}s；错误: {last_error}")
-            time.sleep(jitter)
-
-    raise RuntimeError(f"重试 {max_attempts} 次仍失败: {last_error or '未知错误'}")
+def _call_llm_with_backoff(processor, prompt, timeout=60, max_waits=5, backoff_base_seconds=2):
+    """调用 LLM（指数退避重试）—— 代理到共享模块。"""
+    from server.llm_utils import call_llm_with_backoff
+    return call_llm_with_backoff(processor, prompt, timeout=timeout, max_waits=max_waits, backoff_base_seconds=backoff_base_seconds)
 
 
 # =========================================================

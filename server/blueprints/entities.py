@@ -570,6 +570,15 @@ def delete_entity_family(family_id: str):
     try:
         processor = _get_processor()
         cascade = request.args.get("cascade", "false").lower() == "true"
+        if cascade:
+            # Delete related relations first, then the entity
+            related = processor.storage.get_entity_relations_by_family_id(family_id)
+            rel_fids = list({r.family_id for r in related})
+            rel_count = processor.storage.batch_delete_relations(rel_fids) if rel_fids else 0
+            count = processor.storage.delete_entity_all_versions(family_id)
+            if count == 0:
+                return err(f"未找到实体: {family_id}", 404)
+            return ok({"message": f"已删除 {count} 个实体版本和 {rel_count} 个关系", "family_id": family_id, "cascade": cascade, "relations_deleted": rel_count})
         count = processor.storage.delete_entity_all_versions(family_id)
         if count == 0:
             return err(f"未找到实体: {family_id}", 404)

@@ -136,11 +136,7 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
 
         _ctx_win = llm_context_window_tokens
         if _ctx_win is None:
-            from server.config import DEFAULTS
-            _llm_d = DEFAULTS.get("llm") or {}
-            if "context_window_tokens" not in _llm_d:
-                raise RuntimeError("server.config.DEFAULTS['llm'] 缺少 context_window_tokens")
-            _ctx_win = int(_llm_d["context_window_tokens"])
+            _ctx_win = 8000  # default context window tokens
         _ctx_win = max(256, int(_ctx_win))
 
         self.embedding_client = embedding_client or EmbeddingClient(

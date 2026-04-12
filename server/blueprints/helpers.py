@@ -308,13 +308,17 @@ def _extract_candidate_ids(
         relations = storage.get_relations_by_entity_absolute_ids(
             list(entity_absolute_ids), limit=max_relations
         )
+        rel_time_map: Dict[str, float] = {}
         for r in relations:
             relation_absolute_ids.add(r.absolute_id)
+            if r.processed_time:
+                rel_time_map[r.absolute_id] = _normalize_time_for_compare(r.processed_time).timestamp()
 
     if time_after_dt:
+        after_ts = _normalize_time_for_compare(time_after_dt).timestamp()
         relation_absolute_ids = {
             r_abs_id for r_abs_id in relation_absolute_ids
-            if True  # Will filter below
+            if rel_time_map.get(r_abs_id, 0.0) >= after_ts
         }
 
     return entity_absolute_ids, relation_absolute_ids

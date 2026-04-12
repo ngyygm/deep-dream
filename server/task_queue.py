@@ -715,7 +715,6 @@ class RememberTaskQueue:
                 except Exception as e:
                     logger.debug("恢复暂停任务 %s 失败: %s", tid, e)
                     continue
-                continue
                 op = rec.get("original_path")
                 if not op or not Path(op).exists():
                     rec2 = dict(rec)
@@ -1071,7 +1070,7 @@ class RememberTaskQueue:
             try:
                 stats = processor.get_runtime_stats() or {}
             except Exception as e:
-                logger.debug("获取 processor %s runtime stats 失败: %s", gid, e)
+                logger.debug("获取 processor runtime stats 失败: %s", e)
                 continue
             for key in totals:
                 totals[key] += int(stats.get(key, 0) or 0)
