@@ -631,6 +631,16 @@ _t("resolve_entity_contradiction", "Resolve a detected contradiction by choosing
     "resolution": {"type": "string", "description": "Resolution strategy: keep_new, keep_old, merge, or flag_for_review"},
 }, ["family_id", "contradiction_id", "resolution"])
 
+_t("get_relation_contradictions", "Detect contradictions between relation versions. Returns list of conflicting data points with severity. Call this after remember adds new data to check for inconsistencies in relations. Follow with resolve_relation_contradiction to fix.", {
+    "family_id": {"type": "string", "description": "Relation family ID (e.g. 'rel_abc123')"},
+}, ["family_id"])
+
+_t("resolve_relation_contradiction", "Resolve a detected relation contradiction by choosing a strategy (keep_new, keep_old, merge, flag_for_review). Call get_relation_contradictions first to get the contradiction_id. Use 'flag_for_review' when unsure.", {
+    "family_id": {"type": "string", "description": "Relation family ID (e.g. 'rel_abc123')"},
+    "contradiction_id": {"type": "string", "description": "Contradiction ID from get_relation_contradictions"},
+    "resolution": {"type": "string", "description": "Resolution strategy: keep_new, keep_old, merge, or flag_for_review"},
+}, ["family_id", "contradiction_id", "resolution"])
+
 _t("get_entity_provenance", "Trace where entity data came from: source documents, extraction timestamps, confidence scores. Use this to verify data reliability or debug incorrect extractions. For a broader audit, combine with get_entity_versions.", {
     "family_id": {"type": "string", "description": "Entity family ID (e.g. 'ent_abc123')"},
 }, ["family_id"])
@@ -1617,6 +1627,33 @@ def resolve_entity_contradiction(args):
     data, code = _post(f"/api/v1/find/entities/{args['family_id']}/resolve-contradiction", body)
     if code < 400:
         hint = "\n→ Contradiction resolved. Use entity_profile to verify."
+        _hint(data, hint)
+    return _result(data, code)
+
+
+@_register
+def get_relation_contradictions(args):
+    data, code = _get(f"/api/v1/find/relations/{args['family_id']}/contradictions")
+    if code < 400 and isinstance(data, dict):
+        inner = _inner(data)
+        contradictions = inner if isinstance(inner, list) else inner.get("contradictions", [])
+        if contradictions and isinstance(contradictions, list):
+            hint = f"\n→ {len(contradictions)} contradiction(s) found. Use resolve_relation_contradiction to fix."
+            _hint(data, hint)
+    return _result(data, code)
+
+
+@_register
+def resolve_relation_contradiction(args):
+    body = {
+        "contradiction": {
+            "contradiction_id": args["contradiction_id"],
+            "resolution_strategy": args["resolution"],
+        }
+    }
+    data, code = _post(f"/api/v1/find/relations/{args['family_id']}/resolve-contradiction", body)
+    if code < 400:
+        hint = "\n→ Contradiction resolved. Use get_relation_versions to verify."
         _hint(data, hint)
     return _result(data, code)
 

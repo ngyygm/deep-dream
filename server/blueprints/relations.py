@@ -863,6 +863,45 @@ def invalidate_relation(family_id: str):
         return err(str(e), 500)
 
 
+@relations_bp.route("/api/v1/find/relations/<family_id>/contradictions", methods=["GET"])
+def get_relation_contradictions(family_id: str):
+    """检测关系版本间的矛盾。"""
+    try:
+        processor = _get_processor()
+        versions = processor.storage.get_relation_versions(family_id)
+        if len(versions) < 2:
+            return ok([])
+
+        from server.blueprints.helpers import run_async
+        contradictions = run_async(
+            processor.llm_client.detect_contradictions(family_id, versions, concept_type="relation")
+        )
+
+        return ok(contradictions)
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@relations_bp.route("/api/v1/find/relations/<family_id>/resolve-contradiction", methods=["POST"])
+def resolve_relation_contradiction(family_id: str):
+    """裁决关系版本间矛盾。"""
+    try:
+        body = request.get_json(silent=True) or {}
+        contradiction = body.get("contradiction")
+        if not contradiction or not isinstance(contradiction, dict):
+            return err("contradiction 为必填字段", 400)
+
+        processor = _get_processor()
+        from server.blueprints.helpers import run_async
+        resolution = run_async(
+            processor.llm_client.resolve_contradiction(contradiction)
+        )
+
+        return ok(resolution)
+    except Exception as e:
+        return err(str(e), 500)
+
+
 @relations_bp.route("/api/v1/find/relations/invalidated", methods=["GET"])
 def find_invalidated_relations():
     """列出所有已失效的关系"""

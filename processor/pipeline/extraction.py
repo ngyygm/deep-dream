@@ -960,6 +960,39 @@ class _ExtractionMixin:
                 if verbose:
                     wprint(f"【矛盾检测】{fid}: 检测失败 ({e})")
 
+    def _detect_and_apply_relation_contradictions(self, family_ids: List[str], verbose: bool = False):
+        """对多版本关系运行矛盾检测，发现高严重性矛盾时自动降低置信度。
+
+        这是 remember 流水线的自动关系矛盾检测步骤：
+        1. 对每个 family_id 获取版本历史
+        2. 调用 LLM detect_contradictions(concept_type="relation") 检测矛盾
+        3. 对 medium/high 严重性矛盾调用 adjust_confidence_on_contradiction
+        """
+        import asyncio
+        for fid in family_ids:
+            try:
+                versions = self.storage.get_relation_versions(fid)
+                if len(versions) < 2:
+                    continue
+                loop = asyncio.new_event_loop()
+                try:
+                    contradictions = loop.run_until_complete(
+                        self.llm_client.detect_contradictions(fid, versions, concept_type="relation")
+                    )
+                finally:
+                    loop.close()
+                if not contradictions:
+                    continue
+                high_severity = [c for c in contradictions
+                                 if c.get("severity") in ("high", "medium")]
+                if high_severity:
+                    self.storage.adjust_confidence_on_contradiction(fid, source_type="relation")
+                    if verbose:
+                        wprint(f"【关系矛盾检测】{fid}: 发现 {len(high_severity)} 个中/高严重性矛盾，降低置信度")
+            except Exception as e:
+                if verbose:
+                    wprint(f"【关系矛盾检测】{fid}: 检测失败 ({e})")
+
     def _update_cache(self, input_text: str, document_name: str,
                       text_start_pos: int = 0, text_end_pos: int = 0,
                       total_text_length: int = 0, verbose: bool = True,
@@ -1859,6 +1892,18 @@ class _ExtractionMixin:
         if _versioned_fids:
             self._detect_and_apply_contradictions(
                 _versioned_fids, verbose=verbose,
+            )
+
+        # Relation contradiction detection — 多版本关系矛盾检测
+        _rel_versioned_fids = []
+        for rel in processed_relations:
+            fid = rel.family_id
+            vc = self.storage.get_relation_version_counts([fid])
+            if vc.get(fid, 0) >= 2:
+                _rel_versioned_fids.append(fid)
+        if _rel_versioned_fids:
+            self._detect_and_apply_relation_contradictions(
+                _rel_versioned_fids, verbose=verbose,
             )
 
         if progress_callback:
