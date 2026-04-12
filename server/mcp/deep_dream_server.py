@@ -1152,7 +1152,12 @@ def remember_task_status(args):
             result = inner.get("result", {})
             if isinstance(result, dict):
                 entities = result.get("entities", result.get("new_entities", []))
-                if isinstance(entities, list) and entities:
+                if isinstance(entities, int):
+                    # remember_text() returns integer counts
+                    relations = result.get("relations", 0)
+                    chunks = result.get("chunks_processed", "?")
+                    parts.append(f"Extracted {entities} entities, {relations} relations from {chunks} chunk(s).")
+                elif isinstance(entities, list) and entities:
                     names = [e.get("name", "") for e in entities if isinstance(e, dict) and e.get("name")]
                     if names:
                         sample = ", ".join(names[:5])

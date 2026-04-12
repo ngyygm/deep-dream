@@ -4,6 +4,31 @@
 
 ## 2026-04-12
 
+### [已完成] fix: hybrid search score contamination — expansion entities no longer dominate rankings
+- 严重bug：图谱邻域扩展（Step 4）添加的实体在 `entity_score_map` 中无分数条目
+- Step 6B `confidence_rerank` 对缺失分数使用默认值 1.0，使扩展实体得分 0.94（远高于真正匹配的 0.015）
+- 搜索"曹操"返回"Windows操作系统"排第一，"Python"返回"编程语言特性"排第一
+- 修复三部分：
+  1. Step 3 关系端点实体：赋衰减分数（relation_score × 0.5）
+  2. Step 4 扩展实体：赋 0.0 分数，扩展关系：取端点最高分数 × 0.3 衰减
+  3. Step 6A/6B：默认分数从 1.0 改为 0.0
+- 修复后："曹操"→ 位0 (0.0153)，"Python语言"→ 位0 (0.0154)，"诸葛亮"→ 位0 (0.0154)
+- 影响: server/blueprints/relations.py
+
+### [已完成] feat: core-name search matching for parenthetical entity names
+- 带括号注释的实体名（如"曹操（155年－220年）"）无法通过核心名称"曹操"搜索到
+- 三处改进：
+  1. neo4j_store.py: BM25 搜索添加核心名称前缀匹配回退
+  2. entities.py: by-name 端点添加 Step 2B 前缀匹配
+  3. relations.py: 统一 /find 端点添加 Step 6C 核心名称提升
+- 实体搜索默认改为 hybrid 模式
+- 影响: processor/storage/neo4j_store.py, server/blueprints/entities.py, server/blueprints/relations.py
+
+### [已完成] feat: duplicate entity detection endpoint + merge 4 duplicate pairs
+- 新增 GET /api/v1/concepts/duplicates 端点：按核心名称去重检测
+- 合并 4 对重复实体：居里研究所、巴黎、放射性同位素、文档
+- 影响: server/blueprints/concepts.py
+
 ### [已完成] fix: Relation MENTIONS unconditional — existing relations always included in processed_results
 - Vision 原则「内容版本和关联解耦」：MENTIONS 必须无条件建立
 - `process_relations_batch` 后处理：从 `existing_relations_by_pair` 补充未在 `processed_relations` 中的已有关系

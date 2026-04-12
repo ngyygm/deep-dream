@@ -677,10 +677,22 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
                 wprint(
                     f"[DeepDream] JSON 解析失败，将重试 LLM（{attempt + 2}/{max_attempts}）: {e}"
                 )
-                messages.append({"role": "assistant", "content": last_response})
+                is_truncation = _looks_like_truncation_json_err(e)
+                if is_truncation and len(last_response) > 2000:
+                    # 截断时响应可能达 20K+ 字符，完整追加会导致上下文溢出
+                    # 仅追加前 1500 字符 + 截断标记
+                    truncated_summary = (
+                        last_response[:1500]
+                        + "\n... [输出被截断，共 "
+                        + str(len(last_response))
+                        + " 字符，仅保留前 1500 字符] ..."
+                    )
+                    messages.append({"role": "assistant", "content": truncated_summary})
+                else:
+                    messages.append({"role": "assistant", "content": last_response})
                 base_retry = json_retry_user_message or _JSON_RETRY_USER_MESSAGE
                 retry_hint = base_retry
-                if _looks_like_truncation_json_err(e):
+                if is_truncation:
                     retry_hint = base_retry + _JSON_RETRY_TRUNCATION_SUFFIX
                 messages.append({"role": "user", "content": retry_hint})
                 time.sleep(0.3)
