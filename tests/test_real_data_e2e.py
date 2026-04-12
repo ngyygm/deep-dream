@@ -21,7 +21,7 @@ import json
 import os
 import time
 import unittest
-from datetime import datetime
+from datetime import datetime, timezone
 
 import requests
 
@@ -309,7 +309,7 @@ to enzyme engineering (designing novel catalysts) and understanding disease muta
         # Find with time_after = now (should return nothing or very recent)
         resp = _api("post", "/api/v1/find", json={
             "query": "protein",
-            "time_after": datetime.utcnow().isoformat(),
+            "time_after": datetime.now(timezone.utc).isoformat(),
             "max_entities": 10,
         })
         data = resp.json()
@@ -357,7 +357,8 @@ to enzyme engineering (designing novel catalysts) and understanding disease muta
         })
         data = resp.json()
         self.assertTrue(data["success"])
-        print(f"  entity_search('mitochondrion'): {len(data['data']['entities'])} results")
+        results = data["data"] if isinstance(data["data"], list) else data["data"].get("entities", [])
+        print(f"  entity_search('mitochondrion'): {len(results)} results")
 
     def test_12_find_relations_search(self):
         """Test relation search endpoint."""
@@ -367,15 +368,13 @@ to enzyme engineering (designing novel catalysts) and understanding disease muta
         })
         data = resp.json()
         self.assertTrue(data["success"])
-        print(f"  relation_search('Leonardo'): {len(data['data']['relations'])} results")
+        results = data["data"] if isinstance(data["data"], list) else data["data"].get("relations", [])
+        print(f"  relation_search('Leonardo'): {len(results)} results")
 
     def test_13_find_relations_between(self):
         """Test finding relations between entities."""
-        # First find two entity family_ids
-        resp = _api("post", "/api/v1/find/entities/search", json={
-            "query_name": "mitochondrion",
-            "max_results": 3,
-        })
+        # First find two entity family_ids via entity list
+        resp = _api("get", "/api/v1/find/entities", params={"limit": 3})
         entities = resp.json()["data"]["entities"]
         if len(entities) >= 2:
             fid_a = entities[0]["family_id"]
@@ -386,7 +385,8 @@ to enzyme engineering (designing novel catalysts) and understanding disease muta
             })
             data = resp.json()
             self.assertTrue(data["success"])
-            print(f"  relations_between: {len(data['data']['relations'])} relations")
+            rels = data["data"] if isinstance(data["data"], list) else data["data"].get("relations", [])
+            print(f"  relations_between: {len(rels)} relations")
 
     def test_14_stats(self):
         """Test stats endpoint has data from all remember operations."""

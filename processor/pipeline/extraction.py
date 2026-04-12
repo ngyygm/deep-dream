@@ -1880,18 +1880,6 @@ class _ExtractionMixin:
                 _versioned_fids, verbose=verbose,
             )
 
-        # Relation contradiction detection — 多版本关系矛盾检测
-        _rel_versioned_fids = []
-        for rel in processed_relations:
-            fid = rel.family_id
-            vc = self.storage.get_relation_version_counts([fid])
-            if vc.get(fid, 0) >= 2:
-                _rel_versioned_fids.append(fid)
-        if _rel_versioned_fids:
-            self._detect_and_apply_relation_contradictions(
-                _rel_versioned_fids, verbose=verbose,
-            )
-
         if progress_callback:
             progress_callback(p_hi,
                 f"{_win_label} · 步骤6/7: 实体对齐",
@@ -2196,6 +2184,19 @@ class _ExtractionMixin:
             progress_range=(p2_end, progress_range[1]),
             window_index=window_index, total_windows=total_windows,
         )
+
+        # Relation contradiction detection — 多版本关系矛盾检测
+        if processed_relations:
+            _rel_versioned_fids = []
+            for rel in processed_relations:
+                fid = rel.family_id
+                vc = self.storage.get_relation_version_counts([fid])
+                if vc.get(fid, 0) >= 2:
+                    _rel_versioned_fids.append(fid)
+            if _rel_versioned_fids:
+                self._detect_and_apply_relation_contradictions(
+                    _rel_versioned_fids, verbose=verbose,
+                )
 
         # Phase C-2: 记录 Episode → Relation MENTIONS（无条件：所有新建的关系）
         if processed_relations:

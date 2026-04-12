@@ -487,24 +487,33 @@ class EntityProcessor:
             ])
 
         # --- Vectorized similarity computation ---
-        # Build stored embedding matrix once for all extracted entities
+        # Build stored embedding matrix once for all extracted entities.
+        # Each projection gets exactly one row; missing/dimension-mismatched
+        # embeddings are zero-padded so that the matrix shape equals (len(projections), D).
         stored_emb_matrix = None
         has_stored_embeddings = any(p.get("embedding_array") is not None for p in projections)
         if has_stored_embeddings:
             dim = None
-            rows = []
+            # First pass: determine the canonical embedding dimension
             for p in projections:
                 ea = p.get("embedding_array")
                 if ea is not None:
                     arr = np.array(ea, dtype=np.float32).ravel()
-                    if dim is None:
+                    if dim is None or arr.shape[0] < dim:
                         dim = arr.shape[0]
-                    rows.append(arr)
-                else:
-                    rows.append(np.zeros(dim or 1, dtype=np.float32))
-            stored_emb_matrix = np.stack(rows) if rows else None  # (M, D)
-            # Normalize rows for cosine similarity
-            if stored_emb_matrix is not None and stored_emb_matrix.shape[0] > 0:
+            if dim is None or dim == 0:
+                stored_emb_matrix = None
+            else:
+                rows = []
+                for p in projections:
+                    ea = p.get("embedding_array")
+                    if ea is not None:
+                        arr = np.array(ea, dtype=np.float32).ravel()
+                        rows.append(arr[:dim])  # trim to canonical dim
+                    else:
+                        rows.append(np.zeros(dim, dtype=np.float32))
+                stored_emb_matrix = np.stack(rows)  # (M, D), M == len(projections)
+                # Normalize rows for cosine similarity
                 norms = np.linalg.norm(stored_emb_matrix, axis=1, keepdims=True)
                 norms = np.where(norms == 0, 1.0, norms)
                 stored_emb_matrix = stored_emb_matrix / norms
