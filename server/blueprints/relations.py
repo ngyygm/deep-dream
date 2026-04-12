@@ -158,20 +158,30 @@ def find_unified():
         entities_by_abs: Dict[str, Entity] = {e.absolute_id: e for e in matched_entities}
 
         # --- 第三步：从语义命中的关系中补充关联实体（批量获取） ---
+        # 关系端点实体获得关系分数的衰减值（避免默认1.0污染排序）
         with _perf_timer("find_unified | step3_entity_completion"):
             missing_abs_ids = set()
+            missing_source_scores: Dict[str, float] = {}  # abs_id → best relation score
             for r in list(matched_relations):
+                r_score = relation_score_map.get(r.absolute_id, 0.0)
                 for abs_id in (r.entity1_absolute_id, r.entity2_absolute_id):
                     if abs_id not in entity_abs_ids:
                         missing_abs_ids.add(abs_id)
+                        # 保留最高的关联关系分数用于衰减赋分
+                        if abs_id not in missing_source_scores or r_score > missing_source_scores[abs_id]:
+                            missing_source_scores[abs_id] = r_score
             if missing_abs_ids:
                 batch_entities = storage.get_entities_by_absolute_ids(list(missing_abs_ids))
                 for e in batch_entities:
                     if e:
                         entities_by_abs[e.absolute_id] = e
                         entity_abs_ids.add(e.absolute_id)
+                        # 关系端点实体：使用关系分数 × 0.5 衰减（无关系分数则为0）
+                        if e.absolute_id not in entity_score_map:
+                            entity_score_map[e.absolute_id] = missing_source_scores.get(e.absolute_id, 0.0) * 0.5
 
         # --- 第四步：图谱邻域扩展 ---
+        # 扩展实体/关系使用更低衰减分数（避免无分数实体默认1.0污染排序）
         with _perf_timer("find_unified | step4_graph_expansion"):
             if expand and entity_abs_ids:
                 expanded_rels = storage.get_relations_by_entity_absolute_ids(
@@ -183,6 +193,11 @@ def find_unified():
                     if r.absolute_id not in relation_abs_ids:
                         relation_abs_ids.add(r.absolute_id)
                         matched_relations.append(r)
+                        # 扩展关系分数：取其端点实体最高分数 × 0.3 衰减
+                        if r.absolute_id not in relation_score_map:
+                            e1_score = entity_score_map.get(r.entity1_absolute_id, 0.0)
+                            e2_score = entity_score_map.get(r.entity2_absolute_id, 0.0)
+                            relation_score_map[r.absolute_id] = max(e1_score, e2_score) * 0.3
                     for abs_id in (r.entity1_absolute_id, r.entity2_absolute_id):
                         if abs_id not in entity_abs_ids:
                             expand_missing.add(abs_id)
@@ -192,6 +207,9 @@ def find_unified():
                         if e:
                             entities_by_abs[e.absolute_id] = e
                             entity_abs_ids.add(e.absolute_id)
+                            # 扩展实体分数：0（仅用于补全，不参与排序竞争）
+                            if e.absolute_id not in entity_score_map:
+                                entity_score_map[e.absolute_id] = 0.0
 
         # --- 第五步：时间过滤 ---
         final_entities: List[Entity] = []
@@ -220,21 +238,21 @@ def find_unified():
                 [e.family_id for e in final_entities]
             )
             searcher_hybrid = HybridSearcher(storage)
-            scored = [(e, entity_score_map.get(e.absolute_id, 1.0)) for e in final_entities]
+            scored = [(e, entity_score_map.get(e.absolute_id, 0.0)) for e in final_entities]
             reranked = searcher_hybrid.node_degree_rerank(scored, degree_map)
             final_entities = [e for e, _ in reranked[:max_entities]]
 
         # --- 第六步B：置信度加权 ---
         if search_mode == "hybrid" and reranker != "node_degree":
             searcher_conf = HybridSearcher(storage)
-            ent_scored = [(e, entity_score_map.get(e.absolute_id, 1.0)) for e in final_entities]
+            ent_scored = [(e, entity_score_map.get(e.absolute_id, 0.0)) for e in final_entities]
             reranked_ents = searcher_conf.confidence_rerank(ent_scored, alpha=0.2)
             final_entities = [e for e, _ in reranked_ents[:max_entities]]
             # Also update score map with adjusted scores
             for e, score in reranked_ents[:max_entities]:
                 entity_score_map[e.absolute_id] = score
 
-            rel_scored = [(r, relation_score_map.get(r.absolute_id, 1.0)) for r in final_relations]
+            rel_scored = [(r, relation_score_map.get(r.absolute_id, 0.0)) for r in final_relations]
             reranked_rels = searcher_conf.confidence_rerank(rel_scored, alpha=0.2)
             final_relations = [r for r, _ in reranked_rels[:max_relations]]
             for r, score in reranked_rels[:max_relations]:
