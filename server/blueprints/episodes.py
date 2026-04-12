@@ -181,15 +181,21 @@ def find_snapshot():
     """获取指定时间点的图谱快照"""
     try:
         time_str = request.args.get("time")
-        if not time_str:
-            return err("time 为必填参数（ISO 格式）", 400)
-        time_point = parse_time_point(time_str)
         limit = request.args.get("limit", type=int)
 
         processor = _get_processor()
-        snapshot = processor.storage.get_snapshot(time_point, limit=limit)
+        if time_str:
+            time_point = parse_time_point(time_str)
+            snapshot = processor.storage.get_snapshot(time_point, limit=limit)
+            time_label = time_point.isoformat()
+        else:
+            # 无 time 参数时返回最新快照
+            now = datetime.now(timezone.utc)
+            snapshot = processor.storage.get_snapshot(now, limit=limit)
+            time_label = now.isoformat()
+
         return ok({
-            "time": time_point.isoformat(),
+            "time": time_label,
             "entities": [entity_to_dict(e) for e in snapshot["entities"]],
             "relations": [relation_to_dict(r) for r in snapshot["relations"]],
             "entity_count": len(snapshot["entities"]),
