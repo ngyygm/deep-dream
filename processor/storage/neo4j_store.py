@@ -346,6 +346,7 @@ class Neo4jStorageManager:
             fulltext_indexes = [
                 ("entityFulltext", "CREATE FULLTEXT INDEX entityFulltext IF NOT EXISTS FOR (e:Entity) ON EACH [e.name, e.content]"),
                 ("relationFulltext", "CREATE FULLTEXT INDEX relationFulltext IF NOT EXISTS FOR (r:Relation) ON EACH [r.content]"),
+                ("conceptFulltext", "CREATE FULLTEXT INDEX conceptFulltext IF NOT EXISTS FOR (c:Concept) ON EACH [c.name, c.content]"),
             ]
             for idx_name, idx_cypher in fulltext_indexes:
                 try:
@@ -4909,33 +4910,63 @@ class Neo4jStorageManager:
 
     def search_concepts_by_bm25(self, query: str, role: str = None, limit: int = 20,
                                  time_point: str = None) -> List[dict]:
-        """搜索概念（Neo4j全文索引或CONTAINS）。可选 time_point 过滤。"""
+        """搜索概念（Neo4j 全文索引优先，回退到分词 CONTAINS）。可选 time_point 过滤。"""
         if not query:
             return []
         tp = self._tp_to_datetime(time_point)
         with self._session() as session:
-            if role:
-                result = session.run("""
-                    MATCH (c:Concept)
-                    WHERE c.role = $role AND (c.content CONTAINS $q OR c.name CONTAINS $q)
-                      AND ($tp IS NULL OR c.valid_at IS NULL OR c.valid_at <= $tp)
-                      AND ($tp IS NULL OR c.invalid_at IS NULL OR c.invalid_at > $tp)
-                    RETURN c.uuid AS id, c.family_id AS family_id, c.role AS role,
-                           c.name AS name, c.content AS content,
-                           c.event_time AS event_time, c.processed_time AS processed_time
-                    ORDER BY c.processed_time DESC LIMIT $limit
-                """, q=query, role=role, limit=limit, tp=tp)
-            else:
-                result = session.run("""
-                    MATCH (c:Concept)
-                    WHERE (c.content CONTAINS $q OR c.name CONTAINS $q)
-                      AND ($tp IS NULL OR c.valid_at IS NULL OR c.valid_at <= $tp)
-                      AND ($tp IS NULL OR c.invalid_at IS NULL OR c.invalid_at > $tp)
-                    RETURN c.uuid AS id, c.family_id AS family_id, c.role AS role,
-                           c.name AS name, c.content AS content,
-                           c.event_time AS event_time, c.processed_time AS processed_time
-                    ORDER BY c.processed_time DESC LIMIT $limit
-                """, q=query, limit=limit, tp=tp)
+            # 尝试全文索引搜索（真正的 BM25 排序）
+            try:
+                role_filter = " AND c.role = $role" if role else ""
+                result = session.run(
+                    f"""CALL db.index.fulltext.queryNodes('conceptFulltext', $search_query)
+                       YIELD node, score
+                       WHERE node.invalid_at IS NULL
+                         AND ($tp IS NULL OR node.valid_at IS NULL OR node.valid_at <= $tp)
+                         AND ($tp IS NULL OR node.invalid_at IS NULL OR node.invalid_at > $tp)
+                         {role_filter.replace('c.', 'node.')}
+                       RETURN node.uuid AS id, node.family_id AS family_id, node.role AS role,
+                              node.name AS name, node.content AS content,
+                              node.event_time AS event_time, node.processed_time AS processed_time,
+                              score AS bm25_score
+                       ORDER BY score DESC LIMIT $limit""",
+                    search_query=query, role=role, limit=limit, tp=tp,
+                )
+                rows = [_neo4j_types_to_native(dict(r)) for r in result]
+                if rows:
+                    return rows
+            except Exception as e:
+                logger.debug("Concept fulltext search failed, falling back to CONTAINS: %s", e)
+
+            # 回退: 分词 CONTAINS（每个词独立匹配，OR 组合）
+            import re
+            tokens = [t for t in re.split(r'[\s,;，；、]+', query) if len(t) >= 2]
+            if not tokens:
+                tokens = [query]
+            # 构建分词 CONTAINS 条件
+            conditions = []
+            for token in tokens:
+                conditions.append("(c.content CONTAINS $t_" + str(len(conditions)) +
+                                  " OR c.name CONTAINS $t_" + str(len(conditions)) + ")")
+            token_clauses = " OR ".join(conditions)
+            params = {"t_" + str(i): t for i, t in enumerate(tokens)}
+            params["role"] = role
+            params["limit"] = limit
+            params["tp"] = tp
+
+            role_filter = " AND c.role = $role" if role else ""
+            cypher = f"""
+                MATCH (c:Concept)
+                WHERE ({token_clauses})
+                  AND ($tp IS NULL OR c.valid_at IS NULL OR c.valid_at <= $tp)
+                  AND ($tp IS NULL OR c.invalid_at IS NULL OR c.invalid_at > $tp)
+                  {role_filter}
+                RETURN c.uuid AS id, c.family_id AS family_id, c.role AS role,
+                       c.name AS name, c.content AS content,
+                       c.event_time AS event_time, c.processed_time AS processed_time
+                ORDER BY c.processed_time DESC LIMIT $limit
+            """
+            result = session.run(cypher, **params)
             return [_neo4j_types_to_native(dict(r)) for r in result]
 
     def get_concept_neighbors(self, family_id: str, max_depth: int = 1,

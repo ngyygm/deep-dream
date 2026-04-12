@@ -77,6 +77,7 @@ class HybridSearcher:
         """混合搜索实体。
 
         三路搜索: BM25 + 向量语义 + 图上下文扩展
+        当两路无重叠时，使用 name-only 补充搜索提升短查询召回。
 
         Args:
             query_text: 搜索文本（用于 BM25）
@@ -105,7 +106,7 @@ class HybridSearcher:
         except Exception as e:
             logger.debug("BM25 search failed: %s", e)
 
-        # 路径 2: 向量语义搜索（自动计算 embedding）
+        # 路径 2: 向量语义搜索（name + content 模式）
         if query_embedding is None:
             query_embedding = self._get_embedding(query_text)
         if query_embedding is not None:
@@ -121,6 +122,33 @@ class HybridSearcher:
                     weights.append(vector_weight)
             except Exception as e:
                 logger.debug("Vector search failed: %s", e)
+
+            # 路径 2b: name-only 语义搜索（短查询对短名称匹配更好）
+            # 当 name+content 搜索无结果或结果太少时补充
+            if len(result_lists) < 3:  # BM25 + vector < 3 means vector returned few
+                try:
+                    name_only_results = self.storage.search_entities_by_similarity(
+                        query_name=query_text,
+                        threshold=semantic_threshold,
+                        max_results=semantic_max_results,
+                        text_mode="name_only",
+                    )
+                    if name_only_results:
+                        # 检查与已有结果的重叠度
+                        existing_fids = set()
+                        for rl in result_lists:
+                            for item in rl:
+                                fid = getattr(item, 'family_id', None)
+                                if fid:
+                                    existing_fids.add(fid)
+                        new_fids = {getattr(e, 'family_id', '') for e in name_only_results}
+                        overlap = existing_fids & new_fids
+                        # 有新增实体才加入（避免纯重复）
+                        if new_fids - existing_fids:
+                            result_lists.append(name_only_results)
+                            weights.append(vector_weight * 0.5)  # name-only 权重较低
+                except Exception as e:
+                    logger.debug("Name-only vector search failed: %s", e)
 
         # 路径 3: 图上下文扩展 — 从前两路 top 结果出发，BFS 发现结构关联实体
         if enable_graph_expansion and (result_lists):
@@ -184,7 +212,7 @@ class HybridSearcher:
                     result_lists.append(vector_results)
                     weights.append(vector_weight)
             except Exception as e:
-                logger.debug("Vector search failed: %s", e)
+                logger.debug("Relation vector search failed: %s", e)
 
         if not result_lists:
             return []
