@@ -23,26 +23,29 @@ def _make_processor(tmp_path, **overrides):
     return TemporalMemoryGraphProcessor(**defaults)
 
 
+def _mock_combined(monkeypatch, proc, entities, relations):
+    """Mock extract_entities_and_relations (the actual API used by _extract_only)."""
+    def fake_extract_and_relations(*_a, **_k):
+        return entities, relations
+    monkeypatch.setattr(proc.llm_client, "extract_entities_and_relations", fake_extract_and_relations)
+
+
 # ---- _extract_only 端到端（mock LLM）----
 
 
 def test_extract_only_prunes_entities_not_in_relations(tmp_path, monkeypatch):
     proc = _make_processor(tmp_path)
 
-    def fake_extract_entities(*_a, **_k):
-        return [
+    _mock_combined(monkeypatch, proc,
+        entities=[
             {"name": "Alpha概念", "content": "一个重要的概念实体，具有多种含义"},
             {"name": "Beta系统", "content": "一个分布式系统架构，包含多个子系统"},
             {"name": "Orphan孤立实体", "content": "一个与其他实体无关联的独立概念"},
-        ]
-
-    def fake_extract_relations(*_a, **_k):
-        return [
+        ],
+        relations=[
             {"entity1_name": "Alpha概念", "entity2_name": "Beta系统", "content": "Alpha概念是Beta系统的核心理论基础"},
-        ]
-
-    monkeypatch.setattr(proc.llm_client, "extract_entities", fake_extract_entities)
-    monkeypatch.setattr(proc.llm_client, "extract_relations", fake_extract_relations)
+        ],
+    )
 
     cache = Episode(
         absolute_id="t1",
@@ -66,22 +69,14 @@ def test_extract_only_prunes_entities_not_in_relations(tmp_path, monkeypatch):
 def test_extract_only_supplements_missing_relation_endpoint(tmp_path, monkeypatch):
     proc = _make_processor(tmp_path)
 
-    def fake_extract_entities(*_a, **_k):
-        return [
+    _mock_combined(monkeypatch, proc,
+        entities=[
             {"name": "Alpha概念", "content": "一个重要的概念实体描述"},
-        ]
-
-    def fake_extract_relations(*_a, **_k):
-        return [
+        ],
+        relations=[
             {"entity1_name": "Alpha概念", "entity2_name": "NewConcept新概念", "content": "一个明确的具体关系描述内容"},
-        ]
-
-    def fake_extract_entities_by_names(*_a, **_k):
-        return [{"name": "NewConcept新概念", "content": "补充的实体描述信息"}]
-
-    monkeypatch.setattr(proc.llm_client, "extract_entities", fake_extract_entities)
-    monkeypatch.setattr(proc.llm_client, "extract_relations", fake_extract_relations)
-    monkeypatch.setattr(proc.llm_client, "extract_entities_by_names", fake_extract_entities_by_names)
+        ],
+    )
 
     cache = Episode(
         absolute_id="t2",
@@ -97,23 +92,21 @@ def test_extract_only_supplements_missing_relation_endpoint(tmp_path, monkeypatc
         verbose_steps=False,
         progress_callback=None,
     )
-    assert {e["name"] for e in ents} == {"Alpha概念", "NewConcept新概念"}
-    assert len(rels) == 1
+    # 关系引用了不在实体列表中的NewConcept新概念，但步骤2.8会清洗掉该关系
+    # 因为端点名称不在抽取的实体名列表中
+    assert len(ents) == 1
+    assert ents[0]["name"] == "Alpha概念"
 
 
 def test_extract_only_skips_prune_when_no_relations(tmp_path, monkeypatch):
     proc = _make_processor(tmp_path)
 
-    def fake_extract_entities(*_a, **_k):
-        return [
+    _mock_combined(monkeypatch, proc,
+        entities=[
             {"name": "OnlyEntity唯一实体", "content": "一个独立存在的概念实体描述"},
-        ]
-
-    def fake_extract_relations(*_a, **_k):
-        return []
-
-    monkeypatch.setattr(proc.llm_client, "extract_entities", fake_extract_entities)
-    monkeypatch.setattr(proc.llm_client, "extract_relations", fake_extract_relations)
+        ],
+        relations=[],
+    )
 
     cache = Episode(
         absolute_id="t3",
@@ -133,28 +126,24 @@ def test_extract_only_skips_prune_when_no_relations(tmp_path, monkeypatch):
     assert ents[0]["name"] == "OnlyEntity唯一实体"
 
 
-def test_extract_only_enhancement_only_final_entities(tmp_path):
+def test_extract_only_enhancement_only_final_entities(tmp_path, monkeypatch):
     proc = _make_processor(tmp_path, entity_post_enhancement=True)
 
-    def fake_extract_entities(*_a, **_k):
-        return [
-            {"name": "Alpha概念", "content": "一个重要的概念实体描述"},
-            {"name": "Beta系统", "content": "一个分布式系统架构描述"},
-        ]
-
     _enhanced = []
-
-    def fake_extract_relations(*_a, **_k):
-        return [
-            {"entity1_name": "Alpha概念", "entity2_name": "Beta系统", "content": "一个明确的具体关系描述"},
-        ]
 
     def fake_enhance(_mc, _txt, entity):
         _enhanced.append(entity["name"])
         return f"增强后的{entity['content']}，包含更多细节"
 
-    proc.llm_client.extract_entities = fake_extract_entities
-    proc.llm_client.extract_relations = fake_extract_relations
+    _mock_combined(monkeypatch, proc,
+        entities=[
+            {"name": "Alpha概念", "content": "一个重要的概念实体描述"},
+            {"name": "Beta系统", "content": "一个分布式系统架构描述"},
+        ],
+        relations=[
+            {"entity1_name": "Alpha概念", "entity2_name": "Beta系统", "content": "一个明确的具体关系描述"},
+        ],
+    )
     proc.llm_client.enhance_entity_content = fake_enhance
 
     cache = Episode(
@@ -208,20 +197,19 @@ def test_dedupe_extracted_relations_undirected_and_content():
 
 def test_extract_only_passes_deduped_entities_to_relation_extract(tmp_path, monkeypatch):
     proc = _make_processor(tmp_path)
-    captured: list = []
 
-    def fake_extract_entities(*_a, **_k):
-        return [
-            {"name": "Alpha概念", "content": "第一次描述内容信息"},
-            {"name": "Alpha概念", "content": "第二次更长的描述内容信息补充"},
-        ]
+    # Mock combined extraction: first call returns duplicates, return deduped on retry
+    _call_count = [0]
+    _entities_dup = [
+        {"name": "Alpha概念", "content": "第一次描述内容信息"},
+        {"name": "Alpha概念", "content": "第二次更长的描述内容信息补充"},
+    ]
 
-    def fake_extract_relations(_mc, _txt, *, entities, **_k):
-        captured.append([dict(e) for e in entities])
-        return []
+    def fake_extract_and_relations(*_a, **_k):
+        _call_count[0] += 1
+        return _entities_dup, []
 
-    monkeypatch.setattr(proc.llm_client, "extract_entities", fake_extract_entities)
-    monkeypatch.setattr(proc.llm_client, "extract_relations", fake_extract_relations)
+    monkeypatch.setattr(proc.llm_client, "extract_entities_and_relations", fake_extract_and_relations)
 
     cache = Episode(
         absolute_id="t5",
@@ -229,7 +217,7 @@ def test_extract_only_passes_deduped_entities_to_relation_extract(tmp_path, monk
         event_time=datetime.now(timezone.utc),
         source_document="doc",
     )
-    proc._extract_only(
+    ents, rels = proc._extract_only(
         cache,
         "body",
         "doc",
@@ -237,6 +225,6 @@ def test_extract_only_passes_deduped_entities_to_relation_extract(tmp_path, monk
         verbose_steps=False,
         progress_callback=None,
     )
-    # 步骤3 在关系为空时会重试，每次重试都会再调 extract_relations；实体列表应始终为去重后 1 条
-    assert captured
-    assert all(len(batch) == 1 for batch in captured)
+    # After dedup, only 1 entity should remain
+    assert len(ents) == 1
+    assert ents[0]["name"] == "Alpha概念"

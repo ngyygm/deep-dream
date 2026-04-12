@@ -127,13 +127,27 @@ def _is_valid_entity_name(name: str) -> bool:
     if "！" in name and len(name) > 4:
         return False
 
+    # 包含英文感叹号/问号的长名称通常是句子而非实体名
+    if name.isascii() and len(name) > 6:
+        if name.endswith('!') or name.endswith('?'):
+            return False
+
     # 包含中文顿号"、"的通常是枚举列表/句子片段，不是实体名
     if "、" in name:
+        return False
+
+    # 英文枚举列表（含 "and"/"or" 连接3个以上项）通常是句子片段
+    if name.isascii() and name.count(',') >= 3:
         return False
 
     # 包含中文逗号"，"且长度>8的通常是句子片段/场景描述，不是实体名
     # 短名称含逗号可能是地名（如"长安，洛阳"），但>8字几乎一定是句子
     if "，" in name and len(name) > 8:
+        return False
+
+    # 英文句子检测：含句号（.）通常是完整句子而非实体名
+    # 但允许缩写（如 "U.S.A."、"Ph.D."）和版本号（如 "Python 3.12"）
+    if name.isascii() and '. ' in name:
         return False
 
     # 包含"的"的结构（名词+的+名词）是描述性短语，不是实体名
@@ -241,15 +255,37 @@ def _is_valid_entity_name(name: str) -> bool:
 
     # 英文通用词黑名单：直接匹配或作为双语名称的英文部分
     _english_generic = {
+        # 单词泛化名词/动词
         "research", "discovery", "study", "analysis", "method",
         "partnership", "collaboration", "husband", "wife", "read",
         "influence", "impact", "education", "contribution",
         "achievement", "legacy", "history", "status", "role",
         "first", "pioneering", "only", "one and only", "elements",
+        # 动词/动作
+        "development", "improvement", "enhancement", "optimization",
+        "integration", "implementation", "management", "migration",
+        "processing", "handling", "testing", "review", "feedback",
+        # 泛化状态/质量
+        "quality", "performance", "reliability", "efficiency",
+        "scalability", "availability", "security", "stability",
+        "importance", "significance", "relevance",
+        # 过程/阶段
+        "process", "procedure", "approach", "strategy", "solution",
+        "framework", "architecture", "structure", "design", "pattern",
+        "practice", "principle", "concept", "idea", "overview",
+        "introduction", "background", "summary", "conclusion",
+        # 泛化描述短语
         "new elements", "pioneering research", "scientific contribution",
         "academic studies", "discovery of new elements",
         "scientific history", "scientific heritage", "scientific legacy",
         "radioactive research", "medical assistance", "women scientists",
+        "best practice", "key factor", "main feature", "core concept",
+        "important aspect", "significant development", "major change",
+        "recent advance", "current status", "future direction",
+        # 泛化关系/角色
+        "relationship", "connection", "association", "difference",
+        "similarity", "comparison", "advantage", "disadvantage",
+        "benefit", "challenge", "issue", "problem", "solution",
     }
     # 提取括号内的英文部分
     _en_paren = re.findall(r'[(（]([A-Za-z][A-Za-z\s]+)[)）]', name)
@@ -263,18 +299,50 @@ def _is_valid_entity_name(name: str) -> bool:
     # 英文泛化模式：以动作/过程词结尾的短语（如 "Pioneering research"、"Discovery of ..."）
     if name.isascii():
         _en_generic_start = ("pioneering ", "discovery of ", "study of ",
-                             "analysis of ", "history of ", "impact of ")
+                             "analysis of ", "history of ", "impact of ",
+                             "overview of ", "introduction to ", "review of ",
+                             "basics of ", "fundamentals of ", "principles of ",
+                             "guide to ", "approach to ", "step in ",
+                             "role of ", "importance of ", "future of ",
+                             "state of ", "evolution of ", "development of ")
         _en_generic_end = (" research", " discovery", " contribution",
                            " achievement", " method", " study",
                            " analysis", " collaboration", " partnership",
                            " education", " influence", " impact",
-                           " legacy", " history", " studies")
+                           " legacy", " history", " studies",
+                           " overview", " introduction", " summary",
+                           " conclusion", " review", " perspective",
+                           " development", " improvement", " enhancement",
+                           " optimization", " integration", " management",
+                           " framework", " architecture", " design")
         name_lower = name.lower().strip()
         for start in _en_generic_start:
             if name_lower.startswith(start):
                 return False
         for end in _en_generic_end:
             if name_lower.endswith(end):
+                return False
+
+    # 英文对话/引用标记检查
+    if name.isascii():
+        _en_dialogue_markers = ['said "', 'said that', 'says that', 'stated that',
+                                'according to', 'claims that', 'argues that',
+                                'believes that', 'mentioned that', 'noted that']
+        name_lower = name.lower()
+        for marker in _en_dialogue_markers:
+            if name_lower.startswith(marker):
+                return False
+
+    # 英文描述性短语模式（动词+宾语结构，不是实体名）
+    if name.isascii() and ' ' in name:
+        _en_verb_start_patterns = [
+            r'^(?:improving|enhancing|optimizing|managing|handling|processing|building|creating|developing|designing|implementing|testing|deploying|monitoring|analyzing|evaluating)\b',
+            r'^(?:how to|why|when|where|what|which)\b',
+            r'^(?:the|a|an)\s+(?:best|most|main|key|important|significant|major|new|latest|current|future)\b',
+        ]
+        name_lower = name.lower().strip()
+        for pat in _en_verb_start_patterns:
+            if re.match(pat, name_lower):
                 return False
 
     # 模式匹配：泛化概念组合（如"科学成就XX""科学贡献XX"等）
@@ -527,24 +595,41 @@ def _is_valid_relation_content(content: str, entity1_name: str = "", entity2_nam
 
     # 纯标签式内容黑名单（只有类型标签，没有具体内容）
     _label_only_patterns = {
+        # 中文
         "官職", "居住地", "主从关系", "同僚关系", "敌对关系",
         "合作关系", "亲属关系", "上下级关系", "竞争关系",
         "朋友关系", "师徒关系", "同事关系", "邻居关系",
         "所属关系", "从属关系", "包含关系", "依赖关系",
+        # 英文
+        "colleague", "colleagues", "partnership", "collaboration",
+        "competitor", "competitors", "neighbor", "neighbors",
+        "relationship", "connection", "association",
     }
-    if content.strip() in _label_only_patterns:
+    if content.strip() in _label_only_patterns or content.strip().lower() in _label_only_patterns:
         return False
 
     # 检查是否是空洞模板（只说"有关联"而不描述具体内容）
     _empty_patterns = [
+        # 中文模板
         r'^.{0,4}与.{0,4}的?关联关系?$',
         r'^.{0,4}与.{0,4}有关$',
         r'^.{0,4}和.{0,4}的关系?$',
         r'^.{0,4}与.{0,4}存在关联$',
         r'^.{0,4}和.{0,4}相关$',
+        # 英文模板
+        r'^.{0,30}\bis\s+related\s+to\s+.{0,30}$',
+        r'^.{0,30}\bis\s+associated\s+with\s+.{0,30}$',
+        r'^.{0,30}\bis\s+connected\s+to\s+.{0,30}$',
+        r'^.{0,30}\bis\s+linked\s+to\s+.{0,30}$',
+        r'^.{0,30}\band\s+.{0,30}\s+have\s+a\s+relationship$',
+        r'^.{0,30}\band\s+.{0,30}\s+are\s+related$',
+        r'^.{0,30}\band\s+.{0,30}\s+are\s+associated$',
+        r'^.{0,30}\band\s+.{0,30}\s+are\s+connected$',
+        r'^has\s+a\s+relationship\s+with\s+.{0,30}$',
+        r'^there\s+is\s+a\s+(?:relationship|connection|association)\s+between\b.{0,50}$',
     ]
     for pattern in _empty_patterns:
-        if re.match(pattern, content.strip()):
+        if re.match(pattern, content.strip(), re.IGNORECASE):
             return False
 
     return True

@@ -1510,6 +1510,25 @@ class Neo4jStorageManager:
             )
             return {record["family_id"]: record["cnt"] for record in result}
 
+    def get_relation_version_counts(self, family_ids: List[str]) -> Dict[str, int]:
+        """批量获取多个 relation family_id 的版本数量。"""
+        if not family_ids:
+            return {}
+        resolved_map = self.resolve_family_ids(family_ids)
+        canonical_ids = list(set(r for r in resolved_map.values() if r))
+        if not canonical_ids:
+            return {}
+        with self._session() as session:
+            result = session.run(
+                """
+                MATCH (r:Relation)
+                WHERE r.family_id IN $fids
+                RETURN r.family_id AS family_id, COUNT(r) AS cnt
+                """,
+                fids=canonical_ids,
+            )
+            return {record["family_id"]: record["cnt"] for record in result}
+
     def batch_get_entity_profiles(self, family_ids: List[str]) -> List[Dict[str, Any]]:
         """批量获取实体档案（entity + relations + version_count），一次查询。
 
