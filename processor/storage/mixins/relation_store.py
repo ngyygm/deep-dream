@@ -41,6 +41,35 @@ class RelationStoreMixin:
     """Mixin providing all relation-related storage operations."""
 
     # ------------------------------------------------------------------
+    # Dream candidate filtering
+    # ------------------------------------------------------------------
+
+    def _is_dream_candidate(self, relation: Relation) -> bool:
+        """Check if a relation is an unverified dream candidate (tier=candidate, status=hypothesized)."""
+        if not relation.attributes:
+            return False
+        try:
+            attrs = json.loads(relation.attributes) if isinstance(relation.attributes, str) else relation.attributes
+            return attrs.get("tier") == "candidate" and attrs.get("status") == "hypothesized"
+        except (json.JSONDecodeError, TypeError, AttributeError):
+            return False
+
+    def _filter_dream_candidates(self, relations: List[Relation],
+                                  include_candidates: bool = False) -> List[Relation]:
+        """Filter out unverified dream candidate relations unless explicitly requested.
+
+        Args:
+            relations: Raw relation list from storage.
+            include_candidates: If True, return all relations including dream candidates.
+
+        Returns:
+            Filtered list with dream candidates removed (unless include_candidates=True).
+        """
+        if include_candidates or not relations:
+            return relations
+        return [r for r in relations if not self._is_dream_candidate(r)]
+
+    # ------------------------------------------------------------------
     # Row helper
     # ------------------------------------------------------------------
 
@@ -283,7 +312,8 @@ class RelationStoreMixin:
             logger.debug("relation embedding preview failed: %s", exc)
             return None
 
-    def get_relation_versions(self, family_id: str) -> List[Relation]:
+    def get_relation_versions(self, family_id: str,
+                               include_candidates: bool = False) -> List[Relation]:
         """获取关系的所有版本"""
         conn = self._get_conn()
         cursor = conn.cursor()
@@ -295,13 +325,17 @@ class RelationStoreMixin:
 
         rows = cursor.fetchall()
 
-        return [self._row_to_relation(row) for row in rows]
+        return self._filter_dream_candidates(
+            [self._row_to_relation(row) for row in rows],
+            include_candidates,
+        )
 
     # ------------------------------------------------------------------
     # Search — BM25
     # ------------------------------------------------------------------
 
-    def search_relations_by_bm25(self, query: str, limit: int = 20) -> List[Relation]:
+    def search_relations_by_bm25(self, query: str, limit: int = 20,
+                                  include_candidates: bool = False) -> List[Relation]:
         """BM25 全文搜索关系。"""
         if not query:
             return []
@@ -322,7 +356,7 @@ class RelationStoreMixin:
         relations = []
         for row in cursor.fetchall():
             relations.append(self._row_to_relation(row))
-        return relations
+        return self._filter_dream_candidates(relations, include_candidates)
 
     # ------------------------------------------------------------------
     # Search — embedding & text similarity
@@ -330,7 +364,8 @@ class RelationStoreMixin:
 
     def search_relations_by_similarity(self, query_text: str,
                                        threshold: float = 0.3,
-                                       max_results: int = 10) -> List[Relation]:
+                                       max_results: int = 10,
+                                       include_candidates: bool = False) -> List[Relation]:
         """
         根据embedding相似度搜索关系
 
@@ -338,15 +373,20 @@ class RelationStoreMixin:
             query_text: 查询文本
             threshold: 相似度阈值
             max_results: 返回的最大关系数量
+            include_candidates: 是否包含 dream 候选关系
 
         Returns:
             匹配的关系列表（按相似度排序）
         """
-        # 获取所有关系及其embedding
+        # 获取所有关系及其embedding（已过滤 dream candidates）
         relations_with_embeddings = self._get_relations_with_embeddings()
 
         if not relations_with_embeddings:
             return []
+
+        if include_candidates:
+            # Re-fetch without dream candidate filtering
+            relations_with_embeddings = self._get_all_relations_with_embeddings()
 
         # 使用embedding相似度（如果可用）
         if self.embedding_client and self.embedding_client.is_available():
@@ -440,13 +480,15 @@ class RelationStoreMixin:
     # ------------------------------------------------------------------
 
     def get_all_relations(self, limit: Optional[int] = None, offset: Optional[int] = None,
-                          exclude_embedding: bool = False) -> List[Relation]:
+                          exclude_embedding: bool = False,
+                          include_candidates: bool = False) -> List[Relation]:
         """获取所有关系的最新版本
 
         Args:
             limit: SQL 层限制返回条数（避免全量读取后在 Python 中截断）
             offset: SQL 层偏移量
             exclude_embedding: 是否排除 embedding 字段
+            include_candidates: 是否包含 dream 候选关系
         """
         conn = self._get_conn()
         cursor = conn.cursor()
@@ -474,7 +516,10 @@ class RelationStoreMixin:
 
         rows = cursor.fetchall()
 
-        return [self._row_to_relation(row) for row in rows]
+        return self._filter_dream_candidates(
+            [self._row_to_relation(row) for row in rows],
+            include_candidates,
+        )
 
     def count_unique_entities(self) -> int:
         """轻量统计：返回不重复的 family_id 数量（不加载任何实体数据）。"""
@@ -527,7 +572,8 @@ class RelationStoreMixin:
     # Read operations — by entities
     # ------------------------------------------------------------------
 
-    def get_relations_by_entities(self, from_family_id: str, to_family_id: str) -> List[Relation]:
+    def get_relations_by_entities(self, from_family_id: str, to_family_id: str,
+                                  include_candidates: bool = False) -> List[Relation]:
         """根据两个实体ID获取所有关系（通过family_id查找，内部转换为绝对ID查询）
 
         每个 family_id 只返回最新版本（与 get_entity_relations 保持一致的去重逻辑）。
@@ -585,7 +631,10 @@ class RelationStoreMixin:
 
         rows = cursor.fetchall()
 
-        return [self._row_to_relation(row) for row in rows]
+        return self._filter_dream_candidates(
+            [self._row_to_relation(row) for row in rows],
+            include_candidates,
+        )
 
     def get_relations_by_entity_pairs(self, entity_pairs: List[Tuple[str, str]]) -> Dict[Tuple[str, str], List[Relation]]:
         """批量获取多个实体对的关系，按无向 pair 返回。
@@ -686,13 +735,16 @@ class RelationStoreMixin:
     # Read operations — entity-relation traversal
     # ------------------------------------------------------------------
 
-    def get_entity_relations(self, entity_absolute_id: str, limit: Optional[int] = None, time_point: Optional[datetime] = None) -> List[Relation]:
+    def get_entity_relations(self, entity_absolute_id: str, limit: Optional[int] = None,
+                             time_point: Optional[datetime] = None,
+                             include_candidates: bool = False) -> List[Relation]:
         """获取与指定实体相关的所有关系（作为起点或终点）
 
         Args:
             entity_absolute_id: 实体的绝对ID
             limit: 限制返回的关系数量（按时间倒序），None表示不限制
             time_point: 时间点（可选），如果提供，只返回该时间点之前或等于该时间点的关系，且每个family_id只返回最新版本
+            include_candidates: 是否包含 dream 候选关系
         """
         conn = self._get_conn()
         cursor = conn.cursor()
@@ -739,9 +791,15 @@ class RelationStoreMixin:
 
         rows = cursor.fetchall()
 
-        return [self._row_to_relation(row) for row in rows]
+        return self._filter_dream_candidates(
+            [self._row_to_relation(row) for row in rows],
+            include_candidates,
+        )
 
-    def get_entity_relations_by_family_id(self, family_id: str, limit: Optional[int] = None, time_point: Optional[datetime] = None, max_version_absolute_id: Optional[str] = None) -> List[Relation]:
+    def get_entity_relations_by_family_id(self, family_id: str, limit: Optional[int] = None,
+                                           time_point: Optional[datetime] = None,
+                                           max_version_absolute_id: Optional[str] = None,
+                                           include_candidates: bool = False) -> List[Relation]:
         """获取与指定实体相关的所有关系（通过family_id查找，包含该实体的所有版本）
 
         这个方法会查找该实体的所有版本（从最早版本开始）的所有关系，
@@ -853,9 +911,13 @@ class RelationStoreMixin:
 
         rows = cursor.fetchall()
 
-        return [self._row_to_relation(row) for row in rows]
+        return self._filter_dream_candidates(
+            [self._row_to_relation(row) for row in rows],
+            include_candidates,
+        )
 
-    def get_entity_relations_timeline(self, family_id: str, version_abs_ids: List[str]) -> List[Dict]:
+    def get_entity_relations_timeline(self, family_id: str, version_abs_ids: List[str],
+                                       include_candidates: bool = False) -> List[Dict]:
         """批量获取实体在各版本时间点的关系（消除 N+1 查询）。
 
         与 Neo4j 后端保持一致的接口：获取该实体所有版本关联的关系，
@@ -892,6 +954,14 @@ class RelationStoreMixin:
 
         # 一次查询获取所有相关关系（按 family_id 去重，保留最新版本）
         placeholders = ",".join("?" * len(all_abs_ids))
+        dream_filter = "" if include_candidates else (
+            " AND (r.attributes IS NULL OR json_extract(r.attributes, '$.tier') != 'candidate'"
+            " OR json_extract(r.attributes, '$.status') != 'hypothesized')"
+        )
+        dream_filter_sub = "" if include_candidates else (
+            " AND (attributes IS NULL OR json_extract(attributes, '$.tier') != 'candidate'"
+            " OR json_extract(attributes, '$.status') != 'hypothesized')"
+        )
         cursor.execute(
             f"""
             SELECT r.id, r.family_id, r.content, r.event_time, r.processed_time
@@ -900,11 +970,11 @@ class RelationStoreMixin:
                 SELECT family_id, MAX(processed_time) AS max_pt
                 FROM relations
                 WHERE (entity1_absolute_id IN ({placeholders}) OR entity2_absolute_id IN ({placeholders}))
-                  AND invalid_at IS NULL
+                  AND invalid_at IS NULL{dream_filter_sub}
                 GROUP BY family_id
             ) latest ON r.family_id = latest.family_id AND r.processed_time = latest.max_pt
             WHERE (r.entity1_absolute_id IN ({placeholders}) OR r.entity2_absolute_id IN ({placeholders}))
-              AND r.invalid_at IS NULL
+              AND r.invalid_at IS NULL{dream_filter}
             ORDER BY r.processed_time ASC
             """,
             tuple(all_abs_ids) * 4,
@@ -932,7 +1002,9 @@ class RelationStoreMixin:
                     break
         return timeline
 
-    def get_relations_by_entity_absolute_ids(self, entity_absolute_ids: List[str], limit: Optional[int] = None) -> List[Relation]:
+    def get_relations_by_entity_absolute_ids(self, entity_absolute_ids: List[str],
+                                              limit: Optional[int] = None,
+                                              include_candidates: bool = False) -> List[Relation]:
         """获取与指定实体版本列表直接关联的所有关系（通过entity_absolute_id直接匹配）
 
         这个方法根据关系边中的 entity1_absolute_id 或 entity2_absolute_id 直接匹配，
@@ -942,6 +1014,7 @@ class RelationStoreMixin:
         Args:
             entity_absolute_ids: 实体版本的absolute_id列表
             limit: 限制返回的关系数量，None表示不限制
+            include_candidates: 是否包含 dream 候选关系
 
         Returns:
             直接与这些实体版本关联的关系列表
@@ -977,7 +1050,7 @@ class RelationStoreMixin:
                 if limit is not None and len(result) >= limit:
                     break
 
-        return result
+        return self._filter_dream_candidates(result, include_candidates)
 
     def get_entity_absolute_ids_up_to_version(self, family_id: str, max_absolute_id: str) -> List[str]:
         """获取指定实体从最早版本到指定版本的所有 absolute_id 列表
@@ -1060,9 +1133,36 @@ class RelationStoreMixin:
             relation = self._row_to_relation(row)
             results.append((relation, embedding_array))
 
+        # Filter out dream candidates from embedding cache
+        results = [(r, e) for r, e in results if not self._is_dream_candidate(r)]
+
         with self._emb_cache_lock:
             self._relation_emb_cache = results
             self._relation_emb_cache_ts = time.time()
+        return results
+
+    def _get_all_relations_with_embeddings(self) -> List[tuple]:
+        """Like _get_relations_with_embeddings but includes dream candidates (no cache)."""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute(f"""
+            SELECT {self._RELATION_SELECT}
+            FROM (
+                SELECT *, ROW_NUMBER() OVER (PARTITION BY family_id ORDER BY processed_time DESC) AS rn
+                FROM relations
+            )
+            WHERE rn = 1
+        """)
+        results = []
+        for row in cursor.fetchall():
+            embedding_array = None
+            if len(row) > 9 and row[9] is not None:
+                try:
+                    embedding_array = np.frombuffer(row[9], dtype=np.float32)
+                except (ValueError, TypeError):
+                    embedding_array = None
+            relation = self._row_to_relation(row)
+            results.append((relation, embedding_array))
         return results
 
     # ------------------------------------------------------------------
@@ -1139,7 +1239,8 @@ class RelationStoreMixin:
     # Read operations — batch lookups
     # ------------------------------------------------------------------
 
-    def get_relations_by_family_ids(self, family_ids: List[str], limit: Optional[int] = None) -> List[Relation]:
+    def get_relations_by_family_ids(self, family_ids: List[str], limit: Optional[int] = None,
+                                     include_candidates: bool = False) -> List[Relation]:
         """获取与指定实体 ID 列表相关的所有关系。"""
         if not family_ids:
             return []
@@ -1169,7 +1270,10 @@ class RelationStoreMixin:
             query += " LIMIT ?"
             params.append(int(limit))
         cursor.execute(query, params)
-        return [self._row_to_relation(row) for row in cursor.fetchall()]
+        return self._filter_dream_candidates(
+            [self._row_to_relation(row) for row in cursor.fetchall()],
+            include_candidates,
+        )
 
     def batch_get_entity_degrees(self, family_ids: List[str]) -> Dict[str, int]:
         """批量获取实体度数 — 单次查询替代 N 次 get_entity_degree。"""
@@ -1264,6 +1368,9 @@ class RelationStoreMixin:
             """, tuple(all_aids) * 2)
 
             all_rels = [self._row_to_relation(row) for row in cursor.fetchall()]
+
+            # Filter out dream candidates from entity profiles
+            all_rels = [r for r in all_rels if not self._is_dream_candidate(r)]
 
             # 分配关系到对应的 family_id — O(R) 用 reverse lookup 替代 O(R*F)
             aid_to_fid: Dict[str, str] = {}
