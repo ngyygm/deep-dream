@@ -3840,6 +3840,73 @@ class Neo4jStorageManager:
             """, fid=resolved, attributes=attributes)
         self._cache.invalidate("entity:")
 
+    def update_entity_confidence(self, family_id: str, confidence: float):
+        """更新实体最新版本的置信度。值域 [0.0, 1.0]。"""
+        confidence = max(0.0, min(1.0, confidence))
+        with self._session() as session:
+            session.run("""
+                MATCH (e:Entity {family_id: $fid})
+                WHERE e.invalid_at IS NULL
+                WITH e ORDER BY e.processed_time DESC LIMIT 1
+                SET e.confidence = $confidence
+            """, fid=family_id, confidence=confidence)
+        self._cache.invalidate("entity:")
+
+    def update_relation_confidence(self, family_id: str, confidence: float):
+        """更新关系最新版本的置信度。值域 [0.0, 1.0]。"""
+        confidence = max(0.0, min(1.0, confidence))
+        with self._session() as session:
+            session.run("""
+                MATCH (r:Relation {family_id: $fid})
+                WHERE r.invalid_at IS NULL
+                WITH r ORDER BY r.processed_time DESC LIMIT 1
+                SET r.confidence = $confidence
+            """, fid=family_id, confidence=confidence)
+        self._cache.invalidate("relation:")
+
+    def adjust_confidence_on_corroboration(self, family_id: str, source_type: str = "entity",
+                                            is_dream: bool = False):
+        """独立来源印证时提升置信度。
+
+        Bayesian-inspired 增量调整：
+        - 每次印证 +0.05，上限 1.0
+        - Dream 来源印证权重减半 (+0.025)
+        """
+        label = "Entity" if source_type == "entity" else "Relation"
+        delta = 0.025 if is_dream else 0.05
+        with self._session() as session:
+            session.run(f"""
+                MATCH (n:{label} {{family_id: $fid}})
+                WHERE n.invalid_at IS NULL AND n.confidence IS NOT NULL
+                WITH n ORDER BY n.processed_time DESC LIMIT 1
+                SET n.confidence = CASE
+                    WHEN n.confidence + $delta > 1.0 THEN 1.0
+                    ELSE n.confidence + $delta
+                END
+            """, fid=family_id, delta=delta)
+        if source_type == "entity":
+            self._cache.invalidate("entity:")
+        else:
+            self._cache.invalidate("relation:")
+
+    def adjust_confidence_on_contradiction(self, family_id: str, source_type: str = "entity"):
+        """矛盾证据时降低置信度。每次矛盾 -0.1，下限 0.0。"""
+        label = "Entity" if source_type == "entity" else "Relation"
+        with self._session() as session:
+            session.run(f"""
+                MATCH (n:{label} {{family_id: $fid}})
+                WHERE n.invalid_at IS NULL AND n.confidence IS NOT NULL
+                WITH n ORDER BY n.processed_time DESC LIMIT 1
+                SET n.confidence = CASE
+                    WHEN n.confidence - 0.1 < 0.0 THEN 0.0
+                    ELSE n.confidence - 0.1
+                END
+            """, fid=family_id)
+        if source_type == "entity":
+            self._cache.invalidate("entity:")
+        else:
+            self._cache.invalidate("relation:")
+
     def get_relations_by_family_ids(self, family_ids: List[str], limit: int = 100) -> List[Relation]:
         """获取指定实体 ID 列表相关的所有关系。
 
