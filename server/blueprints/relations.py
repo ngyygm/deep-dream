@@ -204,6 +204,22 @@ def find_unified():
             reranked = searcher_hybrid.node_degree_rerank(scored, degree_map)
             final_entities = [e for e, _ in reranked[:max_entities]]
 
+        # --- 第六步B：置信度加权 ---
+        if search_mode == "hybrid" and reranker != "node_degree":
+            searcher_conf = HybridSearcher(storage)
+            ent_scored = [(e, entity_score_map.get(e.absolute_id, 1.0)) for e in final_entities]
+            reranked_ents = searcher_conf.confidence_rerank(ent_scored, alpha=0.2)
+            final_entities = [e for e, _ in reranked_ents[:max_entities]]
+            # Also update score map with adjusted scores
+            for e, score in reranked_ents[:max_entities]:
+                entity_score_map[e.absolute_id] = score
+
+            rel_scored = [(r, relation_score_map.get(r.absolute_id, 1.0)) for r in final_relations]
+            reranked_rels = searcher_conf.confidence_rerank(rel_scored, alpha=0.2)
+            final_relations = [r for r, _ in reranked_rels[:max_relations]]
+            for r, score in reranked_rels[:max_relations]:
+                relation_score_map[r.absolute_id] = score
+
         result: Dict[str, Any] = {
             "query": query,
             "entities": [entity_to_dict(e, _score=entity_score_map.get(e.absolute_id)) for e in final_entities],
@@ -310,6 +326,7 @@ def find_relations_search():
                 top_k=max_results,
                 semantic_threshold=threshold,
             )
+            hybrid_rels = searcher.confidence_rerank(hybrid_rels, alpha=0.2)
             dicts = [relation_to_dict(r, _score=score) for r, score in hybrid_rels]
         else:
             relations = processor.storage.search_relations_by_similarity(
@@ -1023,6 +1040,8 @@ def quick_search():
             top_k=max_entities,
             semantic_threshold=threshold,
         )
+        # Confidence-weighted reranking
+        fused_entities = searcher.confidence_rerank(fused_entities, alpha=0.2)
         # Dedup: skip entities already found by exact match, preserve scores
         entity_score_map: Dict[str, float] = {}
         rrf_entities = []
@@ -1041,6 +1060,7 @@ def quick_search():
             top_k=max_relations,
             semantic_threshold=max(0.2, threshold - 0.1),
         )
+        fused_relations = searcher.confidence_rerank(fused_relations, alpha=0.2)
         relation_score_map: Dict[str, float] = {r.absolute_id: score for r, score in fused_relations}
         relations = [r for r, _ in fused_relations]
 

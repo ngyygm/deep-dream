@@ -215,6 +215,7 @@ def find_entities_search():
                 top_k=max_results,
                 semantic_threshold=threshold,
             )
+            hybrid_ents = searcher.confidence_rerank(hybrid_ents, alpha=0.2)
             dicts = [h.entity_to_dict(e, _score=score) for e, score in hybrid_ents]
             h.enrich_entity_version_counts(dicts, processor.storage)
             return ok(dicts)
