@@ -200,9 +200,9 @@ def find_entities_search():
             similarity_method = "embedding"
         content_snippet_length = int(_get_value("content_snippet_length", 50))
 
-        search_mode = str(_get_value("search_mode", "semantic") or "semantic").strip().lower()
+        search_mode = str(_get_value("search_mode", "hybrid") or "hybrid").strip().lower()
         if search_mode not in ("semantic", "bm25", "hybrid"):
-            search_mode = "semantic"
+            search_mode = "hybrid"
 
         if search_mode == "bm25":
             entities = processor.storage.search_entities_by_bm25(
@@ -903,7 +903,7 @@ def find_entity_by_name(name: str):
             fid = list(exact_map.values())[0]
             best = processor.storage.get_entity_by_family_id(fid)
 
-        # Step 2: Core-name match (strip parentheses)
+        # Step 2: Core-name match (strip parentheses from query)
         if not best:
             core = _re.sub(r'\s*[\(（].*?[\)）]\s*', '', name).strip()
             if core and core != name:
@@ -912,9 +912,23 @@ def find_entity_by_name(name: str):
                     fid = list(core_map.values())[0]
                     best = processor.storage.get_entity_by_family_id(fid)
 
-        # Step 3: Name prefix match
+        # Step 2B: Prefix match — find entities whose name starts with query + "（"
+        # Handles searching "曹操" → "曹操（155年－220年）"
+        if not best and hasattr(processor.storage, 'find_entity_by_name_prefix'):
+            try:
+                prefix_matches = processor.storage.find_entity_by_name_prefix(name, limit=3)
+                for candidate in prefix_matches:
+                    cname = getattr(candidate, 'name', '')
+                    # Core-name must match exactly (not just prefix of core)
+                    ccore = _re.sub(r'\s*[\(（].*?[\)）]\s*', '', cname).strip()
+                    if ccore == name or cname.startswith(name + '（') or cname.startswith(name + '('):
+                        best = candidate
+                        break
+            except Exception:
+                pass
+
+        # Step 3: BM25 text search
         if not best:
-            # Try BM25 text search
             try:
                 entities = processor.storage.search_entities_by_bm25(name, limit=1)
                 if entities:

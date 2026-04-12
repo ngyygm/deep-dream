@@ -64,9 +64,9 @@ def find_unified():
         time_after = body.get("time_after")
         reranker = str(body.get("reranker", "rrf") or "rrf").strip().lower()
 
-        search_mode = str(body.get("search_mode", "semantic") or "semantic").strip().lower()
+        search_mode = str(body.get("search_mode", "hybrid") or "hybrid").strip().lower()
         if search_mode not in ("semantic", "bm25", "hybrid"):
-            search_mode = "semantic"
+            search_mode = "hybrid"
 
         try:
             time_before_dt = parse_time_point(time_before) if time_before else None
@@ -107,6 +107,26 @@ def find_unified():
                     text_mode="name_and_content",
                     similarity_method="embedding",
                 )
+
+            # --- 核心名称前缀匹配补充 ---
+            # 短查询（≤20字符）可能是实体名称，如果召回结果中没有核心名称匹配，
+            # 用 find_entity_by_name_prefix 补充（处理消歧括号场景）
+            if len(query) >= 2 and len(query) <= 20 and matched_entities:
+                import re as _re
+                seen_fids = {getattr(e, 'family_id', '') for e in matched_entities}
+                _has_core = any(
+                    _re.sub(r'[（(][^）)]+[）)]', '', getattr(e, 'name', '')).strip() == query
+                    or getattr(e, 'name', '').startswith(query + '（')
+                    or getattr(e, 'name', '').startswith(query + '(')
+                    for e in matched_entities
+                )
+                if not _has_core:
+                    prefix_matches = storage.find_entity_by_name_prefix(query, limit=3)
+                    for e in prefix_matches:
+                        fid = getattr(e, 'family_id', '')
+                        if fid and fid not in seen_fids:
+                            seen_fids.add(fid)
+                            matched_entities.insert(0, e)
 
         # --- 第二步：按 search_mode 召回关系 ---
         # Track scores from hybrid search for relation serialization
@@ -219,6 +239,23 @@ def find_unified():
             final_relations = [r for r, _ in reranked_rels[:max_relations]]
             for r, score in reranked_rels[:max_relations]:
                 relation_score_map[r.absolute_id] = score
+
+        # --- 第六步C：核心名称提升 ---
+        # 查询较短（≤20字符）时，将名称精确匹配或核心名称匹配的实体提到最前
+        if len(query) >= 2 and len(query) <= 20 and final_entities:
+            import re as _re
+            _boosted = []
+            _rest = []
+            for e in final_entities:
+                name = getattr(e, 'name', '')
+                core = _re.sub(r'[（(][^）)]+[）)]', '', name).strip()
+                if (core == query or name == query
+                    or name.startswith(query + '（') or name.startswith(query + '(')):
+                    _boosted.append(e)
+                else:
+                    _rest.append(e)
+            if _boosted:
+                final_entities = _boosted + _rest
 
         result: Dict[str, Any] = {
             "query": query,

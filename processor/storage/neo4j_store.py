@@ -2122,7 +2122,11 @@ class Neo4jStorageManager:
     # ------------------------------------------------------------------
 
     def search_entities_by_bm25(self, query: str, limit: int = 20) -> List[Entity]:
-        """BM25 全文搜索实体（Neo4j 5.x 全文索引），去重 family_id 只保留最高分版本。"""
+        """BM25 全文搜索实体（Neo4j 5.x 全文索引），去重 family_id 只保留最高分版本。
+
+        增强逻辑：当 BM25 结果中不包含核心名称匹配的实体时，用前缀匹配补充
+        （解决"曹操"搜不到"曹操（155年－220年）"的问题）。
+        """
         if not query:
             return []
         try:
@@ -2160,6 +2164,29 @@ class Neo4jStorageManager:
                     if len(raw_entities) >= limit:
                         break
 
+                # ---- 核心名称前缀匹配补充 ----
+                # 检查 BM25 结果中是否已有核心名称匹配
+                _has_core_match = False
+                for _, ent in raw_entities:
+                    name = getattr(ent, 'name', '')
+                    # 精确匹配 或 名称以 query 开头（消歧括号场景）
+                    if name == query or name.startswith(query + '（') or name.startswith(query + '('):
+                        _has_core_match = True
+                        break
+                if not _has_core_match and len(query) >= 2:
+                    # 用前缀匹配补充：query="曹操" → 匹配 "曹操（155年－220年）"
+                    try:
+                        prefix_matches = self.find_entity_by_name_prefix(query, limit=5)
+                        for ent in prefix_matches:
+                            fid = getattr(ent, 'family_id', None)
+                            if fid and fid in seen_fids:
+                                continue
+                            if fid:
+                                seen_fids.add(fid)
+                            raw_entities.append((fid, ent))
+                    except Exception:
+                        pass
+
                 # Resolve family_id redirects (merged entities point to canonical id)
                 raw_fids = [fid for fid, _ in raw_entities if fid]
                 resolved_map = self.resolve_family_ids(raw_fids) if raw_fids else {}
@@ -2179,7 +2206,7 @@ class Neo4jStorageManager:
                             valid_at=ent.valid_at, invalid_at=ent.invalid_at,
                         )
                     entities.append(ent)
-                return entities
+                return entities[:limit]
         except Exception as e:
             logger.warning("BM25 search failed, falling back to empty: %s", e)
             return []
