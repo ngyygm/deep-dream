@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re as _re
 from typing import Any, Dict, List, Optional
 
 from ..models import Episode
@@ -31,6 +32,27 @@ def _strip_yamlish_scalar(s: str) -> str:
     if len(s) >= 2 and s[0] == s[-1] and s[0] in "\"'":
         return s[1:-1]
     return s
+
+
+def _is_degenerate_entity_name(name: str) -> bool:
+    """检测 LLM 退化生成的重复实体名称。
+
+    典型模式："eventual consistency mechanism mechanism mechanism ..."
+    当同一个单词连续出现 3+ 次时判定为退化。
+    """
+    if not name or len(name) < 5:
+        return False
+    # 检测连续重复单词（英文）：同一个单词连续 3+ 次
+    words = name.split()
+    if len(words) >= 3:
+        for i in range(len(words) - 2):
+            if words[i] == words[i + 1] == words[i + 2]:
+                return True
+    # 检测名称中包含过长的重复片段（如 "mechanism mechanism mechanism mechanism"）
+    # 用正则匹配连续重复的单词模式
+    if _re.search(r'\b(\w+)\s+\1\s+\1\b', name, _re.IGNORECASE):
+        return True
+    return False
 
 
 def _try_parse_bullet_name_content_entities(text: str) -> Optional[List[Dict[str, str]]]:
@@ -92,14 +114,21 @@ class _EntityExtractionMixin:
         if not isinstance(entities, list):
             entities = [entities]
         cleaned: List[Dict[str, str]] = []
+        _deg = 0
         for entity in entities:
             if isinstance(entity, dict) and "name" in entity and "content" in entity:
+                name = str(entity["name"]).strip()
+                if _is_degenerate_entity_name(name):
+                    _deg += 1
+                    continue
                 cleaned.append(
                     {
-                        "name": str(entity["name"]).strip(),
+                        "name": name,
                         "content": str(entity["content"]).strip(),
                     }
                 )
+        if _deg:
+            wprint(f"[DeepDream] 过滤了 {_deg} 个退化重复实体名称")
         return cleaned
 
     def extract_entities_and_relations(self, episode: Episode, input_text: str,
@@ -270,12 +299,22 @@ class _EntityExtractionMixin:
             if not isinstance(raw_entities, list):
                 raw_entities = [raw_entities]
             entities = []
+            _degenerate_count = 0
             for e in raw_entities:
                 if isinstance(e, dict) and 'name' in e and 'content' in e:
+                    name = str(e['name']).strip()
+                    # 检测退化重复：同一单词连续重复 3+ 次（如 "mechanism mechanism mechanism"）
+                    if _is_degenerate_entity_name(name):
+                        _degenerate_count += 1
+                        continue
                     entities.append({
-                        'name': str(e['name']).strip(),
+                        'name': name,
                         'content': str(e['content']).strip()
                     })
+            if _degenerate_count > 0:
+                wprint(
+                    f"[DeepDream] 过滤了 {_degenerate_count} 个退化重复实体名称"
+                )
 
             # 解析关系
             raw_relations = result.get("relations", [])
