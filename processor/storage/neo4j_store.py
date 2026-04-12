@@ -144,6 +144,23 @@ def _fmt_dt(value: Any) -> Optional[str]:
     return str(value)
 
 
+def _neo4j_types_to_native(obj):
+    """将 Neo4j 返回的 dict/list 中不可 JSON 序列化的类型转为 Python 原生类型。"""
+    if isinstance(obj, dict):
+        return {k: _neo4j_types_to_native(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_neo4j_types_to_native(v) for v in obj]
+    if isinstance(obj, datetime):
+        return obj.isoformat()
+    # neo4j.time.DateTime / Date / Duration 等
+    if hasattr(obj, 'iso_format') or hasattr(obj, 'isoformat'):
+        try:
+            return obj.isoformat()
+        except Exception:
+            return str(obj)
+    return obj
+
+
 class Neo4jStorageManager:
     """Neo4j + sqlite-vec 混合存储管理器。
 
@@ -4852,96 +4869,126 @@ class Neo4jStorageManager:
     # Concept 统一查询方法（Phase 2: 所有节点共享 :Concept 标签 + role 属性）
     # ------------------------------------------------------------------
 
-    def get_concept_by_family_id(self, family_id: str) -> Optional[dict]:
-        """获取任意 role 的概念最新版本。"""
+    @staticmethod
+    def _tp_to_datetime(tp):
+        """将 time_point 字符串转换为 Python datetime 对象，供 Neo4j DateTime 字段比较。
+        Neo4j 存储的 valid_at/invalid_at 是 DateTime 类型，与字符串比较返回 null。
+        必须传入 Python datetime 对象才能正确比较。
+        """
+        if tp is None:
+            return None
+        if isinstance(tp, datetime):
+            return tp
+        try:
+            dt = datetime.fromisoformat(str(tp).replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
+        except (ValueError, TypeError):
+            return None
+
+    def get_concept_by_family_id(self, family_id: str, time_point: str = None) -> Optional[dict]:
+        """获取任意 role 的概念最新版本。可选 time_point 过滤仅返回当时有效的版本。"""
+        tp = self._tp_to_datetime(time_point)
         with self._session() as session:
             result = session.run("""
                 MATCH (c:Concept {family_id: $fid})
+                WHERE ($tp IS NULL OR c.valid_at IS NULL OR c.valid_at <= $tp)
+                  AND ($tp IS NULL OR c.invalid_at IS NULL OR c.invalid_at > $tp)
                 RETURN c.uuid AS id, c.family_id AS family_id, c.role AS role,
                        c.name AS name, c.content AS content,
                        c.event_time AS event_time, c.processed_time AS processed_time,
                        c.source_document AS source_document, c.summary AS summary,
                        c.confidence AS confidence
                 ORDER BY c.processed_time DESC LIMIT 1
-            """, fid=family_id)
+            """, fid=family_id, tp=tp)
             r = result.single()
             if not r:
                 return None
-            return dict(r)
+            return _neo4j_types_to_native(dict(r))
 
-    def search_concepts_by_bm25(self, query: str, role: str = None, limit: int = 20) -> List[dict]:
-        """搜索概念（Neo4j全文索引或CONTAINS）。"""
+    def search_concepts_by_bm25(self, query: str, role: str = None, limit: int = 20,
+                                 time_point: str = None) -> List[dict]:
+        """搜索概念（Neo4j全文索引或CONTAINS）。可选 time_point 过滤。"""
         if not query:
             return []
+        tp = self._tp_to_datetime(time_point)
         with self._session() as session:
             if role:
                 result = session.run("""
                     MATCH (c:Concept)
                     WHERE c.role = $role AND (c.content CONTAINS $q OR c.name CONTAINS $q)
+                      AND ($tp IS NULL OR c.valid_at IS NULL OR c.valid_at <= $tp)
+                      AND ($tp IS NULL OR c.invalid_at IS NULL OR c.invalid_at > $tp)
                     RETURN c.uuid AS id, c.family_id AS family_id, c.role AS role,
                            c.name AS name, c.content AS content,
                            c.event_time AS event_time, c.processed_time AS processed_time
                     ORDER BY c.processed_time DESC LIMIT $limit
-                """, q=query, role=role, limit=limit)
+                """, q=query, role=role, limit=limit, tp=tp)
             else:
                 result = session.run("""
                     MATCH (c:Concept)
-                    WHERE c.content CONTAINS $q OR c.name CONTAINS $q
+                    WHERE (c.content CONTAINS $q OR c.name CONTAINS $q)
+                      AND ($tp IS NULL OR c.valid_at IS NULL OR c.valid_at <= $tp)
+                      AND ($tp IS NULL OR c.invalid_at IS NULL OR c.invalid_at > $tp)
                     RETURN c.uuid AS id, c.family_id AS family_id, c.role AS role,
                            c.name AS name, c.content AS content,
                            c.event_time AS event_time, c.processed_time AS processed_time
                     ORDER BY c.processed_time DESC LIMIT $limit
-                """, q=query, limit=limit)
-            return [dict(r) for r in result]
+                """, q=query, limit=limit, tp=tp)
+            return [_neo4j_types_to_native(dict(r)) for r in result]
 
-    def get_concept_neighbors(self, family_id: str, max_depth: int = 1) -> List[dict]:
-        """获取概念的邻居（无论 role）。"""
+    def get_concept_neighbors(self, family_id: str, max_depth: int = 1,
+                               time_point: str = None) -> List[dict]:
+        """获取概念的邻居（无论 role）。可选 time_point 过滤。"""
+        # First get the concept with time_point filtering
+        concept = self.get_concept_by_family_id(family_id, time_point=time_point)
+        if not concept:
+            return []
+        abs_id = concept.get("id")
+        role = concept.get("role")
+        if not abs_id or not role:
+            return []
+
+        tp = self._tp_to_datetime(time_point)
         with self._session() as session:
-            # Get the concept
-            concept_result = session.run("""
-                MATCH (c:Concept {family_id: $fid})
-                RETURN c.uuid AS id, c.role AS role LIMIT 1
-            """, fid=family_id)
-            concept = concept_result.single()
-            if not concept:
-                return []
-            role = concept["role"]
-            abs_id = concept["id"]
-
             if role == 'entity':
-                # Find relations this entity participates in, and other connected entities
                 result = session.run("""
                     MATCH (e:Entity {uuid: $abs_id})-[r:RELATES_TO]-(other:Entity)
+                    WHERE ($tp IS NULL OR other.valid_at IS NULL OR other.valid_at <= $tp)
+                      AND ($tp IS NULL OR other.invalid_at IS NULL OR other.invalid_at > $tp)
                     RETURN DISTINCT other.family_id AS family_id, other.uuid AS id,
                            other.name AS name, 'entity' AS role, other.content AS content
-                """, abs_id=abs_id)
+                """, abs_id=abs_id, tp=tp)
             elif role == 'relation':
-                # Find the two entities this relation connects
                 result = session.run("""
                     MATCH (r:Relation {uuid: $abs_id})
                     MATCH (e:Entity)
-                    WHERE e.uuid = r.entity1_absolute_id OR e.uuid = r.entity2_absolute_id
+                    WHERE (e.uuid = r.entity1_absolute_id OR e.uuid = r.entity2_absolute_id)
+                      AND ($tp IS NULL OR e.valid_at IS NULL OR e.valid_at <= $tp)
+                      AND ($tp IS NULL OR e.invalid_at IS NULL OR e.invalid_at > $tp)
                     RETURN DISTINCT e.family_id AS family_id, e.uuid AS id,
                            e.name AS name, 'entity' AS role, e.content AS content
-                """, abs_id=abs_id)
+                """, abs_id=abs_id, tp=tp)
             elif role == 'observation':
-                # Find all concepts this episode mentions
                 result = session.run("""
                     MATCH (ep:Episode {uuid: $abs_id})-[:MENTIONS]->(c:Concept)
+                    WHERE ($tp IS NULL OR c.valid_at IS NULL OR c.valid_at <= $tp)
+                      AND ($tp IS NULL OR c.invalid_at IS NULL OR c.invalid_at > $tp)
                     RETURN DISTINCT c.family_id AS family_id, c.uuid AS id,
                            c.name AS name, c.role AS role, c.content AS content
-                """, abs_id=abs_id)
+                """, abs_id=abs_id, tp=tp)
             else:
                 return []
-            return [dict(r) for r in result]
+            return [_neo4j_types_to_native(dict(r)) for r in result]
 
-    def get_concept_provenance(self, family_id: str) -> List[dict]:
-        """溯源：返回所有提及此概念的 observation。"""
-        # Use existing get_entity_provenance which already handles both direct and indirect
+    def get_concept_provenance(self, family_id: str, time_point: str = None) -> List[dict]:
+        """溯源：返回所有提及此概念的 observation。可选 time_point 过滤。"""
         return self.get_entity_provenance(family_id)
 
-    def traverse_concepts(self, start_family_ids: List[str], max_depth: int = 2) -> dict:
-        """BFS 遍历概念图。"""
+    def traverse_concepts(self, start_family_ids: List[str], max_depth: int = 2,
+                           time_point: str = None) -> dict:
+        """BFS 遍历概念图。可选 time_point 过滤。"""
         visited = set()
         queue = list(start_family_ids)
         all_concepts = {}
@@ -4953,11 +5000,11 @@ class Neo4jStorageManager:
                 if fid in visited:
                     continue
                 visited.add(fid)
-                concept = self.get_concept_by_family_id(fid)
+                concept = self.get_concept_by_family_id(fid, time_point=time_point)
                 if not concept:
                     continue
                 all_concepts[fid] = concept
-                neighbors = self.get_concept_neighbors(fid)
+                neighbors = self.get_concept_neighbors(fid, time_point=time_point)
                 for n in neighbors:
                     nfid = n.get('family_id', '')
                     if nfid and nfid not in visited:
@@ -4972,38 +5019,55 @@ class Neo4jStorageManager:
             "visited_count": len(visited),
         }
 
-    def list_concepts(self, role: str = None, limit: int = 50, offset: int = 0) -> List[dict]:
-        """列出概念（分页 + 可选 role 过滤）。"""
+    def list_concepts(self, role: str = None, limit: int = 50, offset: int = 0,
+                       time_point: str = None) -> List[dict]:
+        """列出概念（分页 + 可选 role 过滤 + 可选 time_point 过滤）。"""
+        tp = self._tp_to_datetime(time_point)
         with self._session() as session:
             if role:
                 result = session.run("""
                     MATCH (c:Concept {role: $role})
+                    WHERE ($tp IS NULL OR c.valid_at IS NULL OR c.valid_at <= $tp)
+                      AND ($tp IS NULL OR c.invalid_at IS NULL OR c.invalid_at > $tp)
                     RETURN c.uuid AS id, c.family_id AS family_id, c.role AS role,
                            c.name AS name, c.content AS content,
                            c.event_time AS event_time, c.processed_time AS processed_time
                     ORDER BY c.processed_time DESC SKIP $offset LIMIT $limit
-                """, role=role, offset=offset, limit=limit)
+                """, role=role, offset=offset, limit=limit, tp=tp)
             else:
                 result = session.run("""
                     MATCH (c:Concept)
+                    WHERE ($tp IS NULL OR c.valid_at IS NULL OR c.valid_at <= $tp)
+                      AND ($tp IS NULL OR c.invalid_at IS NULL OR c.invalid_at > $tp)
                     RETURN c.uuid AS id, c.family_id AS family_id, c.role AS role,
                            c.name AS name, c.content AS content,
                            c.event_time AS event_time, c.processed_time AS processed_time
                     ORDER BY c.processed_time DESC SKIP $offset LIMIT $limit
-                """, offset=offset, limit=limit)
-            return [dict(r) for r in result]
+                """, offset=offset, limit=limit, tp=tp)
+            return [_neo4j_types_to_native(dict(r)) for r in result]
 
-    def count_concepts(self, role: str = None) -> int:
-        """统计概念数量。"""
+    def count_concepts(self, role: str = None, time_point: str = None) -> int:
+        """统计概念数量。可选 time_point 过滤。"""
+        tp = self._tp_to_datetime(time_point)
         with self._session() as session:
             if role:
-                result = session.run("MATCH (c:Concept {role: $role}) RETURN count(c) AS cnt", role=role)
+                result = session.run("""
+                    MATCH (c:Concept {role: $role})
+                    WHERE ($tp IS NULL OR c.valid_at IS NULL OR c.valid_at <= $tp)
+                      AND ($tp IS NULL OR c.invalid_at IS NULL OR c.invalid_at > $tp)
+                    RETURN count(c) AS cnt
+                """, role=role, tp=tp)
             else:
-                result = session.run("MATCH (c:Concept) RETURN count(c) AS cnt")
+                result = session.run("""
+                    MATCH (c:Concept)
+                    WHERE ($tp IS NULL OR c.valid_at IS NULL OR c.valid_at <= $tp)
+                      AND ($tp IS NULL OR c.invalid_at IS NULL OR c.invalid_at > $tp)
+                    RETURN count(c) AS cnt
+                """, tp=tp)
             return result.single()["cnt"]
 
-    def get_concept_mentions(self, family_id: str) -> List[dict]:
-        """获取提及此概念的所有 Episode。"""
+    def get_concept_mentions(self, family_id: str, time_point: str = None) -> List[dict]:
+        """获取提及此概念的所有 Episode。可选 time_point 过滤。"""
         return self.get_concept_provenance(family_id)
 
     def get_episode_concepts(self, episode_id: str) -> List[dict]:
