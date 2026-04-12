@@ -120,6 +120,7 @@ class RelationProcessor:
 
         processed_relations: List[Relation] = []
         relations_to_persist: List[Relation] = []
+        all_corroborated_family_ids: set = set()
 
         use_parallel = max_workers is not None and max_workers > 1 and len(relations_by_pair) > 1
         total_pairs = len(relations_by_pair)
@@ -166,18 +167,20 @@ class RelationProcessor:
             for res in results:
                 if res is None:
                     continue
-                proc, to_persist = res
+                proc, to_persist, corrob_fids = res
                 if proc:
                     processed_relations.extend(proc)
                 if to_persist:
                     relations_to_persist.extend(to_persist)
+                if corrob_fids:
+                    all_corroborated_family_ids.update(corrob_fids)
         else:
             for pair_key, pair_relations in relations_by_pair.items():
                 entity1_id, entity2_id = pair_key
                 entity1_name = pair_relations[0].get('entity1_name') or pair_relations[0].get('from_entity_name', '')
                 entity2_name = pair_relations[0].get('entity2_name') or pair_relations[0].get('to_entity_name', '')
                 existing_relations = existing_relations_by_pair.get(pair_key, [])
-                proc, to_persist = self._process_one_relation_pair(
+                proc, to_persist, corrob_fids = self._process_one_relation_pair(
                     pair_key=pair_key,
                     pair_relations=pair_relations,
                     existing_relations=existing_relations,
@@ -194,12 +197,21 @@ class RelationProcessor:
                     processed_relations.extend(proc)
                 if to_persist:
                     relations_to_persist.extend(to_persist)
+                if corrob_fids:
+                    all_corroborated_family_ids.update(corrob_fids)
                 _rel_done += 1
                 if on_relation_done:
                     on_relation_done(_rel_done, total_pairs)
 
         if relations_to_persist:
             self.storage.bulk_save_relations(relations_to_persist)
+
+        # Confidence corroboration: version-updated relations get confidence boost
+        for fid in all_corroborated_family_ids:
+            try:
+                self.storage.adjust_confidence_on_corroboration(fid, source_type="relation")
+            except Exception:
+                pass
 
         # Vision 原则「内容版本和关联解耦」：MENTIONS 必须无条件建立。
         # processed_relations 可能不包含所有 resolved pair 的关系（如 _build_new_relation 返回 None）。
@@ -237,11 +249,12 @@ class RelationProcessor:
                                    base_time: Optional[datetime] = None,
                                    fallback_to_single: bool = True,
                                    verbose_relation: bool = True,
-                                   entity_lookup: Optional[Dict[str, Any]] = None) -> Tuple[List[Relation], List[Relation]]:
-        """处理单个实体对的关系，返回 (processed_relations, relations_to_persist)。"""
+                                   entity_lookup: Optional[Dict[str, Any]] = None) -> Tuple[List[Relation], List[Relation], set]:
+        """处理单个实体对的关系，返回 (processed_relations, relations_to_persist, corroborated_family_ids)。"""
         entity1_id, entity2_id = pair_key
         processed_relations: List[Relation] = []
         relations_to_persist: List[Relation] = []
+        corroborated_family_ids: set = set()
         new_contents = [rel.get("content", "") for rel in pair_relations if rel.get("content", "")]
         existing_relations_info = [
             {
@@ -258,7 +271,7 @@ class RelationProcessor:
         if not truly_new_contents:
             # 所有新内容都已是已有关系的精确重复，无需处理
             processed_relations.extend(existing_relations)
-            return processed_relations, relations_to_persist
+            return processed_relations, relations_to_persist, corroborated_family_ids
 
         # ---- Fix 3: 无已有关系 → 直接创建新关系，跳过batch LLM ----
         if not existing_relations:
@@ -275,7 +288,7 @@ class RelationProcessor:
             if new_rel:
                 processed_relations.append(new_rel)
                 relations_to_persist.append(new_rel)
-            return processed_relations, relations_to_persist
+            return processed_relations, relations_to_persist, corroborated_family_ids
 
         batch_result = self.llm_client.resolve_relation_pair_batch(
             entity1_name=entity1_name,
@@ -301,7 +314,7 @@ class RelationProcessor:
                 )
                 if relation:
                     processed_relations.append(relation)
-            return processed_relations, relations_to_persist
+            return processed_relations, relations_to_persist, corroborated_family_ids
 
         if batch_result.get("action") == "match_existing":
             matched_family_id = batch_result.get("matched_relation_id") or ""
@@ -329,6 +342,7 @@ class RelationProcessor:
                 if new_relation is not None:
                     relations_to_persist.append(new_relation)
                     processed_relations.append(new_relation)
+                    corroborated_family_ids.add(matched_family_id)
             elif latest_relation:
                 processed_relations.append(latest_relation)
             else:
@@ -375,8 +389,8 @@ class RelationProcessor:
             if new_relation is not None:
                 relations_to_persist.append(new_relation)
                 processed_relations.append(new_relation)
-        return processed_relations, relations_to_persist
-    
+        return processed_relations, relations_to_persist, corroborated_family_ids
+
     def _dedupe_and_merge_relations(self, extracted_relations: List[Dict[str, str]],
                                     entity_name_to_id: Dict[str, str]) -> List[Dict[str, str]]:
         """
