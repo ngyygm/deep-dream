@@ -2123,6 +2123,22 @@ class _ExtractionMixin:
                 f"{_win_label} · 步骤7/7: 窗口完成",
                 f"{len(unique_entities)} 个实体, {len(all_processed_relations)} 个关系")
 
+        # Phase B+: 自动关系矛盾检测 — 对刚创建新版本的关系检查版本间矛盾
+        if all_processed_relations:
+            _rel_versioned_fids = []
+            for rel in all_processed_relations:
+                fid = rel.family_id
+                try:
+                    vc = self.storage.get_relation_version_counts([fid])
+                    if vc.get(fid, 0) >= 2:
+                        _rel_versioned_fids.append(fid)
+                except Exception:
+                    pass
+            if _rel_versioned_fids:
+                self._detect_and_apply_relation_contradictions(
+                    _rel_versioned_fids, verbose=verbose,
+                )
+
         self.llm_client._current_distill_step = None
         self.llm_client._distill_task_id = None
 
