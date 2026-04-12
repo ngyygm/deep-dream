@@ -34,7 +34,7 @@ concepts_bp = Blueprint("concepts", __name__)
 
 @concepts_bp.route("/api/v1/concepts/search", methods=["POST"])
 def search_concepts():
-    """统一概念搜索（可选 role 过滤）。"""
+    """统一概念搜索（可选 role 过滤，支持 semantic/bm25/hybrid 模式）。"""
     try:
         processor = _get_processor()
         storage = processor.storage
@@ -46,10 +46,75 @@ def search_concepts():
             return err("query 不能为空", 400)
         role = body.get("role") or None
         limit = min(max(int(body.get("limit", 20)), 1), 100)
-        results = storage.search_concepts_by_bm25(query, role=role, limit=limit)
+        threshold = float(body.get("threshold", 0.5))
+        search_mode = str(body.get("search_mode", "bm25") or "bm25").strip().lower()
+        if search_mode not in ("semantic", "bm25", "hybrid"):
+            search_mode = "bm25"
+
+        if search_mode == "bm25":
+            results = storage.search_concepts_by_bm25(query, role=role, limit=limit)
+        elif search_mode == "semantic":
+            results = storage.search_concepts_by_similarity(
+                query_text=query, role=role, threshold=threshold, max_results=limit
+            )
+        else:
+            # hybrid: merge BM25 + semantic via RRF
+            results = _hybrid_concept_search(storage, query, role, limit, threshold)
         return ok({"concepts": results, "total": len(results)})
     except Exception as e:
         return err(str(e), 500)
+
+
+def _hybrid_concept_search(storage, query: str, role, limit: int,
+                           threshold: float) -> list:
+    """Hybrid concept search: BM25 + semantic embedding, fused via RRF."""
+    bm25_results = []
+    semantic_results = []
+    try:
+        bm25_results = storage.search_concepts_by_bm25(query, role=role, limit=limit * 2)
+    except Exception:
+        pass
+    try:
+        semantic_results = storage.search_concepts_by_similarity(
+            query_text=query, role=role, threshold=threshold, max_results=limit * 2
+        )
+    except Exception:
+        pass
+
+    if not bm25_results and not semantic_results:
+        return []
+
+    # RRF fusion on dict results (keyed by family_id)
+    k = 60
+    scores: Dict[str, float] = {}
+    items: Dict[str, dict] = {}
+    bm25_weight = 0.3
+    sem_weight = 0.7
+
+    for rank, item in enumerate(bm25_results):
+        fid = item.get("family_id", "") or item.get("id", "")
+        rrf = bm25_weight / (k + rank + 1)
+        scores[fid] = scores.get(fid, 0.0) + rrf
+        if fid not in items or rrf > scores.get("_best_" + fid, 0):
+            items[fid] = item
+            scores["_best_" + fid] = rrf
+
+    for rank, item in enumerate(semantic_results):
+        fid = item.get("family_id", "") or item.get("id", "")
+        rrf = sem_weight / (k + rank + 1)
+        scores[fid] = scores.get(fid, 0.0) + rrf
+        if fid not in items or rrf > scores.get("_best_" + fid, 0):
+            items[fid] = item
+            scores["_best_" + fid] = rrf
+
+    # Clean up helper keys
+    helper_keys = [k2 for k2 in scores if k2.startswith("_best_")]
+    for hk in helper_keys:
+        del scores[hk]
+
+    sorted_items = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    fused = [items[fid] for fid, _ in sorted_items[:limit]]
+    return fused
 
 
 @concepts_bp.route("/api/v1/concepts", methods=["GET"])
