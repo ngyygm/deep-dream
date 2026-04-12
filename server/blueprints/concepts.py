@@ -50,33 +50,34 @@ def search_concepts():
         search_mode = str(body.get("search_mode", "bm25") or "bm25").strip().lower()
         if search_mode not in ("semantic", "bm25", "hybrid"):
             search_mode = "bm25"
+        time_point = (body.get("time_point") or "").strip() or None
 
         if search_mode == "bm25":
-            results = storage.search_concepts_by_bm25(query, role=role, limit=limit)
+            results = storage.search_concepts_by_bm25(query, role=role, limit=limit, time_point=time_point)
         elif search_mode == "semantic":
             results = storage.search_concepts_by_similarity(
-                query_text=query, role=role, threshold=threshold, max_results=limit
+                query_text=query, role=role, threshold=threshold, max_results=limit, time_point=time_point
             )
         else:
             # hybrid: merge BM25 + semantic via RRF
-            results = _hybrid_concept_search(storage, query, role, limit, threshold)
+            results = _hybrid_concept_search(storage, query, role, limit, threshold, time_point=time_point)
         return ok({"concepts": results, "total": len(results)})
     except Exception as e:
         return err(str(e), 500)
 
 
 def _hybrid_concept_search(storage, query: str, role, limit: int,
-                           threshold: float) -> list:
+                           threshold: float, time_point: str = None) -> list:
     """Hybrid concept search: BM25 + semantic embedding, fused via RRF."""
     bm25_results = []
     semantic_results = []
     try:
-        bm25_results = storage.search_concepts_by_bm25(query, role=role, limit=limit * 2)
+        bm25_results = storage.search_concepts_by_bm25(query, role=role, limit=limit * 2, time_point=time_point)
     except Exception:
         pass
     try:
         semantic_results = storage.search_concepts_by_similarity(
-            query_text=query, role=role, threshold=threshold, max_results=limit * 2
+            query_text=query, role=role, threshold=threshold, max_results=limit * 2, time_point=time_point
         )
     except Exception:
         pass
@@ -128,8 +129,9 @@ def list_concepts():
         role = request.args.get("role") or None
         limit = min(max(int(request.args.get('limit', 50)), 1), 100)
         offset = max(int(request.args.get('offset', 0)), 0)
-        concepts = storage.list_concepts(role=role, limit=limit, offset=offset)
-        total = storage.count_concepts(role=role) if hasattr(storage, 'count_concepts') else len(concepts)
+        time_point = (request.args.get("time_point") or "").strip() or None
+        concepts = storage.list_concepts(role=role, limit=limit, offset=offset, time_point=time_point)
+        total = storage.count_concepts(role=role, time_point=time_point) if hasattr(storage, 'count_concepts') else len(concepts)
         return ok({"concepts": concepts, "total": total, "limit": limit, "offset": offset})
     except Exception as e:
         return err(str(e), 500)
@@ -143,7 +145,8 @@ def get_concept(family_id: str):
         storage = processor.storage
         if not hasattr(storage, 'get_concept_by_family_id'):
             return err("此功能需要 SQLite >= Phase 3 或 Neo4j 后端", 400)
-        concept = storage.get_concept_by_family_id(family_id)
+        time_point = (request.args.get("time_point") or "").strip() or None
+        concept = storage.get_concept_by_family_id(family_id, time_point=time_point)
         if concept is None:
             return err("概念不存在", 404)
         return ok(concept)
@@ -160,7 +163,8 @@ def get_concept_neighbors(family_id: str):
         if not hasattr(storage, 'get_concept_neighbors'):
             return err("此功能需要 SQLite >= Phase 3 或 Neo4j 后端", 400)
         max_depth = min(max(int(request.args.get('max_depth', 1)), 1), 3)
-        neighbors = storage.get_concept_neighbors(family_id, max_depth=max_depth)
+        time_point = (request.args.get("time_point") or "").strip() or None
+        neighbors = storage.get_concept_neighbors(family_id, max_depth=max_depth, time_point=time_point)
         return ok({"family_id": family_id, "neighbors": neighbors})
     except Exception as e:
         return err(str(e), 500)
@@ -174,7 +178,8 @@ def get_concept_provenance(family_id: str):
         storage = processor.storage
         if not hasattr(storage, 'get_concept_provenance'):
             return err("此功能需要 SQLite >= Phase 3 或 Neo4j 后端", 400)
-        provenance = storage.get_concept_provenance(family_id)
+        time_point = (request.args.get("time_point") or "").strip() or None
+        provenance = storage.get_concept_provenance(family_id, time_point=time_point)
         return ok({"family_id": family_id, "provenance": provenance})
     except Exception as e:
         return err(str(e), 500)
@@ -193,7 +198,8 @@ def traverse_concepts():
         if not start_ids:
             return err("start_family_ids 不能为空", 400)
         max_depth = min(max(int(body.get('max_depth', 2)), 1), 5)
-        result = storage.traverse_concepts(start_ids, max_depth=max_depth)
+        time_point = (body.get("time_point") or "").strip() or None
+        result = storage.traverse_concepts(start_ids, max_depth=max_depth, time_point=time_point)
         return ok(result)
     except Exception as e:
         return err(str(e), 500)
@@ -207,7 +213,8 @@ def get_concept_mentions(family_id: str):
         storage = processor.storage
         if not hasattr(storage, 'get_concept_mentions'):
             return err("此功能需要 SQLite >= Phase 3 或 Neo4j 后端", 400)
-        mentions = storage.get_concept_mentions(family_id)
+        time_point = (request.args.get("time_point") or "").strip() or None
+        mentions = storage.get_concept_mentions(family_id, time_point=time_point)
         return ok({"family_id": family_id, "mentions": mentions})
     except Exception as e:
         return err(str(e), 500)

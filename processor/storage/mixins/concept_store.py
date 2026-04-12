@@ -320,33 +320,41 @@ class ConceptStoreMixin:
         except Exception as exc:
             logger.debug("concept relation sync failed: %s", exc)
 
-    def _get_latest_concepts_with_embeddings(self, role: Optional[str] = None) -> List[tuple]:
+    def _get_latest_concepts_with_embeddings(self, role: Optional[str] = None,
+                                               time_point: Optional[str] = None) -> List[tuple]:
         """获取概念的最新版本及其 embedding（带短 TTL 缓存）。
+
+        注意: time_point 过滤不使用缓存，因为缓存不分时间点。
+        当 time_point 有值时跳过缓存直接查库。
 
         Returns:
             List of (concept_dict, embedding_array) tuples. embedding_array 为 None 表示没有 embedding。
         """
         now = time.time()
-        with self._emb_cache_lock:
-            if self._concept_emb_cache is not None and (now - self._concept_emb_cache_ts) < self._emb_cache_ttl:
-                if role is None:
-                    return self._concept_emb_cache
-                # 缓存不区分 role，在内存中过滤
-                return [(c, e) for c, e in self._concept_emb_cache if role is None or c.get('role') == role]
+        # time_point 过滤不走缓存，因为缓存不分时间点
+        use_cache = not time_point
+        if use_cache:
+            with self._emb_cache_lock:
+                if self._concept_emb_cache is not None and (now - self._concept_emb_cache_ts) < self._emb_cache_ttl:
+                    if role is None:
+                        return self._concept_emb_cache
+                    # 缓存不区分 role，在内存中过滤
+                    return [(c, e) for c, e in self._concept_emb_cache if role is None or c.get('role') == role]
 
         conn = self._get_conn()
         cursor = conn.cursor()
+        tp_sql, tp_params = self._time_point_sql(time_point)
         # ROW_NUMBER 窗口函数获取每个 family_id 的最新版本
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT id, family_id, role, name, content, event_time, processed_time,
                    source_document, episode_id, embedding, connects,
                    summary, attributes, confidence, content_format
             FROM (
                 SELECT *, ROW_NUMBER() OVER (PARTITION BY family_id ORDER BY processed_time DESC) AS rn
-                FROM concepts
+                FROM concepts WHERE 1=1{tp_sql}
             )
             WHERE rn = 1
-        """)
+        """, tp_params)
 
         results = []
         for row in cursor.fetchall():
@@ -374,9 +382,10 @@ class ConceptStoreMixin:
             }
             results.append((concept, embedding_array))
 
-        with self._emb_cache_lock:
-            self._concept_emb_cache = results
-            self._concept_emb_cache_ts = time.time()
+        if use_cache:
+            with self._emb_cache_lock:
+                self._concept_emb_cache = results
+                self._concept_emb_cache_ts = time.time()
 
         if role is not None:
             return [(c, e) for c, e in results if c.get('role') == role]
@@ -433,13 +442,30 @@ class ConceptStoreMixin:
 
     # ========== Phase 3: 统一概念查询接口 ==========
 
-    def get_concept_by_family_id(self, family_id: str) -> Optional[dict]:
-        """获取任意 role 的概念最新版本。"""
+    @staticmethod
+    def _time_point_sql(time_point: Optional[str], param_idx_offset: int = 0):
+        """Build time_point filter SQL fragment and params.
+
+        Returns (sql_fragment, params_list) where sql_fragment starts with 'AND'.
+        The param indices are NOT used (we use ? placeholders), but param_idx_offset
+        is kept for API compatibility.
+        """
+        if not time_point:
+            return "", []
+        return (
+            " AND (valid_at IS NULL OR valid_at <= ?) AND (invalid_at IS NULL OR invalid_at > ?)",
+            [time_point, time_point],
+        )
+
+    def get_concept_by_family_id(self, family_id: str,
+                                  time_point: Optional[str] = None) -> Optional[dict]:
+        """获取任意 role 的概念最新版本。支持 time_point 时间过滤。"""
         conn = self._get_conn()
         cursor = conn.cursor()
+        tp_sql, tp_params = self._time_point_sql(time_point)
         cursor.execute(
-            "SELECT * FROM concepts WHERE family_id = ? ORDER BY processed_time DESC LIMIT 1",
-            (family_id,)
+            f"SELECT * FROM concepts WHERE family_id = ?{tp_sql} ORDER BY processed_time DESC LIMIT 1",
+            [family_id] + tp_params,
         )
         row = cursor.fetchone()
         if not row:
@@ -447,22 +473,24 @@ class ConceptStoreMixin:
         cols = [desc[0] for desc in cursor.description]
         return dict(zip(cols, row))
 
-    def get_concepts_by_family_ids(self, family_ids: List[str]) -> Dict[str, dict]:
-        """批量获取概念最新版本。"""
+    def get_concepts_by_family_ids(self, family_ids: List[str],
+                                    time_point: Optional[str] = None) -> Dict[str, dict]:
+        """批量获取概念最新版本。支持 time_point 时间过滤。"""
         if not family_ids:
             return {}
         conn = self._get_conn()
         cursor = conn.cursor()
         placeholders = ','.join('?' * len(family_ids))
+        tp_sql, tp_params = self._time_point_sql(time_point)
         # Get latest version of each family_id using a subquery
         cursor.execute(f"""
             SELECT c.* FROM concepts c
             INNER JOIN (
                 SELECT family_id, MAX(processed_time) as max_pt
-                FROM concepts WHERE family_id IN ({placeholders})
+                FROM concepts WHERE family_id IN ({placeholders}){tp_sql}
                 GROUP BY family_id
             ) latest ON c.family_id = latest.family_id AND c.processed_time = latest.max_pt
-        """, family_ids)
+        """, family_ids + tp_params)
         cols = [desc[0] for desc in cursor.description]
         result = {}
         for row in cursor.fetchall():
@@ -470,29 +498,31 @@ class ConceptStoreMixin:
             result[d['family_id']] = d
         return result
 
-    def search_concepts_by_bm25(self, query: str, role: str = None, limit: int = 20) -> List[dict]:
-        """BM25 搜索概念，可选按 role 过滤。"""
+    def search_concepts_by_bm25(self, query: str, role: str = None,
+                                 limit: int = 20, time_point: Optional[str] = None) -> List[dict]:
+        """BM25 搜索概念，可选按 role 过滤。支持 time_point 时间过滤。"""
         if not query:
             return []
         conn = self._get_conn()
         cursor = conn.cursor()
+        tp_sql, tp_params = self._time_point_sql(time_point)
         try:
             if role:
-                cursor.execute("""
+                cursor.execute(f"""
                     SELECT c.* FROM concepts c
                     JOIN concept_fts f ON c.rowid = f.rowid
-                    WHERE concept_fts MATCH ? AND c.role = ?
+                    WHERE concept_fts MATCH ? AND c.role = ?{tp_sql}
                     ORDER BY f.rank
                     LIMIT ?
-                """, (query, role, limit))
+                """, [query, role] + tp_params + [limit])
             else:
-                cursor.execute("""
+                cursor.execute(f"""
                     SELECT c.* FROM concepts c
                     JOIN concept_fts f ON c.rowid = f.rowid
-                    WHERE concept_fts MATCH ?
+                    WHERE concept_fts MATCH ?{tp_sql}
                     ORDER BY f.rank
                     LIMIT ?
-                """, (query, limit))
+                """, [query] + tp_params + [limit])
             cols = [desc[0] for desc in cursor.description]
             return [dict(zip(cols, row)) for row in cursor.fetchall()]
         except Exception:
@@ -501,21 +531,22 @@ class ConceptStoreMixin:
             q = f"%{query_lower}%"
             if role:
                 cursor.execute(
-                    "SELECT * FROM concepts WHERE LOWER(content) LIKE ? AND role = ? "
+                    f"SELECT * FROM concepts WHERE LOWER(content) LIKE ? AND role = ?{tp_sql} "
                     "ORDER BY processed_time DESC LIMIT ?",
-                    (q, role, limit)
+                    [q, role] + tp_params + [limit]
                 )
             else:
                 cursor.execute(
-                    "SELECT * FROM concepts WHERE LOWER(content) LIKE ? "
+                    f"SELECT * FROM concepts WHERE LOWER(content) LIKE ?{tp_sql} "
                     "ORDER BY processed_time DESC LIMIT ?",
-                    (q, limit)
+                    [q] + tp_params + [limit]
                 )
             cols = [desc[0] for desc in cursor.description]
             return [dict(zip(cols, row)) for row in cursor.fetchall()]
 
     def search_concepts_by_similarity(self, query_text: str, role: str = None,
-                                       threshold: float = 0.5, max_results: int = 10) -> List[dict]:
+                                       threshold: float = 0.5, max_results: int = 10,
+                                       time_point: Optional[str] = None) -> List[dict]:
         """语义相似度搜索：使用 embedding 余弦相似度，回退到 BM25。
 
         当 embedding 客户端可用时，编码查询文本并与 concepts 表中存储的
@@ -526,23 +557,23 @@ class ConceptStoreMixin:
 
         # 尝试 embedding 搜索
         if self.embedding_client and self.embedding_client.is_available():
-            concepts_with_emb = self._get_latest_concepts_with_embeddings(role=role)
+            concepts_with_emb = self._get_latest_concepts_with_embeddings(role=role, time_point=time_point)
             if not concepts_with_emb:
                 return []
 
             # 检查是否有任何概念有 embedding
             has_any_embedding = any(emb is not None for _, emb in concepts_with_emb)
             if not has_any_embedding:
-                return self.search_concepts_by_bm25(query_text, role=role, limit=max_results)
+                return self.search_concepts_by_bm25(query_text, role=role, limit=max_results, time_point=time_point)
 
             query_embedding = self.embedding_client.encode(query_text)
             if query_embedding is None:
-                return self.search_concepts_by_bm25(query_text, role=role, limit=max_results)
+                return self.search_concepts_by_bm25(query_text, role=role, limit=max_results, time_point=time_point)
 
             query_vec = np.array(query_embedding[0] if isinstance(query_embedding, (list, np.ndarray)) else query_embedding, dtype=np.float32)
             query_norm = np.linalg.norm(query_vec)
             if query_norm == 0:
-                return self.search_concepts_by_bm25(query_text, role=role, limit=max_results)
+                return self.search_concepts_by_bm25(query_text, role=role, limit=max_results, time_point=time_point)
             query_vec = query_vec / query_norm
 
             # 向量化计算：构建存储的 embedding 矩阵
@@ -554,7 +585,7 @@ class ConceptStoreMixin:
                     stored_concepts.append(concept)
 
             if not stored_rows:
-                return self.search_concepts_by_bm25(query_text, role=role, limit=max_results)
+                return self.search_concepts_by_bm25(query_text, role=role, limit=max_results, time_point=time_point)
 
             stored_matrix = np.stack(stored_rows)  # (M, D)
             norms = np.linalg.norm(stored_matrix, axis=1, keepdims=True)
@@ -579,19 +610,20 @@ class ConceptStoreMixin:
             if results:
                 return results
             # embedding 搜索无结果，回退 BM25
-            return self.search_concepts_by_bm25(query_text, role=role, limit=max_results)
+            return self.search_concepts_by_bm25(query_text, role=role, limit=max_results, time_point=time_point)
 
         # 无 embedding 客户端，回退 BM25
-        return self.search_concepts_by_bm25(query_text, role=role, limit=max_results)
+        return self.search_concepts_by_bm25(query_text, role=role, limit=max_results, time_point=time_point)
 
-    def get_concept_neighbors(self, family_id: str, max_depth: int = 1) -> List[dict]:
-        """获取概念的邻居（无论 role）。
+    def get_concept_neighbors(self, family_id: str, max_depth: int = 1,
+                               time_point: Optional[str] = None) -> List[dict]:
+        """获取概念的邻居（无论 role）。支持 time_point 时间过滤。
 
         - entity: 返回关联的 relation（通过 connects 字段包含该 entity family_id 的任意版本的 absolute_id）
         - relation: 返回它连接的 entity
         - observation: 返回它 MENTIONS 的所有 concept
         """
-        concept = self.get_concept_by_family_id(family_id)
+        concept = self.get_concept_by_family_id(family_id, time_point=time_point)
         if not concept:
             return []
         role = concept.get('role', 'entity')
@@ -607,14 +639,15 @@ class ConceptStoreMixin:
             abs_ids = [row[0] for row in cursor.fetchall()]
             if abs_ids:
                 placeholders = ','.join('?' * len(abs_ids))
+                tp_sql, tp_params = self._time_point_sql(time_point)
                 # Find relations that connect to this entity
                 cursor.execute(f"""
                     SELECT DISTINCT c.family_id FROM concepts c, json_each(c.connects) je
-                    WHERE c.role = 'relation' AND je.value IN ({placeholders})
-                """, abs_ids)
+                    WHERE c.role = 'relation' AND je.value IN ({placeholders}){tp_sql}
+                """, abs_ids + tp_params)
                 rel_fids = list(set(r[0] for r in cursor.fetchall()))
                 if rel_fids:
-                    rel_concepts = self.get_concepts_by_family_ids(rel_fids)
+                    rel_concepts = self.get_concepts_by_family_ids(rel_fids, time_point=time_point)
                     results.extend(rel_concepts.values())
 
         elif role == 'relation':
@@ -628,13 +661,14 @@ class ConceptStoreMixin:
                         conn = self._get_conn()
                         cursor = conn.cursor()
                         placeholders = ','.join('?' * len(abs_ids))
+                        tp_sql, tp_params = self._time_point_sql(time_point)
                         cursor.execute(
-                            f"SELECT DISTINCT family_id FROM concepts WHERE id IN ({placeholders})",
-                            abs_ids
+                            f"SELECT DISTINCT family_id FROM concepts WHERE id IN ({placeholders}){tp_sql}",
+                            abs_ids + tp_params
                         )
                         entity_fids = set(r[0] for r in cursor.fetchall())
                     if entity_fids:
-                        ent_concepts = self.get_concepts_by_family_ids(list(entity_fids))
+                        ent_concepts = self.get_concepts_by_family_ids(list(entity_fids), time_point=time_point)
                         results.extend(ent_concepts.values())
                 except (json.JSONDecodeError, Exception):
                     pass
@@ -652,25 +686,27 @@ class ConceptStoreMixin:
             # Resolve to family_ids
             if target_abs_ids:
                 placeholders = ','.join('?' * len(target_abs_ids))
+                tp_sql, tp_params = self._time_point_sql(time_point)
                 cursor.execute(f"""
-                    SELECT family_id, id FROM concepts WHERE id IN ({placeholders})
-                """, target_abs_ids)
+                    SELECT family_id, id FROM concepts WHERE id IN ({placeholders}){tp_sql}
+                """, target_abs_ids + tp_params)
                 fid_set = set()
                 for row in cursor.fetchall():
                     fid_set.add(row[0])
                 if fid_set:
-                    mentioned = self.get_concepts_by_family_ids(list(fid_set))
+                    mentioned = self.get_concepts_by_family_ids(list(fid_set), time_point=time_point)
                     results.extend(mentioned.values())
 
         return results
 
-    def get_concept_provenance(self, family_id: str) -> List[dict]:
+    def get_concept_provenance(self, family_id: str,
+                                time_point: Optional[str] = None) -> List[dict]:
         """溯源：返回所有提及此概念的 observation。
 
         支持所有 role：entity、relation、observation。
         先确定概念的 role，再从对应表查询 absolute_ids。
         """
-        concept = self.get_concept_by_family_id(family_id)
+        concept = self.get_concept_by_family_id(family_id, time_point=time_point)
         if not concept:
             return []
         role = concept.get('role', 'entity')
@@ -714,16 +750,18 @@ class ConceptStoreMixin:
             for row in cursor.fetchall()
         ]
 
-    def get_concept_mentions(self, family_id: str) -> List[dict]:
+    def get_concept_mentions(self, family_id: str,
+                              time_point: Optional[str] = None) -> List[dict]:
         """获取提及此概念的所有 Episode。"""
-        return self.get_concept_provenance(family_id)
+        return self.get_concept_provenance(family_id, time_point=time_point)
 
     def get_episode_concepts(self, episode_id: str) -> List[dict]:
         """获取 Episode 提及的所有概念（entity + relation）。"""
         return self.get_episode_entities(episode_id)
 
-    def traverse_concepts(self, start_family_ids: List[str], max_depth: int = 2) -> dict:
-        """BFS 遍历概念图。"""
+    def traverse_concepts(self, start_family_ids: List[str], max_depth: int = 2,
+                           time_point: Optional[str] = None) -> dict:
+        """BFS 遍历概念图。支持 time_point 时间过滤。"""
         visited = set()
         queue = list(start_family_ids)
         all_concepts = {}
@@ -737,13 +775,13 @@ class ConceptStoreMixin:
                 if fid in visited:
                     continue
                 visited.add(fid)
-                concept = self.get_concept_by_family_id(fid)
+                concept = self.get_concept_by_family_id(fid, time_point=time_point)
                 if not concept:
                     # Not a real concept — remove from visited
                     visited.discard(fid)
                     continue
                 all_concepts[fid] = concept
-                neighbors = self.get_concept_neighbors(fid)
+                neighbors = self.get_concept_neighbors(fid, time_point=time_point)
                 for n in neighbors:
                     nfid = n.get('family_id', '')
                     if nfid and nfid not in visited:
@@ -761,29 +799,32 @@ class ConceptStoreMixin:
             "visited_count": len(visited),
         }
 
-    def list_concepts(self, role: str = None, limit: int = 50, offset: int = 0) -> List[dict]:
-        """列出概念（分页 + 可选 role 过滤）。"""
+    def list_concepts(self, role: str = None, limit: int = 50, offset: int = 0,
+                       time_point: Optional[str] = None) -> List[dict]:
+        """列出概念（分页 + 可选 role 过滤）。支持 time_point 时间过滤。"""
         conn = self._get_conn()
         cursor = conn.cursor()
+        tp_sql, tp_params = self._time_point_sql(time_point)
         if role:
             cursor.execute(
-                "SELECT * FROM concepts WHERE role = ? ORDER BY processed_time DESC LIMIT ? OFFSET ?",
-                (role, limit, offset)
+                f"SELECT * FROM concepts WHERE role = ?{tp_sql} ORDER BY processed_time DESC LIMIT ? OFFSET ?",
+                [role] + tp_params + [limit, offset]
             )
         else:
             cursor.execute(
-                "SELECT * FROM concepts ORDER BY processed_time DESC LIMIT ? OFFSET ?",
-                (limit, offset)
+                f"SELECT * FROM concepts{(' WHERE 1=1' if tp_sql else '')}{tp_sql} ORDER BY processed_time DESC LIMIT ? OFFSET ?",
+                tp_params + [limit, offset]
             )
         cols = [desc[0] for desc in cursor.description]
         return [dict(zip(cols, row)) for row in cursor.fetchall()]
 
-    def count_concepts(self, role: str = None) -> int:
-        """统计概念数量。"""
+    def count_concepts(self, role: str = None, time_point: Optional[str] = None) -> int:
+        """统计概念数量。支持 time_point 时间过滤。"""
         conn = self._get_conn()
         cursor = conn.cursor()
+        tp_sql, tp_params = self._time_point_sql(time_point)
         if role:
-            cursor.execute("SELECT COUNT(*) FROM concepts WHERE role = ?", (role,))
+            cursor.execute(f"SELECT COUNT(*) FROM concepts WHERE role = ?{tp_sql}", [role] + tp_params)
         else:
-            cursor.execute("SELECT COUNT(*) FROM concepts")
+            cursor.execute(f"SELECT COUNT(*) FROM concepts{(' WHERE 1=1' if tp_sql else '')}{tp_sql}", tp_params)
         return cursor.fetchone()[0]
