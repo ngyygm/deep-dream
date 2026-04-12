@@ -28,6 +28,25 @@ logger = logging.getLogger(__name__)
 class ConceptStoreMixin:
     """Mixin providing concept table CRUD and dream-log storage."""
 
+    # ------------------------------------------------------------------
+    # Dream candidate filtering
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _is_dream_candidate_concept(concept: dict) -> bool:
+        """Check if a concept dict represents an unverified dream candidate relation."""
+        if concept.get("role") != "relation":
+            return False
+        attrs = concept.get("attributes") or ""
+        if isinstance(attrs, str):
+            try:
+                attrs = json.loads(attrs) if attrs else {}
+            except (json.JSONDecodeError, TypeError):
+                return False
+        if not isinstance(attrs, dict):
+            return False
+        return attrs.get("tier") == "candidate" and attrs.get("status") == "hypothesized"
+
     # ========== Phase E: Dream Logs ==========
 
     def save_dream_log(self, report):
@@ -382,6 +401,9 @@ class ConceptStoreMixin:
             }
             results.append((concept, embedding_array))
 
+        # Filter out dream candidate relations
+        results = [(c, e) for c, e in results if not self._is_dream_candidate_concept(c)]
+
         if use_cache:
             with self._emb_cache_lock:
                 self._concept_emb_cache = results
@@ -524,7 +546,7 @@ class ConceptStoreMixin:
                     LIMIT ?
                 """, [query] + tp_params + [limit])
             cols = [desc[0] for desc in cursor.description]
-            return [dict(zip(cols, row)) for row in cursor.fetchall()]
+            results = [dict(zip(cols, row)) for row in cursor.fetchall()]
         except Exception:
             # FTS match syntax error -- fallback to LIKE
             query_lower = query.lower()
@@ -542,7 +564,10 @@ class ConceptStoreMixin:
                     [q] + tp_params + [limit]
                 )
             cols = [desc[0] for desc in cursor.description]
-            return [dict(zip(cols, row)) for row in cursor.fetchall()]
+            results = [dict(zip(cols, row)) for row in cursor.fetchall()]
+
+        # Filter out dream candidate relations
+        return [r for r in results if not self._is_dream_candidate_concept(r)]
 
     def search_concepts_by_similarity(self, query_text: str, role: str = None,
                                        threshold: float = 0.5, max_results: int = 10,
@@ -697,6 +722,9 @@ class ConceptStoreMixin:
                     mentioned = self.get_concepts_by_family_ids(list(fid_set), time_point=time_point)
                     results.extend(mentioned.values())
 
+        # Filter dream candidate relations from neighbor results
+        results = [r for r in results if not self._is_dream_candidate_concept(r)]
+
         return results
 
     def get_concept_provenance(self, family_id: str,
@@ -816,7 +844,9 @@ class ConceptStoreMixin:
                 tp_params + [limit, offset]
             )
         cols = [desc[0] for desc in cursor.description]
-        return [dict(zip(cols, row)) for row in cursor.fetchall()]
+        results = [dict(zip(cols, row)) for row in cursor.fetchall()]
+        # Filter out dream candidate relations
+        return [r for r in results if not self._is_dream_candidate_concept(r)]
 
     def count_concepts(self, role: str = None, time_point: Optional[str] = None) -> int:
         """统计概念数量。支持 time_point 时间过滤。"""
