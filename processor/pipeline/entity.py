@@ -577,6 +577,109 @@ class EntityProcessor:
             candidate_rows.sort(key=lambda row: row["combined_score"], reverse=True)
             limit = self.max_alignment_candidates or self.max_similar_entities
             candidate_table[idx] = candidate_rows[:limit]
+
+        # Supplement candidates from unified concept table (BM25 search)
+        candidate_table = self._supplement_candidates_from_concepts(
+            candidate_table, extracted_entities, jaccard_threshold
+        )
+        return candidate_table
+
+    def _supplement_candidates_from_concepts(
+        self,
+        candidate_table: Dict[int, List[Dict[str, Any]]],
+        extracted_entities: List[Dict[str, str]],
+        jaccard_threshold: float,
+    ) -> Dict[int, List[Dict[str, Any]]]:
+        """Supplement candidate table with BM25 matches from the unified concepts table.
+
+        Queries concept_fts for entity names not already found by embedding/Jaccard,
+        then merges new candidates into the existing table. Concept-sourced candidates
+        are conservative: dense_score=0.0, merge_safe=False (always require LLM check).
+        """
+        if not extracted_entities:
+            return candidate_table
+
+        # 1. Collect unique names to deduplicate BM25 queries
+        name_to_indices: Dict[str, List[int]] = {}
+        for idx, ee in enumerate(extracted_entities):
+            name = ee.get("name", "").strip()
+            if name:
+                name_to_indices.setdefault(name, []).append(idx)
+
+        if not name_to_indices:
+            return candidate_table
+
+        # 2. Collect family_ids already present per extracted entity index
+        existing_fids_per_idx: Dict[int, set] = {}
+        for idx in range(len(extracted_entities)):
+            existing_fids_per_idx[idx] = {
+                c["family_id"] for c in candidate_table.get(idx, [])
+            }
+
+        # 3. BM25 search for each unique name, collect new family_ids to resolve
+        new_candidates_by_idx: Dict[int, List[Dict[str, Any]]] = {}
+        all_new_fids: set = set()
+
+        for name, indices in name_to_indices.items():
+            try:
+                bm25_results = self.storage.search_concepts_by_bm25(
+                    name, role="entity", limit=5
+                )
+            except Exception as exc:
+                logger.debug("concept BM25 supplement failed for '%s': %s", name, exc)
+                continue
+
+            for concept in bm25_results:
+                concept_fid = concept.get("family_id", "")
+                concept_name = concept.get("name", "")
+                if not concept_fid or not concept_name:
+                    continue
+                # Compute Jaccard to filter BM25 noise
+                jaccard = self._calculate_jaccard_similarity(name, concept_name)
+                if jaccard < jaccard_threshold:
+                    continue
+                for idx in indices:
+                    if concept_fid in existing_fids_per_idx.get(idx, set()):
+                        continue
+                    new_candidates_by_idx.setdefault(idx, []).append({
+                        "family_id": concept_fid,
+                        "name": concept_name,
+                        "jaccard_score": jaccard,
+                    })
+                    all_new_fids.add(concept_fid)
+                    existing_fids_per_idx.setdefault(idx, set()).add(concept_fid)
+
+        if not all_new_fids:
+            return candidate_table
+
+        # 4. Batch-fetch Entity objects and version counts
+        fid_list = list(all_new_fids)
+        entity_map = self.storage.get_entities_by_family_ids(fid_list)
+        version_counts = self.storage.get_entity_version_counts(fid_list)
+
+        # 5. Merge new candidates into the table
+        for idx, raw_candidates in new_candidates_by_idx.items():
+            rows = candidate_table.get(idx, [])
+            for rc in raw_candidates:
+                fid = rc["family_id"]
+                entity_obj = entity_map.get(fid)
+                rows.append({
+                    "family_id": fid,
+                    "name": rc["name"],
+                    "content": entity_obj.content if entity_obj else (rc.get("name", "")),
+                    "source_document": entity_obj.source_document if entity_obj else "",
+                    "version_count": version_counts.get(fid, 1),
+                    "entity": entity_obj,
+                    "lexical_score": rc["jaccard_score"],
+                    "dense_score": 0.0,
+                    "combined_score": rc["jaccard_score"],
+                    "merge_safe": False,
+                })
+            # Re-sort and re-limit
+            rows.sort(key=lambda r: r["combined_score"], reverse=True)
+            limit = self.max_alignment_candidates or self.max_similar_entities
+            candidate_table[idx] = rows[:limit]
+
         return candidate_table
 
     @staticmethod
