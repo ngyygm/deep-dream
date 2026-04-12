@@ -202,6 +202,7 @@ class DreamStoreMixin:
             "hub": self._dream_seeds_hub,
             "time_gap": self._dream_seeds_time_gap,
             "low_confidence": self._dream_seeds_low_confidence,
+            "cross_community": self._dream_seeds_cross_community,
         }
 
         handler = strategies.get(strategy)
@@ -216,6 +217,7 @@ class DreamStoreMixin:
             "hub": "高连接度实体",
             "time_gap": "长时间未更新的实体",
             "low_confidence": "低置信度实体",
+            "cross_community": "跨社区桥接候选",
         }
         for s in seeds:
             s["reason"] = reason_map.get(strategy, "")
@@ -412,6 +414,102 @@ class DreamStoreMixin:
             })
         return seeds
 
+    def _dream_seeds_cross_community(self, count: int, exclude_ids: list) -> List[Dict[str, Any]]:
+        """从不同图连通分量中各取实体，组合返回跨社区种子对。
+
+        使用 Union-Find 算法从 relations 表构建连通分量，然后从不同
+        分量中随机抽取实体对。适合发现潜在的跨领域关联。
+        """
+        import random as _random
+        conn = self._get_conn()
+        cursor = conn.cursor()
+
+        # Step 1: 获取所有 family_id 列表
+        cursor.execute("SELECT DISTINCT family_id FROM entities WHERE invalid_at IS NULL")
+        all_fids = [row[0] for row in cursor.fetchall()]
+        if len(all_fids) < 2:
+            return self._dream_seeds_random(count, exclude_ids)
+
+        # Step 2: Union-Find 构建连通分量
+        parent = {fid: fid for fid in all_fids}
+
+        def _find(x):
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        def _union(a, b):
+            ra, rb = _find(a), _find(b)
+            if ra != rb:
+                parent[ra] = rb
+
+        # Step 3: 通过 relations 表的 family_id 映射连接分量
+        # 先建 family_id → absolute_ids 映射
+        cursor.execute("SELECT family_id, id FROM entities WHERE invalid_at IS NULL")
+        fid_to_aids: Dict[str, List[str]] = {}
+        for row in cursor.fetchall():
+            fid_to_aids.setdefault(row[0], []).append(row[1])
+
+        # 再通过 relation 端点 merge family_ids
+        cursor.execute("""
+            SELECT entity1_absolute_id, entity2_absolute_id
+            FROM relations WHERE invalid_at IS NULL
+        """)
+        aid_to_fid: Dict[str, str] = {}
+        for fid, aids in fid_to_aids.items():
+            for aid in aids:
+                aid_to_fid[aid] = fid
+
+        for row in cursor.fetchall():
+            fid1 = aid_to_fid.get(row[0])
+            fid2 = aid_to_fid.get(row[1])
+            if fid1 and fid2 and fid1 != fid2:
+                _union(fid1, fid2)
+
+        # Step 4: 按分量分组
+        from collections import defaultdict
+        components: Dict[str, List[str]] = defaultdict(list)
+        for fid in all_fids:
+            root = _find(fid)
+            components[root].append(fid)
+
+        # 过滤排除ID
+        exclude_set = set(exclude_ids)
+        valid_components = []
+        for root, members in components.items():
+            valid = [m for m in members if m not in exclude_set]
+            if valid:
+                valid_components.append(valid)
+
+        if len(valid_components) < 2:
+            return self._dream_seeds_random(count, exclude_ids)
+
+        # Step 5: 从不同分量中随机配对
+        pairs = []
+        attempts = 0
+        max_attempts = count * 3
+        while len(pairs) < count and attempts < max_attempts:
+            c1, c2 = _random.sample(valid_components, 2)
+            fid1 = _random.choice(c1)
+            fid2 = _random.choice(c2)
+            entity1 = self.get_entity_by_family_id(fid1)
+            entity2 = self.get_entity_by_family_id(fid2)
+            if entity1 and entity2:
+                pairs.append({
+                    "family_id": entity1.family_id,
+                    "name": entity1.name,
+                    "content": entity1.content[:200],
+                    "confidence": entity1.confidence,
+                    "event_time": entity1.event_time.isoformat() if entity1.event_time else None,
+                    "degree": 0,
+                    "pair_with": entity2.family_id,
+                    "pair_name": entity2.name,
+                })
+            attempts += 1
+
+        return pairs[:count]
+
     # ------------------------------------------------------------------
     # Dream relation
     # ------------------------------------------------------------------
@@ -440,8 +538,8 @@ class DreamStoreMixin:
         if not entity2:
             raise ValueError(f"实体不存在: {entity2_id}")
 
-        # Check existing relation
-        existing = self.get_relations_by_entities(resolved1, resolved2)
+        # Check existing relation (include dream candidates so we can merge)
+        existing = self.get_relations_by_entities(resolved1, resolved2, include_candidates=True)
         if existing:
             latest = existing[0]
             new_confidence = max(latest.confidence or 0, confidence)
