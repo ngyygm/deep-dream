@@ -1,13 +1,12 @@
-"""LLM 矛盾检测 - 检测同一实体不同版本之间的矛盾。"""
+"""LLM 矛盾检测 - 检测同一概念（实体或关系）不同版本之间的矛盾。"""
 from __future__ import annotations
 
 import json
 from typing import List, Optional
 
-from ..models import Entity
 from ..utils import wprint
 
-DETECT_CONTRADICTIONS_SYSTEM_PROMPT = """你是一个知识图谱一致性检查助手。你的任务是检测同一实体不同版本之间是否存在矛盾。
+DETECT_CONTRADICTIONS_SYSTEM_PROMPT = """你是一个知识图谱一致性检查助手。你的任务是检测同一概念（实体或关系）不同版本之间是否存在矛盾。
 
 矛盾的定义：
 1. 同一属性在不同版本中描述了不同的值（如"在北京工作" vs "在上海工作"）
@@ -38,13 +37,15 @@ class ContradictionDetectionMixin:
     async def detect_contradictions(
         self,
         family_id: str,
-        versions: List[Entity],
+        versions: list,
+        concept_type: str = "entity",
     ) -> List[dict]:
-        """检测同一实体不同版本之间的矛盾。
+        """检测同一概念（实体或关系）不同版本之间的矛盾。
 
         Args:
-            family_id: 实体 ID
-            versions: 实体的多个版本列表
+            family_id: 概念 ID
+            versions: 概念的多个版本列表（Entity 或 Relation）
+            concept_type: "entity" 或 "relation"
 
         Returns:
             矛盾列表，每个包含 description 和 severity
@@ -57,13 +58,14 @@ class ContradictionDetectionMixin:
             for i, v in enumerate(versions[:5])  # 限制版本数量
         )
 
-        prompt = f"""<实体 ID>
+        label = "实体" if concept_type == "entity" else "关系"
+        prompt = f"""<{label} ID>
 {family_id}
-</实体 ID>
+</{label} ID>
 
-<实体版本>
+<{label}版本>
 {versions_text}
-</实体版本>
+</{label}版本>
 
 请检测上述版本之间是否存在矛盾："""
 
