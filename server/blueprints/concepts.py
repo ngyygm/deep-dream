@@ -453,3 +453,58 @@ def chat_send_message(sid):
         return err("Session not found or closed", 404)
 
     return sse_response(queue_to_generator(resp_queue, sentinel=sentinel))
+
+
+# ── Duplicate detection & merge ────────────────────────────────────────────
+
+@concepts_bp.route("/api/v1/concepts/duplicates", methods=["GET"])
+def find_duplicate_entities():
+    """Detect potential duplicate entities by core-name matching.
+
+    Groups entities whose names normalize to the same core (stripping
+    parenthetical annotations and book marks) but have different family_ids.
+    Returns groups with relation counts to help decide merge direction.
+    """
+    try:
+        import re as _re
+        processor = _get_processor()
+
+        limit = min(int(request.args.get("limit", 500)), 2000)
+        entities = processor.storage.get_all_entities(limit=limit, exclude_embedding=True)
+
+        def _normalize(name: str) -> str:
+            n = _re.sub(r'[《》]', '', name)
+            n = _re.sub(r'\s*[（(][^）)]+[）)]\s*', '', n)
+            return n.strip()
+
+        groups: Dict[str, list] = {}
+        for e in entities:
+            core = _normalize(getattr(e, 'name', ''))
+            if not core or len(core) < 2:
+                continue
+            groups.setdefault(core, []).append(e)
+
+        duplicates = []
+        for core, items in sorted(groups.items()):
+            fids = {getattr(e, 'family_id', '') for e in items}
+            if len(fids) < 2:
+                continue
+            group = {
+                "core_name": core,
+                "entities": [],
+            }
+            for e in items:
+                rels = processor.storage.get_entity_relations_by_family_id(e.family_id)
+                group["entities"].append({
+                    "family_id": e.family_id,
+                    "name": getattr(e, 'name', ''),
+                    "relation_count": len(rels),
+                    "version_count": processor.storage.get_entity_version_count(e.family_id),
+                })
+            # Sort by relation_count desc (first entity is merge target)
+            group["entities"].sort(key=lambda x: x["relation_count"], reverse=True)
+            duplicates.append(group)
+
+        return ok({"duplicates": duplicates, "count": len(duplicates)})
+    except Exception as e:
+        return err(str(e), 500)
