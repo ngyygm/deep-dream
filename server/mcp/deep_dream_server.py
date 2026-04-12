@@ -754,8 +754,9 @@ _t("get_snapshot", "Get a full graph snapshot at a point in time. Omit timestamp
     "timestamp": {"type": "string", "description": "ISO 8601 timestamp for point-in-time snapshot (omit for latest)"},
 })
 
-_t("get_changes", "Get all entity/relation changes since a given timestamp. Useful for incremental sync or audit logging.", {
+_t("get_changes", "Get all entity/relation changes in a time range. Useful for incremental sync or audit logging.", {
     "since": {"type": "string", "description": "ISO 8601 timestamp — return changes after this time"},
+    "until": {"type": "string", "description": "ISO 8601 timestamp — return changes before this time (optional, defaults to now)"},
     "limit": {"type": "integer", "description": "Max changes to return"},
 }, ["since"])
 
@@ -1982,6 +1983,8 @@ def get_snapshot(args):
 @_register
 def get_changes(args):
     qp = {"since": args["since"]}
+    if _arg(args, "until"):
+        qp["until"] = str(args["until"])
     if _arg(args, "limit"):
         qp["limit"] = str(args["limit"])
     data, code = _get("/api/v1/find/changes", **qp)
@@ -1994,7 +1997,8 @@ def get_changes(args):
         if isinstance(entities, list) and isinstance(relations, list):
             total = len(entities) + len(relations)
             if total > 0:
-                hint = f"\n→ {len(entities)} entity changes, {len(relations)} relation changes since {args['since']}."
+                until_str = args.get("until", "now")
+                hint = f"\n→ {len(entities)} entity changes, {len(relations)} relation changes between {args['since']} and {until_str}."
                 _hint(data, hint)
     return _result(data, code)
 
