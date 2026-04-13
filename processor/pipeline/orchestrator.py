@@ -1127,13 +1127,13 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
         for i in range(N):
             step7_done_ev[i].wait()
 
-        if t6.is_alive():
-            remember_log("警告: step6 线程在 join 超时后仍在运行")
         t6.join(timeout=60)
+        if t6.is_alive():
+            remember_log("警告: step6 线程在 join(60s) 超时后仍在运行")
 
-        if t7.is_alive():
-            remember_log("警告: step7 线程在 join 超时后仍在运行")
         t7.join(timeout=60)
+        if t7.is_alive():
+            remember_log("警告: step7 线程在 join(60s) 超时后仍在运行")
 
         _prefetch_executor.shutdown(wait=False)
 
