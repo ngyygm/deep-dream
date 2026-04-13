@@ -2033,12 +2033,20 @@ class Neo4jStorageManager:
         return self.delete_relation_by_id(family_id)
 
     def batch_delete_entities(self, family_ids: List[str]) -> int:
-        """批量删除实体 — 单次事务，替代 N 次 DETACH DELETE。"""
+        """批量删除实体 — 单次事务，替代 N 次 DETACH DELETE。含向量清理。"""
         resolved_map = self.resolve_family_ids(family_ids)
         resolved = list(set(r for r in resolved_map.values() if r))
         if not resolved:
             return 0
         with self._write_lock:
+            # 先收集所有 absolute_ids（DETACH DELETE 后就查不到了）
+            all_uuids = []
+            with self._session() as session:
+                result = session.run(
+                    "UNWIND $fids AS fid MATCH (e:Entity {family_id: fid}) RETURN e.uuid AS uuid",
+                    fids=resolved,
+                )
+                all_uuids = [r["uuid"] for r in result]
             with self._session() as session:
                 result = session.run(
                     "UNWIND $fids AS fid MATCH (e:Entity {family_id: fid}) DETACH DELETE e RETURN count(e) AS cnt",
@@ -2046,6 +2054,12 @@ class Neo4jStorageManager:
                 )
                 record = result.single()
                 count = record["cnt"] if record else 0
+            # 清理向量存储
+            if all_uuids:
+                try:
+                    self._vector_store.delete_batch("entity_vectors", all_uuids)
+                except Exception as e:
+                    logger.warning("batch_delete_entities vector cleanup failed: %s", e)
             self._cache.invalidate("entity:")
             self._cache.invalidate("resolve:")
             self._cache.invalidate("sim_search:")
@@ -2053,17 +2067,31 @@ class Neo4jStorageManager:
             return count
 
     def batch_delete_relations(self, family_ids: List[str]) -> int:
-        """批量删除关系 — 单次事务，替代 N 次删除。"""
+        """批量删除关系 — 单次事务，替代 N 次删除。含向量清理。"""
         if not family_ids:
             return 0
         with self._write_lock:
+            # 先收集所有 absolute_ids
+            all_uuids = []
             with self._session() as session:
                 result = session.run(
-                    "UNWIND $fids AS fid MATCH (r:Relation {family_id: fid}) DELETE r RETURN count(r) AS cnt",
+                    "UNWIND $fids AS fid MATCH (r:Relation {family_id: fid}) RETURN r.uuid AS uuid",
+                    fids=family_ids,
+                )
+                all_uuids = [r["uuid"] for r in result]
+            with self._session() as session:
+                result = session.run(
+                    "UNWIND $fids AS fid MATCH (r:Relation {family_id: fid}) DETACH DELETE r RETURN count(r) AS cnt",
                     fids=family_ids,
                 )
                 record = result.single()
                 count = record["cnt"] if record else 0
+            # 清理向量存储
+            if all_uuids:
+                try:
+                    self._vector_store.delete_batch("relation_vectors", all_uuids)
+                except Exception as e:
+                    logger.warning("batch_delete_relations vector cleanup failed: %s", e)
             self._cache.invalidate("relation:")
             self._cache.invalidate("graph_stats")
             return count
@@ -4779,7 +4807,7 @@ class Neo4jStorageManager:
             return result_map
 
     def batch_delete_entity_versions_by_absolute_ids(self, absolute_ids: List[str]) -> int:
-        """批量删除指定实体版本，返回成功删除的数量。"""
+        """批量删除指定实体版本，返回成功删除的数量。含向量清理和缓存失效。"""
         if not absolute_ids:
             return 0
         with self._write_lock:
@@ -4793,7 +4821,17 @@ class Neo4jStorageManager:
                     aids=absolute_ids,
                 )
                 record = result.single()
-                return record["deleted"] if record else 0
+                deleted = record["deleted"] if record else 0
+            if deleted > 0:
+                try:
+                    self._vector_store.delete_batch("entity_vectors", absolute_ids)
+                except Exception as e:
+                    logger.warning("batch_delete_entity_versions vector cleanup failed: %s", e)
+            self._cache.invalidate("entity:")
+            self._cache.invalidate("resolve:")
+            self._cache.invalidate("sim_search:")
+            self._cache.invalidate("graph_stats")
+            return deleted
 
     def split_entity_version(self, absolute_id: str, new_family_id: str = "") -> Optional[Entity]:
         """将实体拆分到新的 family_id，返回更新后的 Entity。"""

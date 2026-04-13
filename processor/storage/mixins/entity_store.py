@@ -746,7 +746,7 @@ class EntityStoreMixin:
         return self.delete_entity_by_id(family_id)
 
     def batch_delete_entities(self, family_ids: List[str]) -> int:
-        """批量删除实体 — 单次事务，替代 N 次单独删除。"""
+        """批量删除实体 — 单次事务，替代 N 次单独删除。含 concepts 清理。"""
         resolved_map = self.resolve_family_ids(family_ids)
         resolved = list(set(r for r in resolved_map.values() if r))
         if not resolved:
@@ -755,6 +755,9 @@ class EntityStoreMixin:
             conn = self._get_conn()
             cursor = conn.cursor()
             placeholders = ",".join("?" * len(resolved))
+            # 清理 concepts 表
+            for fid in resolved:
+                self._delete_concepts_by_family(fid, cursor)
             cursor.execute(f"DELETE FROM entities WHERE family_id IN ({placeholders})", tuple(resolved))
             count = cursor.rowcount
             try:
@@ -793,13 +796,16 @@ class EntityStoreMixin:
             return affected > 0
 
     def batch_delete_entity_versions_by_absolute_ids(self, absolute_ids: List[str]) -> int:
-        """批量删除指定实体版本（带 FTS 清理），返回成功删除的数量。"""
+        """批量删除指定实体版本（带 FTS 和 concepts 清理），返回成功删除的数量。"""
         if not absolute_ids:
             return 0
         with self._write_lock:
             conn = self._get_conn()
             cursor = conn.cursor()
             placeholders = ",".join("?" * len(absolute_ids))
+            # 清理 concepts 表
+            for aid in absolute_ids:
+                self._delete_concept_by_id(aid, cursor)
             # Delete FTS entries (using integer rowids)
             cursor.execute(
                 f"DELETE FROM entity_fts WHERE rowid IN (SELECT rowid FROM entities WHERE id IN ({placeholders}))",
