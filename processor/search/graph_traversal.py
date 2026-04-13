@@ -20,6 +20,7 @@ class GraphTraversalSearcher:
         seed_family_ids: List[str],
         max_depth: int = 2,
         max_nodes: int = 50,
+        time_point: Optional[str] = None,
     ) -> List[Entity]:
         """从种子实体 BFS 扩展，返回发现的实体。
 
@@ -30,12 +31,14 @@ class GraphTraversalSearcher:
             seed_family_ids: 种子实体的 family_id 列表
             max_depth: 最大扩展深度（跳数）
             max_nodes: 最多返回的节点数
+            time_point: ISO 8601 时间点，仅返回该时间点有效的实体和关系
 
         Returns:
             发现的实体列表（包含种子实体）
         """
         entities, relations, _ = self.bfs_expand_with_relations(
-            seed_family_ids, max_depth=max_depth, max_nodes=max_nodes)
+            seed_family_ids, max_depth=max_depth, max_nodes=max_nodes,
+            time_point=time_point)
         return entities[:max_nodes]
 
     def bfs_expand_with_relations(
@@ -43,8 +46,15 @@ class GraphTraversalSearcher:
         seed_family_ids: List[str],
         max_depth: int = 2,
         max_nodes: int = 50,
+        time_point: Optional[str] = None,
     ) -> Tuple[List[Entity], List[Relation], Set[str]]:
         """从种子实体 BFS 扩展，返回实体 + 关系 + 访问集合。
+
+        Args:
+            seed_family_ids: 种子实体的 family_id 列表
+            max_depth: 最大扩展深度
+            max_nodes: 最多返回的节点数
+            time_point: ISO 8601 时间点，仅返回该时间点有效的实体和关系
 
         Returns:
             (entities, relations, visited_family_ids)
@@ -53,23 +63,26 @@ class GraphTraversalSearcher:
         if hasattr(self.storage, 'batch_bfs_traverse'):
             try:
                 entities, relations, visited = self.storage.batch_bfs_traverse(
-                    seed_family_ids, max_depth=max_depth, max_nodes=max_nodes)
+                    seed_family_ids, max_depth=max_depth, max_nodes=max_nodes,
+                    time_point=time_point)
                 return entities[:max_nodes], relations, visited
             except Exception as e:
-                logger.debug("batch_bfs_traverse failed, fallback to iterative: %s", e)
+                logger.warning("batch_bfs_traverse failed, fallback to iterative: %s", e)
 
         # 回退：逐节点扩展（SQLite 后端）
-        return self._iterative_bfs_with_relations(seed_family_ids, max_depth, max_nodes)
+        return self._iterative_bfs_with_relations(
+            seed_family_ids, max_depth, max_nodes, time_point=time_point)
 
     def _iterative_bfs(
         self,
         seed_family_ids: List[str],
         max_depth: int = 2,
         max_nodes: int = 50,
+        time_point: Optional[str] = None,
     ) -> List[Entity]:
         """逐节点 BFS 扩展（兼容 SQLite 后端）。"""
         entities, _, _ = self._iterative_bfs_with_relations(
-            seed_family_ids, max_depth, max_nodes)
+            seed_family_ids, max_depth, max_nodes, time_point=time_point)
         return entities
 
     def _iterative_bfs_with_relations(
@@ -77,8 +90,10 @@ class GraphTraversalSearcher:
         seed_family_ids: List[str],
         max_depth: int = 2,
         max_nodes: int = 50,
+        time_point: Optional[str] = None,
     ) -> Tuple[List[Entity], List[Relation], Set[str]]:
         """逐节点 BFS 扩展，同时收集关系（兼容 SQLite 后端）。"""
+        _tp_cache: Dict[str, Any] = {}
         visited: Set[str] = set()
         queue: deque[Tuple[str, int]] = deque()  # (family_id, depth)
         result_entities: List[Entity] = []
@@ -113,13 +128,41 @@ class GraphTraversalSearcher:
             current_id, depth = queue.popleft()
             entity = self.storage.get_entity_by_family_id(current_id)
             if entity:
+                # time_point 过滤：跳过在 time_point 之后创建的实体版本
+                if time_point and hasattr(entity, 'valid_at') and entity.valid_at:
+                    from datetime import datetime as _dt
+                    try:
+                        tp_dt = _tp_cache.get(time_point) or _dt.fromisoformat(
+                            time_point.replace('Z', '+00:00'))
+                        _tp_cache[time_point] = tp_dt
+                    except (ValueError, TypeError):
+                        tp_dt = None
+                    if tp_dt is not None:
+                        va = entity.valid_at
+                        if isinstance(va, str):
+                            try:
+                                va = _dt.fromisoformat(va.replace('Z', '+00:00'))
+                            except (ValueError, TypeError):
+                                pass
+                        if isinstance(va, _dt) and va > tp_dt:
+                            continue
                 result_entities.append(entity)
 
             if depth >= max_depth:
                 continue
 
-            # 获取当前实体的关系
-            relations = self.storage.get_relations_by_family_ids([current_id])
+            # 获取当前实体的关系（带 time_point 过滤）
+            get_rels_fn = getattr(self.storage, 'get_relations_by_family_ids', None)
+            if get_rels_fn:
+                # 检查是否支持 time_point 参数
+                import inspect
+                sig = inspect.signature(get_rels_fn)
+                if 'time_point' in sig.parameters:
+                    relations = get_rels_fn([current_id], time_point=time_point)
+                else:
+                    relations = get_rels_fn([current_id])
+            else:
+                relations = []
 
             # 收集关系 + neighbor absolute_ids
             neighbor_abs_ids = set()
@@ -143,4 +186,3 @@ class GraphTraversalSearcher:
                     queue.append((fid, depth + 1))
 
         return result_entities[:max_nodes], result_relations, visited
-

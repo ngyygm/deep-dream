@@ -424,11 +424,13 @@ class TestTimeTravel:
     """Phase 3: Time travel (snapshot, changes, invalidate)."""
 
     def test_snapshot_missing_time(self, client, created_graph):
-        """GET /api/v1/find/snapshot without time should return 400."""
+        """GET /api/v1/find/snapshot without time returns latest snapshot (200)."""
         resp = client.get(f"/api/v1/find/snapshot?graph_id={created_graph}")
-        assert resp.status_code == 400
+        assert resp.status_code == 200
         data = resp.get_json()
-        assert data["success"] is False
+        assert data["success"] is True
+        assert "entities" in data["data"]
+        assert "relations" in data["data"]
 
     def test_snapshot(self, client, created_graph):
         """GET /api/v1/find/snapshot with time should return 200."""
@@ -674,7 +676,9 @@ class TestTraverseGraph:
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["success"] is True
-        assert isinstance(data["data"], list)
+        assert isinstance(data["data"], dict)
+        assert data["data"]["entities"] == []
+        assert data["data"]["relations"] == []
 
     def test_traverse_with_depth_and_limit(self, client, created_graph):
         """POST /api/v1/find/traverse with max_depth and max_nodes parameters."""
