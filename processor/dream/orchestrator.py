@@ -155,12 +155,13 @@ class DreamOrchestrator:
                 cycle_summary="图谱为空或无可用种子，梦境结束",
             )
 
-        # Step 2: BFS 图探索
-        entity_lookup, seen_ids, explored = self._explore_graph(seeds, config)
+        # Step 2: BFS 图探索（含已有关系上下文）
+        entity_lookup, seen_ids, explored, relation_context = self._explore_graph(seeds, config)
 
         # Step 3: 关联发现
         relations_created, pairs_checked = self._discover_relations(
             seeds, explored, entity_lookup, cycle_id, config,
+            relation_context=relation_context,
         )
 
         # Step 4: 保存梦境记录
@@ -221,22 +222,23 @@ class DreamOrchestrator:
         seeds: List[Dict[str, Any]],
         config: DreamConfig,
     ) -> tuple:
-        """BFS 扩展获取邻居实体。
+        """BFS 扩展获取邻居实体及已有关系。
 
         Returns:
-            (entity_lookup, seen_ids, explored_list)
+            (entity_lookup, seen_ids, explored_list, relation_context)
+            relation_context: family_id -> list of "neighbor_name — relation_snippet"
         """
         seed_family_ids = [s["family_id"] for s in seeds if s.get("family_id")]
 
         try:
-            bfs_entities = self._searcher.bfs_expand(
+            bfs_entities, bfs_relations, _ = self._searcher.bfs_expand_with_relations(
                 seed_family_ids,
                 max_depth=config.max_depth,
                 max_nodes=config.max_explore_entities,
             )
         except Exception as exc:
             logger.warning("Dream: BFS遍历失败: %s", exc)
-            bfs_entities = []
+            bfs_entities, bfs_relations = [], []
 
         # 构建 entity_lookup: family_id -> 简要信息
         entity_lookup: Dict[str, Dict[str, str]] = {}
@@ -263,6 +265,33 @@ class DreamOrchestrator:
                 }
                 seen_ids.add(fid)
 
+        # 构建关系上下文: family_id -> ["neighbor_name — relation_snippet"]
+        # 先建立 absolute_id -> family_id/name 映射
+        abs_to_fid: Dict[str, str] = {}
+        fid_to_name: Dict[str, str] = {}
+        for ent in bfs_entities:
+            abs_to_fid[getattr(ent, 'absolute_id', '')] = getattr(ent, 'family_id', '')
+            fid_to_name[getattr(ent, 'family_id', '')] = getattr(ent, 'name', '')
+
+        relation_context: Dict[str, List[str]] = {}
+        for rel in bfs_relations:
+            e1_abs = getattr(rel, 'entity1_absolute_id', '')
+            e2_abs = getattr(rel, 'entity2_absolute_id', '')
+            e1_fid = abs_to_fid.get(e1_abs)
+            e2_fid = abs_to_fid.get(e2_abs)
+            content_snippet = (getattr(rel, 'content', '') or '')[:80]
+            e1_name = fid_to_name.get(e1_fid, '') if e1_fid else ''
+            e2_name = fid_to_name.get(e2_fid, '') if e2_fid else ''
+
+            if e1_fid:
+                relation_context.setdefault(e1_fid, []).append(
+                    f"{e2_name or e2_abs[:12]} — {content_snippet}"
+                )
+            if e2_fid:
+                relation_context.setdefault(e2_fid, []).append(
+                    f"{e1_name or e1_abs[:12]} — {content_snippet}"
+                )
+
         # 为每个种子构建 explored 信息
         explored: List[Dict[str, Any]] = []
         for seed in seeds:
@@ -280,7 +309,7 @@ class DreamOrchestrator:
                 "neighbor_count": len(neighbor_data),
             })
 
-        return entity_lookup, seen_ids, explored
+        return entity_lookup, seen_ids, explored, relation_context
 
     # ------------------------------------------------------------------
     # Step 3: 关联发现（并发 LLM 判断）
@@ -293,6 +322,7 @@ class DreamOrchestrator:
         entity_lookup: Dict[str, Dict[str, str]],
         cycle_id: str,
         config: DreamConfig,
+        relation_context: Optional[Dict[str, List[str]]] = None,
     ) -> tuple:
         """并发发现实体间的隐含关联。
 
@@ -339,7 +369,7 @@ class DreamOrchestrator:
                 future = executor.submit(
                     self._judge_pair,
                     seed_fid, seed_name, nb_fid, nb_name, config,
-                    entity_lookup, existing_pairs,
+                    entity_lookup, existing_pairs, relation_context,
                 )
                 futures[future] = pair
 
@@ -400,6 +430,7 @@ class DreamOrchestrator:
         config: DreamConfig,
         entity_lookup: Optional[Dict[str, Dict[str, str]]] = None,
         existing_pairs: Optional[Set[Tuple[str, str]]] = None,
+        relation_context: Optional[Dict[str, List[str]]] = None,
     ) -> Optional[Dict[str, Any]]:
         """判断一对实体是否存在隐含关联。
 
@@ -440,12 +471,28 @@ class DreamOrchestrator:
             nb_name = nb_entity.name
             nb_content = (nb_entity.content or "")[:500]
 
+        # 构建图拓扑上下文（每个实体已有的关系）
+        topology_lines = []
+        if relation_context:
+            seed_rels = relation_context.get(seed_fid, [])
+            nb_rels = relation_context.get(nb_fid, [])
+            if seed_rels:
+                topology_lines.append(
+                    f"实体A的已知关联:\n" + "\n".join(f"  - {r}" for r in seed_rels[:8])
+                )
+            if nb_rels:
+                topology_lines.append(
+                    f"实体B的已知关联:\n" + "\n".join(f"  - {r}" for r in nb_rels[:8])
+                )
+        topology_block = ("\n\n".join(topology_lines) + "\n\n") if topology_lines else ""
+
         # LLM 判断 + 生成（单次调用）
         judge_messages = [
             {"role": "system", "content": JUDGE_AND_GENERATE_RELATION_SYSTEM_PROMPT},
             {"role": "user", "content": (
                 f"实体A: {seed_name}\n描述: {seed_content}\n\n"
                 f"实体B: {nb_name}\n描述: {nb_content}\n\n"
+                f"{topology_block}"
                 f"判断这两个实体之间是否存在明确的、有意义的关联。如果存在，同时生成关系描述。"
             )},
         ]

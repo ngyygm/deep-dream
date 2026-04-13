@@ -212,24 +212,26 @@ class TestSelectSeeds:
 class TestExploreGraph:
     """Tests for BFS graph exploration step."""
 
-    def _make_orchestrator(self, bfs_result=None):
+    def _make_orchestrator(self, bfs_result=None, bfs_relations=None):
         storage = MagicMock()
         llm = MagicMock()
         config = DreamConfig()
         orch = DreamOrchestrator(storage, llm, config)
-        # Mock the searcher's bfs_expand
+        # Mock the searcher's bfs_expand_with_relations
         if bfs_result is not None:
             orch._searcher = MagicMock()
-            orch._searcher.bfs_expand.return_value = bfs_result
+            orch._searcher.bfs_expand_with_relations.return_value = (
+                bfs_result, bfs_relations or [], set()
+            )
         else:
             orch._searcher = MagicMock()
-            orch._searcher.bfs_expand.return_value = []
+            orch._searcher.bfs_expand_with_relations.return_value = ([], [], set())
         return orch
 
     def test_empty_bfs(self):
         seeds = [{"family_id": "f1", "name": "A", "content": "desc"}]
         orch = self._make_orchestrator(bfs_result=[])
-        lookup, seen, explored = orch._explore_graph(seeds, orch.config)
+        lookup, seen, explored, rel_ctx = orch._explore_graph(seeds, orch.config)
         # Seeds should still be in lookup
         assert "f1" in lookup
 
@@ -238,16 +240,16 @@ class TestExploreGraph:
         e2 = _make_entity("f2", "B", "Content B")
         seeds = [{"family_id": "f1", "name": "A", "content": "Content A"}]
         orch = self._make_orchestrator(bfs_result=[e1, e2])
-        lookup, seen, explored = orch._explore_graph(seeds, orch.config)
+        lookup, seen, explored, rel_ctx = orch._explore_graph(seeds, orch.config)
         assert "f1" in lookup
         assert "f2" in lookup
         assert len(explored) == 1  # 1 seed
 
     def test_bfs_failure_returns_empty(self):
         orch = self._make_orchestrator()
-        orch._searcher.bfs_expand.side_effect = Exception("BFS failed")
+        orch._searcher.bfs_expand_with_relations.side_effect = Exception("BFS failed")
         seeds = [{"family_id": "f1", "name": "A", "content": "desc"}]
-        lookup, seen, explored = orch._explore_graph(seeds, orch.config)
+        lookup, seen, explored, rel_ctx = orch._explore_graph(seeds, orch.config)
         assert "f1" in lookup  # seed still added
 
     def test_explored_neighbors_populated(self):
@@ -256,9 +258,42 @@ class TestExploreGraph:
         e3 = _make_entity("f3", "Neighbor2", "N2 content")
         seeds = [{"family_id": "f1", "name": "Seed", "content": "Seed content"}]
         orch = self._make_orchestrator(bfs_result=[e1, e2, e3])
-        _, _, explored = orch._explore_graph(seeds, orch.config)
+        _, _, explored, _ = orch._explore_graph(seeds, orch.config)
         assert len(explored) == 1
         assert explored[0]["neighbor_count"] == 2  # f2 and f3, not f1 itself
+
+    def test_relation_context_built_from_bfs_relations(self):
+        """Relation context is built from BFS relations."""
+        from processor.models import Relation
+        e1 = _make_entity("f1", "A", "Content A")
+        e2 = _make_entity("f2", "B", "Content B")
+        e3 = _make_entity("f3", "C", "Content C")
+        rel = Relation(
+            absolute_id="r1_abs", family_id="rel_1",
+            entity1_absolute_id="abs_f1", entity2_absolute_id="abs_f2",
+            content="A and B are related", confidence=0.8,
+            event_time=_now(), processed_time=_now(),
+            episode_id="ep1", source_document="test",
+        )
+        seeds = [{"family_id": "f1", "name": "A", "content": "Content A"}]
+        orch = self._make_orchestrator(bfs_result=[e1, e2, e3], bfs_relations=[rel])
+        _, _, _, rel_ctx = orch._explore_graph(seeds, orch.config)
+        # f1 should have a relation to f2
+        assert "f1" in rel_ctx
+        assert any("B" in r for r in rel_ctx["f1"])
+        # f2 should have a relation back to f1
+        assert "f2" in rel_ctx
+        assert any("A" in r for r in rel_ctx["f2"])
+        # f3 has no relations
+        assert "f3" not in rel_ctx
+
+    def test_relation_context_empty_when_no_relations(self):
+        """Relation context is empty when BFS returns no relations."""
+        e1 = _make_entity("f1", "A", "Content A")
+        seeds = [{"family_id": "f1", "name": "A", "content": "Content A"}]
+        orch = self._make_orchestrator(bfs_result=[e1])
+        _, _, _, rel_ctx = orch._explore_graph(seeds, orch.config)
+        assert rel_ctx == {}
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -376,10 +411,49 @@ class TestJudgePair:
         assert result is not None
         assert result["confidence"] == 1.0  # Clamped to 1.0
 
+    def test_topology_context_included_in_prompt(self):
+        """Graph topology is included in LLM prompt when relation_context is provided."""
+        orch = self._make_orchestrator()
+        orch.llm_client.call_llm_until_json_parses.return_value = (
+            {"need_create": True, "confidence": 0.7,
+             "content": "Topology-informed relation between A and B"}, {},
+        )
+        rel_ctx = {
+            "f1": ["B — A and B share interests", "C — A influences C"],
+            "f2": ["A — A and B share interests", "D — B collaborates with D"],
+        }
+        result = orch._judge_pair("f1", "A", "f2", "B", orch.config,
+                                  entity_lookup={
+                                      "f1": {"name": "A", "content": "desc A"},
+                                      "f2": {"name": "B", "content": "desc B"},
+                                  },
+                                  existing_pairs=set(),
+                                  relation_context=rel_ctx)
+        assert result is not None
+        # Verify LLM was called with topology context in the user message
+        call_args = orch.llm_client.call_llm_until_json_parses.call_args
+        messages = call_args[0][0]
+        user_msg = messages[1]["content"]
+        assert "已知关联" in user_msg
+        assert "A and B share interests" in user_msg
 
-# ═══════════════════════════════════════════════════════════════════
-# DreamOrchestrator: full run
-# ═══════════════════════════════════════════════════════════════════
+    def test_topology_absent_when_no_context(self):
+        """No topology section when relation_context is None."""
+        orch = self._make_orchestrator()
+        orch.llm_client.call_llm_until_json_parses.return_value = (
+            {"need_create": False}, {},
+        )
+        orch._judge_pair("f1", "A", "f2", "B", orch.config,
+                         entity_lookup={
+                             "f1": {"name": "A", "content": "desc A"},
+                             "f2": {"name": "B", "content": "desc B"},
+                         },
+                         existing_pairs=set(),
+                         relation_context=None)
+        call_args = orch.llm_client.call_llm_until_json_parses.call_args
+        messages = call_args[0][0]
+        user_msg = messages[1]["content"]
+        assert "已知关联" not in user_msg
 
 class TestDreamOrchestratorRun:
     """Integration tests for the full dream cycle."""
@@ -400,9 +474,11 @@ class TestDreamOrchestratorRun:
         config = DreamConfig(seed_count=2, max_relations=3)
         orch = DreamOrchestrator(storage, llm, config)
 
-        # Mock BFS
+        # Mock BFS (returns entities + relations + visited set)
         orch._searcher = MagicMock()
-        orch._searcher.bfs_expand.return_value = bfs_entities or []
+        orch._searcher.bfs_expand_with_relations.return_value = (
+            bfs_entities or [], [], set()
+        )
 
         return orch, storage, llm
 
