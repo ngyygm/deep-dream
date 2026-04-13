@@ -714,81 +714,82 @@ class RememberTaskQueue:
                     self._persist(task)
                 except Exception as e:
                     logger.debug("恢复暂停任务 %s 失败: %s", tid, e)
-                    continue
-                op = rec.get("original_path")
-                if not op or not Path(op).exists():
-                    rec2 = dict(rec)
-                    rec2["status"] = "failed"
-                    rec2["error"] = "重启恢复失败：原始文本文件不存在"
-                    rec2["finished_at"] = time.time()
-                    try:
-                        tdead = _remember_task_from_record(rec2, text="")
-                        self._journal.write(tdead)
-                    except Exception as e:
-                        logger.debug("写入恢复失败记录 %s: %s", tid, e)
-                    self._log_warn(f"[Remember] 恢复跳过 task_id={_short_task_id(str(tid))}: 原文缺失")
-                    continue
+                continue  # Paused tasks don't auto-resume
+            # Non-paused pending/processing tasks: attempt recovery
+            op = rec.get("original_path")
+            if not op or not Path(op).exists():
+                rec2 = dict(rec)
+                rec2["status"] = "failed"
+                rec2["error"] = "重启恢复失败：原始文本文件不存在"
+                rec2["finished_at"] = time.time()
                 try:
-                    text = Path(op).read_text(encoding="utf-8")
+                    tdead = _remember_task_from_record(rec2, text="")
+                    self._journal.write(tdead)
                 except Exception as e:
-                    rec2 = dict(rec)
-                    rec2["status"] = "failed"
-                    rec2["error"] = f"重启恢复失败：无法读取原文: {e}"
-                    rec2["finished_at"] = time.time()
-                    try:
-                        tdead = _remember_task_from_record(rec2, text="")
-                        self._journal.write(tdead)
-                    except Exception as _journal_err:
-                        logger.warning("写入恢复失败记录到日志失败: %s", _journal_err)
-                    continue
-                task = _remember_task_from_record(rec, text=text)
-                task.status = "queued"
-                task.started_at = None
-                task.finished_at = None
-                task.error = None
-                task.result = None
-                task.phase = "queued"
-                task.phase_label = "恢复后等待处理"
-                task.phase_current = 0
-                task.phase_total = 0
-                task.total_chunks = max(
-                    task.total_chunks,
-                    _estimate_chunk_count(len(task.text), self._window_size, self._overlap),
+                    logger.debug("写入恢复失败记录 %s: %s", tid, e)
+                self._log_warn(f"[Remember] 恢复跳过 task_id={_short_task_id(str(tid))}: 原文缺失")
+                continue
+            try:
+                text = Path(op).read_text(encoding="utf-8")
+            except Exception as e:
+                rec2 = dict(rec)
+                rec2["status"] = "failed"
+                rec2["error"] = f"重启恢复失败：无法读取原文: {e}"
+                rec2["finished_at"] = time.time()
+                try:
+                    tdead = _remember_task_from_record(rec2, text="")
+                    self._journal.write(tdead)
+                except Exception as _journal_err:
+                    logger.warning("写入恢复失败记录到日志失败: %s", _journal_err)
+                continue
+            task = _remember_task_from_record(rec, text=text)
+            task.status = "queued"
+            task.started_at = None
+            task.finished_at = None
+            task.error = None
+            task.result = None
+            task.phase = "queued"
+            task.phase_label = "恢复后等待处理"
+            task.phase_current = 0
+            task.phase_total = 0
+            task.total_chunks = max(
+                task.total_chunks,
+                _estimate_chunk_count(len(task.text), self._window_size, self._overlap),
+            )
+            # 三条链的断点分别恢复；processed_chunks 继续兼容为 step7 已完成窗口数。
+            _tc = max(0, int(task.total_chunks or 0))
+            _step7_done = min(_tc, max(0, int(task.step7_done_chunks or task.processed_chunks or 0)))
+            _step6_done = min(_tc, max(_step7_done, int(task.step6_done_chunks or task.processed_chunks or 0)))
+            _main_done = min(_tc, max(_step6_done, int(task.main_done_chunks or task.processed_chunks or 0)))
+            task.main_done_chunks = _main_done
+            task.step6_done_chunks = _step6_done
+            task.step7_done_chunks = _step7_done
+            task.processed_chunks = _step7_done
+            # 根据关系链已完成窗口数恢复总进度
+            if task.total_chunks > 0 and task.step7_done_chunks > 0:
+                task.progress = task.step7_done_chunks / task.total_chunks
+            else:
+                task.progress = 0.0
+            task.main_progress = (_main_done / task.total_chunks) if task.total_chunks > 0 else 0.0
+            if task.step7_done_chunks > 0 or task.step6_done_chunks > 0 or task.main_done_chunks > 0:
+                task.message = (
+                    "服务重启后已恢复入队（"
+                    f"主链 {task.main_done_chunks}/{task.total_chunks} · "
+                    f"实体 {task.step6_done_chunks}/{task.total_chunks} · "
+                    f"关系 {task.step7_done_chunks}/{task.total_chunks}）"
                 )
-                # 三条链的断点分别恢复；processed_chunks 继续兼容为 step7 已完成窗口数。
-                _tc = max(0, int(task.total_chunks or 0))
-                _step7_done = min(_tc, max(0, int(task.step7_done_chunks or task.processed_chunks or 0)))
-                _step6_done = min(_tc, max(_step7_done, int(task.step6_done_chunks or task.processed_chunks or 0)))
-                _main_done = min(_tc, max(_step6_done, int(task.main_done_chunks or task.processed_chunks or 0)))
-                task.main_done_chunks = _main_done
-                task.step6_done_chunks = _step6_done
-                task.step7_done_chunks = _step7_done
-                task.processed_chunks = _step7_done
-                # 根据关系链已完成窗口数恢复总进度
-                if task.total_chunks > 0 and task.step7_done_chunks > 0:
-                    task.progress = task.step7_done_chunks / task.total_chunks
-                else:
-                    task.progress = 0.0
-                task.main_progress = (_main_done / task.total_chunks) if task.total_chunks > 0 else 0.0
-                if task.step7_done_chunks > 0 or task.step6_done_chunks > 0 or task.main_done_chunks > 0:
-                    task.message = (
-                        "服务重启后已恢复入队（"
-                        f"主链 {task.main_done_chunks}/{task.total_chunks} · "
-                        f"实体 {task.step6_done_chunks}/{task.total_chunks} · "
-                        f"关系 {task.step7_done_chunks}/{task.total_chunks}）"
-                    )
-                else:
-                    task.message = "服务重启后已恢复入队"
-                task.last_update = time.time()
-                with self._lock:
-                    self._tasks[tid] = task
-                self._queue.put(task)
-                self._persist(task)
-                n_resume += 1
-                self._log_info(
-                    f"[Remember] 恢复未完成任务并入队: task_id={_short_task_id(tid)}, "
-                    f"source_name={task.source_name!r}"
-                )
+            else:
+                task.message = "服务重启后已恢复入队"
+            task.last_update = time.time()
+            with self._lock:
+                self._tasks[tid] = task
+            self._queue.put(task)
+            self._persist(task)
+            n_resume += 1
+            self._log_info(
+                f"[Remember] 恢复未完成任务并入队: task_id={_short_task_id(tid)}, "
+                f"source_name={task.source_name!r}"
+            )
         if n_resume:
             self._log_info(
                 f"[Remember] 启动恢复：重新入队 {n_resume} 个未完成任务"
