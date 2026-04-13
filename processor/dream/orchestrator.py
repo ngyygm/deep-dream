@@ -340,14 +340,21 @@ class DreamOrchestrator:
                 )
                 futures[future] = pair
 
+            early_break = False
             for future in as_completed(futures):
-                if len(relations_created) >= config.max_relations:
-                    break
                 pair = futures[future]
-                pairs_checked += 1
-                # 记录此配对已被检查（无论结果如何）
                 seed_fid, seed_name, nb_fid, nb_name = pair
+                # Always mark checked to prevent re-checking in future cycles
                 self._history.mark_checked(seed_fid, nb_fid, cycle_id)
+                pairs_checked += 1
+
+                if early_break:
+                    # Already hit max_relations — just drain futures and mark history
+                    continue
+                if len(relations_created) >= config.max_relations:
+                    early_break = True
+                    continue
+
                 try:
                     result = future.result()
                     if result is None:

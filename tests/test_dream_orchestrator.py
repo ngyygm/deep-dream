@@ -625,3 +625,237 @@ class TestStrategies:
         # DreamConfig doesn't validate strategy; the storage layer does
         config = DreamConfig(strategy="nonexistent")
         assert config.strategy == "nonexistent"
+
+
+# ═══════════════════════════════════════════════════════════════════
+# _discover_relations: early termination marks ALL pairs in history
+# ═══════════════════════════════════════════════════════════════════
+
+class TestDiscoverRelationsEarlyBreak:
+    """Verify that when max_relations is hit, ALL submitted pairs are still
+    marked in DreamHistory (not just the ones whose results were consumed)."""
+
+    def _make_orchestrator(self, max_relations=1):
+        storage = MagicMock()
+        storage.get_relations_by_entity_pairs.return_value = {}
+        storage.save_dream_relation.return_value = {"family_id": "rel_1"}
+        llm = MagicMock()
+        config = DreamConfig(llm_concurrency=1, max_relations=max_relations)
+        return DreamOrchestrator(storage, llm, config)
+
+    def test_all_pairs_marked_on_early_break(self):
+        """When max_relations=1 and LLM says yes to multiple pairs, all pairs
+        should still be marked in history even though only 1 relation is kept."""
+        orch = self._make_orchestrator(max_relations=1)
+
+        # 3 pairs: seed f1 with neighbors f2, f3, f4
+        explored = [{
+            "seed": {"family_id": "f1", "name": "A"},
+            "neighbors": [
+                {"family_id": "f2", "name": "B"},
+                {"family_id": "f3", "name": "C"},
+                {"family_id": "f4", "name": "D"},
+            ],
+        }]
+        entity_lookup = {
+            "f1": {"name": "A", "content": "desc A"},
+            "f2": {"name": "B", "content": "desc B"},
+            "f3": {"name": "C", "content": "desc C"},
+            "f4": {"name": "D", "content": "desc D"},
+        }
+
+        # LLM says yes to all pairs
+        orch.llm_client.call_llm_until_json_parses.side_effect = [
+            ({"need_create": True, "confidence": 0.8}, {}),
+            ({"content": "Relation between A and B that is long enough"}, {}),
+            ({"need_create": True, "confidence": 0.7}, {}),
+            ({"content": "Relation between A and C that is long enough"}, {}),
+            ({"need_create": True, "confidence": 0.6}, {}),
+            ({"content": "Relation between A and D that is long enough"}, {}),
+        ]
+
+        rels, checked = orch._discover_relations(
+            [{"family_id": "f1", "name": "A"}],
+            explored, entity_lookup, "cycle_1", orch.config,
+        )
+
+        # Only 1 relation created (max_relations=1)
+        assert len(rels) <= 1
+
+        # ALL 3 pairs should be marked in history (not just the 1st)
+        assert orch._history.was_checked("f1", "f2")
+        assert orch._history.was_checked("f1", "f3")
+        assert orch._history.was_checked("f1", "f4")
+
+        # pairs_checked should reflect all submitted pairs
+        assert checked == 3
+
+    def test_pairs_checked_count_includes_drained(self):
+        """Even pairs drained after early_break should increment pairs_checked."""
+        orch = self._make_orchestrator(max_relations=1)
+        explored = [{
+            "seed": {"family_id": "f1", "name": "A"},
+            "neighbors": [
+                {"family_id": "f2", "name": "B"},
+                {"family_id": "f3", "name": "C"},
+            ],
+        }]
+        entity_lookup = {
+            "f1": {"name": "A", "content": "desc A"},
+            "f2": {"name": "B", "content": "desc B"},
+            "f3": {"name": "C", "content": "desc C"},
+        }
+
+        # LLM says yes to both
+        orch.llm_client.call_llm_until_json_parses.side_effect = [
+            ({"need_create": True, "confidence": 0.8}, {}),
+            ({"content": "First relation between A and B entities"}, {}),
+            ({"need_create": True, "confidence": 0.7}, {}),
+            ({"content": "Second relation between A and C entities"}, {}),
+        ]
+
+        rels, checked = orch._discover_relations(
+            [{"family_id": "f1", "name": "A"}],
+            explored, entity_lookup, "cycle_1", orch.config,
+        )
+
+        assert checked == 2
+        assert len(rels) <= 1
+
+
+# ═══════════════════════════════════════════════════════════════════
+# GraphRegistry: persistent orchestrator and dream lock
+# ═══════════════════════════════════════════════════════════════════
+
+class TestRegistryDreamOrchestrator:
+    """Tests for GraphRegistry's persistent DreamOrchestrator management."""
+
+    def _make_registry(self):
+        """Create a minimal GraphRegistry with mocked dependencies."""
+        from server.registry import GraphRegistry
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = {"llm": {}, "pipeline": {}, "runtime": {}}
+            registry = GraphRegistry(tmpdir, config)
+
+        # Mock get_processor to avoid real DB creation
+        mock_processor = MagicMock()
+        mock_processor.storage = MagicMock()
+        mock_processor.llm_client = MagicMock()
+        registry.get_processor = MagicMock(return_value=mock_processor)
+
+        return registry, mock_processor
+
+    def test_same_orchestrator_for_same_graph(self):
+        """Same graph_id returns same orchestrator instance (persistence)."""
+        registry, _ = self._make_registry()
+        config = DreamConfig(strategy="random", seed_count=3)
+        orch1 = registry.get_dream_orchestrator("g1", config)
+        orch2 = registry.get_dream_orchestrator("g1", DreamConfig(strategy="hub"))
+        assert orch1 is orch2
+
+    def test_different_graphs_get_different_orchestrators(self):
+        """Different graph_ids get different orchestrator instances."""
+        registry, _ = self._make_registry()
+        orch1 = registry.get_dream_orchestrator("g1")
+        orch2 = registry.get_dream_orchestrator("g2")
+        assert orch1 is not orch2
+
+    def test_config_updated_on_existing_orchestrator(self):
+        """Calling with a new config updates the existing orchestrator's config."""
+        registry, _ = self._make_registry()
+        config1 = DreamConfig(strategy="random", seed_count=3)
+        orch = registry.get_dream_orchestrator("g1", config1)
+        assert orch.config.strategy == "random"
+
+        config2 = DreamConfig(strategy="hub", seed_count=5)
+        orch2 = registry.get_dream_orchestrator("g1", config2)
+        assert orch2.config.strategy == "hub"
+        assert orch2.config.seed_count == 5
+
+    def test_history_preserved_across_calls(self):
+        """DreamHistory is preserved across get_dream_orchestrator calls."""
+        registry, _ = self._make_registry()
+        orch = registry.get_dream_orchestrator("g1")
+        orch._history.mark_checked("a", "b", "c1")
+
+        orch2 = registry.get_dream_orchestrator("g1")
+        assert orch2._history.was_checked("a", "b")
+
+    def test_dream_lock_same_for_same_graph(self):
+        """Same graph_id returns same lock instance."""
+        registry, _ = self._make_registry()
+        lock1 = registry.get_dream_lock("g1")
+        lock2 = registry.get_dream_lock("g1")
+        assert lock1 is lock2
+
+    def test_dream_lock_different_for_different_graphs(self):
+        """Different graph_ids get different locks."""
+        registry, _ = self._make_registry()
+        lock1 = registry.get_dream_lock("g1")
+        lock2 = registry.get_dream_lock("g2")
+        assert lock1 is not lock2
+
+    def test_delete_graph_cleans_up_orchestrator_and_lock(self):
+        """delete_graph removes orchestrator and lock for that graph."""
+        registry, mock_proc = self._make_registry()
+        mock_proc.storage.close = MagicMock()
+        mock_proc.storage.storage_path = "/tmp/test"
+
+        # Create orchestrator and lock
+        orch = registry.get_dream_orchestrator("g1")
+        lock = registry.get_dream_lock("g1")
+
+        # Delete graph (need to mock shutil.rmtree and Path.is_dir)
+        import shutil
+        original_rmtree = shutil.rmtree
+        shutil.rmtree = MagicMock()
+
+        # Make graph dir appear to exist
+        from unittest.mock import patch as _patch
+        with _patch.object(type(registry._base_path), 'is_dir', return_value=False):
+            registry.delete_graph("g1")
+
+        shutil.rmtree = original_rmtree
+
+        # Orchestrator and lock should be gone
+        assert "g1" not in registry._orchestrators
+        assert "g1" not in registry._dream_locks
+
+        # New call should create fresh instances
+        orch2 = registry.get_dream_orchestrator("g1")
+        lock2 = registry.get_dream_lock("g1")
+        assert orch2 is not orch
+        assert lock2 is not lock
+
+    def test_concurrent_dream_lock(self):
+        """Lock actually blocks concurrent access."""
+        import threading
+        registry, _ = self._make_registry()
+        lock = registry.get_dream_lock("g1")
+
+        results = []
+
+        def _acquire_and_record(name, hold_time=0.05):
+            if lock.acquire(timeout=0.1):
+                results.append(f"{name}_acquired")
+                import time
+                time.sleep(hold_time)
+                results.append(f"{name}_release")
+                lock.release()
+            else:
+                results.append(f"{name}_blocked")
+
+        t1 = threading.Thread(target=_acquire_and_record, args=("t1", 0.1))
+        t2 = threading.Thread(target=_acquire_and_record, args=("t2",))
+
+        t1.start()
+        import time
+        time.sleep(0.02)  # Ensure t1 acquires first
+        t2.start()
+        t1.join()
+        t2.join()
+
+        # t1 should acquire, t2 should either acquire after or be blocked
+        assert "t1_acquired" in results

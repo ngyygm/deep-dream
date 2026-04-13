@@ -14,6 +14,7 @@ from server.config import merge_llm_alignment, resolve_embedding_model  # noqa: 
 from processor.storage.embedding import EmbeddingClient
 from processor.storage import create_storage_manager
 from processor.pipeline.orchestrator import TemporalMemoryGraphProcessor
+from processor.dream import DreamOrchestrator, DreamConfig
 
 if TYPE_CHECKING:
     from server.monitor import SystemMonitor
@@ -43,6 +44,8 @@ class GraphRegistry:
         self._embedding_client: Optional[EmbeddingClient] = None
         self._processors: Dict[str, TemporalMemoryGraphProcessor] = {}
         self._queues: Dict[str, object] = {}
+        self._orchestrators: Dict[str, DreamOrchestrator] = {}
+        self._dream_locks: Dict[str, threading.Lock] = {}
         self._lock = threading.RLock()
 
     # ------------------------------------------------------------------
@@ -141,6 +144,42 @@ class GraphRegistry:
         return TemporalMemoryGraphProcessor(**kwargs)
 
     # ------------------------------------------------------------------
+    # DreamOrchestrator 管理（持久化跨周期历史）
+    # ------------------------------------------------------------------
+
+    def get_dream_orchestrator(
+        self,
+        graph_id: str,
+        config: Optional["DreamConfig"] = None,
+    ) -> DreamOrchestrator:
+        """获取或创建指定图谱的持久化 DreamOrchestrator。
+
+        每个 graph_id 持有一个 orchestrator 实例，保留跨周期的 LRU 历史。
+        每次调用可传入新的 config 覆盖参数（如 strategy、seed_count），
+        但 _history 和 _cycle_count 在实例生命周期内持久保留。
+        """
+        with self._lock:
+            if graph_id not in self._orchestrators:
+                processor = self.get_processor(graph_id)
+                self._orchestrators[graph_id] = DreamOrchestrator(
+                    processor.storage, processor.llm_client, config
+                )
+            orch = self._orchestrators[graph_id]
+            if config is not None:
+                orch.config = config
+            return orch
+
+    def get_dream_lock(self, graph_id: str) -> threading.Lock:
+        """获取指定图谱的 dream cycle 互斥锁。
+
+        防止同一图谱上并发执行 dream cycle，避免重复关系创建。
+        """
+        with self._lock:
+            if graph_id not in self._dream_locks:
+                self._dream_locks[graph_id] = threading.Lock()
+            return self._dream_locks[graph_id]
+
+    # ------------------------------------------------------------------
     # Queue 管理（延迟导入避免循环依赖）
     # ------------------------------------------------------------------
 
@@ -217,7 +256,11 @@ class GraphRegistry:
                 except Exception as _e:
                     logging.getLogger(__name__).warning("关闭 graph %s 任务队列失败: %s", graph_id, _e)
 
-            # 2. 移除 processor（关闭 DB 连接）
+            # 2. 移除 dream orchestrator
+            self._orchestrators.pop(graph_id, None)
+            self._dream_locks.pop(graph_id, None)
+
+            # 3. 移除 processor（关闭 DB 连接）
             processor = self._processors.pop(graph_id, None)
             if processor and hasattr(processor.storage, "close"):
                 try:

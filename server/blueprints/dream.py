@@ -234,6 +234,7 @@ def dream_run():
         body = request.get_json(silent=True) or {}
 
         processor = _get_processor()
+        graph_id = request.graph_id or "default"
 
         from processor.dream import DreamOrchestrator, DreamConfig, VALID_STRATEGIES
 
@@ -251,8 +252,28 @@ def dream_run():
             llm_concurrency=int(body.get("llm_concurrency", 3)),
         )
 
-        orchestrator = DreamOrchestrator(processor.storage, processor.llm_client, config)
-        result = orchestrator.run()
+        # Use persistent orchestrator from registry (preserves cross-cycle LRU history)
+        registry = request.app.config.get("registry")
+        if registry is not None:
+            orchestrator = registry.get_dream_orchestrator(graph_id, config)
+            dream_lock = registry.get_dream_lock(graph_id)
+        else:
+            # Fallback: no registry (e.g. testing)
+            orchestrator = DreamOrchestrator(processor.storage, processor.llm_client, config)
+            dream_lock = None
+
+        def _run_dream():
+            return orchestrator.run()
+
+        if dream_lock is not None:
+            if not dream_lock.acquire(timeout=5):
+                return err("梦境周期正在执行中，请稍后再试", 429)
+            try:
+                result = _run_dream()
+            finally:
+                dream_lock.release()
+        else:
+            result = _run_dream()
 
         return ok({
             "cycle_id": result.cycle_id,
