@@ -64,7 +64,9 @@ _REL_FIELDS_RETURN = f"RETURN {_RELATION_RETURN_FIELDS}"
 
 def _expand_cypher(cypher: str) -> str:
     """展开 Cypher 查询中的 __ENT_FIELDS__ / __REL_FIELDS__ 占位符为实际 RETURN 字段。"""
+    cypher = cypher.replace("RETURN DISTINCT __ENT_FIELDS__", f"RETURN DISTINCT {_ENTITY_RETURN_FIELDS}")
     cypher = cypher.replace("RETURN __ENT_FIELDS__", _ENT_FIELDS_RETURN)
+    cypher = cypher.replace("RETURN DISTINCT __REL_FIELDS__", f"RETURN DISTINCT {_RELATION_RETURN_FIELDS}")
     cypher = cypher.replace("RETURN __REL_FIELDS__", _REL_FIELDS_RETURN)
     return cypher
 
@@ -3974,14 +3976,25 @@ class Neo4jStorageManager:
         else:
             self._cache.invalidate("relation:")
 
-    def get_relations_by_family_ids(self, family_ids: List[str], limit: int = 100) -> List[Relation]:
+    def get_relations_by_family_ids(self, family_ids: List[str], limit: int = 100,
+                                    time_point: Optional[str] = None) -> List[Relation]:
         """获取指定实体 ID 列表相关的所有关系。
 
         使用单次 Cypher 查询完成 family_id→absolute_id 解析 + 关系检索，
         避免逐个 family_id 调用 resolve_family_id + get_entity_by_family_id 的 N+1 问题。
+
+        Args:
+            family_ids: 实体 family_id 列表
+            limit: 最大返回数量
+            time_point: ISO 8601 时间点，仅返回 valid_at <= time_point 且未失效的关系
         """
         if not family_ids:
             return []
+        _tp_filter = ""
+        _tp_param = {}
+        if time_point:
+            _tp_filter = " AND (r.valid_at IS NULL OR r.valid_at <= datetime($tp))"
+            _tp_param["tp"] = time_point
         with self._session() as session:
             # 单次查询：解析 family_id → 最新 absolute_id，再查找关联关系
             result = session.run(_expand_cypher("""
@@ -3991,10 +4004,10 @@ class Neo4jStorageManager:
                 UNWIND abs_ids AS aid
                 MATCH (r:Relation)
                 WHERE (r.entity1_absolute_id = aid OR r.entity2_absolute_id = aid)
-                  AND r.invalid_at IS NULL
+                  AND r.invalid_at IS NULL%s
                 RETURN DISTINCT __REL_FIELDS__
                 LIMIT $limit
-            """), family_ids=family_ids, limit=limit)
+            """ % _tp_filter), family_ids=family_ids, limit=limit, **_tp_param)
             return [_neo4j_record_to_relation(r) for r in result]
 
     def batch_get_entity_degrees(self, family_ids: List[str]) -> Dict[str, int]:
@@ -4019,13 +4032,15 @@ class Neo4jStorageManager:
             degree_map.setdefault(fid, 0)
         return degree_map
 
-    def batch_bfs_traverse(self, seed_family_ids: List[str], max_depth: int = 2, max_nodes: int = 50) -> Tuple[List[Entity], List[Relation], Dict[str, int]]:
+    def batch_bfs_traverse(self, seed_family_ids: List[str], max_depth: int = 2, max_nodes: int = 50,
+                           time_point: Optional[str] = None) -> Tuple[List[Entity], List[Relation], Dict[str, int]]:
         """批量 BFS 遍历：从种子实体出发，单次 Cypher 查询完成多跳扩展。
 
         Args:
             seed_family_ids: 种子实体的 family_id 列表
             max_depth: 最大扩展深度
             max_nodes: 最多返回的节点数
+            time_point: ISO 8601 时间点，仅返回 valid_at <= time_point 且未失效的实体/关系
 
         Returns:
             (entities, relations, hop_map) 其中 hop_map[family_id] = hop 距离
@@ -4033,13 +4048,24 @@ class Neo4jStorageManager:
         if not seed_family_ids:
             return [], [], {}
 
+        # 构建 time_point 过滤条件
+        _tp_filter_seed_resolve = ""   # for seed resolution (variable 'e')
+        _tp_filter_seed_bfs = ""       # for BFS seed match (variable 'seed')
+        _tp_filter_neighbor = ""       # for BFS neighbor match (variable 'neighbor')
+        _tp_param = {}
+        if time_point:
+            _tp_filter_seed_resolve = " AND (e.valid_at IS NULL OR e.valid_at <= datetime($tp))"
+            _tp_filter_seed_bfs = " AND (seed.valid_at IS NULL OR seed.valid_at <= datetime($tp))"
+            _tp_filter_neighbor = " AND (neighbor.valid_at IS NULL OR neighbor.valid_at <= datetime($tp))"
+            _tp_param["tp"] = time_point
+
         with self._session() as session:
             # 第一步：解析种子 family_id → absolute_id
             seed_result = session.run("""
                 MATCH (e:Entity)
-                WHERE e.family_id IN $family_ids AND e.invalid_at IS NULL
+                WHERE e.family_id IN $family_ids AND e.invalid_at IS NULL%s
                 RETURN e.family_id AS family_id, e.uuid AS absolute_id
-            """, family_ids=seed_family_ids)
+            """ % _tp_filter_seed_resolve, family_ids=seed_family_ids, **_tp_param)
 
             seed_abs_to_fid = {}
             seed_fids = []
@@ -4056,15 +4082,15 @@ class Neo4jStorageManager:
             # 通过 Entity 节点的 RELATES_TO 边进行遍历（已有边类型）
             result = session.run("""
                 MATCH (seed:Entity)
-                WHERE seed.family_id IN $seed_fids AND seed.invalid_at IS NULL
+                WHERE seed.family_id IN $seed_fids AND seed.invalid_at IS NULL%s
                 WITH collect(seed) AS seeds
                 UNWIND seeds AS s
                 MATCH path = (s)-[:RELATES_TO*1..%d]-(neighbor:Entity)
-                WHERE neighbor.invalid_at IS NULL
+                WHERE neighbor.invalid_at IS NULL%s
                 WITH DISTINCT neighbor, length(path) AS dist
                 ORDER BY dist ASC
                 LIMIT $max_nodes
-                RETURN neighbor.uuid AS absolute_id,
+                RETURN neighbor.uuid AS uuid,
                        neighbor.family_id AS family_id,
                        neighbor.name AS name,
                        neighbor.content AS content,
@@ -4076,8 +4102,12 @@ class Neo4jStorageManager:
                        neighbor.confidence AS confidence,
                        neighbor.attributes AS attributes,
                        neighbor.community_id AS community_id,
+                       neighbor.valid_at AS valid_at,
+                       neighbor.invalid_at AS invalid_at,
+                       neighbor.content_format AS content_format,
                        dist AS dist
-            """ % max_depth, seed_fids=seed_fids, max_nodes=max_nodes)
+            """ % (_tp_filter_seed_bfs, max_depth, _tp_filter_neighbor),
+                seed_fids=seed_fids, max_nodes=max_nodes, **_tp_param)
 
             entities = []
             hop_map = {}
@@ -4095,9 +4125,13 @@ class Neo4jStorageManager:
                         entities.insert(0, entity)
                         hop_map[fid] = 0
 
-            # 第三步：批量获取这些实体之间的关系
+            # 第三步：批量获取这些实体之间的关系（带 time_point 过滤）
             discovered_fids = list(hop_map.keys())
-            relations = self.get_relations_by_family_ids(discovered_fids, limit=max_nodes * 3) if discovered_fids else []
+            if discovered_fids:
+                relations = self.get_relations_by_family_ids(
+                    discovered_fids, limit=max_nodes * 3, time_point=time_point)
+            else:
+                relations = []
 
             return entities, relations, hop_map
 

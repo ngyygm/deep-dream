@@ -1036,11 +1036,13 @@ def traverse_graph():
             return err("seed_family_ids 需为非空数组", 400)
         max_depth = int(body.get("max_depth", 2))
         max_nodes = int(body.get("max_nodes", 50))
+        time_point = body.get("time_point")
 
         processor = _get_processor()
         searcher = GraphTraversalSearcher(processor.storage)
         entities, relations, visited = searcher.bfs_expand_with_relations(
-            seed_ids, max_depth=max_depth, max_nodes=max_nodes)
+            seed_ids, max_depth=max_depth, max_nodes=max_nodes,
+            time_point=time_point)
         ent_dicts = [entity_to_dict(e) for e in entities]
         rel_dicts = [relation_to_dict(r) for r in relations]
         enrich_entity_version_counts(ent_dicts, processor.storage)

@@ -140,9 +140,11 @@ def _compact_entity(item):
     if not isinstance(item, dict):
         return item
     out = {}
-    for k in ("family_id", "name", "summary", "absolute_id"):
+    for k in ("family_id", "name", "summary", "absolute_id", "confidence"):
         if k in item:
             out[k] = item[k]
+    if "_score" in item:
+        out["_score"] = item["_score"]
     # Truncate content at sentence boundary
     for ck in ("content", "markdown_content"):
         if ck in item and isinstance(item[ck], str):
@@ -170,6 +172,8 @@ def _compact_relation(item):
     for k in ("family_id", "entity1_id", "entity2_id", "entity1_name", "entity2_name", "relation_type", "event_time", "confidence"):
         if k in item:
             out[k] = item[k]
+    if "_score" in item:
+        out["_score"] = item["_score"]
     if "content" in item and isinstance(item["content"], str):
         out["content"] = _truncate_text(item["content"])
     return out
@@ -503,10 +507,11 @@ _t("search_relations", "Search relations by text query. Returns matching relatio
     "offset": {"type": "integer", "description": "Offset for pagination (0-based)"},
 }, ["query"])
 
-_t("traverse_graph", "BFS traverse from seed entity(s) to discover connected subgraph. Returns entities and relations within max_depth hops. Use depth=2 for immediate neighborhood, depth=3 for broader context. Good for understanding how entities are interconnected. Use this instead of entity_profile when you want to explore beyond a single entity's direct relations.", {
+_t("traverse_graph", "BFS traverse from seed entity(s) to discover connected subgraph. Returns entities and relations within max_depth hops. Use depth=2 for immediate neighborhood, depth=3 for broader context. Good for understanding how entities are interconnected. Use this instead of entity_profile when you want to explore beyond a single entity's direct relations. Supports time_point for temporal traversal.", {
     "start_entity_id": {"type": "string", "description": "Starting entity family_id (or JSON array of family_ids for multiple seeds)"},
     "max_depth": {"type": "integer", "description": "Max traversal depth (default 2)"},
     "max_nodes": {"type": "integer", "description": "Max nodes to return (default 50)"},
+    "time_point": {"type": "string", "description": "ISO 8601 timestamp — only return entities/relations valid at this time"},
 }, ["start_entity_id"])
 
 
@@ -1304,6 +1309,8 @@ def traverse_graph(args):
         body["max_depth"] = args["max_depth"]
     if _arg(args, "max_nodes"):
         body["max_nodes"] = args["max_nodes"]
+    if _arg(args, "time_point"):
+        body["time_point"] = args["time_point"]
     data, code = _post("/api/v1/find/traverse", body)
     if code < 400:
         data = _compact_list(data, _compact_entity, "entities")
