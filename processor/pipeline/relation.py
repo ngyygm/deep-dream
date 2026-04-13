@@ -343,6 +343,9 @@ class RelationProcessor:
                     relations_to_persist.append(new_relation)
                     processed_relations.append(new_relation)
                     corroborated_family_ids.add(matched_family_id)
+                else:
+                    # LLM said need_update but content is whitespace-equivalent — keep existing
+                    processed_relations.append(latest_relation)
             elif latest_relation:
                 processed_relations.append(latest_relation)
             else:
