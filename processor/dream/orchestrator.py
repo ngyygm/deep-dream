@@ -35,6 +35,7 @@ class DreamHistory:
 
     使用 LRU 淘汰策略：保留最近 _max_entries 条检查记录，
     超出时淘汰最早的记录，允许过期对在足够多的周期后被重新探索。
+    同时追踪策略使用记录，支持跨周期策略轮换。
     """
 
     def __init__(self, max_entries: int = 2000):
@@ -43,6 +44,10 @@ class DreamHistory:
         # 记录每个 cycle 探索过的实体 family_ids
         self._explored_entities: Dict[str, Set[str]] = {}
         self._max_entries = max_entries
+        # 策略使用历史：记录最近使用的策略（用于轮换）
+        self._strategy_history: List[str] = []
+        # 每个策略的效果统计：strategy -> {"cycles": int, "relations": int}
+        self._strategy_stats: Dict[str, Dict[str, int]] = {}
 
     def mark_checked(self, fid1: str, fid2: str, cycle_id: str) -> None:
         """记录一对实体已被检查。"""
@@ -77,10 +82,72 @@ class DreamHistory:
             result.update(self._explored_entities[k])
         return result
 
+    def next_strategy(self, current: Optional[str] = None) -> str:
+        """选择下一个策略：轮换使用，优先使用效果好的策略。
+
+        策略选择逻辑：
+        1. 如果有从未使用过的策略，优先使用
+        2. 否则选最近最少使用（LRU）的策略
+        3. 同等 LRU 时，优先选效果好的（relations/cycles 比率高的）
+        """
+        used = set(self._strategy_history)
+        unused = [s for s in VALID_STRATEGIES if s not in used]
+        if unused:
+            return unused[0]
+
+        # 所有策略都用过 — 选最近最少使用的
+        recent_set = set(self._strategy_history[-len(VALID_STRATEGIES):])
+        lru_candidates = [s for s in VALID_STRATEGIES if s not in recent_set]
+
+        if lru_candidates:
+            # 多个 LRU 候选时，选效果最好的
+            return self._best_by_stats(lru_candidates)
+
+        # 所有策略都在最近窗口内 — 选使用次数最少的
+        from collections import Counter
+        counts = Counter(self._strategy_history)
+        min_count = min(counts.get(s, 0) for s in VALID_STRATEGIES)
+        least_used = [s for s in VALID_STRATEGIES if counts.get(s, 0) == min_count]
+        return self._best_by_stats(least_used)
+
+    def _best_by_stats(self, candidates: List[str]) -> str:
+        """从候选策略中选效果最好的（relations_per_cycle 最高的）。"""
+        if len(candidates) == 1:
+            return candidates[0]
+
+        best = candidates[0]
+        best_ratio = -1.0
+        for s in candidates:
+            stats = self._strategy_stats.get(s, {})
+            cycles = stats.get("cycles", 0)
+            rels = stats.get("relations", 0)
+            ratio = rels / cycles if cycles > 0 else 0.0
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best = s
+        return best
+
+    def record_strategy_result(self, strategy: str, relations_found: int) -> None:
+        """记录一次策略执行的結果。"""
+        self._strategy_history.append(strategy)
+        # 只保留最近 60 条策略记录
+        if len(self._strategy_history) > 60:
+            self._strategy_history = self._strategy_history[-60:]
+        # 更新统计
+        stats = self._strategy_stats.setdefault(strategy, {"cycles": 0, "relations": 0})
+        stats["cycles"] += 1
+        stats["relations"] += relations_found
+
+    def get_strategy_stats(self) -> Dict[str, Dict[str, int]]:
+        """获取策略效果统计。"""
+        return dict(self._strategy_stats)
+
     def reset(self) -> None:
         """清空历史。"""
         self._checked_pairs.clear()
         self._explored_entities.clear()
+        self._strategy_history.clear()
+        self._strategy_stats.clear()
 
 
 @dataclass
@@ -134,44 +201,71 @@ class DreamOrchestrator:
         self._history = DreamHistory()
         self._cycle_count = 0
 
-    def run(self) -> DreamResult:
-        """执行一轮完整的梦境周期。"""
+    def run(self, auto_rotate: bool = False) -> DreamResult:
+        """执行一轮完整的梦境周期。
+
+        Args:
+            auto_rotate: 如果为 True，自动轮换策略（忽略 config.strategy，
+                         使用 DreamHistory 推荐的下一个策略）。
+        """
         config = self.config
         self._cycle_count += 1
         cycle_id = f"dream_{uuid.uuid4().hex[:12]}"
 
+        # Step 0: 策略轮换（如果启用）
+        effective_strategy = config.strategy
+        if auto_rotate:
+            effective_strategy = self._history.next_strategy(config.strategy)
+            logger.info("Dream: 策略轮换 → %s", effective_strategy)
+
+        # 创建临时 config（不修改 self.config，保证线程安全）
+        run_config = DreamConfig(
+            strategy=effective_strategy,
+            seed_count=config.seed_count,
+            max_depth=config.max_depth,
+            max_relations=config.max_relations,
+            min_confidence=config.min_confidence,
+            max_explore_entities=config.max_explore_entities,
+            max_neighbors_per_seed=config.max_neighbors_per_seed,
+            exclude_ids=list(config.exclude_ids),
+            llm_timeout=config.llm_timeout,
+            llm_concurrency=config.llm_concurrency,
+        )
+
         # Step 1: 种子选择（排除近期探索过的实体）
         recently_explored = self._history.get_recently_explored(last_n=3)
-        seeds = self._select_seeds(config, recently_explored)
+        seeds = self._select_seeds(run_config, recently_explored)
         if not seeds:
+            self._history.record_strategy_result(effective_strategy, 0)
             return DreamResult(
                 cycle_id=cycle_id,
-                strategy=config.strategy,
+                strategy=effective_strategy,
                 seeds=[],
                 explored=[],
                 relations_created=[],
                 stats={"seeds_count": 0, "entities_explored": 0,
-                       "pairs_checked": 0, "relations_created_count": 0},
+                       "pairs_checked": 0, "relations_created_count": 0,
+                       "strategy_rotated": auto_rotate},
                 cycle_summary="图谱为空或无可用种子，梦境结束",
             )
 
         # Step 2: BFS 图探索（含已有关系上下文）
-        entity_lookup, seen_ids, explored, relation_context = self._explore_graph(seeds, config)
+        entity_lookup, seen_ids, explored, relation_context = self._explore_graph(seeds, run_config)
 
         # Step 3: 关联发现
         relations_created, pairs_checked = self._discover_relations(
-            seeds, explored, entity_lookup, cycle_id, config,
+            seeds, explored, entity_lookup, cycle_id, run_config,
             relation_context=relation_context,
         )
 
         # Step 4: 保存梦境记录
         cycle_summary = (
-            f"梦境周期 {cycle_id}：策略={config.strategy}，种子={len(seeds)}，"
+            f"梦境周期 {cycle_id}：策略={effective_strategy}，种子={len(seeds)}，"
             f"探索实体={len(seen_ids)}，检查配对={pairs_checked}，"
             f"创建关系={len(relations_created)}"
         )
         self._save_episode(
-            cycle_id, cycle_summary, seen_ids, relations_created, config,
+            cycle_id, cycle_summary, seen_ids, relations_created, run_config,
         )
 
         # Step 5: 更新跨周期历史
@@ -179,9 +273,12 @@ class DreamOrchestrator:
         for r in relations_created:
             self._history.mark_checked(r["entity1_id"], r["entity2_id"], cycle_id)
 
+        # Step 6: 记录策略效果
+        self._history.record_strategy_result(effective_strategy, len(relations_created))
+
         return DreamResult(
             cycle_id=cycle_id,
-            strategy=config.strategy,
+            strategy=effective_strategy,
             seeds=[{"family_id": s.get("family_id"), "name": s.get("name", "")} for s in seeds],
             explored=explored,
             relations_created=relations_created,
@@ -190,6 +287,7 @@ class DreamOrchestrator:
                 "entities_explored": len(seen_ids),
                 "pairs_checked": pairs_checked,
                 "relations_created_count": len(relations_created),
+                "strategy_rotated": auto_rotate,
             },
             cycle_summary=cycle_summary,
         )

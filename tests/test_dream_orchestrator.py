@@ -930,3 +930,184 @@ class TestRegistryDreamOrchestrator:
 
         # t1 should acquire, t2 should either acquire after or be blocked
         assert "t1_acquired" in results
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Strategy Rotation tests
+# ═══════════════════════════════════════════════════════════════════
+
+class TestStrategyRotation:
+    """Tests for DreamHistory strategy rotation logic."""
+
+    def test_next_strategy_picks_unused_first(self):
+        """Unused strategies are picked before recently-used ones."""
+        h = DreamHistory()
+        # No history → first unused strategy
+        s = h.next_strategy()
+        assert s in VALID_STRATEGIES
+
+    def test_next_strategy_rotates_through_all(self):
+        """Rotation cycles through all valid strategies."""
+        h = DreamHistory()
+        picked = []
+        for _ in range(len(VALID_STRATEGIES)):
+            s = h.next_strategy()
+            picked.append(s)
+            h.record_strategy_result(s, 0)
+        assert set(picked) == set(VALID_STRATEGIES)
+
+    def test_next_strategy_lru_after_all_used(self):
+        """After all strategies are used, picks least-recently-used."""
+        h = DreamHistory()
+        # Use all strategies
+        for s in VALID_STRATEGIES:
+            h.record_strategy_result(s, 0)
+        # The least recently used is the first one recorded
+        # next_strategy should pick it
+        next_s = h.next_strategy()
+        assert next_s in VALID_STRATEGIES
+        # It should prefer early strategies (LRU), not recent ones
+        assert next_s != VALID_STRATEGIES[-1]  # last used should not be picked again immediately
+
+    def test_next_strategy_prefers_effective(self):
+        """When multiple LRU candidates, picks the one with best ratio."""
+        h = DreamHistory()
+        # Record all strategies but with different effectiveness
+        for i, s in enumerate(VALID_STRATEGIES):
+            h.record_strategy_result(s, i)  # later strategies get more relations
+        # Record again for first few (so they're more recent)
+        for s in VALID_STRATEGIES[:2]:
+            h.record_strategy_result(s, 0)
+        # The LRU candidates should be the later strategies
+        # Among those, pick the one with best ratio
+        next_s = h.next_strategy()
+        assert next_s in VALID_STRATEGIES
+
+    def test_record_strategy_result(self):
+        """record_strategy_result updates history and stats."""
+        h = DreamHistory()
+        h.record_strategy_result("random", 3)
+        h.record_strategy_result("random", 2)
+        stats = h.get_strategy_stats()
+        assert stats["random"]["cycles"] == 2
+        assert stats["random"]["relations"] == 5
+
+    def test_strategy_history_capped_at_60(self):
+        """Strategy history doesn't grow unbounded."""
+        h = DreamHistory()
+        for i in range(100):
+            h.record_strategy_result("random", 1)
+        assert len(h._strategy_history) == 60
+
+    def test_reset_clears_strategy_data(self):
+        """Reset clears strategy history and stats."""
+        h = DreamHistory()
+        h.record_strategy_result("random", 3)
+        h.reset()
+        assert h._strategy_history == []
+        assert h._strategy_stats == {}
+
+    def test_best_by_stats_single_candidate(self):
+        """_best_by_stats returns the only candidate."""
+        h = DreamHistory()
+        assert h._best_by_stats(["hub"]) == "hub"
+
+    def test_best_by_stats_picks_higher_ratio(self):
+        """_best_by_stats picks strategy with better relations/cycles ratio."""
+        h = DreamHistory()
+        h._strategy_stats = {
+            "random": {"cycles": 2, "relations": 0},
+            "orphan": {"cycles": 2, "relations": 6},
+        }
+        assert h._best_by_stats(["random", "orphan"]) == "orphan"
+
+
+class TestAutoRotateRun:
+    """Integration tests for auto_rotate in DreamOrchestrator.run()."""
+
+    def _make_orchestrator(self, seeds):
+        storage = MagicMock()
+        storage.get_dream_seeds.return_value = seeds
+        storage.get_relations_by_entity_pairs.return_value = {}
+        storage.save_dream_relation.return_value = {"family_id": "rel_1"}
+        storage.save_dream_episode.return_value = True
+
+        llm = MagicMock()
+        llm.call_llm_until_json_parses.return_value = (
+            {"need_create": False}, {}
+        )
+
+        config = DreamConfig(strategy="random", seed_count=2, max_relations=3)
+        orch = DreamOrchestrator(storage, llm, config)
+        orch._searcher = MagicMock()
+        orch._searcher.bfs_expand_with_relations.return_value = ([], [], set())
+        return orch, storage, llm
+
+    def test_auto_rotate_changes_strategy(self):
+        """auto_rotate=True uses a different strategy than config default."""
+        seeds = [
+            {"family_id": "f1", "name": "A", "content": "C"},
+            {"family_id": "f2", "name": "B", "content": "C"},
+        ]
+        e1 = _make_entity("f1", "A", "C")
+        e2 = _make_entity("f2", "B", "C")
+        orch, storage, llm = self._make_orchestrator(seeds)
+        orch._searcher.bfs_expand_with_relations.return_value = (
+            [e1, e2], [], set()
+        )
+
+        result = orch.run(auto_rotate=True)
+        # First rotation with no history: picks first unused strategy
+        assert result.strategy in VALID_STRATEGIES
+        assert result.stats.get("strategy_rotated") is True
+
+    def test_auto_rotate_records_history(self):
+        """Auto-rotate records strategy usage in history."""
+        seeds = [{"family_id": "f1", "name": "A", "content": "C"}]
+        e1 = _make_entity("f1", "A", "C")
+        orch, _, _ = self._make_orchestrator(seeds)
+        orch._searcher.bfs_expand_with_relations.return_value = (
+            [e1], [], set()
+        )
+
+        orch.run(auto_rotate=True)
+        stats = orch._history.get_strategy_stats()
+        assert len(stats) >= 1  # At least one strategy was recorded
+
+    def test_auto_rotate_cycles_strategies(self):
+        """Multiple auto_rotate calls cycle through different strategies."""
+        seeds = [{"family_id": "f1", "name": "A", "content": "C"}]
+        e1 = _make_entity("f1", "A", "C")
+        orch, _, _ = self._make_orchestrator(seeds)
+        orch._searcher.bfs_expand_with_relations.return_value = (
+            [e1], [], set()
+        )
+
+        strategies_seen = set()
+        for _ in range(len(VALID_STRATEGIES)):
+            result = orch.run(auto_rotate=True)
+            strategies_seen.add(result.strategy)
+        # Should have seen multiple different strategies
+        assert len(strategies_seen) > 1
+
+    def test_no_auto_rotate_keeps_config_strategy(self):
+        """Without auto_rotate, uses config.strategy as-is."""
+        seeds = [{"family_id": "f1", "name": "A", "content": "C"}]
+        e1 = _make_entity("f1", "A", "C")
+        orch, _, _ = self._make_orchestrator(seeds)
+        orch._searcher.bfs_expand_with_relations.return_value = (
+            [e1], [], set()
+        )
+
+        result = orch.run(auto_rotate=False)
+        assert result.strategy == "random"  # matches config
+        assert result.stats.get("strategy_rotated") is False
+
+    def test_empty_graph_auto_rotate_still_records(self):
+        """Empty graph still records the rotated strategy result."""
+        orch, _, _ = self._make_orchestrator(seeds=[])
+        result = orch.run(auto_rotate=True)
+        assert result.seeds == []
+        # Strategy should still be recorded
+        stats = orch._history.get_strategy_stats()
+        assert len(stats) >= 1

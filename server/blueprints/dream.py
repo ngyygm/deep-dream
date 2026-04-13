@@ -284,6 +284,8 @@ def dream_run():
       - min_confidence（可选）：最低置信度阈值，默认 0.5
       - exclude_ids（可选）：排除的 family_id 列表
       - llm_concurrency（可选）：LLM 并发数，默认 3
+      - auto_rotate（可选）：是否自动轮换策略，默认 False。启用后忽略 strategy 参数，
+        由 DreamHistory 根据跨周期效果自动选择下一个策略
     """
     try:
         body = request.get_json(silent=True) or {}
@@ -292,6 +294,8 @@ def dream_run():
         graph_id = request.graph_id or "default"
 
         from processor.dream import DreamOrchestrator, DreamConfig, VALID_STRATEGIES
+
+        auto_rotate = bool(body.get("auto_rotate", False))
 
         strategy = str(body.get("strategy", "random")).strip()
         if strategy not in VALID_STRATEGIES:
@@ -318,7 +322,7 @@ def dream_run():
             dream_lock = None
 
         def _run_dream():
-            return orchestrator.run()
+            return orchestrator.run(auto_rotate=auto_rotate)
 
         if dream_lock is not None:
             if not dream_lock.acquire(timeout=5):
@@ -337,6 +341,7 @@ def dream_run():
             "explored": result.explored,
             "relations_created": result.relations_created,
             "stats": result.stats,
+            "strategy_stats": orchestrator._history.get_strategy_stats(),
             "cycle_summary": result.cycle_summary,
         })
     except Exception as e:
