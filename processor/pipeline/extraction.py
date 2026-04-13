@@ -1064,6 +1064,69 @@ class _ExtractionMixin:
                 if verbose:
                     wprint(f"【关系矛盾检测】{fid}: 检测失败 ({e})")
 
+    # =========================================================================
+    # 自动摘要进化
+    # =========================================================================
+    SUMMARY_EVOLVE_MIN_VERSIONS = 3  # 至少 3 个版本才触发摘要进化
+
+    def _auto_evolve_summaries(self, family_ids: List[str], verbose: bool = False):
+        """对版本数足够的实体自动进化摘要。
+
+        当实体积累了多个版本后，其 _extract_summary (首行截断) 已无法反映完整信息。
+        此方法调用 LLM 生成综合性摘要，覆盖存储中的 summary 字段。
+
+        阈值：version_count >= SUMMARY_EVOLVE_MIN_VERSIONS
+        """
+        import asyncio
+
+        for fid in family_ids:
+            try:
+                versions = self.storage.get_entity_versions(fid)
+                if len(versions) < self.SUMMARY_EVOLVE_MIN_VERSIONS:
+                    continue
+
+                current = versions[0]  # 最新版本
+                old_version = versions[1] if len(versions) > 1 else None
+
+                # 检查当前 summary 是否已经是 LLM 生成的高质量摘要
+                # 如果 summary 长度 > 50 且包含多种信息，跳过（避免每次都重跑）
+                existing_summary = getattr(current, 'summary', '') or ''
+                if len(existing_summary) > 50:
+                    # 已有较长摘要，仅当内容有显著变化时才重新生成
+                    if old_version and old_version.content == current.content:
+                        continue  # 内容未变，无需进化
+
+                # 调用 async 方法
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        # 在已有 event loop 中（罕见），用新线程
+                        import concurrent.futures
+                        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                            summary = pool.submit(
+                                asyncio.run,
+                                self.llm_client.evolve_entity_summary(current, old_version)
+                            ).result()
+                    else:
+                        summary = loop.run_until_complete(
+                            self.llm_client.evolve_entity_summary(current, old_version)
+                        )
+                except RuntimeError:
+                    # No event loop, create one
+                    summary = asyncio.run(
+                        self.llm_client.evolve_entity_summary(current, old_version)
+                    )
+
+                if summary and summary.strip():
+                    self.storage.update_entity_summary(fid, summary.strip())
+                    if verbose:
+                        wprint(f"【摘要进化】{fid} ({current.name}): 摘要已更新")
+
+            except Exception as e:
+                # 摘要进化失败不应阻断流水线
+                if verbose:
+                    wprint(f"【摘要进化】{fid}: 进化失败 ({e})")
+
     def _update_cache(self, input_text: str, document_name: str,
                       text_start_pos: int = 0, text_end_pos: int = 0,
                       total_text_length: int = 0, verbose: bool = True,
@@ -1964,6 +2027,18 @@ class _ExtractionMixin:
             self._detect_and_apply_contradictions(
                 _versioned_fids, verbose=verbose,
             )
+
+        # Phase B++: 自动摘要进化 — 对版本数足够的实体重新生成 LLM 摘要
+        # 仅对版本数 >= 3 的实体运行，避免对新建实体浪费 LLM 调用
+        _evolve_fids = []
+        _vc_map = self.storage.get_entity_version_counts(
+            [e.family_id for e in unique_entities]
+        )
+        for entity in unique_entities:
+            if _vc_map.get(entity.family_id, 0) >= self.SUMMARY_EVOLVE_MIN_VERSIONS:
+                _evolve_fids.append(entity.family_id)
+        if _evolve_fids:
+            self._auto_evolve_summaries(_evolve_fids, verbose=verbose)
 
         if progress_callback:
             progress_callback(p_hi,
