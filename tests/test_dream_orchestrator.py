@@ -616,10 +616,10 @@ class TestStrategies:
         config = DreamConfig(strategy=strategy)
         assert config.strategy == strategy
 
-    def test_invalid_strategy_accepted_as_is(self):
-        # DreamConfig doesn't validate strategy; the storage layer does
-        config = DreamConfig(strategy="nonexistent")
-        assert config.strategy == "nonexistent"
+    def test_invalid_strategy_raises(self):
+        # DreamConfig now validates strategy at construction time
+        with pytest.raises(ValueError, match="无效策略"):
+            DreamConfig(strategy="nonexistent")
 
 
 # ═══════════════════════════════════════════════════════════════════

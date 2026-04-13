@@ -98,6 +98,10 @@ class DreamConfig:
     llm_concurrency: int = 3
 
     def __post_init__(self):
+        if self.strategy not in VALID_STRATEGIES:
+            raise ValueError(
+                f"无效策略: {self.strategy}，可选: {', '.join(VALID_STRATEGIES)}"
+            )
         self.seed_count = min(max(self.seed_count, 1), 10)
         self.max_depth = min(max(self.max_depth, 1), 4)
         self.max_relations = min(max(self.max_relations, 1), 20)
