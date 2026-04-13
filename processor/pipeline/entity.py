@@ -740,7 +740,7 @@ class EntityProcessor:
         if self._entity_tree_log():
             wprint(f"  │  批量候选生成: {len(candidates)} 个")
 
-        # ---- Fix 2a: 精确名称匹配 + 高embedding相似度 → 自动复用，跳过LLM ----
+        # ---- Fix 2a: 精确名称匹配 + 高embedding相似度 → 同窗口复用/跨窗口创建版本，跳过LLM ----
         top = candidates[0]
         if (top["name"] == entity_name
             and top.get("combined_score", 0) >= 0.85
@@ -748,10 +748,36 @@ class EntityProcessor:
             # 优先使用候选中已携带的实体对象，避免重复 DB 查询
             latest = top.get("entity") or self.storage.get_entity_by_family_id(top["family_id"])
             if latest:
-                if self._entity_tree_log():
-                    wprint(f"  │  快捷路径：精确名称+高相似度({top.get('combined_score', 0):.2f})→复用 {latest.family_id}")
+                # 同窗口内已有版本 → 直接复用，避免同窗口重复版本化
+                _already_versioned = already_versioned_family_ids and latest.family_id in already_versioned_family_ids
+                if _already_versioned:
+                    if self._entity_tree_log():
+                        wprint(f"  │  快捷路径：同窗口复用 {latest.family_id}")
+                    return latest, [], {entity_name: latest.family_id, latest.name: latest.family_id}, None
+
+                # 跨窗口再次遇到已知实体 → 创建新版本（保留已有知识，追加新信息）
+                _old_content = latest.content or ""
+                _new_content = entity_content.strip()
+                if _old_content and _new_content and _old_content.strip() == _new_content:
+                    # 内容完全一致 → 无需版本膨胀，直接复用
+                    self._mark_versioned(latest.family_id, already_versioned_family_ids, _version_lock)
+                    if self._entity_tree_log():
+                        wprint(f"  │  快捷路径：内容完全一致→复用 {latest.family_id}")
+                    return latest, [], {entity_name: latest.family_id, latest.name: latest.family_id}, None
+
+                # 内容有差异或新窗口发现 → 创建新版本
+                entity_version = self._build_entity_version(
+                    latest.family_id,
+                    entity_name,
+                    entity_content,
+                    episode_id,
+                    source_document,
+                    base_time=base_time,
+                )
                 self._mark_versioned(latest.family_id, already_versioned_family_ids, _version_lock)
-                return latest, [], {entity_name: latest.family_id, latest.name: latest.family_id}, None
+                if self._entity_tree_log():
+                    wprint(f"  │  快捷路径：跨窗口新版本 {latest.family_id} (已有版本≥1)")
+                return entity_version, [], {entity_name: latest.family_id, latest.name: latest.family_id}, entity_version
 
         # ---- Fix 2b: 全部候选低相似度 → 直接新建，跳过LLM ----
         if candidates[0].get("combined_score", 0) < 0.4:
@@ -916,12 +942,37 @@ class EntityProcessor:
                         latest_entity.name: latest_entity.family_id,
                     }, None
 
+            # reuse_existing: 跨窗口再次遇到已知实体 → 创建新版本（同窗口内已有版本则复用）
+            _already_versioned = already_versioned_family_ids and latest_entity.family_id in already_versioned_family_ids
+            if _already_versioned:
+                if self._entity_tree_log():
+                    wprint(f"  │  批量裁决: 同窗口复用已有实体 {latest_entity.family_id}")
+                return latest_entity, relations_to_create, {
+                    entity_name: latest_entity.family_id,
+                    latest_entity.name: latest_entity.family_id,
+                }, None
+            # 内容完全一致则不创建版本
+            _old_content = (latest_entity.content or "").strip()
+            _new_content = entity_content.strip()
+            if _old_content and _new_content and _old_content == _new_content:
+                if self._entity_tree_log():
+                    wprint(f"  │  批量裁决: 内容完全一致，复用已有实体 {latest_entity.family_id}")
+                return latest_entity, relations_to_create, {
+                    entity_name: latest_entity.family_id,
+                    latest_entity.name: latest_entity.family_id,
+                }, None
+            # 创建新版本
+            entity_version = self._build_entity_version(
+                latest_entity.family_id, entity_name, entity_content,
+                episode_id, source_document, base_time=base_time,
+            )
+            self._mark_versioned(latest_entity.family_id, already_versioned_family_ids, _version_lock)
             if self._entity_tree_log():
-                wprint(f"  │  批量裁决: 复用已有实体 {latest_entity.family_id}")
-            return latest_entity, relations_to_create, {
+                wprint(f"  │  批量裁决: 跨窗口创建新版本 {latest_entity.family_id}")
+            return entity_version, relations_to_create, {
                 entity_name: latest_entity.family_id,
                 latest_entity.name: latest_entity.family_id,
-            }, None
+            }, entity_version
 
         merged_name = (batch_result.get("merged_name") or entity_name).strip() or entity_name
         merged_content = (batch_result.get("merged_content") or entity_content).strip() or entity_content
