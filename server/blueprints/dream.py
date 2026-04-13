@@ -32,6 +32,61 @@ logger = logging.getLogger(__name__)
 dream_bp = Blueprint("dream", __name__)
 
 
+# ── Shared search execution for ask endpoints ─────────────────────────────
+
+def _execute_ask_search(processor, query_type: str, query_text: str, intent: dict):
+    """Execute search based on parsed query plan.
+
+    Returns (entities, relations, entity_score_map, relation_score_map).
+    """
+    entities = []
+    relations = []
+    entity_score_map: Dict[str, float] = {}
+    relation_score_map: Dict[str, float] = {}
+
+    if query_type == "traverse":
+        entity_name = intent.get("entity_name", "")
+        if entity_name:
+            from processor.search.graph_traversal import GraphTraversalSearcher
+            seed_entities = processor.storage.search_entities_by_bm25(entity_name, limit=3)
+            seed_ids = [e.family_id for e in seed_entities]
+            if seed_ids:
+                searcher = GraphTraversalSearcher(processor.storage)
+                entities = searcher.bfs_expand(seed_ids, max_depth=2, max_nodes=20)
+    else:
+        # Compute query embedding for hybrid search (vector + BM25)
+        from processor.search.hybrid import HybridSearcher
+        query_embedding = None
+        try:
+            ec = getattr(processor.storage, 'embedding_client', None)
+            if ec and getattr(ec, 'is_available', lambda: False)():
+                query_embedding = ec.encode([query_text])[0]
+        except Exception as _emb_err:
+            logger.warning("ask search embedding 失败: %s", _emb_err)
+        searcher = HybridSearcher(processor.storage)
+        entity_hits = searcher.search_entities(query_text=query_text, query_embedding=query_embedding, top_k=20)
+        relation_hits = searcher.search_relations(query_text=query_text, query_embedding=query_embedding, top_k=10)
+        # Apply confidence-weighted reranking
+        entity_hits = searcher.confidence_rerank(entity_hits, alpha=0.2)
+        relation_hits = searcher.confidence_rerank(relation_hits, alpha=0.2)
+        # Preserve scores from hybrid search (after reranking)
+        entity_score_map = {e.absolute_id: score for e, score in entity_hits}
+        relation_score_map = {r.absolute_id: score for r, score in relation_hits}
+        entities = [e for e, _ in entity_hits]
+        relations = [r for r, _ in relation_hits]
+
+    return entities, relations, entity_score_map, relation_score_map
+
+
+def _serialize_ask_results(entities, relations, entity_score_map, relation_score_map, storage):
+    """Serialize search results to dicts with scores and version counts."""
+    entity_dicts = [entity_to_dict(e, _score=entity_score_map.get(e.absolute_id)) for e in entities]
+    relation_dicts = [relation_to_dict(r, _score=relation_score_map.get(r.absolute_id)) for r in relations]
+    enrich_entity_version_counts(entity_dicts, storage)
+    enrich_relation_version_counts(relation_dicts, storage)
+    return entity_dicts, relation_dicts
+
+
 # ── LLM backoff helper (used by ask / explain / dream) ────────────────────
 
 def _call_llm_with_backoff(processor, prompt, timeout=60, max_waits=5, backoff_base_seconds=2):
@@ -312,46 +367,12 @@ def agent_ask():
         query_type = intent.get("query_type", "hybrid")
         query_text = intent.get("query_text", question)
 
-        entities = []
-        relations = []
-        entity_score_map: Dict[str, float] = {}
-        relation_score_map: Dict[str, float] = {}
-
-        if query_type == "traverse":
-            entity_name = intent.get("entity_name", "")
-            if entity_name:
-                from processor.search.graph_traversal import GraphTraversalSearcher
-                seed_entities = processor.storage.search_entities_by_bm25(entity_name, limit=3)
-                seed_ids = [e.family_id for e in seed_entities]
-                if seed_ids:
-                    searcher = GraphTraversalSearcher(processor.storage)
-                    entities = searcher.bfs_expand(seed_ids, max_depth=2, max_nodes=20)
-        else:
-            # Compute query embedding for hybrid search (vector + BM25)
-            from processor.search.hybrid import HybridSearcher
-            query_embedding = None
-            try:
-                ec = getattr(processor.storage, 'embedding_client', None)
-                if ec and getattr(ec, 'is_available', lambda: False)():
-                    query_embedding = ec.encode([query_text])[0]
-            except Exception as _emb_err:
-                logger.warning("search_graph embedding 失败: %s", _emb_err)
-            searcher = HybridSearcher(processor.storage)
-            entity_hits = searcher.search_entities(query_text=query_text, query_embedding=query_embedding, top_k=20)
-            relation_hits = searcher.search_relations(query_text=query_text, query_embedding=query_embedding, top_k=10)
-            # Apply confidence-weighted reranking (consistent with other search endpoints)
-            entity_hits = searcher.confidence_rerank(entity_hits, alpha=0.2)
-            relation_hits = searcher.confidence_rerank(relation_hits, alpha=0.2)
-            # Preserve scores from hybrid search (after reranking)
-            entity_score_map = {e.absolute_id: score for e, score in entity_hits}
-            relation_score_map = {r.absolute_id: score for r, score in relation_hits}
-            entities = [e for e, _ in entity_hits]
-            relations = [r for r, _ in relation_hits]
-
-        entity_dicts = [entity_to_dict(e, _score=entity_score_map.get(e.absolute_id)) for e in entities]
-        relation_dicts = [relation_to_dict(r, _score=relation_score_map.get(r.absolute_id)) for r in relations]
-        enrich_entity_version_counts(entity_dicts, processor.storage)
-        enrich_relation_version_counts(relation_dicts, processor.storage)
+        entities, relations, entity_score_map, relation_score_map = _execute_ask_search(
+            processor, query_type, query_text, intent,
+        )
+        entity_dicts, relation_dicts = _serialize_ask_results(
+            entities, relations, entity_score_map, relation_score_map, processor.storage,
+        )
         result["results"] = {
             "entities": entity_dicts,
             "relations": relation_dicts,
@@ -411,41 +432,10 @@ def agent_ask_stream():
                     "arguments": {"query_text": query_text, "type": query_type},
                 }))
 
-                entities = []
-                relations = []
-                entity_score_map: Dict[str, float] = {}
-                relation_score_map: Dict[str, float] = {}
-
-                if query_type == "traverse":
-                    entity_name = intent.get("entity_name", "")
-                    if entity_name:
-                        from processor.search.graph_traversal import GraphTraversalSearcher
-                        seed_entities = processor.storage.search_entities_by_bm25(entity_name, limit=3)
-                        seed_ids = [e.family_id for e in seed_entities]
-                        if seed_ids:
-                            searcher = GraphTraversalSearcher(processor.storage)
-                            entities = searcher.bfs_expand(seed_ids, max_depth=2, max_nodes=20)
-                else:
-                    # Compute query embedding for hybrid search (vector + BM25)
-                    from processor.search.hybrid import HybridSearcher
-                    query_embedding = None
-                    try:
-                        ec = getattr(processor.storage, 'embedding_client', None)
-                        if ec and getattr(ec, 'is_available', lambda: False)():
-                            query_embedding = ec.encode([query_text])[0]
-                    except Exception as _emb_err:
-                        logger.warning("stream search embedding 失败: %s", _emb_err)
-                    searcher = HybridSearcher(processor.storage)
-                    entity_hits = searcher.search_entities(query_text=query_text, query_embedding=query_embedding, top_k=20)
-                    relation_hits = searcher.search_relations(query_text=query_text, query_embedding=query_embedding, top_k=10)
-                    # Apply confidence-weighted reranking (consistent with other search endpoints)
-                    entity_hits = searcher.confidence_rerank(entity_hits, alpha=0.2)
-                    relation_hits = searcher.confidence_rerank(relation_hits, alpha=0.2)
-                    # Preserve scores from hybrid search (after reranking)
-                    entity_score_map = {e.absolute_id: score for e, score in entity_hits}
-                    relation_score_map = {r.absolute_id: score for r, score in relation_hits}
-                    entities = [e for e, _ in entity_hits]
-                    relations = [r for r, _ in relation_hits]
+                # Execute search using shared helper
+                entities, relations, entity_score_map, relation_score_map = _execute_ask_search(
+                    processor, query_type, query_text, intent,
+                )
 
                 q.put(sse_event("tool_result", {
                     "tool": "search",
@@ -456,11 +446,10 @@ def agent_ask_stream():
                     },
                 }))
 
-                # Generate summary answer using LLM synthesis
-                entity_dicts = [entity_to_dict(e, _score=entity_score_map.get(e.absolute_id)) for e in entities]
-                relation_dicts = [relation_to_dict(r, _score=relation_score_map.get(r.absolute_id)) for r in relations]
-                enrich_entity_version_counts(entity_dicts, processor.storage)
-                enrich_relation_version_counts(relation_dicts, processor.storage)
+                # Serialize results using shared helper
+                entity_dicts, relation_dicts = _serialize_ask_results(
+                    entities, relations, entity_score_map, relation_score_map, processor.storage,
+                )
                 result["results"] = {
                     "entities": entity_dicts,
                     "relations": relation_dicts,
