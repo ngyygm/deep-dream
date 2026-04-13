@@ -849,7 +849,7 @@ class EntityProcessor:
                 if update_mode in ("merge_into_latest", "reuse_existing"):
                     if self._entity_tree_log():
                         wprint(f"  │  批量裁决: merge_safe=False，禁止合并/复用，创建新实体")
-                    new_entity = self._build_new_entity(entity_name, entity_content, episode_id, source_document, base_time=base_time)
+                    new_entity = self._build_new_entity(entity_name, entity_content, episode_id, source_document, base_time=base_time, confidence=confidence)
                     return new_entity, relations_to_create, {
                         entity_name: new_entity.family_id,
                         new_entity.name: new_entity.family_id,
@@ -976,7 +976,7 @@ class EntityProcessor:
 
         merged_name = (batch_result.get("merged_name") or entity_name).strip() or entity_name
         merged_content = (batch_result.get("merged_content") or entity_content).strip() or entity_content
-        new_entity = self._build_new_entity(merged_name, merged_content, episode_id, source_document, base_time=base_time)
+        new_entity = self._build_new_entity(merged_name, merged_content, episode_id, source_document, base_time=base_time, confidence=confidence)
         # 标记新实体的 family_id 已创建版本
         self._mark_versioned(new_entity.family_id, already_versioned_family_ids, _version_lock)
         if self._entity_tree_log():
@@ -1622,12 +1622,21 @@ class EntityProcessor:
 
     def _construct_entity(self, name: str, content: str, episode_id: str,
                           family_id: str, source_document: str = "",
-                          base_time: Optional[datetime] = None) -> Entity:
-        """Shared helper: construct an Entity object with standard fields."""
+                          base_time: Optional[datetime] = None,
+                          confidence: Optional[float] = None) -> Entity:
+        """Shared helper: construct an Entity object with standard fields.
+
+        Args:
+            confidence: Initial confidence from LLM extraction (0.0–1.0).
+                        Falls back to 0.7 if not provided.
+        """
         event_time = base_time if base_time is not None else datetime.now()
         processed_time = datetime.now()
         entity_record_id = f"entity_{processed_time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
         source_document_only = source_document.split('/')[-1] if source_document else ""
+        # Use LLM-provided confidence if available, otherwise default
+        initial_confidence = confidence if confidence is not None else 0.7
+        initial_confidence = max(0.0, min(1.0, initial_confidence))
         return Entity(
             absolute_id=entity_record_id,
             family_id=family_id,
@@ -1639,22 +1648,26 @@ class EntityProcessor:
             source_document=source_document_only,
             content_format="markdown",
             summary=self._extract_summary(name, content),
-            confidence=0.7,
+            confidence=initial_confidence,
         )
 
     def _build_new_entity(self, name: str, content: str, episode_id: str,
-                          source_document: str = "", base_time: Optional[datetime] = None) -> Entity:
+                          source_document: str = "", base_time: Optional[datetime] = None,
+                          confidence: Optional[float] = None) -> Entity:
         """构建新实体对象，但不立即写库。"""
         return self._construct_entity(
             name, content, episode_id,
             family_id=f"ent_{uuid.uuid4().hex[:12]}",
             source_document=source_document, base_time=base_time,
+            confidence=confidence,
         )
 
     def _create_new_entity(self, name: str, content: str, episode_id: str,
-                           source_document: str = "", base_time: Optional[datetime] = None) -> Entity:
+                           source_document: str = "", base_time: Optional[datetime] = None,
+                           confidence: Optional[float] = None) -> Entity:
         """创建新实体"""
-        entity = self._build_new_entity(name, content, episode_id, source_document, base_time=base_time)
+        entity = self._build_new_entity(name, content, episode_id, source_document, base_time=base_time,
+                                        confidence=confidence)
         self.storage.save_entity(entity)
         return entity
 

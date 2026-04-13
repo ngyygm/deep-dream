@@ -366,6 +366,7 @@ class RelationProcessor:
                     source_document=source_document,
                     base_time=base_time,
                     entity_lookup=entity_lookup,
+                    confidence=confidence,
                 )
                 if new_relation is not None:
                     relations_to_persist.append(new_relation)
@@ -388,6 +389,7 @@ class RelationProcessor:
                 source_document=source_document,
                 base_time=base_time,
                 entity_lookup=entity_lookup,
+                confidence=confidence,
             )
             if new_relation is not None:
                 relations_to_persist.append(new_relation)
@@ -691,8 +693,14 @@ class RelationProcessor:
                             verbose_relation: bool = True, source_document: str = "",
                             base_time: Optional[datetime] = None,
                             entity_lookup: Optional[Dict[str, Any]] = None,
-                            skip_label: str = "关系创建") -> Optional[Relation]:
-        """Shared helper: resolve entities, validate, and construct a Relation object."""
+                            skip_label: str = "关系创建",
+                            confidence: Optional[float] = None) -> Optional[Relation]:
+        """Shared helper: resolve entities, validate, and construct a Relation object.
+
+        Args:
+            confidence: Initial confidence from LLM extraction (0.0–1.0).
+                        Falls back to 0.7 if not provided.
+        """
         entity1 = (entity_lookup or {}).get(entity1_id) or self.storage.get_entity_by_family_id(entity1_id)
         entity2 = (entity_lookup or {}).get(entity2_id) or self.storage.get_entity_by_family_id(entity2_id)
 
@@ -716,6 +724,8 @@ class RelationProcessor:
             entity1_absolute_id, entity2_absolute_id = entity2.absolute_id, entity1.absolute_id
 
         source_document_only = source_document.split('/')[-1] if source_document else ""
+        initial_confidence = confidence if confidence is not None else 0.7
+        initial_confidence = max(0.0, min(1.0, initial_confidence))
         return Relation(
             absolute_id=relation_record_id,
             family_id=family_id,
@@ -728,7 +738,7 @@ class RelationProcessor:
             source_document=source_document_only,
             content_format="markdown",
             summary=content[:200].strip(),
-            confidence=0.7,
+            confidence=initial_confidence,
         )
 
     def _build_new_relation(self, entity1_id: str, entity2_id: str,
@@ -736,7 +746,8 @@ class RelationProcessor:
                             entity1_name: str = "", entity2_name: str = "",
                             verbose_relation: bool = True, source_document: str = "",
                             base_time: Optional[datetime] = None,
-                            entity_lookup: Optional[Dict[str, Any]] = None) -> Optional[Relation]:
+                            entity_lookup: Optional[Dict[str, Any]] = None,
+                            confidence: Optional[float] = None) -> Optional[Relation]:
         """构建新关系对象，但不立即写库。"""
         if not content or len(content.strip()) < MIN_RELATION_CONTENT_LENGTH:
             if verbose_relation:
@@ -750,18 +761,21 @@ class RelationProcessor:
             verbose_relation=verbose_relation, source_document=source_document,
             base_time=base_time, entity_lookup=entity_lookup,
             skip_label="关系创建",
+            confidence=confidence,
         )
 
     def _create_new_relation(self, entity1_id: str, entity2_id: str,
                             content: str, episode_id: str,
                             entity1_name: str = "", entity2_name: str = "",
                             verbose_relation: bool = True, source_document: str = "",
-                            base_time: Optional[datetime] = None) -> Optional[Relation]:
+                            base_time: Optional[datetime] = None,
+                            confidence: Optional[float] = None) -> Optional[Relation]:
         """创建新关系"""
         relation = self._build_new_relation(
             entity1_id, entity2_id, content, episode_id,
             entity1_name=entity1_name, entity2_name=entity2_name,
             verbose_relation=verbose_relation, source_document=source_document, base_time=base_time,
+            confidence=confidence,
         )
         if relation:
             self.storage.save_relation(relation)
