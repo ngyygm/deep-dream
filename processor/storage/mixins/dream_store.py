@@ -42,74 +42,61 @@ class DreamStoreMixin:
     # ------------------------------------------------------------------
 
     def get_isolated_entities(self, limit: int = 100, offset: int = 0) -> List:
-        """获取所有孤立实体（有效实体中不被任何有效 Relation 引用的）。"""
+        """获取所有孤立实体（有效实体中不被任何有效 Relation 引用的）。
+
+        使用单次 SQL 查询替代 N+1 模式：先找所有有关系的 family_id，
+        再排除这些 family_id 获取孤立实体。
+        """
         conn = self._get_conn()
         cursor = conn.cursor()
 
-        # Get all absolute_ids referenced by valid relations
-        cursor.execute("""
-            SELECT DISTINCT entity1_absolute_id FROM relations WHERE invalid_at IS NULL
-            UNION
-            SELECT DISTINCT entity2_absolute_id FROM relations WHERE invalid_at IS NULL
-        """)
-        connected = {row[0] for row in cursor.fetchall()}
-
-        # Get latest version of each family_id
+        # Single query: get latest version of family_ids that have NO connected
+        # versions. A family_id is connected if any of its absolute_ids appear
+        # in valid relations as entity1 or entity2 endpoint.
         cursor.execute(f"""
             SELECT {self._ENTITY_SELECT}
             FROM (
-                SELECT *, ROW_NUMBER() OVER (PARTITION BY family_id ORDER BY processed_time DESC) AS rn
-                FROM entities
-                WHERE invalid_at IS NULL
+                SELECT e.*, ROW_NUMBER() OVER (PARTITION BY e.family_id ORDER BY e.processed_time DESC) AS rn
+                FROM entities e
+                WHERE e.invalid_at IS NULL
+                  AND e.family_id NOT IN (
+                    SELECT DISTINCT e2.family_id
+                    FROM entities e2
+                    WHERE e2.invalid_at IS NULL
+                      AND (
+                        e2.id IN (SELECT DISTINCT entity1_absolute_id FROM relations WHERE invalid_at IS NULL)
+                        OR e2.id IN (SELECT DISTINCT entity2_absolute_id FROM relations WHERE invalid_at IS NULL)
+                      )
+                  )
             )
             WHERE rn = 1
             ORDER BY processed_time DESC
-        """)
+            LIMIT ? OFFSET ?
+        """, [limit, offset])
 
-        isolated = []
-        for row in cursor.fetchall():
-            entity = self._row_to_entity(row)
-            # An entity is isolated if none of its versions are connected
-            cursor.execute(
-                "SELECT id FROM entities WHERE family_id = ?",
-                (entity.family_id,),
-            )
-            family_abs_ids = {r[0] for r in cursor.fetchall()}
-            if not family_abs_ids & connected:
-                isolated.append(entity)
-
-        return isolated[offset:offset + limit]
+        return [self._row_to_entity(row) for row in cursor.fetchall()]
 
     def count_isolated_entities(self) -> int:
-        """统计孤立实体数量。"""
+        """统计孤立实体数量。使用单次 SQL 查询。"""
         conn = self._get_conn()
         cursor = conn.cursor()
 
-        # Get all connected absolute_ids
         cursor.execute("""
-            SELECT DISTINCT entity1_absolute_id FROM relations WHERE invalid_at IS NULL
-            UNION
-            SELECT DISTINCT entity2_absolute_id FROM relations WHERE invalid_at IS NULL
-        """)
-        connected = {row[0] for row in cursor.fetchall()}
-
-        # Get distinct family_ids with their absolute_ids
-        cursor.execute("""
-            SELECT family_id, GROUP_CONCAT(id) AS abs_ids
+            SELECT COUNT(DISTINCT family_id)
             FROM entities
             WHERE invalid_at IS NULL
-            GROUP BY family_id
+              AND family_id NOT IN (
+                SELECT DISTINCT e2.family_id
+                FROM entities e2
+                WHERE e2.invalid_at IS NULL
+                  AND (
+                    e2.id IN (SELECT DISTINCT entity1_absolute_id FROM relations WHERE invalid_at IS NULL)
+                    OR e2.id IN (SELECT DISTINCT entity2_absolute_id FROM relations WHERE invalid_at IS NULL)
+                  )
+              )
         """)
 
-        count = 0
-        for row in cursor.fetchall():
-            family_id = row[0]
-            abs_ids_str = row[1] or ""
-            abs_ids = set(abs_ids_str.split(","))
-            if not abs_ids & connected:
-                count += 1
-
-        return count
+        return cursor.fetchone()[0]
 
     # ------------------------------------------------------------------
     # Cleanup
