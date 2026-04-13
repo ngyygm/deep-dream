@@ -208,6 +208,13 @@ def find_entities_search():
             entities = processor.storage.search_entities_by_bm25(
                 query_name, limit=max_results
             )
+            # Confidence-weighted reranking: use rank-based scores for non-hybrid
+            searcher = HybridSearcher(processor.storage)
+            ranked = [(e, 1.0 - i * 0.01) for i, e in enumerate(entities)]
+            ranked = searcher.confidence_rerank(ranked, alpha=0.2)
+            dicts = [h.entity_to_dict(e, _score=score) for e, score in ranked]
+            h.enrich_entity_version_counts(dicts, processor.storage)
+            return ok(dicts)
         elif search_mode == "hybrid":
             searcher = HybridSearcher(processor.storage)
             hybrid_ents = searcher.search_entities(
@@ -229,9 +236,13 @@ def find_entities_search():
                 text_mode=text_mode,
                 similarity_method=similarity_method,
             )
-        dicts = [h.entity_to_dict(e) for e in entities]
-        h.enrich_entity_version_counts(dicts, processor.storage)
-        return ok(dicts)
+            # Confidence-weighted reranking: use rank-based scores for non-hybrid
+            searcher = HybridSearcher(processor.storage)
+            ranked = [(e, 1.0 - i * 0.01) for i, e in enumerate(entities)]
+            ranked = searcher.confidence_rerank(ranked, alpha=0.2)
+            dicts = [h.entity_to_dict(e, _score=score) for e, score in ranked]
+            h.enrich_entity_version_counts(dicts, processor.storage)
+            return ok(dicts)
     except Exception as e:
         return err(str(e), 500)
 
