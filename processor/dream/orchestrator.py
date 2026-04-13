@@ -17,8 +17,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ..llm.prompts import (
-    GENERATE_RELATION_CONTENT_SYSTEM_PROMPT,
-    JUDGE_NEED_CREATE_RELATION_SYSTEM_PROMPT,
+    JUDGE_AND_GENERATE_RELATION_SYSTEM_PROMPT,
 )
 from ..search.graph_traversal import GraphTraversalSearcher
 
@@ -437,13 +436,13 @@ class DreamOrchestrator:
             nb_name = nb_entity.name
             nb_content = (nb_entity.content or "")[:500]
 
-        # LLM 判断
+        # LLM 判断 + 生成（单次调用）
         judge_messages = [
-            {"role": "system", "content": JUDGE_NEED_CREATE_RELATION_SYSTEM_PROMPT},
+            {"role": "system", "content": JUDGE_AND_GENERATE_RELATION_SYSTEM_PROMPT},
             {"role": "user", "content": (
                 f"实体A: {seed_name}\n描述: {seed_content}\n\n"
                 f"实体B: {nb_name}\n描述: {nb_content}\n\n"
-                f"判断这两个实体之间是否存在明确的、有意义的关联。"
+                f"判断这两个实体之间是否存在明确的、有意义的关联。如果存在，同时生成关系描述。"
             )},
         ]
         judge_obj, _ = self.llm_client.call_llm_until_json_parses(
@@ -456,23 +455,7 @@ class DreamOrchestrator:
             return None
 
         judge_confidence = float(judge_obj.get("confidence", 0.5))
-
-        # 生成关系内容
-        rel_messages = [
-            {"role": "system", "content": GENERATE_RELATION_CONTENT_SYSTEM_PROMPT},
-            {"role": "user", "content": (
-                f"实体A: {seed_name}\n描述: {seed_content}\n\n"
-                f"实体B: {nb_name}\n描述: {nb_content}\n\n"
-                f"请生成描述这两个实体之间关系的自然语言。"
-            )},
-        ]
-        rel_obj, _ = self.llm_client.call_llm_until_json_parses(
-            rel_messages,
-            parse_fn=json.loads,
-            json_parse_retries=1,
-            timeout=config.llm_timeout,
-        )
-        rel_content = rel_obj.get("content", "").strip()
+        rel_content = (judge_obj.get("content") or "").strip()
         if not rel_content or len(rel_content) < 10:
             return None
 
