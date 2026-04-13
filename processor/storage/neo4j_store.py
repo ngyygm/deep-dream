@@ -1704,6 +1704,23 @@ class Neo4jStorageManager:
             """)
             row = r.single()
 
+            # When entity_count=0, UNWIND produces no rows → r.single() returns None.
+            # Fall back to a lightweight count-only query.
+            if row is None:
+                r2 = session.run("""
+                    MATCH (all_e:Entity)  WITH count(all_e) AS total_entity_versions
+                    MATCH (all_r:Relation) WITH total_entity_versions, count(all_r) AS total_relation_versions
+                    MATCH (valid_e:Entity) WHERE valid_e.invalid_at IS NULL
+                    WITH total_entity_versions, total_relation_versions, count(DISTINCT valid_e.family_id) AS entity_count
+                    MATCH (valid_r:Relation) WHERE valid_r.invalid_at IS NULL
+                    RETURN total_entity_versions, total_relation_versions,
+                           entity_count, count(DISTINCT valid_r.family_id) AS relation_count
+                """)
+                row = r2.single()
+
+            if row is None:
+                return {}
+
             total_entity_versions = row["total_entity_versions"]
             total_relation_versions = row["total_relation_versions"]
             entity_count = row["entity_count"]
@@ -1716,7 +1733,7 @@ class Neo4jStorageManager:
                 "total_relation_versions": total_relation_versions,
             }
 
-            if entity_count > 0:
+            if entity_count > 0 and row.get("isolated_count") is not None:
                 # 注意：avg_degree 是 per-version 而非 per-family；这里用 family 数重新计算
                 # 但 row 中的 isolated_count 已经正确
                 isolated = row["isolated_count"]
