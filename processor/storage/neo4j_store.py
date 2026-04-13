@@ -5105,7 +5105,13 @@ class Neo4jStorageManager:
 
     def get_concept_neighbors(self, family_id: str, max_depth: int = 1,
                                time_point: str = None) -> List[dict]:
-        """获取概念的邻居（无论 role）。可选 time_point 过滤。"""
+        """获取概念的邻居（无论 role）。可选 time_point 过滤。
+
+        统一概念模型下的邻居语义：
+        - entity → Relation 概念（引用此实体的关系）+ RELATES_TO 连接的 Entity
+        - relation → 端点 Entity 概念 + MENTIONS 此关系的 Episode
+        - observation → MENTIONS 连接的所有 Concept（entity/relation）
+        """
         # First get the concept with time_point filtering
         concept = self.get_concept_by_family_id(family_id, time_point=time_point)
         if not concept:
@@ -5116,8 +5122,10 @@ class Neo4jStorageManager:
             return []
 
         tp = self._tp_to_datetime(time_point)
+        neighbors = []
         with self._session() as session:
             if role == 'entity':
+                # 1a. RELATES_TO 连接的 Entity 邻居
                 result = session.run("""
                     MATCH (e:Entity {uuid: $abs_id})-[r:RELATES_TO]-(other:Entity)
                     WHERE ($tp IS NULL OR other.valid_at IS NULL OR other.valid_at <= $tp)
@@ -5125,7 +5133,19 @@ class Neo4jStorageManager:
                     RETURN DISTINCT other.family_id AS family_id, other.uuid AS id,
                            other.name AS name, 'entity' AS role, other.content AS content
                 """, abs_id=abs_id, tp=tp)
+                neighbors.extend(_neo4j_types_to_native(dict(r)) for r in result)
+                # 1b. 引用此实体的 Relation 概念邻居
+                result = session.run("""
+                    MATCH (rel:Relation)
+                    WHERE (rel.entity1_absolute_id = $abs_id OR rel.entity2_absolute_id = $abs_id)
+                      AND ($tp IS NULL OR rel.valid_at IS NULL OR rel.valid_at <= $tp)
+                      AND ($tp IS NULL OR rel.invalid_at IS NULL OR rel.invalid_at > $tp)
+                    RETURN DISTINCT rel.family_id AS family_id, rel.uuid AS id,
+                           rel.name AS name, 'relation' AS role, rel.content AS content
+                """, abs_id=abs_id, tp=tp)
+                neighbors.extend(_neo4j_types_to_native(dict(r)) for r in result)
             elif role == 'relation':
+                # 2a. 端点 Entity 邻居
                 result = session.run("""
                     MATCH (r:Relation {uuid: $abs_id})
                     MATCH (e:Entity)
@@ -5135,6 +5155,16 @@ class Neo4jStorageManager:
                     RETURN DISTINCT e.family_id AS family_id, e.uuid AS id,
                            e.name AS name, 'entity' AS role, e.content AS content
                 """, abs_id=abs_id, tp=tp)
+                neighbors.extend(_neo4j_types_to_native(dict(r)) for r in result)
+                # 2b. MENTIONS 此关系的 Episode 邻居
+                result = session.run("""
+                    MATCH (ep:Episode)-[:MENTIONS]->(r:Relation {uuid: $abs_id})
+                    WHERE ($tp IS NULL OR ep.valid_at IS NULL OR ep.valid_at <= $tp)
+                      AND ($tp IS NULL OR ep.invalid_at IS NULL OR ep.invalid_at > $tp)
+                    RETURN DISTINCT ep.family_id AS family_id, ep.uuid AS id,
+                           ep.content AS name, 'observation' AS role, ep.content AS content
+                """, abs_id=abs_id, tp=tp)
+                neighbors.extend(_neo4j_types_to_native(dict(r)) for r in result)
             elif role == 'observation':
                 result = session.run("""
                     MATCH (ep:Episode {uuid: $abs_id})-[:MENTIONS]->(c:Concept)
@@ -5143,9 +5173,18 @@ class Neo4jStorageManager:
                     RETURN DISTINCT c.family_id AS family_id, c.uuid AS id,
                            c.name AS name, c.role AS role, c.content AS content
                 """, abs_id=abs_id, tp=tp)
+                neighbors.extend(_neo4j_types_to_native(dict(r)) for r in result)
             else:
                 return []
-            return [_neo4j_types_to_native(dict(r)) for r in result]
+            # Dedup by family_id
+            seen = set()
+            deduped = []
+            for n in neighbors:
+                fid = n.get('family_id', '')
+                if fid and fid not in seen:
+                    seen.add(fid)
+                    deduped.append(n)
+            return deduped
 
     def get_concept_provenance(self, family_id: str, time_point: str = None) -> List[dict]:
         """溯源：返回所有提及此概念的 observation。可选 time_point 过滤。"""
@@ -5153,11 +5192,15 @@ class Neo4jStorageManager:
 
     def traverse_concepts(self, start_family_ids: List[str], max_depth: int = 2,
                            time_point: str = None) -> dict:
-        """BFS 遍历概念图。可选 time_point 过滤。"""
+        """BFS 遍历概念图。可选 time_point 过滤。
+
+        统一概念模型：遍历 entity/relation/observation 所有 role 的概念节点，
+        返回 concepts（所有概念）和 edges（概念间连接关系）。
+        """
         visited = set()
         queue = list(start_family_ids)
         all_concepts = {}
-        all_relations = []
+        all_edges = []  # (source_family_id, target_family_id, target_role)
 
         for _ in range(max_depth):
             next_queue = []
@@ -5174,13 +5217,21 @@ class Neo4jStorageManager:
                     nfid = n.get('family_id', '')
                     if nfid and nfid not in visited:
                         next_queue.append(nfid)
-                        if n.get('role') == 'entity':
-                            all_relations.append(n)
+                        all_edges.append({
+                            "from": fid,
+                            "to": nfid,
+                            "to_role": n.get('role', ''),
+                            "to_name": n.get('name', ''),
+                        })
             queue = next_queue
+
+        # Backward compat: also provide "relations" key for old consumers
+        relation_concepts = [c for c in all_concepts.values() if c.get('role') == 'relation']
 
         return {
             "concepts": all_concepts,
-            "relations": all_relations,
+            "edges": all_edges,
+            "relations": relation_concepts,
             "visited_count": len(visited),
         }
 
