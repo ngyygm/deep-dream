@@ -318,7 +318,10 @@ def agent_ask():
             searcher = HybridSearcher(processor.storage)
             entity_hits = searcher.search_entities(query_text=query_text, query_embedding=query_embedding, top_k=20)
             relation_hits = searcher.search_relations(query_text=query_text, query_embedding=query_embedding, top_k=10)
-            # Preserve scores from hybrid search
+            # Apply confidence-weighted reranking (consistent with other search endpoints)
+            entity_hits = searcher.confidence_rerank(entity_hits, alpha=0.2)
+            relation_hits = searcher.confidence_rerank(relation_hits, alpha=0.2)
+            # Preserve scores from hybrid search (after reranking)
             entity_score_map = {e.absolute_id: score for e, score in entity_hits}
             relation_score_map = {r.absolute_id: score for r, score in relation_hits}
             entities = [e for e, _ in entity_hits]
@@ -414,7 +417,10 @@ def agent_ask_stream():
                     searcher = HybridSearcher(processor.storage)
                     entity_hits = searcher.search_entities(query_text=query_text, query_embedding=query_embedding, top_k=20)
                     relation_hits = searcher.search_relations(query_text=query_text, query_embedding=query_embedding, top_k=10)
-                    # Preserve scores from hybrid search
+                    # Apply confidence-weighted reranking (consistent with other search endpoints)
+                    entity_hits = searcher.confidence_rerank(entity_hits, alpha=0.2)
+                    relation_hits = searcher.confidence_rerank(relation_hits, alpha=0.2)
+                    # Preserve scores from hybrid search (after reranking)
                     entity_score_map = {e.absolute_id: score for e, score in entity_hits}
                     relation_score_map = {r.absolute_id: score for r, score in relation_hits}
                     entities = [e for e, _ in entity_hits]
