@@ -16,6 +16,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+import numpy as np
+
 from ..llm.prompts import (
     JUDGE_AND_GENERATE_RELATION_SYSTEM_PROMPT,
 )
@@ -163,6 +165,7 @@ class DreamConfig:
     exclude_ids: List[str] = field(default_factory=list)
     llm_timeout: int = 60
     llm_concurrency: int = 3
+    min_pair_similarity: float = 0.0
 
     def __post_init__(self):
         if self.strategy not in VALID_STRATEGIES:
@@ -173,6 +176,7 @@ class DreamConfig:
         self.max_depth = min(max(self.max_depth, 1), 4)
         self.max_relations = min(max(self.max_relations, 1), 20)
         self.min_confidence = max(0.0, min(1.0, self.min_confidence))
+        self.min_pair_similarity = max(0.0, min(1.0, self.min_pair_similarity))
 
 
 @dataclass
@@ -230,6 +234,7 @@ class DreamOrchestrator:
             exclude_ids=list(config.exclude_ids),
             llm_timeout=config.llm_timeout,
             llm_concurrency=config.llm_concurrency,
+            min_pair_similarity=config.min_pair_similarity,
         )
 
         # Step 1: 种子选择（排除近期探索过的实体）
@@ -447,6 +452,12 @@ class DreamOrchestrator:
         if not pairs:
             return [], 0
 
+        # 语义预过滤：跳过语义相似度过低的配对
+        pairs = self._prefilter_pairs_by_similarity(pairs, entity_lookup, config)
+
+        if not pairs:
+            return [], 0
+
         # 批量预取所有配对的已有关系，避免 _judge_pair 中逐对查询
         try:
             pair_keys = [(p[0], p[2]) for p in pairs]
@@ -518,6 +529,80 @@ class DreamOrchestrator:
                     logger.warning("Dream: 检查关系 %s↔%s 时出错: %s", pair[0], pair[2], exc)
 
         return relations_created, pairs_checked
+
+    def _prefilter_pairs_by_similarity(
+        self,
+        pairs: List[tuple],
+        entity_lookup: Dict[str, Dict[str, str]],
+        config: DreamConfig,
+    ) -> List[tuple]:
+        """基于 embedding 余弦相似度预过滤配对，跳过语义不相关的配对。
+
+        当 min_pair_similarity > 0 且 embedding 客户端可用时，
+        批量计算所有实体的 embedding 并过滤低相似度配对。
+        无法获取 embedding 的实体保留（不过滤）。
+        """
+        if config.min_pair_similarity <= 0:
+            return pairs
+
+        ec = getattr(self.storage, 'embedding_client', None)
+        if not ec or not getattr(ec, 'is_available', lambda: False)():
+            return pairs
+
+        # 收集所有涉及的 family_id
+        involved_fids = set()
+        for seed_fid, _, nb_fid, _ in pairs:
+            involved_fids.add(seed_fid)
+            involved_fids.add(nb_fid)
+
+        # 批量计算 embedding
+        texts = []
+        fid_list = []
+        for fid in involved_fids:
+            info = entity_lookup.get(fid)
+            if info:
+                text = f"{info.get('name', '')}: {info.get('content', '')}"
+                texts.append(text)
+                fid_list.append(fid)
+
+        if not texts:
+            return pairs
+
+        try:
+            embeddings = ec.encode(texts)
+            if embeddings is None:
+                return pairs
+            fid_to_emb: Dict[str, np.ndarray] = {}
+            for i, fid in enumerate(fid_list):
+                if i < len(embeddings):
+                    emb = np.array(embeddings[i], dtype=np.float32)
+                    norm = np.linalg.norm(emb)
+                    if norm > 0:
+                        fid_to_emb[fid] = emb / norm  # L2 归一化，便于点积=余弦
+        except Exception as exc:
+            logger.warning("Dream: embedding 预计算失败，跳过语义过滤: %s", exc)
+            return pairs
+
+        # 过滤配对
+        filtered = []
+        for pair in pairs:
+            seed_fid, _, nb_fid, _ = pair
+            e1 = fid_to_emb.get(seed_fid)
+            e2 = fid_to_emb.get(nb_fid)
+            if e1 is not None and e2 is not None:
+                similarity = float(np.dot(e1, e2))
+                if similarity < config.min_pair_similarity:
+                    continue
+            # 无 embedding 的实体保留
+            filtered.append(pair)
+
+        if len(filtered) < len(pairs):
+            logger.info(
+                "Dream: 语义预过滤 %d→%d 对 (阈值=%.2f)",
+                len(pairs), len(filtered), config.min_pair_similarity,
+            )
+
+        return filtered
 
     def _judge_pair(
         self,

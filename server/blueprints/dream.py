@@ -284,6 +284,8 @@ def dream_run():
       - min_confidence（可选）：最低置信度阈值，默认 0.5
       - exclude_ids（可选）：排除的 family_id 列表
       - llm_concurrency（可选）：LLM 并发数，默认 3
+      - min_pair_similarity（可选）：配对语义相似度阈值，默认 0.0（不过滤）。
+        当 > 0 时，在 LLM 判断前用 embedding 余弦相似度预过滤低相关配对，减少 LLM 调用
       - auto_rotate（可选）：是否自动轮换策略，默认 False。启用后忽略 strategy 参数，
         由 DreamHistory 根据跨周期效果自动选择下一个策略
     """
@@ -309,6 +311,7 @@ def dream_run():
             min_confidence=float(body.get("min_confidence", 0.5)),
             exclude_ids=body.get("exclude_ids") or body.get("exclude_family_ids") or [],
             llm_concurrency=int(body.get("llm_concurrency", 3)),
+            min_pair_similarity=float(body.get("min_pair_similarity", 0.0)),
         )
 
         # Use persistent orchestrator from registry (preserves cross-cycle LRU history)

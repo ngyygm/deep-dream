@@ -1111,3 +1111,198 @@ class TestAutoRotateRun:
         # Strategy should still be recorded
         stats = orch._history.get_strategy_stats()
         assert len(stats) >= 1
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Semantic pre-filtering: _prefilter_pairs_by_similarity
+# ═══════════════════════════════════════════════════════════════════
+
+class TestPrefilterPairsBySimilarity:
+    """Tests for semantic pre-filtering of entity pairs."""
+
+    def _make_orchestrator(self, embedding_available=False):
+        storage = MagicMock()
+        llm = MagicMock()
+        config = DreamConfig()
+        orch = DreamOrchestrator(storage, llm, config)
+        if embedding_available:
+            mock_ec = MagicMock()
+            mock_ec.is_available.return_value = True
+            storage.embedding_client = mock_ec
+        return orch
+
+    def test_no_filtering_when_threshold_zero(self):
+        """min_pair_similarity=0 returns all pairs unchanged."""
+        orch = self._make_orchestrator()
+        pairs = [("f1", "A", "f2", "B"), ("f1", "A", "f3", "C")]
+        config = DreamConfig(min_pair_similarity=0.0)
+        entity_lookup = {
+            "f1": {"name": "A", "content": "desc A"},
+            "f2": {"name": "B", "content": "desc B"},
+            "f3": {"name": "C", "content": "desc C"},
+        }
+        result = orch._prefilter_pairs_by_similarity(pairs, entity_lookup, config)
+        assert result == pairs
+
+    def test_no_filtering_when_no_embedding_client(self):
+        """No embedding_client → returns all pairs unchanged."""
+        orch = self._make_orchestrator(embedding_available=False)
+        pairs = [("f1", "A", "f2", "B")]
+        config = DreamConfig(min_pair_similarity=0.5)
+        entity_lookup = {"f1": {"name": "A", "content": "desc"}, "f2": {"name": "B", "content": "desc"}}
+        result = orch._prefilter_pairs_by_similarity(pairs, entity_lookup, config)
+        assert result == pairs
+
+    def test_no_filtering_when_embedding_unavailable(self):
+        """embedding_client exists but is_available()=False → no filtering."""
+        orch = self._make_orchestrator()
+        storage = MagicMock()
+        mock_ec = MagicMock()
+        mock_ec.is_available.return_value = False
+        storage.embedding_client = mock_ec
+        orch.storage = storage
+        pairs = [("f1", "A", "f2", "B")]
+        config = DreamConfig(min_pair_similarity=0.5)
+        entity_lookup = {"f1": {"name": "A", "content": "desc"}, "f2": {"name": "B", "content": "desc"}}
+        result = orch._prefilter_pairs_by_similarity(pairs, entity_lookup, config)
+        assert result == pairs
+
+    def test_filters_low_similarity_pairs(self):
+        """Pairs below threshold are filtered out."""
+        import numpy as np
+        orch = self._make_orchestrator(embedding_available=True)
+
+        # Use a side_effect to return embeddings keyed by the text input order.
+        # The method iterates involved_fids (a set), so we use a dict keyed by text.
+        emb_map = {
+            "A: desc A": np.array([1.0, 0.0, 0.0], dtype=np.float32),
+            "B: desc B": np.array([0.99, 0.1, 0.0], dtype=np.float32),  # high sim with A
+            "C: desc C": np.array([0.0, 0.0, 1.0], dtype=np.float32),   # low sim with A
+        }
+
+        def _encode(texts):
+            return [emb_map.get(t, np.zeros(3, dtype=np.float32)) for t in texts]
+
+        orch.storage.embedding_client.encode.side_effect = _encode
+
+        pairs = [
+            ("f1", "A", "f2", "B"),  # similar
+            ("f1", "A", "f3", "C"),  # dissimilar
+        ]
+        config = DreamConfig(min_pair_similarity=0.8)
+        entity_lookup = {
+            "f1": {"name": "A", "content": "desc A"},
+            "f2": {"name": "B", "content": "desc B"},
+            "f3": {"name": "C", "content": "desc C"},
+        }
+        result = orch._prefilter_pairs_by_similarity(pairs, entity_lookup, config)
+        assert len(result) == 1
+        # The similar pair (f1-f2) should remain
+        remaining_fids = {(r[0], r[2]) for r in result}
+        assert ("f1", "f2") in remaining_fids
+
+    def test_keeps_pairs_without_embeddings(self):
+        """Pairs where one entity has no embedding are kept."""
+        import numpy as np
+        orch = self._make_orchestrator(embedding_available=True)
+
+        emb_map = {
+            "A: desc A": np.array([1.0, 0.0, 0.0], dtype=np.float32),
+            "B: desc B": np.array([0.0, 1.0, 0.0], dtype=np.float32),
+            # f4 not in lookup → no embedding computed for it
+        }
+
+        def _encode(texts):
+            return [emb_map.get(t, np.zeros(3, dtype=np.float32)) for t in texts]
+
+        orch.storage.embedding_client.encode.side_effect = _encode
+
+        pairs = [
+            ("f1", "A", "f2", "B"),  # both have embeddings, orthogonal
+            ("f1", "A", "f4", "D"),  # f4 has no embedding
+        ]
+        config = DreamConfig(min_pair_similarity=0.99)
+        entity_lookup = {
+            "f1": {"name": "A", "content": "desc A"},
+            "f2": {"name": "B", "content": "desc B"},
+            # f4 not in lookup
+        }
+        result = orch._prefilter_pairs_by_similarity(pairs, entity_lookup, config)
+        # f1-f2 filtered (low similarity), f1-f4 kept (no embedding for f4)
+        assert len(result) == 1
+        remaining_fids = {(r[0], r[2]) for r in result}
+        assert ("f1", "f4") in remaining_fids
+
+    def test_embedding_failure_returns_all_pairs(self):
+        """When embedding computation fails, returns all pairs unchanged."""
+        orch = self._make_orchestrator(embedding_available=True)
+        orch.storage.embedding_client.encode.side_effect = RuntimeError("OOM")
+
+        pairs = [("f1", "A", "f2", "B")]
+        config = DreamConfig(min_pair_similarity=0.5)
+        entity_lookup = {"f1": {"name": "A", "content": "desc"}, "f2": {"name": "B", "content": "desc"}}
+        result = orch._prefilter_pairs_by_similarity(pairs, entity_lookup, config)
+        assert result == pairs
+
+    def test_embedding_returns_none_returns_all_pairs(self):
+        """When embedding_client.encode() returns None, no filtering."""
+        orch = self._make_orchestrator(embedding_available=True)
+        orch.storage.embedding_client.encode.return_value = None
+
+        pairs = [("f1", "A", "f2", "B")]
+        config = DreamConfig(min_pair_similarity=0.5)
+        entity_lookup = {"f1": {"name": "A", "content": "desc"}, "f2": {"name": "B", "content": "desc"}}
+        result = orch._prefilter_pairs_by_similarity(pairs, entity_lookup, config)
+        assert result == pairs
+
+    def test_empty_entity_lookup_returns_all_pairs(self):
+        """When entity_lookup is empty, no filtering (no embeddings computed)."""
+        orch = self._make_orchestrator(embedding_available=True)
+        pairs = [("f1", "A", "f2", "B")]
+        config = DreamConfig(min_pair_similarity=0.5)
+        result = orch._prefilter_pairs_by_similarity(pairs, {}, config)
+        assert result == pairs
+
+    def test_empty_pairs_returns_empty(self):
+        """Empty pairs list returns empty."""
+        orch = self._make_orchestrator(embedding_available=True)
+        config = DreamConfig(min_pair_similarity=0.5)
+        result = orch._prefilter_pairs_by_similarity([], {}, config)
+        assert result == []
+
+    def test_min_pair_similarity_clamped(self):
+        """DreamConfig clamps min_pair_similarity to [0.0, 1.0]."""
+        assert DreamConfig(min_pair_similarity=-0.5).min_pair_similarity == 0.0
+        assert DreamConfig(min_pair_similarity=1.5).min_pair_similarity == 1.0
+        assert DreamConfig(min_pair_similarity=0.7).min_pair_similarity == 0.7
+
+    def test_high_threshold_keeps_only_very_similar(self):
+        """High threshold only keeps nearly identical embeddings."""
+        import numpy as np
+        orch = self._make_orchestrator(embedding_available=True)
+
+        emb_map = {
+            "A: desc": np.array([1.0, 0.0, 0.0], dtype=np.float32),
+            "B: desc": np.array([0.95, 0.31, 0.0], dtype=np.float32),  # cosine ~0.95 with A
+            "C: desc": np.array([1.0, 0.0, 0.0], dtype=np.float32),   # identical to A
+        }
+
+        def _encode(texts):
+            return [emb_map.get(t, np.zeros(3, dtype=np.float32)) for t in texts]
+
+        orch.storage.embedding_client.encode.side_effect = _encode
+
+        pairs = [
+            ("f1", "A", "f2", "B"),  # ~0.95 similarity
+            ("f1", "A", "f3", "C"),  # ~1.0 similarity (identical)
+        ]
+        config = DreamConfig(min_pair_similarity=0.99)
+        entity_lookup = {
+            "f1": {"name": "A", "content": "desc"},
+            "f2": {"name": "B", "content": "desc"},
+            "f3": {"name": "C", "content": "desc"},
+        }
+        result = orch._prefilter_pairs_by_similarity(pairs, entity_lookup, config)
+        assert len(result) == 1
+        remaining_fids = {(r[0], r[2]) for r in result}
+        assert ("f1", "f3") in remaining_fids  # Only identical pair survives
