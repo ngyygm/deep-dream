@@ -224,38 +224,6 @@ class DreamStoreMixin:
 
         return seeds
 
-    def _dream_seed_base_query(self, cursor, where_extra: str = "",
-                                params: list = None, order_by: str = "",
-                                limit: int = 10):
-        """Common query: get latest version of each family_id with optional filters."""
-        params = params or []
-        order_clause = order_by if order_by else "e.processed_time DESC"
-        where_clause = ""
-        if where_extra:
-            where_clause = f"AND {where_extra}"
-
-        ent_cols = ", e.".join(self._ENTITY_SELECT.split(", "))
-        cursor.execute(f"""
-            SELECT e.{ent_cols}, sub.degree
-            FROM (
-                SELECT family_id, MAX(processed_time) as max_pt
-                FROM entities
-                WHERE invalid_at IS NULL
-                {where_clause}
-                GROUP BY family_id
-            ) latest
-            JOIN entities e ON e.family_id = latest.family_id AND e.processed_time = latest.max_pt
-            LEFT JOIN (
-                SELECT family_id, COUNT(*) as degree
-                FROM (
-                    SELECT family_id FROM entities
-                ) GROUP BY family_id
-            ) sub ON sub.family_id = e.family_id
-            ORDER BY {order_clause}
-            LIMIT ?
-        """, params + [limit])
-        return cursor.fetchall()
-
     def _dream_seeds_random(self, count: int, exclude_ids: list) -> List[Dict[str, Any]]:
         conn = self._get_conn()
         cursor = conn.cursor()
