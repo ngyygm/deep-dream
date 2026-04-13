@@ -1191,13 +1191,16 @@ class RelationStoreMixin:
         return self.delete_relation_by_id(family_id)
 
     def batch_delete_relations(self, family_ids: List[str]) -> int:
-        """批量删除关系 — 单次事务，替代 N 次单独删除。"""
+        """批量删除关系 — 单次事务，替代 N 次单独删除。含 concepts 清理。"""
         if not family_ids:
             return 0
         with self._write_lock:
             conn = self._get_conn()
             cursor = conn.cursor()
             placeholders = ",".join("?" * len(family_ids))
+            # 清理 concepts 表
+            for fid in family_ids:
+                self._delete_concepts_by_family(fid, cursor)
             cursor.execute(f"DELETE FROM relations WHERE family_id IN ({placeholders})", tuple(family_ids))
             count = cursor.rowcount
             try:
@@ -1491,13 +1494,16 @@ class RelationStoreMixin:
             return affected > 0
 
     def batch_delete_relation_versions_by_absolute_ids(self, absolute_ids: List[str]) -> int:
-        """批量删除指定关系版本（带 FTS 清理），返回成功删除的数量。"""
+        """批量删除指定关系版本（带 FTS 和 concepts 清理），返回成功删除的数量。"""
         if not absolute_ids:
             return 0
         with self._write_lock:
             conn = self._get_conn()
             cursor = conn.cursor()
             placeholders = ",".join("?" * len(absolute_ids))
+            # 清理 concepts 表
+            for aid in absolute_ids:
+                self._delete_concept_by_id(aid, cursor)
             # Delete FTS entries (using integer rowids)
             cursor.execute(
                 f"DELETE FROM relation_fts WHERE rowid IN (SELECT rowid FROM relations WHERE id IN ({placeholders}))",
