@@ -298,6 +298,46 @@ class TestCallLlmMockMode:
             {"name": "洪太尉", "content": "朝廷命官"},
         ]
 
+    def test_parse_json_response_repairs_truncated_object(self):
+        """Truncated JSON object: last key-value pair is incomplete."""
+        raw = '{"action": "match_existing", "matched_relation_id": "rel_abc123", "merged_content": "贾宝玉与薛宝钗的关系非常密切'
+        result = self.client._parse_json_response(raw)
+        assert result == {
+            "action": "match_existing",
+            "matched_relation_id": "rel_abc123",
+        }
+
+    def test_parse_json_response_repairs_truncated_object_with_nested(self):
+        """Truncated JSON object with nested array value."""
+        raw = '{"status": "ok", "items": [{"id": 1}, {"id": 2}, {"id": 3'
+        result = self.client._parse_json_response(raw)
+        assert result == {"status": "ok"}
+
+    def test_parse_json_response_repairs_truncated_object_only_key(self):
+        """Truncated JSON object where only the first key-value is complete."""
+        raw = '{"action": "create_new", "content": "some long text that got trun'
+        result = self.client._parse_json_response(raw)
+        assert result == {"action": "create_new"}
+
+    def test_parse_json_response_no_repair_for_valid_object(self):
+        """Valid objects should parse normally, not trigger repair."""
+        raw = '{"action": "match", "id": "rel_123"}'
+        result = self.client._parse_json_response(raw)
+        assert result == {"action": "match", "id": "rel_123"}
+
+    def test_try_repair_truncated_json_object_returns_none_for_empty(self):
+        assert self.client._try_repair_truncated_json_object("") is None
+        assert self.client._try_repair_truncated_json_object("{}") is None
+        assert self.client._try_repair_truncated_json_object("[]") is None
+
+    def test_try_repair_truncated_json_object_unclosed_string(self):
+        """Object with unclosed string value."""
+        raw = '{"name": "test", "value": "unclosed string'
+        result = self.client._try_repair_truncated_json_object(raw)
+        assert result is not None
+        parsed = json.loads(result)
+        assert parsed == {"name": "test"}
+
     def test_resolve_request_max_tokens_keeps_desired_when_prompt_within_budget(self):
         messages = [{"role": "user", "content": "你" * 7900}]
         resolved = self.client._resolve_request_max_tokens(messages, desired_max_tokens=6000)

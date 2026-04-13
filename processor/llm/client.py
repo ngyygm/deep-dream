@@ -1102,6 +1102,7 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
             try:
                 return json.loads(fixed)
             except json.JSONDecodeError:
+                # Try array truncation repair
                 repaired = self._try_repair_truncated_json_array(json_str)
                 if repaired is not None:
                     try:
@@ -1109,6 +1110,18 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
                         wprint(
                             "[DeepDream] 警告: 检测到数组型 JSON 尾部截断；"
                             "已裁剪不完整尾部并补全 `]`，沿用可恢复部分。"
+                        )
+                        return parsed
+                    except json.JSONDecodeError:
+                        pass
+                # Try object truncation repair
+                repaired_obj = self._try_repair_truncated_json_object(json_str)
+                if repaired_obj is not None:
+                    try:
+                        parsed = json.loads(repaired_obj)
+                        wprint(
+                            "[DeepDream] 警告: 检测到对象型 JSON 尾部截断；"
+                            "已裁剪不完整键值对并补全 `}`，沿用可恢复部分。"
                         )
                         return parsed
                     except json.JSONDecodeError:
@@ -1168,6 +1181,68 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
         if not candidate.startswith("["):
             return None
         candidate = candidate.rstrip(", \n\r\t") + "]"
+        return candidate if candidate != stripped else None
+
+    def _try_repair_truncated_json_object(self, json_str: str) -> Optional[str]:
+        """修复尾部被截断的 JSON 对象：裁掉不完整键值对并补上 `}`。
+
+        例如 {"action": "match", "id": "rel_xxx", "content": "很长的内容被截断...
+        修复为 {"action": "match", "id": "rel_xxx"}
+        """
+        stripped = (json_str or "").strip()
+        if not stripped.startswith("{") or stripped.endswith("}"):
+            return None
+
+        in_string = False
+        escaped = False
+        stack: List[str] = []
+        last_complete_value_end: Optional[int] = None
+
+        for idx, ch in enumerate(stripped):
+            if in_string:
+                if escaped:
+                    escaped = False
+                    continue
+                if ch == "\\":
+                    escaped = True
+                    continue
+                if ch == '"':
+                    in_string = False
+                continue
+
+            if ch == '"':
+                in_string = True
+                continue
+
+            if ch in "[{":
+                stack.append(ch)
+                continue
+
+            if ch in "]}":
+                if not stack:
+                    break
+                opener = stack[-1]
+                if (opener == "[" and ch != "]") or (opener == "{" and ch != "}"):
+                    break
+                stack.pop()
+                if not stack:
+                    last_complete_value_end = idx + 1
+                    break
+                if stack == ["{"]:
+                    last_complete_value_end = idx + 1
+                continue
+
+            # Comma at top-level object: the key-value pair before it is complete
+            if ch == "," and stack == ["{"]:
+                last_complete_value_end = idx
+
+        if last_complete_value_end is None:
+            return None
+
+        candidate = stripped[:last_complete_value_end].rstrip()
+        if not candidate.startswith("{"):
+            return None
+        candidate = candidate.rstrip(", \n\r\t") + "}"
         return candidate if candidate != stripped else None
 
     def _mock_llm_response(self, prompt: str) -> str:
