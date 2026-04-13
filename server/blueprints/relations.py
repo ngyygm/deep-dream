@@ -242,8 +242,8 @@ def find_unified():
             reranked = searcher_hybrid.node_degree_rerank(scored, degree_map)
             final_entities = [e for e, _ in reranked[:max_entities]]
 
-        # --- 第六步B：置信度加权 ---
-        if search_mode == "hybrid" and reranker != "node_degree":
+        # --- 第六步B：置信度加权（所有搜索模式） ---
+        if reranker != "node_degree":
             searcher_conf = HybridSearcher(storage)
             ent_scored = [(e, entity_score_map.get(e.absolute_id, 0.0)) for e in final_entities]
             reranked_ents = searcher_conf.confidence_rerank(ent_scored, alpha=0.2)
@@ -373,7 +373,11 @@ def find_relations_search():
             relations = processor.storage.search_relations_by_bm25(
                 query_text, limit=max_results
             )
-            dicts = [relation_to_dict(r) for r in relations]
+            # Confidence-weighted reranking
+            searcher = HybridSearcher(processor.storage)
+            ranked = [(r, 1.0 - i * 0.01) for i, r in enumerate(relations)]
+            ranked = searcher.confidence_rerank(ranked, alpha=0.2)
+            dicts = [relation_to_dict(r, _score=score) for r, score in ranked]
         elif search_mode == "hybrid":
             searcher = HybridSearcher(processor.storage)
             hybrid_rels = searcher.search_relations(
@@ -389,7 +393,11 @@ def find_relations_search():
                 threshold=threshold,
                 max_results=max_results,
             )
-            dicts = [relation_to_dict(r) for r in relations]
+            # Confidence-weighted reranking
+            searcher = HybridSearcher(processor.storage)
+            ranked = [(r, 1.0 - i * 0.01) for i, r in enumerate(relations)]
+            ranked = searcher.confidence_rerank(ranked, alpha=0.2)
+            dicts = [relation_to_dict(r, _score=score) for r, score in ranked]
         enrich_relation_version_counts(dicts, processor.storage)
         enrich_relations(dicts, processor)
         return ok(dicts)
