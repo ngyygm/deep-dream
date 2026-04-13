@@ -313,8 +313,11 @@ class RelationStoreMixin:
             return None
 
     def get_relation_versions(self, family_id: str,
-                               include_candidates: bool = False) -> List[Relation]:
-        """获取关系的所有版本"""
+                               include_candidates: bool = True) -> List[Relation]:
+        """获取关系的所有版本。
+
+        默认包含 dream 候选关系，因为按 family_id 查询是明确的定向查询。
+        """
         conn = self._get_conn()
         cursor = conn.cursor()
 

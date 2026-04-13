@@ -792,8 +792,8 @@ class DreamStoreMixin:
         Returns:
             提升结果 dict，或 None（未找到匹配的候选关系）
         """
-        # Find candidate relation between these entities
-        rels = self.get_relations_by_entities(entity1_family_id, entity2_family_id)
+        # Find candidate relation between these entities (include dream candidates)
+        rels = self.get_relations_by_entities(entity1_family_id, entity2_family_id, include_candidates=True)
         if not rels:
             return None
 
