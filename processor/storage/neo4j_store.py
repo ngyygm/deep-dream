@@ -4916,8 +4916,19 @@ class Neo4jStorageManager:
         tp = self._tp_to_datetime(time_point)
         with self._session() as session:
             # 尝试全文索引搜索（真正的 BM25 排序）
+            # For Chinese text, segment with jieba and construct AND query for better precision
             try:
                 role_filter = " AND c.role = $role" if role else ""
+                # Build Lucene query: segment Chinese text and join with AND
+                try:
+                    import jieba
+                    seg_tokens = [t for t in jieba.cut(query) if t.strip()]
+                    if len(seg_tokens) > 1:
+                        search_query = " AND ".join(seg_tokens)
+                    else:
+                        search_query = query
+                except ImportError:
+                    search_query = query
                 result = session.run(
                     f"""CALL db.index.fulltext.queryNodes('conceptFulltext', $search_query)
                        YIELD node, score
@@ -4930,7 +4941,7 @@ class Neo4jStorageManager:
                               node.event_time AS event_time, node.processed_time AS processed_time,
                               score AS bm25_score
                        ORDER BY score DESC LIMIT $limit""",
-                    search_query=query, role=role, limit=limit, tp=tp,
+                    search_query=search_query, role=role, limit=limit, tp=tp,
                 )
                 rows = [_neo4j_types_to_native(dict(r)) for r in result]
                 if rows:
@@ -4938,9 +4949,14 @@ class Neo4jStorageManager:
             except Exception as e:
                 logger.debug("Concept fulltext search failed, falling back to CONTAINS: %s", e)
 
-            # 回退: 分词 CONTAINS（每个词独立匹配，OR 组合）
+            # 回退: jieba 中文分词 + CONTAINS（每个词独立匹配，OR 组合）
             import re
-            tokens = [t for t in re.split(r'[\s,;，；、]+', query) if len(t) >= 2]
+            # Use jieba for proper Chinese word segmentation
+            try:
+                import jieba
+                tokens = [t for t in jieba.cut(query) if len(t.strip()) >= 2]
+            except ImportError:
+                tokens = [t for t in re.split(r'[\s,;，；、]+', query) if len(t) >= 2]
             if not tokens:
                 tokens = [query]
             # 构建分词 CONTAINS 条件
@@ -4968,6 +4984,124 @@ class Neo4jStorageManager:
             """
             result = session.run(cypher, **params)
             return [_neo4j_types_to_native(dict(r)) for r in result]
+
+    def search_concepts_by_similarity(self, query_text: str, role: str = None,
+                                       threshold: float = 0.5, max_results: int = 20,
+                                       time_point: str = None) -> List[dict]:
+        """概念语义搜索：搜索 entity_vectors + relation_vectors sqlite-vec 表，
+        然后从 Neo4j 批量获取匹配的 Concept 节点。
+
+        Args:
+            query_text: 查询文本
+            role: 可选过滤 'entity' | 'relation' | 'observation'
+            threshold: 余弦相似度阈值
+            max_results: 最大返回数
+            time_point: 可选时间点过滤
+
+        Returns:
+            List[dict] with concept fields (id, family_id, role, name, content, ...)
+        """
+        if not query_text or not self.embedding_client or not self.embedding_client.is_available():
+            return []
+
+        # 1. Encode + normalize query
+        query_embedding = self.embedding_client.encode(query_text)
+        if query_embedding is None:
+            return []
+
+        query_emb = np.array(
+            query_embedding[0] if isinstance(query_embedding, (list, np.ndarray)) else query_embedding,
+            dtype=np.float32
+        )
+        norm = np.linalg.norm(query_emb)
+        if norm > 0:
+            query_emb = query_emb / norm
+
+        # 2. Determine which vector tables to search based on role
+        tables = []
+        if role is None:
+            tables = ["entity_vectors", "relation_vectors"]
+        elif role == "entity":
+            tables = ["entity_vectors"]
+        elif role == "relation":
+            tables = ["relation_vectors"]
+        else:
+            # observation/episode — no vector table; fall back to BM25
+            return []
+
+        # 3. KNN search across selected tables
+        knn_limit = max_results * 5
+        uuid_dist: Dict[str, float] = {}
+
+        for table in tables:
+            try:
+                knn_results = self._vector_store.search(
+                    table, query_emb.tolist(), limit=knn_limit
+                )
+                for uuid, dist in knn_results:
+                    # Keep lowest distance per uuid
+                    if uuid not in uuid_dist or dist < uuid_dist[uuid]:
+                        uuid_dist[uuid] = dist
+            except Exception as e:
+                logger.debug("Concept similarity search on %s failed: %s", table, e)
+
+        if not uuid_dist:
+            return []
+
+        # 4. Batch fetch concepts from Neo4j by uuid
+        tp = self._tp_to_datetime(time_point)
+        uuids = list(uuid_dist.keys())
+
+        with self._session() as session:
+            role_filter = " AND c.role = $role" if role else ""
+            result = session.run(
+                f"""
+                MATCH (c:Concept)
+                WHERE c.uuid IN $uuids
+                  AND ($tp IS NULL OR c.valid_at IS NULL OR c.valid_at <= $tp)
+                  AND ($tp IS NULL OR c.invalid_at IS NULL OR c.invalid_at > $tp)
+                  {role_filter}
+                RETURN c.uuid AS id, c.family_id AS family_id, c.role AS role,
+                       c.name AS name, c.content AS content,
+                       c.event_time AS event_time, c.processed_time AS processed_time,
+                       c.source_document AS source_document, c.summary AS summary,
+                       c.confidence AS confidence
+                """,
+                uuids=uuids,
+                role=role,
+                tp=tp,
+            )
+            concepts = [_neo4j_types_to_native(dict(r)) for r in result]
+
+        # 5. Filter by threshold + dedup by family_id (keep highest similarity)
+        seen: Dict[str, float] = {}  # family_id -> best cos_sim
+        results = []
+
+        # Sort concepts by similarity descending
+        scored = []
+        for c in concepts:
+            uuid = c.get("id")
+            l2_dist_sq = uuid_dist.get(uuid)
+            if l2_dist_sq is None:
+                continue
+            cos_sim = 1.0 - l2_dist_sq / 2.0
+            scored.append((c, cos_sim))
+
+        scored.sort(key=lambda x: x[1], reverse=True)
+
+        for c, cos_sim in scored:
+            if cos_sim < threshold:
+                continue
+            fid = c.get("family_id")
+            if fid in seen:
+                continue
+            seen[fid] = cos_sim
+            c["score"] = round(cos_sim, 4)
+            results.append(c)
+            if len(results) >= max_results:
+                break
+
+        return results
 
     def get_concept_neighbors(self, family_id: str, max_depth: int = 1,
                                time_point: str = None) -> List[dict]:
