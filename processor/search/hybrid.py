@@ -124,8 +124,9 @@ class HybridSearcher:
                 logger.debug("Vector search failed: %s", e)
 
             # 路径 2b: name-only 语义搜索（短查询对短名称匹配更好）
-            # 当 name+content 搜索无结果或结果太少时补充
-            if len(result_lists) < 3:  # BM25 + vector < 3 means vector returned few
+            # 仅当向量 name+content 搜索无结果或结果太少时补充
+            _total_primary = sum(len(rl) for rl in result_lists)
+            if _total_primary < max(3, semantic_max_results // 2):
                 try:
                     name_only_results = self.storage.search_entities_by_similarity(
                         query_name=query_text,

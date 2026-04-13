@@ -2087,7 +2087,7 @@ class Neo4jStorageManager:
         """批量删除关系 — 单次事务，替代 N 次删除。含向量清理。"""
         if not family_ids:
             return 0
-        with self._write_lock:
+        with self._relation_write_lock:
             # 先收集所有 absolute_ids
             all_uuids = []
             with self._session() as session:
@@ -2557,6 +2557,10 @@ class Neo4jStorageManager:
                         r.provenance = row.provenance,
                         r.content_format = row.content_format,
                         r.valid_at = CASE WHEN row.valid_at IS NOT NULL THEN datetime(row.valid_at) ELSE NULL END
+                    WITH row
+                    MATCH (r:Relation {family_id: row.family_id})
+                    WHERE r.uuid <> row.uuid AND r.invalid_at IS NULL
+                    SET r.invalid_at = datetime(row.event_time)
                     WITH row
                     MATCH (n1:Entity {uuid: row.e1_abs})
                     MATCH (n2:Entity {uuid: row.e2_abs})
