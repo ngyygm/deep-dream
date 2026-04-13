@@ -5057,15 +5057,18 @@ class Neo4jStorageManager:
 
         # 2. Determine which vector tables to search based on role
         tables = []
+        fallback_to_bm25 = False
         if role is None:
             tables = ["entity_vectors", "relation_vectors"]
+            # observation has no vector table — always supplement with BM25
+            fallback_to_bm25 = True
         elif role == "entity":
             tables = ["entity_vectors"]
         elif role == "relation":
             tables = ["relation_vectors"]
         else:
             # observation/episode — no vector table; fall back to BM25
-            return []
+            fallback_to_bm25 = True
 
         # 3. KNN search across selected tables
         knn_limit = max_results * 5
@@ -5083,61 +5086,78 @@ class Neo4jStorageManager:
             except Exception as e:
                 logger.debug("Concept similarity search on %s failed: %s", table, e)
 
-        if not uuid_dist:
-            return []
-
-        # 4. Batch fetch concepts from Neo4j by uuid
-        tp = self._tp_to_datetime(time_point)
-        uuids = list(uuid_dist.keys())
-
-        with self._session() as session:
-            role_filter = " AND c.role = $role" if role else ""
-            result = session.run(
-                f"""
-                MATCH (c:Concept)
-                WHERE c.uuid IN $uuids
-                  AND ($tp IS NULL OR c.valid_at IS NULL OR c.valid_at <= $tp)
-                  AND ($tp IS NULL OR c.invalid_at IS NULL OR c.invalid_at > $tp)
-                  {role_filter}
-                RETURN c.uuid AS id, c.family_id AS family_id, c.role AS role,
-                       c.name AS name, c.content AS content,
-                       c.event_time AS event_time, c.processed_time AS processed_time,
-                       c.source_document AS source_document, c.summary AS summary,
-                       c.confidence AS confidence
-                """,
-                uuids=uuids,
-                role=role,
-                tp=tp,
-            )
-            concepts = [_neo4j_types_to_native(dict(r)) for r in result]
-
-        # 5. Filter by threshold + dedup by family_id (keep highest similarity)
-        seen: Dict[str, float] = {}  # family_id -> best cos_sim
+        # 4. Batch fetch concepts from Neo4j by uuid (skip if no vector hits)
+        seen: Dict[str, float] = {}  # family_id -> best score
         results = []
 
-        # Sort concepts by similarity descending
-        scored = []
-        for c in concepts:
-            uuid = c.get("id")
-            l2_dist_sq = uuid_dist.get(uuid)
-            if l2_dist_sq is None:
-                continue
-            cos_sim = 1.0 - l2_dist_sq / 2.0
-            scored.append((c, cos_sim))
+        if uuid_dist:
+            tp = self._tp_to_datetime(time_point)
+            uuids = list(uuid_dist.keys())
 
-        scored.sort(key=lambda x: x[1], reverse=True)
+            with self._session() as session:
+                role_filter = " AND c.role = $role" if role else ""
+                result = session.run(
+                    f"""
+                    MATCH (c:Concept)
+                    WHERE c.uuid IN $uuids
+                      AND ($tp IS NULL OR c.valid_at IS NULL OR c.valid_at <= $tp)
+                      AND ($tp IS NULL OR c.invalid_at IS NULL OR c.invalid_at > $tp)
+                      {role_filter}
+                    RETURN c.uuid AS id, c.family_id AS family_id, c.role AS role,
+                           c.name AS name, c.content AS content,
+                           c.event_time AS event_time, c.processed_time AS processed_time,
+                           c.source_document AS source_document, c.summary AS summary,
+                           c.confidence AS confidence
+                    """,
+                    uuids=uuids,
+                    role=role,
+                    tp=tp,
+                )
+                concepts = [_neo4j_types_to_native(dict(r)) for r in result]
 
-        for c, cos_sim in scored:
-            if cos_sim < threshold:
-                continue
-            fid = c.get("family_id")
-            if fid in seen:
-                continue
-            seen[fid] = cos_sim
-            c["score"] = round(cos_sim, 4)
-            results.append(c)
-            if len(results) >= max_results:
-                break
+            # 5. Filter by threshold + dedup by family_id (keep highest similarity)
+            scored = []
+            for c in concepts:
+                uuid = c.get("id")
+                l2_dist_sq = uuid_dist.get(uuid)
+                if l2_dist_sq is None:
+                    continue
+                cos_sim = 1.0 - l2_dist_sq / 2.0
+                scored.append((c, cos_sim))
+
+            scored.sort(key=lambda x: x[1], reverse=True)
+
+            for c, cos_sim in scored:
+                if cos_sim < threshold:
+                    continue
+                fid = c.get("family_id")
+                if fid in seen:
+                    continue
+                seen[fid] = cos_sim
+                c["score"] = round(cos_sim, 4)
+                results.append(c)
+                if len(results) >= max_results:
+                    break
+
+        # BM25 fallback for observations (no vector table)
+        if fallback_to_bm25:
+            bm25_role = role if role in ("observation",) else None
+            try:
+                bm25_results = self.search_concepts_by_bm25(
+                    query_text, role=bm25_role, limit=max_results,
+                    time_point=time_point,
+                )
+                for c in bm25_results:
+                    fid = c.get("family_id") or c.get("id")
+                    if fid and fid not in seen:
+                        score = c.get("bm25_score", c.get("score", 0.0))
+                        seen[fid] = score
+                        c["score"] = round(float(score), 4)
+                        results.append(c)
+                        if len(results) >= max_results:
+                            break
+            except Exception as e:
+                logger.debug("Concept similarity BM25 fallback failed: %s", e)
 
         return results
 
