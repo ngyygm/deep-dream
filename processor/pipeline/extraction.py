@@ -1994,6 +1994,16 @@ class _ExtractionMixin:
                         new_episode.absolute_id, all_mentioned_entity_ids,
                         target_type="entity",
                     )
+                # Phase C-1b: Active corroboration for all mentioned entities
+                # Vision: "多个独立来源印证同一个事实，置信度上升"
+                # Entities mentioned but without new versions (reused) get corroboration here.
+                # Entities that already got corroboration via _create_entity_version get a second
+                # signal (mentioned + content change = two independent corroboration signals).
+                for fid in all_mentioned_fids:
+                    try:
+                        self.storage.adjust_confidence_on_corroboration(fid, source_type="entity")
+                    except Exception:
+                        pass  # corroboration failure must not block pipeline
         except Exception as e:
             if verbose:
                 wprint(f"【步骤6】MENTIONS｜Entity｜失败｜{e}")
@@ -2310,6 +2320,13 @@ class _ExtractionMixin:
                         new_episode.absolute_id, rel_abs_ids,
                         target_type="relation",
                     )
+                # Phase C-2b: Active corroboration for all mentioned relations
+                mentioned_rel_fids = list(set(r.family_id for r in processed_relations if r.family_id))
+                for fid in mentioned_rel_fids:
+                    try:
+                        self.storage.adjust_confidence_on_corroboration(fid, source_type="relation")
+                    except Exception:
+                        pass
             except Exception as e:
                 if verbose:
                     wprint(f"【步骤7】MENTIONS｜Relation｜失败｜{e}")

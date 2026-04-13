@@ -61,7 +61,7 @@ def storage(tmp_path):
 def _make_mock_processor(storage, llm_contradictions=None):
     """Create a mock processor with _ExtractionMixin methods and real storage."""
     llm = MagicMock()
-    llm.detect_contradictions = AsyncMock(return_value=llm_contradictions or [])
+    llm.detect_contradictions = MagicMock(return_value=llm_contradictions or [])
     # Create a minimal object with the mixin methods
     proc = type("MockProcessor", (_ExtractionMixin,), {
         "storage": storage,
@@ -300,7 +300,7 @@ class TestErrorResilience:
         storage.save_entity(_make_entity(family_id="fam_fail", version=0, confidence=0.8))
         storage.save_entity(_make_entity(family_id="fam_fail", version=1, confidence=0.8))
         proc, llm = _make_mock_processor(storage)
-        llm.detect_contradictions = AsyncMock(side_effect=RuntimeError("LLM timeout"))
+        llm.detect_contradictions = MagicMock(side_effect=RuntimeError("LLM timeout"))
         # Should not raise
         proc._detect_and_apply_contradictions(["fam_fail"])
         # Confidence unchanged
@@ -312,7 +312,7 @@ class TestErrorResilience:
         storage.save_entity(_make_entity(family_id="fam_async", version=0))
         storage.save_entity(_make_entity(family_id="fam_async", version=1))
         proc, llm = _make_mock_processor(storage)
-        llm.detect_contradictions = AsyncMock(side_effect=Exception("async error"))
+        llm.detect_contradictions = MagicMock(side_effect=Exception("async error"))
         proc._detect_and_apply_contradictions(["fam_async"])
 
     def test_malformed_contradiction_response(self, storage):
@@ -336,14 +336,14 @@ class TestErrorResilience:
 
         call_count = [0]
 
-        async def mock_detect(fid, versions):
+        def mock_detect(fid, versions):
             call_count[0] += 1
             if fid == "fam_bad":
                 raise RuntimeError("Simulated failure")
             return [{"description": "Conflict", "severity": "high"}]
 
         proc, llm = _make_mock_processor(storage)
-        llm.detect_contradictions = AsyncMock(side_effect=mock_detect)
+        llm.detect_contradictions = MagicMock(side_effect=mock_detect)
         proc._detect_and_apply_contradictions(["fam_ok", "fam_bad"])
         # Both should have been attempted
         assert call_count[0] == 2
