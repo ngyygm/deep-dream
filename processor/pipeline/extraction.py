@@ -1096,26 +1096,13 @@ class _ExtractionMixin:
                     if old_version and old_version.content == current.content:
                         continue  # 内容未变，无需进化
 
-                # 调用 async 方法
-                try:
-                    loop = asyncio.get_event_loop()
-                    if loop.is_running():
-                        # 在已有 event loop 中（罕见），用新线程
-                        import concurrent.futures
-                        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                            summary = pool.submit(
-                                asyncio.run,
-                                self.llm_client.evolve_entity_summary(current, old_version)
-                            ).result()
-                    else:
-                        summary = loop.run_until_complete(
-                            self.llm_client.evolve_entity_summary(current, old_version)
-                        )
-                except RuntimeError:
-                    # No event loop, create one
-                    summary = asyncio.run(
+                # 调用 async 方法：pipeline 在同步线程中运行，asyncio.run() 安全
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                    summary = pool.submit(
+                        asyncio.run,
                         self.llm_client.evolve_entity_summary(current, old_version)
-                    )
+                    ).result()
 
                 if summary and summary.strip():
                     self.storage.update_entity_summary(fid, summary.strip())
