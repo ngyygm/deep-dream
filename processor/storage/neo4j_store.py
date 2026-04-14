@@ -1695,10 +1695,10 @@ class Neo4jStorageManager:
                 WITH total_entity_versions, total_relation_versions, entity_count,
                      relation_count, rel_uuids,
                      e.family_id AS fid, e.uuid AS uid, e AS ent
-                OPTIONAL MATCH (ent)-[:RELATES_TO]-()
+                OPTIONAL MATCH (ent)-[rt:RELATES_TO]-()
                 WITH total_entity_versions, total_relation_versions, entity_count,
                      relation_count, rel_uuids, fid,
-                     CASE WHEN count(*) > 0 THEN 1 ELSE 0 END AS is_connected
+                     CASE WHEN rt IS NOT NULL THEN 1 ELSE 0 END AS is_connected
                 RETURN total_entity_versions, total_relation_versions,
                        entity_count, relation_count,
                        avg(CASE WHEN is_connected = 1 THEN 1.0 ELSE 0.0 END) AS avg_degree,
