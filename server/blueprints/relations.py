@@ -275,6 +275,26 @@ def find_unified():
             if _boosted:
                 final_entities = _boosted + _rest
 
+        # --- Step 6D: Family-ID deduplication ---
+        # Same entity may appear with different absolute_ids (versions); keep highest-scored
+        _seen_fids: Set[str] = set()
+        _deduped_entities: List[Entity] = []
+        for e in final_entities:
+            fid = getattr(e, 'family_id', None) or e.absolute_id
+            if fid not in _seen_fids:
+                _seen_fids.add(fid)
+                _deduped_entities.append(e)
+        final_entities = _deduped_entities
+
+        _seen_rel_fids: Set[str] = set()
+        _deduped_relations: List[Relation] = []
+        for r in final_relations:
+            fid = getattr(r, 'family_id', None) or r.absolute_id
+            if fid not in _seen_rel_fids:
+                _seen_rel_fids.add(fid)
+                _deduped_relations.append(r)
+        final_relations = _deduped_relations
+
         # --- Step 7: Format output ---
         output_format = str(body.get("format", "full") or "full").strip().lower()
 
