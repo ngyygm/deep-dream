@@ -66,9 +66,9 @@ def _execute_ask_search(processor, query_type: str, query_text: str, intent: dic
         searcher = HybridSearcher(processor.storage)
         entity_hits = searcher.search_entities(query_text=query_text, query_embedding=query_embedding, top_k=20)
         relation_hits = searcher.search_relations(query_text=query_text, query_embedding=query_embedding, top_k=10)
-        # Apply confidence-weighted reranking
-        entity_hits = searcher.confidence_rerank(entity_hits, alpha=0.2)
-        relation_hits = searcher.confidence_rerank(relation_hits, alpha=0.2)
+        # Apply confidence-weighted reranking with time decay
+        entity_hits = searcher.confidence_rerank(entity_hits, alpha=0.2, time_decay_half_life_days=90.0)
+        relation_hits = searcher.confidence_rerank(relation_hits, alpha=0.2, time_decay_half_life_days=90.0)
         # Preserve scores from hybrid search (after reranking)
         entity_score_map = {e.absolute_id: score for e, score in entity_hits}
         relation_score_map = {r.absolute_id: score for r, score in relation_hits}

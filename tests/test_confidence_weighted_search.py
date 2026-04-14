@@ -167,7 +167,7 @@ class TestEndpointIntegration:
             r1 = _make_relation("rel_d3", "a", "b", "Test", confidence=0.9)
             mock_searcher.search_entities.return_value = [(e1, 0.8)]
             mock_searcher.search_relations.return_value = [(r1, 0.7)]
-            mock_searcher.confidence_rerank.side_effect = lambda items, alpha=0.2: items
+            mock_searcher.confidence_rerank.side_effect = lambda items, **kw: items
             MockSearcher.return_value = mock_searcher
 
             with patch('server.blueprints.relations._get_processor') as mock_proc:
@@ -189,7 +189,7 @@ class TestEndpointIntegration:
             r1 = _make_relation("rel_d4", "a", "b", "Test", confidence=0.9)
             mock_searcher.search_entities.return_value = [(e1, 0.8)]
             mock_searcher.search_relations.return_value = [(r1, 0.7)]
-            mock_searcher.confidence_rerank.side_effect = lambda items, alpha=0.2: items
+            mock_searcher.confidence_rerank.side_effect = lambda items, **kw: items
             MockSearcher.return_value = mock_searcher
 
             with patch('server.blueprints.relations._get_processor') as mock_proc:
@@ -202,8 +202,8 @@ class TestEndpointIntegration:
 
                 assert mock_searcher.confidence_rerank.call_count == 2
 
-    def test_find_unified_nonhybrid_skips_rerank(self, client):
-        """D1.5: Non-hybrid search does NOT call confidence_rerank."""
+    def test_find_unified_nonhybrid_calls_rerank(self, client):
+        """D1.5: Non-hybrid search also calls confidence_rerank (confidence applied to all modes)."""
         with patch('server.blueprints.relations.HybridSearcher') as MockSearcher:
             mock_searcher = MagicMock()
             MockSearcher.return_value = mock_searcher
@@ -217,10 +217,11 @@ class TestEndpointIntegration:
                 client.post('/api/v1/find',
                             json={"query": "test", "search_mode": "semantic", "expand": False})
 
-                mock_searcher.confidence_rerank.assert_not_called()
+                # Semantic mode now also calls confidence_rerank
+                assert mock_searcher.confidence_rerank.call_count >= 2
 
-    def test_find_entities_bm25_skips_rerank(self, client):
-        """D1.6: BM25 search does NOT call confidence_rerank."""
+    def test_find_entities_bm25_calls_rerank(self, client):
+        """D1.6: BM25 search also calls confidence_rerank."""
         with patch('server.blueprints.entities.HybridSearcher') as MockSearcher:
             mock_searcher = MagicMock()
             MockSearcher.return_value = mock_searcher
@@ -233,7 +234,8 @@ class TestEndpointIntegration:
                 client.post('/api/v1/find/entities/search',
                             json={"query_name": "test", "search_mode": "bm25"})
 
-                mock_searcher.confidence_rerank.assert_not_called()
+                # BM25 mode now also calls confidence_rerank
+                mock_searcher.confidence_rerank.assert_called_once()
 
     def test_find_unified_node_degree_skips_confidence_rerank(self, client):
         """D1.7: node_degree reranker skips confidence rerank."""
@@ -667,3 +669,189 @@ class TestEndToEndSearchQuality:
         # Order should be: high(0.9) > med(0.5) > low(0.2)
         confidences = [getattr(r[0], 'confidence', 0.5) for r in result]
         assert confidences == sorted(confidences, reverse=True)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# D5: Time decay — concept fade-out based on processed_time age
+# ══════════════════════════════════════════════════════════════════════════
+
+
+class TestTimeDecay:
+    """D5: Concept fade-out via exponential time decay on processed_time."""
+
+    @pytest.fixture
+    def app(self, tmp_path):
+        from server.api import create_app
+        registry = _make_registry(str(tmp_path / "graphs"))
+        app = create_app(registry=registry, config={"rate_limit_per_minute": 600})
+        app.config['TESTING'] = True
+        return app
+
+    @pytest.fixture
+    def client(self, app):
+        return app.test_client()
+
+    def test_recent_entity_ranks_above_old_with_same_score(self, tmp_storage):
+        """D5.1: Recently processed entity ranks above old one, same RRF score."""
+        from processor.search.hybrid import HybridSearcher
+        now = datetime.now(timezone.utc)
+        from datetime import timedelta
+
+        e_recent = _make_entity("ent_td1r", "Recent", "Content", confidence=0.7)
+        e_recent.processed_time = now
+        e_old = _make_entity("ent_td1o", "Old", "Content", confidence=0.7)
+        e_old.processed_time = now - timedelta(days=180)  # 6 months old
+
+        searcher = HybridSearcher(tmp_storage)
+        items = [(e_old, 0.5), (e_recent, 0.5)]
+        result = searcher.confidence_rerank(items, alpha=0.2, time_decay_half_life_days=90.0)
+
+        assert result[0][0].family_id == "ent_td1r"
+
+    def test_old_entity_score_decays(self, tmp_storage):
+        """D5.2: Entity 90 days old has score decayed by ~50%."""
+        from processor.search.hybrid import HybridSearcher
+        import math
+        now = datetime.now(timezone.utc)
+        from datetime import timedelta
+
+        e_old = _make_entity("ent_td2", "Old", "Content", confidence=0.7)
+        e_old.processed_time = now - timedelta(days=90)
+
+        searcher = HybridSearcher(tmp_storage)
+        items = [(e_old, 1.0)]
+        result = searcher.confidence_rerank(items, alpha=0.2, time_decay_half_life_days=90.0)
+
+        # confidence adjustment: 1.0 * (1 - 0.2 + 0.2 * 0.7) = 0.94
+        # time decay: exp(-ln2 * 90/90) = exp(-ln2) ≈ 0.5
+        expected = 0.94 * 0.5
+        assert abs(result[0][1] - round(expected, 6)) < 0.01
+
+    def test_zero_half_life_disables_decay(self, tmp_storage):
+        """D5.3: half_life=0 means no time decay applied."""
+        from processor.search.hybrid import HybridSearcher
+        from datetime import timedelta
+        now = datetime.now(timezone.utc)
+
+        e_old = _make_entity("ent_td3", "Old", "Content", confidence=0.7)
+        e_old.processed_time = now - timedelta(days=365)
+
+        searcher = HybridSearcher(tmp_storage)
+        items_no_decay = [(e_old, 0.5)]
+        result = searcher.confidence_rerank(items_no_decay, alpha=0.2, time_decay_half_life_days=0.0)
+
+        # No decay → score = 0.5 * (0.8 + 0.2*0.7) = 0.47
+        expected = 0.5 * (1 - 0.2 + 0.2 * 0.7)
+        assert abs(result[0][1] - round(expected, 6)) < 0.001
+
+    def test_missing_processed_time_no_crash(self, tmp_storage):
+        """D5.4: Entity without processed_time doesn't crash (no decay applied)."""
+        from processor.search.hybrid import HybridSearcher
+        from processor.models import Entity
+
+        e = Entity(
+            absolute_id="abs_td4", family_id="ent_td4",
+            name="NoTime", content="Content",
+            event_time=datetime.now(timezone.utc),
+            processed_time=None,
+            episode_id="",
+            source_document="",
+            confidence=0.7,
+        )
+
+        searcher = HybridSearcher(tmp_storage)
+        items = [(e, 0.5)]
+        result = searcher.confidence_rerank(items, alpha=0.2, time_decay_half_life_days=90.0)
+        assert len(result) == 1
+        # No decay, just confidence adjustment
+        expected = 0.5 * (0.8 + 0.2 * 0.7)
+        assert abs(result[0][1] - round(expected, 6)) < 0.001
+
+    def test_string_processed_time_handled(self, tmp_storage):
+        """D5.5: processed_time as ISO string works correctly."""
+        from processor.search.hybrid import HybridSearcher
+        from datetime import timedelta
+        now = datetime.now(timezone.utc)
+
+        e = _make_entity("ent_td5", "StringTime", "Content", confidence=0.7)
+        e.processed_time = (now - timedelta(days=90)).isoformat()
+
+        searcher = HybridSearcher(tmp_storage)
+        items = [(e, 1.0)]
+        result = searcher.confidence_rerank(items, alpha=0.2, time_decay_half_life_days=90.0)
+
+        # Should apply decay same as datetime object
+        assert result[0][1] < 1.0  # Decay applied
+
+    def test_relation_time_decay(self, tmp_storage):
+        """D5.6: Relations also decay over time."""
+        from processor.search.hybrid import HybridSearcher
+        from datetime import timedelta
+        now = datetime.now(timezone.utc)
+
+        r_recent = _make_relation("rel_td6r", "a", "b", "Recent rel", confidence=0.7)
+        r_recent.processed_time = now
+        r_old = _make_relation("rel_td6o", "c", "d", "Old rel", confidence=0.7)
+        r_old.processed_time = now - timedelta(days=200)
+
+        searcher = HybridSearcher(tmp_storage)
+        items = [(r_old, 0.5), (r_recent, 0.5)]
+        result = searcher.confidence_rerank(items, alpha=0.2, time_decay_half_life_days=90.0)
+
+        assert result[0][0].family_id == "rel_td6r"
+
+    def test_very_old_entity_heavily_decayed(self, tmp_storage):
+        """D5.7: Entity 365 days old is heavily decayed (90-day half-life)."""
+        from processor.search.hybrid import HybridSearcher
+        import math
+        from datetime import timedelta
+        now = datetime.now(timezone.utc)
+
+        e = _make_entity("ent_td7", "Ancient", "Content", confidence=0.5)
+        e.processed_time = now - timedelta(days=365)
+
+        searcher = HybridSearcher(tmp_storage)
+        items = [(e, 1.0)]
+        result = searcher.confidence_rerank(items, alpha=0.2, time_decay_half_life_days=90.0)
+
+        # decay = exp(-ln2 * 365/90) ≈ exp(-2.815) ≈ 0.06
+        expected_decay = math.exp(-math.log(2) * 365 / 90)
+        assert result[0][1] < 0.1  # Very small score
+        assert abs(result[0][1] / (1.0 * (0.8 + 0.1)) - expected_decay) < 0.05
+
+    def test_decay_and_confidence_combined(self, tmp_storage):
+        """D5.8: Old + low confidence entity ranks below recent + high confidence."""
+        from processor.search.hybrid import HybridSearcher
+        from datetime import timedelta
+        now = datetime.now(timezone.utc)
+
+        e_old_low = _make_entity("ent_td8a", "OldLow", "Content", confidence=0.1)
+        e_old_low.processed_time = now - timedelta(days=180)
+        e_new_high = _make_entity("ent_td8b", "NewHigh", "Content", confidence=0.95)
+        e_new_high.processed_time = now
+
+        searcher = HybridSearcher(tmp_storage)
+        items = [(e_old_low, 0.6), (e_new_high, 0.4)]
+        result = searcher.confidence_rerank(items, alpha=0.3, time_decay_half_life_days=90.0)
+
+        # Old+low should be heavily penalized
+        assert result[0][0].family_id == "ent_td8b"
+
+    def test_endpoint_passes_time_decay_90(self, client):  # noqa: F811
+        """D5.9: Search endpoints pass time_decay_half_life_days=90.0."""
+        with patch('server.blueprints.entities.HybridSearcher') as MockSearcher:
+            mock_searcher = MagicMock()
+            e1 = _make_entity("ent_d9", "Test", "Content", confidence=0.9)
+            mock_searcher.search_entities.return_value = [(e1, 0.8)]
+            mock_searcher.confidence_rerank.side_effect = lambda items, **kw: items
+            MockSearcher.return_value = mock_searcher
+
+            with patch('server.blueprints.entities._get_processor') as mock_proc:
+                proc = MagicMock()
+                mock_proc.return_value = proc
+
+                client.post('/api/v1/find/entities/search',
+                            json={"query_name": "test", "search_mode": "hybrid"})
+
+                _, kwargs = mock_searcher.confidence_rerank.call_args
+                assert kwargs.get('time_decay_half_life_days') == 90.0

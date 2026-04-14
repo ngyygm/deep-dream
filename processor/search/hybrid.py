@@ -4,9 +4,12 @@
 HybridSearcher 封装了三路搜索（BM25 + embedding + graph-context），
 使用 Reciprocal Rank Fusion (RRF) 将多路结果合并为统一排序列表。
 可选 confidence 加权重排序，确保低置信度实体排名靠后。
+可选时间衰减，让长期未被提及的概念自然降低排名（概念淡出）。
 """
 
 import logging
+import math
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..models import Entity, Relation
@@ -305,14 +308,21 @@ class HybridSearcher:
         self,
         items: List[Tuple[Any, float]],
         alpha: float = 0.2,
+        time_decay_half_life_days: float = 0.0,
     ) -> List[Tuple[Any, float]]:
-        """置信度加权重排序：低置信度实体排名靠后。
+        """置信度 + 时间衰减重排序：低置信度、长期未更新的概念排名靠后。
 
-        final_score = rrf_score * (1 - alpha + alpha * confidence)
+        final_score = rrf_score * (1 - alpha + alpha * confidence) * time_decay
+
+        time_decay = exp(-ln(2) * days_since_processed / half_life)
+        - half_life=0: 禁用时间衰减
+        - half_life=30: 30天未更新的概念衰减50%
+        - half_life=90: 90天未更新的概念衰减50%
 
         Args:
             items: [(Entity/Relation, score), ...] 原始排序
             alpha: 置信度影响因子（0-1）
+            time_decay_half_life_days: 时间衰减半衰期（天），0表示禁用
 
         Returns:
             重排序后的 [(item, adjusted_score), ...]
@@ -320,10 +330,30 @@ class HybridSearcher:
         if not items:
             return items
 
+        now = datetime.now(timezone.utc) if time_decay_half_life_days > 0 else None
+        ln2 = 0.6931471805599453  # math.log(2) precomputed
+
         results = []
         for item, score in items:
-            confidence = getattr(item, 'confidence', None) or 0.5  # default 0.5 if unset
+            confidence = getattr(item, 'confidence', None) or 0.5
             adjusted = score * (1 - alpha + alpha * confidence)
+
+            # Time decay: exponential decay based on processed_time
+            if time_decay_half_life_days > 0 and now is not None:
+                pt = getattr(item, 'processed_time', None)
+                if pt is not None:
+                    try:
+                        if isinstance(pt, str):
+                            pt = datetime.fromisoformat(pt)
+                        # Ensure timezone-aware comparison
+                        if pt.tzinfo is None:
+                            pt = pt.replace(tzinfo=timezone.utc)
+                        days_old = max(0.0, (now - pt).total_seconds() / 86400.0)
+                        decay = math.exp(-ln2 * days_old / time_decay_half_life_days)
+                        adjusted *= decay
+                    except (ValueError, TypeError, OverflowError):
+                        pass  # Invalid datetime → no decay
+
             results.append((item, round(adjusted, 6)))
 
         results.sort(key=lambda x: x[1], reverse=True)

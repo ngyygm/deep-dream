@@ -246,14 +246,14 @@ def find_unified():
         if reranker != "node_degree":
             searcher_conf = HybridSearcher(storage)
             ent_scored = [(e, entity_score_map.get(e.absolute_id, 0.0)) for e in final_entities]
-            reranked_ents = searcher_conf.confidence_rerank(ent_scored, alpha=0.2)
+            reranked_ents = searcher_conf.confidence_rerank(ent_scored, alpha=0.2, time_decay_half_life_days=90.0)
             final_entities = [e for e, _ in reranked_ents[:max_entities]]
             # Also update score map with adjusted scores
             for e, score in reranked_ents[:max_entities]:
                 entity_score_map[e.absolute_id] = score
 
             rel_scored = [(r, relation_score_map.get(r.absolute_id, 0.0)) for r in final_relations]
-            reranked_rels = searcher_conf.confidence_rerank(rel_scored, alpha=0.2)
+            reranked_rels = searcher_conf.confidence_rerank(rel_scored, alpha=0.2, time_decay_half_life_days=90.0)
             final_relations = [r for r, _ in reranked_rels[:max_relations]]
             for r, score in reranked_rels[:max_relations]:
                 relation_score_map[r.absolute_id] = score
@@ -376,7 +376,7 @@ def find_relations_search():
             # Confidence-weighted reranking
             searcher = HybridSearcher(processor.storage)
             ranked = [(r, 1.0 - i * 0.01) for i, r in enumerate(relations)]
-            ranked = searcher.confidence_rerank(ranked, alpha=0.2)
+            ranked = searcher.confidence_rerank(ranked, alpha=0.2, time_decay_half_life_days=90.0)
             dicts = [relation_to_dict(r, _score=score) for r, score in ranked]
         elif search_mode == "hybrid":
             searcher = HybridSearcher(processor.storage)
@@ -385,7 +385,7 @@ def find_relations_search():
                 top_k=max_results,
                 semantic_threshold=threshold,
             )
-            hybrid_rels = searcher.confidence_rerank(hybrid_rels, alpha=0.2)
+            hybrid_rels = searcher.confidence_rerank(hybrid_rels, alpha=0.2, time_decay_half_life_days=90.0)
             dicts = [relation_to_dict(r, _score=score) for r, score in hybrid_rels]
         else:
             relations = processor.storage.search_relations_by_similarity(
@@ -396,7 +396,7 @@ def find_relations_search():
             # Confidence-weighted reranking
             searcher = HybridSearcher(processor.storage)
             ranked = [(r, 1.0 - i * 0.01) for i, r in enumerate(relations)]
-            ranked = searcher.confidence_rerank(ranked, alpha=0.2)
+            ranked = searcher.confidence_rerank(ranked, alpha=0.2, time_decay_half_life_days=90.0)
             dicts = [relation_to_dict(r, _score=score) for r, score in ranked]
         enrich_relation_version_counts(dicts, processor.storage)
         enrich_relations(dicts, processor)
@@ -1106,7 +1106,7 @@ def quick_search():
             semantic_threshold=threshold,
         )
         # Confidence-weighted reranking
-        fused_entities = searcher.confidence_rerank(fused_entities, alpha=0.2)
+        fused_entities = searcher.confidence_rerank(fused_entities, alpha=0.2, time_decay_half_life_days=90.0)
         # Dedup: skip entities already found by exact match, preserve scores
         entity_score_map: Dict[str, float] = {}
         rrf_entities = []
@@ -1125,7 +1125,7 @@ def quick_search():
             top_k=max_relations,
             semantic_threshold=max(0.2, threshold - 0.1),
         )
-        fused_relations = searcher.confidence_rerank(fused_relations, alpha=0.2)
+        fused_relations = searcher.confidence_rerank(fused_relations, alpha=0.2, time_decay_half_life_days=90.0)
         relation_score_map: Dict[str, float] = {r.absolute_id: score for r, score in fused_relations}
         relations = [r for r, _ in fused_relations]
 

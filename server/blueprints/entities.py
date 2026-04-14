@@ -211,7 +211,7 @@ def find_entities_search():
             # Confidence-weighted reranking: use rank-based scores for non-hybrid
             searcher = HybridSearcher(processor.storage)
             ranked = [(e, 1.0 - i * 0.01) for i, e in enumerate(entities)]
-            ranked = searcher.confidence_rerank(ranked, alpha=0.2)
+            ranked = searcher.confidence_rerank(ranked, alpha=0.2, time_decay_half_life_days=90.0)
             dicts = [h.entity_to_dict(e, _score=score) for e, score in ranked]
             h.enrich_entity_version_counts(dicts, processor.storage)
             return ok(dicts)
@@ -222,7 +222,7 @@ def find_entities_search():
                 top_k=max_results,
                 semantic_threshold=threshold,
             )
-            hybrid_ents = searcher.confidence_rerank(hybrid_ents, alpha=0.2)
+            hybrid_ents = searcher.confidence_rerank(hybrid_ents, alpha=0.2, time_decay_half_life_days=90.0)
             dicts = [h.entity_to_dict(e, _score=score) for e, score in hybrid_ents]
             h.enrich_entity_version_counts(dicts, processor.storage)
             return ok(dicts)
@@ -239,7 +239,7 @@ def find_entities_search():
             # Confidence-weighted reranking: use rank-based scores for non-hybrid
             searcher = HybridSearcher(processor.storage)
             ranked = [(e, 1.0 - i * 0.01) for i, e in enumerate(entities)]
-            ranked = searcher.confidence_rerank(ranked, alpha=0.2)
+            ranked = searcher.confidence_rerank(ranked, alpha=0.2, time_decay_half_life_days=90.0)
             dicts = [h.entity_to_dict(e, _score=score) for e, score in ranked]
             h.enrich_entity_version_counts(dicts, processor.storage)
             return ok(dicts)
