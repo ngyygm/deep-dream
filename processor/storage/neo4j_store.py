@@ -2296,6 +2296,12 @@ class Neo4jStorageManager:
                               node.processed_time AS processed_time,
                               node.episode_id AS episode_id,
                               node.source_document AS source_document,
+                              node.valid_at AS valid_at,
+                              node.invalid_at AS invalid_at,
+                              node.summary AS summary,
+                              node.attributes AS attributes,
+                              node.confidence AS confidence,
+                              node.provenance AS provenance,
                               score AS bm25_score
                        ORDER BY score DESC
                        LIMIT $raw_limit""",
@@ -4534,17 +4540,28 @@ class Neo4jStorageManager:
     # ------------------------------------------------------------------
 
     def _is_dream_candidate(self, relation) -> bool:
-        """Check if a relation is an unverified dream candidate (tier=candidate, status=hypothesized)."""
+        """Check if a relation is a dream candidate that should be hidden from normal search.
+
+        Filters out both hypothesized and rejected candidates.
+        Verified/promoted candidates are NOT filtered (they appear in normal search).
+        """
         if not relation.attributes:
             return False
         try:
             attrs = json.loads(relation.attributes) if isinstance(relation.attributes, str) else relation.attributes
-            return attrs.get("tier") == "candidate" and attrs.get("status") == "hypothesized"
+            tier = attrs.get("tier")
+            status = attrs.get("status")
+            # Filter: tier is candidate AND status is not verified
+            return tier == "candidate" and status != "verified"
         except (json.JSONDecodeError, TypeError, AttributeError):
             return False
 
     def _filter_dream_candidates(self, relations: list, include_candidates: bool = False) -> list:
-        """Filter out unverified dream candidate relations unless explicitly requested."""
+        """Filter out dream candidate relations unless explicitly requested.
+
+        Removes hypothesized and rejected candidates from normal search results.
+        Verified/promoted candidates are always shown.
+        """
         if include_candidates or not relations:
             return relations
         return [r for r in relations if not self._is_dream_candidate(r)]
@@ -4697,6 +4714,8 @@ class Neo4jStorageManager:
     def get_candidate_relations(self, limit: int = 50, offset: int = 0,
                                  status: str = None) -> list:
         """获取候选层关系（包括已提升/已拒绝的 dream 关系）。"""
+        import json as _json
+
         with self._session() as session:
             # Query by source_document LIKE 'dream%' and attributes containing tier
             query_parts = ["""
@@ -4707,8 +4726,9 @@ class Neo4jStorageManager:
             params = {}
 
             if status:
-                query_parts.append(" AND r.attributes CONTAINS $status_str")
+                query_parts.append(" AND (r.attributes CONTAINS $status_str OR r.attributes CONTAINS $status_str_spaced)")
                 params["status_str"] = f'"status":"{status}"'
+                params["status_str_spaced"] = f'"status": "{status}"'
 
             query_parts.append("""
                 WITH r.family_id AS fid, COLLECT(r) AS rels
@@ -4756,6 +4776,7 @@ class Neo4jStorageManager:
                                     evidence_source: str = "manual",
                                     new_confidence: float = None) -> Dict[str, Any]:
         """将候选关系提升为已验证状态。"""
+        import json as _json
         import uuid as _uuid
 
         resolved = self.resolve_family_id(family_id)
@@ -4811,6 +4832,7 @@ class Neo4jStorageManager:
     def demote_candidate_relation(self, family_id: str,
                                    reason: str = "") -> Dict[str, Any]:
         """将候选关系降级为已拒绝状态。"""
+        import json as _json
         import uuid as _uuid
 
         resolved = self.resolve_family_id(family_id)
@@ -4860,6 +4882,7 @@ class Neo4jStorageManager:
     def corroborate_dream_relation(self, entity1_family_id: str, entity2_family_id: str,
                                     corroboration_source: str = "remember") -> Optional[Dict[str, Any]]:
         """当 remember 提取的关系与 dream 候选关系匹配时，自动增加佐证并可能提升。"""
+        import json as _json
         import uuid as _uuid
 
         rels = self.get_relations_by_entities(entity1_family_id, entity2_family_id,

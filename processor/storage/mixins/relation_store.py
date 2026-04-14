@@ -45,25 +45,27 @@ class RelationStoreMixin:
     # ------------------------------------------------------------------
 
     def _is_dream_candidate(self, relation: Relation) -> bool:
-        """Check if a relation is an unverified dream candidate (tier=candidate, status=hypothesized)."""
+        """Check if a relation is a dream candidate that should be hidden from normal search.
+
+        Filters out both hypothesized and rejected candidates.
+        Verified/promoted candidates are NOT filtered (they appear in normal search).
+        """
         if not relation.attributes:
             return False
         try:
             attrs = json.loads(relation.attributes) if isinstance(relation.attributes, str) else relation.attributes
-            return attrs.get("tier") == "candidate" and attrs.get("status") == "hypothesized"
+            tier = attrs.get("tier")
+            status = attrs.get("status")
+            return tier == "candidate" and status != "verified"
         except (json.JSONDecodeError, TypeError, AttributeError):
             return False
 
     def _filter_dream_candidates(self, relations: List[Relation],
                                   include_candidates: bool = False) -> List[Relation]:
-        """Filter out unverified dream candidate relations unless explicitly requested.
+        """Filter out dream candidate relations unless explicitly requested.
 
-        Args:
-            relations: Raw relation list from storage.
-            include_candidates: If True, return all relations including dream candidates.
-
-        Returns:
-            Filtered list with dream candidates removed (unless include_candidates=True).
+        Removes hypothesized and rejected candidates from normal search results.
+        Verified/promoted candidates are always shown.
         """
         if include_candidates or not relations:
             return relations

@@ -11,7 +11,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from flask import Blueprint, request
+from flask import Blueprint, current_app, request
 
 from server.blueprints.helpers import (
     ok,
@@ -315,7 +315,7 @@ def dream_run():
         )
 
         # Use persistent orchestrator from registry (preserves cross-cycle LRU history)
-        registry = request.app.config.get("registry")
+        registry = current_app.config.get("registry")
         if registry is not None:
             orchestrator = registry.get_dream_orchestrator(graph_id, config)
             dream_lock = registry.get_dream_lock(graph_id)
