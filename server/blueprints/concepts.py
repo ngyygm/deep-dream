@@ -304,7 +304,7 @@ def clear_communities():
 
 @concepts_bp.route("/api/v1/graphs", methods=["GET", "POST"])
 def handle_graphs():
-    """GET: 列出所有图谱。POST: 创建新图谱。"""
+    """GET: 列出所有图谱（含元数据和统计信息）。POST: 创建新图谱。"""
     if request.method == "POST":
         try:
             from server.registry import GraphRegistry
@@ -318,31 +318,56 @@ def handle_graphs():
                 return err(f"图谱 '{graph_id}' 已存在", 409)
             # 触发懒创建：访问 processor 即会初始化 graph.db
             registry.get_processor(graph_id)
-            return ok({"graph_id": graph_id, "message": "图谱创建成功"})
+            # 持久化元数据
+            from datetime import datetime, timezone
+            metadata = registry.set_graph_metadata(
+                graph_id,
+                name=data.get("name", ""),
+                description=data.get("description", ""),
+                created_at=datetime.now(timezone.utc).isoformat(),
+            )
+            metadata["graph_id"] = graph_id
+            return ok({"graph_id": graph_id, "message": "图谱创建成功", "metadata": metadata})
         except ValueError as e:
             return err(str(e), 400)
         except Exception as e:
             return err(str(e), 500)
     try:
         registry = current_app.config["registry"]
-        graphs = registry.list_graphs()
-        return ok({"graphs": graphs, "count": len(graphs)})
+        graphs = registry.list_graphs_info()
+        # Also return flat list for backward compat
+        graph_ids = [g["graph_id"] for g in graphs]
+        return ok({"graphs": graph_ids, "graphs_info": graphs, "count": len(graph_ids)})
     except Exception as e:
         return err(str(e), 500)
 
 
-@concepts_bp.route("/api/v1/graphs/<graph_id>", methods=["DELETE"])
-def delete_graph(graph_id: str):
-    """删除指定图谱（含所有数据）。"""
+@concepts_bp.route("/api/v1/graphs/<graph_id>", methods=["GET", "DELETE"])
+def handle_single_graph(graph_id: str):
+    """GET: 获取单个图谱详情。DELETE: 删除指定图谱。"""
+    if request.method == "DELETE":
+        try:
+            from server.registry import GraphRegistry
+            registry = current_app.config["registry"]
+            GraphRegistry.validate_graph_id(graph_id)
+            existing = registry.list_graphs()
+            if graph_id not in existing:
+                return err(f"图谱 '{graph_id}' 不存在", 404)
+            registry.delete_graph(graph_id)
+            return ok({"graph_id": graph_id, "message": "图谱已删除"})
+        except ValueError as e:
+            return err(str(e), 400)
+        except Exception as e:
+            return err(str(e), 500)
+    # GET
     try:
         from server.registry import GraphRegistry
         registry = current_app.config["registry"]
         GraphRegistry.validate_graph_id(graph_id)
-        existing = registry.list_graphs()
-        if graph_id not in existing:
+        info = registry.get_graph_info(graph_id)
+        if info is None:
             return err(f"图谱 '{graph_id}' 不存在", 404)
-        registry.delete_graph(graph_id)
-        return ok({"graph_id": graph_id, "message": "图谱已删除"})
+        return ok(info)
     except ValueError as e:
         return err(str(e), 400)
     except Exception as e:

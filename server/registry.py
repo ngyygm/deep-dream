@@ -4,11 +4,13 @@
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from server.config import merge_llm_alignment, resolve_embedding_model  # noqa: F401
 from processor.storage.embedding import EmbeddingClient
@@ -218,6 +220,62 @@ class GraphRegistry:
             return self._queues[graph_id]
 
     # ------------------------------------------------------------------
+    # 图谱元数据（metadata.json）
+    # ------------------------------------------------------------------
+
+    def _metadata_path(self, graph_id: str) -> Path:
+        """Return the path to a graph's metadata.json."""
+        return self._base_path / graph_id / "metadata.json"
+
+    def get_graph_metadata(self, graph_id: str) -> Dict[str, Any]:
+        """Read metadata for a graph. Returns empty dict if not stored."""
+        mp = self._metadata_path(graph_id)
+        if mp.is_file():
+            try:
+                return json.loads(mp.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                pass
+        return {}
+
+    def set_graph_metadata(self, graph_id: str, **kwargs) -> Dict[str, Any]:
+        """Write or merge metadata for a graph. Returns the full metadata after write."""
+        mp = self._metadata_path(graph_id)
+        existing = self.get_graph_metadata(graph_id)
+        # Only update keys that are provided and non-None
+        for k, v in kwargs.items():
+            if v is not None:
+                existing[k] = v
+        mp.parent.mkdir(parents=True, exist_ok=True)
+        mp.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
+        return existing
+
+    def get_graph_info(self, graph_id: str) -> Optional[Dict[str, Any]]:
+        """Get full info for a single graph: metadata + entity/relation counts.
+
+        Returns None if the graph directory does not exist.
+        """
+        graph_dir = self._base_path / graph_id
+        if not graph_dir.is_dir():
+            return None
+        metadata = self.get_graph_metadata(graph_id)
+        # Ensure graph_id is in metadata
+        metadata.setdefault("graph_id", graph_id)
+        # Try to get counts from processor (lazy — won't trigger init if not loaded)
+        entity_count = 0
+        relation_count = 0
+        processor = self._processors.get(graph_id)
+        if processor and hasattr(processor, "storage"):
+            try:
+                stats = processor.storage.get_stats()
+                entity_count = stats.get("entities", 0)
+                relation_count = stats.get("relations", 0)
+            except Exception:
+                pass
+        metadata["entity_count"] = entity_count
+        metadata["relation_count"] = relation_count
+        return metadata
+
+    # ------------------------------------------------------------------
     # 图谱列表
     # ------------------------------------------------------------------
 
@@ -236,6 +294,10 @@ class GraphRegistry:
                     (child / "docs").is_dir()):
                 result.append(child.name)
         return result
+
+    def list_graphs_info(self) -> List[Dict[str, Any]]:
+        """列出所有图谱及其元数据和统计信息。"""
+        return [info for gid in self.list_graphs() if (info := self.get_graph_info(gid)) is not None]
 
     # ------------------------------------------------------------------
     # 图谱删除

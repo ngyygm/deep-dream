@@ -108,7 +108,7 @@ def create_app(
     # 系统 API 前缀（不需要 graph_id）
     _SYSTEM_API_PREFIX = "/api/v1/system/"
 
-    # 简单内存限流（按 IP，滑动窗口）
+    # 简单内存限流（按 IP + graph_id，滑动窗口）
     _rate_limit_store: Dict[str, list] = {}
     _rate_limit_lock = threading.Lock()
     _RATE_LIMIT = int(config.get("rate_limit_per_minute", 0))
@@ -143,23 +143,26 @@ def create_app(
         if _RATE_LIMIT <= 0:
             return
         now = time.time()
+        # Rate limit is scoped per (IP, graph_id) to prevent cross-graph interference
         client_ip = request.remote_addr or "unknown"
+        gid = getattr(request, "graph_id", "default")
+        rate_key = f"{client_ip}|{gid}"
         with _rate_limit_lock:
-            timestamps = _rate_limit_store.get(client_ip)
+            timestamps = _rate_limit_store.get(rate_key)
             if timestamps is None:
-                _rate_limit_store[client_ip] = [now]
+                _rate_limit_store[rate_key] = [now]
                 return
             # 清理过期时间戳
             cutoff = now - _RATE_WINDOW
             timestamps = [t for t in timestamps if t > cutoff]
             timestamps.append(now)
-            _rate_limit_store[client_ip] = timestamps
-            # 定期清理长时间不活跃的 IP（超过窗口 2 倍时间未活跃则移除）
+            _rate_limit_store[rate_key] = timestamps
+            # 定期清理长时间不活跃的 key（超过窗口 2 倍时间未活跃则移除）
             if len(_rate_limit_store) > 1000:
-                stale_ips = [ip for ip, ts in _rate_limit_store.items()
-                             if not ts or ts[-1] < cutoff]
-                for ip in stale_ips:
-                    del _rate_limit_store[ip]
+                stale_keys = [k for k, ts in _rate_limit_store.items()
+                              if not ts or ts[-1] < cutoff]
+                for k in stale_keys:
+                    del _rate_limit_store[k]
             if len(timestamps) > _RATE_LIMIT:
                 return jsonify({"success": False, "error": "请求过于频繁，请稍后再试"}), 429
 

@@ -16,7 +16,8 @@ sys.stdin = os.fdopen(sys.stdin.fileno(), 'rb', buffering=0)
 
 DEBUG_LOG = "/tmp/deep-dream-mcp-debug.log"
 BASE_URL = os.environ.get("DEEP_DREAM_BASE_URL", "http://localhost:16200")
-GRAPH_ID = os.environ.get("DEEP_DREAM_GRAPH_ID", "default")
+_DEFAULT_GRAPH_ID = os.environ.get("DEEP_DREAM_GRAPH_ID", "default")
+_active_graph_id = _DEFAULT_GRAPH_ID  # runtime switchable
 
 _use_ndjson = False
 
@@ -67,10 +68,46 @@ def read_message():
 _client = httpx.Client(timeout=60.0)
 
 
-def _url(path, **qp):
-    """Build URL with graph_id query param."""
+def _resolve_graph_id(args):
+    """Resolve graph_id for a tool call.
+
+    Priority: per-call args['graph_id'] > _active_graph_id (set by switch_graph) > env default.
+    """
+    gid = args.get("graph_id")
+    if gid and isinstance(gid, str) and gid.strip():
+        return gid.strip()
+    return _active_graph_id
+
+
+# ── Per-call graph context ─────────────────────────────────────────────────
+# When a tool is dispatched, we set _current_call_graph_id so that _url() can
+# pick it up without every handler needing to pass graph_id explicitly.
+
+_current_call_graph_id = _DEFAULT_GRAPH_ID
+
+import contextlib
+
+
+@contextlib.contextmanager
+def _graph_context(args):
+    """Context manager: set per-call graph_id for the duration of a tool dispatch."""
+    global _current_call_graph_id
+    old = _current_call_graph_id
+    _current_call_graph_id = _resolve_graph_id(args)
+    try:
+        yield _current_call_graph_id
+    finally:
+        _current_call_graph_id = old
+
+
+def _url(path, graph_id=None, **qp):
+    """Build URL with graph_id query param.
+
+    Priority: explicit graph_id > per-call context > active graph > env default.
+    """
+    gid = graph_id or _current_call_graph_id or _active_graph_id
     sep = '&' if '?' in path else '?'
-    url = f"{BASE_URL}{path}{sep}graph_id={GRAPH_ID}"
+    url = f"{BASE_URL}{path}{sep}graph_id={gid}"
     for k, v in qp.items():
         if v is not None:
             url += f"&{k}={v}"
@@ -426,13 +463,25 @@ def _result(data, code):
 
 TOOLS = []
 
+# Shared graph_id parameter — injected into every tool for per-call graph routing.
+# If omitted, uses the active graph (set by switch_graph, defaults to env var).
+_GRAPH_ID_PARAM = {
+    "graph_id": {
+        "type": "string",
+        "description": "Target graph ID. If omitted, operates on the active graph (set via switch_graph, defaults to env DEEP_DREAM_GRAPH_ID='default'). Use list_graphs to see available graphs.",
+    },
+}
+
+
 def _t(name, desc, params, required=None):
+    # Inject graph_id into every tool's parameter schema
+    merged_params = {**params, **_GRAPH_ID_PARAM}
     TOOLS.append({
         "name": name,
         "description": desc,
         "inputSchema": {
             "type": "object",
-            "properties": params,
+            "properties": merged_params,
             **({"required": required} if required else {}),
         },
     })
@@ -855,12 +904,25 @@ _t("clear_communities", "Remove all community detection labels from entities. Do
 
 # ── Graphs (2) ───────────────────────────────────────────────────────────
 
-_t("list_graphs", "List all knowledge graphs registered in the system. Each graph is an isolated namespace — switch between them using DEEP_DREAM_GRAPH_ID.", {})
+# Note: list_graphs and create_graph don't use _GRAPH_ID_PARAM for graph routing
+# (they operate across graphs), but it's still injected — just ignored.
+
+_t("list_graphs", "List all knowledge graphs registered in the system. Each graph is an isolated namespace.", {})
 _t("create_graph", "Create a new knowledge graph. Each graph is an isolated namespace for entities and relations.", {
     "graph_id": {"type": "string", "description": "Unique graph identifier (e.g. 'my_project', 'research_notes')"},
     "name": {"type": "string", "description": "Human-readable name (optional)"},
     "description": {"type": "string", "description": "Graph description (optional)"},
 }, ["graph_id"])
+
+_t("delete_graph", "Delete a knowledge graph and all its data permanently. This cannot be undone.", {
+    "graph_id": {"type": "string", "description": "Graph ID to delete"},
+}, ["graph_id"])
+
+_t("switch_graph", "Switch the active graph for subsequent tool calls. All future operations will target this graph unless overridden with a per-call graph_id parameter. Returns the new active graph info.", {
+    "graph_id": {"type": "string", "description": "Graph ID to switch to. Must be an existing graph — use list_graphs to see available IDs."},
+}, ["graph_id"])
+
+_t("get_active_graph", "Get the currently active graph ID and its summary. All tool calls without an explicit graph_id parameter will target this graph.", {})
 
 
 # ── Docs (2) ─────────────────────────────────────────────────────────────
@@ -1072,6 +1134,11 @@ def _req(args, key):
     if isinstance(val, str) and not val.strip():
         raise ValueError(f"Parameter '{key}' must not be empty")
     return val
+
+
+def _gid(args):
+    """Extract per-call graph_id for HTTP routing. Removes it from args to avoid passing it to API body."""
+    return _resolve_graph_id(args)
 
 
 def _validate_absolute_id(value, param_name="absolute_id"):
@@ -2287,9 +2354,30 @@ def list_graphs(args):
     data, code = _get("/api/v1/graphs")
     if code < 400 and isinstance(data, dict):
         inner = _inner(data)
+        graphs_info = inner.get("graphs_info", [])
         graphs = inner.get("graphs", [])
-        if isinstance(graphs, list) and len(graphs) > 0:
-            _hint(data, f"\n→ {len(graphs)} graph(s). Switch graph via DEEP_DREAM_GRAPH_ID env var.")
+        if isinstance(graphs_info, list) and len(graphs_info) > 0:
+            active = _active_graph_id
+            parts = []
+            for g in graphs_info:
+                if not isinstance(g, dict):
+                    continue
+                gid = g.get("graph_id", "?")
+                marker = " (active)" if gid == active else ""
+                name = g.get("name", "")
+                ec = g.get("entity_count", "?")
+                rc = g.get("relation_count", "?")
+                label = f"'{gid}'{marker}"
+                if name:
+                    label += f" [{name}]"
+                label += f" ({ec}E/{rc}R)"
+                parts.append(label)
+            hint = f"\n→ {len(parts)} graph(s): {', '.join(parts)}. Use switch_graph(graph_id='...') to change active graph."
+            _hint(data, hint)
+        elif isinstance(graphs, list) and len(graphs) > 0:
+            active = _active_graph_id
+            graph_list = ", ".join(f"'{g}'{' (active)' if g == active else ''}" for g in graphs)
+            _hint(data, f"\n→ {len(graphs)} graph(s): {graph_list}. Use switch_graph(graph_id='...') to change active graph.")
     return _result(data, code)
 
 
@@ -2303,10 +2391,71 @@ def create_graph(args):
     data, code = _post("/api/v1/graphs", body)
     if code < 400:
         gid = args["graph_id"]
-        hint = f"\n→ Graph '{gid}' created. Use remember(content='...', source='{gid}') to start building."
+        hint = f"\n→ Graph '{gid}' created. Use switch_graph(graph_id='{gid}') to start using it."
         if isinstance(data, dict):
             _hint(data, hint)
     return _result(data, code)
+
+
+@_register
+def delete_graph(args):
+    gid = _req(args, "graph_id")
+    data, code = _delete(f"/api/v1/graphs/{gid}")
+    if code < 400:
+        # If deleted graph was active, switch back to default
+        global _active_graph_id
+        was_active = _active_graph_id == gid
+        if was_active:
+            _active_graph_id = _DEFAULT_GRAPH_ID
+        hint = f"\n→ Graph '{gid}' deleted permanently."
+        if was_active:
+            hint += f" Active graph reset to '{_active_graph_id}'."
+        else:
+            hint += f" Active graph remains '{_active_graph_id}'."
+        if isinstance(data, dict):
+            _hint(data, hint)
+    return _result(data, code)
+
+
+@_register
+def switch_graph(args):
+    """Switch the active graph for all subsequent tool calls."""
+    global _active_graph_id
+    gid = _req(args, "graph_id")
+    # Verify graph exists by listing
+    data, code = _get("/api/v1/graphs")
+    if code >= 400:
+        return _result(data, code)
+    inner = _inner(data) if isinstance(data, dict) else {}
+    graphs = inner.get("graphs", [])
+    if gid not in graphs:
+        available = ", ".join(f"'{g}'" for g in graphs) if graphs else "none"
+        return _result({"error": f"Graph '{gid}' does not exist. Available: {available}. Use create_graph first."}, 404)
+    old = _active_graph_id
+    _active_graph_id = gid
+    # Get summary of the new graph
+    summary_data, _ = _get("/api/v1/find/graph-summary")
+    summary_inner = _inner(summary_data) if isinstance(summary_data, dict) else {}
+    entity_count = summary_inner.get("entity_count", "?")
+    relation_count = summary_inner.get("relation_count", "?")
+    result = {
+        "active_graph": gid,
+        "previous_graph": old,
+        "entity_count": entity_count,
+        "relation_count": relation_count,
+    }
+    return {"content": [{"type": "text", "text": f"Switched active graph: '{old}' → '{gid}'\nGraph '{gid}': {entity_count} entities, {relation_count} relations."}]}
+
+
+@_register
+def get_active_graph(args):
+    """Get the currently active graph ID and its summary."""
+    gid = _active_graph_id
+    summary_data, _ = _get("/api/v1/find/graph-summary")
+    summary_inner = _inner(summary_data) if isinstance(summary_data, dict) else {}
+    entity_count = summary_inner.get("entity_count", "?")
+    relation_count = summary_inner.get("relation_count", "?")
+    return {"content": [{"type": "text", "text": f"Active graph: '{gid}' (env default: '{_DEFAULT_GRAPH_ID}')\nEntities: {entity_count}, Relations: {relation_count}"}]}
 
 
 # ── Docs ──────────────────────────────────────────────────────────────────
@@ -2963,7 +3112,9 @@ def handle_request(request):
             }
 
         try:
-            result = handler(arguments)
+            # Set per-call graph context so _url() picks up the right graph_id
+            with _graph_context(arguments):
+                result = handler(arguments)
             return {"jsonrpc": "2.0", "id": rid, "result": result}
         except Exception as e:
             debug_log(f"Tool error: {tool_name}: {e}")
@@ -2982,7 +3133,7 @@ def handle_request(request):
 
 
 def main():
-    debug_log(f"Deep Dream MCP Server starting, upstream={BASE_URL}, graph_id={GRAPH_ID}")
+    debug_log(f"Deep Dream MCP Server starting, upstream={BASE_URL}, default_graph_id={_DEFAULT_GRAPH_ID}")
     while True:
         try:
             request = read_message()
