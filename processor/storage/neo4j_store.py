@@ -4035,7 +4035,7 @@ class Neo4jStorageManager:
         Resolves entity references through family_id to find current versions.
         """
         with self._session() as session:
-            # Delete edges pointing to invalidated entities
+            # Step 1: Delete edges pointing to invalidated entities
             result = session.run("""
                 MATCH (a:Entity)-[r:RELATES_TO]->(b:Entity)
                 WHERE a.invalid_at IS NOT NULL OR b.invalid_at IS NOT NULL
@@ -4044,7 +4044,7 @@ class Neo4jStorageManager:
             """)
             deleted = result.single()["deleted"]
 
-            # Recreate edges for all valid relations using family_id resolution
+            # Step 2: MERGE edges for all valid relations (idempotent via relation_uuid)
             result2 = session.run("""
                 MATCH (rel:Relation) WHERE rel.invalid_at IS NULL
                 MATCH (ref1:Entity {uuid: rel.entity1_absolute_id})
@@ -4053,9 +4053,6 @@ class Neo4jStorageManager:
                 MATCH (ref2:Entity {uuid: rel.entity2_absolute_id})
                 MATCH (cur2:Entity {family_id: ref2.family_id})
                 WHERE cur2.invalid_at IS NULL
-                WHERE NOT EXISTS {
-                    MATCH (cur1)-[:RELATES_TO {relation_uuid: rel.uuid}]->(cur2)
-                }
                 MERGE (cur1)-[r:RELATES_TO {relation_uuid: rel.uuid}]->(cur2)
                 SET r.fact = rel.content
                 RETURN count(r) AS created
