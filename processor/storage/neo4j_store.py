@@ -1689,15 +1689,16 @@ class Neo4jStorageManager:
                      count(DISTINCT valid_r.family_id) AS relation_count,
                      collect(DISTINCT valid_r.entity1_absolute_id)
                      + collect(DISTINCT valid_r.entity2_absolute_id) AS rel_uuids
-                // 度数：按 family_id 聚合有效实体被引用次数
+                // 度数：按 RELATES_TO 边判断实体是否连通
                 UNWIND CASE WHEN entity_count > 0 THEN [1] ELSE [] END AS _trigger
                 MATCH (e:Entity) WHERE e.invalid_at IS NULL AND e.family_id IS NOT NULL
                 WITH total_entity_versions, total_relation_versions, entity_count,
                      relation_count, rel_uuids,
-                     e.family_id AS fid, e.uuid AS uid
+                     e.family_id AS fid, e.uuid AS uid, e AS ent
+                OPTIONAL MATCH (ent)-[:RELATES_TO]-()
                 WITH total_entity_versions, total_relation_versions, entity_count,
                      relation_count, rel_uuids, fid,
-                     CASE WHEN uid IN rel_uuids THEN 1 ELSE 0 END AS is_connected
+                     CASE WHEN count(*) > 0 THEN 1 ELSE 0 END AS is_connected
                 RETURN total_entity_versions, total_relation_versions,
                        entity_count, relation_count,
                        avg(CASE WHEN is_connected = 1 THEN 1.0 ELSE 0.0 END) AS avg_degree,
@@ -1787,36 +1788,21 @@ class Neo4jStorageManager:
     # ------------------------------------------------------------------
 
     def get_isolated_entities(self, limit: int = 100, offset: int = 0) -> List[Entity]:
-        """获取所有孤立实体（有效实体中不被任何有效 Relation 引用的）。"""
+        """获取所有孤立实体（有效实体中没有 RELATES_TO 边的）。"""
         with self._session() as session:
-            # 先收集所有被有效 Relation 引用的 entity uuid
-            r = session.run("""
-                MATCH (rel:Relation) WHERE rel.invalid_at IS NULL
-                WITH collect(DISTINCT rel.entity1_absolute_id)
-                   + collect(DISTINCT rel.entity2_absolute_id) AS aids
-                UNWIND aids AS aid
-                RETURN collect(DISTINCT aid) AS connected
-            """)
-            row = r.single()
-            connected = set(row["connected"]) if row and row["connected"] else set()
-
-            # 获取每个 family_id 的最新有效版本
             r = session.run(f"""
                 MATCH (e:Entity)
                 WHERE e.invalid_at IS NULL AND e.family_id IS NOT NULL
+                AND NOT EXISTS {{ MATCH (e)-[:RELATES_TO]-() }}
                 WITH e.family_id AS fid, COLLECT(e) AS ents
                 UNWIND ents AS e
                 WITH fid, e ORDER BY e.processed_time DESC
                 WITH fid, HEAD(COLLECT(e)) AS e
                 RETURN {_ENTITY_RETURN_FIELDS}
                 ORDER BY e.processed_time DESC
-            """)
-            isolated = []
-            for rec in r:
-                uid = rec.get("uuid")
-                if uid and uid not in connected:
-                    isolated.append(_neo4j_record_to_entity(rec))
-            return isolated[offset:offset + limit]
+                SKIP $offset LIMIT $limit
+            """, offset=offset, limit=limit)
+            return [_neo4j_record_to_entity(rec) for rec in r]
 
     def count_isolated_entities(self) -> int:
         """统计孤立实体数量。"""
