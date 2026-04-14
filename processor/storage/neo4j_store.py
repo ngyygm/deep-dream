@@ -2276,7 +2276,8 @@ class Neo4jStorageManager:
             logger.warning("BM25 search failed, falling back to empty: %s", e)
             return []
 
-    def search_relations_by_bm25(self, query: str, limit: int = 20) -> List[Relation]:
+    def search_relations_by_bm25(self, query: str, limit: int = 20,
+                                  include_candidates: bool = False) -> List[Relation]:
         """BM25 全文搜索关系（Neo4j 5.x 全文索引），去重 family_id 只保留最高分版本。"""
         if not query:
             return []
@@ -2311,7 +2312,7 @@ class Neo4jStorageManager:
                     relations.append(_neo4j_record_to_relation(record))
                     if len(relations) >= limit:
                         break
-                return relations
+                return self._filter_dream_candidates(relations, include_candidates)
         except Exception as e:
             logger.warning("BM25 search failed, falling back to empty: %s", e)
             return []
@@ -2628,10 +2629,12 @@ class Neo4jStorageManager:
                 relation.embedding = np.array(emb, dtype=np.float32).tobytes()
             return relation
 
-    def get_relations_by_entities(self, from_family_id: str, to_family_id: str) -> List[Relation]:
+    def get_relations_by_entities(self, from_family_id: str, to_family_id: str,
+                                   include_candidates: bool = False) -> List[Relation]:
         """根据两个 family_id 获取所有关系（合并为 2 次 session 查询）。"""
         with _perf_timer("get_relations_by_entities"):
-            return self._get_relations_by_entities_impl(from_family_id, to_family_id)
+            result = self._get_relations_by_entities_impl(from_family_id, to_family_id)
+            return self._filter_dream_candidates(result, include_candidates)
 
     def _get_relations_by_entities_impl(self, from_family_id: str, to_family_id: str) -> List[Relation]:
         """根据两个 family_id 获取所有关系（实际实现）。"""
@@ -2761,7 +2764,8 @@ class Neo4jStorageManager:
 
 
     def get_entity_relations(self, entity_absolute_id: str, limit: Optional[int] = None,
-                              time_point: Optional[datetime] = None) -> List[Relation]:
+                              time_point: Optional[datetime] = None,
+                              include_candidates: bool = False) -> List[Relation]:
         """获取与指定实体相关的所有关系。"""
         with self._session() as session:
             if time_point:
@@ -2793,14 +2797,17 @@ class Neo4jStorageManager:
             if limit is not None:
                 query += f" LIMIT {int(limit)}"
             result = session.run(query, **params)
-            return [_neo4j_record_to_relation(r) for r in result]
+            relations = [_neo4j_record_to_relation(r) for r in result]
+            return self._filter_dream_candidates(relations, include_candidates)
 
     def get_entity_relations_by_family_id(self, family_id: str, limit: Optional[int] = None,
                                            time_point: Optional[datetime] = None,
-                                           max_version_absolute_id: Optional[str] = None) -> List[Relation]:
+                                           max_version_absolute_id: Optional[str] = None,
+                                           include_candidates: bool = False) -> List[Relation]:
         """通过 family_id 获取实体的所有关系（包含所有版本）。"""
         with _perf_timer("get_entity_relations_by_family_id"):
-            return self._get_entity_relations_by_family_id_impl(family_id, limit, time_point, max_version_absolute_id)
+            result = self._get_entity_relations_by_family_id_impl(family_id, limit, time_point, max_version_absolute_id)
+            return self._filter_dream_candidates(result, include_candidates)
 
     def _get_entity_relations_by_family_id_impl(self, family_id: str, limit: Optional[int] = None,
                                                  time_point: Optional[datetime] = None,
@@ -2927,7 +2934,8 @@ class Neo4jStorageManager:
             return timeline
 
     def get_relations_by_entity_absolute_ids(self, entity_absolute_ids: List[str],
-                                              limit: Optional[int] = None) -> List[Relation]:
+                                              limit: Optional[int] = None,
+                                              include_candidates: bool = False) -> List[Relation]:
         """根据 absolute_id 列表获取关系。"""
         if not entity_absolute_ids:
             return []
@@ -2945,7 +2953,8 @@ class Neo4jStorageManager:
             if limit is not None:
                 query += f" LIMIT {int(limit)}"
             result = session.run(query, abs_ids=entity_absolute_ids)
-            return [_neo4j_record_to_relation(r) for r in result]
+            relations = [_neo4j_record_to_relation(r) for r in result]
+            return self._filter_dream_candidates(relations, include_candidates)
 
     def get_entity_absolute_ids_up_to_version(self, family_id: str, max_absolute_id: str) -> List[str]:
         """获取从最早版本到指定版本的所有 absolute_id。"""
@@ -2968,7 +2977,8 @@ class Neo4jStorageManager:
             return [r["uuid"] for r in result]
 
     def get_all_relations(self, limit: Optional[int] = None, offset: Optional[int] = None,
-                           exclude_embedding: bool = False) -> List[Relation]:
+                           exclude_embedding: bool = False,
+                           include_candidates: bool = False) -> List[Relation]:
         """获取所有关系的最新版本。"""
         with self._session() as session:
             query = _q("""
@@ -2997,7 +3007,7 @@ class Neo4jStorageManager:
                 if emb_list:
                     rel.embedding = np.array(emb_list, dtype=np.float32).tobytes()
 
-        return relations
+        return self._filter_dream_candidates(relations, include_candidates)
 
     def _get_relations_with_embeddings(self) -> List[tuple]:
         """获取所有关系的最新版本及其 embedding（带短 TTL 缓存）。"""
@@ -3043,16 +3053,19 @@ class Neo4jStorageManager:
 
     def search_relations_by_similarity(self, query_text: str,
                                        threshold: float = 0.3,
-                                       max_results: int = 10) -> List[Relation]:
+                                       max_results: int = 10,
+                                       include_candidates: bool = False) -> List[Relation]:
         """根据相似度搜索关系。"""
         if self.embedding_client and self.embedding_client.is_available():
             # KNN 路径：不需要加载全量数据
-            return self._search_relations_with_embedding(
+            results = self._search_relations_with_embedding(
                 query_text, [], threshold, max_results
             )
+            return self._filter_dream_candidates(results, include_candidates)
         else:
             # BM25 替代文本全量扫描
-            return self.search_relations_by_bm25(query_text, limit=max_results)
+            return self.search_relations_by_bm25(query_text, limit=max_results,
+                                                  include_candidates=include_candidates)
 
     def _search_relations_with_embedding(self, query_text: str,
                                           relations_with_embeddings: List[tuple],
@@ -4516,11 +4529,34 @@ class Neo4jStorageManager:
 
         return pairs[:count * 2]
 
+    # ------------------------------------------------------------------
+    # Dream candidate filtering (mirrors SQLite RelationStoreMixin)
+    # ------------------------------------------------------------------
+
+    def _is_dream_candidate(self, relation) -> bool:
+        """Check if a relation is an unverified dream candidate (tier=candidate, status=hypothesized)."""
+        if not relation.attributes:
+            return False
+        try:
+            attrs = json.loads(relation.attributes) if isinstance(relation.attributes, str) else relation.attributes
+            return attrs.get("tier") == "candidate" and attrs.get("status") == "hypothesized"
+        except (json.JSONDecodeError, TypeError, AttributeError):
+            return False
+
+    def _filter_dream_candidates(self, relations: list, include_candidates: bool = False) -> list:
+        """Filter out unverified dream candidate relations unless explicitly requested."""
+        if include_candidates or not relations:
+            return relations
+        return [r for r in relations if not self._is_dream_candidate(r)]
+
     def save_dream_relation(self, entity1_id: str, entity2_id: str,
                             content: str, confidence: float, reasoning: str,
                             dream_cycle_id: Optional[str] = None,
                             episode_id: Optional[str] = None) -> Dict[str, Any]:
         """创建或合并梦境发现的关系。
+
+        Blueprint line 147: Dream relations start as candidates (tier=candidate,
+        status=hypothesized, confidence capped at 0.5).
 
         Returns: {"family_id": "...", "entity1_family_id": "...", "entity2_family_id": "...", "action": "created"|"merged"}
         Raises: ValueError 如果实体不存在
@@ -4544,8 +4580,8 @@ class Neo4jStorageManager:
         if not entity2:
             raise ValueError(f"实体不存在: {entity2_id}")
 
-        # 检查是否已存在关系 — 合并而非报错
-        existing = self.get_relations_by_entities(resolved1, resolved2)
+        # Check existing relation (include candidates so we can merge with them)
+        existing = self.get_relations_by_entities(resolved1, resolved2, include_candidates=True)
         if existing:
             latest = existing[0]
             # 合并：取较高 confidence，追加 reasoning
@@ -4570,6 +4606,16 @@ class Neo4jStorageManager:
             source_doc = f"dream:{dream_cycle_id}" if dream_cycle_id else "dream"
             merged_content = f"{latest.content}\n[Dream update] {content}" if content != latest.content else latest.content
 
+            # Preserve existing attributes (tier, status, corroboration state)
+            try:
+                merged_attrs = _json.loads(latest.attributes) if latest.attributes else {}
+            except (_json.JSONDecodeError, TypeError):
+                merged_attrs = {}
+            # Track additional dream cycle
+            if dream_cycle_id:
+                merged_attrs.setdefault("additional_dream_cycles", [])
+                merged_attrs["additional_dream_cycles"].append(dream_cycle_id)
+
             relation = Relation(
                 absolute_id=record_id,
                 family_id=latest.family_id,
@@ -4582,6 +4628,7 @@ class Neo4jStorageManager:
                 source_document=source_doc,
                 confidence=new_confidence,
                 provenance=_json.dumps(old_prov, ensure_ascii=False),
+                attributes=_json.dumps(merged_attrs) if merged_attrs else latest.attributes,
             )
             self.save_relation(relation)
             return {
@@ -4621,8 +4668,15 @@ class Neo4jStorageManager:
             processed_time=now,
             episode_id=episode_id or "",
             source_document=source_doc,
-            confidence=confidence,
+            confidence=min(confidence, 0.5),  # Blueprint: cap at 0.5 for new candidates
             provenance=_json.dumps([provenance_data], ensure_ascii=False),
+            attributes=_json.dumps({
+                "tier": "candidate",
+                "status": "hypothesized",
+                "corroboration_count": 0,
+                "created_by_dream": dream_cycle_id or "unknown",
+                "created_at": now.isoformat(),
+            }),
         )
 
         self.save_relation(relation)
@@ -4634,6 +4688,292 @@ class Neo4jStorageManager:
             "entity1_name": entity1.name,
             "entity2_name": entity2.name,
             "action": "created",
+        }
+
+    # ------------------------------------------------------------------
+    # Dream candidate lifecycle methods (port from SQLite dream_store.py)
+    # ------------------------------------------------------------------
+
+    def get_candidate_relations(self, limit: int = 50, offset: int = 0,
+                                 status: str = None) -> list:
+        """获取候选层关系（包括已提升/已拒绝的 dream 关系）。"""
+        with self._session() as session:
+            # Query by source_document LIKE 'dream%' and attributes containing tier
+            query_parts = ["""
+                MATCH (r:Relation)
+                WHERE r.source_document STARTS WITH 'dream'
+                  AND r.invalid_at IS NULL
+            """]
+            params = {}
+
+            if status:
+                query_parts.append(" AND r.attributes CONTAINS $status_str")
+                params["status_str"] = f'"status":"{status}"'
+
+            query_parts.append("""
+                WITH r.family_id AS fid, COLLECT(r) AS rels
+                UNWIND rels AS r
+                WITH fid, r ORDER BY r.processed_time DESC
+                WITH fid, HEAD(COLLECT(r)) AS r
+                RETURN __REL_FIELDS__
+                ORDER BY r.processed_time DESC
+            """)
+
+            query = _q("".join(query_parts))
+            if offset > 0:
+                query += f" SKIP {int(offset)}"
+            query += f" LIMIT {int(limit)}"
+
+            result = session.run(query, **params)
+            relations = [_neo4j_record_to_relation(r) for r in result]
+
+        # Post-filter: only return actual candidate-tier relations
+        filtered = []
+        for rel in relations:
+            try:
+                attrs = _json.loads(rel.attributes) if rel.attributes else {}
+            except (ValueError, TypeError):
+                attrs = {}
+            tier = attrs.get("tier")
+            if tier in ("candidate", "verified", "rejected"):
+                if status is None or attrs.get("status") == status:
+                    filtered.append(rel)
+        return filtered
+
+    def count_candidate_relations(self, status: str = None) -> int:
+        """统计候选层关系数量。"""
+        relations = self.get_candidate_relations(limit=10000, status=status)
+        # Deduplicate by family_id
+        seen = set()
+        count = 0
+        for rel in relations:
+            if rel.family_id not in seen:
+                seen.add(rel.family_id)
+                count += 1
+        return count
+
+    def promote_candidate_relation(self, family_id: str,
+                                    evidence_source: str = "manual",
+                                    new_confidence: float = None) -> Dict[str, Any]:
+        """将候选关系提升为已验证状态。"""
+        import uuid as _uuid
+
+        resolved = self.resolve_family_id(family_id)
+        if not resolved:
+            raise ValueError(f"关系不存在: {family_id}")
+
+        rel = self.get_relation_by_family_id(resolved)
+        if not rel:
+            raise ValueError(f"关系不存在: {family_id}")
+
+        try:
+            attrs = _json.loads(rel.attributes) if rel.attributes else {}
+        except (ValueError, TypeError):
+            attrs = {}
+
+        old_status = attrs.get("status", "unknown")
+        old_tier = attrs.get("tier", "unknown")
+
+        attrs["tier"] = "verified"
+        attrs["status"] = "verified"
+        attrs["promoted_by"] = evidence_source
+        attrs["promoted_at"] = datetime.now().isoformat()
+        attrs["corroboration_count"] = attrs.get("corroboration_count", 0) + 1
+
+        now = datetime.now()
+        record_id = f"relation_{now.strftime('%Y%m%d_%H%M%S')}_{_uuid.uuid4().hex[:8]}"
+        new_conf = new_confidence if new_confidence is not None else max(rel.confidence or 0.5, 0.7)
+
+        relation = Relation(
+            absolute_id=record_id,
+            family_id=rel.family_id,
+            entity1_absolute_id=rel.entity1_absolute_id,
+            entity2_absolute_id=rel.entity2_absolute_id,
+            content=rel.content,
+            event_time=now,
+            processed_time=now,
+            episode_id=rel.episode_id,
+            source_document=rel.source_document,
+            confidence=new_conf,
+            attributes=_json.dumps(attrs),
+        )
+        self.save_relation(relation)
+
+        return {
+            "family_id": resolved,
+            "old_status": old_status,
+            "old_tier": old_tier,
+            "new_status": "verified",
+            "new_tier": "verified",
+            "confidence": new_conf,
+        }
+
+    def demote_candidate_relation(self, family_id: str,
+                                   reason: str = "") -> Dict[str, Any]:
+        """将候选关系降级为已拒绝状态。"""
+        import uuid as _uuid
+
+        resolved = self.resolve_family_id(family_id)
+        if not resolved:
+            raise ValueError(f"关系不存在: {family_id}")
+
+        rel = self.get_relation_by_family_id(resolved)
+        if not rel:
+            raise ValueError(f"关系不存在: {family_id}")
+
+        try:
+            attrs = _json.loads(rel.attributes) if rel.attributes else {}
+        except (ValueError, TypeError):
+            attrs = {}
+
+        old_status = attrs.get("status", "unknown")
+
+        attrs["status"] = "rejected"
+        attrs["rejected_reason"] = reason
+        attrs["rejected_at"] = datetime.now().isoformat()
+
+        now = datetime.now()
+        record_id = f"relation_{now.strftime('%Y%m%d_%H%M%S')}_{_uuid.uuid4().hex[:8]}"
+
+        relation = Relation(
+            absolute_id=record_id,
+            family_id=rel.family_id,
+            entity1_absolute_id=rel.entity1_absolute_id,
+            entity2_absolute_id=rel.entity2_absolute_id,
+            content=rel.content,
+            event_time=now,
+            processed_time=now,
+            episode_id=rel.episode_id,
+            source_document=rel.source_document,
+            confidence=min(rel.confidence or 0.3, 0.2),
+            attributes=_json.dumps(attrs),
+        )
+        self.save_relation(relation)
+
+        return {
+            "family_id": resolved,
+            "old_status": old_status,
+            "new_status": "rejected",
+            "confidence": relation.confidence,
+        }
+
+    def corroborate_dream_relation(self, entity1_family_id: str, entity2_family_id: str,
+                                    corroboration_source: str = "remember") -> Optional[Dict[str, Any]]:
+        """当 remember 提取的关系与 dream 候选关系匹配时，自动增加佐证并可能提升。"""
+        import uuid as _uuid
+
+        rels = self.get_relations_by_entities(entity1_family_id, entity2_family_id,
+                                               include_candidates=True)
+        if not rels:
+            return None
+
+        for rel in rels:
+            try:
+                attrs = _json.loads(rel.attributes) if rel.attributes else {}
+            except (ValueError, TypeError):
+                attrs = {}
+
+            if (attrs.get("tier") == "candidate" and
+                attrs.get("status") == "hypothesized" and
+                rel.source_document and rel.source_document.startswith("dream")):
+
+                count = attrs.get("corroboration_count", 0) + 1
+                attrs["corroboration_count"] = count
+                attrs.setdefault("corroboration_sources", []).append(corroboration_source)
+
+                if count >= 2:
+                    # Save updated attributes so promote reads them
+                    now = datetime.now()
+                    record_id = f"relation_{now.strftime('%Y%m%d_%H%M%S')}_{_uuid.uuid4().hex[:8]}"
+                    new_conf = min((rel.confidence or 0.5) + 0.1, 0.69)
+
+                    pre_promote = Relation(
+                        absolute_id=record_id,
+                        family_id=rel.family_id,
+                        entity1_absolute_id=rel.entity1_absolute_id,
+                        entity2_absolute_id=rel.entity2_absolute_id,
+                        content=rel.content,
+                        event_time=now,
+                        processed_time=now,
+                        episode_id=rel.episode_id,
+                        source_document=rel.source_document,
+                        confidence=new_conf,
+                        attributes=_json.dumps(attrs),
+                    )
+                    self.save_relation(pre_promote)
+
+                    return self.promote_candidate_relation(
+                        rel.family_id,
+                        evidence_source=f"auto:{corroboration_source}",
+                    )
+                else:
+                    now = datetime.now()
+                    record_id = f"relation_{now.strftime('%Y%m%d_%H%M%S')}_{_uuid.uuid4().hex[:8]}"
+                    new_conf = min((rel.confidence or 0.5) + 0.1, 0.69)
+
+                    updated = Relation(
+                        absolute_id=record_id,
+                        family_id=rel.family_id,
+                        entity1_absolute_id=rel.entity1_absolute_id,
+                        entity2_absolute_id=rel.entity2_absolute_id,
+                        content=rel.content,
+                        event_time=now,
+                        processed_time=now,
+                        episode_id=rel.episode_id,
+                        source_document=rel.source_document,
+                        confidence=new_conf,
+                        attributes=_json.dumps(attrs),
+                    )
+                    self.save_relation(updated)
+
+                    return {
+                        "family_id": rel.family_id,
+                        "corroboration_count": count,
+                        "status": "hypothesized",
+                        "confidence": new_conf,
+                        "message": f"佐证计数: {count}/2，需要2次佐证才能提升",
+                    }
+
+        return None
+
+    def reject_dream_cycle_relations(self, dream_cycle_id: str) -> Dict[str, Any]:
+        """批量拒绝指定 Dream 周期产生的所有未验证候选关系。"""
+        source_doc = f"dream:{dream_cycle_id}"
+        with self._session() as session:
+            result = session.run(
+                _q("""
+                    MATCH (r:Relation {source_document: $src})
+                    WHERE r.invalid_at IS NULL
+                    WITH r.family_id AS fid, COLLECT(r) AS rels
+                    UNWIND rels AS r
+                    WITH fid, r ORDER BY r.processed_time DESC
+                    WITH fid, HEAD(COLLECT(r)) AS r
+                    RETURN __REL_FIELDS__
+                """),
+                src=source_doc,
+            )
+            relations = [_neo4j_record_to_relation(r) for r in result]
+
+        family_ids = set()
+        for rel in relations:
+            try:
+                attrs = _json.loads(rel.attributes) if rel.attributes else {}
+            except (ValueError, TypeError):
+                attrs = {}
+            if attrs.get("tier") == "candidate" and attrs.get("status") == "hypothesized":
+                family_ids.add(rel.family_id)
+
+        rejected = 0
+        for fid in family_ids:
+            try:
+                self.demote_candidate_relation(fid, reason=f"批量拒绝: dream cycle {dream_cycle_id}")
+                rejected += 1
+            except Exception:
+                pass
+
+        return {
+            "rejected_count": rejected,
+            "cycle_id": dream_cycle_id,
         }
 
     def save_dream_episode(self, content: str,
