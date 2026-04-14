@@ -4041,6 +4041,44 @@ class Neo4jStorageManager:
             """ % _tp_filter), family_ids=family_ids, limit=limit, **_tp_param)
             return [_neo4j_record_to_relation(r) for r in result]
 
+
+    def refresh_relates_to_edges(self):
+        """Rebuild RELATES_TO edges that point to invalidated entity versions.
+
+        Called after entity alignment to ensure graph traversal stays consistent.
+        Resolves entity references through family_id to find current versions.
+        """
+        with self._session() as session:
+            # Delete edges pointing to invalidated entities
+            result = session.run("""
+                MATCH (a:Entity)-[r:RELATES_TO]->(b:Entity)
+                WHERE a.invalid_at IS NOT NULL OR b.invalid_at IS NOT NULL
+                DELETE r
+                RETURN count(r) AS deleted
+            """)
+            deleted = result.single()["deleted"]
+
+            # Recreate edges for all valid relations using family_id resolution
+            result2 = session.run("""
+                MATCH (rel:Relation) WHERE rel.invalid_at IS NULL
+                MATCH (ref1:Entity {uuid: rel.entity1_absolute_id})
+                MATCH (cur1:Entity {family_id: ref1.family_id})
+                WHERE cur1.invalid_at IS NULL
+                MATCH (ref2:Entity {uuid: rel.entity2_absolute_id})
+                MATCH (cur2:Entity {family_id: ref2.family_id})
+                WHERE cur2.invalid_at IS NULL
+                WHERE NOT EXISTS {
+                    MATCH (cur1)-[:RELATES_TO {relation_uuid: rel.uuid}]->(cur2)
+                }
+                MERGE (cur1)-[r:RELATES_TO {relation_uuid: rel.uuid}]->(cur2)
+                SET r.fact = rel.content
+                RETURN count(r) AS created
+            """)
+            created = result2.single()["created"]
+            if deleted > 0 or created > 0:
+                logger.info("refresh_relates_to_edges: deleted=%d stale, created=%d new", deleted, created)
+            return {"deleted": deleted, "created": created}
+
     def batch_get_entity_degrees(self, family_ids: List[str]) -> Dict[str, int]:
         """批量获取实体度数 — 单次 Cypher 查询替代 N 次 get_entity_degree。"""
         if not family_ids:

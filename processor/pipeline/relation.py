@@ -205,6 +205,9 @@ class RelationProcessor:
 
         if relations_to_persist:
             self.storage.bulk_save_relations(relations_to_persist)
+            # Refresh stale RELATES_TO edges (entity versions may have changed during alignment)
+            if hasattr(self.storage, 'refresh_relates_to_edges'):
+                self.storage.refresh_relates_to_edges()
 
         # Confidence corroboration: version-updated relations get confidence boost
         for fid in all_corroborated_family_ids:
