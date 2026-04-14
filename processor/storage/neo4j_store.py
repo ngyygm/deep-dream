@@ -2463,8 +2463,10 @@ class Neo4jStorageManager:
                     WHERE r.uuid <> abs_id AND r.invalid_at IS NULL
                     SET r.invalid_at = datetime(et)
                     WITH $uuid AS rel_uuid, $e1_abs AS e1, $e2_abs AS e2, $content AS fact
-                    MATCH (n1:Entity {uuid: e1})
-                    MATCH (n2:Entity {uuid: e2})
+                    MATCH (ref1:Entity {uuid: e1})
+                    MATCH (n1:Entity {family_id: ref1.family_id}) WHERE n1.invalid_at IS NULL
+                    MATCH (ref2:Entity {uuid: e2})
+                    MATCH (n2:Entity {family_id: ref2.family_id}) WHERE n2.invalid_at IS NULL
                     MERGE (n1)-[rel:RELATES_TO {relation_uuid: rel_uuid}]->(n2)
                     SET rel.fact = fact
                     """,
@@ -2545,8 +2547,9 @@ class Neo4jStorageManager:
                     emb_list = list(np.frombuffer(embedding_blob, dtype=np.float32))
                     vec_items.append((relation.absolute_id, emb_list))
 
-            # 一次 UNWIND 替代 N 次 session.run
+            # 批量写入：先写 Relation 节点，再单独创建 RELATES_TO 边
             with self._session() as session:
+                # Pass 1: Create/update Relation nodes + invalidate old versions
                 session.run(
                     """
                     UNWIND $rows AS row
@@ -2570,13 +2573,22 @@ class Neo4jStorageManager:
                     MATCH (r:Relation {family_id: row.family_id})
                     WHERE r.uuid <> row.uuid AND r.invalid_at IS NULL
                     SET r.invalid_at = datetime(row.event_time)
-                    WITH row
-                    MATCH (n1:Entity {uuid: row.e1_abs})
-                    MATCH (n2:Entity {uuid: row.e2_abs})
-                    MERGE (n1)-[rel:RELATES_TO {relation_uuid: row.uuid}]->(n2)
-                    SET rel.fact = row.content
                     """,
                     rows=rows,
+                )
+                # Pass 2: Create RELATES_TO edges (resolve to current entity versions via family_id)
+                edge_rows = [{"uuid": r["uuid"], "e1": r["e1_abs"], "e2": r["e2_abs"], "fact": r["content"]} for r in rows]
+                session.run(
+                    """
+                    UNWIND $edges AS e
+                    MATCH (ref1:Entity {uuid: e.e1})
+                    MATCH (n1:Entity {family_id: ref1.family_id}) WHERE n1.invalid_at IS NULL
+                    MATCH (ref2:Entity {uuid: e.e2})
+                    MATCH (n2:Entity {family_id: ref2.family_id}) WHERE n2.invalid_at IS NULL
+                    MERGE (n1)-[rel:RELATES_TO {relation_uuid: e.uuid}]->(n2)
+                    SET rel.fact = e.fact
+                    """,
+                    edges=edge_rows,
                 )
 
             if vec_items:
