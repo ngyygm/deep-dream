@@ -1,0 +1,31 @@
+{
+  "bypassPermissions": true,
+  "permissions": {
+    "allow": [
+      "Bash(*)",
+      "Edit",
+      "Write",
+      "Read",
+      "Glob",
+      "Grep",
+      "WebFetch",
+      "WebSearch",
+      "NotebookEdit",
+      "TodoWrite",
+      "Task",
+      "MultiEdit"
+    ]
+  },
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/linkco/.claude/plugins/marketplaces/claude-code-plugins/plugins/ralph-wiggum/hooks/stop-hook.sh"
+          }
+        ]
+      }
+    ]
+  }
+}

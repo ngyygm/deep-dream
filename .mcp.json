@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "deep-dream": {
+      "command": "/home/linkco/anaconda3/bin/python3",
+      "args": ["server/mcp/deep_dream_server.py"],
+      "env": {
+        "DEEP_DREAM_BASE_URL": "http://localhost:16200",
+        "DEEP_DREAM_GRAPH_ID": "default"
+      }
+    }
+  }
+}

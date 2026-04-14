@@ -275,6 +275,54 @@ def find_unified():
             if _boosted:
                 final_entities = _boosted + _rest
 
+        # --- Step 7: Format output ---
+        output_format = str(body.get("format", "full") or "full").strip().lower()
+
+        if output_format == "compact":
+            # Agent-optimized compact format: minimal fields, save tokens
+            compact_entities = []
+            for e in final_entities:
+                ce = {
+                    "fid": e.family_id,
+                    "name": e.name,
+                    "score": round(entity_score_map.get(e.absolute_id, 0.0), 3),
+                }
+                if getattr(e, "summary", None):
+                    s = e.summary
+                    ce["summary"] = s[:150] + ("..." if len(s) > 150 else "")
+                elif e.content:
+                    s = e.content
+                    ce["summary"] = s[:150] + ("..." if len(s) > 150 else "")
+                if getattr(e, "confidence", None) is not None:
+                    ce["conf"] = round(e.confidence, 2)
+                compact_entities.append(ce)
+
+            compact_relations = []
+            all_abs_ids = set()
+            for r in final_relations:
+                all_abs_ids.add(r.entity1_absolute_id)
+                all_abs_ids.add(r.entity2_absolute_id)
+            name_map = storage.get_entity_names_by_absolute_ids(list(all_abs_ids))
+            for r in final_relations:
+                cr = {
+                    "fid": r.family_id,
+                    "from": name_map.get(r.entity1_absolute_id, "?"),
+                    "to": name_map.get(r.entity2_absolute_id, "?"),
+                    "rel": r.content[:100] if r.content else "",
+                    "score": round(relation_score_map.get(r.absolute_id, 0.0), 3),
+                }
+                if getattr(r, "relation_type", None):
+                    cr["type"] = r.relation_type
+                compact_relations.append(cr)
+
+            return ok({
+                "query": query,
+                "entities": compact_entities,
+                "relations": compact_relations,
+                "counts": {"entities": len(compact_entities), "relations": len(compact_relations)},
+            })
+
+        # Full format (default): backward compatible
         result: Dict[str, Any] = {
             "query": query,
             "entities": [entity_to_dict(e, _score=entity_score_map.get(e.absolute_id)) for e in final_entities],

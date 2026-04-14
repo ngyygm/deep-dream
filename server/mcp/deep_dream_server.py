@@ -1112,6 +1112,27 @@ _t("get_concept_mentions", "Get all episodes that mention a given concept. Alias
 }, ["family_id"])
 
 
+
+# -- Composite workflow tools --------------------------------------------------
+
+_t("remember_and_explore", "Remember text AND immediately show what was extracted. Combines remember (sync) + quick_search in one call. Best for: 'remember this and show me what you learned'.", {
+    "content": {"type": "string", "description": "Text content to remember"},
+    "source": {"type": "string", "description": "Source label"},
+}, ["content"])
+
+_t("explore_topic", "Deep-explore a topic: search for it, then traverse connected entities to build a knowledge map. Returns entities, relations, and their connections.", {
+    "topic": {"type": "string", "description": "Topic or question to explore"},
+    "depth": {"type": "integer", "description": "Traversal depth from found entities (default 2)"},
+}, ["topic"])
+
+_t("graph_overview", "Get a quick overview of the active graph: stats, recent activity, and graph health. Perfect starting point for any session.", {})
+
+_t("dream_quick_start", "Start a dream cycle with sensible defaults. Combines status check + dream start in one call. Returns immediately if dream is already running.", {
+    "max_cycles": {"type": "integer", "description": "Number of dream cycles (default 5)"},
+    "strategies": {"type": "array", "items": {"type": "string"}, "description": "Dream strategies (default: free_association, cross_domain, leap)"},
+})
+
+
 # ── Tool dispatch ─────────────────────────────────────────────────────────
 
 _TOOL_MAP = {}
@@ -1316,6 +1337,7 @@ def semantic_search(args):
         elif mode == "relations":
             body["max_entities"] = 0
     body["expand"] = _arg(args, "expand", False)
+    body["format"] = "compact"
     data, code = _post("/api/v1/find", body)
     if code < 400:
         data = _compact_list(data, _compact_entity, "entities")
@@ -3071,6 +3093,118 @@ def get_concept_mentions(args):
         if isinstance(mentions, list) and len(mentions) > 0:
             hint = f"\n→ Mentioned in {len(mentions)} episodes."
             _hint(data, hint)
+    return _result(data, code)
+
+
+
+# -- Composite workflow handlers -----------------------------------------------
+
+@_register
+def remember_and_explore(args):
+    text = _req(args, "content")
+    if len(text.strip()) < 5:
+        raise ValueError("content too short (min 5 chars)")
+    body = {"text": text, "wait": True, "timeout": 300}
+    if _arg(args, "source"):
+        body["source_name"] = args["source"]
+    data, code = _post("/api/v1/remember", body)
+    if code >= 400:
+        return _result(data, code)
+    # Now search for what was extracted
+    search_data, search_code = _post("/api/v1/find", {"query": text[:200], "search_mode": "hybrid", "max_entities": 10, "max_relations": 10, "format": "compact"})
+    result = _inner(data) if isinstance(data, dict) else {}
+    search_inner = _inner(search_data) if isinstance(search_data, dict) else {}
+    combined = {
+        "remember_status": result.get("status", "unknown"),
+        "remember_result": result.get("result", {}),
+        "extracted_entities": [_compact_entity(e) for e in search_inner.get("entities", [])[:10]],
+        "extracted_relations": [_compact_relation(r) for r in search_inner.get("relations", [])[:10]],
+    }
+    _hint(combined, "\n\u2192 Use entity_profile(family_id=...) to explore any entity in detail.")
+    return _result({"success": True, "data": combined}, 200)
+
+
+@_register
+def explore_topic(args):
+    topic = _req(args, "topic")
+    depth = _arg(args, "depth", 2)
+    # Step 1: Search
+    search_data, search_code = _post("/api/v1/find", {"query": topic, "search_mode": "hybrid", "max_entities": 5, "max_relations": 5, "format": "compact"})
+    if search_code >= 400:
+        return _result(search_data, search_code)
+    search_inner = _inner(search_data) if isinstance(search_data, dict) else {}
+    entities = search_inner.get("entities", [])
+    relations = search_inner.get("relations", [])
+
+    # Step 2: Traverse from top entities
+    traversal_entities = []
+    traversal_relations = []
+    seed_fids = [e.get("family_id") for e in entities[:3] if e.get("family_id")]
+    if seed_fids:
+        trav_data, trav_code = _post("/api/v1/find/traverse", {
+            "start_entity_ids": seed_fids, "max_depth": min(depth, 4), "max_nodes": 30
+        })
+        if trav_code < 400:
+            trav_inner = _inner(trav_data) if isinstance(trav_data, dict) else {}
+            traversal_entities = trav_inner.get("entities", [])
+            traversal_relations = trav_inner.get("relations", [])
+
+    combined = {
+        "search_results": {
+            "entities": [_compact_entity(e) for e in entities[:5]],
+            "relations": [_compact_relation(r) for r in relations[:5]],
+        },
+        "graph_context": {
+            "entities": [_compact_entity(e) for e in traversal_entities[:20]],
+            "relations": [_compact_relation(r) for r in traversal_relations[:20]],
+            "depth": depth,
+        },
+    }
+    _hint(combined, "\n\u2192 Use entity_profile(family_id=...) for details on any entity.")
+    return _result({"success": True, "data": combined}, 200)
+
+
+@_register
+def graph_overview(args):
+    # Get graph summary
+    summary_data, _ = _get("/api/v1/find/graph-summary")
+    # Get recent activity
+    recent_data, _ = _get("/api/v1/find/entities", limit=5, sort="recent")
+
+    summary_inner = _inner(summary_data) if isinstance(summary_data, dict) else {}
+    recent_inner = _inner(recent_data) if isinstance(recent_data, dict) else {}
+
+    combined = {
+        "graph_id": _current_call_graph_id,
+        "stats": {k: v for k, v in summary_inner.items() if k in ("entity_count", "relation_count", "episode_count", "storage_backend", "embedding_available")},
+        "recent_entities": [_compact_entity(e) for e in recent_inner.get("entities", [])[:5]],
+    }
+    return _result({"success": True, "data": combined}, 200)
+
+
+
+@_register
+def dream_quick_start(args):
+    """Start dream with smart defaults - checks status first."""
+    # Check if dream is already running
+    status_data, status_code = _get("/api/v1/find/dream/status")
+    if status_code < 400:
+        status_inner = _inner(status_data) if isinstance(status_data, dict) else {}
+        if status_inner.get("running") or status_inner.get("is_running"):
+            _hint(status_data, "\n\u2192 Dream is already running. Use get_dream_status to monitor progress.")
+            return _result(status_data, status_code)
+
+    # Start dream with defaults
+    body = {
+        "max_cycles": _arg(args, "max_cycles", 5),
+        "strategies": _arg(args, "strategies", ["free_association", "cross_domain", "leap"]),
+        "strategy_mode": "round_robin",
+        "confidence_threshold": 0.6,
+        "max_tool_calls_per_cycle": 15,
+    }
+    data, code = _post("/api/v1/find/dream/run", body)
+    if code < 400:
+        _hint(data, "\n\u2192 Dream started. Use get_dream_status to monitor. Use get_dream_logs to review discoveries.")
     return _result(data, code)
 
 
