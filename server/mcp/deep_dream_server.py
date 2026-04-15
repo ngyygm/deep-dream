@@ -654,8 +654,9 @@ _t("batch_delete_entities", "Delete multiple entities at once by their family ID
     "family_ids": {"type": "array", "items": {"type": "string"}, "description": "List of entity family IDs to delete"},
 }, ["family_ids"])
 
-_t("merge_entities", "Merge multiple entities into one. All relations and versions are consolidated into the target entity. Workflow: (1) search_similar_entities or find_entity_by_name to identify duplicates, (2) batch_profiles to compare content, (3) merge_entities to consolidate. Irreversible — verify before merging.", {
+_t("merge_entities", "Merge multiple entities into one. All relations and versions are consolidated into the target entity. Workflow: (1) search_similar_entities or find_entity_by_name to identify duplicates, (2) batch_profiles to compare content, (3) merge_entities to consolidate. For cross-language duplicates (e.g. 'Microsoft' and '微软'), set skip_name_check=true. Irreversible — verify before merging.", {
     "family_ids": {"type": "array", "items": {"type": "string"}, "description": "All entity family IDs to merge (target + sources)"},
+    "skip_name_check": {"type": "boolean", "description": "Skip name similarity check. Required for cross-language duplicates (e.g. English + Chinese names for same entity)."},
     "target_family_id": {"type": "string", "description": "Which entity to keep as the target (optional, defaults to first)"},
     "target_name": {"type": "string", "description": "New name for merged entity (optional)"},
     "target_summary": {"type": "string", "description": "New summary for merged entity (optional)"},
@@ -1664,6 +1665,8 @@ def merge_entities(args):
     target_id = _arg(args, "target_family_id") or (family_ids[0] if family_ids else "")
     source_ids = [fid for fid in family_ids if fid != target_id]
     body = {"target_family_id": target_id, "source_family_ids": source_ids}
+    if args.get("skip_name_check"):
+        body["skip_name_check"] = True
     data, code = _post("/api/v1/find/entities/merge", body)
     if code < 400:
         hint = f"\n→ Merged into {target_id}. Use entity_profile(family_id='{target_id}') to verify the merged result."
