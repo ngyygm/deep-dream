@@ -662,6 +662,10 @@ _t("merge_entities", "Merge multiple entities into one. All relations and versio
     "target_summary": {"type": "string", "description": "New summary for merged entity (optional)"},
 }, ["family_ids"])
 
+
+_t("refresh_graph_edges", "Rebuild RELATES_TO traversal edges from Relation nodes. Call after entity merges, alignment, or dream cycles to ensure graph traversal is consistent. Idempotent - safe to call repeatedly. Returns count of deleted stale + created new edges.", {}, [])
+
+
 _t("split_entity_version", "Separate a specific version into its own new entity. Useful when an entity has accumulated mixed topics across versions. Workflow: get_entity_versions → identify the version to split → split_entity_version. Get the version_id (absolute_id) from get_entity_versions.", {
     "family_id": {"type": "string", "description": "Source entity family ID"},
     "version_id": {"type": "string", "description": "Version absolute ID to split out"},
@@ -1676,6 +1680,15 @@ def merge_entities(args):
 
 
 @_register
+
+def refresh_graph_edges(args):
+    data, code = _post("/api/v1/find/entities/refresh-edges", {})
+    if code < 400:
+        result = data.get("result", {})
+        return f"Edge refresh complete: deleted={result.get('deleted', 0)} stale, created={result.get('created', 0)} new"
+    return f"Error: {data}"
+
+
 def split_entity_version(args):
     vid = args.get("version_id", "").strip()
     if not vid:

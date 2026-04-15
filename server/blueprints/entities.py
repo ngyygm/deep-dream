@@ -396,6 +396,25 @@ def merge_entities():
         return err(str(e), 500)
 
 
+
+
+@entities_bp.route("/api/v1/find/entities/refresh-edges", methods=["POST"])
+def refresh_edges():
+    """Rebuild RELATES_TO edges from valid Relation nodes.
+
+    Useful after entity alignment, merges, or dream cycles to ensure
+    graph traversal stays consistent. Idempotent - safe to call repeatedly.
+    """
+    processor = _get_processor()
+    try:
+        if hasattr(processor.storage, 'refresh_relates_to_edges'):
+            result = processor.storage.refresh_relates_to_edges()
+            return ok({"message": "RELATES_TO edges refreshed", "result": result})
+        else:
+            return err("Storage backend does not support refresh_relates_to_edges", 501)
+    except Exception as e:
+        return err(str(e), 500)
+
 @entities_bp.route("/api/v1/find/entities/isolated", methods=["GET"])
 def find_isolated_entities():
     try:
