@@ -406,6 +406,38 @@ class DreamOrchestrator:
                 for eid, info in entity_lookup.items()
                 if eid != fid
             ]
+
+            # Fallback for isolated seeds: use embedding similarity to find neighbors
+            if not neighbor_data and hasattr(self.storage, 'search_entities_by_similarity'):
+                try:
+                    seed_name = seed.get("name", "")
+                    seed_content = (seed.get("content") or "")[:200]
+                    sim_results = self.storage.search_entities_by_similarity(
+                        query_name=seed_name,
+                        query_content=seed_content,
+                        limit=config.max_neighbors_per_seed,
+                    )
+                    for ent in sim_results:
+                        efid = getattr(ent, 'family_id', None)
+                        if efid and efid != fid and getattr(ent, 'invalid_at', None) is None:
+                            info = {
+                                "family_id": efid,
+                                "name": getattr(ent, 'name', ''),
+                                "content": (getattr(ent, 'content', '') or '')[:200],
+                            }
+                            neighbor_data.append(info)
+                            if efid not in entity_lookup:
+                                entity_lookup[efid] = {
+                                    "family_id": efid,
+                                    "name": info["name"],
+                                    "content": info["content"],
+                                }
+                                seen_ids.add(efid)
+                    if neighbor_data:
+                        logger.info("Dream: 孤立种子 %s 通过embedding找到 %d 个候选邻居", seed_name, len(neighbor_data))
+                except Exception as exc:
+                    logger.warning("Dream: embedding fallback failed for seed %s: %s", fid, exc)
+
             explored.append({
                 "seed": {"family_id": fid, "name": seed.get("name", "")},
                 "neighbors": neighbor_data[:20],

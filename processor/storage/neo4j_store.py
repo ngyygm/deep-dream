@@ -4480,7 +4480,9 @@ class Neo4jStorageManager:
     def _dream_seeds_orphan(self, count, exclude_uuids, community_id):
         with self._session() as session:
             result = session.run("""
-                MATCH (e:Entity) WHERE NOT (e)--()
+                MATCH (e:Entity)
+                WHERE e.invalid_at IS NULL
+                  AND NOT (e)-[:RELATES_TO]-()
                   AND NOT e.uuid IN $exclude_uuids
                   AND ($cid IS NULL OR e.community_id = $cid)
                 RETURN e.uuid AS uuid, e.family_id AS family_id,
