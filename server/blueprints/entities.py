@@ -389,7 +389,8 @@ def merge_entities():
         target = processor.storage.get_entity_by_family_id(target_id)
         if target is None:
             return err(f"目标实体不存在: {target_id}", 404)
-        result = processor.storage.merge_entity_families(target_id, source_ids)
+        skip_name_check = body.get("skip_name_check", False)
+        result = processor.storage.merge_entity_families(target_id, source_ids, skip_name_check=skip_name_check)
         return ok({"message": "实体合并完成", "target_family_id": target_id, "source_family_ids": source_ids, "merged_count": result})
     except Exception as e:
         return err(str(e), 500)
