@@ -872,7 +872,7 @@ _t("save_dream_episode", "Save a dream exploration episode record. Call this AFT
 
 # ── Agent / Ask (3) ──────────────────────────────────────────────────────
 
-_t("ask", "Ask a natural language question about the knowledge graph. The AI will reason over entities and relations to produce an answer. For complex questions, provide context for better results.", {
+_t("ask", "Ask a natural language question â AI reasons over entities and relations to produce a comprehensive answer. Best for synthesis, comparisons, summaries. For raw data, use quick_search instead. Supports context parameter for follow-ups.", {
     "question": {"type": "string", "description": "Question to ask (e.g. 'How are X and Y related?')"},
     "context": {"type": "string", "description": "Additional context to guide the answer (optional)"},
 }, ["question"])
@@ -1058,7 +1058,7 @@ _t("butler_execute", "Execute butler optimization actions on the memory graph. G
     "dry_run": {"type": "boolean", "description": "Preview only without executing (default false). Strongly recommended for evolve_summaries since it uses LLM calls."},
 }, ["actions"])
 
-_t("quick_search", "All-in-one search: auto-selects the best search mode and returns both entities and relations in a single call. This is the RECOMMENDED starting point for most searches. Use this instead of semantic_search unless you need specific mode control or expand context. Typical use: 'What does the graph know about X?' → quick_search(query='X').", {
+_t("quick_search", "All-in-one search: returns entities + relations in one call. RECOMMENDED for most searches. After results: entity_profile(family_id) for details, traverse_graph for connections, ask(question) for AI answers. Use this instead of semantic_search unless you need specific mode control or expand context. Typical use: 'What does the graph know about X?' → quick_search(query='X').", {
     "query": {"type": "string", "description": "Search query text"},
     "max_entities": {"type": "integer", "description": "Max entities to return (default 10, max 50)"},
     "max_relations": {"type": "integer", "description": "Max relations to return (default 20, max 100)"},
@@ -1120,19 +1120,19 @@ _t("get_concept_mentions", "Get all episodes that mention a given concept. Alias
 
 # -- Composite workflow tools --------------------------------------------------
 
-_t("remember_and_explore", "Remember text AND immediately show what was extracted. Combines remember (sync) + quick_search in one call. Best for: 'remember this and show me what you learned'.", {
+_t("remember_and_explore", "Remember text AND immediately show extracted results. Combines remember + quick_search in one call. RECOMMENDED over bare remember() when you want to verify what was stored. Follow up with entity_profile for specific entities.", {
     "content": {"type": "string", "description": "Text content to remember"},
     "source": {"type": "string", "description": "Source label"},
 }, ["content"])
 
-_t("explore_topic", "Deep-explore a topic: search for it, then traverse connected entities to build a knowledge map. Returns entities, relations, and their connections.", {
+_t("explore_topic", "Deep-explore a topic: search + traverse in one call. Returns entities, relations, and connections as a knowledge map. Follow up with entity_profile for specific entities or ask(question) for AI synthesis.", {
     "topic": {"type": "string", "description": "Topic or question to explore"},
     "depth": {"type": "integer", "description": "Traversal depth from found entities (default 2)"},
 }, ["topic"])
 
-_t("graph_overview", "Get a quick overview of the active graph: stats, recent activity, and graph health. Perfect starting point for any session.", {})
+_t("graph_overview", "CALL THIS FIRST at session start. Returns graph stats, recent activity, and health. Use results to decide next: quick_search for queries, remember for new data, dream_quick_start for consolidation, butler_report for maintenance.", {})
 
-_t("dream_quick_start", "Start a dream cycle with sensible defaults. Combines status check + dream start in one call. Returns immediately if dream is already running.", {
+_t("dream_quick_start", "Start a dream cycle (offline consolidation that discovers hidden connections). Combines status check + dream start. After completion, use get_dream_logs to review discoveries or quick_search to find new relations.", {
     "max_cycles": {"type": "integer", "description": "Number of dream cycles (default 5)"},
     "strategies": {"type": "array", "items": {"type": "string"}, "description": "Dream strategies (default: free_association, cross_domain, leap)"},
 })
@@ -1683,12 +1683,10 @@ def merge_entities(args):
 
 def refresh_graph_edges(args):
     data, code = _post("/api/v1/find/entities/refresh-edges", {})
-    if code < 400:
-        result = data.get("result", {})
-        return f"Edge refresh complete: deleted={result.get('deleted', 0)} stale, created={result.get('created', 0)} new"
-    return f"Error: {data}"
+    return _result(data, code)
 
 
+@_register
 def split_entity_version(args):
     vid = args.get("version_id", "").strip()
     if not vid:
@@ -2471,8 +2469,8 @@ def switch_graph(args):
         return _result({"error": f"Graph '{gid}' does not exist. Available: {available}. Use create_graph first."}, 404)
     old = _active_graph_id
     _active_graph_id = gid
-    # Get summary of the new graph
-    summary_data, _ = _get("/api/v1/find/graph-summary")
+    # Get summary of the new graph (pass graph_id explicitly since _current_call_graph_id may be stale)
+    summary_data, _ = _get("/api/v1/find/graph-summary", graph_id=gid)
     summary_inner = _inner(summary_data) if isinstance(summary_data, dict) else {}
     entity_count = summary_inner.get("entity_count", "?")
     relation_count = summary_inner.get("relation_count", "?")
@@ -2489,7 +2487,7 @@ def switch_graph(args):
 def get_active_graph(args):
     """Get the currently active graph ID and its summary."""
     gid = _active_graph_id
-    summary_data, _ = _get("/api/v1/find/graph-summary")
+    summary_data, _ = _get("/api/v1/find/graph-summary", graph_id=gid)
     summary_inner = _inner(summary_data) if isinstance(summary_data, dict) else {}
     entity_count = summary_inner.get("entity_count", "?")
     relation_count = summary_inner.get("relation_count", "?")
@@ -3158,7 +3156,7 @@ def explore_topic(args):
     seed_fids = [e.get("family_id") for e in entities[:3] if e.get("family_id")]
     if seed_fids:
         trav_data, trav_code = _post("/api/v1/find/traverse", {
-            "start_entity_ids": seed_fids, "max_depth": min(depth, 4), "max_nodes": 30
+            "seed_family_ids": seed_fids, "max_depth": min(depth, 4), "max_nodes": 30
         })
         if trav_code < 400:
             trav_inner = _inner(trav_data) if isinstance(trav_data, dict) else {}
@@ -3241,6 +3239,16 @@ def handle_request(request):
                 "protocolVersion": "2024-11-05",
                 "capabilities": {"tools": {}},
                 "serverInfo": {"name": "deep-dream", "version": "1.0.0"},
+                "instructions": "Deep Dream is a knowledge graph memory layer. Key workflows:\n"
+                    "FIND: quick_search(query) for most queries; find_entity_by_name(name) for exact lookup; "
+                    "entity_profile(family_id) for full details; explore_topic(topic) for deep exploration; "
+                    "ask(question) for AI-powered Q&A.\n"
+                    "REMEMBER: remember(content) to store text (async, returns task_id); "
+                    "remember_and_explore(content) for store+search in one call.\n"
+                    "DREAM: dream_quick_start() to start consolidation; get_dream_seeds(strategy) for manual exploration.\n"
+                    "MAINTAIN: graph_overview() at session start; butler_report() for AI maintenance.\n"
+                    "Tips: Start with graph_overview(). Prefer quick_search over semantic_search. "
+                    "Use entity_profile over get_entity. Use batch_profiles for multiple entities.",
             },
         }
 

@@ -95,7 +95,8 @@ registerPage('episodes', (function () {
               <div class="flex items-center gap-2 mb-1">
                 ${ep.episode_type ? `<span class="badge badge-secondary">${escapeHtml(ep.episode_type)}</span>` : ''}
                 ${ep.source_document ? `<span class="badge badge-info">${escapeHtml(truncate(ep.source_document, 30))}</span>` : ''}
-                ${ep.event_time ? `<span class="text-xs" style="color:var(--text-muted);">${formatDate(ep.event_time)}</span>` : ''}
+                ${ep.event_time ? `<span class="text-xs mono" style="color:var(--text-muted);">${formatDate(ep.event_time)}</span>` : ''}
+                ${ep.processed_time ? `<span class="text-xs mono" style="color:var(--text-muted);margin-left:0.25rem;">${formatDateMs(ep.processed_time)}</span>` : ''}
               </div>
               <p class="text-sm" style="color:var(--text-primary);line-height:1.5;">${escapeHtml(truncate(ep.content, 200))}</p>
             </div>
@@ -160,7 +161,8 @@ registerPage('episodes', (function () {
         <span style="color:var(--text-secondary);">UUID:</span><span class="font-mono text-xs">${escapeHtml(ep.uuid || '')}</span>
         ${ep.episode_type ? `<span style="color:var(--text-secondary);">${t('episodes.episodeType')}:</span><span>${escapeHtml(ep.episode_type)}</span>` : ''}
         <span style="color:var(--text-secondary);">${t('common.source')}:</span><span>${escapeHtml(ep.source_document || '-')}</span>
-        <span style="color:var(--text-secondary);">${t('common.time')}:</span><span>${formatDate(ep.event_time)}</span>
+        <span style="color:var(--text-secondary);">${t('relations.eventTime')}:</span><span class="mono" style="font-size:0.8125rem;">${formatDate(ep.event_time)}</span>
+        ${ep.processed_time ? `<span style="color:var(--text-secondary);">${t('relations.processedTime')}:</span><span class="mono" style="font-size:0.8125rem;">${formatDateMs(ep.processed_time)}</span>` : ''}
       </div>`;
 
       body += `<div>

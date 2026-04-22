@@ -244,7 +244,8 @@ def list_episodes():
             return err("此功能需要 Neo4j 或 SQLite 后端", 400)
         limit = min(max(int(request.args.get('limit', 20)), 1), 100)
         offset = max(int(request.args.get('offset', 0)), 0)
-        episodes = processor.storage.list_episodes(limit=limit, offset=offset)
+        include_text = request.args.get('include_text', '0') in ('1', 'true')
+        episodes = processor.storage.list_episodes(limit=limit, offset=offset, include_text=include_text)
         total = processor.storage.count_episodes()
         return ok({"episodes": episodes, "total": total, "limit": limit, "offset": offset})
     except Exception as e:

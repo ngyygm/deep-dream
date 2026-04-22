@@ -199,13 +199,20 @@ window.GraphUtils = (function () {
         var isHighlight = highlightAbsId && e.absolute_id === highlightAbsId;
         var hopLevel = hopMap ? hopMap[e.absolute_id] : undefined;
 
-        // Label formatting
-        var label;
+        // Version count — needed early for label and styling decisions
+        var vc = versionCounts[e.family_id] || 1;
+        var isMultiVersion = vc > 1;
+
+        // Label: entity name + version count [v2] for multi-version entities
+        // In focus mode version-switching, show "2/3" inside the focused node
+        var label = baseName;
+        if (isMultiVersion) {
+          label = baseName + ' [v' + vc + ']';
+        }
+        var showVersionInside = false;
         if (isHighlight && versionLabel && versionLabel.total > 1) {
-          label = baseName + ' [' + versionLabel.idx + '/' + versionLabel.total + ']';
-        } else {
-          var vc = versionCounts[e.family_id] || 1;
-          label = vc > 1 ? baseName + ' [' + vc + ']' : baseName;
+          label = versionLabel.idx + '/' + versionLabel.total;
+          showVersionInside = true;
         }
 
         // ---- Color selection ----
@@ -286,37 +293,102 @@ window.GraphUtils = (function () {
           borderColor = defaultColor.border;
         }
 
-        // Node size
+        // Node size — discrete tiers by relation count
+        var relationCount = options.relationCounts ? (options.relationCounts[e.absolute_id] || 0) : 0;
         var nodeSize;
         if (hasTypeColoring) {
-          nodeSize = isHighlight ? 25 : NODE_SIZES[Math.min(hopLevel || 1, NODE_SIZES.length - 1)];
+          nodeSize = isHighlight ? 30 : NODE_SIZES[Math.min(hopLevel || 1, NODE_SIZES.length - 1)];
         } else if (options.colorMode === 'search' && rankMap) {
           nodeSize = rankMap[e.absolute_id] === 1 ? 28
             : (rankMap[e.absolute_id] <= 5 ? 22 : (rankMap[e.absolute_id] <= 10 ? 18 : 14));
+        } else if (relationCount > 100) {
+          nodeSize = 45;
+        } else if (relationCount > 50) {
+          nodeSize = 38;
+        } else if (relationCount > 20) {
+          nodeSize = 32;
+        } else if (relationCount > 10) {
+          nodeSize = 26;
+        } else if (relationCount > 5) {
+          nodeSize = 22;
+        } else if (relationCount > 0) {
+          nodeSize = 16;
         } else {
-          nodeSize = isHighlight ? 25 : (hopLevel === 0 ? 25 : 20);
+          nodeSize = 10; // isolated nodes
+        }
+
+        // Version badge: gold border + glow for multi-version entities
+        var borderWidth = 1;
+        var shadow = { enabled: false };
+        var versionBorderColor = borderColor;
+        if (isMultiVersion) {
+          borderWidth = 1.5 + Math.min(vc * 0.3, 2.5);
+          versionBorderColor = light ? '#d97706' : '#fbbf24'; // amber-600 / amber-400
+          shadow = {
+            enabled: true,
+            color: 'rgba(251, 191, 36, 0.3)',
+            size: Math.min(4 + vc * 1, 14),
+            x: 0,
+            y: 0,
+          };
         }
 
         var nodeFontColor = isHighlight ? highlightFontColor : labelFontColor;
 
+        // Shape: 'dot' by default (label outside = entity name always visible)
+        // Only focused entity in version-switch mode uses 'circle' (version label inside)
+        var nodeShape = 'dot';
+        var borderWidthSelected = 2;
+        var nodeFontSize = isHighlight ? 12 : 11;
+
+        if (showVersionInside) {
+          nodeShape = 'circle';
+          borderWidthSelected = 3;
+          nodeFontSize = Math.max(10, Math.min(14, nodeSize * 0.5));
+          nodeFontColor = light ? '#1e293b' : '#ffffff';
+        }
+
+        // Build rich HTML tooltip
+        var tooltipHtml = '<div style="max-width:280px;padding:4px 0;">';
+        tooltipHtml += '<div style="font-weight:600;font-size:0.85rem;margin-bottom:4px;">' + (typeof escapeHtml !== 'undefined' ? escapeHtml(baseName) : baseName) + '</div>';
+        if (isMultiVersion) {
+          tooltipHtml += '<div style="font-size:0.75rem;color:#d97706;margin-bottom:4px;">⏱ ' + vc + ' versions</div>';
+        }
+        if (e.content) {
+          var contentPreview = e.content.substring(0, 150).replace(/\n/g, ' ');
+          if (e.content.length > 150) contentPreview += '...';
+          tooltipHtml += '<div style="font-size:0.75rem;color:#64748b;line-height:1.4;">' + (typeof escapeHtml !== 'undefined' ? escapeHtml(contentPreview) : contentPreview) + '</div>';
+        }
+        if (e.processed_time) {
+          var dateStr = new Date(e.processed_time).toLocaleDateString();
+          tooltipHtml += '<div style="font-size:0.6875rem;color:#94a3b8;margin-top:4px;">📅 ' + dateStr + '</div>';
+        }
+        tooltipHtml += '</div>';
+
         return {
           id: e.absolute_id,
           label: label,
-          title: typeof escapeHtml !== 'undefined' ? escapeHtml(typeof truncate !== 'undefined' ? truncate(e.content || e.name || '', 80) : (e.content || e.name || '')) : (e.content || e.name || ''),
+          // title: tooltipHtml,  // Disabled: custom hover panel (graph-explorer.js) replaces vis-network tooltip
           color: {
             background: bgColor,
-            border: borderColor,
-            highlight: { background: borderColor, border: '#a5b4fc' },
-            hover: { background: borderColor, border: '#a5b4fc' },
+            border: isMultiVersion ? versionBorderColor : borderColor,
+            highlight: { background: isMultiVersion ? versionBorderColor : borderColor, border: '#a5b4fc' },
+            hover: { background: isMultiVersion ? versionBorderColor : borderColor, border: '#a5b4fc' },
           },
+          borderWidth: borderWidth,
+          borderWidthSelected: borderWidthSelected,
+          shadow: shadow,
           size: nodeSize,
-          shape: 'dot',
+          shape: nodeShape,
           font: {
             color: nodeFontColor,
-            size: isHighlight ? 12 : 11,
+            size: nodeFontSize,
             face: 'Inter, sans-serif',
-            bold: isHighlight ? { color: nodeFontColor, size: 12, face: 'Inter, sans-serif' } : undefined,
+            bold: isHighlight || isMultiVersion ? { color: nodeFontColor, size: nodeFontSize, face: 'Inter, sans-serif' } : undefined,
           },
+          // Custom metadata
+          _isMultiVersion: isMultiVersion,
+          _baseColor: bgColor,
         };
       })
     );
@@ -399,13 +471,13 @@ window.GraphUtils = (function () {
             }
           }
 
+          // Edge tooltip handled by custom hover panel in graph-explorer.js
           return {
             id: r.absolute_id,
             from: r.entity1_absolute_id,
             to: r.entity2_absolute_id,
             color: edgeColor,
             dashes: dashes,
-            title: typeof escapeHtml !== 'undefined' ? escapeHtml(typeof truncate !== 'undefined' ? truncate(r.content || '', 80) : (r.content || '')) : (r.content || ''),
             smooth: {
               enabled: true,
               type: 'continuous',
@@ -470,7 +542,8 @@ window.GraphUtils = (function () {
   function getInteractionOptions() {
     return {
       hover: true,
-      tooltipDelay: 200,
+      tooltipDelay: 0,
+      hideTooltipOnDragMove: false,
       zoomView: true,
       dragView: true,
       navigationButtons: false,

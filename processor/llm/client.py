@@ -16,7 +16,7 @@ import threading
 import time
 
 from ..models import Episode
-from ..utils import clean_separator_tags, wprint
+from ..utils import clean_separator_tags, wprint_info
 from .chat_api import ollama_chat, openai_compatible_chat
 from .errors import LLMContextBudgetExceeded
 from .memory_ops import _MemoryOpsMixin
@@ -27,6 +27,8 @@ from .consolidation import _ConsolidationMixin
 from .summary_evolution import SummaryEvolutionMixin
 from .contradiction import ContradictionDetectionMixin
 from .agent_query import AgentQueryMixin
+from .v2_extraction import _V2ExtractionMixin
+from .v3_extraction import _V3ExtractionMixin
 
 try:
     from openai import RateLimitError
@@ -128,7 +130,8 @@ LLM_PRIORITY_STEP7 = 6   # 步骤7: 关系对齐
 
 class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixin,
                  _ContentMergerMixin, _ConsolidationMixin, SummaryEvolutionMixin,
-                 ContradictionDetectionMixin, AgentQueryMixin):
+                 ContradictionDetectionMixin, AgentQueryMixin, _V2ExtractionMixin,
+                 _V3ExtractionMixin):
 
     @staticmethod
     def _normalize_entity_pair(entity1: str, entity2: str) -> tuple:
@@ -278,7 +281,7 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
             api_key or base_url or self.alignment_base_url or (self.alignment_api_key is not None)
         )
         if not self._endpoint_available:
-            wprint("提示：未提供 API key 或任一 base_url，将使用模拟响应模式")
+            wprint_info("提示：未提供 API key 或任一 base_url，将使用模拟响应模式")
 
         # LLM 并发：上游（步骤1–5）与下游（步骤6–7）两池
         self._max_llm_concurrency: int = max_llm_concurrency or 0
@@ -429,7 +432,7 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
             trimmed = content[:head] + marker
             if tail > 0:
                 trimmed += content[-tail:]
-        wprint(
+        wprint_info(
             f"[DeepDream] 记忆缓存过长：{len(content)} 字符，"
             f"已截断为 {len(trimmed)} 字符后再注入抽取 prompt"
         )
@@ -449,7 +452,7 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
             return True
         except LLMContextBudgetExceeded:
             prompt_tokens = self._estimate_messages_token_count(next_messages)
-            wprint(
+            wprint_info(
                 f"[DeepDream] {stage_label} 多轮预检停止：下一轮估算输入约 {prompt_tokens} tokens，"
                 f"已触达输入上限 {self.context_window_tokens}"
             )
@@ -505,7 +508,7 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
         context_cap = self.context_window_tokens
         prompt_tokens = self._estimate_messages_token_count(messages)
         if prompt_tokens >= context_cap:
-            wprint(
+            wprint_info(
                 f"[DeepDream] 输入上下文超限: 估算输入 tokens: {prompt_tokens}, "
                 f"输入上限: {context_cap}, 期望输出上限: {desired_max_tokens}, "
                 f"消息条数: {len(messages)}"
@@ -670,11 +673,11 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
             except json.JSONDecodeError as e:
                 last_err = e
                 if attempt >= max_attempts - 1:
-                    wprint(
+                    wprint_info(
                         f"[DeepDream] JSON 解析失败，已达最大重试次数（{max_attempts}）: {e}"
                     )
                     raise
-                wprint(
+                wprint_info(
                     f"[DeepDream] JSON 解析失败，将重试 LLM（{attempt + 2}/{max_attempts}）: {e}"
                 )
                 is_truncation = _looks_like_truncation_json_err(e)
@@ -795,12 +798,12 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
                 )
                 if _is_truncated:
                     _est_input = self._estimate_messages_token_count(messages)
-                    wprint(
+                    wprint_info(
                         f"[DeepDream] LLM 输出被截断（finish_reason=length）。"
                         f"当前请求输出上限为 {_api_max_tokens}，已不再自动扩容重试；"
                         "如需避免截断，请缩短输入上下文或减少输出体积。"
                     )
-                    wprint(
+                    wprint_info(
                         f"[DeepDream] 截断摘要: 估算输入 tokens: {_est_input}, "
                         f"期望输出上限: {_desired_max_tokens}, "
                         f"实际输出上限: {_api_max_tokens}, "
@@ -813,12 +816,12 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
                 if not self._is_valid_utf8(response_text):
                     _utf8_round += 1
                     if _utf8_round <= _LLM_MAX_FAILURE_ROUNDS:
-                        wprint(f"检测到非UTF-8编码的文本，正在重新生成（第 {_utf8_round}/{_LLM_MAX_FAILURE_ROUNDS} 次尝试）...")
-                        wprint(f"问题内容预览:\n{response_text}")
+                        wprint_info(f"检测到非UTF-8编码的文本，正在重新生成（第 {_utf8_round}/{_LLM_MAX_FAILURE_ROUNDS} 次尝试）...")
+                        wprint_info(f"问题内容预览:\n{response_text}")
                         continue
                     else:
-                        wprint(f"警告：检测到非UTF-8编码但已达到最大重试次数，返回原始响应")
-                        wprint(f"问题内容预览:\n{response_text}")
+                        wprint_info(f"警告：检测到非UTF-8编码但已达到最大重试次数，返回原始响应")
+                        wprint_info(f"问题内容预览:\n{response_text}")
 
                 # 编码有效则返回响应（已取消乱码检测）
                 # 蒸馏数据保存（步骤2/3走多轮手动保存，在此跳过）
@@ -857,7 +860,7 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
 
                 if not _detailed_error_logged and not is_connection_error and not is_timeout and not is_tpm_error:
                     if self._error_suggests_context_overflow(e):
-                        wprint(
+                        wprint_info(
                             f"[DeepDream] 服务端报上下文/长度相关错误: "
                             f"估算输入 tokens: {self._estimate_messages_token_count(messages)}, "
                             f"期望输出上限: {_effective_max_tokens}, "
@@ -867,14 +870,14 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
                     _detailed_error_logged = True
 
                 if "上下文预算超限" in error_str or "输入上下文超限" in error_str:
-                    wprint(str(e))
+                    wprint_info(str(e))
                     raise
 
                 # max_tokens 超限：自动降低重试（不计入退避轮次）
                 if "max_tokens" in error_str or "max_completion_tokens" in error_str or "too large" in error_str:
                     if _effective_max_tokens and _effective_max_tokens > 1:
                         _effective_max_tokens = _effective_max_tokens // 2
-                        wprint(f"[DeepDream] max_tokens 超限，自动降至 {_effective_max_tokens} 后重试")
+                        wprint_info(f"[DeepDream] max_tokens 超限，自动降至 {_effective_max_tokens} 后重试")
                         if _sem is not None:
                             _sem.release()
                         _sem_held = False
@@ -888,7 +891,7 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
                         _LLM_BACKOFF_BASE ** min(_tpm_round, 12),
                         _LLM_TPM_SLEEP_CAP_SECONDS,
                     )
-                    wprint(
+                    wprint_info(
                         f"LLM 速率限制（TPM/429），{wait_seconds}s 后重试（不限制次数，第 {_tpm_round} 次等待）: {e}"
                     )
                     if _sem is not None:
@@ -902,14 +905,14 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
                     _conn_failures += 1
                     if _conn_failures <= _LLM_MAX_FAILURE_ROUNDS:
                         wait_seconds = _LLM_BACKOFF_BASE ** _conn_failures
-                        wprint(f"LLM连接错误（第 {_conn_failures}/{_LLM_MAX_FAILURE_ROUNDS} 次失败）: {e}")
-                        wprint(f"{wait_seconds} 秒后重试...")
+                        wprint_info(f"LLM连接错误（第 {_conn_failures}/{_LLM_MAX_FAILURE_ROUNDS} 次失败）: {e}")
+                        wprint_info(f"{wait_seconds} 秒后重试...")
                         if _sem is not None:
                             _sem.release()
                         _sem_held = False
                         time.sleep(wait_seconds)
                         continue
-                    wprint(f"LLM连接错误已达 {_LLM_MAX_FAILURE_ROUNDS} 轮，放弃重试: {e}")
+                    wprint_info(f"LLM连接错误已达 {_LLM_MAX_FAILURE_ROUNDS} 轮，放弃重试: {e}")
                     if _sem is not None:
                         _sem.release()
                     _sem_held = False
@@ -920,10 +923,10 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
                 if _normal_failures <= _LLM_MAX_FAILURE_ROUNDS:
                     wait_seconds = _LLM_BACKOFF_BASE ** _normal_failures
                     if is_timeout:
-                        wprint(f"LLM调用超时（第 {_normal_failures}/{_LLM_MAX_FAILURE_ROUNDS} 次失败，超时: {timeout}s）: {e}")
+                        wprint_info(f"LLM调用超时（第 {_normal_failures}/{_LLM_MAX_FAILURE_ROUNDS} 次失败，超时: {timeout}s）: {e}")
                     else:
-                        wprint(f"LLM调用错误（第 {_normal_failures}/{_LLM_MAX_FAILURE_ROUNDS} 次失败）: {e}")
-                    wprint(f"{wait_seconds} 秒后重试...")
+                        wprint_info(f"LLM调用错误（第 {_normal_failures}/{_LLM_MAX_FAILURE_ROUNDS} 次失败）: {e}")
+                    wprint_info(f"{wait_seconds} 秒后重试...")
                     if _sem is not None:
                         _sem.release()
                     _sem_held = False
@@ -931,9 +934,9 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
                     continue
 
                 if is_timeout:
-                    wprint(f"LLM调用超时（已达 {_LLM_MAX_FAILURE_ROUNDS} 轮重试，超时时间: {timeout}秒）: {e}")
+                    wprint_info(f"LLM调用超时（已达 {_LLM_MAX_FAILURE_ROUNDS} 轮重试，超时时间: {timeout}秒）: {e}")
                 else:
-                    wprint(f"LLM调用错误（已达 {_LLM_MAX_FAILURE_ROUNDS} 轮重试）: {e}")
+                    wprint_info(f"LLM调用错误（已达 {_LLM_MAX_FAILURE_ROUNDS} 轮重试）: {e}")
                 if _sem is not None:
                     _sem.release()
                 _sem_held = False
@@ -946,7 +949,7 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
 
         # 理论上不会到达这里，但为了稳妥保留兜底
         if last_error:
-            wprint(f"所有重试都失败，使用模拟响应")
+            wprint_info(f"所有重试都失败，使用模拟响应")
         if allow_mock_fallback:
             return self._mock_llm_response(prompt)
         return ""
@@ -1075,13 +1078,13 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
             json_start = json_str.find("```json") + 7
             json_end = json_str.find("```", json_start)
             if json_end == -1:
-                wprint("[DeepDream] 警告: LLM 响应的 ```json 块未闭合，JSON 可能被截断")
+                wprint_info("[DeepDream] 警告: LLM 响应的 ```json 块未闭合，JSON 可能被截断")
             json_str = json_str[json_start:json_end].strip() if json_end != -1 else json_str[json_start:].strip()
         elif "```" in json_str:
             json_start = json_str.find("```") + 3
             json_end = json_str.find("```", json_start)
             if json_end == -1:
-                wprint("[DeepDream] 警告: LLM 响应的 ``` 块未闭合，JSON 可能被截断")
+                wprint_info("[DeepDream] 警告: LLM 响应的 ``` 块未闭合，JSON 可能被截断")
             json_str = json_str[json_start:json_end].strip() if json_end != -1 else json_str[json_start:].strip()
 
         json_str = self._clean_json_string(json_str)
@@ -1092,7 +1095,7 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
             open_char = stripped[0]
             close_char = ']' if open_char == '[' else '}'
             if not stripped.endswith(close_char):
-                wprint(f"[DeepDream] 警告: LLM 响应 JSON 被截断，以 {open_char} 开头但不以 {close_char} 结尾。"
+                wprint_info(f"[DeepDream] 警告: LLM 响应 JSON 被截断，以 {open_char} 开头但不以 {close_char} 结尾。"
                       f"请缩短输入上下文或输出内容。响应前200字符: {stripped[:200]}")
 
         try:
@@ -1107,7 +1110,7 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
                 if repaired is not None:
                     try:
                         parsed = json.loads(repaired)
-                        wprint(
+                        wprint_info(
                             "[DeepDream] 警告: 检测到数组型 JSON 尾部截断；"
                             "已裁剪不完整尾部并补全 `]`，沿用可恢复部分。"
                         )
@@ -1119,14 +1122,14 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
                 if repaired_obj is not None:
                     try:
                         parsed = json.loads(repaired_obj)
-                        wprint(
+                        wprint_info(
                             "[DeepDream] 警告: 检测到对象型 JSON 尾部截断；"
                             "已裁剪不完整键值对并补全 `}`，沿用可恢复部分。"
                         )
                         return parsed
                     except json.JSONDecodeError:
                         pass
-                wprint(f"[DeepDream] 警告: LLM 响应 JSON 解析失败（可能被截断）。"
+                wprint_info(f"[DeepDream] 警告: LLM 响应 JSON 解析失败（可能被截断）。"
                       f"响应: {json_str}")
                 raise
 
@@ -1247,7 +1250,61 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
 
     def _mock_llm_response(self, prompt: str) -> str:
         """模拟LLM响应（用于测试）"""
+        import re as _re
+
         prompt_lower = prompt.lower()
+
+        def _extract_tag_block(tag: str) -> str:
+            match = _re.search(rf"<{tag}>\s*(.*?)\s*</{tag}>", prompt, _re.DOTALL)
+            return match.group(1).strip() if match else ""
+
+        def _extract_bullet_names(*tags: str) -> list[str]:
+            for tag in tags:
+                block = _extract_tag_block(tag)
+                if not block:
+                    continue
+                names = []
+                for line in block.splitlines():
+                    line = line.strip()
+                    if not line.startswith("-"):
+                        continue
+                    item = line[1:].strip()
+                    if "|" in item:
+                        item = item.split("|", 1)[0].strip()
+                    if "<->" in item:
+                        continue
+                    if item:
+                        names.append(item)
+                if names:
+                    return names
+            return []
+
+        def _extract_candidate_pairs() -> list[dict]:
+            block = _extract_tag_block("候选概念对")
+            pairs = []
+            for line in block.splitlines():
+                line = line.strip()
+                if not line.startswith("-"):
+                    continue
+                item = line[1:].strip()
+                hint = ""
+                if "|" in item:
+                    pair_part, hint_part = item.split("|", 1)
+                    item = pair_part.strip()
+                    hint = hint_part.replace("线索:", "").strip()
+                if "<->" not in item:
+                    continue
+                left, right = [part.strip() for part in item.split("<->", 1)]
+                if not left or not right or left == right:
+                    continue
+                entity1_name, entity2_name = sorted((left, right))
+                pairs.append({
+                    "entity1_name": entity1_name,
+                    "entity2_name": entity2_name,
+                    "content": hint,
+                })
+            return pairs
+
         if ("更新记忆缓存" in prompt or "memory_cache" in prompt_lower
                 or "创建初始记忆缓存" in prompt or "创建初始的记忆缓存" in prompt):
             return """当前摘要：正在处理文档内容。当前阅读的是文档的开头部分，介绍了故事的基本背景和主要人物。重要细节包括主要人物的基本信息和故事的初始情境。
@@ -1261,8 +1318,6 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
 - 已处理文本范围：处理到"文档开始"结束
 - 当前文档名：示例文档.txt"""
         elif "候选实体列表" in prompt and "match_existing_id" in prompt:
-            # 批量候选裁决 — 若当前实体名与某候选名完全一致则匹配复用
-            import re as _re
             _candidate_block = prompt.split("</当前实体>")[1] if "</当前实体>" in prompt else ""
             _current_name_match = _re.search(r"<当前实体>.*?name:\s*(\S+)", prompt, _re.DOTALL)
             _current_name = _current_name_match.group(1) if _current_name_match else ""
@@ -1286,53 +1341,113 @@ class LLMClient(_MemoryOpsMixin, _EntityExtractionMixin, _RelationExtractionMixi
             })
         elif ("判断.*实体.*匹配" in prompt or "judge.*entity.*match" in prompt_lower or
               "判断新抽取的实体是否与已有实体" in prompt):
-            # 模拟实体匹配响应
             return _mock_json_fence({
                 "family_id": "ent_001",
                 "need_update": False
             })
+        elif "<指定实体名称>" in prompt:
+            names = _extract_bullet_names("指定实体名称")
+            if not names:
+                names = ["示例实体1"]
+            return _mock_json_fence([
+                {
+                    "name": name,
+                    "content": f"{name}在当前文本中被提及，并有一段稳定的结构化描述。"
+                }
+                for name in names
+            ])
+        elif "请召回所有结构性文本锚点概念候选" in prompt or "结构性文本锚点概念候选" in prompt:
+            return _mock_json_fence([
+                {"name": "第一章", "content": "文本中的结构性章节标题。"},
+                {"name": "需求分析阶段", "content": "文本中明确出现的阶段性锚点。"},
+            ])
+        elif "请召回所有具体/具名概念候选" in prompt or "具名概念候选" in prompt:
+            return _mock_json_fence([
+                {"name": "示例实体1", "content": "文本中明确出现的具体概念。"},
+                {"name": "示例实体2", "content": "文本中明确出现的另一具体概念。"},
+            ])
+        elif "请召回所有具体/具名概念候选" in prompt or "具体/具名概念候选" in prompt:
+            return _mock_json_fence([
+                {"name": "示例实体1", "content": "文本中明确出现的具体概念。"},
+                {"name": "示例实体2", "content": "文本中明确出现的另一具体概念。"},
+            ])
+        elif "请召回所有抽象/过程/时间/文本锚点类概念候选" in prompt or "抽象/过程/时间/文本锚点类概念候选" in prompt:
+            return _mock_json_fence([
+                {"name": "示例主题", "content": "文本中的抽象主题或过程概念。"}
+            ])
+        elif "<已召回概念列表>" in prompt or "请只补充上面列表中明显遗漏" in prompt:
+            known_names = set(_extract_bullet_names("已召回概念列表"))
+            candidate = "补充概念"
+            if candidate in known_names:
+                return _mock_json_fence([])
+            return _mock_json_fence([
+                {"name": candidate, "content": "对已召回概念的补充概念。"}
+            ])
+        elif "<候选概念对>" in prompt and "只为候选概念对写出具体关系内容" in prompt:
+            pairs = _extract_candidate_pairs()
+            return _mock_json_fence([
+                {
+                    "entity1_name": pair["entity1_name"],
+                    "entity2_name": pair["entity2_name"],
+                    "content": pair.get("content") or f"{pair['entity1_name']}与{pair['entity2_name']}在文本中存在明确关联。"
+                }
+                for pair in pairs
+            ])
+        elif "<稳定概念实体列表>" in prompt and "值得建立关系的概念对" in prompt:
+            names = _extract_bullet_names("稳定概念实体列表")
+            if len(names) < 2:
+                return _mock_json_fence([])
+            pairs = []
+            for left, right in zip(names, names[1:]):
+                entity1_name, entity2_name = sorted((left, right))
+                pairs.append({
+                    "entity1_name": entity1_name,
+                    "entity2_name": entity2_name,
+                    "content": f"{entity1_name}与{entity2_name}之间存在关系线索"
+                })
+                if len(pairs) >= 2:
+                    break
+            return _mock_json_fence(pairs)
+        elif "继续生成" in prompt or "继续补充" in prompt:
+            return _mock_json_fence([])
+        elif "输出格式纠错" in prompt or "json 代码块" in prompt_lower:
+            return _mock_json_fence([])
+        elif ("抽取关系" in prompt or "抽取所有概念实体间的关系" in prompt or
+              "relation" in prompt_lower or "从输入文本中抽取实体之间的关系" in prompt or
+              "关系抽取" in prompt or "实体间的关系" in prompt):
+            names = _extract_bullet_names("概念实体列表", "稳定概念实体列表")
+            if not names and "已抽取的实体：" in prompt:
+                entities_section = prompt.split("已抽取的实体：", 1)[1].split("</已抽取实体>", 1)[0].strip()
+                if not entities_section:
+                    return _mock_json_fence([])
+            if len(names) >= 2:
+                entity1_name, entity2_name = sorted((names[0], names[1]))
+            else:
+                entity1_name, entity2_name = "示例实体1", "示例实体2"
+            return _mock_json_fence([
+                {
+                    "entity1_name": entity1_name,
+                    "entity2_name": entity2_name,
+                    "content": f"{entity1_name}与{entity2_name}之间存在稳定关系。"
+                }
+            ])
+        elif ("实体后验增强" in prompt or "enhance.*entity.*content" in prompt_lower or
+              "对该实体的content进行更细致的补全和挖掘" in prompt or "增强后的完整实体content" in prompt):
+            if "当前content：" in prompt:
+                original_content = prompt.split("当前content：", 1)[1].split("</已抽取实体>", 1)[0].strip()
+                enhanced_content = f"{original_content}\n\n[增强信息]：基于记忆缓存和当前文本的补充细节和上下文信息。"
+            else:
+                enhanced_content = "这是一个示例实体的描述\n\n[增强信息]：基于记忆缓存和当前文本的补充细节和上下文信息。"
+            return _mock_json_fence({"content": enhanced_content})
         elif ("抽取实体" in prompt or "抽取所有概念实体" in prompt or "entity" in prompt_lower or
               "从输入文本中抽取所有实体" in prompt or "实体抽取" in prompt or
               "概念实体" in prompt):
             return _mock_json_fence([
                 {
                     "name": "示例实体1",
-                    "content": "这是一个示例实体的描述"
+                    "content": "这是一个示例实体的描述，包含足够的结构化信息。"
                 }
             ])
-        elif "继续生成" in prompt or "继续补充" in prompt:
-            # 多轮抽取的续轮提示 → 返回空数组表示已无更多内容
-            return _mock_json_fence([])
-        elif "输出格式纠错" in prompt or "json 代码块" in prompt_lower:
-            # JSON 解析重试提示 → 返回空数组兜底
-            return _mock_json_fence([])
-        elif ("抽取关系" in prompt or "抽取所有概念实体间的关系" in prompt or
-              "relation" in prompt_lower or "从输入文本中抽取实体之间的关系" in prompt or
-              "关系抽取" in prompt or "实体间的关系" in prompt):
-            # 检查实体列表是否为空
-            if "已抽取的实体：" in prompt:
-                entities_section = prompt.split("已抽取的实体：")[1].split("</已抽取实体>")[0].strip()
-                # 如果实体部分为空或只有换行符，返回空关系列表
-                if not entities_section or entities_section == "\n" or entities_section == "":
-                    return _mock_json_fence([])
-            # 如果有实体，返回示例关系（使用与实体抽取一致的实体名称）
-            return _mock_json_fence([
-                {
-                    "entity1_name": "示例实体1",
-                    "entity2_name": "示例实体2",
-                    "content": "示例实体1与示例实体2之间的关系描述"
-                }
-            ])
-        elif ("实体后验增强" in prompt or "enhance.*entity.*content" in prompt_lower or
-              "对该实体的content进行更细致的补全和挖掘" in prompt or "增强后的完整实体content" in prompt):
-            # 模拟实体后验增强响应（JSON格式）
-            # 从prompt中提取原始content，然后返回增强后的版本
-            if "当前content：" in prompt:
-                original_content = prompt.split("当前content：")[1].split("</已抽取实体>")[0].strip()
-                enhanced_content = f"{original_content}\n\n[增强信息]：基于记忆缓存和当前文本的补充细节和上下文信息。"
-            else:
-                enhanced_content = "这是一个示例实体的描述\n\n[增强信息]：基于记忆缓存和当前文本的补充细节和上下文信息。"
-            return _mock_json_fence({"content": enhanced_content})
         elif ("判断" in prompt and "合并" in prompt and "实体" in prompt) or "merge_entity_name" in prompt_lower:
             return _mock_json_fence({"merged_name": "示例实体1", "merged_content": "合并后的描述"})
         elif ("判断" in prompt and "更新" in prompt and ("content" in prompt_lower or "内容" in prompt)):

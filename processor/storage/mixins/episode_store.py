@@ -126,6 +126,7 @@ class EpisodeStoreMixin:
             absolute_id=metadata.get("absolute_id") or metadata.get("id"),
             content=md_content,
             event_time=self._safe_parse_datetime(metadata.get("event_time"), datetime.now()),
+            processed_time=self._safe_parse_datetime(metadata.get("processed_time"), None),
             source_document=metadata.get("source_document") or metadata.get("doc_name", ""),
             activity_type=metadata.get("activity_type"),
         )
@@ -287,7 +288,7 @@ class EpisodeStoreMixin:
             escaped = query_lower.replace('"', '""')
             # SQL LIKE 过滤候选，再在 Python 中精确评分
             cursor.execute(
-                'SELECT id, content, source_document, event_time, activity_type '
+                'SELECT id, content, source_document, event_time, processed_time, activity_type '
                 'FROM episodes WHERE LOWER(content) LIKE ? '
                 'ORDER BY event_time DESC',
                 (f'%{escaped}%',)
@@ -310,7 +311,8 @@ class EpisodeStoreMixin:
                         content=row[1] or "",
                         source_document=row[2] or "",
                         event_time=datetime.fromisoformat(row[3]) if row[3] else datetime.now(),
-                        activity_type=row[4] or "",
+                        processed_time=datetime.fromisoformat(row[4]) if row[4] else None,
+                        activity_type=row[5] or "",
                     ))
             return results
         # 回退：文件遍历（旧逻辑，episodes 表为空时）
@@ -651,7 +653,7 @@ class EpisodeStoreMixin:
                     resolved_family_id,
                     cache.content,
                     cache.event_time.isoformat(),
-                    datetime.now().isoformat(),
+                    (cache.processed_time or datetime.now()).isoformat(),
                     cache.source_document,
                     cache.activity_type or "",
                     getattr(cache, 'episode_type', '') or "",
@@ -825,7 +827,7 @@ class EpisodeStoreMixin:
         conn = self._get_conn()
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT id, content, source_document, event_time, activity_type "
+            "SELECT id, content, source_document, event_time, activity_type, processed_time "
             "FROM episodes ORDER BY event_time DESC LIMIT ? OFFSET ?",
             (limit, offset),
         )
@@ -837,6 +839,7 @@ class EpisodeStoreMixin:
                 "source_document": row[2] or "",
                 "event_time": row[3] or "",
                 "activity_type": row[4] or "",
+                "processed_time": row[5] or "",
                 "created_at": row[3] or "",
             })
         return episodes

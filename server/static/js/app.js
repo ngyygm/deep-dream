@@ -76,6 +76,7 @@ class DeepDreamApi {
   listGraphs() { return this.get('/api/v1/graphs'); }
   createGraph(graphId) { return this.post('/api/v1/graphs', { graph_id: graphId }); }
   deleteGraph(graphId) { return this.delete(`/api/v1/graphs/${encodeURIComponent(graphId)}`); }
+  clearGraph(graphId) { return this.post(`/api/v1/graphs/${encodeURIComponent(graphId)}/clear`, {}); }
   findStats(graphId = 'default') {
     return this.get(`/api/v1/find/stats?graph_id=${encodeURIComponent(graphId)}`);
   }
@@ -162,6 +163,9 @@ class DeepDreamApi {
   }
   entityVersions(familyId, graphId = 'default') {
     return this.get(`/api/v1/find/entities/${encodeURIComponent(familyId)}/versions?graph_id=${encodeURIComponent(graphId)}`);
+  }
+  entityVersionDiff(familyId, v1, v2, graphId = 'default') {
+    return this.get(`/api/v1/find/entities/${encodeURIComponent(familyId)}/version-diff?v1=${encodeURIComponent(v1)}&v2=${encodeURIComponent(v2)}&graph_id=${encodeURIComponent(graphId)}`);
   }
   entityRelations(familyId, graphId = 'default', options = {}) {
     let q = `graph_id=${encodeURIComponent(graphId)}`;
@@ -464,6 +468,71 @@ class DeepDreamApi {
   graphSummary(graphId = 'default') {
     return this.get(`/api/v1/find/graph-summary?graph_id=${encodeURIComponent(graphId)}`);
   }
+
+  // Quick Search (unified search in one call)
+  quickSearch(query, options = {}) {
+    return this.post('/api/v1/find/quick-search', {
+      query,
+      graph_id: options.graphId || 'default',
+      similarity_threshold: options.threshold ?? 0.4,
+      max_entities: options.maxEntities ?? 10,
+      max_relations: options.maxRelations ?? 20,
+    });
+  }
+
+  // Find entity by name (fuzzy match)
+  findEntityByName(name, options = {}) {
+    return this.get(`/api/v1/find/entities/by-name/${encodeURIComponent(name)}?graph_id=${encodeURIComponent(options.graphId || 'default')}&threshold=${options.threshold || 0.7}&limit=${options.limit || 5}`);
+  }
+
+  // Create entity manually
+  createEntity(data, graphId = 'default') {
+    return this.post(`/api/v1/find/entities/create?graph_id=${encodeURIComponent(graphId)}`, data);
+  }
+
+  // Create relation manually
+  createRelation(data, graphId = 'default') {
+    return this.post(`/api/v1/find/relations/create?graph_id=${encodeURIComponent(graphId)}`, data);
+  }
+
+  // Recent activity
+  recentActivity(graphId = 'default', limit = 10) {
+    return this.get(`/api/v1/find/recent-activity?graph_id=${encodeURIComponent(graphId)}&limit=${limit}`);
+  }
+
+  // Refresh graph edges (after merges etc.)
+  refreshGraphEdges(graphId = 'default') {
+    return this.post(`/api/v1/find/entities/refresh-edges?graph_id=${encodeURIComponent(graphId)}`, {});
+  }
+
+  // Entity profile (entity + relations in one call)
+  entityProfile(familyId, graphId = 'default') {
+    return this.get(`/api/v1/find/entities/${encodeURIComponent(familyId)}/profile?graph_id=${encodeURIComponent(graphId)}`);
+  }
+
+  // Search concepts
+  searchConcepts(query, options = {}) {
+    return this.post('/api/v1/concepts/search', {
+      query,
+      graph_id: options.graphId || 'default',
+      limit: options.limit || 20,
+      role: options.role || '',
+    });
+  }
+
+  // List concepts
+  listConcepts(graphId = 'default', options = {}) {
+    let q = `graph_id=${encodeURIComponent(graphId)}`;
+    if (options.limit) q += `&limit=${options.limit}`;
+    if (options.offset) q += `&offset=${options.offset}`;
+    if (options.role) q += `&role=${encodeURIComponent(options.role)}`;
+    return this.get(`/api/v1/concepts?${q}`);
+  }
+
+  // Batch entity profiles (up to 20)
+  batchProfiles(familyIds, graphId = 'default') {
+    return this.post('/api/v1/find/batch-profiles', { family_ids: familyIds, graph_id: graphId });
+  }
 }
 
 // ---- Global State ----
@@ -484,21 +553,40 @@ function setGraphId(id) {
   localStorage.setItem('deepdream_graph_id', id);
   const sel = document.getElementById('graph-selector');
   if (sel) sel.value = id;
-  // Re-render current page if it has a graph-aware render
-  if (typeof window.onGraphChange === 'function') {
-    window.onGraphChange(id);
-  }
+  // Detect backend type for new graph
+  state.api.health(id).then(h => {
+    if (h.data?.storage_backend) state.backendType = h.data.storage_backend;
+  }).catch(() => {});
+  // Re-render current page with new graph
+  handleRoute();
 }
 
 // ---- Utilities ----
+function getLocale() {
+  var lang = (window.I18N && window.I18N.currentLang) || 'zh';
+  return lang === 'en' ? 'en-US' : lang === 'ja' ? 'ja-JP' : 'zh-CN';
+}
+
 function formatDate(isoStr) {
   if (!isoStr) return '-';
   try {
     const d = new Date(isoStr);
-    return d.toLocaleString('zh-CN', {
+    return d.toLocaleString(getLocale(), {
       year: 'numeric', month: '2-digit', day: '2-digit',
       hour: '2-digit', minute: '2-digit', second: '2-digit',
     });
+  } catch { return isoStr; }
+}
+
+function formatDateMs(isoStr) {
+  if (!isoStr) return '-';
+  try {
+    const d = new Date(isoStr);
+    var ms = String(d.getMilliseconds()).padStart(3, '0');
+    return d.toLocaleString(getLocale(), {
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+    }) + '.' + ms;
   } catch { return isoStr; }
 }
 
@@ -822,23 +910,13 @@ async function deleteCurrentGraph() {
     return;
   }
 
-  // Confirmation modal
-  const confirmed = await new Promise(resolve => {
-    showModal({
-      title: '删除图谱',
-      size: 'sm',
-      content: `<p style="color:var(--text-secondary);">确定要删除图谱 <strong style="color:var(--danger);">${escapeHtml(graphId)}</strong> 吗？</p>
-                <p style="color:var(--text-muted);font-size:0.8rem;margin-top:8px;">此操作将永久删除该图谱的所有实体、关系和文档，不可恢复。</p>`,
-      footer: `
-        <button class="btn btn-ghost" id="modal-cancel-btn">取消</button>
-        <button class="btn" style="background:var(--danger);color:#fff;" id="modal-confirm-btn">删除</button>
-      `,
-      onClose: () => resolve(false),
-    });
-    document.getElementById('modal-cancel-btn')?.addEventListener('click', () => resolve(false));
-    document.getElementById('modal-confirm-btn')?.addEventListener('click', () => resolve(true));
+  const confirmed = await showConfirm({
+    title: '删除图谱',
+    message: `确定要删除图谱 "${graphId}" 吗？此操作将永久删除该图谱的所有实体、关系和文档，不可恢复。`,
+    confirmLabel: '删除',
+    cancelLabel: '取消',
+    destructive: true,
   });
-
   if (!confirmed) return;
 
   try {
@@ -850,6 +928,26 @@ async function deleteCurrentGraph() {
     loadGraphSelector();
   } catch (e) {
     showToast(`删除失败: ${e.message || e}`, 'error');
+  }
+}
+
+async function clearCurrentGraph() {
+  const graphId = state.currentGraphId;
+
+  const confirmed = await showConfirm({
+    title: t('graph.clearTitle'),
+    message: t('graph.clearMessage', { name: graphId }),
+    confirmLabel: t('graph.clearConfirm'),
+    cancelLabel: t('common.cancel'),
+  });
+  if (!confirmed) return;
+
+  try {
+    await state.api.clearGraph(graphId);
+    showToast(t('graph.clearSuccess', { name: graphId }), 'success');
+    handleRoute();
+  } catch (e) {
+    showToast(t('graph.clearFailed') + `: ${e.message || e}`, 'error');
   }
 }
 
@@ -896,6 +994,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   const graphDelBtn = document.getElementById('graph-delete-btn');
   if (graphDelBtn) {
     graphDelBtn.addEventListener('click', deleteCurrentGraph);
+  }
+  // Setup graph clear button
+  const graphClearBtn = document.getElementById('graph-clear-btn');
+  if (graphClearBtn) {
+    graphClearBtn.addEventListener('click', clearCurrentGraph);
   }
 
   // Setup hash routing
@@ -965,18 +1068,79 @@ function _toggleSidebarCollapse() {
   localStorage.setItem('deepdream_sidebar_collapsed', sidebar.classList.contains('collapsed'));
 }
 
-// ---- Global: Show document content modal ----
-window.showDocContent = async function(cacheId) {
-  if (!cacheId) return;
+// ---- Global: Show document content modal (by filename) ----
+window.showDocContent = async function(filename) {
+  if (!filename) return;
   try {
-    const res = await state.api.episodeDoc(cacheId, state.currentGraphId);
+    const res = await state.api.getDocContent(filename, state.currentGraphId);
     const data = res.data || {};
     const meta = data.meta || {};
 
-    const sourceName = meta.source_document || meta.doc_name || cacheId;
+    const sourceName = meta.source_document || meta.doc_name || filename;
     const eventTime = meta.event_time || '-';
     const original = data.original || '';
     const cache = data.cache || '';
+
+    let body = `
+      <div style="display:flex;flex-direction:column;gap:1rem;">
+        <div style="display:grid;grid-template-columns:auto 1fr;gap:0.25rem 0.75rem;font-size:0.85rem;">
+          <span style="color:var(--text-secondary);">${t('memory.taskSource')}:</span><span>${escapeHtml(sourceName)}</span>
+          <span style="color:var(--text-secondary);">${t('memory.docTime')}:</span><span>${formatDate(eventTime)}</span>
+        </div>
+    `;
+
+    if (cache) {
+      body += `
+        <div>
+          <h4 style="margin-bottom:0.5rem;">${t('memory.cacheSummary')}</h4>
+          <div style="max-height:400px;overflow-y:auto;background:var(--bg-secondary);padding:0.75rem;border-radius:0.5rem;font-size:0.85rem;line-height:1.6;white-space:pre-wrap;word-break:break-word;">${escapeHtml(cache)}</div>
+        </div>
+      `;
+    }
+
+    if (original) {
+      body += `
+        <div>
+          <h4 style="margin-bottom:0.5rem;">${t('memory.originalText')}</h4>
+          <div style="max-height:400px;overflow-y:auto;background:var(--bg-secondary);padding:0.75rem;border-radius:0.5rem;font-size:0.85rem;line-height:1.6;white-space:pre-wrap;word-break:break-word;">${escapeHtml(original)}</div>
+        </div>
+      `;
+    }
+
+    body += '</div>';
+
+    showModal({
+      title: t('memory.docContent') + ' - ' + escapeHtml(truncate(sourceName, 30)),
+      content: body,
+      size: 'lg',
+    });
+  } catch (err) {
+    showToast(t('memory.loadDocContentFailed') + ': ' + err.message, 'error');
+  }
+};
+
+// ---- Global: Show episode document content modal (by cache_id) ----
+window.showEpisodeDoc = async function(cacheId) {
+  if (!cacheId) return;
+  try {
+    // First try loading episode directly (works for Neo4j-only episodes)
+    const epRes = await state.api.get(`/api/v1/find/episodes/${encodeURIComponent(cacheId)}?graph_id=${encodeURIComponent(state.currentGraphId)}`);
+    const epData = epRes.data || {};
+
+    // Then try to get the full document content
+    let docData = {};
+    try {
+      const docRes = await state.api.episodeDoc(cacheId, state.currentGraphId);
+      docData = docRes.data || {};
+    } catch (e) {
+      // Doc endpoint may fail for Neo4j-only episodes — use episode content instead
+    }
+
+    const meta = docData.meta || {};
+    const sourceName = epData.source_document || meta.source_document || meta.doc_name || cacheId;
+    const eventTime = epData.event_time || meta.event_time || '-';
+    const original = docData.original || '';
+    const cache = docData.cache || epData.content || '';
 
     let body = `
       <div style="display:flex;flex-direction:column;gap:1rem;">

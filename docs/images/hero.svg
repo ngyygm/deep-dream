@@ -1,0 +1,230 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 600" font-family="'Segoe UI', Arial, sans-serif">
+  <defs>
+    <!-- Background gradient -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0f0c29"/>
+      <stop offset="50%" style="stop-color:#302b63"/>
+      <stop offset="100%" style="stop-color:#24243e"/>
+    </linearGradient>
+
+    <!-- Zone gradients -->
+    <linearGradient id="rememberGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#10B981;stop-opacity:0.9"/>
+      <stop offset="100%" style="stop-color:#059669;stop-opacity:0.9"/>
+    </linearGradient>
+    <linearGradient id="graphGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#3B82F6;stop-opacity:0.9"/>
+      <stop offset="100%" style="stop-color:#2563EB;stop-opacity:0.9"/>
+    </linearGradient>
+    <linearGradient id="dreamGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#8B5CF6;stop-opacity:0.9"/>
+      <stop offset="100%" style="stop-color:#7C3AED;stop-opacity:0.9"/>
+    </linearGradient>
+
+    <!-- Node glow -->
+    <radialGradient id="nodeGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" style="stop-color:#fff;stop-opacity:0.3"/>
+      <stop offset="100%" style="stop-color:#fff;stop-opacity:0"/>
+    </radialGradient>
+
+    <!-- Arrow glow filter -->
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="2" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <filter id="softGlow">
+      <feGaussianBlur stdDeviation="4" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <!-- Star dots -->
+    <radialGradient id="star" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" style="stop-color:#fff;stop-opacity:0.8"/>
+      <stop offset="100%" style="stop-color:#fff;stop-opacity:0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1200" height="600" fill="url(#bgGrad)"/>
+
+  <!-- Stars -->
+  <circle cx="100" cy="50" r="1.5" fill="white" opacity="0.4"/>
+  <circle cx="250" cy="80" r="1" fill="white" opacity="0.3"/>
+  <circle cx="400" cy="30" r="1.5" fill="white" opacity="0.5"/>
+  <circle cx="550" cy="70" r="1" fill="white" opacity="0.3"/>
+  <circle cx="700" cy="45" r="2" fill="white" opacity="0.4"/>
+  <circle cx="850" cy="60" r="1" fill="white" opacity="0.5"/>
+  <circle cx="1000" cy="35" r="1.5" fill="white" opacity="0.3"/>
+  <circle cx="1100" cy="75" r="1" fill="white" opacity="0.4"/>
+  <circle cx="150" cy="550" r="1" fill="white" opacity="0.3"/>
+  <circle cx="350" cy="530" r="1.5" fill="white" opacity="0.4"/>
+  <circle cx="600" cy="560" r="1" fill="white" opacity="0.3"/>
+  <circle cx="900" cy="545" r="1.5" fill="white" opacity="0.5"/>
+  <circle cx="1050" cy="530" r="1" fill="white" opacity="0.3"/>
+
+  <!-- ===== TITLE ===== -->
+  <text x="600" y="55" text-anchor="middle" font-size="36" font-weight="bold" fill="white" filter="url(#glow)">
+    🌊 Deep Dream
+  </text>
+  <text x="600" y="82" text-anchor="middle" font-size="14" fill="#a5b4fc" opacity="0.9">
+    Agent 的全生命周期记忆 — 像人一样记忆、回溯、做梦
+  </text>
+
+  <!-- ===== ZONE 1: REMEMBER ===== -->
+  <rect x="40" y="120" width="280" height="380" rx="16" fill="#10B981" fill-opacity="0.1" stroke="#10B981" stroke-width="2" stroke-opacity="0.5"/>
+  <rect x="60" y="135" width="240" height="36" rx="8" fill="url(#rememberGrad)"/>
+  <text x="180" y="159" text-anchor="middle" font-size="18" font-weight="bold" fill="white">🧠 Remember</text>
+  <text x="180" y="195" text-anchor="middle" font-size="12" fill="#6EE7B7">清醒时写入记忆</text>
+
+  <!-- Remember icons -->
+  <rect x="80" y="215" width="200" height="45" rx="8" fill="#10B981" fill-opacity="0.15" stroke="#34D399" stroke-width="1"/>
+  <text x="180" y="235" text-anchor="middle" font-size="11" fill="#A7F3D0">📝 文本 → 实体提取</text>
+  <text x="180" y="252" text-anchor="middle" font-size="10" fill="#6EE7B7">Entity Extraction</text>
+
+  <rect x="80" y="275" width="200" height="45" rx="8" fill="#10B981" fill-opacity="0.15" stroke="#34D399" stroke-width="1"/>
+  <text x="180" y="295" text-anchor="middle" font-size="11" fill="#A7F3D0">📄 文档 → 关系抽取</text>
+  <text x="180" y="312" text-anchor="middle" font-size="10" fill="#6EE7B7">Relation Extraction</text>
+
+  <rect x="80" y="335" width="200" height="45" rx="8" fill="#10B981" fill-opacity="0.15" stroke="#34D399" stroke-width="1"/>
+  <text x="180" y="355" text-anchor="middle" font-size="11" fill="#A7F3D0">📦 版本化写入</text>
+  <text x="180" y="372" text-anchor="middle" font-size="10" fill="#6EE7B7">Versioned Write</text>
+
+  <!-- Down arrow from Remember -->
+  <path d="M 180 395 L 180 430 L 340 430" stroke="#34D399" stroke-width="3" fill="none" marker-end="url(#arrowGreen)" filter="url(#glow)"/>
+  <defs>
+    <marker id="arrowGreen" markerWidth="10" markerHeight="8" refX="8" refY="4" orient="auto">
+      <polygon points="0 0, 10 4, 0 8" fill="#34D399"/>
+    </marker>
+  </defs>
+  <text x="255" y="420" text-anchor="middle" font-size="9" fill="#6EE7B7">写入图谱</text>
+
+  <!-- ===== ZONE 2: KNOWLEDGE GRAPH (CENTER) ===== -->
+  <rect x="360" y="120" width="480" height="380" rx="16" fill="#3B82F6" fill-opacity="0.08" stroke="#3B82F6" stroke-width="2" stroke-opacity="0.4"/>
+
+  <!-- Knowledge Graph title -->
+  <rect x="480" y="135" width="240" height="36" rx="8" fill="url(#graphGrad)"/>
+  <text x="600" y="159" text-anchor="middle" font-size="18" font-weight="bold" fill="white">🕸️ Knowledge Graph</text>
+
+  <!-- Graph nodes -->
+  <!-- Central node -->
+  <circle cx="600" cy="300" r="28" fill="#2563EB" fill-opacity="0.3" stroke="#60A5FA" stroke-width="2" filter="url(#softGlow)"/>
+  <circle cx="600" cy="300" r="28" fill="url(#nodeGlow)"/>
+  <text x="600" y="296" text-anchor="middle" font-size="10" font-weight="bold" fill="white">Entity</text>
+  <text x="600" y="310" text-anchor="middle" font-size="8" fill="#93C5FD">v1→v2→v3</text>
+
+  <!-- Top-left node -->
+  <circle cx="460" cy="230" r="22" fill="#2563EB" fill-opacity="0.25" stroke="#60A5FA" stroke-width="1.5" filter="url(#softGlow)"/>
+  <text x="460" y="233" text-anchor="middle" font-size="9" fill="#BFDBFE">Entity A</text>
+
+  <!-- Top-right node -->
+  <circle cx="740" cy="230" r="22" fill="#2563EB" fill-opacity="0.25" stroke="#60A5FA" stroke-width="1.5" filter="url(#softGlow)"/>
+  <text x="740" y="233" text-anchor="middle" font-size="9" fill="#BFDBFE">Entity B</text>
+
+  <!-- Bottom-left node -->
+  <circle cx="450" cy="380" r="22" fill="#2563EB" fill-opacity="0.25" stroke="#60A5FA" stroke-width="1.5" filter="url(#softGlow)"/>
+  <text x="450" y="383" text-anchor="middle" font-size="9" fill="#BFDBFE">Entity C</text>
+
+  <!-- Bottom-right node -->
+  <circle cx="750" cy="380" r="22" fill="#2563EB" fill-opacity="0.25" stroke="#60A5FA" stroke-width="1.5" filter="url(#softGlow)"/>
+  <text x="750" y="383" text-anchor="middle" font-size="9" fill="#BFDBFE">Entity D</text>
+
+  <!-- Small peripheral nodes -->
+  <circle cx="420" cy="300" r="15" fill="#2563EB" fill-opacity="0.2" stroke="#60A5FA" stroke-width="1"/>
+  <circle cx="780" cy="310" r="15" fill="#2563EB" fill-opacity="0.2" stroke="#60A5FA" stroke-width="1"/>
+  <circle cx="600" cy="200" r="15" fill="#2563EB" fill-opacity="0.2" stroke="#60A5FA" stroke-width="1"/>
+  <circle cx="600" cy="415" r="15" fill="#2563EB" fill-opacity="0.2" stroke="#60A5FA" stroke-width="1"/>
+
+  <!-- Edges (solid = existing) -->
+  <line x1="460" y1="230" x2="600" y2="300" stroke="#60A5FA" stroke-width="1.5" stroke-opacity="0.6"/>
+  <line x1="740" y1="230" x2="600" y2="300" stroke="#60A5FA" stroke-width="1.5" stroke-opacity="0.6"/>
+  <line x1="450" y1="380" x2="600" y2="300" stroke="#60A5FA" stroke-width="1.5" stroke-opacity="0.6"/>
+  <line x1="750" y1="380" x2="600" y2="300" stroke="#60A5FA" stroke-width="1.5" stroke-opacity="0.6"/>
+  <line x1="460" y1="230" x2="450" y2="380" stroke="#60A5FA" stroke-width="1" stroke-opacity="0.3"/>
+  <line x1="740" y1="230" x2="750" y2="380" stroke="#60A5FA" stroke-width="1" stroke-opacity="0.3"/>
+
+  <!-- Dream-discovered edges (dashed, purple glow) -->
+  <line x1="460" y1="230" x2="740" y2="230" stroke="#A78BFA" stroke-width="2" stroke-dasharray="6 4" filter="url(#glow)"/>
+  <line x1="450" y1="380" x2="750" y2="380" stroke="#A78BFA" stroke-width="2" stroke-dasharray="6 4" filter="url(#glow)"/>
+  <line x1="460" y1="230" x2="750" y2="380" stroke="#A78BFA" stroke-width="2" stroke-dasharray="6 4" filter="url(#glow)" stroke-opacity="0.6"/>
+
+  <!-- Legend -->
+  <line x1="400" y1="460" x2="430" y2="460" stroke="#60A5FA" stroke-width="2"/>
+  <text x="438" y="464" font-size="10" fill="#93C5FD">已有关系</text>
+  <line x1="520" y1="460" x2="550" y2="460" stroke="#A78BFA" stroke-width="2" stroke-dasharray="6 4"/>
+  <text x="558" y="464" font-size="10" fill="#C4B5FD">💭 梦境发现</text>
+  <text x="680" y="464" font-size="10" fill="#93C5FD">Entity 版本链 · Relation 版本链</text>
+
+  <!-- Arrow from Graph to Find -->
+  <path d="M 340 430 L 340 520 L 180 520" stroke="#F59E0B" stroke-width="3" fill="none" marker-end="url(#arrowAmber)" filter="url(#glow)"/>
+  <defs>
+    <marker id="arrowAmber" markerWidth="10" markerHeight="8" refX="8" refY="4" orient="auto">
+      <polygon points="0 0, 10 4, 0 8" fill="#F59E0B"/>
+    </marker>
+  </defs>
+  <text x="255" y="540" text-anchor="middle" font-size="9" fill="#FCD34D">检索查询</text>
+
+  <!-- Arrow from Graph to Dream -->
+  <path d="M 860 300 L 880 300" stroke="#A78BFA" stroke-width="3" fill="none" marker-end="url(#arrowPurple)" filter="url(#glow)"/>
+  <defs>
+    <marker id="arrowPurple" markerWidth="10" markerHeight="8" refX="8" refY="4" orient="auto">
+      <polygon points="0 0, 10 4, 0 8" fill="#A78BFA"/>
+    </marker>
+  </defs>
+  <text x="870" y="285" text-anchor="middle" font-size="9" fill="#C4B5FD">自主探索</text>
+
+  <!-- ===== ZONE 3: FIND (bottom) ===== -->
+  <rect x="40" y="490" width="280" height="90" rx="12" fill="#F59E0B" fill-opacity="0.1" stroke="#F59E0B" stroke-width="2" stroke-opacity="0.4"/>
+  <rect x="60" y="500" width="240" height="30" rx="6" fill="#F59E0B" fill-opacity="0.7"/>
+  <text x="180" y="520" text-anchor="middle" font-size="14" font-weight="bold" fill="white">🔍 Find 检索</text>
+  <text x="180" y="545" text-anchor="middle" font-size="10" fill="#FCD34D">语义检索 · 图谱扩展 · 时间回溯</text>
+  <text x="180" y="565" text-anchor="middle" font-size="9" fill="#FBBF24">自然语言提问 → 结构化查询</text>
+
+  <!-- ===== ZONE 3: DREAM (right) ===== -->
+  <rect x="880" y="120" width="280" height="380" rx="16" fill="#8B5CF6" fill-opacity="0.1" stroke="#8B5CF6" stroke-width="2" stroke-opacity="0.5"/>
+  <rect x="900" y="135" width="240" height="36" rx="8" fill="url(#dreamGrad)"/>
+  <text x="1020" y="159" text-anchor="middle" font-size="18" font-weight="bold" fill="white">💭 Dream</text>
+  <text x="1020" y="195" text-anchor="middle" font-size="12" fill="#C4B5FD">睡眠时自主巩固</text>
+
+  <!-- Dream Agent loop -->
+  <rect x="900" y="215" width="240" height="50" rx="8" fill="#8B5CF6" fill-opacity="0.15" stroke="#A78BFA" stroke-width="1"/>
+  <text x="1020" y="237" text-anchor="middle" font-size="11" fill="#DDD6FE">📋 策略选择 Strategy</text>
+  <text x="1020" y="254" text-anchor="middle" font-size="9" fill="#C4B5FD">free_association · leap · cross_domain</text>
+
+  <!-- Arrow down -->
+  <path d="M 1020 270 L 1020 285" stroke="#A78BFA" stroke-width="2" fill="none" marker-end="url(#arrowPurpleSmall)"/>
+  <defs>
+    <marker id="arrowPurpleSmall" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#A78BFA"/>
+    </marker>
+  </defs>
+
+  <rect x="900" y="290" width="240" height="50" rx="8" fill="#8B5CF6" fill-opacity="0.15" stroke="#A78BFA" stroke-width="1"/>
+  <text x="1020" y="312" text-anchor="middle" font-size="11" fill="#DDD6FE">🔭 工具调用 Tool Calls</text>
+  <text x="1020" y="329" text-anchor="middle" font-size="9" fill="#C4B5FD">get_seeds → traverse → observe</text>
+
+  <!-- Arrow down -->
+  <path d="M 1020 345 L 1020 360" stroke="#A78BFA" stroke-width="2" fill="none" marker-end="url(#arrowPurpleSmall)"/>
+
+  <rect x="900" y="365" width="240" height="50" rx="8" fill="#8B5CF6" fill-opacity="0.15" stroke="#A78BFA" stroke-width="1"/>
+  <text x="1020" y="387" text-anchor="middle" font-size="11" fill="#DDD6FE">💡 关系发现 Discovery</text>
+  <text x="1020" y="404" text-anchor="middle" font-size="9" fill="#C4B5FD">新关系 + 来源标记 source: dream</text>
+
+  <!-- Loop arrow back -->
+  <path d="M 900 310 Q 875 310 875 340 Q 875 400 900 400" stroke="#A78BFA" stroke-width="1.5" fill="none" stroke-dasharray="4 3" marker-end="url(#arrowPurpleSmall)" opacity="0.6"/>
+  <text x="860" y="358" text-anchor="middle" font-size="8" fill="#C4B5FD" transform="rotate(-90 860 358)">∞ loop</text>
+
+  <!-- Constraint badge -->
+  <rect x="900" y="435" width="240" height="50" rx="8" fill="#EF4444" fill-opacity="0.15" stroke="#F87171" stroke-width="1"/>
+  <text x="1020" y="457" text-anchor="middle" font-size="10" font-weight="bold" fill="#FCA5A5">⚠️ 关键约束</text>
+  <text x="1020" y="475" text-anchor="middle" font-size="9" fill="#FECACA">只发现关系，不编造实体</text>
+
+  <!-- Dream back-arrow to Graph (discovered relations) -->
+  <path d="M 880 380 L 860 380" stroke="#A78BFA" stroke-width="2" stroke-dasharray="6 4" fill="none" marker-end="url(#arrowPurple)" filter="url(#glow)"/>
+</svg>

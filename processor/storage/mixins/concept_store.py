@@ -112,7 +112,7 @@ class ConceptStoreMixin:
         """Dual-write: write Entity to concepts table (called within existing write transaction)."""
         try:
             cursor.execute("""
-                INSERT OR IGNORE INTO concepts
+                INSERT OR REPLACE INTO concepts
                 (id, family_id, role, name, content, event_time, processed_time,
                  source_document, episode_id, embedding, valid_at, invalid_at,
                  summary, attributes, confidence, content_format, provenance)
@@ -155,7 +155,7 @@ class ConceptStoreMixin:
         try:
             connects = json.dumps([relation.entity1_absolute_id, relation.entity2_absolute_id])
             cursor.execute("""
-                INSERT OR IGNORE INTO concepts
+                INSERT OR REPLACE INTO concepts
                 (id, family_id, role, name, content, event_time, processed_time,
                  source_document, episode_id, embedding, valid_at, invalid_at,
                  summary, attributes, confidence, content_format, provenance, connects)
@@ -205,7 +205,7 @@ class ConceptStoreMixin:
         try:
             fid = family_id or cache.absolute_id
             cursor.execute("""
-                INSERT OR IGNORE INTO concepts
+                INSERT OR REPLACE INTO concepts
                 (id, family_id, role, name, content, event_time, processed_time,
                  source_document, activity_type, episode_type, provenance)
                 VALUES (?, ?, 'observation', '', ?, ?, ?, ?, ?, ?, ?)
@@ -291,19 +291,23 @@ class ConceptStoreMixin:
                 f"UPDATE concepts SET {set_clause} WHERE id = ?",
                 values,
             )
-            # Also update concept_fts if name or content changed
+            # Also update concept_fts if name or content changed.
+            # Must read BOTH name and content from the row to avoid partial
+            # FTS overwrite (e.g. only name changed → content would be lost).
             if 'name' in concept_fields or 'content' in concept_fields:
                 try:
-                    cursor.execute("SELECT rowid FROM concepts WHERE id = ?", (absolute_id,))
+                    cursor.execute(
+                        "SELECT rowid, name, content FROM concepts WHERE id = ?",
+                        (absolute_id,),
+                    )
                     _row = cursor.fetchone()
                     if _row:
-                        name_val = concept_fields.get('name', '')
-                        content_val = concept_fields.get('content', '')
-                        if name_val or content_val:
-                            cursor.execute(
-                                "INSERT OR REPLACE INTO concept_fts(rowid, name, content) VALUES (?, ?, ?)",
-                                (_row[0], name_val, content_val),
-                            )
+                        fts_name = concept_fields.get('name', _row[1] or '')
+                        fts_content = concept_fields.get('content', _row[2] or '')
+                        cursor.execute(
+                            "INSERT OR REPLACE INTO concept_fts(rowid, name, content) VALUES (?, ?, ?)",
+                            (_row[0], fts_name, fts_content),
+                        )
                 except Exception as exc:
                     logger.debug("concept_fts sync failed: %s", exc)
         except Exception as exc:
@@ -424,7 +428,7 @@ class ConceptStoreMixin:
                     return  # already migrated
                 # entities -> concepts
                 cursor.execute("""
-                    INSERT OR IGNORE INTO concepts
+                    INSERT OR REPLACE INTO concepts
                     (id, family_id, role, name, content, event_time, processed_time,
                      source_document, episode_id, embedding, valid_at, invalid_at,
                      summary, attributes, confidence, content_format)
@@ -435,7 +439,7 @@ class ConceptStoreMixin:
                 """)
                 # relations -> concepts
                 cursor.execute("""
-                    INSERT OR IGNORE INTO concepts
+                    INSERT OR REPLACE INTO concepts
                     (id, family_id, role, content, event_time, processed_time,
                      source_document, episode_id, embedding, valid_at, invalid_at,
                      summary, attributes, confidence, content_format, connects)
@@ -447,7 +451,7 @@ class ConceptStoreMixin:
                 """)
                 # episodes -> concepts
                 cursor.execute("""
-                    INSERT OR IGNORE INTO concepts
+                    INSERT OR REPLACE INTO concepts
                     (id, family_id, role, content, event_time, processed_time,
                      source_document, activity_type, episode_type)
                     SELECT id, family_id, 'observation', content, event_time, processed_time,

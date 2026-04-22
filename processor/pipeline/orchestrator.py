@@ -29,8 +29,11 @@ from ..utils import (
     set_pipeline_role,
     set_window_label,
     wprint,
+    wprint_info,
 )
-from .extraction import _ExtractionMixin, _AlignResult, dedupe_extraction_lists
+from .extraction import _ExtractionMixin, _AlignResult
+from .extraction_utils import dedupe_extraction_lists
+from .new_extraction import _NewExtractionMixin
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +44,7 @@ class RememberControlFlow(Exception):
         self.remember_control_action = action
 
 
-class TemporalMemoryGraphProcessor(_ExtractionMixin):
+class TemporalMemoryGraphProcessor(_ExtractionMixin, _NewExtractionMixin):
     """时序记忆图谱处理器 - 主处理流程"""
     
     def __init__(self, storage_path: str, window_size: int = 1000, overlap: int = 200,
@@ -83,7 +86,14 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
                  extraction_rounds: Optional[int] = None,
                  entity_extraction_rounds: Optional[int] = None,
                  relation_extraction_rounds: Optional[int] = None,
-                 compress_multi_round_extraction: Optional[bool] = None):
+                 compress_multi_round_extraction: Optional[bool] = None,
+                 v2_enable_reflection: Optional[bool] = None,
+                 v2_enable_orphan_recovery: Optional[bool] = None,
+                 v3_entity_refine_rounds: Optional[int] = None,
+                 v3_relation_refine_rounds: Optional[int] = None,
+                 remember_config: Optional[Dict[str, Any]] = None,
+                 extraction_llm: Optional[Dict[str, Any]] = None,
+                 graph_id: Optional[str] = None):
         """
         初始化处理器
 
@@ -120,6 +130,76 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
             prompt_episode_max_chars: 注入抽取 prompt 的记忆缓存最大字符数；超长时自动截断，默认 2000
         """
         _content_snippet_length = content_snippet_length if content_snippet_length is not None else 300
+        _remember_defaults = {
+            "mode": "multi_step",
+            "anchor_recall_rounds": 1,
+            "named_entity_recall_rounds": 1,
+            "concrete_recall_rounds": 1,
+            "abstract_recall_rounds": 1,
+            "coverage_gap_rounds": 1,
+            "missing_concept_rounds": 1,
+            "entity_write_batch_size": 6,
+            "entity_content_batch_size": 6,
+            "relation_hint_rounds": 1,
+            "relation_candidate_rounds": 1,
+            "relation_expand_rounds": 1,
+            "relation_write_rounds": 1,
+            "pre_alignment_validation_retries": 2,
+            "validation_retries": 2,
+            "min_relation_candidates_per_window": 0,
+            "min_entities_per_100_chars_soft_target": 0.0,
+            "alignment_policy": "conservative",
+        }
+        _remember_from_config = (((config or {}).get("pipeline") or {}).get("remember") or {})
+        _remember_overrides = dict(remember_config or {})
+        _remember_cfg = dict(_remember_defaults)
+        _remember_cfg.update(_remember_from_config)
+        if remember_config:
+            _remember_cfg.update(remember_config)
+        self.remember_config = _remember_cfg
+
+        def _remember_pick(primary_key: str, fallback_key: Optional[str] = None):
+            if primary_key in _remember_overrides:
+                return _remember_overrides.get(primary_key)
+            if primary_key in _remember_from_config:
+                return _remember_from_config.get(primary_key)
+            if fallback_key:
+                if fallback_key in _remember_overrides:
+                    return _remember_overrides.get(fallback_key)
+                if fallback_key in _remember_from_config:
+                    return _remember_from_config.get(fallback_key)
+            return _remember_cfg.get(primary_key)
+
+        self.remember_mode = str(_remember_cfg.get("mode") or "v3").strip() or "v3"
+        if self.remember_mode not in {"v2", "v3"}:
+            self.remember_mode = "v3"
+        self.remember_anchor_recall_rounds = max(1, int(_remember_pick("anchor_recall_rounds") or 1))
+        _named_rounds = _remember_pick("named_entity_recall_rounds", "concrete_recall_rounds")
+        self.remember_named_entity_recall_rounds = max(1, int(_named_rounds or 1))
+        self.remember_concrete_recall_rounds = self.remember_named_entity_recall_rounds
+        self.remember_abstract_recall_rounds = max(1, int(_remember_pick("abstract_recall_rounds") or 1))
+        _coverage_gap_rounds = _remember_pick("coverage_gap_rounds", "missing_concept_rounds")
+        self.remember_coverage_gap_rounds = max(1, int(_coverage_gap_rounds or 1))
+        self.remember_missing_concept_rounds = self.remember_coverage_gap_rounds
+        _entity_write_batch_size = _remember_pick("entity_write_batch_size", "entity_content_batch_size")
+        self.remember_entity_write_batch_size = max(1, int(_entity_write_batch_size or 6))
+        self.remember_entity_content_batch_size = self.remember_entity_write_batch_size
+        _relation_hint_rounds = _remember_pick("relation_hint_rounds", "relation_candidate_rounds")
+        self.remember_relation_hint_rounds = max(1, int(_relation_hint_rounds or 1))
+        self.remember_relation_candidate_rounds = self.remember_relation_hint_rounds
+        self.remember_relation_expand_rounds = max(1, int(_remember_pick("relation_expand_rounds") or 1))
+        self.remember_relation_write_rounds = max(1, int(_remember_pick("relation_write_rounds") or 1))
+        _pre_validation_retries = _remember_pick("pre_alignment_validation_retries", "validation_retries")
+        self.remember_pre_alignment_validation_retries = max(0, int(_pre_validation_retries or 0))
+        self.remember_validation_retries = self.remember_pre_alignment_validation_retries
+        self.remember_min_relation_candidates_per_window = max(
+            0, int(_remember_pick("min_relation_candidates_per_window") or 0)
+        )
+        self.remember_min_entities_per_100_chars_soft_target = max(
+            0.0, float(_remember_pick("min_entities_per_100_chars_soft_target") or 0.0)
+        )
+        self.remember_alignment_policy = str(_remember_cfg.get("alignment_policy") or "conservative").strip() or "conservative"
+        self.remember_alignment_conservative = self.remember_alignment_policy == "conservative"
         _relation_content_snippet_length = relation_content_snippet_length if relation_content_snippet_length is not None else 200
         _relation_endpoint_jaccard_threshold = (
             float(relation_endpoint_jaccard_threshold)
@@ -155,6 +235,7 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
                 storage_path=storage_path,
                 entity_content_snippet_length=_content_snippet_length,
                 relation_content_snippet_length=_relation_content_snippet_length,
+                graph_id=graph_id,
             )
         else:
             self.storage = StorageManager(
@@ -197,6 +278,14 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
             content_snippet_length=_content_snippet_length
         )
         self.relation_processor = RelationProcessor(self.storage, self.llm_client)
+        if self.remember_alignment_conservative:
+            self.entity_processor.batch_resolution_confidence_threshold = 0.9
+            self.entity_processor.merge_safe_embedding_threshold = max(self.entity_processor.merge_safe_embedding_threshold, 0.7)
+            self.entity_processor.merge_safe_jaccard_threshold = max(self.entity_processor.merge_safe_jaccard_threshold, 0.55)
+            self.relation_processor.batch_resolution_confidence_threshold = 0.9
+            self.relation_processor.preserve_distinct_relations_per_pair = True
+        else:
+            self.relation_processor.preserve_distinct_relations_per_pair = False
         
         self.similarity_threshold = similarity_threshold if similarity_threshold is not None else 0.7
         self.max_similar_entities = _max_similar_entities
@@ -216,6 +305,36 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
         self.compress_multi_round_extraction = (
             compress_multi_round_extraction if compress_multi_round_extraction is not None else False
         )
+
+        # V2 pipeline feature flags
+        self.v2_enable_reflection = v2_enable_reflection if v2_enable_reflection is not None else True
+        self.v2_enable_orphan_recovery = v2_enable_orphan_recovery if v2_enable_orphan_recovery is not None else True
+
+        # V3 pipeline refine rounds
+        self.v3_entity_refine_rounds = v3_entity_refine_rounds if v3_entity_refine_rounds is not None else 2
+        self.v3_relation_refine_rounds = v3_relation_refine_rounds if v3_relation_refine_rounds is not None else 1
+
+        # V3 extraction client (dual-model pipeline)
+        _el = extraction_llm or {}
+        self.extraction_client = None
+        self.v3_extraction_enabled = False
+        if _el.get("enabled", False):
+            self.extraction_client = LLMClient(
+                _el.get("api_key", llm_api_key),
+                _el.get("model", llm_model),
+                _el.get("base_url", llm_base_url),
+                content_snippet_length=_content_snippet_length,
+                relation_content_snippet_length=_relation_content_snippet_length,
+                embedding_client=self.embedding_client,
+                think_mode=bool(_el.get("think_mode", False)),
+                max_tokens=_el.get("max_tokens"),
+                context_window_tokens=int(_el.get("context_window_tokens", _ctx_win)),
+                max_llm_concurrency=_el.get("max_concurrency"),
+                alignment_enabled=False,
+            )
+            self.v3_extraction_enabled = True
+            if self.remember_mode not in ("v2", "legacy"):
+                self.remember_mode = "v3"
 
         self.llm_threads = max_llm_concurrency if max_llm_concurrency else 1
         self.load_cache_memory = load_cache_memory if load_cache_memory is not None else False
@@ -361,6 +480,8 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
         # 保存原始值，以便在方法结束时恢复
         original_values = {}
         original_components = {}
+        # 子对象属性（storage/llm_client 的属性被就地修改，setattr 恢复组件引用不会还原它们）
+        _original_sub_attrs = {}
         
         # 如果提供了参数，临时覆盖实例属性
         if similarity_threshold is not None:
@@ -393,13 +514,12 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
             original_values['content_snippet_length'] = self.content_snippet_length
             self.content_snippet_length = content_snippet_length
             final_content_snippet_length = content_snippet_length
-            # 更新 StorageManager
-            if 'storage' not in original_components:
-                original_components['storage'] = self.storage
+            # 保存子对象原始属性值（setattr 恢复同一对象引用不会还原这些修改）
+            if 'storage.entity_content_snippet_length' not in _original_sub_attrs:
+                _original_sub_attrs['storage.entity_content_snippet_length'] = self.storage.entity_content_snippet_length
+            if 'llm_client.content_snippet_length' not in _original_sub_attrs:
+                _original_sub_attrs['llm_client.content_snippet_length'] = self.llm_client.content_snippet_length
             self.storage.entity_content_snippet_length = content_snippet_length
-            # 更新 LLMClient
-            if 'llm_client' not in original_components:
-                original_components['llm_client'] = self.llm_client
             self.llm_client.content_snippet_length = content_snippet_length
             need_update_entity_processor = True
         
@@ -416,9 +536,9 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
         if relation_content_snippet_length is not None:
             original_values['relation_content_snippet_length'] = self.relation_content_snippet_length
             self.relation_content_snippet_length = relation_content_snippet_length
-            # 更新 StorageManager
-            if 'storage' not in original_components:
-                original_components['storage'] = self.storage
+            # 保存子对象原始属性值
+            if 'storage.relation_content_snippet_length' not in _original_sub_attrs:
+                _original_sub_attrs['storage.relation_content_snippet_length'] = self.storage.relation_content_snippet_length
             self.storage.relation_content_snippet_length = relation_content_snippet_length
         if entity_extraction_max_iterations is not None:
             original_values['entity_extraction_max_iterations'] = self.entity_extraction_max_iterations
@@ -450,7 +570,7 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
         try:
             self.entity_processor.entity_progress_verbose = _epv
             if verbose:
-                wprint(f"开始处理 {len(document_paths)} 个文档...")
+                wprint_info(f"开始处理 {len(document_paths)} 个文档...")
             
             # 断点续传相关变量
             resume_document_path = None
@@ -459,7 +579,7 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
             # 根据配置决定是否加载最新的记忆缓存并支持断点续传
             if self.load_cache_memory:
                 if verbose:
-                    wprint("正在加载最新的缓存记忆...")
+                    wprint_info("正在加载最新的缓存记忆...")
 
                 # 获取最新缓存的元数据（包含 text 和 document_path）
                 # 只查找"文档处理"类型的缓存，避免使用知识图谱整理产生的缓存（其text字段是整理后的实体信息，不是原始文档文本）
@@ -471,7 +591,7 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
                     
                     if self.current_episode:
                         if verbose:
-                            wprint(f"已加载缓存记忆: {self.current_episode.absolute_id} (时间: {self.current_episode.event_time})")
+                            wprint_info(f"已加载缓存记忆: {self.current_episode.absolute_id} (时间: {self.current_episode.event_time})")
                         
                         # 提取断点续传信息
                         resume_document_path = latest_metadata.get('document_path', '')
@@ -479,17 +599,17 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
                         
                         if verbose:
                             if resume_document_path:
-                                wprint(f"[断点续传] 上次处理的文档: {resume_document_path}")
+                                wprint_info(f"[断点续传] 上次处理的文档: {resume_document_path}")
                             if resume_text:
                                 text_preview = resume_text[:100].replace('\n', ' ')
-                                wprint(f"[断点续传] 上次处理的文本片段: {text_preview}...")
+                                wprint_info(f"[断点续传] 上次处理的文本片段: {text_preview}...")
                 else:
                     if verbose:
-                        wprint("未找到缓存记忆，将从头开始处理")
+                        wprint_info("未找到缓存记忆，将从头开始处理")
                     self.current_episode = None
             else:
                 if verbose:
-                    wprint("不加载缓存记忆，将从头开始处理")
+                    wprint_info("不加载缓存记忆，将从头开始处理")
                 self.current_episode = None
             
             # 遍历所有文档的滑动窗口（支持断点续传）
@@ -501,9 +621,9 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
                 )
             ):
                 if verbose:
-                    wprint(f"\n处理窗口 {chunk_idx + 1} (文档: {document_name}, 位置: {text_start_pos}-{text_end_pos}/{total_text_length})")
+                    wprint_info(f"\n处理窗口 {chunk_idx + 1} (文档: {document_name}, 位置: {text_start_pos}-{text_end_pos}/{total_text_length})")
                 elif _epv:
-                    wprint(f"窗口 {chunk_idx + 1} 开始 · {document_name}")
+                    wprint_info(f"窗口 {chunk_idx + 1} 开始 · {document_name}")
                 
                 # 处理当前窗口
                 self._process_window(input_text, document_name, is_new_document, 
@@ -516,6 +636,10 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
             # 恢复原始组件
             for key, value in original_components.items():
                 setattr(self, key, value)
+            # 恢复子对象属性（storage/llm_client 的属性被就地修改，组件引用还原不会覆盖它们）
+            for attr_path, value in _original_sub_attrs.items():
+                obj_name, attr_name = attr_path.split('.', 1)
+                setattr(getattr(self, obj_name), attr_name, value)
             self.entity_processor.entity_progress_verbose = _saved_entity_progress_verbose
 
     def remember_text(self, text: str, doc_name: str = "api_input", verbose: bool = False,
@@ -616,6 +740,9 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
         align_results = [None] * N     # _AlignResult
         step7_results = [None] * N     # List[Relation] from _align_relations
 
+        # 每窗口计时（线程安全：各线程只写自己的 index）
+        window_timings: List[Dict[str, float]] = [{} for _ in range(N)]
+
         # 同步事件
         extract_done = [threading.Event() for _ in range(N)]
         step6_done_ev = [threading.Event() for _ in range(N)]
@@ -703,7 +830,7 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
                         hb_message = f"{message}（已等待 {elapsed}s）"
                         _safe_progress(base_progress, hb_label, hb_message, chain_id)
                         if elapsed - last_log_elapsed >= log_interval_seconds:
-                            wprint(f"{phase_label} · 长调用进行中（已等待 {elapsed}s）")
+                            wprint_info(f"{phase_label} · 长调用进行中（已等待 {elapsed}s）")
                             last_log_elapsed = float(elapsed)
                 finally:
                     clear_parallel_log_context()
@@ -737,6 +864,7 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
 
         # ========== step6 工作线程 ==========
         def step6_worker():
+            _already_versioned = set()  # 跨窗口共享：同一次 remember 中同一实体只创建一次版本
             for i in range(N):
                 extract_done[i].wait()          # 等待当前窗口 step2-5 完成
                 _action = _poll_control()
@@ -762,6 +890,7 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
                     break
                 with self._runtime_lock:
                     self._active_step6 += 1
+                _t_step6_start = time.time()
                 try:
                     mc = episodes[i]
                     _success = False
@@ -771,16 +900,16 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
                         if _upstream is not None:
                             _stage, _exc = _upstream
                             if verbose or verbose_steps:
-                                wprint(f"【步骤6】跳过｜上游｜{_stage} {_exc}")
+                                wprint_info(f"【步骤6】跳过｜上游｜{_stage} {_exc}")
                             continue
                         raise RuntimeError(
                             f"step6 skipped for window {start_chunk + i}: extract result is None (extraction failed)"
                         )
                     ents, rels = _er
                     if verbose:
-                        wprint("【步骤6】实体｜就绪｜本窗1–5完成或缓存")
+                        wprint_info("【步骤6】实体｜就绪｜本窗1–5完成或缓存")
                     elif verbose_steps:
-                        wprint("【步骤6】实体｜开始｜前置1–5已就绪")
+                        wprint_info("【步骤6】实体｜开始｜前置1–5已就绪")
                     _wi = start_chunk + i
                     _g_lo = _wi / total_chunks
                     _g_hi = (_wi + 1) / total_chunks
@@ -794,9 +923,15 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
                         progress_range=_pr_step6,
                         window_index=start_chunk + i, total_windows=total_chunks,
                         entity_embedding_prefetch=emb_prefetch_future,
+                        already_versioned_family_ids=_already_versioned,
+                        window_timings_ref=window_timings[i],
                     )
                     align_results[i] = ar
                     _success = True
+                    _step6_elapsed = time.time() - _t_step6_start
+                    window_timings[i]["step6"] = _step6_elapsed
+                    if verbose or verbose_steps:
+                        wprint_info(f"【步骤6】完成｜{_step6_elapsed:.1f}s")
                 except Exception as e:
                     if _record_window_error("step6", i, e):
                         logger.error("step6 window %d error: %s", i, e, exc_info=True)
@@ -832,7 +967,7 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
                                 _eid,
                             )
                     except Exception as exc:
-                        wprint(f"  │  step7 输入构建失败: {exc}")
+                        wprint_info(f"  │  step7 输入构建失败: {exc}")
                         step7_inputs_cache = None
                         rel_prefetch_future = None
                 if i > 0:
@@ -846,10 +981,11 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
                     try:
                         prepared_relations_by_pair, _ = rel_prefetch_future.result()
                     except Exception as exc:
-                        wprint(f"  │  关系预取结果获取失败: {exc}")
+                        wprint_info(f"  │  关系预取结果获取失败: {exc}")
                         prepared_relations_by_pair = None
                 with self._runtime_lock:
                     self._active_step7 += 1
+                _t_step7_start = time.time()
                 _success = False
                 _window_has_entities = False
                 try:
@@ -858,7 +994,7 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
                         if _upstream is not None:
                             _stage, _exc = _upstream
                             if verbose or verbose_steps:
-                                wprint(f"【步骤7】跳过｜上游｜{_stage} {_exc}")
+                                wprint_info(f"【步骤7】跳过｜上游｜{_stage} {_exc}")
                             continue
                         raise RuntimeError(
                             f"step6 result for window {start_chunk + i} is None"
@@ -877,10 +1013,27 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
                         window_index=start_chunk + i, total_windows=total_chunks,
                         prepared_relations_by_pair=prepared_relations_by_pair,
                         step7_inputs_cache=step7_inputs_cache,
+                        window_timings_ref=window_timings[i],
                     )
                     step7_results[i] = processed_rels
                     _success = True
                     _window_has_entities = bool(ar.unique_entities)
+                    _step7_elapsed = time.time() - _t_step7_start
+                    window_timings[i]["step7"] = _step7_elapsed
+                    if verbose or verbose_steps:
+                        wprint_info(f"【步骤7】完成｜{_step7_elapsed:.1f}s")
+
+                    # step7 成功后清理孤立实体
+                    if _window_has_entities:
+                        try:
+                            _orphan_count = self._cleanup_orphaned_entities(
+                                ar.unique_entities,
+                                verbose=verbose or verbose_steps,
+                            )
+                            if _orphan_count > 0:
+                                _window_has_entities = bool(ar.unique_entities) and _orphan_count < len(ar.unique_entities)
+                        except Exception as _oe:
+                            logger.warning("孤立实体清理失败: %s", _oe)
                 except Exception as e:
                     if _record_window_error("step7", i, e):
                         logger.error("step7 window %d error: %s", i, e, exc_info=True)
@@ -892,7 +1045,7 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
                     if _success and chunk_done_callback:
                         chunk_done_callback(start_chunk + i + 1)
                     if _success and not _window_has_entities:
-                        wprint("提示: step7 完成但本窗无实体，仍已计入进度（避免断点卡死）")
+                        wprint_info("提示: step7 完成但本窗无实体，仍已计入进度（避免断点卡死）")
                     clear_parallel_log_context()
 
         # 启动 step6 / step7 线程
@@ -933,19 +1086,19 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
                     end = min(start + window_size, total_length)
                     chunk = text[start:end]
                     if start == 0:
-                        chunk = f"开始阅读新的文档，文件名是：{doc_name}\n\n{chunk}"
+                        chunk = f"[文档元数据] 文档名：{doc_name} [/文档元数据]\n\n{chunk}"
 
                     _wlabel = f"W{start_chunk + ci + 1}/{total_chunks}"
                     if verbose:
                         set_window_label(_wlabel)
                         set_pipeline_role("主线程")
-                        wprint(
+                        wprint_info(
                             f"【窗口】{_wlabel}｜{doc_name}｜[{start}-{end}/{total_length}] {len(chunk)}字"
                         )
                     elif verbose_steps:
                         set_window_label(_wlabel)
                         set_pipeline_role("主线程")
-                        wprint(
+                        wprint_info(
                             f"【窗口】{_wlabel}｜{doc_name}｜[{start}-{end}/{total_length}]"
                         )
 
@@ -966,6 +1119,7 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
 
                     # Step1: 更新缓存（串行，需加锁）
                     # 断点续传优化：如果该窗口的缓存已存在，直接复用，跳过 LLM 调用
+                    _t_step1_start = time.time()
                     _chunk_hash = compute_doc_hash(chunk)
                     _saved_extraction = (
                         self.storage.load_extraction_result(_chunk_hash, document_path=document_path)
@@ -981,9 +1135,9 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
                         # 若步骤2–5 也有缓存，稍后在下方合并打印，避免看起来像「没跑步骤1–5 就直接步骤6」
                         if _saved_extraction is None:
                             if verbose:
-                                wprint("【步骤1】缓存｜命中｜跳过生成")
+                                wprint_info("【步骤1】缓存｜命中｜跳过生成")
                             elif verbose_steps:
-                                wprint("【步骤1】缓存｜命中｜跳过生成")
+                                wprint_info("【步骤1】缓存｜命中｜跳过生成")
                     else:
                         with self._cache_lock:
                             def _run_step1():
@@ -1005,6 +1159,10 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
                                 window_label=_wlabel,
                                 pipeline_role="主线程",
                             )
+                    _step1_elapsed = time.time() - _t_step1_start
+                    window_timings[ci]["step1"] = _step1_elapsed
+                    if verbose or verbose_steps:
+                        wprint_info(f"【步骤1】完成｜{_step1_elapsed:.1f}s")
                     episodes[ci] = new_mc
                     input_texts[ci] = chunk
                     last_episode_id = new_mc.absolute_id
@@ -1027,6 +1185,7 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
                             _saved_extraction[0], _saved_extraction[1]
                         )
                         extract_results[ci] = (_dedup_ents, _dedup_rels)
+                        window_timings[ci]["step2-5"] = 0.0  # 缓存命中
                         extract_done[ci].set()
                         if main_chunk_done_callback:
                             main_chunk_done_callback(start_chunk + ci + 1)
@@ -1043,20 +1202,20 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
                             _ents_count = len(_dedup_ents)
                             _rels_count = len(_dedup_rels)
                             if existing_mc:
-                                wprint(
+                                wprint_info(
                                     f"【步骤1–5】缓存｜命中｜实体{_ents_count} 关系{_rels_count}→步骤6"
                                 )
                             else:
-                                wprint(
+                                wprint_info(
                                     f"【步骤2–5】缓存｜命中｜实体{_ents_count} 关系{_rels_count}"
                                 )
                         elif verbose_steps:
                             if existing_mc:
-                                wprint(
+                                wprint_info(
                                     f"窗口 {start_chunk + ci + 1}/{total_chunks} · 步骤1–5 已缓存跳过 → 步骤6/7"
                                 )
                             else:
-                                wprint("【步骤2–5】缓存｜跳过｜抽取已存在")
+                                wprint_info("【步骤2–5】缓存｜跳过｜抽取已存在")
                     else:
                         if progress_callback:
                             _safe_progress(
@@ -1071,6 +1230,7 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
                             set_window_label(_wlabel)
                             set_pipeline_role("抽取")
                             _success_main = False
+                            _t_extract_start = time.time()
                             with self._runtime_lock:
                                 self._active_window_extractions += 1
                                 self._peak_window_extractions = max(
@@ -1090,11 +1250,16 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
                                         _idx_lo + _idx_span * (5.0 / 7.0),
                                     ),
                                     window_index=start_chunk + idx, total_windows=total_chunks,
+                                    window_timings_ref=window_timings[idx],
                                 )
                                 extract_results[idx] = (ents, rels)
                                 # 保存抽取结果供断点续传复用
                                 self.storage.save_extraction_result(__hash, ents, rels, document_path=document_path)
                                 _success_main = True
+                                _extract_elapsed = time.time() - _t_extract_start
+                                window_timings[idx]["step2-5"] = _extract_elapsed
+                                if verbose or verbose_steps:
+                                    wprint_info(f"【步骤2–5】完成｜{_extract_elapsed:.1f}s")
                             except Exception as e:
                                 if _record_window_error("extract", idx, e):
                                     logger.error("extract window %d error: %s", idx, e, exc_info=True)
@@ -1144,6 +1309,50 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
             _phase, _idx, exc = errors[0]
             raise exc
 
+        # ========== Post-window cross-window same-name dedup ==========
+        # After all windows complete, find same-name entities with different family_ids
+        # and merge those that are genuinely the same concept (high embedding similarity).
+        if N > 1 and verbose:
+            self._cross_window_dedup(align_results, verbose=verbose)
+
+        # ========== 计时汇总 ==========
+        _all_steps = ["step1", "step2-5", "step6", "step7"]
+        _step_labels = {"step1": "步骤1-缓存", "step2-5": "步骤2-5-抽取", "step6": "步骤6-实体对齐", "step7": "步骤7-关系对齐"}
+        # Sub-step keys (accumulated across all windows)
+        _sub_step_labels = {
+            "v3-1_entity_extract": "V3-1-实体提取",
+            "v3-2_entity_dedup": "V3-2-实体去重",
+            "v3-3_entity_content": "V3-3-实体内容",
+            "v3-4_entity_quality": "V3-4-实体质量门",
+            "v3-5_relation_discovery": "V3-5-关系发现",
+            "v3-6_relation_content": "V3-6-关系内容",
+            "v3-7_relation_quality": "V3-7-关系质量门",
+            "step6-process_entities": "步骤6-实体处理",
+            "step6-dedup_merge": "步骤6-同名去重",
+            "step7-process_relations": "步骤7-关系处理",
+        }
+        _step_totals = {s: 0.0 for s in _all_steps}
+        _sub_totals = {k: 0.0 for k in _sub_step_labels}
+        for _i, _wt in enumerate(window_timings):
+            for _s in _all_steps:
+                _step_totals[_s] += _wt.get(_s, 0.0)
+            for _sk in _sub_step_labels:
+                _sub_totals[_sk] += _wt.get(_sk, 0.0)
+        _total_elapsed = sum(_step_totals.values())
+        if _total_elapsed > 0:
+            _timing_detail = " | ".join(
+                f"{_step_labels[s]}:{_step_totals[s]:.1f}s"
+                for s in _all_steps if _step_totals[s] > 0
+            )
+            remember_log(f"计时汇总｜共{_total_elapsed:.1f}s｜{_timing_detail}")
+            _active_subs = {k: v for k, v in _sub_totals.items() if v > 0.01}
+            if _active_subs:
+                _sub_detail = " | ".join(
+                    f"{_sub_step_labels[k]}:{v:.1f}s"
+                    for k, v in sorted(_active_subs.items(), key=lambda x: -x[1])
+                )
+                remember_log(f"子步骤明细｜{_sub_detail}")
+
         storage_path = str(self.storage.storage_path)
         # Aggregate entity/relation counts from all windows
         total_entities = sum(
@@ -1159,6 +1368,115 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
             "entities": total_entities,
             "relations": total_relations,
         }
+
+    def _cross_window_dedup(self, align_results, verbose=True):
+        """After all windows complete, find and merge same-name entities with different family_ids.
+
+        Uses embedding similarity to distinguish genuine duplicates from same-name-different-meaning entities.
+        Only merges when embedding similarity is above threshold (default 0.75).
+        """
+        from collections import defaultdict
+
+        # Collect all unique entities across windows
+        all_entities = []
+        for ar in align_results:
+            if ar is None:
+                continue
+            all_entities.extend(ar.unique_entities)
+
+        # Group by name
+        name_to_entities = defaultdict(list)
+        for entity in all_entities:
+            name_to_entities[entity.name.strip()].append(entity)
+
+        # Find same-name duplicates with different family_ids
+        dupes = {name: ents for name, ents in name_to_entities.items()
+                 if len(set(e.family_id for e in ents)) > 1}
+
+        if not dupes:
+            return
+
+        if verbose:
+            wprint_info(f"【后处理】同名检查｜{len(dupes)}组")
+
+        for name, ents in dupes.items():
+            # Group by family_id (in case same fid appears multiple times)
+            fid_groups = defaultdict(list)
+            for e in ents:
+                fid_groups[e.family_id].append(e)
+
+            fids = list(fid_groups.keys())
+            if len(fids) < 2:
+                continue
+
+            # Check embedding similarity between pairs
+            primary_fid = fids[0]
+            primary = fid_groups[primary_fid][0]
+
+            for other_fid in fids[1:]:
+                # Compute content similarity using embeddings
+                try:
+                    sim = self._compute_entity_content_similarity(primary, fid_groups[other_fid][0])
+                except Exception:
+                    sim = 0.0
+
+                if sim >= 0.75:
+                    # High similarity: redirect relations to primary, then delete duplicate
+                    self.storage.register_entity_redirect(other_fid, primary_fid)
+                    try:
+                        # Re-point relations that reference the duplicate entity
+                        self.storage.redirect_entity_relations(other_fid, primary_fid)
+                        deleted = self.storage.delete_entity_all_versions(other_fid)
+                        if verbose:
+                            wprint_info(f"【后处理】同名合并｜{name} sim={sim:.2f} {other_fid}→{primary_fid} (deleted {deleted}v)")
+                    except Exception as e:
+                        if verbose:
+                            wprint_info(f"【后处理】同名合并｜{name} sim={sim:.2f} {other_fid}→{primary_fid} (redirect only, merge failed: {e})")
+                else:
+                    if verbose:
+                        wprint_info(f"【后处理】同名保留｜{name} sim={sim:.2f} (不同概念)")
+
+    def _compute_entity_content_similarity(self, entity1, entity2):
+        """Compute content similarity between two entities using embeddings.
+
+        Fetches content from DB if Entity.content is empty (alignment result
+        objects may not have content populated).
+        """
+        c1 = (entity1.content or "")[:500]
+        c2 = (entity2.content or "")[:500]
+
+        # Fetch from DB if content is empty
+        if not c1:
+            try:
+                versions = self.storage.get_entity_versions(entity1.family_id)
+                if versions:
+                    c1 = (versions[0].content or "")[:500]
+            except Exception:
+                pass
+        if not c2:
+            try:
+                versions = self.storage.get_entity_versions(entity2.family_id)
+                if versions:
+                    c2 = (versions[0].content or "")[:500]
+            except Exception:
+                pass
+
+        if not c1 or not c2:
+            # Fall back to name-only comparison
+            return 1.0 if entity1.name == entity2.name else 0.0
+
+        try:
+            import numpy as np
+            if not self.storage.embedding_client or not self.storage.embedding_client.is_available():
+                # No embedding available, use name match only
+                return 1.0 if entity1.name == entity2.name else 0.0
+            emb1 = np.asarray(self.storage.embedding_client.encode(c1)).flatten()
+            emb2 = np.asarray(self.storage.embedding_client.encode(c2)).flatten()
+            sim = float(np.dot(emb1, emb2) / (np.linalg.norm(emb1) * np.linalg.norm(emb2) + 1e-8))
+            return max(0.0, min(1.0, sim))
+        except Exception as e:
+            wprint_info(f"【后处理】相似度计算失败｜{entity1.name} {type(e).__name__}: {e}")
+            return 0.0
 
     def remember_phase1_overall(self, text: str, doc_name: str = "api_input",
                                 event_time: Optional[datetime] = None,
@@ -1187,7 +1505,7 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
                 "message": f"文档整体记忆已生成: {doc_name}",
             })
         if verbose:
-            wprint(f"[Phase1] 文档整体记忆已生成: {overall.absolute_id[:20]}…, doc_name={doc_name!r}")
+            wprint_info(f"[Phase1] 文档整体记忆已生成: {overall.absolute_id[:20]}…, doc_name={doc_name!r}")
         return overall
 
     def remember_phase2_windows(self, text: str, doc_name: str = "api_input", verbose: bool = False,
@@ -1229,15 +1547,15 @@ class TemporalMemoryGraphProcessor(_ExtractionMixin):
             end = min(start + window_size, total_length)
             chunk = text[start:end]
             if start == 0:
-                chunk = f"开始阅读新的文档，文件名是：{doc_name}\n\n{chunk}"
+                chunk = f"[文档元数据] 文档名：{doc_name} [/文档元数据]\n\n{chunk}"
 
             if verbose:
-                wprint(f"\n{'='*60}")
-                wprint(f"处理窗口 (文档: {doc_name}, 位置: {start}-{end}/{total_length})")
-                wprint(f"输入文本长度: {len(chunk)} 字符")
-                wprint(f"{'='*60}\n")
+                wprint_info(f"\n{'='*60}")
+                wprint_info(f"处理窗口 (文档: {doc_name}, 位置: {start}-{end}/{total_length})")
+                wprint_info(f"输入文本长度: {len(chunk)} 字符")
+                wprint_info(f"{'='*60}\n")
             elif verbose_steps:
-                wprint(f"窗口 {chunk_idx + 1}/{total_chunks} 开始 · {doc_name} [{start}-{end}/{total_length}]")
+                wprint_info(f"窗口 {chunk_idx + 1}/{total_chunks} 开始 · {doc_name} [{start}-{end}/{total_length}]")
 
             with self._cache_lock:
                 new_mc = self._update_cache(
@@ -1312,8 +1630,8 @@ def main():
     document_paths = sys.argv[1:] if len(sys.argv) > 1 else []
     
     if not document_paths:
-        wprint("用法: python -m Temporal_Memory_Graph.processor <文档路径1> [文档路径2] ...")
-        wprint("示例: python -m Temporal_Memory_Graph.processor doc1.txt doc2.txt")
+        wprint_info("用法: python -m Temporal_Memory_Graph.processor <文档路径1> [文档路径2] ...")
+        wprint_info("示例: python -m Temporal_Memory_Graph.processor doc1.txt doc2.txt")
         return
     
     # 创建处理器
@@ -1333,8 +1651,8 @@ def main():
     
     # 输出统计信息
     stats = processor.get_statistics()
-    wprint("\n处理完成！")
-    wprint(f"统计信息: {stats}")
+    wprint_info("\n处理完成！")
+    wprint_info(f"统计信息: {stats}")
 
 
 if __name__ == "__main__":

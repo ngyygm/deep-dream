@@ -26,6 +26,9 @@
   let communityColoringEnabled = false;
   let communityMap = null; // absolute_id -> community_id
 
+  // Keyboard shortcut handler reference (for cleanup)
+  let _graphKeyHandler = null;
+
   // Relation strength mode
   let relationStrengthEnabled = false;
 
@@ -64,11 +67,19 @@
                 <i data-lucide="maximize-2" style="width:16px;height:16px;"></i>
                 ${t('graph.exitFocus')}
               </button>
+              <div style="position:relative;">
+                <input type="text" class="input" id="graph-entity-search" placeholder="${t('graph.searchEntity') || 'Find entity...'}" style="width:180px;font-size:0.8125rem;padding-left:28px;">
+                <i data-lucide="search" style="width:14px;height:14px;position:absolute;left:8px;top:50%;transform:translateY(-50%);color:var(--text-muted);pointer-events:none;"></i>
+                <div id="graph-search-dropdown" style="display:none;position:absolute;top:100%;left:0;width:260px;max-height:200px;overflow-y:auto;background:var(--bg-surface);border:1px solid var(--border-color);border-radius:0.5rem;z-index:100;margin-top:4px;box-shadow:0 4px 12px rgba(0,0,0,0.3);"></div>
+              </div>
             </div>
             <button class="btn btn-ghost btn-sm" id="toggle-graph-options-btn" style="color:var(--text-muted);">
               <i data-lucide="sliders-horizontal" style="width:14px;height:14px;margin-right:4px;"></i>
               ${t('graph.displayOptions')}
               <i data-lucide="chevron-down" style="width:14px;height:14px;margin-left:4px;transition:transform 0.2s;" id="graph-options-chevron"></i>
+            </button>
+            <button class="btn btn-ghost btn-sm" id="graph-shortcuts-btn" title="Keyboard shortcuts" style="color:var(--text-muted);position:relative;">
+              <i data-lucide="keyboard" style="width:14px;height:14px;"></i>
             </button>
           </div>
 
@@ -76,7 +87,7 @@
             <div style="display:flex;gap:1rem;align-items:flex-end;flex-wrap:wrap;">
               <div>
                 <label class="form-label">${t('graph.maxEntities')}</label>
-                <input type="number" class="input" id="entity-limit" min="10" max="500" value="50" step="10" style="width:100px;">
+                <input type="number" class="input" id="entity-limit" min="0" max="500" value="" placeholder="Auto" step="10" style="width:100px;">
               </div>
               <div>
                 <label class="form-label">${t('graph.hopLevel')}</label>
@@ -116,12 +127,29 @@
         </div>
 
         <!-- Main area: canvas + detail sidebar -->
-        <div class="flex gap-4" style="height:calc(100vh - 240px);min-height:400px;">
+        <div class="flex gap-4" style="height:calc(100vh - 320px);min-height:320px;">
           <!-- Graph canvas -->
           <div class="flex-1 relative" style="min-width:0;">
             <div id="graph-canvas" style="width:100%;height:100%;"></div>
             <div id="graph-loading" class="absolute inset-0 flex items-center justify-center" style="background:var(--bg-input);border-radius:0.5rem;display:none;">
               ${spinnerHtml()}
+            </div>
+            <div id="snapshot-overlay" style="display:none;position:absolute;top:0.75rem;left:0.75rem;z-index:10;">
+              <div class="snapshot-badge-overlay">
+                <i data-lucide="clock" style="width:12px;height:12px;"></i>
+                <span id="snapshot-overlay-time"></span>
+                <span id="snapshot-overlay-stats" style="font-size:0.6875rem;color:var(--text-muted);margin-left:0.25rem;"></span>
+                <button class="snapshot-return-btn" id="snapshot-return-live" title="${t('timeline.resetToLive')}">
+                  <i data-lucide="zap" style="width:10px;height:10px;"></i>
+                  ${t('timeline.live')}
+                </button>
+              </div>
+            </div>
+            <div id="canvas-time-overlay" style="display:none;position:absolute;bottom:1.25rem;left:50%;transform:translateX(-50%);z-index:10;">
+              <div class="canvas-time-badge">
+                <span class="canvas-time-label" id="canvas-time-text"></span>
+                <span class="canvas-time-progress" id="canvas-time-progress"></span>
+              </div>
             </div>
           </div>
 
@@ -137,10 +165,82 @@
             </div>
           </div>
         </div>
+
+        <!-- Timeline slider bar -->
+        <div id="timeline-container"></div>
       </div>
     `;
 
     if (window.lucide) lucide.createIcons();
+
+    // Snapshot overlay return-to-live button
+    const snapshotReturnBtn = document.getElementById('snapshot-return-live');
+    if (snapshotReturnBtn) {
+      snapshotReturnBtn.addEventListener('click', function () {
+        resetToLive();
+        renderTimeline(document.getElementById('timeline-container'));
+      });
+    }
+
+    // ---- Keyboard shortcuts for time+version navigation ----
+    _graphKeyHandler = function (e) {
+      // Only handle when graph page is visible
+      if (!container.offsetParent) return;
+
+      const key = e.key;
+
+      // Space — play/pause timeline
+      if (key === ' ' && !e.target.matches('input, textarea, select')) {
+        e.preventDefault();
+        if (tlPlaybackTimer) {
+          stopTimelinePlayback();
+        } else {
+          startTimelinePlayback();
+        }
+        renderTimeline(document.getElementById('timeline-container'));
+        return;
+      }
+
+      // Left/Right arrows — version navigation (only when detail sidebar is showing entity)
+      if ((key === 'ArrowLeft' || key === 'ArrowRight') && !e.target.matches('input, textarea, select')) {
+        if (explorer && explorer.getState().focusAbsoluteId) {
+          e.preventDefault();
+          var st = explorer.getState();
+          if (key === 'ArrowLeft' && st.currentVersionIdx > 0) {
+            explorer.switchVersion(st.currentVersionIdx - 1);
+          } else if (key === 'ArrowRight' && st.currentVersionIdx < st.currentVersions.length - 1) {
+            explorer.switchVersion(st.currentVersionIdx + 1);
+          }
+        } else if (key === 'ArrowLeft') {
+          // Step timeline backward
+          e.preventDefault();
+          stepTimeline(-1);
+        } else if (key === 'ArrowRight') {
+          // Step timeline forward
+          e.preventDefault();
+          stepTimeline(1);
+        }
+        return;
+      }
+
+      // Escape — close shortcuts overlay, then exit snapshot/focus mode
+      if (key === 'Escape') {
+        var shortcutsOverlay = document.getElementById('graph-shortcuts-overlay');
+        if (shortcutsOverlay) {
+          shortcutsOverlay.remove();
+          return;
+        }
+        if (focusAbsoluteId) {
+          focusAbsoluteId = null;
+          explorer.exitFocus();
+        } else if (snapshotMode) {
+          resetToLive();
+          renderTimeline(document.getElementById('timeline-container'));
+        }
+        return;
+      }
+    };
+    document.addEventListener('keydown', _graphKeyHandler);
 
     // ---- Create GraphExplorer instance ----
     explorer = GraphExplorer.create({
@@ -183,6 +283,62 @@
     graphBadge.textContent = state.currentGraphId;
 
     loadBtn.addEventListener('click', () => loadGraph());
+
+    // Graph entity search with dropdown
+    const searchInput = document.getElementById('graph-entity-search');
+    const searchDropdown = document.getElementById('graph-search-dropdown');
+    if (searchInput && searchDropdown) {
+      let _searchTimeout = null;
+      searchInput.addEventListener('input', () => {
+        clearTimeout(_searchTimeout);
+        const query = (searchInput.value || '').trim().toLowerCase();
+        if (!query || query.length < 1) { searchDropdown.style.display = 'none'; return; }
+        _searchTimeout = setTimeout(() => {
+          const matches = [];
+          for (const absId in cachedAllEntities) {
+            const e = cachedAllEntities[absId];
+            if ((e.name || '').toLowerCase().includes(query)) {
+              matches.push(e);
+              if (matches.length >= 8) break;
+            }
+          }
+          if (matches.length === 0) {
+            searchDropdown.innerHTML = '<div style="padding:0.5rem 0.75rem;font-size:0.8rem;color:var(--text-muted);">No matches</div>';
+          } else {
+            // Build version counts index for search results
+            var vcMap = explorer.getState().versionCounts || {};
+            searchDropdown.innerHTML = matches.map(e => {
+              var vc = vcMap[e.family_id] || 1;
+              var versionTag = vc > 1
+                ? ' <span style="display:inline-block;padding:0 0.25rem;background:color-mix(in srgb, #f59e0b 15%, transparent);color:#f59e0b;border-radius:3px;font-size:0.65rem;font-weight:500;font-family:var(--font-mono);">[v' + vc + ']</span>'
+                : '';
+              return '<div class="graph-search-item" data-abs-id="' + escapeHtml(e.absolute_id) + '" style="padding:0.5rem 0.75rem;cursor:pointer;font-size:0.8rem;border-bottom:1px solid var(--border-color);" onmouseover="this.style.background=\'var(--bg-input)\'" onmouseout="this.style.background=\'transparent\'">' +
+              '<strong>' + escapeHtml(e.name || '-') + '</strong>' + versionTag +
+              '<div style="font-size:0.7rem;color:var(--text-muted);margin-top:2px;">' + escapeHtml((e.content || '').slice(0, 60)) + '</div>' +
+              '</div>';
+            }).join('');
+          }
+          searchDropdown.style.display = 'block';
+        }, 200);
+      });
+      searchDropdown.addEventListener('click', (ev) => {
+        const item = ev.target.closest('.graph-search-item');
+        if (!item) return;
+        const absId = item.getAttribute('data-abs-id');
+        if (absId && explorer) {
+          explorer.focusOnEntity(absId).then(() => {
+            focusAbsoluteId = explorer.getState().focusAbsoluteId;
+          });
+        }
+        searchDropdown.style.display = 'none';
+        searchInput.value = '';
+      });
+      document.addEventListener('click', (ev) => {
+        if (!searchInput.contains(ev.target) && !searchDropdown.contains(ev.target)) {
+          searchDropdown.style.display = 'none';
+        }
+      });
+    }
     document.getElementById('exit-focus-btn').addEventListener('click', () => {
       focusAbsoluteId = null;
       explorer.exitFocus();
@@ -219,6 +375,58 @@
         optionsPanel.style.display = 'block';
         if (chevron) chevron.style.transform = 'rotate(180deg)';
       }
+    }
+
+    // Keyboard shortcuts overlay
+    const shortcutsBtn = document.getElementById('graph-shortcuts-btn');
+    if (shortcutsBtn) {
+      var shortcutsOverlay = null;
+      shortcutsBtn.addEventListener('click', function () {
+        if (shortcutsOverlay) {
+          shortcutsOverlay.remove();
+          shortcutsOverlay = null;
+          return;
+        }
+        shortcutsOverlay = document.createElement('div');
+        shortcutsOverlay.id = 'graph-shortcuts-overlay';
+        shortcutsOverlay.innerHTML =
+          '<div style="position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:1000;display:flex;align-items:center;justify-content:center;">' +
+            '<div style="background:var(--bg-surface);border:1px solid var(--border-color);border-radius:0.75rem;padding:1.25rem 1.5rem;max-width:360px;width:90%;box-shadow:0 8px 32px rgba(0,0,0,0.3);">' +
+              '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.75rem;">' +
+                '<h3 style="font-size:0.9375rem;font-weight:600;">Keyboard Shortcuts</h3>' +
+                '<button id="graph-shortcuts-close" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:1.25rem;line-height:1;">&times;</button>' +
+              '</div>' +
+              '<div style="display:grid;grid-template-columns:auto 1fr;gap:0.375rem 1rem;font-size:0.8125rem;">' +
+                '<kbd style="background:var(--bg-input);border:1px solid var(--border-color);border-radius:4px;padding:0.125rem 0.5rem;font-family:var(--font-mono);font-size:0.75rem;text-align:center;">Space</kbd>' +
+                '<span style="color:var(--text-secondary);">Play / Pause timeline</span>' +
+                '<kbd style="background:var(--bg-input);border:1px solid var(--border-color);border-radius:4px;padding:0.125rem 0.5rem;font-family:var(--font-mono);font-size:0.75rem;text-align:center;">&larr; &rarr;</kbd>' +
+                '<span style="color:var(--text-secondary);">Switch versions (focused) / step timeline</span>' +
+                '<kbd style="background:var(--bg-input);border:1px solid var(--border-color);border-radius:4px;padding:0.125rem 0.5rem;font-family:var(--font-mono);font-size:0.75rem;text-align:center;">Esc</kbd>' +
+                '<span style="color:var(--text-secondary);">Exit focus / snapshot mode</span>' +
+                '<kbd style="background:var(--bg-input);border:1px solid var(--border-color);border-radius:4px;padding:0.125rem 0.5rem;font-family:var(--font-mono);font-size:0.75rem;text-align:center;">Click</kbd>' +
+                '<span style="color:var(--text-secondary);">Entity details + version timeline</span>' +
+                '<kbd style="background:var(--bg-input);border:1px solid var(--border-color);border-radius:4px;padding:0.125rem 0.5rem;font-family:var(--font-mono);font-size:0.75rem;text-align:center;">Hover</kbd>' +
+                '<span style="color:var(--text-secondary);">Quick preview with version count</span>' +
+              '</div>' +
+              '<div style="margin-top:0.75rem;padding-top:0.5rem;border-top:1px solid var(--border-color);font-size:0.75rem;color:var(--text-muted);">' +
+                '<span style="color:#f59e0b;">&#9679;</span> Amber glow = multi-version entity &nbsp; ' +
+                '<span style="color:var(--text-muted);">[v2] = version count</span>' +
+              '</div>' +
+            '</div>' +
+          '</div>';
+        document.body.appendChild(shortcutsOverlay);
+        // Close handlers
+        var closeBtn = document.getElementById('graph-shortcuts-close');
+        if (closeBtn) closeBtn.addEventListener('click', function () {
+          if (shortcutsOverlay) { shortcutsOverlay.remove(); shortcutsOverlay = null; }
+        });
+        shortcutsOverlay.addEventListener('click', function (ev) {
+          if (ev.target === shortcutsOverlay || ev.target === shortcutsOverlay.firstElementChild.parentElement) {
+            shortcutsOverlay.remove();
+            shortcutsOverlay = null;
+          }
+        });
+      });
     }
 
     // Community coloring toggle
@@ -361,11 +569,13 @@
       if (!currentAbsIds.has(r.entity2_absolute_id)) unknownAbsIds.add(r.entity2_absolute_id);
     }
 
-    // Batch resolve unknown endpoints (max 30 to avoid overload)
+    // Batch resolve unknown endpoints in concurrent batches of 50
     const resolved = {};
-    const toResolve = [...unknownAbsIds].slice(0, 30);
-    if (toResolve.length > 0) {
-      const promises = toResolve.map(async (absId) => {
+    const toResolve = [...unknownAbsIds];
+    const batchSize = 50;
+    for (let i = 0; i < toResolve.length; i += batchSize) {
+      const batch = toResolve.slice(i, i + batchSize);
+      const promises = batch.map(async (absId) => {
         try {
           const res = await state.api.entityByAbsoluteId(absId, graphId);
           if (res.data) resolved[absId] = res.data;
@@ -425,9 +635,19 @@
 
   function rebuildMainView() {
     const allKnownEntities = Object.values(cachedAllEntities);
-    const entityLimit = parseInt(document.getElementById('entity-limit').value, 10) || 50;
     const hopLevel = currentHopLevel;
 
+    // Dynamic seed limit (same logic as loadGraph)
+    var entityLimit = parseInt(document.getElementById('entity-limit').value, 10);
+    if (!entityLimit || entityLimit <= 0) {
+      if (allKnownEntities.length <= 200) {
+        entityLimit = Math.min(allKnownEntities.length, 200);
+      } else if (allKnownEntities.length <= 1000) {
+        entityLimit = 200;
+      } else {
+        entityLimit = 300;
+      }
+    }
     const seedEntities = allKnownEntities.slice(0, entityLimit);
     const seedAbsIds = new Set(seedEntities.map(e => e.absolute_id));
 
@@ -458,7 +678,6 @@
 
   async function loadGraph() {
     const graphId = state.currentGraphId;
-    const entityLimit = parseInt(document.getElementById('entity-limit').value, 10) || 50;
     const hopLevel = parseInt(document.getElementById('hop-level').value, 10) || 1;
     currentHopLevel = hopLevel;
     if (explorer) explorer.setState('defaultHopLevel', currentHopLevel);
@@ -478,14 +697,37 @@
       const allRelations = relationRes.data?.relations || relationRes.data || [];
 
       if (allKnownEntities.length === 0) {
-        if (statsEl) statsEl.textContent = t('graph.noRelations');
+        if (statsEl) statsEl.textContent = t('graph.noEntities');
         if (loadingEl) loadingEl.style.display = 'none';
         return;
       }
 
       cachedAllRawRelations = allRelations;
 
-      const seedEntities = allKnownEntities.slice(0, entityLimit);
+      // Prioritize connected entities as seeds (entities appearing in relations)
+      const relationAbsIds = new Set();
+      for (const r of allRelations) {
+        relationAbsIds.add(r.entity1_absolute_id);
+        relationAbsIds.add(r.entity2_absolute_id);
+      }
+      const connectedEntities = allKnownEntities.filter(e => relationAbsIds.has(e.absolute_id));
+      const isolatedEntities = allKnownEntities.filter(e => !relationAbsIds.has(e.absolute_id));
+
+      // Dynamic seed limit: auto-scale based on graph size
+      // Small graphs (<200 entities): show all connected + some isolated
+      // Medium graphs (200-1000): show up to 200 connected
+      // Large graphs (>1000): show up to 300 connected
+      var entityLimit = parseInt(document.getElementById('entity-limit').value, 10);
+      if (!entityLimit || entityLimit <= 0) {
+        if (connectedEntities.length <= 200) {
+          entityLimit = Math.min(allKnownEntities.length, 200);
+        } else if (connectedEntities.length <= 1000) {
+          entityLimit = 200;
+        } else {
+          entityLimit = 300;
+        }
+      }
+      const seedEntities = [...connectedEntities, ...isolatedEntities].slice(0, entityLimit);
 
       const entityByAbs = {};
       for (const e of allKnownEntities) {
@@ -508,7 +750,14 @@
         visibleAbsIds.has(r.entity1_absolute_id) && visibleAbsIds.has(r.entity2_absolute_id)
       );
 
-      const allVisible = [...visibleAbsIds]
+      // Remove isolated entities: keep only entities that have at least one visible relation
+      const connectedAbsIds = new Set();
+      for (const r of visibleRelations) {
+        connectedAbsIds.add(r.entity1_absolute_id);
+        connectedAbsIds.add(r.entity2_absolute_id);
+      }
+
+      const allVisible = [...connectedAbsIds]
         .map(aid => entityByAbs[aid])
         .filter(Boolean);
 
@@ -536,6 +785,9 @@
         statsEl.textContent = t('graph.loaded', { entities: allVisible.length, relations: visibleRelations.length });
       }
       showToast(t('graph.loaded', { entities: allVisible.length, relations: visibleRelations.length }), 'success');
+
+      // Initialize timeline after graph loads
+      initTimeline();
     } catch (err) {
       console.error('Failed to load graph:', err);
       showToast(t('graph.loadFailed') + ': ' + err.message, 'error');
@@ -569,7 +821,7 @@
     const timeInput = document.getElementById('graph-snapshot-time');
     const time = timeInput ? timeInput.value : null;
     if (!time) {
-      showToast(t('timeTravel.time') + ' ' + t('common.required', 'required'), 'warn');
+      showToast(t('timeTravel.time') + ' ' + t('common.required'), 'warning');
       return;
     }
 
@@ -582,12 +834,7 @@
       const timeParam = time + ':00';
       const res = await state.api.getSnapshot(timeParam, state.currentGraphId);
 
-      if (res.error) {
-        showToast(res.error, 'error');
-        return;
-      }
-
-      renderSnapshotData(res);
+      renderSnapshotData(res.data || res);
       snapshotMode = true;
       snapshotTime = time;
       showToast(t('timeTravel.snapshot') + ': ' + time, 'success');
@@ -599,37 +846,94 @@
     }
   }
 
-  function renderSnapshotData(data) {
+  // ---- Snapshot transition animation ----
+
+  function playSnapshotTransition() {
+    const canvasParent = document.getElementById('graph-canvas');
+    if (!canvasParent) return;
+
+    // Remove any existing overlay
+    const oldOverlay = canvasParent.querySelector('.snapshot-transition-overlay');
+    if (oldOverlay) oldOverlay.remove();
+
+    const overlay = document.createElement('div');
+    overlay.className = 'snapshot-transition-overlay';
+
+    // Flash effect
+    const flash = document.createElement('div');
+    flash.className = 'snapshot-flash';
+    overlay.appendChild(flash);
+
+    // Scanline (delayed slightly for layered effect)
+    setTimeout(function () {
+      const scanline = document.createElement('div');
+      scanline.className = 'snapshot-scanline';
+      overlay.appendChild(scanline);
+    }, 80);
+
+    // Ripple (delayed)
+    setTimeout(function () {
+      const ripple = document.createElement('div');
+      ripple.className = 'snapshot-ripple';
+      overlay.appendChild(ripple);
+    }, 150);
+
+    canvasParent.appendChild(overlay);
+
+    // Clean up after animation
+    setTimeout(function () { if (overlay.parentNode) overlay.remove(); }, 1500);
+  }
+
+  function renderSnapshotData(data, isTimelineDriven) {
     const snapshotEntities = data.entities || [];
     const snapshotRelations = data.relations || [];
 
-    if (snapshotEntities.length === 0) {
+    // Filter out isolated entities — only keep entities that have at least one relation
+    const connectedAbsIds = new Set();
+    for (const r of snapshotRelations) {
+      if (r.entity1_absolute_id) connectedAbsIds.add(r.entity1_absolute_id);
+      if (r.entity2_absolute_id) connectedAbsIds.add(r.entity2_absolute_id);
+    }
+    const filteredEntities = snapshotEntities.filter(e => connectedAbsIds.has(e.absolute_id));
+    const filteredRelations = snapshotRelations.filter(r =>
+      connectedAbsIds.has(r.entity1_absolute_id) && connectedAbsIds.has(r.entity2_absolute_id)
+    );
+
+    if (filteredEntities.length === 0) {
       const statsEl = document.getElementById('graph-stats');
-      if (statsEl) statsEl.textContent = t('graph.noRelations');
-      showToast(t('common.noData'), 'warn');
+      if (statsEl) statsEl.textContent = t('graph.noEntities');
+      // Only show toast for explicit snapshot button clicks, not timeline scrubbing/playback
+      // During timeline playback, early time points legitimately have no connected entities
+      if (!isTimelineDriven) {
+        showToast(t('common.noData'), 'warning');
+      }
       return;
     }
 
-    cachedAllNodes = snapshotEntities;
-    cachedAllEdges = snapshotRelations;
+    cachedAllNodes = filteredEntities;
+    cachedAllEdges = filteredRelations;
     cachedInheritedRelationIds = null;
 
-    const snapshotEntityIds = [...new Set(snapshotEntities.map(e => e.family_id))];
+    // Play time warp transition animation
+    playSnapshotTransition();
+
+    const snapshotEntityIds = [...new Set(filteredEntities.map(e => e.family_id))];
     var vc = {};
     for (const eid of snapshotEntityIds) {
-      vc[eid] = snapshotEntities.filter(e => e.family_id === eid).length;
+      vc[eid] = filteredEntities.filter(e => e.family_id === eid).length;
     }
     if (explorer) explorer.setVersionCounts(vc);
 
-    explorer.buildGraph(snapshotEntities, snapshotRelations, null, null, null);
+    explorer.buildGraph(filteredEntities, filteredRelations, null, null, null);
 
     const statsEl = document.getElementById('graph-stats');
     if (statsEl) {
       statsEl.textContent = t('graph.loaded', {
-        entities: snapshotEntities.length,
-        relations: snapshotRelations.length,
+        entities: filteredEntities.length,
+        relations: filteredRelations.length,
       }) + ' [' + t('timeTravel.snapshot') + ']';
     }
+    updateSnapshotOverlay(snapshotTime ? new Date(snapshotTime).toLocaleString() : t('timeline.snapshot'), filteredEntities.length, filteredRelations.length);
 
     focusAbsoluteId = null;
     const exitBtn = document.getElementById('exit-focus-btn');
@@ -643,7 +947,27 @@
     snapshotTime = null;
     const timeInput = document.getElementById('graph-snapshot-time');
     if (timeInput) timeInput.value = '';
+    updateSnapshotOverlay(null);
     loadGraph();
+  }
+
+  // ---- Snapshot overlay badge ----
+
+  function updateSnapshotOverlay(timeStr, entityCount, relationCount) {
+    const overlay = document.getElementById('snapshot-overlay');
+    const timeEl = document.getElementById('snapshot-overlay-time');
+    const statsEl = document.getElementById('snapshot-overlay-stats');
+    if (!overlay) return;
+    if (timeStr) {
+      overlay.style.display = '';
+      if (timeEl) timeEl.textContent = timeStr;
+      if (statsEl && entityCount !== undefined) {
+        statsEl.textContent = 'E:' + entityCount + ' R:' + relationCount;
+      }
+      if (window.lucide) lucide.createIcons({ nodes: [overlay] });
+    } else {
+      overlay.style.display = 'none';
+    }
   }
 
   // ---- Cleanup on page leave ----
@@ -653,13 +977,848 @@
       explorer.destroy();
       explorer = null;
     }
+    stopTimelinePlayback();
+    // Remove keyboard handler
+    if (_graphKeyHandler) {
+      document.removeEventListener('keydown', _graphKeyHandler);
+    }
     focusAbsoluteId = null;
+    cachedAllNodes = [];
+    cachedAllEdges = [];
+    cachedAllEntities = {};
     cachedInheritedRelationIds = null;
     cachedAllRawRelations = null;
     cachedRemappedMainRelations = null;
     relationStrengthEnabled = false;
     snapshotMode = false;
     snapshotTime = null;
+    isFirstRender = true;
+  }
+
+  // ==================================================================
+  // Timeline Slider — Deep-Dream Time + Version Visualization
+  // ==================================================================
+
+  // ---- Canvas time indicator overlay ----
+
+  function showCanvasTimeOverlay(timeStr, progressStr) {
+    const overlay = document.getElementById('canvas-time-overlay');
+    const textEl = document.getElementById('canvas-time-text');
+    const progressEl = document.getElementById('canvas-time-progress');
+    if (!overlay) return;
+    if (textEl) textEl.textContent = timeStr || '';
+    if (progressEl) progressEl.textContent = progressStr || '';
+    overlay.style.display = '';
+  }
+
+  function hideCanvasTimeOverlay() {
+    const overlay = document.getElementById('canvas-time-overlay');
+    if (overlay) overlay.style.display = 'none';
+  }
+
+  function formatTimeShort(ts) {
+    if (!ts) return '';
+    const d = new Date(ts);
+    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ' ' +
+      d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  }
+
+  // Timeline state
+  let tlEpisodes = [];      // sorted episode list [{time, label, type, data}]
+  let tlMinTime = 0;
+  let tlMaxTime = 0;
+  let tlCurrentPos = 1.0;   // 0..1 where 1 = live (rightmost)
+  let tlIsLive = true;
+  let tlIsDragging = false;
+  let tlPlaybackTimer = null;
+  let tlPlaybackIndex = -1;
+  let tlPlaybackSpeed = 1;  // seconds between steps
+  let tlPlaybackMode = 'grow';  // 'grow' = entity-by-entity animation, 'snapshot' = episode snapshots
+
+  // Grow-mode state
+  let growSortedNodes = [];   // nodes sorted by processed_time
+  let growSortedEdges = [];   // edges sorted by processed_time
+  let growAnimTimer = null;   // animation interval
+  let growIndex = 0;          // current index in grow animation
+  let growEdgeIndex = 0;      // current edge frontier index (for time-ordered edge addition)
+  let growActive = false;
+  let growVisibleNodes = [];  // accumulated visible nodes during animation
+  let growVisibleEdges = [];  // accumulated visible edges during animation
+
+  async function initTimeline() {
+    const container = document.getElementById('timeline-container');
+    if (!container) return;
+
+    // Fetch episodes for event markers
+    try {
+      const res = await state.api.listEpisodes(state.currentGraphId, 100, 0);
+      const episodes = res.data?.episodes || [];
+      tlEpisodes = episodes
+        .filter(e => e.created_at || e.processed_time)
+        .map((e, i) => ({
+          time: new Date(e.created_at || e.processed_time).getTime(),
+          label: e.source_document || t('timeline.episode', { index: i + 1 }),
+          type: (e.source_document || '').includes('dream') ? 'dream' : 'remember',
+          data: e,
+          entityCount: (e.entity_count || (e.data && e.data.entity_count)),
+          relationCount: (e.relation_count || (e.data && e.data.relation_count)),
+        }))
+        .sort((a, b) => a.time - b.time);
+    } catch (_) {
+      tlEpisodes = [];
+    }
+
+    // Compute time range from entities
+    if (cachedAllNodes.length > 0) {
+      const times = cachedAllNodes
+        .map(e => e.processed_time ? new Date(e.processed_time).getTime() : 0)
+        .filter(t => t > 0);
+      if (times.length > 0) {
+        tlMinTime = Math.min(...times);
+        tlMaxTime = Math.max(...times);
+      }
+    }
+    if (tlMinTime === tlMaxTime) {
+      tlMinTime = tlMaxTime - 86400000; // fallback: 1 day range
+    }
+
+    tlIsLive = !snapshotMode;
+    tlCurrentPos = 1.0;
+
+    renderTimeline(container);
+
+    // Auto-load recent changes if episodes exist
+    if (tlEpisodes.length > 0) {
+      loadTimelineChanges();
+    }
+  }
+
+  function renderTimeline(container) {
+    const timeRange = tlMaxTime - tlMinTime;
+    const posPercent = (tlCurrentPos * 100).toFixed(2);
+
+    // Build version density bars — shows entity activity distribution
+    let densityHtml = '';
+    if (cachedAllNodes.length > 0 && timeRange > 0) {
+      const BINS = 50;
+      const bins = new Array(BINS).fill(0);
+      for (const e of cachedAllNodes) {
+        const t = e.processed_time ? new Date(e.processed_time).getTime() : 0;
+        if (t >= tlMinTime && t <= tlMaxTime) {
+          const idx = Math.min(Math.floor((t - tlMinTime) / timeRange * BINS), BINS - 1);
+          bins[idx]++;
+        }
+      }
+      const maxBin = Math.max(...bins, 1);
+      const barWidth = (100 / BINS).toFixed(3);
+      densityHtml = '<div class="timeline-density-bar">';
+      for (let b = 0; b < BINS; b++) {
+        const h = Math.max(bins[b] / maxBin * 100, 0).toFixed(1);
+        const opacity = Math.max(bins[b] / maxBin, 0.05).toFixed(2);
+        const binPct = ((b + 0.5) / BINS * 100).toFixed(2);
+        densityHtml += '<div class="timeline-density-col" style="width:' + barWidth + '%;height:' + h + '%;opacity:' + opacity + ';" data-bin-pct="' + binPct + '" title="' + bins[b] + ' entities"></div>';
+      }
+      densityHtml += '</div>';
+    }
+
+    const markerHtml = tlEpisodes.map((ep, i) => {
+      if (timeRange === 0) return '';
+      const pct = ((ep.time - tlMinTime) / timeRange * 100).toFixed(2);
+      const statsHtml = (ep.entityCount || ep.relationCount)
+        ? '<br><span style="font-size:0.625rem;">E:' + (ep.entityCount || '?') + ' R:' + (ep.relationCount || '?') + '</span>'
+        : '';
+      const typeIcon = ep.type === 'dream'
+        ? '<span style="color:var(--warning);font-size:0.6875rem;">&#9728;</span> '
+        : '<span style="color:var(--primary);font-size:0.6875rem;">&#9679;</span> ';
+      return '<div class="timeline-marker type-' + ep.type + '" style="left:' + pct + '%;" data-ep-idx="' + i + '">' +
+        '<div class="timeline-tooltip">' + typeIcon + escapeHtml(ep.label) + '<br><span style="color:var(--text-muted);">' + formatDate(new Date(ep.time).toISOString()) + '</span>' + statsHtml + '</div>' +
+      '</div>';
+    }).join('');
+
+    const minLabel = tlMinTime ? new Date(tlMinTime).toLocaleDateString() : '-';
+    const maxLabel = tlMaxTime ? new Date(tlMaxTime).toLocaleDateString() : '-';
+    const currentTime = tlCurrentPos < 1
+      ? new Date(tlMinTime + tlCurrentPos * timeRange)
+      : null;
+    const currentTimeStr = currentTime
+      ? currentTime.toLocaleString()
+      : '';
+
+    container.innerHTML =
+      '<div class="timeline-bar">' +
+        '<div class="timeline-header">' +
+          '<div class="timeline-title">' +
+            '<i data-lucide="clock" style="width:14px;height:14px;color:var(--primary);"></i> ' +
+            t('timeline.title') +
+            (tlIsLive
+              ? ' <span class="timeline-live-dot"></span><span style="color:var(--success);font-size:0.75rem;">' + t('timeline.live') + '</span>'
+              : ' <span class="timeline-live-dot snapshot"></span><span class="timeline-snapshot-badge"><i data-lucide="camera" style="width:10px;height:10px;"></i> ' + t('timeline.snapshot') + '</span>'
+            ) +
+          '</div>' +
+          '<div class="timeline-controls">' +
+            '<button class="timeline-btn" id="tl-step-back" title="' + t('timeline.stepBack') + '" ' + (tlIsLive ? 'disabled' : '') + '>' +
+              '<i data-lucide="skip-back" style="width:12px;height:12px;"></i>' +
+            '</button>' +
+            '<button class="timeline-btn' + (tlPlaybackTimer ? ' active' : '') + '" id="tl-play-btn" title="' + (tlPlaybackTimer ? t('timeline.pause') : t('timeline.play')) + '">' +
+              '<i data-lucide="' + (tlPlaybackTimer ? 'pause' : 'play') + '" style="width:12px;height:12px;"></i>' +
+            '</button>' +
+            '<button class="timeline-btn" id="tl-step-forward" title="' + t('timeline.stepForward') + '" ' + (tlIsLive ? '' : '') + '>' +
+              '<i data-lucide="skip-forward" style="width:12px;height:12px;"></i>' +
+            '</button>' +
+            '<button class="timeline-btn" id="tl-reset-live" title="' + t('timeline.resetToLive') + '" ' + (tlIsLive ? 'disabled' : '') + '>' +
+              '<i data-lucide="zap" style="width:12px;height:12px;"></i>' +
+            '</button>' +
+            '<span class="timeline-speed" id="tl-speed" title="' + t('timeline.speed') + '">' + tlPlaybackSpeed + 's</span>' +
+            '<button class="timeline-btn tl-mode-btn' + (tlPlaybackMode === 'grow' ? ' active' : '') + '" id="tl-mode-grow" title="Entity-by-entity growth animation">' +
+              '<i data-lucide="sprout" style="width:12px;height:12px;"></i>' +
+            '</button>' +
+            '<button class="timeline-btn tl-mode-btn' + (tlPlaybackMode === 'snapshot' ? ' active' : '') + '" id="tl-mode-snapshot" title="Episode snapshot playback">' +
+              '<i data-lucide="camera" style="width:12px;height:12px;"></i>' +
+            '</button>' +
+          '</div>' +
+        '</div>' +
+
+        '<div class="timeline-track-area">' +
+          densityHtml +
+          '<div class="timeline-track" id="tl-track">' +
+            '<div class="timeline-track-fill" style="width:' + posPercent + '%;"></div>' +
+            markerHtml +
+            '<div class="timeline-thumb' + (tlIsDragging ? ' dragging' : '') + '" id="tl-thumb" style="left:' + posPercent + '%;"></div>' +
+          '</div>' +
+        '</div>' +
+
+        '<div class="timeline-labels">' +
+          '<span class="timeline-label">' + minLabel + '</span>' +
+          '<span class="timeline-current-time" id="tl-current-time">' + currentTimeStr + '</span>' +
+          '<span class="timeline-label">' + maxLabel + ' (' + t('timeline.markers', { count: tlEpisodes.length }) + ')</span>' +
+        '</div>' +
+
+        // Legend with version info
+        '<div class="timeline-legend">' +
+          '<span class="timeline-legend-item"><span class="timeline-legend-dot remember"></span>' + t('timeline.legendRemember') + '</span>' +
+          '<span class="timeline-legend-item"><span class="timeline-legend-dot dream"></span>' + t('timeline.legendDream') + '</span>' +
+          '<span class="timeline-legend-item"><span class="timeline-legend-dot" style="background:linear-gradient(135deg,#f59e0b,#d97706);"></span>' + t('timeline.legendVersioned') + '</span>' +
+        '</div>' +
+      '</div>';
+
+    if (window.lucide) lucide.createIcons({ nodes: [container] });
+
+    // Wire up interactions
+    wireTimelineEvents(container);
+  }
+
+  function wireTimelineEvents(container) {
+    const track = document.getElementById('tl-track');
+    const thumb = document.getElementById('tl-thumb');
+    if (!track || !thumb) return;
+
+    // Drag handling
+    function onDragStart(e) {
+      e.preventDefault();
+      tlIsDragging = true;
+      thumb.classList.add('dragging');
+      document.addEventListener('mousemove', onDragMove);
+      document.addEventListener('mouseup', onDragEnd);
+      document.addEventListener('touchmove', onDragMove, { passive: false });
+      document.addEventListener('touchend', onDragEnd);
+    }
+
+    function onDragMove(e) {
+      if (!tlIsDragging) return;
+      e.preventDefault();
+      const rect = track.getBoundingClientRect();
+      const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+      let pct = (clientX - rect.left) / rect.width;
+      pct = Math.max(0, Math.min(1, pct));
+      tlCurrentPos = pct;
+      updateThumbPosition();
+      // Show canvas time indicator during drag
+      const timeRange = tlMaxTime - tlMinTime;
+      if (timeRange > 0) {
+        const t = tlMinTime + tlCurrentPos * timeRange;
+        showCanvasTimeOverlay(formatTimeShort(t), '');
+      }
+    }
+
+    function onDragEnd() {
+      if (!tlIsDragging) return;
+      tlIsDragging = false;
+      thumb.classList.remove('dragging');
+      document.removeEventListener('mousemove', onDragMove);
+      document.removeEventListener('mouseup', onDragEnd);
+      document.removeEventListener('touchmove', onDragMove);
+      document.removeEventListener('touchend', onDragEnd);
+      hideCanvasTimeOverlay();
+      applyTimelinePosition();
+    }
+
+    thumb.addEventListener('mousedown', onDragStart);
+    thumb.addEventListener('touchstart', onDragStart);
+
+    // Click on track to jump
+    track.addEventListener('click', function (e) {
+      if (e.target.classList.contains('timeline-marker')) {
+        // Click on marker — jump to that event's time
+        const idx = parseInt(e.target.getAttribute('data-ep-idx'), 10);
+        if (!isNaN(idx) && tlEpisodes[idx]) {
+          const timeRange = tlMaxTime - tlMinTime;
+          if (timeRange > 0) {
+            tlCurrentPos = (tlEpisodes[idx].time - tlMinTime) / timeRange;
+            tlCurrentPos = Math.max(0, Math.min(1, tlCurrentPos));
+            updateThumbPosition();
+            applyTimelinePosition();
+          }
+        }
+        return;
+      }
+      if (e.target === thumb) return;
+      const rect = track.getBoundingClientRect();
+      let pct = (e.clientX - rect.left) / rect.width;
+      pct = Math.max(0, Math.min(1, pct));
+      tlCurrentPos = pct;
+      updateThumbPosition();
+      applyTimelinePosition();
+    });
+
+    // Playback controls
+    const playBtn = document.getElementById('tl-play-btn');
+    if (playBtn) {
+      playBtn.addEventListener('click', function () {
+        if (tlPlaybackTimer || growActive) {
+          stopTimelinePlayback();
+          stopGrowAnimation();
+        } else if (tlPlaybackMode === 'grow') {
+          startGrowAnimation();
+        } else {
+          startTimelinePlayback();
+        }
+        renderTimeline(container);
+      });
+    }
+
+    const stepBackBtn = document.getElementById('tl-step-back');
+    if (stepBackBtn) {
+      stepBackBtn.addEventListener('click', function () {
+        stepTimeline(-1);
+      });
+    }
+
+    const stepFwdBtn = document.getElementById('tl-step-forward');
+    if (stepFwdBtn) {
+      stepFwdBtn.addEventListener('click', function () {
+        stepTimeline(1);
+      });
+    }
+
+    const resetBtn = document.getElementById('tl-reset-live');
+    if (resetBtn) {
+      resetBtn.addEventListener('click', function () {
+        resetToLive();
+        renderTimeline(container);
+      });
+    }
+
+    const speedBtn = document.getElementById('tl-speed');
+    if (speedBtn) {
+      speedBtn.addEventListener('click', function () {
+        const speeds = [0.5, 1, 2, 3, 5];
+        const curIdx = speeds.indexOf(tlPlaybackSpeed);
+        tlPlaybackSpeed = speeds[(curIdx + 1) % speeds.length];
+        speedBtn.textContent = tlPlaybackSpeed + 's';
+        // Update grow animation speed if running
+        if (growAnimTimer) {
+          clearInterval(growAnimTimer);
+          growAnimTimer = setInterval(growStep, Math.max(tlPlaybackSpeed * 100, 50));
+        }
+      });
+    }
+
+    // Mode toggle buttons
+    const growModeBtn = document.getElementById('tl-mode-grow');
+    const snapModeBtn = document.getElementById('tl-mode-snapshot');
+    if (growModeBtn) {
+      growModeBtn.addEventListener('click', function () {
+        tlPlaybackMode = 'grow';
+        stopTimelinePlayback();
+        stopGrowAnimation();
+        renderTimeline(container);
+      });
+    }
+    if (snapModeBtn) {
+      snapModeBtn.addEventListener('click', function () {
+        tlPlaybackMode = 'snapshot';
+        stopTimelinePlayback();
+        stopGrowAnimation();
+        renderTimeline(container);
+      });
+    }
+
+    // Density bar click to navigate time
+    const densityCols = container.querySelectorAll('.timeline-density-col');
+    densityCols.forEach(function (col) {
+      col.style.cursor = 'pointer';
+      col.addEventListener('click', function (e) {
+        e.stopPropagation();
+        var pct = parseFloat(col.getAttribute('data-bin-pct')) / 100;
+        if (!isNaN(pct)) {
+          tlCurrentPos = Math.max(0, Math.min(1, pct));
+          updateThumbPosition();
+          applyTimelinePosition();
+        }
+      });
+      col.addEventListener('mouseenter', function () {
+        var pct = parseFloat(col.getAttribute('data-bin-pct')) / 100;
+        if (!isNaN(pct)) {
+          var timeRange = tlMaxTime - tlMinTime;
+          var t = tlMinTime + pct * timeRange;
+          showCanvasTimeOverlay(formatTimeShort(t), col.getAttribute('title') || '');
+        }
+      });
+      col.addEventListener('mouseleave', function () {
+        if (!growActive) hideCanvasTimeOverlay();
+      });
+    });
+  }
+
+  function updateThumbPosition() {
+    const fill = document.querySelector('.timeline-track-fill');
+    const thumb = document.getElementById('tl-thumb');
+    const curTime = document.getElementById('tl-current-time');
+    if (fill) fill.style.width = (tlCurrentPos * 100).toFixed(2) + '%';
+    if (thumb) thumb.style.left = (tlCurrentPos * 100).toFixed(2) + '%';
+
+    const timeRange = tlMaxTime - tlMinTime;
+    if (curTime && timeRange > 0 && tlCurrentPos < 1) {
+      const t = new Date(tlMinTime + tlCurrentPos * timeRange);
+      curTime.textContent = t.toLocaleString();
+    } else if (curTime) {
+      curTime.textContent = '';
+    }
+  }
+
+  async function applyTimelinePosition() {
+    if (tlCurrentPos >= 0.995) {
+      // Close enough to right edge = live
+      if (!tlIsLive) {
+        resetToLive();
+        renderTimeline(document.getElementById('timeline-container'));
+      }
+      return;
+    }
+
+    const timeRange = tlMaxTime - tlMinTime;
+    const targetTime = new Date(tlMinTime + tlCurrentPos * timeRange);
+    const isoTime = targetTime.toISOString().replace('Z', '');
+
+    const loadingEl = document.getElementById('graph-loading');
+    if (loadingEl) loadingEl.style.display = 'flex';
+
+    try {
+      const res = await state.api.getSnapshot(isoTime, state.currentGraphId);
+      renderSnapshotData(res.data || res, true);
+      snapshotMode = true;
+      snapshotTime = isoTime;
+      tlIsLive = false;
+
+      // Flash the canvas time indicator
+      const snapData = res.data || res;
+      const snapEntities = (snapData.entities || []).length;
+      const snapRelations = (snapData.relations || []).length;
+      showCanvasTimeOverlay(
+        formatTimeShort(targetTime.getTime()),
+        snapEntities + 'E ' + snapRelations + 'R'
+      );
+      setTimeout(hideCanvasTimeOverlay, 2500);
+
+      // Re-render timeline to update live/snapshot state
+      renderTimeline(document.getElementById('timeline-container'));
+
+      showToast(t('timeline.snapshotAt', { time: targetTime.toLocaleString() }), 'info');
+    } catch (err) {
+      console.error('Timeline snapshot failed:', err);
+      showToast(t('graph.loadFailed') + ': ' + err.message, 'error');
+    } finally {
+      if (loadingEl) loadingEl.style.display = 'none';
+    }
+  }
+
+  function stepTimeline(direction) {
+    // Step through episode markers
+    if (tlEpisodes.length === 0) return;
+    const timeRange = tlMaxTime - tlMinTime;
+    if (timeRange === 0) return;
+
+    // Find nearest episode index based on current position
+    const currentTime = tlMinTime + tlCurrentPos * timeRange;
+    let nearestIdx = -1;
+
+    if (direction > 0) {
+      // Step forward: find next episode after current time
+      for (let i = 0; i < tlEpisodes.length; i++) {
+        if (tlEpisodes[i].time > currentTime + 1000) {
+          nearestIdx = i;
+          break;
+        }
+      }
+      if (nearestIdx < 0) nearestIdx = tlEpisodes.length - 1;
+    } else {
+      // Step backward: find previous episode before current time
+      for (let i = tlEpisodes.length - 1; i >= 0; i--) {
+        if (tlEpisodes[i].time < currentTime - 1000) {
+          nearestIdx = i;
+          break;
+        }
+      }
+      if (nearestIdx < 0) {
+        // Before first episode — reset to live
+        resetToLive();
+        renderTimeline(document.getElementById('timeline-container'));
+        return;
+      }
+    }
+
+    const ep = tlEpisodes[nearestIdx];
+    tlCurrentPos = (ep.time - tlMinTime) / timeRange;
+    tlCurrentPos = Math.max(0, Math.min(1, tlCurrentPos));
+    tlIsLive = false;
+    updateThumbPosition();
+    applyTimelinePosition();
+  }
+
+  // ---- Grow Animation: entity-by-entity graph building ----
+
+  function startGrowAnimation() {
+    if (cachedAllNodes.length === 0) return;
+
+    // Sort nodes by processed_time
+    growSortedNodes = cachedAllNodes.slice().sort(function (a, b) {
+      var ta = a.processed_time ? new Date(a.processed_time).getTime() : 0;
+      var tb = b.processed_time ? new Date(b.processed_time).getTime() : 0;
+      return ta - tb;
+    });
+
+    // Sort edges by the later of their two endpoint times
+    growSortedEdges = cachedAllEdges.slice().sort(function (a, b) {
+      var ta1 = (cachedAllEntities[a.entity1_absolute_id] || {}).processed_time;
+      var ta2 = (cachedAllEntities[a.entity2_absolute_id] || {}).processed_time;
+      var tb1 = (cachedAllEntities[b.entity1_absolute_id] || {}).processed_time;
+      var tb2 = (cachedAllEntities[b.entity2_absolute_id] || {}).processed_time;
+      var taMax = Math.max(ta1 ? new Date(ta1).getTime() : 0, ta2 ? new Date(ta2).getTime() : 0);
+      var tbMax = Math.max(tb1 ? new Date(tb1).getTime() : 0, tb2 ? new Date(tb2).getTime() : 0);
+      return taMax - tbMax;
+    });
+
+    growIndex = 0;
+    growEdgeIndex = 0;
+    growActive = true;
+    growVisibleNodes = [];
+    growVisibleEdges = [];
+    tlIsLive = false;
+
+    // Precompute hub layout from ALL edges (stable throughout animation)
+    var hubLayout = computeHubLayout(cachedAllEdges);
+
+    // Start with empty graph using persistent DataSets
+    explorer.initEmptyGraph(hubLayout);
+
+    // Play snapshot transition effect
+    playSnapshotTransition();
+
+    // Start animation interval — target ~15-40 seconds total regardless of speed
+    var interval = Math.max(tlPlaybackSpeed * 100, 50);
+    growAnimTimer = setInterval(growStep, interval);
+
+    renderTimeline(document.getElementById('timeline-container'));
+  }
+
+  function growStep() {
+    if (!growActive || !explorer) {
+      stopGrowAnimation();
+      return;
+    }
+
+    // Target ~200 total frames for a smooth animation regardless of graph size
+    var totalSteps = 200;
+    var nodeBatchSize = Math.max(1, Math.ceil(growSortedNodes.length / totalSteps));
+    var addedNodes = [];
+    var currentNodeTime = 0;
+
+    for (var i = 0; i < nodeBatchSize && growIndex < growSortedNodes.length; i++) {
+      var node = growSortedNodes[growIndex];
+      addedNodes.push(node);
+      currentNodeTime = node.processed_time ? new Date(node.processed_time).getTime() : 0;
+      growIndex++;
+    }
+
+    if (addedNodes.length === 0) {
+      // All nodes added — continue to add remaining edges
+      growAddRemainingEdges();
+      return;
+    }
+
+    // Accumulate nodes
+    growVisibleNodes = growVisibleNodes.concat(addedNodes);
+    var visibleAbsIds = new Set(growVisibleNodes.map(function (n) { return n.absolute_id; }));
+
+    // Advance the edge frontier in time order — edges appear when their time <= current node time
+    var newlyConnectable = [];
+    var currentEdgeIds = new Set(growVisibleEdges.map(function (e) { return e.absolute_id; }));
+
+    // Move edge frontier forward: advance growEdgeIndex up to currentNodeTime
+    while (growEdgeIndex < growSortedEdges.length) {
+      var edge = growSortedEdges[growEdgeIndex];
+      var eTime1 = (cachedAllEntities[edge.entity1_absolute_id] || {}).processed_time;
+      var eTime2 = (cachedAllEntities[edge.entity2_absolute_id] || {}).processed_time;
+      var edgeTime = Math.max(
+        eTime1 ? new Date(eTime1).getTime() : 0,
+        eTime2 ? new Date(eTime2).getTime() : 0
+      );
+      if (edgeTime > currentNodeTime) break;
+      // Edge is within current time window — add if both endpoints visible
+      if (visibleAbsIds.has(edge.entity1_absolute_id) && visibleAbsIds.has(edge.entity2_absolute_id)
+          && !currentEdgeIds.has(edge.absolute_id)) {
+        newlyConnectable.push(edge);
+        currentEdgeIds.add(edge.absolute_id);
+      }
+      growEdgeIndex++;
+    }
+
+    // Also check previously-seen edges that might now be connectable (one endpoint was added this frame)
+    var addedAbsIds = new Set(addedNodes.map(function (n) { return n.absolute_id; }));
+    for (var ei = 0; ei < growEdgeIndex; ei++) {
+      var edge2 = growSortedEdges[ei];
+      // Skip if already in growVisibleEdges or already found
+      if (currentEdgeIds.has(edge2.absolute_id)) continue;
+      // Only consider edges where at least one endpoint was just added
+      if (!addedAbsIds.has(edge2.entity1_absolute_id) && !addedAbsIds.has(edge2.entity2_absolute_id)) continue;
+      if (visibleAbsIds.has(edge2.entity1_absolute_id) && visibleAbsIds.has(edge2.entity2_absolute_id)) {
+        newlyConnectable.push(edge2);
+        currentEdgeIds.add(edge2.absolute_id);
+      }
+    }
+
+    growVisibleEdges = growVisibleEdges.concat(newlyConnectable);
+
+    // Incrementally add new nodes and edges (no full rebuild!)
+    var hubLayout = computeHubLayout(cachedAllEdges);
+    explorer.addNodesAndEdges(addedNodes, newlyConnectable, hubLayout);
+
+    // Update timeline position
+    var timeRange = tlMaxTime - tlMinTime;
+    if (timeRange > 0 && currentNodeTime > 0) {
+      tlCurrentPos = Math.min((currentNodeTime - tlMinTime) / timeRange, 1);
+      updateThumbPosition();
+    }
+
+    // Update stats with progress
+    var statsEl = document.getElementById('graph-stats');
+    if (statsEl) {
+      var pct = Math.round(growIndex / growSortedNodes.length * 100);
+      statsEl.textContent = t('graph.loaded', { entities: growVisibleNodes.length, relations: growVisibleEdges.length })
+        + ' (' + pct + '%)';
+    }
+
+    // Update canvas time indicator
+    if (currentNodeTime > 0) {
+      showCanvasTimeOverlay(
+        formatTimeShort(currentNodeTime),
+        growVisibleNodes.length + 'E ' + growVisibleEdges.length + 'R'
+      );
+    }
+  }
+
+  function growAddRemainingEdges() {
+    if (!growActive || !explorer) {
+      stopGrowAnimation();
+      return;
+    }
+
+    // Advance edge frontier to the end (all remaining edges are now fair game)
+    var visibleAbsIds = new Set(growVisibleNodes.map(function (n) { return n.absolute_id; }));
+    var currentEdgeIds = new Set(growVisibleEdges.map(function (e) { return e.absolute_id; }));
+
+    // First, process any edges still in the frontier beyond growEdgeIndex
+    var newlyConnectable = [];
+    while (growEdgeIndex < growSortedEdges.length) {
+      var edge = growSortedEdges[growEdgeIndex];
+      if (visibleAbsIds.has(edge.entity1_absolute_id) && visibleAbsIds.has(edge.entity2_absolute_id)
+          && !currentEdgeIds.has(edge.absolute_id)) {
+        newlyConnectable.push(edge);
+        currentEdgeIds.add(edge.absolute_id);
+      }
+      growEdgeIndex++;
+    }
+
+    // Also catch any previously-seen edges that are now connectable
+    var allRemaining = newlyConnectable;
+    for (var ei = 0; ei < growSortedEdges.length; ei++) {
+      var edge2 = growSortedEdges[ei];
+      if (currentEdgeIds.has(edge2.absolute_id)) continue;
+      if (visibleAbsIds.has(edge2.entity1_absolute_id) && visibleAbsIds.has(edge2.entity2_absolute_id)) {
+        allRemaining.push(edge2);
+        currentEdgeIds.add(edge2.absolute_id);
+      }
+    }
+
+    if (allRemaining.length === 0) {
+      finishGrowAnimation();
+      return;
+    }
+
+    // Add a batch of the remaining edges
+    var batchSize = Math.max(1, Math.ceil(allRemaining.length / 10));
+    var batch = allRemaining.slice(0, batchSize);
+    growVisibleEdges = growVisibleEdges.concat(batch);
+
+    // Incrementally add edges only
+    var hubLayout = computeHubLayout(cachedAllEdges);
+    explorer.addNodesAndEdges([], batch, hubLayout);
+
+    var statsEl = document.getElementById('graph-stats');
+    if (statsEl) {
+      statsEl.textContent = t('graph.loaded', { entities: growVisibleNodes.length, relations: growVisibleEdges.length })
+        + ' (edges ' + Math.round(growVisibleEdges.length / growSortedEdges.length * 100) + '%)';
+    }
+
+    if (batch.length >= allRemaining.length) {
+      finishGrowAnimation();
+    }
+  }
+
+  function finishGrowAnimation() {
+    growActive = false;
+    if (growAnimTimer) {
+      clearInterval(growAnimTimer);
+      growAnimTimer = null;
+    }
+    hideCanvasTimeOverlay();
+    tlIsLive = true;
+    tlCurrentPos = 1.0;
+    updateThumbPosition();
+
+    // No full rebuild needed — all data was already added incrementally via addNodesAndEdges.
+    // Just update version badges and stats for the final state.
+    try {
+      var allEntityIds = [...new Set(cachedAllNodes.map(function(e) { return e.family_id; }))];
+      if (allEntityIds.length > 0) {
+        state.api.entityVersionCounts(allEntityIds, state.currentGraphId).then(function(vcRes) {
+          var vc = vcRes.data || {};
+          if (explorer) explorer.setVersionCounts(vc);
+        }).catch(function() {});
+      }
+    } catch (_) {}
+
+    var statsEl = document.getElementById('graph-stats');
+    if (statsEl) {
+      statsEl.textContent = t('graph.loaded', { entities: cachedAllNodes.length, relations: cachedAllEdges.length });
+    }
+
+    renderTimeline(document.getElementById('timeline-container'));
+    showToast('Graph growth animation complete!', 'success');
+  }
+
+  function stopGrowAnimation() {
+    growActive = false;
+    if (growAnimTimer) {
+      clearInterval(growAnimTimer);
+      growAnimTimer = null;
+    }
+    hideCanvasTimeOverlay();
+  }
+
+  function startTimelinePlayback() {
+    if (tlEpisodes.length === 0) return;
+
+    // Start from first episode if currently live
+    if (tlIsLive) {
+      const timeRange = tlMaxTime - tlMinTime;
+      if (timeRange > 0 && tlEpisodes.length > 0) {
+        tlPlaybackIndex = 0;
+        tlCurrentPos = (tlEpisodes[0].time - tlMinTime) / timeRange;
+      }
+    } else {
+      // Find current position in episode list
+      const timeRange = tlMaxTime - tlMinTime;
+      const currentTime = tlMinTime + tlCurrentPos * timeRange;
+      tlPlaybackIndex = 0;
+      for (let i = 0; i < tlEpisodes.length; i++) {
+        if (tlEpisodes[i].time >= currentTime) {
+          tlPlaybackIndex = i;
+          break;
+        }
+      }
+    }
+
+    function playStep() {
+      if (tlPlaybackIndex >= tlEpisodes.length) {
+        stopTimelinePlayback();
+        resetToLive();
+        renderTimeline(document.getElementById('timeline-container'));
+        return;
+      }
+
+      const ep = tlEpisodes[tlPlaybackIndex];
+      const timeRange = tlMaxTime - tlMinTime;
+      if (timeRange > 0) {
+        tlCurrentPos = (ep.time - tlMinTime) / timeRange;
+        tlCurrentPos = Math.max(0, Math.min(1, tlCurrentPos));
+      }
+
+      // Apply snapshot
+      const isoTime = new Date(ep.time).toISOString().replace('Z', '');
+      state.api.getSnapshot(isoTime, state.currentGraphId).then(function (res) {
+        renderSnapshotData(res.data || res, true);
+        snapshotMode = true;
+        tlIsLive = false;
+        updateThumbPosition();
+
+        // Update current time display
+        const curTime = document.getElementById('tl-current-time');
+        if (curTime) curTime.textContent = new Date(ep.time).toLocaleString();
+
+        tlPlaybackIndex++;
+        tlPlaybackTimer = setTimeout(playStep, tlPlaybackSpeed * 1000);
+      }).catch(function () {
+        tlPlaybackIndex++;
+        tlPlaybackTimer = setTimeout(playStep, tlPlaybackSpeed * 1000);
+      });
+    }
+
+    playStep();
+  }
+
+  function stopTimelinePlayback() {
+    if (tlPlaybackTimer) {
+      clearTimeout(tlPlaybackTimer);
+      tlPlaybackTimer = null;
+    }
+    tlPlaybackIndex = -1;
+  }
+
+  function resetToLive() {
+    stopTimelinePlayback();
+    tlIsLive = true;
+    tlCurrentPos = 1.0;
+    snapshotMode = false;
+    snapshotTime = null;
+    updateSnapshotOverlay(null);
+    // Rebuild graph from cache
+    if (cachedAllNodes.length > 0) {
+      const hubLayout = computeHubLayout(cachedAllEdges);
+      explorer.buildGraph(cachedAllNodes, cachedAllEdges, null, null, cachedInheritedRelationIds, undefined, hubLayout);
+    }
+  }
+
+  async function loadTimelineChanges() {
+    // Load recent changes to enrich timeline markers
+    try {
+      if (!tlMaxTime) return;
+      const since = new Date(tlMinTime).toISOString();
+      const res = await state.api.getChanges(since, null, state.currentGraphId);
+      const changes = res.data?.changes || res.data || [];
+      // Add change events as additional markers (if not already covered by episodes)
+      // We don't need to do much here — episodes are the primary markers
+    } catch (_) {}
   }
 
   // ---- Register this page ----

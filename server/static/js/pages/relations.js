@@ -11,6 +11,7 @@
   let allLoading = false;
   let allHasMore = true;
   let activeTab = 'all';
+  let _cachedGraphId = null;
 
   // ---- UI state only (cleared on destroy) ----
   let searchTimer = null;
@@ -31,12 +32,14 @@
 
   async function loadEntityMap() {
     try {
-      const res = await state.api.listEntities(state.currentGraphId, 5000);
+      const graphId = state.currentGraphId;
+      const res = await state.api.listEntities(graphId, 5000);
       const entities = res.data?.entities || res.data || [];
       entityMap = {};
       entities.forEach(e => {
         entityMap[e.absolute_id] = { name: e.name, family_id: e.family_id };
       });
+      _cachedGraphId = graphId;
     } catch (err) {
       console.error('Failed to load entity map:', err);
       showToast(t('relations.loadEntityMapFailed'), 'warning');
@@ -55,6 +58,7 @@
         <td title="${escapeHtml(entityName(r.entity1_absolute_id, r.entity1_name))}">${escapeHtml(truncate(entityName(r.entity1_absolute_id, r.entity1_name), 24))}</td>
         <td title="${escapeHtml(entityName(r.entity2_absolute_id, r.entity2_name))}">${escapeHtml(truncate(entityName(r.entity2_absolute_id, r.entity2_name), 24))}</td>
         <td class="mono" style="white-space:nowrap;">${formatDate(r.event_time)}</td>
+        <td class="mono" style="white-space:nowrap;">${formatDateMs(r.processed_time)}</td>
         <td title="${escapeHtml(r.source_document || r.doc_name || '')}">${escapeHtml(truncate(r.source_document || r.doc_name || '-', 20))}</td>
         <td>
           <button class="btn btn-sm btn-primary btn-edit-relation" data-family-id="${escapeAttr(r.family_id || '')}" data-i18n="relations.edit">Edit</button>
@@ -70,7 +74,8 @@
             <th>${t('relations.content')}</th>
             <th>${t('relations.entity1')}</th>
             <th>${t('relations.entity2')}</th>
-            <th>${t('relations.time')}</th>
+            <th>${t('relations.eventTime')}</th>
+            <th>${t('relations.processedTime')}</th>
             <th>${t('relations.source')}</th>
             <th data-i18n="relations.actions">Actions</th>
           </tr>
@@ -132,7 +137,7 @@
           </div>
           <div>
             <div class="form-label">${t('relations.processedTime')}</div>
-            <div class="mono" id="relation-detail-processed-time" style="font-size:0.8125rem;color:var(--text-primary);">${formatDate(r.processed_time)}</div>
+            <div class="mono" id="relation-detail-processed-time" style="font-size:0.8125rem;color:var(--text-primary);">${formatDateMs(r.processed_time)}</div>
           </div>
           <div>
             <div class="form-label">${t('relations.sourceLabel')}</div>
@@ -169,7 +174,7 @@
     overlay.querySelectorAll('.doc-link').forEach(el => {
       el.addEventListener('click', () => {
         const cacheId = el.getAttribute('data-cache-id');
-        if (cacheId) window.showDocContent(cacheId);
+        if (cacheId) window.showEpisodeDoc(cacheId);
       });
     });
 
@@ -215,14 +220,14 @@
             }).catch(() => {})
         );
       }
-      if (promises.length) Promise.all(promises);
+      if (promises.length) await Promise.all(promises);
     }
 
     // Fetch versions
     const graphId = state.currentGraphId;
-    const familyId = r.family_id;
+    const relFamilyId = r.family_id;
 
-    state.api.relationVersions(familyId, graphId)
+    state.api.relationVersions(relFamilyId, graphId)
       .then(res => {
         const spinner = overlay.querySelector('#relation-versions-spinner');
         if (spinner) spinner.remove();
@@ -262,7 +267,8 @@
       isActiveCheck: function(v) { return v.absolute_id === currentAbsId; },
       renderHeader: function(v, i, sorted, isActive) {
         return '<div style="display:flex;align-items:center;gap:0.5rem;">'
-          + '<span class="mono" style="font-size:0.75rem;color:var(--text-muted);">' + formatDate(v.processed_time) + '</span>'
+          + '<span class="mono" style="font-size:0.75rem;color:var(--text-muted);">' + t('relations.eventTime') + ' ' + formatDate(v.event_time) + '</span>'
+          + '<span class="mono" style="font-size:0.7rem;color:var(--text-muted);">' + t('relations.processedTime') + ' ' + formatDateMs(v.processed_time) + '</span>'
           + (i === 0 ? '<span class="badge badge-info" style="font-size:0.6875rem;">' + t('relations.latest') + '</span>' : '')
           + (isActive && i !== 0 ? '<span class="badge badge-primary" style="font-size:0.6875rem;">' + t('relations.current') + '</span>' : '')
           + '</div>'
@@ -566,8 +572,17 @@
     // Determine initial tab from hash params
     const initialTab = params[0] || 'all';
 
-    // Load entity map (cached — if already populated, skip)
-    if (Object.keys(entityMap).length === 0) {
+    // Load entity map (cached — if already populated AND graph hasn't changed, skip)
+    if (Object.keys(entityMap).length === 0 || _cachedGraphId !== state.currentGraphId) {
+      // Graph changed — invalidate all caches
+      if (_cachedGraphId !== state.currentGraphId) {
+        entityMap = {};
+        relationMap = {};
+        allRelations = [];
+        allOffset = 0;
+        allHasMore = true;
+        allLoading = false;
+      }
       await loadEntityMap();
     }
 

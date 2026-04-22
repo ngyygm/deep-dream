@@ -36,3 +36,11 @@ dev = ["pytest>=7.0", "pytest-cov", "ruff"]
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["processor*", "server*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "real_llm: test requires USE_REAL_LLM=1",
+    "slow: test takes > 5 seconds",
+    "e2e: test requires a running Deep-Dream server",
+]

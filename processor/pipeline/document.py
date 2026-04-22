@@ -4,7 +4,7 @@
 from typing import List, Iterator, Tuple, Optional
 from pathlib import Path
 
-from ..utils import wprint
+from ..utils import wprint_info
 
 
 class DocumentProcessor:
@@ -51,7 +51,7 @@ class DocumentProcessor:
         for doc_path in ordered_paths:
             doc_path_obj = Path(doc_path)
             if not doc_path_obj.exists():
-                wprint(f"警告：文档不存在: {doc_path}")
+                wprint_info(f"警告：文档不存在: {doc_path}")
                 continue
             
             document_name = doc_path_obj.name
@@ -61,7 +61,7 @@ class DocumentProcessor:
                 with open(doc_path_obj, 'r', encoding='utf-8') as f:
                     content = f.read()
             except Exception as e:
-                wprint(f"错误：无法读取文档 {doc_path}: {e}")
+                wprint_info(f"错误：无法读取文档 {doc_path}: {e}")
                 continue
             
             total_length = len(content)
@@ -70,7 +70,7 @@ class DocumentProcessor:
             if is_first_doc and resume_start_pos is not None and resume_start_pos > 0:
                 start = resume_start_pos
                 is_first_doc = False
-                wprint(f"[断点续传] 从文档 {document_name} 的位置 {start} 继续处理")
+                wprint_info(f"[断点续传] 从文档 {document_name} 的位置 {start} 继续处理")
             else:
                 start = 0
                 is_first_doc = False
@@ -80,13 +80,14 @@ class DocumentProcessor:
             while start < len(content):
                 end = min(start + self.window_size, len(content))
                 chunk = content[start:end]
-                
+
                 # 如果是新文档的第一块，添加提示
+                is_new_doc = is_first_chunk and start == 0
                 if is_first_chunk:
-                    chunk = f"开始阅读新的文档，文件名是：{document_name}\n\n{chunk}"
+                    chunk = f"[文档元数据] 文档名：{document_name} [/文档元数据]\n\n{chunk}"
                     is_first_chunk = False
-                
-                yield (chunk, document_name, is_first_chunk and start == 0, start, end, total_length, doc_path)
+
+                yield (chunk, document_name, is_new_doc, start, end, total_length, doc_path)
                 
                 # 移动到下一个窗口（考虑重叠）
                 if end >= len(content):
@@ -122,14 +123,14 @@ class DocumentProcessor:
             # 尝试精确匹配
             if resume_document_path in document_paths:
                 matched_doc_path = resume_document_path
-                wprint(f"[断点续传] 根据文档路径找到匹配: {resume_document_path}")
+                wprint_info(f"[断点续传] 根据文档路径找到匹配: {resume_document_path}")
             else:
                 # 尝试按文件名匹配
                 resume_doc_name = Path(resume_document_path).name
                 for doc_path in document_paths:
                     if Path(doc_path).name == resume_doc_name:
                         matched_doc_path = doc_path
-                        wprint(f"[断点续传] 根据文件名找到匹配: {resume_doc_name} -> {doc_path}")
+                        wprint_info(f"[断点续传] 根据文件名找到匹配: {resume_doc_name} -> {doc_path}")
                         break
         
         # 方法2：如果根据文档路径没找到，或者需要定位具体位置，通过文本搜索
@@ -137,7 +138,12 @@ class DocumentProcessor:
             # 清理文本（移除窗口添加的前缀）
             search_text = resume_text
             if "开始阅读新的文档，文件名是：" in search_text:
-                # 移除前缀，只保留原始文本内容
+                # 移除旧版前缀，只保留原始文本内容
+                parts = search_text.split("\n\n", 1)
+                if len(parts) > 1:
+                    search_text = parts[1]
+            if "[文档元数据]" in search_text:
+                # 移除新版元数据标签
                 parts = search_text.split("\n\n", 1)
                 if len(parts) > 1:
                     search_text = parts[1]
@@ -159,11 +165,11 @@ class DocumentProcessor:
                         # 从找到的文本片段位置开始继续处理
                         # 这个位置就是上次处理到的位置，应该从这里重新开始
                         resume_start_pos = text_pos
-                        wprint(f"[断点续传] 在文档 {doc_path} 中找到匹配文本，位置: {text_pos}")
-                        wprint(f"[断点续传] 将从位置 {resume_start_pos} 继续处理")
+                        wprint_info(f"[断点续传] 在文档 {doc_path} 中找到匹配文本，位置: {text_pos}")
+                        wprint_info(f"[断点续传] 将从位置 {resume_start_pos} 继续处理")
                         break
                 except Exception as e:
-                    wprint(f"警告：无法读取文档 {doc_path}: {e}")
+                    wprint_info(f"警告：无法读取文档 {doc_path}: {e}")
                     continue
         
         if matched_doc_path:
@@ -175,6 +181,6 @@ class DocumentProcessor:
             return reordered_paths, resume_start_pos
         else:
             if resume_document_path or resume_text:
-                wprint(f"[断点续传] 警告：未找到匹配的断点位置，将从头开始处理")
+                wprint_info(f"[断点续传] 警告：未找到匹配的断点位置，将从头开始处理")
             return document_paths, None
     

@@ -340,6 +340,13 @@ class SystemMonitor:
                 self._graphs[graph_id] = GraphMonitor(graph_id, processor, queue)
                 self._graph_order.append(graph_id)
 
+    def detach_graph(self, graph_id: str) -> None:
+        """从监控中移除一个图谱（删除图谱时调用）。"""
+        with self._lock:
+            self._graphs.pop(graph_id, None)
+            if graph_id in self._graph_order:
+                self._graph_order.remove(graph_id)
+
     def overview(self) -> dict:
         """系统总览。"""
         import threading

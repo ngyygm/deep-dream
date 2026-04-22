@@ -20,6 +20,7 @@ class Episode:
     content: str  # Markdown格式的完整描述
     event_time: datetime  # 事件发生时间
     source_document: str  # 来源文档名称
+    processed_time: Optional[datetime] = None  # 系统处理时间
     activity_type: Optional[str] = None  # 可选的活动类型，如"阅读小说"、"处理文档"等
     episode_type: Optional[str] = None  # Episode 类型: "narrative" | "fact" | "conversation" | "dream"
 

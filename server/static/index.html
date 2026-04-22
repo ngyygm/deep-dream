@@ -5,13 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>DeepDream</title>
 
-  <!-- Google Fonts -->
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <!-- Fonts (local) -->
+  <link rel="stylesheet" href="/static/vendor/fonts.css">
 
-  <!-- Tailwind CSS -->
-  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Tailwind CSS (local) -->
+  <script src="/static/vendor/tailwindcss.js"></script>
   <script>
     tailwind.config = {
       darkMode: 'class',
@@ -27,12 +25,11 @@
     }
   </script>
 
-  <!-- vis-network.js -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/vis-network/9.1.2/standalone/umd/vis-network.min.js"
-          crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+  <!-- vis-network.js (local) -->
+  <script src="/static/vendor/vis-network.min.js"></script>
 
-  <!-- Lucide Icons -->
-  <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+  <!-- Lucide Icons (local) -->
+  <script src="/static/vendor/lucide.js"></script>
 
   <!-- Custom Styles -->
   <link rel="stylesheet" href="/static/css/app.css">
@@ -133,6 +130,9 @@
             <select id="graph-selector" class="input text-xs py-1 px-2 w-36">
               <option value="default">default</option>
             </select>
+            <button id="graph-clear-btn" class="btn btn-ghost btn-sm p-1" title="清空图谱数据" data-i18n-title="graph.clearGraph">
+              <i data-lucide="eraser" style="width:14px;height:14px;color:var(--warning);"></i>
+            </button>
             <button id="graph-delete-btn" class="btn btn-ghost btn-sm p-1" title="删除当前图谱" style="display:none;">
               <i data-lucide="trash-2" style="width:14px;height:14px;color:var(--danger);"></i>
             </button>
@@ -173,7 +173,7 @@
   <script src="/static/js/i18n/index.js"></script>
 
   <!-- Scripts (order matters) -->
-  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="/static/vendor/marked.min.js"></script>
   <script src="/static/js/app.js"></script>
   <script src="/static/js/components/toast.js"></script>
   <script src="/static/js/components/modal.js"></script>

@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 from ..models import Entity, Episode, ContentPatch
 from ..storage.manager import StorageManager
 from ..llm.client import LLMClient
-from ..utils import wprint, calculate_jaccard_similarity
+from ..utils import wprint_info, calculate_jaccard_similarity
 from ..content_schema import (
     ENTITY_SECTIONS,
     content_to_sections,
@@ -122,7 +122,7 @@ class EntityProcessor:
                 try:
                     prefetched_embeddings = entity_embedding_prefetch.result()
                 except Exception as exc:
-                    wprint(f"  │  embedding预取失败: {exc}")
+                    wprint_info(f"  │  embedding预取失败: {exc}")
                     prefetched_embeddings = None
             use_parallel = (max_workers is not None and max_workers > 1 and len(extracted_entities) > 1)
             if use_parallel:
@@ -210,7 +210,7 @@ class EntityProcessor:
         _skipped_orphans = 0
         for idx, extracted_entity in enumerate(extracted_entities, 1):
             candidates = candidate_table.get(idx - 1, [])
-            entity, relations, name_mapping, to_persist = self._process_single_entity_batch(
+            entity, relations, name_mapping, to_persist = self._process_entity_with_batch_candidates(
                 extracted_entity=extracted_entity,
                 candidates=candidates,
                 episode_id=episode_id,
@@ -244,6 +244,13 @@ class EntityProcessor:
 
         if entities_to_persist:
             self.storage.bulk_save_entities(entities_to_persist)
+            # 置信度演化：新版本 = 独立来源印证 → 置信度提升
+            _corroborated = {e.family_id for e in entities_to_persist if e.family_id.startswith("ent_")}
+            for fid in _corroborated:
+                try:
+                    self.storage.adjust_confidence_on_corroboration(fid, source_type="entity")
+                except Exception:
+                    pass
 
         return processed_entities, pending_relations, entity_name_to_id
 
@@ -293,14 +300,14 @@ class EntityProcessor:
         total_entities = len(extracted_entities)
         _distill_step = self.llm_client._current_distill_step
         _priority = getattr(self.llm_client._priority_local, 'priority', 5)
-        _version_lock = threading.Lock()
+        _version_lock = threading.RLock()
 
         def task(idx: int, extracted_entity: Dict[str, str], orig_idx: int):
             # 将主线程的 distill step 和优先级传播到工作线程（threading.local）
             self.llm_client._current_distill_step = _distill_step
             self.llm_client._priority_local.priority = _priority
             candidates = candidate_table.get(orig_idx, [])
-            entity, relations, name_mapping, to_persist = self._process_single_entity_batch(
+            entity, relations, name_mapping, to_persist = self._process_entity_with_batch_candidates(
                 extracted_entity=extracted_entity,
                 candidates=candidates,
                 episode_id=episode_id,
@@ -407,9 +414,15 @@ class EntityProcessor:
             if len(_deduped) < len(entities_to_persist_final):
                 _dup_count = len(entities_to_persist_final) - len(_deduped)
                 if self._entity_tree_log():
-                    wprint(f"  │  持久化去重: 移除 {_dup_count} 个重复 family_id 的待持久化实体")
+                    wprint_info(f"  │  持久化去重: 移除 {_dup_count} 个重复 family_id 的待持久化实体")
                 entities_to_persist_final = _deduped
             self.storage.bulk_save_entities(entities_to_persist_final)
+            # 置信度演化：新版本 = 独立来源印证 → 置信度提升
+            for e in entities_to_persist_final:
+                try:
+                    self.storage.adjust_confidence_on_corroboration(e.family_id, source_type="entity")
+                except Exception:
+                    pass
 
         processed_entities = [r[1] for r in results if r[1] is not None]
         pending_relations: List[Dict] = []
@@ -522,22 +535,39 @@ class EntityProcessor:
         name_sim_matrix = None  # (N_extracted, M_stored)
         full_sim_matrix = None
         if stored_emb_matrix is not None and stored_emb_matrix.shape[1] > 1:
+            stored_dim = stored_emb_matrix.shape[1]
             if name_embeddings is not None:
                 name_mat = np.array(name_embeddings, dtype=np.float32)
                 if name_mat.ndim == 1:
                     name_mat = name_mat.reshape(1, -1)
-                name_norms = np.linalg.norm(name_mat, axis=1, keepdims=True)
-                name_norms = np.where(name_norms == 0, 1.0, name_norms)
-                name_mat = name_mat / name_norms
-                name_sim_matrix = name_mat @ stored_emb_matrix.T  # (N, M)
+                # Guard: skip matmul if query dimensions are empty or mismatch stored
+                if name_mat.shape[1] > 0 and name_mat.shape[1] == stored_dim:
+                    name_norms = np.linalg.norm(name_mat, axis=1, keepdims=True)
+                    name_norms = np.where(name_norms == 0, 1.0, name_norms)
+                    name_mat = name_mat / name_norms
+                    name_sim_matrix = name_mat @ stored_emb_matrix.T  # (N, M)
+                else:
+                    logger.warning(
+                        "entity alignment: name embedding dim mismatch "
+                        "(query=%d, stored=%d), skipping embedding similarity",
+                        name_mat.shape[1], stored_dim,
+                    )
             if full_embeddings is not None:
                 full_mat = np.array(full_embeddings, dtype=np.float32)
                 if full_mat.ndim == 1:
                     full_mat = full_mat.reshape(1, -1)
-                full_norms = np.linalg.norm(full_mat, axis=1, keepdims=True)
-                full_norms = np.where(full_norms == 0, 1.0, full_norms)
-                full_mat = full_mat / full_norms
-                full_sim_matrix = full_mat @ stored_emb_matrix.T  # (N, M)
+                # Guard: skip matmul if query dimensions are empty or mismatch stored
+                if full_mat.shape[1] > 0 and full_mat.shape[1] == stored_dim:
+                    full_norms = np.linalg.norm(full_mat, axis=1, keepdims=True)
+                    full_norms = np.where(full_norms == 0, 1.0, full_norms)
+                    full_mat = full_mat / full_norms
+                    full_sim_matrix = full_mat @ stored_emb_matrix.T  # (N, M)
+                else:
+                    logger.warning(
+                        "entity alignment: full embedding dim mismatch "
+                        "(query=%d, stored=%d), skipping embedding similarity",
+                        full_mat.shape[1], stored_dim,
+                    )
 
         candidate_table: Dict[int, List[Dict[str, Any]]] = {}
         for idx, extracted_entity in enumerate(extracted_entities):
@@ -546,6 +576,9 @@ class EntityProcessor:
             ext_core = self._normalize_entity_name_for_matching(ext_name)
             for j, projection in enumerate(projections):
                 lexical_score = self._calculate_jaccard_similarity(ext_name, projection["name"])
+                core_score = 0.0
+                proj_core = ""
+                name_match_type = "none"  # Track why the names matched
                 # 核心名称 Jaccard：处理 "张伟教授" vs "张伟" 等变体
                 if lexical_score < jaccard_threshold:
                     proj_core = self._normalize_entity_name_for_matching(projection["name"])
@@ -553,6 +586,20 @@ class EntityProcessor:
                     # 核心名称精确匹配直接给高分
                     if ext_core and proj_core and ext_core == proj_core:
                         core_score = max(core_score, 0.85)
+                        name_match_type = "exact"
+                    # 子串匹配：处理名称变体（如 "对齐" ⊂ "概念对齐"）
+                    if core_score < jaccard_threshold and ext_core and proj_core:
+                        if len(ext_core) >= 2 and len(proj_core) >= 2:
+                            if ext_core in proj_core or proj_core in ext_core:
+                                shorter = ext_core if len(ext_core) <= len(proj_core) else proj_core
+                                longer = proj_core if len(ext_core) <= len(proj_core) else ext_core
+                                ratio = len(shorter) / len(longer)
+                                # Substring match is strong evidence — even 50% overlap is meaningful
+                                # Map ratio [0.3, 1.0] → score [0.65, 0.95]
+                                substring_score = 0.65 + ratio * 0.30
+                                core_score = max(core_score, min(substring_score, 0.95))
+                                if name_match_type == "none":
+                                    name_match_type = "substring"
                     lexical_score = max(lexical_score, core_score)
 
                 # Use precomputed matrix values (O(1) lookup) instead of per-pair dot product
@@ -581,6 +628,7 @@ class EntityProcessor:
                         "dense_score": best_dense,
                         "combined_score": max(lexical_score, dense_name_score, dense_full_score),
                         "merge_safe": core_name_match or (best_dense >= self.merge_safe_embedding_threshold and lexical_score >= self.merge_safe_jaccard_threshold),
+                        "name_match_type": name_match_type,
                     })
 
             candidate_rows.sort(key=lambda row: row["combined_score"], reverse=True)
@@ -701,7 +749,7 @@ class EntityProcessor:
             else:
                 already_versioned.add(family_id)
 
-    def _process_single_entity_batch(self,
+    def _process_entity_with_batch_candidates(self,
                                      extracted_entity: Dict[str, str],
                                      candidates: List[Dict[str, Any]],
                                      episode_id: str,
@@ -728,17 +776,17 @@ class EntityProcessor:
         entity_name = extracted_entity["name"]
         entity_content = extracted_entity["content"]
         if self._entity_tree_log() and total_entities > 0:
-            wprint(f"  ├─ 处理实体 [{entity_index}/{total_entities}]: {entity_name}")
+            wprint_info(f"  ├─ 处理实体 [{entity_index}/{total_entities}]: {entity_name}")
 
         if not candidates:
             new_entity = self._build_new_entity(entity_name, entity_content, episode_id, source_document, base_time=base_time)
             if self._entity_tree_log():
-                wprint(f"  │  未找到候选实体，批量路径创建新实体: {new_entity.family_id}")
+                wprint_info(f"  │  未找到候选实体，批量路径创建新实体: {new_entity.family_id}")
             self._mark_versioned(new_entity.family_id, already_versioned_family_ids, _version_lock)
             return new_entity, [], {entity_name: new_entity.family_id, new_entity.name: new_entity.family_id}, new_entity
 
         if self._entity_tree_log():
-            wprint(f"  │  批量候选生成: {len(candidates)} 个")
+            wprint_info(f"  │  批量候选生成: {len(candidates)} 个")
 
         # ---- Fix 2a: 精确名称匹配 + 高embedding相似度 → 同窗口复用/跨窗口创建版本，跳过LLM ----
         top = candidates[0]
@@ -748,41 +796,83 @@ class EntityProcessor:
             # 优先使用候选中已携带的实体对象，避免重复 DB 查询
             latest = top.get("entity") or self.storage.get_entity_by_family_id(top["family_id"])
             if latest:
-                # 同窗口内已有版本 → 直接复用，避免同窗口重复版本化
-                _already_versioned = already_versioned_family_ids and latest.family_id in already_versioned_family_ids
-                if _already_versioned:
-                    if self._entity_tree_log():
-                        wprint(f"  │  快捷路径：同窗口复用 {latest.family_id}")
-                    return latest, [], {entity_name: latest.family_id, latest.name: latest.family_id}, None
+                # ---- Three-way alignment guard for exact name matches (Phase 4) ----
+                # Even with exact name match, check if content describes a different entity
+                # This catches "张伟(教授)" vs "张伟(CEO)" cases
+                if hasattr(self.llm_client, 'judge_entity_alignment_v2') and latest.content:
+                    _align_result = self.llm_client.judge_entity_alignment_v2(
+                        entity_name, entity_content,
+                        latest.name, latest.content or "",
+                        name_match_type=top.get("name_match_type", "none"),
+                    )
+                    _align_verdict = _align_result.get("verdict", "uncertain")
+                    _align_confidence = _align_result.get("confidence", 0.5)
+                    if _align_verdict == "different":
+                        if self._entity_tree_log():
+                            wprint_info(f"  │  快捷路径三值对齐: verdict=different (conf={_align_confidence:.2f}), 同名但不同实体→新建")
+                        new_entity = self._build_new_entity(entity_name, entity_content, episode_id, source_document, base_time=base_time)
+                        self._mark_versioned(new_entity.family_id, already_versioned_family_ids, _version_lock)
+                        return new_entity, [], {entity_name: new_entity.family_id, new_entity.name: new_entity.family_id}, new_entity
+                    elif _align_verdict == "uncertain" and _align_confidence < 0.8:
+                        if self._entity_tree_log():
+                            wprint_info(f"  │  快捷路径三值对齐: verdict=uncertain (conf={_align_confidence:.2f}), 保守策略→新建")
+                        new_entity = self._build_new_entity(entity_name, entity_content, episode_id, source_document, base_time=base_time)
+                        self._mark_versioned(new_entity.family_id, already_versioned_family_ids, _version_lock)
+                        return new_entity, [], {entity_name: new_entity.family_id, new_entity.name: new_entity.family_id}, new_entity
+                    # verdict == "same" → proceed with fast path merge
 
-                # 跨窗口再次遇到已知实体 → 创建新版本（保留已有知识，追加新信息）
-                _old_content = latest.content or ""
-                _new_content = entity_content.strip()
-                if _old_content and _new_content and _old_content.strip() == _new_content:
-                    # 内容完全一致 → 无需版本膨胀，直接复用
+                # 同窗口内已有版本 → 直接复用，避免同窗口重复版本化（加锁防竞态）
+                def _fast_path_create_version():
+                    """在锁保护下检查+创建版本，防止并行线程重复版本化。"""
+                    if already_versioned_family_ids and latest.family_id in already_versioned_family_ids:
+                        if self._entity_tree_log():
+                            wprint_info(f"  │  快捷路径：同窗口复用 {latest.family_id}")
+                        return latest, [], {entity_name: latest.family_id, latest.name: latest.family_id}, None
+
+                    # 内容完全相同 → 直接复用旧 content（零 LLM 开销）
+                    old_content = (latest.content or "").strip()
+                    new_content = entity_content.strip()
+                    if old_content and old_content == new_content:
+                        entity_version = self._build_entity_version(
+                            latest.family_id, entity_name, latest.content,
+                            episode_id, source_document, base_time=base_time,
+                        )
+                        self._mark_versioned(latest.family_id, already_versioned_family_ids, _version_lock)
+                        if self._entity_tree_log():
+                            wprint_info(f"  │  快捷路径：内容相同，直接复用 {latest.family_id}")
+                        return entity_version, [], {entity_name: latest.family_id, latest.name: latest.family_id}, entity_version
+
+                    # 内容有差异 → 增量合并（git-like editing）
+                    if old_content:
+                        merged_content = self.llm_client.merge_multiple_entity_contents(
+                            [latest.content, entity_content],
+                            entity_sources=[latest.source_document, source_document],
+                            entity_names=[latest.name, entity_name],
+                        )
+                        final_name = entity_name
+                    else:
+                        merged_content = entity_content
+                        final_name = entity_name
+
+                    entity_version = self._build_entity_version(
+                        latest.family_id, final_name, merged_content,
+                        episode_id, source_document, base_time=base_time,
+                    )
                     self._mark_versioned(latest.family_id, already_versioned_family_ids, _version_lock)
                     if self._entity_tree_log():
-                        wprint(f"  │  快捷路径：内容完全一致→复用 {latest.family_id}")
-                    return latest, [], {entity_name: latest.family_id, latest.name: latest.family_id}, None
+                        wprint_info(f"  │  快捷路径：增量合并新版本 {latest.family_id}")
+                    return entity_version, [], {entity_name: latest.family_id, latest.name: latest.family_id}, entity_version
 
-                # 内容有差异或新窗口发现 → 创建新版本
-                entity_version = self._build_entity_version(
-                    latest.family_id,
-                    entity_name,
-                    entity_content,
-                    episode_id,
-                    source_document,
-                    base_time=base_time,
-                )
-                self._mark_versioned(latest.family_id, already_versioned_family_ids, _version_lock)
-                if self._entity_tree_log():
-                    wprint(f"  │  快捷路径：跨窗口新版本 {latest.family_id} (已有版本≥1)")
-                return entity_version, [], {entity_name: latest.family_id, latest.name: latest.family_id}, entity_version
+                if _version_lock:
+                    with _version_lock:
+                        return _fast_path_create_version()
+                else:
+                    return _fast_path_create_version()
 
         # ---- Fix 2b: 全部候选低相似度 → 直接新建，跳过LLM ----
         if candidates[0].get("combined_score", 0) < 0.4:
             if self._entity_tree_log():
-                wprint(f"  │  快捷路径：候选相似度过低({candidates[0].get('combined_score', 0):.2f})→新建")
+                wprint_info(f"  │  快捷路径：候选相似度过低({candidates[0].get('combined_score', 0):.2f})→新建")
             new_entity = self._build_new_entity(entity_name, entity_content, episode_id, source_document, base_time=base_time)
             if new_entity:
                 self._mark_versioned(new_entity.family_id, already_versioned_family_ids, _version_lock)
@@ -803,8 +893,8 @@ class EntityProcessor:
         confidence = float(batch_result.get("confidence", 0.0) or 0.0)
         if (not self.batch_resolution_enabled) or batch_result.get("update_mode") == "fallback" or confidence < self.batch_resolution_confidence_threshold:
             if self._entity_tree_log():
-                wprint(f"  │  批量裁决置信度不足，回退到旧逻辑 (confidence={confidence:.2f})")
-            entity, relations, name_mapping = self._process_single_entity(
+                wprint_info(f"  │  批量裁决置信度不足，回退到旧逻辑 (confidence={confidence:.2f})")
+            entity, relations, name_mapping = self._process_entity_sequential_fallback(
                 extracted_entity,
                 episode_id,
                 similarity_threshold,
@@ -848,17 +938,50 @@ class EntityProcessor:
                 update_mode = batch_result.get("update_mode") or "reuse_existing"
                 if update_mode in ("merge_into_latest", "reuse_existing"):
                     if self._entity_tree_log():
-                        wprint(f"  │  批量裁决: merge_safe=False，禁止合并/复用，创建新实体")
+                        wprint_info(f"  │  批量裁决: merge_safe=False，禁止合并/复用，创建新实体")
                     new_entity = self._build_new_entity(entity_name, entity_content, episode_id, source_document, base_time=base_time, confidence=confidence)
+                    self._mark_versioned(new_entity.family_id, already_versioned_family_ids, _version_lock)
                     return new_entity, relations_to_create, {
                         entity_name: new_entity.family_id,
                         new_entity.name: new_entity.family_id,
                     }, new_entity
+            # ---- Three-way alignment verification (Phase 4) ----
+            # Before proceeding with merge, verify with judge_entity_alignment_v2
+            if hasattr(self.llm_client, 'judge_entity_alignment_v2'):
+                _matched_cand = next((c for c in candidates if c.get("family_id") == match_existing_id), None)
+                _align_result = self.llm_client.judge_entity_alignment_v2(
+                    entity_name, entity_content,
+                    _matched_cand.get("name", "") if _matched_cand else "",
+                    _matched_cand.get("content", "") if _matched_cand else "",
+                    name_match_type=_matched_cand.get("name_match_type", "none") if _matched_cand else "none",
+                )
+                _align_verdict = _align_result.get("verdict", "uncertain")
+                _align_confidence = _align_result.get("confidence", 0.5)
+                if _align_verdict == "different":
+                    if self._entity_tree_log():
+                        wprint_info(f"  │  三值对齐: verdict=different (conf={_align_confidence:.2f}), 拒绝合并→新建")
+                    new_entity = self._build_new_entity(entity_name, entity_content, episode_id, source_document, base_time=base_time, confidence=confidence)
+                    self._mark_versioned(new_entity.family_id, already_versioned_family_ids, _version_lock)
+                    return new_entity, relations_to_create, {
+                        entity_name: new_entity.family_id,
+                        new_entity.name: new_entity.family_id,
+                    }, new_entity
+                elif _align_verdict == "uncertain" and _align_confidence < 0.8:
+                    if self._entity_tree_log():
+                        wprint_info(f"  │  三值对齐: verdict=uncertain (conf={_align_confidence:.2f}), 保守策略→新建")
+                    new_entity = self._build_new_entity(entity_name, entity_content, episode_id, source_document, base_time=base_time, confidence=confidence)
+                    self._mark_versioned(new_entity.family_id, already_versioned_family_ids, _version_lock)
+                    return new_entity, relations_to_create, {
+                        entity_name: new_entity.family_id,
+                        new_entity.name: new_entity.family_id,
+                    }, new_entity
+                # verdict == "same" -> proceed with merge as normal
+
             latest_entity = self.storage.get_entity_by_family_id(match_existing_id)
             if not latest_entity:
                 if self._entity_tree_log():
-                    wprint(f"  │  批量裁决命中的实体不存在，回退旧逻辑: {match_existing_id}")
-                entity, relations, name_mapping = self._process_single_entity(
+                    wprint_info(f"  │  批量裁决命中的实体不存在，回退旧逻辑: {match_existing_id}")
+                entity, relations, name_mapping = self._process_entity_sequential_fallback(
                     extracted_entity,
                     episode_id,
                     similarity_threshold,
@@ -880,44 +1003,34 @@ class EntityProcessor:
 
             update_mode = batch_result.get("update_mode") or "reuse_existing"
             if update_mode == "merge_into_latest":
-                # 防止同窗口内重复版本化：如果该 family_id 已在本次处理中创建过新版本，复用已有实体
-                _already_versioned = False
-                if already_versioned_family_ids and match_existing_id in already_versioned_family_ids:
-                    _already_versioned = True
-                    if self._entity_tree_log():
-                        wprint(f"  │  批量裁决: family_id {match_existing_id} 已在本次处理中创建版本，复用已有实体")
-                    return latest_entity, relations_to_create, {
-                        entity_name: latest_entity.family_id,
-                        latest_entity.name: latest_entity.family_id,
-                    }, None
-
-                merged_name = (batch_result.get("merged_name") or latest_entity.name).strip()
-                merged_content = (batch_result.get("merged_content") or "").strip()
-                if not merged_content:
-                    merged_content = self.llm_client.merge_multiple_entity_contents([latest_entity.content, entity_content])
-
-                # 检查内容是否真正变化，避免无意义版本膨胀
-                need_update = self.llm_client.judge_content_need_update(
-                    latest_entity.content,
-                    merged_content,
-                    old_source_document=latest_entity.source_document,
-                    new_source_document=source_document,
-                    old_name=latest_entity.name,
-                    new_name=merged_name,
-                    object_type="实体",
-                )
-
-                if need_update:
-                    # 二次校验：精确比较内容，避免 LLM 判断误报导致版本膨胀
-                    _old_norm = (latest_entity.content or "").strip()
-                    _new_norm = merged_content.strip()
-                    if _old_norm == _new_norm and latest_entity.name == merged_name:
+                # 防止同窗口内重复版本化（加锁防竞态）
+                def _batch_merge_create_version():
+                    if already_versioned_family_ids and match_existing_id in already_versioned_family_ids:
                         if self._entity_tree_log():
-                            wprint(f"  │  批量裁决: LLM判断需更新但内容实际相同，复用已有实体 {latest_entity.family_id}")
+                            wprint_info(f"  │  批量裁决: family_id {match_existing_id} 已在本次处理中创建版本，复用已有实体")
                         return latest_entity, relations_to_create, {
                             entity_name: latest_entity.family_id,
                             latest_entity.name: latest_entity.family_id,
                         }, None
+
+                    merged_name = (batch_result.get("merged_name") or latest_entity.name).strip()
+
+                    # 增量合并：使用专用 merge 函数，而非 batch 裁决的 merged_content
+                    # 确保 CONTENT_MERGE_REQUIREMENTS 的六条增量规则始终生效
+                    old_content = (latest_entity.content or "").strip()
+                    new_content = entity_content.strip()
+                    if old_content and old_content != new_content:
+                        merged_content = self.llm_client.merge_multiple_entity_contents(
+                            [latest_entity.content, entity_content],
+                            entity_sources=[latest_entity.source_document, source_document],
+                            entity_names=[latest_entity.name, entity_name],
+                        )
+                    elif old_content == new_content:
+                        merged_content = latest_entity.content or entity_content
+                    else:
+                        merged_content = entity_content
+
+                    # 始终创建新版本（每个 episode 提及的概念都版本化）
                     entity_version = self._build_entity_version(
                         latest_entity.family_id,
                         merged_name,
@@ -926,53 +1039,49 @@ class EntityProcessor:
                         source_document,
                         base_time=base_time,
                     )
-                    # 标记该 family_id 已创建版本，防止同窗口重复版本化
                     self._mark_versioned(latest_entity.family_id, already_versioned_family_ids, _version_lock)
                     if self._entity_tree_log():
-                        wprint(f"  │  批量裁决: 合并到已有实体 {latest_entity.family_id} 并生成新版本")
+                        wprint_info(f"  │  批量裁决: 增量合并到已有实体 {latest_entity.family_id} 并生成新版本")
                     return entity_version, relations_to_create, {
                         entity_name: latest_entity.family_id,
                         entity_version.name: latest_entity.family_id,
                     }, entity_version
+
+                if _version_lock:
+                    with _version_lock:
+                        return _batch_merge_create_version()
                 else:
+                    return _batch_merge_create_version()
+
+            # reuse_existing: 跨窗口再次遇到已知实体 → 创建新版本（同窗口内已有版本则复用）
+            # 使用锁保护 check+create，防止并行线程重复版本化（TOCTOU 竞态）
+            def _batch_reuse_create_version():
+                if already_versioned_family_ids and latest_entity.family_id in already_versioned_family_ids:
                     if self._entity_tree_log():
-                        wprint(f"  │  批量裁决: 内容无实质变化，复用已有实体 {latest_entity.family_id}")
+                        wprint_info(f"  │  批量裁决: 同窗口复用已有实体 {latest_entity.family_id}")
                     return latest_entity, relations_to_create, {
                         entity_name: latest_entity.family_id,
                         latest_entity.name: latest_entity.family_id,
                     }, None
+                # 始终创建新版本（每个 episode 提及的概念都版本化）
+                # reuse_existing: 保留已有实体的名称和内容（新信息已被已有内容覆盖）
+                entity_version = self._build_entity_version(
+                    latest_entity.family_id, latest_entity.name, latest_entity.content or entity_content,
+                    episode_id, source_document, base_time=base_time,
+                )
+                self._mark_versioned(latest_entity.family_id, already_versioned_family_ids, _version_lock)
+                if self._entity_tree_log():
+                    wprint_info(f"  │  批量裁决: 跨窗口创建新版本 {latest_entity.family_id}")
+                return entity_version, relations_to_create, {
+                    entity_name: latest_entity.family_id,
+                    latest_entity.name: latest_entity.family_id,
+                }, entity_version
 
-            # reuse_existing: 跨窗口再次遇到已知实体 → 创建新版本（同窗口内已有版本则复用）
-            _already_versioned = already_versioned_family_ids and latest_entity.family_id in already_versioned_family_ids
-            if _already_versioned:
-                if self._entity_tree_log():
-                    wprint(f"  │  批量裁决: 同窗口复用已有实体 {latest_entity.family_id}")
-                return latest_entity, relations_to_create, {
-                    entity_name: latest_entity.family_id,
-                    latest_entity.name: latest_entity.family_id,
-                }, None
-            # 内容完全一致则不创建版本
-            _old_content = (latest_entity.content or "").strip()
-            _new_content = entity_content.strip()
-            if _old_content and _new_content and _old_content == _new_content:
-                if self._entity_tree_log():
-                    wprint(f"  │  批量裁决: 内容完全一致，复用已有实体 {latest_entity.family_id}")
-                return latest_entity, relations_to_create, {
-                    entity_name: latest_entity.family_id,
-                    latest_entity.name: latest_entity.family_id,
-                }, None
-            # 创建新版本
-            entity_version = self._build_entity_version(
-                latest_entity.family_id, entity_name, entity_content,
-                episode_id, source_document, base_time=base_time,
-            )
-            self._mark_versioned(latest_entity.family_id, already_versioned_family_ids, _version_lock)
-            if self._entity_tree_log():
-                wprint(f"  │  批量裁决: 跨窗口创建新版本 {latest_entity.family_id}")
-            return entity_version, relations_to_create, {
-                entity_name: latest_entity.family_id,
-                latest_entity.name: latest_entity.family_id,
-            }, entity_version
+            if _version_lock:
+                with _version_lock:
+                    return _batch_reuse_create_version()
+            else:
+                return _batch_reuse_create_version()
 
         merged_name = (batch_result.get("merged_name") or entity_name).strip() or entity_name
         merged_content = (batch_result.get("merged_content") or entity_content).strip() or entity_content
@@ -980,7 +1089,7 @@ class EntityProcessor:
         # 标记新实体的 family_id 已创建版本
         self._mark_versioned(new_entity.family_id, already_versioned_family_ids, _version_lock)
         if self._entity_tree_log():
-            wprint(f"  │  批量裁决: 创建新实体 {new_entity.family_id}")
+            wprint_info(f"  │  批量裁决: 创建新实体 {new_entity.family_id}")
         return new_entity, relations_to_create, {
             entity_name: new_entity.family_id,
             new_entity.name: new_entity.family_id,
@@ -1041,11 +1150,11 @@ class EntityProcessor:
         )
 
         if self._entity_tree_log():
-            wprint(f"  │  ├─ Jaccard搜索（name_only）: {len(candidates_jaccard)} 个")
+            wprint_info(f"  │  ├─ Jaccard搜索（name_only）: {len(candidates_jaccard)} 个")
             if _has_title_suffix:
-                wprint(f"  │  ├─ 核心名称Jaccard搜索（{_core_name}）: {len(candidates_core_jaccard)} 个")
-            wprint(f"  │  ├─ Embedding搜索（name_only）: {len(candidates_name_embedding)} 个")
-            wprint(f"  │  ├─ Embedding搜索（name+content）: {len(candidates_full_embedding)} 个")
+                wprint_info(f"  │  ├─ 核心名称Jaccard搜索（{_core_name}）: {len(candidates_core_jaccard)} 个")
+            wprint_info(f"  │  ├─ Embedding搜索（name_only）: {len(candidates_name_embedding)} 个")
+            wprint_info(f"  │  ├─ Embedding搜索（name+content）: {len(candidates_full_embedding)} 个")
 
         # 按 family_id 去重，保留最新版本
         entity_dict: Dict[str, Entity] = {}
@@ -1085,14 +1194,14 @@ class EntityProcessor:
                 if any(pair[0] == pair_key for pair in extracted_relation_pairs):
                     skipped += 1
                     if self._entity_tree_log():
-                        wprint(f"  │  │  ├─ {candidate.name}: 跳过已有关系（步骤3已处理）")
+                        wprint_info(f"  │  │  ├─ {candidate.name}: 跳过已有关系（步骤3已处理）")
                 else:
                     filtered.append(candidate)
         if self._entity_tree_log() and skipped > 0:
-            wprint(f"  │  跳过 {skipped} 个已在当前抽取列表且已存在关系的候选实体（步骤3已处理）")
+            wprint_info(f"  │  跳过 {skipped} 个已在当前抽取列表且已存在关系的候选实体（步骤3已处理）")
         return filtered
 
-    def _process_single_entity(self, extracted_entity: Dict[str, str],
+    def _process_entity_sequential_fallback(self, extracted_entity: Dict[str, str],
                                episode_id: str,
                                similarity_threshold: float,
                                episode: Optional[Episode] = None,
@@ -1125,9 +1234,9 @@ class EntityProcessor:
         # 显示进度信息
         if self._entity_tree_log():
             if total_entities > 0:
-                wprint(f"  ├─ 处理实体 [{entity_index}/{total_entities}]: {entity_name}")
+                wprint_info(f"  ├─ 处理实体 [{entity_index}/{total_entities}]: {entity_name}")
             else:
-                wprint(f"  ├─ 处理实体: {entity_name}")
+                wprint_info(f"  ├─ 处理实体: {entity_name}")
 
         # 步骤1：混合搜索候选实体
         similar_entities = self._search_entity_candidates(
@@ -1140,8 +1249,9 @@ class EntityProcessor:
         if not similar_entities:
             # 没有找到相似实体，直接新建
             new_entity = self._create_new_entity(entity_name, entity_content, episode_id, source_document, base_time=base_time)
+            self._mark_versioned(new_entity.family_id, already_versioned_family_ids, _version_lock)
             if self._entity_tree_log():
-                wprint(f"  │  未找到相似实体，创建新实体: {new_entity.family_id}")
+                wprint_info(f"  │  未找到相似实体，创建新实体: {new_entity.family_id}")
             # 返回实体、空关系列表、实体名称到ID的映射
             entity_name_to_id = {
                 entity_name: new_entity.family_id,
@@ -1150,7 +1260,7 @@ class EntityProcessor:
             return new_entity, [], entity_name_to_id
         
         if self._entity_tree_log():
-            wprint(f"  │  找到 {len(similar_entities)} 个候选实体")
+            wprint_info(f"  │  找到 {len(similar_entities)} 个候选实体")
 
         unique_entities = similar_entities  # already deduped by _search_entity_candidates
 
@@ -1198,7 +1308,7 @@ class EntityProcessor:
         
         # 步骤5：使用两步流程分析（初步筛选 + 精细化判断）
         if self._entity_tree_log():
-            wprint(f"  │  调用LLM分析（候选数: {len(unique_entities)}）")
+            wprint_info(f"  │  调用LLM分析（候选数: {len(unique_entities)}）")
         
         # 阶段1：初步筛选（使用content snippet快速筛选）
         try:
@@ -1266,7 +1376,7 @@ class EntityProcessor:
         # 输出初步筛选结果（只统计需要精细化判断的候选）
         if self._entity_tree_log():
             relation_count = len([c for c in candidates_to_analyze.values() if c['type'] == 'relation'])
-            wprint(f"  │  ├─ 初步筛选: 合并 {len([c for c in candidates_to_analyze.values() if c['type'] == 'merge'])} 个, 关系 {relation_count} 个, 跳过 {len(no_action)} 个")
+            wprint_info(f"  │  ├─ 初步筛选: 合并 {len([c for c in candidates_to_analyze.values() if c['type'] == 'merge'])} 个, 关系 {relation_count} 个, 跳过 {len(no_action)} 个")
         
         # 准备当前实体信息（新实体）
         current_entity_info = {
@@ -1284,7 +1394,7 @@ class EntityProcessor:
         # 如果有需要精细化判断的候选，先打印开始提示
         if candidates_to_analyze:
             if self._entity_tree_log():
-                wprint(f"  │  ├─ 精细化判断开始（共 {len(candidates_to_analyze)} 个候选）")
+                wprint_info(f"  │  ├─ 精细化判断开始（共 {len(candidates_to_analyze)} 个候选）")
         
         for cid, info in candidates_to_analyze.items():
             candidate_entity = next((e for e in unique_entities if e.family_id == cid), None)
@@ -1321,11 +1431,29 @@ class EntityProcessor:
             
 
             if action == "merge":
+                # ---- Three-way alignment verification (Phase 4) ----
+                if hasattr(self.llm_client, 'judge_entity_alignment_v2'):
+                    _align_result = self.llm_client.judge_entity_alignment_v2(
+                        entity_name, entity_content,
+                        candidate_entity.name, candidate_entity.content or "",
+                    )
+                    _align_verdict = _align_result.get("verdict", "uncertain")
+                    _align_confidence = _align_result.get("confidence", 0.5)
+                    if _align_verdict == "different":
+                        if self._entity_tree_log():
+                            wprint_info(f"  │  │  ├─ 三值对齐: verdict=different (conf={_align_confidence:.2f}), 拒绝合并")
+                        continue  # skip this candidate
+                    elif _align_verdict == "uncertain" and _align_confidence < 0.8:
+                        if self._entity_tree_log():
+                            wprint_info(f"  │  │  ├─ 三值对齐: verdict=uncertain (conf={_align_confidence:.2f}), 保守→跳过")
+                        continue  # skip this candidate
+                    # verdict == "same" -> proceed with merge
+
                 # 合并安全检查：Jaccard 名称相似度 < 0.3 或 embedding < 0.5 → 禁止合并
                 _jaccard = self._calculate_jaccard_similarity(entity_name, candidate_entity.name)
                 if _jaccard < 0.3:
                     if self._entity_tree_log():
-                        wprint(f"  │  │  ├─ 合并被阻止: 名称Jaccard相似度过低 ({_jaccard:.2f})")
+                        wprint_info(f"  │  │  ├─ 合并被阻止: 名称Jaccard相似度过低 ({_jaccard:.2f})")
                     continue
                 if self.storage.embedding_client and self.storage.embedding_client.is_available():
                     _cand_emb = getattr(candidate_entity, 'embedding', None)
@@ -1342,7 +1470,7 @@ class EntityProcessor:
                         )
                         if _sim < 0.5:
                             if self._entity_tree_log():
-                                wprint(f"  │  │  ├─ 合并被阻止: embedding相似度过低 ({_sim:.2f})")
+                                wprint_info(f"  │  │  ├─ 合并被阻止: embedding相似度过低 ({_sim:.2f})")
                             continue
                 merge_target_id = merge_target if merge_target and merge_target != "NEW_ENTITY" else cid
                 merge_decisions.append({
@@ -1375,7 +1503,7 @@ class EntityProcessor:
         # 输出最终分析结果
         if merge_decisions or relation_decisions:
             if self._entity_tree_log():
-                wprint(f"  │  └─ 精细化判断: 合并 {len(merge_decisions)} 个, 关系 {len(relation_decisions)} 个")
+                wprint_info(f"  │  └─ 精细化判断: 合并 {len(merge_decisions)} 个, 关系 {len(relation_decisions)} 个")
         
         # 步骤6.1和6.2：处理分析结果（合并决策和关系决策）
         final_entity = None
@@ -1408,7 +1536,7 @@ class EntityProcessor:
                     other_targets = [tid for tid in set(target_family_ids) if tid != primary_target_id]
                     if other_targets:
                         if self._entity_tree_log():
-                            wprint(f"  │  ├─ 多合并目标: 选择 {primary_target_id} 为主要目标（版本数最多）")
+                            wprint_info(f"  │  ├─ 多合并目标: 选择 {primary_target_id} 为主要目标（版本数最多）")
                         
                         # 在合并之前，先收集其他目标实体的信息（合并后这些ID就不存在了）
                         other_targets_entities.clear()  # 清空之前的数据
@@ -1441,7 +1569,7 @@ class EntityProcessor:
                     # 防止同窗口重复版本化：如果该 family_id 已创建过版本，复用已有实体
                     if already_versioned_family_ids and primary_target_id in already_versioned_family_ids:
                         if self._entity_tree_log():
-                            wprint(f"  │  family_id {primary_target_id} 已在本次处理中创建版本，复用已有实体")
+                            wprint_info(f"  │  family_id {primary_target_id} 已在本次处理中创建版本，复用已有实体")
                         final_entity = latest_entity
                         entity_name_to_id[entity_name] = primary_target_id
                         entity_name_to_id[final_entity.name] = primary_target_id
@@ -1483,21 +1611,26 @@ class EntityProcessor:
                                     if not any(candidate_content == content for content in contents_to_merge):
                                         contents_to_merge.append(candidate_content)
                                         entities_to_merge_names.append(candidate_name or f"实体{candidate_family_id}")
-                                        entity_sources_to_merge.append(candidate_entity.source_document)
+                                        entity_sources_to_merge.append(merge_decision.get("source_document", ""))
 
-                        # 判断是否需要更新
-                        need_update = self.llm_client.judge_content_need_update(
-                            latest_entity.content,
-                            entity_content,
-                            old_source_document=latest_entity.source_document,
-                            new_source_document=source_document,
-                            old_name=latest_entity.name,
-                            new_name=entity_name,
-                            object_type="实体",
-                        )
-
-                        if need_update:
-                            # 合并名称
+                        # 快速比较：内容是否变化（始终版本化，但避免多余的合并 LLM 调用）
+                        _old_content = (latest_entity.content or "").strip()
+                        _new_content = entity_content.strip()
+                        if _old_content == _new_content and entity_name == latest_entity.name:
+                            # 内容完全相同 → 直接复制创建版本（不调 LLM）
+                            final_entity = self._create_entity_version(
+                                primary_target_id,
+                                latest_entity.name,
+                                latest_entity.content,
+                                episode_id,
+                                source_document,
+                                base_time=base_time,
+                                old_content=latest_entity.content or "",
+                                old_content_format=latest_entity.content_format or "plain",
+                            )
+                            self._mark_versioned(primary_target_id, already_versioned_family_ids, _version_lock)
+                        else:
+                            # 内容有差异 → 走完整合并流程
                             if entity_name != latest_entity.name:
                                 merged_name = self.llm_client.merge_entity_name(
                                     latest_entity.name,
@@ -1506,16 +1639,14 @@ class EntityProcessor:
                             else:
                                 merged_name = entity_name
 
-                            # 合并内容：统一使用多实体合并方法（2个实体是多实体的特殊情况）
                             merged_content = self.llm_client.merge_multiple_entity_contents(
                                 contents_to_merge,
                                 entity_sources=entity_sources_to_merge,
                                 entity_names=entities_to_merge_names,
                             )
                             if self._entity_tree_log():
-                                wprint(f"  │  ├─ 合并 {len(contents_to_merge)} 个实体的content: {', '.join(entities_to_merge_names[:3])}{'...' if len(entities_to_merge_names) > 3 else ''}")
+                                wprint_info(f"  │  ├─ 合并 {len(contents_to_merge)} 个实体的content: {', '.join(entities_to_merge_names[:3])}{'...' if len(entities_to_merge_names) > 3 else ''}")
 
-                            # 创建新版本
                             final_entity = self._create_entity_version(
                                 primary_target_id,
                                 merged_name,
@@ -1525,12 +1656,8 @@ class EntityProcessor:
                                 base_time=base_time,
                                 old_content=latest_entity.content or "",
                                 old_content_format=latest_entity.content_format or "plain",
-                                skip_if_unchanged=True,
                             )
-                            # 标记该 family_id 已创建版本，防止同窗口重复版本化
                             self._mark_versioned(primary_target_id, already_versioned_family_ids, _version_lock)
-                        else:
-                            final_entity = latest_entity
 
                         # 更新映射：原始名称和目标实体名称都映射到目标实体ID
                         entity_name_to_id[entity_name] = primary_target_id
@@ -1548,7 +1675,7 @@ class EntityProcessor:
                 relation_type = "alias"
             
             if self._entity_tree_log():
-                wprint(f"  │  ├─ 关系: {entity1_name} <-> {entity2_name}")
+                wprint_info(f"  │  ├─ 关系: {entity1_name} <-> {entity2_name}")
             
             # 关系使用实体名称，ID将在步骤6.3中更新
             pending_relations.append({
@@ -1566,18 +1693,30 @@ class EntityProcessor:
             if matched:
                 # 有合并决策但未成功生成 final_entity，尝试取第一个候选作为兜底
                 if self._entity_tree_log():
-                    wprint(f"  │  ⚠️ 合并决策存在但未生成最终实体，使用兜底逻辑")
+                    wprint_info(f"  │  ⚠️ 合并决策存在但未生成最终实体，使用兜底逻辑")
                 first_target_id = merge_decisions[0].get("target_family_id", "")
                 if first_target_id:
                     fallback_entity = self.storage.get_entity_by_family_id(first_target_id)
                     if fallback_entity:
-                        final_entity = fallback_entity
+                        # 始终创建新版本（兜底路径也要版本化）
+                        final_entity = self._create_entity_version(
+                            first_target_id,
+                            entity_name,
+                            entity_content,
+                            episode_id,
+                            source_document,
+                            base_time=base_time,
+                            old_content=fallback_entity.content or "",
+                            old_content_format=fallback_entity.content_format or "plain",
+                        )
+                        self._mark_versioned(first_target_id, already_versioned_family_ids, _version_lock)
                         entity_name_to_id[entity_name] = final_entity.family_id
                         entity_name_to_id[final_entity.name] = final_entity.family_id
 
             if not final_entity:
                 # 没有匹配或兜底失败，创建新实体
                 final_entity = self._create_new_entity(entity_name, entity_content, episode_id, source_document, base_time=base_time)
+                self._mark_versioned(final_entity.family_id, already_versioned_family_ids, _version_lock)
                 # 更新映射：新创建的实体
                 entity_name_to_id[entity_name] = final_entity.family_id
                 entity_name_to_id[final_entity.name] = final_entity.family_id
@@ -1599,12 +1738,12 @@ class EntityProcessor:
         if self._entity_tree_log():
             if final_entity:
                 if updated_relations:
-                    wprint(f"  └─ 完成: {final_entity.name} ({final_entity.family_id}), 关系 {len(updated_relations)} 个")
+                    wprint_info(f"  └─ 完成: {final_entity.name} ({final_entity.family_id}), 关系 {len(updated_relations)} 个")
                 else:
-                    wprint(f"  └─ 完成: {final_entity.name} ({final_entity.family_id})")
+                    wprint_info(f"  └─ 完成: {final_entity.name} ({final_entity.family_id})")
             else:
                 if updated_relations:
-                    wprint(f"  └─ 完成: 关系 {len(updated_relations)} 个")
+                    wprint_info(f"  └─ 完成: 关系 {len(updated_relations)} 个")
         
         return final_entity, updated_relations, entity_name_to_id
     
@@ -1612,6 +1751,8 @@ class EntityProcessor:
     def _extract_summary(name: str, content: str) -> str:
         """从实体名称和内容中提取简短摘要（无需额外LLM调用）。"""
         # 跳过 markdown 标题行，取第一行非空正文
+        if not content:
+            return name[:100]
         for line in content.split('\n'):
             stripped = line.strip()
             if not stripped or stripped.startswith('#'):
@@ -1685,30 +1826,14 @@ class EntityProcessor:
                               episode_id: str, source_document: str = "",
                               base_time: Optional[datetime] = None,
                               old_content: str = "",
-                              old_content_format: str = "plain",
-                              skip_if_unchanged: bool = False) -> Entity:
+                              old_content_format: str = "plain") -> Entity:
         """创建实体的新版本，并记录 section 级 patches。"""
-        # 如果启用了 skip_if_unchanged，检查内容是否真的变化了
-        _fetched_versions = None
-        if skip_if_unchanged and content:
-            if not old_content:
-                # 尝试从存储获取最新版本的内容
-                _fetched_versions = self.storage.get_entity_versions(family_id)
-                if _fetched_versions:
-                    old_content = _fetched_versions[0].content or ""
-                    old_content_format = _fetched_versions[0].content_format or "plain"
-            # 精确匹配：内容完全相同则跳过
-            if old_content and old_content.strip() == content.strip():
-                if _fetched_versions is None:
-                    _fetched_versions = self.storage.get_entity_versions(family_id)
-                if _fetched_versions:
-                    return _fetched_versions[0]
+        # 始终创建新版本（每个 episode 提及的概念都版本化）
 
         entity = self._build_entity_version(family_id, name, content, episode_id, source_document, base_time=base_time)
         self.storage.save_entity(entity)
 
-        # 置信度演化：新版本 = 独立来源印证 → 置信度提升
-        self.storage.adjust_confidence_on_corroboration(family_id, source_type="entity")
+        # 注意：置信度 corroboration 在 extraction.py Phase C-1b 统一处理，不在此处重复调用
 
         # 计算 section patches
         _source_document_only = source_document.split('/')[-1] if source_document else ""

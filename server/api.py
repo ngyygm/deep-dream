@@ -28,7 +28,7 @@ import signal
 import socket
 import threading
 import time
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from flask import Flask, abort, jsonify, make_response, request
 from werkzeug.exceptions import NotFound
@@ -122,14 +122,21 @@ def create_app(
         if path in _NO_GRAPH_ID_ROUTES or path.startswith(_SYSTEM_API_PREFIX):
             return
         gid = ""
-        if request.method == "POST":
+        # 1. Header: X-Graph-Id（前端 / MCP 客户端常用）
+        if not gid:
+            gid = (request.headers.get("X-Graph-Id") or "").strip()
+        # 2. Request body (POST/PUT/DELETE/PATCH)
+        if not gid and request.method in ("POST", "PUT", "DELETE", "PATCH"):
             body = request.get_json(silent=True)
             if isinstance(body, dict):
                 gid = (body.get("graph_id") or "").strip()
+        # 3. Form data
         if not gid:
             gid = (request.form.get("graph_id") or "").strip()
+        # 4. Query parameter
         if not gid:
             gid = (request.args.get("graph_id") or "").strip()
+        # 5. Default
         if not gid:
             gid = "default"
         try:
@@ -167,9 +174,14 @@ def create_app(
                 return jsonify({"success": False, "error": "请求过于频繁，请稍后再试"}), 429
 
     # 向后兼容：/api/<path> → /api/v1/<path>（308 永久重定向）
+    # 仅对非 v1/ 开头的路径重定向，避免 /api/v1/xxx → /api/v1/v1/xxx 双重前缀
     @app.route("/api/<path:subpath>", methods=["GET", "POST", "PUT", "DELETE"])
     def _api_redirect(subpath):
         from flask import redirect as flask_redirect
+        if subpath.startswith("v1/"):
+            # 已含 v1 前缀的路径到达此 catch-all，说明路由不存在，返回 404
+            from flask import abort as flask_abort
+            flask_abort(404)
         return flask_redirect(f"/api/v1/{subpath}", code=308)
 
     @app.route("/api")
@@ -229,6 +241,7 @@ def build_processor(config: Dict[str, Any]) -> TemporalMemoryGraphProcessor:
     pipeline_search = pipeline.get("search") or {}
     pipeline_alignment = pipeline.get("alignment") or {}
     pipeline_extraction = pipeline.get("extraction") or {}
+    pipeline_remember = pipeline.get("remember") or {}
     pipeline_debug = pipeline.get("debug") or {}
     max_concurrency = llm.get("max_concurrency")
     model_path, model_name, use_local = resolve_embedding_model(embedding)
@@ -269,6 +282,8 @@ def build_processor(config: Dict[str, Any]) -> TemporalMemoryGraphProcessor:
     ):
         if key in pipeline_extraction:
             kwargs[key] = pipeline_extraction[key]
+    if pipeline_remember:
+        kwargs["remember_config"] = pipeline_remember
     if "distill_data_dir" in pipeline_debug:
         kwargs["distill_data_dir"] = pipeline_debug["distill_data_dir"]
     return TemporalMemoryGraphProcessor(**kwargs)
@@ -307,47 +322,83 @@ def _tcp_bind_probe(host: str, port: int) -> Tuple[bool, Optional[str]]:
                 pass
 
 
-def _kill_port_occupants(port: int) -> None:
-    """Kill processes occupying the given port."""
+def _get_port_pids(port: int) -> List[int]:
+    """获取占用指定端口的 PID 列表（排除自身）。"""
     import subprocess
+    my_pid = os.getpid()
+    pids: List[int] = []
+
+    # 优先用 ss（更快、更普遍）
     try:
-        # lsof 方式
+        result = subprocess.run(
+            ["ss", "-tlnp", f"sport = :{port}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        import re
+        for m in re.finditer(r"pid=(\d+)", result.stdout):
+            pid = int(m.group(1))
+            if pid != my_pid:
+                pids.append(pid)
+        if pids:
+            return pids
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+
+    # 回退到 lsof
+    try:
         result = subprocess.run(
             ["lsof", "-t", "-i", f":{port}"],
             capture_output=True, text=True, timeout=5,
         )
-        pids = [p.strip() for p in result.stdout.strip().splitlines() if p.strip()]
-        if pids:
-            for pid in pids:
-                # 避免杀掉自己
-                if int(pid) == os.getpid():
-                    continue
-                try:
-                    os.kill(int(pid), signal.SIGTERM)
-                    logging.info("已发送 SIGTERM 到进程 %s (占用端口 %d)", pid, port)
-                except ProcessLookupError:
-                    pass
-                except PermissionError:
-                    logging.warning("无权限终止进程 %s", pid)
-            # 等待进程退出
-            for pid in pids:
-                if int(pid) == os.getpid():
-                    continue
-                try:
-                    os.waitpid(int(pid), os.WNOHANG)
-                except (ChildProcessError, PermissionError):
-                    pass
-            return
+        for line in result.stdout.strip().splitlines():
+            pid = int(line.strip())
+            if pid != my_pid:
+                pids.append(pid)
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
-    # 回退到 fuser
-    try:
-        subprocess.run(
-            ["fuser", "-k", f"{port}/tcp"],
-            capture_output=True, text=True, timeout=5,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
+
+    return pids
+
+
+def _kill_port_occupants(port: int) -> bool:
+    """Kill processes occupying the given port. Returns True if all killed."""
+    pids = _get_port_pids(port)
+    if not pids:
+        return True
+
+    all_killed = True
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+            logging.info("已发送 SIGTERM 到进程 %d (占用端口 %d)", pid, port)
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            logging.warning("无权限终止进程 %d", pid)
+            all_killed = False
+
+    # 轮询等待进程退出（最多 3 秒）
+    for _ in range(15):
+        remaining = _get_port_pids(port)
+        if not remaining:
+            return True
+        time.sleep(0.2)
+
+    # SIGTERM 没杀掉，升级到 SIGKILL
+    remaining = _get_port_pids(port)
+    for pid in remaining:
+        try:
+            os.kill(pid, signal.SIGKILL)
+            logging.warning("SIGTERM 无效，已发送 SIGKILL 到进程 %d (占用端口 %d)", pid, port)
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            logging.warning("无权限终止进程 %d", pid)
+            all_killed = False
+
+    # 再等 1 秒确认
+    time.sleep(1)
+    return not _get_port_pids(port)
 
 
 def _resolve_listen_port(
@@ -386,6 +437,9 @@ def _check_storage_writable(storage_root: Path) -> Optional[str]:
 
 
 def main() -> int:
+    # 优先使用本地缓存的模型，避免每次启动都尝试联网检查更新
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")
+
     parser = argparse.ArgumentParser(description="DeepDream 自然语言记忆图 API（Remember + Find）")
     parser.add_argument("--config", type=str, required=True, help="配置文件路径（如 service_config.json）")
     parser.add_argument("--host", type=str, default=None, help="覆盖配置中的 host")
@@ -476,8 +530,7 @@ def main() -> int:
     if not ok_bind:
         # 自动尝试 kill 占用端口的旧进程
         system_monitor.event_log.warn("System", f"端口 {host}:{listen_port} 已被占用，尝试自动释放...")
-        _kill_port_occupants(listen_port)
-        time.sleep(1)
+        killed = _kill_port_occupants(listen_port)
         ok_bind, bind_err = _tcp_bind_probe(host, listen_port)
         if not ok_bind:
             system_monitor.event_log.error("System", f"错误：无法在 {host}:{listen_port} 上绑定: {bind_err}")

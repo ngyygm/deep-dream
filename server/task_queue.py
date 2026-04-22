@@ -31,7 +31,10 @@ def _estimate_chunk_count(text_length: int, window_size: int, overlap: int) -> i
 
 
 _RE_WINDOW_STEP = re.compile(r"窗口\s*(\d+)/(\d+)\s*·\s*步骤(\d+)/(\d+)")
+_RE_WINDOW_ONLY = re.compile(r"窗口\s*(\d+)/(\d+)")
 _RE_MAIN_1_5_DONE = re.compile(r"步骤\s*1\s*[–-]\s*5\s*/\s*7")
+_RE_EXTRACT_STEP_NUM = re.compile(r"步骤\s*(\d+)")
+_RE_EXTRACT_STEP_FRAC = re.compile(r"\((\d+)/(\d+)\)\s*$")
 
 
 def _parse_window_phase_label(phase_label: str) -> Optional[tuple]:
@@ -124,20 +127,29 @@ def _main_chain_anchor_rank(phase_label: str, tc: int) -> tuple:
             w = max(1, min(w, tc))
         return (6, w)
     parsed = _parse_window_phase_label(pl)
-    if not parsed:
-        return (-1, 0)
-    win_cur, _wt, step_cur, _st = parsed
-    if tc > 0:
-        win_cur = max(1, min(win_cur, tc))
-    if 2 <= step_cur <= 5:
-        return (step_cur, win_cur)
-    if step_cur != 1:
-        return (min(step_cur, 6), win_cur)
-    if "进行中" in pl:
+    if parsed:
+        win_cur, _wt, step_cur, _st = parsed
+        if tc > 0:
+            win_cur = max(1, min(win_cur, tc))
+        if 2 <= step_cur <= 5:
+            return (step_cur, win_cur)
+        if step_cur != 1:
+            return (min(step_cur, 6), win_cur)
+        if "进行中" in pl:
+            return (0, win_cur)
+        if "完成" in pl:
+            return (1, win_cur)
         return (0, win_cur)
-    if "完成" in pl:
-        return (1, win_cur)
-    return (0, win_cur)
+    # 抽取步骤 2-5 标签（如 "窗口 1/1 · 步骤2a: 文本锚点召回"）不匹配 _RE_WINDOW_STEP，
+    # 但包含窗口信息和步骤编号，应赋予高于步骤1的优先级。
+    wm = _RE_WINDOW_ONLY.match(pl)
+    if wm:
+        w = max(1, min(int(wm.group(1)), tc))
+        _sm = _RE_EXTRACT_STEP_NUM.search(pl)
+        step_num = int(_sm.group(1)) if _sm else 2
+        step_num = max(2, min(5, step_num))
+        return (step_num, w)
+    return (-1, 0)
 
 
 def _remember_callback_ui_fields(
@@ -177,6 +189,41 @@ def _remember_callback_ui_fields(
                     "message": message,
                     "phase_current": _pc,
                     "phase_total": _pt,
+                    "main_progress": main_global,
+                    "main_label": phase_label or message or "",
+                }
+        # 抽取步骤 2–5 的标签不匹配 _RE_WINDOW_STEP（如 "窗口 1/1 · 步骤2a: 文本锚点召回"），
+        # 但仍需更新 main_progress/main_label/phase_current 以避免前端进度条停滞在步骤1。
+        if chain_id in ("main", "phase_ab"):
+            wm = _RE_WINDOW_ONLY.match(pl)
+            if wm:
+                win_cur = max(1, min(int(wm.group(1)), tc))
+                g_lo_w = (win_cur - 1) / float(tc)
+                g_hi_w = win_cur / float(tc)
+                wf_main = _wf_win_steps_1_5(float(progress), g_lo_w, g_hi_w)
+                main_global = min(1.0, (win_cur - 1 + wf_main) / float(tc))
+                # 从标签中尝试提取步骤编号（如 "步骤2a"、"步骤3.5"）
+                _sm = _RE_EXTRACT_STEP_NUM.search(pl)
+                estimated_step = int(_sm.group(1)) if _sm else 2
+                estimated_step = max(2, min(5, estimated_step))
+                # 尝试提取子步骤分数（如 "实体对齐 (3/5)"）
+                _fm = _RE_EXTRACT_STEP_FRAC.search(pl)
+                if _fm:
+                    _sub_done = int(_fm.group(1))
+                    _sub_total = max(1, int(_fm.group(2)))
+                    estimated_step = max(estimated_step, min(5, estimated_step + int(_sub_done / max(1, _sub_total))))
+                _pc_phase = (win_cur - 1) * 7 + estimated_step
+                _pt_phase = tc * 7
+                new_rank = _main_chain_anchor_rank(pl, tc)
+                old_rank = _main_chain_anchor_rank(task.main_label or "", tc)
+                if task.main_label and new_rank < old_rank:
+                    return {"progress": max(new_o, main_global)}
+                return {
+                    "progress": max(new_o, main_global),
+                    "phase_label": phase_label,
+                    "message": message,
+                    "phase_current": _pc_phase,
+                    "phase_total": _pt_phase,
                     "main_progress": main_global,
                     "main_label": phase_label or message or "",
                 }
@@ -602,11 +649,24 @@ class RememberTaskQueue:
             if message is not None:
                 task.message = message
             if step6_progress is not None:
-                task.step6_progress = max(0.0, min(1.0, float(step6_progress)))
+                new_s6 = max(0.0, min(1.0, float(step6_progress)))
+                # 运行中回调可能乱序：进度只增不减（终态时写入明确值）
+                if status is not None and status != "running":
+                    task.step6_progress = new_s6
+                elif task.status == "running":
+                    task.step6_progress = max(task.step6_progress, new_s6)
+                else:
+                    task.step6_progress = new_s6
             if step6_label is not None:
                 task.step6_label = step6_label
             if step7_progress is not None:
-                task.step7_progress = max(0.0, min(1.0, float(step7_progress)))
+                new_s7 = max(0.0, min(1.0, float(step7_progress)))
+                if status is not None and status != "running":
+                    task.step7_progress = new_s7
+                elif task.status == "running":
+                    task.step7_progress = max(task.step7_progress, new_s7)
+                else:
+                    task.step7_progress = new_s7
             if step7_label is not None:
                 task.step7_label = step7_label
             if main_progress is not None:
@@ -652,6 +712,7 @@ class RememberTaskQueue:
             "step7_done_chunks": t.step7_done_chunks,
             "processed_chunks": t.processed_chunks,
             "total_chunks": t.total_chunks,
+            "run_start_chunks": t.run_start_chunks,
             "progress": t.progress,
             "message": t.message,
             "step6_progress": t.step6_progress,
@@ -660,6 +721,7 @@ class RememberTaskQueue:
             "step7_label": t.step7_label,
             "main_progress": t.main_progress,
             "main_label": t.main_label,
+            "event_time": t.event_time.isoformat() if t.event_time else None,
             "created_at": t.created_at,
             "started_at": t.started_at,
             "finished_at": t.finished_at,
@@ -1152,10 +1214,15 @@ class RememberTaskQueue:
                             _tc = max(1, int(_t.total_chunks or 1))
                             _pc = max(0, int(processed_count))
                             _pg = min(1.0, float(_pc) / float(_tc))
+                            _ml = _t.main_label or ""
+                            # 当所有窗口的步骤1-5完成时，更新 main_label 显示完成状态
+                            if _pc >= _tc and not _RE_MAIN_1_5_DONE.search(_ml):
+                                _ml = f"步骤1–5/7 已完成"
                             self._update_task_progress(
                                 _t,
                                 main_done_chunks=_pc,
                                 main_progress=_pg,
+                                main_label=_ml,
                             )
                             self._persist(_t)
 

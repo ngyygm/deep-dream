@@ -50,13 +50,16 @@ def _helpers():
 def find_entities_all():
     try:
         processor = _get_processor()
-        limit = min(request.args.get("limit", type=int) or 500, 500)
+        limit = min(request.args.get("limit", type=int) or 500, 5000)
         offset = request.args.get("offset", type=int, default=0) or 0
         total = processor.storage.count_unique_entities()
         entities = processor.storage.get_all_entities(limit=limit, offset=offset if offset > 0 else None, exclude_embedding=True)
         h = _helpers()
+        # Batch version counts
+        family_ids = [e.family_id for e in entities if e.family_id]
+        vc_map = processor.storage.get_entity_version_counts(family_ids) if family_ids else {}
         return ok({
-            "entities": [h.entity_to_dict(e) for e in entities],
+            "entities": [h.entity_to_dict(e, version_count=vc_map.get(e.family_id)) for e in entities],
             "total": total,
             "offset": offset,
             "limit": limit,
