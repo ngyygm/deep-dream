@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from server.config import merge_llm_alignment, resolve_embedding_model  # noqa: F401
+from server.config import merge_llm_alignment, merge_llm_extraction, resolve_embedding_model  # noqa: F401
 from processor.storage.embedding import EmbeddingClient
 from processor.storage import create_storage_manager
 from processor.pipeline.orchestrator import TemporalMemoryGraphProcessor
@@ -102,6 +102,7 @@ class GraphRegistry:
         pipeline_search = pipeline.get("search") or {}
         pipeline_alignment = pipeline.get("alignment") or {}
         pipeline_extraction = pipeline.get("extraction") or {}
+        pipeline_remember = pipeline.get("remember") or {}
         pipeline_debug = pipeline.get("debug") or {}
         max_concurrency = llm.get("max_concurrency")
         # 从 storage_path 提取 graph_id（路径格式: {base_path}/{graph_id}/）
@@ -109,12 +110,14 @@ class GraphRegistry:
         kwargs: dict = {
             "storage_path": storage_path,
             "config": config,
+            "graph_id": graph_id,
             "window_size": window_size,
             "overlap": overlap,
             "llm_api_key": llm.get("api_key"),
             "llm_model": llm.get("model", "gpt-4"),
             "llm_base_url": llm.get("base_url"),
             "alignment_llm": merge_llm_alignment(llm),
+            "extraction_llm": merge_llm_extraction(llm),
             "llm_think_mode": bool(llm.get("think", llm.get("think_mode", False))),
             "embedding_client": self._get_embedding_client(),
             "llm_max_tokens": llm.get("max_tokens"),
@@ -138,9 +141,13 @@ class GraphRegistry:
             "extraction_rounds", "entity_extraction_rounds", "relation_extraction_rounds",
             "entity_post_enhancement", "prompt_episode_max_chars",
             "compress_multi_round_extraction",
+            "v2_enable_reflection", "v2_enable_orphan_recovery",
+            "v3_entity_refine_rounds", "v3_relation_refine_rounds",
         ):
             if key in pipeline_extraction:
                 kwargs[key] = pipeline_extraction[key]
+        if pipeline_remember:
+            kwargs["remember_config"] = pipeline_remember
         if "distill_data_dir" in pipeline_debug:
             kwargs["distill_data_dir"] = pipeline_debug["distill_data_dir"]
         return TemporalMemoryGraphProcessor(**kwargs)
@@ -303,6 +310,57 @@ class GraphRegistry:
     # 图谱删除
     # ------------------------------------------------------------------
 
+    def clear_graph(self, graph_id: str) -> None:
+        """清空指定图谱的所有数据（实体、关系、Episode），但保留图谱本身。"""
+        with self._lock:
+            processor = self._processors.get(graph_id)
+            if not processor:
+                raise KeyError(f"Graph '{graph_id}' not found")
+
+            # Neo4j 后端：删除该 graph_id 的所有节点
+            if hasattr(processor.storage, '_run'):
+                from processor.storage.neo4j_store import Neo4jStorageManager
+                if isinstance(processor.storage, Neo4jStorageManager):
+                    with processor.storage._session() as session:
+                        gid = processor.storage._graph_id
+                        session.run(
+                            "MATCH (ep:Episode) WHERE ep.graph_id = $gid DETACH DELETE ep",
+                            gid=gid,
+                        )
+                        session.run(
+                            "MATCH (r:Relation) WHERE r.graph_id = $gid DETACH DELETE r",
+                            gid=gid,
+                        )
+                        session.run(
+                            "MATCH (e:Entity) WHERE e.graph_id = $gid DETACH DELETE e",
+                            gid=gid,
+                        )
+                    logging.getLogger(__name__).info(
+                        "Cleared Neo4j data for graph '%s'", graph_id,
+                    )
+                    return
+
+            # SQLite 后端：清空表 + docs 目录
+            if hasattr(processor.storage, '_get_conn'):
+                conn = processor.storage._get_conn()
+                with processor.storage._write_lock:
+                    cursor = conn.cursor()
+                    cursor.execute("DELETE FROM entities")
+                    cursor.execute("DELETE FROM relations")
+                    cursor.execute("DELETE FROM episodes")
+                    cursor.execute("DELETE FROM episode_mentions")
+                    cursor.execute("DELETE FROM concepts")
+                    conn.commit()
+                # 清空 docs 目录
+                import shutil
+                docs_dir = getattr(processor.storage, 'docs_dir', None)
+                if docs_dir and docs_dir.is_dir():
+                    shutil.rmtree(docs_dir)
+                    docs_dir.mkdir(parents=True, exist_ok=True)
+                logging.getLogger(__name__).info(
+                    "Cleared SQLite data for graph '%s'", graph_id,
+                )
+
     def delete_graph(self, graph_id: str) -> None:
         """删除指定图谱：停止任务队列、关闭 processor 连接、删除数据目录。
 
@@ -324,17 +382,50 @@ class GraphRegistry:
 
             # 3. 移除 processor（关闭 DB 连接）
             processor = self._processors.pop(graph_id, None)
+
+            # 4. Neo4j 后端：删除该 graph_id 的所有节点
+            if processor and hasattr(processor.storage, '_run'):
+                # Neo4jStorageManager — 删除该图谱的所有数据
+                try:
+                    from processor.storage.neo4j_store import Neo4jStorageManager
+                    if isinstance(processor.storage, Neo4jStorageManager):
+                        with processor.storage._session() as session:
+                            gid = processor.storage._graph_id
+                            session.run(
+                                "MATCH (ep:Episode) WHERE ep.graph_id = $gid DETACH DELETE ep",
+                                gid=gid,
+                            )
+                            session.run(
+                                "MATCH (r:Relation) WHERE r.graph_id = $gid DETACH DELETE r",
+                                gid=gid,
+                            )
+                            session.run(
+                                "MATCH (e:Entity) WHERE e.graph_id = $gid DETACH DELETE e",
+                                gid=gid,
+                            )
+                        logging.getLogger(__name__).info(
+                            "Deleted Neo4j data for graph '%s'", graph_id,
+                        )
+                except Exception as _e:
+                    logging.getLogger(__name__).warning(
+                        "删除 graph %s Neo4j 数据失败: %s", graph_id, _e,
+                    )
+
             if processor and hasattr(processor.storage, "close"):
                 try:
                     processor.storage.close()
                 except Exception as _e:
                     logging.getLogger(__name__).warning("关闭 graph %s 存储连接失败: %s", graph_id, _e)
 
-            # 3. 删除数据目录
+            # 5. 删除数据目录
             graph_dir = self._base_path / graph_id
             if graph_dir.is_dir():
                 import shutil
                 shutil.rmtree(graph_dir)
+
+            # 6. 从系统监控中移除
+            if self._system_monitor is not None:
+                self._system_monitor.detach_graph(graph_id)
 
     # ------------------------------------------------------------------
     # graph_id 校验

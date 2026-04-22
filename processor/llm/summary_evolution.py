@@ -5,7 +5,7 @@ import json
 from typing import Optional
 
 from ..models import Entity
-from ..utils import wprint
+from ..utils import wprint_info
 
 EVOLVE_ENTITY_SUMMARY_SYSTEM_PROMPT = """你是一个知识图谱维护助手。你的任务是基于实体的新旧版本信息，生成一个简洁、准确的进化后摘要。
 
@@ -59,7 +59,7 @@ class SummaryEvolutionMixin:
             )
             return result
         except Exception as e:
-            wprint(f"摘要进化失败，使用截断内容: {e}")
+            wprint_info(f"摘要进化失败，使用截断内容: {e}")
             return entity.content[:200]
 
     def _parse_summary_response(self, response: str) -> str:

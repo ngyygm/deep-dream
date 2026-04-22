@@ -9,10 +9,12 @@ import numpy as np
 
 from ..models import Episode, Entity
 from ..debug_log import log as dbg
-from ..utils import wprint
+from ..utils import wprint_info
 from .errors import LLMContextBudgetExceeded
 from .prompts import (
     EXTRACT_RELATIONS_SINGLE_PASS_SYSTEM_PROMPT,
+    EXTRACT_RELATION_CANDIDATES_SYSTEM_PROMPT,
+    WRITE_RELATION_CONTENTS_FOR_PAIRS_SYSTEM_PROMPT,
 )
 
 
@@ -300,6 +302,17 @@ class _RelationExtractionMixin:
 
         q = np.asarray(qemb, dtype=np.float64)
         c = catalog_emb
+        # Guard: skip embedding similarity if dimensions are incompatible
+        if q.ndim != 2 or q.shape[1] == 0 or q.shape[1] != c.shape[1]:
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "relation endpoint: embedding dim mismatch (query=%s, catalog=%s), "
+                "falling back to raw names",
+                q.shape, c.shape,
+            )
+            for ur in pending_emb:
+                resolution[ur] = ur
+            return resolution
         sims = self._cosine_sim_queries_vs_catalog(q, c)
         thr = float(thr_e)
         for i, ur in enumerate(pending_emb):
@@ -317,8 +330,41 @@ class _RelationExtractionMixin:
             )
         return resolution
 
+    @staticmethod
+    def _normalize_rel_keys(rel: Dict[str, Any]) -> Dict[str, Any]:
+        """Normalize LLM output keys (handle key variants from different LLMs)."""
+        key_map = {
+            # underscore variants: entity_1_name → entity1_name
+            "entity_1_name": "entity1_name",
+            "entity_2_name": "entity2_name",
+            "entity_1_id": "entity1_id",
+            "entity_2_id": "entity2_id",
+            # hyphen variants: entity-1-name → entity1_name
+            "entity-1-name": "entity1_name",
+            "entity-2-name": "entity2_name",
+            "entity-1-id": "entity1_id",
+            "entity-2-id": "entity2_id",
+            # mixed variants: entity-1_name → entity1_name
+            "entity-1_name": "entity1_name",
+            "entity-2_name": "entity2_name",
+            "entity-1_id": "entity1_id",
+            "entity-2_id": "entity2_id",
+            # Chinese variants some LLMs produce
+            "实体1名称": "entity1_name",
+            "实体2名称": "entity2_name",
+        }
+        needs_fix = any(k in rel for k in key_map)
+        if not needs_fix:
+            return rel
+        normalized = dict(rel)
+        for old_key, new_key in key_map.items():
+            if old_key in normalized and new_key not in normalized:
+                normalized[new_key] = normalized.pop(old_key)
+        return normalized
+
     def _relation_raw_pair_from_rel_dict(self, rel: Dict[str, Any]) -> Optional[Tuple[str, str]]:
         """从单条关系 dict 解析 entity1/entity2 原始名称；失败返回 None。"""
+        rel = self._normalize_rel_keys(rel)
         raw1: Optional[str] = None
         raw2: Optional[str] = None
         if "entity1_name" in rel and "entity2_name" in rel:
@@ -408,6 +454,7 @@ class _RelationExtractionMixin:
         filtered_examples: List[str] = []
 
         for rel in relations:
+            rel = self._normalize_rel_keys(rel)
             original_e1 = str(rel.get('entity1_name', '')).strip()
             original_e2 = str(rel.get('entity2_name', '')).strip()
             content = str(rel.get('content', '')).strip()
@@ -446,9 +493,181 @@ class _RelationExtractionMixin:
 
         if verbose and filtered_count > 0:
             suffix = f"，示例: {'; '.join(filtered_examples)}" if filtered_examples else ""
-            wprint(f"【步骤3】过滤｜丢弃｜{filtered_count}条{suffix}")
+            wprint_info(f"【步骤3】过滤｜丢弃｜{filtered_count}条{suffix}")
 
         return normalized_relations, normalized_count, filtered_count
+
+    def _collect_relations_with_prompt(self,
+                                     system_prompt: str,
+                                     first_prompt: str,
+                                     continue_user: str,
+                                     valid_entity_names: Set[str],
+                                     catalog_name_order: List[str],
+                                     rounds: int = 1,
+                                     verbose: bool = False,
+                                     stage_label: str = "步骤3",
+                                     on_round_done=None,
+                                     allowed_pairs: Optional[Set[Tuple[str, str]]] = None) -> List[Dict[str, str]]:
+        all_relations: List[Dict[str, str]] = []
+        seen_rel_keys: set = set()
+        messages: List[Dict[str, str]] = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": first_prompt},
+        ]
+
+        def _accept_relations(candidates: List[Dict[str, str]]) -> int:
+            new_count = 0
+            for rel in candidates:
+                e1 = rel.get('entity1_name', '').strip()
+                e2 = rel.get('entity2_name', '').strip()
+                content = rel.get('content', '').strip()
+                if not e1 or not e2 or not content:
+                    continue
+                pair = tuple(sorted((e1, e2)))
+                if allowed_pairs is not None and pair not in allowed_pairs:
+                    continue
+                content_hash = hash(content.lower())
+                key = (pair, content_hash)
+                if key in seen_rel_keys:
+                    continue
+                seen_rel_keys.add(key)
+                all_relations.append({
+                    'entity1_name': pair[0],
+                    'entity2_name': pair[1],
+                    'content': content,
+                })
+                new_count += 1
+            return new_count
+
+        for round_idx in range(max(1, rounds)):
+            try:
+                new_relations, _ = self.call_llm_until_json_parses(
+                    messages,
+                    parse_fn=lambda r, vs=valid_entity_names, co=catalog_name_order: self._parse_relations_response(
+                        r, vs, catalog_name_order=co
+                    ),
+                    json_parse_retries=2,
+                )
+            except LLMContextBudgetExceeded:
+                if all_relations:
+                    break
+                raise
+
+            new_relations, _, _ = self._normalize_and_filter_relations_by_entities(
+                new_relations, valid_entity_names, verbose=verbose, catalog_name_order=catalog_name_order
+            )
+            new_count = _accept_relations(new_relations)
+            messages.append({"role": "assistant", "content": _json_code_block(all_relations[-new_count:] if new_count else [])})
+            if on_round_done:
+                on_round_done(round_idx + 1, rounds, len(all_relations))
+            if verbose:
+                wprint_info(f"【{stage_label}】轮{round_idx + 1}/{rounds}｜完成｜累计{len(all_relations)}关系")
+            if new_count == 0:
+                break
+            if round_idx + 1 < rounds:
+                if not self._can_continue_multi_round(messages, next_user_content=continue_user, stage_label=stage_label):
+                    break
+                messages.append({"role": "user", "content": continue_user})
+        return all_relations
+
+    def extract_relation_candidates(self, episode: Episode, input_text: str,
+                                    entities: Union[List[Dict[str, str]], List[Entity]],
+                                    rounds: int = 1,
+                                    verbose: bool = False,
+                                    on_round_done=None) -> List[Dict[str, str]]:
+        if not entities:
+            return []
+        entity_info_list = []
+        for entity in entities:
+            if isinstance(entity, Entity):
+                entity_info_list.append({'name': entity.name, 'content': entity.content, 'family_id': entity.family_id})
+            else:
+                entity_info_list.append({'name': entity['name'], 'content': entity['content'], 'family_id': entity.get('family_id')})
+        entities_str, valid_names, catalog_name_order = self._build_relation_entity_catalog(entity_info_list)
+        first_prompt = f"""<输入文本>
+{input_text}
+</输入文本>
+
+<稳定概念实体列表>
+{entities_str}
+</稳定概念实体列表>
+
+请尽可能多地发现值得建立关系的概念对。特别注意：
+1. 同一架构中搭配使用的技术/工具要两两配对
+2. 人物与其到达/定都的地点要配对
+3. 人物与其成就/事件要配对
+4. 宁可多发现也不要遗漏
+
+只输出一个 ```json ... ``` 代码块。"""
+        return self._collect_relations_with_prompt(
+            EXTRACT_RELATION_CANDIDATES_SYSTEM_PROMPT,
+            first_prompt,
+            "继续补充尚未覆盖、但值得建立关系的概念对。",
+            valid_names,
+            catalog_name_order,
+            rounds=rounds,
+            verbose=verbose,
+            stage_label="步骤3-关系候选发现",
+            on_round_done=on_round_done,
+        )
+
+    def write_relation_contents_for_pairs(self, episode: Episode, input_text: str,
+                                          entities: Union[List[Dict[str, str]], List[Entity]],
+                                          relation_pairs: List[Dict[str, str]],
+                                          rounds: int = 1,
+                                          verbose: bool = False,
+                                          on_round_done=None) -> List[Dict[str, str]]:
+        if not entities or not relation_pairs:
+            return []
+        entity_info_list = []
+        for entity in entities:
+            if isinstance(entity, Entity):
+                entity_info_list.append({'name': entity.name, 'content': entity.content, 'family_id': entity.family_id})
+            else:
+                entity_info_list.append({'name': entity['name'], 'content': entity['content'], 'family_id': entity.get('family_id')})
+        entities_str, valid_names, catalog_name_order = self._build_relation_entity_catalog(entity_info_list)
+        allowed_pairs: Set[Tuple[str, str]] = set()
+        pair_lines = []
+        for rel in relation_pairs:
+            e1 = str(rel.get('entity1_name') or '').strip()
+            e2 = str(rel.get('entity2_name') or '').strip()
+            if not e1 or not e2:
+                continue
+            pair = tuple(sorted((e1, e2)))
+            allowed_pairs.add(pair)
+            hint = str(rel.get('content') or '').strip()
+            if hint:
+                pair_lines.append(f"- {pair[0]} <-> {pair[1]} | 线索: {hint}")
+            else:
+                pair_lines.append(f"- {pair[0]} <-> {pair[1]}")
+        if not allowed_pairs:
+            return []
+        pair_str = "\n".join(pair_lines)
+        first_prompt = f"""<输入文本>
+{input_text}
+</输入文本>
+
+<稳定概念实体列表>
+{entities_str}
+</稳定概念实体列表>
+
+<候选概念对>
+{pair_str}
+</候选概念对>
+
+请只为候选概念对写出具体关系内容。只输出一个 ```json ... ``` 代码块。"""
+        return self._collect_relations_with_prompt(
+            WRITE_RELATION_CONTENTS_FOR_PAIRS_SYSTEM_PROMPT,
+            first_prompt,
+            "继续补充候选概念对的具体关系内容，但不要新增未给定端点。",
+            valid_names,
+            catalog_name_order,
+            rounds=rounds,
+            verbose=verbose,
+            stage_label="步骤3-关系内容写作",
+            on_round_done=on_round_done,
+            allowed_pairs=allowed_pairs,
+        )
 
     def extract_relations(self, episode: Episode, input_text: str,
                          entities: Union[List[Dict[str, str]], List[Entity]],
@@ -559,7 +778,7 @@ class _RelationExtractionMixin:
         for round_idx in range(max(1, rounds)):
             if verbose:
                 r, t = round_idx + 1, rounds
-                wprint(f"【步骤3】轮{r}/{t}｜进行｜")
+                wprint_info(f"【步骤3】轮{r}/{t}｜进行｜")
 
             try:
                 new_relations, response = self.call_llm_until_json_parses(
@@ -571,7 +790,7 @@ class _RelationExtractionMixin:
                 )
             except LLMContextBudgetExceeded:
                 if all_relations:
-                    wprint(
+                    wprint_info(
                         f"【步骤3】轮{round_idx + 1}/{rounds}｜上下文预算超限｜"
                         f"沿用已得 {len(all_relations)} 条关系，不再续轮"
                     )
@@ -583,7 +802,7 @@ class _RelationExtractionMixin:
                 new_relations, valid_entity_names, verbose=verbose, catalog_name_order=catalog_name_order
             )
 
-            # 验收并去重：仅将本轮真正新增且合法的关系作为“被系统接受”的 assistant 输出
+            # 验收并去重：仅将本轮真正新增且合法的关系作为"被系统接受"的 assistant 输出
             accepted_relations, new_count = _accept_relations(new_relations)
 
             accepted_response = _json_code_block(accepted_relations)
@@ -595,7 +814,7 @@ class _RelationExtractionMixin:
 
             if verbose:
                 r, t = round_idx + 1, rounds
-                wprint(
+                wprint_info(
                     f"【步骤3】轮{r}/{t}｜完成｜新{new_count} 累{len(all_relations)}关系"
                 )
 
@@ -605,7 +824,7 @@ class _RelationExtractionMixin:
             if new_count == 0:
                 if verbose:
                     r, t = round_idx + 1, rounds
-                    wprint(f"【步骤3】轮{r}/{t}｜停止｜无新增")
+                    wprint_info(f"【步骤3】轮{r}/{t}｜停止｜无新增")
                 break
 
             if round_idx + 1 < rounds:
@@ -621,7 +840,7 @@ class _RelationExtractionMixin:
                     ]
                     if uncovered_names:
                         if verbose:
-                            wprint(
+                            wprint_info(
                                 f"【步骤3】轮{round_idx + 2}/{rounds}｜退化补抽｜"
                                 f"续轮上下文过长，改为单轮补抽未覆盖实体 {len(uncovered_names)} 个"
                             )
@@ -636,14 +855,14 @@ class _RelationExtractionMixin:
                             )
                         except LLMContextBudgetExceeded:
                             if verbose:
-                                wprint(
+                                wprint_info(
                                     f"【步骤3】轮{round_idx + 2}/{rounds}｜退化补抽失败｜"
                                     "单轮补抽仍超出上下文预算，沿用当前关系结果"
                                 )
                             break
                         fallback_accepted, fallback_new_count = _accept_relations(fallback_relations)
                         if verbose:
-                            wprint(
+                            wprint_info(
                                 f"【步骤3】轮{round_idx + 2}/{rounds}｜退化补抽完成｜"
                                 f"新{fallback_new_count} 累{len(all_relations)}关系"
                             )
@@ -663,11 +882,11 @@ class _RelationExtractionMixin:
             self._save_distill_conversation(save_msgs)
 
         if verbose:
-            wprint(
+            wprint_info(
                 f"【步骤3】汇总｜得｜{len(all_relations)}关系 实体{len(entity_info_list)} 轮{max(1, rounds)}"
             )
             if len(all_relations) == 0 and len(entity_info_list) > 1:
-                wprint(
+                wprint_info(
                     f"【步骤3】警告｜空关系｜{len(entity_info_list)}实体无关系（可能JSON或文本原因）"
                 )
         return all_relations
@@ -734,7 +953,7 @@ class _RelationExtractionMixin:
         prompt = "\n\n".join(prompt_parts)
 
         if verbose:
-            wprint(f"【步骤3】单次｜调用｜{len(entities)}实体")
+            wprint_info(f"【步骤3】单次｜调用｜{len(entities)}实体")
         messages_sp = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt},
@@ -747,7 +966,7 @@ class _RelationExtractionMixin:
             json_parse_retries=2,
         )
         if verbose:
-            wprint("【步骤3】单次｜解析｜")
+            wprint_info("【步骤3】单次｜解析｜")
 
         valid_entity_names = {e.get('name', '').strip() for e in entities if e.get('name', '').strip()}
         result, normalized_count, filtered_count = self._normalize_and_filter_relations_by_entities(
@@ -761,11 +980,11 @@ class _RelationExtractionMixin:
                     parts.append(f"规范化了 {normalized_count} 个实体名称")
                 if filtered_count > 0:
                     parts.append(f"过滤了 {filtered_count} 条非法关系")
-                wprint(
+                wprint_info(
                     f"【步骤3】单次｜结果｜{len(result)}关系（{'，'.join(parts)}）"
                 )
             else:
-                wprint(f"【步骤3】单次｜结果｜{len(result)}关系")
+                wprint_info(f"【步骤3】单次｜结果｜{len(result)}关系")
         return result
 
     def _parse_relations_response(
@@ -802,11 +1021,11 @@ class _RelationExtractionMixin:
 
             for rel in relations:
                 if not isinstance(rel, dict):
-                    wprint(f"【步骤3】警告｜跳过｜格式无效 {rel}")
+                    wprint_info(f"【步骤3】警告｜跳过｜格式无效 {rel}")
                     continue
                 pair = self._relation_raw_pair_from_rel_dict(rel)
                 if not pair:
-                    wprint(f"【步骤3】警告｜跳过｜缺端点名 {rel}")
+                    wprint_info(f"【步骤3】警告｜跳过｜缺端点名 {rel}")
                     continue
                 raw1, raw2 = pair
                 parsed_rows.append((raw1, raw2, rel))
@@ -833,7 +1052,7 @@ class _RelationExtractionMixin:
                 entity2 = resolution_map.get(raw2, raw2)
 
                 if not entity1 or not entity2:
-                    wprint(f"【步骤3】警告｜跳过｜端点空 {rel}")
+                    wprint_info(f"【步骤3】警告｜跳过｜端点空 {rel}")
                     continue
 
                 # 标准化实体对（按字母顺序排序，使关系无向化）
@@ -857,7 +1076,7 @@ class _RelationExtractionMixin:
                     'content': content
                 }
                 valid_relations.append(cleaned_relation)
-            wprint(
+            wprint_info(
                 f"【步骤3】解析｜统计｜返{len(relations)} 有效{len(valid_relations)}"
             )
             dbg(f"关系解析: LLM返回 {len(relations)} 条, 有效 {len(valid_relations)} 条")
@@ -884,8 +1103,8 @@ class _RelationExtractionMixin:
             # 交给上层 call_llm_until_json_parses 重试 LLM
             raise
         except Exception as e:
-            wprint(f"【步骤3】解析｜失败｜{e}")
-            wprint(f"【步骤3】解析｜片段｜{response[:500]}")
+            wprint_info(f"【步骤3】解析｜失败｜{e}")
+            wprint_info(f"【步骤3】解析｜片段｜{response[:500]}")
             dbg(f"关系解析失败: {e}")
             dbg(f"  LLM响应前800字符: {response[:800]}")
             return []

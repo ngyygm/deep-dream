@@ -80,6 +80,21 @@
       "prompt_memory_cache_max_chars": 2000,
       "compress_multi_round_extraction": false
     },
+    "remember": {
+      "mode": "multi_step",
+      "anchor_recall_rounds": 1,
+      "named_entity_recall_rounds": 1,
+      "abstract_recall_rounds": 1,
+      "coverage_gap_rounds": 1,
+      "entity_write_batch_size": 6,
+      "relation_hint_rounds": 1,
+      "relation_expand_rounds": 1,
+      "relation_write_rounds": 1,
+      "pre_alignment_validation_retries": 2,
+      "min_relation_candidates_per_window": 0,
+      "min_entities_per_100_chars_soft_target": 0.0,
+      "alignment_policy": "conservative"
+    },
     "debug": {
       "distill_data_dir": "distill_pipeline"
     }

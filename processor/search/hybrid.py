@@ -262,6 +262,11 @@ class HybridSearcher:
 
         # 按融合分数降序排列
         sorted_items = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+        # Normalize scores to 0-1 range for better interpretability
+        if sorted_items:
+            max_score = sorted_items[0][1]
+            if max_score > 0:
+                return [(items[key], round(score / max_score, 4)) for key, score in sorted_items]
         return [(items[key], score) for key, score in sorted_items]
 
     # ------------------------------------------------------------------

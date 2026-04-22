@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from ..utils import clean_markdown_code_blocks, wprint
+from ..utils import clean_markdown_code_blocks, wprint_info
 from .prompts import (
     JUDGE_CONTENT_NEED_UPDATE_SYSTEM_PROMPT,
     MERGE_ENTITY_NAME_SYSTEM_PROMPT,
@@ -78,16 +78,18 @@ class _ContentMergerMixin:
 
         response = self._call_llm(prompt, system_prompt)
 
-        # 解析响应
-        response = response.strip().lower()
+        # 提取 markdown 代码块内的内容（prompt 要求 LLM 输出 ```json true/false ```）
+        extracted = clean_markdown_code_blocks(response).strip().lower()
+        # 优先用提取后的内容判断；若提取后为空则回退到原始响应
+        text = extracted if extracted else response.strip().lower()
         # 宽松匹配：处理LLM返回的各种格式
-        if response in ("true", "yes", "是", "需要更新", "需要"):
+        if text in ("true", "yes", "是", "需要更新", "需要"):
             return True
-        elif response in ("false", "no", "否", "不需要更新", "不需要", "已包含"):
+        elif text in ("false", "no", "否", "不需要更新", "不需要", "已包含"):
             return False
         else:
             # 如果LLM返回明确的更新指令（包含"更新"等关键词），视为需要更新
-            if "更新" in response or "新信息" in response or "差异" in response:
+            if "更新" in text or "新信息" in text or "差异" in text:
                 return True
             # 兜底：模糊响应默认不更新，避免版本膨胀
             return False
@@ -139,7 +141,7 @@ class _ContentMergerMixin:
 
         except Exception as exc:
             # JSON解析失败，使用简单合并策略
-            wprint(f"警告：名称合并JSON解析失败，使用简单策略: {exc}")
+            wprint_info(f"警告：名称合并JSON解析失败，使用简单策略: {exc}")
             # 选择较短的作为主名称，较长的作为补充
             if len(old_name) <= len(new_name):
                 return f"{old_name}（{new_name}）"
@@ -200,7 +202,7 @@ class _ContentMergerMixin:
                 return result
             return None
         except Exception as e:
-            wprint(f"[DeepDream] 实体合并内容解析失败: {e}")
+            wprint_info(f"[DeepDream] 实体合并内容解析失败: {e}")
             return None
 
     def merge_relation_content(
@@ -241,7 +243,7 @@ class _ContentMergerMixin:
 {new_content}
 </新版本关系>
 
-请重新总结，只输出一个 ```json ... ``` 代码块；代码块内部格式为：{{"content": "重新总结后的完整关系描述"}}"""
+请增量合并：优先保留旧版本的原文，仅将新版本中的**新增信息**补充进去。如果没有新信息，直接返回旧版本原文。只输出一个 ```json ... ``` 代码块；代码块内部格式为：{{"content": "增量合并后的关系描述"}}"""
 
         response = self._call_llm(prompt, system_prompt)
 
@@ -257,12 +259,12 @@ class _ContentMergerMixin:
                     return merged_content
 
             # 如果JSON格式不正确或content为空，回退到原始响应
-            wprint(f"警告：关系内容合并返回的JSON格式不正确或content为空，使用原始响应")
+            wprint_info(f"警告：关系内容合并返回的JSON格式不正确或content为空，使用原始响应")
             return response.strip()
 
         except Exception as e:
             # JSON解析失败
-            wprint(f"警告：关系内容合并JSON解析失败，使用原始响应: {e}")
+            wprint_info(f"警告：关系内容合并JSON解析失败，使用原始响应: {e}")
             cleaned_response = clean_markdown_code_blocks(response)
             return cleaned_response.strip()
 
@@ -306,7 +308,7 @@ class _ContentMergerMixin:
 {contents_str}
 </关系描述列表>
 
-请重新总结，确保保留所有独特信息，输出重新总结后的完整内容："""
+请增量合并：保持第一个描述的原文，仅将后续描述中的**新增信息**补充进去。如果没有新信息，直接返回第一个描述的原文。"""
 
         return self._call_llm(prompt, system_prompt)
 
@@ -332,23 +334,46 @@ class _ContentMergerMixin:
         if len(contents) == 1:
             return contents[0]
 
+        # 快速返回：如果所有内容完全相同，无需 LLM 调用
+        base = contents[0].strip()
+        if all(c.strip() == base for c in contents[1:]):
+            return contents[0]
+
+        # 快速返回：如果新内容是旧内容的子串（新信息已被旧内容包含），保留旧内容
+        if len(contents) == 2:
+            new_stripped = contents[1].strip()
+            if new_stripped and new_stripped in base:
+                return contents[0]
+
         system_prompt = MERGE_MULTIPLE_ENTITY_CONTENTS_SYSTEM_PROMPT
 
-        contents_str = "\n\n".join([
-            (
-                f"实体内容 {i+1}:\n"
+        # 构建 prompt：明确区分"基础版本"和"新信息"
+        base_label = (
+            f"- name: {entity_names[0] if entity_names and len(entity_names) > 0 else '(未提供名称)'}\n"
+            f"- source_document: {self._source_doc_label(entity_sources[0] if entity_sources and len(entity_sources) > 0 else '')}"
+        )
+        base_content = contents[0]
+
+        new_infos = []
+        for i, content in enumerate(contents[1:], 1):
+            new_infos.append(
+                f"新信息来源 {i}:\n"
                 f"- name: {entity_names[i] if entity_names and i < len(entity_names) else '(未提供名称)'}\n"
                 f"- source_document: {self._source_doc_label(entity_sources[i] if entity_sources and i < len(entity_sources) else '')}\n"
                 f"- content: {content}"
             )
-            for i, content in enumerate(contents)
-        ])
+        new_infos_str = "\n\n".join(new_infos)
 
-        prompt = f"""<实体内容列表>
-{contents_str}
-</实体内容列表>
+        prompt = f"""<基础版本（已有内容，请在此上做最小编辑）>
+{base_label}
+{base_content}
+</基础版本>
 
-请重新总结，确保保留所有独特信息；只输出一个 ```json ... ``` 代码块；代码块内部格式为：{{"content": "重新总结后的完整实体描述"}}"""
+<待融入的新信息>
+{new_infos_str}
+</待融入的新信息>
+
+请像编辑代码一样操作：在基础版本上做最小修改来融入新信息。禁止重写。如果没有新信息需要融入，直接返回基础版本原文。只输出一个 ```json ... ``` 代码块；代码块内部格式为：{{"content": "编辑后的内容"}}"""
 
         response = self._call_llm(prompt, system_prompt)
 
@@ -364,12 +389,12 @@ class _ContentMergerMixin:
                     return merged_content
 
             # 如果JSON格式不正确或content为空，回退到原始响应
-            wprint(f"警告：多实体内容合并返回的JSON格式不正确或content为空，使用原始响应")
+            wprint_info(f"警告：多实体内容合并返回的JSON格式不正确或content为空，使用原始响应")
             return response.strip()
 
         except Exception as e:
             # JSON解析失败
-            wprint(f"警告：多实体内容合并JSON解析失败，使用原始响应: {e}")
+            wprint_info(f"警告：多实体内容合并JSON解析失败，使用原始响应: {e}")
             cleaned_response = clean_markdown_code_blocks(response)
             return cleaned_response.strip()
 

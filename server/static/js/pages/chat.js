@@ -457,6 +457,7 @@ registerPage('chat', (function () {
       '<h2>' + (t('chat.welcomeTitle') || 'DeepDream Chat') + '</h2>' +
       '<p>' + (t('chat.welcomeDesc') || 'Ask questions about your knowledge graph or start a dream session to discover hidden connections.') + '</p>' +
       '<div id="chat-welcome-stats" class="chat-welcome-stats"></div>' +
+      '<div id="chat-welcome-suggestions" class="chat-welcome-suggestions" style="margin-top:1rem;display:flex;flex-wrap:wrap;gap:0.5rem;justify-content:center;"></div>' +
     '</div>';
   }
 
@@ -482,7 +483,50 @@ registerPage('chat', (function () {
         '<div class="chat-welcome-stat"><div class="stat-value">' + formatNumber(d.entity_count || 0) + '</div><div class="stat-label">' + (t('common.entities') || 'Entities') + '</div></div>' +
         '<div class="chat-welcome-stat"><div class="stat-value">' + formatNumber(d.relation_count || 0) + '</div><div class="stat-label">' + (t('common.relations') || 'Relations') + '</div></div>';
     } catch (e) { /* ignore */ }
+    // Load suggested questions from recent entities
+    _loadWelcomeSuggestions();
   }
+
+  async function _loadWelcomeSuggestions() {
+    var sugEl = _container && _container.querySelector('#chat-welcome-suggestions');
+    if (!sugEl) return;
+    try {
+      var res = await state.api.listEntities(state.currentGraphId, 8, 0);
+      var entities = (res.data && res.data.entities) || [];
+      if (!entities.length) return;
+      // Pick up to 4 diverse entities for suggestions
+      var names = [];
+      var seen = new Set();
+      for (var i = 0; i < entities.length && names.length < 4; i++) {
+        var name = entities[i].name || '';
+        var core = name.replace(/[\uff08\(][^\uff09\)]+[\uff09\)]/g, '').trim();
+        if (core && !seen.has(core) && core.length <= 20) {
+          seen.add(core);
+          names.push(core);
+        }
+      }
+      if (!names.length) return;
+      var suggestions = names.map(function(n) {
+        return { text: n, query: n + ' is?' };
+      });
+      // Add a dream suggestion
+      suggestions.push({ text: '/dream', query: '/dream' });
+      sugEl.innerHTML = suggestions.map(function(s) {
+        return '<button class="btn btn-secondary btn-sm chat-suggestion-btn" onclick="window._chatUseSuggestion(\'' + s.query.replace(/'/g, "\\'") + '\')" style="font-size:0.8rem;border-radius:1rem;padding:0.375rem 0.75rem;">' +
+          '<i data-lucide="' + (s.text === '/dream' ? 'moon' : 'search') + '" style="width:12px;height:12px;margin-right:4px;"></i>' +
+          escapeHtml(s.text === '/dream' ? 'Start Dream' : s.text) +
+          '</button>';
+      }).join('');
+      if (window.lucide) lucide.createIcons({ nodes: [sugEl] });
+    } catch (e) { /* ignore */ }
+  }
+
+  window._chatUseSuggestion = function(query) {
+    if (!_inputEl) return;
+    _inputEl.value = query;
+    _inputEl.focus();
+    _handleSend();
+  };
 
   // ---- Actions ----
 

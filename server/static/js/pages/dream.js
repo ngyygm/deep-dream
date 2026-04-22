@@ -210,6 +210,14 @@ registerPage('dream', (function() {
     if (!el) return;
     el.innerHTML = `
       <div style="display:flex;flex-wrap:wrap;gap:0.5rem;">
+        <button class="btn btn-primary btn-sm" onclick="window._dreamRunCycle()" id="dream-run-btn">
+          <i data-lucide="play" style="width:14px;height:14px;margin-right:4px;"></i>
+          Run Dream Cycle
+        </button>
+        <button class="btn btn-secondary btn-sm" onclick="window._dreamGetSeeds()">
+          <i data-lucide="dice-5" style="width:14px;height:14px;margin-right:4px;"></i>
+          ${t('dream.getSeeds')}
+        </button>
         <button class="btn btn-secondary btn-sm" onclick="window._dreamCleanup()">
           <i data-lucide="trash-2" style="width:14px;height:14px;margin-right:4px;"></i>
           ${t('dream.cleanup')}
@@ -222,11 +230,9 @@ registerPage('dream', (function() {
           <i data-lucide="sparkles" style="width:14px;height:14px;margin-right:4px;"></i>
           ${t('dream.evolveSummaries')}
         </button>
-        <button class="btn btn-secondary btn-sm" onclick="window._dreamGetSeeds()">
-          <i data-lucide="dice-5" style="width:14px;height:14px;margin-right:4px;"></i>
-          ${t('dream.getSeeds')}
-        </button>
       </div>
+      <!-- Seeds Panel (populated on demand) -->
+      <div id="dream-seeds-panel" style="margin-top:0.75rem;display:none;"></div>
     `;
     if (window.lucide) lucide.createIcons();
   }
@@ -295,14 +301,45 @@ registerPage('dream', (function() {
   };
 
   window._dreamGetSeeds = async function() {
+    const panel = document.getElementById('dream-seeds-panel');
+    if (panel) { panel.style.display = 'block'; panel.innerHTML = spinnerHtml('sm'); }
     try {
       const gid = state.currentGraphId;
-      const res = await state.api.dreamSeeds(gid, 'random', 5);
+      const strategies = ['hub', 'orphan', 'recent', 'random'];
+      const stratIdx = (window._dreamSeedIdx || 0) % strategies.length;
+      window._dreamSeedIdx = stratIdx + 1;
+      const strategy = strategies[stratIdx];
+      const res = await state.api.dreamSeeds(gid, strategy, 5);
       const seeds = res.data?.seeds || [];
-      if (!seeds.length) { showAlert({ message: t('common.noResults') || 'No results' }); return; }
-      const lines = seeds.map((s, i) => `${i + 1}. ${s.name || s.family_id} (degree: ${s.degree || '?'})`).join('\n');
-      showAlert({ title: t('dream.seedsFound') || 'Seeds', message: lines });
-    } catch (e) { showAlert({ title: t('dream.actionFailed') || 'Error', message: e.message }); }
+      if (!seeds.length) {
+        if (panel) panel.innerHTML = '<div style="color:var(--text-muted);font-size:0.85rem;padding:0.5rem;">No seeds found</div>';
+        return;
+      }
+      if (panel) {
+        panel.innerHTML = `
+          <div class="card" style="padding:0.75rem;">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.5rem;">
+              <span style="font-size:0.8rem;font-weight:600;color:var(--text-secondary);">Seeds (${escapeHtml(strategy)})</span>
+              <button class="btn btn-ghost btn-sm" onclick="window._dreamGetSeeds()" title="Refresh seeds">
+                <i data-lucide="refresh-cw" style="width:12px;height:12px;"></i>
+              </button>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:0.375rem;">
+              ${seeds.map(s => `
+                <div style="display:flex;align-items:center;gap:0.5rem;padding:0.375rem 0.5rem;border-radius:0.375rem;background:var(--bg-secondary);font-size:0.85rem;cursor:pointer;" onclick="window.location.hash='#search';setTimeout(()=>{const i=document.getElementById('search-input');if(i){i.value='${escapeHtml(s.name||'')}';i.dispatchEvent(new Event('input'));}},100);">
+                  <i data-lucide="circle-dot" style="width:14px;height:14px;color:var(--primary);flex-shrink:0;"></i>
+                  <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-primary);">${escapeHtml(s.name || s.family_id)}</span>
+                  <span class="badge badge-info" style="flex-shrink:0;font-size:0.7rem;">${s.degree || 0} links</span>
+                </div>
+              `).join('')}
+            </div>
+          </div>
+        `;
+        if (window.lucide) lucide.createIcons();
+      }
+    } catch (e) {
+      if (panel) panel.innerHTML = '<div style="color:var(--error);font-size:0.85rem;">' + escapeHtml(e.message) + '</div>';
+    }
   };
 
   window._dreamExecuteAll = async function() {
@@ -347,6 +384,26 @@ registerPage('dream', (function() {
   };
 
   window._dreamLoadLogs = function() { loadDreamLogs(state.currentGraphId); };
+
+  window._dreamRunCycle = async function() {
+    const btn = document.getElementById('dream-run-btn');
+    if (btn) { btn.disabled = true; btn.innerHTML = '<div class="spinner spinner-sm" style="margin-right:4px;"></div> Running...'; }
+    try {
+      const gid = state.currentGraphId;
+      const res = await state.api.post('/api/v1/find/dream/run?graph_id=' + encodeURIComponent(gid), {
+        max_cycles: 3,
+        strategies: ['free_association', 'cross_domain', 'leap'],
+      });
+      const d = res.data || {};
+      const msg = `Dream cycle completed!\nStrategy: ${d.strategy || '?'}\nEntities explored: ${d.entities_examined || d.explored || 0}\nRelations created: ${d.relations_created || 0}`;
+      showAlert({ title: 'Dream Complete', message: msg });
+      await loadAll();
+    } catch (e) {
+      showAlert({ title: 'Dream Failed', message: e.message });
+    } finally {
+      if (btn) { btn.disabled = false; btn.innerHTML = '<i data-lucide="play" style="width:14px;height:14px;margin-right:4px;"></i> Run Dream Cycle'; if (window.lucide) lucide.createIcons(); }
+    }
+  };
 
   return { render, destroy };
 })());

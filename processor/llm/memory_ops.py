@@ -126,6 +126,7 @@ class _MemoryOpsMixin:
             absolute_id=new_cache_id,
             content=new_content,
             event_time=base_time,
+            processed_time=datetime.now(),
             source_document=source_document_only,
             activity_type="文档处理"
         )
@@ -179,6 +180,7 @@ class _MemoryOpsMixin:
             absolute_id=new_cache_id,
             content=new_content,
             event_time=base_time,
+            processed_time=datetime.now(),
             source_document=source_document_only,
             activity_type="文档整体",
         )

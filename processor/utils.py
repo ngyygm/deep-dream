@@ -6,6 +6,7 @@ DeepDream 通用工具函数。
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import queue
 import re
@@ -113,6 +114,7 @@ def _abbr_role(role: str) -> str:
 
 
 def _emit_log_line(line: str) -> None:
+    """Emit a formatted log line. Routes through logging if configured, else queue/print."""
     global _log_queue, _log_writer_started
     if not _log_serial:
         print(line, flush=True)
@@ -169,6 +171,34 @@ def remember_log(msg: str) -> None:
     _emit_log_line(line)
 
 
+# ---------------------------------------------------------------------------
+# Logging adapter: routes wprint-style messages through Python logging
+# ---------------------------------------------------------------------------
+
+class _QueueLogHandler(logging.Handler):
+    """Logging handler that routes through _emit_log_line for serialized output."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            label = get_window_label() or "----"
+            role = _abbr_role(get_pipeline_role())
+            ts = datetime.now().strftime("%H:%M:%S")
+            msg = self.format(record)
+            line = f"{ts} {label:>10} {role:4} | {msg}"
+            _emit_log_line(line)
+        except Exception:
+            self.handleError(record)
+
+
+# Set up the pipeline logger with our custom handler
+_pipeline_logger = logging.getLogger("tmg.pipeline")
+if not _pipeline_logger.handlers:
+    _handler = _QueueLogHandler()
+    _handler.setFormatter(logging.Formatter("%(message)s"))
+    _pipeline_logger.addHandler(_handler)
+    _pipeline_logger.setLevel(logging.DEBUG)
+
+
 def wprint(msg: str = "") -> None:
     """并行友好：固定列「时间 窗号 角色 | 正文」，经队列串行写出避免行级交错。"""
     label = get_window_label() or "----"
@@ -176,3 +206,18 @@ def wprint(msg: str = "") -> None:
     ts = datetime.now().strftime("%H:%M:%S")
     line = f"{ts} {label:>10} {role:4} | {msg}"
     _emit_log_line(line)
+
+
+def wprint_debug(msg: str = "") -> None:
+    """Level-aware version of wprint for debug/progress messages."""
+    _pipeline_logger.debug(msg)
+
+
+def wprint_info(msg: str = "") -> None:
+    """Level-aware version of wprint for step milestones."""
+    _pipeline_logger.info(msg)
+
+
+def wprint_warn(msg: str = "") -> None:
+    """Level-aware version of wprint for warnings."""
+    _pipeline_logger.warning(msg)

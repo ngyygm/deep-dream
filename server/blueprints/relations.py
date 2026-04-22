@@ -295,6 +295,24 @@ def find_unified():
                 _deduped_relations.append(r)
         final_relations = _deduped_relations
 
+        # --- Step 6E: Content-based deduplication ---
+        # Relations from multiple remember ops may have same content but different family_ids.
+        # Deduplicate by (entity_pair, content_prefix) keeping highest-scored.
+        _seen_content_keys: Set[str] = set()
+        _content_deduped: List[Relation] = []
+        for r in final_relations:
+            # Build a content signature: sorted entity pair + first 60 chars of content
+            e1 = getattr(r, 'entity1_absolute_id', '') or ''
+            e2 = getattr(r, 'entity2_absolute_id', '') or ''
+            rc = (getattr(r, 'content', '') or '')[:60].strip()
+            content_key = rc  # same content = same relation regardless of endpoints
+            if content_key and content_key in _seen_content_keys:
+                continue
+            if content_key:
+                _seen_content_keys.add(content_key)
+            _content_deduped.append(r)
+        final_relations = _content_deduped
+
         # --- Step 7: Format output ---
         output_format = str(body.get("format", "full") or "full").strip().lower()
 
@@ -530,9 +548,12 @@ def find_shortest_paths():
 
         serialized_paths = []
         for p in result.get("paths", []):
+            ent_dicts = [entity_to_dict(e) for e in p.get("entities", [])]
+            rel_dicts = [relation_to_dict(r) for r in p.get("relations", [])]
+            enrich_relations(rel_dicts, processor)
             serialized_paths.append({
-                "entities": [entity_to_dict(e) for e in p.get("entities", [])],
-                "relations": [relation_to_dict(r) for r in p.get("relations", [])],
+                "entities": ent_dicts,
+                "relations": rel_dicts,
                 "length": p.get("length", 0),
             })
 

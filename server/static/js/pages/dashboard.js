@@ -267,7 +267,7 @@
       const s6p = Math.min(1, Math.max(0, tk.step6_progress ?? 0));
       const s7p = Math.min(1, Math.max(0, tk.step7_progress ?? 0));
       const smp = Math.min(1, Math.max(0, tk.main_progress ?? 0));
-      const overallPct = Math.min(1, Math.max(0, tk.step7_progress ?? tk.progress ?? 0));
+      const overallPct = Math.min(1, Math.max(0, (smp + s6p + s7p) / 3));
 
       // 进度区域：running 时显示 总进度 + 滑窗(1–5) + 实体链 + 关系链
       let progressHtml;
@@ -426,8 +426,7 @@
   async function fetchGraphStats() {
     try {
       const res = await state.api.getGraphStats(state.currentGraphId);
-      if (res.error) return;
-      const stats = res;
+      const stats = res.data || res;
       const container = document.getElementById('graphStatsContainer');
       if (!container) return;
       container.innerHTML = `
@@ -540,6 +539,30 @@
       <!-- Top stat cards -->
       <div id="dashboard-stats">
         <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-6">${Array(6).fill('<div class="stat-card"><div class="stat-label" style="height:0.75rem;background:var(--bg-input);border-radius:4px;width:60%;"></div><div class="stat-value" style="height:1.5rem;background:var(--bg-input);border-radius:4px;width:40%;margin-top:0.5rem;"></div></div>').join('')}</div>
+      </div>
+
+      <!-- Quick Actions -->
+      <div class="mb-4" style="display:flex;flex-wrap:wrap;gap:0.5rem;">
+        <a href="#search" class="btn btn-primary btn-sm" style="text-decoration:none;">
+          <i data-lucide="search" style="width:14px;height:14px;margin-right:4px;"></i>
+          ${t('nav.search') || 'Search'}
+        </a>
+        <a href="#chat" class="btn btn-secondary btn-sm" style="text-decoration:none;">
+          <i data-lucide="message-circle" style="width:14px;height:14px;margin-right:4px;"></i>
+          ${t('nav.chat') || 'Chat'}
+        </a>
+        <a href="#memory" class="btn btn-secondary btn-sm" style="text-decoration:none;">
+          <i data-lucide="database" style="width:14px;height:14px;margin-right:4px;"></i>
+          ${t('nav.memory') || 'Remember'}
+        </a>
+        <a href="#dream" class="btn btn-secondary btn-sm" style="text-decoration:none;">
+          <i data-lucide="moon" style="width:14px;height:14px;margin-right:4px;"></i>
+          ${t('nav.dream') || 'Dream'}
+        </a>
+        <a href="#graph" class="btn btn-secondary btn-sm" style="text-decoration:none;">
+          <i data-lucide="network" style="width:14px;height:14px;margin-right:4px;"></i>
+          ${t('nav.graph') || 'Graph'}
+        </a>
       </div>
 
       <!-- Graph Statistics -->

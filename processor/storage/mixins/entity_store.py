@@ -68,6 +68,7 @@ class EntityStoreMixin:
             confidence=row[11] if len(row) > 11 else None,
             valid_at=self._safe_parse_datetime(row[12]) if len(row) > 12 and row[12] else None,
             invalid_at=self._safe_parse_datetime(row[13]) if len(row) > 13 and row[13] else None,
+            content_format=row[14] if len(row) > 14 else 'plain',
         )
 
     # ------------------------------------------------------------------
@@ -100,6 +101,8 @@ class EntityStoreMixin:
         # 计算embedding（无需锁，纯计算）
         embedding_blob = self._compute_entity_embedding(entity)
         entity.embedding = embedding_blob
+        # processed_time = 实际写入时刻（而非构造时刻）
+        entity.processed_time = datetime.now()
 
         with self._write_lock:
             conn = self._get_conn()
@@ -138,6 +141,11 @@ class EntityStoreMixin:
                     cursor.execute("""
                         UPDATE entities SET invalid_at = ?
                         WHERE family_id = ? AND id != ? AND invalid_at IS NULL
+                    """, (entity.event_time.isoformat(), entity.family_id, entity.absolute_id))
+                    # 同步更新 concepts 表中旧版本的 invalid_at
+                    cursor.execute("""
+                        UPDATE concepts SET invalid_at = ?
+                        WHERE family_id = ? AND id != ? AND role = 'entity' AND invalid_at IS NULL
                     """, (entity.event_time.isoformat(), entity.family_id, entity.absolute_id))
                 except Exception as exc:
                     logger.warning("FTS invalid_at update failed: %s", exc)
@@ -739,6 +747,7 @@ class EntityStoreMixin:
                 logger.warning("FTS delete failed: %s", exc)
             # Phase 2: cleanup concepts
             self._delete_concepts_by_family(family_id, cursor)
+            conn.commit()
             return cursor.rowcount
 
     def delete_entity_all_versions(self, family_id: str) -> int:
@@ -1147,6 +1156,14 @@ class EntityStoreMixin:
                 "UPDATE entities SET family_id = ? WHERE id = ?",
                 (new_family_id, absolute_id),
             )
+            # Sync family_id change to concepts table
+            try:
+                cursor.execute(
+                    "UPDATE concepts SET family_id = ? WHERE id = ? AND role = 'entity'",
+                    (new_family_id, absolute_id),
+                )
+            except Exception as exc:
+                logger.debug("concept family_id sync failed in split: %s", exc)
             conn.commit()
 
         return self.get_entity_by_absolute_id(absolute_id)

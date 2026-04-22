@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from typing import List, Optional
 
-from ..utils import wprint
+from ..utils import wprint_info
 
 DETECT_CONTRADICTIONS_SYSTEM_PROMPT = """你是一个知识图谱一致性检查助手。你的任务是检测同一概念（实体或关系）不同版本之间是否存在矛盾。
 
@@ -82,7 +82,7 @@ class ContradictionDetectionMixin:
             )
             return result
         except Exception as e:
-            wprint(f"矛盾检测失败: {e}")
+            wprint_info(f"矛盾检测失败: {e}")
             return []
 
     def resolve_contradiction(self, contradiction: dict) -> dict:
@@ -113,7 +113,7 @@ class ContradictionDetectionMixin:
             )
             return result
         except Exception as e:
-            wprint(f"矛盾裁决失败: {e}")
+            wprint_info(f"矛盾裁决失败: {e}")
             return {"decision": "flag", "reason": f"自动裁决失败: {e}"}
 
     def _parse_contradictions_response(self, response: str) -> List[dict]:

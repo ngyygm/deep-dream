@@ -6,7 +6,7 @@ import re as _re
 from typing import Any, Dict, List, Optional
 
 from ..models import Episode
-from ..utils import wprint
+from ..utils import wprint_info
 from .errors import LLMContextBudgetExceeded
 
 # 多轮补充时仅追加本条 user，依赖首轮 system/user 与历史 assistant 中的任务与格式约定
@@ -21,6 +21,11 @@ from .prompts import (
     EXTRACT_ENTITIES_RELATIONS_STRICT_SYSTEM_PROMPT,
     EXTRACT_ENTITIES_SINGLE_PASS_SYSTEM_PROMPT,
     EXTRACT_ENTITIES_BY_NAMES_SYSTEM_PROMPT,
+    EXTRACT_ANCHOR_CONCEPT_CANDIDATES_SYSTEM_PROMPT,
+    EXTRACT_NAMED_CONCEPT_CANDIDATES_SYSTEM_PROMPT,
+    EXTRACT_CONCRETE_CONCEPT_CANDIDATES_SYSTEM_PROMPT,
+    EXTRACT_ABSTRACT_CONCEPT_CANDIDATES_SYSTEM_PROMPT,
+    FILL_MISSING_CONCEPT_CANDIDATES_SYSTEM_PROMPT,
     ENHANCE_ENTITY_CONTENT_SYSTEM_PROMPT,
     ENHANCE_ENTITY_JSON_RETRY_USER,
     DETAILED_JUDGMENT_PROCESS,
@@ -128,7 +133,7 @@ class _EntityExtractionMixin:
                     }
                 )
         if _deg:
-            wprint(f"[DeepDream] 过滤了 {_deg} 个退化重复实体名称")
+            wprint_info(f"[DeepDream] 过滤了 {_deg} 个退化重复实体名称")
         return cleaned
 
     def extract_entities_and_relations(self, episode: Episode, input_text: str,
@@ -185,7 +190,7 @@ class _EntityExtractionMixin:
         for round_idx in range(max(1, rounds)):
             if verbose:
                 r, t = round_idx + 1, rounds
-                wprint(f"【合并】轮{r}/{t}｜进行｜")
+                wprint_info(f"【合并】轮{r}/{t}｜进行｜")
 
             try:
                 (new_entities, new_relations), response = self.call_llm_until_json_parses(
@@ -195,7 +200,7 @@ class _EntityExtractionMixin:
                 )
             except LLMContextBudgetExceeded:
                 if all_entities or all_relations:
-                    wprint(
+                    wprint_info(
                         f"【合并】轮{round_idx + 1}/{rounds}｜上下文预算超限｜"
                         f"沿用已得 {len(all_entities)} 实体、{len(all_relations)} 关系，不再续轮"
                     )
@@ -251,7 +256,7 @@ class _EntityExtractionMixin:
 
             if verbose:
                 r, t = round_idx + 1, rounds
-                wprint(
+                wprint_info(
                     f"【合并】轮{r}/{t}｜完成｜新{new_entity_count}实体 {new_rel_count}关系 "
                     f"累{len(all_entities)}实体 {len(all_relations)}关系"
                 )
@@ -263,7 +268,7 @@ class _EntityExtractionMixin:
             if new_entity_count == 0 and new_rel_count == 0:
                 if verbose:
                     r, t = round_idx + 1, rounds
-                    wprint(f"【合并】轮{r}/{t}｜停止｜无新增")
+                    wprint_info(f"【合并】轮{r}/{t}｜停止｜无新增")
                 break
 
             # 还有下一轮：只追加简短续写指令，上下文已在首轮与历史 assistant 中
@@ -312,7 +317,7 @@ class _EntityExtractionMixin:
                         'content': str(e['content']).strip()
                     })
             if _degenerate_count > 0:
-                wprint(
+                wprint_info(
                     f"[DeepDream] 过滤了 {_degenerate_count} 个退化重复实体名称"
                 )
 
@@ -359,8 +364,8 @@ class _EntityExtractionMixin:
         except json.JSONDecodeError:
             raise
         except Exception as e:
-            wprint(f"解析合并抽取JSON失败: {e}")
-            wprint(f"响应内容: {response[:500]}...")
+            wprint_info(f"解析合并抽取JSON失败: {e}")
+            wprint_info(f"响应内容: {response[:500]}...")
             return [], []
 
     @staticmethod
@@ -375,6 +380,210 @@ class _EntityExtractionMixin:
             if base_name == vn_base:
                 return vn
         return None
+
+    def _collect_entities_with_prompt(self,
+                                     system_prompt: str,
+                                     first_prompt: str,
+                                     continue_user: str,
+                                     rounds: int = 1,
+                                     verbose: bool = False,
+                                     stage_label: str = "步骤2",
+                                     on_round_done=None) -> List[Dict[str, str]]:
+        all_entities: List[Dict[str, str]] = []
+        name_to_index: Dict[str, int] = {}
+        messages: List[Dict[str, str]] = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": first_prompt},
+        ]
+        distill_flat: List[Dict[str, str]] = []
+
+        for round_idx in range(max(1, rounds)):
+            try:
+                new_entities, _ = self.call_llm_until_json_parses(
+                    messages,
+                    parse_fn=lambda r: self._parse_entities_list_from_response(r),
+                    json_parse_retries=4,
+                )
+            except LLMContextBudgetExceeded:
+                if all_entities:
+                    break
+                raise
+
+            accepted_entities: List[Dict[str, str]] = []
+            accepted_name_to_index: Dict[str, int] = {}
+            new_count = 0
+            for e in new_entities:
+                name = str(e.get("name") or "").strip()
+                if not name:
+                    continue
+                candidate = {
+                    "name": name,
+                    "content": str(e.get("content") or "").strip(),
+                }
+                existing_idx = name_to_index.get(name)
+                if existing_idx is None:
+                    name_to_index[name] = len(all_entities)
+                    all_entities.append(candidate)
+                    accepted_name_to_index[name] = len(accepted_entities)
+                    accepted_entities.append(candidate)
+                    new_count += 1
+                    continue
+                if len(candidate["content"]) > len(all_entities[existing_idx]["content"]):
+                    all_entities[existing_idx] = candidate
+                    accepted_idx = accepted_name_to_index.get(name)
+                    if accepted_idx is None:
+                        accepted_name_to_index[name] = len(accepted_entities)
+                        accepted_entities.append(candidate)
+                    else:
+                        accepted_entities[accepted_idx] = candidate
+
+            messages.append({"role": "assistant", "content": _json_code_block(accepted_entities)})
+            distill_flat.append({"role": "user", "content": messages[-2]["content"]})
+            distill_flat.append({"role": "assistant", "content": messages[-1]["content"]})
+
+            if on_round_done:
+                on_round_done(round_idx + 1, rounds, len(all_entities))
+            if verbose:
+                wprint_info(f"【{stage_label}】轮{round_idx + 1}/{rounds}｜完成｜累计{len(all_entities)}实体")
+            if new_count == 0:
+                break
+            if round_idx + 1 < rounds:
+                if not self._can_continue_multi_round(
+                    messages,
+                    next_user_content=continue_user,
+                    stage_label=stage_label,
+                ):
+                    break
+                messages.append({"role": "user", "content": continue_user})
+
+        if self._distill_data_dir and self._current_distill_step:
+            save_msgs = [{"role": "system", "content": system_prompt}] + distill_flat
+            self._save_distill_conversation(save_msgs)
+        return all_entities
+
+    def extract_anchor_entities(self, episode: Episode, input_text: str,
+                                rounds: int = 1,
+                                verbose: bool = False,
+                                on_round_done=None) -> List[Dict[str, str]]:
+        prompt_episode = self._prepare_episode_for_prompt(episode)
+        first_prompt = f"""<记忆缓存>
+{prompt_episode}
+</记忆缓存>
+
+<输入文本>
+{input_text}
+</输入文本>
+
+请召回所有结构性文本锚点概念候选。
+只输出一个 ```json ... ``` 代码块。"""
+        return self._collect_entities_with_prompt(
+            EXTRACT_ANCHOR_CONCEPT_CANDIDATES_SYSTEM_PROMPT,
+            first_prompt,
+            "继续补充尚未列出的结构性文本锚点、章节标题、阶段名和版本阶段。",
+            rounds=rounds,
+            verbose=verbose,
+            stage_label="步骤2-文本锚点",
+            on_round_done=on_round_done,
+        )
+
+    def extract_named_entities(self, episode: Episode, input_text: str,
+                               rounds: int = 1,
+                               verbose: bool = False,
+                               on_round_done=None) -> List[Dict[str, str]]:
+        prompt_episode = self._prepare_episode_for_prompt(episode)
+        first_prompt = f"""<记忆缓存>
+{prompt_episode}
+</记忆缓存>
+
+<输入文本>
+{input_text}
+</输入文本>
+
+请召回所有具体/具名概念候选。
+只输出一个 ```json ... ``` 代码块。"""
+        return self._collect_entities_with_prompt(
+            EXTRACT_NAMED_CONCEPT_CANDIDATES_SYSTEM_PROMPT,
+            first_prompt,
+            "继续补充尚未列出的具名对象、具名事件、具名项目、具名文件和具名版本。",
+            rounds=rounds,
+            verbose=verbose,
+            stage_label="步骤2-具名概念",
+            on_round_done=on_round_done,
+        )
+
+    def extract_entities_by_focus(self, episode: Episode, input_text: str,
+                                  focus: str,
+                                  rounds: int = 1,
+                                  verbose: bool = False,
+                                  on_round_done=None) -> List[Dict[str, str]]:
+        prompt_episode = self._prepare_episode_for_prompt(episode)
+        if focus == "concrete":
+            system_prompt = EXTRACT_CONCRETE_CONCEPT_CANDIDATES_SYSTEM_PROMPT
+            continue_user = "继续补充尚未列出的具体/具名概念候选，尤其是人物、地点、组织、具名事件、文本锚点。"
+            task_hint = "请召回所有具体/具名概念候选。"
+            stage_label = "步骤2-具体概念"
+        elif focus == "abstract":
+            system_prompt = EXTRACT_ABSTRACT_CONCEPT_CANDIDATES_SYSTEM_PROMPT
+            continue_user = "继续补充尚未列出的抽象概念、过程、时间概念、文本锚点与主题。"
+            task_hint = "请召回所有抽象/过程/时间/文本锚点类概念候选。"
+            stage_label = "步骤2-抽象概念"
+        else:
+            raise ValueError(f"unsupported focus: {focus}")
+
+        first_prompt = f"""<记忆缓存>
+{prompt_episode}
+</记忆缓存>
+
+<输入文本>
+{input_text}
+</输入文本>
+
+{task_hint}
+只输出一个 ```json ... ``` 代码块。"""
+        return self._collect_entities_with_prompt(
+            system_prompt,
+            first_prompt,
+            continue_user,
+            rounds=rounds,
+            verbose=verbose,
+            stage_label=stage_label,
+            on_round_done=on_round_done,
+        )
+
+    def fill_missing_entities(self, episode: Episode, input_text: str,
+                              known_entity_names: List[str],
+                              rounds: int = 1,
+                              verbose: bool = False,
+                              on_round_done=None) -> List[Dict[str, str]]:
+        known_names = [name.strip() for name in known_entity_names if str(name).strip()]
+        if not known_names:
+            return []
+        prompt_episode = self._prepare_episode_for_prompt(episode)
+        known_names_str = "\n".join(f"- {name}" for name in known_names)
+        first_prompt = f"""<记忆缓存>
+{prompt_episode}
+</记忆缓存>
+
+<输入文本>
+{input_text}
+</输入文本>
+
+<已召回概念列表>
+{known_names_str}
+</已召回概念列表>
+
+请只补充上面列表中明显遗漏、但值得记住的概念。不要重复已有名称。只输出一个 ```json ... ``` 代码块。"""
+        results = self._collect_entities_with_prompt(
+            FILL_MISSING_CONCEPT_CANDIDATES_SYSTEM_PROMPT,
+            first_prompt,
+            "继续补充遗漏概念，不要重复已召回列表中的名称。",
+            rounds=rounds,
+            verbose=verbose,
+            stage_label="步骤4-缺失概念补漏",
+            on_round_done=on_round_done,
+        )
+        known_set = set(known_names)
+        return [e for e in results if e.get("name") not in known_set]
 
     def extract_entities(self, episode: Episode, input_text: str,
                          rounds: int = 1, verbose: bool = False,
@@ -420,7 +629,7 @@ class _EntityExtractionMixin:
         for round_idx in range(max(1, rounds)):
             if verbose:
                 r, t = round_idx + 1, rounds
-                wprint(f"【步骤2】轮{r}/{t}｜进行｜")
+                wprint_info(f"【步骤2】轮{r}/{t}｜进行｜")
 
             try:
                 new_entities, response = self.call_llm_until_json_parses(
@@ -430,7 +639,7 @@ class _EntityExtractionMixin:
                 )
             except LLMContextBudgetExceeded:
                 if all_entities:
-                    wprint(
+                    wprint_info(
                         f"【步骤2】轮{round_idx + 1}/{rounds}｜上下文预算超限｜"
                         f"沿用已得 {len(all_entities)} 个实体，不再续轮"
                     )
@@ -475,7 +684,7 @@ class _EntityExtractionMixin:
 
             if verbose:
                 r, t = round_idx + 1, rounds
-                wprint(
+                wprint_info(
                     f"【步骤2】轮{r}/{t}｜完成｜新{new_count} 累{len(all_entities)}实体"
                 )
 
@@ -485,7 +694,7 @@ class _EntityExtractionMixin:
             if new_count == 0:
                 if verbose:
                     r, t = round_idx + 1, rounds
-                    wprint(f"【步骤2】轮{r}/{t}｜停止｜无新增")
+                    wprint_info(f"【步骤2】轮{r}/{t}｜停止｜无新增")
                 break
 
             if round_idx + 1 < rounds:
@@ -544,7 +753,7 @@ class _EntityExtractionMixin:
 请从输入文本中抽取上述指定的实体。只输出一个 ```json ... ``` 代码块；代码块内部必须是 JSON 数组，每个对象仅含 "name" 与 "content" 字符串字段；不要输出 YAML 或 `- name:` 格式。"""
 
         if verbose:
-            wprint(f"【步骤4】补全｜调用｜{len(entity_names)}个名称")
+            wprint_info(f"【步骤4】补全｜调用｜{len(entity_names)}个名称")
 
         messages_sp = [
             {"role": "system", "content": system_prompt},
@@ -566,8 +775,8 @@ class _EntityExtractionMixin:
         )
 
         if verbose:
-            wprint("【步骤4】补全｜解析｜")
-            wprint(f"【步骤4】补全｜结果｜{len(cleaned_entities)}实体")
+            wprint_info("【步骤4】补全｜解析｜")
+            wprint_info(f"【步骤4】补全｜结果｜{len(cleaned_entities)}实体")
 
         return cleaned_entities
 
@@ -625,5 +834,5 @@ class _EntityExtractionMixin:
             )
             return enhanced
         except (json.JSONDecodeError, Exception) as e:
-            wprint(f"警告：实体后验增强 JSON 解析失败，保留原 content: {e}")
+            wprint_info(f"警告：实体后验增强 JSON 解析失败，保留原 content: {e}")
             return (entity.get("content") or "").strip()

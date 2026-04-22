@@ -10,6 +10,8 @@ window.GraphExplorer = (function () {
   function create(options) {
     // ---- Internal state ----
     var _network = null;
+    var _nodesDataSet = null;
+    var _edgesDataSet = null;
     var _entityMap = {};
     var _relationMap = {};
     var _versionCounts = {};
@@ -165,6 +167,15 @@ window.GraphExplorer = (function () {
         buildNodesOpts.hubNeighborIds = hubLayout.hubNeighborIds;
       }
 
+      // Compute relation count per entity for node sizing
+      var relationCounts = {};
+      for (var ri = 0; ri < relations.length; ri++) {
+        var r = relations[ri];
+        relationCounts[r.entity1_absolute_id] = (relationCounts[r.entity1_absolute_id] || 0) + 1;
+        relationCounts[r.entity2_absolute_id] = (relationCounts[r.entity2_absolute_id] || 0) + 1;
+      }
+      buildNodesOpts.relationCounts = relationCounts;
+
       var result = GraphUtils.buildNodes(entities, buildNodesOpts);
       var nodes = result.nodes;
       var eMap = result.entityMap;
@@ -253,16 +264,34 @@ window.GraphExplorer = (function () {
         if (highlightAbsId) {
           _network.focus(highlightAbsId, { scale: 1.2, animation: { duration: 500, easingFunction: 'easeInOutQuad' } });
         }
+        // Render version badges after layout is stable
+        renderVersionBadges(nodes);
       });
 
       _network.on('click', function (params) {
         var nodeId = params.nodes[0];
         var edgeId = params.edges[0];
         if (nodeId) {
+          hideNodeHover();
           showEntityDetail(nodeId);
         } else if (edgeId) {
           showRelationDetail(edgeId);
         }
+      });
+
+      _network.on('hoverNode', function (params) {
+        var nodeId = params.node;
+        showNodeHover(nodeId, params);
+      });
+      _network.on('hoverEdge', function (params) {
+        var edgeId = params.edge;
+        showEdgeHover(edgeId, params);
+      });
+      _network.on('blurNode', function () {
+        hideNodeHover();
+      });
+      _network.on('blurEdge', function () {
+        hideNodeHover();
       });
 
       // Allow re-dragging: enable physics during drag so unfixed nodes respond to forces
@@ -290,6 +319,263 @@ window.GraphExplorer = (function () {
         });
         _network.setOptions({ physics: { enabled: false } });
       });
+
+      // Update version badge positions on zoom/pan/drag
+      _network.on('zoom', function () { updateBadgePositions(); updateNodeHoverPosition(); });
+      _network.on('dragEnd', function () {
+        // The dragEnd above handles node dragging; this is for canvas panning
+        setTimeout(updateBadgePositions, 50);
+        updateNodeHoverPosition();
+      });
+      _network.on('viewChanged', function () { updateBadgePositions(); updateNodeHoverPosition(); });
+    }
+
+    // ---- Incremental graph building for smooth animations ----
+    // Creates an empty network with persistent DataSets for incremental .add()
+
+    function initEmptyGraph(hubLayout) {
+      _entityMap = {};
+      _relationMap = {};
+
+      var container = _el(_opts.canvasId);
+      if (!container) return;
+
+      if (_network) {
+        _network.destroy();
+        _network = null;
+      }
+
+      _nodesDataSet = new vis.DataSet([]);
+      _edgesDataSet = new vis.DataSet([]);
+
+      var visOpts = {
+        physics: {
+          enabled: true,
+          solver: 'forceAtlas2Based',
+          forceAtlas2Based: {
+            gravitationalConstant: -80,
+            centralGravity: 0.005,
+            springLength: 120,
+            springConstant: 0.04,
+          },
+          stabilization: { enabled: false },
+        },
+        interaction: GraphUtils.getInteractionOptions(),
+        layout: { improvedLayout: true },
+      };
+
+      _network = new vis.Network(container, { nodes: _nodesDataSet, edges: _edgesDataSet }, visOpts);
+
+      _network.on('click', function (params) {
+        var nodeId = params.nodes[0];
+        var edgeId = params.edges[0];
+        if (nodeId) {
+          hideNodeHover();
+          showEntityDetail(nodeId);
+        } else if (edgeId) {
+          showRelationDetail(edgeId);
+        }
+      });
+
+      _network.on('hoverNode', function (params) {
+        var nodeId = params.node;
+        showNodeHover(nodeId, params);
+      });
+      _network.on('hoverEdge', function (params) {
+        var edgeId = params.edge;
+        showEdgeHover(edgeId, params);
+      });
+      _network.on('blurNode', function () {
+        hideNodeHover();
+      });
+      _network.on('blurEdge', function () {
+        hideNodeHover();
+      });
+
+      _network.on('dragStart', function (params) {
+        if (params.nodes.length === 0) return;
+        params.nodes.forEach(function (nodeId) {
+          _nodesDataSet.update({ id: nodeId, fixed: false });
+        });
+        _network.setOptions({ physics: { enabled: true } });
+      });
+
+      _network.on('dragEnd', function (params) {
+        if (!params.nodes || params.nodes.length === 0) return;
+        var positions = _network.getPositions(params.nodes);
+        params.nodes.forEach(function (nodeId) {
+          var pos = positions[nodeId];
+          if (!pos) return;
+          _pinnedNodePositions[nodeId] = { x: pos.x, y: pos.y };
+          _nodesDataSet.update({
+            id: nodeId,
+            x: pos.x,
+            y: pos.y,
+            fixed: { x: true, y: true },
+          });
+        });
+        _network.setOptions({ physics: { enabled: false } });
+      });
+
+      _network.on('zoom', function () { updateBadgePositions(); updateNodeHoverPosition(); });
+      _network.on('dragEnd', function () { setTimeout(updateBadgePositions, 50); updateNodeHoverPosition(); });
+      _network.on('viewChanged', function () { updateBadgePositions(); updateNodeHoverPosition(); });
+
+      // Pin hub nodes in triangle layout if provided
+      if (hubLayout && hubLayout.hubIds && hubLayout.hubIds.length > 0) {
+        var cx = container.offsetWidth / 2;
+        var cy = container.offsetHeight / 2;
+        var tr = 150;
+        var hubPositions = [
+          { x: cx, y: cy - tr },
+          { x: cx - tr * 0.866, y: cy + tr * 0.5 },
+          { x: cx + tr * 0.866, y: cy + tr * 0.5 },
+        ];
+        for (var hi = 0; hi < hubLayout.hubIds.length && hi < hubPositions.length; hi++) {
+          _pinnedNodePositions[hubLayout.hubIds[hi]] = hubPositions[hi];
+        }
+      }
+    }
+
+    // Incrementally add entities and relations to the existing network
+    // Uses DataSet .add() for smooth, non-destructive updates
+
+    function addNodesAndEdges(newEntities, newRelations, hubLayout) {
+      if (!_network || !_nodesDataSet) return;
+
+      // Build vis node objects from raw entity data
+      var colorMode = hubLayout && hubLayout.hubMap ? 'hub' : 'default';
+      var buildNodesOpts = {
+        colorMode: colorMode,
+        versionCounts: _versionCounts,
+        unnamedLabel: t('graph.unnamedEntity'),
+      };
+      if (hubLayout) {
+        buildNodesOpts.hubMap = hubLayout.hubMap;
+        buildNodesOpts.hubNeighborIds = hubLayout.hubNeighborIds;
+      }
+
+      // Compute relation count from ALL currently visible edges for accurate sizing
+      var allEdges = _edgesDataSet.get();
+      var relationCounts = {};
+      for (var ri = 0; ri < allEdges.length; ri++) {
+        var re = allEdges[ri];
+        // vis edge 'from'/'to' map to entity absolute_ids (node IDs)
+        relationCounts[re.from] = (relationCounts[re.from] || 0) + 1;
+        relationCounts[re.to] = (relationCounts[re.to] || 0) + 1;
+      }
+      // Also count new relations not yet in DataSet
+      for (var ri2 = 0; ri2 < newRelations.length; ri2++) {
+        var nr = newRelations[ri2];
+        var nFrom = nr.entity1_family_id || nr.entity1_absolute_id;
+        var nTo = nr.entity2_family_id || nr.entity2_absolute_id;
+        relationCounts[nFrom] = (relationCounts[nFrom] || 0) + 1;
+        relationCounts[nTo] = (relationCounts[nTo] || 0) + 1;
+      }
+      buildNodesOpts.relationCounts = relationCounts;
+
+      var result = GraphUtils.buildNodes(newEntities, buildNodesOpts);
+      var newNodes = result.nodes.get();
+
+      // Update entity map
+      for (var ek in result.entityMap) {
+        _entityMap[ek] = result.entityMap[ek];
+      }
+
+      // Compute smart positions for new nodes based on their connected existing nodes
+      var existingPositions = _network.getPositions();
+      var existingNodeIds = new Set(_nodesDataSet.getIds());
+
+      // Build a lookup: newEntity absolute_id -> list of connected existing nodeIds
+      var newNodeConnections = {};
+      for (var ni = 0; ni < newNodes.length; ni++) {
+        newNodeConnections[newNodes[ni].id] = [];
+      }
+      // Check newRelations for connections to existing nodes
+      for (var ri = 0; ri < newRelations.length; ri++) {
+        var rel = newRelations[ri];
+        var e1Id = rel.entity1_family_id || rel.entity1_absolute_id;
+        var e2Id = rel.entity2_family_id || rel.entity2_absolute_id;
+        // If one end is new and the other is existing, record the connection
+        if (!existingNodeIds.has(e1Id) && existingNodeIds.has(e2Id)) {
+          if (newNodeConnections[e1Id]) newNodeConnections[e1Id].push(e2Id);
+        } else if (existingNodeIds.has(e1Id) && !existingNodeIds.has(e2Id)) {
+          if (newNodeConnections[e2Id]) newNodeConnections[e2Id].push(e1Id);
+        }
+      }
+
+      // Assign positions: new nodes appear near their connected existing neighbors
+      var canvasEl = document.getElementById(_opts.canvasId);
+      var cx = canvasEl ? canvasEl.offsetWidth / 2 : 400;
+      var cy = canvasEl ? canvasEl.offsetHeight / 2 : 300;
+
+      for (var ni = 0; ni < newNodes.length; ni++) {
+        var node = newNodes[ni];
+        var pinned = _pinnedNodePositions[node.id];
+        if (pinned) {
+          node.x = pinned.x;
+          node.y = pinned.y;
+          node.fixed = { x: true, y: true };
+          continue;
+        }
+
+        var connections = newNodeConnections[node.id];
+        if (connections && connections.length > 0) {
+          // Average position of connected existing nodes
+          var sumX = 0, sumY = 0, count = 0;
+          for (var ci = 0; ci < connections.length; ci++) {
+            var cpos = existingPositions[connections[ci]];
+            if (cpos) { sumX += cpos.x; sumY += cpos.y; count++; }
+          }
+          if (count > 0) {
+            node.x = sumX / count + (Math.random() - 0.5) * 60;
+            node.y = sumY / count + (Math.random() - 0.5) * 60;
+          } else {
+            node.x = cx + (Math.random() - 0.5) * 200;
+            node.y = cy + (Math.random() - 0.5) * 200;
+          }
+        } else {
+          // No connection to existing nodes — place near center with some spread
+          node.x = cx + (Math.random() - 0.5) * 300;
+          node.y = cy + (Math.random() - 0.5) * 300;
+        }
+      }
+
+      // Add to DataSet (triggers smooth network update)
+      _nodesDataSet.add(newNodes);
+
+      // Brief highlight pulse for newly added nodes (grow animation effect)
+      if (newNodes.length > 0 && newNodes.length <= 50) {
+        var newNodeIds = newNodes.map(function(n) { return n.id; });
+        _network.selectNodes(newNodeIds);
+        setTimeout(function() {
+          if (_network) _network.unselectAll();
+        }, 300);
+      }
+
+      // Build vis edge objects — use ALL visible node IDs as the filter
+      var allNodeIds = new Set(_nodesDataSet.getIds());
+      var buildEdgesOpts = {};
+      if (_opts.relationStrengthEnabled) buildEdgesOpts.weightMode = 'count';
+      if (hubLayout) buildEdgesOpts.hubMap = hubLayout.hubMap;
+
+      var edgeResult = GraphUtils.buildEdges(newRelations, allNodeIds, buildEdgesOpts);
+      var newEdges = edgeResult.edges.get();
+
+      // Update relation map
+      for (var rk in edgeResult.relationMap) {
+        _relationMap[rk] = edgeResult.relationMap[rk];
+      }
+
+      // Add edges (triggers smooth network update)
+      _edgesDataSet.add(newEdges);
+
+      // Update version badges
+      renderVersionBadges(_nodesDataSet);
+
+      // Auto-fit viewport to keep all nodes visible
+      // Use instant fit (no animation) to avoid conflicts with rapid updates during animation
+      try { _network.fit({ animation: false }); } catch (_) {}
     }
 
     // ---- FocusSession: minimal accumulation tracker ----
@@ -413,6 +699,28 @@ window.GraphExplorer = (function () {
         // 2. BFS topology (family-id based, no API calls)
         var bfs = focusBFS(familyId, hopLevel);
 
+        // 2b. Fetch ALL relations for the focused entity from API (supplement main view cache)
+        var _apiRelationAbsIds = new Set();
+        try {
+          var scope = _relationScope || 'accumulated';
+          var apiRelRes = await state.api.entityRelations(familyId, graphId, {
+            maxVersionAbsoluteId: absoluteId,
+            relationScope: scope
+          });
+          var apiRels = apiRelRes.data?.relations || apiRelRes.data || [];
+          var existingRelAbsIds = new Set();
+          bfs.relations.forEach(function(r) { existingRelAbsIds.add(r.absolute_id); });
+          for (var ari = 0; ari < apiRels.length; ari++) {
+            var apiRel = apiRels[ari];
+            if (!existingRelAbsIds.has(apiRel.absolute_id)) {
+              bfs.relations.push(apiRel);
+              existingRelAbsIds.add(apiRel.absolute_id);
+              _apiRelationAbsIds.add(apiRel.entity1_absolute_id);
+              _apiRelationAbsIds.add(apiRel.entity2_absolute_id);
+            }
+          }
+        } catch (_) { /* non-fatal: proceed with main view cache only */ }
+
         // 3. Build familyIdToLatest with focus override
         var familyIdToLatest = _opts.familyIdToLatest ? Object.assign({}, _opts.familyIdToLatest()) : {};
         familyIdToLatest[familyId] = absoluteId;
@@ -444,6 +752,15 @@ window.GraphExplorer = (function () {
           });
           await Promise.all(resolvePromises);
         }
+
+        // 4b. Add family_ids discovered from API relations to BFS visited set
+        _apiRelationAbsIds.forEach(function(apiAbsId) {
+          var fid = absToFid[apiAbsId];
+          if (fid && !bfs.familyIds.has(fid)) {
+            bfs.familyIds.add(fid);
+            bfs.hopMapFid[fid] = 1;
+          }
+        });
 
         // 5. Collect entity data for all discovered family_ids
         var entityCache = _opts.entityCache || {};
@@ -597,6 +914,408 @@ window.GraphExplorer = (function () {
 
     // ---- Show entity detail in the sidebar ----
 
+    // ---- Content diff helper ----
+
+    function computeContentDiff(currentContent, previousContent) {
+      if (!previousContent) return null;
+      var curLines = (currentContent || '').split('\n').filter(function(l) { return l.trim(); });
+      var prevLines = (previousContent || '').split('\n').filter(function(l) { return l.trim(); });
+      if (curLines.join('\n') === prevLines.join('\n')) return null;
+
+      var added = [], removed = [];
+      curLines.forEach(function(line) { if (prevLines.indexOf(line) === -1) added.push(line); });
+      prevLines.forEach(function(line) { if (curLines.indexOf(line) === -1) removed.push(line); });
+
+      if (added.length === 0 && removed.length === 0) return null;
+      return { added: added, removed: removed };
+    }
+
+    function renderDiffPreview(diff) {
+      if (!diff) return '';
+      var html = '<div class="version-diff-container">';
+      html += '<div class="version-diff-header"><span>' + t('entities.changes') + '</span><span style="color:var(--success);">+' + diff.added.length + '</span>/<span style="color:var(--error);">-' + diff.removed.length + '</span></div>';
+      html += '<div class="version-diff-body">';
+      diff.removed.forEach(function(line) {
+        html += '<div class="version-diff-line removed">- ' + escapeHtml(line) + '</div>';
+      });
+      diff.added.forEach(function(line) {
+        html += '<div class="version-diff-line added">+ ' + escapeHtml(line) + '</div>';
+      });
+      html += '</div></div>';
+      return html;
+    }
+
+    // ---- Version evolution summary ----
+
+    function renderVersionContext(versions, currentIdx) {
+      var v = versions[currentIdx];
+      if (!v) return '';
+      var html = '<div class="version-context-card">';
+
+      // Version creation time
+      html += '<div class="version-ctx-row">';
+      html += '<span class="version-ctx-label">' + t('graph.processedTime') + '</span>';
+      html += '<span class="version-ctx-value">' + (v.processed_time ? formatDateMs(v.processed_time) : '-') + '</span>';
+      html += '</div>';
+
+      // Source document
+      if (v.source_document) {
+        html += '<div class="version-ctx-row">';
+        html += '<span class="version-ctx-label">' + t('graph.sourceDoc') + '</span>';
+        html += '<span class="version-ctx-value mono" style="font-size:0.6875rem;">' + escapeHtml(v.source_document) + '</span>';
+        html += '</div>';
+      }
+
+      // Episode ID (clickable)
+      if (v.episode_id) {
+        html += '<div class="version-ctx-row">';
+        html += '<span class="version-ctx-label">' + t('graph.episodeId') + '</span>';
+        html += '<span class="doc-link version-ctx-value mono" style="font-size:0.6875rem;" data-view-episode="' + escapeHtml(v.episode_id) + '">' + escapeHtml(v.episode_id) + '</span>';
+        html += '</div>';
+      }
+
+      // Change indicator: first version vs update
+      if (currentIdx === 0) {
+        html += '<div class="version-ctx-tag tag-created">Created</div>';
+      } else {
+        var hasContentChange = (v.content || '') !== (versions[currentIdx - 1].content || '');
+        var hasNameChange = (v.name || '') !== (versions[currentIdx - 1].name || '');
+        var tags = [];
+        if (hasContentChange) tags.push('Content updated');
+        if (hasNameChange) tags.push('Renamed');
+        if (tags.length === 0) tags.push('Metadata update');
+        html += '<div class="version-ctx-tag tag-updated">' + tags.join(' + ') + '</div>';
+      }
+
+      html += '</div>';
+      return html;
+    }
+
+    function renderVersionEvolutionSummary(versions) {
+      if (versions.length < 2) return '';
+      var changeCount = 0;
+      for (var i = 1; i < versions.length; i++) {
+        if ((versions[i].content || '') !== (versions[i - 1].content || '') ||
+            (versions[i].name || '') !== (versions[i - 1].name || '')) {
+          changeCount++;
+        }
+      }
+
+      var times = versions.map(function(v) { return v.processed_time ? new Date(v.processed_time).getTime() : 0; }).filter(function(t) { return t > 0; });
+      var timeSpan = '';
+      if (times.length >= 2) {
+        var diff = Math.max.apply(null, times) - Math.min.apply(null, times);
+        if (diff < 3600000) timeSpan = Math.round(diff / 60000) + 'm';
+        else if (diff < 86400000) timeSpan = (diff / 3600000).toFixed(1) + 'h';
+        else timeSpan = (diff / 86400000).toFixed(1) + 'd';
+      }
+
+      var nameChanges = 0;
+      var contentChanges = 0;
+      for (var j = 1; j < versions.length; j++) {
+        if (versions[j].name !== versions[j - 1].name) nameChanges++;
+        if (versions[j].content !== versions[j - 1].content) contentChanges++;
+      }
+
+      return '<div class="version-evolution-summary">' +
+        '<div class="version-evo-stat"><div class="version-evo-stat-value">' + versions.length + '</div><div class="version-evo-stat-label">' + t('graph.versions') + '</div></div>' +
+        '<div class="version-evo-stat"><div class="version-evo-stat-value">' + changeCount + '</div><div class="version-evo-stat-label">' + t('entities.changes') + '</div></div>' +
+        (timeSpan ? '<div class="version-evo-stat"><div class="version-evo-stat-value">' + timeSpan + '</div><div class="version-evo-stat-label">' + t('graph.timeSpan') + '</div></div>' : '') +
+        (nameChanges > 0 ? '<div class="version-evo-stat"><div class="version-evo-stat-value" style="color:var(--warning);">' + nameChanges + '</div><div class="version-evo-stat-label">' + t('graph.nameChanges') + '</div></div>' : '') +
+      '</div>';
+    }
+
+    // ---- Keyboard shortcut hints ----
+
+    function renderKeyboardHints() {
+      return '<div class="keyboard-hints">' +
+        '<span class="kb-hint"><span class="kb-key">&larr;</span><span class="kb-key">&rarr;</span> ' + t('graph.switchVersion') + '</span>' +
+        '<span class="kb-hint"><span class="kb-key">Space</span> ' + t('graph.playPause') + '</span>' +
+        '<span class="kb-hint"><span class="kb-key">Esc</span> ' + t('graph.exitFocus') + '</span>' +
+      '</div>';
+    }
+
+    // ---- Mini version timeline widget ----
+
+    function renderMiniVersionTimeline(versions, currentIdx, prefix) {
+      if (versions.length < 2) return '';
+      var html = '<div class="version-mini-timeline" style="margin-bottom:0.75rem;">';
+
+      // Time range
+      var times = versions.map(function (v) {
+        return v.processed_time ? new Date(v.processed_time).getTime() : 0;
+      });
+      var validTimes = times.filter(function (t) { return t > 0; });
+      var minT = validTimes.length > 0 ? Math.min.apply(null, validTimes) : 0;
+      var maxT = validTimes.length > 0 ? Math.max.apply(null, validTimes) : 0;
+      var range = maxT - minT || 1;
+
+      // Version dots with gap indicators
+      html += '<div class="version-mini-track">';
+      for (var i = 0; i < versions.length; i++) {
+        var t = times[i] || 0;
+        var pct = t > 0 && range > 0 ? ((t - minT) / range * 100) : (i / Math.max(versions.length - 1, 1) * 100);
+        var isCurrent = i === currentIdx;
+        var cls = 'version-mini-dot' + (isCurrent ? ' current' : '');
+        var timeStr = versions[i].processed_time ? formatDateMs(versions[i].processed_time) : '';
+
+        // Source label (episode source or version number)
+        var sourceLabel = '';
+        if (versions[i].source_document) {
+          sourceLabel = versions[i].source_document.replace(/^document:/, '').substring(0, 20);
+        } else {
+          sourceLabel = 'v' + (i + 1);
+        }
+
+        // Time gap from previous version
+        var gapLabel = '';
+        if (i > 0 && times[i] > 0 && times[i - 1] > 0) {
+          var gapMs = times[i] - times[i - 1];
+          if (gapMs < 60000) gapLabel = gapMs + 'ms';
+          else if (gapMs < 3600000) gapLabel = Math.round(gapMs / 60000) + 'm';
+          else if (gapMs < 86400000) gapLabel = (gapMs / 3600000).toFixed(1) + 'h';
+          else gapLabel = (gapMs / 86400000).toFixed(1) + 'd';
+        }
+
+        html += '<div class="' + cls + '" style="left:' + pct.toFixed(1) + '%;" data-ver-idx="' + i + '" title="v' + (i + 1) + ' — ' + timeStr + '">';
+        // Version number badge inside dot
+        html += '<span class="version-mini-dot-num">' + (i + 1) + '</span>';
+        html += '</div>';
+
+        // Source label below the dot
+        html += '<div class="version-mini-source" style="left:' + pct.toFixed(1) + '%;">' + escapeHtml(sourceLabel) + '</div>';
+
+        // Gap indicator between dots
+        if (gapLabel && i > 0) {
+          var prevPct = times[i - 1] > 0 && range > 0 ? ((times[i - 1] - minT) / range * 100) : ((i - 1) / Math.max(versions.length - 1, 1) * 100);
+          var midPct = (prevPct + pct) / 2;
+          html += '<div class="version-mini-gap" style="left:' + midPct.toFixed(1) + '%;">' + gapLabel + '</div>';
+        }
+      }
+      // Connecting line
+      html += '<div class="version-mini-line"></div>';
+      html += '</div>';
+
+      // Timestamp labels
+      if (versions.length >= 2) {
+        html += '<div class="version-mini-labels">';
+        html += '<span class="version-mini-label">' + (versions[0].processed_time ? formatDateMs(versions[0].processed_time) : 'v1') + '</span>';
+        html += '<span class="version-mini-label">' + (versions[versions.length - 1].processed_time ? formatDateMs(versions[versions.length - 1].processed_time) : 'v' + versions.length) + '</span>';
+        html += '</div>';
+      }
+
+      html += '</div>';
+      return html;
+    }
+
+    // ---- Version badge overlays on vis-network canvas ----
+    // Version information shown via node border styling (amber border + glow)
+    // No DOM overlays — version count visible in tooltip and detail sidebar
+
+    function renderVersionBadges(nodesDataSet) {
+      if (!_network) return;
+      var container = _el(_opts.canvasId);
+      if (!container) return;
+
+      // Remove any legacy overlay badges
+      var oldBadges = container.querySelectorAll('.version-badge-overlay');
+      for (var oi = 0; oi < oldBadges.length; oi++) oldBadges[oi].remove();
+
+      // Add watermark
+      var oldWatermark = container.querySelector('.graph-deepdream-watermark');
+      if (!oldWatermark) {
+        var wm = document.createElement('div');
+        wm.className = 'graph-deepdream-watermark';
+        wm.textContent = 'Deep-Dream';
+        container.appendChild(wm);
+      }
+    }
+
+    function updateBadgePositions() {
+      // No-op: version info is in node border styling, no overlay to update
+    }
+
+    // ---- Node hover info panel ----
+    var _hoverPanel = null;
+    var _hoverNodeId = null;
+
+    function showNodeHover(nodeId, params) {
+      if (!_network) return;
+      var entity = _entityMap[nodeId];
+      if (!entity) return;
+
+      var container = _el(_opts.canvasId);
+      if (!container) return;
+
+      // Create panel if needed
+      if (!_hoverPanel) {
+        _hoverPanel = document.createElement('div');
+        _hoverPanel.className = 'node-hover-info';
+        _hoverPanel.style.opacity = '0';
+        container.appendChild(_hoverPanel);
+      }
+
+      // Build content
+      var name = entity.name || entity.family_id || nodeId;
+      var vc = _versionCounts[entity.family_id] || _versionCounts[nodeId] || 0;
+      var summary = entity.summary || '';
+      var content = entity.content || '';
+
+      var html = '<div class="nhv-name">' + escapeHtml(name);
+      if (vc > 1) {
+        html += ' <span class="nhv-version">[v' + vc + ']</span>';
+      }
+      html += '</div>';
+      // Prefer summary for preview, fall back to content
+      var preview = summary || content || '';
+      if (preview) {
+        if (preview.length > 150) preview = preview.substring(0, 150) + '...';
+        html += '<div class="nhv-content">' + escapeHtml(preview) + '</div>';
+      }
+      if (entity.processed_time) {
+        html += '<div style="font-size:0.6875rem;color:var(--text-muted);margin-top:0.25rem;">' + formatDate(entity.processed_time) + '</div>';
+      }
+
+      _hoverPanel.innerHTML = html;
+      _hoverNodeId = nodeId;
+
+      // Position near the node
+      updateNodeHoverPosition();
+
+      // Show with slight delay for smooth appearance
+      requestAnimationFrame(function () {
+        if (_hoverPanel) _hoverPanel.style.opacity = '1';
+      });
+    }
+
+    function hideNodeHover() {
+      if (_hoverPanel) {
+        _hoverPanel.style.opacity = '0';
+      }
+      _hoverNodeId = null;
+    }
+
+    function updateNodeHoverPosition() {
+      if (!_hoverPanel || !_hoverNodeId || !_network) return;
+
+      var container = _el(_opts.canvasId);
+      if (!container) return;
+
+      // Edge hover — reposition at edge midpoint
+      if (_hoverNodeId.indexOf('__edge__') === 0) {
+        var edgeId = _hoverNodeId.replace('__edge__', '');
+        var edgeEnds = _network.getConnectedNodes(edgeId);
+        if (edgeEnds && edgeEnds.length === 2) {
+          var positions = _network.getPositions(edgeEnds);
+          var p1 = positions[edgeEnds[0]];
+          var p2 = positions[edgeEnds[1]];
+          if (p1 && p2) {
+            var midCanvas = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
+            var domPos = _network.canvasToDOM(midCanvas);
+            _hoverPanel.style.left = domPos.x + 'px';
+            _hoverPanel.style.top = (domPos.y - 30) + 'px';
+          }
+        }
+        return;
+      }
+
+      var canvasPos = _network.getPositions([_hoverNodeId]);
+      if (!canvasPos[_hoverNodeId]) return;
+
+      var domPos = _network.canvasToDOM({ x: canvasPos[_hoverNodeId].x, y: canvasPos[_hoverNodeId].y });
+
+      // Get node size to offset positioning
+      var node = _network.body.nodes[_hoverNodeId];
+      var nodeSize = node ? (node.options.size || 20) : 20;
+
+      var left = domPos.x + nodeSize + 12;
+      var top = domPos.y - 20;
+
+      // Keep panel within container bounds
+      var panelRect = _hoverPanel.getBoundingClientRect();
+      var containerRect = container.getBoundingClientRect();
+      if (left + 240 > containerRect.width) {
+        left = domPos.x - nodeSize - 252;
+      }
+      if (top + 100 > containerRect.height) {
+        top = containerRect.height - 110;
+      }
+      if (top < 10) top = 10;
+      if (left < 10) left = 10;
+
+      _hoverPanel.style.left = left + 'px';
+      _hoverPanel.style.top = top + 'px';
+    }
+
+    function escapeHtml(text) {
+      var div = document.createElement('div');
+      div.appendChild(document.createTextNode(text));
+      return div.innerHTML;
+    }
+
+    function showEdgeHover(edgeId, params) {
+      if (!_network) return;
+      var relation = _relationMap[edgeId];
+      if (!relation) return;
+
+      var container = _el(_opts.canvasId);
+      if (!container) return;
+
+      // Reuse or create panel
+      if (!_hoverPanel) {
+        _hoverPanel = document.createElement('div');
+        _hoverPanel.className = 'node-hover-info';
+        _hoverPanel.style.opacity = '0';
+        container.appendChild(_hoverPanel);
+      }
+
+      // Look up endpoint entity names
+      var e1Name = '';
+      var e2Name = '';
+      if (relation.entity1_absolute_id && _entityMap[relation.entity1_absolute_id]) {
+        e1Name = _entityMap[relation.entity1_absolute_id].name || '';
+      }
+      if (relation.entity2_absolute_id && _entityMap[relation.entity2_absolute_id]) {
+        e2Name = _entityMap[relation.entity2_absolute_id].name || '';
+      }
+
+      var html = '';
+      if (e1Name || e2Name) {
+        html += '<div class="nhv-name" style="font-size:0.75rem;">' + escapeHtml(e1Name || '?') + ' <span style="color:var(--text-muted);margin:0 0.25rem;">&harr;</span> ' + escapeHtml(e2Name || '?') + '</div>';
+      }
+      var content = relation.content || relation.summary || '';
+      if (content) {
+        var preview = content.length > 150 ? content.substring(0, 150) + '...' : content;
+        html += '<div class="nhv-content" style="margin-top:0.25rem;">' + escapeHtml(preview) + '</div>';
+      }
+      if (relation.processed_time) {
+        html += '<div style="font-size:0.6875rem;color:var(--text-muted);margin-top:0.25rem;">' + formatDate(relation.processed_time) + '</div>';
+      }
+
+      if (!html) return; // Don't show empty panel
+
+      _hoverPanel.innerHTML = html;
+      _hoverNodeId = '__edge__' + edgeId;
+
+      // Position at edge midpoint
+      var edgeEnds = _network.getConnectedNodes(edgeId);
+      if (edgeEnds && edgeEnds.length === 2) {
+        var positions = _network.getPositions(edgeEnds);
+        var p1 = positions[edgeEnds[0]];
+        var p2 = positions[edgeEnds[1]];
+        if (p1 && p2) {
+          var midCanvas = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
+          var domPos = _network.canvasToDOM(midCanvas);
+          _hoverPanel.style.left = domPos.x + 'px';
+          _hoverPanel.style.top = (domPos.y - 30) + 'px';
+        }
+      }
+
+      requestAnimationFrame(function () {
+        if (_hoverPanel) _hoverPanel.style.opacity = '1';
+      });
+    }
+
     async function showEntityDetail(absoluteId) {
       var entity = _entityMap[absoluteId];
       if (!entity) {
@@ -628,6 +1347,15 @@ window.GraphExplorer = (function () {
       var totalVersions = versions.length;
       var prefix = _opts.idPrefix || '';
 
+      // Compute diff against previous version
+      var versionDiff = null;
+      if (totalVersions > 1 && _currentVersionIdx > 0) {
+        versionDiff = computeContentDiff(
+          versions[_currentVersionIdx].content,
+          versions[_currentVersionIdx - 1].content
+        );
+      }
+
       detailContent.innerHTML =
         '<div class="flex items-center justify-between mb-3">' +
           '<span class="badge badge-primary">' + t('graph.entityDetail') + '</span>' +
@@ -650,6 +1378,18 @@ window.GraphExplorer = (function () {
           escapeHtml(entity.name || t('graph.unnamedEntity')) +
           (totalVersions > 1 ? ' <span style="color:var(--text-muted);font-size:0.85rem;font-weight:400;"> [' + (_currentVersionIdx + 1) + '/' + totalVersions + ']</span>' : '') +
         '</h3>' +
+
+        // Version evolution summary (if > 1 version)
+        (totalVersions > 1 ? renderVersionEvolutionSummary(versions) : '') +
+
+        // Mini version timeline (if > 1 version)
+        (totalVersions > 1 ? renderMiniVersionTimeline(versions, _currentVersionIdx, prefix) : '') +
+
+        // Content diff preview (if version changed from previous)
+        (versionDiff ? renderDiffPreview(versionDiff) : '') +
+
+        // Version context: which episode/source created this version
+        renderVersionContext(versions, _currentVersionIdx) +
 
         '<div class="flex flex-wrap gap-2 mb-3">' +
           '<button class="btn btn-secondary btn-sm" id="' + prefix + 'view-versions-btn">' +
@@ -675,6 +1415,9 @@ window.GraphExplorer = (function () {
             '</label>' +
           '</div>'
         : '') +
+
+        // Keyboard shortcut hints
+        (totalVersions > 1 ? renderKeyboardHints() : '') +
 
         '<div class="divider"></div>' +
 
@@ -710,14 +1453,14 @@ window.GraphExplorer = (function () {
           '<div>' +
             '<span class="form-label" style="margin-bottom:0.125rem;">' + t('graph.processedTime') + '</span>' +
             '<p style="font-size:0.8125rem;color:var(--text-secondary);">' +
-              formatDate(entity.processed_time) +
+              formatDateMs(entity.processed_time) +
             '</p>' +
           '</div>' +
 
           (entity.source_document ?
             '<div>' +
               '<span class="form-label" style="margin-bottom:0.125rem;">' + t('graph.sourceDoc') + '</span>' +
-              '<span class="doc-link mono truncate" style="font-size:0.75rem;" data-view-doc="' + escapeHtml(entity.source_document) + '" title="' + escapeHtml(entity.source_document) + '">' +
+              '<span class="mono truncate" style="font-size:0.75rem;color:var(--text-secondary);">' +
                 escapeHtml(truncate(entity.source_document, 60)) +
               '</span>' +
             '</div>'
@@ -726,7 +1469,7 @@ window.GraphExplorer = (function () {
           (entity.episode_id ?
             '<div>' +
               '<span class="form-label" style="margin-bottom:0.125rem;">' + t('graph.episodeId') + '</span>' +
-              '<span class="doc-link mono truncate" style="font-size:0.75rem;" data-view-doc="' + escapeHtml(entity.episode_id) + '" title="' + t('common.clickToView') + '">' +
+              '<span class="doc-link mono truncate" style="font-size:0.75rem;" data-view-episode="' + escapeHtml(entity.episode_id) + '" title="' + t('common.clickToView') + '">' +
                 escapeHtml(entity.episode_id) +
               '</span>' +
             '</div>'
@@ -738,6 +1481,9 @@ window.GraphExplorer = (function () {
       detailContent.querySelectorAll('[data-view-doc]').forEach(function (el) {
         el.addEventListener('click', function () { window.showDocContent(el.getAttribute('data-view-doc')); });
       });
+      detailContent.querySelectorAll('[data-view-episode]').forEach(function (el) {
+        el.addEventListener('click', function () { window.showEpisodeDoc(el.getAttribute('data-view-episode')); });
+      });
 
       _el(prefix + 'view-versions-btn').addEventListener('click', function () {
         openVersionsModal(entity);
@@ -747,6 +1493,14 @@ window.GraphExplorer = (function () {
       });
       _el(prefix + 'focus-entity-btn').addEventListener('click', function () {
         focusOnEntity(absoluteId);
+      });
+
+      // Mini version timeline dot clicks
+      detailContent.querySelectorAll('.version-mini-dot').forEach(function (dot) {
+        dot.addEventListener('click', function () {
+          var idx = parseInt(dot.getAttribute('data-ver-idx'), 10);
+          if (!isNaN(idx) && idx !== _currentVersionIdx) switchVersion(idx);
+        });
       });
 
       var scopeSel = _el(prefix + 'relation-scope-sel');
@@ -841,14 +1595,14 @@ window.GraphExplorer = (function () {
           '<div>' +
             '<span class="form-label" style="margin-bottom:0.125rem;">' + t('graph.processedTime') + '</span>' +
             '<p style="font-size:0.8125rem;color:var(--text-secondary);">' +
-              formatDate(relation.processed_time) +
+              formatDateMs(relation.processed_time) +
             '</p>' +
           '</div>' +
 
           (relation.source_document ?
             '<div>' +
               '<span class="form-label" style="margin-bottom:0.125rem;">' + t('graph.sourceDoc') + '</span>' +
-              '<span class="doc-link mono truncate" style="font-size:0.75rem;" data-view-doc="' + escapeHtml(relation.source_document) + '" title="' + escapeHtml(relation.source_document) + '">' +
+              '<span class="mono truncate" style="font-size:0.75rem;color:var(--text-secondary);">' +
                 escapeHtml(truncate(relation.source_document, 60)) +
               '</span>' +
             '</div>'
@@ -860,9 +1614,6 @@ window.GraphExplorer = (function () {
       });
       detailContent.querySelectorAll('[data-focus-entity]').forEach(function (el) {
         el.addEventListener('click', function () { focusOnEntity(el.getAttribute('data-focus-entity')); });
-      });
-      detailContent.querySelectorAll('[data-view-doc]').forEach(function (el) {
-        el.addEventListener('click', function () { window.showDocContent(el.getAttribute('data-view-doc')); });
       });
 
       if (window.lucide) lucide.createIcons({ nodes: [detailContent] });
@@ -906,26 +1657,106 @@ window.GraphExplorer = (function () {
           return;
         }
 
-        var rows = versions.map(function (v) {
-          return '<tr>' +
-            '<td style="max-width:120px;">' + formatDate(v.processed_time) + '</td>' +
-            '<td style="max-width:200px;" title="' + escapeHtml(v.name || '') + '">' + escapeHtml(truncate(v.name || '-', 30)) + '</td>' +
-            '<td style="max-width:300px;" title="' + escapeHtml(v.content || '') + '">' + escapeHtml(truncate(v.content || '-', 50)) + '</td>' +
-          '</tr>';
+        // Build rich version timeline with inline diff
+        var sorted = versions.slice().sort(function(a, b) {
+          var ta = a.processed_time ? new Date(a.processed_time).getTime() : 0;
+          var tb = b.processed_time ? new Date(b.processed_time).getTime() : 0;
+          return tb - ta;
+        });
+
+        function simpleContentDiff(current, previous) {
+          if (!previous) return null;
+          var curLines = (current.content || '').split('\n').filter(function(l) { return l.trim(); });
+          var prevLines = (previous.content || '').split('\n').filter(function(l) { return l.trim(); });
+          if (curLines.join('\n') === prevLines.join('\n')) return null;
+          var added = [], removed = [];
+          curLines.forEach(function(line) { if (prevLines.indexOf(line) === -1) added.push(line); });
+          prevLines.forEach(function(line) { if (curLines.indexOf(line) === -1) removed.push(line); });
+          return { added: added, removed: removed };
+        }
+
+        var items = sorted.map(function(v, i) {
+          var prev = sorted[i + 1];
+          var diff = simpleContentDiff(v, prev);
+          var hasNameChange = prev && v.name !== prev.name;
+          var verNum = sorted.length - i;
+
+          // Time gap indicator
+          var gapHtml = '';
+          if (prev) {
+            var curTime = v.processed_time ? new Date(v.processed_time).getTime() : 0;
+            var prevTime = prev.processed_time ? new Date(prev.processed_time).getTime() : 0;
+            var gapMs = curTime - prevTime;
+            var gapText = '';
+            if (gapMs < 60000) gapText = '< 1m';
+            else if (gapMs < 3600000) gapText = Math.round(gapMs / 60000) + 'm';
+            else if (gapMs < 86400000) gapText = Math.round(gapMs / 3600000) + 'h';
+            else gapText = Math.round(gapMs / 86400000) + 'd';
+            gapHtml = '<span style="position:absolute;left:-1.25rem;top:50%;transform:translateY(-50%);font-size:0.625rem;color:var(--text-muted);background:var(--bg-surface);padding:0 0.25rem;white-space:nowrap;z-index:1;">' + gapText + '</span>';
+          }
+
+          // Source label
+          var sourceLabel = v.source_document || '';
+          if (sourceLabel.length > 25) sourceLabel = sourceLabel.substring(0, 22) + '...';
+
+          var headerHtml = '<div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap;">'
+            + '<span style="display:inline-flex;align-items:center;justify-content:center;width:1.375rem;height:1.375rem;border-radius:50%;font-size:0.6875rem;font-weight:600;font-family:var(--font-mono);background:color-mix(in srgb, #f59e0b 15%, transparent);color:#f59e0b;">v' + verNum + '</span>'
+            + '<span class="mono" style="font-size:0.75rem;color:var(--text-muted);">' + formatDate(v.event_time) + '</span>'
+            + (i === 0 ? '<span class="badge badge-info" style="font-size:0.6875rem;">' + t('entities.latest') + '</span>' : '')
+            + (diff || hasNameChange ? '<span class="badge badge-primary" style="font-size:0.6875rem;">' + t('entities.changed') + '</span>' : '')
+            + '</div>'
+            + '<div style="margin-top:0.25rem;font-weight:500;font-size:0.875rem;">' + escapeHtml(v.name || '-') + '</div>'
+            + '<div style="margin-top:0.125rem;color:var(--text-secondary);font-size:0.8125rem;" class="truncate">' + escapeHtml(truncate(v.content || '', 100)) + '</div>'
+            + (sourceLabel ? '<div style="margin-top:0.25rem;font-size:0.6875rem;color:var(--text-muted);">source: ' + escapeHtml(sourceLabel) + '</div>' : '');
+
+          // Inline diff
+          if (diff) {
+            headerHtml += '<div style="margin-top:0.5rem;border-left:3px solid var(--primary);padding:0.375rem 0.5rem;background:var(--bg-input);border-radius:0 0.375rem 0.375rem 0;font-size:0.8125rem;">';
+            diff.removed.forEach(function(line) {
+              headerHtml += '<div style="color:var(--error);text-decoration:line-through;opacity:0.7;padding:1px 0;">- ' + escapeHtml(line) + '</div>';
+            });
+            diff.added.forEach(function(line) {
+              headerHtml += '<div style="color:var(--success);padding:1px 0;">+ ' + escapeHtml(line) + '</div>';
+            });
+            headerHtml += '</div>';
+          }
+
+          var bodyHtml = '<div class="md-content" style="background:var(--bg-input);border:1px solid var(--border-color);border-radius:0.375rem;padding:0.75rem;">'
+            + renderMarkdown(v.content || '')
+            + '</div>';
+
+          var toggleId = 'graph-version-toggle-' + i;
+          var expandedId = 'graph-version-expanded-' + i;
+
+          return '<div style="position:relative;padding-left:1.5rem;padding-bottom:' + (i < sorted.length - 1 ? '1.5rem' : '0') + ';">'
+            + (i < sorted.length - 1 ? '<div style="position:absolute;left:5px;top:12px;bottom:0;width:1px;background:var(--border-color);"></div>' : '')
+            + '<div style="position:absolute;left:0;top:4px;width:11px;height:11px;border-radius:50%;background:' + (diff || hasNameChange ? 'var(--primary)' : 'var(--border-color)') + ';border:2px solid ' + (diff || hasNameChange ? 'var(--primary-hover)' : 'var(--border-hover)') + ';"></div>'
+            + gapHtml
+            + '<div style="cursor:pointer;" id="' + toggleId + '">'
+            + headerHtml
+            + '</div>'
+            + '<div id="' + expandedId + '" style="display:none;margin-top:0.5rem;">'
+            + bodyHtml
+            + '</div>'
+            + '</div>';
         }).join('');
 
         modal.overlay.querySelector('.modal-body').innerHTML =
-          '<div class="table-container" style="max-height:50vh;overflow-y:auto;">' +
-            '<table class="data-table">' +
-              '<thead><tr>' +
-                '<th>' + t('graph.versionTime') + '</th>' +
-                '<th>' + t('graph.versionName') + '</th>' +
-                '<th>' + t('graph.versionContent') + '</th>' +
-              '</tr></thead>' +
-              '<tbody>' + rows + '</tbody>' +
-            '</table>' +
-          '</div>' +
-          '<p style="margin-top:0.75rem;font-size:0.75rem;color:var(--text-muted);">' + t('graph.versionCount', { count: versions.length }) + '</p>';
+          '<div style="max-height:60vh;overflow-y:auto;padding:0.5rem;" data-family-id="' + escapeHtml(familyId) + '">'
+          + items
+          + '</div>'
+          + '<p style="margin-top:0.75rem;font-size:0.75rem;color:var(--text-muted);">' + t('graph.versionCount', { count: versions.length }) + '</p>';
+
+        // Attach expand/collapse
+        modal.overlay.querySelectorAll('[id^="graph-version-toggle-"]').forEach(function(toggle) {
+          toggle.addEventListener('click', function() {
+            var idx = toggle.id.replace('graph-version-toggle-', '');
+            var expanded = modal.overlay.querySelector('#graph-version-expanded-' + idx);
+            if (expanded) expanded.style.display = expanded.style.display === 'none' ? 'block' : 'none';
+          });
+        });
+
+        if (window.lucide) lucide.createIcons({ nodes: [modal.overlay] });
       } catch (err) {
         modal.overlay.querySelector('.modal-body').innerHTML =
           '<div class="empty-state">' +
@@ -971,7 +1802,8 @@ window.GraphExplorer = (function () {
           return '<tr>' +
             '<td style="max-width:250px;" title="' + escapeHtml(r.content || '') + '">' + escapeHtml(truncate(r.content || '-', 40)) + '</td>' +
             '<td style="max-width:120px;" title="' + escapeHtml(otherName) + '">' + escapeHtml(truncate(otherName, 20)) + '</td>' +
-            '<td class="mono" style="max-width:120px;font-size:0.75rem;color:var(--text-muted);">' + formatDate(r.event_time) + '</td>' +
+            '<td class="mono" style="white-space:nowrap;font-size:0.75rem;color:var(--text-muted);">' + formatDate(r.event_time) + '</td>' +
+            '<td class="mono" style="white-space:nowrap;font-size:0.75rem;color:var(--text-muted);">' + formatDateMs(r.processed_time) + '</td>' +
           '</tr>';
         }).join('');
 
@@ -981,7 +1813,8 @@ window.GraphExplorer = (function () {
               '<thead><tr>' +
                 '<th>' + t('graph.content') + '</th>' +
                 '<th>' + t('graph.toEntity') + '</th>' +
-                '<th>' + t('graph.versionTime') + '</th>' +
+                '<th>' + t('graph.eventTime') + '</th>' +
+                '<th>' + t('graph.processedTime') + '</th>' +
               '</tr></thead>' +
               '<tbody>' + rows + '</tbody>' +
             '</table>' +
@@ -1001,6 +1834,8 @@ window.GraphExplorer = (function () {
 
     return {
       buildGraph: buildGraph,
+      initEmptyGraph: initEmptyGraph,
+      addNodesAndEdges: addNodesAndEdges,
       focusOnEntity: focusOnEntity,
       exitFocus: exitFocus,
       showEntityDetail: showEntityDetail,
@@ -1022,6 +1857,16 @@ window.GraphExplorer = (function () {
         if (key === 'relationStrengthEnabled') _opts.relationStrengthEnabled = val;
         if (key === 'defaultHopLevel') _opts.defaultHopLevel = val;
       },
+      updateBadgePositions: updateBadgePositions,
+      renderVersionBadges: function () {
+        if (_network) {
+          var container = _el(_opts.canvasId);
+          if (container) {
+            var nodes = _network.body.data.nodes;
+            renderVersionBadges(nodes);
+          }
+        }
+      },
       getState: function () {
         return {
           focusAbsoluteId: _focusAbsoluteId,
@@ -1033,7 +1878,20 @@ window.GraphExplorer = (function () {
           versionCounts: _versionCounts,
         };
       },
+      getCurrentNodes: function () {
+        if (!_network || !_network.body || !_network.body.data.nodes) return [];
+        return _network.body.data.nodes.get();
+      },
+      getCurrentEdges: function () {
+        if (!_network || !_network.body || !_network.body.data.edges) return [];
+        return _network.body.data.edges.get();
+      },
       destroy: function () {
+        hideNodeHover();
+        if (_hoverPanel) {
+          _hoverPanel.remove();
+          _hoverPanel = null;
+        }
         if (_network) {
           _network.destroy();
           _network = null;

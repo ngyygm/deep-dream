@@ -15,6 +15,7 @@
   let isSearchMode = false;
   let _currentModalClose = null;
   let _searchSeq = 0;
+  let _cachedGraphId = null;
 
   // ---- Search & Filter Bar ----
 
@@ -58,6 +59,7 @@
         <td style="max-width:180px;font-weight:500;">${escapeHtml(e.name || '-')}</td>
         <td style="max-width:300px;" class="truncate" title="${escapeHtml(e.content || '')}">${escapeHtml(truncate(e.content || '', 60))}</td>
         <td style="white-space:nowrap;">${formatDate(e.event_time)}</td>
+        <td style="white-space:nowrap;">${formatDateMs(e.processed_time)}</td>
         <td style="max-width:120px;" class="truncate" title="${escapeHtml(e.doc_name || e.source_document || '')}">${escapeHtml(e.doc_name || e.source_document || '-')}</td>
         <td style="text-align:center;">
           <span class="badge badge-info">${escapeHtml(String(e.version_count || '?'))}</span>
@@ -83,6 +85,7 @@
                 <th>${t('entities.name')}</th>
                 <th>${t('entities.content')}</th>
                 <th>${t('entities.eventTime')}</th>
+                <th>${t('graph.processedTime')}</th>
                 <th>${t('entities.source')}</th>
                 <th style="text-align:center;">${t('entities.version')}</th>
                 <th data-i18n="entities.actions">Actions</th>
@@ -147,7 +150,7 @@
           </div>
           <div>
             <span style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;">${t('graph.processedTime')}</span>
-            <div class="mono" style="margin-top:0.125rem;">${formatDate(entity.processed_time)}</div>
+            <div class="mono" style="margin-top:0.125rem;">${formatDateMs(entity.processed_time)}</div>
           </div>
           <div>
             <span style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;">${t('graph.sourceDoc')}</span>
@@ -194,7 +197,7 @@
           <span style="font-size:0.875rem;font-weight:600;">${t('entities.versionHistory')}</span>
           <div class="spinner spinner-sm" id="versions-spinner"></div>
         </div>
-        <div id="versions-container"></div>
+        <div id="versions-container" data-family-id="${familyId}"></div>
       </div>
 
       <div class="divider"></div>
@@ -243,7 +246,7 @@
     overlay.querySelectorAll('.doc-link').forEach(el => {
       el.addEventListener('click', () => {
         const cacheId = el.getAttribute('data-cache-id');
-        if (cacheId) window.showDocContent(cacheId);
+        if (cacheId) window.showEpisodeDoc(cacheId);
       });
     });
 
@@ -440,6 +443,75 @@
   // ---- Version Timeline ----
 
   function buildVersionTimeline(versions, overlay) {
+    var familyId = versions.length > 0 && versions[0].family_id;
+
+    // Build a simple content diff between adjacent versions
+    function simpleContentDiff(current, previous) {
+      if (!previous) return null;
+      var curLines = (current.content || '').split('\n').filter(function(l) { return l.trim(); });
+      var prevLines = (previous.content || '').split('\n').filter(function(l) { return l.trim(); });
+      if (curLines.join('\n') === prevLines.join('\n')) return null;
+
+      var added = [];
+      var removed = [];
+      curLines.forEach(function(line) {
+        if (prevLines.indexOf(line) === -1) added.push(line);
+      });
+      prevLines.forEach(function(line) {
+        if (curLines.indexOf(line) === -1) removed.push(line);
+      });
+      return { added: added, removed: removed };
+    }
+
+    function renderContentDiffInline(current, previous) {
+      var diff = simpleContentDiff(current, previous);
+      if (!diff) return '';
+      var html = '<div style="margin-top:0.5rem;border-left:3px solid var(--primary);padding:0.375rem 0.5rem;background:var(--bg-input);border-radius:0 0.375rem 0.375rem 0;font-size:0.8125rem;">';
+      diff.removed.forEach(function(line) {
+        html += '<div style="color:var(--error);text-decoration:line-through;opacity:0.7;padding:1px 0;">- ' + escapeHtml(line) + '</div>';
+      });
+      diff.added.forEach(function(line) {
+        html += '<div style="color:var(--success);padding:1px 0;">+ ' + escapeHtml(line) + '</div>';
+      });
+      html += '</div>';
+      return html;
+    }
+
+    // Lazy diff loader using the backend API
+    function loadFullDiff(versionIdx, sorted, diffContainerId) {
+      var current = sorted[versionIdx];
+      var prev = sorted[versionIdx + 1];
+      if (!prev || !familyId) return;
+      var container = overlay.querySelector('#' + diffContainerId);
+      if (!container || container.dataset.loaded) return;
+      container.dataset.loaded = 'true';
+      container.innerHTML = '<div style="padding:0.5rem;color:var(--text-muted);font-size:0.75rem;">' + t('common.loading') + '...</div>';
+
+      state.api.entityVersionDiff(familyId, prev.absolute_id, current.absolute_id, state.currentGraphId).then(function(res) {
+        var sections = res.data && res.data.sections;
+        if (!sections) { container.innerHTML = ''; return; }
+        var sectionHtml = '';
+        Object.keys(sections).forEach(function(key) {
+          var s = sections[key];
+          if (!s.changed) return;
+          sectionHtml += '<div style="margin-bottom:0.5rem;">'
+            + '<div style="font-size:0.75rem;font-weight:600;color:var(--text-primary);margin-bottom:0.125rem;">' + escapeHtml(key) + '</div>';
+          if (s.old) {
+            sectionHtml += '<div style="color:var(--error);font-size:0.8125rem;text-decoration:line-through;opacity:0.7;padding:2px 0.5rem;background:rgba(239,68,68,0.06);border-radius:0.25rem;margin-bottom:2px;">' + escapeHtml(s.old) + '</div>';
+          }
+          if (s.new_val) {
+            sectionHtml += '<div style="color:var(--success);font-size:0.8125rem;padding:2px 0.5rem;background:rgba(34,197,94,0.06);border-radius:0.25rem;">' + escapeHtml(s.new_val) + '</div>';
+          }
+          sectionHtml += '</div>';
+        });
+        container.innerHTML = sectionHtml
+          ? '<div style="border-left:3px solid var(--primary);padding:0.5rem;background:var(--bg-input);border-radius:0 0.375rem 0.375rem 0;">' + sectionHtml + '</div>'
+          : '<div style="color:var(--text-muted);font-size:0.8125rem;padding:0.25rem 0;">' + t('entities.noContentChange') + '</div>';
+      }).catch(function() {
+        container.innerHTML = '<div style="color:var(--text-muted);font-size:0.8125rem;">Diff load failed</div>';
+      });
+    }
+
     return renderVersionTimeline({
       versions: versions,
       overlay: overlay,
@@ -448,12 +520,17 @@
       expandedIdPrefix: 'version-expanded',
       isActiveCheck: function(v) { return false; },
       renderHeader: function(v, i, sorted, isActive) {
+        var prev = sorted[i + 1];
+        var hasDiff = prev && (v.name !== prev.name || v.content !== prev.content);
         return '<div style="display:flex;align-items:center;gap:0.5rem;">'
-          + '<span class="mono" style="font-size:0.75rem;color:var(--text-muted);">' + formatDate(v.processed_time) + '</span>'
+          + '<span class="mono" style="font-size:0.75rem;color:var(--text-muted);">' + t('graph.eventTime') + ' ' + formatDate(v.event_time) + '</span>'
+          + '<span class="mono" style="font-size:0.7rem;color:var(--text-muted);">' + t('graph.processedTime') + ' ' + formatDateMs(v.processed_time) + '</span>'
           + (i === 0 ? '<span class="badge badge-info" style="font-size:0.6875rem;">' + t('entities.latest') + '</span>' : '')
+          + (hasDiff ? '<span class="badge badge-primary" style="font-size:0.6875rem;">' + t('entities.changed') + '</span>' : '')
           + '</div>'
           + '<div style="margin-top:0.25rem;font-weight:500;font-size:0.875rem;">' + escapeHtml(v.name || '-') + '</div>'
-          + '<div style="margin-top:0.125rem;color:var(--text-secondary);font-size:0.8125rem;" class="truncate">' + escapeHtml(truncate(v.content || '', 100)) + '</div>';
+          + '<div style="margin-top:0.125rem;color:var(--text-secondary);font-size:0.8125rem;" class="truncate">' + escapeHtml(truncate(v.content || '', 100)) + '</div>'
+          + renderContentDiffInline(v, prev);
       },
       renderDiff: function(v, prev) {
         if (!prev || v.name === prev.name) return '';
@@ -464,12 +541,82 @@
           + '</div>';
       },
       renderBody: function(v) {
+        var idx = versions.indexOf(v);
+        var sortedIdx = -1;
+        var sorted = versions.slice().sort(function(a, b) {
+          return (b.processed_time ? new Date(b.processed_time).getTime() : 0) - (a.processed_time ? new Date(a.processed_time).getTime() : 0);
+        });
+        sortedIdx = sorted.indexOf(v);
+        var diffContainerId = 'version-fulldiff-' + sortedIdx;
+        var hasPrev = sortedIdx < sorted.length - 1;
+
         return '<div class="md-content" style="background:var(--bg-input);border:1px solid var(--border-color);border-radius:0.375rem;padding:0.75rem;">'
           + renderMarkdown(v.content || '')
-          + '</div>';
+          + '</div>'
+          + (hasPrev
+            ? '<button class="btn btn-secondary" style="margin-top:0.5rem;font-size:0.75rem;padding:0.25rem 0.5rem;" onclick="window.__loadVersionDiff(\'' + diffContainerId + '\',' + sortedIdx + ')">'
+              + '<i data-lucide="git-compare" style="width:12px;height:12px;vertical-align:middle;margin-right:4px;"></i>'
+              + t('entities.showDiff')
+              + '</button>'
+              + '<div id="' + diffContainerId + '" style="margin-top:0.5rem;"></div>'
+            : '');
+      },
+      onExpand: function(versionIdx, sorted) {
+        // Auto-load diff on first expand
       },
     });
   }
+
+  // Expose diff loader for onclick
+  window.__loadVersionDiff = function(containerId, sortedIdx) {
+    var container = document.getElementById(containerId);
+    if (!container || container.dataset.loaded) return;
+    // Find the overlay by walking up
+    var versionsContainer = container.closest('#versions-container');
+    if (!versionsContainer) return;
+    var overlayEl = versionsContainer.closest('.modal-overlay') || versionsContainer.closest('.side-panel');
+    if (!overlayEl) return;
+    // Reconstruct sorted versions from DOM
+    var familyIdEl = overlayEl.querySelector('[data-family-id]');
+    if (!familyIdEl) return;
+    var famId = familyIdEl.getAttribute('data-family-id');
+    var graphId = state.currentGraphId;
+
+    state.api.entityVersions(famId, graphId).then(function(res) {
+      var versions = res.data || [];
+      var sorted = versions.slice().sort(function(a, b) {
+        return (b.processed_time ? new Date(b.processed_time).getTime() : 0) - (a.processed_time ? new Date(a.processed_time).getTime() : 0);
+      });
+      var current = sorted[sortedIdx];
+      var prev = sorted[sortedIdx + 1];
+      if (!prev) { container.innerHTML = ''; return; }
+
+      container.dataset.loaded = 'true';
+      container.innerHTML = '<div style="padding:0.5rem;color:var(--text-muted);font-size:0.75rem;">Loading diff...</div>';
+
+      state.api.entityVersionDiff(famId, prev.absolute_id, current.absolute_id, graphId).then(function(diffRes) {
+        var sections = diffRes.data && diffRes.data.sections;
+        if (!sections) { container.innerHTML = ''; return; }
+        var sectionHtml = '';
+        Object.keys(sections).forEach(function(key) {
+          var s = sections[key];
+          if (!s.changed) return;
+          sectionHtml += '<div style="margin-bottom:0.5rem;">'
+            + '<div style="font-size:0.75rem;font-weight:600;color:var(--text-primary);margin-bottom:0.125rem;">' + escapeHtml(key) + '</div>';
+          if (s.old) {
+            sectionHtml += '<div style="color:var(--error);font-size:0.8125rem;text-decoration:line-through;opacity:0.7;padding:2px 0.5rem;background:rgba(239,68,68,0.06);border-radius:0.25rem;margin-bottom:2px;">' + escapeHtml(s.old) + '</div>';
+          }
+          if (s['new']) {
+            sectionHtml += '<div style="color:var(--success);font-size:0.8125rem;padding:2px 0.5rem;background:rgba(34,197,94,0.06);border-radius:0.25rem;">' + escapeHtml(s['new']) + '</div>';
+          }
+          sectionHtml += '</div>';
+        });
+        container.innerHTML = sectionHtml
+          ? '<div style="border-left:3px solid var(--primary);padding:0.5rem;background:var(--bg-input);border-radius:0 0.375rem 0.375rem 0;">' + sectionHtml + '</div>'
+          : '<div style="color:var(--text-muted);font-size:0.8125rem;padding:0.25rem 0;">No content changes</div>';
+      });
+    });
+  };
 
   // ---- Relations List ----
 
@@ -491,6 +638,7 @@
                 <span class="badge badge-primary" style="font-size:0.6875rem;">${escapeHtml(direction)}</span>
                 <span class="mono" style="font-size:0.75rem;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(otherId || t('entities.unknown'))}</span>
                 <span class="mono" style="font-size:0.6875rem;color:var(--text-muted);">${formatDate(r.event_time)}</span>
+                <span class="mono" style="font-size:0.65rem;color:var(--text-muted);">${formatDateMs(r.processed_time)}</span>
               </div>
             </div>
           </div>
@@ -518,6 +666,7 @@
         if (entities.length < BATCH_SIZE) {
           allHasMore = false;
         }
+        _cachedGraphId = graphId;
       }
     } finally {
       allLoading = false;
@@ -689,8 +838,8 @@
   }
 
   async function resetToListAll() {
-    // If we have cached data, just re-render from cache (no API call)
-    if (allEntities.length > 0 && !isSearchMode) {
+    // If we have cached data AND graph hasn't changed, just re-render from cache (no API call)
+    if (allEntities.length > 0 && !isSearchMode && _cachedGraphId === state.currentGraphId) {
       renderEntityTable();
       const searchInput = document.getElementById('entity-search-input');
       if (searchInput) searchInput.value = '';
@@ -809,7 +958,7 @@
 
   async function openBatchDeleteEntities() {
     const ids = getSelectedEntityIds();
-    if (!ids.length) { showToast(t('entities.selectEntities'), 'warn'); return; }
+    if (!ids.length) { showToast(t('entities.selectEntities'), 'warning'); return; }
     const ok = await showConfirm({ message: t('entities.deleteConfirm') + ' (' + ids.length + ')', destructive: true });
     if (!ok) return;
     state.api.batchDeleteEntities(ids, false, state.currentGraphId).then(res => {
@@ -821,7 +970,7 @@
 
   async function openMergeEntities() {
     const ids = getSelectedEntityIds();
-    if (ids.length < 2) { showToast(t('entities.selectEntities') + ' (>=2)', 'warn'); return; }
+    if (ids.length < 2) { showToast(t('entities.selectEntities') + ' (>=2)', 'warning'); return; }
     const target = ids[0];
     const sources = ids.slice(1);
     const ok = await showConfirm({ message: t('entities.mergeConfirm') });
@@ -849,8 +998,8 @@
 
     bindSearchEvents(container);
 
-    // If cache has data, render immediately without API call
-    if (allEntities.length > 0 && !isSearchMode) {
+    // If cache has data AND graph hasn't changed, render immediately without API call
+    if (allEntities.length > 0 && !isSearchMode && _cachedGraphId === state.currentGraphId) {
       renderEntityTable();
       if (window.lucide) lucide.createIcons({ nodes: [container] });
       return;

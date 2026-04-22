@@ -177,6 +177,7 @@ def episode_to_dict(c: Episode) -> Dict[str, Any]:
         "id": c.absolute_id,  # 向后兼容
         "absolute_id": c.absolute_id,
         "content": c.content,
+        "source_text": getattr(c, "source_text", "") or "",
         "event_time": c.event_time.isoformat() if c.event_time else None,
         "processed_time": c.processed_time.isoformat() if hasattr(c, 'processed_time') and c.processed_time else None,
         "source_document": getattr(c, "source_document", "") or getattr(c, "doc_name", "") or "",
@@ -257,7 +258,12 @@ def _score_entity_versions_against_time(family_id: str, time_point: datetime, pr
         delta_seconds = abs((vt - target).total_seconds())
         direction_bias = 0 if vt <= target else 1
         scored.append((delta_seconds, direction_bias, version))
-    scored.sort(key=lambda item: (item[0], item[1], -_normalize_time_for_compare(item[2].processed_time).timestamp()))
+    def _sort_key(item):
+        pt = item[2].processed_time
+        ts = _normalize_time_for_compare(pt).timestamp() if pt else 0.0
+        return (item[0], item[1], -ts)
+
+    scored.sort(key=_sort_key)
     return scored
 
 

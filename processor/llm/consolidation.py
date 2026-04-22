@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from ..utils import wprint
+from ..utils import wprint_info
 from .prompts import (
     ANALYZE_ENTITY_CANDIDATES_PRELIMINARY_SYSTEM_PROMPT,
     RESOLVE_ENTITY_CANDIDATES_BATCH_SYSTEM_PROMPT,
@@ -126,7 +126,7 @@ class _ConsolidationMixin:
             return result
 
         except Exception as e:
-            wprint(f"  初步筛选出错: {e}")
+            wprint_info(f"  初步筛选出错: {e}")
             # 出错时默认 no_action，避免误合并
             return {
                 "possible_merges": [],
@@ -238,7 +238,7 @@ class _ConsolidationMixin:
             return result
 
         except Exception as e:
-            wprint(f"  精细化判断出错: {e}")
+            wprint_info(f"  精细化判断出错: {e}")
             return {
                 "action": "no_action",
                 "reason": f"判断出错: {str(e)}",
@@ -271,6 +271,12 @@ class _ConsolidationMixin:
 
         candidates_str = []
         for idx, candidate in enumerate(candidates, 1):
+            match_type = candidate.get('name_match_type', 'none')
+            match_type_note = ""
+            if match_type == "substring":
+                match_type_note = "\n- name_match_type: substring（一个名称是另一个的子串，可能是简称/别名）"
+            elif match_type == "exact":
+                match_type_note = "\n- name_match_type: exact（核心名称完全相同）"
             candidates_str.append(
                 f"""候选{idx}:
 - family_id: {candidate.get('family_id', '')}
@@ -278,7 +284,7 @@ class _ConsolidationMixin:
 - version_count: {candidate.get('version_count', 1)}
 - source_document: {candidate.get('source_document', '') or '(未知文档)'}
 - lexical_score: {candidate.get('lexical_score', 0):.4f}
-- dense_score: {candidate.get('dense_score', 0):.4f}
+- dense_score: {candidate.get('dense_score', 0):.4f}{match_type_note}
 - content: {candidate.get('content', '')}"""
             )
 
@@ -298,7 +304,7 @@ class _ConsolidationMixin:
   "match_existing_id": "若应合并到已有实体则填写 family_id，否则为空字符串",
   "update_mode": "reuse_existing | merge_into_latest | create_new",
   "merged_name": "若需要，给出最终名称，否则为空字符串",
-  "merged_content": "若需要更新/合并，给出最终内容，否则为空字符串",
+  "merged_content": "（无需填写，系统会自动增量合并）",
   "relations_to_create": [
     {{"family_id": "候选family_id", "relation_content": "与当前实体的自然语言关系"}}
   ],
@@ -310,6 +316,7 @@ class _ConsolidationMixin:
 - 若不合并，但与若干候选存在明确关系，可放入 relations_to_create
 - 必须参考 source_document；跨文档时只有在明确是同一概念实体时才允许合并或融合内容
 - 若信息不足，confidence 降低
+- **专注于对齐判断**：你只需要判断实体是否同一、应合并还是新建；内容合并由系统自动完成
 - 只输出一个 ```json ... ``` 代码块"""
 
         try:

@@ -5,7 +5,7 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from ..models import Entity
-from ..utils import wprint
+from ..utils import wprint_info
 
 logger = logging.getLogger(__name__)
 
@@ -104,7 +104,7 @@ class AgentQueryMixin:
             result = self._call_llm(prompt="", messages=messages)
             return (result or "").strip()
         except Exception as e:
-            wprint(f"实体解释失败: {e}")
+            wprint_info(f"实体解释失败: {e}")
             return entity.content[:300]
 
     async def generate_suggestions(
@@ -152,7 +152,7 @@ class AgentQueryMixin:
             )
             return result
         except Exception as e:
-            wprint(f"建议生成失败: {e}")
+            wprint_info(f"建议生成失败: {e}")
             return []
 
     async def _parse_query_intent(self, question: str) -> Dict[str, Any]:
@@ -176,7 +176,7 @@ class AgentQueryMixin:
             )
             return result if isinstance(result, dict) else {"query_type": "hybrid", "query_text": question}
         except Exception as e:
-            wprint(f"[DeepDream] 查询意图解析失败，回退到混合查询: {e}")
+            wprint_info(f"[DeepDream] 查询意图解析失败，回退到混合查询: {e}")
             return {"query_type": "hybrid", "query_text": question}
 
     async def _execute_query(self, intent: Dict[str, Any], graph_id: str) -> Dict[str, Any]:

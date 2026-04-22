@@ -342,6 +342,25 @@ def handle_graphs():
         return err(str(e), 500)
 
 
+@concepts_bp.route("/api/v1/graphs/<graph_id>/clear", methods=["POST"])
+def clear_graph(graph_id: str):
+    """清空图谱数据（保留图谱本身）。"""
+    try:
+        from server.registry import GraphRegistry
+        registry = current_app.config["registry"]
+        GraphRegistry.validate_graph_id(graph_id)
+        if graph_id not in registry.list_graphs():
+            return err(f"图谱 '{graph_id}' 不存在", 404)
+        registry.clear_graph(graph_id)
+        return ok({"graph_id": graph_id, "message": "图谱已清空"})
+    except KeyError as e:
+        return err(str(e), 404)
+    except ValueError as e:
+        return err(str(e), 400)
+    except Exception as e:
+        return err(str(e), 500)
+
+
 @concepts_bp.route("/api/v1/graphs/<graph_id>", methods=["GET", "DELETE"])
 def handle_single_graph(graph_id: str):
     """GET: 获取单个图谱详情。DELETE: 删除指定图谱。"""

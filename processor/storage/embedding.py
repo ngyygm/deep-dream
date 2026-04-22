@@ -5,7 +5,7 @@ from typing import List, Optional, Union
 import threading
 import numpy as np
 
-from ..utils import wprint
+from ..utils import wprint_info
 
 
 class EmbeddingClient:
@@ -37,7 +37,7 @@ class EmbeddingClient:
             
             if self.model_path and self.use_local:
                 # 使用本地模型路径
-                wprint(f"加载本地embedding模型: {self.model_path}")
+                wprint_info(f"加载本地embedding模型: {self.model_path}")
                 self.model = SentenceTransformer(
                     self.model_path,
                     device=self.device,
@@ -45,7 +45,7 @@ class EmbeddingClient:
                 )
             elif self.model_name:
                 # 使用HuggingFace模型名称
-                wprint(f"加载HuggingFace embedding模型: {self.model_name}")
+                wprint_info(f"加载HuggingFace embedding模型: {self.model_name}")
                 self.model = SentenceTransformer(
                     self.model_name,
                     device=self.device,
@@ -53,18 +53,18 @@ class EmbeddingClient:
                 )
             else:
                 # 使用默认模型
-                wprint("使用默认embedding模型: all-MiniLM-L6-v2")
+                wprint_info("使用默认embedding模型: all-MiniLM-L6-v2")
                 self.model = SentenceTransformer(
                     'all-MiniLM-L6-v2',
                     device=self.device
                 )
         except ImportError:
             self.model = None
-            wprint("警告：未安装sentence-transformers库，将使用文本相似度搜索")
-            wprint("安装命令: pip install sentence-transformers")
+            wprint_info("警告：未安装sentence-transformers库，将使用文本相似度搜索")
+            wprint_info("安装命令: pip install sentence-transformers")
         except Exception as e:
             self.model = None
-            wprint(f"警告：embedding 模型加载失败，将使用文本相似度搜索: {e}")
+            wprint_info(f"警告：embedding 模型加载失败，将使用文本相似度搜索: {e}")
     
     def encode(self, texts: Union[str, List[str]], batch_size: int = 32) -> np.ndarray:
         """
@@ -107,7 +107,7 @@ class EmbeddingClient:
                     convert_to_numpy=True
                 )
             except Exception as e:
-                wprint(f"Embedding编码错误: {e}")
+                wprint_info(f"Embedding编码错误: {e}")
                 return None
     
     def is_available(self) -> bool:

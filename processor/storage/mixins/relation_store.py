@@ -93,6 +93,8 @@ class RelationStoreMixin:
             confidence=row[12] if len(row) > 12 else None,
             valid_at=self._safe_parse_datetime(row[13]) if len(row) > 13 and row[13] else None,
             invalid_at=self._safe_parse_datetime(row[14]) if len(row) > 14 and row[14] else None,
+            content_format=row[15] if len(row) > 15 else 'plain',
+            provenance=row[16] if len(row) > 16 else None,
         )
 
     # ------------------------------------------------------------------
@@ -166,6 +168,11 @@ class RelationStoreMixin:
                     cursor.execute("""
                         UPDATE relations SET invalid_at = ?
                         WHERE family_id = ? AND id != ? AND invalid_at IS NULL
+                    """, (relation.event_time.isoformat(), relation.family_id, relation.absolute_id))
+                    # 同步更新 concepts 表中旧版本的 invalid_at
+                    cursor.execute("""
+                        UPDATE concepts SET invalid_at = ?
+                        WHERE family_id = ? AND id != ? AND role = 'relation' AND invalid_at IS NULL
                     """, (relation.event_time.isoformat(), relation.family_id, relation.absolute_id))
                 except Exception as exc:
                     logger.warning("FTS relation invalid_at update failed: %s", exc)
@@ -512,9 +519,9 @@ class RelationStoreMixin:
             ORDER BY r1.processed_time DESC
         """
 
-        if offset is not None and offset > 0:
-            query += f" OFFSET {int(offset)}"
-        if limit is not None:
+        if limit is not None and offset is not None and offset > 0:
+            query += f" LIMIT {int(limit)} OFFSET {int(offset)}"
+        elif limit is not None:
             query += f" LIMIT {int(limit)}"
 
         cursor.execute(query)
@@ -1425,10 +1432,19 @@ class RelationStoreMixin:
         with self._write_lock:
             conn = self._get_conn()
             cursor = conn.cursor()
+            now_iso = datetime.now(timezone.utc).isoformat()
             cursor.execute("""
                 UPDATE relations SET invalid_at = ?
                 WHERE family_id = ? AND invalid_at IS NULL
-            """, (datetime.now(timezone.utc).isoformat(), family_id))
+            """, (now_iso, family_id))
+            # 同步更新 concepts 表
+            try:
+                cursor.execute("""
+                    UPDATE concepts SET invalid_at = ?
+                    WHERE family_id = ? AND role = 'relation' AND invalid_at IS NULL
+                """, (now_iso, family_id))
+            except Exception as exc:
+                logger.debug("concept invalidate sync failed: %s", exc)
             conn.commit()
             return cursor.rowcount
 
@@ -1593,5 +1609,20 @@ class RelationStoreMixin:
             else:
                 return 0
             affected = cursor.rowcount
+            # Sync connects field in concepts table
+            if affected > 0:
+                try:
+                    cursor.execute(
+                        "SELECT id, entity1_absolute_id, entity2_absolute_id FROM relations WHERE family_id = ?",
+                        (family_id,),
+                    )
+                    for row in cursor.fetchall():
+                        connects = json.dumps([row[1], row[2]])
+                        cursor.execute(
+                            "UPDATE concepts SET connects = ? WHERE id = ? AND role = 'relation'",
+                            (connects, row[0]),
+                        )
+                except Exception as exc:
+                    logger.debug("concept connects sync failed in redirect: %s", exc)
             conn.commit()
             return affected

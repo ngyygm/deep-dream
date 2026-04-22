@@ -21,7 +21,7 @@ import numpy as np
 import difflib
 
 from ..models import ContentPatch, Episode, Entity, Relation
-from ..utils import clean_markdown_code_blocks, wprint, calculate_jaccard_similarity
+from ..utils import clean_markdown_code_blocks, wprint_info, calculate_jaccard_similarity
 from .mixins.entity_store import EntityStoreMixin
 from .mixins.relation_store import RelationStoreMixin
 from .mixins.episode_store import EpisodeStoreMixin
@@ -46,12 +46,13 @@ class StorageManager(EntityStoreMixin, RelationStoreMixin, EpisodeStoreMixin, Co
     _ENTITY_SELECT = (
         "id, family_id, name, content, event_time, processed_time, "
         "episode_id, source_document, embedding, summary, attributes, "
-        "confidence, valid_at, invalid_at"
+        "confidence, valid_at, invalid_at, content_format"
     )
     _RELATION_SELECT = (
         "id, family_id, entity1_absolute_id, entity2_absolute_id, "
         "content, event_time, processed_time, episode_id, source_document, "
-        "embedding, summary, attributes, confidence, valid_at, invalid_at"
+        "embedding, summary, attributes, confidence, valid_at, invalid_at, "
+        "content_format, provenance"
     )
 
     def _row_to_entity(self, row) -> Entity:
@@ -71,6 +72,7 @@ class StorageManager(EntityStoreMixin, RelationStoreMixin, EpisodeStoreMixin, Co
             confidence=row[11] if len(row) > 11 else None,
             valid_at=self._safe_parse_datetime(row[12]) if len(row) > 12 and row[12] else None,
             invalid_at=self._safe_parse_datetime(row[13]) if len(row) > 13 and row[13] else None,
+            content_format=row[14] if len(row) > 14 else 'plain',
         )
 
     def _row_to_relation(self, row) -> Relation:
@@ -91,6 +93,8 @@ class StorageManager(EntityStoreMixin, RelationStoreMixin, EpisodeStoreMixin, Co
             confidence=row[12] if len(row) > 12 else None,
             valid_at=self._safe_parse_datetime(row[13]) if len(row) > 13 and row[13] else None,
             invalid_at=self._safe_parse_datetime(row[14]) if len(row) > 14 and row[14] else None,
+            content_format=row[15] if len(row) > 15 else 'plain',
+            provenance=row[16] if len(row) > 16 else None,
         )
 
     def __init__(self, storage_path: str, embedding_client=None,
@@ -592,9 +596,9 @@ class StorageManager(EntityStoreMixin, RelationStoreMixin, EpisodeStoreMixin, Co
         if old_journal.is_dir() and not new_journal.exists():
             try:
                 old_journal.rename(new_journal)
-                wprint(f"[迁移] {old_journal} → {new_journal}")
+                wprint_info(f"[迁移] {old_journal} → {new_journal}")
             except OSError as e:
-                wprint(f"[迁移警告] remember_journal 重命名失败: {e}")
+                wprint_info(f"[迁移警告] remember_journal 重命名失败: {e}")
 
         # 1.5 迁移旧的任务独立 JSON 文件 → queue.jsonl（仅保留未完成的任务）
         tasks_dir = self.storage_path / "tasks"
@@ -618,7 +622,7 @@ class StorageManager(EntityStoreMixin, RelationStoreMixin, EpisodeStoreMixin, Co
                             logger.debug("task json parse failed: %s", exc)
                     if lines:
                         queue_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
-                        wprint(f"[迁移] {len(old_json_files)} 个旧任务文件 → queue.jsonl（{migrated} 个未完成）")
+                        wprint_info(f"[迁移] {len(old_json_files)} 个旧任务文件 → queue.jsonl（{migrated} 个未完成）")
                     # 清理旧的独立 JSON 文件
                     for jf in old_json_files:
                         try:
@@ -626,7 +630,7 @@ class StorageManager(EntityStoreMixin, RelationStoreMixin, EpisodeStoreMixin, Co
                         except Exception as exc:
                             logger.debug("task file unlink failed: %s", exc)
                 except Exception as e:
-                    wprint(f"[迁移警告] 任务文件迁移失败: {e}")
+                    wprint_info(f"[迁移警告] 任务文件迁移失败: {e}")
 
         # 2. 迁移 memory_caches/ → docs/
         old_cache_json = self.storage_path / "memory_caches" / "json"
@@ -670,7 +674,7 @@ class StorageManager(EntityStoreMixin, RelationStoreMixin, EpisodeStoreMixin, Co
                     if cache_id:
                         self._id_to_doc_hash[cache_id] = doc_hash
                 except Exception as e:
-                    wprint(f"[迁移警告] 跳过文件 {json_file}: {e}")
+                    wprint_info(f"[迁移警告] 跳过文件 {json_file}: {e}")
 
         # 3. 迁移 originals/ 中独立保存的文件（未被 memory_caches 引用的）
         old_originals = self.storage_path / "originals"
@@ -685,7 +689,7 @@ class StorageManager(EntityStoreMixin, RelationStoreMixin, EpisodeStoreMixin, Co
                     if not original_path.exists():
                         original_path.write_text(text, encoding="utf-8")
                 except Exception as e:
-                    wprint(f"[迁移警告] 跳过文件 {txt_file}: {e}")
+                    wprint_info(f"[迁移警告] 跳过文件 {txt_file}: {e}")
 
         # 4. 构建新结构中已有的 id→doc_hash 映射
         if self.docs_dir.is_dir():
@@ -842,6 +846,11 @@ class StorageManager(EntityStoreMixin, RelationStoreMixin, EpisodeStoreMixin, Co
             conn.commit()
             return canonical_target
 
+    def redirect_entity_relations(self, old_family_id: str, new_family_id: str) -> int:
+        """Re-point relations from old entity to new entity (for cross-window dedup)."""
+        # StorageManager doesn't have relation endpoint fields in SQLite
+        # This is a no-op for SQLite backend; Neo4j backend handles it
+        return 0
 
     # ========== Episode 操作 ==========
 
@@ -1035,6 +1044,22 @@ class StorageManager(EntityStoreMixin, RelationStoreMixin, EpisodeStoreMixin, Co
     
     # ========== Relation 操作 ==========
     
+
+    def get_stats(self) -> Dict[str, Any]:
+        """返回当前图谱的基础统计：实体数和关系数。
+
+        用于 GraphRegistry.get_graph_info() 显示图谱列表信息。
+        """
+        try:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(DISTINCT family_id) FROM entities WHERE invalid_at IS NULL")
+            entity_count = cursor.fetchone()[0]
+            cursor.execute("SELECT COUNT(DISTINCT family_id) FROM relations WHERE invalid_at IS NULL")
+            relation_count = cursor.fetchone()[0]
+            return {"entities": entity_count, "relations": relation_count}
+        except Exception:
+            return {"entities": 0, "relations": 0}
 
     def get_graph_statistics(self) -> Dict[str, Any]:
         """返回图谱结构统计数据"""

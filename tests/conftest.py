@@ -40,20 +40,33 @@ def _load_real_llm_config():
 
 
 def pytest_configure(config):
-    """Register the real_llm marker."""
+    """Register custom markers."""
     config.addinivalue_line(
         "markers", "real_llm: test requires USE_REAL_LLM=1"
+    )
+    config.addinivalue_line(
+        "markers", "slow: test takes > 5 seconds"
+    )
+    config.addinivalue_line(
+        "markers", "e2e: test requires a running Deep-Dream server"
     )
 
 
 def pytest_collection_modifyitems(config, items):
-    """Skip @pytest.mark.real_llm tests when USE_REAL_LLM is not set."""
-    if os.environ.get("USE_REAL_LLM") == "1":
-        return
-    skip_real = pytest.mark.skip(reason="Set USE_REAL_LLM=1 to run")
-    for item in items:
-        if "real_llm" in item.keywords:
-            item.add_marker(skip_real)
+    """Skip marker-gated tests when their prerequisites are not met."""
+    # Skip real_llm tests when USE_REAL_LLM is not set
+    if os.environ.get("USE_REAL_LLM") != "1":
+        skip_real = pytest.mark.skip(reason="Set USE_REAL_LLM=1 to run")
+        for item in items:
+            if "real_llm" in item.keywords:
+                item.add_marker(skip_real)
+
+    # Skip e2e tests when DEEP_DREAM_URL is not set
+    if not os.environ.get("DEEP_DREAM_URL"):
+        skip_e2e = pytest.mark.skip(reason="Set DEEP_DREAM_URL to run e2e tests")
+        for item in items:
+            if "e2e" in item.keywords:
+                item.add_marker(skip_e2e)
 
 
 @pytest.fixture(scope="session")

@@ -4,6 +4,9 @@
    ========================================== */
 
 (function() {
+  // ---- Smart refresh state ----
+  let _hasActiveTasks = true;
+
   // ---- Helpers ----
 
   function progressClass(status) {
@@ -28,6 +31,7 @@
         <!-- Text Input Tab -->
         <div id="upload-tab-text">
           <textarea class="input" id="memory-text" placeholder="${t('memory.textPlaceholder')}" style="min-height:200px;"></textarea>
+          <div id="text-counter" style="display:flex;justify-content:flex-end;font-size:0.75rem;color:var(--text-muted);padding:0.25rem 0.5rem 0;">${t('memory.charCount') || 'Characters'}: 0</div>
           <div style="display:flex;gap:1rem;align-items:flex-end;margin-top:0.75rem;flex-wrap:wrap;">
             <div style="flex:1;min-width:180px;">
               <label class="form-label">${t('memory.sourceName')}</label>
@@ -129,11 +133,18 @@
     // Text submit
     document.getElementById('btn-submit-text').addEventListener('click', submitText);
     // Ctrl+Enter / Cmd+Enter to submit text
-    document.getElementById('memory-text').addEventListener('keydown', (e) => {
+    const memoryTextEl = document.getElementById('memory-text');
+    memoryTextEl.addEventListener('keydown', (e) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
         e.preventDefault();
         submitText();
       }
+    });
+    // Character counter
+    const counterEl = document.getElementById('text-counter');
+    memoryTextEl.addEventListener('input', () => {
+      const len = (memoryTextEl.value || '').length;
+      if (counterEl) counterEl.textContent = (t('memory.charCount') || 'Characters') + ': ' + len.toLocaleString();
     });
 
     // ---- Multi-file handling ----
@@ -339,7 +350,7 @@
         const s6p = Math.min(1, Math.max(0, task.step6_progress ?? 0));
         const s7p = Math.min(1, Math.max(0, task.step7_progress ?? 0));
         const smp = Math.min(1, Math.max(0, task.main_progress ?? 0));
-        const overallP = Math.min(1, Math.max(0, task.step7_progress ?? task.progress ?? 0));
+        const overallP = Math.min(1, Math.max(0, (smp + s6p + s7p) / 3));
         let progressCell;
         if (hasTriple) {
           progressCell = tripleProgressBar({
@@ -428,6 +439,11 @@
       const res = await state.api.rememberTasks(state.currentGraphId);
       const tasks = res.data?.tasks || [];
       const count = res.data?.count ?? tasks.length;
+
+      // Track active tasks for smart refresh
+      const hadActive = _hasActiveTasks;
+      _hasActiveTasks = tasks.some(t => t.status === 'running' || t.status === 'queued' || t.status === 'paused');
+      if (hadActive !== _hasActiveTasks && typeof scheduleRefresh === 'function') scheduleRefresh();
 
       const el = document.getElementById('task-list-wrapper');
       if (!el) return;
@@ -526,7 +542,7 @@
       const s6p = Math.min(1, Math.max(0, task.step6_progress ?? 0));
       const s7p = Math.min(1, Math.max(0, task.step7_progress ?? 0));
       const smp = Math.min(1, Math.max(0, task.main_progress ?? 0));
-      const overallPd = Math.min(1, Math.max(0, task.step7_progress ?? task.progress ?? 0));
+      const overallPd = Math.min(1, Math.max(0, (smp + s6p + s7p) / 3));
       let progressDetail;
       if (hasTriple) {
         progressDetail = tripleProgressBar({
@@ -680,6 +696,7 @@
           <td><span class="mono" title="${escapeHtml(d.doc_hash)}">${escapeHtml(d.doc_hash || '-')}</span></td>
           <td>${escapeHtml(truncate(d.source_document || d.doc_name || '-', 32))}</td>
           <td>${formatDate(d.event_time)}</td>
+          <td>${formatDateMs(d.processed_time)}</td>
           <td class="mono">${d.text_length != null ? d.text_length.toLocaleString() : '-'}</td>
           <td><button class="btn btn-secondary btn-sm doc-detail-btn" data-filename="${escapeHtml(filename)}" ${!filename ? 'disabled' : ''}>${t('common.detail')}</button></td>
         </tr>
@@ -700,6 +717,7 @@
               <th>${t('memory.docHash')}</th>
               <th>${t('memory.taskSource')}</th>
               <th>${t('memory.docTime')}</th>
+              <th>${t('memory.processedTime')}</th>
               <th>${t('memory.docTextLength')}</th>
               <th>${t('common.detail')}</th>
             </tr>
@@ -859,10 +877,15 @@
     loadTasks();
     loadDocs();
 
-    // Auto-refresh task list every 3 seconds (less aggressive to avoid flicker)
-    state.refreshTimers.memory = setInterval(() => {
-      refreshTasks();
-    }, 3000);
+    // Smart auto-refresh: fast (3s) when tasks active, slow (15s) when idle
+    function scheduleRefresh() {
+      if (state.refreshTimers.memory) clearInterval(state.refreshTimers.memory);
+      const interval = _hasActiveTasks ? 3000 : 15000;
+      state.refreshTimers.memory = setInterval(() => {
+        refreshTasks();
+      }, interval);
+    }
+    scheduleRefresh();
 
     // Re-render icons
     if (window.lucide) lucide.createIcons();

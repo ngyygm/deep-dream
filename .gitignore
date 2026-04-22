@@ -1,5 +1,4 @@
-# 排除 docs、graph、data 目录（含书籍等本地数据）
-docs/
+# 排除运行时数据目录
 graph/
 data/
 
@@ -46,3 +45,15 @@ distill_pipeline/
 .DS_Store
 .claude/ralph-loop.local.md
 .ralphrc
+
+# 基准测试结果
+bench_*.json
+
+# 实验结果产物（代码保留）
+experiments/*/results/
+
+# Neo4j bolt 协议误创建的目录
+bolt:
+
+# 已合并到 scripts/
+bin/

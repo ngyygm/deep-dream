@@ -343,18 +343,22 @@
         <table class="data-table">
           <thead>
             <tr>
-              <th style="width:20%;">${t('common.name')}</th>
-              <th style="width:40%;">${t('common.content')}</th>
-              <th style="width:20%;">${t('common.time')}</th>
-              <th style="width:20%;">${t('common.source')}</th>
+              <th style="width:8%;">Score</th>
+              <th style="width:18%;">${t('common.name')}</th>
+              <th style="width:34%;">${t('common.content')}</th>
+              <th style="width:12%;">${t('search.eventTime')}</th>
+              <th style="width:12%;">${t('search.processedTime')}</th>
+              <th style="width:16%;">${t('common.source')}</th>
             </tr>
           </thead>
           <tbody>
             ${entities.map((e, i) => `
               <tr class="entity-row" data-entity-index="${i}" style="cursor:pointer;">
-                <td><strong>${escapeHtml(e.name || '-')}</strong></td>
+                <td><span class="badge ${(e._score || 0) >= 0.7 ? 'badge-success' : (e._score || 0) >= 0.3 ? 'badge-warning' : 'badge-info'}" style="font-size:0.7rem;">${typeof e._score === 'number' ? (e._score * 100).toFixed(0) + '%' : '-'}</span></td>
+                <td><strong>${escapeHtml(e.name || '-')}</strong>${e.version_count > 1 ? ' <span class="badge badge-primary" style="font-size:0.65rem;">v' + e.version_count + '</span>' : ''}</td>
                 <td class="truncate" title="${escapeHtml(e.content || '')}">${escapeHtml(truncate(e.content, 100))}</td>
                 <td class="mono" style="font-size:0.8rem;">${formatDate(e.event_time)}</td>
+                <td class="mono" style="font-size:0.8rem;">${formatDateMs(e.processed_time)}</td>
                 <td class="truncate" title="${escapeHtml(e.source_document || '')}">${escapeHtml(truncate(e.source_document, 40))}</td>
               </tr>
             `).join('')}
@@ -375,11 +379,12 @@
         <table class="data-table">
           <thead>
             <tr>
-              <th style="width:15%;">${t('search.entity1')}</th>
-              <th style="width:40%;">${t('common.content')}</th>
-              <th style="width:15%;">${t('search.entity2')}</th>
-              <th style="width:15%;">${t('common.time')}</th>
-              <th style="width:15%;">${t('common.source')}</th>
+              <th style="width:13%;">${t('search.entity1')}</th>
+              <th style="width:34%;">${t('common.content')}</th>
+              <th style="width:13%;">${t('search.entity2')}</th>
+              <th style="width:12%;">${t('search.eventTime')}</th>
+              <th style="width:12%;">${t('search.processedTime')}</th>
+              <th style="width:16%;">${t('common.source')}</th>
             </tr>
           </thead>
           <tbody>
@@ -397,6 +402,7 @@
                   </span>
                 </td>
                 <td class="mono" style="font-size:0.8rem;">${formatDate(r.event_time)}</td>
+                <td class="mono" style="font-size:0.8rem;">${formatDateMs(r.processed_time)}</td>
                 <td class="truncate" title="${escapeHtml(r.source_document || '')}">${escapeHtml(truncate(r.source_document, 40))}</td>
               </tr>
             `).join('')}
