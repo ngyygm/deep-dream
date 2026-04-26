@@ -1,0 +1,1229 @@
+"""
+Relation-related routes extracted from server/api.py.
+
+All relation CRUD, search, path finding, and generic find/search endpoints.
+"""
+from __future__ import annotations
+
+import json
+import logging
+import re as _re
+import uuid
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Set
+
+# Shared pool for find_unified — avoids thread creation/destruction per request
+_shared_pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="find-unified")
+
+from flask import Blueprint, request
+
+from core.models import Entity, Relation
+from core.find.hybrid import HybridSearcher
+from core.find.graph_traversal import GraphTraversalSearcher
+from core.perf import _perf_timer
+
+_VALID_SEARCH_MODES = frozenset(("semantic", "bm25", "hybrid"))
+_VALID_RELATION_SCOPES = frozenset(("accumulated", "version_only", "all_versions"))
+_VALID_SIDES = frozenset(("entity1", "entity2"))
+
+from core.server.blueprints.helpers import (
+    ok, err, _get_processor, _get_graph_id,
+    entity_to_dict, relation_to_dict, enrich_relations,
+    enrich_entity_version_counts, enrich_relation_version_counts,
+    parse_time_point, _normalize_time_for_compare, _extract_candidate_ids,
+    run_async,
+)
+
+logger = logging.getLogger(__name__)
+
+relations_bp = Blueprint('relations', __name__)
+
+# Pre-compiled regex for stripping parenthetical annotations from entity names
+_PAREN_ANNOTATION_RE = _re.compile(r'[（(][^）)]+[）)]')  # keep in sync with core/remember/helpers.py
+
+
+def _get_searcher(storage):
+    """Get or create a cached HybridSearcher for the given storage."""
+    searcher = getattr(storage, '_hybrid_searcher', None)
+    if searcher is None:
+        searcher = HybridSearcher(storage)
+        storage._hybrid_searcher = searcher
+    return searcher
+
+
+# =========================================================
+# Find: 统一语义检索入口（推荐）
+# =========================================================
+@relations_bp.route("/api/v1/find", methods=["POST"])
+def find_unified():
+    """统一语义检索：用自然语言从总记忆图中唤醒相关的局部区域。
+
+    请求体:
+        query (str, 必填): 自然语言查询
+        similarity_threshold (float): 语义相似度阈值，默认 0.5
+        max_entities (int): 最大返回实体数，默认 20
+        max_relations (int): 最大返回关系数，默认 50
+        expand (bool): 是否从命中实体向外扩展邻域，默认 true
+        time_before (str, ISO): 只返回此时间之前的记忆
+        time_after (str, ISO): 只返回此时间之后的记忆
+
+    返回:
+        entities: 命中的概念实体列表
+        relations: 命中的概念关系列表
+    """
+    try:
+        body = request.get_json(silent=True) or {}
+        query = (body.get("query") or "").strip()
+        if not query:
+            return err("query 为必填字段", 400)
+
+        similarity_threshold = float(body.get("similarity_threshold", 0.5))
+        max_entities = int(body.get("max_entities", 20))
+        max_relations = int(body.get("max_relations", 50))
+        expand = body.get("expand", True)
+        time_before = body.get("time_before")
+        time_after = body.get("time_after")
+        reranker = (body.get("reranker", "rrf") or "rrf").strip().lower()
+
+        search_mode = (body.get("search_mode", "hybrid") or "hybrid").strip().lower()
+        if search_mode not in _VALID_SEARCH_MODES:
+            search_mode = "hybrid"
+
+        try:
+            time_before_dt = parse_time_point(time_before) if time_before else None
+            time_after_dt = parse_time_point(time_after) if time_after else None
+        except ValueError as ve:
+            return err(str(ve), 400)
+
+        processor = _get_processor()
+        storage = processor.storage
+
+        # 创建 HybridSearcher 一次，共享给实体和关系搜索
+        _hybrid_searcher = _get_searcher(storage) if search_mode == "hybrid" else None
+
+        # --- Step 1+2: Entity and relation recall run in parallel ---
+        entity_score_map: Dict[str, float] = {}
+        relation_score_map: Dict[str, float] = {}
+
+        def _recall_entities():
+            """Step 1: Entity recall by search_mode."""
+            with _perf_timer("find_unified | step1_entity_recall"):
+                if search_mode == "bm25":
+                    entities = storage.search_entities_by_bm25(query, limit=max_entities)
+                elif search_mode == "hybrid":
+                    hybrid_entities = _hybrid_searcher.search_entities(
+                        query_text=query, top_k=max_entities,
+                        semantic_threshold=similarity_threshold,
+                    )
+                    entities = []
+                    for e, score in hybrid_entities:
+                        entities.append(e)
+                        entity_score_map[e.absolute_id] = score
+                else:
+                    entities = storage.search_entities_by_similarity(
+                        query_name=query, query_content=query,
+                        threshold=similarity_threshold,
+                        max_results=max_entities,
+                        text_mode="name_and_content",
+                        similarity_method="embedding",
+                    )
+
+                # 核心名称前缀匹配补充
+                if len(query) >= 2 and len(query) <= 20 and entities:
+                    seen_fids = {getattr(e, 'family_id', '') for e in entities}
+                    _has_core = any(
+                        _PAREN_ANNOTATION_RE.sub('', getattr(e, 'name', '')).strip() == query
+                        or getattr(e, 'name', '').startswith(query + '（')
+                        or getattr(e, 'name', '').startswith(query + '(')
+                        for e in entities
+                    )
+                    if not _has_core:
+                        prefix_matches = storage.find_entity_by_name_prefix(query, limit=3)
+                        for e in prefix_matches:
+                            fid = getattr(e, 'family_id', '')
+                            if fid and fid not in seen_fids:
+                                seen_fids.add(fid)
+                                entities.insert(0, e)
+            return entities
+
+        def _recall_relations():
+            """Step 2: Relation recall by search_mode."""
+            with _perf_timer("find_unified | step2_relation_recall"):
+                if search_mode == "bm25":
+                    rels = storage.search_relations_by_bm25(query, limit=max_relations)
+                elif search_mode == "hybrid":
+                    hybrid_relations = _hybrid_searcher.search_relations(
+                        query_text=query, top_k=max_relations,
+                        semantic_threshold=similarity_threshold,
+                    )
+                    rels = []
+                    for r, score in hybrid_relations:
+                        rels.append(r)
+                        relation_score_map[r.absolute_id] = score
+                else:
+                    rels = storage.search_relations_by_similarity(
+                        query_text=query,
+                        threshold=similarity_threshold,
+                        max_results=max_relations,
+                    )
+            return rels
+
+        _ent_fut = _shared_pool.submit(_recall_entities)
+        _rel_fut = _shared_pool.submit(_recall_relations)
+        matched_entities = _ent_fut.result()
+        matched_relations = _rel_fut.result()
+
+        entity_abs_ids: Set[str] = {e.absolute_id for e in matched_entities}
+        relation_abs_ids: Set[str] = {r.absolute_id for r in matched_relations}
+        entities_by_abs: Dict[str, Entity] = {e.absolute_id: e for e in matched_entities}
+
+        # --- 第三步：从语义命中的关系中补充关联实体（批量获取） ---
+        # 关系端点实体获得关系分数的衰减值（避免默认1.0污染排序）
+        with _perf_timer("find_unified | step3_entity_completion"):
+            missing_abs_ids = set()
+            missing_source_scores: Dict[str, float] = {}  # abs_id → best relation score
+            for r in list(matched_relations):
+                r_score = relation_score_map.get(r.absolute_id, 0.0)
+                for abs_id in (r.entity1_absolute_id, r.entity2_absolute_id):
+                    if abs_id not in entity_abs_ids:
+                        missing_abs_ids.add(abs_id)
+                        # 保留最高的关联关系分数用于衰减赋分
+                        if abs_id not in missing_source_scores or r_score > missing_source_scores[abs_id]:
+                            missing_source_scores[abs_id] = r_score
+            if missing_abs_ids:
+                batch_entities = storage.get_entities_by_absolute_ids(list(missing_abs_ids))
+                for e in batch_entities:
+                    if e:
+                        entities_by_abs[e.absolute_id] = e
+                        entity_abs_ids.add(e.absolute_id)
+                        # 关系端点实体：使用关系分数 × 0.5 衰减（无关系分数则为0）
+                        if e.absolute_id not in entity_score_map:
+                            entity_score_map[e.absolute_id] = missing_source_scores.get(e.absolute_id, 0.0) * 0.5
+
+        # --- 第四步：图谱邻域扩展 ---
+        # 扩展实体/关系使用更低衰减分数（避免无分数实体默认1.0污染排序）
+        with _perf_timer("find_unified | step4_graph_expansion"):
+            if expand and entity_abs_ids:
+                expanded_rels = storage.get_relations_by_entity_absolute_ids(
+                    list(entity_abs_ids), limit=max_relations
+                )
+                # 批量获取扩展关系中的新实体
+                expand_missing = set()
+                for r in expanded_rels:
+                    if r.absolute_id not in relation_abs_ids:
+                        relation_abs_ids.add(r.absolute_id)
+                        matched_relations.append(r)
+                        # 扩展关系分数：取其端点实体最高分数 × 0.3 衰减
+                        if r.absolute_id not in relation_score_map:
+                            e1_score = entity_score_map.get(r.entity1_absolute_id, 0.0)
+                            e2_score = entity_score_map.get(r.entity2_absolute_id, 0.0)
+                            relation_score_map[r.absolute_id] = max(e1_score, e2_score) * 0.3
+                    for abs_id in (r.entity1_absolute_id, r.entity2_absolute_id):
+                        if abs_id not in entity_abs_ids:
+                            expand_missing.add(abs_id)
+                if expand_missing:
+                    batch_entities = storage.get_entities_by_absolute_ids(list(expand_missing))
+                    for e in batch_entities:
+                        if e:
+                            entities_by_abs[e.absolute_id] = e
+                            entity_abs_ids.add(e.absolute_id)
+                            # 扩展实体分数：0（仅用于补全，不参与排序竞争）
+                            if e.absolute_id not in entity_score_map:
+                                entity_score_map[e.absolute_id] = 0.0
+
+        # --- 第五步：时间过滤 ---
+        final_entities: List[Entity] = []
+        for e in entities_by_abs.values():
+            if time_before_dt and e.event_time and e.event_time > time_before_dt:
+                continue
+            if time_after_dt and e.event_time and e.event_time < time_after_dt:
+                continue
+            final_entities.append(e)
+
+        final_relations: List[Relation] = []
+        seen_rel_ids: Set[str] = set()
+        for r in matched_relations:
+            if r.absolute_id in seen_rel_ids:
+                continue
+            if time_before_dt and r.event_time and r.event_time > time_before_dt:
+                continue
+            if time_after_dt and r.event_time and r.event_time < time_after_dt:
+                continue
+            seen_rel_ids.add(r.absolute_id)
+            final_relations.append(r)
+
+        # --- 第六步：可选重排序 ---
+        # Reuse the same HybridSearcher instance (or create one if needed)
+        _reranker_searcher = _hybrid_searcher or _get_searcher(storage)
+        if reranker == "node_degree":
+            degree_map = storage.batch_get_entity_degrees(
+                [e.family_id for e in final_entities]
+            )
+            scored = [(e, entity_score_map.get(e.absolute_id, 0.0)) for e in final_entities]
+            reranked = _reranker_searcher.node_degree_rerank(scored, degree_map)
+            final_entities = [e for e, _ in reranked[:max_entities]]
+
+        # --- 第六步B：置信度加权（所有搜索模式） ---
+        if reranker != "node_degree":
+            ent_scored = [(e, entity_score_map.get(e.absolute_id, 0.0)) for e in final_entities]
+            reranked_ents = _reranker_searcher.confidence_rerank(ent_scored, alpha=0.2, time_decay_half_life_days=90.0)
+            final_entities = [e for e, _ in reranked_ents[:max_entities]]
+            # Also update score map with adjusted scores
+            for e, score in reranked_ents[:max_entities]:
+                entity_score_map[e.absolute_id] = score
+
+            rel_scored = [(r, relation_score_map.get(r.absolute_id, 0.0)) for r in final_relations]
+            reranked_rels = _reranker_searcher.confidence_rerank(rel_scored, alpha=0.2, time_decay_half_life_days=90.0)
+            final_relations = [r for r, _ in reranked_rels[:max_relations]]
+            for r, score in reranked_rels[:max_relations]:
+                relation_score_map[r.absolute_id] = score
+
+        # --- 第六步C：核心名称提升 ---
+        # 查询较短（≤20字符）时，将名称精确匹配或核心名称匹配的实体提到最前
+        if len(query) >= 2 and len(query) <= 20 and final_entities:
+            _boosted = []
+            _rest = []
+            for e in final_entities:
+                name = getattr(e, 'name', '')
+                core = _PAREN_ANNOTATION_RE.sub('', name).strip()
+                if (core == query or name == query
+                    or name.startswith(query + '（') or name.startswith(query + '(')):
+                    _boosted.append(e)
+                else:
+                    _rest.append(e)
+            if _boosted:
+                final_entities = _boosted + _rest
+
+        # --- Step 6D: Family-ID deduplication ---
+        # Same entity may appear with different absolute_ids (versions); keep highest-scored
+        _seen_fids: Set[str] = set()
+        _deduped_entities: List[Entity] = []
+        for e in final_entities:
+            fid = getattr(e, 'family_id', None) or e.absolute_id
+            if fid not in _seen_fids:
+                _seen_fids.add(fid)
+                _deduped_entities.append(e)
+        final_entities = _deduped_entities
+
+        _seen_rel_fids: Set[str] = set()
+        _seen_content_keys: Set[str] = set()
+        _deduped_relations: List[Relation] = []
+        for r in final_relations:
+            fid = getattr(r, 'family_id', None) or r.absolute_id
+            if fid in _seen_rel_fids:
+                continue
+            _seen_rel_fids.add(fid)
+            # Content-based dedup (merged from old Step 6E)
+            rc = (getattr(r, 'content', '') or '')[:60].strip()
+            if rc and rc in _seen_content_keys:
+                continue
+            if rc:
+                _seen_content_keys.add(rc)
+            _deduped_relations.append(r)
+        final_relations = _deduped_relations
+
+        # --- Step 7: Format output ---
+        output_format = (body.get("format", "full") or "full").strip().lower()
+
+        if output_format == "compact":
+            # Agent-optimized compact format: minimal fields, save tokens
+            compact_entities = []
+            for e in final_entities:
+                ce = {
+                    "fid": e.family_id,
+                    "name": e.name,
+                    "score": round(entity_score_map.get(e.absolute_id, 0.0), 3),
+                }
+                if getattr(e, "summary", None):
+                    s = e.summary
+                    ce["summary"] = s[:150] + ("..." if len(s) > 150 else "")
+                elif e.content:
+                    s = e.content
+                    ce["summary"] = s[:150] + ("..." if len(s) > 150 else "")
+                if getattr(e, "confidence", None) is not None:
+                    ce["conf"] = round(e.confidence, 2)
+                compact_entities.append(ce)
+
+            compact_relations = []
+            all_abs_ids = set()
+            for r in final_relations:
+                all_abs_ids.add(r.entity1_absolute_id)
+                all_abs_ids.add(r.entity2_absolute_id)
+            name_map = storage.get_entity_names_by_absolute_ids(list(all_abs_ids))
+            for r in final_relations:
+                cr = {
+                    "fid": r.family_id,
+                    "from": name_map.get(r.entity1_absolute_id, "?"),
+                    "to": name_map.get(r.entity2_absolute_id, "?"),
+                    "rel": r.content[:100] if r.content else "",
+                    "score": round(relation_score_map.get(r.absolute_id, 0.0), 3),
+                }
+                if getattr(r, "relation_type", None):
+                    cr["type"] = r.relation_type
+                compact_relations.append(cr)
+
+            return ok({
+                "query": query,
+                "entities": compact_entities,
+                "relations": compact_relations,
+                "counts": {"entities": len(compact_entities), "relations": len(compact_relations)},
+            })
+
+        # Full format (default): backward compatible
+        result: Dict[str, Any] = {
+            "query": query,
+            "entities": [entity_to_dict(e, _score=entity_score_map.get(e.absolute_id), skip_sections=True) for e in final_entities],
+            "relations": [relation_to_dict(r, _score=relation_score_map.get(r.absolute_id)) for r in final_relations],
+            "entity_count": len(final_entities),
+            "relation_count": len(final_relations),
+        }
+        # Parallelize 3 independent enrichment DB calls (reuse shared pool)
+        _evc_fut = _shared_pool.submit(enrich_entity_version_counts, result["entities"], processor.storage)
+        _rvc_fut = _shared_pool.submit(enrich_relation_version_counts, result["relations"], processor.storage)
+        _er_fut = _shared_pool.submit(enrich_relations, result["relations"], processor)
+        _evc_fut.result()
+        _rvc_fut.result()
+        _er_fut.result()
+        return ok(result)
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@relations_bp.route("/api/v1/find/candidates", methods=["POST"])
+def find_query_one():
+    """按请求体条件一次性返回候选实体与关系；推荐路径 /api/v1/find/candidates。"""
+    try:
+        processor = _get_processor()
+        body = request.get_json(silent=True) or {}
+        include_entities = body.get("include_entities", True)
+        include_relations = body.get("include_relations", True)
+        try:
+            family_ids, relation_family_ids = _extract_candidate_ids(
+                processor.storage, body,
+            )
+        except ValueError as ve:
+            return err(str(ve), 400)
+        storage = processor.storage
+        entities_data: List[Dict[str, Any]] = []
+        relations_data: List[Dict[str, Any]] = []
+        if include_entities:
+            batch = storage.get_entities_by_absolute_ids(list(family_ids))
+            entities_data = [entity_to_dict(e, skip_sections=True) for e in batch if e]
+        if include_relations:
+            batch_rels = storage.get_relations_by_entity_absolute_ids(list(relation_family_ids))
+            for r in batch_rels:
+                if r.absolute_id in relation_family_ids:
+                    relations_data.append(relation_to_dict(r))
+        return ok({"entities": entities_data, "relations": relations_data})
+    except Exception as e:
+        return err(str(e), 500)
+
+
+
+# =========================================================
+# Find: 关系原子接口
+# =========================================================
+@relations_bp.route("/api/v1/find/relations", methods=["GET"])
+def find_relations_all():
+    try:
+        processor = _get_processor()
+        limit = request.args.get("limit", type=int)
+        offset = request.args.get("offset", type=int, default=0) or 0
+        total = processor.storage.count_unique_relations()
+        relations = processor.storage.get_all_relations(
+            limit=limit, offset=offset if offset > 0 else None,
+            exclude_embedding=True,
+        )
+        dicts = [relation_to_dict(r) for r in relations]
+        enrich_relations(dicts, processor)
+        return ok({
+            "relations": dicts,
+            "total": total,
+            "offset": offset,
+            "limit": limit,
+        })
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@relations_bp.route("/api/v1/find/relations/search", methods=["GET", "POST"])
+def find_relations_search():
+    try:
+        processor = _get_processor()
+        body = request.get_json(silent=True) if request.method == "POST" else None
+        body = body if isinstance(body, dict) else {}
+
+        def _get_value(name: str, default: Any = None) -> Any:
+            if name in body and body[name] is not None:
+                return body[name]
+            return request.args.get(name, default)
+
+        query_text = str(_get_value("query_text", "") or "").strip()
+        if not query_text:
+            return err("query_text 为必填参数", 400)
+        threshold = float(_get_value("similarity_threshold") or _get_value("threshold", 0.5))
+        max_results = int(_get_value("max_results", 10))
+
+        search_mode = str(_get_value("search_mode", "semantic") or "semantic").strip().lower()
+        if search_mode not in _VALID_SEARCH_MODES:
+            search_mode = "semantic"
+
+        searcher = _get_searcher(processor.storage)
+        if search_mode == "hybrid":
+            ranked = searcher.search_relations(
+                query_text=query_text,
+                top_k=max_results,
+                semantic_threshold=threshold,
+            )
+        else:
+            if search_mode == "bm25":
+                relations = processor.storage.search_relations_by_bm25(
+                    query_text, limit=max_results
+                )
+            else:
+                relations = processor.storage.search_relations_by_similarity(
+                    query_text=query_text,
+                    threshold=threshold,
+                    max_results=max_results,
+                )
+            ranked = [(r, 1.0 - i * 0.01) for i, r in enumerate(relations)]
+        ranked = searcher.confidence_rerank(ranked, alpha=0.2, time_decay_half_life_days=90.0)
+        dicts = [relation_to_dict(r, _score=score) for r, score in ranked]
+        enrich_relation_version_counts(dicts, processor.storage)
+        enrich_relations(dicts, processor)
+        return ok(dicts)
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@relations_bp.route("/api/v1/find/relations/between", methods=["GET", "POST"])
+def find_relations_between():
+    try:
+        processor = _get_processor()
+        body = request.get_json(silent=True) if request.method == "POST" else None
+        body = body if isinstance(body, dict) else {}
+        family_id_a = (body.get("family_id_a") or body.get("from_family_id") or request.args.get("family_id_a") or request.args.get("from_family_id") or "").strip()
+        family_id_b = (body.get("family_id_b") or body.get("to_family_id") or request.args.get("family_id_b") or request.args.get("to_family_id") or "").strip()
+        if not family_id_a or not family_id_b:
+            return err("family_id_a 与 family_id_b 为必填参数", 400)
+        with _perf_timer("find_relations_between"):
+            relations = processor.storage.get_relations_by_entities(family_id_a, family_id_b)
+        dicts = [relation_to_dict(r) for r in relations]
+        enrich_relations(dicts, processor)
+        return ok(dicts)
+    except Exception as e:
+        return err(str(e), 500)
+
+
+# =========================================================
+# Path finding
+# =========================================================
+@relations_bp.route("/api/v1/find/paths/shortest", methods=["GET", "POST"])
+def find_shortest_paths():
+    """查找两个实体之间的最短路径"""
+    try:
+        processor = _get_processor()
+        body = request.get_json(silent=True) if request.method == "POST" else None
+        body = body if isinstance(body, dict) else {}
+        family_id_a = (body.get("family_id_a") or body.get("from_family_id")
+                         or request.args.get("family_id_a")
+                         or request.args.get("from_family_id") or "").strip()
+        family_id_b = (body.get("family_id_b") or body.get("to_family_id")
+                         or request.args.get("family_id_b")
+                         or request.args.get("to_family_id") or "").strip()
+        if not family_id_a or not family_id_b:
+            return err("family_id_a 与 family_id_b 为必填参数", 400)
+
+        max_depth = body.get("max_depth") if body else None
+        if max_depth is None:
+            max_depth = request.args.get("max_depth", type=int)
+        max_depth = max_depth or 6
+
+        max_paths = body.get("max_paths") if body else None
+        if max_paths is None:
+            max_paths = request.args.get("max_paths", type=int)
+        max_paths = max_paths or 10
+
+        result = processor.storage.find_shortest_paths(
+            source_family_id=family_id_a,
+            target_family_id=family_id_b,
+            max_depth=max_depth,
+            max_paths=max_paths,
+        )
+
+        serialized_paths = []
+        all_rel_dicts = []
+        for p in result.get("paths", []):
+            ent_dicts = [entity_to_dict(e) for e in p.get("entities", [])]
+            rel_dicts = [relation_to_dict(r) for r in p.get("relations", [])]
+            serialized_paths.append({
+                "entities": ent_dicts,
+                "relations": rel_dicts,
+                "length": p.get("length", 0),
+            })
+            all_rel_dicts.extend(rel_dicts)
+        # Batch enrich all relations in a single pass (avoids N DB round-trips)
+        if all_rel_dicts:
+            enrich_relations(all_rel_dicts, processor)
+
+        return ok({
+            "source_entity": entity_to_dict(result["source_entity"]) if result.get("source_entity") else None,
+            "target_entity": entity_to_dict(result["target_entity"]) if result.get("target_entity") else None,
+            "path_length": result.get("path_length", -1),
+            "total_shortest_paths": result.get("total_shortest_paths", 0),
+            "paths": serialized_paths,
+        })
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@relations_bp.route("/api/v1/find/paths/shortest-cypher", methods=["POST"])
+def find_shortest_path_cypher():
+    """使用 Cypher shortestPath 查找路径（Neo4j 专属）。"""
+    try:
+        processor = _get_processor()
+        if not hasattr(processor.storage, 'find_shortest_path_cypher'):
+            return err("此功能需要 Neo4j 后端", 400)
+        body = request.get_json(silent=True) or {}
+        entity_a = (body.get("family_id_a") or body.get("entity_a") or "").strip()
+        entity_b = (body.get("family_id_b") or body.get("entity_b") or "").strip()
+        if not entity_a or not entity_b:
+            return err("family_id_a 和 family_id_b 不能为空", 400)
+        max_depth = min(max(int(body.get("max_depth", 6)), 1), 10)
+        paths = processor.storage.find_shortest_path_cypher(entity_a, entity_b, max_depth=max_depth)
+        return ok({
+            "paths": paths,
+            "source_family_id": entity_a,
+            "target_family_id": entity_b,
+        })
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@relations_bp.route("/api/v1/find/relations/absolute/<absolute_id>/embedding-preview", methods=["GET"])
+def find_relation_embedding_preview(absolute_id: str):
+    try:
+        processor = _get_processor()
+        num_values = request.args.get("num_values", type=int, default=5)
+        preview = processor.storage.get_relation_embedding_preview(absolute_id, num_values=num_values)
+        if preview is None:
+            return err(f"未找到关系 embedding 或关系不存在: {absolute_id}", 404)
+        return ok({"absolute_id": absolute_id, "values": preview})
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@relations_bp.route("/api/v1/find/relations/absolute/<absolute_id>", methods=["GET"])
+def find_relation_by_absolute_id(absolute_id: str):
+    try:
+        processor = _get_processor()
+        relation = processor.storage.get_relation_by_absolute_id(absolute_id)
+        if relation is None:
+            return err(f"未找到关系版本: {absolute_id}", 404)
+        d = relation_to_dict(relation)
+        enrich_relations([d], processor)
+        return ok(d)
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@relations_bp.route("/api/v1/find/entities/absolute/<entity_absolute_id>/relations", methods=["GET"])
+def find_relations_by_entity_absolute_id(entity_absolute_id: str):
+    try:
+        processor = _get_processor()
+        limit = request.args.get("limit", type=int)
+        time_point_str = request.args.get("time_point")
+        try:
+            time_point = parse_time_point(time_point_str)
+        except ValueError as ve:
+            return err(str(ve), 400)
+        relations = processor.storage.get_entity_relations(
+            entity_absolute_id=entity_absolute_id,
+            limit=limit,
+            time_point=time_point,
+        )
+        dicts = [relation_to_dict(r) for r in relations]
+        enrich_relations(dicts, processor)
+        return ok(dicts)
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@relations_bp.route("/api/v1/find/relations/<family_id>/versions", methods=["GET"])
+def find_relation_versions(family_id: str):
+    try:
+        processor = _get_processor()
+        versions = processor.storage.get_relation_versions(family_id)
+        dicts = [relation_to_dict(r) for r in versions]
+        enrich_relations(dicts, processor)
+        return ok(dicts)
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@relations_bp.route("/api/v1/find/relations/<family_id>", methods=["PUT"])
+def update_relation_by_family(family_id: str):
+    """编辑关系：创建新版本。"""
+    try:
+        processor = _get_processor()
+        body = request.get_json(silent=True) or {}
+        content = body.get("content")
+        if not content:
+            return err("content 为必填字段", 400)
+
+        current_versions = processor.storage.get_relation_versions(family_id)
+        if not current_versions:
+            return err(f"未找到关系: {family_id}", 404)
+        current = current_versions[0]  # 最新版本
+
+        now = datetime.now(timezone.utc)
+        updated = Relation(
+            absolute_id=str(uuid.uuid4()),
+            family_id=family_id,
+            entity1_absolute_id=current.entity1_absolute_id,
+            entity2_absolute_id=current.entity2_absolute_id,
+            content=content,
+            event_time=now,
+            processed_time=now,
+            episode_id=current.episode_id,
+            source_document=current.source_document,
+            valid_at=now,
+        )
+        processor.storage.save_relation(updated)
+        return ok({"message": "关系已更新", "absolute_id": updated.absolute_id, "family_id": family_id})
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@relations_bp.route("/api/v1/find/relations/<family_id>", methods=["DELETE"])
+def delete_relation_family(family_id: str):
+    """删除关系所有版本。"""
+    try:
+        processor = _get_processor()
+        count = processor.storage.delete_relation_all_versions(family_id)
+        if count == 0:
+            return err(f"未找到关系: {family_id}", 404)
+        return ok({"message": f"已删除 {count} 个关系版本", "family_id": family_id})
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@relations_bp.route("/api/v1/find/relations/batch-delete", methods=["POST"])
+def batch_delete_relations():
+    """批量删除关系。"""
+    try:
+        processor = _get_processor()
+        body = request.get_json(silent=True) or {}
+        family_ids = body.get("family_ids") or body.get("relation_ids", [])
+        if not isinstance(family_ids, list) or not family_ids:
+            return err("family_ids 需为非空数组", 400)
+        if len(family_ids) > 100:
+            return err("单次批量删除上限 100 个", 400)
+        total = processor.storage.batch_delete_relations(family_ids)
+        return ok({"message": f"已删除 {total} 个关系版本", "count": len(family_ids)})
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@relations_bp.route("/api/v1/find/entities/<family_id>/relations", methods=["GET"])
+def find_relations_by_entity(family_id: str):
+    try:
+        processor = _get_processor()
+        limit = request.args.get("limit", type=int)
+        time_point_str = request.args.get("time_point")
+        try:
+            time_point = parse_time_point(time_point_str)
+        except ValueError as ve:
+            return err(str(ve), 400)
+        max_version_absolute_id = (request.args.get("max_version_absolute_id") or "").strip() or None
+        relation_scope = (request.args.get("relation_scope") or "accumulated").strip()
+
+        if relation_scope not in _VALID_RELATION_SCOPES:
+            relation_scope = "accumulated"
+
+        # When no max_version_absolute_id, all modes degenerate to returning all relations
+        if not max_version_absolute_id:
+            relations = processor.storage.get_entity_relations_by_family_id(
+                family_id=family_id,
+                limit=limit,
+                time_point=time_point,
+                max_version_absolute_id=None,
+            )
+            dicts = [relation_to_dict(r) for r in relations]
+            enrich_relations(dicts, processor)
+            return ok(dicts)
+
+        # ---- Shared queries ----
+        # current_rels: relations directly linked to the focused version only
+        current_rels = processor.storage.get_entity_relations(
+            max_version_absolute_id,
+            limit=limit,
+            time_point=time_point,
+        )
+        # accum_rels: accumulated relations from v1 through focused version
+        accum_rels = processor.storage.get_entity_relations_by_family_id(
+            family_id=family_id,
+            limit=limit,
+            time_point=time_point,
+            max_version_absolute_id=max_version_absolute_id,
+        )
+
+        # Dedup by family_id
+        accum_by_rid = {r.family_id: r for r in accum_rels}
+        current_by_rid = {r.family_id: r for r in current_rels}
+        accum_rids = set(accum_by_rid)
+        current_rids = set(current_by_rid)
+
+        # ---- version_only: only relations directly linked to this version ----
+        if relation_scope == "version_only":
+            dicts = [relation_to_dict(r) for r in current_rels]
+            enrich_relations(dicts, processor)
+            return ok(dicts)
+
+        # ---- shared latest_rels (used by both accumulated and all_versions) ----
+        latest_rels = processor.storage.get_entity_relations_by_family_id(
+            family_id=family_id,
+            limit=limit,
+            time_point=time_point,
+            max_version_absolute_id=None,
+        )
+        latest_by_rid = {r.family_id: r for r in latest_rels}
+        latest_rids = set(latest_by_rid)
+        union_rids = accum_rids | latest_rids
+
+        # ---- accumulated: v1..vN union + future from latest ----
+        if relation_scope == "accumulated":
+            all_rels = []
+            for rid in union_rids:
+                if rid in current_rids:
+                    all_rels.append(current_by_rid[rid])
+                elif rid in accum_rids:
+                    all_rels.append(accum_by_rid[rid])
+                else:
+                    all_rels.append(latest_by_rid[rid])
+
+            dicts = [relation_to_dict(r) for r in all_rels]
+            enrich_relations(dicts, processor)
+
+            for d in dicts:
+                rid = d["family_id"]
+                if rid not in current_rids:
+                    if rid not in accum_rids:
+                        d["_future"] = True
+                    else:
+                        d["_inherited"] = True
+
+            return ok(dicts)
+
+        # ---- all_versions: (v1..vN) ∪ latest, classify as current/inherited/future ----
+        all_rels = []
+        for rid in union_rids:
+            if rid in latest_rids:
+                all_rels.append(latest_by_rid[rid])
+            else:
+                all_rels.append(accum_by_rid[rid])
+
+        dicts = [relation_to_dict(r) for r in all_rels]
+        enrich_relations(dicts, processor)
+
+        for d in dicts:
+            rid = d["family_id"]
+            if rid in current_rids:
+                d["_version_scope"] = "current"
+            elif rid in accum_rids:
+                d["_version_scope"] = "inherited"
+            else:
+                d["_version_scope"] = "future"
+
+        return ok(dicts)
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@relations_bp.route("/api/v1/find/relations/create", methods=["POST"])
+def create_relation():
+    """手动创建关系（生成新 family_id + absolute_id）。
+
+    实体 ID 参数支持两种形式（二选一，优先使用 absolute_id）：
+      - entity1_absolute_id / entity2_absolute_id（版本快照 ID）
+      - entity1_family_id / entity2_family_id（逻辑 ID，自动解析为最新 absolute_id）
+    """
+    try:
+        processor = _get_processor()
+        body = request.get_json(silent=True) or {}
+
+        # Resolve entity IDs: prefer absolute_id, fall back to family_id
+        e1 = (body.get("entity1_absolute_id") or "").strip()
+        e2 = (body.get("entity2_absolute_id") or "").strip()
+
+        if not e1:
+            e1_fid = (body.get("entity1_family_id") or "").strip()
+            if e1_fid:
+                entity1 = processor.storage.get_entity_by_family_id(e1_fid)
+                if entity1:
+                    e1 = entity1.absolute_id
+                else:
+                    return err(f"entity1_family_id '{e1_fid}' 未找到对应实体", 404)
+
+        if not e2:
+            e2_fid = (body.get("entity2_family_id") or "").strip()
+            if e2_fid:
+                entity2 = processor.storage.get_entity_by_family_id(e2_fid)
+                if entity2:
+                    e2 = entity2.absolute_id
+                else:
+                    return err(f"entity2_family_id '{e2_fid}' 未找到对应实体", 404)
+
+        if not e1 or not e2:
+            return err("需要 entity1_absolute_id 或 entity1_family_id（entity2 同理）", 400)
+
+        content = (body.get("content") or "").strip()
+        if not content:
+            return err("content 为必填", 400)
+
+        now = datetime.now()
+        ts = now.strftime("%Y%m%d_%H%M%S")
+        # 确保 entity1 < entity2（无向关系）
+        if e1 > e2:
+            e1, e2 = e2, e1
+        family_id = f"rel_{uuid.uuid4().hex[:12]}"
+        absolute_id = f"relation_{ts}_{uuid.uuid4().hex[:8]}"
+        # Single loop: check both IDs together (collision probability ~0)
+        for _ in range(10):
+            family_id = f"rel_{uuid.uuid4().hex[:12]}"
+            absolute_id = f"relation_{ts}_{uuid.uuid4().hex[:8]}"
+            if (not processor.storage.get_relation_by_absolute_id(absolute_id)
+                    and not processor.storage.get_relation_by_family_id(family_id)):
+                break
+
+        relation = Relation(
+            absolute_id=absolute_id,
+            family_id=family_id,
+            entity1_absolute_id=e1,
+            entity2_absolute_id=e2,
+            content=content,
+            event_time=now,
+            processed_time=now,
+            episode_id=body.get("episode_id", ""),
+            source_document=body.get("source_document", ""),
+        )
+        processor.storage.save_relation(relation)
+        return ok(relation_to_dict(relation))
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@relations_bp.route("/api/v1/find/relations/absolute/<absolute_id>", methods=["PUT"])
+def update_relation_absolute(absolute_id: str):
+    """更新指定版本关系。"""
+    try:
+        processor = _get_processor()
+        body = request.get_json(silent=True) or {}
+        fields = {}
+        for key in ("content", "summary", "attributes", "confidence"):
+            if key in body:
+                fields[key] = body[key]
+        if not fields:
+            return err("至少提供一个可更新字段", 400)
+        updated = processor.storage.update_relation_by_absolute_id(absolute_id, **fields)
+        if not updated:
+            return err(f"未找到关系版本: {absolute_id}", 404)
+        return ok(relation_to_dict(updated))
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@relations_bp.route("/api/v1/find/relations/absolute/<absolute_id>", methods=["DELETE"])
+def delete_relation_absolute(absolute_id: str):
+    """删除指定版本关系。"""
+    try:
+        processor = _get_processor()
+        success = processor.storage.delete_relation_by_absolute_id(absolute_id)
+        if not success:
+            return err(f"未找到关系版本: {absolute_id}", 404)
+        return ok({"absolute_id": absolute_id, "deleted": True})
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@relations_bp.route("/api/v1/find/relations/batch-delete-versions", methods=["POST"])
+def batch_delete_relation_versions():
+    """批量删除关系版本。"""
+    try:
+        processor = _get_processor()
+        body = request.get_json(silent=True) or {}
+        absolute_ids = body.get("absolute_ids", [])
+        if not isinstance(absolute_ids, list) or not absolute_ids:
+            return err("absolute_ids 需为非空数组", 400)
+        deleted_count = processor.storage.batch_delete_relation_versions_by_absolute_ids(absolute_ids)
+        return ok({
+            "deleted": absolute_ids[:deleted_count],
+            "failed": absolute_ids[deleted_count:] if deleted_count < len(absolute_ids) else [],
+            "summary": {"deleted_count": deleted_count, "failed_count": len(absolute_ids) - deleted_count},
+        })
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@relations_bp.route("/api/v1/find/relations/redirect", methods=["POST"])
+def redirect_relation():
+    """重定向关系的实体端点。"""
+    try:
+        processor = _get_processor()
+        body = request.get_json(silent=True) or {}
+        family_id = (body.get("family_id") or "").strip()
+        side = (body.get("side") or "").strip()
+        new_family_id = (body.get("new_family_id") or "").strip()
+        if not family_id or not side or not new_family_id:
+            return err("family_id, side, new_family_id 为必填", 400)
+        if side not in _VALID_SIDES:
+            return err("side 必须为 entity1 或 entity2", 400)
+        count = processor.storage.redirect_relation(family_id, side, new_family_id)
+        return ok({
+            "family_id": family_id,
+            "side": side,
+            "new_family_id": new_family_id,
+            "relations_updated": count,
+        })
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@relations_bp.route("/api/v1/find/relations/<family_id>/confidence", methods=["PUT"])
+def update_relation_confidence(family_id: str):
+    """手动设置关系置信度（覆盖自动演化值）。"""
+    try:
+        processor = _get_processor()
+        body = request.get_json(silent=True) or {}
+        confidence = body.get("confidence")
+        if confidence is None:
+            return err("confidence 为必填字段", 400)
+        confidence = float(confidence)
+        if not (0.0 <= confidence <= 1.0):
+            return err("confidence 必须在 0.0 ~ 1.0 之间", 400)
+        relation = processor.storage.get_relation_by_family_id(family_id)
+        if not relation:
+            return err(f"关系不存在: {family_id}", 404)
+        processor.storage.update_relation_confidence(family_id, confidence)
+        # Patch in-memory instead of re-reading from DB
+        relation.confidence = confidence
+        return ok(relation_to_dict(relation))
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@relations_bp.route("/api/v1/find/relations/<family_id>/invalidate", methods=["POST"])
+def invalidate_relation(family_id: str):
+    """标记关系为失效（不删除，保留历史）"""
+    try:
+        processor = _get_processor()
+        body = request.get_json(silent=True) or {}
+        reason = body.get("reason", "")
+        count = processor.storage.invalidate_relation(family_id, reason)
+        if count == 0:
+            return err(f"未找到可失效的关系: {family_id}", 404)
+        return ok({"message": f"已标记 {count} 个关系版本为失效", "family_id": family_id})
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@relations_bp.route("/api/v1/find/relations/<family_id>/contradictions", methods=["GET"])
+def get_relation_contradictions(family_id: str):
+    """检测关系版本间的矛盾。"""
+    try:
+        processor = _get_processor()
+        versions = processor.storage.get_relation_versions(family_id)
+        if len(versions) < 2:
+            return ok([])
+
+        contradictions = run_async(
+            processor.llm_client.detect_contradictions(family_id, versions, concept_type="relation")
+        )
+
+        return ok(contradictions)
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@relations_bp.route("/api/v1/find/relations/<family_id>/resolve-contradiction", methods=["POST"])
+def resolve_relation_contradiction(family_id: str):
+    """裁决关系版本间矛盾。"""
+    try:
+        body = request.get_json(silent=True) or {}
+        contradiction = body.get("contradiction")
+        if not contradiction or not isinstance(contradiction, dict):
+            return err("contradiction 为必填字段", 400)
+
+        processor = _get_processor()
+        resolution = run_async(
+            processor.llm_client.resolve_contradiction(contradiction)
+        )
+
+        return ok(resolution)
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@relations_bp.route("/api/v1/find/relations/invalidated", methods=["GET"])
+def find_invalidated_relations():
+    """列出所有已失效的关系"""
+    try:
+        processor = _get_processor()
+        limit = request.args.get("limit", type=int, default=100)
+        relations = processor.storage.get_invalidated_relations(limit)
+        dicts = [relation_to_dict(r) for r in relations]
+        enrich_relations(dicts, processor)
+        return ok(dicts)
+    except Exception as e:
+        return err(str(e), 500)
+
+
+# =========================================================
+# 图谱结构统计
+# =========================================================
+@relations_bp.route("/api/v1/find/graph-stats", methods=["GET"])
+def find_graph_stats():
+    """图谱结构统计"""
+    try:
+        processor = _get_processor()
+        stats = processor.storage.get_graph_statistics()
+        return ok(stats)
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@relations_bp.route("/api/v1/find/graph-summary", methods=["GET"])
+def graph_summary():
+    """聚合返回：图谱统计 + 健康状态。"""
+    try:
+        processor = _get_processor()
+        stats = processor.storage.get_graph_statistics()
+        embedding_available = (
+            processor.embedding_client is not None
+            and processor.embedding_client.is_available()
+        )
+        storage_backend = "neo4j" if hasattr(processor.storage, 'is_neo4j') else "sqlite"
+        return ok({
+            "graph_id": _get_graph_id(),
+            "storage_backend": storage_backend,
+            "embedding_available": embedding_available,
+            "statistics": stats,
+        })
+    except Exception as e:
+        return err(str(e), 500)
+
+
+# =========================================================
+# Phase B: Advanced Search — BFS 遍历 + MMR 重排序
+# =========================================================
+@relations_bp.route("/api/v1/find/traverse", methods=["POST"])
+def traverse_graph():
+    """BFS 图遍历搜索。"""
+    try:
+        body = request.get_json(silent=True) or {}
+        seed_ids = body.get("seed_family_ids") or body.get("start_entity_ids", [])
+        if not isinstance(seed_ids, list) or not seed_ids:
+            return err("seed_family_ids 需为非空数组", 400)
+        max_depth = int(body.get("max_depth", 2))
+        max_nodes = int(body.get("max_nodes", 50))
+        time_point = body.get("time_point")
+
+        processor = _get_processor()
+        searcher = GraphTraversalSearcher(processor.storage)
+        entities, relations, visited = searcher.bfs_expand_with_relations(
+            seed_ids, max_depth=max_depth, max_nodes=max_nodes,
+            time_point=time_point)
+        ent_dicts = [entity_to_dict(e) for e in entities]
+        rel_dicts = [relation_to_dict(r) for r in relations]
+        enrich_entity_version_counts(ent_dicts, processor.storage)
+        enrich_relation_version_counts(rel_dicts, processor.storage)
+        enrich_relations(rel_dicts, processor)
+        return ok({
+            "entities": ent_dicts,
+            "relations": rel_dicts,
+            "visited_count": len(visited),
+        })
+    except Exception as e:
+        return err(str(e), 500)
+
+
+# =========================================================
+# Convenience endpoints for Agent workflows
+# =========================================================
+@relations_bp.route("/api/v1/find/quick-search", methods=["POST"])
+def quick_search():
+    """One-shot search: hybrid BM25+embedding RRF fusion with name boosting.
+
+    Phase 1: exact name match (highest confidence)
+    Phase 2: BM25 + embedding via HybridSearcher RRF fusion
+    Phase 3: relation search via HybridSearcher RRF fusion
+    """
+    try:
+        processor = _get_processor()
+        body = request.get_json(silent=True) or {}
+        query = body.get("query", "").strip()
+        if not query:
+            return err("query is required", 400)
+        max_entities = min(int(body.get("max_entities", 10)), 50)
+        max_relations = min(int(body.get("max_relations", 20)), 100)
+        threshold = max(0.0, min(1.0, float(body.get("similarity_threshold", 0.4))))
+
+        # Phase 1: Exact name match (instant, highest confidence)
+        exact_entities = []
+        seen_fids = set()
+        exact_map = processor.storage.get_family_ids_by_names([query])
+        if exact_map:
+            fid = list(exact_map.values())[0]
+            ent = processor.storage.get_entity_by_family_id(fid)
+            if ent:
+                exact_entities.append(ent)
+                seen_fids.add(ent.family_id)
+
+        # Phase 2: BM25 + embedding RRF fusion via HybridSearcher
+        searcher = _get_searcher(processor.storage)
+
+        fused_entities = searcher.search_entities(
+            query_text=query,
+            top_k=max_entities,
+            semantic_threshold=threshold,
+        )
+        # Confidence-weighted reranking
+        fused_entities = searcher.confidence_rerank(fused_entities, alpha=0.2, time_decay_half_life_days=90.0)
+        # Dedup: skip entities already found by exact match, preserve scores
+        entity_score_map: Dict[str, float] = {}
+        rrf_entities = []
+        for ent, score in fused_entities:
+            if ent.family_id not in seen_fids:
+                rrf_entities.append(ent)
+                entity_score_map[ent.absolute_id] = score
+                seen_fids.add(ent.family_id)
+
+        entities = exact_entities + rrf_entities
+        entities = entities[:max_entities]
+
+        # Phase 3: Relation search via HybridSearcher RRF fusion
+        fused_relations = searcher.search_relations(
+            query_text=query,
+            top_k=max_relations,
+            semantic_threshold=max(0.2, threshold - 0.1),
+        )
+        fused_relations = searcher.confidence_rerank(fused_relations, alpha=0.2, time_decay_half_life_days=90.0)
+        relation_score_map: Dict[str, float] = {r.absolute_id: score for r, score in fused_relations}
+        relations = [r for r, _ in fused_relations]
+
+        entity_dicts = [entity_to_dict(e, _score=entity_score_map.get(e.absolute_id), skip_sections=True) for e in entities]
+        rel_dicts = [relation_to_dict(r, _score=relation_score_map.get(r.absolute_id)) for r in relations]
+        enrich_entity_version_counts(entity_dicts, processor.storage)
+        enrich_relation_version_counts(rel_dicts, processor.storage)
+        enrich_relations(rel_dicts, processor)
+
+        return ok({
+            "query": query,
+            "entities": entity_dicts,
+            "entity_count": len(entity_dicts),
+            "relations": rel_dicts,
+            "relation_count": len(rel_dicts),
+        })
+    except Exception as e:
+        return err(str(e), 500)

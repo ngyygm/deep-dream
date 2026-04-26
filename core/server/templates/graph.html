@@ -1,0 +1,2925 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>时序记忆图谱可视化</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/vis-network/9.1.2/dist/dist/vis-network.min.css" 
+          integrity="sha512-WgxfT5LWjfszlPHXRmBWHkV2eceiWTOBvrKCNbdgDYTHrT2AeLCGbF4sZlZw3UMN3WtL0tGUoIAKsu8mllg/XA==" 
+          crossorigin="anonymous" referrerpolicy="no-referrer" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/vis-network/9.1.2/dist/vis-network.min.js"
+            integrity="sha512-LnvoEWDFrqGHlHmDD2101OrLcbsfkrzoSpvtSQtxK3RMnRV0eOkhhBN2dXHKRrUU8p2DGRTk35n4O8nWSVe1mQ=="
+            crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.0.0-beta3/dist/css/bootstrap.min.css"
+          rel="stylesheet"
+          integrity="sha384-eOJMYsd53ii+scO/bJGFsiCZc+5NDVN2yr8+0RDqr0Ql0h+rP48ckxlpbzKgwra6"
+          crossorigin="anonymous" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"
+          integrity="sha512-iecdLmaskl7CVkqkXNQ/ZH/XLlvWZOJyj7Yy7tcenmpD1ypASozpmT/E0iPtmFIB46ZmdtAc9eNBvH0H/ZpiBw=="
+          crossorigin="anonymous" referrerpolicy="no-referrer" />
+      <style>
+          body {
+              background-color: #1a1a1a;
+              color: #ffffff;
+              font-family: 'Microsoft YaHei', 'SimHei', Arial, sans-serif;
+              margin: 0;
+              padding: 0;
+              display: flex;
+              height: 100vh;
+              overflow: hidden;
+          }
+          .main-content {
+              flex: 1;
+              display: flex;
+              flex-direction: column;
+              padding: 20px;
+              overflow: hidden;
+          }
+          .container {
+              padding: 0;
+          }
+          h1 {
+              margin: 0 0 15px 0;
+              font-size: 24px;
+          }
+          .stats-panel {
+              background-color: #2a2a2a;
+              padding: 15px;
+              border-radius: 8px;
+              margin-bottom: 15px;
+              flex-shrink: 0;
+          }
+          .btn-refresh {
+              margin-bottom: 0;
+          }
+          .info-text {
+              color: #aaaaaa;
+              font-size: 14px;
+              margin: 0;
+          }
+          #mynetwork {
+              flex: 1;
+              min-height: 0;
+              background-color: #222222;
+              border: 1px solid #444444;
+              border-radius: 8px;
+              position: relative;
+          }
+          .sidebar {
+              width: 500px;
+              background-color: #2a2a2a;
+              border-left: 2px solid #444444;
+              display: flex;
+              flex-direction: column;
+              overflow: hidden;
+              flex-shrink: 0;
+          }
+          .sidebar-header {
+              padding: 20px;
+              border-bottom: 2px solid #444444;
+              background-color: #1a1a1a;
+              flex-shrink: 0;
+          }
+          .sidebar-title {
+              font-size: 18px;
+              font-weight: bold;
+              color: #4A90E2;
+              margin: 0 0 5px 0;
+          }
+          .sidebar-subtitle {
+              font-size: 14px;
+              color: #888888;
+              margin: 0;
+          }
+          .sidebar-content {
+              flex: 1;
+              overflow-y: auto;
+              padding: 20px;
+          }
+          .detail-section {
+              margin-bottom: 20px;
+          }
+          .detail-section-title {
+              font-size: 16px;
+              font-weight: bold;
+              color: #4A90E2;
+              margin-bottom: 10px;
+              padding-bottom: 8px;
+              border-bottom: 1px solid #444444;
+          }
+          .detail-content {
+              color: #cccccc;
+              line-height: 1.6;
+              white-space: pre-wrap;
+              word-wrap: break-word;
+              background-color: #1a1a1a;
+              padding: 15px;
+              border-radius: 6px;
+          }
+          .empty-state {
+              text-align: center;
+              color: #888888;
+              padding: 40px 20px;
+          }
+          .version-selector {
+              background-color: #1a1a1a;
+              padding: 15px;
+              border-radius: 6px;
+              margin-bottom: 20px;
+              border: 1px solid #444444;
+          }
+          .version-selector-header {
+              display: flex;
+              justify-content: space-between;
+              align-items: center;
+              margin-bottom: 10px;
+          }
+          .version-selector-title {
+              font-size: 14px;
+              font-weight: bold;
+              color: #4A90E2;
+          }
+          .version-selector-info {
+              font-size: 12px;
+              color: #888888;
+          }
+          .version-selector-controls {
+              display: flex;
+              gap: 10px;
+              align-items: center;
+          }
+          .version-selector select {
+              flex: 1;
+              background-color: #2a2a2a;
+              color: #ffffff;
+              border: 1px solid #444444;
+              border-radius: 4px;
+              padding: 8px 12px;
+              font-size: 14px;
+              cursor: pointer;
+          }
+          .version-selector select:hover {
+              border-color: #4A90E2;
+          }
+          .version-selector select:focus {
+              outline: none;
+              border-color: #4A90E2;
+          }
+          .version-nav-buttons {
+              display: flex;
+              gap: 5px;
+          }
+          .version-nav-btn {
+              background-color: #2a2a2a;
+              color: #ffffff;
+              border: 1px solid #444444;
+              border-radius: 4px;
+              padding: 6px 10px;
+              font-size: 14px;
+              cursor: pointer;
+              transition: all 0.2s;
+              min-width: 32px;
+              text-align: center;
+          }
+          .version-nav-btn:hover:not(:disabled) {
+              background-color: #4A90E2;
+              border-color: #4A90E2;
+          }
+          .version-nav-btn:disabled {
+              opacity: 0.5;
+              cursor: not-allowed;
+          }
+          .version-loading {
+              text-align: center;
+              color: #888888;
+              padding: 10px;
+              font-size: 12px;
+          }
+          .search-panel {
+              background-color: #2a2a2a;
+              padding: 15px;
+              border-radius: 8px;
+              margin-bottom: 15px;
+              flex-shrink: 0;
+          }
+          .search-controls {
+              display: flex;
+              gap: 10px;
+              align-items: center;
+              flex-wrap: wrap;
+          }
+          .search-input {
+              flex: 1;
+              min-width: 200px;
+              background-color: #1a1a1a;
+              color: #ffffff;
+              border: 1px solid #444444;
+              border-radius: 4px;
+              padding: 8px 12px;
+              font-size: 14px;
+          }
+          .search-input:focus {
+              outline: none;
+              border-color: #4A90E2;
+          }
+          .search-count-select {
+              background-color: #1a1a1a;
+              color: #ffffff;
+              border: 1px solid #444444;
+              border-radius: 4px;
+              padding: 8px 12px;
+              font-size: 14px;
+              cursor: pointer;
+          }
+          .search-count-select:focus {
+              outline: none;
+              border-color: #4A90E2;
+          }
+          .search-count-input {
+              width: 80px;
+              background-color: #1a1a1a;
+              color: #ffffff;
+              border: 1px solid #444444;
+              border-radius: 4px;
+              padding: 8px 12px;
+              font-size: 14px;
+              text-align: center;
+          }
+          .search-count-input:focus {
+              outline: none;
+              border-color: #4A90E2;
+          }
+          .search-count-label {
+              color: #aaaaaa;
+              font-size: 14px;
+              margin: 0 5px;
+          }
+          .search-btn {
+              background-color: #4A90E2;
+              color: #ffffff;
+              border: none;
+              border-radius: 4px;
+              padding: 8px 16px;
+              font-size: 14px;
+              cursor: pointer;
+              transition: background-color 0.2s;
+          }
+          .search-btn:hover {
+              background-color: #357ABD;
+          }
+          .search-btn:disabled {
+              background-color: #555555;
+              cursor: not-allowed;
+          }
+          .clear-search-btn {
+              background-color: #666666;
+              color: #ffffff;
+              border: none;
+              border-radius: 4px;
+              padding: 8px 16px;
+              font-size: 14px;
+              cursor: pointer;
+              transition: background-color 0.2s;
+          }
+          .clear-search-btn:hover {
+              background-color: #777777;
+          }
+          .search-status {
+              margin-top: 10px;
+              font-size: 12px;
+              color: #888888;
+          }
+
+          /* Source Tracing Controls */
+          .source-tracing-panel {
+              background-color: #2a2a2a;
+              padding: 15px;
+              border-radius: 8px;
+              margin-bottom: 15px;
+              flex-shrink: 0;
+          }
+          .source-tracing-header {
+              display: flex;
+              justify-content: space-between;
+              align-items: center;
+              margin-bottom: 10px;
+          }
+          .source-tracing-title {
+              font-size: 14px;
+              font-weight: bold;
+              color: #f39c12;
+              display: flex;
+              align-items: center;
+              gap: 8px;
+          }
+          .source-tracing-toggle {
+              display: flex;
+              align-items: center;
+              gap: 10px;
+          }
+          .toggle-switch {
+              position: relative;
+              width: 50px;
+              height: 24px;
+              background-color: #3a3a3a;
+              border-radius: 12px;
+              cursor: pointer;
+              transition: background-color 0.3s;
+          }
+          .toggle-switch.active {
+              background-color: #f39c12;
+          }
+          .toggle-switch::after {
+              content: '';
+              position: absolute;
+              top: 2px;
+              left: 2px;
+              width: 20px;
+              height: 20px;
+              background-color: white;
+              border-radius: 50%;
+              transition: transform 0.3s;
+          }
+          .toggle-switch.active::after {
+              transform: translateX(26px);
+          }
+          .source-tracing-info {
+              font-size: 12px;
+              color: #888888;
+              margin-top: 8px;
+          }
+
+          /* Timeline Slider Styles */
+          .timeline-container {
+              background-color: #2a2a2a;
+              padding: 15px 20px;
+              border-top: 2px solid #444444;
+              flex-shrink: 0;
+          }
+          .timeline-header {
+              display: flex;
+              justify-content: space-between;
+              align-items: center;
+              margin-bottom: 10px;
+          }
+          .timeline-title {
+              font-size: 14px;
+              font-weight: bold;
+              color: #4A90E2;
+              display: flex;
+              align-items: center;
+              gap: 8px;
+          }
+          .timeline-controls {
+              display: flex;
+              gap: 8px;
+              align-items: center;
+          }
+          .timeline-btn {
+              background-color: #3a3a3a;
+              color: #ffffff;
+              border: 1px solid #555555;
+              border-radius: 4px;
+              padding: 6px 12px;
+              font-size: 13px;
+              cursor: pointer;
+              transition: all 0.2s;
+          }
+          .timeline-btn:hover:not(:disabled) {
+              background-color: #4A90E2;
+              border-color: #4A90E2;
+          }
+          .timeline-btn:disabled {
+              opacity: 0.5;
+              cursor: not-allowed;
+          }
+          .timeline-btn.active {
+              background-color: #4A90E2;
+              border-color: #4A90E2;
+          }
+          .timeline-slider-wrapper {
+              position: relative;
+              padding: 10px 0;
+          }
+          .timeline-slider {
+              -webkit-appearance: none;
+              appearance: none;
+              width: 100%;
+              height: 8px;
+              border-radius: 4px;
+              background: linear-gradient(to right,
+                  #1a5f7a 0%,
+                  #2e8b9e 20%,
+                  #4a9cb8 40%,
+                  #6ab04c 60%,
+                  #f39c12 80%,
+                  #e74c3c 100%
+              );
+              outline: none;
+              cursor: pointer;
+          }
+          .timeline-slider::-webkit-slider-thumb {
+              -webkit-appearance: none;
+              appearance: none;
+              width: 20px;
+              height: 20px;
+              border-radius: 50%;
+              background: #ffffff;
+              cursor: pointer;
+              box-shadow: 0 2px 6px rgba(0,0,0,0.4);
+              transition: transform 0.1s;
+          }
+          .timeline-slider::-webkit-slider-thumb:hover {
+              transform: scale(1.2);
+          }
+          .timeline-slider::-moz-range-thumb {
+              width: 20px;
+              height: 20px;
+              border-radius: 50%;
+              background: #ffffff;
+              cursor: pointer;
+              box-shadow: 0 2px 6px rgba(0,0,0,0.4);
+              border: none;
+          }
+          .timeline-info {
+              display: flex;
+              justify-content: space-between;
+              margin-top: 8px;
+              font-size: 12px;
+              color: #aaaaaa;
+          }
+          .timeline-current {
+              color: #4A90E2;
+              font-weight: bold;
+          }
+          .timeline-markers {
+              position: absolute;
+              top: 0;
+              left: 0;
+              right: 0;
+              height: 100%;
+              pointer-events: none;
+          }
+          .timeline-marker {
+              position: absolute;
+              width: 2px;
+              background-color: rgba(255,255,255,0.3);
+              top: 0;
+              bottom: 0;
+          }
+
+          /* Color Legend */
+          .color-legend {
+              display: flex;
+              gap: 15px;
+              align-items: center;
+              font-size: 11px;
+              color: #888888;
+          }
+          .legend-item {
+              display: flex;
+              align-items: center;
+              gap: 5px;
+          }
+          .legend-color {
+              width: 12px;
+              height: 12px;
+              border-radius: 2px;
+          }
+
+          /* Node Multi-dimension Encoding */
+          .node-type-observation {
+              border-width: 3px;
+              border-style: solid;
+          }
+          .node-type-entity {
+              border-width: 2px;
+              border-style: dashed;
+          }
+          .node-type-relation {
+              border-width: 1px;
+              border-style: dotted;
+          }
+
+          /* Glow effect for recently active nodes */
+          @keyframes pulse-glow {
+              0%, 100% {
+                  box-shadow: 0 0 5px 2px rgba(74, 144, 226, 0.5);
+              }
+              50% {
+                  box-shadow: 0 0 15px 5px rgba(74, 144, 226, 0.8);
+              }
+          }
+          .node-recent-glow {
+              animation: pulse-glow 2s ease-in-out infinite;
+          }
+
+          /* Source path highlighting */
+          .edge-source-path {
+              width: 4px !important;
+              background-color: #f39c12 !important;
+          }
+          .node-source-path {
+              border: 2px solid #f39c12 !important;
+          }
+
+          /* Version Timeline Modal */
+          .version-timeline-modal {
+              display: none;
+              position: fixed;
+              top: 0;
+              left: 0;
+              width: 100%;
+              height: 100%;
+              background-color: rgba(0,0,0,0.7);
+              z-index: 1000;
+              justify-content: center;
+              align-items: center;
+          }
+          .version-timeline-modal.active {
+              display: flex;
+          }
+          .version-timeline-content {
+              background-color: #2a2a2a;
+              border-radius: 8px;
+              max-width: 800px;
+              width: 90%;
+              max-height: 80vh;
+              overflow-y: auto;
+              padding: 20px;
+          }
+          .version-timeline-header {
+              display: flex;
+              justify-content: space-between;
+              align-items: center;
+              margin-bottom: 20px;
+              padding-bottom: 15px;
+              border-bottom: 1px solid #444444;
+          }
+          .version-timeline-title {
+              font-size: 18px;
+              font-weight: bold;
+              color: #4A90E2;
+          }
+          .version-timeline-close {
+              background: none;
+              border: none;
+              color: #888888;
+              font-size: 24px;
+              cursor: pointer;
+              padding: 0;
+              width: 30px;
+              height: 30px;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+          }
+          .version-timeline-close:hover {
+              color: #ffffff;
+          }
+          .version-timeline-track {
+              position: relative;
+              padding: 20px 0;
+          }
+          .version-timeline-line {
+              position: absolute;
+              left: 20px;
+              top: 0;
+              bottom: 0;
+              width: 2px;
+              background: linear-gradient(to bottom,
+                  #1a5f7a 0%,
+                  #2e8b9e 25%,
+                  #4a9cb8 50%,
+                  #6ab04c 75%,
+                  #f39c12 100%
+              );
+          }
+          .version-timeline-item {
+              position: relative;
+              padding-left: 60px;
+              margin-bottom: 25px;
+          }
+          .version-timeline-dot {
+              position: absolute;
+              left: 11px;
+              top: 5px;
+              width: 20px;
+              height: 20px;
+              border-radius: 50%;
+              background-color: #4A90E2;
+              border: 3px solid #1a1a1a;
+              cursor: pointer;
+              transition: all 0.2s;
+          }
+          .version-timeline-dot:hover {
+              transform: scale(1.3);
+              background-color: #6ab04c;
+              z-index: 10;
+          }
+          .version-timeline-dot.active {
+              background-color: #f39c12;
+              box-shadow: 0 0 10px rgba(243, 156, 18, 0.5);
+          }
+          .version-timeline-card {
+              background-color: #1a1a1a;
+              border-radius: 6px;
+              padding: 15px;
+              border-left: 3px solid #4A90E2;
+          }
+          .version-timeline-card:hover {
+              background-color: #252525;
+          }
+          .version-timeline-card-header {
+              display: flex;
+              justify-content: space-between;
+              align-items: center;
+              margin-bottom: 10px;
+          }
+          .version-timeline-version {
+              font-weight: bold;
+              color: #4A90E2;
+          }
+          .version-timeline-time {
+              font-size: 12px;
+              color: #888888;
+          }
+          .version-timeline-content {
+              color: #cccccc;
+              font-size: 14px;
+              line-height: 1.5;
+          }
+          .version-timeline-diff {
+              margin-top: 10px;
+              padding: 10px;
+              background-color: #0a0a0a;
+              border-radius: 4px;
+              font-size: 13px;
+          }
+          .diff-added {
+              color: #6ab04c;
+          }
+          .diff-removed {
+              color: #e74c3c;
+          }
+
+          /* Search focus styles */
+          .search-highlight {
+              filter: brightness(1.5);
+          }
+          .search-dimmed {
+              opacity: 0.3;
+          }
+      </style>
+  </head>
+  <body>
+      <div class="main-content">
+          <h1>时序记忆图谱可视化</h1>
+          
+          <div class="stats-panel">
+              <div style="display: flex; flex-wrap: wrap; gap: 15px; align-items: center;">
+                  <!-- 统计信息 -->
+                  <div style="display: flex; gap: 20px; align-items: center;">
+                      <span style="color: #aaaaaa; font-size: 14px;"><strong style="color: #ffffff;">实体数量:</strong> <span id="entity-count" style="color: #4A90E2;">-</span></span>
+                      <span style="color: #aaaaaa; font-size: 14px;"><strong style="color: #ffffff;">关系数量:</strong> <span id="relation-count" style="color: #4A90E2;">-</span></span>
+                  </div>
+                  
+                  <!-- 分隔线 -->
+                  <div style="width: 1px; height: 24px; background-color: #444444;"></div>
+                  
+                  <!-- 控制参数 -->
+                  <div style="display: flex; gap: 15px; align-items: center; flex-wrap: wrap;">
+                      <div style="display: flex; gap: 8px; align-items: center;">
+                          <label for="limit-entities-input" style="color: #aaaaaa; font-size: 14px; margin: 0; white-space: nowrap;">显示实体数:</label>
+                          <input type="number" 
+                                 id="limit-entities-input" 
+                                 class="search-count-input" 
+                                 min="1" 
+                                 value="50"
+                                 placeholder="100"
+                                 style="width: 70px;">
+                      </div>
+                      <div style="display: flex; gap: 8px; align-items: center;">
+                          <label for="limit-edges-input" style="color: #aaaaaa; font-size: 14px; margin: 0; white-space: nowrap;">每实体边数:</label>
+                          <input type="number" 
+                                 id="limit-edges-input"
+                                 class="search-count-input" 
+                                 min="1" 
+                                 value="50"
+                                 placeholder="50"
+                                 style="width: 70px;">
+                      </div>
+                      <div style="display: flex; gap: 8px; align-items: center;">
+                          <label for="hops-input" style="color: #aaaaaa; font-size: 14px; margin: 0; white-space: nowrap;">跳数:</label>
+                          <input type="number" 
+                                 id="hops-input"
+                                 class="search-count-input" 
+                                 min="1" 
+                                 value="1"
+                                 placeholder="1"
+                                 style="width: 70px;">
+                      </div>
+                  </div>
+                  
+                  <!-- 分隔线 -->
+                  <div style="width: 1px; height: 24px; background-color: #444444;"></div>
+                  
+                  <!-- 图谱路径 -->
+                  <div style="display: flex; gap: 8px; align-items: center; flex: 1; min-width: 200px; max-width: 400px;">
+                      <label for="graph-path-input" style="color: #aaaaaa; font-size: 14px; margin: 0; white-space: nowrap;">图谱路径:</label>
+                      <input type="text" 
+                             id="graph-path-input" 
+                             class="search-input" 
+                             placeholder="./graph/tmg_storage"
+                             style="flex: 1; min-width: 150px;">
+                  </div>
+                  
+                  <!-- 刷新按钮 -->
+                  <button class="btn btn-primary btn-refresh" onclick="loadGraph()" style="white-space: nowrap;">🔄 刷新图谱</button>
+                  
+                  <!-- 最后更新时间 -->
+                  <div style="color: #888888; font-size: 12px; white-space: nowrap;">
+                      最后更新: <span id="last-update">-</span>
+                  </div>
+              </div>
+          </div>
+          
+          <div class="search-panel">
+              <div class="search-controls">
+                  <input type="text" 
+                         id="search-input" 
+                         class="search-input" 
+                         placeholder="输入自然语言查询，例如：人物、事件、概念等..."
+                         onkeypress="handleSearchKeyPress(event)">
+                  <span class="search-count-label">结果数量:</span>
+                  <input type="number" 
+                         id="search-count-input" 
+                         class="search-count-input" 
+                         min="1" 
+                         value="1"
+                         placeholder="10">
+                  <button class="search-btn" id="search-btn" onclick="searchGraph()">🔍 搜索</button>
+                  <button class="clear-search-btn" id="clear-search-btn" onclick="clearSearch()" style="display: none;">清除搜索</button>
+              </div>
+              <div class="search-status" id="search-status"></div>
+          </div>
+
+          <!-- Source Tracing Panel -->
+          <div class="source-tracing-panel">
+              <div class="source-tracing-header">
+                  <div class="source-tracing-title">
+                      <i class="fas fa-route"></i>
+                      溯源路径高亮
+                  </div>
+                  <div class="source-tracing-toggle">
+                      <span style="color: #aaaaaa; font-size: 13px;">启用溯源</span>
+                      <div class="toggle-switch" id="source-tracing-toggle" onclick="toggleSourceTracing()"></div>
+                  </div>
+              </div>
+              <div class="source-tracing-info" id="source-tracing-info">
+                  点击节点查看其溯源路径（连接到源观察文本的所有路径）
+              </div>
+          </div>
+
+          <div id="mynetwork"></div>
+
+          <!-- Timeline Slider -->
+          <div class="timeline-container">
+              <div class="timeline-header">
+                  <div class="timeline-title">
+                      <i class="fas fa-history"></i>
+                      时间轴导航
+                  </div>
+                  <div class="timeline-controls">
+                      <button class="timeline-btn" id="timeline-first" title="最早版本">
+                          <i class="fas fa-fast-backward"></i>
+                      </button>
+                      <button class="timeline-btn" id="timeline-prev" title="上一个版本">
+                          <i class="fas fa-step-backward"></i>
+                      </button>
+                      <button class="timeline-btn" id="timeline-play" title="自动播放">
+                          <i class="fas fa-play"></i>
+                      </button>
+                      <button class="timeline-btn" id="timeline-next" title="下一个版本">
+                          <i class="fas fa-step-forward"></i>
+                      </button>
+                      <button class="timeline-btn" id="timeline-last" title="最新版本">
+                          <i class="fas fa-fast-forward"></i>
+                      </button>
+                      <button class="timeline-btn" id="timeline-reset" title="重置视图">
+                          <i class="fas fa-sync-alt"></i>
+                      </button>
+                  </div>
+                  <div class="color-legend">
+                      <div class="legend-item">
+                          <div class="legend-color" style="background: #1a5f7a;"></div>
+                          <span>最早</span>
+                      </div>
+                      <div class="legend-item">
+                          <div class="legend-color" style="background: #4a9cb8;"></div>
+                          <span>早期</span>
+                      </div>
+                      <div class="legend-item">
+                          <div class="legend-color" style="background: #6ab04c;"></div>
+                          <span>中期</span>
+                      </div>
+                      <div class="legend-item">
+                          <div class="legend-color" style="background: #f39c12;"></div>
+                          <span>近期</span>
+                      </div>
+                      <div class="legend-item">
+                          <div class="legend-color" style="background: #e74c3c;"></div>
+                          <span>最新</span>
+                      </div>
+                  </div>
+              </div>
+              <div class="timeline-slider-wrapper">
+                  <input type="range"
+                         class="timeline-slider"
+                         id="timeline-slider"
+                         min="0"
+                         max="100"
+                         value="100"
+                         step="1">
+                  <div class="timeline-markers" id="timeline-markers"></div>
+              </div>
+              <div class="timeline-info">
+                  <span id="timeline-earliest">加载中...</span>
+                  <span class="timeline-current" id="timeline-current">当前: 最新版本</span>
+                  <span id="timeline-latest">加载中...</span>
+              </div>
+          </div>
+      </div>
+
+      <!-- Encoding Legend Panel -->
+      <div style="position: fixed; bottom: 20px; right: 20px; background-color: #2a2a2a; padding: 15px; border-radius: 8px; border: 1px solid #444444; z-index: 100; max-width: 250px;">
+          <div style="font-size: 14px; font-weight: bold; color: #4A90E2; margin-bottom: 10px; display: flex; align-items: center; gap: 8px;">
+              <i class="fas fa-info-circle"></i>
+              图例说明
+          </div>
+          <div style="font-size: 12px; color: #aaaaaa; line-height: 1.8;">
+              <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 5px;">
+                  <div style="width: 12px; height: 12px; border-radius: 2px; background: linear-gradient(to right, #1a5f7a, #e74c3c);"></div>
+                  <span>颜色 = 时间 (蓝→红)</span>
+              </div>
+              <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 5px;">
+                  <div style="width: 20px; height: 20px; border: 3px solid #888888; border-radius: 50%;"></div>
+                  <span>边框 = 类型 (实线/虚线/点线)</span>
+              </div>
+              <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 5px;">
+                  <div style="width: 15px; height: 15px; background-color: #888888; opacity: 0.5; border-radius: 50%;"></div>
+                  <span>透明度 = 置信度</span>
+              </div>
+              <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 5px;">
+                  <div style="width: 20px; height: 20px; border: 2px solid #6ab04c; border-radius: 50%;"></div>
+                  <span>绿边 = 最近活跃 (24h内)</span>
+              </div>
+              <div style="display: flex; align-items: center; gap: 8px;">
+                  <div style="width: 30px; height: 2px; background-color: #f39c12;"></div>
+                  <span>橙色路径 = 溯源链路</span>
+              </div>
+          </div>
+      </div>
+
+      <!-- Version Timeline Modal -->
+      <div class="version-timeline-modal" id="version-timeline-modal">
+          <div class="version-timeline-content">
+              <div class="version-timeline-header">
+                  <div class="version-timeline-title">
+                      <i class="fas fa-stream"></i>
+                      版本历史
+                  </div>
+                  <button class="version-timeline-close" id="version-timeline-close">
+                      <i class="fas fa-times"></i>
+                  </button>
+              </div>
+              <div class="version-timeline-track" id="version-timeline-track">
+                  <div class="version-timeline-line"></div>
+                  <!-- Version items will be dynamically added here -->
+              </div>
+          </div>
+      </div>
+
+      <!-- 右侧边栏 -->
+      <div class="sidebar">
+          <div class="sidebar-header">
+              <div class="sidebar-title" id="sidebar-title">详细信息</div>
+              <div class="sidebar-subtitle" id="sidebar-subtitle">点击节点或边查看详情</div>
+          </div>
+          <div class="sidebar-content" id="sidebar-content">
+              <div class="empty-state">点击图谱中的节点或关系边查看详细信息</div>
+          </div>
+      </div>
+
+    <script type="text/javascript">
+        console.log('=== 图谱可视化脚本开始加载 ===');
+        
+        // 检查vis-network库是否加载
+        if (typeof vis === 'undefined') {
+            console.error('❌ vis-network库未加载！请检查CDN链接');
+        } else {
+            console.log('✅ vis-network库已加载，版本:', vis.Network ? '可用' : '不可用');
+        }
+        
+        var network;
+        var container = document.getElementById('mynetwork');
+        var nodesDataSet;
+        var edges;  // 边数据集，用于版本切换时更新
+
+        // 检查容器元素
+        if (!container) {
+            console.error('❌ 找不到容器元素 #mynetwork');
+        } else {
+            console.log('✅ 容器元素找到:', container);
+            console.log('   容器尺寸:', container.offsetWidth, 'x', container.offsetHeight);
+        }
+
+        // 跟踪当前模式：'default' 或 'search'
+        var currentMode = 'default';
+        var currentSearchQuery = '';
+
+        // Timeline state
+        var timelineState = {
+            enabled: false,
+            earliestTime: null,
+            latestTime: null,
+            currentTime: null,
+            timePoints: [],
+            isPlaying: false,
+            playInterval: null,
+            playSpeed: 2000 // ms per step
+        };
+
+        // Search focus state
+        var searchFocusState = {
+            matchedNodes: new Set(),
+            matchedEdges: new Set()
+        };
+
+        // Source tracing state
+        var sourceTracingState = {
+            enabled: false,
+            sourceNodes: new Set(),
+            pathNodes: new Set(),
+            pathEdges: new Set()
+        };
+        
+        function loadGraph() {
+            // 从输入框获取参数
+            var limitEntities = parseInt(document.getElementById('limit-entities-input').value) || 100;
+            var limitEdgesPerEntity = parseInt(document.getElementById('limit-edges-input').value) || 50;
+            var hops = parseInt(document.getElementById('hops-input').value) || 1;
+            var graphPath = document.getElementById('graph-path-input').value.trim();
+            
+            // 验证输入
+            if (limitEntities < 1) {
+                alert('实体数量必须大于等于1');
+                return;
+            }
+            if (limitEdgesPerEntity < 1) {
+                alert('每实体边数必须大于等于1');
+                return;
+            }
+            if (hops < 1) {
+                alert('跳数必须大于等于1');
+                return;
+            }
+            
+            console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+            console.log('📡 [1/4] 开始加载图谱数据（默认模式）...');
+            console.log('   实体数量限制:', limitEntities);
+            console.log('   每实体边数限制:', limitEdgesPerEntity);
+            console.log('   跳数:', hops);
+            console.log('   图谱路径:', graphPath || '(使用默认路径)');
+            
+            // 构建请求URL
+            var url = '/api/graphs/data?limit_entities=' + limitEntities + '&limit_edges_per_entity=' + limitEdgesPerEntity + '&hops=' + hops;
+            if (graphPath) {
+                url += '&storage_path=' + encodeURIComponent(graphPath);
+            }
+            console.log('   请求URL:', url);
+            
+            currentMode = 'default';
+            currentSearchQuery = '';
+            updateSearchStatus('');
+            document.getElementById('clear-search-btn').style.display = 'none';
+            document.getElementById('search-input').value = '';
+            
+            fetch(url)
+                .then(response => {
+                    console.log('📥 [2/4] 收到HTTP响应');
+                    console.log('   状态码:', response.status);
+                    console.log('   状态文本:', response.statusText);
+                    console.log('   Content-Type:', response.headers.get('content-type'));
+                    
+                    if (!response.ok) {
+                        throw new Error('HTTP错误: ' + response.status + ' ' + response.statusText);
+                    }
+                    
+                    return response.json();
+                })
+                .then(data => {
+                    console.log('📦 [3/4] JSON数据解析完成');
+                    console.log('   数据键:', Object.keys(data));
+                    
+                    if (data.success) {
+                        console.log('✅ API返回成功');
+                        console.log('   节点数量:', data.nodes ? data.nodes.length : 0);
+                        console.log('   边数量:', data.edges ? data.edges.length : 0);
+                        console.log('   统计信息:', data.stats);
+                        
+                        // 显示前几个节点的信息
+                        if (data.nodes && data.nodes.length > 0) {
+                            console.log('   前3个节点示例:');
+                            data.nodes.slice(0, 3).forEach(function(node, index) {
+                                console.log('     [' + index + ']', {
+                                    id: node.id,
+                                    label: node.label,
+                                    hasEntityId: !!node.entity_id,
+                                    hasAbsoluteId: !!node.absolute_id
+                                });
+                            });
+                        }
+                        
+                        // 显示前几条边的信息
+                        if (data.edges && data.edges.length > 0) {
+                            console.log('   前3条边示例:');
+                            data.edges.slice(0, 3).forEach(function(edge, index) {
+                                console.log('     [' + index + ']', {
+                                    from: edge.from,
+                                    to: edge.to,
+                                    hasRelationId: !!edge.relation_id,
+                                    hasAbsoluteId: !!edge.absolute_id
+                                });
+                            });
+                        }
+                        
+                        updateStats(data.stats);
+                        console.log('🎨 [4/4] 开始绘制图谱...');
+                        drawGraph(data.nodes, data.edges);
+                        updateTimelineData(data.nodes);
+                        updateLastUpdate();
+                        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+                    } else {
+                        console.error('❌ API返回失败');
+                        console.error('   错误信息:', data.error);
+                        alert('加载图谱数据失败: ' + data.error);
+                    }
+                })
+                .catch(error => {
+                    console.error('❌ 请求过程中发生错误');
+                    console.error('   错误类型:', error.name);
+                    console.error('   错误消息:', error.message);
+                    console.error('   错误堆栈:', error.stack);
+                    alert('请求错误: ' + error.message);
+                });
+        }
+        
+        function searchGraph() {
+            var query = document.getElementById('search-input').value.trim();
+            var maxResultsInput = document.getElementById('search-count-input').value;
+            var maxResults = parseInt(maxResultsInput);
+            var graphPath = document.getElementById('graph-path-input').value.trim();
+            
+            if (!query) {
+                alert('请输入搜索查询');
+                return;
+            }
+            
+            // 验证结果数量
+            if (isNaN(maxResults) || maxResults < 1) {
+                alert('结果数量必须是大于等于1的整数');
+                document.getElementById('search-count-input').focus();
+                return;
+            }
+            
+            console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+            console.log('🔍 [1/4] 开始搜索图谱...');
+            console.log('   查询文本:', query);
+            console.log('   最大结果数:', maxResults);
+            console.log('   图谱路径:', graphPath || '(使用默认路径)');
+            console.log('   请求URL: /api/graphs/search');
+            
+            currentMode = 'search';
+            currentSearchQuery = query;
+            updateSearchStatus('正在搜索...');
+            document.getElementById('clear-search-btn').style.display = 'inline-block';
+            document.getElementById('search-btn').disabled = true;
+            
+            // 构建请求体
+            var requestBody = {
+                query: query,
+                max_results: maxResults,
+                limit_edges_per_entity: 50
+            };
+            if (graphPath) {
+                requestBody.storage_path = graphPath;
+            }
+            
+            fetch('/api/graphs/search', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(requestBody)
+            })
+                .then(response => {
+                    console.log('📥 [2/4] 收到HTTP响应');
+                    console.log('   状态码:', response.status);
+                    
+                    if (!response.ok) {
+                        throw new Error('HTTP错误: ' + response.status + ' ' + response.statusText);
+                    }
+                    
+                    return response.json();
+                })
+                .then(data => {
+                    console.log('📦 [3/4] JSON数据解析完成');
+                    console.log('   完整响应数据:', JSON.stringify(data, null, 2));
+                    console.log('   数据键:', Object.keys(data));
+                    
+                    document.getElementById('search-btn').disabled = false;
+                    
+                    if (data.success) {
+                        console.log('✅ 搜索成功');
+                        console.log('   匹配实体数:', data.stats ? data.stats.matched_entities : 0);
+                        console.log('   节点数量:', data.nodes ? data.nodes.length : 0);
+                        console.log('   边数量:', data.edges ? data.edges.length : 0);
+                        console.log('   统计信息:', data.stats);
+                        console.log('   查询文本:', data.query);
+                        
+                        // 检查是否有节点数据
+                        if (!data.nodes || data.nodes.length === 0) {
+                            console.warn('⚠️  搜索结果中没有节点数据');
+                            updateSearchStatus('未找到匹配的实体，请尝试其他查询词');
+                            alert('未找到匹配的实体，请尝试其他查询词');
+                            return;
+                        }
+                        
+                        if (data.stats && data.stats.matched_entities > 0) {
+                            updateSearchStatus('找到 ' + data.stats.matched_entities + ' 个匹配实体，共显示 ' + data.stats.total_entities + ' 个实体（包含关联实体）');
+                        } else {
+                            updateSearchStatus('未找到匹配的实体');
+                        }
+
+                        updateStats(data.stats);
+                        console.log('🎨 [4/4] 开始绘制搜索结果图谱...');
+                        console.log('   准备绘制的节点数:', data.nodes.length);
+                        console.log('   准备绘制的边数:', data.edges.length);
+                        drawGraph(data.nodes, data.edges);
+
+                        // Apply search focus enhancement
+                        enhanceSearchFocus(data.matched_entities, data.matched_relations);
+
+                        updateLastUpdate();
+                        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+                    } else {
+                        console.error('❌ 搜索失败');
+                        console.error('   错误信息:', data.error);
+                        updateSearchStatus('搜索失败: ' + data.error);
+                        alert('搜索失败: ' + data.error);
+                    }
+                })
+                .catch(error => {
+                    console.error('❌ 搜索过程中发生错误');
+                    console.error('   错误类型:', error.name);
+                    console.error('   错误消息:', error.message);
+                    console.error('   错误堆栈:', error.stack);
+                    document.getElementById('search-btn').disabled = false;
+                    updateSearchStatus('搜索错误: ' + error.message);
+                    alert('搜索错误: ' + error.message);
+                });
+        }
+        
+        function clearSearch() {
+            console.log('清除搜索，返回默认视图');
+            document.getElementById('search-input').value = '';
+            document.getElementById('clear-search-btn').style.display = 'none';
+            updateSearchStatus('');
+            clearSearchFocus();
+            loadGraph();
+        }
+        
+        function handleSearchKeyPress(event) {
+            if (event.key === 'Enter') {
+                searchGraph();
+            }
+        }
+
+        // Timeline functions
+        function initTimeline() {
+            var slider = document.getElementById('timeline-slider');
+            var playBtn = document.getElementById('timeline-play');
+
+            slider.addEventListener('input', handleTimelineChange);
+            document.getElementById('timeline-first').addEventListener('click', () => jumpToTimeline('first'));
+            document.getElementById('timeline-prev').addEventListener('click', () => jumpToTimeline('prev'));
+            document.getElementById('timeline-next').addEventListener('click', () => jumpToTimeline('next'));
+            document.getElementById('timeline-last').addEventListener('click', () => jumpToTimeline('last'));
+            document.getElementById('timeline-reset').addEventListener('click', resetTimelineView);
+            playBtn.addEventListener('click', toggleTimelinePlay);
+        }
+
+        function updateTimelineData(nodes) {
+            if (!nodes || nodes.length === 0) {
+                timelineState.enabled = false;
+                return;
+            }
+
+            // Collect all time points
+            var times = [];
+            nodes.forEach(function(node) {
+                if (node.processed_time) {
+                    times.push(new Date(node.processed_time));
+                }
+            });
+
+            if (times.length === 0) {
+                timelineState.enabled = false;
+                return;
+            }
+
+            times.sort(function(a, b) { return a - b; });
+            timelineState.earliestTime = times[0];
+            timelineState.latestTime = times[times.length - 1];
+            timelineState.timePoints = times;
+            timelineState.currentTime = timelineState.latestTime;
+            timelineState.enabled = true;
+
+            // Update UI
+            document.getElementById('timeline-earliest').textContent = formatDateTimeShort(timelineState.earliestTime);
+            document.getElementById('timeline-latest').textContent = formatDateTimeShort(timelineState.latestTime);
+            document.getElementById('timeline-current').textContent = '当前: ' + formatDateTimeShort(timelineState.currentTime);
+
+            // Set slider to 100% (latest)
+            document.getElementById('timeline-slider').value = 100;
+        }
+
+        function handleTimelineChange(event) {
+            if (!timelineState.enabled) return;
+
+            var slider = event.target;
+            var percent = parseInt(slider.value);
+            var timePoint = getTimePointAtPercent(percent);
+
+            if (timePoint) {
+                timelineState.currentTime = timePoint;
+                document.getElementById('timeline-current').textContent = '当前: ' + formatDateTimeShort(timePoint);
+                updateGraphForTimePoint(timePoint);
+            }
+        }
+
+        function getTimePointAtPercent(percent) {
+            if (!timelineState.enabled || !timelineState.timePoints.length) return null;
+
+            var index = Math.floor((percent / 100) * (timelineState.timePoints.length - 1));
+            return timelineState.timePoints[index];
+        }
+
+        function jumpToTimeline(direction) {
+            if (!timelineState.enabled) return;
+
+            var currentIndex = timelineState.timePoints.findIndex(function(t) {
+                return t.getTime() === timelineState.currentTime.getTime();
+            });
+
+            var newIndex = currentIndex;
+            switch(direction) {
+                case 'first':
+                    newIndex = 0;
+                    break;
+                case 'prev':
+                    newIndex = Math.max(0, currentIndex - 1);
+                    break;
+                case 'next':
+                    newIndex = Math.min(timelineState.timePoints.length - 1, currentIndex + 1);
+                    break;
+                case 'last':
+                    newIndex = timelineState.timePoints.length - 1;
+                    break;
+            }
+
+            if (newIndex !== currentIndex) {
+                timelineState.currentTime = timelineState.timePoints[newIndex];
+                var percent = (newIndex / (timelineState.timePoints.length - 1)) * 100;
+                document.getElementById('timeline-slider').value = percent;
+                document.getElementById('timeline-current').textContent = '当前: ' + formatDateTimeShort(timelineState.currentTime);
+                updateGraphForTimePoint(timelineState.currentTime);
+            }
+        }
+
+        function toggleTimelinePlay() {
+            var playBtn = document.getElementById('timeline-play');
+
+            if (timelineState.isPlaying) {
+                stopTimelinePlay();
+                playBtn.innerHTML = '<i class="fas fa-play"></i>';
+                playBtn.classList.remove('active');
+            } else {
+                startTimelinePlay();
+                playBtn.innerHTML = '<i class="fas fa-pause"></i>';
+                playBtn.classList.add('active');
+            }
+        }
+
+        function startTimelinePlay() {
+            if (!timelineState.enabled) return;
+
+            timelineState.isPlaying = true;
+            timelineState.playInterval = setInterval(function() {
+                var currentIndex = timelineState.timePoints.findIndex(function(t) {
+                    return t.getTime() === timelineState.currentTime.getTime();
+                });
+
+                if (currentIndex >= timelineState.timePoints.length - 1) {
+                    stopTimelinePlay();
+                    document.getElementById('timeline-play').innerHTML = '<i class="fas fa-play"></i>';
+                    document.getElementById('timeline-play').classList.remove('active');
+                    return;
+                }
+
+                jumpToTimeline('next');
+            }, timelineState.playSpeed);
+        }
+
+        function stopTimelinePlay() {
+            timelineState.isPlaying = false;
+            if (timelineState.playInterval) {
+                clearInterval(timelineState.playInterval);
+                timelineState.playInterval = null;
+            }
+        }
+
+        function resetTimelineView() {
+            if (!timelineState.enabled) return;
+
+            stopTimelinePlay();
+            document.getElementById('timeline-play').innerHTML = '<i class="fas fa-play"></i>';
+            document.getElementById('timeline-play').classList.remove('active');
+
+            timelineState.currentTime = timelineState.latestTime;
+            document.getElementById('timeline-slider').value = 100;
+            document.getElementById('timeline-current').textContent = '当前: ' + formatDateTimeShort(timelineState.currentTime);
+            updateGraphForTimePoint(timelineState.currentTime);
+        }
+
+        function updateGraphForTimePoint(timePoint) {
+            if (!network || !nodesDataSet) return;
+
+            // Filter nodes based on time point
+            var nodesToShow = [];
+            var edgesToShow = [];
+
+            nodesDataSet.get().forEach(function(node) {
+                if (node.processed_time) {
+                    var nodeTime = new Date(node.processed_time);
+                    if (nodeTime <= timePoint) {
+                        nodesToShow.push(node.id);
+                    }
+                }
+            });
+
+            // Update node visibility and colors
+            nodesDataSet.get().forEach(function(node) {
+                var shouldShow = nodesToShow.includes(node.id);
+                var updateData = { hidden: !shouldShow };
+
+                if (shouldShow && node.processed_time) {
+                    updateData.color = getTimeBasedColor(new Date(node.processed_time));
+                }
+
+                nodesDataSet.update(node.id, updateData);
+            });
+
+            // Update edge visibility
+            edges.get().forEach(function(edge) {
+                var fromHidden = nodesDataSet.get(edge.from).hidden;
+                var toHidden = nodesDataSet.get(edge.to).hidden;
+                edges.update(edge.id, { hidden: fromHidden || toHidden });
+            });
+        }
+
+        function getTimeBasedColor(date) {
+            if (!timelineState.enabled || !timelineState.earliestTime || !timelineState.latestTime) {
+                return '#4A90E2';
+            }
+
+            var totalDuration = timelineState.latestTime - timelineState.earliestTime;
+            var elapsed = date - timelineState.earliestTime;
+            var ratio = elapsed / totalDuration;
+
+            // Color gradient from cold (blue) to warm (red)
+            var colors = [
+                { pos: 0.0, color: '#1a5f7a' },   // Deep blue - oldest
+                { pos: 0.2, color: '#2e8b9e' },   // Teal
+                { pos: 0.4, color: '#4a9cb8' },   // Light blue
+                { pos: 0.6, color: '#6ab04c' },   // Green
+                { pos: 0.8, color: '#f39c12' },   // Orange
+                { pos: 1.0, color: '#e74c3c' }    // Red - newest
+            ];
+
+            // Find the two colors to interpolate between
+            var lower = colors[0];
+            var upper = colors[colors.length - 1];
+
+            for (var i = 0; i < colors.length - 1; i++) {
+                if (ratio >= colors[i].pos && ratio <= colors[i + 1].pos) {
+                    lower = colors[i];
+                    upper = colors[i + 1];
+                    break;
+                }
+            }
+
+            // Interpolate between the two colors
+            var range = upper.pos - lower.pos;
+            var rangeRatio = range === 0 ? 0 : (ratio - lower.pos) / range;
+
+            return interpolateColor(lower.color, upper.color, rangeRatio);
+        }
+
+        function interpolateColor(color1, color2, ratio) {
+            var r1 = parseInt(color1.substr(1, 2), 16);
+            var g1 = parseInt(color1.substr(3, 2), 16);
+            var b1 = parseInt(color1.substr(5, 2), 16);
+
+            var r2 = parseInt(color2.substr(1, 2), 16);
+            var g2 = parseInt(color2.substr(3, 2), 16);
+            var b2 = parseInt(color2.substr(5, 2), 16);
+
+            var r = Math.round(r1 + (r2 - r1) * ratio);
+            var g = Math.round(g1 + (g2 - g1) * ratio);
+            var b = Math.round(b1 + (b2 - b1) * ratio);
+
+            return '#' + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1);
+        }
+
+        function formatDateTimeShort(date) {
+            try {
+                return date.toLocaleString('zh-CN', {
+                    month: '2-digit',
+                    day: '2-digit',
+                    hour: '2-digit',
+                    minute: '2-digit'
+                });
+            } catch (e) {
+                return '';
+            }
+        }
+
+        // Version timeline modal functions
+        function showVersionTimeline(entityId, absoluteId) {
+            var modal = document.getElementById('version-timeline-modal');
+            var track = document.getElementById('version-timeline-track');
+
+            // Clear existing items (except the line)
+            track.innerHTML = '<div class="version-timeline-line"></div>';
+
+            // Load versions
+            fetch('/api/entities/' + encodeURIComponent(entityId) + '/versions')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success && data.versions) {
+                        // Sort versions by time
+                        var sortedVersions = data.versions.slice().sort(function(a, b) {
+                            return new Date(a.processed_time) - new Date(b.processed_time);
+                        });
+
+                        sortedVersions.forEach(function(version, index) {
+                            var item = createVersionTimelineItem(version, index, sortedVersions.length, absoluteId);
+                            track.appendChild(item);
+                        });
+
+                        modal.classList.add('active');
+                    }
+                })
+                .catch(error => {
+                    console.error('Failed to load versions:', error);
+                });
+        }
+
+        function createVersionTimelineItem(version, index, total, currentAbsoluteId) {
+            var item = document.createElement('div');
+            item.className = 'version-timeline-item';
+
+            var dot = document.createElement('div');
+            dot.className = 'version-timeline-dot';
+            if (version.absolute_id === currentAbsoluteId) {
+                dot.classList.add('active');
+            }
+            dot.style.backgroundColor = getTimeBasedColor(new Date(version.processed_time));
+            dot.onclick = function() {
+                switchEntityVersion(version.family_id, version.absolute_id);
+                closeModal();
+            };
+
+            var card = document.createElement('div');
+            card.className = 'version-timeline-card';
+            card.style.borderLeftColor = dot.style.backgroundColor;
+
+            var header = document.createElement('div');
+            header.className = 'version-timeline-card-header';
+
+            var versionSpan = document.createElement('span');
+            versionSpan.className = 'version-timeline-version';
+            versionSpan.textContent = '版本 ' + (index + 1) + '/' + total;
+
+            var timeSpan = document.createElement('span');
+            timeSpan.className = 'version-timeline-time';
+            timeSpan.textContent = formatDateTime(version.processed_time);
+
+            header.appendChild(versionSpan);
+            header.appendChild(timeSpan);
+
+            var content = document.createElement('div');
+            content.className = 'version-timeline-content';
+            content.textContent = version.content || version.name || '';
+
+            card.appendChild(header);
+            card.appendChild(content);
+
+            item.appendChild(dot);
+            item.appendChild(card);
+
+            return item;
+        }
+
+        function closeModal() {
+            document.getElementById('version-timeline-modal').classList.remove('active');
+        }
+
+        document.getElementById('version-timeline-close').addEventListener('click', closeModal);
+
+        // Close modal on outside click
+        document.getElementById('version-timeline-modal').addEventListener('click', function(e) {
+            if (e.target === this) {
+                closeModal();
+            }
+        });
+
+        // Search focus enhancement
+        function enhanceSearchFocus(matchedEntities, matchedRelations) {
+            searchFocusState.matchedNodes.clear();
+            searchFocusState.matchedEdges.clear();
+
+            // Collect matched node IDs
+            if (matchedEntities) {
+                matchedEntities.forEach(function(entity) {
+                    searchFocusState.matchedNodes.add(entity.family_id);
+                });
+            }
+
+            // Collect matched edge IDs
+            if (matchedRelations) {
+                matchedRelations.forEach(function(relation) {
+                    searchFocusState.matchedEdges.add(relation.family_id);
+                });
+            }
+
+            // Apply visual effects
+            if (nodesDataSet) {
+                nodesDataSet.get().forEach(function(node) {
+                    var isMatched = searchFocusState.matchedNodes.has(node.id);
+                    var update = {
+                        size: isMatched ? 30 : 20,
+                        opacity: isMatched ? 1 : 0.4
+                    };
+                    nodesDataSet.update(node.id, update);
+                });
+            }
+
+            if (edges) {
+                edges.get().forEach(function(edge) {
+                    var isMatched = searchFocusState.matchedEdges.has(edge.family_id);
+                    var update = {
+                        width: isMatched ? 4 : 2,
+                        opacity: isMatched ? 1 : 0.4
+                    };
+                    edges.update(edge.id, update);
+                });
+            }
+        }
+
+        function clearSearchFocus() {
+            searchFocusState.matchedNodes.clear();
+            searchFocusState.matchedEdges.clear();
+
+            if (nodesDataSet) {
+                nodesDataSet.get().forEach(function(node) {
+                    nodesDataSet.update(node.id, {
+                        size: 20,
+                        opacity: 1
+                    });
+                });
+            }
+
+            if (edges) {
+                edges.get().forEach(function(edge) {
+                    edges.update(edge.id, {
+                        width: 2,
+                        opacity: 1
+                    });
+                });
+            }
+        }
+
+        // Source Tracing Functions
+        function toggleSourceTracing() {
+            var toggle = document.getElementById('source-tracing-toggle');
+            var info = document.getElementById('source-tracing-info');
+
+            sourceTracingState.enabled = !sourceTracingState.enabled;
+            toggle.classList.toggle('active', sourceTracingState.enabled);
+
+            if (sourceTracingState.enabled) {
+                info.textContent = '溯源模式已启用 - 点击节点查看其溯源路径';
+                info.style.color = '#f39c12';
+            } else {
+                info.textContent = '点击节点查看其溯源路径（连接到源观察文本的所有路径）';
+                info.style.color = '#888888';
+                clearSourceTracing();
+            }
+        }
+
+        function performSourceTracing(nodeId) {
+            if (!sourceTracingState.enabled) return;
+
+            console.log('🔍 开始溯源节点:', nodeId);
+
+            // Clear previous tracing
+            clearSourceTracing();
+
+            // Use BFS to find all paths to source observation nodes
+            var paths = findPathsToSources(nodeId);
+
+            // Highlight the paths
+            highlightSourcePaths(paths);
+
+            // Update info
+            var info = document.getElementById('source-tracing-info');
+            info.textContent = '找到 ' + paths.length + ' 条溯源路径，显示 ' + sourceTracingState.pathNodes.size + ' 个节点';
+        }
+
+        function findPathsToSources(startNodeId) {
+            var paths = [];
+            var visited = new Set();
+            var queue = [[startNodeId, [startNodeId]]];
+
+            while (queue.length > 0) {
+                var [currentId, path] = queue.shift();
+
+                if (visited.has(currentId)) continue;
+                visited.add(currentId);
+
+                // Check if this is a source observation node
+                var node = nodesDataSet.get(currentId);
+                if (node && node.entity_type === 'observation') {
+                    paths.push(path);
+                    // Continue to find other paths
+                }
+
+                // Explore connected nodes
+                var connectedEdges = edges.get().filter(function(edge) {
+                    return edge.from === currentId || edge.to === currentId;
+                });
+
+                connectedEdges.forEach(function(edge) {
+                    var nextId = edge.from === currentId ? edge.to : edge.from;
+                    if (!visited.has(nextId)) {
+                        queue.push([nextId, [...path, nextId]]);
+                    }
+                });
+            }
+
+            return paths;
+        }
+
+        function highlightSourcePaths(paths) {
+            // Collect all nodes and edges in paths
+            sourceTracingState.pathNodes.clear();
+            sourceTracingState.pathEdges.clear();
+
+            paths.forEach(function(path) {
+                for (var i = 0; i < path.length; i++) {
+                    sourceTracingState.pathNodes.add(path[i]);
+
+                    if (i < path.length - 1) {
+                        // Find the edge between consecutive nodes
+                        var edge = edges.get().find(function(e) {
+                            return (e.from === path[i] && e.to === path[i + 1]) ||
+                                   (e.to === path[i] && e.from === path[i + 1]);
+                        });
+                        if (edge) {
+                            sourceTracingState.pathEdges.add(edge.id);
+                        }
+                    }
+                }
+            });
+
+            // Apply highlighting
+            sourceTracingState.pathNodes.forEach(function(nodeId) {
+                nodesDataSet.update(nodeId, {
+                    color: '#f39c12',
+                    borderWidth: 3,
+                    opacity: 1
+                });
+            });
+
+            sourceTracingState.pathEdges.forEach(function(edgeId) {
+                edges.update(edgeId, {
+                    color: '#f39c12',
+                    width: 4,
+                    dashes: true,
+                    opacity: 1
+                });
+            });
+
+            // Dim non-path nodes and edges
+            nodesDataSet.get().forEach(function(node) {
+                if (!sourceTracingState.pathNodes.has(node.id)) {
+                    nodesDataSet.update(node.id, {
+                        opacity: 0.3
+                    });
+                }
+            });
+
+            edges.get().forEach(function(edge) {
+                if (!sourceTracingState.pathEdges.has(edge.id)) {
+                    edges.update(edge.id, {
+                        opacity: 0.3
+                    });
+                }
+            });
+        }
+
+        function clearSourceTracing() {
+            // Reset all highlighted nodes
+            sourceTracingState.pathNodes.forEach(function(nodeId) {
+                var node = nodesDataSet.get(nodeId);
+                if (node) {
+                    var update = {
+                        opacity: 1
+                    };
+                    // Restore original color if available
+                    if (node.processed_time) {
+                        update.color = getTimeBasedColor(new Date(node.processed_time));
+                    } else {
+                        update.color = '#4A90E2';
+                    }
+                    nodesDataSet.update(nodeId, update);
+                }
+            });
+
+            // Reset all highlighted edges
+            sourceTracingState.pathEdges.forEach(function(edgeId) {
+                edges.update(edgeId, {
+                    color: '#888888',
+                    width: 2,
+                    dashes: false,
+                    opacity: 1
+                });
+            });
+
+            // Reset all dimmed nodes
+            nodesDataSet.get().forEach(function(node) {
+                if (!sourceTracingState.pathNodes.has(node.id) && node.opacity === 0.3) {
+                    nodesDataSet.update(node.id, { opacity: 1 });
+                }
+            });
+
+            // Reset all dimmed edges
+            edges.get().forEach(function(edge) {
+                if (!sourceTracingState.pathEdges.has(edge.id) && edge.opacity === 0.3) {
+                    edges.update(edge.id, { opacity: 1 });
+                }
+            });
+
+            sourceTracingState.pathNodes.clear();
+            sourceTracingState.pathEdges.clear();
+
+            // Update info
+            var info = document.getElementById('source-tracing-info');
+            if (sourceTracingState.enabled) {
+                info.textContent = '点击节点查看其溯源路径（连接到源观察文本的所有路径）';
+            }
+        }
+
+        function updateSearchStatus(message) {
+            document.getElementById('search-status').textContent = message;
+        }
+        
+        function updateStats(stats) {
+            document.getElementById('entity-count').textContent = stats.total_entities || 0;
+            document.getElementById('relation-count').textContent = stats.total_relations || 0;
+        }
+        
+        function updateLastUpdate() {
+            const now = new Date();
+            document.getElementById('last-update').textContent = now.toLocaleString('zh-CN');
+        }
+        
+        // 存储边的完整数据
+        var edgesDataMap = {};
+        
+        function drawGraph(nodesData, edgesData) {
+            try {
+                console.log('┌─ drawGraph 函数开始执行 ──────────────────────────');
+                console.log('📊 输入数据检查:');
+                console.log('   节点数据类型:', typeof nodesData, Array.isArray(nodesData) ? '(数组)' : '(非数组)');
+                console.log('   节点数据长度:', nodesData ? nodesData.length : 'null/undefined');
+                console.log('   边数据类型:', typeof edgesData, Array.isArray(edgesData) ? '(数组)' : '(非数组)');
+                console.log('   边数据长度:', edgesData ? edgesData.length : 'null/undefined');
+                
+                if (!nodesData || nodesData.length === 0) {
+                    console.error('❌ 节点数据为空或无效');
+                    alert('没有节点数据，无法绘制图谱');
+                    return;
+                }
+                
+                if (!container) {
+                    console.error('❌ 容器元素不存在');
+                    alert('找不到图谱容器元素');
+                    return;
+                }
+                console.log('✅ 容器元素检查通过');
+                
+                // 如果已存在网络，先清除旧数据
+                if (network) {
+                    console.log('🗑️  清除现有网络数据...');
+                    network.destroy();
+                    network = null;
+                    nodesDataSet = null;
+                }
+                
+                // 创建节点数据集
+                console.log('📦 步骤1: 创建节点数据集...');
+                try {
+                    // 去重：确保每个节点ID只出现一次
+                    var uniqueNodes = [];
+                    var seenNodeIds = new Set();
+                    var allTimes = [];
+
+                    for (var i = 0; i < nodesData.length; i++) {
+                        var node = nodesData[i];
+                        if (!seenNodeIds.has(node.id)) {
+                            seenNodeIds.add(node.id);
+
+                            // Apply time-based coloring
+                            if (node.processed_time) {
+                                var nodeTime = new Date(node.processed_time);
+                                node.color = getTimeBasedColor(nodeTime);
+                                allTimes.push(nodeTime);
+                            }
+
+                            // Apply multi-dimension encoding
+                            // Size based on importance (degree)
+                            node.size = node.size || 20;
+
+                            // Border style based on type (if available)
+                            if (node.entity_type) {
+                                switch(node.entity_type) {
+                                    case 'observation':
+                                        node.shapeProperties = { borderDashes: false };
+                                        node.borderWidth = 3;
+                                        break;
+                                    case 'entity':
+                                        node.shapeProperties = { borderDashes: true };
+                                        node.borderWidth = 2;
+                                        break;
+                                    case 'relation':
+                                        node.shapeProperties = { borderDashes: [5, 5] };
+                                        node.borderWidth = 1;
+                                        break;
+                                }
+                            }
+
+                            // Opacity based on confidence score (if available)
+                            if (node.confidence !== undefined) {
+                                // Map confidence (0-1) to opacity (0.3-1.0)
+                                node.opacity = 0.3 + (node.confidence * 0.7);
+                            }
+
+                            // Glow effect for recently active nodes (modified within last 24 hours)
+                            if (node.processed_time) {
+                                var nodeTime = new Date(node.processed_time);
+                                var now = new Date();
+                                var hoursSinceModified = (now - nodeTime) / (1000 * 60 * 60);
+                                if (hoursSinceModified < 24) {
+                                    node.title = (node.title || node.label) + ' [最近活跃]';
+                                    // Note: vis-network doesn't support CSS animations on nodes directly
+                                    // We use a lighter border color to indicate recent activity
+                                    node.borderColor = '#6ab04c';
+                                }
+                            }
+
+                            uniqueNodes.push(node);
+                        } else {
+                            console.warn('⚠️  发现重复节点ID，跳过:', node.id, node.label);
+                        }
+                    }
+                    console.log('   去重前节点数:', nodesData.length, '去重后节点数:', uniqueNodes.length);
+                    
+                    nodesDataSet = new vis.DataSet(uniqueNodes);
+                    console.log('✅ 节点数据集创建成功');
+                    console.log('   数据集节点数:', nodesDataSet.length);
+                    if (nodesDataSet.length > 0) {
+                        console.log('   第一个节点示例:', nodesDataSet.get()[0]);
+                    }
+                } catch (e) {
+                    console.error('❌ 创建节点数据集失败:', e);
+                    throw e;
+                }
+                
+                // 存储边的完整数据，用于点击时显示
+                console.log('🔗 步骤2: 处理边数据...');
+                edgesDataMap = {};
+                var edgeIndex = 0;
+                if (edgesData && edgesData.length > 0) {
+                    console.log('   处理', edgesData.length, '条边');
+                    edgesData.forEach(function(edge, index) {
+                        var edgeId = 'edge_' + edgeIndex++;
+                        var edgeKey = edge.from + '_' + edge.to + '_' + edgeId;
+                        edge._visId = edgeId; // 临时存储vis-network的ID
+                        edgesDataMap[edgeKey] = edge;
+                        
+                        if (index < 3) {
+                            console.log('   边[' + index + ']:', {
+                                from: edge.from,
+                                to: edge.to,
+                                visId: edge._visId,
+                                hasRelationId: !!edge.relation_id,
+                                hasAbsoluteId: !!edge.absolute_id
+                            });
+                        }
+                    });
+                    console.log('✅ 边数据映射完成，共', Object.keys(edgesDataMap).length, '条');
+                } else {
+                    console.log('⚠️  没有边数据');
+                }
+                
+                // 创建边数据集（不显示label，避免糊在一起）
+                console.log('🔗 步骤3: 创建边数据集...');
+                var edgesForVis = [];
+                if (edgesData && edgesData.length > 0) {
+                    edgesForVis = edgesData.map(function(edge, index) {
+                        if (!edge._visId) {
+                            console.warn('⚠️  边[' + index + ']缺少_visId，自动生成:', edge);
+                            edge._visId = 'edge_' + Math.random().toString(36).substr(2, 9);
+                        }
+                        return {
+                            from: edge.from,
+                            to: edge.to,
+                            id: edge._visId, // 使用唯一的ID
+                            // 不设置label，避免文字重叠
+                            arrows: '',
+                            width: 2,
+                            color: {
+                                color: "#888888",
+                                highlight: "#4A90E2"
+                            }
+                        };
+                    });
+                }
+                
+                try {
+                    edges = new vis.DataSet(edgesForVis);  // 使用全局变量
+                    console.log('✅ 边数据集创建成功');
+                    console.log('   数据集边数:', edges.length);
+                    if (edges.length > 0) {
+                        console.log('   第一条边示例:', edges.get()[0]);
+                    }
+                } catch (e) {
+                    console.error('❌ 创建边数据集失败:', e);
+                    throw e;
+                }
+                
+                // 创建数据对象
+                console.log('📋 步骤4: 组装数据对象...');
+                var data = {
+                    nodes: nodesDataSet,
+                    edges: edges
+                };
+                console.log('✅ 数据对象创建完成');
+                console.log('   节点数:', data.nodes.length);
+                console.log('   边数:', data.edges.length);
+                
+                // 配置选项
+                console.log('⚙️  步骤5: 配置选项...');
+                var options = {
+                    physics: {
+                        enabled: true,
+                        solver: "forceAtlas2Based",
+                        forceAtlas2Based: {
+                            gravitationalConstant: -50,
+                            centralGravity: 0.01,
+                            springLength: 100,
+                            springConstant: 0.08
+                        }
+                    },
+                    nodes: {
+                        font: {
+                            color: "white",
+                            size: 14
+                        }
+                    },
+                    edges: {
+                        arrows: {
+                            to: {
+                                enabled: true,
+                                scaleFactor: 1.2
+                            }
+                        },
+                        width: 2,
+                        scaling: {
+                            min: 1,
+                            max: 1,
+                            label: {
+                                enabled: false
+                            }
+                        },
+                        color: {
+                            color: "#888888",
+                            highlight: "#4A90E2"
+                        },
+                        selectionWidth: 3
+                    },
+                    interaction: {
+                        hover: true,
+                        tooltipDelay: 100
+                    }
+                };
+                console.log('✅ 选项配置完成');
+                
+                // 创建网络
+                console.log('🎨 步骤6: 创建vis.Network实例...');
+                console.log('   容器:', container);
+                console.log('   数据:', { nodes: data.nodes.length, edges: data.edges.length });
+                console.log('   选项:', options);
+                
+                if (typeof vis === 'undefined' || !vis.Network) {
+                    throw new Error('vis.Network 不可用，请检查vis-network库是否正确加载');
+                }
+                
+                try {
+                    network = new vis.Network(container, data, options);
+                    console.log('✅ vis.Network 实例创建成功');
+                    console.log('   网络对象:', network);
+                    
+                    // 监听网络事件
+                    network.on("stabilizationEnd", function() {
+                        console.log('✅ 网络布局稳定完成');
+                    });
+                    
+                    network.on("stabilizationProgress", function(params) {
+                        if (params.iterations % 50 === 0) {
+                            console.log('   布局进度:', params.iterations, '/', params.total);
+                        }
+                    });
+                } catch (e) {
+                    console.error('❌ 创建vis.Network实例失败:', e);
+                    console.error('   错误详情:', e.message);
+                    console.error('   错误堆栈:', e.stack);
+                    throw e;
+                }
+                
+                // 添加事件监听
+                console.log('👂 步骤7: 添加点击事件监听...');
+                network.on("click", function(params) {
+                    console.log('🖱️  图谱被点击:', params);
+                    // 优先判断节点（点击节点时优先显示节点信息）
+                    if (params.nodes.length > 0) {
+                        var nodeId = params.nodes[0];
+                        var node = nodesDataSet.get(nodeId);
+                        if (node) {
+                            console.log('   点击了节点:', nodeId, node.label);
+
+                            // Perform source tracing if enabled
+                            if (sourceTracingState.enabled) {
+                                performSourceTracing(nodeId);
+                            }
+
+                            showNodeDetail(node);
+                        }
+                    } else if (params.edges.length > 0) {
+                        // 如果没有点击节点，再判断是否点击了边
+                        var edgeId = params.edges[0];
+                        var edge = edges.get(edgeId);
+                        if (edge) {
+                            console.log('   点击了边:', edgeId);
+                            // 遍历edgesDataMap找到对应的edgeData
+                            for (var key in edgesDataMap) {
+                                if (edgesDataMap[key]._visId === edgeId) {
+                                    showEdgeDetail(edgesDataMap[key]);
+                                    break;
+                                }
+                            }
+                        }
+                    } else {
+                        // 点击空白处，重置侧边栏和溯源
+                        console.log('   点击了空白处');
+                        if (sourceTracingState.enabled) {
+                            clearSourceTracing();
+                        }
+                        resetSidebar();
+                    }
+                });
+                console.log('✅ 事件监听添加完成');
+                console.log('└─ drawGraph 函数执行完成 ──────────────────────────');
+            } catch (error) {
+                console.error('❌ 绘制图谱时发生错误');
+                console.error('   错误类型:', error.name);
+                console.error('   错误消息:', error.message);
+                console.error('   错误堆栈:', error.stack);
+                alert('绘制图谱时发生错误: ' + error.message);
+            }
+        }
+        
+        function resetSidebar() {
+            document.getElementById('sidebar-title').textContent = '详细信息';
+            document.getElementById('sidebar-subtitle').textContent = '点击节点或边查看详情';
+            document.getElementById('sidebar-content').innerHTML = 
+                '<div class="empty-state">点击图谱中的节点或关系边查看详细信息</div>';
+        }
+        
+        // 存储当前显示的实体和关系信息
+        var currentEntityId = null;
+        var currentEntityVersions = null;
+        var currentEntityAbsoluteId = null;
+        var currentRelationId = null;
+        var currentRelationVersions = null;
+        var currentRelationAbsoluteId = null;
+        
+        function showNodeDetail(node) {
+            document.getElementById('sidebar-title').textContent = '实体详情';
+            document.getElementById('sidebar-subtitle').textContent = node.label;
+
+            currentEntityId = node.entity_id || node.id;
+            currentEntityAbsoluteId = node.absolute_id || node.id;
+            currentEntityVersions = null;
+            currentRelationId = null;
+            currentRelationVersions = null;
+            currentRelationAbsoluteId = null;
+
+            // 通过API获取完整信息（包括embedding_preview和episode_text）
+            if (node.absolute_id) {
+                fetch('/api/entities/' + encodeURIComponent(currentEntityId) + '/versions/' + encodeURIComponent(node.absolute_id))
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.success) {
+                            var entity = data.entity;
+                            // 更新显示
+                            var html = renderVersionSelector('entity', currentEntityId, currentEntityAbsoluteId, null);
+                            // Add version timeline button
+                            html += '<div style="margin-bottom: 15px;">';
+                            html += '<button class="timeline-btn" onclick="showVersionTimeline(\'' + currentEntityId + '\', \'' + currentEntityAbsoluteId + '\')" style="width: 100%;">';
+                            html += '<i class="fas fa-stream"></i> 查看版本历史时间轴';
+                            html += '</button>';
+                            html += '</div>';
+                            html += renderEntityDetail({
+                                entity_id: entity.entity_id,
+                                absolute_id: entity.absolute_id,
+                                id: entity.entity_id,
+                                name: entity.name,
+                                label: entity.name,
+                                content: entity.content,
+                                event_time: entity.event_time,
+                                processed_time: entity.processed_time,
+                                episode_content: entity.episode_content,
+                                episode_text: entity.episode_text,
+                                source_document: entity.source_document,
+                                doc_name: entity.source_document,
+                                embedding_preview: entity.embedding_preview
+                            });
+                            document.getElementById('sidebar-content').innerHTML = html;
+                            loadEntityVersions(currentEntityId);
+                        } else {
+                            // 如果API失败，使用节点数据
+                            var html = renderVersionSelector('entity', currentEntityId, currentEntityAbsoluteId, null);
+                            html += renderEntityDetail(node);
+                            document.getElementById('sidebar-content').innerHTML = html;
+                            loadEntityVersions(currentEntityId);
+                        }
+                    })
+                    .catch(error => {
+                        console.error('获取实体详情失败:', error);
+                        // 如果API失败，使用节点数据
+                        var html = renderVersionSelector('entity', currentEntityId, currentEntityAbsoluteId, null);
+                        html += renderEntityDetail(node);
+                        document.getElementById('sidebar-content').innerHTML = html;
+                        loadEntityVersions(currentEntityId);
+                    });
+            } else {
+                // 如果没有absolute_id，直接显示节点数据
+                var html = renderVersionSelector('entity', currentEntityId, currentEntityAbsoluteId, null);
+                html += renderEntityDetail(node);
+                document.getElementById('sidebar-content').innerHTML = html;
+                loadEntityVersions(currentEntityId);
+            }
+        }
+        
+        function renderVersionSelector(type, id, currentAbsoluteId, currentVersionIndex) {
+            var html = '<div class="version-selector" id="version-selector-' + type + '">';
+            html += '<div class="version-selector-header">';
+            html += '<div class="version-selector-title">📋 版本选择</div>';
+            html += '<div class="version-selector-info" id="version-info-' + type + '">加载中...</div>';
+            html += '</div>';
+            html += '<div class="version-selector-controls">';
+            html += '<select id="version-select-' + type + '" onchange="onVersionChange(\\'' + type + '\\', this.value)">';
+            html += '<option value="">加载版本列表...</option>';
+            html += '</select>';
+            html += '<div class="version-nav-buttons">';
+            html += '<button class="version-nav-btn" id="version-prev-' + type + '" onclick="navigateVersion(\\'' + type + '\\', -1)" disabled>◀</button>';
+            html += '<button class="version-nav-btn" id="version-next-' + type + '" onclick="navigateVersion(\\'' + type + '\\', 1)" disabled>▶</button>';
+            html += '</div>';
+            html += '</div>';
+            html += '</div>';
+            return html;
+        }
+        
+        function renderEntityDetail(entity) {
+            var html = '<div class="detail-section">';
+            html += '<div class="detail-section-title">📌 实体 ID | 绝对 ID</div>';
+            html += '<div class="detail-content">';
+            html += '<div style="margin-bottom: 5px;">实体ID: ' + escapeHtml(entity.entity_id || entity.id) + '</div>';
+            if (entity.absolute_id) {
+                html += '<div>绝对ID: ' + escapeHtml(entity.absolute_id) + '</div>';
+            }
+            html += '</div>';
+            html += '</div>';
+            
+            html += '<div class="detail-section">';
+            html += '<div class="detail-section-title">📝 实体名称</div>';
+            html += '<div class="detail-content">' + escapeHtml(entity.name || entity.label) + '</div>';
+            html += '</div>';
+            
+            html += '<div class="detail-section">';
+            html += '<div class="detail-section-title">📄 实体描述</div>';
+            html += '<div class="detail-content">' + escapeHtml(entity.content || entity.title || entity.label) + '</div>';
+            html += '</div>';
+            
+            // 时间信息
+            if (entity.event_time) {
+                html += '<div class="detail-section">';
+                html += '<div class="detail-section-title">🕐 事件时间</div>';
+                html += '<div class="detail-content">';
+                try {
+                    var time = new Date(entity.event_time);
+                    html += '<div>' + time.toLocaleString('zh-CN') + '</div>';
+                    html += '<div style="color: #888888; font-size: 12px; margin-top: 5px;">' + time.toISOString() + '</div>';
+                } catch (e) {
+                    html += '<div>' + escapeHtml(entity.event_time) + '</div>';
+                }
+                html += '</div>';
+                html += '</div>';
+            }
+            if (entity.processed_time) {
+                html += '<div class="detail-section">';
+                html += '<div class="detail-section-title">⏱️ 处理时间</div>';
+                html += '<div class="detail-content">';
+                try {
+                    var time = new Date(entity.processed_time);
+                    html += '<div>' + time.toLocaleString('zh-CN') + '</div>';
+                    html += '<div style="color: #888888; font-size: 12px; margin-top: 5px;">' + time.toISOString() + '</div>';
+                } catch (e) {
+                    html += '<div>' + escapeHtml(entity.processed_time) + '</div>';
+                }
+                html += '</div>';
+                html += '</div>';
+            }
+            
+            // 缓存记忆（episode_id对应的md文档内容）
+            if (entity.episode_content) {
+                html += '<div class="detail-section">';
+                html += '<div class="detail-section-title">💾 缓存记忆</div>';
+                html += '<div class="detail-content">';
+                html += '<div style="max-height: 200px; overflow-y: auto; font-size: 13px; line-height: 1.5; white-space: pre-wrap; word-wrap: break-word;">';
+                html += escapeHtml(entity.episode_content);
+                html += '</div>';
+                html += '</div>';
+                html += '</div>';
+            }
+            
+            // 原文内容（episode_id对应json中的text内容）
+            if (entity.episode_text) {
+                html += '<div class="detail-section">';
+                html += '<div class="detail-section-title">📄 原文内容</div>';
+                html += '<div class="detail-content">';
+                html += '<div style="max-height: 200px; overflow-y: auto; font-size: 13px; line-height: 1.5; white-space: pre-wrap; word-wrap: break-word;">';
+                html += escapeHtml(entity.episode_text);
+                html += '</div>';
+                html += '</div>';
+                html += '</div>';
+            }
+            
+            // 文档名称
+            if (entity.source_document || entity.doc_name) {
+                html += '<div class="detail-section">';
+                html += '<div class="detail-section-title">📁 文档名称</div>';
+                html += '<div class="detail-content">' + escapeHtml(entity.source_document || entity.doc_name) + '</div>';
+                html += '</div>';
+            }
+            
+            // Embedding向量前4个值
+            if (entity.embedding_preview && Array.isArray(entity.embedding_preview)) {
+                html += '<div class="detail-section">';
+                html += '<div class="detail-section-title">🔢 编码向量（前4个值）</div>';
+                html += '<div class="detail-content">';
+                html += '<div style="font-family: monospace; font-size: 12px;">';
+                // 只显示前4个值
+                var previewValues = entity.embedding_preview.slice(0, 4);
+                html += '[' + previewValues.map(function(val) {
+                    return val.toFixed(6);
+                }).join(', ') + ']';
+                html += '</div>';
+                html += '</div>';
+                html += '</div>';
+            }
+            
+            return html;
+        }
+        
+        function loadEntityVersions(entityId) {
+            fetch('/api/entities/' + encodeURIComponent(entityId) + '/versions')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        currentEntityVersions = data.versions;
+                        updateVersionSelector('entity', data.versions, currentEntityAbsoluteId);
+                    } else {
+                        console.error('加载实体版本失败:', data.error);
+                        document.getElementById('version-info-entity').textContent = '加载失败';
+                    }
+                })
+                .catch(error => {
+                    console.error('请求错误:', error);
+                    document.getElementById('version-info-entity').textContent = '加载失败';
+                });
+        }
+        
+        function updateVersionSelector(type, versions, currentAbsoluteId) {
+            var select = document.getElementById('version-select-' + type);
+            var info = document.getElementById('version-info-' + type);
+            var prevBtn = document.getElementById('version-prev-' + type);
+            var nextBtn = document.getElementById('version-next-' + type);
+            
+            // 清空选项
+            select.innerHTML = '';
+            
+            if (!versions || versions.length === 0) {
+                select.innerHTML = '<option value="">无版本数据</option>';
+                info.textContent = '无版本';
+                prevBtn.disabled = true;
+                nextBtn.disabled = true;
+                return;
+            }
+            
+            // 找到当前版本的索引
+            var currentIndex = versions.findIndex(v => v.absolute_id === currentAbsoluteId);
+            if (currentIndex === -1) {
+                currentIndex = 0; // 默认选择第一个（最新版本）
+            }
+            
+            // 填充选项
+            versions.forEach(function(version, index) {
+                var option = document.createElement('option');
+                option.value = version.absolute_id;
+                option.textContent = '版本 ' + version.index + '/' + version.total + ' (' + formatDateTime(version.processed_time) + ')';
+                if (index === currentIndex) {
+                    option.selected = true;
+                }
+                select.appendChild(option);
+            });
+            
+            // 更新信息显示
+            var currentVersion = versions[currentIndex];
+            info.textContent = '版本 ' + currentVersion.index + '/' + currentVersion.total;
+            
+            // 更新导航按钮状态
+            prevBtn.disabled = currentIndex === 0;
+            nextBtn.disabled = currentIndex === versions.length - 1;
+        }
+        
+        function onVersionChange(type, absoluteId) {
+            if (!absoluteId) return;
+            
+            if (type === 'entity') {
+                switchEntityVersion(currentEntityId, absoluteId);
+            } else if (type === 'relation') {
+                switchRelationVersion(currentRelationId, absoluteId);
+            }
+        }
+        
+        function navigateVersion(type, direction) {
+            var versions = type === 'entity' ? currentEntityVersions : currentRelationVersions;
+            if (!versions || versions.length === 0) return;
+            
+            var select = document.getElementById('version-select-' + type);
+            var currentAbsoluteId = select.value;
+            var currentIndex = versions.findIndex(v => v.absolute_id === currentAbsoluteId);
+            
+            if (currentIndex === -1) return;
+            
+            var newIndex = currentIndex + direction;
+            if (newIndex < 0 || newIndex >= versions.length) return;
+            
+            var newAbsoluteId = versions[newIndex].absolute_id;
+            select.value = newAbsoluteId;
+            onVersionChange(type, newAbsoluteId);
+        }
+        
+        function switchEntityVersion(entityId, absoluteId) {
+            fetch('/api/entities/' + encodeURIComponent(entityId) + '/versions/' + encodeURIComponent(absoluteId))
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        currentEntityAbsoluteId = absoluteId;
+                        var entity = data.entity;
+                        
+                        // 更新详细信息显示
+                        var detailHtml = renderEntityDetail({
+                            entity_id: entity.entity_id,
+                            absolute_id: entity.absolute_id,
+                            id: entity.entity_id,
+                            name: entity.name,
+                            label: entity.name,
+                            content: entity.content,
+                            event_time: entity.event_time,
+                            processed_time: entity.processed_time,
+                            episode_content: entity.episode_content,
+                            episode_text: entity.episode_text,
+                            source_document: entity.source_document,
+                            doc_name: entity.source_document,
+                            embedding_preview: entity.embedding_preview
+                        });
+
+                        // 保留版本选择器，只更新详细信息部分
+                        var versionSelector = document.getElementById('version-selector-entity');
+                        var detailSection = versionSelector.nextElementSibling;
+                        if (detailSection && detailSection.classList.contains('detail-section')) {
+                            // 找到所有详细信息部分并替换
+                            var content = document.getElementById('sidebar-content');
+                            var versionSelectorHtml = versionSelector.outerHTML;
+                            content.innerHTML = versionSelectorHtml + detailHtml;
+                            
+                            // 重新绑定事件
+                            var newSelect = document.getElementById('version-select-entity');
+                            newSelect.onchange = function() { onVersionChange('entity', this.value); };
+                            document.getElementById('version-prev-entity').onclick = function() { navigateVersion('entity', -1); };
+                            document.getElementById('version-next-entity').onclick = function() { navigateVersion('entity', 1); };
+                            
+                            // 更新版本选择器
+                            updateVersionSelector('entity', currentEntityVersions, absoluteId);
+                        } else {
+                            // 如果结构不对，重新渲染整个内容
+                            var html = renderVersionSelector('entity', entityId, absoluteId, entity.version_index);
+                            html += detailHtml;
+                            document.getElementById('sidebar-content').innerHTML = html;
+                            loadEntityVersions(entityId);
+                        }
+                        
+                        // 更新图谱中的节点和相关的边、实体
+                        updateGraphForEntityVersion(entityId, absoluteId, entity.event_time);
+                    } else {
+                        console.error('切换实体版本失败:', data.error);
+                        alert('切换版本失败: ' + data.error);
+                    }
+                })
+                .catch(error => {
+                    console.error('请求错误:', error);
+                    alert('请求错误: ' + error);
+                });
+        }
+        
+        function updateGraphForEntityVersion(entityId, absoluteId, timePoint) {
+            if (!network || !nodesDataSet) return;
+            
+            console.log('🔄 更新图谱以反映实体版本变化:', entityId, absoluteId);
+            console.log('   版本ID:', absoluteId);
+            
+            // 获取当前的限制参数
+            var limitEntities = parseInt(document.getElementById('limit-entities-input').value) || 100;
+            var limitEdgesPerEntity = parseInt(document.getElementById('limit-edges-input').value) || 50;
+            var hops = parseInt(document.getElementById('hops-input').value) || 1;
+            
+            // 重新加载图谱，以该实体版本为中心，显示从最早版本到该版本的所有关系
+            // 只需要传递focus_entity_id和focus_absolute_id，后端会自动根据版本确定时间点
+            // 使用limit_edges_per_entity参数控制每个实体显示的关系边数量
+            // 使用hops参数控制跳数
+            currentMode = 'version_snapshot';
+            currentSearchQuery = '';
+            updateSearchStatus('显示实体版本: ' + entityId + ' (到版本 ' + absoluteId.substring(0, 8) + '...) - ' + hops + '跳 - 每实体最多' + limitEdgesPerEntity + '条关系');
+            
+            // 使用focus_entity_id和focus_absolute_id参数，以该实体版本为中心显示图谱
+            // 使用limit_edges_per_entity参数控制关系边数量
+            // 使用hops参数控制跳数
+            var url = '/api/graphs/data?limit_entities=' + limitEntities +
+                      '&limit_edges_per_entity=' + limitEdgesPerEntity +
+                      '&hops=' + hops +
+                      '&focus_family_id=' + encodeURIComponent(entityId) +
+                      '&focus_absolute_id=' + encodeURIComponent(absoluteId);
+            
+            fetch(url)
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error('HTTP错误: ' + response.status + ' ' + response.statusText);
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    if (data.success) {
+                        console.log('✅ 获取实体版本图谱成功');
+                        console.log('   节点数量:', data.nodes ? data.nodes.length : 0);
+                        console.log('   边数量:', data.edges ? data.edges.length : 0);
+                        
+                        updateStats(data.stats);
+                        drawGraph(data.nodes, data.edges);
+                        updateLastUpdate();
+                    } else {
+                        console.error('❌ 获取实体版本图谱失败:', data.error);
+                        alert('获取实体版本图谱失败: ' + data.error);
+                    }
+                })
+                .catch(error => {
+                    console.error('❌ 请求错误:', error);
+                    alert('请求错误: ' + error.message);
+                });
+        }
+        
+        function updateGraphForRelationVersion(relationId, absoluteId, timePoint, fromEntityId, toEntityId) {
+            if (!network || !nodesDataSet || !edges) return;
+            
+            console.log('🔄 更新图谱以反映关系版本变化:', relationId, absoluteId, timePoint);
+            console.log('   时间点:', timePoint);
+            
+            // 获取当前的限制参数
+            var limitEntities = parseInt(document.getElementById('limit-entities-input').value) || 100;
+            var limitEdgesPerEntity = parseInt(document.getElementById('limit-edges-input').value) || 50;
+            
+            // 重新加载图谱，但只显示该时间点之前的数据
+            currentMode = 'version_snapshot';
+            currentSearchQuery = '';
+            updateSearchStatus('显示时间点: ' + new Date(timePoint).toLocaleString('zh-CN'));
+            
+            fetch('/api/graphs/data?limit_entities=' + limitEntities + '&limit_edges_per_entity=' + limitEdgesPerEntity + '&time_point=' + encodeURIComponent(timePoint))
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error('HTTP错误: ' + response.status + ' ' + response.statusText);
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    if (data.success) {
+                        console.log('✅ 获取时间点快照成功');
+                        console.log('   节点数量:', data.nodes ? data.nodes.length : 0);
+                        console.log('   边数量:', data.edges ? data.edges.length : 0);
+                        
+                        updateStats(data.stats);
+                        drawGraph(data.nodes, data.edges);
+                        updateLastUpdate();
+                    } else {
+                        console.error('❌ 获取时间点快照失败:', data.error);
+                        alert('获取时间点快照失败: ' + data.error);
+                    }
+                })
+                .catch(error => {
+                    console.error('❌ 请求错误:', error);
+                    alert('请求错误: ' + error.message);
+                });
+        }
+        
+        function formatDateTime(isoString) {
+            try {
+                var date = new Date(isoString);
+                return date.toLocaleString('zh-CN', {
+                    year: 'numeric',
+                    month: '2-digit',
+                    day: '2-digit',
+                    hour: '2-digit',
+                    minute: '2-digit'
+                });
+            } catch (e) {
+                return isoString;
+            }
+        }
+        
+        function showEdgeDetail(edgeData) {
+            var fromNode = nodesDataSet.get(edgeData.from);
+            var toNode = nodesDataSet.get(edgeData.to);
+            
+            var fromName = fromNode ? fromNode.label : edgeData.from;
+            var toName = toNode ? toNode.label : edgeData.to;
+            var fromId = edgeData.from;
+            var toId = edgeData.to;
+            
+            currentRelationId = edgeData.relation_id;
+            currentRelationAbsoluteId = edgeData.absolute_id || edgeData.id;  // 兼容处理
+            currentRelationVersions = null;
+            currentEntityId = null;
+            currentEntityVersions = null;
+            currentEntityAbsoluteId = null;
+            
+            document.getElementById('sidebar-title').textContent = '关系详情';
+            document.getElementById('sidebar-subtitle').textContent = fromName + ' → ' + toName;
+            
+            // 如果没有embedding_preview，通过API获取
+            if (!edgeData.embedding_preview && edgeData.absolute_id && currentRelationId) {
+                fetch('/api/relations/' + encodeURIComponent(currentRelationId) + '/versions/' + encodeURIComponent(edgeData.absolute_id))
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.success && data.relation.embedding_preview) {
+                            edgeData.embedding_preview = data.relation.embedding_preview;
+                            // 更新显示
+                            var html = renderVersionSelector('relation', currentRelationId, currentRelationAbsoluteId, null);
+                            html += renderRelationDetail(edgeData, fromNode, toNode, fromId, toId, fromName, toName);
+                            document.getElementById('sidebar-content').innerHTML = html;
+                            if (currentRelationId) {
+                                loadRelationVersions(currentRelationId);
+                            }
+                        }
+                    })
+                    .catch(error => {
+                        console.error('获取embedding失败:', error);
+                    });
+            }
+            
+            // 显示版本选择器和详细信息
+            var html = renderVersionSelector('relation', currentRelationId, currentRelationAbsoluteId, null);
+            html += renderRelationDetail(edgeData, fromNode, toNode, fromId, toId, fromName, toName);
+            
+            document.getElementById('sidebar-content').innerHTML = html;
+            
+            // 加载版本列表
+            if (currentRelationId) {
+                loadRelationVersions(currentRelationId);
+            }
+        }
+        
+        function renderRelationDetail(edgeData, fromNode, toNode, fromId, toId, fromName, toName) {
+            // 使用完整的content，如果没有则使用title，最后使用label
+            var fromContent = fromNode ? (fromNode.content || fromNode.title || fromNode.label) : '未知实体';
+            var toContent = toNode ? (toNode.content || toNode.title || toNode.label) : '未知实体';
+            
+            var html = '<div class="detail-section">';
+            html += '<div class="detail-section-title">🔗 关系描述</div>';
+            // 优先使用完整的content，如果没有则使用title
+            html += '<div class="detail-content">' + escapeHtml(edgeData.content || edgeData.title || '无描述') + '</div>';
+            html += '</div>';
+            
+            // 起点实体信息
+            html += '<div class="detail-section">';
+            html += '<div class="detail-section-title">🎯 起点实体</div>';
+            html += '<div class="detail-content">';
+            html += '<strong>实体 ID:</strong> ' + escapeHtml(fromId) + '<br>';
+            html += '<strong>实体名称:</strong> ' + escapeHtml(fromName) + '<br><br>';
+            html += '<strong>实体描述:</strong><br>' + escapeHtml(fromContent);
+            html += '</div>';
+            html += '</div>';
+            
+            // 终点实体信息
+            html += '<div class="detail-section">';
+            html += '<div class="detail-section-title">🎯 终点实体</div>';
+            html += '<div class="detail-content">';
+            html += '<strong>实体 ID:</strong> ' + escapeHtml(toId) + '<br>';
+            html += '<strong>实体名称:</strong> ' + escapeHtml(toName) + '<br><br>';
+            html += '<strong>实体描述:</strong><br>' + escapeHtml(toContent);
+            html += '</div>';
+            html += '</div>';
+            
+            // 时间信息
+            if (edgeData.event_time) {
+                html += '<div class="detail-section">';
+                html += '<div class="detail-section-title">🕐 事件时间</div>';
+                html += '<div class="detail-content">';
+                try {
+                    var time = new Date(edgeData.event_time);
+                    html += '<div>' + time.toLocaleString('zh-CN') + '</div>';
+                    html += '<div style="color: #888888; font-size: 12px; margin-top: 5px;">' + time.toISOString() + '</div>';
+                } catch (e) {
+                    html += '<div>' + escapeHtml(edgeData.event_time) + '</div>';
+                }
+                html += '</div>';
+                html += '</div>';
+            }
+            if (edgeData.processed_time) {
+                html += '<div class="detail-section">';
+                html += '<div class="detail-section-title">⏱️ 处理时间</div>';
+                html += '<div class="detail-content">';
+                try {
+                    var time = new Date(edgeData.processed_time);
+                    html += '<div>' + time.toLocaleString('zh-CN') + '</div>';
+                    html += '<div style="color: #888888; font-size: 12px; margin-top: 5px;">' + time.toISOString() + '</div>';
+                } catch (e) {
+                    html += '<div>' + escapeHtml(edgeData.processed_time) + '</div>';
+                }
+                html += '</div>';
+                html += '</div>';
+            }
+            
+            // Embedding向量前5个值
+            if (edgeData.embedding_preview && Array.isArray(edgeData.embedding_preview)) {
+                html += '<div class="detail-section">';
+                html += '<div class="detail-section-title">🔢 Embedding向量（前5个值）</div>';
+                html += '<div class="detail-content">';
+                html += '<div style="font-family: monospace; font-size: 12px;">';
+                html += '[' + edgeData.embedding_preview.map(function(val) {
+                    return val.toFixed(6);
+                }).join(', ') + ']';
+                html += '</div>';
+                html += '</div>';
+                html += '</div>';
+            }
+            
+            return html;
+        }
+        
+        function loadRelationVersions(relationId) {
+            fetch('/api/relations/' + encodeURIComponent(relationId) + '/versions')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        currentRelationVersions = data.versions;
+                        updateVersionSelector('relation', data.versions, currentRelationAbsoluteId);
+                    } else {
+                        console.error('加载关系版本失败:', data.error);
+                        document.getElementById('version-info-relation').textContent = '加载失败';
+                    }
+                })
+                .catch(error => {
+                    console.error('请求错误:', error);
+                    document.getElementById('version-info-relation').textContent = '加载失败';
+                });
+        }
+        
+        function switchRelationVersion(relationId, absoluteId) {
+            fetch('/api/relations/' + encodeURIComponent(relationId) + '/versions/' + encodeURIComponent(absoluteId))
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        currentRelationAbsoluteId = absoluteId;
+                        var relation = data.relation;
+                        
+                        // 更新图谱中的关系边和连接的实体
+                        updateGraphForRelationVersion(relationId, absoluteId, relation.event_time, relation.from_entity_id, relation.to_entity_id);
+                        
+                        // 获取实体信息 - 优先使用API返回的实体名称，如果没有则从当前图谱中获取
+                        var fromNode = null;
+                        var toNode = null;
+                        if (relation.from_entity_id) {
+                            fromNode = nodesDataSet.get(relation.from_entity_id);
+                        }
+                        if (relation.to_entity_id) {
+                            toNode = nodesDataSet.get(relation.to_entity_id);
+                        }
+                        
+                        var fromName = relation.from_entity_name || (fromNode ? fromNode.label : '未知实体');
+                        var toName = relation.to_entity_name || (toNode ? toNode.label : '未知实体');
+                        var fromId = relation.from_entity_id || '未知';
+                        var toId = relation.to_entity_id || '未知';
+                        
+                        // 获取实体内容 - 如果节点不存在，尝试通过API获取
+                        var fromContent = fromNode ? (fromNode.content || fromNode.title || fromNode.label) : '未知实体';
+                        var toContent = toNode ? (toNode.content || toNode.title || toNode.label) : '未知实体';
+                        
+                        // 如果节点不存在，尝试通过API获取实体信息
+                        var entityPromises = [];
+                        if (!fromNode && relation.from_entity_id) {
+                            entityPromises.push(
+                                fetch('/api/entities/' + encodeURIComponent(relation.from_entity_id) + '/versions')
+                                    .then(response => response.json())
+                                    .then(data => {
+                                        if (data.success && data.versions.length > 0) {
+                                            return { type: 'from', content: data.versions[0].content || fromName };
+                                        }
+                                        return null;
+                                    })
+                                    .catch(() => null)
+                            );
+                        } else {
+                            entityPromises.push(Promise.resolve(null));
+                        }
+                        
+                        if (!toNode && relation.to_entity_id) {
+                            entityPromises.push(
+                                fetch('/api/entities/' + encodeURIComponent(relation.to_entity_id) + '/versions')
+                                    .then(response => response.json())
+                                    .then(data => {
+                                        if (data.success && data.versions.length > 0) {
+                                            return { type: 'to', content: data.versions[0].content || toName };
+                                        }
+                                        return null;
+                                    })
+                                    .catch(() => null)
+                            );
+                        } else {
+                            entityPromises.push(Promise.resolve(null));
+                        }
+                        
+                        // 等待所有实体信息加载完成后再更新显示
+                        Promise.all(entityPromises).then(function(results) {
+                            // 更新实体内容
+                            results.forEach(function(result) {
+                                if (result) {
+                                    if (result.type === 'from') {
+                                        fromContent = result.content;
+                                    } else if (result.type === 'to') {
+                                        toContent = result.content;
+                                    }
+                                }
+                            });
+                            
+                            // 更新标题
+                            document.getElementById('sidebar-subtitle').textContent = fromName + ' → ' + toName;
+                            
+                            // 创建虚拟节点对象用于renderRelationDetail
+                            var virtualFromNode = fromNode || { label: fromName, content: fromContent, title: fromName };
+                            var virtualToNode = toNode || { label: toName, content: toContent, title: toName };
+                            
+                            // 更新详细信息显示
+                            var detailHtml = renderRelationDetail({
+                                content: relation.content,
+                                event_time: relation.event_time,
+                                processed_time: relation.processed_time,
+                                embedding_preview: relation.embedding_preview
+                            }, virtualFromNode, virtualToNode, fromId, toId, fromName, toName);
+                            
+                            // 保留版本选择器，只更新详细信息部分
+                            var versionSelector = document.getElementById('version-selector-relation');
+                            var detailSection = versionSelector.nextElementSibling;
+                            if (detailSection && detailSection.classList.contains('detail-section')) {
+                                // 找到所有详细信息部分并替换
+                                var content = document.getElementById('sidebar-content');
+                                var versionSelectorHtml = versionSelector.outerHTML;
+                                content.innerHTML = versionSelectorHtml + detailHtml;
+                                
+                                // 重新绑定事件
+                                var newSelect = document.getElementById('version-select-relation');
+                                newSelect.onchange = function() { onVersionChange('relation', this.value); };
+                                document.getElementById('version-prev-relation').onclick = function() { navigateVersion('relation', -1); };
+                                document.getElementById('version-next-relation').onclick = function() { navigateVersion('relation', 1); };
+                                
+                                // 更新版本选择器
+                                updateVersionSelector('relation', currentRelationVersions, absoluteId);
+                            } else {
+                                // 如果结构不对，重新渲染整个内容
+                                var html = renderVersionSelector('relation', relationId, absoluteId, relation.version_index);
+                                html += detailHtml;
+                                document.getElementById('sidebar-content').innerHTML = html;
+                                loadRelationVersions(relationId);
+                            }
+                        });
+                    } else {
+                        console.error('切换关系版本失败:', data.error);
+                        alert('切换版本失败: ' + data.error);
+                    }
+                })
+                .catch(error => {
+                    console.error('请求错误:', error);
+                    alert('请求错误: ' + error);
+                });
+        }
+        
+        // HTML 转义
+        function escapeHtml(text) {
+            if (!text) return '';
+            var div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+        
+        // 页面加载时自动加载图谱
+        window.onload = function() {
+            console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+            console.log('🌐 页面加载完成');
+            console.log('   当前URL:', window.location.href);
+            console.log('   页面标题:', document.title);
+            console.log('   容器元素:', container ? '找到' : '未找到');
+            console.log('   vis库状态:', typeof vis !== 'undefined' ? '已加载' : '未加载');
+            console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+
+            // Initialize timeline
+            initTimeline();
+
+            // 获取当前配置并设置默认路径
+            fetch('/api/graphs/config')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success && data.storage_path) {
+                        var pathInput = document.getElementById('graph-path-input');
+                        if (pathInput && !pathInput.value.trim()) {
+                            pathInput.value = data.storage_path;
+                            console.log('✅ 已设置默认图谱路径:', data.storage_path);
+                        }
+                    }
+                    console.log('🚀 开始自动加载图谱...');
+                    loadGraph();
+                })
+                .catch(error => {
+                    console.warn('⚠️  获取配置失败，使用默认设置:', error);
+                    console.log('🚀 开始自动加载图谱...');
+                    loadGraph();
+                });
+        };
+        
+        console.log('✅ 图谱可视化脚本加载完成');
+    </script>
+</body>
+</html>

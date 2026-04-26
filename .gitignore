@@ -43,8 +43,7 @@ distill_pipeline/
 # 日志与系统文件
 *.log
 .DS_Store
-.claude/ralph-loop.local.md
-.ralphrc
+
 
 # 基准测试结果
 bench_*.json

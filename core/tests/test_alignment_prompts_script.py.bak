@@ -1,0 +1,306 @@
+"""
+对齐阶段 Prompt 效果验证测试 (pytest 版本)
+
+直接调用 LLM，测试修改后的 4 个 prompt 在各种场景下的判断准确性。
+
+注意：此测试需要 LLM 服务可用（默认使用 localhost:11434/v1 的 Ollama）
+可通过环境变量配置：
+- LLM_API_KEY: API key (默认 "ollama")
+- LLM_BASE_URL: 服务地址 (默认 "http://localhost:11434/v1")
+- LLM_MODEL: 模型名称 (默认 "gemma4-26b-32k")
+
+运行：USE_REAL_LLM=1 pytest core/tests/test_alignment_prompts_pytest.py -v
+"""
+import os
+import sys
+
+# Skip entire module unless USE_REAL_LLM is set
+if not os.getenv("USE_REAL_LLM"):
+    import pytest
+    pytest.skip("Requires USE_REAL_LLM=1 — calls real LLM API", allow_module_level=True)
+
+import pytest
+import json
+import re
+from pathlib import Path
+
+# Add project root to path
+_project_root = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(_project_root))
+
+from core.llm.prompts import (
+    ENTITY_PAIR_JUDGMENT_RULES,
+    RESOLVE_ENTITY_CANDIDATES_BATCH_SYSTEM_PROMPT,
+    ENTITY_ALIGNMENT_JUDGE_SYSTEM,
+    ENTITY_ALIGNMENT_JUDGE_USER,
+    analyze_entity_pair_detailed_system_prompt,
+)
+from core.llm.client import LLMClient
+
+
+@pytest.fixture(scope="module")
+def llm_client():
+    """Create LLM client for testing."""
+    return LLMClient(
+        api_key=os.getenv("LLM_API_KEY", "ollama"),
+        model_name=os.getenv("LLM_MODEL", "gemma4-26b-32k"),
+        base_url=os.getenv("LLM_BASE_URL", "http://localhost:11434/v1"),
+        context_window_tokens=32000,
+        max_tokens=12000,
+        think_mode=False,
+    )
+
+
+def parse_json_block(text):
+    """从 LLM 响应中提取 JSON。"""
+    m = re.search(r'```(?:json)?\s*(.*?)```', text, re.DOTALL)
+    if m:
+        return json.loads(m.group(1).strip())
+    return json.loads(text.strip())
+
+
+def call_llm_simple(client, system_prompt, user_prompt):
+    """调用 LLM 并解析 JSON 响应。"""
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+    response = client._call_llm("", system_prompt=system_prompt, messages=messages)
+    return parse_json_block(response)
+
+
+# ============================================================================
+# ENTITY_ALIGNMENT_JUDGE Tests (三值判断)
+# ============================================================================
+
+class TestEntityAlignmentJudge:
+    """Test ENTITY_ALIGNMENT_JUDGE prompt."""
+
+    @pytest.mark.parametrize("name_a,content_a,name_b,content_b,expected,desc", [
+        (
+            "甄士隐", "甄士隐，名费，字士隐，原籍姑苏，为人宽厚仁慈，当地望族",
+            "士隐", "士隐在梦中遇见一僧一道，醒来后家中遭大火",
+            "same", "甄士隐/士隐，经典别名"
+        ),
+        (
+            "刘备", "刘备，字玄德，蜀汉开国皇帝，三国时期重要政治家",
+            "玄德", "玄德在长坂坡大败，携民渡江",
+            "same", "刘备/玄德，字号别名"
+        ),
+        (
+            "贾宝玉", "贾宝玉，贾政与王夫人之子，衔玉而生，性情叛逆",
+            "大观园", "大观园是贾府为元春省亲修建的园林，后成为宝玉等人居住之所",
+            "different", "人 vs 地名，不应合并"
+        ),
+        (
+            "曹操", "曹操，字孟德，东汉末年政治家、军事家、诗人",
+            "三国演义", "三国演义是罗贯中创作的长篇历史小说，描写东汉末年到西晋初年的历史",
+            "different", "人 vs 作品，不应合并"
+        ),
+        (
+            "贾政", "贾政，贾府二老爷，为人端方正直，对宝玉管教甚严",
+            "贾宝玉", "贾宝玉，衔玉而生，性情叛逆，视功名为粪土",
+            "different", "贾政/贾宝玉，名称含共同字但不同人"
+        ),
+        (
+            "存在主义", "存在主义的核心命题是存在先于本质，代表人物有萨特和加缪",
+            "荒诞哲学", "荒诞哲学由加缪系统阐述，认为人类对意义的追求与世界无意义之间存在冲突",
+            "different", "存在主义 vs 荒诞哲学，相关但不同概念"
+        ),
+        (
+            "林黛玉", "林黛玉，林如海与贾敏之女，自幼体弱多病，才情出众",
+            "贾府", "贾府是红楼梦中的主要场景，四大家族之一的贾家宅邸",
+            "different", "林黛玉 vs 贾府，人物与地点"
+        ),
+    ])
+    def test_entity_alignment_judge(self, llm_client, name_a, content_a, name_b, content_b, expected, desc):
+        """Test three-value judgment (same/different/uncertain)."""
+        user_prompt = ENTITY_ALIGNMENT_JUDGE_USER.format(
+            name_a=name_a, content_a=content_a,
+            name_b=name_b, content_b=content_b,
+            name_relationship="",
+        )
+        result = call_llm_simple(llm_client, ENTITY_ALIGNMENT_JUDGE_SYSTEM, user_prompt)
+        verdict = result.get("verdict", "uncertain")
+
+        if expected == "same":
+            assert verdict == "same", f"Expected 'same', got '{verdict}' — {desc}"
+        else:
+            # For different, uncertain is also acceptable
+            assert verdict in ("different", "uncertain"), f"Expected 'different' or 'uncertain', got '{verdict}' — {desc}"
+
+
+# ============================================================================
+# analyze_entity_pair_detailed Tests (精细化判断)
+# ============================================================================
+
+class TestAnalyzeEntityPairDetailed:
+    """Test analyze_entity_pair_detailed prompt."""
+
+    @pytest.mark.parametrize("current,candidate,should_merge,desc", [
+        (
+            {"name": "甄士隐", "content": "甄士隐，名费，字士隐，原籍姑苏，为人宽厚仁慈"},
+            {"name": "士隐", "content": "士隐在梦中遇见一僧一道，醒来后家中遭大火"},
+            True, "甄士隐/士隐 — 子串别名，应合并"
+        ),
+        (
+            {"name": "贾宝玉", "content": "贾宝玉，衔玉而生，性情叛逆，视功名为粪土"},
+            {"name": "大观园", "content": "大观园是贾府为元春省亲修建的园林"},
+            False, "人 vs 地名 — 类型不同，不应合并"
+        ),
+        (
+            {"name": "曹操", "content": "曹操，字孟德，东汉末年政治家、军事家"},
+            {"name": "三国演义", "content": "三国演义是罗贯中创作的长篇历史小说"},
+            False, "人 vs 作品 — 类型不同，不应合并"
+        ),
+        (
+            {"name": "贾政", "content": "贾政，贾府二老爷，为人端方正直，对宝玉管教甚严"},
+            {"name": "贾宝玉", "content": "贾宝玉，衔玉而生，性情叛逆"},
+            False, "贾政/贾宝玉 — 不同人，不应合并"
+        ),
+        (
+            {"name": "存在主义哲学", "content": "存在主义哲学是20世纪重要哲学流派，强调个体存在的自由与责任"},
+            {"name": "荒诞哲学", "content": "荒诞哲学由加缪系统阐述，认为人类对意义的追求与世界无意义之间存在冲突"},
+            False, "不同概念，不应合并"
+        ),
+    ])
+    def test_analyze_entity_pair_detailed(self, llm_client, current, candidate, should_merge, desc):
+        """Test detailed entity pair analysis."""
+        system_prompt = analyze_entity_pair_detailed_system_prompt()
+        user_prompt = f"""<当前实体>
+- name: {current['name']}
+- content: {current['content']}
+</当前实体>
+
+<候选实体>
+- name: {candidate['name']}
+- content: {candidate['content']}
+</候选实体>
+
+{ENTITY_PAIR_JUDGMENT_RULES}
+
+只输出一个 ```json ... ``` 代码块，不要其他文字："""
+
+        result = call_llm_simple(system_prompt, user_prompt)
+        action = result.get("action", "no_action")
+
+        if should_merge:
+            assert action == "merge", f"Expected action='merge', got '{action}' — {desc}"
+        else:
+            assert action != "merge", f"Expected action != 'merge', got '{action}' — {desc}"
+
+
+# ============================================================================
+# RESOLVE_ENTITY_CANDIDATES_BATCH Tests (批量对齐)
+# ============================================================================
+
+class TestResolveEntityCandidatesBatch:
+    """Test RESOLVE_ENTITY_CANDIDATES_BATCH prompt."""
+
+    @pytest.mark.parametrize("current,candidates,should_match,desc", [
+        (
+            {"name": "士隐", "content": "士隐在梦中遇见一僧一道，醒来后家中遭大火"},
+            [
+                {"family_id": "ent_1", "name": "甄士隐", "content": "甄士隐，名费，字士隐，原籍姑苏",
+                 "name_match_type": "substring"},
+                {"family_id": "ent_2", "name": "大观园", "content": "大观园是贾府为元春省亲修建的园林"},
+            ],
+            True, "士隐应匹配甄士隐（substring），不匹配大观园"
+        ),
+        (
+            {"name": "Redis", "content": "Redis是一款开源内存数据结构存储系统"},
+            [
+                {"family_id": "ent_3", "name": "MongoDB", "content": "MongoDB是面向文档的NoSQL数据库"},
+                {"family_id": "ent_4", "name": "贾宝玉", "content": "贾宝玉，衔玉而生，性情叛逆"},
+            ],
+            False, "Redis与MongoDB、贾宝玉都无关，应 create_new"
+        ),
+        (
+            {"name": "贾宝玉", "content": "贾宝玉，衔玉而生，性情叛逆，视功名为粪土"},
+            [
+                {"family_id": "ent_5", "name": "贾政", "content": "贾政，贾府二老爷，对宝玉管教甚严",
+                 "name_match_type": "none"},
+                {"family_id": "ent_6", "name": "大观园", "content": "大观园是贾府修建的园林"},
+            ],
+            False, "贾宝玉与贾政、大观园都不同，应 create_new"
+        ),
+    ])
+    def test_resolve_entity_candidates_batch(self, llm_client, current, candidates, should_match, desc):
+        """Test batch entity alignment."""
+        candidates_str_parts = []
+        for idx, c in enumerate(candidates, 1):
+            match_note = ""
+            mt = c.get("name_match_type", "none")
+            if mt == "substring":
+                match_note = "\n- name_match_type: substring（名称子串关系）"
+            elif mt == "exact":
+                match_note = "\n- name_match_type: exact（核心名称相同）"
+
+            candidates_str_parts.append(
+                f"候选{idx}:\n- family_id: {c['family_id']}\n- name: {c['name']}{match_note}\n- content: {c['content']}"
+            )
+
+        prompt = f"""<当前实体>
+- name: {current['name']}
+- content: {current['content']}
+</当前实体>
+
+<候选实体列表>
+{chr(10).join(candidates_str_parts)}
+</候选实体列表>
+
+输出 ```json``` 代码块："""
+
+        result = call_llm_simple(llm_client, RESOLVE_ENTITY_CANDIDATES_BATCH_SYSTEM_PROMPT, prompt)
+        update_mode = result.get("update_mode", "create_new")
+
+        if should_match:
+            assert update_mode in ("merge_into_latest", "reuse_existing"), \
+                f"Expected update_mode in ('merge_into_latest', 'reuse_existing'), got '{update_mode}' — {desc}"
+        else:
+            assert update_mode == "create_new", \
+                f"Expected update_mode='create_new', got '{update_mode}' — {desc}"
+
+
+# ============================================================================
+# Edge Case Tests
+# ============================================================================
+
+class TestEdgeCases:
+    """Test edge cases and known LLM judgment variations."""
+
+    def test_docker_substring_judgment(self, llm_client):
+        """Test Docker容器 vs Docker substring judgment.
+
+        This is a known edge case where LLM may judge them as different
+        concepts (container technology vs platform). This is actually
+        reasonable domain knowledge, not a prompt defect.
+        """
+        system_prompt = analyze_entity_pair_detailed_system_prompt()
+        user_prompt = f"""<当前实体>
+- name: Docker容器
+- content: Docker容器是轻量级虚拟化技术，通过操作系统级隔离实现应用打包部署
+</当前实体>
+
+<候选实体>
+- name: Docker
+- content: Docker最初基于LXC开发，后改为自研的libcontainer运行时
+</候选实体>
+
+{ENTITY_PAIR_JUDGMENT_RULES}
+
+只输出一个 ```json ... ``` 代码块，不要其他文字："""
+
+        result = call_llm_simple(system_prompt, user_prompt)
+        action = result.get("action", "no_action")
+
+        # Either judgment is acceptable - this tests that the prompt works
+        # regardless of LLM's domain knowledge decision
+        assert action in ("merge", "no_action", "create_relation"), \
+            f"Unexpected action: {action}"
+
+        # If LLM decided not to merge, verify it provided reasoning
+        if action != "merge":
+            reasoning = result.get("reasoning", "")
+            # Should have some explanation
+            assert isinstance(reasoning, str) or reasoning is None

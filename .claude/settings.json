@@ -16,16 +16,11 @@
       "MultiEdit"
     ]
   },
-  "hooks": {
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/home/linkco/.claude/plugins/marketplaces/claude-code-plugins/plugins/ralph-wiggum/hooks/stop-hook.sh"
-          }
-        ]
-      }
-    ]
+  "experimental": {
+    "agentTeams": true
+  },
+  "agent-teams": {
+    "displayMode": "split-panes",
+    "terminalMultiplexer": "tmux"
   }
 }
