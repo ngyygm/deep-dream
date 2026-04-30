@@ -51,6 +51,9 @@ bench_*.json
 # 实验结果产物（代码保留）
 experiments/*/results/
 
+# 测试结果截图和 dump
+tests/result/
+
 # Neo4j bolt 协议误创建的目录
 bolt:
 
