@@ -56,3 +56,15 @@ bolt:
 
 # 已合并到 scripts/
 bin/
+
+# Node 依赖
+node_modules/
+
+# 数据库文件（运行时产物）
+*.db
+
+# Windows 空设备文件
+nul
+
+# LLM 模型文件
+Gemma4-*
