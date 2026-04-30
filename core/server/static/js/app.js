@@ -187,6 +187,10 @@ class DeepDreamApi {
     return this.get(`/api/v1/find/entities/absolute/${encodeURIComponent(absoluteId)}?graph_id=${encodeURIComponent(graphId)}`);
   }
 
+  entityEmbeddingPreview(absoluteId, numValues = 5, graphId = 'default') {
+    return this.get(`/api/v1/find/entities/absolute/${encodeURIComponent(absoluteId)}/embedding-preview?num_values=${numValues}&graph_id=${encodeURIComponent(graphId)}`);
+  }
+
   // --- CRUD ---
   updateEntity(familyId, data, graphId = 'default') {
     return this.request('PUT', `/api/v1/find/entities/${encodeURIComponent(familyId)}?graph_id=${encodeURIComponent(graphId)}`, {
@@ -264,6 +268,10 @@ class DeepDreamApi {
   }
   relationByAbsoluteId(absoluteId, graphId = 'default') {
     return this.get(`/api/v1/find/relations/absolute/${encodeURIComponent(absoluteId)}?graph_id=${encodeURIComponent(graphId)}`);
+  }
+
+  relationEmbeddingPreview(absoluteId, numValues = 5, graphId = 'default') {
+    return this.get(`/api/v1/find/relations/absolute/${encodeURIComponent(absoluteId)}/embedding-preview?num_values=${numValues}&graph_id=${encodeURIComponent(graphId)}`);
   }
 
   // Relations
@@ -383,10 +391,6 @@ class DeepDreamApi {
   }
   getDocContent(filename, graphId = 'default') {
     return this.get(`/api/v1/docs/${encodeURIComponent(filename)}?graph_id=${encodeURIComponent(graphId)}`);
-  }
-
-  episodeDoc(cacheId, graphId = 'default') {
-    return this.get(`/api/v1/find/episodes/${encodeURIComponent(cacheId)}/doc?graph_id=${encodeURIComponent(graphId)}`);
   }
 
   // --- Agent Meta Query (Phase F) ---
@@ -541,7 +545,7 @@ const state = {
   currentGraphId: localStorage.getItem('deepdream_graph_id') || localStorage.getItem('tmg_graph_id') || 'default',
   refreshTimers: {},
   currentPage: null,
-  backendType: 'sqlite',
+  backendType: 'neo4j',
 };
 
 function isNeo4j() {
@@ -734,7 +738,13 @@ function truncate(str, maxLen = 80) {
   return str.length > maxLen ? str.slice(0, maxLen) + '...' : str;
 }
 
-function statusBadge(status) {
+function statusBadge(status, phase) {
+  if (status === 'running' && phase === 'pausing') {
+    return `<span class="badge badge-warning">${escapeHtml(t('memory.statusPausing'))}</span>`;
+  }
+  if (status === 'running' && phase === 'cancelling') {
+    return `<span class="badge badge-error">${escapeHtml(t('memory.statusCancelling'))}</span>`;
+  }
   const map = {
     queued: 'badge-warning',
     running: 'badge-info',
@@ -1068,6 +1078,71 @@ function _toggleSidebarCollapse() {
   localStorage.setItem('deepdream_sidebar_collapsed', sidebar.classList.contains('collapsed'));
 }
 
+// ---- Shared: render episode/doc modal with tab switcher ----
+function _renderDocModal(sourceName, eventTime, cache, original) {
+  const hasCache = !!cache;
+  const hasOriginal = !!original;
+  const showTabs = hasCache && hasOriginal;
+
+  let body = `
+    <div style="display:flex;flex-direction:column;gap:1rem;">
+      <div style="display:grid;grid-template-columns:auto 1fr;gap:0.25rem 0.75rem;font-size:0.85rem;">
+        <span style="color:var(--text-secondary);">${t('memory.taskSource')}:</span><span>${escapeHtml(sourceName)}</span>
+        <span style="color:var(--text-secondary);">${t('memory.docTime')}:</span><span>${formatDate(eventTime)}</span>
+      </div>`;
+
+  if (showTabs) {
+    body += `
+      <div style="display:flex;gap:0; border-bottom:1px solid var(--border-color); margin-bottom:0;">
+        <button class="doc-tab-btn active" data-doc-tab="cache" style="padding:0.5rem 1rem;font-size:0.85rem;border:none;background:none;cursor:pointer;border-bottom:2px solid var(--primary);color:var(--text-primary);font-weight:600;">${t('memory.cacheSummary')}</button>
+        <button class="doc-tab-btn" data-doc-tab="original" style="padding:0.5rem 1rem;font-size:0.85rem;border:none;background:none;cursor:pointer;border-bottom:2px solid transparent;color:var(--text-muted);">${t('memory.originalText')}</button>
+      </div>
+      <div id="doc-tab-cache" class="doc-tab-panel" style="max-height:400px;overflow-y:auto;background:var(--bg-secondary);padding:0.75rem;border-radius:0.5rem;font-size:0.85rem;line-height:1.6;white-space:pre-wrap;word-break:break-word;">${escapeHtml(cache)}</div>
+      <div id="doc-tab-original" class="doc-tab-panel" style="display:none;max-height:400px;overflow-y:auto;background:var(--bg-secondary);padding:0.75rem;border-radius:0.5rem;font-size:0.85rem;line-height:1.6;white-space:pre-wrap;word-break:break-word;">${escapeHtml(original)}</div>`;
+  } else if (hasCache) {
+    body += `
+      <div>
+        <h4 style="margin-bottom:0.5rem;">${t('memory.cacheSummary')}</h4>
+        <div style="max-height:400px;overflow-y:auto;background:var(--bg-secondary);padding:0.75rem;border-radius:0.5rem;font-size:0.85rem;line-height:1.6;white-space:pre-wrap;word-break:break-word;">${escapeHtml(cache)}</div>
+      </div>`;
+  } else if (hasOriginal) {
+    body += `
+      <div>
+        <h4 style="margin-bottom:0.5rem;">${t('memory.originalText')}</h4>
+        <div style="max-height:400px;overflow-y:auto;background:var(--bg-secondary);padding:0.75rem;border-radius:0.5rem;font-size:0.85rem;line-height:1.6;white-space:pre-wrap;word-break:break-word;">${escapeHtml(original)}</div>
+      </div>`;
+  }
+
+  body += '</div>';
+  const { overlay } = showModal({
+    title: t('memory.docContent') + ' - ' + escapeHtml(truncate(sourceName, 30)),
+    content: body,
+    size: 'lg',
+  });
+
+  // Tab switching
+  if (showTabs) {
+    overlay.querySelectorAll('.doc-tab-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const tab = btn.getAttribute('data-doc-tab');
+        overlay.querySelectorAll('.doc-tab-btn').forEach(b => {
+          b.classList.remove('active');
+          b.style.borderBottom = '2px solid transparent';
+          b.style.color = 'var(--text-muted)';
+          b.style.fontWeight = '400';
+        });
+        btn.classList.add('active');
+        btn.style.borderBottom = '2px solid var(--primary)';
+        btn.style.color = 'var(--text-primary)';
+        btn.style.fontWeight = '600';
+        overlay.querySelectorAll('.doc-tab-panel').forEach(p => p.style.display = 'none');
+        const panel = overlay.querySelector('#doc-tab-' + tab);
+        if (panel) panel.style.display = '';
+      });
+    });
+  }
+}
+
 // ---- Global: Show document content modal (by filename) ----
 window.showDocContent = async function(filename) {
   if (!filename) return;
@@ -1075,110 +1150,344 @@ window.showDocContent = async function(filename) {
     const res = await state.api.getDocContent(filename, state.currentGraphId);
     const data = res.data || {};
     const meta = data.meta || {};
-
-    const sourceName = meta.source_document || meta.doc_name || filename;
-    const eventTime = meta.event_time || '-';
-    const original = data.original || '';
-    const cache = data.cache || '';
-
-    let body = `
-      <div style="display:flex;flex-direction:column;gap:1rem;">
-        <div style="display:grid;grid-template-columns:auto 1fr;gap:0.25rem 0.75rem;font-size:0.85rem;">
-          <span style="color:var(--text-secondary);">${t('memory.taskSource')}:</span><span>${escapeHtml(sourceName)}</span>
-          <span style="color:var(--text-secondary);">${t('memory.docTime')}:</span><span>${formatDate(eventTime)}</span>
-        </div>
-    `;
-
-    if (cache) {
-      body += `
-        <div>
-          <h4 style="margin-bottom:0.5rem;">${t('memory.cacheSummary')}</h4>
-          <div style="max-height:400px;overflow-y:auto;background:var(--bg-secondary);padding:0.75rem;border-radius:0.5rem;font-size:0.85rem;line-height:1.6;white-space:pre-wrap;word-break:break-word;">${escapeHtml(cache)}</div>
-        </div>
-      `;
-    }
-
-    if (original) {
-      body += `
-        <div>
-          <h4 style="margin-bottom:0.5rem;">${t('memory.originalText')}</h4>
-          <div style="max-height:400px;overflow-y:auto;background:var(--bg-secondary);padding:0.75rem;border-radius:0.5rem;font-size:0.85rem;line-height:1.6;white-space:pre-wrap;word-break:break-word;">${escapeHtml(original)}</div>
-        </div>
-      `;
-    }
-
-    body += '</div>';
-
-    showModal({
-      title: t('memory.docContent') + ' - ' + escapeHtml(truncate(sourceName, 30)),
-      content: body,
-      size: 'lg',
-    });
+    _renderDocModal(
+      meta.source_document || meta.doc_name || filename,
+      meta.event_time || '-',
+      data.cache || '',
+      data.original || '',
+    );
   } catch (err) {
     showToast(t('memory.loadDocContentFailed') + ': ' + err.message, 'error');
   }
 };
 
-// ---- Global: Show episode document content modal (by cache_id) ----
-window.showEpisodeDoc = async function(cacheId) {
-  if (!cacheId) return;
+// ---- Global: Show episode full detail modal (shared by graph explorer + episodes page) ----
+window.showEpisodeDetailModal = async function(uuid) {
+  if (!uuid) return;
   try {
-    // First try loading episode directly (works for Neo4j-only episodes)
-    const epRes = await state.api.get(`/api/v1/find/episodes/${encodeURIComponent(cacheId)}?graph_id=${encodeURIComponent(state.currentGraphId)}`);
-    const epData = epRes.data || {};
+    const [epRes, entRes] = await Promise.all([
+      state.api.getEpisode(uuid, state.currentGraphId),
+      state.api.getEpisodeEntities(uuid, state.currentGraphId),
+    ]);
+    const ep = epRes.data || {};
+    const allItems = entRes.data?.entities || [];
+    const cacheText = ep.content || '';
+    const originalText = ep.source_text || '';
 
-    // Then try to get the full document content
-    let docData = {};
-    try {
-      const docRes = await state.api.episodeDoc(cacheId, state.currentGraphId);
-      docData = docRes.data || {};
-    } catch (e) {
-      // Doc endpoint may fail for Neo4j-only episodes — use episode content instead
+    const epEntities = allItems.filter(x => x.target_type === 'entity');
+    const epRelations = allItems.filter(x => x.target_type === 'relation');
+
+    const hasCache = !!cacheText;
+    const hasOriginal = !!originalText;
+    const hasConcepts = epEntities.length > 0 || epRelations.length > 0;
+
+    // Build entity name lookup for relation display
+    const _entityNameMap = {};
+    epEntities.forEach(e => { _entityNameMap[e.absolute_id] = e.name || e.family_id; });
+
+    // Prefetch full relation data for display (batch by absolute_id)
+    const _fullRelations = {};
+    if (epRelations.length > 0) {
+      const fetches = epRelations.map(r =>
+        state.api.relationByAbsoluteId(r.absolute_id, state.currentGraphId)
+          .then(res => { if (res.data) _fullRelations[r.absolute_id] = res.data; })
+          .catch(() => {})
+      );
+      await Promise.all(fetches);
     }
 
-    const meta = docData.meta || {};
-    const sourceName = epData.source_document || meta.source_document || meta.doc_name || cacheId;
-    const eventTime = epData.event_time || meta.event_time || '-';
-    const original = docData.original || '';
-    const cache = docData.cache || epData.content || '';
-
-    let body = `
-      <div style="display:flex;flex-direction:column;gap:1rem;">
-        <div style="display:grid;grid-template-columns:auto 1fr;gap:0.25rem 0.75rem;font-size:0.85rem;">
-          <span style="color:var(--text-secondary);">${t('memory.taskSource')}:</span><span>${escapeHtml(sourceName)}</span>
-          <span style="color:var(--text-secondary);">${t('memory.docTime')}:</span><span>${formatDate(eventTime)}</span>
-        </div>
-    `;
-
-    if (cache) {
-      body += `
-        <div>
-          <h4 style="margin-bottom:0.5rem;">${t('memory.cacheSummary')}</h4>
-          <div style="max-height:400px;overflow-y:auto;background:var(--bg-secondary);padding:0.75rem;border-radius:0.5rem;font-size:0.85rem;line-height:1.6;white-space:pre-wrap;word-break:break-word;">${escapeHtml(cache)}</div>
-        </div>
-      `;
+    function _relationLabel(rel) {
+      const full = _fullRelations[rel.absolute_id];
+      if (!full) return escapeHtml(rel.family_id || '-');
+      const e1 = _entityNameMap[full.entity1_absolute_id] || full.entity1_absolute_id || '?';
+      const e2 = _entityNameMap[full.entity2_absolute_id] || full.entity2_absolute_id || '?';
+      const content = truncate(full.content || '', 40);
+      return `${escapeHtml(e1)} <span style="color:var(--text-muted);">→</span> ${escapeHtml(content)} <span style="color:var(--text-muted);">→</span> ${escapeHtml(e2)}`;
     }
 
-    if (original) {
-      body += `
-        <div>
-          <h4 style="margin-bottom:0.5rem;">${t('memory.originalText')}</h4>
-          <div style="max-height:400px;overflow-y:auto;background:var(--bg-secondary);padding:0.75rem;border-radius:0.5rem;font-size:0.85rem;line-height:1.6;white-space:pre-wrap;word-break:break-word;">${escapeHtml(original)}</div>
-        </div>
-      `;
+    // ---- Build episode main view HTML ----
+    function _buildMainHtml() {
+      let body = `<div style="display:flex;flex-direction:column;gap:1rem;">`;
+      body += `<div style="display:grid;grid-template-columns:auto 1fr;gap:0.25rem 0.75rem;font-size:0.85rem;">
+        <span style="color:var(--text-secondary);">UUID:</span><span class="font-mono text-xs">${escapeHtml(ep.uuid || '')}</span>
+        ${ep.episode_type ? `<span style="color:var(--text-secondary);">${t('episodes.episodeType')}:</span><span>${escapeHtml(ep.episode_type)}</span>` : ''}
+        <span style="color:var(--text-secondary);">${t('common.source')}:</span><span>${escapeHtml(ep.source_document || '-')}</span>
+        <span style="color:var(--text-secondary);">${t('relations.eventTime')}:</span><span class="mono" style="font-size:0.8125rem;">${formatDate(ep.event_time)}</span>
+        ${ep.processed_time ? `<span style="color:var(--text-secondary);">${t('relations.processedTime')}:</span><span class="mono" style="font-size:0.8125rem;">${formatDateMs(ep.processed_time)}</span>` : ''}
+      </div>`;
+
+      // Build top-level tabs
+      const mainTabs = [];
+      if (hasCache) mainTabs.push('cache');
+      if (hasOriginal) mainTabs.push('original');
+      if (hasConcepts) mainTabs.push('concepts');
+      if (mainTabs.length === 0) mainTabs.push('cache');
+      const useMainTabs = mainTabs.length > 1;
+
+      if (useMainTabs) {
+        const tabBtns = mainTabs.map((tab, i) => {
+          const labels = {
+            cache: t('memory.cacheSummary'),
+            original: t('memory.originalText'),
+            concepts: `${t('episodes.tabConcepts')} (${epEntities.length + epRelations.length})`,
+          };
+          const active = i === 0;
+          return `<button class="ep-main-tab ${active ? 'active' : ''}" data-ep-main="${tab}" style="padding:0.5rem 1rem;font-size:0.85rem;border:none;background:none;cursor:pointer;border-bottom:2px solid ${active ? 'var(--primary)' : 'transparent'};color:${active ? 'var(--text-primary)' : 'var(--text-muted)'};font-weight:${active ? '600' : '400'};">${labels[tab]}</button>`;
+        }).join('');
+        body += `<div style="display:flex;gap:0;border-bottom:1px solid var(--border-color);">${tabBtns}</div>`;
+      }
+
+      // Cache panel
+      if (hasCache) {
+        body += `<div id="ep-panel-cache" class="ep-main-panel" style="${useMainTabs && mainTabs[0] !== 'cache' ? 'display:none;' : ''}max-height:500px;overflow-y:auto;background:var(--bg-secondary);padding:0.75rem;border-radius:0.5rem;font-size:0.85rem;line-height:1.6;white-space:pre-wrap;word-break:break-word;">${renderMarkdown(cacheText)}</div>`;
+      }
+
+      // Original text panel
+      if (hasOriginal) {
+        body += `<div id="ep-panel-original" class="ep-main-panel" style="${useMainTabs && mainTabs[0] !== 'original' ? 'display:none;' : ''}max-height:500px;overflow-y:auto;background:var(--bg-secondary);padding:0.75rem;border-radius:0.5rem;font-size:0.85rem;line-height:1.6;white-space:pre-wrap;word-break:break-word;">${escapeHtml(originalText)}</div>`;
+      }
+
+      if (!hasCache && !hasOriginal) {
+        body += `<div style="color:var(--text-muted);font-size:0.85rem;padding:1rem;">${t('episodes.noContent')}</div>`;
+      }
+
+      if (hasConcepts) {
+        const entityList = epEntities.length > 0
+          ? epEntities.map((ent, i) =>
+              `<div class="flex items-center gap-2 p-2 rounded cursor-pointer" style="background:var(--bg-secondary);font-size:0.85rem;margin-bottom:4px;" data-ep-entity-idx="${i}">
+                <i data-lucide="circle-dot" style="width:14px;height:14px;color:var(--primary);flex-shrink:0;"></i>
+                <span class="font-medium">${escapeHtml(ent.name || ent.family_id || '-')}</span>
+              </div>`
+            ).join('')
+          : `<p style="color:var(--text-muted);font-size:0.85rem;padding:0.5rem;">${t('episodes.noEntities')}</p>`;
+
+        const relationList = epRelations.length > 0
+          ? epRelations.map((rel, i) =>
+              `<div class="flex items-center gap-2 p-2 rounded cursor-pointer" style="background:var(--bg-secondary);font-size:0.85rem;margin-bottom:4px;" data-ep-relation-idx="${i}">
+                <i data-lucide="link" style="width:14px;height:14px;color:var(--warning);flex-shrink:0;"></i>
+                <span>${_relationLabel(rel)}</span>
+              </div>`
+            ).join('')
+          : `<p style="color:var(--text-muted);font-size:0.85rem;padding:0.5rem;">${t('episodes.noRelations')}</p>`;
+
+        body += `<div id="ep-panel-concepts" class="ep-main-panel" style="display:none;">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;">
+            <div>
+              <h4 style="margin-bottom:0.5rem;font-size:0.85rem;color:var(--text-secondary);">
+                <i data-lucide="circle-dot" style="width:14px;height:14px;color:var(--primary);vertical-align:middle;"></i>
+                ${t('episodes.entities')} (${epEntities.length})
+              </h4>
+              ${entityList}
+            </div>
+            <div>
+              <h4 style="margin-bottom:0.5rem;font-size:0.85rem;color:var(--text-secondary);">
+                <i data-lucide="link" style="width:14px;height:14px;color:var(--warning);vertical-align:middle;"></i>
+                ${t('episodes.relations')} (${epRelations.length})
+              </h4>
+              ${relationList}
+            </div>
+          </div>
+        </div>`;
+      }
+
+      body += '</div>';
+      return body;
     }
 
-    body += '</div>';
+    // ---- Build inline entity detail HTML ----
+    function _buildEntityDetailHtml(entity) {
+      let h = `<div style="display:flex;flex-direction:column;gap:0.75rem;">`;
+      h += `<div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.25rem;">
+        <button class="btn btn-secondary btn-sm" id="ep-back-btn" title="${t('common.back')}"><i data-lucide="arrow-left" style="width:14px;height:14px;"></i></button>
+        <span class="badge badge-primary">${t('graph.entityDetail')}</span>
+      </div>`;
+      h += `<h3 style="font-size:1.1rem;font-weight:600;color:var(--text-primary);word-break:break-word;">${escapeHtml(entity.name || t('graph.unnamedEntity'))}</h3>`;
+      h += `<div style="display:grid;grid-template-columns:auto 1fr;gap:0.25rem 0.75rem;font-size:0.85rem;">
+        <span style="color:var(--text-secondary);">ID:</span><span class="mono text-xs">${escapeHtml(entity.absolute_id || '')}</span>
+        <span style="color:var(--text-secondary);">Family:</span><span class="mono text-xs">${escapeHtml(entity.family_id || '')}</span>
+        ${entity.episode_type ? `<span style="color:var(--text-secondary);">${t('episodes.episodeType')}:</span><span>${escapeHtml(entity.episode_type)}</span>` : ''}
+        ${entity.event_time ? `<span style="color:var(--text-secondary);">${t('relations.eventTime')}:</span><span class="mono" style="font-size:0.8125rem;">${formatDate(entity.event_time)}</span>` : ''}
+      </div>`;
+      if (entity.content) {
+        h += `<div>
+          <span class="form-label" style="margin-bottom:0.25rem;">${t('graph.content')}</span>
+          <div class="md-content" style="max-height:350px;overflow-y:auto;background:var(--bg-secondary);padding:0.75rem;border-radius:0.5rem;font-size:0.85rem;line-height:1.6;">${renderMarkdown(entity.content)}</div>
+        </div>`;
+      }
+      h += '</div>';
+      return h;
+    }
 
-    showModal({
-      title: t('memory.docContent') + ' - ' + escapeHtml(truncate(sourceName, 30)),
-      content: body,
+    // ---- Build inline relation detail HTML ----
+    function _buildRelationDetailHtml(relation) {
+      const e1 = _entityNameMap[relation.entity1_absolute_id] || relation.entity1_absolute_id || '?';
+      const e2 = _entityNameMap[relation.entity2_absolute_id] || relation.entity2_absolute_id || '?';
+      let h = `<div style="display:flex;flex-direction:column;gap:0.75rem;">`;
+      h += `<div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.25rem;">
+        <button class="btn btn-secondary btn-sm" id="ep-back-btn" title="${t('common.back')}"><i data-lucide="arrow-left" style="width:14px;height:14px;"></i></button>
+        <span class="badge" style="background:var(--info-dim);color:var(--info);">${t('graph.relationDetail')}</span>
+      </div>`;
+      h += `<h3 style="font-size:1.1rem;font-weight:600;color:var(--text-primary);word-break:break-word;">${escapeHtml(truncate(relation.content || t('graph.unnamedRelation'), 80))}</h3>`;
+      h += `<div style="display:grid;grid-template-columns:auto 1fr;gap:0.25rem 0.75rem;font-size:0.85rem;">
+        <span style="color:var(--text-secondary);">${t('graph.fromEntity')}:</span><span style="color:var(--info);cursor:pointer;" class="ep-nav-entity" data-nav-abs="${escapeHtml(relation.entity1_absolute_id)}">${escapeHtml(e1)}</span>
+        <span style="color:var(--text-secondary);">${t('graph.toEntity')}:</span><span style="color:var(--info);cursor:pointer;" class="ep-nav-entity" data-nav-abs="${escapeHtml(relation.entity2_absolute_id)}">${escapeHtml(e2)}</span>
+        <span style="color:var(--text-secondary);">${t('graph.relationId')}:</span><span class="mono text-xs">${escapeHtml(relation.family_id || '-')}</span>
+        ${relation.event_time ? `<span style="color:var(--text-secondary);">${t('graph.eventTime')}:</span><span class="mono" style="font-size:0.8125rem;">${formatDate(relation.event_time)}</span>` : ''}
+        ${relation.processed_time ? `<span style="color:var(--text-secondary);">${t('graph.processedTime')}:</span><span class="mono" style="font-size:0.8125rem;">${formatDateMs(relation.processed_time)}</span>` : ''}
+      </div>`;
+      if (relation.content) {
+        h += `<div>
+          <span class="form-label" style="margin-bottom:0.25rem;">${t('graph.content')}</span>
+          <div class="md-content" style="max-height:350px;overflow-y:auto;background:var(--bg-secondary);padding:0.75rem;border-radius:0.5rem;font-size:0.85rem;line-height:1.6;">${renderMarkdown(relation.content)}</div>
+        </div>`;
+      }
+      h += '</div>';
+      return h;
+    }
+
+    // ---- Navigation stack for back button within modal ----
+    const _navStack = []; // each entry = HTML string
+
+    const { overlay, close } = showModal({
+      title: t('episodes.detail'),
+      content: _buildMainHtml(),
       size: 'lg',
     });
+    const _bodyEl = overlay.querySelector('.modal-body');
+
+    if (window.lucide) lucide.createIcons({ nodes: [overlay] });
+
+    function _saveMainAndSwitch(detailHtml) {
+      if (_bodyEl) _navStack.push(_bodyEl.innerHTML);
+      if (_bodyEl) _bodyEl.innerHTML = detailHtml;
+      if (window.lucide) lucide.createIcons({ nodes: [overlay] });
+      _bindDetailEvents();
+    }
+
+    function _restoreView(html) {
+      if (_bodyEl) _bodyEl.innerHTML = html;
+      if (window.lucide) lucide.createIcons({ nodes: [overlay] });
+      if (_bodyEl?.querySelector('.ep-main-tab')) {
+        _bindMainEvents();
+      } else {
+        _bindDetailEvents();
+      }
+    }
+
+    function _bindDetailEvents() {
+      const backBtn = _bodyEl?.querySelector('#ep-back-btn');
+      if (backBtn) {
+        backBtn.addEventListener('click', () => {
+          const prev = _navStack.pop();
+          if (prev) _restoreView(prev);
+        });
+      }
+      _bodyEl?.querySelectorAll('.ep-nav-entity').forEach(el => {
+        el.addEventListener('click', () => {
+          const absId = el.getAttribute('data-nav-abs');
+          if (absId) _navigateToEntity(absId);
+        });
+      });
+    }
+
+    async function _navigateToEntity(absoluteId) {
+      try {
+        const res = await state.api.entityByAbsoluteId(absoluteId, state.currentGraphId);
+        const entity = res.data;
+        if (!entity) { showToast('Entity not found', 'error'); return; }
+        _saveMainAndSwitch(_buildEntityDetailHtml(entity));
+      } catch (err) {
+        showToast(err.message, 'error');
+      }
+    }
+
+    async function _navigateToRelation(absoluteId) {
+      const full = _fullRelations[absoluteId];
+      if (full) {
+        // Also look up entity names if not in map
+        if (!_entityNameMap[full.entity1_absolute_id]) {
+          try {
+            const r = await state.api.entityByAbsoluteId(full.entity1_absolute_id, state.currentGraphId);
+            if (r.data) _entityNameMap[full.entity1_absolute_id] = r.data.name || r.data.family_id;
+          } catch (_) {}
+        }
+        if (!_entityNameMap[full.entity2_absolute_id]) {
+          try {
+            const r = await state.api.entityByAbsoluteId(full.entity2_absolute_id, state.currentGraphId);
+            if (r.data) _entityNameMap[full.entity2_absolute_id] = r.data.name || r.data.family_id;
+          } catch (_) {}
+        }
+        _saveMainAndSwitch(_buildRelationDetailHtml(full));
+      } else {
+        try {
+          const res = await state.api.relationByAbsoluteId(absoluteId, state.currentGraphId);
+          const rel = res.data;
+          if (!rel) { showToast('Relation not found', 'error'); return; }
+          _fullRelations[absoluteId] = rel;
+          // Lookup entity names
+          for (const aid of [rel.entity1_absolute_id, rel.entity2_absolute_id]) {
+            if (!_entityNameMap[aid]) {
+              try {
+                const r = await state.api.entityByAbsoluteId(aid, state.currentGraphId);
+                if (r.data) _entityNameMap[aid] = r.data.name || r.data.family_id;
+              } catch (_) {}
+            }
+          }
+          _saveMainAndSwitch(_buildRelationDetailHtml(rel));
+        } catch (err) {
+          showToast(err.message, 'error');
+        }
+      }
+    }
+
+    function _bindMainEvents() {
+      // Main tab switching
+      overlay.querySelectorAll('.ep-main-tab').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const tab = btn.getAttribute('data-ep-main');
+          overlay.querySelectorAll('.ep-main-tab').forEach(b => {
+            b.classList.remove('active');
+            b.style.borderBottom = '2px solid transparent';
+            b.style.color = 'var(--text-muted)';
+            b.style.fontWeight = '400';
+          });
+          btn.classList.add('active');
+          btn.style.borderBottom = '2px solid var(--primary)';
+          btn.style.color = 'var(--text-primary)';
+          btn.style.fontWeight = '600';
+          overlay.querySelectorAll('.ep-main-panel').forEach(p => p.style.display = 'none');
+          const panel = overlay.querySelector(`#ep-panel-${tab}`);
+          if (panel) panel.style.display = '';
+        });
+      });
+
+      // Entity click
+      overlay.querySelectorAll('[data-ep-entity-idx]').forEach(el => {
+        el.addEventListener('click', () => {
+          const idx = parseInt(el.getAttribute('data-ep-entity-idx'), 10);
+          const ref = epEntities[idx];
+          if (ref) _navigateToEntity(ref.absolute_id);
+        });
+      });
+
+      // Relation click
+      overlay.querySelectorAll('[data-ep-relation-idx]').forEach(el => {
+        el.addEventListener('click', () => {
+          const idx = parseInt(el.getAttribute('data-ep-relation-idx'), 10);
+          const ref = epRelations[idx];
+          if (ref) _navigateToRelation(ref.absolute_id);
+        });
+      });
+    }
+
+    _bindMainEvents();
   } catch (err) {
-    showToast(t('memory.loadDocContentFailed') + ': ' + err.message, 'error');
+    showToast(err.message, 'error');
   }
 };
+
+// Backward compat alias: graph explorer uses showEpisodeDoc(cacheId)
+window.showEpisodeDoc = window.showEpisodeDetailModal;
 
 // ---- Keyboard Shortcut System ----
 const _shortcuts = [];

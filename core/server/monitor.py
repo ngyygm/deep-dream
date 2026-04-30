@@ -283,8 +283,8 @@ class GraphMonitor:
                 ),
                 "window_threads_peak": int(processor_stats.get("peak_window_extractions", 0)),
                 "window_threads_configured": int(processor_stats.get("configured_window_workers", 0)),
-                "step6_active": int(processor_stats.get("active_step6", 0)),
-                "step7_active": int(processor_stats.get("active_step7", 0)),
+                "step9_active": int(processor_stats.get("active_step9", 0)),
+                "step10_active": int(processor_stats.get("active_step10", 0)),
                 "llm_threads_alive": llm_alive,
                 "llm_threads_busy": int(processor_stats.get("llm_semaphore_active", 0)),
                 "llm_threads_max": int(processor_stats.get("llm_semaphore_max", 0)),
@@ -299,8 +299,8 @@ class GraphMonitor:
                 "window_threads_busy": 0,
                 "window_threads_peak": 0,
                 "window_threads_configured": 0,
-                "step6_active": 0,
-                "step7_active": 0,
+                "step9_active": 0,
+                "step10_active": 0,
                 "llm_threads_alive": 0,
                 "llm_threads_busy": 0,
                 "llm_threads_max": 0,
@@ -363,6 +363,10 @@ class SystemMonitor:
         self._graph_order: List[str] = []
         self._lock = threading.Lock()
         self._start_time = time.time()
+        self._registry = None  # set later via set_registry
+
+    def set_registry(self, registry) -> None:
+        self._registry = registry
 
     @property
     def start_time(self) -> float:
@@ -393,8 +397,7 @@ class SystemMonitor:
     def overview(self) -> dict:
         """系统总览。"""
         import threading
-        with self._lock:
-            graph_count = len(self._graphs)
+        graph_count = len(self._all_graph_ids())
         return {
             "graph_count": graph_count,
             "uptime_seconds": round(self.uptime_seconds, 1),
@@ -404,27 +407,79 @@ class SystemMonitor:
             "mode": self.mode,
         }
 
+    def _default_threads(self) -> dict:
+        """无 monitor 图谱的默认线程信息。"""
+        return {
+            "python_threads_total": 0,
+            "remember_worker_threads_alive": 0,
+            "remember_worker_threads_busy": 0,
+            "window_threads_alive": 0,
+            "window_threads_busy": 0,
+            "window_threads_configured": self.config.get("window_workers", 2),
+            "window_threads_peak": 0,
+            "llm_threads_alive": 0,
+            "llm_threads_busy": 0,
+            "llm_threads_max": self.config.get("llm_semaphore_max", 8),
+            "step9_active": 0,
+            "step10_active": 0,
+        }
+
+    def _all_graph_ids(self) -> List[str]:
+        """合并 registry 已知图谱和已注册 monitor 的图谱。"""
+        ids = set()
+        if self._registry is not None:
+            try:
+                ids.update(self._registry.list_graphs())
+            except Exception:
+                pass
+        with self._lock:
+            ids.update(self._graph_order)
+        # 保持注册顺序
+        with self._lock:
+            ordered = [g for g in self._graph_order if g in ids]
+        ordered.extend(g for g in sorted(ids) if g not in ordered)
+        return ordered
+
     def all_graphs(self) -> List[dict]:
         """所有图谱摘要列表。"""
-        with self._lock:
-            graph_ids = list(self._graph_order)
+        graph_ids = self._all_graph_ids()
         results = []
         for gid in graph_ids:
             with self._lock:
                 gm = self._graphs.get(gid)
-            if gm is None:
-                continue
-            snap = gm.snapshot()
-            results.append({
-                "graph_id": gid,
-                "storage": snap["storage"],
-                "queue": {
-                    "queued_count": snap["queue"]["queued_count"],
-                    "running_count": snap["queue"]["running_count"],
-                    "backlog": snap["queue"]["backlog"],
-                },
-                "threads": snap["threads"],
-            })
+            if gm is not None:
+                snap = gm.snapshot()
+                results.append({
+                    "graph_id": gid,
+                    "storage": snap["storage"],
+                    "queue": {
+                        "queued_count": snap["queue"]["queued_count"],
+                        "running_count": snap["queue"]["running_count"],
+                        "backlog": snap["queue"]["backlog"],
+                    },
+                    "threads": snap["threads"],
+                })
+            else:
+                # 图谱存在但尚未创建队列/monitor — 轻量级展示
+                storage = {"entities": 0, "relations": 0, "episodes": 0}
+                default_threads = self._default_threads()
+                if self._registry is not None:
+                    try:
+                        proc = self._registry.get_processor(gid)
+                        st = proc.storage
+                        storage = {
+                            "entities": st.count_unique_entities(),
+                            "relations": st.count_unique_relations(),
+                            "episodes": sum(1 for _ in (st.docs_dir.glob("*/meta.json") if st.docs_dir.is_dir() else [])),
+                        }
+                    except Exception:
+                        pass
+                results.append({
+                    "graph_id": gid,
+                    "storage": storage,
+                    "queue": {"queued_count": 0, "running_count": 0, "backlog": 0},
+                    "threads": default_threads,
+                })
         return results
 
     def graph_detail(self, graph_id: str) -> Optional[dict]:
@@ -437,8 +492,7 @@ class SystemMonitor:
 
     def all_tasks(self, limit: int = 50) -> List[dict]:
         """所有图谱的任务列表。"""
-        with self._lock:
-            graph_ids = list(self._graph_order)
+        graph_ids = self._all_graph_ids()
         all_tasks = []
         for gid in graph_ids:
             with self._lock:
@@ -471,8 +525,7 @@ class SystemMonitor:
         import threading
 
         # 1. overview
-        with self._lock:
-            graph_ids = list(self._graph_order)
+        graph_ids = self._all_graph_ids()
 
         overview = {
             "graph_count": len(graph_ids),
@@ -489,20 +542,46 @@ class SystemMonitor:
         for gid in graph_ids:
             with self._lock:
                 gm = self._graphs.get(gid)
-            if gm is None:
-                continue
-            snap = gm.snapshot()
-            graphs.append({
-                "graph_id": gid,
-                "storage": snap["storage"],
-                "queue": {
-                    "queued_count": snap["queue"]["queued_count"],
-                    "running_count": snap["queue"]["running_count"],
-                    "backlog": snap["queue"]["backlog"],
-                },
-                "threads": snap["threads"],
-            })
-            # 同时收集 tasks
+            if gm is not None:
+                snap = gm.snapshot()
+                graphs.append({
+                    "graph_id": gid,
+                    "storage": snap["storage"],
+                    "queue": {
+                        "queued_count": snap["queue"]["queued_count"],
+                        "running_count": snap["queue"]["running_count"],
+                        "backlog": snap["queue"]["backlog"],
+                    },
+                    "threads": snap["threads"],
+                })
+                # 同时收集 tasks
+                try:
+                    tasks = gm._queue.list_tasks(limit=task_limit)
+                    for t in tasks:
+                        t["graph_id"] = gid
+                    all_tasks.extend(tasks)
+                except Exception as e:
+                    logger.debug("列图 %s 任务失败(2): %s", gid, e)
+            else:
+                storage = {"entities": 0, "relations": 0, "episodes": 0}
+                default_threads = self._default_threads()
+                if self._registry is not None:
+                    try:
+                        proc = self._registry.get_processor(gid)
+                        st = proc.storage
+                        storage = {
+                            "entities": st.count_unique_entities(),
+                            "relations": st.count_unique_relations(),
+                            "episodes": sum(1 for _ in (st.docs_dir.glob("*/meta.json") if st.docs_dir.is_dir() else [])),
+                        }
+                    except Exception:
+                        pass
+                graphs.append({
+                    "graph_id": gid,
+                    "storage": storage,
+                    "queue": {"queued_count": 0, "running_count": 0, "backlog": 0},
+                    "threads": default_threads,
+                })
             try:
                 tasks = gm._queue.list_tasks(limit=task_limit)
                 for t in tasks:

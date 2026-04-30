@@ -380,8 +380,8 @@ def _error_hint(data):
         hints.append("Hint: use list_communities to see valid community IDs. Run detect_communities first if empty.")
     if "not found" in lower and "task" in lower:
         hints.append("Hint: use remember_tasks to list all tasks with valid IDs.")
-    if "neo4j" in lower and ("not available" in lower or "sqlite" in lower):
-        hints.append("Hint: this feature requires Neo4j backend. SQLite does not support it.")
+    if "neo4j" in lower and "not available" in lower:
+        hints.append("Hint: this feature requires Neo4j backend.")
     if "context budget" in lower or "token" in lower:
         hints.append("Hint: reduce max_entities/max_relations or shorten your query.")
     if "already exists" in lower:

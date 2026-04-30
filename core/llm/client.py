@@ -58,6 +58,8 @@ _CONTEXT_OVERFLOW_NEEDLES = (
 
 # Pre-compiled regex for JSON cleanup
 _TRAILING_COMMA_RE = re.compile(r',(\s*[}\]])')
+_MD_BULLET_IN_JSON_RE = re.compile(r'^\s*\*\s+(?=[\[{])', re.MULTILINE)
+_BARE_IDENTIFIER_RE = re.compile(r',?\s*\b(?:gap|ellipsis|continue|\.\.\.)\b\s*,?', re.IGNORECASE)
 _INVALID_UNICODE_ESCAPE_RE = re.compile(r'\\u([0-9a-fA-F]{0,3})(?![0-9a-fA-F])')
 _CJK_PUNCT_RE = re.compile(r'[\uff1a\uff0c\uff1b]')  # ：，；
 _CJK_PUNCT_MAP = {'\uff1a': ':', '\uff0c': ',', '\uff1b': ';'}
@@ -207,13 +209,13 @@ class PrioritySemaphore:
 
 
 # 优先级常量（越小优先级越高）
-LLM_PRIORITY_STEP1 = 0   # 步骤1: 更新缓存
-LLM_PRIORITY_STEP2 = 1   # 步骤2: 抽取实体
-LLM_PRIORITY_STEP3 = 2   # 步骤3: 抽取关系
-LLM_PRIORITY_STEP4 = 3   # 步骤4: 补全实体
-LLM_PRIORITY_STEP5 = 4   # 步骤5: 实体增强
-LLM_PRIORITY_STEP6 = 5   # 步骤6: 实体对齐
-LLM_PRIORITY_STEP7 = 6   # 步骤7: 关系对齐
+LLM_PRIORITY_STEP1 = 0   # 更新缓存
+LLM_PRIORITY_STEP2 = 1   # 抽取实体
+LLM_PRIORITY_STEP3 = 2   # 抽取关系
+LLM_PRIORITY_STEP4 = 3   # 补全实体内容
+LLM_PRIORITY_STEP5 = 4   # 补全关系内容
+LLM_PRIORITY_STEP6 = 5   # 实体对齐
+LLM_PRIORITY_STEP7 = 6   # 关系对齐
 
 
 class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
@@ -328,7 +330,7 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
         if not self._endpoint_available:
             wprint_info("提示：未提供 API key 或任一 base_url，将使用模拟响应模式")
 
-        # LLM 并发：上游（步骤1–5）与下游（步骤6–7）两池
+        # LLM 并发：上游（步骤2–8）与下游（步骤9–10）两池
         self._max_llm_concurrency: int = max_llm_concurrency or 0
         self._llm_upstream_slot_max: int = 0
         self._llm_downstream_slot_max: int = 0
@@ -338,7 +340,7 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
         mc = max_llm_concurrency or 0
         amc = self._alignment_max_llm_concurrency
         if self.alignment_enabled and mc >= 1 and amc is not None:
-            # 对齐开启且单独指定下游并发：上游 = 步骤1–5，下游 = 步骤6–7
+            # 对齐开启且单独指定下游并发：上游 = 步骤2–8，下游 = 步骤9–10
             self._llm_upstream_slot_max = int(mc)
             self._llm_downstream_slot_max = int(amc)
             self._llm_sem_upstream = PrioritySemaphore(self._llm_upstream_slot_max)
@@ -380,7 +382,7 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
         self._distill_data_dir = distill_data_dir
         self._distill_task_id = None  # task_id 由 step1 生成，全局共享
         self._distill_lock = threading.Lock()
-        # 线程局部变量：distill step（step6/step7 并行线程各自独立）
+        # 线程局部变量：distill step（step9/step10 并行线程各自独立）
         self._distill_local = threading.local()
 
     @property
@@ -556,7 +558,7 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
         return max(1, int(desired_max_tokens))
 
     def effective_entity_snippet_length(self) -> int:
-        """按当前线程优先级返回实体 content 截断长度（步骤6–7 可走 alignment 配置）。"""
+        """按当前线程优先级返回实体 content 截断长度（步骤9–10 可走 alignment 配置）。"""
         p = getattr(self._priority_local, "priority", LLM_PRIORITY_STEP1)
         if self._use_alignment_llm_endpoint(p) and self.alignment_content_snippet_length is not None:
             return int(self.alignment_content_snippet_length)
@@ -595,7 +597,7 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
         return '\ufffd' not in text
 
     def _select_llm_semaphore(self, priority: int) -> Optional[PrioritySemaphore]:
-        """步骤1–5 用上游池，步骤6–7 用下游池；未拆分（单槽）时仅上游。"""
+        """步骤2–8 用上游池，步骤9–10 用下游池；未拆分（单槽）时仅上游。"""
         if self._llm_sem_upstream is None:
             return None
         if self._llm_sem_downstream is None:
@@ -669,6 +671,7 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
                 timeout=timeout,
                 allow_mock_fallback=allow_mock_fallback,
                 request_max_tokens_scale=scale,
+                json_mode=True,
             )
             try:
                 return parse_fn(last_response), last_response
@@ -713,6 +716,7 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
         messages: Optional[List[Dict[str, str]]] = None,
         *,
         request_max_tokens_scale: float = 1.0,
+        json_mode: bool = False,
     ) -> str:
         """
         调用LLM的通用方法（带重试机制）
@@ -788,6 +792,7 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
                         think=_eff_think,
                         timeout=timeout,
                         num_predict=_api_max_tokens,
+                        json_format=json_mode,
                     )
                 response_text = resp.content or ""
                 # 已成功完成一次上游 HTTP 调用：清零各类失败计数（UTF-8 轮次单独计）
@@ -970,6 +975,12 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
         # 它们是合法 UTF-8 字符，可直接保留。
         # 移除可能的尾随逗号（在数组或对象的最后一个元素后）
         json_str = _TRAILING_COMMA_RE.sub(r'\1', json_str)
+        # 移除 markdown 列表标记（弱模型在 JSON 内混入 "*   {" 等）
+        json_str = _MD_BULLET_IN_JSON_RE.sub('', json_str)
+        # 移除模型在 JSON 对象间插入的占位符（gap, ellipsis, ...）
+        json_str = _BARE_IDENTIFIER_RE.sub(',', json_str)
+        # 修复连续逗号（前一步可能产生 ,,）
+        json_str = re.sub(r',{2,}', ',', json_str)
         return json_str
     
     def _fix_json_errors(self, json_str: str) -> str:

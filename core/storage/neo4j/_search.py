@@ -8,8 +8,7 @@ import numpy as np
 
 from ...models import Entity, Relation
 from ...perf import _perf_timer
-from ..vector_store import VectorStore
-from ._helpers import _neo4j_record_to_entity, _neo4j_record_to_relation
+from ._helpers import _ENTITY_RETURN_FIELDS, _neo4j_record_to_entity, _neo4j_record_to_relation
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +19,6 @@ class SearchMixin:
         self._session()              → Neo4j session factory
         self._run(session, cypher, **kw) → execute Cypher with graph_id injection
         self._graph_id: str          → active graph ID
-        self._vector_store           → VectorStore for KNN search
         self.embedding_client        → EmbeddingClient (optional)
     """
 
@@ -30,58 +28,80 @@ class SearchMixin:
                                 max_results: int = 10, content_snippet_length: int = 50,
                                 text_mode: str = "name_and_content",
                                 query_embedding=None) -> List[Entity]:
-        """使用 sqlite-vec KNN 进行实体相似度搜索。"""
+        """使用 Neo4j 向量索引进行实体相似度搜索。"""
         # 1. Encode + 归一化 query (skip if caller provided embedding)
         if query_embedding is None:
             query_embedding = self.embedding_client.encode(query_text)
         if query_embedding is None:
             return self.search_entities_by_bm25(query_text, limit=max_results * 3)[:max_results]
 
-        query_emb = np.asarray(
-            query_embedding[0] if isinstance(query_embedding, (list, np.ndarray)) else query_embedding,
-            dtype=np.float32
-        )
+        query_emb = np.asarray(query_embedding, dtype=np.float32)
+        if query_emb.ndim > 1:
+            query_emb = query_emb[0]
         norm = np.linalg.norm(query_emb)
         if norm > 0:
             query_emb = query_emb / norm
 
-        # 2. KNN top-k（多取几倍候选，因为同一 family_id 可能有多个版本）
+        # 2. Neo4j vector index KNN
         knn_limit = max_results * 5
-        knn_results = self._vector_store.search(
-            "entity_vectors", [], limit=knn_limit,
-            _precomputed_bytes=query_emb.astype(np.float32).tobytes()
-        )
-        # knn_results: [(uuid, l2_dist_sq), ...]
+        query_vector = query_emb.tolist()
+        with self._session() as session:
+            try:
+                result = session.run(
+                    """
+                    CALL db.index.vector.queryNodes('entity_embedding', $k, $queryVector)
+                    YIELD node, score
+                    WHERE node.graph_id = $graph_id AND node.invalid_at IS NULL
+                    RETURN node, score
+                    ORDER BY score DESC
+                    """,
+                    k=knn_limit,
+                    queryVector=query_vector,
+                    graph_id=self._graph_id,
+                )
+                records = list(result)
+            except Exception as e:
+                logger.warning("Neo4j vector search failed, falling back to BM25: %s", e)
+                return self.search_entities_by_bm25(query_text, limit=max_results * 3)[:max_results]
 
-        if not knn_results:
+        if not records:
             return []
 
-        # 3. L2 距离转余弦相似度: cos_sim = 1 - l2_dist_sq / 2
-        # Build dist map + uuid list in single pass (avoid double iteration over knn_results)
-        uuid_dist = {}
-        uuids = []
-        for uuid, dist in knn_results:
-            uuid_dist[uuid] = dist
-            uuids.append(uuid)
-
-        # 4. 批量获取实体（一次 Neo4j 查询，仅有效版本）
-        entities = self.get_entities_by_absolute_ids(uuids, valid_only=True)
-
-        # 5. 过滤 threshold + 去重（同 family_id 取最新，即 KNN 中距离最小的）
+        # 3. 去重（同 family_id 取最高分）+ 过滤 threshold
         seen = set()
         results = []
-        for entity in entities:
-            if entity is None:
+        for record in records:
+            node = record["node"]
+            score = record["score"]
+            if score < threshold:
+                break
+            family_id = node.get("family_id")
+            if family_id in seen:
                 continue
-            l2_dist_sq = uuid_dist.get(entity.absolute_id)
-            if l2_dist_sq is None:
-                continue
-            cos_sim = 1.0 - l2_dist_sq / 2.0
-            if cos_sim >= threshold and entity.family_id not in seen:
-                results.append(entity)
-                seen.add(entity.family_id)
-                if len(results) >= max_results:
-                    break
+            seen.add(family_id)
+            # Convert node properties to entity via the standard helper
+            entity_dict = {
+                "uuid": node.get("uuid"),
+                "family_id": family_id,
+                "name": node.get("name", ""),
+                "content": node.get("content", ""),
+                "summary": node.get("summary"),
+                "attributes": node.get("attributes"),
+                "confidence": node.get("confidence"),
+                "content_format": node.get("content_format", "plain"),
+                "community_id": node.get("community_id"),
+                "valid_at": node.get("valid_at"),
+                "invalid_at": node.get("invalid_at"),
+                "event_time": node.get("event_time"),
+                "processed_time": node.get("processed_time"),
+                "episode_id": node.get("episode_id", ""),
+                "source_document": node.get("source_document", ""),
+                "embedding": node.get("embedding"),
+            }
+            entity = _neo4j_record_to_entity(entity_dict)
+            results.append(entity)
+            if len(results) >= max_results:
+                break
         return results
 
     # ------------------------------------------------------------------

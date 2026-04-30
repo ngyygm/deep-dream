@@ -105,13 +105,11 @@ def sanitize_user_input(
         )
 
     # 2. Check for injection patterns
-    text_lower = text.lower()
+    # Search the original text directly (patterns are compiled with re.IGNORECASE)
     for pattern in _COMPILED_PATTERNS:
-        match = pattern.search(text_lower)
+        match = pattern.search(text)
         if match:
-            # Replace the matched portion with [REDACTED]
-            start, end = match.span()
-            text = text[:start] + '[REDACTED]' + text[end:]
+            text = text[:match.start()] + '[REDACTED]' + text[match.end():]
             was_modified = True
             logger.warning(
                 "Detected potential prompt injection pattern: %s",

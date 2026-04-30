@@ -3,6 +3,7 @@ Entity candidate generation: building, supplementing, and enriching candidate ta
 for entity alignment. Extracted from entity.py for maintainability.
 """
 import logging
+import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional, Tuple
@@ -10,6 +11,7 @@ import threading
 
 import numpy as np
 
+from core.debug_log import log as dbg, log_struct as _dbg_struct
 from core.utils import wprint_info, calculate_jaccard_similarity, _bigrams, _jaccard_from_bigrams
 from core.content_schema import ENTITY_SECTIONS
 from .helpers import _PAREN_ANNOTATION_RE
@@ -123,6 +125,7 @@ class EntityCandidateBuilder:
 
         This is the main entry point — replaces the old _build_entity_candidate_table.
         """
+        _t0 = time.monotonic()
         projections = self.storage.get_latest_entities_projection(
             self.llm_client.effective_entity_snippet_length()
         )
@@ -132,6 +135,9 @@ class EntityCandidateBuilder:
         else:
             proj_names = [p["name"] for p in projections[:10]]
             wprint_info(f"[candidate_table] projections: {len(projections)} existing entities. First 10: {proj_names}")
+
+        _t_proj = time.monotonic()
+        wprint_info(f"[candidate_timing] projections fetch: {_t_proj - _t0:.3f}s ({len(projections)} entities)")
 
         jaccard_threshold = jaccard_search_threshold if jaccard_search_threshold is not None else min(similarity_threshold, 0.6)
         embedding_name_threshold = embedding_name_search_threshold if embedding_name_search_threshold is not None else min(similarity_threshold, 0.6)
@@ -147,23 +153,24 @@ class EntityCandidateBuilder:
             _snippet_len = self.llm_client.effective_entity_snippet_length()
             _name_texts = [entity["name"] for entity in extracted_entities]
             _full_texts = [
-                f"{entity['name']} {entity['content'][:_snippet_len]}"
+                f"# {entity['name']}\n{entity['content'][:_snippet_len]}"
                 for entity in extracted_entities
             ]
             _all_embs = self.storage.embedding_client.encode(_name_texts + _full_texts)
             name_embeddings = _all_embs[:_N]
             full_embeddings = _all_embs[_N:]
 
-        # Vectorized similarity computation
-        stored_emb_matrix = self._build_stored_embedding_matrix(projections)
+        _t_encode = time.monotonic()
+        wprint_info(f"[candidate_timing] embedding encode: {_t_encode - _t_proj:.3f}s ({len(extracted_entities)} entities)")
 
-        # Precompute similarity matrices
-        name_sim_matrix = None
-        full_sim_matrix = None
-        if stored_emb_matrix is not None and stored_emb_matrix.shape[1] > 1:
-            stored_dim = stored_emb_matrix.shape[1]
-            name_sim_matrix = self._compute_sim_matrix(name_embeddings, stored_emb_matrix, stored_dim, "name")
-            full_sim_matrix = self._compute_sim_matrix(full_embeddings, stored_emb_matrix, stored_dim, "full")
+        # Vectorized similarity via Neo4j vector index top-K queries
+        top_k = max(len(projections), self.max_alignment_candidates or 50, 50)
+        name_emb_scores, full_emb_scores = self._search_embedding_top_k(
+            extracted_entities, name_embeddings, full_embeddings, top_k,
+        )
+
+        _t_matrix = time.monotonic()
+        wprint_info(f"[candidate_timing] Neo4j vector top-K search: {_t_matrix - _t_encode:.3f}s")
 
         # Pre-compute core names for all projections (avoids E × P calls to normalize function)
         for p in projections:
@@ -187,11 +194,14 @@ class EntityCandidateBuilder:
             proj_core_bigrams.append(_bigrams(p["_core_name"].lower().strip()) if p["_core_name"] else _EMPTY_FROZENSET)
 
         # Build initial candidate rows
+        _t_matrix = time.monotonic()
+        wprint_info(f"[candidate_timing] matrix build + precompute: {_t_matrix - _t_encode:.3f}s")
+
         candidate_table: Dict[int, List[Dict[str, Any]]] = {}
         for idx, extracted_entity in enumerate(extracted_entities):
             candidate_rows = self._build_rows_for_entity(
                 idx, extracted_entity, projections,
-                stored_emb_matrix, name_sim_matrix, full_sim_matrix,
+                name_emb_scores.get(idx, {}), full_emb_scores.get(idx, {}),
                 jaccard_threshold, embedding_name_threshold, embedding_full_threshold,
                 ext_bigrams[idx], ext_core_bigrams[idx],
                 proj_bigrams, proj_core_bigrams,
@@ -200,6 +210,9 @@ class EntityCandidateBuilder:
             candidate_rows.sort(key=lambda row: row["combined_score"], reverse=True)
             limit = self.max_alignment_candidates or self.max_similar_entities
             candidate_table[idx] = candidate_rows[:limit]
+
+        _t_rows = time.monotonic()
+        wprint_info(f"[candidate_timing] _build_rows loop: {_t_rows - _t_matrix:.3f}s ({len(extracted_entities)} entities x {len(projections)} projections)")
 
         # Phase 1: parallel supplement stages (1-3 only add candidates, no inter-dependencies)
         _pool = _get_supp_pool()
@@ -220,6 +233,9 @@ class EntityCandidateBuilder:
         )
         _ct_1, _ct_2, _ct_3 = _f1.result(), _f2.result(), _f3.result()
 
+        _t_supp = time.monotonic()
+        wprint_info(f"[candidate_timing] parallel supplements (BM25+content+batch): {_t_supp - _t_rows:.3f}s")
+
         # Merge parallel results: dedup by family_id (first-seen wins)
         _limit = self.max_alignment_candidates or self.max_similar_entities
         for idx in range(len(extracted_entities)):
@@ -236,19 +252,109 @@ class EntityCandidateBuilder:
 
         # Phase 2: sequential enrichment (depends on merged phase-1 results)
         candidate_table, graph_context = self._enrich_candidates_with_neighbors(candidate_table)
+        _t_neighbors = time.monotonic()
+        wprint_info(f"[candidate_timing] enrich neighbors: {_t_neighbors - _t_supp:.3f}s")
+
         candidate_table = self._expand_candidates_via_neighbor_overlap(
             candidate_table, extracted_entities, graph_context=graph_context
         )
+        _t_expand = time.monotonic()
+        wprint_info(f"[candidate_timing] expand neighbor overlap: {_t_expand - _t_neighbors:.3f}s")
+
         candidate_table = self._enrich_candidates_with_source_text(candidate_table)
+        _t_source = time.monotonic()
+        wprint_info(f"[candidate_timing] enrich source text: {_t_source - _t_expand:.3f}s")
+        wprint_info(f"[candidate_timing] TOTAL build_candidate_table: {_t_source - _t0:.3f}s")
 
         # Debug logging
         if self.entity_progress_verbose:
             self._log_candidate_summary(candidate_table, extracted_entities, projections)
 
+        # Structured alignment trace: candidate table summary
+        for idx, ee in enumerate(extracted_entities):
+            rows = candidate_table.get(idx, [])
+            top3 = "; ".join(
+                f"{r.get('name','?')}(fid={r.get('family_id','?')},score={r.get('combined_score',0):.3f},safe={r.get('merge_safe',True)})"
+                for r in rows[:3]
+            )
+            _dbg_struct("candidate_table_built",
+                        entity_name=ee["name"],
+                        n_candidates=len(rows),
+                        top3=top3)
+
         return candidate_table
 
     # ------------------------------------------------------------------
-    # Internal: embedding matrix
+    # Internal: Neo4j vector index top-K search
+    # ------------------------------------------------------------------
+
+    def _search_embedding_top_k(
+        self,
+        extracted_entities: List[Dict[str, str]],
+        name_embeddings,
+        full_embeddings,
+        top_k: int,
+    ) -> Tuple[Dict[int, Dict[str, float]], Dict[int, Dict[str, float]]]:
+        """Use Neo4j vector index to find top-K similar entities per extracted entity.
+
+        Returns:
+            (name_scores, full_scores) — each is {extracted_idx: {family_id: cosine_score}}
+        """
+        name_scores: Dict[int, Dict[str, float]] = {}
+        full_scores: Dict[int, Dict[str, float]] = {}
+
+        if not hasattr(self.storage, '_session'):
+            return name_scores, full_scores
+
+        for idx in range(len(extracted_entities)):
+            # Name-based search
+            if name_embeddings is not None:
+                query_emb = np.asarray(name_embeddings[idx] if name_embeddings.ndim == 1 or idx < len(name_embeddings) else None, dtype=np.float32)
+                if query_emb is not None and query_emb.size > 0:
+                    norm = np.linalg.norm(query_emb)
+                    if norm > 0:
+                        query_emb = query_emb / norm
+                    name_scores[idx] = self._neo4j_vector_search(query_emb.tolist(), top_k)
+
+            # Full text (name + content) search
+            if full_embeddings is not None:
+                query_emb = np.asarray(full_embeddings[idx] if full_embeddings.ndim == 1 or idx < len(full_embeddings) else None, dtype=np.float32)
+                if query_emb is not None and query_emb.size > 0:
+                    norm = np.linalg.norm(query_emb)
+                    if norm > 0:
+                        query_emb = query_emb / norm
+                    full_scores[idx] = self._neo4j_vector_search(query_emb.tolist(), top_k)
+
+        return name_scores, full_scores
+
+    def _neo4j_vector_search(self, query_vector: List[float], top_k: int) -> Dict[str, float]:
+        """Execute a single Neo4j vector index query, returning {family_id: score}."""
+        results = {}
+        try:
+            with self.storage._session() as session:
+                graph_id = getattr(self.storage, '_graph_id', 'default')
+                result = session.run(
+                    """
+                    CALL db.index.vector.queryNodes('entity_embedding', $k, $queryVector)
+                    YIELD node, score
+                    WHERE node.graph_id = $graph_id AND node.invalid_at IS NULL
+                    RETURN node.family_id AS family_id, score
+                    ORDER BY score DESC
+                    """,
+                    k=top_k,
+                    queryVector=query_vector,
+                    graph_id=graph_id,
+                )
+                for record in result:
+                    fid = record["family_id"]
+                    if fid:
+                        results[fid] = float(record["score"])
+        except Exception as e:
+            logger.debug("Neo4j vector search in alignment failed: %s", e)
+        return results
+
+    # ------------------------------------------------------------------
+    # Internal: embedding matrix (DEPRECATED — kept for fallback)
     # ------------------------------------------------------------------
 
     def _build_stored_embedding_matrix(self, projections: List[Dict]) -> Optional[np.ndarray]:
@@ -300,7 +406,7 @@ class EntityCandidateBuilder:
 
     def _build_rows_for_entity(
         self, idx, extracted_entity, projections,
-        stored_emb_matrix, name_sim_matrix, full_sim_matrix,
+        name_emb_scores: Dict[str, float], full_emb_scores: Dict[str, float],
         jaccard_threshold, embedding_name_threshold, embedding_full_threshold,
         ext_name_bigrams, ext_core_bigrams, proj_name_bigrams, proj_core_bigrams,
         ext_core_name: str = "",
@@ -326,8 +432,17 @@ class EntityCandidateBuilder:
                             ratio = ext_cl / proj_cl
                         else:
                             ratio = proj_cl / ext_cl
-                    substring_score = 0.65 + ratio * 0.30
-                    core_score = max(core_score, min(substring_score, 0.95))
+                        substring_score = 0.65 + ratio * 0.30
+                        core_score = max(core_score, min(substring_score, 0.95))
+                        name_match_type = "substring"
+                elif ext_cl == 1 and proj_cl >= 2 and ext_core in proj_core:
+                    # Single-char core name (e.g., "张" from "张教授"): allow
+                    # substring match with penalty (higher false-positive risk).
+                    # Score intentionally above jaccard_threshold so the candidate
+                    # is generated for LLM-based final decision.
+                    ratio = ext_cl / proj_cl
+                    substring_score = 0.60 + ratio * 0.15
+                    core_score = max(core_score, min(substring_score, 0.75))
                     name_match_type = "substring"
 
             # Exact core-name match
@@ -342,8 +457,9 @@ class EntityCandidateBuilder:
 
             lexical_score = max(lexical_score, core_score)
 
-            dense_name_score = float(name_sim_matrix[idx, j]) if name_sim_matrix is not None else 0.0
-            dense_full_score = float(full_sim_matrix[idx, j]) if full_sim_matrix is not None else 0.0
+            fid = projection["family_id"]
+            dense_name_score = name_emb_scores.get(fid, 0.0)
+            dense_full_score = full_emb_scores.get(fid, 0.0)
 
             if (
                 lexical_score >= jaccard_threshold
@@ -382,6 +498,7 @@ class EntityCandidateBuilder:
         jaccard_threshold: float,
     ) -> Dict[int, List[Dict[str, Any]]]:
         """Supplement candidate table with BM25 matches from the unified concepts table."""
+        _t0 = time.monotonic()
         if not extracted_entities:
             return candidate_table
 
@@ -444,6 +561,9 @@ class EntityCandidateBuilder:
         if not all_new_fids:
             return candidate_table
 
+        _t_bm25 = time.monotonic()
+        wprint_info(f"[candidate_timing] BM25 search: {_t_bm25 - _t0:.3f}s ({len(name_to_indices)} names)")
+
         fid_list = list(all_new_fids)
         entity_map = self.storage.get_entities_by_family_ids(fid_list)
         version_counts = self.storage.get_entity_version_counts(fid_list)
@@ -468,6 +588,9 @@ class EntityCandidateBuilder:
             rows.sort(key=lambda r: r["combined_score"], reverse=True)
             limit = self.max_alignment_candidates or self.max_similar_entities
             candidate_table[idx] = rows[:limit]
+
+        _t_fetch = time.monotonic()
+        wprint_info(f"[candidate_timing] BM25 entity fetch: {_t_fetch - _t_bm25:.3f}s ({len(fid_list)} fids)")
 
         return candidate_table
 
@@ -638,7 +761,7 @@ class EntityCandidateBuilder:
                         (j, i, _names[j], _names[i], core_i),
                         (i, j, _names[i], _names[j], core_j),
                     ]:
-                        existing = candidate_table.get(tgt_idx) or ()
+                        existing = candidate_table.get(tgt_idx) or []
                         already = any(
                             c.get("family_id") == f"__batch_{src_idx}"
                             for c in existing
@@ -929,7 +1052,7 @@ class EntityCandidateBuilder:
                     new_candidates.append({
                         "family_id": nfid,
                         "name": nname,
-                        "content": (_nc := neighbor_ent.content or "")[:200] if len(_nc) > 200 else _nc,
+                        "content": (neighbor_ent.content or "")[:200],
                         "source_document": neighbor_ent.source_document or "",
                         "version_count": version_counts_map.get(nfid, 0),
                         "entity": neighbor_ent,

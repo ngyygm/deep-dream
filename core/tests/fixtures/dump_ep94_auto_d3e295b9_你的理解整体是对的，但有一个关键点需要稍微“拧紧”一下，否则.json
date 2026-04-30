@@ -1,0 +1,580 @@
+{
+  "source_name": "auto_d3e295b9_你的理解整体是对的，但有一个关键点需要稍微“拧紧”一下，否则",
+  "entities": [
+    {
+      "name": "version lineage",
+      "content": "描述版本演进的逻辑链条,通过记录从当前版本到下一版本的递进关系,体现数据或概念随时间流逝的迭代轨迹。"
+    },
+    {
+      "name": "v → v",
+      "content": "代表版本间的演化过程,体现了从旧版本向新版本转换的动态逻辑,是版本继承与更新的核心路径。"
+    },
+    {
+      "name": "new concept",
+      "content": "指代系统中新出现的、尚未在既有版本中定义的独立语义单元,是触发新版本创建的初始标志。"
+    },
+    {
+      "name": "v1",
+      "content": "系统初始化的第一个版本节点,承载着新概念诞生时的基础属性信息,作为后续版本演进的基准起点。"
+    },
+    {
+      "name": "episode → concept",
+      "content": "描述具体事件与特定概念版本之间的映射关系,通过将新发生的剧情或信息片段关联至现有版本,实现信息的归档与对齐。"
+    },
+    {
+      "name": "变更判定层",
+      "content": "一种用于决策的逻辑机制,负责通过识别概念一致性与信息增量,来判断是应当更新现有内容还是触发新版本的生成。"
+    },
+    {
+      "name": "mutation gate",
+      "content": "一种新增的判定机制,旨在通过多步逻辑判断是否需要为现有概念创建新的版本,从而实现高效的信息管理。"
+    },
+    {
+      "name": "LLM 不只是判断“要不要更新 content”,而是先判断“要不要产生新版本”",
+      "content": "一种改进后的处理逻辑,通过先评估版本迭代必要性、再评估内容更新策略的二阶段流程,减少冗余数据的产生。"
+    },
+    {
+      "name": "alignment",
+      "content": "判定流程中的第一步,用于识别新输入的信息是否与既有概念属于同一个实体或范畴。"
+    },
+    {
+      "name": "mutation detection",
+      "content": "判定流程中的第二步,负责检测新输入的信息中是否包含了区别于当前版本的增量信息。"
+    },
+    {
+      "name": "content decision",
+      "content": "判定流程中的最终步骤,负责决定在确认需要更新后,具体应当如何执行内容的修改或填充。"
+    },
+    {
+      "name": "张三",
+      "content": "文中用于演示概念演进过程的示例角色,其职业与活动信息的变动驱动了版本迭代的逻辑演示。"
+    },
+    {
+      "name": "警察",
+      "content": "故事主角张三的初始职业身份,是该人物在版本更新初期所具备的基本属性。"
+    },
+    {
+      "name": "东京",
+      "content": "人物活动所处的地理位置,是后续版本中新增的关于人物空间维度的关键信息。"
+    },
+    {
+      "name": "办案",
+      "content": "人物正在进行的具体行为活动,在此过程中为人物的属性状态提供了新的信息输入。"
+    },
+    {
+      "name": "v2",
+      "content": "概念更新后的第二个版本,包含了职业信息以及新增的地理位置等更全面的属性集合。"
+    },
+    {
+      "name": "职业: 警察, 活动地: 东京",
+      "content": "于东京开展办案活动的警察,具有职业身份与特定的地理活动范围,在文本的叙事演进中作为核心概念实体的属性组成部分。"
+    },
+    {
+      "name": "继续调查案件",
+      "content": "属于小说情节中的特定行为片段,表现为人物动作的重复或延续。在版本演进逻辑中,该情节因未包含任何新增或冲突信息,被判定为无需触发版本更新的冗余事件。"
+    },
+    {
+      "name": "没有新信息",
+      "content": "指在处理新章节内容时,经判定后的信息增量为零,此时系统仅执行概念对齐,而不触发新版本的创建。"
+    },
+    {
+      "name": "episode3 → concept",
+      "content": "表示第三个情节片段在经过对齐检测后,由于不包含任何新增属性,直接指向并沿用既有的旧版本概念。"
+    },
+    {
+      "name": "辞职",
+      "content": "指人物职业身份发生的实质性变更,属于触发版本更新、产生新版本（v3）的关键冲突信息。"
+    },
+    {
+      "name": "冲突信息",
+      "content": "指新输入的文本内容与已有版本记录中存在矛盾或身份变化,是驱动系统进行版本迭代与状态更新的诱因。"
+    },
+    {
+      "name": "v3",
+      "content": "版本序列中的第三个版本,是在检测到职业变更等冲突信息后,由系统自动生成的包含最新属性的新状态。"
+    },
+    {
+      "name": "职业: 已辞职, 活动地: 东京",
+      "content": "小说人物张三的第三版属性状态,呈现其职业已由警察变为辞职状态,且活动范围维持在东京,是概念版本演进过程中的关键信息变更节点。"
+    },
+    {
+      "name": "冗余",
+      "content": "指在版本迭代过程中,由于缺乏变更判定而导致的无意义重复,即在信息未发生实质性变化时错误地创建了新的版本记录。"
+    },
+    {
+      "name": "Step 1: alignment",
+      "content": "变更判定层的第一阶段,用于识别当前输入的信息是否与已有概念在主体维度上保持一致,判断是否属于同一个基本概念。"
+    },
+    {
+      "name": "Step 2: mutation detection",
+      "content": "变更判定层的第二阶段,通过识别是否存在新增信息或属性变化,来决定是否需要通过产生新版本的方式来更新概念内容。"
+    },
+    {
+      "name": "Step 3: content decision",
+      "content": "变更判定层的最终阶段,负责根据前两步的检测结果,制定具体的更新策略,确定如何对概念的内容进行增删或改写。"
+    },
+    {
+      "name": "{职业: 警察, 活动地: 东京}",
+      "content": "描述了一个特定人物的初始属性状态,包含其职业身份为警察以及具体的活动地理位置为东京。"
+    },
+    {
+      "name": "{职业: 已辞职, 活动地: 东京}",
+      "content": "描述了人物职业状态发生变更后的属性信息,体现了其职业身份已由警察变为已辞职状态,但活动地点仍保持在东京。"
+    },
+    {
+      "name": "判断“要不要更新 content”",
+      "content": "在变更判定逻辑中属于决策的最终环节,用于决定如何对已有内容进行增量更新或修正。"
+    },
+    {
+      "name": "判断“要不要产生新版本”",
+      "content": "处于变更判定层的前置环节,通过识别是否存在实质性变更来决定是否需要为概念创建新的版本序列。"
+    },
+    {
+      "name": "对齐命中",
+      "content": "指新输入的片段与现有概念实例成功匹配,确认其指向的是同一个既有对象或概念。"
+    },
+    {
+      "name": "新增信息",
+      "content": "指在对齐既有概念后,新输入的片段中包含了原版本所未包含的新属性或新要素。"
+    },
+    {
+      "name": "行为重复",
+      "content": "指新输入的片段虽然指向同一对象,但其描述的内容与现有版本信息一致,未带来任何实质性的变更。"
+    },
+    {
+      "name": "职业变化",
+      "content": "指实体属性发生冲突或更迭的具体情况,这种信息变动会触发新版本的产生以反映最新的状态。"
+    },
+    {
+      "name": "职业",
+      "content": "用于标识角色身份属性的关键信息字段,其内容会随着剧情发展或突发事件发生变更,记录着角色从特定职业转变为其他状态的动态过程。"
+    }
+  ],
+  "relations": [
+    {
+      "entity1_name": "new concept",
+      "entity2_name": "v1",
+      "content": "新概念在系统初始化时触发并直接创建第一个版本v1"
+    },
+    {
+      "entity1_name": "mutation gate",
+      "entity2_name": "变更判定层",
+      "content": "mutation gate作为核心逻辑组件构成了系统的变更判定层"
+    },
+    {
+      "entity1_name": "Step 1: alignment",
+      "entity2_name": "mutation gate",
+      "content": "Step 1通过对齐检查来驱动mutation gate进行初步的变更识别"
+    },
+    {
+      "entity1_name": "Step 2: mutation detection",
+      "entity2_name": "mutation gate",
+      "content": "Step 2通过检测信息增量来驱动mutation gate执行变更判定"
+    },
+    {
+      "entity1_name": "Step 3: content decision",
+      "entity2_name": "mutation gate",
+      "content": "Step 3通过最终的内容决策来驱动mutation gate完成版本更新"
+    },
+    {
+      "entity1_name": "Step 1: alignment",
+      "entity2_name": "对齐命中",
+      "content": "Step 1执行对齐步骤后若匹配成功则触发对齐命中状态"
+    },
+    {
+      "entity1_name": "Step 2: mutation detection",
+      "entity2_name": "新增信息",
+      "content": "Step 2在检测过程中若发现新要素则判定为包含新增信息"
+    },
+    {
+      "entity1_name": "Step 2: mutation detection",
+      "entity2_name": "没有新信息",
+      "content": "Step 2在检测过程中若无新属性出现则判定为没有新信息"
+    },
+    {
+      "entity1_name": "Step 2: mutation detection",
+      "entity2_name": "行为重复",
+      "content": "通过检测信息增量来识别当前情节是否属于行为重复"
+    },
+    {
+      "entity1_name": "Step 3: content decision",
+      "entity2_name": "判断“要不要更新 content”",
+      "content": "该步骤执行逻辑判断以决定是否对现有内容进行更新"
+    },
+    {
+      "entity1_name": "Step 3: content decision",
+      "entity2_name": "判断“要不要产生新版本”",
+      "content": "该决策层通过分析信息变化来决定是否需要触发版本迭代"
+    },
+    {
+      "entity1_name": "张三",
+      "entity2_name": "警察",
+      "content": "张三在初始版本中被赋予了警察这一具体职业身份"
+    },
+    {
+      "entity1_name": "v1",
+      "entity2_name": "张三",
+      "content": "v1版本记录了张三作为警察的初始属性信息"
+    },
+    {
+      "entity1_name": "职业",
+      "entity2_name": "张三",
+      "content": "职业属性作为核心元数据描述了张三的人物特征"
+    },
+    {
+      "entity1_name": "v2",
+      "entity2_name": "张三",
+      "content": "v2版本通过增加东京活动地信息扩展了张三的属性"
+    },
+    {
+      "entity1_name": "{职业: 警察, 活动地: 东京}",
+      "entity2_name": "张三",
+      "content": "该结构化数据定义了张三在第二个阶段的具体状态"
+    },
+    {
+      "entity1_name": "v3",
+      "entity2_name": "张三",
+      "content": "v3版本通过记录辞职信息更新了张三的职业状态"
+    },
+    {
+      "entity1_name": "{职业: 已辞职, 活动地: 东京}",
+      "entity2_name": "张三",
+      "content": "该属性集描述了张三在版本更新后的最新身份状态。"
+    },
+    {
+      "entity1_name": "职业",
+      "entity2_name": "警察",
+      "content": "警察这一身份在版本v1中被赋予给张三。"
+    },
+    {
+      "entity1_name": "东京",
+      "entity2_name": "警察",
+      "content": "东京作为活动地点被关联到警察身份的张三身上。"
+    },
+    {
+      "entity1_name": "办案",
+      "entity2_name": "警察",
+      "content": "警察张三在东京执行办案任务并产生了位置变更。"
+    },
+    {
+      "entity1_name": "东京",
+      "entity2_name": "办案",
+      "content": "办案这一行为发生的地理空间具体位于东京。"
+    },
+    {
+      "entity1_name": "办案",
+      "entity2_name": "继续调查案件",
+      "content": "办案行为在后续情节中演变为对案件的持续调查。"
+    },
+    {
+      "entity1_name": "没有新信息",
+      "entity2_name": "继续调查案件",
+      "content": "继续调查案件的过程因缺乏新要素而未触发版本更新。"
+    },
+    {
+      "entity1_name": "继续调查案件",
+      "entity2_name": "行为重复",
+      "content": "继续调查案件的操作在逻辑上被判定为无增量的行为重复。"
+    },
+    {
+      "entity1_name": "v2",
+      "entity2_name": "继续调查案件",
+      "content": "v2版本承载了包含办案地点在内的所有调查案件信息。"
+    },
+    {
+      "entity1_name": "职业变化",
+      "entity2_name": "辞职",
+      "content": "职业变化这一核心冲突信息直接导致了主角最终辞职的行为发生。"
+    },
+    {
+      "entity1_name": "冲突信息",
+      "entity2_name": "辞职",
+      "content": "文本中关于职业状态的冲突信息触发了从警察变为已辞职的转变。"
+    },
+    {
+      "entity1_name": "v3",
+      "entity2_name": "辞职",
+      "content": "v3版本记录了主角因职业变动而产生的已经辞职的具体状态。"
+    },
+    {
+      "entity1_name": "冲突信息",
+      "entity2_name": "职业变化",
+      "content": "冲突信息通过识别职业变动来判断是否需要生成新的版本号。"
+    },
+    {
+      "entity1_name": "v3",
+      "entity2_name": "职业变化",
+      "content": "v3版本通过捕捉职业变化的冲突信息来完成从警察到辞职的更新。"
+    },
+    {
+      "entity1_name": "v3",
+      "entity2_name": "{职业: 已辞职, 活动地: 东京}",
+      "content": "承接了前序版本并集成了辞职这一新增的冲突信息。"
+    },
+    {
+      "entity1_name": "v2",
+      "entity2_name": "v3",
+      "content": "v3版本通过检测职业变动这一冲突信息,对v2版本进行了覆盖更新。"
+    },
+    {
+      "entity1_name": "v1",
+      "entity2_name": "v2",
+      "content": "v2版本通过识别东京办案的新增信息,在v1版本基础上进行了演进。"
+    },
+    {
+      "entity1_name": "v2",
+      "entity2_name": "新增信息",
+      "content": "v2版本通过提取办案地点的新增信息,完成了从v1到v2的版本迭代。"
+    },
+    {
+      "entity1_name": "v2",
+      "entity2_name": "没有新信息",
+      "content": "v2版本内容在后续判定中经检测不包含任何新增的属性或维度信息。"
+    },
+    {
+      "entity1_name": "v3",
+      "entity2_name": "冗余",
+      "content": "v3版本因其包含的信息与已有版本高度重合而被判定为无效的冗余版本。"
+    },
+    {
+      "entity1_name": "v3",
+      "entity2_name": "行为重复",
+      "content": "v3版本记录的内容仅是对既有情节或动作的简单重复而未触发版本迭代。"
+    },
+    {
+      "entity1_name": "v1",
+      "entity2_name": "v3",
+      "content": "v1版本作为初始状态,其属性信息在v3版本中发生了冲突性的变更。"
+    },
+    {
+      "entity1_name": "v → v",
+      "entity2_name": "v1",
+      "content": "版本迭代链条通过继承机制,将v1的初始属性延续并演化至后续版本。"
+    },
+    {
+      "entity1_name": "v → v",
+      "entity2_name": "v2",
+      "content": "版本序列通过lineage机制,将前代版本的信息传递并增量更新至v2。"
+    },
+    {
+      "entity1_name": "v → v",
+      "entity2_name": "v3",
+      "content": "版本演进链条通过mutation gate层,将变化后的新信息写入v3版本中。"
+    },
+    {
+      "entity1_name": "episode → concept",
+      "entity2_name": "episode3 → concept",
+      "content": "不同篇章通过建立映射关系,将各自的故事情节关联至对应的核心概念。"
+    },
+    {
+      "entity1_name": "episode3 → concept",
+      "entity2_name": "v2",
+      "content": "episode3通过对齐机制命中既有概念,并直接引用v2版本的已有属性。"
+    },
+    {
+      "entity1_name": "episode3 → concept",
+      "entity2_name": "v3",
+      "content": "episode3在判定不产生新信息后,被逻辑排除在v3版本的创建范围之外。"
+    },
+    {
+      "entity1_name": "Step 1: alignment",
+      "entity2_name": "alignment",
+      "content": "Step 1阶段通过执行alignment操作来确认当前episode是否属于同一概念。"
+    },
+    {
+      "entity1_name": "Step 2: mutation detection",
+      "entity2_name": "mutation detection",
+      "content": "Step 2阶段通过执行mutation detection逻辑来检测是否存在新信息输入。"
+    },
+    {
+      "entity1_name": "Step 2: mutation detection",
+      "entity2_name": "冲突信息",
+      "content": "Step 2阶段通过mutation detection识别并捕获与既有版本不符的冲突信息。"
+    },
+    {
+      "entity1_name": "判断“要不要产生新版本”",
+      "entity2_name": "判断“要不要更新 content”",
+      "content": "系统先执行判断“要不要产生新版本”来决定是否需要进一步执行判断“要不要更新 content”。"
+    },
+    {
+      "entity1_name": "content decision",
+      "entity2_name": "判断“要不要更新 content”",
+      "content": "content decision环节承接并执行判断“要不要更新 content”后的具体更新策略。"
+    },
+    {
+      "entity1_name": "content decision",
+      "entity2_name": "判断“要不要产生新版本”",
+      "content": "content decision基于判断“要不要产生新版本”的结果来决定如何调整现有内容。"
+    },
+    {
+      "entity1_name": "职业变化",
+      "entity2_name": "警察",
+      "content": "职业变化这一冲突信息直接修改了原版本中“警察”这一职业属性的状态。"
+    },
+    {
+      "entity1_name": "v2",
+      "entity2_name": "东京",
+      "content": "v2版本中记录了人物在东京这一特定地点的活动轨迹。"
+    },
+    {
+      "entity1_name": "{职业: 警察, 活动地: 东京}",
+      "entity2_name": "东京",
+      "content": "该职业描述通过设定东京作为活动地来界定其地理范围。"
+    },
+    {
+      "entity1_name": "{职业: 已辞职, 活动地: 东京}",
+      "entity2_name": "东京",
+      "content": "该实体状态下依然维持着在东京地区的地理位置关联。"
+    },
+    {
+      "entity1_name": "v2",
+      "entity2_name": "办案",
+      "content": "v2版本通过增加办案这一具体行为来扩充人物的活动细节。"
+    },
+    {
+      "entity1_name": "{职业: 警察, 活动地: 东京}",
+      "entity2_name": "办案",
+      "content": "警察身份在东京这一地点下执行具体的办案业务活动。"
+    },
+    {
+      "entity1_name": "没有新信息",
+      "entity2_name": "行为重复",
+      "content": "当情节仅涉及行为重复时,系统判定该情节没有产生新信息。"
+    },
+    {
+      "entity1_name": "v3",
+      "entity2_name": "没有新信息",
+      "content": "v3版本通过检测是否存在新信息来决定是否进行版本迭代。"
+    },
+    {
+      "entity1_name": "v2",
+      "entity2_name": "行为重复",
+      "content": "v2版本包含的办案内容在后续情节中表现为行为重复。"
+    },
+    {
+      "entity1_name": "冗余",
+      "entity2_name": "行为重复",
+      "content": "由于内容仅为行为重复,导致新版本产生了无意义的冗余。"
+    },
+    {
+      "entity1_name": "v3",
+      "entity2_name": "新增信息",
+      "content": "v3版本通过识别职业变化的冲突信息来承载新增信息。"
+    },
+    {
+      "entity1_name": "冲突信息",
+      "entity2_name": "新增信息",
+      "content": "冲突信息通过识别与新增信息之间的矛盾点,触发版本更新逻辑。"
+    },
+    {
+      "entity1_name": "新增信息",
+      "entity2_name": "职业变化",
+      "content": "新增信息中包含的属性变更内容,直接驱动了角色职业状态的变化。"
+    },
+    {
+      "entity1_name": "v3",
+      "entity2_name": "冲突信息",
+      "content": "v3版本通过整合冲突信息,修正了前序版本中错误的职业描述。"
+    },
+    {
+      "entity1_name": "东京",
+      "entity2_name": "冲突信息",
+      "content": "东京作为活动地信息,在冲突信息中与旧有的地理属性进行比对。"
+    },
+    {
+      "entity1_name": "{职业: 已辞职, 活动地: 东京}",
+      "entity2_name": "职业变化",
+      "content": "该状态通过识别职业从警察转为已辞职的过程,完成了职业变化记录。"
+    },
+    {
+      "entity1_name": "{职业: 警察, 活动地: 东京}",
+      "entity2_name": "职业变化",
+      "content": "该实体状态因检测到职业属性被覆盖,从而触发了职业变化的判定。"
+    },
+    {
+      "entity1_name": "{职业: 已辞职, 活动地: 东京}",
+      "entity2_name": "冲突信息",
+      "content": "该实体状态包含了与原警察身份相矛盾的冲突信息,导致版本升级。"
+    },
+    {
+      "entity1_name": "{职业: 警察, 活动地: 东京}",
+      "entity2_name": "新增信息",
+      "content": "该实体状态通过识别东京这一新增信息,实现了属性的增量更新。"
+    },
+    {
+      "entity1_name": "{职业: 警察, 活动地: 东京}",
+      "entity2_name": "对齐命中",
+      "content": "该实体状态通过与现有概念进行特征匹配,成功实现了对齐命中。"
+    },
+    {
+      "entity1_name": "mutation detection",
+      "entity2_name": "{职业: 已辞职, 活动地: 东京}",
+      "content": "通过检测是否存在新增信息,来触发该实体版本从v2向v3的更新。"
+    },
+    {
+      "entity1_name": "v1",
+      "entity2_name": "{职业: 警察, 活动地: 东京}",
+      "content": "作为初始版本,记录了该人物最初作为警察的身份状态。"
+    },
+    {
+      "entity1_name": "{职业: 警察, 活动地: 东京}",
+      "entity2_name": "职业",
+      "content": "在人物属性的演变过程中,经历了从警察到已辞职的职业变动。"
+    },
+    {
+      "entity1_name": "episode → concept",
+      "entity2_name": "v1",
+      "content": "episode通过提取其包含的核心信息,用于初始化或关联至特定版本的concept(v1)。"
+    },
+    {
+      "entity1_name": "v → v",
+      "entity2_name": "version lineage",
+      "content": "v → v 的迭代演进过程构成了 version lineage,体现了概念在信息变更时版本间的继承与演化逻辑。"
+    },
+    {
+      "entity1_name": "episode3 → concept",
+      "entity2_name": "继续调查案件",
+      "content": "episode3通过对齐命中既有概念,因缺乏新信息而仅关联至旧版本concept(v2)而不触发新版本创建"
+    },
+    {
+      "entity1_name": "Step 3: content decision",
+      "entity2_name": "content decision",
+      "content": "Step 3: content decision 是用于执行如何更新已有内容的具体决策步骤。"
+    },
+    {
+      "entity1_name": "v2",
+      "entity2_name": "{职业: 警察, 活动地: 东京}",
+      "content": "v2通过集成新信息（活动地:东京）而从v1版本演进而来,构成了概念版本在信息增量下的迭代。"
+    },
+    {
+      "entity1_name": "LLM 不只是判断“要不要更新 content”,而是先判断“要不要产生新版本”",
+      "entity2_name": "mutation gate",
+      "content": "LLM 通过执行“先判断是否产生新版本”的逻辑,构成了 mutation gate 中识别信息变更的核心判定机制。"
+    },
+    {
+      "entity1_name": "episode3 → concept",
+      "entity2_name": "张三",
+      "content": "episode3通过对齐机制指向了已存在的concept(v2),且因不含新信息而未触发新版本的创建。"
+    },
+    {
+      "entity1_name": "{职业: 已辞职, 活动地: 东京}",
+      "entity2_name": "辞职",
+      "content": "“辞职”这一新信息的加入,导致了该实体职业属性从“警察”变更为“已辞职”,触发了版本更新。"
+    },
+    {
+      "entity1_name": "{职业: 警察, 活动地: 东京}",
+      "entity2_name": "警察",
+      "content": "“{职业: 警察, 活动地: 东敬}”是由于“张三”在东京办案这一新信息加入,而生成的关于“警察”这一概念的更新版本。"
+    },
+    {
+      "entity1_name": "{职业: 已辞职, 活动地: 东京}",
+      "entity2_name": "{职业: 警察, 活动地: 东京}",
+      "content": "两者通过职业身份的变化构成版本演进关系,后者由于职业变动而成为前者的更新版本"
+    },
+    {
+      "entity1_name": "v3",
+      "entity2_name": "职业: 已辞职, 活动地: 东京",
+      "content": "v3版本通过识别职业变动这一冲突信息,承载了张三职业已辞职且活动地在东京的最新状态。"
+    }
+  ]
+}

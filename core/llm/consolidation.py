@@ -265,8 +265,15 @@ class _ConsolidationMixin:
 输出 ```json``` 代码块：
 {{"match_existing_id": "", "update_mode": "reuse_existing|merge_into_latest|create_new", "merged_name": "", "relations_to_create": [{{"family_id": "", "relation_content": ""}}], "confidence": 0.0}}"""
 
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt},
+        ]
+
         try:
-            result = self._parse_json_response(self._call_llm(prompt, system_prompt))
+            result, _ = self.call_llm_until_json_parses(
+                messages, parse_fn=self._parse_json_response, json_parse_retries=1,
+            )
             if not isinstance(result, dict):
                 raise ValueError("响应格式不正确")
             result.setdefault("match_existing_id", "")

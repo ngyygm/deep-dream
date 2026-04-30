@@ -1,0 +1,385 @@
+{
+  "source_name": "auto_1af299b1_那按照我的理解是，处理一个episode，它抽取出来的概念将",
+  "entities": [
+    {
+      "name": "episode",
+      "content": "文档处理的基本单元,通常指从长文本中切分出的特定片段或章节,是提取和更新概念信息的原始数据来源。"
+    },
+    {
+      "name": "对齐",
+      "content": "一种用于检测新抽取概念与现有知识库是否存在关联的校验过程,旨在识别新旧数据是否指向同一个逻辑实体。"
+    },
+    {
+      "name": "图谱",
+      "content": "存储和管理已识别概念的结构化知识库,通过关联已有数据来判断新提取信息是属于新概念还是现有概念的更新。"
+    },
+    {
+      "name": "概念版本",
+      "content": "随处理进度而产生的概念演进记录,记录了同一概念在不同处理阶段的状态,每个版本都可能包含增量或重复的信息。"
+    },
+    {
+      "name": "content",
+      "content": "承载具体描述性信息的文本内容,包含概念的属性与介绍,其更新逻辑取决于新旧信息的合并需求及判断结果。"
+    },
+    {
+      "name": "LLM判断",
+      "content": "利用大语言模型执行的逻辑决策过程,用于决定在概念对齐后,是否需要对具体的描述性内容进行更新或维持原状。"
+    },
+    {
+      "name": "git形式",
+      "content": "一种用于处理概念内容更新的数据合并机制,通过将既有内容与当前提取的新内容进行整合,实现数据的版本化管理。"
+    },
+    {
+      "name": "合并更新",
+      "content": "一种数据处理策略,当识别到新提取的概念与已有概念一致时,通过将新旧内容进行融合,从而为新版本概念赋予完整信息。"
+    },
+    {
+      "name": "全新概念",
+      "content": "指在知识图谱对齐过程中,经识别发现不与现有知识库中任何已知数据重合的新增知识条目。"
+    },
+    {
+      "name": "500字切分",
+      "content": "一种针对长文本（如小说）的处理手段,通过将长篇内容拆解为固定长度的片段,以便于进行分章节或分段落的序列化处理。"
+    },
+    {
+      "name": "主角",
+      "content": "在文本序列中持续出现并随剧情推进产生多个版本记录的核心人物实体,其属性信息会随着不同文本片段的读取而演变。"
+    },
+    {
+      "name": "增量更新",
+      "content": "指在概念版本迭代过程中,仅将每个新片段中引入的新信息叠加到原有属性中,使概念内容随阅读进程不断扩充的过程。"
+    },
+    {
+      "name": "已存在概念",
+      "content": "知识图谱中已经存储的、经过对齐识别后的既有知识单元,是后续版本更新或直接沿用的基础数据节点。"
+    },
+    {
+      "name": "更新版",
+      "content": "在处理新片段时,针对已有概念进行的迭代版本,其内容可能基于原数据进行直接复制、合并或增量更新。"
+    },
+    {
+      "name": "复制",
+      "content": "一种处理逻辑,指在对齐发现概念一致时,不改变原有内容,直接沿用旧版本数据结构的操作方式。"
+    },
+    {
+      "name": "小说",
+      "content": "作为数据处理的原始文本来源,其长文本会被切分为多个片段,用于提取并构建演进式的概念版本。"
+    },
+    {
+      "name": "介绍属性",
+      "content": "概念所携带的具体描述性内容,其特征在于随处理进度的不同,可能会保持不变或发生增量式的更新。"
+    },
+    {
+      "name": "信息",
+      "content": "在文本处理过程中新引入的、用于扩充或改变概念描述内容的增量数据要素。"
+    },
+    {
+      "name": "数据",
+      "content": "指在概念对齐过程中需要进行比对、更新或合并的原始信息,包括概念的具体内容及其版本属性,其更新逻辑受大模型判断及增量合并机制的影响。"
+    },
+    {
+      "name": "第三个episode",
+      "content": "文本处理的后续片段,其提取的概念版本是基于前两个片段累积而成的,代表了概念在处理流程中随文本推进而产生的最新演变状态。"
+    },
+    {
+      "name": "第一个episode",
+      "content": "文本处理的初始片段,用于提取初步的概念信息,并作为后续片段中相同概念版本的基础,记录了概念最初出现的属性与内容。"
+    },
+    {
+      "name": "第二个episode",
+      "content": "文本处理的中间片段,其包含的概念信息会与前序片段进行对齐,通过识别是否存在同类概念来实现属性的延续、复制或增量更新。"
+    }
+  ],
+  "relations": [
+    {
+      "entity1_name": "episode",
+      "entity2_name": "对齐",
+      "content": "通过对齐操作来识别当前episode抽取的概念是否与现有图谱数据匹配"
+    },
+    {
+      "entity1_name": "图谱",
+      "entity2_name": "对齐",
+      "content": "利用对齐机制在图谱中检索是否存在与新抽取概念语义一致的已有数据"
+    },
+    {
+      "entity1_name": "对齐",
+      "entity2_name": "已存在概念",
+      "content": "对齐过程旨在检测新提取的信息是否能够映射到图谱中已存在的概念"
+    },
+    {
+      "entity1_name": "全新概念",
+      "entity2_name": "对齐",
+      "content": "当对齐操作无法在现有数据中找到匹配项时,判定该概念为全新概念"
+    },
+    {
+      "entity1_name": "已存在概念",
+      "entity2_name": "概念版本",
+      "content": "已存在概念在处理不同episode时会产生并演进出多个不同的概念版本"
+    },
+    {
+      "entity1_name": "已存在概念",
+      "entity2_name": "更新版",
+      "content": "通过识别新信息来触发已存在概念向更新版进行合并或覆盖的操作"
+    },
+    {
+      "entity1_name": "更新版",
+      "entity2_name": "概念版本",
+      "content": "更新版作为概念版本序列中的后续成员,承载了该概念最新的状态信息"
+    },
+    {
+      "entity1_name": "content",
+      "entity2_name": "概念版本",
+      "content": "content内容根据LLM判断结果,决定是否同步更新至新的概念版本中"
+    },
+    {
+      "entity1_name": "LLM判断",
+      "entity2_name": "概念版本",
+      "content": "利用LLM判断新提取的content是否需要合并更新到当前的某个概念版本"
+    },
+    {
+      "entity1_name": "介绍属性",
+      "entity2_name": "概念版本",
+      "content": "概念版本的介绍属性可能保持不变,也可能随episode处理而发生增量更新"
+    },
+    {
+      "entity1_name": "增量更新",
+      "entity2_name": "概念版本",
+      "content": "通过引入新信息的方式,使已有的概念版本产生内容上的变动。"
+    },
+    {
+      "entity1_name": "概念版本",
+      "entity2_name": "第一个episode",
+      "content": "该版本记录了从第一个episode中提取出的初始概念特征。"
+    },
+    {
+      "entity1_name": "概念版本",
+      "entity2_name": "第二个episode",
+      "content": "该版本承接了来自第二个episode中关联概念的新增信息。"
+    },
+    {
+      "entity1_name": "概念版本",
+      "entity2_name": "第三个episode",
+      "content": "该版本通过对第三个episode中新属性的捕获而生成更新。"
+    },
+    {
+      "entity1_name": "合并更新",
+      "entity2_name": "更新版",
+      "content": "将旧的content与当前episode提取的内容按git形式进行合并操作。"
+    },
+    {
+      "entity1_name": "复制",
+      "entity2_name": "更新版",
+      "content": "当判定无需修改时,直接将原有的内容数据完整克隆至新版本。"
+    },
+    {
+      "entity1_name": "增量更新",
+      "entity2_name": "更新版",
+      "content": "在原有概念基础上,仅针对新提取到的属性信息进行增量改写。"
+    },
+    {
+      "entity1_name": "git形式",
+      "entity2_name": "更新版",
+      "content": "利用类似于git的逻辑,对现有内容与新内容进行差异化合并。"
+    },
+    {
+      "entity1_name": "content",
+      "entity2_name": "更新版",
+      "content": "决定了更新版中存储的具体文本描述或属性信息的实质内容。"
+    },
+    {
+      "entity1_name": "数据",
+      "entity2_name": "更新版",
+      "content": "从当前episode中提取并用于填充或更新概念版本的数据内容。"
+    },
+    {
+      "entity1_name": "信息",
+      "entity2_name": "更新版",
+      "content": "通过逐个episode的提取,将新获取的描述信息填充至概念的更新版本中"
+    },
+    {
+      "entity1_name": "git形式",
+      "entity2_name": "合并更新",
+      "content": "利用类似git的差异化比对逻辑,对已有content与新content执行合并操作"
+    },
+    {
+      "entity1_name": "content",
+      "entity2_name": "合并更新",
+      "content": "在识别到重复概念时,将当前episode提取的content与旧版内容进行合并更新"
+    },
+    {
+      "entity1_name": "合并更新",
+      "entity2_name": "增量更新",
+      "content": "当每个episode引入新信息时,合并更新的过程实质上完成了数据的增量更新"
+    },
+    {
+      "entity1_name": "content",
+      "entity2_name": "数据",
+      "content": "content作为核心载体,存储并承载了从episode中抽取出来的具体概念数据"
+    },
+    {
+      "entity1_name": "content",
+      "entity2_name": "信息",
+      "content": "content的内容随episode的推进,不断累加并承载着关于概念的新增信息"
+    },
+    {
+      "entity1_name": "content",
+      "entity2_name": "介绍属性",
+      "content": "content内部的文本描述详细记录了该概念所属的各项介绍属性"
+    },
+    {
+      "entity1_name": "500字切分",
+      "entity2_name": "content",
+      "content": "通过对长文进行500字切分,为每一个切分后的片段生成对应的独立content"
+    },
+    {
+      "entity1_name": "LLM判断",
+      "entity2_name": "content",
+      "content": "利用LLM判断逻辑来决定在对齐概念后,是否需要对原有的content进行更新"
+    },
+    {
+      "entity1_name": "500字切分",
+      "entity2_name": "小说",
+      "content": "将长篇小说按500字的固定长度进行物理切分,以构建处理用的episode序列"
+    },
+    {
+      "entity1_name": "主角",
+      "entity2_name": "小说",
+      "content": "主角作为核心人物存在于被切分为多个片段的小说文本之中。"
+    },
+    {
+      "entity1_name": "主角",
+      "entity2_name": "介绍属性",
+      "content": "主角的介绍属性随处理进度的不同而产生内容更新或保持不变。"
+    },
+    {
+      "entity1_name": "主角",
+      "entity2_name": "第一个episode",
+      "content": "主角在第一个episode片段中首次被提取并生成初始版本。"
+    },
+    {
+      "entity1_name": "主角",
+      "entity2_name": "第二个episode",
+      "content": "主角在第二个episode片段中被再次提及并触发版本更新。"
+    },
+    {
+      "entity1_name": "主角",
+      "entity2_name": "第三个episode",
+      "content": "主角在第三个episode片段中被识别并与前序版本进行内容合并。"
+    },
+    {
+      "entity1_name": "第一个episode",
+      "entity2_name": "第二个episode",
+      "content": "第一个episode提取的概念通过对齐操作与第二个episode产生关联。"
+    },
+    {
+      "entity1_name": "第三个episode",
+      "entity2_name": "第二个episode",
+      "content": "第三个episode的概念通过Git形式的合并逻辑与第二个episode更新。"
+    },
+    {
+      "entity1_name": "已存在概念",
+      "entity2_name": "数据",
+      "content": "已存在概念通过对齐操作识别并接收来自新episode的增量数据。"
+    },
+    {
+      "entity1_name": "图谱",
+      "entity2_name": "已存在概念",
+      "content": "图谱通过对齐逻辑检索并匹配其中已经存储的既有概念数据。"
+    },
+    {
+      "entity1_name": "全新概念",
+      "entity2_name": "已存在概念",
+      "content": "全新概念通过对齐检查发现无法匹配任何已存在的概念节点。"
+    },
+    {
+      "entity1_name": "概念版本",
+      "entity2_name": "episode",
+      "content": "每一个概念版本都通过建立索引的方式连接到其对应的特定episode。"
+    },
+    {
+      "entity1_name": "更新版",
+      "entity2_name": "episode",
+      "content": "当通过对齐发现重复概念时,系统会为该episode生成一个新的概念版本。"
+    },
+    {
+      "entity1_name": "信息",
+      "entity2_name": "增量更新",
+      "content": "当每个episode引入主角的新信息时,会触发概念版本的增量更新动作。"
+    },
+    {
+      "entity1_name": "增量更新",
+      "entity2_name": "数据",
+      "content": "增量更新通过累加新提取的信息,实现对原有概念数据内容的持续扩充。"
+    },
+    {
+      "entity1_name": "合并更新",
+      "entity2_name": "已存在概念",
+      "content": "系统采用git形式将当前content与已存在概念的旧内容进行合并操作。"
+    },
+    {
+      "entity1_name": "content",
+      "entity2_name": "git形式",
+      "content": "系统利用git形式的逻辑,对新旧content进行冲突检测与内容合并。"
+    },
+    {
+      "entity1_name": "500字切分",
+      "entity2_name": "episode",
+      "content": "通过将小说长文进行500字切分,从而构造出连续的多个episode单元。"
+    },
+    {
+      "entity1_name": "对齐",
+      "entity2_name": "数据",
+      "content": "通过对齐操作,识别出图谱中已存在的数据是否与当前提取的概念重复。"
+    },
+    {
+      "entity1_name": "图谱",
+      "entity2_name": "数据",
+      "content": "图谱作为存储容器,承载并维护着所有已识别和对齐后的概念数据。"
+    },
+    {
+      "entity1_name": "git形式",
+      "entity2_name": "已存在概念",
+      "content": "系统使用git形式的合并机制,将新提取的内容注入到已存在的概念中。"
+    },
+    {
+      "entity1_name": "介绍属性",
+      "entity2_name": "更新版",
+      "content": "介绍属性在概念对齐后会根据新提取的信息进行版本更新"
+    },
+    {
+      "entity1_name": "合并更新",
+      "entity2_name": "episode",
+      "content": "将当前episode提取的概念内容与原有内容进行git式合并"
+    },
+    {
+      "entity1_name": "git形式",
+      "entity2_name": "episode",
+      "content": "利用git形式对episode中提取的新旧content进行差异化合并"
+    },
+    {
+      "entity1_name": "复制",
+      "entity2_name": "已存在概念",
+      "content": "当识别到已存在概念时,直接复制其既有属性而不进行修改"
+    },
+    {
+      "entity1_name": "content",
+      "entity2_name": "复制",
+      "content": "若判定无需更新,则直接将原有的content内容进行原样复制"
+    },
+    {
+      "entity1_name": "增量更新",
+      "entity2_name": "content",
+      "content": "每个episode引入新信息时,会对原有content进行增量式更新"
+    },
+    {
+      "entity1_name": "主角",
+      "entity2_name": "episode",
+      "content": "主角概念在不同的episode处理过程中会产生多个演进版本"
+    },
+    {
+      "entity1_name": "主角",
+      "entity2_name": "content",
+      "content": "主角对应的content内容随episode处理过程发生更新或保持不变"
+    }
+  ]
+}

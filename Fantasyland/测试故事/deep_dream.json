@@ -1,0 +1,5 @@
+{
+  "base_url": "http://localhost:16200/api/v1",
+  "graph_id": "novel_test_story",
+  "note": "测试用工作空间，验证 Deep-Dream 连接和基本操作"
+}

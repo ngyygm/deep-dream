@@ -14,7 +14,7 @@ class DeepDreamError(Exception):
 
 
 class StorageError(DeepDreamError):
-    """存储层异常（SQLite、文件 I/O）。"""
+    """存储层异常（Neo4j、文件 I/O）。"""
 
 
 class LLMError(DeepDreamError):

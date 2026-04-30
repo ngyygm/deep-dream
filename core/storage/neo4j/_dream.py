@@ -88,7 +88,7 @@ class DreamMixin:
         return pairs[:count * 2]
 
     # ------------------------------------------------------------------
-    # Dream candidate filtering (mirrors SQLite RelationStoreMixin)
+    # Dream candidate filtering
     # ------------------------------------------------------------------
 
 

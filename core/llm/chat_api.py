@@ -139,6 +139,7 @@ def ollama_chat(
     think: bool = False,
     timeout: int = 300,
     num_predict: Optional[int] = None,
+    json_format: bool = False,
 ) -> OllamaChatResponse:
     """Ollama 非流式 chat（原生 /api/chat 接口）。"""
     payload = {
@@ -147,6 +148,8 @@ def ollama_chat(
         "stream": False,
         "think": think,
     }
+    if json_format:
+        payload["format"] = "json"
     if num_predict is not None:
         payload["num_predict"] = num_predict
     req = request.Request(

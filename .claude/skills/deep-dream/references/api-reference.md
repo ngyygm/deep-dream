@@ -22,10 +22,11 @@
 12. [社区检测 (Neo4j)](#12-社区检测-neo4j)
 13. [Episode (Neo4j)](#13-episode-neo4j)
 14. [实体邻居 (Neo4j)](#14-实体邻居-neo4j)
-15. [图谱管理](#15-图谱管理)
-16. [文档管理](#16-文档管理)
-17. [Chat 会话](#17-chat-会话)
-18. [系统监控](#18-系统监控)
+15. [Concepts 统一概念查询](#15-concepts-统一概念查询)
+16. [图谱管理](#16-图谱管理)
+17. [文档管理](#17-文档管理)
+18. [Chat 会话](#18-chat-会话)
+19. [系统监控](#19-系统监控)
 
 ---
 
@@ -309,6 +310,11 @@ Embedding 向量预览。
 
 **Body**: `{family_ids: [...]}`
 
+### PUT /find/entities/<family_id>/confidence
+手动设置实体置信度。
+
+**Body**: `{confidence(必填, 0.0-1.0)}`
+
 ---
 
 ## 5. 关系接口
@@ -380,6 +386,11 @@ Embedding 预览。
 重定向关系端点。
 
 **Body**: `{graph_id, family_id(必填), side(必填:"entity1"/"entity2"), new_family_id(必填)}`
+
+### PUT /find/relations/<family_id>/confidence
+手动设置关系置信度。
+
+**Body**: `{confidence(必填, 0.0-1.0)}`
 
 ---
 
@@ -499,6 +510,28 @@ Episode 详情。
 
 **Body**: `{content(必填), entities_examined, relations_created, strategy_used, dream_cycle_id}`
 
+### GET /dream/candidates
+列出 Dream 候选层关系。
+
+**Query**: `limit(默认50), offset, status(hypothesized/verified/rejected)`
+
+**返回**: `{relations: [...], total, offset, limit}`
+
+### POST /dream/candidates/<family_id>/promote
+将候选关系提升为已验证状态。
+
+**Body**: `{evidence_source(默认"manual"), confidence(可选)}`
+
+### POST /dream/candidates/<family_id>/demote
+将候选关系降级为已拒绝状态。
+
+**Body**: `{reason(可选)}`
+
+### POST /dream/candidates/corroborate
+佐证检查：验证两实体间是否有证据支撑候选关系。
+
+**Body**: `{entity1_family_id(必填), entity2_family_id(必填)}`
+
 ---
 
 ## 11. Agent 智能接口
@@ -582,7 +615,60 @@ aspect: summary / relations / timeline / contradictions
 
 ---
 
-## 15. 图谱管理
+## 15. Concepts 统一概念查询
+
+### POST /concepts/search
+统一概念搜索（可选 role 过滤，支持 semantic/bm25/hybrid 模式）。需要 Neo4j 后端。
+
+**Body**:
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+|---|---|---|---|---|
+| query | string | 是 | - | 搜索文本 |
+| role | string | 否 | - | entity/relation/observation |
+| limit | int | 否 | 20 | 上限100 |
+| threshold | float | 否 | 0.5 | 相似度阈值 |
+| search_mode | string | 否 | bm25 | semantic/bm25/hybrid |
+| time_point | ISO8601 | 否 | - | 时间点过滤 |
+
+### GET /concepts
+列出概念（分页 + 可选 role 过滤）。
+
+**Query**: `role, limit(默认50,上限100), offset, time_point`
+
+### GET /concepts/<family_id>
+获取概念（任意角色，按 family_id）。
+
+**Query**: `time_point(可选)`
+
+### GET /concepts/<family_id>/neighbors
+获取概念邻居（跨角色图遍历）。
+
+**Query**: `max_depth(默认1,上限3), time_point(可选)`
+
+### GET /concepts/<family_id>/provenance
+概念溯源：返回所有提及此概念的 observation。
+
+### POST /concepts/traverse
+BFS 遍历概念图。
+
+**Body**:
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+|---|---|---|---|---|
+| start_family_ids | array | 是 | - | 起始概念 ID 列表 |
+| max_depth | int | 否 | 2 | 上限5 |
+| time_point | ISO8601 | 否 | - | 时间点过滤 |
+
+### GET /concepts/<family_id>/mentions
+获取提及此概念的所有 Episode。
+
+### GET /concepts/duplicates
+检测潜在重复实体（按名称规范化分组）。
+
+**Query**: `limit(默认500,上限2000)`
+
+---
+
+## 16. 图谱管理
 
 ### GET /graphs
 列出所有图谱。
@@ -596,7 +682,7 @@ aspect: summary / relations / timeline / contradictions
 
 ---
 
-## 16. 文档管理
+## 17. 文档管理
 
 ### GET /docs
 列出文档。
@@ -610,7 +696,7 @@ aspect: summary / relations / timeline / contradictions
 
 ---
 
-## 17. Chat 会话
+## 18. Chat 会话
 
 ### GET /chat/sessions
 列出会话。
@@ -620,7 +706,7 @@ aspect: summary / relations / timeline / contradictions
 ### POST /chat/sessions
 创建会话。
 
-**Body**: `{graph_id(默认default), title}`
+**Body**: `{title, graph_id}`
 
 ### GET /chat/sessions/<sid>
 获取详情。
@@ -636,17 +722,14 @@ aspect: summary / relations / timeline / contradictions
 ### POST /chat/sessions/<sid>/close
 关闭（保留历史，终止进程）。
 
-### GET /chat/sessions/<sid>/messages
-消息历史。
-
 ### POST /chat/sessions/<sid>/stream
 发送消息（SSE 流式）。
 
-**Body**: `{message(必填), attachments?}`
+**Body**: `{message}`
 
 ---
 
-## 18. 系统监控
+## 19. 系统监控
 
 ### GET /system/dashboard
 仪表盘（合并端点）。

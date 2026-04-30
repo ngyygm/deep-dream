@@ -91,7 +91,10 @@ def find_episode_doc(cache_id: str):
         doc_hash = processor.storage.get_doc_hash_by_cache_id(cache_id)
         if not doc_hash:
             return err(f"未找到文档: {cache_id}", 404)
-        content = processor.storage.get_doc_content(doc_hash)
+        doc_dir = processor.storage.get_doc_dir(doc_hash)
+        if not doc_dir:
+            return err("文档目录不存在", 404)
+        content = processor.storage.get_doc_content(doc_dir.name)
         if content is None:
             return err("文档内容不存在", 404)
         # 不返回 meta 中的大文本字段
@@ -161,7 +164,7 @@ def batch_ingest_episodes():
             )
             episode_objects.append(mc)
         if episode_objects:
-            # Use bulk save for Neo4j, fallback to loop for SQLite
+            # Use bulk save for Neo4j
             if hasattr(processor.storage, 'bulk_save_episodes'):
                 processor.storage.bulk_save_episodes(episode_objects)
             else:
@@ -241,7 +244,7 @@ def list_episodes():
     try:
         processor = _get_processor()
         if not hasattr(processor.storage, 'list_episodes'):
-            return err("此功能需要 Neo4j 或 SQLite 后端", 400)
+            return err("此功能需要 Neo4j 后端", 400)
         limit = min(max(int(request.args.get('limit', 20)), 1), 100)
         offset = max(int(request.args.get('offset', 0)), 0)
         include_text = request.args.get('include_text', '0') in ('1', 'true')
@@ -258,7 +261,7 @@ def get_episode(uuid: str):
     try:
         processor = _get_processor()
         if not hasattr(processor.storage, 'get_episode'):
-            return err("此功能需要 Neo4j 或 SQLite 后端", 400)
+            return err("此功能需要 Neo4j 后端", 400)
         episode = processor.storage.get_episode(uuid)
         if episode is None:
             return err("Episode 不存在", 404)
@@ -273,7 +276,7 @@ def get_episode_entities(uuid: str):
     try:
         processor = _get_processor()
         if not hasattr(processor.storage, 'get_episode_entities'):
-            return err("此功能需要 Neo4j 或 SQLite 后端", 400)
+            return err("此功能需要 Neo4j 后端", 400)
         entities = processor.storage.get_episode_entities(uuid)
         return ok({"entities": entities})
     except Exception as e:
@@ -335,7 +338,9 @@ def list_docs():
                 "processed_time": d.get("processed_time"),
                 "activity_type": d.get("activity_type", ""),
                 "text_length": d.get("text_length", 0),
-                "filename": d.get("filename", ""),
+                "original_size": d.get("original_size", 0),
+                "cache_size": d.get("cache_size", 0),
+                "filename": d.get("dir_name", ""),
             })
         return ok({"docs": result, "count": len(result)})
     except Exception as e:

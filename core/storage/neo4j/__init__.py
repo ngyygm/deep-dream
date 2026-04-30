@@ -1,10 +1,7 @@
-"""Neo4jStorageManager: Neo4j + sqlite-vec 混合存储后端。
+"""Neo4jStorageManager: 基于 Neo4j 的图存储后端。
 
-借鉴 Graphiti (Zep) 的分层节点架构：
-    Neo4j       → 图结构存储（Entity / Relation / Episode 节点及边）
-    sqlite-vec  → embedding 向量存储与 KNN 搜索
-
-与 StorageManager 保持完全相同的公共接口，可作为 drop-in replacement。
+所有数据（图结构 + embedding 向量 + 向量索引）统一存储在 Neo4j 中。
+使用 Neo4j 5.11+ 原生 HNSW 向量索引进行语义搜索。
 """
 
 
@@ -16,7 +13,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..cache import QueryCache
-from ..vector_store import VectorStore
 
 # Shared helpers (constants + pure functions used by mixins)
 from ._helpers import (  # noqa: F401 — re-exported for backward compat
@@ -48,9 +44,9 @@ logger = logging.getLogger(__name__)
 
 class Neo4jStorageManager(Neo4jBaseMixin, EntityStoreMixin, RelationStoreMixin, EpisodeStoreMixin, SearchMixin, StatsMixin, GraphTraversalMixin, CommunityMixin, DreamMixin, ConceptMixin):
 
-    """Neo4j + sqlite-vec 混合存储管理器。
+    """Neo4j 存储管理器。
 
-    实现与 StorageManager 完全相同的公共接口，用于替代 SQLite 后端。
+    所有数据统一存储在 Neo4j 中，包括 embedding 向量和 HNSW 向量索引。
 
     Usage:
         sm = Neo4jStorageManager(
@@ -139,11 +135,8 @@ class Neo4jStorageManager(Neo4jBaseMixin, EntityStoreMixin, RelationStoreMixin, 
         self._emb_cache_ttl: float = 5.0
         self._emb_cache_max_size: int = 10000  # Max entities to cache in memory
 
-        # sqlite-vec 向量存储
-        self._vector_store = VectorStore(
-            str(self.storage_path / "vectors.db"),
-            dim=vector_dim,
-        )
+        # 向量维度（用于创建 HNSW 索引）
+        self._vector_dim = vector_dim
 
         # 初始化 Neo4j 约束和索引
         self._init_schema()
@@ -302,6 +295,25 @@ class Neo4jStorageManager(Neo4jBaseMixin, EntityStoreMixin, RelationStoreMixin, 
                 except Exception as e:
                     logger.debug("Performance index creation skipped: %s", e)
 
+            # 向量索引 — HNSW (Neo4j 5.11+)
+            vector_dim = self._vector_dim
+            vector_indexes = [
+                ("entity_embedding",
+                 "CREATE VECTOR INDEX entity_embedding IF NOT EXISTS "
+                 "FOR (e:Entity) ON (e.embedding) "
+                 "OPTIONS {indexConfig: {'vector.dimensions': $dim, 'vector.similarity_function': 'cosine'}}"),
+                ("relation_embedding",
+                 "CREATE VECTOR INDEX relation_embedding IF NOT EXISTS "
+                 "FOR (r:Relation) ON (r.embedding) "
+                 "OPTIONS {indexConfig: {'vector.dimensions': $dim, 'vector.similarity_function': 'cosine'}}"),
+            ]
+            for idx_name, idx_cypher in vector_indexes:
+                try:
+                    session.run(idx_cypher, dim=vector_dim)
+                    logger.info("Vector index %s created (dim=%d)", idx_name, vector_dim)
+                except Exception as e:
+                    logger.warning("Vector index %s creation failed: %s", idx_name, e)
+
 
     def migrate_to_concepts(self):
         """Add :Concept label and role property to all existing nodes (idempotent).
@@ -361,28 +373,27 @@ class Neo4jStorageManager(Neo4jBaseMixin, EntityStoreMixin, RelationStoreMixin, 
                 continue
             dirname = doc_dir.name
             # Build reverse map: extract doc_hash from dirname
-            # dirname is either "doc_hash" or "prefix_doc_hash"
             if "_" in dirname:
                 _hash_part = dirname.rpartition("_")[2]
             else:
                 _hash_part = dirname
             if _hash_part and len(_hash_part) >= 8:
                 self._doc_hash_to_dirname[_hash_part] = dirname
+            # Build cache_id → doc_hash from meta.json
             meta_path = doc_dir / "meta.json"
             if meta_path.exists():
                 try:
                     meta = json.loads(meta_path.read_text(encoding="utf-8"))
-                    cache_id = meta.get("absolute_id") or meta.get("id")
-                    if cache_id:
-                        self._id_to_doc_hash[cache_id] = dirname
-                except Exception as e:
-                    logger.debug("Failed to read doc meta.json: %s", e)
-
+                    cache_id = meta.get("absolute_id")
+                    doc_hash = meta.get("doc_hash")
+                    if cache_id and doc_hash:
+                        self._id_to_doc_hash[cache_id] = doc_hash
+                except Exception:
+                    pass
 
     def close(self):
-        """关闭 Neo4j 驱动和向量存储连接。"""
+        """关闭 Neo4j 驱动。"""
         try:
             self._driver.close()
         except Exception as e:
             logger.warning("Error closing Neo4j driver: %s", e)
-        self._vector_store.close()

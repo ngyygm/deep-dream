@@ -459,8 +459,8 @@ class ConceptMixin:
     def search_concepts_by_similarity(self, query_text: str, role: str = None,
                                    threshold: float = 0.5, max_results: int = 20,
                                    time_point: str = None) -> List[dict]:
-        """概念语义搜索：搜索 entity_vectors + relation_vectors sqlite-vec 表，
-        然后从 Neo4j 批量获取匹配的 Concept 节点。
+        """概念语义搜索：使用 Neo4j HNSW 向量索引搜索 Entity 和 Relation 节点，
+        然后批量获取匹配的 Concept 节点。
 
         Args:
             query_text: 查询文本
@@ -480,98 +480,80 @@ class ConceptMixin:
         if query_embedding is None:
             return []
 
-        query_emb = np.asarray(
-            query_embedding[0] if isinstance(query_embedding, (list, np.ndarray)) else query_embedding,
-            dtype=np.float32
-        )
+        query_emb = np.asarray(query_embedding, dtype=np.float32)
+        if query_emb.ndim > 1:
+            query_emb = query_emb[0]
         norm = np.linalg.norm(query_emb)
         if norm > 0:
             query_emb = query_emb / norm
 
-        # 2. Determine which vector tables to search based on role
-        tables = []
+        # 2. Determine which vector indexes to search based on role
+        indexes = []
         fallback_to_bm25 = False
         if role is None:
-            tables = ["entity_vectors", "relation_vectors"]
-            # observation has no vector table — always supplement with BM25
+            indexes = ["entity_embedding", "relation_embedding"]
             fallback_to_bm25 = True
         elif role == "entity":
-            tables = ["entity_vectors"]
+            indexes = ["entity_embedding"]
         elif role == "relation":
-            tables = ["relation_vectors"]
+            indexes = ["relation_embedding"]
         else:
-            # observation/episode — no vector table; fall back to BM25
             fallback_to_bm25 = True
 
-        # 3. KNN search across selected tables
+        # 3. Neo4j vector index KNN search
         knn_limit = max_results * 5
-        uuid_dist: Dict[str, float] = {}
-
-        for table in tables:
-            try:
-                knn_results = self._vector_store.search(
-                    table, [], limit=knn_limit,
-                    _precomputed_bytes=query_emb.astype(np.float32).tobytes()
-                )
-                for uuid, dist in knn_results:
-                    # Keep lowest distance per uuid
-                    if uuid not in uuid_dist or dist < uuid_dist[uuid]:
-                        uuid_dist[uuid] = dist
-            except Exception as e:
-                logger.debug("Concept similarity search on %s failed: %s", table, e)
-
-        # 4. Batch fetch concepts from Neo4j by uuid (skip if no vector hits)
+        query_vector = query_emb.tolist()
         seen: Dict[str, float] = {}  # family_id -> best score
         results = []
 
-        if uuid_dist:
-            tp = self._tp_to_datetime(time_point)
-            uuids = list(uuid_dist)
-
-            with self._session() as session:
-                role_filter = " AND c.role = $role" if role else ""
-                result = self._run(session,
-                    f"""
-                    MATCH (c:Concept)
-                    WHERE c.uuid IN $uuids
-                      AND ($tp IS NULL OR c.valid_at IS NULL OR c.valid_at <= $tp)
-                      AND ($tp IS NULL OR c.invalid_at IS NULL OR c.invalid_at > $tp)
-                      {role_filter}
-                    RETURN c.uuid AS id, c.family_id AS family_id, c.role AS role,
-                           c.name AS name, c.content AS content,
-                           c.event_time AS event_time, c.processed_time AS processed_time,
-                           c.source_document AS source_document, c.summary AS summary,
-                           c.confidence AS confidence
-                    """,
-                    uuids=uuids,
-                    role=role,
-                    tp=tp,
-                )
-                concepts = [_neo4j_types_to_native(dict(r)) for r in result]
-
-            # 5. Filter by threshold + dedup by family_id (keep highest similarity)
-            scored = []
-            for c in concepts:
-                uuid = c.get("id")
-                l2_dist_sq = uuid_dist.get(uuid)
-                if l2_dist_sq is None:
-                    continue
-                cos_sim = 1.0 - l2_dist_sq / 2.0
-                scored.append((c, cos_sim))
-
-            scored.sort(key=lambda x: x[1], reverse=True)
-
-            for c, cos_sim in scored:
-                if cos_sim < threshold:
-                    continue
-                fid = c.get("family_id")
-                if fid in seen:
-                    continue
-                seen[fid] = cos_sim
-                c["score"] = round(cos_sim, 4)
-                results.append(c)
-                if len(results) >= max_results:
-                    break
+        for idx_name in indexes:
+            try:
+                with self._session() as session:
+                    role_filter = " AND node.role = $role" if role else ""
+                    tp = self._tp_to_datetime(time_point)
+                    tp_filter = " AND ($tp IS NULL OR node.valid_at IS NULL OR node.valid_at <= $tp) AND ($tp IS NULL OR node.invalid_at IS NULL OR node.invalid_at > $tp)" if tp else ""
+                    result = session.run(
+                        f"""
+                        CALL db.index.vector.queryNodes($idxName, $k, $queryVector)
+                        YIELD node, score
+                        WHERE node.graph_id = $graph_id{role_filter}{tp_filter}
+                        RETURN node, score
+                        ORDER BY score DESC
+                        """,
+                        idxName=idx_name,
+                        k=knn_limit,
+                        queryVector=query_vector,
+                        graph_id=self._graph_id,
+                        role=role,
+                        tp=tp,
+                    )
+                    for record in result:
+                        node = record["node"]
+                        score = record["score"]
+                        if score < threshold:
+                            break
+                        fid = node.get("family_id")
+                        if fid in seen:
+                            continue
+                        seen[fid] = score
+                        c = {
+                            "id": node.get("uuid"),
+                            "family_id": fid,
+                            "role": node.get("role"),
+                            "name": node.get("name", ""),
+                            "content": node.get("content", ""),
+                            "event_time": _neo4j_types_to_native({"v": node.get("event_time")}).get("v"),
+                            "processed_time": _neo4j_types_to_native({"v": node.get("processed_time")}).get("v"),
+                            "source_document": node.get("source_document"),
+                            "summary": node.get("summary"),
+                            "confidence": node.get("confidence"),
+                            "score": round(score, 4),
+                        }
+                        results.append(c)
+                        if len(results) >= max_results:
+                            break
+            except Exception as e:
+                logger.debug("Concept vector search on %s failed: %s", idx_name, e)
 
         # BM25 fallback for observations (no vector table)
         if fallback_to_bm25:

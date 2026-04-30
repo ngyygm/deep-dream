@@ -179,6 +179,10 @@
           </div>
         </div>
         ` : ''}
+        <div id="entity-embedding-section">
+          <span style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;">${t('entities.embedding')}</span>
+          <div id="entity-embedding-values" style="margin-top:0.25rem;font-size:0.75rem;color:var(--text-muted);">-</div>
+        </div>
         <div style="display:flex;gap:0.5rem;">
           <button class="btn btn-primary btn-sm" id="evolve-summary-btn">
             <i data-lucide="sparkles" style="width:14px;height:14px;margin-right:4px;"></i>${t('entities.evolveSummary')}
@@ -352,10 +356,11 @@
     const familyId = entity.family_id;
 
     try {
-      const [versionsRes, relationsRes, contradictionsRes] = await Promise.all([
+      const [versionsRes, relationsRes, contradictionsRes, embRes] = await Promise.all([
         state.api.entityVersions(familyId, graphId),
         state.api.entityRelations(familyId, graphId),
         state.api.entityContradictions(familyId, state.currentGraphId).catch(() => ({ data: [] })),
+        state.api.entityEmbeddingPreview(entity.absolute_id, 5, graphId).catch(() => null),
       ]);
 
       const vSpinner = overlay.querySelector('#versions-spinner');
@@ -368,6 +373,17 @@
       const versions = versionsRes.data || [];
       const relations = relationsRes.data || [];
       const contradictions = contradictionsRes.data || [];
+
+      // Render embedding preview
+      const embEl = overlay.querySelector('#entity-embedding-values');
+      if (embEl) {
+        if (embRes && embRes.data && embRes.data.values) {
+          const vals = embRes.data.values;
+          embEl.innerHTML = vals.map(v => `<span class="mono" style="display:inline-block;padding:2px 6px;margin:2px;border-radius:4px;background:var(--bg-secondary);font-size:0.7rem;">${v.toFixed(4)}</span>`).join('');
+        } else {
+          embEl.textContent = t('entities.noEmbedding');
+        }
+      }
 
       const versionsContainer = overlay.querySelector('#versions-container');
       if (versionsContainer) {

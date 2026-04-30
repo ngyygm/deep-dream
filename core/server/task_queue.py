@@ -40,7 +40,7 @@ _RE_EXTRACT_STEP_FRAC = re.compile(r"\((\d+)/(\d+)\)\s*$")
 _TERMINAL_STATUSES = frozenset(("completed", "failed", "cancelled"))
 _DONE_STATUSES = frozenset(("completed", "failed"))
 _MAIN_PHASES = frozenset(("main", "phase_ab"))
-_STEP67 = frozenset(("step6", "step7"))
+_STEP910 = frozenset(("step9", "step10"))
 
 
 def _parse_window_phase_label(phase_label: str) -> Optional[tuple]:
@@ -57,15 +57,15 @@ def _intra_in_window_slice(global_p: float, g_lo: float, g_hi: float) -> float:
     return max(0.0, min(1.0, (global_p - g_lo) / span))
 
 
-def _intra_step6_step7(global_p: float, g_lo: float, g_hi: float, chain_id: str) -> float:
-    """步骤6/7 各占单窗的 1/7（与 orchestrator 传入 extraction 的 progress_range 一致），链内 0–1。"""
+def _intra_step9_step10(global_p: float, g_lo: float, g_hi: float, chain_id: str) -> float:
+    """步骤9/7 各占单窗的 1/7（与 orchestrator 传入 extraction 的 progress_range 一致），链内 0–1。"""
     span = g_hi - g_lo
     if span <= 1e-15:
         return 0.0
-    if chain_id == "step6":
+    if chain_id == "step9":
         s_lo = g_lo + span * (5.0 / 7.0)
         s_hi = g_lo + span * (6.0 / 7.0)
-    elif chain_id == "step7":
+    elif chain_id == "step10":
         s_lo = g_lo + span * (6.0 / 7.0)
         s_hi = g_hi
     else:
@@ -77,13 +77,13 @@ def _intra_step6_step7(global_p: float, g_lo: float, g_hi: float, chain_id: str)
 
 
 def _wf_for_chain(chain_id: str, intra: float) -> float:
-    """单窗内流水线权重：步骤2–5 占 5/7，步骤6 占 1/7，步骤7 占 1/7（与 extraction 中分窗一致）。"""
+    """单窗内流水线权重：步骤2–5 占 5/7，步骤9 占 1/7，步骤10 占 1/7（与 extraction 中分窗一致）。"""
     intra = max(0.0, min(1.0, intra))
     if chain_id == "phase_ab":
         return (5.0 / 7.0) * intra
-    if chain_id == "step6":
+    if chain_id == "step9":
         return (5.0 / 7.0) + (1.0 / 7.0) * intra
-    if chain_id == "step7":
+    if chain_id == "step10":
         return (6.0 / 7.0) + (1.0 / 7.0) * intra
     return (5.0 / 7.0) * intra
 
@@ -165,7 +165,7 @@ def _remember_callback_ui_fields(
     message: str,
     chain_id: str,
 ) -> Dict[str, Any]:
-    """推导总进度：主滑窗链 main（步骤1–5）、步骤6/7 链各自独立进度（0–1 为链内细粒度）。"""
+    """推导总进度：主滑窗链 main（步骤1–5）、步骤9/7 链各自独立进度（0–1 为链内细粒度）。"""
     parsed = _parse_window_phase_label(phase_label)
     tc = max(1, int(task.total_chunks or 1))
     pc = max(0, int(task.processed_chunks or 0))
@@ -246,8 +246,8 @@ def _remember_callback_ui_fields(
     win_tot_eff = tc
     g_lo = (win_cur - 1) / float(win_tot_eff)
     g_hi = win_cur / float(win_tot_eff)
-    if chain_id in _STEP67:
-        intra = _intra_step6_step7(float(progress), g_lo, g_hi, chain_id)
+    if chain_id in _STEP910:
+        intra = _intra_step9_step10(float(progress), g_lo, g_hi, chain_id)
     else:
         intra = _intra_in_window_slice(progress, g_lo, g_hi)
     wf = _wf_for_chain(chain_id, intra)
@@ -280,29 +280,29 @@ def _remember_callback_ui_fields(
             main_label=phase_label or message or "",
         )
         return base
-    if chain_id == "step7":
-        step6_global = max(
-            _completed_chunk_fraction(task.step6_done_chunks or 0, tc),
+    if chain_id == "step10":
+        step9_global = max(
+            _completed_chunk_fraction(task.step9_done_chunks or 0, tc),
             _completed_chunk_fraction(win_cur, tc),
-            float(getattr(task, "step6_progress", 0.0) or 0.0),
+            float(getattr(task, "step9_progress", 0.0) or 0.0),
         )
-        step7_global = max(
-            _completed_chunk_fraction(task.step7_done_chunks or 0, tc),
+        step10_global = max(
+            _completed_chunk_fraction(task.step10_done_chunks or 0, tc),
             _overall_chain_from_window_intra(win_cur, win_tot_eff, intra),
         )
         base.update(
-            step6_progress=step6_global,
-            step7_progress=step7_global,
-            step7_label=phase_label or message or "",
+            step9_progress=step9_global,
+            step10_progress=step10_global,
+            step10_label=phase_label or message or "",
         )
         return base
-    # step6：实体链进度按窗口累计；不要把关系链已完成进度清零。
+    # step9：实体链进度按窗口累计；不要把关系链已完成进度清零。
     base.update(
-        step6_progress=max(
-            _completed_chunk_fraction(task.step6_done_chunks or 0, tc),
+        step9_progress=max(
+            _completed_chunk_fraction(task.step9_done_chunks or 0, tc),
             _overall_chain_from_window_intra(win_cur, win_tot_eff, intra),
         ),
-        step6_label=phase_label or message or "",
+        step9_label=phase_label or message or "",
     )
     return base
 
@@ -331,17 +331,17 @@ class RememberTask:
     phase_current: int = 0
     phase_total: int = 0
     main_done_chunks: int = 0
-    step6_done_chunks: int = 0
-    step7_done_chunks: int = 0
+    step9_done_chunks: int = 0
+    step10_done_chunks: int = 0
     processed_chunks: int = 0
     total_chunks: int = 0
     run_start_chunks: int = 0      # 本轮开始时已有的 chunk 数（用于断点续传预估）
     progress: float = 0.0
     message: str = "等待进入处理队列"
-    step6_progress: float = 0.0
-    step6_label: str = ""
-    step7_progress: float = 0.0
-    step7_label: str = ""
+    step9_progress: float = 0.0
+    step9_label: str = ""
+    step10_progress: float = 0.0
+    step10_label: str = ""
     main_progress: float = 0.0
     main_label: str = ""
     last_update: float = field(default_factory=time.time)
@@ -380,17 +380,17 @@ class RememberJournal:
             "phase_current": task.phase_current,
             "phase_total": task.phase_total,
             "main_done_chunks": task.main_done_chunks,
-            "step6_done_chunks": task.step6_done_chunks,
-            "step7_done_chunks": task.step7_done_chunks,
+            "step9_done_chunks": task.step9_done_chunks,
+            "step10_done_chunks": task.step10_done_chunks,
             "processed_chunks": task.processed_chunks,
             "total_chunks": task.total_chunks,
             "run_start_chunks": task.run_start_chunks,
             "progress": task.progress,
             "message": task.message,
-            "step6_progress": task.step6_progress,
-            "step6_label": task.step6_label,
-            "step7_progress": task.step7_progress,
-            "step7_label": task.step7_label,
+            "step9_progress": task.step9_progress,
+            "step9_label": task.step9_label,
+            "step10_progress": task.step10_progress,
+            "step10_label": task.step10_label,
             "main_progress": task.main_progress,
             "main_label": task.main_label,
             "last_update": task.last_update,
@@ -507,17 +507,17 @@ def _remember_task_from_record(rec: Dict[str, Any], text: str) -> RememberTask:
         phase_current=int(rec.get("phase_current") or 0),
         phase_total=int(rec.get("phase_total") or 0),
         main_done_chunks=int(rec.get("main_done_chunks") or rec.get("processed_chunks") or 0),
-        step6_done_chunks=int(rec.get("step6_done_chunks") or rec.get("processed_chunks") or 0),
-        step7_done_chunks=int(rec.get("step7_done_chunks") or rec.get("processed_chunks") or 0),
+        step9_done_chunks=int(rec.get("step9_done_chunks") or rec.get("processed_chunks") or 0),
+        step10_done_chunks=int(rec.get("step10_done_chunks") or rec.get("processed_chunks") or 0),
         processed_chunks=int(rec.get("processed_chunks") or 0),
         total_chunks=int(rec.get("total_chunks") or 0),
         run_start_chunks=int(rec.get("run_start_chunks") or 0),
         progress=float(rec.get("progress") or 0.0),
         message=str(rec.get("message") or "等待进入处理队列"),
-        step6_progress=float(rec.get("step6_progress") or 0.0),
-        step6_label=str(rec.get("step6_label") or ""),
-        step7_progress=float(rec.get("step7_progress") or 0.0),
-        step7_label=str(rec.get("step7_label") or ""),
+        step9_progress=float(rec.get("step9_progress") or 0.0),
+        step9_label=str(rec.get("step9_label") or ""),
+        step10_progress=float(rec.get("step10_progress") or 0.0),
+        step10_label=str(rec.get("step10_label") or ""),
         main_progress=float(rec.get("main_progress") or 0.0),
         main_label=str(rec.get("main_label") or ""),
         last_update=float(rec.get("last_update") or time.time()),
@@ -600,17 +600,17 @@ class RememberTaskQueue:
         phase_current: Optional[int] = None,
         phase_total: Optional[int] = None,
         main_done_chunks: Optional[int] = None,
-        step6_done_chunks: Optional[int] = None,
-        step7_done_chunks: Optional[int] = None,
+        step9_done_chunks: Optional[int] = None,
+        step10_done_chunks: Optional[int] = None,
         processed_chunks: Optional[int] = None,
         total_chunks: Optional[int] = None,
         run_start_chunks: Optional[int] = None,
         progress: Optional[float] = None,
         message: Optional[str] = None,
-        step6_progress: Optional[float] = None,
-        step6_label: Optional[str] = None,
-        step7_progress: Optional[float] = None,
-        step7_label: Optional[str] = None,
+        step9_progress: Optional[float] = None,
+        step9_label: Optional[str] = None,
+        step10_progress: Optional[float] = None,
+        step10_label: Optional[str] = None,
         main_progress: Optional[float] = None,
         main_label: Optional[str] = None,
         started_at: Optional[float] = None,
@@ -631,10 +631,10 @@ class RememberTaskQueue:
                 task.phase_total = max(0, int(phase_total))
             if main_done_chunks is not None:
                 task.main_done_chunks = max(0, int(main_done_chunks))
-            if step6_done_chunks is not None:
-                task.step6_done_chunks = max(0, int(step6_done_chunks))
-            if step7_done_chunks is not None:
-                task.step7_done_chunks = max(0, int(step7_done_chunks))
+            if step9_done_chunks is not None:
+                task.step9_done_chunks = max(0, int(step9_done_chunks))
+            if step10_done_chunks is not None:
+                task.step10_done_chunks = max(0, int(step10_done_chunks))
             if processed_chunks is not None:
                 task.processed_chunks = max(0, int(processed_chunks))
             if total_chunks is not None:
@@ -655,27 +655,27 @@ class RememberTaskQueue:
                         task.progress = new_p
             if message is not None:
                 task.message = message
-            if step6_progress is not None:
-                new_s6 = max(0.0, min(1.0, float(step6_progress)))
+            if step9_progress is not None:
+                new_s6 = max(0.0, min(1.0, float(step9_progress)))
                 # 运行中回调可能乱序：进度只增不减（终态时写入明确值）
                 if status is not None and status != "running":
-                    task.step6_progress = new_s6
+                    task.step9_progress = new_s6
                 elif task.status == "running":
-                    task.step6_progress = max(task.step6_progress, new_s6)
+                    task.step9_progress = max(task.step9_progress, new_s6)
                 else:
-                    task.step6_progress = new_s6
-            if step6_label is not None:
-                task.step6_label = step6_label
-            if step7_progress is not None:
-                new_s7 = max(0.0, min(1.0, float(step7_progress)))
+                    task.step9_progress = new_s6
+            if step9_label is not None:
+                task.step9_label = step9_label
+            if step10_progress is not None:
+                new_s7 = max(0.0, min(1.0, float(step10_progress)))
                 if status is not None and status != "running":
-                    task.step7_progress = new_s7
+                    task.step10_progress = new_s7
                 elif task.status == "running":
-                    task.step7_progress = max(task.step7_progress, new_s7)
+                    task.step10_progress = max(task.step10_progress, new_s7)
                 else:
-                    task.step7_progress = new_s7
-            if step7_label is not None:
-                task.step7_label = step7_label
+                    task.step10_progress = new_s7
+            if step10_label is not None:
+                task.step10_label = step10_label
             if main_progress is not None:
                 new_m = max(0.0, min(1.0, float(main_progress)))
                 if status is not None and status != "running":
@@ -715,17 +715,17 @@ class RememberTaskQueue:
             "phase_current": t.phase_current,
             "phase_total": t.phase_total,
             "main_done_chunks": t.main_done_chunks,
-            "step6_done_chunks": t.step6_done_chunks,
-            "step7_done_chunks": t.step7_done_chunks,
+            "step9_done_chunks": t.step9_done_chunks,
+            "step10_done_chunks": t.step10_done_chunks,
             "processed_chunks": t.processed_chunks,
             "total_chunks": t.total_chunks,
             "run_start_chunks": t.run_start_chunks,
             "progress": t.progress,
             "message": t.message,
-            "step6_progress": t.step6_progress,
-            "step6_label": t.step6_label,
-            "step7_progress": t.step7_progress,
-            "step7_label": t.step7_label,
+            "step9_progress": t.step9_progress,
+            "step9_label": t.step9_label,
+            "step10_progress": t.step10_progress,
+            "step10_label": t.step10_label,
             "main_progress": t.main_progress,
             "main_label": t.main_label,
             "event_time": t.event_time.isoformat() if t.event_time else None,
@@ -840,27 +840,27 @@ class RememberTaskQueue:
                 task.total_chunks,
                 _estimate_chunk_count(len(task.text), self._window_size, self._overlap),
             )
-            # 三条链的断点分别恢复；processed_chunks 继续兼容为 step7 已完成窗口数。
+            # 三条链的断点分别恢复；processed_chunks 继续兼容为 step10 已完成窗口数。
             _tc = max(0, int(task.total_chunks or 0))
-            _step7_done = min(_tc, max(0, int(task.step7_done_chunks or task.processed_chunks or 0)))
-            _step6_done = min(_tc, max(_step7_done, int(task.step6_done_chunks or task.processed_chunks or 0)))
-            _main_done = min(_tc, max(_step6_done, int(task.main_done_chunks or task.processed_chunks or 0)))
+            _step10_done = min(_tc, max(0, int(task.step10_done_chunks or task.processed_chunks or 0)))
+            _step9_done = min(_tc, max(_step10_done, int(task.step9_done_chunks or task.processed_chunks or 0)))
+            _main_done = min(_tc, max(_step9_done, int(task.main_done_chunks or task.processed_chunks or 0)))
             task.main_done_chunks = _main_done
-            task.step6_done_chunks = _step6_done
-            task.step7_done_chunks = _step7_done
-            task.processed_chunks = _step7_done
+            task.step9_done_chunks = _step9_done
+            task.step10_done_chunks = _step10_done
+            task.processed_chunks = _step10_done
             # 根据关系链已完成窗口数恢复总进度
-            if task.total_chunks > 0 and task.step7_done_chunks > 0:
-                task.progress = task.step7_done_chunks / task.total_chunks
+            if task.total_chunks > 0 and task.step10_done_chunks > 0:
+                task.progress = task.step10_done_chunks / task.total_chunks
             else:
                 task.progress = 0.0
             task.main_progress = (_main_done / task.total_chunks) if task.total_chunks > 0 else 0.0
-            if task.step7_done_chunks > 0 or task.step6_done_chunks > 0 or task.main_done_chunks > 0:
+            if task.step10_done_chunks > 0 or task.step9_done_chunks > 0 or task.main_done_chunks > 0:
                 task.message = (
                     "服务重启后已恢复入队（"
                     f"主链 {task.main_done_chunks}/{task.total_chunks} · "
-                    f"实体 {task.step6_done_chunks}/{task.total_chunks} · "
-                    f"关系 {task.step7_done_chunks}/{task.total_chunks}）"
+                    f"实体 {task.step9_done_chunks}/{task.total_chunks} · "
+                    f"关系 {task.step10_done_chunks}/{task.total_chunks}）"
                 )
             else:
                 task.message = "服务重启后已恢复入队"
@@ -945,7 +945,7 @@ class RememberTaskQueue:
 
     def list_tasks(self, limit: int = 50) -> List[Dict]:
         with self._lock:
-            items = sorted(self._tasks.values(), key=lambda t: t.created_at)
+            items = sorted(self._tasks.values(), key=lambda t: t.created_at, reverse=True)
         out = []
         for t in items[:limit]:
             out.append(self._task_to_dict(t))
@@ -1151,8 +1151,8 @@ class RememberTaskQueue:
             "active_window_extractions": 0,
             "active_main_pipeline_windows": 0,
             "peak_window_extractions": 0,
-            "active_step6": 0,
-            "active_step7": 0,
+            "active_step9": 0,
+            "active_step10": 0,
             "llm_semaphore_active": 0,
             "llm_semaphore_max": 0,
         }
@@ -1177,19 +1177,19 @@ class RememberTaskQueue:
                     self._log_info(f"[Remember] 跳过已删除任务: task_id={_short_task_id(task.task_id)}")
                     continue
                 _existing_main_chunks = task.main_done_chunks or 0
-                _existing_step6_chunks = task.step6_done_chunks or 0
-                _existing_step7_chunks = task.step7_done_chunks or task.processed_chunks or 0
-                _init_progress = _existing_step7_chunks / task.total_chunks if task.total_chunks > 0 else 0.0
+                _existing_step9_chunks = task.step9_done_chunks or 0
+                _existing_step10_chunks = task.step10_done_chunks or task.processed_chunks or 0
+                _init_progress = _existing_step10_chunks / task.total_chunks if task.total_chunks > 0 else 0.0
                 _resume_hint = (
                     "断点续传："
                     f"主链 {_existing_main_chunks}/{task.total_chunks} · "
-                    f"实体 {_existing_step6_chunks}/{task.total_chunks} · "
-                    f"关系 {_existing_step7_chunks}/{task.total_chunks}"
-                    if (_existing_main_chunks > 0 or _existing_step6_chunks > 0 or _existing_step7_chunks > 0)
+                    f"实体 {_existing_step9_chunks}/{task.total_chunks} · "
+                    f"关系 {_existing_step10_chunks}/{task.total_chunks}"
+                    if (_existing_main_chunks > 0 or _existing_step9_chunks > 0 or _existing_step10_chunks > 0)
                     and task.total_chunks > 0
-                    else ("断点续传" if (_existing_main_chunks > 0 or _existing_step6_chunks > 0 or _existing_step7_chunks > 0) else "开始处理")
+                    else ("断点续传" if (_existing_main_chunks > 0 or _existing_step9_chunks > 0 or _existing_step10_chunks > 0) else "开始处理")
                 )
-                _start_chunk = task.step7_done_chunks or task.processed_chunks or 0
+                _start_chunk = task.step10_done_chunks or task.processed_chunks or 0
                 _uses_external_cache = self._task_uses_external_cache(task)
                 _task_processor = self._processor if _uses_external_cache else self._processor_factory()
                 self._update_task_progress(
@@ -1197,21 +1197,21 @@ class RememberTaskQueue:
                     status="queued",
                     phase="waiting_cache_chain" if _uses_external_cache else "queued",
                     phase_label="等待前序缓存链" if _uses_external_cache else "等待开始",
-                    phase_current=_existing_step7_chunks,
+                    phase_current=_existing_step10_chunks,
                     phase_total=max(1, task.total_chunks),
                     main_done_chunks=_existing_main_chunks,
-                    step6_done_chunks=_existing_step6_chunks,
-                    step7_done_chunks=_existing_step7_chunks,
-                    processed_chunks=_existing_step7_chunks,
+                    step9_done_chunks=_existing_step9_chunks,
+                    step10_done_chunks=_existing_step10_chunks,
+                    processed_chunks=_existing_step10_chunks,
                     total_chunks=task.total_chunks,
-                    run_start_chunks=_existing_step7_chunks,
+                    run_start_chunks=_existing_step10_chunks,
                     progress=_init_progress,
-                    # 勿用「下一窗编号」预填 step6/7，否则 Web 端会误以为已在做实体/关系对齐；
-                    # 主滑窗进度由 chain main 回调写入 main_*；实体/关系链写入 step6_* / step7_*。
-                    step6_progress=0.0,
-                    step6_label="",
-                    step7_progress=0.0,
-                    step7_label="",
+                    # 勿用「下一窗编号」预填 step9/10，否则 Web 端会误以为已在做实体/关系对齐；
+                    # 主滑窗进度由 chain main 回调写入 main_*；实体/关系链写入 step9_* / step10_*。
+                    step9_progress=0.0,
+                    step9_label="",
+                    step10_progress=0.0,
+                    step10_label="",
                     main_progress=0.0,
                     main_label="",
                     message=("等待前一个接续缓存链的任务完成后开始" if _uses_external_cache else "等待工作线程开始"),
@@ -1232,7 +1232,7 @@ class RememberTaskQueue:
                         # 构建进度回调：将处理器的进度更新转发到任务跟踪
                         _task_ref = task  # 闭包引用
 
-                        def _on_progress(progress: float, phase_label: str, message: str, chain_id: str = "step6", _t=_task_ref):
+                        def _on_progress(progress: float, phase_label: str, message: str, chain_id: str = "step9", _t=_task_ref):
                             _fields = _remember_callback_ui_fields(
                                 _t, progress, phase_label, message, chain_id,
                             )
@@ -1255,22 +1255,22 @@ class RememberTaskQueue:
                             )
                             self._persist(_t)
 
-                        def _on_step6_chunk_done(processed_count: int, _t=_task_ref):
+                        def _on_step9_chunk_done(processed_count: int, _t=_task_ref):
                             _pc = max(0, int(processed_count))
                             self._update_task_progress(
                                 _t,
-                                step6_done_chunks=_pc,
+                                step9_done_chunks=_pc,
                             )
                             self._persist(_t)
 
                         def _on_chunk_done(processed_count: int, _t=_task_ref):
-                            """窗口 step7 完成后更新 processed_chunks；总进度与已完成窗数一致（单调递增）。"""
+                            """窗口 step10 完成后更新 processed_chunks；总进度与已完成窗数一致（单调递增）。"""
                             _tc = max(1, int(_t.total_chunks or 1))
                             _pc = max(0, int(processed_count))
                             _pg = min(1.0, float(_pc) / float(_tc))
                             self._update_task_progress(
                                 _t,
-                                step7_done_chunks=_pc,
+                                step10_done_chunks=_pc,
                                 processed_chunks=_pc,
                                 progress=_pg,
                             )
@@ -1291,7 +1291,7 @@ class RememberTaskQueue:
                                     control_callback=lambda _t=task: _t.control_action,
                                     start_chunk=_start_chunk,
                                     main_chunk_done_callback=_on_main_chunk_done,
-                                    step6_chunk_done_callback=_on_step6_chunk_done,
+                                    step9_chunk_done_callback=_on_step9_chunk_done,
                                     chunk_done_callback=_on_chunk_done,
                                 )
                             finally:
@@ -1304,19 +1304,19 @@ class RememberTaskQueue:
                                 status="running",
                                 phase="processing",
                                 phase_label=_resume_hint,
-                                phase_current=_existing_step7_chunks,
+                                phase_current=_existing_step10_chunks,
                                 phase_total=max(1, task.total_chunks),
                                 main_done_chunks=_existing_main_chunks,
-                                step6_done_chunks=_existing_step6_chunks,
-                                step7_done_chunks=_existing_step7_chunks,
-                                processed_chunks=_existing_step7_chunks,
+                                step9_done_chunks=_existing_step9_chunks,
+                                step10_done_chunks=_existing_step10_chunks,
+                                processed_chunks=_existing_step10_chunks,
                                 total_chunks=task.total_chunks,
-                                run_start_chunks=_existing_step7_chunks,
+                                run_start_chunks=_existing_step10_chunks,
                                 progress=_init_progress,
-                                step6_progress=0.0,
-                                step6_label="",
-                                step7_progress=0.0,
-                                step7_label="",
+                                step9_progress=0.0,
+                                step9_label="",
+                                step10_progress=0.0,
+                                step10_label="",
                                 main_progress=0.0,
                                 main_label="",
                                 message=_resume_hint,
@@ -1364,17 +1364,17 @@ class RememberTaskQueue:
                             phase_current=_tc_done * 7,
                             phase_total=_tc_done * 7,
                             main_done_chunks=_cp_done,
-                            step6_done_chunks=_cp_done,
-                            step7_done_chunks=_cp_done,
+                            step9_done_chunks=_cp_done,
+                            step10_done_chunks=_cp_done,
                             processed_chunks=_cp_done,
                             progress=1.0,
                             message="处理完成",
                             result=result,
                             finished_at=finished_at,
-                            step6_progress=1.0,
-                            step7_progress=1.0,
-                            step6_label="",
-                            step7_label="",
+                            step9_progress=1.0,
+                            step10_progress=1.0,
+                            step9_label="",
+                            step10_label="",
                             main_progress=1.0,
                             main_label="",
                         )

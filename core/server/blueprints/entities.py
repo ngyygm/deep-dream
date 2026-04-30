@@ -677,8 +677,10 @@ def update_entity_v2(family_id: str):
             if current is None:
                 return err(f"未找到实体: {family_id}", 404)
             now = datetime.now(timezone.utc)
+            now = datetime.now(timezone.utc)
+            ts = now.strftime("%Y%m%d_%H%M%S")
             updated = Entity(
-                absolute_id=str(uuid.uuid4()),
+                absolute_id=f"entity_{ts}_{uuid.uuid4().hex[:8]}",
                 family_id=family_id,
                 name=name if name else current.name,
                 content=content if content else current.content,

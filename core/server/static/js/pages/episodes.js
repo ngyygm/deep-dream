@@ -5,7 +5,6 @@ registerPage('episodes', (function () {
   'use strict';
 
   let _container = null;
-  let _detailEntities = [];
   let _episodes = [];
   let _total = 0;
   let _offset = 0;
@@ -146,71 +145,6 @@ registerPage('episodes', (function () {
     _sentinelObserver.observe(sentinel);
   }
 
-  async function _showDetail(uuid) {
-    try {
-      const [epRes, entRes] = await Promise.all([
-        state.api.getEpisode(uuid, state.currentGraphId),
-        state.api.getEpisodeEntities(uuid, state.currentGraphId),
-      ]);
-      const ep = epRes.data || {};
-      const entities = entRes.data?.entities || [];
-      _detailEntities = entities;
-
-      let body = `<div style="display:flex;flex-direction:column;gap:1rem;">`;
-      body += `<div style="display:grid;grid-template-columns:auto 1fr;gap:0.25rem 0.75rem;font-size:0.85rem;">
-        <span style="color:var(--text-secondary);">UUID:</span><span class="font-mono text-xs">${escapeHtml(ep.uuid || '')}</span>
-        ${ep.episode_type ? `<span style="color:var(--text-secondary);">${t('episodes.episodeType')}:</span><span>${escapeHtml(ep.episode_type)}</span>` : ''}
-        <span style="color:var(--text-secondary);">${t('common.source')}:</span><span>${escapeHtml(ep.source_document || '-')}</span>
-        <span style="color:var(--text-secondary);">${t('relations.eventTime')}:</span><span class="mono" style="font-size:0.8125rem;">${formatDate(ep.event_time)}</span>
-        ${ep.processed_time ? `<span style="color:var(--text-secondary);">${t('relations.processedTime')}:</span><span class="mono" style="font-size:0.8125rem;">${formatDateMs(ep.processed_time)}</span>` : ''}
-      </div>`;
-
-      body += `<div>
-        <h4 style="margin-bottom:0.5rem;">${t('common.content')}</h4>
-        <div class="md-content" style="max-height:300px;overflow-y:auto;background:var(--bg-secondary);padding:0.75rem;border-radius:0.5rem;font-size:0.85rem;">${renderMarkdown(ep.content || '')}</div>
-      </div>`;
-
-      if (entities.length > 0) {
-        body += `<div>
-          <h4 style="margin-bottom:0.5rem;">${t('episodes.entities')} (${entities.length})</h4>
-          <div class="space-y-1">`;
-        for (let i = 0; i < entities.length; i++) {
-          const ent = entities[i];
-          body += `<div class="flex items-center gap-2 p-2 rounded cursor-pointer" style="background:var(--bg-secondary);font-size:0.85rem;" data-entity-idx="${i}">
-            <i data-lucide="circle-dot" style="width:14px;height:14px;color:var(--primary);flex-shrink:0;"></i>
-            <span class="font-medium">${escapeHtml(ent.name || ent.family_id || '-')}</span>
-            ${ent.content ? `<span class="text-xs" style="color:var(--text-muted);">${escapeHtml(truncate(ent.content, 60))}</span>` : ''}
-          </div>`;
-        }
-        body += '</div></div>';
-      } else {
-        body += `<div><p style="color:var(--text-muted);font-size:0.85rem;">${t('episodes.noEntities')}</p></div>`;
-      }
-
-      body += '</div>';
-
-      const { overlay } = showModal({
-        title: t('episodes.detail'),
-        content: body,
-        size: 'lg',
-      });
-      if (window.lucide) lucide.createIcons({ nodes: [overlay] });
-
-      // Entity click delegation
-      overlay.querySelectorAll('[data-entity-idx]').forEach(el => {
-        el.addEventListener('click', () => {
-          const idx = parseInt(el.getAttribute('data-entity-idx'), 10);
-          const entity = _detailEntities[idx];
-          if (entity && window.showEntityDetail) {
-            window.showEntityDetail(entity);
-          }
-        });
-      });
-    } catch (err) {
-      showToast(err.message, 'error');
-    }
-  }
-
   async function _deleteEpisode(uuid) {
     const ok = await showConfirm({ message: t('episodes.deleteConfirm'), destructive: true });
     if (!ok) return;
@@ -314,7 +248,7 @@ registerPage('episodes', (function () {
   }
 
   // Expose to onclick handlers
-  window._epShowDetail = _showDetail;
+  window._epShowDetail = function(uuid) { window.showEpisodeDetailModal(uuid); };
   window._epDelete = _deleteEpisode;
   window._epLoad = function(offset) { _loadEpisodes(offset, false); };
   window._epDoSearch = null;

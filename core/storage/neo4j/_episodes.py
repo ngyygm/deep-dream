@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import numpy as np
+
 from ...models import Episode, Entity, Relation
 from ._helpers import _fmt_dt, _parse_dt
 from ...utils import clean_markdown_code_blocks
@@ -30,6 +32,27 @@ class EpisodeStoreMixin:
         self._id_to_doc_hash         → Dict mapping cache_id to doc_hash
     """
 
+    def _compute_episode_embedding(self, content: str) -> Optional[bytes]:
+        """计算 episode 的 embedding 向量（L2 归一化后存储）。
+
+        文本格式: "# Episode\\n{content}"
+        """
+        if not self.embedding_client or not self.embedding_client.is_available():
+            return None
+        if not content:
+            return None
+        text = f"# Episode\n{content}"
+        embedding = self.embedding_client.encode(text)
+        if embedding is None or (isinstance(embedding, (list, tuple)) and len(embedding) == 0):
+            return None
+        if isinstance(embedding, np.ndarray) and embedding.size == 0:
+            return None
+        emb_array = np.array(embedding[0] if isinstance(embedding, list) else embedding, dtype=np.float32)
+        norm = np.linalg.norm(emb_array)
+        if norm > 0:
+            emb_array = emb_array / norm
+        return emb_array.tobytes()
+
 
     def _get_cache_dir_by_doc_hash(self, doc_hash: str, document_path: str = "") -> Optional[Path]:
         """根据 doc_hash 获取文档目录（O(1) 查找 via reverse map）。"""
@@ -49,8 +72,8 @@ class EpisodeStoreMixin:
 
 
 
-    _meta_files_cache: tuple = ()    # (timestamp, [Path, ...])
-    _bm25_lower_cache: tuple = ()    # (timestamp, {path_str: lowercased_content})
+    _meta_files_cache: tuple = (0.0, None)    # (timestamp, [Path, ...])
+    _bm25_lower_cache: tuple = (0.0, None)    # (timestamp, {path_str: lowercased_content})
     _meta_json_cache: dict = {}      # {path_str: parsed_dict} — shared with BM25 TTL
     _META_FILES_TTL: float = 2.0     # seconds
 
@@ -81,8 +104,30 @@ class EpisodeStoreMixin:
         if not episodes:
             return 0
         _now_iso = datetime.now().isoformat()
+
+        # Compute embeddings BEFORE write
+        embeddings = None
+        if self.embedding_client and self.embedding_client.is_available():
+            texts = [f"# Episode\n{ep.content}" for ep in episodes if ep.content]
+            if texts:
+                embeddings = self.embedding_client.encode(texts)
+
         rows = []
+        ep_idx = 0
         for ep in episodes:
+            embedding_list = None
+            if embeddings is not None and ep.content and ep.absolute_id:
+                if ep_idx < len(embeddings):
+                    try:
+                        emb_arr = np.array(embeddings[ep_idx], dtype=np.float32)
+                        norm = np.linalg.norm(emb_arr)
+                        if norm > 0:
+                            emb_arr = emb_arr / norm
+                        embedding_list = emb_arr.tolist()
+                    except Exception as e:
+                        logger.debug("Episode embedding decode failed for %s: %s", ep.absolute_id, e)
+                ep_idx += 1
+
             rows.append({
                 "uuid": ep.absolute_id,
                 "content": ep.content or "",
@@ -91,6 +136,7 @@ class EpisodeStoreMixin:
                 "episode_type": getattr(ep, "episode_type", None),
                 "activity_type": getattr(ep, "activity_type", None),
                 "graph_id": self._graph_id,
+                "embedding": embedding_list,
             })
         with self._session() as session:
             self._run(session,
@@ -104,10 +150,12 @@ class EpisodeStoreMixin:
                     ep.episode_type = row.episode_type,
                     ep.activity_type = row.activity_type,
                     ep.created_at = datetime(),
-                    ep.graph_id = row.graph_id
+                    ep.graph_id = row.graph_id,
+                    ep.embedding = row.embedding
                 """,
                 rows=rows,
             )
+
         return len(rows)
 
 
@@ -124,7 +172,7 @@ class EpisodeStoreMixin:
     def delete_episode(self, cache_id: str) -> int:
         """删除 docs/ 目录下的文件 + Neo4j Episode 节点。返回删除的条数。"""
         # 1. 尝试删除 docs/ 子目录
-        doc_hash = self._id_to_doc_hash.get(cache_id)
+        doc_hash = self._resolve_doc_hash(cache_id)
         if doc_hash:
             doc_dir = self.docs_dir / doc_hash
             if doc_dir.is_dir():
@@ -334,9 +382,29 @@ class EpisodeStoreMixin:
 
     # ------------------------------------------------------------------
 
+    def _resolve_doc_hash(self, cache_id: str) -> Optional[str]:
+        """根据 cache_id 获取 doc_hash，内存缓存未命中时回退 Neo4j 查询。"""
+        doc_hash = self._id_to_doc_hash.get(cache_id)
+        if doc_hash:
+            return doc_hash
+        # Fallback: query Neo4j Episode node
+        try:
+            with self._session() as session:
+                result = self._run(session,
+                    "MATCH (ep:Episode {uuid: $uuid}) RETURN ep.doc_hash AS dh",
+                    uuid=cache_id)
+                record = result.single()
+                if record and record["dh"]:
+                    doc_hash = record["dh"]
+                    self._id_to_doc_hash[cache_id] = doc_hash
+                    return doc_hash
+        except Exception as e:
+            logger.debug("Neo4j fallback for doc_hash lookup failed: %s", e)
+        return None
+
     def get_doc_hash_by_cache_id(self, cache_id: str) -> Optional[str]:
         """根据 cache_id 获取 doc_hash。"""
-        return self._id_to_doc_hash.get(cache_id)
+        return self._resolve_doc_hash(cache_id)
 
 
 
@@ -412,7 +480,7 @@ class EpisodeStoreMixin:
 
     def get_episode_text(self, cache_id: str) -> Optional[str]:
         """获取记忆缓存对应的原始文本。"""
-        doc_hash = self._id_to_doc_hash.get(cache_id)
+        doc_hash = self._resolve_doc_hash(cache_id)
         if doc_hash:
             doc_dir = self.docs_dir / doc_hash
             original_path = doc_dir / "original.txt"
@@ -533,13 +601,37 @@ class EpisodeStoreMixin:
                 if meta is None:
                     meta = json.loads(meta_file.read_text(encoding="utf-8"))
                     self._meta_json_cache[mf_key] = meta
+                doc_dir = meta_file.parent
+                # 计算原文大小
+                original_path = doc_dir / "original.txt"
+                text_length = 0
+                original_size = 0
+                if original_path.exists():
+                    try:
+                        raw = original_path.read_text(encoding="utf-8")
+                        text_length = len(raw)
+                        original_size = original_path.stat().st_size
+                    except Exception:
+                        pass
+                cache_size = 0
+                cache_path = doc_dir / "cache.md"
+                if cache_path.exists():
+                    try:
+                        cache_size = cache_path.stat().st_size
+                    except Exception:
+                        pass
                 results.append({
                     "id": meta.get("absolute_id", ""),
                     "doc_hash": meta.get("doc_hash", ""),
                     "event_time": meta.get("event_time", ""),
+                    "processed_time": meta.get("processed_time", ""),
                     "source_document": meta.get("source_document", ""),
                     "document_path": meta.get("document_path", ""),
-                    "dir_name": meta_file.parent.name,
+                    "dir_name": doc_dir.name,
+                    "activity_type": meta.get("activity_type", ""),
+                    "text_length": text_length,
+                    "original_size": original_size,
+                    "cache_size": cache_size,
                 })
             except Exception as e:
                 logger.debug("Skipping meta file during list_docs: %s", e)
@@ -613,7 +705,7 @@ class EpisodeStoreMixin:
                 )
 
         # 回退到文件系统
-        doc_hash = self._id_to_doc_hash.get(cache_id)
+        doc_hash = self._resolve_doc_hash(cache_id)
         if doc_hash:
             doc_dir = self.docs_dir / doc_hash
             meta_path = doc_dir / "meta.json"
@@ -666,7 +758,7 @@ class EpisodeStoreMixin:
         # Fallback: file-system for missing ids
         missing = [cid for cid in cache_ids if cid not in results_map]
         for cache_id in missing:
-            doc_hash = self._id_to_doc_hash.get(cache_id)
+            doc_hash = self._resolve_doc_hash(cache_id)
             if doc_hash:
                 doc_dir = self.docs_dir / doc_hash
                 meta_path = doc_dir / "meta.json"
@@ -754,6 +846,13 @@ class EpisodeStoreMixin:
         if cache.absolute_id:
             self._id_to_doc_hash[cache.absolute_id] = doc_dir.name
 
+        # Compute embedding BEFORE Neo4j write
+        embedding_list = None
+        embedding_blob = self._compute_episode_embedding(cache.content)
+        if embedding_blob:
+            emb_arr = np.frombuffer(embedding_blob, dtype=np.float32)
+            embedding_list = emb_arr.tolist()
+
         # 在 Neo4j 中创建 Episode 节点
         with self._session() as session:
             self._run(session,
@@ -769,7 +868,8 @@ class EpisodeStoreMixin:
                     ep.activity_type = $activity_type,
                     ep.doc_hash = $doc_hash,
                     ep.created_at = datetime(),
-                    ep.graph_id = $graph_id
+                    ep.graph_id = $graph_id,
+                    ep.embedding = $embedding
                 """,
                 uuid=cache.absolute_id,
                 content=cache.content,
@@ -781,6 +881,7 @@ class EpisodeStoreMixin:
                 activity_type=cache.activity_type,
                 doc_hash=doc_hash,
                 graph_id=self._graph_id,
+                embedding=embedding_list,
             )
 
         return doc_hash
@@ -908,7 +1009,7 @@ class EpisodeStoreMixin:
 
 
     def search_episodes_by_bm25(self, query: str, limit: int = 20) -> List[Episode]:
-        """遍历 docs/ 目录搜索 Episode（简单文本匹配，与 SQLite 版本一致）。
+        """遍历 docs/ 目录搜索 Episode（简单文本匹配）。
 
         优化：先从 cache.md 文件直接读取内容做 BM25 匹配（无 DB 调用），
         只对最终 top-K 结果调用 load_episode 获取完整 Episode 对象。

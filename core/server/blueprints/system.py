@@ -17,6 +17,10 @@ logger = logging.getLogger(__name__)
 
 system_bp = Blueprint("system", __name__)
 
+# Rate limit for LLM health check (prevent credit burn)
+_last_llm_health_time = 0.0
+_LLM_HEALTH_MIN_INTERVAL = 30.0  # seconds
+
 
 def _get_system_monitor():
     """Get the SystemMonitor from app config."""
@@ -281,16 +285,16 @@ _API_ROUTE_INDEX = {
 def health():
     """健康检查；推荐使用 /api/v1/health。"""
     try:
-        processor = _get_processor()
+        gid = getattr(request, 'graph_id', None) or request.args.get('graph_id', 'default')
+        processor = current_app.config["registry"].get_processor(gid)
         embedding_available = (
             processor.embedding_client is not None
             and processor.embedding_client.is_available()
         )
-        storage_backend = "neo4j" if hasattr(processor.storage, 'is_neo4j') else "sqlite"
+        storage_backend = "neo4j"
         return ok({
-            "graph_id": request.graph_id,
+            "graph_id": gid,
             "storage_backend": storage_backend,
-            "storage_path": str(processor.storage.storage_path),
             "embedding_available": embedding_available,
         })
     except Exception as e:
@@ -300,14 +304,25 @@ def health():
 @system_bp.route("/api/v1/health/llm", methods=["GET"])
 def health_llm():
     """检查大模型是否可访问。"""
+    global _last_llm_health_time
+    now = time.time()
+    gid = getattr(request, 'graph_id', None) or request.args.get('graph_id', 'default')
+    if now - _last_llm_health_time < _LLM_HEALTH_MIN_INTERVAL:
+        return ok({
+            "graph_id": gid,
+            "llm_available": True,
+            "message": "LLM 健康检查冷却中，请稍后重试",
+            "cooldown_remaining": round(_LLM_HEALTH_MIN_INTERVAL - (now - _last_llm_health_time), 1),
+        })
+    _last_llm_health_time = now
     try:
-        processor = _get_processor()
+        processor = current_app.config["registry"].get_processor(gid)
         response = _call_llm_with_backoff(
             processor,
             "请只回复一个词：OK",
             timeout=60,
         )
-        return ok({"graph_id": request.graph_id, "llm_available": True, "message": "大模型访问正常", "response_preview": response.strip()[:80]})
+        return ok({"graph_id": gid, "llm_available": True, "message": "大模型访问正常", "response_preview": response.strip()[:80]})
     except Exception as e:
         return err(f"大模型不可用: {e}", 503)
 

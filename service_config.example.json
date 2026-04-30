@@ -6,8 +6,7 @@
   "monitor_refresh_seconds": 1.0,
   "storage_path": "./graph",
   "storage": {
-    "backend": "sqlite",
-    "_comment_backend": "sqlite | neo4j",
+    "backend": "neo4j",
     "neo4j": {
       "uri": "bolt://localhost:7687",
       "user": "neo4j",

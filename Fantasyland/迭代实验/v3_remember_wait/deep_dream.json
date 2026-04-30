@@ -1,0 +1,5 @@
+{
+  "base_url": "http://localhost:16200/api/v1",
+  "graph_id": "novel_v3_full",
+  "note": "v3 remember-wait 全流程测试。全部用 remember(wait=true)，每条等完成再继续。"
+}

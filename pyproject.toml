@@ -19,7 +19,6 @@ dependencies = [
     "numpy>=1.21.0",
     # Storage
     "neo4j>=5.0",
-    "sqlite-vec>=0.1.6",
     # Embedding / ML
     "sentence-transformers>=2.2.0",
     "transformers>=4.51.0,<5.0.0",
@@ -35,10 +34,10 @@ dev = ["pytest>=7.0", "pytest-cov", "ruff"]
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["processor*", "server*"]
+include = ["core*"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["core/tests"]
 markers = [
     "real_llm: test requires USE_REAL_LLM=1",
     "slow: test takes > 5 seconds",

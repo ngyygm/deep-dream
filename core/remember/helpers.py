@@ -451,7 +451,7 @@ def dedupe_extraction_lists(
 
 @dataclass(slots=True)
 class _AlignResult:
-    """步骤6（实体对齐）的输出，供步骤7使用。"""
+    """步骤9（实体对齐）的输出，供步骤10使用。"""
     entity_name_to_id: Dict[str, str] = field(default_factory=dict)
     pending_relations: List[Dict] = field(default_factory=list)
     unique_entities: List[Entity] = field(default_factory=list)

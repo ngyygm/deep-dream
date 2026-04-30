@@ -465,13 +465,6 @@ class Neo4jBaseMixin:
                 for old_fid, _ in resolved_pairs:
                     self._invalidate_entity_cache(old_fid)
 
-        # Vector store cleanup OUTSIDE lock
-        if all_abs_ids_to_clean:
-            try:
-                self._vector_store.delete_batch("entity_vectors", all_abs_ids_to_clean)
-            except Exception as e:
-                logger.warning("Batch vector cleanup failed: %s", e)
-
         self._cache.invalidate("sim_search:")
         self._cache.invalidate_keys(["graph_stats"])
         return total_deleted

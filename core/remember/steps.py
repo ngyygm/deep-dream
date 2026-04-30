@@ -2,16 +2,16 @@
 Extraction Pipeline — "one small task per step".
 
 Pipeline steps (within a sliding window):
-  Step 1: Comprehensive entity extraction (one LLM call + refinement)
-  Step 2: Entity dedup & normalization (rule-based)
-  Step 3: Per-entity content writing (one LLM call per entity)
-  Step 4: Entity quality gate (rule-based)
-  Step 5: Comprehensive relation discovery (one LLM call + refinement)
-  Step 6: Per-pair relation content writing (one LLM call per pair)
-  Step 7: Relation quality gate (rule-based)
+  Step 2: Comprehensive entity extraction (one LLM call + refinement)
+  Step 3: Entity dedup & normalization (rule-based)
+  Step 4: Per-entity content writing (one LLM call per entity)
+  Step 5: Entity quality gate (rule-based)
+  Step 6: Comprehensive relation discovery (one LLM call + refinement)
+  Step 7: Per-pair relation content writing (one LLM call per pair)
+  Step 8: Relation quality gate (rule-based)
 
-Steps 0 (cache update), 8 (entity alignment), 9 (relation alignment)
-are handled by existing code in orchestrator.py, entity.py, relation.py.
+Step 1 (cache update) is in alignment.py.
+Steps 9 (entity alignment) and 10 (relation alignment) are in alignment.py and orchestrator.py.
 """
 
 import re
@@ -342,6 +342,24 @@ def _format_desc(sentence: str, max_len: int = 200) -> str:
     return sentence
 
 
+def _build_relation_fallback_content(
+    entity_a: str, entity_b: str, prose_index: '_ProseIndex',
+) -> str:
+    """Build relation content from window text when both entities co-occur."""
+    sentences = prose_index.sentences
+    if not sentences:
+        return ""
+    relevant = [s for s in sentences if entity_a in s and entity_b in s]
+    if not relevant:
+        return ""
+    desc = '。'.join(relevant[:2])
+    if len(desc) > 150:
+        desc = desc[:147] + '...'
+    if not desc.endswith('。'):
+        desc += '。'
+    return desc
+
+
 # ---------------------------------------------------------------------------
 # Extraction Pipeline Mixin
 # ---------------------------------------------------------------------------
@@ -367,6 +385,7 @@ class _ExtractionStepsMixin:
         window_index: int = 0,
         total_windows: int = 1,
         window_timings_ref: Optional[Dict[str, float]] = None,
+        control_check_fn=None,
     ) -> Tuple[List[Dict[str, str]], List[Dict[str, str]]]:
         """
         Dual-model extraction pipeline.
@@ -377,6 +396,14 @@ class _ExtractionStepsMixin:
         Returns:
             (extracted_entities, extracted_relations)
         """
+        from core.remember.orchestrator import RememberControlFlow
+
+        def _check_control():
+            if control_check_fn:
+                action = control_check_fn()
+                if action:
+                    raise RememberControlFlow(action)
+
         p_lo, p_hi = progress_range
         _win = f"窗口 {window_index + 1}/{total_windows}"
 
@@ -390,39 +417,45 @@ class _ExtractionStepsMixin:
 
         extraction_client = self.extraction_client
 
+        # Set up LLM cancel checks so pause/delete can interrupt retry loops
+        _cancel_check_fn = (lambda: control_check_fn() is not None) if control_check_fn else None
+        if _cancel_check_fn:
+            self.llm_client.set_cancel_check(_cancel_check_fn)
+            if self.extraction_client_enabled:
+                extraction_client.set_cancel_check(_cancel_check_fn)
+
         # ==============================================================
-        # Step 1: Comprehensive entity extraction (strong model, think mode)
+        # Step 2: Comprehensive entity extraction (strong model, think mode)
         # Step 1b: Conversational refinement
         # ==============================================================
-        _progress(0.03, f"{_win} · 步骤1: 实体提取（强模型）", "开始")
+        _progress(0.03, f"{_win} · 步骤2: 实体提取（强模型）", "开始")
         _t = _time.time()
         raw_names, ent_refine = extraction_client.extract_entities(
-            input_text, max_refine_rounds=self.entity_refine_rounds
+            input_text, max_refine_rounds=self.entity_rounds
         )
         _elapsed = _time.time() - _t
-        _record_timing("step1_entity_extract", _elapsed)
+        _record_timing("step2_entity_extract", _elapsed)
         if verbose or verbose_steps:
             _refine_tag = ""
             if ent_refine["rounds_run"] > 0:
                 _refine_tag = f" (精炼{ent_refine['rounds_run']}轮 +{ent_refine['refine_added']})"
-            wprint_info(f"【步骤1】综合实体提取｜{ent_refine['initial']}个初始{_refine_tag} → 总{len(raw_names)}个候选｜{_elapsed:.1f}s")
+            wprint_info(f"【步骤2】综合实体提取｜{ent_refine['initial']}个初始{_refine_tag} → 总{len(raw_names)}个候选｜{_elapsed:.1f}s")
 
-        # ==============================================================
-        # Step 2: Entity dedup & normalization (rule-based)
+        _check_control()
         # ==============================================================
         _t = _time.time()
         entity_names = _normalize_and_dedup_entity_names(raw_names)
         _elapsed = _time.time() - _t
-        _record_timing("step2_entity_dedup", _elapsed)
+        _record_timing("step3_entity_dedup", _elapsed)
         if verbose or verbose_steps:
-            wprint_info(f"【步骤2】实体去重｜{len(entity_names)}个有效｜{_elapsed:.1f}s")
+            wprint_info(f"【步骤3】实体去重｜{len(entity_names)}个有效｜{_elapsed:.1f}s")
 
-        _progress(0.15, f"{_win} · 步骤2: 实体去重", f"{len(entity_names)} 个实体")
+        _progress(0.15, f"{_win} · 步骤3: 实体去重", f"{len(entity_names)} 个实体")
 
-        # ==============================================================
+        _check_control()
         # Step 3: Entity content writing — batch first, per-entity fallback
         # ==============================================================
-        _progress(0.18, f"{_win} · 步骤3: 实体内容写作", f"开始写 {len(entity_names)} 个实体")
+        _progress(0.18, f"{_win} · 步骤4: 实体内容写作", f"开始写 {len(entity_names)} 个实体")
 
         # Cache for _build_entity_fallback_content — same name may be called multiple times
         _fallback_cache: Dict[str, str] = {}
@@ -436,34 +469,49 @@ class _ExtractionStepsMixin:
         # Pre-compute prose index once for all fallback content calls
         _prose_index = _ProseIndex(_prepare_prose_sentences(input_text))
 
-        # 3a: Batch write — single LLM call for all entities
-        batch_results = self.llm_client.batch_write_entity_content(
-            entity_names, input_text,
-        )
+        # All entities go through LLM for proper concept descriptions
+        _fast_path_names: List[str] = []
+        _needs_llm_names: List[str] = list(entity_names)
 
-        # 3b: Identify entities the batch missed or returned short content for
-        _min_content_len = 10
-        _missing_names = [
-            n for n in entity_names
-            if n not in batch_results or len(batch_results[n]) < _min_content_len
-        ]
-
-        # 3c: Per-entity fallback for missing entities (parallelized)
-        if _missing_names:
-            def _write_one_entity(name: str) -> Dict[str, str]:
-                content = self.llm_client.write_entity_content(name, input_text)
-                if not content or len(content) < _min_content_len:
-                    content = _cached_fallback(name)
-                return {"name": name, "content": content}
-
-            _entity_fallback = lambda name, exc: {"name": name, "content": _cached_fallback(name)}
-            _fallback_results = _parallel_map(
-                _missing_names, _write_one_entity,
-                fallback_fn=_entity_fallback,
-                n_workers=4, thread_prefix="extract-econtent",
+        # 4a: Batch write only for entities needing LLM content
+        batch_results: Dict[str, str] = {}
+        if _needs_llm_names:
+            _batch_chunk_size = getattr(self, 'remember_entity_content_batch_size', 10)
+            batch_results = self.llm_client.batch_write_entity_content(
+                _needs_llm_names, input_text,
+                chunk_size=_batch_chunk_size,
             )
-            for e in _fallback_results:
-                batch_results[e["name"]] = e["content"]
+
+            # 4b: Identify entities the batch missed
+            _min_content_len = 10
+            _missing_names = [
+                n for n in _needs_llm_names
+                if n not in batch_results or len(batch_results[n]) < _min_content_len
+            ]
+            if verbose_steps and _missing_names:
+                wprint_info(f"  │  S4 batch命中{len(_needs_llm_names) - len(_missing_names)}/{len(_needs_llm_names)}，{_missing_names} 需回退")
+
+            # 4c: Per-entity fallback for missing entities (parallelized)
+            if _missing_names:
+                def _write_one_entity(name: str) -> Dict[str, str]:
+                    content = self.llm_client.write_entity_content(name, input_text)
+                    if not content or len(content) < _min_content_len:
+                        content = _cached_fallback(name)
+                    return {"name": name, "content": content}
+
+                _entity_fallback = lambda name, exc: {"name": name, "content": _cached_fallback(name)}
+
+                _fallback_results = _parallel_map(
+                    _missing_names, _write_one_entity,
+                    fallback_fn=_entity_fallback,
+                    n_workers=4, thread_prefix="extract-econtent",
+                )
+                for e in _fallback_results:
+                    batch_results[e["name"]] = e["content"]
+
+        # Merge fast-path results
+        for name in _fast_path_names:
+            batch_results[name] = _fallback_cache[name]
 
         # Assemble final list preserving entity_names order
         extracted_entities = []
@@ -474,12 +522,12 @@ class _ExtractionStepsMixin:
             extracted_entities.append({"name": name, "content": content})
 
         _elapsed = _time.time() - _t
-        _record_timing("step3_entity_content", _elapsed)
+        _record_timing("step4_entity_content", _elapsed)
         if verbose or verbose_steps:
-            wprint_info(f"【步骤3】实体内容写作｜{len(extracted_entities)}个完成｜{_elapsed:.1f}s")
+            _detail = f"{len(_fast_path_names)}个快速+{len(_needs_llm_names)}个LLM" if _fast_path_names else f"{len(extracted_entities)}个完成"
+            wprint_info(f"【步骤4】实体内容写作｜{_detail} → {len(extracted_entities)}个完成｜{_elapsed:.1f}s")
 
-        # ==============================================================
-        # Step 4: Entity quality gate (rule-based)
+        _check_control()
         #   When content fails validation, try fallback before dropping.
         #   If ALL entities are filtered, keep them with forced fallback
         #   (better to have imperfect entities than lose entire window).
@@ -523,73 +571,80 @@ class _ExtractionStepsMixin:
         if verbose or verbose_steps:
             rejected = len(extracted_entities) - len(valid_entities)
             if rejected:
-                wprint_info(f"【步骤4】实体质量门｜{rejected}个被过滤，{len(valid_entities)}个通过")
+                wprint_info(f"【步骤5】实体质量门｜{rejected}个被过滤，{len(valid_entities)}个通过")
 
-        _record_timing("step4_entity_quality", _time.time() - _t)
+        _record_timing("step5_entity_quality", _time.time() - _t)
         extracted_entities = valid_entities
         entity_name_list = [e["name"] for e in extracted_entities]
         entity_name_set = set(entity_name_list)
 
-        _progress(0.50, f"{_win} · 步骤4: 实体质量门", f"{len(extracted_entities)} 个有效实体")
+        _progress(0.50, f"{_win} · 步骤5: 实体质量门", f"{len(extracted_entities)} 个有效实体")
 
-        # ==============================================================
-        # Step 5: Comprehensive relation discovery (strong model, think mode)
-        # Step 5b: Conversational refinement
+        _check_control()
+        # Step 6b: Conversational refinement
         # ==============================================================
         _t = _time.time()
         relation_pairs = []
         if len(extracted_entities) >= 2:
-            _progress(0.53, f"{_win} · 步骤5: 关系发现（强模型）", "开始")
-            raw_pairs, rel_refine = extraction_client.discover_relations(
-                entity_name_list, input_text, max_refine_rounds=self.relation_refine_rounds
-            )
+            _progress(0.53, f"{_win} · 步骤6: 关系发现（强模型）", "开始")
 
-            # Normalize pair endpoints to match entity names
+            # Normalize helper
             seen_pairs = set()
             _name_lookup = self._build_name_lookup(entity_name_set)
-            for a, b in raw_pairs:
-                a = self._resolve_entity_name(a, entity_name_set, _lookup=_name_lookup)
-                b = self._resolve_entity_name(b, entity_name_set, _lookup=_name_lookup)
-                if a and b and a != b:
-                    pair_key = _pair_key(a, b)
-                    if pair_key not in seen_pairs:
-                        seen_pairs.add(pair_key)
-                        relation_pairs.append((a, b))
+            def _add_pairs(raw_list):
+                added = 0
+                for a, b in raw_list:
+                    a = self._resolve_entity_name(a, entity_name_set, _lookup=_name_lookup)
+                    b = self._resolve_entity_name(b, entity_name_set, _lookup=_name_lookup)
+                    if a and b and a != b:
+                        pair_key = _pair_key(a, b)
+                        if pair_key not in seen_pairs:
+                            seen_pairs.add(pair_key)
+                            relation_pairs.append((a, b))
+                            added += 1
+                return added
+
+            # Single conversation: initial + refine (coverage handled by refine prompt)
+            raw_pairs, rel_stats = extraction_client.discover_relations(
+                entity_name_list, input_text, max_refine_rounds=self.relation_rounds
+            )
+            _initial_count = _add_pairs(raw_pairs)
+            _refine_added = len(relation_pairs) - _initial_count
 
             if verbose or verbose_steps:
-                _refine_tag = ""
-                if rel_refine["rounds_run"] > 0:
-                    _refine_tag = f" (精炼{rel_refine['rounds_run']}轮 +{rel_refine['refine_added']})"
                 _elapsed5 = _time.time() - _t
-                wprint_info(f"【步骤5】关系对发现｜{rel_refine['initial']}对初始{_refine_tag} → 总{len(relation_pairs)}对｜{_elapsed5:.1f}s")
+                _ref_tag = f" +精炼{_refine_added}对" if _refine_added else ""
+                wprint_info(f"【步骤6】关系对发现｜{_initial_count}对初始{_ref_tag} → 总{len(relation_pairs)}对｜{_elapsed5:.1f}s")
             else:
                 _elapsed5 = _time.time() - _t
-        _record_timing("step5_relation_discovery", _elapsed5)
+        _record_timing("step6_relation_discovery", _elapsed5)
 
-        _progress(0.60, f"{_win} · 步骤5: 关系发现完成", f"{len(relation_pairs)} 对")
+        _progress(0.60, f"{_win} · 步骤6: 关系发现完成", f"{len(relation_pairs)} 对")
 
-        # ==============================================================
-        # Step 6: Relation content writing — batch first, per-pair fallback
+        _check_control()
         # ==============================================================
         _t = _time.time()
 
-        # 6a: Batch write — single LLM call for all relation pairs
+        # 7a: All relation pairs go through LLM for proper descriptions
+        _fast_rel_results: Dict[Tuple[str, str], str] = {}
+        _needs_llm_pairs: List[Tuple[str, str]] = list(relation_pairs)
+
+        # 7b: Batch write for pairs needing LLM content
         batch_rel_results: Dict[Tuple[str, str], str] = {}
-        if relation_pairs:
+        if _needs_llm_pairs:
+            _rel_batch_size = getattr(self, 'remember_relation_content_batch_size', 10)
             batch_rel_results = self.llm_client.batch_write_relation_content(
-                relation_pairs, input_text,
+                _needs_llm_pairs, input_text,
+                chunk_size=_rel_batch_size,
             )
 
-        # 6b: Identify pairs the batch missed
-        # Pre-compute sorted tuple keys once per pair (avoid 3-5x redundant sorted+tuple)
-        _pair_keys = {id(p): _pair_key(p[0], p[1]) for p in relation_pairs}
+        # 7c: Per-pair fallback for batch misses
+        _pair_keys = {id(p): _pair_key(p[0], p[1]) for p in _needs_llm_pairs}
         _missing_pairs = [
-            p for p in relation_pairs
+            p for p in _needs_llm_pairs
             if _pair_keys[id(p)] not in batch_rel_results
-            or len(batch_rel_results.get(_pair_keys[id(p)], "")) < 10
+            or len(batch_rel_results.get(_pair_keys[id(p)], "")) < _MIN_RELATION_CONTENT_LEN
         ]
-
-        # 6c: Per-pair fallback for missing pairs
         _fallback_rels: List[Dict[str, str]] = []
         if _missing_pairs:
             def _write_one_relation(pair: Tuple[str, str]) -> Optional[Dict[str, str]]:
@@ -604,17 +659,18 @@ class _ExtractionStepsMixin:
                 n_workers=4, thread_prefix="extract-rcontent",
             )
 
-        # Assemble final list: batch results + fallback results
+        # Assemble final list: batch > fast-path > per-pair fallback
         extracted_relations = []
         covered_keys = set()
         for p in relation_pairs:
-            key = _pair_keys[id(p)]
+            key = _pair_key(p[0], p[1])
             content = batch_rel_results.get(key, "")
-            if content and len(content) >= 10:
+            if not content or len(content) < _MIN_RELATION_CONTENT_LEN:
+                content = _fast_rel_results.get(key, "")
+            if content and len(content) >= _MIN_RELATION_CONTENT_LEN:
                 extracted_relations.append({"entity1_name": p[0], "entity2_name": p[1], "content": content})
                 covered_keys.add(key)
 
-        # Add fallback results for pairs not yet covered
         for r in _fallback_rels:
             key = _pair_key(r["entity1_name"], r["entity2_name"])
             if key not in covered_keys:
@@ -622,19 +678,24 @@ class _ExtractionStepsMixin:
                 covered_keys.add(key)
 
         if verbose or verbose_steps:
+            _fast_n = len(_fast_rel_results)
             _batch_n = len(batch_rel_results)
             _fallback_n = len(_fallback_rels)
-            _detail = f"批量{_batch_n}条"
+            _detail_parts = []
+            if _fast_n:
+                _detail_parts.append(f"快速{_fast_n}条")
+            if _batch_n:
+                _detail_parts.append(f"批量{_batch_n}条")
             if _fallback_n:
-                _detail += f" + 回退{_fallback_n}条"
+                _detail_parts.append(f"回退{_fallback_n}条")
+            _detail = " + ".join(_detail_parts) or f"{len(extracted_relations)}条"
             _elapsed6 = _time.time() - _t
-            wprint_info(f"【步骤6】关系内容写作｜{_detail} → {len(extracted_relations)}条完成｜{_elapsed6:.1f}s")
+            wprint_info(f"【步骤7】关系内容写作｜{_detail} → {len(extracted_relations)}条完成｜{_elapsed6:.1f}s")
         else:
             _elapsed6 = _time.time() - _t
-        _record_timing("step6_relation_content", _elapsed6)
+        _record_timing("step7_relation_content", _elapsed6)
 
-        # ==============================================================
-        # Step 7: Relation quality gate (rule-based)
+        _check_control()
         # ==============================================================
         _t = _time.time()
         valid_relations = []
@@ -646,9 +707,9 @@ class _ExtractionStepsMixin:
         if verbose or verbose_steps:
             rejected_r = len(extracted_relations) - len(valid_relations)
             if rejected_r:
-                wprint_info(f"【步骤7】关系质量门｜{rejected_r}条被过滤，{len(valid_relations)}条通过")
+                wprint_info(f"【步骤8】关系质量门｜{rejected_r}条被过滤，{len(valid_relations)}条通过")
         _elapsed7 = _time.time() - _t
-        _record_timing("step7_relation_quality", _elapsed7)
+        _record_timing("step8_relation_quality", _elapsed7)
 
         _progress(0.95, f"{_win} · 完成",
                    f"{len(extracted_entities)} 实体, {len(valid_relations)} 关系")

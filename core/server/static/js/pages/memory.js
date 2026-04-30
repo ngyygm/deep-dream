@@ -369,15 +369,21 @@
             <td><span class="mono" title="${escapeHtml(task.task_id)}">${escapeHtml(truncate(task.task_id, 12))}</span></td>
             <td>${escapeHtml(truncate(task.source_name || '-', 24))}</td>
             <td>${escapeHtml(loadCacheLabel)}</td>
-            <td>${statusBadge(task.status)}</td>
+            <td>${statusBadge(task.status, task.phase)}</td>
             <td>${progressCell}</td>
             <td>${escapeHtml(task.phase_label || '-')}</td>
             <td>${elapsed}</td>
             <td>
               ${isPausePending ? `
                 <button class="btn btn-secondary btn-sm" disabled style="margin-right:0.35rem;opacity:0.75;cursor:not-allowed;">
-                  <i data-lucide="pause" style="width:14px;height:14px;"></i>
-                  ${t('memory.pausePending')}
+                  ${spinnerHtml('spinner-sm')}
+                  ${t('memory.pausePending')} · ${escapeHtml(task.phase_label || '')}
+                </button>
+              ` : ''}
+              ${task.phase === 'cancelling' ? `
+                <button class="btn btn-secondary btn-sm" disabled style="margin-right:0.35rem;opacity:0.75;cursor:not-allowed;color:var(--error);">
+                  ${spinnerHtml('spinner-sm')}
+                  ${t('memory.deleting')} · ${escapeHtml(task.phase_label || '')}
                 </button>
               ` : ''}
               ${canPause ? `
@@ -498,34 +504,43 @@
     if (!taskId) return;
     const ok = await showConfirm({ message: t('memory.deleteTaskConfirm'), destructive: true });
     if (!ok) return;
+    const btn = document.querySelector(`.btn-delete-task[data-task-id="${taskId}"]`);
+    if (btn) { btn.disabled = true; btn.innerHTML = `${spinnerHtml('spinner-sm')} ${t('memory.deleting')}`; }
     try {
       const res = await state.api.rememberDelete(taskId, state.currentGraphId);
       showToast(res.data?.message || t('memory.deleteTaskSuccess'), 'success');
       refreshTasks();
     } catch (err) {
       showToast(t('memory.deleteTaskFailed') + ': ' + err.message, 'error');
+      refreshTasks();
     }
   }
 
   async function pauseTask(taskId) {
     if (!taskId) return;
+    const btn = document.querySelector(`.btn-pause-task[data-task-id="${taskId}"]`);
+    if (btn) { btn.disabled = true; btn.innerHTML = `${spinnerHtml('spinner-sm')} ${t('memory.pausing')}`; }
     try {
       const res = await state.api.rememberPause(taskId, state.currentGraphId);
       showToast(res.data?.message || t('memory.pauseTaskSuccess'), 'success');
       refreshTasks();
     } catch (err) {
       showToast(t('memory.pauseTaskFailed') + ': ' + err.message, 'error');
+      refreshTasks();
     }
   }
 
   async function resumeTask(taskId) {
     if (!taskId) return;
+    const btn = document.querySelector(`.btn-resume-task[data-task-id="${taskId}"]`);
+    if (btn) { btn.disabled = true; btn.innerHTML = `${spinnerHtml('spinner-sm')} ${t('memory.resuming')}`; }
     try {
       const res = await state.api.rememberResume(taskId, state.currentGraphId);
       showToast(res.data?.message || t('memory.resumeTaskSuccess'), 'success');
       refreshTasks();
     } catch (err) {
       showToast(t('memory.resumeTaskFailed') + ': ' + err.message, 'error');
+      refreshTasks();
     }
   }
 
@@ -562,7 +577,7 @@
             <span style="color:var(--text-muted);">${t('memory.taskId')}</span>
             <span class="mono">${escapeHtml(task.task_id)}</span>
             <span style="color:var(--text-muted);">${t('memory.taskStatus')}</span>
-            <span>${statusBadge(task.status)}</span>
+            <span>${statusBadge(task.status, task.phase)}</span>
             <span style="color:var(--text-muted);">${t('memory.taskLoadCache')}</span>
             <span>${escapeHtml(loadCacheLabel)}</span>
             <span style="color:var(--text-muted);">${t('memory.taskProgress')}</span>
@@ -603,8 +618,16 @@
       if (isPausePending) {
         footerParts.unshift(`
           <button class="btn btn-secondary btn-sm" disabled style="opacity:0.75;cursor:not-allowed;">
-            <i data-lucide="pause" style="width:14px;height:14px;"></i>
-            ${t('memory.pausePending')}
+            ${spinnerHtml('spinner-sm')}
+            ${t('memory.pausePending')} · ${escapeHtml(task.phase_label || '')}
+          </button>
+        `);
+      }
+      if (task.status === 'running' && task.phase === 'cancelling') {
+        footerParts.unshift(`
+          <button class="btn btn-secondary btn-sm" disabled style="opacity:0.75;cursor:not-allowed;color:var(--error);">
+            ${spinnerHtml('spinner-sm')}
+            ${t('memory.deleting')} · ${escapeHtml(task.phase_label || '')}
           </button>
         `);
       }
@@ -689,8 +712,8 @@
     const start = (_docsPage - 1) * _docsPageSize;
     const pageDocs = _allDocs.slice(start, start + _docsPageSize);
 
-    const rows = pageDocs.map(d => {
-      const filename = d.filename || d.doc_hash || '';
+    const rows = pageDocs.map((d, i) => {
+      const idx = start + i;
       return `
         <tr>
           <td><span class="mono" title="${escapeHtml(d.doc_hash)}">${escapeHtml(d.doc_hash || '-')}</span></td>
@@ -698,7 +721,7 @@
           <td>${formatDate(d.event_time)}</td>
           <td>${formatDateMs(d.processed_time)}</td>
           <td class="mono">${d.text_length != null ? d.text_length.toLocaleString() : '-'}</td>
-          <td><button class="btn btn-secondary btn-sm doc-detail-btn" data-filename="${escapeHtml(filename)}" ${!filename ? 'disabled' : ''}>${t('common.detail')}</button></td>
+          <td><button class="btn btn-secondary btn-sm doc-detail-btn" data-doc-idx="${idx}">${t('common.detail')}</button></td>
         </tr>
       `;
     }).join('');
@@ -781,13 +804,48 @@
     }
   }
 
+  function showDocPreview(doc) {
+    const fmtSize = (b) => {
+      if (b == null) return '-';
+      if (b < 1024) return b + ' B';
+      if (b < 1024 * 1024) return (b / 1024).toFixed(1) + ' KB';
+      return (b / (1024 * 1024)).toFixed(1) + ' MB';
+    };
+    const name = doc.source_document || doc.doc_name || '-';
+    const textLen = doc.text_length != null ? doc.text_length.toLocaleString() : '-';
+    const origSize = fmtSize(doc.original_size);
+    const cacheSize = fmtSize(doc.cache_size);
+    const eventTime = formatDate(doc.event_time);
+    const procTime = formatDateMs(doc.processed_time);
+    const hash = doc.doc_hash || '-';
+
+    const rows = [
+      [t('memory.taskSource') || '来源', escapeHtml(truncate(name, 60))],
+      [t('memory.docHash') || 'Hash', `<span class="mono">${escapeHtml(hash)}</span>`],
+      [t('memory.docTextLength') || '文本长度', textLen],
+      [t('memory.originalSize') || '原文大小', origSize],
+      [t('memory.cacheSize') || '缓存大小', cacheSize],
+      [t('memory.docTime') || '文档时间', eventTime],
+      [t('memory.processedTime') || '处理时间', procTime],
+    ];
+    const grid = rows.map(([k, v]) =>
+      `<span style="color:var(--text-secondary);white-space:nowrap;">${k}:</span><span>${v}</span>`
+    ).join('');
+
+    showModal({
+      title: t('memory.docPreview') || '文档预览',
+      content: `<div style="display:grid;grid-template-columns:auto 1fr;gap:0.4rem 0.75rem;font-size:0.85rem;">${grid}</div>`,
+    });
+  }
+
   function bindDocsEvents() {
     if (window.lucide) lucide.createIcons({ nodes: [document.getElementById('docs-list-wrapper')] });
     bindDocsPagination();
     document.querySelectorAll('.doc-detail-btn').forEach(btn => {
       btn.addEventListener('click', () => {
-        const filename = btn.getAttribute('data-filename');
-        if (filename) showDocContent(filename);
+        const idx = parseInt(btn.getAttribute('data-doc-idx'), 10);
+        if (isNaN(idx) || idx < 0 || idx >= _allDocs.length) return;
+        showDocPreview(_allDocs[idx]);
       });
     });
   }
@@ -816,45 +874,12 @@
       const res = await state.api.getDocContent(filename, state.currentGraphId);
       const data = res.data || {};
       const meta = data.meta || {};
-
-      const sourceName = meta.source_document || meta.doc_name || filename;
-      const eventTime = meta.event_time || '-';
-      const original = data.original || '';
-      const cache = data.cache || '';
-
-      let body = `
-        <div style="display:flex;flex-direction:column;gap:1rem;">
-          <div style="display:grid;grid-template-columns:auto 1fr;gap:0.25rem 0.75rem;font-size:0.85rem;">
-            <span style="color:var(--text-secondary);">${t('memory.taskSource')}:</span><span>${escapeHtml(sourceName)}</span>
-            <span style="color:var(--text-secondary);">${t('memory.docTime')}:</span><span>${formatDate(eventTime)}</span>
-          </div>
-      `;
-
-      if (cache) {
-        body += `
-          <div>
-            <h4 style="margin-bottom:0.5rem;">${t('memory.cacheSummary')}</h4>
-            <div style="max-height:400px;overflow-y:auto;background:var(--bg-secondary);padding:0.75rem;border-radius:0.5rem;font-size:0.85rem;line-height:1.6;white-space:pre-wrap;word-break:break-word;">${escapeHtml(cache)}</div>
-          </div>
-        `;
-      }
-
-      if (original) {
-        body += `
-          <div>
-            <h4 style="margin-bottom:0.5rem;">${t('memory.originalText')}</h4>
-            <div style="max-height:400px;overflow-y:auto;background:var(--bg-secondary);padding:0.75rem;border-radius:0.5rem;font-size:0.85rem;line-height:1.6;white-space:pre-wrap;word-break:break-word;">${escapeHtml(original)}</div>
-          </div>
-        `;
-      }
-
-      body += '</div>';
-
-      showModal({
-        title: t('memory.docContent') + ' - ' + escapeHtml(truncate(sourceName, 30)),
-        content: body,
-        size: 'lg',
-      });
+      _renderDocModal(
+        meta.source_document || meta.doc_name || filename,
+        meta.event_time || '-',
+        data.cache || '',
+        data.original || '',
+      );
     } catch (err) {
       showToast(t('memory.loadDocContentFailed') + ': ' + err.message, 'error');
     }

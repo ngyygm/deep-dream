@@ -1,0 +1,288 @@
+{
+  "source_name": "auto_d3e295b9_你的理解整体是对的，但有一个关键点需要稍微“拧紧”一下，否则",
+  "entities": [
+    {
+      "name": "东京",
+      "content": "作为活动发生的地理位置,是该记录或事件所关联的具体城市。"
+    },
+    {
+      "name": "正确的结构",
+      "content": "一种优化后的数据管理模式,主张通过复用已有版本而非为每个片段创建新版本,旨在减少冗余并提升数据效率。"
+    },
+    {
+      "name": "episode1 → v1",
+      "content": "展示了数据版本化初期状态的示例,即第一个片段与其初始版本建立的对应关系。"
+    },
+    {
+      "name": "episode2 → v2",
+      "content": "展示了数据版本演进中的一个阶段,即第二个片段关联到了更新后的第二个版本。"
+    },
+    {
+      "name": "episode3 → v2",
+      "content": "体现了版本复用逻辑的典型案例,即第三个片段并未产生新版本,而是直接引用了现有的第二个版本。"
+    },
+    {
+      "name": "版本爆炸",
+      "content": "指在数据管理中,若为每个内容片段都强制创建独立版本,会导致版本数量与内容数量同步激增,造成存储和处理上的巨大冗余。"
+    },
+    {
+      "name": "语义稀释",
+      "content": "指在信息处理过程中,由于版本冗余或不必要的更新,导致核心语义特征被大量无关信息冲淡,进而影响后续检索精度的一种现象。"
+    },
+    {
+      "name": "downstream查询",
+      "content": "指依赖于底层数据或向量表示的后续下游任务请求,需要通过准确的版本定位来获取一致且正确的语义信息。"
+    },
+    {
+      "name": "embedding",
+      "content": "指将文本或概念转化为高维向量的数值化表示过程,其质量直接影响语义检索的准确性与匹配效率。"
+    },
+    {
+      "name": "retrieval",
+      "content": "指从大规模向量空间或数据库中检索相关信息的过程,其效果受输入数据版本一致性及语义清晰度的直接影响。"
+    },
+    {
+      "name": "无效diff",
+      "content": "指在版本比对过程中产生的无实际内容变化的差异记录,表现为内容为空或仅有结构变动而无实质语义更新。"
+    },
+    {
+      "name": "Concept Version产生条件",
+      "content": "指触发新概念版本生成的特定逻辑标准,包括新属性的出现、既有属性值的冲突或修正,以及超过预设阈值的细节补充。"
+    },
+    {
+      "name": "新属性出现",
+      "content": "指在概念描述中新增了原先不存在的特征维度或信息项,是触发概念版本更新的触发条件之一。"
+    },
+    {
+      "name": "属性值变化",
+      "content": "指原有属性所承载的具体数据或描述内容发生了冲突、修正或重新定义,会导致产生新的概念版本。"
+    },
+    {
+      "name": "重要细节补充",
+      "content": "指对现有属性进行了程度超过预设阈值的深度信息扩充,足以支撑产生新版本记录的增量信息。"
+    },
+    {
+      "name": "只记录引用,不版本化",
+      "content": "一种数据存储策略,即在属性未发生实质性变动时,仅通过关联旧版本来保留历史轨迹,避免产生冗余的版本记录。"
+    },
+    {
+      "name": "Episode和Concept的关系",
+      "content": "指事件片段与概念实体之间的逻辑关联架构,涵盖了从简单的提及、证据支持到版本演化来源的多层级建模关系。"
+    },
+    {
+      "name": "mention",
+      "content": "指事件片段（Episode）对特定概念（Concept）的一次性引用或提及,代表两者之间存在基础的关联映射。"
+    },
+    {
+      "name": "support",
+      "content": "用于建立特定事件与概念版本之间联系的逻辑纽带,其作用是为该版本提供事实依据或论据支持。"
+    },
+    {
+      "name": "mutation source",
+      "content": "指代导致概念版本发生变更或产生的原始触发因素,用于追踪新版本生成的来源与动力。"
+    },
+    {
+      "name": "empty",
+      "content": "描述由于数据或内容未发生实质性变化,导致版本比对或差异计算结果中不包含有效增量信息的状态。"
+    },
+    {
+      "name": "evidence",
+      "content": "支撑或证明某一特定概念版本存在并具有准确性的客观事实、数据或逻辑依据。"
+    },
+    {
+      "name": "conflict",
+      "content": "指代属性值之间存在的不一致性或矛盾,是触发概念版本更新和新版本产生的关键驱动条件之一。"
+    },
+    {
+      "name": "correction",
+      "content": "指对既有属性值进行的修正操作,通过更新错误或过时的信息来驱动概念版本向更准确的状态演进。"
+    },
+    {
+      "name": "threshold",
+      "content": "用于判定是否需要生成新版本的衡量标准,通常指代重要细节补充的量化界限。"
+    },
+    {
+      "name": "created_by",
+      "content": "用于标记概念版本变更来源的溯源属性,指明引发属性变化或新版本产生的具体事件。"
+    },
+    {
+      "name": "冲突",
+      "content": "指代属性值发生变动的情况,是触发概念版本更新的逻辑条件之一。"
+    },
+    {
+      "name": "修正",
+      "content": "指对已有属性值进行调整或更正的行为,属于导致版本演进的触发因素。"
+    },
+    {
+      "name": "证据",
+      "content": "指代支持特定概念版本存在性的支撑性数据,通过事件与版本之间的关联关系进行体现。"
+    }
+  ],
+  "relations": [
+    {
+      "entity1_name": "episode1 → v1",
+      "entity2_name": "正确的结构",
+      "content": "通过展示单向映射关系来定义正确的结构逻辑"
+    },
+    {
+      "entity1_name": "episode2 → v2",
+      "entity2_name": "正确的结构",
+      "content": "作为结构中版本复用的示例展示其映射状态"
+    },
+    {
+      "entity1_name": "episode3 → v2",
+      "entity2_name": "正确的结构",
+      "content": "通过指向已有版本v2来演示结构中的复用机制"
+    },
+    {
+      "entity1_name": "episode1 → v1",
+      "entity2_name": "episode2 → v2",
+      "content": "通过对比不同episode对应的版本映射来构建序列"
+    },
+    {
+      "entity1_name": "episode2 → v2",
+      "entity2_name": "episode3 → v2",
+      "content": "通过指向相同的v2版本来展示数据合并与去重"
+    },
+    {
+      "entity1_name": "版本爆炸",
+      "entity2_name": "语义稀释",
+      "content": "由于产生过多冗余版本而直接导致语义特征被摊薄"
+    },
+    {
+      "entity1_name": "downstream查询",
+      "entity2_name": "语义稀释",
+      "content": "查询操作在面对模糊版本时会产生检索定位混乱"
+    },
+    {
+      "entity1_name": "embedding",
+      "entity2_name": "语义稀释",
+      "content": "向量化过程在多版本干扰下会降低特征的辨识度"
+    },
+    {
+      "entity1_name": "retrieval",
+      "entity2_name": "语义稀释",
+      "content": "检索环节在处理过载版本时会造成匹配精度下降"
+    },
+    {
+      "entity1_name": "embedding",
+      "entity2_name": "retrieval",
+      "content": "使用向量化特征来支撑后续的语义检索匹配过程"
+    },
+    {
+      "entity1_name": "empty",
+      "entity2_name": "无效diff",
+      "content": "当diff内容为空时,系统将其判定并归类为无效的差异记录。"
+    },
+    {
+      "entity1_name": "Concept Version产生条件",
+      "entity2_name": "新属性出现",
+      "content": "新属性的出现会触发系统执行创建新版本的逻辑动作。"
+    },
+    {
+      "entity1_name": "Concept Version产生条件",
+      "entity2_name": "属性值变化",
+      "content": "检测到属性值发生改变时,系统会执行版本迭代的动作。"
+    },
+    {
+      "entity1_name": "Concept Version产生条件",
+      "entity2_name": "重要细节补充",
+      "content": "当重要细节补充的内容达到标准时,会驱动新版本的产生。"
+    },
+    {
+      "entity1_name": "冲突",
+      "entity2_name": "属性值变化",
+      "content": "冲突的发生会导致原有的属性值被重新赋值或更新。"
+    },
+    {
+      "entity1_name": "修正",
+      "entity2_name": "属性值变化",
+      "content": "通过修正操作来改变错误的属性值,从而实现数据的更新。"
+    },
+    {
+      "entity1_name": "conflict",
+      "entity2_name": "属性值变化",
+      "content": "冲突的存在会直接引起属性值在版本间的更替与变动。"
+    },
+    {
+      "entity1_name": "correction",
+      "entity2_name": "属性值变化",
+      "content": "执行修正逻辑会改写属性的旧值,从而产生新的属性值状态。"
+    },
+    {
+      "entity1_name": "threshold",
+      "entity2_name": "重要细节补充",
+      "content": "细节补充的内容若超过预设阈值,则会触发版本化记录。"
+    },
+    {
+      "entity1_name": "Concept Version产生条件",
+      "entity2_name": "只记录引用,不版本化",
+      "content": "若未触发版本条件,系统仅执行对原版本的引用而不创建新版。"
+    },
+    {
+      "entity1_name": "episode3 → v2",
+      "entity2_name": "mention",
+      "content": "episode3 → v2 通过文本描述动作来 mention 相关的核心概念。"
+    },
+    {
+      "entity1_name": "episode3 → v2",
+      "entity2_name": "support",
+      "content": "episode3 → v2 通过携带的证据链条来 support 对应版本属性的真实性。"
+    },
+    {
+      "entity1_name": "episode3 → v2",
+      "entity2_name": "mutation source",
+      "content": "episode3 → v2 充当 mutation source 导致 Concept 版本发生属性变更。"
+    },
+    {
+      "entity1_name": "created_by",
+      "entity2_name": "episode3 → v2",
+      "content": "created_by 属性标识了导致 episode3 → v2 版本产生的具体溯源事件。"
+    },
+    {
+      "entity1_name": "evidence",
+      "entity2_name": "support",
+      "content": "evidence 通过提供事实依据来 support 概念版本属性的有效性。"
+    },
+    {
+      "entity1_name": "created_by",
+      "entity2_name": "mutation source",
+      "content": "created_by 记录了 mutation source 触发版本更新的具体操作记录。"
+    },
+    {
+      "entity1_name": "conflict",
+      "entity2_name": "修正",
+      "content": "conflict 触发了针对错误属性值的 修正 动作以实现版本迭代。"
+    },
+    {
+      "entity1_name": "conflict",
+      "entity2_name": "correction",
+      "content": "属性值发生冲突时,通过产生新的版本记录修正后的准确信息。"
+    },
+    {
+      "entity1_name": "episode3 → v2",
+      "entity2_name": "episode1 → v1",
+      "content": "episode3 通过复用 episode1 对应的版本 v2 来避免产生冗余的新版本。"
+    },
+    {
+      "entity1_name": "东京",
+      "entity2_name": "正确的结构",
+      "content": "将东京作为活动地信息,按照版本复用逻辑重新整理至正确的结构化模型中。"
+    },
+    {
+      "entity1_name": "Episode和Concept的关系",
+      "entity2_name": "support",
+      "content": "Episode和Concept的关系与support存在关联"
+    },
+    {
+      "entity1_name": "Episode和Concept的关系",
+      "entity2_name": "mention",
+      "content": "Episode和Concept的关系与mention存在关联"
+    },
+    {
+      "entity1_name": "Episode和Concept的关系",
+      "entity2_name": "mutation source",
+      "content": "Episode和Concept的关系与mutation source存在关联"
+    }
+  ]
+}

@@ -1,0 +1,49 @@
+[
+  {
+    "batch_size": 10,
+    "elapsed": 36.162275314331055,
+    "total_entities": 29,
+    "covered": 27,
+    "missing": [
+      "女娲氏",
+      "好事多磨"
+    ],
+    "coverage_rate": 0.9310344827586207,
+    "avg_content_len": 41.55555555555556,
+    "min_content_len": 37,
+    "max_content_len": 48
+  },
+  {
+    "batch_size": 20,
+    "elapsed": 37.02035665512085,
+    "total_entities": 29,
+    "covered": 29,
+    "missing": [],
+    "coverage_rate": 1.0,
+    "avg_content_len": 27.379310344827587,
+    "min_content_len": 13,
+    "max_content_len": 51
+  },
+  {
+    "batch_size": 30,
+    "elapsed": 29.783869743347168,
+    "total_entities": 29,
+    "covered": 29,
+    "missing": [],
+    "coverage_rate": 1.0,
+    "avg_content_len": 28.20689655172414,
+    "min_content_len": 18,
+    "max_content_len": 38
+  },
+  {
+    "batch_size": 50,
+    "elapsed": 29.95624589920044,
+    "total_entities": 29,
+    "covered": 29,
+    "missing": [],
+    "coverage_rate": 1.0,
+    "avg_content_len": 28.103448275862068,
+    "min_content_len": 21,
+    "max_content_len": 34
+  }
+]

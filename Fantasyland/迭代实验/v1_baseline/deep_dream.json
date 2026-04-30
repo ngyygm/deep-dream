@@ -1,0 +1,5 @@
+{
+  "base_url": "http://localhost:16200/api/v1",
+  "graph_id": "novel_fantasyland_v1",
+  "note": "Iteration 1 baseline test - fantasyland skill optimization"
+}

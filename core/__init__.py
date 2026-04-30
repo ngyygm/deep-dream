@@ -6,11 +6,11 @@ Deep-Dream Core
 - find/ — 混合搜索引擎
 - dream/ — 隐含关系发现
 - llm/ — LLM 客户端
-- storage/ — 双后端存储 (SQLite/Neo4j)
+- storage/ — Neo4j 图存储
 """
 
 from .models import ContentPatch, Episode, Entity, Relation
-from .storage import StorageManager
+from .storage.neo4j_store import Neo4jStorageManager
 from .storage import EmbeddingClient
 from .storage import create_storage_manager
 from .llm import LLMClient
@@ -22,7 +22,7 @@ __all__ = [
     "Episode",
     "Entity",
     "Relation",
-    "StorageManager",
+    "Neo4jStorageManager",
     "EmbeddingClient",
     "create_storage_manager",
     "LLMClient",

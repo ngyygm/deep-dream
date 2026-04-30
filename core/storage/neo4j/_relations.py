@@ -12,8 +12,7 @@ import numpy as np
 
 from ...models import Entity, Relation
 from ...perf import _perf_timer
-from ..vector_store import VectorStore
-from ._helpers import _RELATION_RETURN_FIELDS, _expand_cypher, _neo4j_record_to_relation, _q
+from ._helpers import _RELATION_RETURN_FIELDS, _RELATION_RETURN_FIELDS_WITH_EMB, _expand_cypher, _fmt_dt, _neo4j_record_to_relation, _q
 from ._dream import _dream_source
 
 logger = logging.getLogger(__name__)
@@ -92,15 +91,13 @@ class RelationStoreMixin:
         return name1, name2
 
     def _build_relation_embedding_text(self, relation: Relation, entity1_name: str = "", entity2_name: str = "") -> str:
-        """构建关系 embedding 文本："{entity1_name} {content} {entity2_name}"。"""
-        parts = []
-        if entity1_name:
-            parts.append(entity1_name)
-        if relation.content:
-            parts.append(relation.content)
-        if entity2_name:
-            parts.append(entity2_name)
-        return " ".join(parts) if parts else relation.content
+        """构建关系 embedding 文本：Markdown 格式 "# name1 → name2\\ncontent"。"""
+        content = relation.content or ""
+        if entity1_name and entity2_name:
+            return f"# {entity1_name} → {entity2_name}\n{content}"
+        elif entity1_name or entity2_name:
+            return f"# {entity1_name or entity2_name}\n{content}"
+        return content
 
     def _compute_relation_embedding(self, relation: Relation,
                                      names: Optional[Dict[str, str]] = None) -> Optional[bytes]:
@@ -213,32 +210,27 @@ class RelationStoreMixin:
     def _get_relations_with_embeddings_impl(self) -> List[tuple]:
         """获取所有关系的最新版本及其 embedding（实际实现）。"""
         with self._session() as session:
-            # 2026-04-26: Added LIMIT to prevent unbounded cache growth
             limit = getattr(self, '_emb_cache_max_size', 10000)
-            result = self._run(session, _q("""
+            result = self._run(session,
+                f"""
                 MATCH (r:Relation)
                 WITH r.family_id AS fid, COLLECT(r) AS rels
                 UNWIND rels AS r
                 WITH fid, r ORDER BY r.processed_time DESC
                 WITH fid, HEAD(COLLECT(r)) AS r
-                RETURN __REL_FIELDS__
+                RETURN {_RELATION_RETURN_FIELDS_WITH_EMB}
                 ORDER BY r.processed_time DESC
                 LIMIT $limit
-                """), limit=limit)
+                """, limit=limit)
             records = list(result)
 
         if not records:
             return []
 
-        # 批量获取所有 embedding
-        uuids = [record["uuid"] for record in records]
-        emb_map = self._vector_store.get_batch("relation_vectors", uuids)
-
         relations = []
         for record in records:
             relation = _neo4j_record_to_relation(record)
-            emb_list = emb_map.get(relation.absolute_id)
-            emb_array = np.array(emb_list, dtype=np.float32) if emb_list else None
+            emb_array = np.frombuffer(relation.embedding, dtype=np.float32) if relation.embedding else None
             relations.append((relation, emb_array))
         return relations
 
@@ -257,12 +249,18 @@ class RelationStoreMixin:
                    Neo4j lookups for embedding text. When the caller already has
                    entity names (e.g. remember pipeline), pass them here.
         """
-        valid_at = (relation.valid_at or relation.event_time).isoformat()
+        valid_at = _fmt_dt(relation.valid_at or relation.event_time)
 
         # Phase 1: Compute embedding OUTSIDE the write lock (CPU-bound work)
         embedding_blob = self._compute_relation_embedding(relation, names=names)
         if embedding_blob is not None:
             relation.embedding = embedding_blob
+
+        # Convert embedding bytes → LIST<FLOAT> for Neo4j node property
+        embedding_list = None
+        if embedding_blob:
+            emb_array_for_list = np.frombuffer(embedding_blob, dtype=np.float32)
+            embedding_list = emb_array_for_list.tolist()
 
         # Phase 2: Acquire lock only for DB writes
         with self._relation_write_lock:
@@ -273,8 +271,8 @@ class RelationStoreMixin:
                     "e1_abs": relation.entity1_absolute_id,
                     "e2_abs": relation.entity2_absolute_id,
                     "content": relation.content,
-                    "event_time": relation.event_time.isoformat(),
-                    "processed_time": relation.processed_time.isoformat(),
+                    "event_time": _fmt_dt(relation.event_time),
+                    "processed_time": _fmt_dt(relation.processed_time),
                     "cache_id": relation.episode_id,
                     "source": relation.source_document,
                     "summary": relation.summary,
@@ -284,6 +282,7 @@ class RelationStoreMixin:
                     "content_format": getattr(relation, "content_format", "plain"),
                     "valid_at": valid_at,
                     "graph_id": self._graph_id,
+                    "embedding": embedding_list,
                 }
 
                 # Single combined query: MERGE node + invalidate old + RELATES_TO edges
@@ -305,7 +304,8 @@ class RelationStoreMixin:
                         r.provenance = $provenance,
                         r.content_format = $content_format,
                         r.valid_at = datetime($valid_at),
-                        r.graph_id = $graph_id
+                        r.graph_id = $graph_id,
+                        r.embedding = $embedding
                     WITH 1 AS _dummy
                     MATCH (old:Relation {family_id: $family_id})
                     WHERE old.uuid <> $uuid AND old.invalid_at IS NULL
@@ -322,12 +322,10 @@ class RelationStoreMixin:
                     **params,
                 )
 
-        # Phase 3: Vector store I/O OUTSIDE lock
+        # Phase 3: Cache update
         emb_array = None
         if embedding_blob:
             emb_array = np.frombuffer(embedding_blob, dtype=np.float32)
-            self._vector_store.upsert("relation_vectors", relation.absolute_id, [],
-                                      _precomputed_bytes=embedding_blob)
 
         self._invalidate_relation_cache_bulk()
         return emb_array
@@ -339,56 +337,79 @@ class RelationStoreMixin:
                                           threshold: float,
                                           max_results: int,
                                           query_embedding=None) -> List[Relation]:
-        """使用 sqlite-vec KNN 进行关系相似度搜索。"""
+        """使用 Neo4j 向量索引进行关系相似度搜索。"""
         # 1. Encode + 归一化 query (skip if caller provided embedding)
         if query_embedding is None:
             query_embedding = self.embedding_client.encode(query_text)
         if query_embedding is None:
             return []
 
-        query_emb = np.asarray(
-            query_embedding[0] if isinstance(query_embedding, (list, np.ndarray)) else query_embedding,
-            dtype=np.float32
-        )
+        query_emb = np.asarray(query_embedding, dtype=np.float32)
+        if query_emb.ndim > 1:
+            query_emb = query_emb[0]
         norm = np.linalg.norm(query_emb)
         if norm > 0:
             query_emb = query_emb / norm
 
-        # 2. KNN top-k（多取几倍候选，因为同一 family_id 可能有多个版本）
+        # 2. Neo4j vector index KNN
         knn_limit = max_results * 5
-        knn_results = self._vector_store.search(
-            "relation_vectors", [], limit=knn_limit,
-            _precomputed_bytes=query_emb.astype(np.float32).tobytes()
-        )
+        query_vector = query_emb.tolist()
+        with self._session() as session:
+            try:
+                result = session.run(
+                    """
+                    CALL db.index.vector.queryNodes('relation_embedding', $k, $queryVector)
+                    YIELD node, score
+                    WHERE node.graph_id = $graph_id AND node.invalid_at IS NULL
+                    RETURN node, score
+                    ORDER BY score DESC
+                    """,
+                    k=knn_limit,
+                    queryVector=query_vector,
+                    graph_id=self._graph_id,
+                )
+                records = list(result)
+            except Exception as e:
+                logger.warning("Neo4j relation vector search failed: %s", e)
+                return []
 
-        if not knn_results:
+        if not records:
             return []
 
-        # 3. L2 距离转余弦相似度 — single-pass building both uuid_dist map and uuids list
-        uuid_dist = {}
-        uuids = []
-        for uuid, dist in knn_results:
-            uuid_dist[uuid] = dist
-            uuids.append(uuid)
-
-        # 4. 批量获取关系（一次 Neo4j 查询，仅有效版本）
-        relations = self.get_relations_by_absolute_ids(uuids, valid_only=True)
-
-        # 5. 过滤 threshold + 去重（同 family_id 取最新）
+        # 3. 去重（同 family_id 取最高分）+ 过滤 threshold
         seen = set()
         results = []
-        for relation in relations:
-            if relation is None:
+        for record in records:
+            node = record["node"]
+            score = record["score"]
+            if score < threshold:
+                break
+            family_id = node.get("family_id")
+            if family_id in seen:
                 continue
-            l2_dist_sq = uuid_dist.get(relation.absolute_id)
-            if l2_dist_sq is None:
-                continue
-            cos_sim = 1.0 - l2_dist_sq / 2.0
-            if cos_sim >= threshold and relation.family_id not in seen:
-                results.append(relation)
-                seen.add(relation.family_id)
-                if len(results) >= max_results:
-                    break
+            seen.add(family_id)
+            rel_dict = {
+                "uuid": node.get("uuid"),
+                "family_id": family_id,
+                "entity1_absolute_id": node.get("entity1_absolute_id", ""),
+                "entity2_absolute_id": node.get("entity2_absolute_id", ""),
+                "content": node.get("content", ""),
+                "event_time": node.get("event_time"),
+                "processed_time": node.get("processed_time"),
+                "episode_id": node.get("episode_id", ""),
+                "source_document": node.get("source_document", ""),
+                "valid_at": node.get("valid_at"),
+                "invalid_at": node.get("invalid_at"),
+                "summary": node.get("summary"),
+                "attributes": node.get("attributes"),
+                "confidence": node.get("confidence"),
+                "provenance": node.get("provenance"),
+                "embedding": node.get("embedding"),
+            }
+            relation = _neo4j_record_to_relation(rel_dict)
+            results.append(relation)
+            if len(results) >= max_results:
+                break
         return results
 
     # ------------------------------------------------------------------
@@ -414,11 +435,6 @@ class RelationStoreMixin:
                 record = result.single()
                 deleted = record["deleted"] if record else 0
             self._invalidate_relation_cache_bulk()
-        if deleted > 0:
-            try:
-                self._vector_store.delete_batch("relation_vectors", absolute_ids)
-            except Exception as e:
-                logger.warning("batch_delete_relation_versions vector cleanup failed: %s", e)
         return deleted
 
 
@@ -446,12 +462,6 @@ class RelationStoreMixin:
                 record = result.single()
                 count = record["cnt"] if record else 0
             self._invalidate_relation_cache_bulk()
-        # 清理向量存储 — outside lock
-        if all_uuids:
-            try:
-                self._vector_store.delete_batch("relation_vectors", all_uuids)
-            except Exception as e:
-                logger.warning("batch_delete_relations vector cleanup failed: %s", e)
         return count
 
 
@@ -480,69 +490,24 @@ class RelationStoreMixin:
 
 
     def bulk_save_relations(self, relations: List[Relation]):
-        """批量保存关系（UNWIND 批量写入）。"""
+        """批量保存关系（UNWIND 批量写入）。
+
+        先写入元数据（不含 embedding），embedding 在后台线程异步计算并更新。
+        """
         if not relations:
             return
 
-        # 批量解析实体名称用于 embedding 编码
-        _emb_available = bool(self.embedding_client and self.embedding_client.is_available())
-        entity_names = {}
-        if _emb_available:
-            all_abs_ids = set()
-            for r in relations:
-                if r.entity1_absolute_id:
-                    all_abs_ids.add(r.entity1_absolute_id)
-                if r.entity2_absolute_id:
-                    all_abs_ids.add(r.entity2_absolute_id)
-            if all_abs_ids:
-                try:
-                    with self._session() as session:
-                        result = self._run(session,
-                            "MATCH (e:Entity) WHERE e.uuid IN $aids RETURN e.uuid AS aid, e.name AS name",
-                            aids=list(all_abs_ids),
-                        )
-                        for rec in result:
-                            entity_names[rec["aid"]] = rec["name"] or ""
-                except Exception as e:
-                    logger.debug("bulk_resolve entity names failed: %s", e)
-
-        embeddings = None
-        if _emb_available:
-            texts = [
-                self._build_relation_embedding_text(
-                    r,
-                    entity_names.get(r.entity1_absolute_id, ""),
-                    entity_names.get(r.entity2_absolute_id, ""),
-                )
-                for r in relations
-            ]
-            embeddings = self.embedding_client.encode(texts)
-
-        # Phase 1: Prepare rows and vec_items outside lock (CPU work, no I/O)
-        vec_items = []
+        # --- Phase 1: 快速写入 Neo4j（不含 embedding）---
         rows = []
-        for idx, relation in enumerate(relations):
-            embedding_blob = None
-            if embeddings is not None:
-                try:
-                    emb_arr = np.array(embeddings[idx], dtype=np.float32)
-                    norm = np.linalg.norm(emb_arr)
-                    if norm > 0:
-                        emb_arr = emb_arr / norm
-                    embedding_blob = emb_arr.tobytes()
-                except Exception as e:
-                    logger.debug("Embedding decode failed for relation index %d: %s", idx, e)
-                    embedding_blob = None
-            relation.embedding = embedding_blob
-
+        for relation in relations:
             rows.append({
                 "uuid": relation.absolute_id,
                 "family_id": relation.family_id,
                 "e1_abs": relation.entity1_absolute_id,
                 "e2_abs": relation.entity2_absolute_id,
                 "content": relation.content,
-                "event_time": relation.event_time.isoformat(),
-                "processed_time": relation.processed_time.isoformat(),
+                "event_time": _fmt_dt(relation.event_time),
+                "processed_time": _fmt_dt(relation.processed_time),
                 "cache_id": relation.episode_id,
                 "source": relation.source_document,
                 "summary": getattr(relation, 'summary', None),
@@ -550,17 +515,12 @@ class RelationStoreMixin:
                 "confidence": getattr(relation, 'confidence', None),
                 "provenance": getattr(relation, 'provenance', None),
                 "content_format": getattr(relation, 'content_format', None),
-                "valid_at": (relation.valid_at or relation.event_time).isoformat() if relation.valid_at or relation.event_time else None,
+                "valid_at": _fmt_dt(relation.valid_at or relation.event_time) if relation.valid_at or relation.event_time else None,
                 "graph_id": self._graph_id,
             })
 
-            if embedding_blob:
-                vec_items.append((relation.absolute_id, embedding_blob))
-
-        # Phase 2: Neo4j write under lock
         with self._relation_write_lock:
             with self._session() as session:
-                # Single UNWIND: create/update Relation nodes + invalidate old + create RELATES_TO edges
                 self._run_with_retry(session,
                     """
                     UNWIND $rows AS row
@@ -597,15 +557,75 @@ class RelationStoreMixin:
                     rows=rows,
                 )
 
-            # Incremental relation emb cache update (in-memory, fast)
-            if self._relation_emb_cache is not None:
-                cache_items = []
-                for relation in relations:
-                    if relation.embedding:
-                        emb_array = np.frombuffer(relation.embedding, dtype=np.float32)
-                        cache_items.append((relation, emb_array))
-                    else:
-                        cache_items.append((relation, None))
+        # --- Phase 2: 后台线程计算 embedding + 更新 Neo4j ---
+        if self.embedding_client and self.embedding_client.is_available():
+            threading.Thread(
+                target=self._bulk_save_relation_embedding_bg,
+                args=(list(relations),),
+                daemon=True,
+            ).start()
+
+    def _bulk_save_relation_embedding_bg(self, relations: List[Relation]):
+        """后台计算关系 embedding 并更新到 Neo4j。"""
+        try:
+            # 批量解析实体名称
+            entity_names = {}
+            all_abs_ids = set()
+            for r in relations:
+                if r.entity1_absolute_id:
+                    all_abs_ids.add(r.entity1_absolute_id)
+                if r.entity2_absolute_id:
+                    all_abs_ids.add(r.entity2_absolute_id)
+            if all_abs_ids:
+                try:
+                    with self._session() as session:
+                        result = self._run(session,
+                            "MATCH (e:Entity) WHERE e.uuid IN $aids RETURN e.uuid AS aid, e.name AS name",
+                            aids=list(all_abs_ids),
+                        )
+                        for rec in result:
+                            entity_names[rec["aid"]] = rec["name"] or ""
+                except Exception:
+                    pass
+
+            texts = [
+                self._build_relation_embedding_text(
+                    r,
+                    entity_names.get(r.entity1_absolute_id, ""),
+                    entity_names.get(r.entity2_absolute_id, ""),
+                )
+                for r in relations
+            ]
+            embeddings = self.embedding_client.encode(texts)
+
+            cache_items = []
+            emb_rows = []
+            for idx, relation in enumerate(relations):
+                try:
+                    emb_array = np.array(embeddings[idx], dtype=np.float32)
+                    norm = np.linalg.norm(emb_array)
+                    if norm > 0:
+                        emb_array = emb_array / norm
+                    relation.embedding = emb_array.tobytes()
+                    embedding_list = emb_array.tolist()
+                except Exception:
+                    continue
+                emb_rows.append({"uuid": relation.absolute_id, "embedding": embedding_list})
+                cache_items.append((relation, emb_array))
+
+            if emb_rows:
+                with self._session() as session:
+                    self._run_with_retry(session,
+                        """
+                        UNWIND $rows AS row
+                        MATCH (r:Relation {uuid: row.uuid})
+                        SET r.embedding = row.embedding
+                        """,
+                        operation_name="bulk_save_rel_emb_update",
+                        rows=emb_rows,
+                    )
+
+            if self._relation_emb_cache is not None and cache_items:
                 if self._relation_emb_fid_idx is not None:
                     fid_to_idx = self._relation_emb_fid_idx
                 else:
@@ -618,15 +638,10 @@ class RelationStoreMixin:
                     else:
                         self._relation_emb_cache.append((relation, emb_array))
                         fid_to_idx[relation.family_id] = len(self._relation_emb_cache) - 1
+        except Exception:
+            logger.debug("Background relation embedding update failed", exc_info=True)
 
             self._invalidate_relation_cache_bulk()
-
-        # Phase 3: Vector store I/O OUTSIDE lock
-        if vec_items:
-            try:
-                self._vector_store.upsert_batch("relation_vectors", vec_items)
-            except Exception as e:
-                logger.warning("bulk_save_relations vector upsert failed: %s", e)
 
 
 
@@ -658,11 +673,6 @@ class RelationStoreMixin:
                 record = result.single()
                 deleted = record is not None and record["cnt"] > 0
             self._invalidate_relation_cache_bulk()
-        if deleted:
-            try:
-                self._vector_store.delete_batch("relation_vectors", [absolute_id])
-            except Exception as e:
-                logger.warning("delete_relation_by_absolute_id vector cleanup failed: %s", e)
         return deleted
 
 
@@ -687,12 +697,6 @@ class RelationStoreMixin:
                 record = result.single()
                 count = record["cnt"] if record else 0
             self._invalidate_relation_cache_bulk()
-        # 清理向量存储 — outside lock
-        if abs_ids:
-            try:
-                self._vector_store.delete_batch("relation_vectors", abs_ids)
-            except Exception as e:
-                logger.warning("Failed to clean up relation vectors for %s: %s", family_id, e)
         return count
 
 
@@ -702,15 +706,16 @@ class RelationStoreMixin:
                            include_candidates: bool = False) -> List[Relation]:
         """获取所有关系的最新版本。"""
         with self._session() as session:
-            query = _q("""
+            fields = _RELATION_RETURN_FIELDS if exclude_embedding else _RELATION_RETURN_FIELDS_WITH_EMB
+            query = f"""
                 MATCH (r:Relation)
                 WITH r.family_id AS fid, COLLECT(r) AS rels
                 UNWIND rels AS r
                 WITH fid, r ORDER BY r.processed_time DESC
                 WITH fid, HEAD(COLLECT(r)) AS r
-                RETURN __REL_FIELDS__
+                RETURN {fields}
                 ORDER BY r.processed_time DESC
-            """)
+            """
             if offset is not None and offset > 0:
                 query += f" SKIP {int(offset)}"
             if limit is not None:
@@ -719,15 +724,6 @@ class RelationStoreMixin:
             records = list(result)
 
         relations = [_neo4j_record_to_relation(r) for r in records]
-
-        if not exclude_embedding and relations:
-            uuids = [rel.absolute_id for rel in relations]
-            emb_map = self._vector_store.get_batch("relation_vectors", uuids)
-            for rel in relations:
-                emb_list = emb_map.get(rel.absolute_id)
-                if emb_list:
-                    rel.embedding = np.array(emb_list, dtype=np.float32).tobytes()
-
         return self._filter_dream_candidates(relations, include_candidates)
 
 
@@ -753,48 +749,47 @@ class RelationStoreMixin:
     def get_relation_by_absolute_id(self, relation_absolute_id: str) -> Optional[Relation]:
         """根据 absolute_id 获取关系。"""
         with self._session() as session:
-            result = self._run(session, _q("""
-                MATCH (r:Relation {uuid: $uuid})
-                RETURN __REL_FIELDS__
-                """),
+            result = self._run(session,
+                f"""
+                MATCH (r:Relation {{uuid: $uuid}})
+                RETURN {_RELATION_RETURN_FIELDS_WITH_EMB}
+                """,
                 uuid=relation_absolute_id,
             )
             record = result.single()
             if not record:
                 return None
-            relation = _neo4j_record_to_relation(record)
-            emb = self._vector_store.get("relation_vectors", relation.absolute_id)
-            if emb:
-                relation.embedding = np.array(emb, dtype=np.float32).tobytes()
-            return relation
+            return _neo4j_record_to_relation(record)
 
 
 
     def get_relation_by_family_id(self, family_id: str) -> Optional[Relation]:
         with self._session() as session:
-            result = self._run(session, _q("""
-                MATCH (r:Relation {family_id: $fid})
-                RETURN __REL_FIELDS__
+            result = self._run(session,
+                f"""
+                MATCH (r:Relation {{family_id: $fid}})
+                RETURN {_RELATION_RETURN_FIELDS_WITH_EMB}
                 ORDER BY r.processed_time DESC LIMIT 1
-                """),
+                """,
                 fid=family_id,
             )
             record = result.single()
             if not record:
                 return None
-            relation = _neo4j_record_to_relation(record)
-            emb = self._vector_store.get("relation_vectors", relation.absolute_id)
-            if emb:
-                relation.embedding = np.array(emb, dtype=np.float32).tobytes()
-            return relation
+            return _neo4j_record_to_relation(record)
 
 
 
     def get_relation_embedding_preview(self, absolute_id: str, num_values: int = 5) -> Optional[List[float]]:
         """获取关系 embedding 预览。"""
-        emb = self._vector_store.get("relation_vectors", absolute_id)
-        if emb:
-            return emb[:num_values]
+        with self._session() as session:
+            result = self._run(session,
+                "MATCH (r:Relation {uuid: $uuid}) RETURN r.embedding AS embedding",
+                uuid=absolute_id,
+            )
+            record = result.single()
+            if record and record["embedding"]:
+                return record["embedding"][:num_values]
         return None
 
 
@@ -1310,14 +1305,14 @@ class RelationStoreMixin:
         }
 
     # ------------------------------------------------------------------
-    # Dream candidate lifecycle methods (port from SQLite dream_store.py)
+    # Dream candidate lifecycle methods
     # ------------------------------------------------------------------
 
 
     # ------------------------------------------------------------------
 
     def save_relation(self, relation: Relation):
-        """保存关系到 Neo4j + sqlite-vec（合并为单条 Cypher）。"""
+        """保存关系到 Neo4j（合并为单条 Cypher）。"""
         with _perf_timer("save_relation"):
             emb_array = self._save_relation_impl(relation)
             # Incremental relation emb cache update (reuse array from _save_relation_impl)
@@ -1329,7 +1324,7 @@ class RelationStoreMixin:
     def update_relation_by_absolute_id(self, absolute_id: str, **fields) -> Optional[Relation]:
         """根据 absolute_id 更新指定字段，返回更新后的 Relation 或 None。
 
-        当 content 变更时自动重算 embedding 并更新 VectorStore。
+        当 content 变更时自动重算 embedding 并更新。
         Embedding computed BEFORE write lock; vector store I/O AFTER lock.
         """
         valid_keys = {"content", "summary", "attributes", "confidence"}
@@ -1354,11 +1349,21 @@ class RelationStoreMixin:
                 if _emb_result is not None:
                     _precomputed_emb = _emb_result
 
+        # Convert embedding bytes → LIST<FLOAT> for Neo4j
+        embedding_list = None
+        if _precomputed_emb is not None:
+            emb_array_for_list = np.frombuffer(_precomputed_emb, dtype=np.float32)
+            embedding_list = emb_array_for_list.tolist()
+
         # Phase 2: Acquire lock only for Neo4j write
         with self._relation_write_lock:
             with self._session() as session:
-                set_clauses = ", ".join(f"r.{k} = ${k}" for k in filtered)
+                set_parts = [f"r.{k} = ${k}" for k in filtered]
                 params = {**filtered, "aid": absolute_id}
+                if _precomputed_emb is not None:
+                    set_parts.append("r.embedding = $embedding")
+                    params["embedding"] = embedding_list
+                set_clauses = ", ".join(set_parts)
                 cypher = (
                     f"MATCH (r:Relation {{uuid: $aid}}) "
                     f"SET {set_clauses} "
@@ -1374,12 +1379,8 @@ class RelationStoreMixin:
                 relation.embedding = _precomputed_emb
             self._invalidate_relation_cache_bulk()
 
-        # Phase 3: Vector store I/O OUTSIDE lock
+        # Phase 3: Cache update
         if _precomputed_emb is not None:
-            try:
-                self._vector_store.upsert_batch("relation_vectors", [(absolute_id, _precomputed_emb)])
-            except Exception as e:
-                logger.warning("update_relation vector upsert failed: %s", e)
             emb_array = np.frombuffer(_precomputed_emb, dtype=np.float32)
             self._update_relation_emb_cache(relation, emb_array)
         elif needs_emb_update:

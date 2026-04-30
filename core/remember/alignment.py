@@ -317,7 +317,7 @@ class _PipelineExtractionMixin:
         # 蒸馏数据准备：确保 task_id 在步骤1前生成
         if self.llm_client._distill_data_dir:
             if not self.llm_client._distill_task_id:
-                self.llm_client._distill_task_id = f"{document_name}_{uuid.uuid4().hex[:8]}_{int(time.time() * 1000)}"
+                self.llm_client._distill_task_id = f"{document_name}_{uuid.uuid4().hex[:8]}_{int(_time.time() * 1000)}"
             self.llm_client._current_distill_step = "01_update_cache"
 
         new_episode = self.llm_client.update_episode(
@@ -388,7 +388,8 @@ class _PipelineExtractionMixin:
                       progress_range: tuple = (0.1, 0.5),
                       window_index: int = 0,
                       total_windows: int = 1,
-                      window_timings_ref: Optional[Dict[str, float]] = None) -> Tuple[List[Dict], List[Dict]]:
+                      window_timings_ref: Optional[Dict[str, float]] = None,
+                      control_check_fn=None) -> Tuple[List[Dict], List[Dict]]:
         """Dispatch extraction to V2 or V3 pipeline. No storage writes; safe for thread pools.
 
         Returns:
@@ -403,11 +404,12 @@ class _PipelineExtractionMixin:
                 progress_range=progress_range,
                 window_index=window_index, total_windows=total_windows,
                 window_timings_ref=window_timings_ref,
+                control_check_fn=control_check_fn,
             )
         raise ValueError(f"Unsupported extraction mode: {mode!r}")
 
     # =========================================================================
-    # 步骤6：实体对齐（写存储，必须串行跨窗口）
+    # 步骤9：实体对齐（写存储，必须串行跨窗口）
     # =========================================================================
 
     def _resolve_same_name_conflicts(self, entity_name_to_ids, verbose=False):
@@ -420,10 +422,10 @@ class _PipelineExtractionMixin:
             return entity_name_to_id, ambiguous_duplicate_names
 
         if verbose:
-            wprint_info(f"【步骤6】警告｜同名｜{len(duplicate_names)}处")
+            wprint_info(f"【步骤9】警告｜同名｜{len(duplicate_names)}处")
             for name, ids in duplicate_names.items():
                 wprint_info(
-                    f"【步骤6】冲突｜详情｜{name} {len(ids)}id {ids[:3]}{'...' if len(ids) > 3 else ''}"
+                    f"【步骤9】冲突｜详情｜{name} {len(ids)}id {ids[:3]}{'...' if len(ids) > 3 else ''}"
                 )
 
         entity_name_to_id = {}
@@ -450,12 +452,12 @@ class _PipelineExtractionMixin:
                                 self.storage.register_entity_redirect(fid, pid)
                     if verbose:
                         wprint_info(
-                            f"【步骤6】冲突｜主实体｜{name}->{primary_id} v{versions_map.get(primary_id, 0)}"
+                            f"【步骤9】冲突｜主实体｜{name}->{primary_id} v{versions_map.get(primary_id, 0)}"
                         )
                 else:
                     ambiguous_duplicate_names.add(name)
                     if verbose:
-                        wprint_info(f"【步骤6】冲突｜跳过｜同名实体 '{name}' 不自动映射")
+                        wprint_info(f"【步骤9】冲突｜跳过｜同名实体 '{name}' 不自动映射")
                     continue
             else:
                 entity_name_to_id[name] = ids[0]
@@ -606,10 +608,9 @@ class _PipelineExtractionMixin:
         return updated_pending_relations, _skipped_relations, _self_relations
 
     def _post_align_entity_maintenance(self, unique_entities, verbose=False):
-        """Run contradiction detection and summary evolution on newly aligned entities."""
-        _all_fids = [e.family_id for e in unique_entities]
-        if not _all_fids:
-            return
+        """Contradiction detection & summary evolution — disabled in auto pipeline (too expensive).
+        Manual API endpoints (/contradictions, /resolve-contradiction) still work."""
+        return
 
         # Pre-fetch all versions once (shared by contradiction detection and summary evolution)
         batch_fn = getattr(self.storage, 'get_entity_versions_batch', None)
@@ -627,8 +628,7 @@ class _PipelineExtractionMixin:
             _vc_map = self.storage.get_entity_version_counts(_all_fids)
 
         _versioned_fids = [fid for fid in _all_fids if _vc_map.get(fid, 0) >= 2]
-        _evolve_fids = [fid for fid in _all_fids
-                        if _vc_map.get(fid, 0) >= self.SUMMARY_EVOLVE_MIN_VERSIONS]
+        _evolve_fids = []  # disabled: content merge already carries all info; 77s LLM cost not justified
 
         # Run contradiction detection and summary evolution in parallel —
         # they work on different fields (confidence vs summary) with no dependency
@@ -676,6 +676,12 @@ class _PipelineExtractionMixin:
                     new_episode.absolute_id, all_mentioned_entity_ids,
                     target_type="entity",
                 )
+                # Alignment trace: mention recording
+                _mention_names = []
+                for _e in unique_entities:
+                    if _e and _e.family_id:
+                        _mention_names.append(f"{_e.name}(fid={_e.family_id})")
+                dbg(f"MENTIONS: ep={new_episode.absolute_id} → {len(all_mentioned_entity_ids)} entities: {', '.join(_mention_names[:10])}")
             # Batch corroboration adjustment
             _fids_list = list(_seen_fids)
             if _fids_list:
@@ -693,12 +699,12 @@ class _PipelineExtractionMixin:
                     pass
         except Exception as e:
             if verbose:
-                wprint_info(f"【步骤6】MENTIONS｜Entity｜失败｜{e}")
+                wprint_info(f"【步骤9】MENTIONS｜Entity｜失败｜{e}")
 
-    def _build_step7_relation_inputs_from_align_result(
+    def _build_step10_relation_inputs_from_align_result(
         self, align_result: _AlignResult
     ) -> Tuple[List[Dict[str, str]], Dict[str, str], List[Dict], List[Dict]]:
-        """从步骤6输出构造步骤7批处理输入；与 _align_relations 内逻辑一致，供预取与步骤7共用。"""
+        """从步骤9输出构造步骤10批处理输入；与 _align_relations 内逻辑一致，供预取与步骤10共用。"""
         entity_name_to_id = dict(align_result.entity_name_to_id)
         pending_relations_from_entities = align_result.pending_relations
         updated_pending_relations = align_result.unique_pending_relations
@@ -814,10 +820,10 @@ class _PipelineExtractionMixin:
                         entity_embedding_prefetch: Optional[Future] = None,
                         already_versioned_family_ids: Optional[set] = None,
                         window_timings_ref: Optional[Dict[str, float]] = None) -> _AlignResult:
-        """步骤6：实体对齐（搜索、合并、写入存储）。必须串行跨窗口。
+        """步骤9：实体对齐（搜索、合并、写入存储）。必须串行跨窗口。
 
         Returns:
-            _AlignResult 包含 entity_name_to_id、pending_relations 等，供步骤7使用。
+            _AlignResult 包含 entity_name_to_id、pending_relations 等，供步骤10使用。
         """
 
         p_lo, p_hi = progress_range
@@ -825,9 +831,9 @@ class _PipelineExtractionMixin:
 
         self.llm_client._priority_local.priority = LLM_PRIORITY_STEP6
         if verbose:
-            wprint_info("【步骤6】实体｜开始｜对齐写入")
+            wprint_info("【步骤9】实体｜开始｜对齐写入")
         elif verbose_steps:
-            wprint_info("【步骤6】实体｜开始｜")
+            wprint_info("【步骤9】实体｜开始｜")
 
         self.llm_client._current_distill_step = "06_entity_alignment"
 
@@ -862,7 +868,7 @@ class _PipelineExtractionMixin:
             if progress_callback:
                 frac = _entity_done / max(1, _entity_total)
                 progress_callback(p_lo + _step_size * frac,
-                    f"{_win_label} · 步骤6/7: 实体对齐 ({_entity_done}/{_entity_total})",
+                    f"{_win_label} · 步骤9/7: 实体对齐 ({_entity_done}/{_entity_total})",
                     f"实体对齐 {_entity_done}/{_entity_total}")
 
         _t_align_start = _time.time()
@@ -888,9 +894,9 @@ class _PipelineExtractionMixin:
         )
         _t_align_elapsed = _time.time() - _t_align_start
         if window_timings_ref is not None:
-            window_timings_ref["step6-process_entities"] = _t_align_elapsed
+            window_timings_ref["step9-process_entities"] = _t_align_elapsed
         if verbose or verbose_steps:
-            wprint_info(f"【步骤6】process_entities｜{_t_align_elapsed:.1f}s｜{_entity_total}个实体")
+            wprint_info(f"【步骤9】process_entities｜{_t_align_elapsed:.1f}s｜{_entity_total}个实体")
 
         entity_name_to_id_from_entities.update(entity_name_to_id_from_entities_final)
         pending_relations_from_entities = all_pending_relations_by_name
@@ -928,9 +934,9 @@ class _PipelineExtractionMixin:
         )
         _t_dup_elapsed = _time.time() - _t_dup_start
         if window_timings_ref is not None:
-            window_timings_ref["step6-dedup_merge"] = _t_dup_elapsed
+            window_timings_ref["step9-dedup_merge"] = _t_dup_elapsed
         if (verbose or verbose_steps) and _t_dup_elapsed > 0.5:
-            wprint_info(f"【步骤6】同名去重｜{_t_dup_elapsed:.1f}s")
+            wprint_info(f"【步骤9】同名去重｜{_t_dup_elapsed:.1f}s")
 
         merged_mappings = []
         for i, entity in enumerate(processed_entities):
@@ -942,16 +948,16 @@ class _PipelineExtractionMixin:
         if verbose:
             if not unique_entities:
                 wprint_info(
-                    f"【步骤6】小结｜实体｜无新·抽{len(original_entity_names)}个已存在"
+                    f"【步骤9】小结｜实体｜无新·抽{len(original_entity_names)}个已存在"
                 )
             else:
                 wprint_info(
-                    f"【步骤6】小结｜实体｜唯一{len(unique_entities)}·原{len(original_entity_names)}"
+                    f"【步骤9】小结｜实体｜唯一{len(unique_entities)}·原{len(original_entity_names)}"
                 )
             if merged_mappings:
-                wprint_info(f"【步骤6】映射｜合并｜{len(merged_mappings)}个")
+                wprint_info(f"【步骤9】映射｜合并｜{len(merged_mappings)}个")
 
-        # 步骤6.3：构建完整的实体名称→ID映射表，防止关系丢失
+        # 步骤9：构建完整的实体名称→ID映射表，防止关系丢失
         entity_name_to_id, _db_matched, _fuzzy_matched = self._resolve_missing_relation_entity_names(
             pending_relations_from_entities, entity_name_to_id, ambiguous_duplicate_names
         )
@@ -973,29 +979,29 @@ class _PipelineExtractionMixin:
                 _parts.append(f"无法解析 {len(_skipped_relations)} 个")
             if verbose:
                 wprint_info(
-                    f"【步骤6】关系｜待处理｜{len(pending_relations_from_entities)}→{', '.join(_parts)}"
+                    f"【步骤9】关系｜待处理｜{len(pending_relations_from_entities)}→{', '.join(_parts)}"
                 )
                 if _skipped_relations:
                     _n_known = len(entity_name_to_id)
                     wprint_info(
-                        f"【步骤6】映射｜表｜{_n_known}名 "
+                        f"【步骤9】映射｜表｜{_n_known}名 "
                         f"{', '.join(list(entity_name_to_id)[:15])}{'...' if _n_known > 15 else ''}"
                     )
                     for _sr in _skipped_relations[:10]:
-                        wprint_info(f"【步骤6】关系｜跳过｜{_sr}")
+                        wprint_info(f"【步骤9】关系｜跳过｜{_sr}")
                     if len(_skipped_relations) > 10:
-                        wprint_info(f"【步骤6】关系｜跳过｜余{len(_skipped_relations) - 10}条")
+                        wprint_info(f"【步骤9】关系｜跳过｜余{len(_skipped_relations) - 10}条")
         else:
             if verbose:
                 wprint_info(
-                    f"【步骤6】关系｜待处理｜{len(pending_relations_from_entities)}→全解析"
+                    f"【步骤9】关系｜待处理｜{len(pending_relations_from_entities)}→全解析"
                     + (f"·库补{_db_matched}" if _db_matched > 0 else "")
                 )
 
         if verbose_steps and not verbose:
-            wprint_info("【步骤6】实体｜完成｜映射")
+            wprint_info("【步骤9】实体｜完成｜映射")
 
-        dbg_section("步骤6.3: 实体名称→family_id映射")
+        dbg_section("步骤9: 实体名称→family_id映射")
         if _dbg_enabled:
             dbg(f"entity_name_to_id 映射 ({len(entity_name_to_id)} 个):")
             for _mn, _mid in entity_name_to_id.items():
@@ -1011,7 +1017,7 @@ class _PipelineExtractionMixin:
 
         if progress_callback:
             progress_callback(p_hi,
-                f"{_win_label} · 步骤6/7: 实体对齐",
+                f"{_win_label} · 步骤9/7: 实体对齐",
                 f"实体对齐完成，共 {len(unique_entities)} 个实体")
 
         # Phase C: 记录 Episode → Entity MENTIONS
@@ -1029,7 +1035,7 @@ class _PipelineExtractionMixin:
         )
 
     # =========================================================================
-    # 步骤7：关系对齐（写存储，串行跨窗口）
+    # 步骤10：关系对齐（写存储，串行跨窗口）
     # =========================================================================
 
     def _align_relations(self, align_result: _AlignResult,
@@ -1042,15 +1048,15 @@ class _PipelineExtractionMixin:
                          window_index: int = 0,
                          total_windows: int = 1,
                          prepared_relations_by_pair: Optional[Dict[Tuple[str, str], List[Dict[str, str]]]] = None,
-                         step7_inputs_cache: Optional[Tuple[List[Dict[str, str]], Dict[str, str], List[Dict], List[Dict]]] = None,
+                         step10_inputs_cache: Optional[Tuple[List[Dict[str, str]], Dict[str, str], List[Dict], List[Dict]]] = None,
                          window_timings_ref: Optional[Dict[str, float]] = None,
                          ) -> List:
-        """步骤7：关系对齐（搜索、合并、写入存储）。串行跨窗口。
+        """步骤10：关系对齐（搜索、合并、写入存储）。串行跨窗口。
 
         Args:
-            align_result: 步骤6的输出，包含 entity_name_to_id 和 pending_relations。
-            prepared_relations_by_pair: 可选，跨窗预取的按实体对分组结果（须在上一窗 step7 完成后读库）。
-            step7_inputs_cache: 可选，与 _build_step7_relation_inputs_from_align_result 返回值一致，避免重复计算。
+            align_result: 步骤9的输出，包含 entity_name_to_id 和 pending_relations。
+            prepared_relations_by_pair: 可选，跨窗预取的按实体对分组结果（须在上一窗 step10 完成后读库）。
+            step10_inputs_cache: 可选，与 _build_step10_relation_inputs_from_align_result 返回值一致，避免重复计算。
         """
 
         p_lo, p_hi = progress_range
@@ -1059,40 +1065,40 @@ class _PipelineExtractionMixin:
 
         self.llm_client._priority_local.priority = LLM_PRIORITY_STEP7
         if verbose:
-            wprint_info("【步骤7】关系｜开始｜对齐写入")
+            wprint_info("【步骤10】关系｜开始｜对齐写入")
         elif verbose_steps:
-            wprint_info("【步骤7】关系｜开始｜")
+            wprint_info("【步骤10】关系｜开始｜")
 
         self.llm_client._current_distill_step = "07_relation_alignment"
 
         unique_entities = align_result.unique_entities
 
-        if step7_inputs_cache is not None:
-            relation_inputs, entity_name_to_id, unique_pending_relations, all_pending_relations = step7_inputs_cache
+        if step10_inputs_cache is not None:
+            relation_inputs, entity_name_to_id, unique_pending_relations, all_pending_relations = step10_inputs_cache
         else:
             relation_inputs, entity_name_to_id, unique_pending_relations, all_pending_relations = (
-                self._build_step7_relation_inputs_from_align_result(align_result)
+                self._build_step10_relation_inputs_from_align_result(align_result)
             )
 
         if verbose:
             duplicate_count = len(all_pending_relations) - len(unique_pending_relations)
             if duplicate_count > 0:
                 wprint_info(
-                    f"【步骤7】关系｜待处理｜{len(all_pending_relations)}→去重{len(unique_pending_relations)}"
+                    f"【步骤10】关系｜待处理｜{len(all_pending_relations)}→去重{len(unique_pending_relations)}"
                 )
             else:
-                wprint_info(f"【步骤7】关系｜待处理｜{len(unique_pending_relations)}个")
+                wprint_info(f"【步骤10】关系｜待处理｜{len(unique_pending_relations)}个")
 
         _upr_count = len(unique_pending_relations)
         if _upr_count == 0:
             if verbose:
-                wprint_info("【步骤7】关系｜跳过｜无待处理")
+                wprint_info("【步骤10】关系｜跳过｜无待处理")
         else:
             if verbose:
                 wprint_info(
-                    f"【步骤7】关系｜待处理｜去重{_upr_count}·原{len(all_pending_relations)}"
+                    f"【步骤10】关系｜待处理｜去重{_upr_count}·原{len(all_pending_relations)}"
                 )
-        dbg(f"步骤7: 去重后待处理关系 {len(unique_pending_relations)} 个 (去重前 {len(all_pending_relations)} 个)")
+        dbg(f"步骤10: 去重后待处理关系 {len(unique_pending_relations)} 个 (去重前 {len(all_pending_relations)} 个)")
         if _dbg_enabled:
             for _upr in unique_pending_relations:
                 dbg(f"  待处理: '{_upr.get('entity1_name', '')}' <-> '{_upr.get('entity2_name', '')}' (e1_id={_upr.get('entity1_id', '?')}, e2_id={_upr.get('entity2_id', '?')})  content='{_upr.get('content', '')[:100]}'")
@@ -1104,7 +1110,7 @@ class _PipelineExtractionMixin:
             if progress_callback:
                 frac = done / max(1, total)
                 progress_callback(p_lo + _step_size * frac,
-                    f"{_win_label} · 步骤7/7: 关系对齐 ({done}/{total})",
+                    f"{_win_label} · 步骤10/7: 关系对齐 ({done}/{total})",
                     f"关系对齐 {done}/{total}")
 
         _t_rel_start = _time.time()
@@ -1124,17 +1130,17 @@ class _PipelineExtractionMixin:
         )
         _t_rel_elapsed = _time.time() - _t_rel_start
         if window_timings_ref is not None:
-            window_timings_ref["step7-process_relations"] = _t_rel_elapsed
+            window_timings_ref["step10-process_relations"] = _t_rel_elapsed
         if verbose or verbose_steps:
-            wprint_info(f"【步骤7】process_relations_batch｜{_t_rel_elapsed:.1f}s｜{len(all_processed_relations)}个关系")
+            wprint_info(f"【步骤10】process_relations_batch｜{_t_rel_elapsed:.1f}s｜{len(all_processed_relations)}个关系")
 
         if verbose:
             if not all_processed_relations:
-                wprint_info("【步骤7】关系｜小结｜无新")
+                wprint_info("【步骤10】关系｜小结｜无新")
             else:
-                wprint_info(f"【步骤7】关系｜小结｜{len(all_processed_relations)}个")
+                wprint_info(f"【步骤10】关系｜小结｜{len(all_processed_relations)}个")
         elif verbose_steps:
-            wprint_info("【步骤7】关系｜完成｜")
+            wprint_info("【步骤10】关系｜完成｜")
 
         if verbose:
             wprint_info("【窗口】流水｜结束｜")
@@ -1153,22 +1159,10 @@ class _PipelineExtractionMixin:
 
         if progress_callback:
             progress_callback(p_hi,
-                f"{_win_label} · 步骤7/7: 窗口完成",
+                f"{_win_label} · 步骤10/7: 窗口完成",
                 f"{len(unique_entities)} 个实体, {len(all_processed_relations)} 个关系")
 
-        # Phase B+: 自动关系矛盾检测 — 对刚创建新版本的关系检查版本间矛盾
-        if all_processed_relations:
-            _rel_all_fids = list({rel.family_id for rel in all_processed_relations})
-            _rel_versioned_fids = []
-            try:
-                _rel_vc_map = self.storage.get_relation_version_counts(_rel_all_fids)
-                _rel_versioned_fids = [fid for fid, cnt in _rel_vc_map.items() if cnt >= 2]
-            except Exception:
-                pass
-            if _rel_versioned_fids:
-                self._detect_and_apply_relation_contradictions(
-                    _rel_versioned_fids, verbose=verbose,
-                )
+        # Phase B+: 自动关系矛盾检测 — disabled (too expensive for auto pipeline)
 
         self.llm_client._current_distill_step = None
         self.llm_client._distill_task_id = None
@@ -1277,7 +1271,7 @@ class _PipelineExtractionMixin:
     ) -> int:
         """清理孤立实体：先尝试补救（找关系），再删除无法补救的。
 
-        在 step7（关系存储）完成后调用。此时关系已经全部写入，
+        在 step10（关系存储）完成后调用。此时关系已经全部写入，
         可以准确判断哪些实体是孤立的。
 
         补救流程：对孤立实体调用 LLM 寻找与其他实体的关系，写入后重新检查度数，
@@ -1287,7 +1281,7 @@ class _PipelineExtractionMixin:
         （有历史版本），即使当前无关系也不删除——因为历史版本可能携带重要信息。
 
         Args:
-            saved_entities: step6 存入的实体列表（_AlignResult.unique_entities）
+            saved_entities: step9 存入的实体列表（_AlignResult.unique_entities）
             verbose: 是否打印日志
             window_text: 当前窗口文本（补救用）
             all_entity_names: 当前窗口所有实体名称（补救用）
@@ -1543,7 +1537,7 @@ class _PipelineExtractionMixin:
                             total_windows: int = 1):
         """兼容入口：串行执行步骤2-7（_process_window 等旧路径使用）。"""
 
-        # 步骤2-5 占 progress_range 的 5/7，步骤6 占 1/7，步骤7 占 1/7
+        # 步骤2-5 占 progress_range 的 5/7，步骤9 占 1/7，步骤10 占 1/7
         total_size = progress_range[1] - progress_range[0]
         p1_end = progress_range[0] + total_size * 5 / 7
         p2_end = progress_range[0] + total_size * 6 / 7
@@ -1586,10 +1580,10 @@ class _PipelineExtractionMixin:
                         target_type="relation",
                     )
                     if verbose:
-                        wprint_info(f"【步骤7】MENTIONS｜Relation｜{len(rel_abs_ids)}条")
+                        wprint_info(f"【步骤10】MENTIONS｜Relation｜{len(rel_abs_ids)}条")
                 # 注意：关系置信度 corroboration 已在 relation.py _process_relations_parallel 中统一处理
             except Exception as e:
-                wprint_warn(f"【步骤7】MENTIONS｜Relation｜失败｜{e}")
+                wprint_warn(f"【步骤10】MENTIONS｜Relation｜失败｜{e}")
 
         # 步骤8: 纯代码校验
         self._verify_window_results(

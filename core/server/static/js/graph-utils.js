@@ -260,7 +260,7 @@ window.GraphUtils = (function () {
         }
         var showVersionInside = false;
         if (isHighlight && versionLabel && versionLabel.total > 1) {
-          label = versionLabel.idx + '/' + versionLabel.total;
+          label = baseName + ' ' + versionLabel.idx + '/' + versionLabel.total;
           showVersionInside = true;
         }
 

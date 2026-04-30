@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 logger = logging.getLogger(__name__)
 
-from core import StorageManager, EmbeddingClient
+from core import Neo4jStorageManager, EmbeddingClient
 from core.utils import normalize_entity_pair
 
 
@@ -32,7 +32,10 @@ class GraphWebServer:
                  embedding_model_path: Optional[str] = None,
                  embedding_model_name: Optional[str] = None,
                  embedding_device: str = "cpu",
-                 embedding_use_local: bool = True):
+                 embedding_use_local: bool = True,
+                 neo4j_uri: str = "bolt://localhost:7687",
+                 neo4j_user: str = "neo4j",
+                 neo4j_password: str = "password"):
         """
         初始化 Web 服务器
         
@@ -47,6 +50,8 @@ class GraphWebServer:
         self.storage_path = storage_path
         self._base_storage_path = os.path.dirname(storage_path) if os.path.isdir(storage_path) and not os.path.basename(storage_path) else storage_path
         self.port = port
+        self._neo4j_uri = neo4j_uri
+        self._neo4j_auth = (neo4j_user, neo4j_password)
         self.app = Flask(__name__)
         
         # 初始化embedding客户端
@@ -58,7 +63,12 @@ class GraphWebServer:
         )
         
         # 初始化存储
-        self.storage = StorageManager(storage_path, embedding_client=self.embedding_client)
+        self.storage = Neo4jStorageManager(
+            storage_path,
+            neo4j_uri=neo4j_uri,
+            neo4j_auth=(neo4j_user, neo4j_password),
+            embedding_client=self.embedding_client,
+        )
         
         # 缓存当前使用的存储路径（用于路径切换检测）
         self._current_storage_path = storage_path
@@ -83,7 +93,12 @@ class GraphWebServer:
                 raise ValueError(f"存储路径必须在 {base} 目录下: {new_path}")
             try:
                 # 重新初始化存储
-                self.storage = StorageManager(str(target), embedding_client=self.embedding_client)
+                self.storage = Neo4jStorageManager(
+                    str(target),
+                    neo4j_uri=self._neo4j_uri,
+                    neo4j_auth=self._neo4j_auth,
+                    embedding_client=self.embedding_client,
+                )
                 self._current_storage_path = str(target)
                 logger.info("已切换到新的存储路径: %s", target)
             except Exception as e:
@@ -258,7 +273,7 @@ class GraphWebServer:
                             try:
                                 versions_sorted = sorted(
                                     versions,
-                                    key=lambda v: self.storage._normalize_datetime_for_compare(v.processed_time)
+                                    key=lambda v: v.processed_time if isinstance(v.processed_time, datetime) else datetime.fromisoformat(str(v.processed_time).replace("Z", "+00:00"))
                                 )
                                 current_version_index = None
                                 for idx, v in enumerate(versions_sorted, 1):
@@ -722,7 +737,7 @@ class GraphWebServer:
                             if focus_family_id and absolute_id:
                                 versions_sorted = sorted(
                                     versions,
-                                    key=lambda v: self.storage._normalize_datetime_for_compare(v.processed_time)
+                                    key=lambda v: v.processed_time if isinstance(v.processed_time, datetime) else datetime.fromisoformat(str(v.processed_time).replace("Z", "+00:00"))
                                 )
                                 current_version_index = None
                                 for idx, v in enumerate(versions_sorted, 1):
@@ -1546,13 +1561,33 @@ def main():
         print(f"  基础目录: {base_path}，graph_id: {args.graph_id}")
         return 1
 
+    # Read port from config if --config is used
+    if args.config:
+        port = config.get('port', args.port)
+    else:
+        port = args.port
+
+    # Read Neo4j connection info from config
+    if args.config:
+        neo4j_cfg = (config.get('storage') or {}).get('neo4j') or {}
+        neo4j_uri = neo4j_cfg.get('uri', 'bolt://localhost:7687')
+        neo4j_user = neo4j_cfg.get('user', 'neo4j')
+        neo4j_password = neo4j_cfg.get('password', 'password')
+    else:
+        neo4j_uri = 'bolt://localhost:7687'
+        neo4j_user = 'neo4j'
+        neo4j_password = 'password'
+
     server = GraphWebServer(
         storage_path=storage_path,
-        port=args.port,
+        port=port,
         embedding_model_path=embedding_model_path,
         embedding_model_name=embedding_model_name,
         embedding_device=embedding_device,
-        embedding_use_local=embedding_use_local
+        embedding_use_local=embedding_use_local,
+        neo4j_uri=neo4j_uri,
+        neo4j_user=neo4j_user,
+        neo4j_password=neo4j_password,
     )
     server.run(debug=args.debug, host=args.host)
 

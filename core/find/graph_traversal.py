@@ -32,7 +32,7 @@ class GraphTraversalSearcher:
         """从种子实体 BFS 扩展，返回发现的实体。
 
         优先使用存储层的 batch_bfs_traverse（单次 Cypher 查询），
-        回退到逐节点扩展（兼容 SQLite 后端）。
+        回退到逐节点扩展。
 
         Args:
             seed_family_ids: 种子实体的 family_id 列表
@@ -76,7 +76,7 @@ class GraphTraversalSearcher:
             except Exception as e:
                 logger.warning("batch_bfs_traverse failed, fallback to iterative: %s", e)
 
-        # 回退：逐节点扩展（SQLite 后端）
+        # 回退：逐节点扩展
         return self._iterative_bfs_with_relations(
             seed_family_ids, max_depth, max_nodes, time_point=time_point)
 
@@ -87,7 +87,7 @@ class GraphTraversalSearcher:
         max_nodes: int = 50,
         time_point: Optional[str] = None,
     ) -> List[Entity]:
-        """逐节点 BFS 扩展（兼容 SQLite 后端）。"""
+        """逐节点 BFS 扩展。"""
         entities, _, _ = self._iterative_bfs_with_relations(
             seed_family_ids, max_depth, max_nodes, time_point=time_point)
         return entities

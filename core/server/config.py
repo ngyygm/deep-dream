@@ -13,7 +13,7 @@ DEFAULTS = {
     "port": 5001,
     "storage_path": "./graph",
     "storage": {
-        "backend": "sqlite",  # "sqlite" | "neo4j"
+        "backend": "neo4j",
         "neo4j": {
             "uri": "bolt://localhost:7687",
             "user": "neo4j",

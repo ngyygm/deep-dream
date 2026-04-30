@@ -27,7 +27,7 @@ import hmac
 import json
 import logging
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from functools import wraps
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
@@ -158,6 +158,8 @@ def _validate_api_key(api_key: str) -> Tuple[bool, Set[str]]:
     """
     Validate an API key and return associated permissions.
 
+    Uses constant-time comparison to prevent timing attacks.
+
     Args:
         api_key: The API key to validate
 
@@ -165,13 +167,16 @@ def _validate_api_key(api_key: str) -> Tuple[bool, Set[str]]:
         (is_valid, permissions_set) tuple
     """
     if not _API_KEYS:
-        # If no keys loaded, allow the default development key
         default_key = os.environ.get("DEEPDREAM_DEFAULT_API_KEY", "dev-key-insecure")
         if hmac.compare_digest(api_key, default_key):
             return True, DEFAULT_PERMISSIONS["api_key"]
         return False, set()
 
-    return api_key in _API_KEYS, _API_KEYS.get(api_key, set())
+    # Constant-time comparison for all keys to prevent timing attacks
+    for stored_key, perms in _API_KEYS.items():
+        if hmac.compare_digest(api_key, stored_key):
+            return True, perms
+    return False, set()
 
 
 def _validate_jwt_token(token: str) -> Tuple[bool, Set[str], dict | None]:
@@ -195,11 +200,6 @@ def _validate_jwt_token(token: str) -> Tuple[bool, Set[str], dict | None]:
             algorithms=[JWT_ALGORITHM],
             options={"require": ["exp", "user_id"]}
         )
-
-        # Check expiration
-        exp = payload.get("exp")
-        if exp and datetime.fromtimestamp(exp) < datetime.now():
-            return False, set(), None
 
         permissions = set(payload.get("permissions", DEFAULT_PERMISSIONS["jwt"]))
         return True, permissions, payload
@@ -228,8 +228,8 @@ def create_jwt_token(user_id: str, permissions: List[str] | None = None) -> str:
     payload = {
         "user_id": user_id,
         "permissions": permissions or list(DEFAULT_PERMISSIONS["jwt"]),
-        "iat": datetime.utcnow(),
-        "exp": datetime.utcnow() + timedelta(hours=JWT_EXPIRATION_HOURS),
+        "iat": datetime.now(timezone.utc),
+        "exp": datetime.now(timezone.utc) + timedelta(hours=JWT_EXPIRATION_HOURS),
     }
 
     return jwt.encode(payload, SECRET_KEY, algorithm=JWT_ALGORITHM)
@@ -285,7 +285,7 @@ def require_auth(f: Callable | None = None, /, optional: bool = False) -> Callab
                 if is_valid:
                     g.authenticated = True
                     g.auth_method = "api_key"
-                    g.user_id = f"api_key:{api_key[:8]}"
+                    g.user_id = f"api_key:{hmac.new(b'x', api_key.encode(), 'sha256').hexdigest()[:8]}"
                     g.permissions = permissions
                     return func(*args, **kwargs)
                 else:

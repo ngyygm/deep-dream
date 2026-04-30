@@ -159,6 +159,13 @@
           </div>
           <div id="relation-versions-container"></div>
         </div>
+
+        <div class="divider"></div>
+
+        <div id="relation-embedding-section">
+          <span style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;">${t('relations.embedding')}</span>
+          <div id="relation-embedding-values" style="margin-top:0.25rem;font-size:0.75rem;color:var(--text-muted);">-</div>
+        </div>
       </div>
     `;
 
@@ -223,9 +230,26 @@
       if (promises.length) await Promise.all(promises);
     }
 
-    // Fetch versions
+    // Fetch versions + embedding preview
     const graphId = state.currentGraphId;
     const relFamilyId = r.family_id;
+
+    // Load embedding preview
+    state.api.relationEmbeddingPreview(r.absolute_id, 5, graphId)
+      .then(embRes => {
+        const embEl = overlay.querySelector('#relation-embedding-values');
+        if (embEl && embRes && embRes.data && embRes.data.values) {
+          const vals = embRes.data.values;
+          embEl.innerHTML = vals.map(v => `<span class="mono" style="display:inline-block;padding:2px 6px;margin:2px;border-radius:4px;background:var(--bg-secondary);font-size:0.7rem;">${v.toFixed(4)}</span>`).join('');
+        } else {
+          const embEl = overlay.querySelector('#relation-embedding-values');
+          if (embEl) embEl.textContent = t('relations.noEmbedding');
+        }
+      })
+      .catch(() => {
+        const embEl = overlay.querySelector('#relation-embedding-values');
+        if (embEl) embEl.textContent = t('relations.noEmbedding');
+      });
 
     state.api.relationVersions(relFamilyId, graphId)
       .then(res => {

@@ -141,6 +141,7 @@ class GraphRegistry:
             kwargs["max_alignment_candidates"] = pipeline_alignment["max_alignment_candidates"]
         for key in (
             "prompt_episode_max_chars",
+            "entity_rounds", "relation_rounds",
             "entity_refine_rounds", "relation_refine_rounds",
         ):
             if key in pipeline_extraction:
@@ -286,18 +287,14 @@ class GraphRegistry:
     # ------------------------------------------------------------------
 
     def list_graphs(self) -> List[str]:
-        """列出基础目录下所有已有图谱（支持 SQLite 和 Neo4j 后端）。"""
+        """列出基础目录下所有已有图谱。"""
         result: List[str] = []
         if not self._base_path.is_dir():
             return result
         for child in sorted(self._base_path.iterdir()):
             if not child.is_dir():
                 continue
-            # SQLite 后端：有 graph.db
-            # Neo4j 后端：有 vectors.db 或 docs/ 目录
-            if ((child / "graph.db").exists() or
-                    (child / "vectors.db").exists() or
-                    (child / "docs").is_dir()):
+            if (child / "docs").is_dir():
                 result.append(child.name)
         return result
 
@@ -310,53 +307,40 @@ class GraphRegistry:
     # ------------------------------------------------------------------
 
     def clear_graph(self, graph_id: str) -> None:
-        """清空指定图谱的所有数据（实体、关系、Episode），但保留图谱本身。"""
+        """清空指定图谱的所有数据（实体、关系、Episode + 文件缓存），但保留图谱本身。"""
         with self._lock:
             processor = self._processors.get(graph_id)
             if not processor:
                 raise KeyError(f"Graph '{graph_id}' not found")
 
-            # Neo4j 后端：删除该 graph_id 的所有节点
-            if hasattr(processor.storage, '_run'):
-                if isinstance(processor.storage, Neo4jStorageManager):
-                    with processor.storage._session() as session:
-                        gid = processor.storage._graph_id
-                        session.run(
-                            "MATCH (ep:Episode) WHERE ep.graph_id = $gid DETACH DELETE ep",
-                            gid=gid,
-                        )
-                        session.run(
-                            "MATCH (r:Relation) WHERE r.graph_id = $gid DETACH DELETE r",
-                            gid=gid,
-                        )
-                        session.run(
-                            "MATCH (e:Entity) WHERE e.graph_id = $gid DETACH DELETE e",
-                            gid=gid,
-                        )
-                    logging.getLogger(__name__).info(
-                        "Cleared Neo4j data for graph '%s'", graph_id,
-                    )
-                    return
-
-            # SQLite 后端：清空表 + docs 目录
-            if hasattr(processor.storage, '_get_conn'):
-                conn = processor.storage._get_conn()
-                with processor.storage._write_lock:
-                    cursor = conn.cursor()
-                    cursor.execute("DELETE FROM entities")
-                    cursor.execute("DELETE FROM relations")
-                    cursor.execute("DELETE FROM episodes")
-                    cursor.execute("DELETE FROM episode_mentions")
-                    cursor.execute("DELETE FROM concepts")
-                    conn.commit()
-                # 清空 docs 目录
-                docs_dir = getattr(processor.storage, 'docs_dir', None)
-                if docs_dir and docs_dir.is_dir():
-                    shutil.rmtree(docs_dir)
-                    docs_dir.mkdir(parents=True, exist_ok=True)
-                logging.getLogger(__name__).info(
-                    "Cleared SQLite data for graph '%s'", graph_id,
+            storage = processor.storage
+            with storage._session() as session:
+                gid = storage._graph_id
+                session.run(
+                    "MATCH (ep:Episode) WHERE ep.graph_id = $gid DETACH DELETE ep",
+                    gid=gid,
                 )
+                session.run(
+                    "MATCH (r:Relation) WHERE r.graph_id = $gid DETACH DELETE r",
+                    gid=gid,
+                )
+                session.run(
+                    "MATCH (e:Entity) WHERE e.graph_id = $gid DETACH DELETE e",
+                    gid=gid,
+                )
+
+            # 清理文件系统：docs 目录下的 episode 文件
+            import shutil
+            for subdir in ("docs",):
+                d = storage.storage_path / subdir
+                if d.is_dir():
+                    for child in d.iterdir():
+                        if child.is_dir():
+                            shutil.rmtree(child, ignore_errors=True)
+
+            logging.getLogger(__name__).info(
+                "Cleared Neo4j data + file cache for graph '%s'", graph_id,
+            )
 
     def delete_graph(self, graph_id: str) -> None:
         """删除指定图谱：停止任务队列、关闭 processor 连接、删除数据目录。
@@ -380,29 +364,26 @@ class GraphRegistry:
             # 3. 移除 processor（关闭 DB 连接）
             processor = self._processors.pop(graph_id, None)
 
-            # 4. Neo4j 后端：删除该 graph_id 的所有节点
-            if processor and hasattr(processor.storage, '_run'):
-                # Neo4jStorageManager — 删除该图谱的所有数据
+            # 4. 删除该 graph_id 的所有 Neo4j 节点
+            if processor:
                 try:
-                    from core.storage.neo4j_store import Neo4jStorageManager
-                    if isinstance(processor.storage, Neo4jStorageManager):
-                        with processor.storage._session() as session:
-                            gid = processor.storage._graph_id
-                            session.run(
-                                "MATCH (ep:Episode) WHERE ep.graph_id = $gid DETACH DELETE ep",
-                                gid=gid,
-                            )
-                            session.run(
-                                "MATCH (r:Relation) WHERE r.graph_id = $gid DETACH DELETE r",
-                                gid=gid,
-                            )
-                            session.run(
-                                "MATCH (e:Entity) WHERE e.graph_id = $gid DETACH DELETE e",
-                                gid=gid,
-                            )
-                        logging.getLogger(__name__).info(
-                            "Deleted Neo4j data for graph '%s'", graph_id,
+                    with processor.storage._session() as session:
+                        gid = processor.storage._graph_id
+                        session.run(
+                            "MATCH (ep:Episode) WHERE ep.graph_id = $gid DETACH DELETE ep",
+                            gid=gid,
                         )
+                        session.run(
+                            "MATCH (r:Relation) WHERE r.graph_id = $gid DETACH DELETE r",
+                            gid=gid,
+                        )
+                        session.run(
+                            "MATCH (e:Entity) WHERE e.graph_id = $gid DETACH DELETE e",
+                            gid=gid,
+                        )
+                    logging.getLogger(__name__).info(
+                        "Deleted Neo4j data for graph '%s'", graph_id,
+                    )
                 except Exception as _e:
                     logging.getLogger(__name__).warning(
                         "删除 graph %s Neo4j 数据失败: %s", graph_id, _e,

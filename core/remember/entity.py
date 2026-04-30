@@ -9,13 +9,15 @@ from concurrent.futures import ThreadPoolExecutor, as_completed, Future
 
 import threading
 import uuid
+import time
 import numpy as np
 import logging
 
 logger = logging.getLogger(__name__)
 
+from core.debug_log import log as dbg, log_struct as _dbg_struct, log_section as _dbg_section
 from core.models import Entity, Episode, ContentPatch
-from core.storage.manager import StorageManager
+from core.storage.neo4j_store import Neo4jStorageManager
 from core.llm.client import LLMClient
 from core.utils import wprint_info, calculate_jaccard_similarity, cosine_similarity
 
@@ -84,7 +86,7 @@ def _preprocess_extraction_context(extracted_entities, extracted_relations):
 class EntityProcessor:
     """实体处理器 - 负责实体的搜索、对齐、更新和新建"""
     
-    def __init__(self, storage: StorageManager, llm_client: LLMClient,
+    def __init__(self, storage: Neo4jStorageManager, llm_client: LLMClient,
                  max_similar_entities: int = 10, content_snippet_length: int = 50,
                  max_alignment_candidates: Optional[int] = None,
                  verbose: bool = True,
@@ -556,6 +558,12 @@ class EntityProcessor:
         )
         verdict = result.get("verdict", "uncertain")
         confidence = result.get("confidence", 0.5)
+        _dbg_struct("alignment_guard",
+                    name_a=name_a, name_b=name_b,
+                    content_a_snippet=(content_a or "")[:80],
+                    content_b_snippet=(content_b or "")[:80],
+                    verdict=verdict, confidence=f"{confidence:.2f}",
+                    name_match_type=name_match_type)
         if verdict in ("different", "uncertain"):
             ans = (verdict, confidence)
         else:
@@ -602,15 +610,13 @@ class EntityProcessor:
         _version_lock: Optional[Any],
         entity_name_to_id: Optional[Dict[str, str]] = None,
     ) -> Optional[Tuple]:
-        """Check if top candidate is an obvious alias and merge directly, bypassing LLM.
+        """Check if top candidate is an alias and merge after LLM verification.
 
-        Detects alias pairs by checking:
-        1. Candidate content mentions the extracted name (e.g., 刘备 content says "字玄德")
-        2. Extracted content mentions candidate name
-        3. Both names appear as dialogue subjects in context text (A曰, B曰)
-        4. Context introduces them together (e.g., "曹操与刘备...玄德曰")
+        Gate: EITHER name Jaccard >= 0.3 OR embedding(name+content) >= 0.5.
+        Then checks content-mention alias evidence, and finally verifies with
+        _alignment_guard before merging.
 
-        Returns a result tuple if alias detected, None otherwise.
+        Returns a result tuple if alias verified, None otherwise.
         """
         if not candidates or not context_text:
             return None
@@ -618,14 +624,21 @@ class EntityProcessor:
         top = candidates[0]
         cand_name = top.get("name", "")
         cand_content = top.get("content", "")
-        combined_score = top.get("combined_score", 0)
-
-        # Need at least moderate similarity for this bypass
-        if combined_score < 0.45:
-            return None
 
         # Skip if exact name match (already handled by fast path above)
         if cand_name == entity_name:
+            return None
+
+        # Gate: name Jaccard OR embedding similarity must pass threshold.
+        # Either signal independently justifies trying LLM verification.
+        _name_jaccard = self._calculate_jaccard_similarity(entity_name, cand_name)
+        _dense_score = top.get("dense_score", 0)
+        _lexical_score = top.get("lexical_score", 0)
+
+        _jaccard_ok = _name_jaccard >= 0.3
+        _embedding_ok = _dense_score >= 0.5
+
+        if not _jaccard_ok and not _embedding_ok:
             return None
 
         # Check alias evidence
@@ -643,14 +656,30 @@ class EntityProcessor:
             is_alias = True
             alias_reason = f"当前内容提及'{cand_name}'"
 
-        # Note: Check 3 (dialogue speakers A曰+B曰) and Check 4 (co-occurrence within 20 chars)
-        # were removed — they caused massive false positive merges.
-        # Two names co-occurring in text ≠ aliases; only content-level evidence is reliable.
-
         if not is_alias:
             return None
 
-        # Alias detected! Merge directly without LLM.
+        # Alias evidence found — verify with _alignment_guard before committing.
+        # Content-mention alone is insufficient: "打听" appearing as a verb in
+        # "周瑞家的" content is not alias evidence.
+        _guard = self._alignment_guard(
+            entity_name, entity_content, cand_name, cand_content or "",
+            name_match_type=top.get("name_match_type", "none"),
+        )
+        if _guard:
+            _guard_verdict, _guard_conf = _guard
+            _dbg_struct("alias_merge_guard_reject",
+                        entity_name=entity_name, cand_name=cand_name,
+                        alias_reason=alias_reason,
+                        name_jaccard=f"{_name_jaccard:.3f}",
+                        dense_score=f"{_dense_score:.3f}",
+                        guard_verdict=_guard_verdict, guard_conf=f"{_guard_conf:.2f}")
+            if self._entity_tree_log():
+                wprint_info(f"  │  别名合并被 guard 拒绝: '{entity_name}' ≁ '{cand_name}' (verdict={_guard_verdict}, conf={_guard_conf:.2f})")
+            return None
+
+        # Alias verified by guard — proceed with merge.
+        _combined = top.get("combined_score", 0)
         match_existing_id = top.get("family_id", "")
         if not match_existing_id:
             return None
@@ -673,7 +702,7 @@ class EntityProcessor:
             return None
 
         if self._entity_tree_log():
-            wprint_info(f"  │  别名快速合并: '{entity_name}' = '{cand_name}' ({alias_reason}, score={combined_score:.2f})")
+            wprint_info(f"  │  别名合并: '{entity_name}' = '{cand_name}' ({alias_reason}, jaccard={_name_jaccard:.2f}, emb={_dense_score:.2f}, guard=passed)")
 
         # Use the longer/more standard name as the merged name
         merged_name = cand_name  # Default: keep existing entity's name
@@ -753,6 +782,18 @@ class EntityProcessor:
             # Fast path: new starts with old → incremental knowledge growth
             if new_content.startswith(old_content):
                 return new_content
+            # Fast path: high content overlap → use the longer content (avoids LLM call)
+            # For same-name entities with very similar content, the longer version
+            # typically subsumes the shorter one. Character bigram Jaccard >= 0.55
+            # captures "same concept, different wording" cases.
+            _min_len = min(len(old_content), len(new_content))
+            if _min_len > 15:
+                _old_bigrams = set(zip(old_content, old_content[1:]))
+                _new_bigrams = set(zip(new_content, new_content[1:]))
+                if _old_bigrams and _new_bigrams:
+                    _jaccard = len(_old_bigrams & _new_bigrams) / len(_old_bigrams | _new_bigrams)
+                    if _jaccard >= 0.55:
+                        return max(old_content, new_content, key=len)
             return self.llm_client.merge_multiple_entity_contents(
                 [old_entity.content, entity_content],
                 entity_sources=[old_entity.source_document, source_document],
@@ -791,43 +832,79 @@ class EntityProcessor:
         """
         entity_name = extracted_entity["name"]
         entity_content = extracted_entity["content"]
+        _t_entity_start = time.monotonic()
         if self._entity_tree_log() and total_entities > 0:
             wprint_info(f"  ├─ 处理实体 [{entity_index}/{total_entities}]: {entity_name}")
+
+        # ── Alignment trace: entity start ──
+        _dbg_struct("entity_start",
+                    name=entity_name,
+                    content_snippet=(entity_content or "")[:120],
+                    episode_id=episode_id,
+                    n_candidates=len(candidates) if candidates else 0,
+                    already_versioned_count=len(already_versioned_family_ids) if already_versioned_family_ids else 0)
 
         if not candidates:
             new_entity = self._build_new_entity(entity_name, entity_content, episode_id, source_document, base_time=base_time)
             if self._entity_tree_log():
                 wprint_info(f"  │  未找到候选实体，批量路径创建新实体: {new_entity.family_id}")
+            _dbg_struct("decision_no_candidates",
+                        name=entity_name, new_family_id=new_entity.family_id)
+            wprint_info(f"[entity_timing] '{entity_name}' no_candidates → {time.monotonic() - _t_entity_start:.1f}s")
             self._mark_versioned(new_entity.family_id, already_versioned_family_ids, _version_lock)
             return new_entity, [], {entity_name: new_entity.family_id, new_entity.name: new_entity.family_id}, new_entity
 
         if self._entity_tree_log():
             wprint_info(f"  │  批量候选生成: {len(candidates)} 个")
 
+        # ── Alignment trace: candidate summary ──
+        _cand_summary = "; ".join(
+            f"{c.get('name','?')}(fid={c.get('family_id','?')},score={c.get('combined_score',0):.3f},safe={c.get('merge_safe',True)},type={c.get('name_match_type','?')})"
+            for c in candidates[:5]
+        )
+        _dbg_struct("candidates_top",
+                    name=entity_name, top_n=min(len(candidates), 5),
+                    candidates=_cand_summary)
+
         # ---- Fix 2a: 精确名称匹配 + 高embedding相似度 → 同窗口复用/跨窗口创建版本，跳过LLM ----
         top = candidates[0]
+        _exact_match_skip_guard = (
+            top["name"] == entity_name
+            and top.get("combined_score", 0) >= 0.85
+            and top.get("merge_safe", True)
+            and top.get("name_match_type", "none") in ("exact", "substring")
+        )
         if (top["name"] == entity_name
             and top.get("combined_score", 0) >= 0.85
             and top.get("merge_safe", True)):
             # 优先使用候选中已携带的实体对象，避免重复 DB 查询
             latest = top.get("entity") or self.storage.get_entity_by_family_id(top["family_id"])
             if latest:
-                # ---- Three-way alignment guard for exact name matches (Phase 4) ----
-                # Even with exact name match, check if content describes a different entity
-                # This catches "张伟(教授)" vs "张伟(CEO)" cases
-                _guard = self._alignment_guard(
-                    entity_name, entity_content, latest.name, latest.content or "",
-                    name_match_type=top.get("name_match_type", "none"),
-                )
-                if _guard:
-                    _align_verdict, _align_confidence = _guard
-                    if self._entity_tree_log():
-                        _label = "同名但不同实体" if _align_verdict == "different" else "保守策略"
-                        wprint_info(f"  │  快捷路径三值对齐: verdict={_align_verdict} (conf={_align_confidence:.2f}), {_label}→新建")
-                    new_entity = self._build_new_entity(entity_name, entity_content, episode_id, source_document, base_time=base_time)
-                    self._mark_versioned(new_entity.family_id, already_versioned_family_ids, _version_lock)
-                    return new_entity, [], {entity_name: new_entity.family_id, new_entity.name: new_entity.family_id}, new_entity
-                    # verdict == "same" → proceed with fast path merge
+                # Skip alignment guard for merge_safe exact/substring matches — the candidate
+                # table already confirmed strong name + embedding similarity. The guard adds
+                # ~20-40s LLM call per entity with near-zero value for these high-confidence cases.
+                if not _exact_match_skip_guard:
+                    # ---- Three-way alignment guard for exact name matches (Phase 4) ----
+                    # Even with exact name match, check if content describes a different entity
+                    # This catches "张伟(教授)" vs "张伟(CEO)" cases
+                    _guard = self._alignment_guard(
+                        entity_name, entity_content, latest.name, latest.content or "",
+                        name_match_type=top.get("name_match_type", "none"),
+                    )
+                    if _guard:
+                        _align_verdict, _align_confidence = _guard
+                        if self._entity_tree_log():
+                            _label = "同名但不同实体" if _align_verdict == "different" else "保守策略"
+                            wprint_info(f"  │  快捷路径三值对齐: verdict={_align_verdict} (conf={_align_confidence:.2f}), {_label}→新建")
+                        _dbg_struct("decision_exact_match_guard_reject",
+                                    name=entity_name, matched_name=top.get("name","?"),
+                                    matched_fid=top.get("family_id","?"),
+                                    verdict=_align_verdict, guard_conf=f"{_align_confidence:.2f}",
+                                    action="create_new")
+                        new_entity = self._build_new_entity(entity_name, entity_content, episode_id, source_document, base_time=base_time)
+                        self._mark_versioned(new_entity.family_id, already_versioned_family_ids, _version_lock)
+                        return new_entity, [], {entity_name: new_entity.family_id, new_entity.name: new_entity.family_id}, new_entity
+                        # verdict == "same" → proceed with fast path merge
 
                 # 同窗口内已有版本 → 直接复用，避免同窗口重复版本化（加锁防竞态）
                 def _fast_path_create_version():
@@ -835,6 +912,9 @@ class EntityProcessor:
                     if already_versioned_family_ids and latest.family_id in already_versioned_family_ids:
                         if self._entity_tree_log():
                             wprint_info(f"  │  快捷路径：同窗口复用 {latest.family_id}")
+                        _dbg_struct("decision_exact_same_window_reuse",
+                                    name=entity_name, family_id=latest.family_id,
+                                    action="reuse_existing_version")
                         return latest, [], {entity_name: latest.family_id, latest.name: latest.family_id}, None
 
                     # 内容完全相同 → 直接复用旧 content（零 LLM 开销）
@@ -848,6 +928,9 @@ class EntityProcessor:
                         self._mark_versioned(latest.family_id, already_versioned_family_ids, _version_lock)
                         if self._entity_tree_log():
                             wprint_info(f"  │  快捷路径：内容相同，直接复用 {latest.family_id}")
+                        _dbg_struct("decision_exact_content_identical",
+                                    name=entity_name, family_id=latest.family_id,
+                                    action="reuse_content_new_version")
                         return entity_version, [], {entity_name: latest.family_id, latest.name: latest.family_id}, entity_version
 
                     # 内容有差异 → 增量合并（git-like editing）
@@ -864,22 +947,33 @@ class EntityProcessor:
                     self._mark_versioned(latest.family_id, already_versioned_family_ids, _version_lock)
                     if self._entity_tree_log():
                         wprint_info(f"  │  快捷路径：增量合并新版本 {latest.family_id}")
+                    _dbg_struct("decision_exact_incremental_merge",
+                                name=entity_name, family_id=latest.family_id,
+                                action="merge_and_new_version")
                     return entity_version, [], {entity_name: latest.family_id, latest.name: latest.family_id}, entity_version
 
                 if _version_lock:
                     with _version_lock:
-                        return _fast_path_create_version()
+                        _r = _fast_path_create_version()
+                        wprint_info(f"[entity_timing] '{entity_name}' exact_match_fast → {time.monotonic() - _t_entity_start:.1f}s")
+                        return _r
                 else:
-                    return _fast_path_create_version()
+                    _r = _fast_path_create_version()
+                    wprint_info(f"[entity_timing] '{entity_name}' exact_match_fast → {time.monotonic() - _t_entity_start:.1f}s")
+                    return _r
 
         # ---- Fix 2b: 全部候选低相似度 → 直接新建，跳过LLM ----
         if candidates[0].get("combined_score", 0) < 0.4:
             if self._entity_tree_log():
                 wprint_info(f"  │  快捷路径：候选相似度过低({candidates[0].get('combined_score', 0):.2f})→新建")
+            _dbg_struct("decision_low_similarity",
+                        name=entity_name, best_score=f"{candidates[0].get('combined_score', 0):.3f}",
+                        best_name=candidates[0].get('name', '?'), action="create_new")
             new_entity = self._build_new_entity(entity_name, entity_content, episode_id, source_document, base_time=base_time)
             if new_entity:
                 self._mark_versioned(new_entity.family_id, already_versioned_family_ids, _version_lock)
             if new_entity:
+                wprint_info(f"[entity_timing] '{entity_name}' low_similarity(score<{0.4}) → {time.monotonic() - _t_entity_start:.1f}s")
                 return new_entity, [], {entity_name: new_entity.family_id, new_entity.name: new_entity.family_id}, new_entity
 
         # ---- Context-based alias bypass (skip LLM for obvious aliases) ----
@@ -901,6 +995,12 @@ class EntityProcessor:
             entity_name_to_id=entity_name_to_id,
         )
         if alias_merged is not None:
+            _dbg_struct("decision_alias_merge",
+                        name=entity_name, matched_name=candidates[0].get('name', '?') if candidates else '?',
+                        matched_fid=candidates[0].get('family_id', '?') if candidates else '?',
+                        combined_score=f"{candidates[0].get('combined_score', 0):.3f}" if candidates else "0",
+                        action="alias_merge_guard_verified")
+            wprint_info(f"[entity_timing] '{entity_name}' alias_merge → {time.monotonic() - _t_entity_start:.1f}s")
             return alias_merged
 
         batch_result = self.llm_client.resolve_entity_candidates_batch(
@@ -916,7 +1016,68 @@ class EntityProcessor:
         )
         confidence = float(batch_result.get("confidence", 0.0) or 0.0)
         update_mode = batch_result.get("update_mode") or "reuse_existing"
-        if (not self.batch_resolution_enabled) or update_mode == "fallback" or confidence < self.batch_resolution_confidence_threshold:
+
+        # ── Alignment trace: batch LLM decision ──
+        _dbg_struct("batch_llm_decision",
+                    name=entity_name, confidence=f"{confidence:.3f}",
+                    update_mode=update_mode,
+                    match_existing_id=batch_result.get("match_existing_id", ""),
+                    merged_name=batch_result.get("merged_name", ""),
+                    n_relations=len(batch_result.get("relations_to_create", []) or []))
+        # Trust batch_resolve decisions directly — update_mode is the LLM's judgment,
+        # confidence is just self-reported noise. create_new = no match = fast path.
+        _safe_create_new = (update_mode == "create_new")
+
+        # Lightweight path: when batch gives a merge/reuse decision with moderate confidence,
+        # verify with a single _alignment_guard instead of falling back to the
+        # full sequential path.
+        _moderate_conf_merge = (
+            update_mode in ("merge_into_latest", "reuse_existing")
+            and confidence < self.batch_resolution_confidence_threshold
+            and self.batch_resolution_enabled
+        )
+        if _moderate_conf_merge:
+            match_existing_id = (batch_result.get("match_existing_id") or "").strip()
+            if match_existing_id:
+                _cand_by_fid = {c.get("family_id"): c for c in candidates if c.get("family_id")}
+                _matched_cand = _cand_by_fid.get(match_existing_id)
+                _guard = self._alignment_guard(
+                    entity_name, entity_content,
+                    _matched_cand.get("name", "") if _matched_cand else "",
+                    _matched_cand.get("content", "") if _matched_cand else "",
+                    name_match_type=_matched_cand.get("name_match_type", "none") if _matched_cand else "none",
+                    require_content=False,
+                )
+                if _guard:
+                    if self._entity_tree_log():
+                        wprint_info(f"  │  中等置信合并被 alignment_guard 拒绝 (conf={confidence:.2f})→新建")
+                    _dbg_struct("decision_moderate_guard_reject",
+                                name=entity_name, match_fid=match_existing_id,
+                                batch_conf=f"{confidence:.2f}",
+                                guard_verdict=_guard[0], guard_conf=f"{_guard[1]:.2f}",
+                                action="create_new")
+                    new_entity = self._build_new_entity(entity_name, entity_content, episode_id, source_document, base_time=base_time, confidence=confidence)
+                    self._mark_versioned(new_entity.family_id, already_versioned_family_ids, _version_lock)
+                    wprint_info(f"[entity_timing] '{entity_name}' moderate_guard_reject → {time.monotonic() - _t_entity_start:.1f}s")
+                    return new_entity, [], {entity_name: new_entity.family_id, new_entity.name: new_entity.family_id}, new_entity
+                # Guard passed — proceed with the merge/reuse decision below
+                if self._entity_tree_log():
+                    wprint_info(f"  │  中等置信合并通过 guard (conf={confidence:.2f}), 跳过完整 fallback")
+            else:
+                # No match_existing_id — treat as create_new
+                new_entity = self._build_new_entity(entity_name, entity_content, episode_id, source_document, base_time=base_time, confidence=confidence)
+                self._mark_versioned(new_entity.family_id, already_versioned_family_ids, _version_lock)
+                wprint_info(f"[entity_timing] '{entity_name}' moderate_no_match → {time.monotonic() - _t_entity_start:.1f}s")
+                return new_entity, [], {entity_name: new_entity.family_id, new_entity.name: new_entity.family_id}, new_entity
+
+        _need_full_fallback = (not self.batch_resolution_enabled) or update_mode == "fallback"
+        if _need_full_fallback:
+            _dbg_struct("decision_fallback",
+                        name=entity_name, batch_conf=f"{confidence:.2f}",
+                        update_mode=update_mode,
+                        reason="disabled" if not self.batch_resolution_enabled else
+                               "fallback_mode" if update_mode == "fallback" else "low_confidence",
+                        action="sequential_fallback")
             if self._entity_tree_log():
                 wprint_info(f"  │  批量裁决置信度不足，回退到旧逻辑 (confidence={confidence:.2f})")
             entity, relations, name_mapping = self._process_entity_sequential_fallback(
@@ -939,7 +1100,10 @@ class EntityProcessor:
                 prefetched_embedding=prefetched_embedding,
                 prebuilt_candidates=candidates,
             )
+            wprint_info(f"[entity_timing] '{entity_name}' fallback_sequential(conf={confidence:.2f}) → {time.monotonic() - _t_entity_start:.1f}s")
             return entity, relations, name_mapping, None
+
+        wprint_info(f"[entity_timing] '{entity_name}' batch_resolve(conf={confidence:.2f},{update_mode}) → {time.monotonic() - _t_entity_start:.1f}s (past fallback check)")
 
         # Pre-build family_id → candidate dict for O(1) lookups (avoids 4× linear scans)
         _cand_by_fid = {c.get("family_id"): c for c in candidates if c.get("family_id")}
@@ -1001,8 +1165,13 @@ class EntityProcessor:
                     if update_mode in ("merge_into_latest", "reuse_existing"):
                         if self._entity_tree_log():
                             wprint_info("  │  批量裁决: merge_safe=False，禁止合并/复用，创建新实体")
+                        _dbg_struct("decision_merge_unsafe_reject",
+                                    name=entity_name, match_fid=match_existing_id,
+                                    matched_name=mc_name, update_mode=update_mode,
+                                    action="create_new")
                         new_entity = self._build_new_entity(entity_name, entity_content, episode_id, source_document, base_time=base_time, confidence=confidence)
                         self._mark_versioned(new_entity.family_id, already_versioned_family_ids, _version_lock)
+                        wprint_info(f"[entity_timing] '{entity_name}' merge_unsafe_reject → {time.monotonic() - _t_entity_start:.1f}s")
                         return new_entity, relations_to_create, {
                             entity_name: new_entity.family_id,
                             new_entity.name: new_entity.family_id,
@@ -1024,8 +1193,15 @@ class EntityProcessor:
                     _align_verdict, _align_confidence = _guard
                     if self._entity_tree_log():
                         wprint_info(f"  │  三值对齐: verdict={_align_verdict} (conf={_align_confidence:.2f}), 拒绝合并→新建")
+                    _dbg_struct("decision_guard_reject",
+                                name=entity_name, match_fid=match_existing_id,
+                                batch_conf=f"{_batch_conf:.2f}",
+                                guard_verdict=_align_verdict,
+                                guard_conf=f"{_align_confidence:.2f}",
+                                action="create_new")
                     new_entity = self._build_new_entity(entity_name, entity_content, episode_id, source_document, base_time=base_time, confidence=confidence)
                     self._mark_versioned(new_entity.family_id, already_versioned_family_ids, _version_lock)
+                    wprint_info(f"[entity_timing] '{entity_name}' guard_reject(conf={_batch_conf:.2f}) → {time.monotonic() - _t_entity_start:.1f}s")
                     return new_entity, relations_to_create, {
                         entity_name: new_entity.family_id,
                         new_entity.name: new_entity.family_id,
@@ -1035,30 +1211,23 @@ class EntityProcessor:
 
             latest_entity = matched_candidate.get("entity") if matched_candidate else None
             if not latest_entity:
-                latest_entity = self.storage.get_entity_by_family_id(match_existing_id)
+                # Try redirect resolution first
+                resolved_id = self.storage.resolve_family_id(match_existing_id)
+                if resolved_id and resolved_id != match_existing_id:
+                    latest_entity = self.storage.get_entity_by_family_id(resolved_id)
             if not latest_entity:
+                # Entity not found (merged/deleted) — create new directly instead of
+                # expensive fallback. Register redirect so future lookups find the new entity.
                 if self._entity_tree_log():
-                    wprint_info(f"  │  批量裁决命中的实体不存在，回退旧逻辑: {match_existing_id}")
-                entity, relations, name_mapping = self._process_entity_sequential_fallback(
-                    extracted_entity,
-                    episode_id,
-                    similarity_threshold,
-                    episode,
-                    source_document,
-                    context_text,
-                    entity_index=entity_index,
-                    total_entities=total_entities,
-                    extracted_entity_names=extracted_entity_names,
-                    extracted_relation_pairs=extracted_relation_pairs,
-                    jaccard_search_threshold=jaccard_search_threshold,
-                    embedding_name_search_threshold=embedding_name_search_threshold,
-                    embedding_full_search_threshold=embedding_full_search_threshold,
-                    base_time=base_time,
-                    already_versioned_family_ids=already_versioned_family_ids,
-                    _version_lock=_version_lock,
-                    prefetched_embedding=prefetched_embedding,
-                )
-                return entity, relations, name_mapping, None
+                    wprint_info(f"  │  批量裁决命中的实体不存在: {match_existing_id}，直接新建")
+                new_entity = self._build_new_entity(entity_name, entity_content, episode_id, source_document, base_time=base_time, confidence=confidence)
+                self._mark_versioned(new_entity.family_id, already_versioned_family_ids, _version_lock)
+                try:
+                    self.storage.register_entity_redirect(match_existing_id, new_entity.family_id)
+                except Exception:
+                    pass
+                wprint_info(f"[entity_timing] '{entity_name}' entity_not_found→create_new(conf={confidence:.2f}) → {time.monotonic() - _t_entity_start:.1f}s")
+                return new_entity, relations_to_create, {entity_name: new_entity.family_id, new_entity.name: new_entity.family_id}, new_entity
 
             if update_mode == "merge_into_latest":
                 # 防止同窗口内重复版本化（加锁防竞态）
@@ -1066,6 +1235,9 @@ class EntityProcessor:
                     if already_versioned_family_ids and match_existing_id in already_versioned_family_ids:
                         if self._entity_tree_log():
                             wprint_info(f"  │  批量裁决: family_id {match_existing_id} 已在本次处理中创建版本，复用已有实体")
+                        _dbg_struct("decision_batch_merge_same_window_reuse",
+                                    name=entity_name, family_id=match_existing_id,
+                                    action="reuse_existing_version")
                         return latest_entity, relations_to_create, {
                             entity_name: latest_entity.family_id,
                             latest_entity.name: latest_entity.family_id,
@@ -1092,6 +1264,11 @@ class EntityProcessor:
                     self._mark_versioned(latest_entity.family_id, already_versioned_family_ids, _version_lock)
                     if self._entity_tree_log():
                         wprint_info(f"  │  批量裁决: 增量合并到已有实体 {latest_entity.family_id} 并生成新版本")
+                    _dbg_struct("decision_batch_merge",
+                                name=entity_name, family_id=latest_entity.family_id,
+                                merged_name=merged_name,
+                                confidence=f"{confidence:.2f}",
+                                action="merge_incremental_new_version")
                     return entity_version, relations_to_create, {
                         entity_name: latest_entity.family_id,
                         entity_version.name: latest_entity.family_id,
@@ -1099,9 +1276,13 @@ class EntityProcessor:
 
                 if _version_lock:
                     with _version_lock:
-                        return _batch_merge_create_version()
+                        _r = _batch_merge_create_version()
+                        wprint_info(f"[entity_timing] '{entity_name}' batch_merge(conf={confidence:.2f}) → {time.monotonic() - _t_entity_start:.1f}s")
+                        return _r
                 else:
-                    return _batch_merge_create_version()
+                    _r = _batch_merge_create_version()
+                    wprint_info(f"[entity_timing] '{entity_name}' batch_merge(conf={confidence:.2f}) → {time.monotonic() - _t_entity_start:.1f}s")
+                    return _r
 
             # reuse_existing: 跨窗口再次遇到已知实体 → 创建新版本（同窗口内已有版本则复用）
             # 使用锁保护 check+create，防止并行线程重复版本化（TOCTOU 竞态）
@@ -1109,6 +1290,9 @@ class EntityProcessor:
                 if already_versioned_family_ids and latest_entity.family_id in already_versioned_family_ids:
                     if self._entity_tree_log():
                         wprint_info(f"  │  批量裁决: 同窗口复用已有实体 {latest_entity.family_id}")
+                    _dbg_struct("decision_batch_reuse_same_window",
+                                name=entity_name, family_id=latest_entity.family_id,
+                                action="reuse_existing_version")
                     return latest_entity, relations_to_create, {
                         entity_name: latest_entity.family_id,
                         latest_entity.name: latest_entity.family_id,
@@ -1122,6 +1306,10 @@ class EntityProcessor:
                 self._mark_versioned(latest_entity.family_id, already_versioned_family_ids, _version_lock)
                 if self._entity_tree_log():
                     wprint_info(f"  │  批量裁决: 跨窗口创建新版本 {latest_entity.family_id}")
+                _dbg_struct("decision_batch_reuse_cross_window",
+                            name=entity_name, family_id=latest_entity.family_id,
+                            confidence=f"{confidence:.2f}",
+                            action="reuse_existing_new_version")
                 return entity_version, relations_to_create, {
                     entity_name: latest_entity.family_id,
                     latest_entity.name: latest_entity.family_id,
@@ -1129,9 +1317,13 @@ class EntityProcessor:
 
             if _version_lock:
                 with _version_lock:
-                    return _batch_reuse_create_version()
+                    _r = _batch_reuse_create_version()
+                    wprint_info(f"[entity_timing] '{entity_name}' batch_reuse(conf={confidence:.2f}) → {time.monotonic() - _t_entity_start:.1f}s")
+                    return _r
             else:
-                return _batch_reuse_create_version()
+                _r = _batch_reuse_create_version()
+                wprint_info(f"[entity_timing] '{entity_name}' batch_reuse(conf={confidence:.2f}) → {time.monotonic() - _t_entity_start:.1f}s")
+                return _r
 
         merged_name = (batch_result.get("merged_name") or entity_name).strip() or entity_name
         new_entity = self._build_new_entity(merged_name, entity_content, episode_id, source_document, base_time=base_time, confidence=confidence)
@@ -1139,6 +1331,13 @@ class EntityProcessor:
         self._mark_versioned(new_entity.family_id, already_versioned_family_ids, _version_lock)
         if self._entity_tree_log():
             wprint_info(f"  │  批量裁决: 创建新实体 '{entity_name}' {new_entity.family_id} (had {len(candidates)} cands, best={candidates[0].get('name','?')} score={candidates[0].get('combined_score',0):.2f}, LLM chose create_new conf={confidence:.2f})")
+        _dbg_struct("decision_batch_create_new",
+                    name=entity_name, new_family_id=new_entity.family_id,
+                    confidence=f"{confidence:.2f}",
+                    best_candidate=candidates[0].get('name', '?'),
+                    best_score=f"{candidates[0].get('combined_score', 0):.3f}",
+                    action="create_new")
+        wprint_info(f"[entity_timing] '{entity_name}' batch_create_new(conf={confidence:.2f}) → {time.monotonic() - _t_entity_start:.1f}s")
         return new_entity, relations_to_create, {
             entity_name: new_entity.family_id,
             new_entity.name: new_entity.family_id,
@@ -1340,6 +1539,9 @@ class EntityProcessor:
             self._mark_versioned(new_entity.family_id, already_versioned_family_ids, _version_lock)
             if self._entity_tree_log():
                 wprint_info(f"  │  未找到相似实体，创建新实体: {new_entity.family_id}")
+            _dbg_struct("decision_fallback_no_candidates",
+                        name=entity_name, new_family_id=new_entity.family_id,
+                        action="create_new")
             # 返回实体、空关系列表、实体名称到ID的映射
             entity_name_to_id = {
                 entity_name: new_entity.family_id,
@@ -1377,39 +1579,16 @@ class EntityProcessor:
                 'version_count': version_counts.get(e.family_id, 1)
             })
 
-        # 步骤5：使用两步流程分析（初步筛选 + 精细化判断）
+        # 步骤5：直接进行精细化判断（跳过 preliminary 筛选）
+        # 候选表已经通过 Jaccard + embedding + BM25 + content-mention 多重筛选，
+        # preliminary analysis 是多余的 LLM 调用。直接对所有候选做 detailed analysis。
         if self._entity_tree_log():
             wprint_info(f"  │  调用LLM分析（候选数: {len(unique_entities)}）")
-        
-        # 阶段1：初步筛选（使用content snippet快速筛选）
-        try:
-            preliminary_result = self.llm_client.analyze_entity_candidates_preliminary(
-                entities_group,
-                context_text=context_text
-            )
-        except Exception as e:
-            logger.warning("LLM preliminary analysis failed for '%s': %s — falling back to no_action", entity_name, e)
-            preliminary_result = {"candidates": []}
 
-        candidates = preliminary_result.get("candidates", [])
-
-        # 去重
-        _seen_ids = set()
-        deduped_candidates = []
-        for item in candidates:
-            _is_dict = isinstance(item, dict)
-            cid = item.get("family_id") if _is_dict else item
-            if cid not in _seen_ids:
-                _seen_ids.add(cid)
-                deduped_candidates.append(item)
-        candidates = deduped_candidates
-
-        # 阶段2：精细化判断（对筛选出的候选使用完整content进行精确判断）
+        # All unique entities are candidates for detailed analysis (skip preliminary)
         candidates_to_analyze = {}
-        for item in candidates:
-            cid = item.get("family_id") if isinstance(item, dict) else item
-            if cid != 'NEW_ENTITY':
-                candidates_to_analyze[cid] = {"type": "pending", "reason": ""}
+        for e in unique_entities:
+            candidates_to_analyze[e.family_id] = {"type": "pending", "reason": ""}
 
         # Pre-encode current entity embedding for merge safety checks (once, not per-candidate)
         _current_entity_emb = prefetched_embedding
@@ -1426,8 +1605,7 @@ class EntityProcessor:
 
         # 输出初步筛选结果
         if self._entity_tree_log():
-            skipped = len(unique_entities) - len(candidates_to_analyze)
-            wprint_info(f"  │  ├─ 初步筛选: {len(candidates_to_analyze)} 个候选需详细判断, 跳过 {skipped} 个")
+            wprint_info(f"  │  ├─ 跳过 preliminary, 直接精细化判断: {len(candidates_to_analyze)} 个候选")
         
         # 准备当前实体信息（新实体）
         current_entity_info = {
@@ -1448,9 +1626,16 @@ class EntityProcessor:
                 wprint_info(f"  │  ├─ 精细化判断开始（共 {len(candidates_to_analyze)} 个候选）")
 
         # Phase 1: Parallel LLM calls for detailed analysis
+        # Limit to top 5 candidates to cap LLM calls (sorted by combined_score desc)
+        _MAX_DETAILED_CANDIDATES = 5
         _detailed_tasks = []  # (cid, candidate_entity, candidate_info, future_or_result)
         _unique_by_fid = {e.family_id: e for e in unique_entities if hasattr(e, 'family_id') and e.family_id}
-        for cid, info in candidates_to_analyze.items():
+        _sorted_cids = list(candidates_to_analyze.items())
+        if len(_sorted_cids) > _MAX_DETAILED_CANDIDATES:
+            _sorted_cids = _sorted_cids[:_MAX_DETAILED_CANDIDATES]
+            if self._entity_tree_log():
+                wprint_info(f"  │  ├─ 精细化判断截断: 仅分析前 {_MAX_DETAILED_CANDIDATES}/{len(candidates_to_analyze)} 个候选")
+        for cid, info in _sorted_cids:
             candidate_entity = _unique_by_fid.get(cid)
             if not candidate_entity:
                 continue
@@ -1463,7 +1648,7 @@ class EntityProcessor:
             }
             _detailed_tasks.append((cid, candidate_entity, candidate_info))
 
-        # Execute LLM calls in parallel (2 workers to avoid overloading)
+        # Execute LLM calls in parallel (3 workers to utilize concurrency budget)
         _detailed_results: Dict[str, Optional[Dict]] = {}
         if len(_detailed_tasks) > 1:
             def _call_detailed(task):
@@ -1475,7 +1660,7 @@ class EntityProcessor:
                     logger.warning("LLM detailed analysis failed for '%s' vs '%s': %s — skipping",
                                    entity_name, cent.name, e)
                     return (cid, None)
-            pool = _get_entity_pool(2)
+            pool = _get_entity_pool(3)
             for cid, result in pool.map(_call_detailed, _detailed_tasks):
                 if result is not None:
                     _detailed_results[cid] = result
@@ -1499,6 +1684,9 @@ class EntityProcessor:
             
 
             if action == "merge":
+                _dbg_struct("fallback_detailed_analysis",
+                            name=entity_name, candidate_name=candidate_entity.name,
+                            candidate_fid=cid, action=action)
                 # ---- Three-way alignment verification (Phase 4) ----
                 _guard = self._alignment_guard(
                     entity_name, entity_content,
@@ -1560,7 +1748,7 @@ class EntityProcessor:
             if self._entity_tree_log():
                 wprint_info(f"  │  └─ 精细化判断: 合并 {len(merge_decisions)} 个, 关系 {len(relation_decisions)} 个")
         
-        # 步骤6.1和6.2：处理分析结果（合并决策和关系决策）
+        # 步骤9：处理分析结果（合并决策和关系决策）
         final_entity = None
         pending_relations = []  # 待处理的关系（使用实体名称，因为新实体还没有ID）
         entity_name_to_id = {}  # 实体名称到ID的映射
@@ -1746,7 +1934,7 @@ class EntityProcessor:
             if self._entity_tree_log():
                 wprint_info(f"  │  ├─ 关系: {entity1_name} <-> {entity2_name}")
             
-            # 关系使用实体名称，ID将在步骤6.3中更新
+            # 关系使用实体名称，ID将在步骤9中更新
             pending_relations.append({
                 "entity1_name": entity1_name,  # 当前抽取的实体名称
                 "entity2_name": entity2_name,  # 候选实体名称
@@ -1754,7 +1942,7 @@ class EntityProcessor:
                 "relation_type": relation_type
             })
         
-        # 步骤6.3：如果没有匹配或合并，创建新实体并分配ID
+        # 步骤9：如果没有匹配或合并，创建新实体并分配ID
         if not final_entity:
             # 检查是否有匹配的实体（通过分析结果判断）
             matched = bool(merge_decisions)
@@ -1790,7 +1978,7 @@ class EntityProcessor:
                 entity_name_to_id[entity_name] = final_entity.family_id
                 entity_name_to_id[final_entity.name] = final_entity.family_id
         
-        # 步骤6.3：更新关系边中的实体名称到ID映射
+        # 步骤9：更新关系边中的实体名称到ID映射
         # 对于pending_relations中的关系，如果涉及当前实体（entity1_name），更新为实际的family_id
         updated_relations = []
         for rel in pending_relations:
@@ -1800,7 +1988,7 @@ class EntityProcessor:
                 updated_rel["entity1_id"] = final_entity.family_id if final_entity else None
                 updated_relations.append(updated_rel)
             else:
-                # 保持原样（entity2_name是已有实体，将在步骤7中处理）
+                # 保持原样（entity2_name是已有实体，将在步骤10中处理）
                 updated_relations.append(rel)
         
         # 输出最终结果

@@ -163,7 +163,7 @@ class _CrossWindowDedupMixin:
         # DISABLED: In literary text, entities in the same scene almost always
         # mention each other in their content, causing massive false positives
         # (十里街↔仁清巷, 太虚幻境↔对联, 丫鬟↔巨眼英雄 etc.)
-        # Real alias detection is handled by Step 6 (alignment with LLM verification)
+        # Real alias detection is handled by Step 9 (alignment with LLM verification)
         # and name-substring dedup below.
         # self._cross_window_content_mention_dedup(all_entities, verbose=verbose)
 

@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import uuid
 
 from core.models import Relation
-from core.storage.manager import StorageManager
+from core.storage.neo4j_store import Neo4jStorageManager
 from core.llm.client import LLMClient
 from core.debug_log import log as dbg, log_section as dbg_section, _ENABLED as _dbg_enabled
 from core.utils import wprint_info, normalize_entity_pair
@@ -56,7 +56,7 @@ def _doc_basename(source_document: str) -> str:
 class RelationProcessor:
     """关系处理器 - 负责关系的搜索、对齐、更新和新建"""
     
-    def __init__(self, storage: StorageManager, llm_client: LLMClient):
+    def __init__(self, storage: Neo4jStorageManager, llm_client: LLMClient):
         self.storage = storage
         self.llm_client = llm_client
         self.batch_resolution_enabled = True
@@ -69,7 +69,7 @@ class RelationProcessor:
         extracted_relations: List[Dict[str, str]],
         entity_name_to_id: Dict[str, str],
     ) -> Tuple[Dict[Tuple[str, str], List[Dict[str, str]]], int]:
-        """去重合并后按实体对分组，不含读库。供步骤7跨窗预取，与 process_relations_batch 前半段一致。"""
+        """去重合并后按实体对分组，不含读库。供步骤10跨窗预取，与 process_relations_batch 前半段一致。"""
         merged_relations = self._dedupe_and_merge_relations(extracted_relations, entity_name_to_id)
         if not merged_relations:
             return {}, 0

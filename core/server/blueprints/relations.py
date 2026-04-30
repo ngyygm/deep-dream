@@ -1103,7 +1103,7 @@ def graph_summary():
             processor.embedding_client is not None
             and processor.embedding_client.is_available()
         )
-        storage_backend = "neo4j" if hasattr(processor.storage, 'is_neo4j') else "sqlite"
+        storage_backend = "neo4j"
         return ok({
             "graph_id": _get_graph_id(),
             "storage_backend": storage_backend,

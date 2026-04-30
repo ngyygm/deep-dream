@@ -18,6 +18,7 @@ window.GraphExplorer = (function () {
     var _pinnedNodePositions = {};
 
     var _focusAbsoluteId = null;
+    var _detailBackStack = [];  // stack of {type:'relation'|'entity', id:string} for back navigation
     var _currentVersions = [];
     var _currentVersionIdx = 0;
     var _relationScope = 'accumulated';
@@ -769,9 +770,10 @@ window.GraphExplorer = (function () {
 
     async function focusOnEntity(absoluteId, opts) {
       opts = opts || {};
+      var isVersionSwitch = opts.isVersionSwitch && _session && _session.focusFamilyId;
       var graphId = state.currentGraphId;
       var loadingEl = _el(_opts.loadingId);
-      if (loadingEl) loadingEl.style.display = 'flex';
+      if (loadingEl && !isVersionSwitch) loadingEl.style.display = 'flex';
 
       try {
         // 1. Resolve entity
@@ -796,25 +798,27 @@ window.GraphExplorer = (function () {
 
         // 2b. Fetch ALL relations for the focused entity from API (supplement main view cache)
         var _apiRelationAbsIds = new Set();
-        try {
-          var scope = _relationScope || 'accumulated';
-          var apiRelRes = await state.api.entityRelations(familyId, graphId, {
-            maxVersionAbsoluteId: absoluteId,
-            relationScope: scope
-          });
-          var apiRels = apiRelRes.data?.relations || apiRelRes.data || [];
-          var existingRelAbsIds = new Set();
-          bfs.relations.forEach(function(r) { existingRelAbsIds.add(r.absolute_id); });
-          for (var ari = 0; ari < apiRels.length; ari++) {
-            var apiRel = apiRels[ari];
-            if (!existingRelAbsIds.has(apiRel.absolute_id)) {
-              bfs.relations.push(apiRel);
-              existingRelAbsIds.add(apiRel.absolute_id);
-              _apiRelationAbsIds.add(apiRel.entity1_absolute_id);
-              _apiRelationAbsIds.add(apiRel.entity2_absolute_id);
+        if (!isVersionSwitch) {
+          try {
+            var scope = _relationScope || 'accumulated';
+            var apiRelRes = await state.api.entityRelations(familyId, graphId, {
+              maxVersionAbsoluteId: absoluteId,
+              relationScope: scope
+            });
+            var apiRels = apiRelRes.data?.relations || apiRelRes.data || [];
+            var existingRelAbsIds = new Set();
+            bfs.relations.forEach(function(r) { existingRelAbsIds.add(r.absolute_id); });
+            for (var ari = 0; ari < apiRels.length; ari++) {
+              var apiRel = apiRels[ari];
+              if (!existingRelAbsIds.has(apiRel.absolute_id)) {
+                bfs.relations.push(apiRel);
+                existingRelAbsIds.add(apiRel.absolute_id);
+                _apiRelationAbsIds.add(apiRel.entity1_absolute_id);
+                _apiRelationAbsIds.add(apiRel.entity2_absolute_id);
+              }
             }
-          }
-        } catch (_) { /* non-fatal: proceed with main view cache only */ }
+          } catch (_) { /* non-fatal: proceed with main view cache only */ }
+        }
 
         // 3. Build familyIdToLatest with focus override
         var familyIdToLatest = _opts.familyIdToLatest ? Object.assign({}, _opts.familyIdToLatest()) : {};
@@ -822,30 +826,32 @@ window.GraphExplorer = (function () {
 
         // 4. Resolve missing absolute_ids (endpoints not in entityCache)
         var absToFid = Object.assign({}, bfs.absToFid);
-        var unresolvedAbsIds = [];
-        var seenAbs = new Set();
-        for (var ui = 0; ui < bfs.relations.length; ui++) {
-          var ur = bfs.relations[ui];
-          if (!absToFid[ur.entity1_absolute_id] && !seenAbs.has(ur.entity1_absolute_id)) {
-            unresolvedAbsIds.push(ur.entity1_absolute_id);
-            seenAbs.add(ur.entity1_absolute_id);
+        if (!isVersionSwitch) {
+          var unresolvedAbsIds = [];
+          var seenAbs = new Set();
+          for (var ui = 0; ui < bfs.relations.length; ui++) {
+            var ur = bfs.relations[ui];
+            if (!absToFid[ur.entity1_absolute_id] && !seenAbs.has(ur.entity1_absolute_id)) {
+              unresolvedAbsIds.push(ur.entity1_absolute_id);
+              seenAbs.add(ur.entity1_absolute_id);
+            }
+            if (!absToFid[ur.entity2_absolute_id] && !seenAbs.has(ur.entity2_absolute_id)) {
+              unresolvedAbsIds.push(ur.entity2_absolute_id);
+              seenAbs.add(ur.entity2_absolute_id);
+            }
           }
-          if (!absToFid[ur.entity2_absolute_id] && !seenAbs.has(ur.entity2_absolute_id)) {
-            unresolvedAbsIds.push(ur.entity2_absolute_id);
-            seenAbs.add(ur.entity2_absolute_id);
+          if (unresolvedAbsIds.length > 0) {
+            var resolveBatch = unresolvedAbsIds.slice(0, 30);
+            var resolvePromises = resolveBatch.map(function (uAbsId) {
+              return state.api.entityByAbsoluteId(uAbsId, graphId).then(function (uRes) {
+                if (uRes.data) {
+                  _entityMap[uAbsId] = uRes.data;
+                  absToFid[uAbsId] = uRes.data.family_id;
+                }
+              }).catch(function () {});
+            });
+            await Promise.all(resolvePromises);
           }
-        }
-        if (unresolvedAbsIds.length > 0) {
-          var resolveBatch = unresolvedAbsIds.slice(0, 30);
-          var resolvePromises = resolveBatch.map(function (uAbsId) {
-            return state.api.entityByAbsoluteId(uAbsId, graphId).then(function (uRes) {
-              if (uRes.data) {
-                _entityMap[uAbsId] = uRes.data;
-                absToFid[uAbsId] = uRes.data.family_id;
-              }
-            }).catch(function () {});
-          });
-          await Promise.all(resolvePromises);
         }
 
         // 4b. Add family_ids discovered from API relations to BFS visited set
@@ -910,11 +916,11 @@ window.GraphExplorer = (function () {
         var futureRelationIds = new Set();
         var scope = _relationScope;
 
-        // Optimize: skip API if viewing latest version in accumulated scope
+        // Optimize: skip API if viewing latest version in accumulated scope OR version switch
         var latestAbsForFocus = _opts.familyIdToLatest ? _opts.familyIdToLatest()[familyId] : null;
         var isLatestVersion = (absoluteId === latestAbsForFocus);
 
-        if (scope !== 'version_only' && !(isLatestVersion && scope === 'accumulated')) {
+        if (!isVersionSwitch && scope !== 'version_only' && !(isLatestVersion && scope === 'accumulated')) {
           var apiFids = [];
           bfs.familyIds.forEach(function (fid) { apiFids.push(fid); });
           var apiPromises = apiFids.map(function (fid) {
@@ -938,10 +944,12 @@ window.GraphExplorer = (function () {
         }
 
         // 9. Session merge for version switch accumulation
-        var isVersionSwitch = _session && _session.focusFamilyId === familyId;
+        var doSessionMerge = _session && _session.focusFamilyId === familyId;
         if (!_session) _session = new FocusSession();
-        var sessionInherited = _session.merge(familyId, relAbsIdSet);
-        sessionInherited.forEach(function (id) { inheritedRelationIds.add(id); });
+        if (doSessionMerge) {
+          var sessionInherited = _session.merge(familyId, relAbsIdSet);
+          sessionInherited.forEach(function (id) { inheritedRelationIds.add(id); });
+        }
 
         // 10. Filter: only keep connected entities
         var connAbsIds = new Set();
@@ -951,19 +959,21 @@ window.GraphExplorer = (function () {
         }
         entities = entities.filter(function (e) { return connAbsIds.has(e.absolute_id); });
 
-        // 11. Fetch version counts
-        var allFids = [];
-        var vseenIds = new Set();
-        for (var vei = 0; vei < entities.length; vei++) {
-          if (!vseenIds.has(entities[vei].family_id)) {
-            allFids.push(entities[vei].family_id);
-            vseenIds.add(entities[vei].family_id);
+        // 11. Fetch version counts (skip on version switch — already cached)
+        if (!isVersionSwitch) {
+          var allFids = [];
+          var vseenIds = new Set();
+          for (var vei = 0; vei < entities.length; vei++) {
+            if (!vseenIds.has(entities[vei].family_id)) {
+              allFids.push(entities[vei].family_id);
+              vseenIds.add(entities[vei].family_id);
+            }
           }
+          try {
+            var vcRes = await state.api.entityVersionCounts(allFids, graphId);
+            _versionCounts = vcRes.data || {};
+          } catch (_) {}
         }
-        try {
-          var vcRes = await state.api.entityVersionCounts(allFids, graphId);
-          _versionCounts = vcRes.data || {};
-        } catch (_) {}
 
         // 12. Render
         if (!isVersionSwitch) _pinnedNodePositions = {};
@@ -1421,6 +1431,15 @@ window.GraphExplorer = (function () {
       }
       if (!entity) return;
 
+      // Determine back navigation
+      var _hasBack = _detailBackStack.length > 0;
+      var _backTo = _hasBack ? _detailBackStack[_detailBackStack.length - 1] : null;
+      if (_hasBack) {
+        _detailBackStack.push({type: 'entity', id: absoluteId});
+      } else {
+        _detailBackStack = [{type: 'entity', id: absoluteId}];
+      }
+
       var detailContent = _el(_opts.detailContentId);
       if (!detailContent) return;
 
@@ -1453,7 +1472,10 @@ window.GraphExplorer = (function () {
 
       detailContent.innerHTML =
         '<div class="flex items-center justify-between mb-3">' +
-          '<span class="badge badge-primary">' + t('graph.entityDetail') + '</span>' +
+          '<div class="flex items-center gap-2">' +
+            (_hasBack ? '<button class="btn btn-secondary btn-sm" id="detail-back-btn" title="' + t('common.back') + '"><i data-lucide="arrow-left" style="width:14px;height:14px;"></i></button>' : '') +
+            '<span class="badge badge-primary">' + t('graph.entityDetail') + '</span>' +
+          '</div>' +
           (totalVersions > 1 ?
             '<div class="flex items-center gap-1">' +
               '<button class="btn btn-secondary btn-sm" id="' + prefix + 'prev-ver-btn" ' + (_currentVersionIdx === 0 ? 'disabled' : '') + ' title="' + t('graph.prevVersion') + '">' +
@@ -1620,6 +1642,23 @@ window.GraphExplorer = (function () {
           if (_currentVersionIdx < _currentVersions.length - 1) switchVersion(_currentVersionIdx + 1);
         });
       }
+
+      // Back button: return to relation detail
+      var backBtn = document.getElementById('detail-back-btn');
+      if (backBtn && _backTo) {
+        backBtn.addEventListener('click', function () {
+          // Pop the current entity + the target entry so it gets re-pushed as fresh
+          while (_detailBackStack.length > 0) {
+            var top = _detailBackStack.pop();
+            if (top.type === _backTo.type && top.id === _backTo.id) break;
+          }
+          if (_backTo.type === 'relation') {
+            showRelationDetail(_backTo.id);
+          } else if (_backTo.type === 'entity') {
+            showEntityDetail(_backTo.id);
+          }
+        });
+      }
     }
 
     // ---- Show relation detail in the sidebar ----
@@ -1627,6 +1666,9 @@ window.GraphExplorer = (function () {
     function showRelationDetail(absoluteId) {
       var relation = _relationMap[absoluteId];
       if (!relation) return;
+
+      _detailBackStack = [];  // top-level relation click clears back stack
+      _detailBackStack.push({type: 'relation', id: absoluteId});
 
       var detailContent = _el(_opts.detailContentId);
       if (!detailContent) return;
@@ -1702,6 +1744,15 @@ window.GraphExplorer = (function () {
               '</span>' +
             '</div>'
           : '') +
+
+          (relation.episode_id ?
+            '<div>' +
+              '<span class="form-label" style="margin-bottom:0.125rem;">' + t('graph.episodeId') + '</span>' +
+              '<span class="doc-link mono truncate" style="font-size:0.75rem;" data-view-episode="' + escapeHtml(relation.episode_id) + '" title="' + t('common.clickToView') + '">' +
+                escapeHtml(relation.episode_id) +
+              '</span>' +
+            '</div>'
+          : '') +
         '</div>';
 
       detailContent.querySelectorAll('[data-view-entity]').forEach(function (el) {
@@ -1709,6 +1760,9 @@ window.GraphExplorer = (function () {
       });
       detailContent.querySelectorAll('[data-focus-entity]').forEach(function (el) {
         el.addEventListener('click', function () { focusOnEntity(el.getAttribute('data-focus-entity')); });
+      });
+      detailContent.querySelectorAll('[data-view-episode]').forEach(function (el) {
+        el.addEventListener('click', function () { window.showEpisodeDoc(el.getAttribute('data-view-episode')); });
       });
 
       if (window.lucide) lucide.createIcons({ nodes: [detailContent] });
@@ -1727,6 +1781,90 @@ window.GraphExplorer = (function () {
         _entityMap[absoluteId] = version;
       }
 
+      // Fast path: update node label/color in-place via DataSet, skip full rebuild
+      if (_nodesDataSet && _network && _focusAbsoluteId) {
+        var oldFocusId = _focusAbsoluteId;
+        _focusAbsoluteId = absoluteId;
+        var familyId = version.family_id;
+        var vc = _versionCounts[familyId] || _currentVersions.length;
+        var focusColors = GraphUtils.FOCUS_NODE;
+        var baseName = version.name || familyId || 'unnamed';
+        var newLabel = baseName + ' ' + (newIdx + 1) + '/' + _currentVersions.length;
+
+        // Revert old focus node to normal style
+        if (oldFocusId !== absoluteId) {
+          var oldEnt = _entityMap[oldFocusId];
+          var oldBaseName = oldEnt ? (oldEnt.name || oldEnt.family_id || 'unnamed') : 'unnamed';
+          var oldLabel = oldBaseName;
+          if (vc > 1) oldLabel = oldBaseName + ' [v' + vc + ']';
+          // If old node exists in DataSet, update it; otherwise skip
+          if (_nodesDataSet.get(oldFocusId)) {
+            _nodesDataSet.update({
+              id: oldFocusId,
+              label: oldLabel,
+              color: { background: undefined, border: undefined, highlight: undefined },
+            });
+          }
+        }
+
+        // Add or update the new focus node
+        if (_nodesDataSet.get(absoluteId)) {
+          _nodesDataSet.update({
+            id: absoluteId,
+            label: newLabel,
+            color: {
+              background: focusColors.bg,
+              border: focusColors.border,
+              highlight: { background: focusColors.bg, border: focusColors.border },
+            },
+          });
+        } else {
+          // New version node not yet in graph — add it at the old focus position
+          var oldPos = _pinnedNodePositions[oldFocusId] || _network.getPositions([oldFocusId])[oldFocusId];
+          var nodeData = {
+            id: absoluteId,
+            label: newLabel,
+            color: {
+              background: focusColors.bg,
+              border: focusColors.border,
+              highlight: { background: focusColors.bg, border: focusColors.border },
+            },
+            shape: 'dot',
+            size: 30,
+          };
+          if (oldPos) {
+            nodeData.x = oldPos.x;
+            nodeData.y = oldPos.y;
+            nodeData.fixed = { x: true, y: true };
+            _pinnedNodePositions[absoluteId] = { x: oldPos.x, y: oldPos.y };
+          }
+          _nodesDataSet.add(nodeData);
+        }
+
+        // Re-wire edges: move edges from old focus id to new focus id
+        if (oldFocusId !== absoluteId) {
+          var edges = _edgesDataSet.get();
+          var edgeUpdates = [];
+          for (var ei = 0; ei < edges.length; ei++) {
+            var edge = edges[ei];
+            var changed = false;
+            if (edge.from === oldFocusId) { edge.from = absoluteId; changed = true; }
+            if (edge.to === oldFocusId) { edge.to = absoluteId; changed = true; }
+            if (changed) edgeUpdates.push(edge);
+          }
+          if (edgeUpdates.length > 0) _edgesDataSet.update(edgeUpdates);
+        }
+
+        // Animate focus to new node
+        try {
+          _network.focus(absoluteId, { scale: 1.2, animation: { duration: 400, easingFunction: 'easeInOutQuad' } });
+        } catch (_) {}
+
+        await showEntityDetail(absoluteId);
+        return;
+      }
+
+      // Fallback: full rebuild (first focus or network not initialized)
       await focusOnEntity(absoluteId, { isVersionSwitch: true });
       await showEntityDetail(absoluteId);
     }
@@ -1911,7 +2049,9 @@ window.GraphExplorer = (function () {
           var otherAbsId = r.entity1_absolute_id === entity.absolute_id
             ? r.entity2_absolute_id : r.entity1_absolute_id;
           var otherEntity = _entityMap[otherAbsId] || entityCache[otherAbsId];
-          var otherName = otherEntity ? (otherEntity.name || otherEntity.family_id || '-') : '-';
+          var otherName = r.entity1_absolute_id === entity.absolute_id
+            ? (r.entity2_name || (otherEntity ? otherEntity.name : '') || otherAbsId || '-')
+            : (r.entity1_name || (otherEntity ? otherEntity.name : '') || otherAbsId || '-');
           return '<tr>' +
             '<td style="max-width:250px;" title="' + escapeHtml(r.content || '') + '">' + escapeHtml(truncate(r.content || '-', 40)) + '</td>' +
             '<td style="max-width:120px;" title="' + escapeHtml(otherName) + '">' + escapeHtml(truncate(otherName, 20)) + '</td>' +

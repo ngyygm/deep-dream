@@ -1,12 +1,7 @@
 """Shared Neo4j helper functions and constants.
 
 Used by Neo4jStorageManager and all mixins.
-
-借鉴 Graphiti (Zep) 的分层节点架构：
-    Neo4j       → 图结构存储（Entity / Relation / Episode 节点及边）
-    sqlite-vec  → embedding 向量存储与 KNN 搜索
-
-与 StorageManager 保持完全相同的公共接口，可作为 drop-in replacement。
+All data (graph structure + embeddings + vector indexes) stored in Neo4j.
 """
 
 
@@ -32,7 +27,6 @@ except ImportError:
 from ...utils import clean_markdown_code_blocks
 from ...perf import _perf_timer
 from ..cache import QueryCache
-from ..vector_store import VectorStore
 from functools import lru_cache as _lru_cache
 
 logger = logging.getLogger(__name__)
@@ -50,6 +44,8 @@ e.valid_at AS valid_at, e.invalid_at AS invalid_at,
 e.event_time AS event_time, e.processed_time AS processed_time,
 e.episode_id AS episode_id, e.source_document AS source_document"""
 
+_ENTITY_RETURN_FIELDS_WITH_EMB = _ENTITY_RETURN_FIELDS + ", e.embedding AS embedding"
+
 # ---------------------------------------------------------------------------
 # Cypher RETURN 子句片段 — 所有 Relation 查询共用
 # ---------------------------------------------------------------------------
@@ -63,6 +59,8 @@ r.source_document AS source_document, r.valid_at AS valid_at,
 r.invalid_at AS invalid_at, r.summary AS summary,
 r.attributes AS attributes, r.confidence AS confidence,
 r.provenance AS provenance"""
+
+_RELATION_RETURN_FIELDS_WITH_EMB = _RELATION_RETURN_FIELDS + ", r.embedding AS embedding"
 
 # 占位符：在普通字符串中写 RETURN __ENT_FIELDS__ / __REL_FIELDS__，
 # _expand_cypher() 展开为实际字段列表
@@ -319,6 +317,10 @@ def _neo4j_record_to_entity(record, _now: Optional[datetime] = None) -> Entity:
     _pd = _parse_dt
     if _now is None:
         _now = _get_cached_now()
+    # Neo4j stores embedding as LIST<FLOAT>; convert to bytes for internal use
+    _emb = record.get("embedding")
+    if isinstance(_emb, list):
+        _emb = np.array(_emb, dtype=np.float32).tobytes()
     return Entity(
         absolute_id=record["uuid"],
         family_id=record["family_id"],
@@ -328,7 +330,7 @@ def _neo4j_record_to_entity(record, _now: Optional[datetime] = None) -> Entity:
         processed_time=_pd(record.get("processed_time")) or _now,
         episode_id=record.get("episode_id", ""),
         source_document=record.get("source_document") or "",
-        embedding=record.get("embedding"),
+        embedding=_emb,
         valid_at=_pd(record.get("valid_at")),
         invalid_at=_pd(record.get("invalid_at")),
         summary=record.get("summary"),
@@ -344,6 +346,10 @@ def _neo4j_record_to_relation(record, _now: Optional[datetime] = None) -> Relati
     _pd = _parse_dt
     if _now is None:
         _now = _get_cached_now()
+    # Neo4j stores embedding as LIST<FLOAT>; convert to bytes for internal use
+    _emb = record.get("embedding")
+    if isinstance(_emb, list):
+        _emb = np.array(_emb, dtype=np.float32).tobytes()
     return Relation(
         absolute_id=record["uuid"],
         family_id=record["family_id"],
@@ -354,7 +360,7 @@ def _neo4j_record_to_relation(record, _now: Optional[datetime] = None) -> Relati
         processed_time=_pd(record.get("processed_time")) or _now,
         episode_id=record.get("episode_id", ""),
         source_document=record.get("source_document") or "",
-        embedding=record.get("embedding"),
+        embedding=_emb,
         valid_at=_pd(record.get("valid_at")),
         invalid_at=_pd(record.get("invalid_at")),
         summary=record.get("summary"),

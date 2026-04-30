@@ -127,6 +127,9 @@ def create_app(
     app.config["system_monitor"] = system_monitor
     app.config["registry"] = registry
 
+    # Build version for cache-busting (hash of static dir mtime)
+    _static_version = str(int(static_dir.stat().st_mtime))
+
     # CORS：仅允许同源和 localhost 跨域调用
     _ALLOWED_ORIGINS = {"http://localhost", "http://127.0.0.1"}
     @app.after_request
@@ -142,28 +145,28 @@ def create_app(
         # Security: Add security headers
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
-        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
-        # Comprehensive CSP policy
+        # Comprehensive CSP policy (relaxed for local/LAN access)
         csp_directives = [
             "default-src 'self'",
-            "script-src 'self' 'unsafe-inline' 'unsafe-eval'",  # unsafe-inline needed for Chart.js and dynamic scripts
-            "style-src 'self' 'unsafe-inline'",  # unsafe-inline needed for component styles
+            "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
+            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
             "img-src 'self' data: https: blob:",
-            "font-src 'self' data:",
-            "connect-src 'self' http://localhost:* http://127.0.0.1:*",  # Allow local API calls
-            "object-src 'none'",  # Prevent plugins
+            "font-src 'self' data: https://fonts.gstatic.com",
+            "connect-src 'self' http://localhost:* http://127.0.0.1:* ws://localhost:*",
+            "object-src 'none'",
             "base-uri 'self'",
             "form-action 'self'",
             "frame-ancestors 'none'",
-            "upgrade-insecure-requests",
         ]
         response.headers["Content-Security-Policy"] = "; ".join(csp_directives)
         response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
-        # 静态文件禁止缓存，确保部署后浏览器立即加载最新版本
-        if request.path.startswith("/static/") and request.path.endswith((".js", ".css")):
-            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-            response.headers["Pragma"] = "no-cache"
-            response.headers["Expires"] = "0"
+        if request.path.startswith("/static/"):
+            if request.path.endswith((".js", ".css", ".woff2", ".woff", ".ttf")):
+                response.headers["Cache-Control"] = "public, max-age=86400"
+            elif request.path.endswith((".html",)):
+                response.headers["Cache-Control"] = "no-cache"
+        elif request.path in ("/", "/index.html"):
+            response.headers["Cache-Control"] = "no-cache, no-store"
         return response
 
     @app.before_request
@@ -428,12 +431,31 @@ def create_app(
     app.register_blueprint(dream_bp)
     app.register_blueprint(concepts_bp)
 
+    # Cleanup shared thread pools on shutdown
+    def _shutdown_pools():
+        from core.server.blueprints.entities import _shared_pool as _ent_pool
+        from core.server.blueprints.relations import _shared_pool as _rel_pool
+        from core.server.blueprints.dream import _dream_pool
+        for pool in (_ent_pool, _rel_pool, _dream_pool):
+            pool.shutdown(wait=False)
+    atexit.register(_shutdown_pools)
+
     # ── SPA fallback routes (must be last) ─────────────────────────────────
     _API_PREFIXES = ("/api/", "/health")
 
+    def _render_index():
+        """Serve index.html with cache-busting version injected."""
+        index_path = static_dir / "index.html"
+        html = index_path.read_text(encoding="utf-8")
+        html = html.replace("{{STATIC_VERSION}}", _static_version)
+        resp = make_response(html)
+        resp.headers["Content-Type"] = "text/html; charset=utf-8"
+        resp.headers["Cache-Control"] = "no-cache"
+        return resp
+
     @app.route("/", methods=["GET"])
     def serve_index():
-        return app.send_static_file("index.html")
+        return _render_index()
 
     @app.route("/<path:path>", methods=["GET"])
     def serve_spa(path):
@@ -444,7 +466,7 @@ def create_app(
         try:
             return app.send_static_file(path)
         except NotFound:
-            return app.send_static_file("index.html")
+            return _render_index()
 
     return app
 
@@ -723,6 +745,7 @@ def main() -> int:
         return 1
 
     registry = GraphRegistry(storage_path, config, system_monitor=system_monitor)
+    system_monitor.set_registry(registry)
 
     # 启动前对配置的 LLM 做握手，不可用则报错退出（可用 --skip-llm-check 跳过）
     if args.skip_llm_check:

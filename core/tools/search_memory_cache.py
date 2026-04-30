@@ -14,6 +14,7 @@
 """
 
 import sys
+import os
 import argparse
 from pathlib import Path
 from collections import defaultdict
@@ -31,9 +32,9 @@ else:
     sys.path.insert(0, str(Path("/home/linkco/exa/DeepDream")))
 
 try:
-    from core.storage import StorageManager
+    from core.storage.neo4j import Neo4jStorageManager
 except ImportError:
-    print("错误: 无法导入 StorageManager")
+    print("错误: 无法导入 Neo4jStorageManager")
     print("请确保 DeepDream 在正确的位置")
     sys.exit(1)
 
@@ -154,7 +155,14 @@ def main():
 
     args = parser.parse_args()
 
-    storage = StorageManager(args.storage_path)
+    storage = Neo4jStorageManager(
+        args.storage_path,
+        neo4j_uri=os.environ.get("NEO4J_URI", "bolt://localhost:7687"),
+        neo4j_auth=(
+            os.environ.get("NEO4J_USER", "neo4j"),
+            os.environ.get("NEO4J_PASSWORD", "password"),
+        ),
+    )
 
     print("=" * 80)
     print(f"记忆缓存搜索")

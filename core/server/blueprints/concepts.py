@@ -51,7 +51,7 @@ def search_concepts():
         processor = _get_processor()
         storage = processor.storage
         if not hasattr(storage, 'search_concepts_by_bm25'):
-            return err("此功能需要 SQLite >= Phase 3 或 Neo4j 后端", 400)
+            return err("此功能需要 Neo4j 后端", 400)
         body = request.get_json(silent=True) or {}
         query = (body.get("query") or "").strip()
         if not query:
@@ -140,7 +140,7 @@ def list_concepts():
         processor = _get_processor()
         storage = processor.storage
         if not hasattr(storage, 'list_concepts'):
-            return err("此功能需要 SQLite >= Phase 3 或 Neo4j 后端", 400)
+            return err("此功能需要 Neo4j 后端", 400)
         role = request.args.get("role") or None
         limit = min(max(int(request.args.get('limit', 50)), 1), 100)
         offset = max(int(request.args.get('offset', 0)), 0)
@@ -159,7 +159,7 @@ def get_concept(family_id: str):
         processor = _get_processor()
         storage = processor.storage
         if not hasattr(storage, 'get_concept_by_family_id'):
-            return err("此功能需要 SQLite >= Phase 3 或 Neo4j 后端", 400)
+            return err("此功能需要 Neo4j 后端", 400)
         time_point = (request.args.get("time_point") or "").strip() or None
         concept = storage.get_concept_by_family_id(family_id, time_point=time_point)
         if concept is None:
@@ -176,7 +176,7 @@ def get_concept_neighbors(family_id: str):
         processor = _get_processor()
         storage = processor.storage
         if not hasattr(storage, 'get_concept_neighbors'):
-            return err("此功能需要 SQLite >= Phase 3 或 Neo4j 后端", 400)
+            return err("此功能需要 Neo4j 后端", 400)
         max_depth = min(max(int(request.args.get('max_depth', 1)), 1), 3)
         time_point = (request.args.get("time_point") or "").strip() or None
         neighbors = storage.get_concept_neighbors(family_id, max_depth=max_depth, time_point=time_point)
@@ -192,7 +192,7 @@ def get_concept_provenance(family_id: str):
         processor = _get_processor()
         storage = processor.storage
         if not hasattr(storage, 'get_concept_provenance'):
-            return err("此功能需要 SQLite >= Phase 3 或 Neo4j 后端", 400)
+            return err("此功能需要 Neo4j 后端", 400)
         time_point = (request.args.get("time_point") or "").strip() or None
         provenance = storage.get_concept_provenance(family_id, time_point=time_point)
         return ok({"family_id": family_id, "provenance": provenance})
@@ -207,7 +207,7 @@ def traverse_concepts():
         processor = _get_processor()
         storage = processor.storage
         if not hasattr(storage, 'traverse_concepts'):
-            return err("此功能需要 SQLite >= Phase 3 或 Neo4j 后端", 400)
+            return err("此功能需要 Neo4j 后端", 400)
         body = request.get_json(silent=True) or {}
         start_ids = body.get("start_family_ids") or []
         if not start_ids:
@@ -227,7 +227,7 @@ def get_concept_mentions(family_id: str):
         processor = _get_processor()
         storage = processor.storage
         if not hasattr(storage, 'get_concept_mentions'):
-            return err("此功能需要 SQLite >= Phase 3 或 Neo4j 后端", 400)
+            return err("此功能需要 Neo4j 后端", 400)
         time_point = (request.args.get("time_point") or "").strip() or None
         mentions = storage.get_concept_mentions(family_id, time_point=time_point)
         return ok({"family_id": family_id, "mentions": mentions})
@@ -330,7 +330,7 @@ def handle_graphs():
             existing = registry.list_graphs()
             if graph_id in existing:
                 return err(f"图谱 '{graph_id}' 已存在", 409)
-            # 触发懒创建：访问 processor 即会初始化 graph.db
+            # 触发懒创建：访问 processor 即会初始化存储
             registry.get_processor(graph_id)
             # 持久化元数据
             metadata = registry.set_graph_metadata(

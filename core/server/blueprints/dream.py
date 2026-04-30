@@ -680,7 +680,7 @@ def butler_report():
             processor.embedding_client is not None
             and processor.embedding_client.is_available()
         )
-        storage_backend = "neo4j" if hasattr(storage, 'is_neo4j') else "sqlite"
+        storage_backend = "neo4j"
 
         health = {
             "graph_id": request.graph_id,
@@ -758,29 +758,20 @@ def butler_report():
                 "estimated_impact": "识别知识领域边界，辅助梦境探索策略",
             })
 
-        # 实体摘要进化建议 — targeted SQL instead of loading 50 full entities
+        # 实体摘要进化建议 — sample-based check (storage-agnostic)
         no_summary = 0
         sample_total = 0
         try:
-            conn = storage._get_conn()
-            cursor = conn.cursor()
-            # Count latest-version entities missing summaries
-            cursor.execute(
-                "SELECT COUNT(*) FROM entities WHERE invalid_at IS NULL "
-                "AND (summary IS NULL OR summary = '')"
-            )
-            no_summary = cursor.fetchone()[0]
-            cursor.execute("SELECT COUNT(DISTINCT family_id) FROM entities")
-            sample_total = cursor.fetchone()[0]
-        except Exception:
             sample = storage.get_all_entities(limit=50, exclude_embedding=True)
             sample_total = len(sample)
             no_summary = sum(1 for e in sample if not getattr(e, 'summary', None))
-        if no_summary > sample_total * 0.5:
+        except Exception:
+            sample_total = 0
+        if sample_total > 0 and no_summary > sample_total * 0.5:
             recommendations.append({
                 "action": "evolve_summaries",
                 "priority": "low",
-                "description": f"抽样显示 {no_summary}/{len(sample)} 个实体缺少摘要",
+                "description": f"抽样显示 {no_summary}/{sample_total} 个实体缺少摘要",
                 "estimated_impact": "提升语义检索质量",
             })
 

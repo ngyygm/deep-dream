@@ -127,7 +127,7 @@ def clean_separator_tags(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 线程局部窗口标签 + 流水线角色（并行 remember 时区分主线程 / 抽取 / 步骤6 / 7）
+# 线程局部窗口标签 + 流水线角色（并行 remember 时区分主线程 / 抽取 / 步骤9 / 10）
 # ---------------------------------------------------------------------------
 
 _window_local = threading.local()
@@ -141,8 +141,8 @@ _log_writer_lock = threading.Lock()
 _ROLE_ABBR = {
     "主线程": "MAIN",
     "抽取": "EXT",
-    "步骤6": "S6",
-    "步骤7": "S7",
+    "步骤9": "S9",
+    "步骤10": "S10",
 }
 
 
@@ -193,7 +193,7 @@ def get_window_label() -> str:
 
 
 def set_pipeline_role(role: str | None) -> None:
-    """设置当前线程的流水线角色（如「主线程」「抽取」「步骤6」「步骤7」），传 None 清除。"""
+    """设置当前线程的流水线角色（如「主线程」「抽取」「步骤9」「步骤10」），传 None 清除。"""
     _window_local.pipeline_role = role
 
 

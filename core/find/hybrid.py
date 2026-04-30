@@ -28,7 +28,7 @@ class HybridSearcher:
     def __init__(self, storage: Any):
         """
         Args:
-            storage: StorageManager 或 Neo4jStorageManager 实例
+            storage: Neo4jStorageManager 实例
         """
         self.storage = storage
         self._traverser = None  # Lazy-initialized GraphTraversalSearcher
@@ -363,6 +363,8 @@ class HybridSearcher:
         else:
             vals = list(vals_iter)
             vals.sort(key=itemgetter(0), reverse=True)
+        if not vals:
+            return []
         max_score = vals[0][0]
         if max_score > 0:
             inv_max = 1.0 / max_score

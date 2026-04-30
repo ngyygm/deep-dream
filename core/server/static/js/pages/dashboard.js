@@ -154,6 +154,7 @@
   function buildStatCards(overview, graphs, accessStats) {
     const totalEntities = sumAcrossGraphs(graphs, 'entities');
     const totalRelations = sumAcrossGraphs(graphs, 'relations');
+    const totalEpisodes = sumAcrossGraphs(graphs, 'episodes');
     const successRate = accessStats.success_rate ?? 0;
     const avgLatency = accessStats.avg_duration_ms ?? 0;
 
@@ -218,7 +219,7 @@
       <!-- Episodes (Neo4j only) -->
       <div class="stat-card" style="cursor:pointer;" onclick="navigate('#episodes')">
         <div class="stat-label">${t('nav.episodes')}</div>
-        <div class="stat-value" style="color:#14b8a6;">${formatNumber(_episodeCount)}</div>
+        <div class="stat-value" style="color:#14b8a6;">${formatNumber(totalEpisodes)}</div>
       </div>
       <!-- Communities (Neo4j only) -->
       <div class="stat-card" style="cursor:pointer;" onclick="navigate('#communities')">
@@ -316,13 +317,13 @@
 
   /** Build the active tasks section (card layout). */
   function buildTasksSection(tasks) {
-    // 状态优先级：running > queued > completed/failed，同组内按 created_at 倒序
+    // 分组：running → queued → completed/failed，组内按 created_at 正序（入队时间从早到晚）
     const statusOrder = { running: 0, queued: 1, completed: 2, failed: 2 };
     const sorted = [...tasks].sort((a, b) => {
       const pa = statusOrder[a.status] ?? 3;
       const pb = statusOrder[b.status] ?? 3;
       if (pa !== pb) return pa - pb;
-      return (b.created_at || 0) - (a.created_at || 0);
+      return (a.created_at || 0) - (b.created_at || 0);
     });
     // active 全部显示，completed/failed 最多 5 个
     let doneCount = 0;
@@ -363,7 +364,7 @@
              onmouseenter="this.style.background='var(--bg-surface-hover)'" onmouseleave="this.style.background='transparent'">
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
             <div style="display:flex;align-items:center;gap:8px;min-width:0;flex:1;">
-              ${statusBadge(tk.status)}
+              ${statusBadge(tk.status, tk.phase)}
               <span class="mono" style="font-size:0.7rem;color:var(--text-muted);flex-shrink:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(tk.task_id)}">${escapeHtml(tk.task_id.slice(0, 10))}</span>
               <span style="font-size:0.8rem;color:var(--text-secondary);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(tk.source_name || '-')}">${escapeHtml(tk.source_name || '-')}</span>
               <span style="font-size:0.75rem;color:var(--text-muted);flex-shrink:0;white-space:nowrap;">${t('memory.overallProgress')} ${(overallPct * 100).toFixed(2)}%</span>
@@ -508,12 +509,14 @@
       const stats = res.data || res;
       const container = document.getElementById('graphStatsContainer');
       if (!container) return;
+      const graphLabel = state.currentGraphId || 'default';
       container.innerHTML = `
         <div class="card">
           <div class="card-header">
             <div class="card-title" style="display:flex;align-items:center;gap:0.5rem;">
               <i data-lucide="bar-chart-3" style="width:16px;height:16px;"></i>
               <span data-i18n="stats.graphStats">${t('stats.graphStats')}</span>
+              <span style="font-size:0.75rem;color:var(--text-muted);margin-left:0.5rem;">[${escapeHtml(graphLabel)}]</span>
             </div>
           </div>
           <div class="stats-grid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:1rem;">
@@ -543,7 +546,7 @@
             </div>
           </div>
         </div>`;
-      if (window.I18N) window.I18N.apply(container);
+      if (window.I18N) window.I18N.applyLang(window.I18N.currentLang);
       if (window.lucide) lucide.createIcons({ nodes: [container] });
     } catch (e) {
       console.error('Failed to load graph stats:', e);
@@ -570,10 +573,18 @@
     if (window.lucide) lucide.createIcons({ nodes: [listEl] });
   }
 
+  let _lastTasksHtml = '';
   function updateTasks() {
     const tasksEl = document.getElementById('dashboard-tasks');
     const countEl = document.getElementById('dashboard-task-count');
-    if (tasksEl) tasksEl.innerHTML = buildTasksSection(_tasks);
+    if (tasksEl) {
+      const html = buildTasksSection(_tasks);
+      if (html !== _lastTasksHtml) {
+        _lastTasksHtml = html;
+        tasksEl.innerHTML = html;
+        if (window.lucide) lucide.createIcons({ nodes: [tasksEl] });
+      }
+    }
     if (countEl) countEl.textContent = `${_tasks.length}`;
   }
 
@@ -722,7 +733,7 @@
     // Logs: every 10s
     state.refreshTimers.dash_logs = setInterval(fetchLogs, 10000);
 
-    // Overview + Graphs: every 15s (graphs is expensive: scans filesystem + SQLite)
+    // Overview + Graphs: every 15s (graphs is expensive: scans filesystem)
     state.refreshTimers.dash_graphs = setInterval(async () => {
       await fetchOverview();
       await fetchGraphs();

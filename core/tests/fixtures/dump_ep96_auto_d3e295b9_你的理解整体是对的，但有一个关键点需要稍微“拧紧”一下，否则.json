@@ -1,0 +1,300 @@
+{
+  "source_name": "auto_d3e295b9_你的理解整体是对的，但有一个关键点需要稍微“拧紧”一下，否则",
+  "entities": [
+    {
+      "name": "episode",
+      "content": "系统中的基本运行单元或数据片段,代表了单次执行或处理的过程,其变化量通过累积最终形成新的版本。"
+    },
+    {
+      "name": "concept_version",
+      "content": "概念的特定状态记录,是变更（mutation）发生后的产物,代表了数据结构或逻辑在某一时间点的完整快照。"
+    },
+    {
+      "name": "mutation source",
+      "content": "记录变更来源的标识,用于追踪从 episode 到 concept_version 演进过程中的具体驱动因素或操作记录。"
+    },
+    {
+      "name": "created_by",
+      "content": "用于标注版本或变更记录的创建者信息,能够明确指代触发数据演进的具体主体或操作人员。"
+    },
+    {
+      "name": "软版本",
+      "content": "一种中间态的变更管理机制,通过延迟提交新版本的方式,将多个连续的增量变化暂时合并,以减少版本碎片化。"
+    },
+    {
+      "name": "accumulate",
+      "content": "一种数据聚合过程,通过收集并累加多个 episode 产生的增量变化,待达到预设阈值后再正式提交为新版本。"
+    },
+    {
+      "name": "delta",
+      "content": "指代系统在演进过程中产生的增量变化或突变数据,是构成新版本的核心要素。"
+    },
+    {
+      "name": "threshold",
+      "content": "预设的触发阈值,用于决定累积的增量变化是否达到规模,从而启动版本创建的逻辑。"
+    },
+    {
+      "name": "commit",
+      "content": "将累积的增量变更正式固化并记录下来的操作,标志着一个新的版本正式生成。"
+    },
+    {
+      "name": "Git",
+      "content": "一种版本控制系统,其管理代码变更的逻辑和提交机制可作为该模型设计的参考范本。"
+    },
+    {
+      "name": "squash commit",
+      "content": "一种合并提交的策略,通过将多个细碎的变更记录压缩成一个单一的提交,从而简化版本历史。"
+    },
+    {
+      "name": "episode ≠ version",
+      "content": "强调单个演进片段并不等同于一个完整版本,版本应当由具有实质意义的变更驱动生成。"
+    },
+    {
+      "name": "变更",
+      "content": "指代系统中发生的实质性演变,它是定义新版本生成的根本依据,而非仅仅依赖于单个事件的发生。"
+    },
+    {
+      "name": "mutation",
+      "content": "代表数据或概念的版本演进过程,通过追踪 episode 到 concept_version 的映射关系,实现状态的增量更新。"
+    },
+    {
+      "name": "数据结构图",
+      "content": "用于直观展示系统内部逻辑关系的图形化工具,能够清晰地呈现数据之间的层级与关联逻辑。"
+    },
+    {
+      "name": "schema",
+      "content": "定义系统数据模型的核心规范,规定了数据结构的组成、类型以及各要素之间的内在逻辑约束。"
+    },
+    {
+      "name": "Git-like version graph",
+      "content": "一种模仿 Git 版本控制机制的图形化结构,通过节点与分支的演进关系,直观地展现版本历史与变更流向。"
+    },
+    {
+      "name": "优化",
+      "content": "指通过引入软版本等机制,对系统性能或逻辑进行改进,例如通过累积增量并达到阈值后再提交的方式来减少版本碎片。"
+    },
+    {
+      "name": "机制",
+      "content": "一种类似于Git squash commit的逻辑处理手段,通过引入软版本化策略,在达到预设阈值前先累积多个episode的增量变化,而非立即创建新版本。"
+    },
+    {
+      "name": "模型",
+      "content": "用于描述数据演进逻辑的架构方案,核心在于明确区分单次episode与版本之间的关系,强调版本应当由具体的变更（mutation）来定义。"
+    },
+    {
+      "name": "版本图",
+      "content": "一种直观展示系统演进路径的可视化工具,采用类似Git的图形化方式,能够清晰地呈现数据结构及版本之间的演变逻辑。"
+    },
+    {
+      "name": "总结",
+      "content": "对当前系统逻辑状态的提炼,明确指出模型优化的关键在于界定变更与版本的关系,而非简单的episode与版本的等同。"
+    }
+  ],
+  "relations": [
+    {
+      "entity1_name": "concept_version",
+      "entity2_name": "episode",
+      "content": "episode 通过记录变更内容来触发并创建新的 concept_version 节点"
+    },
+    {
+      "entity1_name": "concept_version",
+      "entity2_name": "created_by",
+      "content": "concept_version 的生成是由特定的 mutation source 触发并驱动完成的。"
+    },
+    {
+      "entity1_name": "created_by",
+      "entity2_name": "episode",
+      "content": "created_by 记录了驱动或产生特定 episode 变更的源头实体。"
+    },
+    {
+      "entity1_name": "mutation",
+      "entity2_name": "mutation source",
+      "content": "mutation 从 mutation source 提取并应用变更指令以改变系统状态。"
+    },
+    {
+      "entity1_name": "accumulate",
+      "entity2_name": "episode",
+      "content": "accumulate 过程持续收集并堆叠多个连续 episode 产生的增量数据。"
+    },
+    {
+      "entity1_name": "accumulate",
+      "entity2_name": "delta",
+      "content": "accumulate 动作将离散的 delta 变化量进行累加以形成版本变更。"
+    },
+    {
+      "entity1_name": "commit",
+      "entity2_name": "threshold",
+      "content": "commit 操作在累积的变更量达到预设的 threshold 阈值时被执行。"
+    },
+    {
+      "entity1_name": "delta",
+      "entity2_name": "threshold",
+      "content": "delta 的累积总和用于衡量是否触发了预设的 commit threshold 阈值。"
+    },
+    {
+      "entity1_name": "Git",
+      "entity2_name": "commit",
+      "content": "Git 通过提交 commit 操作将暂存的变更永久性地记录到版本历史中。"
+    },
+    {
+      "entity1_name": "Git",
+      "entity2_name": "squash commit",
+      "content": "Git 利用 squash commit 技术将多个小的变更合并为一个单一的提交记录。"
+    },
+    {
+      "entity1_name": "accumulate",
+      "entity2_name": "squash commit",
+      "content": "通过累积多个delta的变化来执行类似Git的压缩提交操作。"
+    },
+    {
+      "entity1_name": "episode",
+      "entity2_name": "Git-like version graph",
+      "content": "episode作为基本单元构成了版本图中节点间的演进逻辑。"
+    },
+    {
+      "entity1_name": "mutation",
+      "entity2_name": "Git-like version graph",
+      "content": "mutation通过记录差异驱动版本图产生新的分支或节点。"
+    },
+    {
+      "entity1_name": "mutation",
+      "entity2_name": "变更",
+      "content": "mutation本质上承载并记录了系统状态发生的具体物理变更。"
+    },
+    {
+      "entity1_name": "schema",
+      "entity2_name": "数据结构图",
+      "content": "schema通过定义逻辑规范来绘制并构建系统的数据结构图。"
+    },
+    {
+      "entity1_name": "Git-like version graph",
+      "entity2_name": "schema",
+      "content": "version graph利用schema定义的规则来呈现版本间的演变关系。"
+    },
+    {
+      "entity1_name": "优化",
+      "entity2_name": "模型",
+      "content": "优化策略通过引入软版本机制来提升现有模型的运行效率。"
+    },
+    {
+      "entity1_name": "总结",
+      "entity2_name": "模型",
+      "content": "总结通过厘清episode与version的区别来完善核心模型逻辑。"
+    },
+    {
+      "entity1_name": "concept_version",
+      "entity2_name": "mutation",
+      "content": "concept_version通过集成mutation的变更内容来形成新版本。"
+    },
+    {
+      "entity1_name": "delta",
+      "entity2_name": "episode",
+      "content": "delta记录了单个episode发生变化后的增量数据内容。"
+    },
+    {
+      "entity1_name": "accumulate",
+      "entity2_name": "软版本",
+      "content": "通过累积多个 episode 的增量数据来填充软版本的内容"
+    },
+    {
+      "entity1_name": "delta",
+      "entity2_name": "软版本",
+      "content": "delta 增量被暂存在软版本中等待达到阈值后提交"
+    },
+    {
+      "entity1_name": "threshold",
+      "entity2_name": "软版本",
+      "content": "阈值决定了何时将暂存的软版本正式固化为新版本"
+    },
+    {
+      "entity1_name": "commit",
+      "entity2_name": "软版本",
+      "content": "执行 commit 操作将软版本中的变更正式转化为新版本"
+    },
+    {
+      "entity1_name": "commit",
+      "entity2_name": "delta",
+      "content": "commit 动作将累积的 delta 增量合并并持久化存储"
+    },
+    {
+      "entity1_name": "mutation",
+      "entity2_name": "threshold",
+      "content": "mutation 的累积规模用于触发预设的提交阈值判定"
+    },
+    {
+      "entity1_name": "mutation source",
+      "entity2_name": "Git-like version graph",
+      "content": "mutation source 作为变更源驱动版本图谱的节点演进"
+    },
+    {
+      "entity1_name": "mutation",
+      "entity2_name": "schema",
+      "content": "mutation 变更会根据定义的逻辑更新并修改 schema 结构"
+    },
+    {
+      "entity1_name": "episode",
+      "entity2_name": "mutation",
+      "content": "episode 产生的变化被记录并封装为一次 mutation 变更"
+    },
+    {
+      "entity1_name": "concept_version",
+      "entity2_name": "Git-like version graph",
+      "content": "concept_version 作为版本节点构建 Git-like version graph 的拓扑关系"
+    },
+    {
+      "entity1_name": "delta",
+      "entity2_name": "mutation",
+      "content": "delta 累积并记录了 mutation 过程中发生的具体内容变更"
+    },
+    {
+      "entity1_name": "commit",
+      "entity2_name": "Git-like version graph",
+      "content": "commit 作为节点持久化存储于 Git-like version graph 的结构中"
+    },
+    {
+      "entity1_name": "squash commit",
+      "entity2_name": "Git-like version graph",
+      "content": "squash commit 通过合并多个提交简化了 Git-like version graph 的复杂度"
+    },
+    {
+      "entity1_name": "accumulate",
+      "entity2_name": "Git-like version graph",
+      "content": "accumulate 过程通过暂存变更来延迟 Git-like version graph 节点的生成"
+    },
+    {
+      "entity1_name": "threshold",
+      "entity2_name": "Git-like version graph",
+      "content": "threshold 触发器决定了何时将数据写入 Git-like version graph 形成新版本"
+    },
+    {
+      "entity1_name": "机制",
+      "entity2_name": "软版本",
+      "content": "软版本是一种通过暂存 delta 来延迟提交新版本的特殊管理机制"
+    },
+    {
+      "entity1_name": "accumulate",
+      "entity2_name": "机制",
+      "content": "accumulate 动作在软版本机制中负责汇集多个 episode 的变更数据"
+    },
+    {
+      "entity1_name": "commit",
+      "entity2_name": "机制",
+      "content": "commit 动作在软版本机制中用于将累积的变更固化为正式版本"
+    },
+    {
+      "entity1_name": "Git-like version graph",
+      "entity2_name": "版本图",
+      "content": "Git-like version graph 是对系统版本演进逻辑的直观图形化呈现"
+    },
+    {
+      "entity1_name": "数据结构图",
+      "entity2_name": "版本图",
+      "content": "数据结构图通过 schema 定义了构建版本图所需的核心实体及其关系"
+    },
+    {
+      "entity1_name": "schema",
+      "entity2_name": "版本图",
+      "content": "schema 定义了节点与边的数据结构,并以此构建起具有时序特征的版本图"
+    }
+  ]
+}

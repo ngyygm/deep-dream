@@ -22,6 +22,7 @@ from core.server.blueprints.helpers import (
 )
 from core.server.monitor import LOG_MODE_DETAIL
 from core.server.task_queue import RememberTask
+from core.llm.sanitize import sanitize_user_input
 
 _BOOL_TRUE = frozenset(("1", "true", "yes", "on"))
 _BOOL_FALSE = frozenset(("0", "false", "no", "off"))
@@ -119,6 +120,11 @@ def _parse_remember_input(post_json: Dict[str, Any]):
     # Security: Check for null bytes in text
     if '\x00' in text:
         return err("文本包含非法字符（null bytes）", 400)
+
+    # Security: Sanitize for LLM prompt safety
+    text, was_sanitized = sanitize_user_input(text)
+    if was_sanitized:
+        logger.warning("Remember input was sanitized due to security concerns")
 
     sn = _remember_get_str("source_name", post_json)
     dn = _remember_get_str("doc_name", post_json)
@@ -287,7 +293,7 @@ def remember():
                     timeout = _validate_positive_int(timeout_str, "timeout")
                     timeout = max(10, min(3600, timeout))
                 except ValueError:
-                    pass  # use default timeout
+                    return err("timeout 必须为正整数", 400)
             return _handle_sync_wait(remember_queue, task.task_id, timeout)
 
         # Default async mode: return 202 immediately

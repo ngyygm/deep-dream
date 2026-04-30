@@ -327,64 +327,6 @@ class TestMENTIONSEpisodeDeletion:
         mock_storage.delete_episode_mentions.assert_called_once_with(episode_id)
 
 
-class TestMENTIONSWithSQLiteStorage:
-    """Test MENTIONS contract with SQLite storage backend."""
-
-    def test_save_episode_mentions_to_sqlite(self):
-        """Episode mentions are saved to SQLite episode_mentions table."""
-        # Test the structure expected by SQLite
-        episode_id = "ep_sqlite_001"
-        entity_ids = ["ent_a", "ent_b", "ent_c"]
-
-        # Expected record structure
-        expected_records = [
-            {
-                "episode_id": episode_id,
-                "target_absolute_id": eid,
-                "target_type": "entity",
-                "mention_context": ""
-            }
-            for eid in entity_ids
-        ]
-
-        assert len(expected_records) == 3
-        for rec in expected_records:
-            assert rec["episode_id"] == episode_id
-            assert rec["target_type"] == "entity"
-
-    def test_sqlite_mentions_prevents_duplicates(self):
-        """SQLite schema uses PRIMARY KEY to prevent duplicate mentions."""
-        # Schema: (episode_id, target_absolute_id, target_type)
-        # This ensures no duplicate MENTIONS edges
-        episode_id = "ep_001"
-        entity_id = "ent_1"
-
-        # First insert should succeed
-        first_insert = (episode_id, entity_id, "entity", "")
-        # Duplicate insert should be ignored (INSERT OR REPLACE)
-        duplicate_insert = (episode_id, entity_id, "entity", "")
-
-        assert first_insert[:3] == duplicate_insert[:3]
-
-    def test_sqlite_mentions_query_by_episode(self):
-        """Query all entities mentioned by an episode."""
-        episode_id = "ep_query_test"
-
-        # Expected SQL query:
-        # SELECT target_absolute_id FROM episode_mentions WHERE episode_id = ?
-        expected_sql_pattern = "episode_id"
-
-        assert episode_id in expected_sql_pattern or True
-
-    def test_sqlite_mentions_query_by_entity(self):
-        """Query all episodes that mention an entity."""
-        entity_abs_id = "ent_provenance"
-
-        # Expected SQL query:
-        # SELECT episode_id FROM episode_mentions WHERE target_absolute_id = ?
-        expected_sql_pattern = "target_absolute_id"
-
-        assert entity_abs_id in expected_sql_pattern or True
 
 
 class TestMENTIONSWithNeo4jStorage:
