@@ -350,7 +350,7 @@ class TemporalMemoryGraphProcessor(_PipelineExtractionMixin, _ExtractionStepsMix
         _er = entity_rounds if entity_rounds is not None else entity_refine_rounds
         self.entity_rounds = _er if _er is not None else 2
         _rr = relation_rounds if relation_rounds is not None else relation_refine_rounds
-        self.relation_rounds = _rr if _rr is not None else 1
+        self.relation_rounds = _rr if _rr is not None else 2
 
         # Extraction client (dual-model pipeline)
         _el = extraction_llm or {}
@@ -466,6 +466,7 @@ class TemporalMemoryGraphProcessor(_PipelineExtractionMixin, _ExtractionStepsMix
         verbose: bool = True,
         verbose_steps: bool = True,
         event_time: Optional[datetime] = None,
+        control_check_fn=None,
     ):
         with self._runtime_lock:
             self._active_window_extractions += 1
@@ -481,6 +482,7 @@ class TemporalMemoryGraphProcessor(_PipelineExtractionMixin, _ExtractionStepsMix
                 verbose=verbose,
                 verbose_steps=verbose_steps,
                 event_time=event_time,
+                control_check_fn=control_check_fn,
             )
         finally:
             with self._runtime_lock:
@@ -852,6 +854,7 @@ class TemporalMemoryGraphProcessor(_PipelineExtractionMixin, _ExtractionStepsMix
                     entity_embedding_prefetch=emb_prefetch_future,
                     already_versioned_family_ids=_already_versioned,
                     window_timings_ref=state.window_timings[i],
+                    control_check_fn=lambda: self._poll_control(state, None),
                 )
                 state.align_results[i] = ar
                 _success = True
@@ -860,6 +863,8 @@ class TemporalMemoryGraphProcessor(_PipelineExtractionMixin, _ExtractionStepsMix
                 if verbose or verbose_steps:
                     wprint_info(f"【步骤9】完成｜{_step9_elapsed:.1f}s")
             except Exception as e:
+                if isinstance(e, RememberControlFlow):
+                    self._signal_control_stop(state, e.remember_control_action, i, set_extract=False, set_step9=True, set_step10=True)
                 if self._record_window_error(state, "step9", i, e):
                     logger.error("step9 window %d error: %s", i, e, exc_info=True)
             finally:
@@ -948,6 +953,7 @@ class TemporalMemoryGraphProcessor(_PipelineExtractionMixin, _ExtractionStepsMix
                     prepared_relations_by_pair=prepared_relations_by_pair,
                     step10_inputs_cache=step10_inputs_cache,
                     window_timings_ref=state.window_timings[i],
+                    control_check_fn=lambda: self._poll_control(state, None),
                 )
                 state.step10_results[i] = processed_rels
                 _success = True
@@ -995,6 +1001,8 @@ class TemporalMemoryGraphProcessor(_PipelineExtractionMixin, _ExtractionStepsMix
                     except Exception as _oe:
                         logger.warning("孤立实体清理失败: %s", _oe)
             except Exception as e:
+                if isinstance(e, RememberControlFlow):
+                    self._signal_control_stop(state, e.remember_control_action, i, set_extract=False, set_step9=False, set_step10=True)
                 if self._record_window_error(state, "step10", i, e):
                     logger.error("step10 window %d error: %s", i, e, exc_info=True)
             finally:
@@ -1374,6 +1382,7 @@ class TemporalMemoryGraphProcessor(_PipelineExtractionMixin, _ExtractionStepsMix
                                     ),
                                     window_index=start_chunk + idx, total_windows=total_chunks,
                                     window_timings_ref=state.window_timings[idx],
+                                    control_check_fn=lambda _s=state, _cb=control_callback: self._poll_control(_s, _cb),
                                 )
                                 state.extract_results[idx] = (ents, rels)
                                 self.storage.save_extraction_result(__hash, ents, rels, document_path=document_path)
@@ -1383,6 +1392,8 @@ class TemporalMemoryGraphProcessor(_PipelineExtractionMixin, _ExtractionStepsMix
                                 if verbose or verbose_steps:
                                     wprint_info(f"【步骤2–8】完成｜{_extract_elapsed:.1f}s")
                             except Exception as e:
+                                if isinstance(e, RememberControlFlow):
+                                    self._signal_control_stop(state, e.remember_control_action, idx)
                                 if self._record_window_error(state, "extract", idx, e):
                                     logger.error("extract window %d error: %s", idx, e, exc_info=True)
                             finally:

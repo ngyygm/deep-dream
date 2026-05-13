@@ -675,7 +675,8 @@ class _PipelineExtractionMixin:
                         total_windows: int = 1,
                         entity_embedding_prefetch: Optional[Future] = None,
                         already_versioned_family_ids: Optional[set] = None,
-                        window_timings_ref: Optional[Dict[str, float]] = None) -> _AlignResult:
+                        window_timings_ref: Optional[Dict[str, float]] = None,
+                        control_check_fn=None) -> _AlignResult:
         """步骤9：实体对齐（搜索、合并、写入存储）。必须串行跨窗口。
 
         Returns:
@@ -692,6 +693,14 @@ class _PipelineExtractionMixin:
             wprint_info("【步骤9】实体｜开始｜")
 
         self.llm_client._current_distill_step = "06_entity_alignment"
+
+        if control_check_fn:
+            action = control_check_fn()
+            if action:
+                from core.remember.orchestrator import RememberControlFlow
+                raise RememberControlFlow(action)
+            _cancel_bool_fn = lambda: control_check_fn() is not None
+            self.llm_client.set_cancel_check(_cancel_bool_fn)
 
         # 记录原始实体名称列表（用于后续建立映射）
         original_entity_names = [e['name'] for e in extracted_entities]
@@ -904,6 +913,7 @@ class _PipelineExtractionMixin:
         # Capture validated family_ids to skip redundant re-resolution in step 7
         _validated_fids = set(entity_name_to_id.values()) - {""}
 
+        self.llm_client.clear_cancel_check()
         return _AlignResult(
             entity_name_to_id=entity_name_to_id,
             pending_relations=pending_relations_from_entities,
@@ -928,6 +938,7 @@ class _PipelineExtractionMixin:
                          prepared_relations_by_pair: Optional[Dict[Tuple[str, str], List[Dict[str, str]]]] = None,
                          step10_inputs_cache: Optional[Tuple[List[Dict[str, str]], Dict[str, str], List[Dict], List[Dict]]] = None,
                          window_timings_ref: Optional[Dict[str, float]] = None,
+                         control_check_fn=None,
                          ) -> List:
         """步骤10：关系对齐（搜索、合并、写入存储）。串行跨窗口。
 
@@ -948,6 +959,14 @@ class _PipelineExtractionMixin:
             wprint_info("【步骤10】关系｜开始｜")
 
         self.llm_client._current_distill_step = "07_relation_alignment"
+
+        if control_check_fn:
+            action = control_check_fn()
+            if action:
+                from core.remember.orchestrator import RememberControlFlow
+                raise RememberControlFlow(action)
+            _cancel_bool_fn = lambda: control_check_fn() is not None
+            self.llm_client.set_cancel_check(_cancel_bool_fn)
 
         unique_entities = align_result.unique_entities
 
@@ -1055,6 +1074,7 @@ class _PipelineExtractionMixin:
 
         self.llm_client._current_distill_step = None
         self.llm_client._distill_task_id = None
+        self.llm_client.clear_cancel_check()
 
         return all_processed_relations
 
@@ -1473,7 +1493,8 @@ class _PipelineExtractionMixin:
                             progress_callback=None,
                             progress_range: tuple = (0.1, 1.0),
                             window_index: int = 0,
-                            total_windows: int = 1):
+                            total_windows: int = 1,
+                            control_check_fn=None):
         """兼容入口：串行执行步骤2-7（_process_window 等旧路径使用）。"""
 
         # 步骤2-5 占 progress_range 的 5/7，步骤9 占 1/7，步骤10 占 1/7
@@ -1487,6 +1508,7 @@ class _PipelineExtractionMixin:
             progress_callback=progress_callback,
             progress_range=(progress_range[0], p1_end),
             window_index=window_index, total_windows=total_windows,
+            control_check_fn=control_check_fn,
         )
 
         align_result = self._align_entities(
@@ -1496,6 +1518,7 @@ class _PipelineExtractionMixin:
             progress_callback=progress_callback,
             progress_range=(p1_end, p2_end),
             window_index=window_index, total_windows=total_windows,
+            control_check_fn=control_check_fn,
         )
 
         processed_relations = self._align_relations(
@@ -1505,6 +1528,7 @@ class _PipelineExtractionMixin:
             progress_callback=progress_callback,
             progress_range=(p2_end, progress_range[1]),
             window_index=window_index, total_windows=total_windows,
+            control_check_fn=control_check_fn,
         )
 
         # Phase C-2: 记录 Episode → Relation MENTIONS（串行路径）

@@ -8,6 +8,7 @@ LLM客户端：封装LLM调用，实现三个核心任务。
 think 模式由初始化参数 think_mode 控制；只有 Ollama 原生协议支持通过 `think: true/false` 显式开关思考模式。
 """
 from typing import Any, Callable, Dict, List, Optional, Tuple
+from concurrent.futures import CancelledError
 import heapq
 import json
 import os
@@ -378,6 +379,9 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
         # 线程局部变量：当前 LLM 调用优先级
         self._priority_local = threading.local()
 
+        # 取消检查：由 pipeline 设置，在 LLM 重试循环中调用
+        self._cancel_check_fn = None
+
         # 蒸馏数据保存
         self._distill_data_dir = distill_data_dir
         self._distill_task_id = None  # task_id 由 step1 生成，全局共享
@@ -400,6 +404,14 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
         if b.endswith("/v1"):
             b = b[:-3]
         return b
+
+    def set_cancel_check(self, fn):
+        """设置取消检查回调（返回 True 表示应取消）。"""
+        self._cancel_check_fn = fn
+
+    def clear_cancel_check(self):
+        """清除取消检查回调。"""
+        self._cancel_check_fn = None
 
     def _in_alignment_phase(self, priority: int) -> bool:
         return priority >= LLM_PRIORITY_STEP6
@@ -743,6 +755,7 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
         _priority_init = getattr(self._priority_local, "priority", LLM_PRIORITY_STEP7)
         _mt0 = self._effective_max_tokens_base(_priority_init)
         _effective_max_tokens = _mt0 if _mt0 is not None else 4096
+        _cancel_fn = self._cancel_check_fn
         # Resolve LLM endpoint config once (doesn't change between retries)
         _eff_base = self._effective_base_url(_priority_init)
         _eff_key = self._effective_api_key(_priority_init)
@@ -873,6 +886,8 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
                         if _sem is not None:
                             _sem.release()
                         _sem_held = False
+                        if _cancel_fn and _cancel_fn():
+                            raise CancelledError("LLM call cancelled by pipeline control")
                         time.sleep(0.5)
                         continue
 
@@ -889,6 +904,8 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
                     if _sem is not None:
                         _sem.release()
                     _sem_held = False
+                    if _cancel_fn and _cancel_fn():
+                        raise CancelledError("LLM call cancelled by pipeline control")
                     time.sleep(wait_seconds)
                     continue
 
@@ -902,6 +919,8 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
                         if _sem is not None:
                             _sem.release()
                         _sem_held = False
+                        if _cancel_fn and _cancel_fn():
+                            raise CancelledError("LLM call cancelled by pipeline control")
                         time.sleep(wait_seconds)
                         continue
                     wprint_info(f"LLM连接错误已达 {_LLM_MAX_FAILURE_ROUNDS} 轮，放弃重试: {e}")
@@ -922,6 +941,8 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
                     if _sem is not None:
                         _sem.release()
                     _sem_held = False
+                    if _cancel_fn and _cancel_fn():
+                        raise CancelledError("LLM call cancelled by pipeline control")
                     time.sleep(wait_seconds)
                     continue
 

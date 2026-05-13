@@ -160,89 +160,141 @@ class _LLMExtractionMixin:
         )
 
     # ------------------------------------------------------------------
-    # Step 6: Relation Discovery — initial extraction + orphan recovery
+    # Step 6: Relation Discovery — single-session multi-phase
     # ------------------------------------------------------------------
 
     def discover_relations(
         self,
         entity_names: List[str],
         window_text: str,
-        max_refine_rounds: int = 1,
+        max_refine_rounds: int = 2,
     ) -> Tuple[List[Tuple[str, str]], Dict[str, int]]:
-        """Discover all relation pairs: initial extraction + targeted orphan recovery.
+        """Discover relation pairs in a single conversation session with two phases.
 
-        Uses generic multi-round refine only for entity extraction.
-        For relations, after initial extraction, finds entities not in any pair
-        (orphans) and makes a single targeted LLM call for them — avoiding
-        the model re-outputting the full list on each refine round.
+        Phase A — Orphan recovery (untimed): after initial extraction, repeatedly
+        find unpaired (orphan) entities and prompt the LLM to find relationships
+        for them.  Loops until no new orphans remain or no new pairs are found.
+
+        Phase B — Adversarial refinement (max_refine_rounds): pushes the LLM to
+        find cross-pair, hidden, or implicit relationships across N rounds.
+
+        Both phases share the same messages list so the LLM sees the full context.
         """
         from .prompts import ORPHAN_RECOVERY_USER
         entity_list_str = "、".join(entity_names)
-        refine_stats = {"initial": 0, "refine_added": 0, "rounds_run": 0}
+        stats = {"initial": 0, "orphan_rounds": 0, "orphan_added": 0,
+                 "refine_rounds": 0, "refine_added": 0, "rounds_run": 0}
 
-        # Phase 1: Initial extraction (no generic multi-round refine)
-        pairs, _ = self._extract_with_refinement(
-            system_prompt=RELATION_DISCOVER_SYSTEM,
-            user_prompt=RELATION_DISCOVER_USER.format(
-                entity_names=entity_list_str,
-                window_text=window_text,
-            ),
-            refine_prompt=RELATION_REFINE_USER,
-            parse_fn=self._parse_pair_list,
-            key_fn=lambda p: p,
-            max_refine_rounds=0,
-            stage_label="关系",
-        )
-        refine_stats["initial"] = len(pairs)
-
-        if not pairs or max_refine_rounds < 1:
-            return pairs, refine_stats
-
-        # Phase 2: Orphan recovery — single targeted call for uncovered entities
-        paired_entities = set()
-        for a, b in pairs:
-            paired_entities.add(a)
-            paired_entities.add(b)
-
-        orphans = [n for n in entity_names if n not in paired_entities]
-        if not orphans:
-            return pairs, refine_stats
-
-        other_entities = [n for n in entity_names if n not in orphans]
-        orphan_prompt = ORPHAN_RECOVERY_USER.format(
-            orphan_names="、".join(orphans),
-            other_entity_names="、".join(other_entities),
-            window_text=window_text,
-        )
+        # ── Shared state ──
+        seen: set = set()
+        all_pairs: list = []
         messages = [
             {"role": "system", "content": RELATION_DISCOVER_SYSTEM},
-            {"role": "user", "content": orphan_prompt},
+            {"role": "user", "content": RELATION_DISCOVER_USER.format(
+                entity_names=entity_list_str,
+                window_text=window_text,
+            )},
         ]
+
+        # ── Initial extraction ──
         try:
             _t0 = _time.monotonic()
-            new_pairs, _ = self.call_llm_until_json_parses(
-                messages, parse_fn=self._parse_pair_list, json_parse_retries=2,
+            items, response_text = self.call_llm_until_json_parses(
+                messages, parse_fn=self._parse_pair_list, json_parse_retries=3,
             )
             from ..utils import wprint_info
-            wprint_info(
-                f"[extraction_timing] 关系 orphan: "
-                f"{_time.monotonic()-_t0:.1f}s "
-                f"({len(new_pairs)} pairs for {len(orphans)} orphans)"
-            )
+            wprint_info(f"[extraction_timing] 关系 initial: {_time.monotonic()-_t0:.1f}s ({len(items)} pairs)")
         except (json.JSONDecodeError, LLMContextBudgetExceeded):
-            return pairs, refine_stats
+            return [], stats
 
-        seen = set(pairs)
-        added = 0
-        for pair in new_pairs:
+        for pair in items:
             if pair not in seen:
                 seen.add(pair)
-                pairs.append(pair)
-                added += 1
-        refine_stats["refine_added"] = added
-        refine_stats["rounds_run"] = 1 if added > 0 else 0
+                all_pairs.append(pair)
+        stats["initial"] = len(all_pairs)
 
-        return pairs, refine_stats
+        if not all_pairs:
+            return [], stats
+
+        messages.append({"role": "assistant", "content": response_text})
+
+        # ── Phase A: Orphan recovery loop (no round limit) ──
+        max_orphan_rounds = 5  # safety cap
+        for orphan_round in range(max_orphan_rounds):
+            paired_entities = set()
+            for a, b in all_pairs:
+                paired_entities.add(a)
+                paired_entities.add(b)
+            orphans = [n for n in entity_names if n not in paired_entities]
+            if not orphans:
+                break
+
+            other_entities = [n for n in entity_names if n not in orphans]
+            orphan_prompt = ORPHAN_RECOVERY_USER.format(
+                orphan_names="、".join(orphans),
+                other_entity_names="、".join(other_entities),
+                window_text=window_text,
+            )
+            if not self._can_continue_multi_round(
+                messages, next_user_content=orphan_prompt,
+                stage_label="关系查漏",
+            ):
+                break
+            messages.append({"role": "user", "content": orphan_prompt})
+            try:
+                _t0 = _time.monotonic()
+                new_items, new_text = self.call_llm_until_json_parses(
+                    messages, parse_fn=self._parse_pair_list, json_parse_retries=2,
+                )
+                from ..utils import wprint_info as _wp
+                _wp(f"[extraction_timing] 关系 orphan r{orphan_round+1}: {_time.monotonic()-_t0:.1f}s ({len(new_items)} pairs for {len(orphans)} orphans)")
+            except (json.JSONDecodeError, LLMContextBudgetExceeded):
+                break
+
+            added = 0
+            for pair in new_items:
+                if pair not in seen:
+                    seen.add(pair)
+                    all_pairs.append(pair)
+                    added += 1
+            stats["orphan_rounds"] = orphan_round + 1
+            stats["orphan_added"] += added
+            if added == 0:
+                break
+            messages.append({"role": "assistant", "content": new_text})
+
+        # ── Phase B: Adversarial refinement rounds ──
+        for round_i in range(max_refine_rounds):
+            if not self._can_continue_multi_round(
+                messages, next_user_content=RELATION_REFINE_USER,
+                stage_label="关系精炼",
+            ):
+                break
+            messages.append({"role": "user", "content": RELATION_REFINE_USER})
+            try:
+                _tr0 = _time.monotonic()
+                round_items, round_text = self.call_llm_until_json_parses(
+                    messages, parse_fn=self._parse_pair_list, json_parse_retries=2,
+                )
+                from ..utils import wprint_info as _wp2
+                _new_count = len([p for p in round_items if p not in seen])
+                _wp2(f"[extraction_timing] 关系 refine r{round_i+1}: {_time.monotonic()-_tr0:.1f}s ({len(round_items)} pairs, +{_new_count} new)")
+            except (json.JSONDecodeError, LLMContextBudgetExceeded):
+                break
+            added = 0
+            for pair in round_items:
+                if pair not in seen:
+                    seen.add(pair)
+                    all_pairs.append(pair)
+                    added += 1
+            stats["refine_rounds"] = round_i + 1
+            stats["refine_added"] += added
+            stats["rounds_run"] = stats["orphan_rounds"] + round_i + 1
+            if added == 0:
+                break
+            messages.append({"role": "assistant", "content": round_text})
+
+        return all_pairs, stats
 
     # ------------------------------------------------------------------
     # Shared parser

@@ -712,6 +712,9 @@ class _ExtractionStepsMixin:
         _progress(0.95, f"{_win} · 完成",
                    f"{len(extracted_entities)} 实体, {len(valid_relations)} 关系")
 
+        self.llm_client.clear_cancel_check()
+        if self.extraction_client_enabled:
+            extraction_client.clear_cancel_check()
         return extracted_entities, valid_relations
 
     # ------------------------------------------------------------------

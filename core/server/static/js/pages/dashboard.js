@@ -241,19 +241,23 @@
       const q = g.queue || {};
       const isActive = (q.running_count || 0) > 0 || (q.queued_count || 0) > 0;
       const gid = escapeHtml(g.graph_id);
-      return `<div style="display:flex;align-items:center;gap:0.75rem;padding:0.45rem 0.6rem;border-bottom:1px solid var(--border-color);font-size:0.8125rem;">
-        <i data-lucide="git-branch" style="width:14px;height:14px;color:var(--primary);flex-shrink:0;"></i>
-        <span style="cursor:pointer;font-weight:600;flex-shrink:0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" onclick="setGraphId('${gid}');navigate('#graph');" title="${gid}">${gid}</span>
-        ${isActive ? `<span class="badge badge-info" style="flex-shrink:0;font-size:0.65rem;padding:0 4px;">${t('dashboard.active')}</span>` : ''}
-        <span style="color:var(--text-muted);flex-shrink:0;">E:${formatNumber(s.entities)} R:${formatNumber(s.relations)} Ep:${formatNumber(s.episodes)}</span>
-        <span style="color:var(--text-muted);flex-shrink:0;">${t('dashboard.queueRunning')}:${q.running_count || 0} ${t('dashboard.queueQueued')}:${q.queued_count || 0}</span>
-        <span style="flex:1;"></span>
-        <button class="btn btn-ghost btn-sm btn-graph-clear" data-graph-id="${gid}" title="${t('dashboard.clearGraph')}" style="padding:2px 4px;">
-          <i data-lucide="eraser" style="width:13px;height:13px;"></i>
-        </button>
-        <button class="btn btn-ghost btn-sm btn-graph-delete" data-graph-id="${gid}" title="${t('dashboard.deleteGraph')}" style="padding:2px 4px;color:var(--error);">
-          <i data-lucide="trash-2" style="width:13px;height:13px;"></i>
-        </button>
+      return `<div style="padding:0.4rem 0.6rem;border-bottom:1px solid var(--border-color);font-size:0.8125rem;">
+        <div style="display:flex;align-items:center;gap:0.5rem;">
+          <i data-lucide="git-branch" style="width:14px;height:14px;color:var(--primary);flex-shrink:0;"></i>
+          <span style="cursor:pointer;font-weight:600;flex-shrink:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" onclick="setGraphId('${gid}');navigate('#graph');" title="${gid}">${gid}</span>
+          ${isActive ? `<span class="badge badge-info" style="flex-shrink:0;font-size:0.65rem;padding:0 4px;">${t('dashboard.active')}</span>` : ''}
+          <span style="flex:1;"></span>
+          <button class="btn btn-ghost btn-sm btn-graph-clear" data-graph-id="${gid}" title="${t('dashboard.clearGraph')}" style="padding:2px 4px;">
+            <i data-lucide="eraser" style="width:13px;height:13px;"></i>
+          </button>
+          <button class="btn btn-ghost btn-sm btn-graph-delete" data-graph-id="${gid}" title="${t('dashboard.deleteGraph')}" style="padding:2px 4px;color:var(--error);">
+            <i data-lucide="trash-2" style="width:13px;height:13px;"></i>
+          </button>
+        </div>
+        <div style="display:flex;gap:0.75rem;margin-top:0.2rem;padding-left:22px;color:var(--text-muted);font-size:0.75rem;">
+          <span>E:${formatNumber(s.entities)} R:${formatNumber(s.relations)} Ep:${formatNumber(s.episodes)}</span>
+          <span>${t('dashboard.queueRunning')}:${q.running_count || 0} ${t('dashboard.queueQueued')}:${q.queued_count || 0}</span>
+        </div>
       </div>`;
     }).join('');
 
