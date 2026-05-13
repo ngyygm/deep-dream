@@ -23,7 +23,7 @@ from core.utils import wprint_info, calculate_jaccard_similarity, cosine_similar
 
 # Shared thread pool — reused across entity processing calls within a session
 _ENTITY_POOL: ThreadPoolExecutor | None = None
-_ENTITY_POOL_MAX = 4
+_ENTITY_POOL_MAX = 1
 
 
 def _get_entity_pool(max_workers: int) -> ThreadPoolExecutor:
@@ -51,6 +51,7 @@ def _doc_basename(source_document: str) -> str:
     return source_document.rpartition('/')[-1] if source_document else ""
 from core.content_schema import (
     ENTITY_SECTIONS,
+    compute_content_patches,
     content_to_sections,
     compute_section_diff,
     sections_equal,
@@ -251,7 +252,7 @@ class EntityProcessor:
         processed_entities: List[Entity] = []
         pending_relations: List[Dict] = []
         entity_name_to_id: Dict[str, str] = {}
-        entities_to_persist: List[Entity] = []
+        _corroborated_fids: List[str] = []
 
         extracted_entity_names, extracted_relation_pairs, related_entity_names = _preprocess_extraction_context(
             extracted_entities, extracted_relations,
@@ -315,19 +316,25 @@ class EntityProcessor:
             if name_mapping:
                 entity_name_to_id.update(name_mapping)
             if to_persist:
-                entities_to_persist.append(to_persist)
+                self.storage.save_entity(to_persist)
+                _ent_patches = getattr(to_persist, '_pending_patches', None) or []
+                if _ent_patches:
+                    try:
+                        self.storage.save_content_patches(_ent_patches)
+                    except Exception:
+                        pass
+                if to_persist.family_id:
+                    _corroborated_fids.append(to_persist.family_id)
             if on_entity_processed and entity:
                 on_entity_processed(entity, entity_name_to_id, relations or [])
 
-        if entities_to_persist:
-            self.storage.bulk_save_entities(entities_to_persist)
-            # 置信度演化：新版本 = 独立来源印证 → 置信度提升
-            _corroborated = list({e.family_id for e in entities_to_persist if e.family_id.startswith("ent_")})
-            if _corroborated:
-                try:
-                    self.storage.adjust_confidence_on_corroboration_batch(_corroborated, source_type="entity")
-                except Exception:
-                    pass
+        # Batch corroboration: 独立来源印证 → 置信度提升
+        if _corroborated_fids:
+            _unique_fids = list(set(_corroborated_fids))
+            try:
+                self.storage.adjust_confidence_on_corroboration_batch(_unique_fids, source_type="entity")
+            except Exception:
+                pass
 
         return processed_entities, pending_relations, entity_name_to_id
 
@@ -341,7 +348,7 @@ class EntityProcessor:
                         embedding_full_search_threshold: Optional[float] = None,
                         on_entity_processed: Optional[callable] = None,
                         base_time: Optional[datetime] = None,
-                        max_workers: int = 2,
+                        max_workers: int = 1,
                         prefetched_embeddings: Optional[Tuple[Optional[Any], Optional[Any]]] = None,
                         already_versioned_family_ids: Optional[set] = None) -> Tuple[List[Entity], List[Dict], Dict[str, str]]:
         """多线程处理实体；合并冲突时以数据库中已存在的 family_id 为准。"""
@@ -376,6 +383,13 @@ class EntityProcessor:
                     _prefetched_full_embs = _full_embs
             except Exception:
                 pass
+
+        # Pre-seed entity name cache from candidate entities to reduce hidden reads
+        for _cand_row in candidate_table.values():
+            for _cand in _cand_row:
+                _cand_ent = _cand.get("entity")
+                if _cand_ent and hasattr(_cand_ent, 'absolute_id') and hasattr(_cand_ent, 'name'):
+                    self.storage._cache_entity_name(_cand_ent.absolute_id, _cand_ent.name)
 
         def task(idx: int, extracted_entity: Dict[str, str], orig_idx: int):
             # 将主线程的 distill step 和优先级传播到工作线程（threading.local）
@@ -494,7 +508,7 @@ class EntityProcessor:
         canonical_ids = set(entity_name_to_id.values())
         all_to_persist: List[Entity] = [r[4] for r in results if r[4] is not None]
         entities_to_persist_final = [e for e in all_to_persist if e.family_id in canonical_ids]
-        # 按 family_id 去重：同一 family_id 只保留一个待持久化实体（避免批量写入重复版本）
+        # 按 family_id 去重：同一 family_id 只保留一个待持久化实体（避免重复写入）
         if entities_to_persist_final:
             _seen_fids = set()
             _deduped = []
@@ -507,12 +521,42 @@ class EntityProcessor:
                 if self._entity_tree_log():
                     wprint_info(f"  │  持久化去重: 移除 {_dup_count} 个重复 family_id 的待持久化实体")
                 entities_to_persist_final = _deduped
-            self.storage.bulk_save_entities(entities_to_persist_final)
-            # 置信度演化：新版本 = 独立来源印证 → 置信度提升
-            _corro_fids = list({e.family_id for e in entities_to_persist_final})
+            # 批量保存实体（UNWIND 一次写入，减少 Neo4j 连接数）
+            _corro_fids = []
+            # 预计算所有 embedding（CPU 密集，不需要 Neo4j session）
+            for e in entities_to_persist_final:
+                try:
+                    _emb_result = self.storage._compute_entity_embedding(e)
+                    if _emb_result is not None:
+                        e.embedding = _emb_result[0]
+                except Exception:
+                    pass
+            # 一次 UNWIND 写入所有实体
+            try:
+                self.storage.bulk_save_entities_with_embedding(entities_to_persist_final)
+            except Exception:
+                # Fallback: 逐条写入
+                for e in entities_to_persist_final:
+                    try:
+                        self.storage.save_entity(e)
+                    except Exception:
+                        pass
+            # 一次写入所有 patches
+            _all_patches = []
+            for e in entities_to_persist_final:
+                _ent_patches = getattr(e, '_pending_patches', None) or []
+                _all_patches.extend(_ent_patches)
+                if e.family_id:
+                    _corro_fids.append(e.family_id)
+            if _all_patches:
+                try:
+                    self.storage.save_content_patches(_all_patches)
+                except Exception:
+                    pass
+            # Batch corroboration
             if _corro_fids:
                 try:
-                    self.storage.adjust_confidence_on_corroboration_batch(_corro_fids, source_type="entity")
+                    self.storage.adjust_confidence_on_corroboration_batch(list(set(_corro_fids)), source_type="entity")
                 except Exception:
                     pass
 
@@ -737,6 +781,8 @@ class EntityProcessor:
             episode_id,
             source_document,
             base_time=base_time,
+            old_content=latest_entity.content or "",
+            old_content_format=latest_entity.content_format or "plain",
         )
         self._mark_versioned(latest_entity.family_id, already_versioned_family_ids, _version_lock)
 
@@ -924,6 +970,8 @@ class EntityProcessor:
                         entity_version = self._build_entity_version(
                             latest.family_id, entity_name, latest.content,
                             episode_id, source_document, base_time=base_time,
+                            old_content=latest.content or "",
+                            old_content_format=latest.content_format or "plain",
                         )
                         self._mark_versioned(latest.family_id, already_versioned_family_ids, _version_lock)
                         if self._entity_tree_log():
@@ -943,6 +991,8 @@ class EntityProcessor:
                     entity_version = self._build_entity_version(
                         latest.family_id, final_name, merged_content,
                         episode_id, source_document, base_time=base_time,
+                        old_content=latest.content or "",
+                        old_content_format=latest.content_format or "plain",
                     )
                     self._mark_versioned(latest.family_id, already_versioned_family_ids, _version_lock)
                     if self._entity_tree_log():
@@ -1260,6 +1310,8 @@ class EntityProcessor:
                         episode_id,
                         source_document,
                         base_time=base_time,
+                        old_content=latest_entity.content or "",
+                        old_content_format=latest_entity.content_format or "plain",
                     )
                     self._mark_versioned(latest_entity.family_id, already_versioned_family_ids, _version_lock)
                     if self._entity_tree_log():
@@ -1302,6 +1354,8 @@ class EntityProcessor:
                 entity_version = self._build_entity_version(
                     latest_entity.family_id, latest_entity.name, latest_entity.content or entity_content,
                     episode_id, source_document, base_time=base_time,
+                    old_content=latest_entity.content or "",
+                    old_content_format=latest_entity.content_format or "plain",
                 )
                 self._mark_versioned(latest_entity.family_id, already_versioned_family_ids, _version_lock)
                 if self._entity_tree_log():
@@ -1406,8 +1460,8 @@ class EntityProcessor:
         if _has_title_suffix:
             search_fns.append(_search_core_jaccard)
 
-        if len(search_fns) > 1:
-            pool = _get_entity_pool(len(search_fns))
+        if len(search_fns) > 1 and _ENTITY_POOL_MAX > 1:
+            pool = _get_entity_pool(min(len(search_fns), _ENTITY_POOL_MAX))
             futures = [pool.submit(fn) for fn in search_fns]
             search_results = [fut.result() for fut in futures]
         else:
@@ -1660,7 +1714,7 @@ class EntityProcessor:
                     logger.warning("LLM detailed analysis failed for '%s' vs '%s': %s — skipping",
                                    entity_name, cent.name, e)
                     return (cid, None)
-            pool = _get_entity_pool(3)
+            pool = _get_entity_pool(min(3, _ENTITY_POOL_MAX))
             for cid, result in pool.map(_call_detailed, _detailed_tasks):
                 if result is not None:
                     _detailed_results[cid] = result
@@ -2077,13 +2131,28 @@ class EntityProcessor:
 
     def _build_entity_version(self, family_id: str, name: str, content: str,
                               episode_id: str, source_document: str = "",
-                              base_time: Optional[datetime] = None) -> Entity:
-        """构建实体新版本对象，但不立即写库。"""
-        return self._construct_entity(
+                              base_time: Optional[datetime] = None,
+                              old_content: str = "",
+                              old_content_format: str = "plain") -> Entity:
+        """构建实体新版本对象，但不立即写库。附带 section patch 计算。"""
+        entity = self._construct_entity(
             name, content, episode_id,
             family_id=family_id,
             source_document=source_document, base_time=base_time,
         )
+        if old_content:
+            patches = self._compute_entity_patches(
+                family_id=family_id,
+                old_content=old_content,
+                old_content_format=old_content_format,
+                new_content=content,
+                new_absolute_id=entity.absolute_id,
+                source_document=_doc_basename(source_document),
+                event_time=entity.event_time,
+            )
+            if patches:
+                entity._pending_patches = patches
+        return entity
 
     def _create_entity_version(self, family_id: str, name: str, content: str,
                               episode_id: str, source_document: str = "",
@@ -2125,31 +2194,15 @@ class EntityProcessor:
         source_document: str = "",
         event_time: Optional[datetime] = None,
     ) -> list:
-        """计算新旧内容之间的 section 级变更 patches。"""
-        old_sections = content_to_sections(old_content, old_content_format, ENTITY_SECTIONS)
-        new_sections = content_to_sections(new_content, "markdown", ENTITY_SECTIONS)
-        if sections_equal(old_sections, new_sections):
-            return []
-        diff = compute_section_diff(old_sections, new_sections)
-        if not has_any_change(diff):
-            return []
-        patches = []
-        _now = datetime.now()
-        for key, info in diff.items():
-            if not info.get("changed", False):
-                continue
-            patches.append(ContentPatch(
-                uuid=str(uuid.uuid4()),
-                target_type="Entity",
-                target_absolute_id=new_absolute_id,
-                target_family_id=family_id,
-                section_key=key,
-                change_type=info.get("change_type", "modified"),
-                old_hash=section_hash(info.get("old", "") or ""),
-                new_hash=section_hash(info.get("new", "") or ""),
-                diff_summary=f"Section '{key}' {info.get('change_type', 'modified')}",
-                source_document=source_document,
-                event_time=event_time or _now,
-            ))
-        return patches
+        return compute_content_patches(
+            family_id=family_id,
+            old_content=old_content,
+            old_content_format=old_content_format,
+            new_content=new_content,
+            new_absolute_id=new_absolute_id,
+            target_type="Entity",
+            schema=ENTITY_SECTIONS,
+            source_document=source_document,
+            event_time=event_time,
+        )
 

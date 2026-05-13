@@ -16,6 +16,8 @@ window.GraphExplorer = (function () {
     var _relationMap = {};
     var _versionCounts = {};
     var _pinnedNodePositions = {};
+    var _spiralIdx = 0;
+    var _streamingMode = false;  // skip expensive ops during bulk loading
 
     var _focusAbsoluteId = null;
     var _detailBackStack = [];  // stack of {type:'relation'|'entity', id:string} for back navigation
@@ -39,7 +41,7 @@ window.GraphExplorer = (function () {
 
     // ---- Build vis-network DataSet and initialize the network ----
 
-    function buildGraph(entities, relations, highlightAbsId, hopMap, inheritedRelationIds, futureRelationIds, hubLayout) {
+    function buildGraph(entities, relations, highlightAbsId, hopMap, inheritedRelationIds, futureRelationIds, hubLayout, savedPositions) {
       _entityMap = {};
       _relationMap = {};
 
@@ -183,9 +185,11 @@ window.GraphExplorer = (function () {
       var nodeIds = result.nodeIds;
 
       var visibleNodeIds = new Set();
+      var restorePositions = savedPositions || _pinnedNodePositions;
+      var hasRestoredPositions = false;
       nodes.forEach(function (node) {
         visibleNodeIds.add(node.id);
-        var pinned = _pinnedNodePositions[node.id];
+        var pinned = restorePositions[node.id];
         if (pinned) {
           nodes.update({
             id: node.id,
@@ -193,8 +197,15 @@ window.GraphExplorer = (function () {
             y: pinned.y,
             fixed: { x: true, y: true },
           });
+          hasRestoredPositions = true;
         }
       });
+      // Merge saved positions into _pinnedNodePositions
+      if (savedPositions) {
+        Object.keys(savedPositions).forEach(function (k) {
+          if (visibleNodeIds.has(k)) _pinnedNodePositions[k] = savedPositions[k];
+        });
+      }
       var pinnedKeys = Object.keys(_pinnedNodePositions);
       for (var pi = 0; pi < pinnedKeys.length; pi++) {
         if (!visibleNodeIds.has(pinnedKeys[pi])) delete _pinnedNodePositions[pinnedKeys[pi]];
@@ -210,25 +221,7 @@ window.GraphExplorer = (function () {
         _pinnedNodePositions[highlightAbsId] = { x: fcx, y: fcy };
       }
 
-      // Fix top-3 hub nodes in triangle layout
-      if (hubLayout && hubLayout.hubIds && hubLayout.hubIds.length > 0) {
-        var hubContainer = _el(_opts.canvasId);
-        var cx = hubContainer.offsetWidth / 2;
-        var cy = hubContainer.offsetHeight / 2;
-        var tr = 150;
-        var hubPositions = [
-          { x: cx, y: cy - tr },
-          { x: cx - tr * 0.866, y: cy + tr * 0.5 },
-          { x: cx + tr * 0.866, y: cy + tr * 0.5 },
-        ];
-        for (var hi = 0; hi < hubLayout.hubIds.length && hi < hubPositions.length; hi++) {
-          var hubId = hubLayout.hubIds[hi];
-          if (nodeIds.has(hubId)) {
-            nodes.update({ id: hubId, x: hubPositions[hi].x, y: hubPositions[hi].y, fixed: { x: true, y: true } });
-            _pinnedNodePositions[hubId] = hubPositions[hi];
-          }
-        }
-      }
+      // Hub coloring — no position pinning, let physics engine arrange
 
       var buildEdgesOpts = {
         inheritedRelationIds: inheritedRelationIds,
@@ -251,26 +244,42 @@ window.GraphExplorer = (function () {
         _network = null;
       }
 
-      var visOpts = {
-        physics: GraphUtils.getPhysicsOptions(),
-        interaction: GraphUtils.getInteractionOptions(),
-        layout: { improvedLayout: true },
-      };
+      // When restoring from saved positions (most nodes positioned), skip physics entirely
+      var skipPhysics = hasRestoredPositions && (Object.keys(restorePositions).length >= visibleNodeIds.size * 0.7);
+
+      var visOpts;
+      if (skipPhysics) {
+        visOpts = {
+          physics: { enabled: false },
+          interaction: GraphUtils.getInteractionOptions(),
+          layout: { improvedLayout: false },
+        };
+      } else {
+        visOpts = {
+          physics: GraphUtils.getPhysicsOptions(),
+          interaction: GraphUtils.getInteractionOptions(),
+          layout: { improvedLayout: true },
+        };
+      }
 
       _network = new vis.Network(container, { nodes: nodes, edges: edges }, visOpts);
 
       // Invalidate hover panel — vis.Network may have cleared the container DOM
       _hoverPanel = null;
 
-      _network.once('stabilizationIterationsDone', function () {
-        // Freeze after stabilization: stop simulation but keep interaction working
-        _network.setOptions({ physics: { enabled: false } });
-        if (highlightAbsId) {
-          _network.focus(highlightAbsId, { scale: 1.2, animation: { duration: 500, easingFunction: 'easeInOutQuad' } });
-        }
-        // Render version badges after layout is stable
+      if (skipPhysics) {
+        // Instant render — no stabilization needed
         renderVersionBadges(nodes);
-      });
+      } else {
+        _network.once('stabilizationIterationsDone', function () {
+          // Freeze after stabilization: stop simulation but keep interaction working
+          _network.setOptions({ physics: { enabled: false } });
+          if (highlightAbsId) {
+            _network.focus(highlightAbsId, { scale: 1.2, animation: { duration: 500, easingFunction: 'easeInOutQuad' } });
+          }
+          renderVersionBadges(nodes);
+        });
+      }
 
       _network.on('click', function (params) {
         var nodeId = params.nodes[0];
@@ -340,6 +349,7 @@ window.GraphExplorer = (function () {
     function initEmptyGraph(hubLayout) {
       _entityMap = {};
       _relationMap = {};
+      _spiralIdx = 0;
 
       var container = _el(_opts.canvasId);
       if (!container) return;
@@ -428,26 +438,13 @@ window.GraphExplorer = (function () {
       _network.on('dragEnd', function () { setTimeout(updateBadgePositions, 50); updateNodeHoverPosition(); });
       _network.on('viewChanged', function () { updateBadgePositions(); updateNodeHoverPosition(); });
 
-      // Pin hub nodes in triangle layout if provided
-      if (hubLayout && hubLayout.hubIds && hubLayout.hubIds.length > 0) {
-        var cx = container.offsetWidth / 2;
-        var cy = container.offsetHeight / 2;
-        var tr = 150;
-        var hubPositions = [
-          { x: cx, y: cy - tr },
-          { x: cx - tr * 0.866, y: cy + tr * 0.5 },
-          { x: cx + tr * 0.866, y: cy + tr * 0.5 },
-        ];
-        for (var hi = 0; hi < hubLayout.hubIds.length && hi < hubPositions.length; hi++) {
-          _pinnedNodePositions[hubLayout.hubIds[hi]] = hubPositions[hi];
-        }
-      }
+      // Hub coloring — no position pinning
     }
 
     // Incrementally add entities and relations to the existing network
     // Uses DataSet .add() for smooth, non-destructive updates
 
-    function addNodesAndEdges(newEntities, newRelations, hubLayout) {
+    function addNodesAndEdges(newEntities, newRelations, hubLayout, totalNodeEstimate) {
       if (!_network || !_nodesDataSet) return;
 
       // Build vis node objects from raw entity data
@@ -515,16 +512,13 @@ window.GraphExplorer = (function () {
       var canvasEl = document.getElementById(_opts.canvasId);
       var cx = canvasEl ? canvasEl.offsetWidth / 2 : 400;
       var cy = canvasEl ? canvasEl.offsetHeight / 2 : 300;
+      var maxRadius = Math.min(cx, cy) * 0.85;
+
+      // Use golden-angle spiral for unconnected nodes (natural spread)
+      var goldenAngle = Math.PI * (3 - Math.sqrt(5));
 
       for (var ni = 0; ni < newNodes.length; ni++) {
         var node = newNodes[ni];
-        var pinned = _pinnedNodePositions[node.id];
-        if (pinned) {
-          node.x = pinned.x;
-          node.y = pinned.y;
-          node.fixed = { x: true, y: true };
-          continue;
-        }
 
         var connections = newNodeConnections[node.id];
         if (connections && connections.length > 0) {
@@ -542,9 +536,13 @@ window.GraphExplorer = (function () {
             node.y = cy + (Math.random() - 0.5) * 200;
           }
         } else {
-          // No connection to existing nodes — place near center with some spread
-          node.x = cx + (Math.random() - 0.5) * 300;
-          node.y = cy + (Math.random() - 0.5) * 300;
+          // No connection info — use spiral placement with global counter
+          var idx = _spiralIdx++;
+          var totalEst = totalNodeEstimate || 200;
+          var r = maxRadius * Math.sqrt((idx + 0.5) / totalEst);
+          var theta = idx * goldenAngle;
+          node.x = cx + r * Math.cos(theta);
+          node.y = cy + r * Math.sin(theta);
         }
       }
 
@@ -577,40 +575,13 @@ window.GraphExplorer = (function () {
       // Add edges (triggers smooth network update)
       _edgesDataSet.add(newEdges);
 
-      // Recalculate node sizes: existing nodes should grow as new edges connect to them
-      var allUpdatedEdges = _edgesDataSet.get();
-      var liveCounts = {};
-      for (var lci = 0; lci < allUpdatedEdges.length; lci++) {
-        var le = allUpdatedEdges[lci];
-        liveCounts[le.from] = (liveCounts[le.from] || 0) + 1;
-        liveCounts[le.to] = (liveCounts[le.to] || 0) + 1;
-      }
-      var liveMax = 1;
-      var liveKeys = Object.keys(liveCounts);
-      for (var lki = 0; lki < liveKeys.length; lki++) {
-        if (liveCounts[liveKeys[lki]] > liveMax) liveMax = liveCounts[liveKeys[lki]];
-      }
-      // Update sizes of ALL existing nodes (not just new ones)
-      var allCurrentNodes = _nodesDataSet.get();
-      var sizeUpdates = [];
-      for (var sni = 0; sni < allCurrentNodes.length; sni++) {
-        var sn = allCurrentNodes[sni];
-        var newCount = liveCounts[sn.id] || 0;
-        var newSize = GraphUtils.computeNodeSize(newCount, liveMax);
-        if (Math.abs((sn.size || 0) - newSize) > 0.5) {
-          sizeUpdates.push({ id: sn.id, size: newSize });
-        }
-      }
-      if (sizeUpdates.length > 0) {
-        _nodesDataSet.update(sizeUpdates);
-      }
+      // Skip expensive per-tick operations during streaming animation
+      if (!_streamingMode) {
+        _recalcNodeSizes();
 
-      // Update version badges
-      renderVersionBadges(_nodesDataSet);
-
-      // Auto-fit viewport to keep all nodes visible
-      // Use instant fit (no animation) to avoid conflicts with rapid updates during animation
-      try { _network.fit({ animation: false }); } catch (_) {}
+        // Auto-fit viewport
+        try { _network.fit({ animation: false }); } catch (_) {}
+      }
     }
 
     /**
@@ -1019,33 +990,95 @@ window.GraphExplorer = (function () {
 
     // ---- Show entity detail in the sidebar ----
 
-    // ---- Content diff helper ----
+    // ---- Content diff helper (LCS-based inline diff) ----
 
-    function computeContentDiff(currentContent, previousContent) {
-      if (!previousContent) return null;
-      var curLines = (currentContent || '').split('\n').filter(function(l) { return l.trim(); });
-      var prevLines = (previousContent || '').split('\n').filter(function(l) { return l.trim(); });
-      if (curLines.join('\n') === prevLines.join('\n')) return null;
-
-      var added = [], removed = [];
-      curLines.forEach(function(line) { if (prevLines.indexOf(line) === -1) added.push(line); });
-      prevLines.forEach(function(line) { if (curLines.indexOf(line) === -1) removed.push(line); });
-
-      if (added.length === 0 && removed.length === 0) return null;
-      return { added: added, removed: removed };
+    // Shared LCS engine: builds DP table once, backtracks to produce diff ops.
+    // oldArr/newArr are arrays of tokens (chars or lines).
+    // Returns [{type:'equal'|'del'|'ins', text: string}]
+    function _lcsDiff(oldArr, newArr) {
+      var n = oldArr.length, m = newArr.length;
+      var dp = [new Array(m + 1).fill(0)];
+      for (var i = 1; i <= n; i++) {
+        var row = [0];
+        for (var j = 1; j <= m; j++) {
+          if (oldArr[i - 1] === newArr[j - 1]) row[j] = dp[i - 1][j - 1] + 1;
+          else row[j] = Math.max(dp[i - 1][j], row[j - 1]);
+        }
+        dp.push(row);
+      }
+      var ops = [];
+      var ci = n, cj = m;
+      while (ci > 0 || cj > 0) {
+        if (ci > 0 && cj > 0 && oldArr[ci - 1] === newArr[cj - 1]) {
+          ops.push({ type: 'equal', text: oldArr[ci - 1] });
+          ci--; cj--;
+        } else if (cj > 0 && (ci === 0 || dp[ci][cj - 1] >= dp[ci - 1][cj])) {
+          ops.push({ type: 'ins', text: newArr[cj - 1] });
+          cj--;
+        } else {
+          ops.push({ type: 'del', text: oldArr[ci - 1] });
+          ci--;
+        }
+      }
+      ops.reverse();
+      return ops;
     }
 
-    function renderDiffPreview(diff) {
-      if (!diff) return '';
+    function computeInlineDiff(oldText, newText) {
+      oldText = oldText || '';
+      newText = newText || '';
+      if (oldText === newText) return null;
+
+      var n = oldText.length, m = newText.length;
+      // For very long texts, fall back to line-level diff
+      if (n * m > 4000000) {
+        var oldLines = oldText.split('\n');
+        var newLines = newText.split('\n');
+        return _lcsDiff(oldLines, newLines);
+      }
+
+      // Character-level diff
+      var chars = _lcsDiff(oldText.split(''), newText.split(''));
+      // Merge consecutive same-type ops into runs
+      var runs = [];
+      for (var k = 0; k < chars.length; k++) {
+        var op = chars[k];
+        if (runs.length > 0 && runs[runs.length - 1].type === op.type) {
+          runs[runs.length - 1].text += op.text;
+        } else {
+          runs.push({ type: op.type, text: op.text });
+        }
+      }
+      return runs;
+    }
+
+    function _renderDiffSpans(runs) {
+      var html = '';
+      for (var i = 0; i < runs.length; i++) {
+        var r = runs[i];
+        var escaped = escapeHtml(r.text);
+        if (r.type === 'equal') {
+          html += '<span style="color:var(--text-secondary);">' + escaped + '</span>';
+        } else if (r.type === 'del') {
+          html += '<span style="color:var(--error);text-decoration:line-through;">' + escaped + '</span>';
+        } else {
+          html += '<span style="color:var(--success);font-weight:500;">' + escaped + '</span>';
+        }
+      }
+      return html;
+    }
+
+    function renderDiffPreview(runs) {
+      if (!runs || runs.length === 0) return '';
+      var delCount = 0, insCount = 0;
+      for (var i = 0; i < runs.length; i++) {
+        if (runs[i].type === 'del') delCount += runs[i].text.length;
+        if (runs[i].type === 'ins') insCount += runs[i].text.length;
+      }
       var html = '<div class="version-diff-container">';
-      html += '<div class="version-diff-header"><span>' + t('entities.changes') + '</span><span style="color:var(--success);">+' + diff.added.length + '</span>/<span style="color:var(--error);">-' + diff.removed.length + '</span></div>';
-      html += '<div class="version-diff-body">';
-      diff.removed.forEach(function(line) {
-        html += '<div class="version-diff-line removed">- ' + escapeHtml(line) + '</div>';
-      });
-      diff.added.forEach(function(line) {
-        html += '<div class="version-diff-line added">+ ' + escapeHtml(line) + '</div>';
-      });
+      html += '<div class="version-diff-header"><span>' + t('entities.changes') + '</span><span style="color:var(--success);">+' + insCount + '</span>/<span style="color:var(--error);">-' + delCount + '</span></div>';
+      html += '<div class="version-diff-body" style="white-space:pre-wrap;word-break:break-all;line-height:1.6;">';
+      html += _renderDiffSpans(runs);
       html += '</div></div>';
       return html;
     }
@@ -1352,11 +1385,11 @@ window.GraphExplorer = (function () {
       _hoverPanel.style.top = top + 'px';
     }
 
-    function escapeHtml(text) {
+    var escapeHtml = window.escapeHtml || function escapeHtml(text) {
       var div = document.createElement('div');
       div.appendChild(document.createTextNode(text));
       return div.innerHTML;
-    }
+    };
 
     function showEdgeHover(edgeId, params) {
       if (!_network) return;
@@ -1461,12 +1494,11 @@ window.GraphExplorer = (function () {
       var totalVersions = versions.length;
       var prefix = _opts.idPrefix || '';
 
-      // Compute diff against previous version
       var versionDiff = null;
       if (totalVersions > 1 && _currentVersionIdx > 0) {
-        versionDiff = computeContentDiff(
-          versions[_currentVersionIdx].content,
-          versions[_currentVersionIdx - 1].content
+        versionDiff = computeInlineDiff(
+          versions[_currentVersionIdx - 1].content,
+          versions[_currentVersionIdx].content
         );
       }
 
@@ -1899,13 +1931,7 @@ window.GraphExplorer = (function () {
 
         function simpleContentDiff(current, previous) {
           if (!previous) return null;
-          var curLines = (current.content || '').split('\n').filter(function(l) { return l.trim(); });
-          var prevLines = (previous.content || '').split('\n').filter(function(l) { return l.trim(); });
-          if (curLines.join('\n') === prevLines.join('\n')) return null;
-          var added = [], removed = [];
-          curLines.forEach(function(line) { if (prevLines.indexOf(line) === -1) added.push(line); });
-          prevLines.forEach(function(line) { if (curLines.indexOf(line) === -1) removed.push(line); });
-          return { added: added, removed: removed };
+          return computeInlineDiff(previous.content, current.content);
         }
 
         var items = sorted.map(function(v, i) {
@@ -1954,13 +1980,8 @@ window.GraphExplorer = (function () {
 
           // Inline diff
           if (diff) {
-            headerHtml += '<div style="margin-top:0.5rem;border-left:3px solid var(--primary);padding:0.375rem 0.5rem;background:var(--bg-input);border-radius:0 0.375rem 0.375rem 0;font-size:0.8125rem;">';
-            diff.removed.forEach(function(line) {
-              headerHtml += '<div style="color:var(--error);text-decoration:line-through;opacity:0.7;padding:1px 0;">- ' + escapeHtml(line) + '</div>';
-            });
-            diff.added.forEach(function(line) {
-              headerHtml += '<div style="color:var(--success);padding:1px 0;">+ ' + escapeHtml(line) + '</div>';
-            });
+            headerHtml += '<div style="margin-top:0.5rem;border-left:3px solid var(--primary);padding:0.375rem 0.5rem;background:var(--bg-input);border-radius:0 0.375rem 0.375rem 0;font-size:0.8125rem;white-space:pre-wrap;word-break:break-all;line-height:1.6;">';
+            headerHtml += _renderDiffSpans(diff);
             headerHtml += '</div>';
           }
 
@@ -2083,6 +2104,35 @@ window.GraphExplorer = (function () {
       }
     }
 
+    // ---- Internal helpers ----
+
+    function _recalcNodeSizes() {
+      var allUpdatedEdges = _edgesDataSet.get();
+      var liveCounts = {};
+      for (var i = 0; i < allUpdatedEdges.length; i++) {
+        var e = allUpdatedEdges[i];
+        liveCounts[e.from] = (liveCounts[e.from] || 0) + 1;
+        liveCounts[e.to] = (liveCounts[e.to] || 0) + 1;
+      }
+      var liveMax = 1;
+      var keys = Object.keys(liveCounts);
+      for (var k = 0; k < keys.length; k++) {
+        if (liveCounts[keys[k]] > liveMax) liveMax = liveCounts[keys[k]];
+      }
+      var allNodes = _nodesDataSet.get();
+      var sizeUpdates = [];
+      for (var n = 0; n < allNodes.length; n++) {
+        var node = allNodes[n];
+        var cnt = liveCounts[node.id] || 0;
+        var newSize = GraphUtils.computeNodeSize(cnt, liveMax);
+        if (Math.abs((node.size || 0) - newSize) > 0.5) {
+          sizeUpdates.push({ id: node.id, size: newSize });
+        }
+      }
+      if (sizeUpdates.length > 0) _nodesDataSet.update(sizeUpdates);
+      renderVersionBadges(_nodesDataSet);
+    }
+
     // ---- Public API ----
 
     return {
@@ -2090,6 +2140,11 @@ window.GraphExplorer = (function () {
       initEmptyGraph: initEmptyGraph,
       addNodesAndEdges: addNodesAndEdges,
       removeNodesAndEdges: removeNodesAndEdges,
+      setPhysics: function (enabled) {
+        if (_network) {
+          _network.setOptions({ physics: { enabled: !!enabled } });
+        }
+      },
       focusOnEntity: focusOnEntity,
       exitFocus: exitFocus,
       showEntityDetail: showEntityDetail,
@@ -2098,6 +2153,89 @@ window.GraphExplorer = (function () {
       openVersionsModal: openVersionsModal,
       openRelationsModal: openRelationsModal,
       setEntityCache: function (cache) { _opts.entityCache = cache; },
+      setStreamingMode: function (enabled) {
+        _streamingMode = !!enabled;
+        if (_network) {
+          if (enabled) {
+            // Streaming: short springs, stiff, fast clustering
+            _network.setOptions({
+              physics: {
+                enabled: true,
+                solver: 'forceAtlas2Based',
+                forceAtlas2Based: {
+                  gravitationalConstant: -50,
+                  centralGravity: 0.01,
+                  springLength: 50,
+                  springConstant: 0.15,
+                },
+                stabilization: { enabled: false },
+              }
+            });
+          } else {
+            // Restore normal physics (canonical values from getPhysicsOptions)
+            var _po = GraphUtils.getPhysicsOptions();
+            _po.stabilization = { enabled: false };
+            _network.setOptions({ physics: _po });
+          }
+        }
+      },
+      fitViewport: function () {
+        if (_network) { try { _network.fit({ animation: false }); } catch (_) {} }
+      },
+      recalcGraphState: function () {
+        if (!_network || !_nodesDataSet) return;
+        _recalcNodeSizes();
+        try { _network.fit({ animation: true }); } catch (_) {}
+      },
+      applyHubColors: function (hubLayout) {
+        // Recolor existing nodes + all edges based on hub layout
+        if (!_network || !_nodesDataSet || !hubLayout) return;
+        var light = isLightTheme();
+        var hubMap = hubLayout.hubMap;
+        var hubNeighborIds = hubLayout.hubNeighborIds;
+        var allNodes = _nodesDataSet.get();
+        var colorUpdates = [];
+        for (var i = 0; i < allNodes.length; i++) {
+          var node = allNodes[i];
+          var hubIdx = hubMap[node.id];
+          var isNeighbor = hubNeighborIds && hubNeighborIds.has(node.id);
+          var bgColor, borderColor;
+          if (hubIdx !== undefined) {
+            if (isNeighbor) {
+              var scheme = GraphUtils.HUB_NEIGHBOR_PALETTE[hubIdx];
+              bgColor = scheme.bg; borderColor = scheme.border;
+            } else {
+              var scheme = GraphUtils.HUB_PALETTE[hubIdx];
+              bgColor = scheme.bg; borderColor = scheme.border;
+            }
+          } else {
+            var dc = light ? GraphUtils.DEFAULT_LIGHT : GraphUtils.DEFAULT_DARK;
+            bgColor = dc.bg; borderColor = dc.border;
+          }
+          colorUpdates.push({
+            id: node.id,
+            color: {
+              background: bgColor,
+              border: borderColor,
+              highlight: { background: bgColor, border: borderColor },
+            }
+          });
+        }
+        if (colorUpdates.length > 0) _nodesDataSet.update(colorUpdates);
+
+        // Recolor edges
+        var allEdges = _edgesDataSet.get();
+        var edgeUpdates = [];
+        for (var ei = 0; ei < allEdges.length; ei++) {
+          var edge = allEdges[ei];
+          var h1 = hubMap[edge.from];
+          var h2 = hubMap[edge.to];
+          if (h1 !== undefined && h2 !== undefined && h1 === h2) {
+            edgeUpdates.push({ id: edge.id, color: GraphUtils.HUB_EDGE_PALETTE[h1] });
+          }
+        }
+        if (edgeUpdates.length > 0) _edgesDataSet.update(edgeUpdates);
+      },
       setMainViewCache: function (relations, entities, inheritedIds) {
         _mainViewRelations = relations || [];
         _mainViewEntities = entities || {};
@@ -2139,6 +2277,20 @@ window.GraphExplorer = (function () {
       getCurrentEdges: function () {
         if (!_network || !_network.body || !_network.body.data.edges) return [];
         return _network.body.data.edges.get();
+      },
+      getPinnedPositions: function () {
+        // Snapshot current positions from the network (more complete than just _pinnedNodePositions)
+        if (_network) {
+          var allIds = _nodesDataSet ? _nodesDataSet.getIds() : [];
+          if (allIds.length > 0) {
+            var positions = _network.getPositions(allIds);
+            return positions || {};
+          }
+        }
+        // Fallback to tracked pinned positions
+        var copy = {};
+        Object.keys(_pinnedNodePositions).forEach(function (k) { copy[k] = _pinnedNodePositions[k]; });
+        return copy;
       },
       destroy: function () {
         hideNodeHover();

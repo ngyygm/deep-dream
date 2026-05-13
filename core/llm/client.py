@@ -468,30 +468,6 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
                 total += self._estimate_text_token_count(content)
         return total + 16  # 请求包尾部保留固定开销
 
-    def _prepare_episode_for_prompt(self, episode: Optional[Episode]) -> str:
-        """将记忆缓存裁剪到 prompt 可接受长度，避免异常膨胀拖爆上下文。"""
-        content = ""
-        if episode is not None:
-            content = getattr(episode, "content", "") or ""
-        limit = self.prompt_episode_max_chars
-        if limit is None or limit <= 0 or len(content) <= limit:
-            return content
-
-        marker = "\n\n...[记忆缓存过长，已截断]...\n\n"
-        if limit <= len(marker) + 32:
-            trimmed = content[:limit]
-        else:
-            head = int((limit - len(marker)) * 0.7)
-            tail = max(0, limit - len(marker) - head)
-            trimmed = content[:head] + marker
-            if tail > 0:
-                trimmed += content[-tail:]
-        wprint_info(
-            f"[DeepDream] 记忆缓存过长：{len(content)} 字符，"
-            f"已截断为 {len(trimmed)} 字符后再注入抽取 prompt"
-        )
-        return trimmed
-
     def _can_continue_multi_round(
         self,
         messages: List[Dict[str, Any]],
@@ -617,6 +593,16 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
         if u or d:
             return u + d
         return self._max_llm_concurrency
+
+    def get_llm_semaphore_detail(self) -> dict:
+        u_active = self._llm_sem_upstream.active_count if self._llm_sem_upstream else 0
+        u_max = self._llm_upstream_slot_max or 0
+        d_active = self._llm_sem_downstream.active_count if self._llm_sem_downstream else 0
+        d_max = self._llm_downstream_slot_max or 0
+        return {
+            "upstream_active": u_active, "upstream_max": u_max,
+            "downstream_active": d_active, "downstream_max": d_max,
+        }
 
     def _save_distill_conversation(self, messages: List[Dict[str, str]]):
         """保存一次 LLM 对话到 JSONL 文件（OpenAI fine-tuning 格式）。"""
@@ -795,6 +781,13 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
                         json_format=json_mode,
                     )
                 response_text = resp.content or ""
+                _pe = getattr(resp, "prompt_eval_count", None)
+                _ev = getattr(resp, "eval_count", None)
+                if _pe is not None or _ev is not None:
+                    wprint_info(
+                        f"[llm_tokens] in={_pe or '?'} out={_ev or '?'} "
+                        f"({len(messages)} msgs, {len(response_text)} chars)"
+                    )
                 # 已成功完成一次上游 HTTP 调用：清零各类失败计数（UTF-8 轮次单独计）
                 _normal_failures = 0
                 _conn_failures = 0

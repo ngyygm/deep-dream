@@ -26,7 +26,7 @@ _EMPTY_FROZENSET = frozenset()
 # Shared pool for BM25 concept search (avoids per-call pool creation)
 _BM25_POOL: ThreadPoolExecutor | None = None
 _BM25_POOL_LOCK = threading.Lock()
-_BM25_POOL_MAX = 4
+_BM25_POOL_MAX = 1
 
 def _get_bm25_pool(max_workers: int) -> ThreadPoolExecutor:
     global _BM25_POOL, _BM25_POOL_MAX
@@ -50,7 +50,7 @@ def _get_supp_pool() -> ThreadPoolExecutor:
     global _SUPP_POOL
     with _SUPP_POOL_LOCK:
         if _SUPP_POOL is None:
-            _SUPP_POOL = ThreadPoolExecutor(max_workers=3, thread_name_prefix="cand-supp")
+            _SUPP_POOL = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cand-supp")
         return _SUPP_POOL
 
 
@@ -352,35 +352,6 @@ class EntityCandidateBuilder:
         except Exception as e:
             logger.debug("Neo4j vector search in alignment failed: %s", e)
         return results
-
-    # ------------------------------------------------------------------
-    # Internal: embedding matrix (DEPRECATED — kept for fallback)
-    # ------------------------------------------------------------------
-
-    def _build_stored_embedding_matrix(self, projections: List[Dict]) -> Optional[np.ndarray]:
-        """Build a normalized embedding matrix from stored projections.
-        Single-pass: convert + find min-dim, then truncate + stack."""
-        arrays: List[Optional[np.ndarray]] = []
-        dim = None
-        for p in projections:
-            ea = p.get("embedding_array")
-            if ea is not None:
-                arr = np.asarray(ea, dtype=np.float32).ravel()
-                arrays.append(arr)
-                if dim is None or arr.shape[0] < dim:
-                    dim = arr.shape[0]
-            else:
-                arrays.append(None)
-
-        if dim is None or dim == 0:
-            return None
-
-        rows = [arr[:dim] if arr is not None else np.zeros(dim, dtype=np.float32) for arr in arrays]
-
-        stored_emb_matrix = np.stack(rows)
-        norms = np.linalg.norm(stored_emb_matrix, axis=1, keepdims=True)
-        norms = np.where(norms == 0, 1.0, norms)
-        return stored_emb_matrix / norms
 
     def _compute_sim_matrix(self, query_embeddings, stored_emb_matrix, stored_dim, label):
         """Compute normalized cosine similarity matrix between query and stored embeddings."""

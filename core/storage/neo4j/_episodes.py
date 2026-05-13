@@ -2,7 +2,6 @@
 import hashlib
 import json
 import logging
-import os
 import shutil
 import time
 from datetime import datetime, timezone
@@ -11,8 +10,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from ...models import Episode, Entity, Relation
-from ._helpers import _fmt_dt, _parse_dt
+from ...models import Episode
+from ._helpers import _encode_and_normalize, _fmt_dt, _parse_dt
 from ...utils import clean_markdown_code_blocks
 
 logger = logging.getLogger(__name__)
@@ -33,25 +32,10 @@ class EpisodeStoreMixin:
     """
 
     def _compute_episode_embedding(self, content: str) -> Optional[bytes]:
-        """计算 episode 的 embedding 向量（L2 归一化后存储）。
-
-        文本格式: "# Episode\\n{content}"
-        """
-        if not self.embedding_client or not self.embedding_client.is_available():
-            return None
         if not content:
             return None
-        text = f"# Episode\n{content}"
-        embedding = self.embedding_client.encode(text)
-        if embedding is None or (isinstance(embedding, (list, tuple)) and len(embedding) == 0):
-            return None
-        if isinstance(embedding, np.ndarray) and embedding.size == 0:
-            return None
-        emb_array = np.array(embedding[0] if isinstance(embedding, list) else embedding, dtype=np.float32)
-        norm = np.linalg.norm(emb_array)
-        if norm > 0:
-            emb_array = emb_array / norm
-        return emb_array.tobytes()
+        result = _encode_and_normalize(self.embedding_client, f"# Episode\n{content}")
+        return result[0] if result else None
 
 
     def _get_cache_dir_by_doc_hash(self, doc_hash: str, document_path: str = "") -> Optional[Path]:
@@ -581,14 +565,9 @@ class EpisodeStoreMixin:
         return latest_metadata
 
 
-    def is_neo4j(self) -> bool:
-        """标识当前为 Neo4j 后端。"""
-        return True
-
     # ------------------------------------------------------------------
     # Episode 管理
     # ------------------------------------------------------------------
-
 
 
     def list_docs(self) -> List[Dict[str, Any]]:

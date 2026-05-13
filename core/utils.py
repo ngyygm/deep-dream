@@ -207,12 +207,6 @@ def clear_parallel_log_context() -> None:
     _window_local.pipeline_role = None
 
 
-def remember_log(msg: str) -> None:
-    """无窗号时的 Remember 级说明（入口、断点、提示）。"""
-    ts = datetime.now().strftime("%H:%M:%S")
-    line = f"{ts} {'Remember':>10} ---- | {msg}"
-    _emit_log_line(line)
-
 
 # ---------------------------------------------------------------------------
 # Logging adapter: routes wprint-style messages through Python logging

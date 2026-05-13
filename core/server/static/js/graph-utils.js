@@ -580,16 +580,16 @@ window.GraphUtils = (function () {
       enabled: true,
       solver: 'forceAtlas2Based',
       forceAtlas2Based: {
-        gravitationalConstant: -80,
-        centralGravity: 0.008,
-        springLength: 120,
+        gravitationalConstant: -150,
+        centralGravity: 0.005,
+        springLength: 160,
         springConstant: 0.04,
         damping: 0.6,
-        avoidOverlap: 0.4,
+        avoidOverlap: 0.8,
       },
       stabilization: {
         enabled: true,
-        iterations: 300,
+        iterations: 1500,
         updateInterval: 25,
       },
     };

@@ -674,52 +674,6 @@ class DreamMixin:
 
 
 
-    def reject_dream_cycle_relations(self, dream_cycle_id: str) -> Dict[str, Any]:
-        """批量拒绝指定 Dream 周期产生的所有未验证候选关系（单次 Cypher 批量更新）。"""
-        source_doc = _dream_source(dream_cycle_id)
-        reason = f"批量拒绝: dream cycle {dream_cycle_id}"
-        now_str = datetime.now().isoformat()
-
-        with self._session() as session:
-            # First fetch matching relations to update their attributes JSON in Python
-            result = self._run(session, """
-                MATCH (r:Relation {source_document: $src})
-                WHERE r.invalid_at IS NULL
-                  AND r.attributes CONTAINS '"tier":"candidate"'
-                  AND r.attributes CONTAINS '"status":"hypothesized"'
-                WITH r.family_id AS fid, COLLECT(r) AS rels
-                WITH fid, rels[0] AS latest
-                RETURN latest.uuid AS uuid, latest.family_id AS fid,
-                       latest.attributes AS attrs, latest.confidence AS conf
-            """, src=source_doc)
-            records = [dict(r) for r in result]
-
-        # Update each relation's attributes and confidence
-        rejected = 0
-        for rec in records:
-            try:
-                attrs = _json.loads(rec["attrs"]) if rec["attrs"] else {}
-            except (ValueError, TypeError):
-                attrs = {}
-            attrs["status"] = "rejected"
-            attrs["rejected_reason"] = reason
-            attrs["rejected_at"] = now_str
-            new_conf = min(rec.get("conf") or 0.5, 0.2)
-            with self._session() as session:
-                self._run(session, """
-                    MATCH (r:Relation {uuid: $uuid})
-                    SET r.attributes = $attrs, r.confidence = $conf
-                """, uuid=rec["uuid"], attrs=_json.dumps(attrs, ensure_ascii=False), conf=new_conf)
-            rejected += 1
-            rejected = result.single()["rejected"]
-
-        return {
-            "rejected_count": rejected,
-            "cycle_id": dream_cycle_id,
-        }
-
-
-
     def save_dream_episode(self, content: str,
                            entities_examined: Optional[List[str]] = None,
                            relations_created: Optional[List[Dict]] = None,

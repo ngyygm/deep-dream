@@ -11,6 +11,10 @@
   let cachedAllNodes = [];       // default view: all nodes (seed + related)
   let cachedAllEdges = [];       // default view: all edges
   let cachedAllEntities = {};    // absolute_id -> entity data (from full entity list)
+  let cachedPinnedPositions = null; // saved node positions for instant restore
+  let graphDataLoaded = false;   // whether SSE data has been fetched at least once
+  let graphLastModified = null;  // ISO timestamp from /graph/version — used for incremental updates
+  let versionPollTimer = null;   // setInterval handle for periodic /version polling
 
   // Advanced options panel state
   let advancedOptionsOpen = false;
@@ -96,7 +100,7 @@
               <div style="display:flex;gap:0.75rem;align-items:center;flex-wrap:wrap;">
                 <div style="display:flex;align-items:center;gap:4px;">
                   <label class="form-label" style="margin:0;font-size:0.75rem;">${t('graph.maxEntities')}</label>
-                  <input type="number" class="input" id="entity-limit" min="0" max="500" value="" placeholder="Auto" step="10" style="width:80px;font-size:0.75rem;padding:2px 6px;">
+                  <input type="number" class="input" id="entity-limit" min="0" max="5000" value="" placeholder="Auto" step="100" style="width:80px;font-size:0.75rem;padding:2px 6px;">
                 </div>
                 <div style="display:flex;align-items:center;gap:4px;">
                   <label class="form-label" style="margin:0;font-size:0.75rem;">${t('graph.hopLevel')}</label>
@@ -510,16 +514,149 @@
       clearSnapshotBtn.addEventListener('click', () => clearSnapshot());
     }
 
-    if (isFirstRender) {
+    stopVersionPoll();
+    window.__graphRenderDebug = { isFirstRender, graphDataLoaded, cachedNodes: cachedAllNodes.length, graphLastModified };
+    if (isFirstRender || !graphDataLoaded) {
       isFirstRender = false;
       await loadGraph();
     } else if (cachedAllNodes.length > 0) {
-      const hubLayout = computeHubLayout(cachedAllEdges);
-      explorer.buildGraph(cachedAllNodes, cachedAllEdges, null, null, cachedInheritedRelationIds, undefined, hubLayout);
-      const exitBtn = document.getElementById('exit-focus-btn');
-      if (exitBtn) exitBtn.style.display = focusAbsoluteId ? '' : 'none';
-      const focusBadge = document.getElementById('focus-mode-badge');
-      if (focusBadge) focusBadge.style.display = focusAbsoluteId ? '' : 'none';
+      // Has data — check if server has newer data before restoring cache
+      const needsIncremental = await checkGraphVersion();
+      window.__graphRenderDebug.needsIncremental = needsIncremental;
+      if (needsIncremental === false) {
+        restoreCachedGraph();
+      } else {
+        await loadGraphIncremental();
+      }
+    }
+    startVersionPoll();
+  }
+
+  // ---- Version-aware graph loading ----
+
+  function restoreCachedGraph() {
+    const hubLayout = computeHubLayout(cachedAllEdges);
+    explorer.buildGraph(cachedAllNodes, cachedAllEdges, null, null, cachedInheritedRelationIds, undefined, hubLayout, cachedPinnedPositions);
+    const statsEl = document.getElementById('graph-stats');
+    if (statsEl) statsEl.textContent = t('graph.loaded', { entities: cachedAllNodes.length, relations: cachedAllEdges.length });
+    const exitBtn = document.getElementById('exit-focus-btn');
+    if (exitBtn) exitBtn.style.display = focusAbsoluteId ? '' : 'none';
+    const focusBadge = document.getElementById('focus-mode-badge');
+    if (focusBadge) focusBadge.style.display = focusAbsoluteId ? '' : 'none';
+  }
+
+  /** Check /graph/version against cached last_modified.
+   *  Returns true if server has newer data, false if unchanged, null on error. */
+  async function checkGraphVersion() {
+    if (!graphLastModified) { window.__graphRenderDebug.checkResult = 'no-lastmod'; return true; } // never fetched version before
+    try {
+      const res = await fetch('/api/v1/find/graph/version?graph_id=' + encodeURIComponent(state.currentGraphId));
+      if (!res.ok) return null;
+      const data = (await res.json()).data;
+      if (!data || !data.last_modified) return true;
+      return data.last_modified !== graphLastModified;
+    } catch (_) {
+      return null; // network error — fall through to cache restore
+    }
+  }
+
+  /** Incremental update: fetch only entities/relations since graphLastModified, merge into cache. */
+  async function loadGraphIncremental() {
+    const since = graphLastModified;
+    const streamBase = '/api/v1/find/graph/stream/';
+    const streamParams = '?graph_id=' + encodeURIComponent(state.currentGraphId) + '&since=' + encodeURIComponent(since);
+    const statsEl = document.getElementById('graph-stats');
+    const loadingEl = document.getElementById('graph-loading');
+
+    if (loadingEl) loadingEl.style.display = 'flex';
+    if (statsEl) statsEl.textContent = t('common.loading');
+
+    var newEntities = [];
+    var newRelations = [];
+
+    var entPromise = consumeSSE(streamBase + 'entities' + streamParams, {
+      entity: function (d) { if (d) newEntities.push(d); },
+      error: function () {}
+    }).catch(function () {});
+
+    var relPromise = consumeSSE(streamBase + 'relations' + streamParams, {
+      relation: function (d) { if (d) newRelations.push(d); },
+      error: function () {}
+    }).catch(function () {});
+
+    await Promise.all([entPromise, relPromise]);
+
+    if (newEntities.length === 0 && newRelations.length === 0) {
+      // No actual changes — just restore cache
+      if (loadingEl) loadingEl.style.display = 'none';
+      restoreCachedGraph();
+      return;
+    }
+
+    // Merge new entities into cache (add or update by absolute_id)
+    for (var i = 0; i < newEntities.length; i++) {
+      var e = newEntities[i];
+      cachedAllEntities[e.absolute_id] = e;
+    }
+    var knownIds = new Set(Object.keys(cachedAllEntities));
+
+    // Rebuild full node list from entity cache
+    cachedAllNodes = Object.values(cachedAllEntities);
+
+    // Merge new valid relations
+    var validNewRels = newRelations.filter(function (r) {
+      return knownIds.has(r.entity1_absolute_id) && knownIds.has(r.entity2_absolute_id);
+    });
+    if (!cachedAllRawRelations) cachedAllRawRelations = [];
+
+    // Update raw relations and full edge list
+    var existingRelIds = new Set((cachedAllRawRelations || []).map(function (r) { return r.absolute_id; }));
+    for (var j = 0; j < validNewRels.length; j++) {
+      if (!existingRelIds.has(validNewRels[j].absolute_id)) {
+        cachedAllRawRelations.push(validNewRels[j]);
+      }
+    }
+    cachedAllEdges = (cachedAllRawRelations || []).filter(function (r) {
+      return knownIds.has(r.entity1_absolute_id) && knownIds.has(r.entity2_absolute_id);
+    });
+
+    // Rebuild graph with updated data
+    var hubLayout = computeHubLayout(cachedAllEdges);
+    explorer.buildGraph(cachedAllNodes, cachedAllEdges, null, null, cachedInheritedRelationIds, undefined, hubLayout);
+    explorer.setEntityCache(cachedAllEntities);
+    explorer.setMainViewCache(cachedAllEdges, cachedAllNodes, cachedInheritedRelationIds || new Set());
+
+    graphDataLoaded = true;
+
+    if (loadingEl) loadingEl.style.display = 'none';
+    if (statsEl) {
+      statsEl.textContent = t('graph.loaded', { entities: cachedAllNodes.length, relations: cachedAllEdges.length });
+    }
+
+    // Update last_modified from version endpoint
+    try {
+      const vr = await fetch('/api/v1/find/graph/version?graph_id=' + encodeURIComponent(state.currentGraphId));
+      if (vr.ok) {
+        const vd = (await vr.json()).data;
+        if (vd && vd.last_modified) graphLastModified = vd.last_modified;
+      }
+    } catch (_) {}
+  }
+
+  function startVersionPoll() {
+    stopVersionPoll();
+    versionPollTimer = setInterval(async function () {
+      const changed = await checkGraphVersion();
+      if (changed === true && graphDataLoaded) {
+        await loadGraphIncremental();
+      }
+    }, 30000);
+  }
+
+  function stopVersionPoll() {
+    if (versionPollTimer) {
+      clearInterval(versionPollTimer);
+      versionPollTimer = null;
     }
   }
 
@@ -665,20 +802,15 @@
     const allKnownEntities = Object.values(cachedAllEntities);
     const hopLevel = currentHopLevel;
 
-    // Dynamic seed limit (same logic as loadGraph)
+    // Dynamic seed limit: show all by default
     var entityLimit = parseInt(document.getElementById('entity-limit').value, 10);
     if (!entityLimit || entityLimit <= 0) {
-      if (allKnownEntities.length <= 200) {
-        entityLimit = Math.min(allKnownEntities.length, 200);
-      } else if (allKnownEntities.length <= 1000) {
-        entityLimit = 200;
-      } else {
-        entityLimit = 300;
-      }
+      entityLimit = allKnownEntities.length;
     }
     const seedEntities = allKnownEntities.slice(0, entityLimit);
     const seedAbsIds = new Set(seedEntities.map(e => e.absolute_id));
 
+    // Use remapped relations if available (background task completed), otherwise raw
     const allRels = cachedRemappedMainRelations || cachedAllRawRelations;
     const visibleAbsIds = expandNHops(seedAbsIds, allRels, hopLevel);
 
@@ -702,6 +834,84 @@
     }
   }
 
+  // Shared: background remap of inherited relations (called from loadGraph and finishGrowAnimation)
+  function remapInheritedRelations(statsEl) {
+    if (!cachedAllRawRelations || cachedAllRawRelations.length <= cachedAllEdges.length) return;
+    setTimeout(async function () {
+      try {
+        var allEntities = Object.values(cachedAllEntities);
+        var remapResult = await resolveAndRemapRelations(allEntities, cachedAllRawRelations, state.currentGraphId);
+        cachedInheritedRelationIds = remapResult.inheritedRelationIds;
+        cachedRemappedMainRelations = remapResult.relations;
+
+        var existingRelIds = new Set(cachedAllEdges.map(function (r) { return r.absolute_id; }));
+        var knownIds = new Set(Object.keys(cachedAllEntities));
+        var inheritedRels = remapResult.relations.filter(function (r) {
+          return !existingRelIds.has(r.absolute_id) &&
+            knownIds.has(r.entity1_absolute_id) && knownIds.has(r.entity2_absolute_id);
+        });
+
+        if (inheritedRels.length > 0) {
+          explorer.addNodesAndEdges([], inheritedRels, null);
+          cachedAllEdges = cachedAllEdges.concat(inheritedRels);
+          explorer.setMainViewCache(cachedAllEdges, cachedAllNodes, remapResult.inheritedRelationIds);
+          if (statsEl) {
+            statsEl.textContent = t('graph.loaded', { entities: cachedAllNodes.length, relations: cachedAllEdges.length });
+          }
+        }
+      } catch (err) {
+        console.warn('Background remap failed:', err);
+      }
+    }, 200);
+  }
+
+  // ---- SSE consumer (generic, reusable) ----
+  function consumeSSE(url, handlers) {
+    return fetch(url).then(function (res) {
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      var reader = res.body.getReader();
+      var decoder = new TextDecoder();
+      var buffer = '';
+      var curEvent = '';
+      var curData = '';
+
+      function pump() {
+        return reader.read().then(function (result) {
+          if (result.done) {
+            if (buffer.trim()) parseChunk(buffer + '\n');
+            if (handlers.done_event) handlers.done_event();
+            return;
+          }
+          buffer += decoder.decode(result.value, { stream: true });
+          var lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+          parseChunk(lines.join('\n') + '\n');
+          return pump();
+        });
+      }
+
+      function parseChunk(text) {
+        var lines = text.split('\n');
+        for (var i = 0; i < lines.length; i++) {
+          var line = lines[i];
+          if (line.startsWith('event: ')) {
+            curEvent = line.slice(7).trim();
+          } else if (line.startsWith('data: ')) {
+            curData = line.slice(6);
+          } else if (line === '' && curEvent && curData) {
+            var parsed = null;
+            try { parsed = JSON.parse(curData); } catch (_) {}
+            if (handlers[curEvent]) handlers[curEvent](parsed);
+            curEvent = '';
+            curData = '';
+          }
+        }
+      }
+
+      return pump();
+    });
+  }
+
   // ---- Fetch entities, their relations, and build the graph ----
 
   async function loadGraph() {
@@ -712,117 +922,135 @@
     const loadingEl = document.getElementById('graph-loading');
     const statsEl = document.getElementById('graph-stats');
 
+    // Reset state
+    cachedAllNodes = [];
+    cachedAllEdges = [];
+    cachedAllEntities = {};
+    cachedAllRawRelations = null;
+    cachedRemappedMainRelations = null;
+    cachedInheritedRelationIds = null;
+
     if (loadingEl) loadingEl.style.display = 'flex';
     if (statsEl) statsEl.textContent = t('common.loading');
 
-    try {
-      const [entityRes, relationRes] = await Promise.all([
-        state.api.listEntities(graphId, 5000),
-        state.api.listRelations(graphId, 2000),
-      ]);
+    var totalEntities = 0;
+    var totalRelations = 0;
 
-      const allKnownEntities = entityRes.data?.entities || entityRes.data || [];
-      const allRelations = relationRes.data?.relations || relationRes.data || [];
+    var streamBase = '/api/v1/find/graph/stream/';
+    var streamParams = '?graph_id=' + encodeURIComponent(graphId);
 
-      if (allKnownEntities.length === 0) {
-        if (statsEl) statsEl.textContent = t('graph.noEntities');
-        if (loadingEl) loadingEl.style.display = 'none';
-        return;
-      }
+    // Phase 1: Collect all data via SSE (zero vis-network operations)
+    var entityFailed = false;
+    var relFailed = false;
 
-      cachedAllRawRelations = allRelations;
-
-      // Prioritize connected entities as seeds (entities appearing in relations)
-      const relationAbsIds = new Set();
-      for (const r of allRelations) {
-        relationAbsIds.add(r.entity1_absolute_id);
-        relationAbsIds.add(r.entity2_absolute_id);
-      }
-      const connectedEntities = allKnownEntities.filter(e => relationAbsIds.has(e.absolute_id));
-      const isolatedEntities = allKnownEntities.filter(e => !relationAbsIds.has(e.absolute_id));
-
-      // Dynamic seed limit: auto-scale based on graph size
-      // Small graphs (<200 entities): show all connected + some isolated
-      // Medium graphs (200-1000): show up to 200 connected
-      // Large graphs (>1000): show up to 300 connected
-      var entityLimit = parseInt(document.getElementById('entity-limit').value, 10);
-      if (!entityLimit || entityLimit <= 0) {
-        if (connectedEntities.length <= 200) {
-          entityLimit = Math.min(allKnownEntities.length, 200);
-        } else if (connectedEntities.length <= 1000) {
-          entityLimit = 200;
-        } else {
-          entityLimit = 300;
+    var entityPromise = consumeSSE(streamBase + 'entities' + streamParams, {
+      meta: function (d) { if (d) totalEntities = d.total || 0; },
+      entity: function (d) {
+        if (!d) return;
+        cachedAllEntities[d.absolute_id] = d;
+        cachedAllNodes.push(d);
+        if (statsEl && totalEntities > 0) {
+          statsEl.textContent = cachedAllNodes.length + ' / ' + totalEntities + 'E \xB7 ' + Math.round(cachedAllNodes.length / totalEntities * 100) + '%';
         }
+      },
+      error: function (d) {
+        console.error('Entity stream error:', (d || {}).message);
+        entityFailed = true;
+        showToast(t('graph.loadFailed') + ': ' + ((d || {}).message || 'entity stream'), 'error');
       }
-      const seedEntities = [...connectedEntities, ...isolatedEntities].slice(0, entityLimit);
+    }).catch(function (err) {
+      console.error('Entity stream failed:', err);
+      entityFailed = true;
+    });
 
-      const entityByAbs = {};
-      for (const e of allKnownEntities) {
-        entityByAbs[e.absolute_id] = e;
+    var relPromise = consumeSSE(streamBase + 'relations' + streamParams, {
+      meta: function (d) { if (d) totalRelations = d.total || 0; },
+      relation: function (d) {
+        if (!d) return;
+        if (!cachedAllRawRelations) cachedAllRawRelations = [];
+        cachedAllRawRelations.push(d);
+        if (statsEl && totalRelations > 0) {
+          statsEl.textContent = cachedAllNodes.length + 'E \xB7 ' + cachedAllRawRelations.length + ' / ' + totalRelations + 'R';
+        }
+      },
+      error: function (d) {
+        console.error('Relation stream error:', (d || {}).message);
+        relFailed = true;
+        showToast(t('graph.loadFailed') + ': ' + ((d || {}).message || 'relation stream'), 'error');
       }
-      cachedAllEntities = entityByAbs;
-      if (explorer) explorer.setEntityCache(cachedAllEntities);
+    }).catch(function (err) {
+      console.error('Relation stream failed:', err);
+      relFailed = true;
+    });
 
-      const { relations: remappedRelations, inheritedRelationIds } = await resolveAndRemapRelations(
-        allKnownEntities, allRelations, graphId
-      );
-      cachedInheritedRelationIds = inheritedRelationIds;
-      cachedRemappedMainRelations = remappedRelations;
+    // Wait for both streams to complete
+    await Promise.all([entityPromise, relPromise]);
 
-      const seedAbsIds = new Set(seedEntities.map(e => e.absolute_id));
-
-      const visibleAbsIds = expandNHops(seedAbsIds, remappedRelations, hopLevel);
-
-      const visibleRelations = remappedRelations.filter(r =>
-        visibleAbsIds.has(r.entity1_absolute_id) && visibleAbsIds.has(r.entity2_absolute_id)
-      );
-
-      // Remove isolated entities: keep only entities that have at least one visible relation
-      const connectedAbsIds = new Set();
-      for (const r of visibleRelations) {
-        connectedAbsIds.add(r.entity1_absolute_id);
-        connectedAbsIds.add(r.entity2_absolute_id);
-      }
-
-      const allVisible = [...connectedAbsIds]
-        .map(aid => entityByAbs[aid])
-        .filter(Boolean);
-
-      const allEntityIds = [...new Set(allVisible.map(e => e.family_id))];
-      try {
-        const vcRes = await state.api.entityVersionCounts(allEntityIds, graphId);
-        const vc = vcRes.data || {};
-        if (explorer) explorer.setVersionCounts(vc);
-      } catch (_) {}
-
-      cachedAllNodes = allVisible;
-      cachedAllEdges = visibleRelations;
-
-      const hubLayout = computeHubLayout(visibleRelations);
-      explorer.buildGraph(allVisible, visibleRelations, null, null, cachedInheritedRelationIds, undefined, hubLayout);
-      explorer.setMainViewCache(visibleRelations, allVisible, cachedInheritedRelationIds);
-
-      focusAbsoluteId = null;
-      const exitBtn = document.getElementById('exit-focus-btn');
-      if (exitBtn) exitBtn.style.display = 'none';
-      const focusBadge = document.getElementById('focus-mode-badge');
-      if (focusBadge) focusBadge.style.display = 'none';
-
-      if (statsEl) {
-        statsEl.textContent = t('graph.loaded', { entities: allVisible.length, relations: visibleRelations.length });
-      }
-      showToast(t('graph.loaded', { entities: allVisible.length, relations: visibleRelations.length }), 'success');
-
-      // Initialize timeline after graph loads
-      initTimeline();
-    } catch (err) {
-      console.error('Failed to load graph:', err);
-      showToast(t('graph.loadFailed') + ': ' + err.message, 'error');
-      if (statsEl) statsEl.textContent = t('common.error');
-    } finally {
+    if (entityFailed && relFailed) {
       if (loadingEl) loadingEl.style.display = 'none';
+      if (statsEl) statsEl.textContent = t('graph.loadFailed');
+      return;
     }
+
+    // Phase 2: Build valid edges
+    if (cachedAllNodes.length === 0) {
+      if (loadingEl) loadingEl.style.display = 'none';
+      if (statsEl) statsEl.textContent = t('graph.loaded', { entities: 0, relations: 0 });
+      return;
+    }
+
+    // Filter relations where both endpoints exist
+    var knownIds = new Set(Object.keys(cachedAllEntities));
+    var _droppedRels = [];
+    cachedAllEdges = (cachedAllRawRelations || []).filter(function (r) {
+      var ok = knownIds.has(r.entity1_absolute_id) && knownIds.has(r.entity2_absolute_id);
+      if (!ok) _droppedRels.push(r);
+      return ok;
+    });
+    if (_droppedRels.length > 0) {
+      console.warn('[graph] Dropped ' + _droppedRels.length + '/' + (cachedAllRawRelations || []).length +
+        ' relations with unknown endpoints. Sample:', _droppedRels.slice(0, 3).map(function (r) {
+          return { abs: r.absolute_id, e1: r.entity1_absolute_id, e2: r.entity2_absolute_id,
+                   e1_known: knownIds.has(r.entity1_absolute_id), e2_known: knownIds.has(r.entity2_absolute_id) };
+        }));
+    }
+
+    // Set version counts from SSE data
+    applyVersionCounts();
+
+    // One-shot graph rendering
+    var hubLayout = computeHubLayout(cachedAllEdges);
+    explorer.buildGraph(cachedAllNodes, cachedAllEdges, null, null, null, null, hubLayout);
+    explorer.setEntityCache(cachedAllEntities);
+
+    graphDataLoaded = true;
+    // Fetch version timestamp for future incremental updates
+    try {
+      const vr = await fetch('/api/v1/find/graph/version?graph_id=' + encodeURIComponent(state.currentGraphId));
+      if (vr.ok) {
+        const vd = (await vr.json()).data;
+        if (vd && vd.last_modified) graphLastModified = vd.last_modified;
+      }
+    } catch (_) {}
+    computeTimeRange();
+
+    explorer.setMainViewCache(cachedAllEdges, cachedAllNodes, cachedInheritedRelationIds || new Set());
+
+    tlIsLive = true;
+    tlCurrentPos = 1.0;
+    resetFocusUI();
+
+    initTimeline();
+    renderTimeline(document.getElementById('timeline-container'));
+
+    if (loadingEl) loadingEl.style.display = 'none';
+    if (statsEl) {
+      statsEl.textContent = t('graph.loaded', { entities: cachedAllNodes.length, relations: cachedAllEdges.length });
+    }
+
+    stopPhysicsAfter(8000);
+
+    remapInheritedRelations(statsEl);
   }
 
   // ---- Load community map from API ----
@@ -964,10 +1192,10 @@
     // Play time warp transition animation
     playSnapshotTransition();
 
-    const snapshotEntityIds = [...new Set(filteredEntities.map(e => e.family_id))];
     var vc = {};
-    for (const eid of snapshotEntityIds) {
-      vc[eid] = filteredEntities.filter(e => e.family_id === eid).length;
+    for (var vi = 0; vi < filteredEntities.length; vi++) {
+      var fid = filteredEntities[vi].family_id;
+      vc[fid] = (vc[fid] || 0) + 1;
     }
     if (explorer) explorer.setVersionCounts(vc);
 
@@ -1020,26 +1248,18 @@
   // ---- Cleanup on page leave ----
 
   function destroy() {
+    stopGrowAnimation();
+    stopVersionPoll();
     if (explorer) {
+      cachedPinnedPositions = explorer.getPinnedPositions();
       explorer.destroy();
       explorer = null;
     }
     stopTimelinePlayback();
-    // Remove keyboard handler
     if (_graphKeyHandler) {
       document.removeEventListener('keydown', _graphKeyHandler);
     }
-    focusAbsoluteId = null;
-    cachedAllNodes = [];
-    cachedAllEdges = [];
-    cachedAllEntities = {};
-    cachedInheritedRelationIds = null;
-    cachedAllRawRelations = null;
-    cachedRemappedMainRelations = null;
-    relationStrengthEnabled = false;
-    snapshotMode = false;
-    snapshotTime = null;
-    isFirstRender = true;
+    isFirstRender = false;
   }
 
   // ==================================================================
@@ -1082,15 +1302,52 @@
   let tlPlaybackSpeed = 1;  // seconds between steps
   let tlPlaybackMode = 'grow';  // 'grow' = entity-by-entity animation, 'snapshot' = episode snapshots
 
+  // Shared helpers used by both loadGraph and finishGrowAnimation
+
+  function applyVersionCounts() {
+    var vc = {};
+    for (var fi = 0; fi < cachedAllNodes.length; fi++) {
+      var ne = cachedAllNodes[fi];
+      if (ne.family_id && ne.version_count) vc[ne.family_id] = ne.version_count;
+    }
+    if (explorer && Object.keys(vc).length > 0) explorer.setVersionCounts(vc);
+  }
+
+  function computeTimeRange() {
+    var times = cachedAllNodes
+      .map(function (e) { return e.processed_time ? new Date(e.processed_time).getTime() : 0; })
+      .filter(function (t) { return t > 0; });
+    if (times.length > 0) {
+      tlMinTime = Math.min.apply(null, times);
+      tlMaxTime = Math.max.apply(null, times);
+    }
+    if (tlMinTime === tlMaxTime) tlMinTime = tlMaxTime - 86400000;
+  }
+
+  function resetFocusUI() {
+    focusAbsoluteId = null;
+    var exitBtn = document.getElementById('exit-focus-btn');
+    if (exitBtn) exitBtn.style.display = 'none';
+    var focusBadge = document.getElementById('focus-mode-badge');
+    if (focusBadge) focusBadge.style.display = 'none';
+  }
+
+  function stopPhysicsAfter(ms) {
+    setTimeout(function () {
+      if (explorer) explorer.setPhysics(false);
+    }, ms);
+  }
+
   // Grow-mode state
-  let growSortedNodes = [];   // nodes sorted by processed_time
-  let growSortedEdges = [];   // edges sorted by processed_time
+  let growEpisodeGroups = []; // entities+relations grouped by episode_id, sorted by time
   let growAnimTimer = null;   // animation interval
-  let growIndex = 0;          // current index in grow animation
-  let growEdgeIndex = 0;      // current edge frontier index (for time-ordered edge addition)
+  let growIndex = 0;          // current episode group index
   let growActive = false;
   let growVisibleNodes = [];  // accumulated visible nodes during animation
   let growVisibleEdges = [];  // accumulated visible edges during animation
+  let growVisibleNodeIds = new Set(); // incremental Set for O(1) lookup
+  let growVisibleEdgeIds = new Set(); // incremental Set for O(1) dedup
+  let growCachedHubLayout = null; // cached hub layout (compute once, not per frame)
 
   // Timeline drag animation state
   let tlDragSortedNodes = [];   // nodes sorted by processed_time (for drag filtering)
@@ -1710,41 +1967,75 @@
   function startGrowAnimation() {
     if (cachedAllNodes.length === 0) return;
 
-    // Sort nodes by processed_time
-    growSortedNodes = cachedAllNodes.slice().sort(function (a, b) {
-      var ta = a.processed_time ? new Date(a.processed_time).getTime() : 0;
-      var tb = b.processed_time ? new Date(b.processed_time).getTime() : 0;
-      return ta - tb;
-    });
+    // Group entities by episode_id
+    var epEntMap = {};
+    var noEpNodes = [];
+    for (var i = 0; i < cachedAllNodes.length; i++) {
+      var node = cachedAllNodes[i];
+      if (node.episode_id) {
+        if (!epEntMap[node.episode_id]) epEntMap[node.episode_id] = [];
+        epEntMap[node.episode_id].push(node);
+      } else {
+        noEpNodes.push(node);
+      }
+    }
 
-    // Sort edges by the later of their two endpoint times
-    growSortedEdges = cachedAllEdges.slice().sort(function (a, b) {
-      var ta1 = (cachedAllEntities[a.entity1_absolute_id] || {}).processed_time;
-      var ta2 = (cachedAllEntities[a.entity2_absolute_id] || {}).processed_time;
-      var tb1 = (cachedAllEntities[b.entity1_absolute_id] || {}).processed_time;
-      var tb2 = (cachedAllEntities[b.entity2_absolute_id] || {}).processed_time;
-      var taMax = Math.max(ta1 ? new Date(ta1).getTime() : 0, ta2 ? new Date(ta2).getTime() : 0);
-      var tbMax = Math.max(tb1 ? new Date(tb1).getTime() : 0, tb2 ? new Date(tb2).getTime() : 0);
-      return taMax - tbMax;
+    // Group relations by episode_id
+    var epRelMap = {};
+    var noEpRels = [];
+    for (var ri = 0; ri < cachedAllEdges.length; ri++) {
+      var rel = cachedAllEdges[ri];
+      if (rel.episode_id) {
+        if (!epRelMap[rel.episode_id]) epRelMap[rel.episode_id] = [];
+        epRelMap[rel.episode_id].push(rel);
+      } else {
+        noEpRels.push(rel);
+      }
+    }
+
+    // Build episode groups: entities + relations together
+    var allEpIds = new Set([].concat(Object.keys(epEntMap), Object.keys(epRelMap)));
+    var groups = [];
+    allEpIds.forEach(function (epId) {
+      var ents = epEntMap[epId] || [];
+      var rels = epRelMap[epId] || [];
+      var minTime = Infinity;
+      var maxTime = 0;
+      for (var k = 0; k < ents.length; k++) {
+        var t = ents[k].processed_time ? new Date(ents[k].processed_time).getTime() : 0;
+        if (t > 0 && t < minTime) minTime = t;
+        if (t > maxTime) maxTime = t;
+      }
+      if (minTime === Infinity) minTime = 0;
+      groups.push({ episode_id: epId, entities: ents, relations: rels, minTime: minTime, maxTime: maxTime });
     });
+    groups.sort(function (a, b) { return a.minTime - b.minTime; });
+
+    // No-episode data goes first
+    if (noEpNodes.length > 0 || noEpRels.length > 0) {
+      var noEpMax = 0;
+      for (var ni = 0; ni < noEpNodes.length; ni++) {
+        var nt = noEpNodes[ni].processed_time ? new Date(noEpNodes[ni].processed_time).getTime() : 0;
+        if (nt > noEpMax) noEpMax = nt;
+      }
+      groups.unshift({ episode_id: null, entities: noEpNodes, relations: noEpRels, minTime: 0, maxTime: noEpMax });
+    }
+
+    growEpisodeGroups = groups;
 
     growIndex = 0;
-    growEdgeIndex = 0;
     growActive = true;
     growVisibleNodes = [];
     growVisibleEdges = [];
+    growVisibleNodeIds = new Set();
+    growVisibleEdgeIds = new Set();
     tlIsLive = false;
 
-    // Precompute hub layout from ALL edges (stable throughout animation)
-    var hubLayout = computeHubLayout(cachedAllEdges);
+    growCachedHubLayout = computeHubLayout(cachedAllEdges);
+    explorer.initEmptyGraph(growCachedHubLayout);
 
-    // Start with empty graph using persistent DataSets
-    explorer.initEmptyGraph(hubLayout);
-
-    // Play snapshot transition effect
     playSnapshotTransition();
 
-    // Start animation interval — target ~15-40 seconds total regardless of speed
     var interval = Math.max(tlPlaybackSpeed * 100, 50);
     growAnimTimer = setInterval(growStep, interval);
 
@@ -1757,71 +2048,40 @@
       return;
     }
 
-    // Target ~200 total frames for a smooth animation regardless of graph size
-    var totalSteps = 200;
-    var nodeBatchSize = Math.max(1, Math.ceil(growSortedNodes.length / totalSteps));
-    var addedNodes = [];
-    var currentNodeTime = 0;
-
-    for (var i = 0; i < nodeBatchSize && growIndex < growSortedNodes.length; i++) {
-      var node = growSortedNodes[growIndex];
-      addedNodes.push(node);
-      currentNodeTime = node.processed_time ? new Date(node.processed_time).getTime() : 0;
-      growIndex++;
-    }
-
-    if (addedNodes.length === 0) {
-      // All nodes added — continue to add remaining edges
-      growAddRemainingEdges();
+    if (growIndex >= growEpisodeGroups.length) {
+      finishGrowAnimation();
       return;
     }
 
-    // Accumulate nodes
-    growVisibleNodes = growVisibleNodes.concat(addedNodes);
-    var visibleAbsIds = new Set(growVisibleNodes.map(function (n) { return n.absolute_id; }));
+    // One episode group per tick
+    var group = growEpisodeGroups[growIndex];
+    growIndex++;
 
-    // Advance the edge frontier in time order — edges appear when their time <= current node time
-    var newlyConnectable = [];
-    var currentEdgeIds = new Set(growVisibleEdges.map(function (e) { return e.absolute_id; }));
+    var addedNodes = group.entities;
+    var currentNodeTime = group.maxTime;
 
-    // Move edge frontier forward: advance growEdgeIndex up to currentNodeTime
-    while (growEdgeIndex < growSortedEdges.length) {
-      var edge = growSortedEdges[growEdgeIndex];
-      var eTime1 = (cachedAllEntities[edge.entity1_absolute_id] || {}).processed_time;
-      var eTime2 = (cachedAllEntities[edge.entity2_absolute_id] || {}).processed_time;
-      var edgeTime = Math.max(
-        eTime1 ? new Date(eTime1).getTime() : 0,
-        eTime2 ? new Date(eTime2).getTime() : 0
-      );
-      if (edgeTime > currentNodeTime) break;
-      // Edge is within current time window — add if both endpoints visible
-      if (visibleAbsIds.has(edge.entity1_absolute_id) && visibleAbsIds.has(edge.entity2_absolute_id)
-          && !currentEdgeIds.has(edge.absolute_id)) {
-        newlyConnectable.push(edge);
-        currentEdgeIds.add(edge.absolute_id);
-      }
-      growEdgeIndex++;
+    // Add new entity IDs to the incremental Set
+    for (var ai = 0; ai < addedNodes.length; ai++) {
+      growVisibleNodeIds.add(addedNodes[ai].absolute_id);
     }
 
-    // Also check previously-seen edges that might now be connectable (one endpoint was added this frame)
-    var addedAbsIds = new Set(addedNodes.map(function (n) { return n.absolute_id; }));
-    for (var ei = 0; ei < growEdgeIndex; ei++) {
-      var edge2 = growSortedEdges[ei];
-      // Skip if already in growVisibleEdges or already found
-      if (currentEdgeIds.has(edge2.absolute_id)) continue;
-      // Only consider edges where at least one endpoint was just added
-      if (!addedAbsIds.has(edge2.entity1_absolute_id) && !addedAbsIds.has(edge2.entity2_absolute_id)) continue;
-      if (visibleAbsIds.has(edge2.entity1_absolute_id) && visibleAbsIds.has(edge2.entity2_absolute_id)) {
-        newlyConnectable.push(edge2);
-        currentEdgeIds.add(edge2.absolute_id);
+    // Filter this episode's relations: both endpoints must be visible
+    var validRels = [];
+    for (var ri = 0; ri < group.relations.length; ri++) {
+      var r = group.relations[ri];
+      if (growVisibleNodeIds.has(r.entity1_absolute_id) && growVisibleNodeIds.has(r.entity2_absolute_id)
+          && !growVisibleEdgeIds.has(r.absolute_id)) {
+        validRels.push(r);
+        growVisibleEdgeIds.add(r.absolute_id);
       }
     }
 
-    growVisibleEdges = growVisibleEdges.concat(newlyConnectable);
+    // Append in-place instead of creating new arrays
+    Array.prototype.push.apply(growVisibleNodes, addedNodes);
+    Array.prototype.push.apply(growVisibleEdges, validRels);
 
-    // Incrementally add new nodes and edges (no full rebuild!)
-    var hubLayout = computeHubLayout(cachedAllEdges);
-    explorer.addNodesAndEdges(addedNodes, newlyConnectable, hubLayout);
+    explorer.addNodesAndEdges(addedNodes, validRels, growCachedHubLayout);
+    explorer.fitViewport();
 
     // Update timeline position
     var timeRange = tlMaxTime - tlMinTime;
@@ -1830,78 +2090,19 @@
       updateThumbPosition();
     }
 
-    // Update stats with progress
+    // Update stats
     var statsEl = document.getElementById('graph-stats');
     if (statsEl) {
-      var pct = Math.round(growIndex / growSortedNodes.length * 100);
+      var pct = Math.round(growIndex / growEpisodeGroups.length * 100);
       statsEl.textContent = t('graph.loaded', { entities: growVisibleNodes.length, relations: growVisibleEdges.length })
         + ' (' + pct + '%)';
     }
 
-    // Update canvas time indicator
     if (currentNodeTime > 0) {
       showCanvasTimeOverlay(
         formatTimeShort(currentNodeTime),
         growVisibleNodes.length + 'E ' + growVisibleEdges.length + 'R'
       );
-    }
-  }
-
-  function growAddRemainingEdges() {
-    if (!growActive || !explorer) {
-      stopGrowAnimation();
-      return;
-    }
-
-    // Advance edge frontier to the end (all remaining edges are now fair game)
-    var visibleAbsIds = new Set(growVisibleNodes.map(function (n) { return n.absolute_id; }));
-    var currentEdgeIds = new Set(growVisibleEdges.map(function (e) { return e.absolute_id; }));
-
-    // First, process any edges still in the frontier beyond growEdgeIndex
-    var newlyConnectable = [];
-    while (growEdgeIndex < growSortedEdges.length) {
-      var edge = growSortedEdges[growEdgeIndex];
-      if (visibleAbsIds.has(edge.entity1_absolute_id) && visibleAbsIds.has(edge.entity2_absolute_id)
-          && !currentEdgeIds.has(edge.absolute_id)) {
-        newlyConnectable.push(edge);
-        currentEdgeIds.add(edge.absolute_id);
-      }
-      growEdgeIndex++;
-    }
-
-    // Also catch any previously-seen edges that are now connectable
-    var allRemaining = newlyConnectable;
-    for (var ei = 0; ei < growSortedEdges.length; ei++) {
-      var edge2 = growSortedEdges[ei];
-      if (currentEdgeIds.has(edge2.absolute_id)) continue;
-      if (visibleAbsIds.has(edge2.entity1_absolute_id) && visibleAbsIds.has(edge2.entity2_absolute_id)) {
-        allRemaining.push(edge2);
-        currentEdgeIds.add(edge2.absolute_id);
-      }
-    }
-
-    if (allRemaining.length === 0) {
-      finishGrowAnimation();
-      return;
-    }
-
-    // Add a batch of the remaining edges
-    var batchSize = Math.max(1, Math.ceil(allRemaining.length / 10));
-    var batch = allRemaining.slice(0, batchSize);
-    growVisibleEdges = growVisibleEdges.concat(batch);
-
-    // Incrementally add edges only
-    var hubLayout = computeHubLayout(cachedAllEdges);
-    explorer.addNodesAndEdges([], batch, hubLayout);
-
-    var statsEl = document.getElementById('graph-stats');
-    if (statsEl) {
-      statsEl.textContent = t('graph.loaded', { entities: growVisibleNodes.length, relations: growVisibleEdges.length })
-        + ' (edges ' + Math.round(growVisibleEdges.length / growSortedEdges.length * 100) + '%)';
-    }
-
-    if (batch.length >= allRemaining.length) {
-      finishGrowAnimation();
     }
   }
 
@@ -1916,22 +2117,53 @@
     tlCurrentPos = 1.0;
     updateThumbPosition();
 
-    // No full rebuild needed — all data was already added incrementally via addNodesAndEdges.
-    // Just update version badges and stats for the final state.
-    try {
-      var allEntityIds = [...new Set(cachedAllNodes.map(function(e) { return e.family_id; }))];
-      if (allEntityIds.length > 0) {
-        state.api.entityVersionCounts(allEntityIds, state.currentGraphId).then(function(vcRes) {
-          var vc = vcRes.data || {};
-          if (explorer) explorer.setVersionCounts(vc);
-        }).catch(function() {});
+    // Final sweep: add any edges missed during episode playback
+    if (explorer) {
+      var missedEdges = [];
+      for (var mi = 0; mi < cachedAllEdges.length; mi++) {
+        var me = cachedAllEdges[mi];
+        if (!growVisibleEdgeIds.has(me.absolute_id)
+            && growVisibleNodeIds.has(me.entity1_absolute_id)
+            && growVisibleNodeIds.has(me.entity2_absolute_id)) {
+          missedEdges.push(me);
+        }
       }
-    } catch (_) {}
+      if (missedEdges.length > 0) {
+        explorer.addNodesAndEdges([], missedEdges, growCachedHubLayout);
+        Array.prototype.push.apply(growVisibleEdges, missedEdges);
+        cachedAllEdges = growVisibleEdges.slice();
+      }
+    }
+
+    // Version counts from cached data
+    applyVersionCounts();
+
+    if (explorer) {
+      explorer.setStreamingMode(false);
+      explorer.recalcGraphState();
+      explorer.setEntityCache(cachedAllEntities);
+    }
+
+    computeTimeRange();
+
+    if (explorer) {
+      explorer.setMainViewCache(cachedAllEdges, cachedAllNodes, cachedInheritedRelationIds || new Set());
+    }
 
     var statsEl = document.getElementById('graph-stats');
     if (statsEl) {
       statsEl.textContent = t('graph.loaded', { entities: cachedAllNodes.length, relations: cachedAllEdges.length });
     }
+
+    resetFocusUI();
+
+    initTimeline();
+
+    stopPhysicsAfter(15000);
+
+    remapInheritedRelations(statsEl);
+
+    growCachedHubLayout = null;
 
     renderTimeline(document.getElementById('timeline-container'));
     showToast('Graph growth animation complete!', 'success');
@@ -1939,6 +2171,7 @@
 
   function stopGrowAnimation() {
     growActive = false;
+    growCachedHubLayout = null;
     if (growAnimTimer) {
       clearInterval(growAnimTimer);
       growAnimTimer = null;

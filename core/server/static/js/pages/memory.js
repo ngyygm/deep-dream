@@ -347,17 +347,17 @@
         const canPause = task.status === 'running' && !isPausePending;
         const canResume = task.status === 'paused';
         const hasTriple = isRunning;
-        const s6p = Math.min(1, Math.max(0, task.step6_progress ?? 0));
-        const s7p = Math.min(1, Math.max(0, task.step7_progress ?? 0));
+        const s9p = Math.min(1, Math.max(0, task.step9_progress ?? 0));
+        const s10p = Math.min(1, Math.max(0, task.step10_progress ?? 0));
         const smp = Math.min(1, Math.max(0, task.main_progress ?? 0));
-        const overallP = Math.min(1, Math.max(0, (smp + s6p + s7p) / 3));
+        const overallP = Math.min(1, Math.max(0, (smp + s9p + s10p) / 3));
         let progressCell;
         if (hasTriple) {
           progressCell = tripleProgressBar({
-            smp, s6p, s7p,
+            smp, s9p, s10p,
             mainLabel: task.main_label || '-',
-            step6Label: task.step6_label || '-',
-            step7Label: task.step7_label || '-',
+            step9Label: task.step9_label || '-',
+            step10Label: task.step10_label || '-',
             showOverall: true,
             overallP: overallP,
           });
@@ -554,17 +554,17 @@
       const isPausePending = task.phase === 'pausing';
       const hasTriple = isRunning;
       const loadCacheLabel = task.load_cache_memory ? t('memory.loadCacheOn') : t('memory.loadCacheOff');
-      const s6p = Math.min(1, Math.max(0, task.step6_progress ?? 0));
-      const s7p = Math.min(1, Math.max(0, task.step7_progress ?? 0));
+      const s9p = Math.min(1, Math.max(0, task.step9_progress ?? 0));
+      const s10p = Math.min(1, Math.max(0, task.step10_progress ?? 0));
       const smp = Math.min(1, Math.max(0, task.main_progress ?? 0));
-      const overallPd = Math.min(1, Math.max(0, (smp + s6p + s7p) / 3));
+      const overallPd = Math.min(1, Math.max(0, (smp + s9p + s10p) / 3));
       let progressDetail;
       if (hasTriple) {
         progressDetail = tripleProgressBar({
-          smp, s6p, s7p,
+          smp, s9p, s10p,
           mainLabel: task.main_label || '-',
-          step6Label: task.step6_label || '-',
-          step7Label: task.step7_label || '-',
+          step9Label: task.step9_label || '-',
+          step10Label: task.step10_label || '-',
           showOverall: true,
           overallP: overallPd,
         });

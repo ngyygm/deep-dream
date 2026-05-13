@@ -625,6 +625,7 @@ function escapeHtml(str) {
   div.textContent = str;
   return div.innerHTML;
 }
+window.escapeHtml = escapeHtml;
 
 function renderMarkdown(text) {
   if (!text) return '';
@@ -665,8 +666,8 @@ function getElapsed(startedAt, finishedAt) {
 function tripleProgressBar(opts) {
   var cols = [
     { pct: opts.smp, color: 'var(--primary)', label: t('dashboard.mainWindow'), text: opts.mainLabel },
-    { pct: opts.s6p, color: 'var(--info)', label: t('dashboard.entityAlign'), text: opts.step6Label },
-    { pct: opts.s7p, color: 'var(--warning)', label: t('dashboard.relationAlign'), text: opts.step7Label },
+    { pct: opts.s9p, color: 'var(--info)', label: t('dashboard.entityAlign'), text: opts.step9Label },
+    { pct: opts.s10p, color: 'var(--warning)', label: t('dashboard.relationAlign'), text: opts.step10Label },
   ];
   var html = '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px 12px;">';
   for (var ci = 0; ci < cols.length; ci++) {

@@ -9,16 +9,15 @@ import json
 import logging
 import queue as _queue
 import re
-import sys
 import threading
 import time
-import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from core.server.monitor import LOG_MODE_DETAIL
+from core.log import info as _log_info_fn, warn as _log_warn_fn, error as _log_error_fn
 
 logger = logging.getLogger(__name__)
 def _estimate_chunk_count(text_length: int, window_size: int, overlap: int) -> int:
@@ -32,7 +31,7 @@ def _estimate_chunk_count(text_length: int, window_size: int, overlap: int) -> i
 
 _RE_WINDOW_STEP = re.compile(r"窗口\s*(\d+)/(\d+)\s*·\s*步骤(\d+)/(\d+)")
 _RE_WINDOW_ONLY = re.compile(r"窗口\s*(\d+)/(\d+)")
-_RE_MAIN_1_5_DONE = re.compile(r"步骤\s*1\s*[–-]\s*5\s*/\s*7")
+_RE_MAIN_1_8_DONE = re.compile(r"步骤\s*1\s*[–-]\s*8\s*/\s*10")
 _RE_EXTRACT_STEP_NUM = re.compile(r"步骤\s*(\d+)")
 _RE_EXTRACT_STEP_FRAC = re.compile(r"\((\d+)/(\d+)\)\s*$")
 
@@ -58,15 +57,15 @@ def _intra_in_window_slice(global_p: float, g_lo: float, g_hi: float) -> float:
 
 
 def _intra_step9_step10(global_p: float, g_lo: float, g_hi: float, chain_id: str) -> float:
-    """步骤9/7 各占单窗的 1/7（与 orchestrator 传入 extraction 的 progress_range 一致），链内 0–1。"""
+    """步骤9/10 各占单窗的 1/10（与 orchestrator 传入 extraction 的 progress_range 一致），链内 0–1。"""
     span = g_hi - g_lo
     if span <= 1e-15:
         return 0.0
     if chain_id == "step9":
-        s_lo = g_lo + span * (5.0 / 7.0)
-        s_hi = g_lo + span * (6.0 / 7.0)
+        s_lo = g_lo + span * (8.0 / 10.0)
+        s_hi = g_lo + span * (9.0 / 10.0)
     elif chain_id == "step10":
-        s_lo = g_lo + span * (6.0 / 7.0)
+        s_lo = g_lo + span * (9.0 / 10.0)
         s_hi = g_hi
     else:
         return _intra_in_window_slice(global_p, g_lo, g_hi)
@@ -77,23 +76,23 @@ def _intra_step9_step10(global_p: float, g_lo: float, g_hi: float, chain_id: str
 
 
 def _wf_for_chain(chain_id: str, intra: float) -> float:
-    """单窗内流水线权重：步骤2–5 占 5/7，步骤9 占 1/7，步骤10 占 1/7（与 extraction 中分窗一致）。"""
+    """单窗内流水线权重：步骤1–8 占 8/10，步骤9 占 1/10，步骤10 占 1/10。"""
     intra = max(0.0, min(1.0, intra))
     if chain_id == "phase_ab":
-        return (5.0 / 7.0) * intra
+        return (8.0 / 10.0) * intra
     if chain_id == "step9":
-        return (5.0 / 7.0) + (1.0 / 7.0) * intra
+        return (8.0 / 10.0) + (1.0 / 10.0) * intra
     if chain_id == "step10":
-        return (6.0 / 7.0) + (1.0 / 7.0) * intra
-    return (5.0 / 7.0) * intra
+        return (9.0 / 10.0) + (1.0 / 10.0) * intra
+    return (8.0 / 10.0) * intra
 
 
-def _wf_win_steps_1_5(global_p: float, g_lo: float, g_hi: float) -> float:
-    """单窗内步骤1–5 占窗口宽度的前 5/7；返回 [0, 5/7] 的窗口内占比（相对整窗 0–1 的片段）。"""
+def _wf_win_steps_1_8(global_p: float, g_lo: float, g_hi: float) -> float:
+    """单窗内步骤1–8 占窗口宽度的前 8/10；返回 [0, 8/10] 的窗口内占比（相对整窗 0–1 的片段）。"""
     span = g_hi - g_lo
     if span <= 1e-15:
         return 0.0
-    return max(0.0, min(5.0 / 7.0, (global_p - g_lo) / span))
+    return max(0.0, min(8.0 / 10.0, (global_p - g_lo) / span))
 
 
 def _overall_from_window_wf(win_cur: int, win_tot: int, wf: float) -> float:
@@ -119,41 +118,41 @@ def _completed_chunk_fraction(done_chunks: int, total_chunks: int) -> float:
 
 
 def _main_chain_anchor_rank(phase_label: str, tc: int) -> tuple:
-    """主滑窗 1–5 的 UI 锚点优先级：越大越应作为展示锚点（抽取步骤 2–5 / 本窗 1–5 完成 优先于 步骤1 进行中）。
+    """主滑窗 1–8 的 UI 锚点优先级：越大越应作为展示锚点（抽取步骤 2–8 / 本窗 1–8 完成 优先于 步骤1 进行中）。
 
-    并行时主线程可能在后序窗跑步骤1，而前序窗已在步骤2–5；此时应用「更靠前」的链上位置为锚点，而非总是跟主线程窗。
+    并行时主线程可能在后序窗跑步骤1，而前序窗已在步骤2–8；此时应用「更靠前」的链上位置为锚点，而非总是跟主线程窗。
     """
     pl = (phase_label or "").strip()
     if not pl:
         return (-1, 0)
-    if _RE_MAIN_1_5_DONE.search(pl) and ("已完成" in pl or "缓存" in pl):
+    if _RE_MAIN_1_8_DONE.search(pl) and ("已完成" in pl or "缓存" in pl):
         m = _RE_WINDOW_ONLY.search(pl)
         w = int(m.group(1)) if m else 0
         if tc > 0:
             w = max(1, min(w, tc))
-        return (6, w)
+        return (9, w)
     parsed = _parse_window_phase_label(pl)
     if parsed:
         win_cur, _wt, step_cur, _st = parsed
         if tc > 0:
             win_cur = max(1, min(win_cur, tc))
-        if 2 <= step_cur <= 5:
+        if 2 <= step_cur <= 8:
             return (step_cur, win_cur)
         if step_cur != 1:
-            return (min(step_cur, 6), win_cur)
+            return (min(step_cur, 9), win_cur)
         if "进行中" in pl:
             return (0, win_cur)
         if "完成" in pl:
             return (1, win_cur)
         return (0, win_cur)
-    # 抽取步骤 2-5 标签（如 "窗口 1/1 · 步骤2a: 文本锚点召回"）不匹配 _RE_WINDOW_STEP，
+    # 抽取步骤 2-8 标签（如 "窗口 1/1 · 步骤2a: 文本锚点召回"）不匹配 _RE_WINDOW_STEP，
     # 但包含窗口信息和步骤编号，应赋予高于步骤1的优先级。
     wm = _RE_WINDOW_ONLY.match(pl)
     if wm:
         w = max(1, min(int(wm.group(1)), tc))
         _sm = _RE_EXTRACT_STEP_NUM.search(pl)
         step_num = int(_sm.group(1)) if _sm else 2
-        step_num = max(2, min(5, step_num))
+        step_num = max(2, min(8, step_num))
         return (step_num, w)
     return (-1, 0)
 
@@ -165,7 +164,7 @@ def _remember_callback_ui_fields(
     message: str,
     chain_id: str,
 ) -> Dict[str, Any]:
-    """推导总进度：主滑窗链 main（步骤1–5）、步骤9/7 链各自独立进度（0–1 为链内细粒度）。"""
+    """推导总进度：主滑窗链 main（步骤1–8）、步骤9/10 链各自独立进度（0–1 为链内细粒度）。"""
     parsed = _parse_window_phase_label(phase_label)
     tc = max(1, int(task.total_chunks or 1))
     pc = max(0, int(task.processed_chunks or 0))
@@ -174,21 +173,21 @@ def _remember_callback_ui_fields(
     if not parsed:
         new_o = max(pc_f, max(0.0, min(1.0, float(progress))))
         pl = phase_label or ""
-        if chain_id in _MAIN_PHASES and _RE_MAIN_1_5_DONE.search(pl) and (
+        if chain_id in _MAIN_PHASES and _RE_MAIN_1_8_DONE.search(pl) and (
             "已完成" in pl or "缓存" in pl
         ):
             m = _RE_WINDOW_ONLY.search(pl)
             if m:
                 win_cur = max(1, min(int(m.group(1)), tc))
-                wf_main = 5.0 / 7.0
+                wf_main = 8.0 / 10.0
                 main_global = min(1.0, (win_cur - 1 + wf_main) / float(tc))
                 merged_p = max(new_o, main_global, pc_f)
                 new_rank = _main_chain_anchor_rank(pl, tc)
                 old_rank = _main_chain_anchor_rank(task.main_label or "", tc)
                 if task.main_label and new_rank < old_rank:
                     return {"progress": merged_p}
-                _pc = (win_cur - 1) * 7 + 5
-                _pt = tc * 7
+                _pc = (win_cur - 1) * 10 + 8
+                _pt = tc * 10
                 return {
                     "progress": merged_p,
                     "phase_label": phase_label,
@@ -198,7 +197,7 @@ def _remember_callback_ui_fields(
                     "main_progress": main_global,
                     "main_label": phase_label or message or "",
                 }
-        # 抽取步骤 2–5 的标签不匹配 _RE_WINDOW_STEP（如 "窗口 1/1 · 步骤2a: 文本锚点召回"），
+        # 抽取步骤 2–8 的标签不匹配 _RE_WINDOW_STEP（如 "窗口 1/1 · 步骤2a: 文本锚点召回"），
         # 但仍需更新 main_progress/main_label/phase_current 以避免前端进度条停滞在步骤1。
         if chain_id in _MAIN_PHASES:
             wm = _RE_WINDOW_ONLY.match(pl)
@@ -206,20 +205,20 @@ def _remember_callback_ui_fields(
                 win_cur = max(1, min(int(wm.group(1)), tc))
                 g_lo_w = (win_cur - 1) / float(tc)
                 g_hi_w = win_cur / float(tc)
-                wf_main = _wf_win_steps_1_5(float(progress), g_lo_w, g_hi_w)
+                wf_main = _wf_win_steps_1_8(float(progress), g_lo_w, g_hi_w)
                 main_global = min(1.0, (win_cur - 1 + wf_main) / float(tc))
                 # 从标签中尝试提取步骤编号（如 "步骤2a"、"步骤3.5"）
                 _sm = _RE_EXTRACT_STEP_NUM.search(pl)
                 estimated_step = int(_sm.group(1)) if _sm else 2
-                estimated_step = max(2, min(5, estimated_step))
+                estimated_step = max(2, min(8, estimated_step))
                 # 尝试提取子步骤分数（如 "实体对齐 (3/5)"）
                 _fm = _RE_EXTRACT_STEP_FRAC.search(pl)
                 if _fm:
                     _sub_done = int(_fm.group(1))
                     _sub_total = max(1, int(_fm.group(2)))
-                    estimated_step = max(estimated_step, min(5, estimated_step + int(_sub_done / max(1, _sub_total))))
-                _pc_phase = (win_cur - 1) * 7 + estimated_step
-                _pt_phase = tc * 7
+                    estimated_step = max(estimated_step, min(8, estimated_step + int(_sub_done / max(1, _sub_total))))
+                _pc_phase = (win_cur - 1) * 10 + estimated_step
+                _pt_phase = tc * 10
                 new_rank = _main_chain_anchor_rank(pl, tc)
                 old_rank = _main_chain_anchor_rank(task.main_label or "", tc)
                 if task.main_label and new_rank < old_rank:
@@ -253,10 +252,10 @@ def _remember_callback_ui_fields(
     wf = _wf_for_chain(chain_id, intra)
     new_o = _overall_from_window_wf(win_cur, win_tot_eff, wf)
 
-    _pc = (win_cur - 1) * 7 + step_cur
-    _pt = win_tot_eff * 7
+    _pc = (win_cur - 1) * 10 + step_cur
+    _pt = win_tot_eff * 10
 
-    wf_main = _wf_win_steps_1_5(float(progress), g_lo, g_hi)
+    wf_main = _wf_win_steps_1_8(float(progress), g_lo, g_hi)
     main_global = min(1.0, (win_cur - 1 + wf_main) / float(win_tot_eff))
 
     base: Dict[str, Any] = {
@@ -267,7 +266,7 @@ def _remember_callback_ui_fields(
         "phase_total": _pt,
     }
 
-    # 主滑窗（步骤1–5）：chain main 或历史 phase_ab（锚点优先抽取链上位置，而非主线程步骤1）
+    # 主滑窗（步骤1–8）：chain main 或历史 phase_ab（锚点优先抽取链上位置，而非主线程步骤1）
     if chain_id in ("main", "phase_ab"):
         base["progress"] = max(base["progress"], main_global)
         new_rank = _main_chain_anchor_rank(phase_label or "", tc)
@@ -573,22 +572,13 @@ class RememberTaskQueue:
         return bool(task.load_cache)
 
     def _log_info(self, message: str) -> None:
-        if self._event_log is not None:
-            self._event_log.info("Remember", message)
-        else:
-            print(message)
+        _log_info_fn("Remember", message)
 
     def _log_warn(self, message: str) -> None:
-        if self._event_log is not None:
-            self._event_log.warn("Remember", message)
-        else:
-            print(f"[WARN] {message}")
+        _log_warn_fn("Remember", message)
 
     def _log_error(self, message: str) -> None:
-        if self._event_log is not None:
-            self._event_log.error("Remember", message)
-        else:
-            print(f"[ERROR] {message}", file=sys.stderr)
+        _log_error_fn("Remember", message)
 
     def _update_task_progress(
         self,
@@ -1155,6 +1145,10 @@ class RememberTaskQueue:
             "active_step10": 0,
             "llm_semaphore_active": 0,
             "llm_semaphore_max": 0,
+            "llm_upstream_active": 0,
+            "llm_upstream_max": 0,
+            "llm_downstream_active": 0,
+            "llm_downstream_max": 0,
         }
         for processor in unique_processors:
             if not hasattr(processor, "get_runtime_stats"):
@@ -1168,6 +1162,21 @@ class RememberTaskQueue:
                 totals[key] += int(stats.get(key, 0) or 0)
         return totals
 
+    def get_pipeline_snapshot(self) -> Optional[Dict]:
+        """返回当前正在运行的 remember 流水线逐窗口快照，无任务时返回 None。"""
+        with self._lock:
+            processors = list(self._active_processors.values())
+        for processor in processors:
+            if processor is None:
+                continue
+            if hasattr(processor, "get_pipeline_snapshot"):
+                snap = processor.get_pipeline_snapshot()
+                if snap is not None:
+                    return snap
+        if hasattr(self._processor, "get_pipeline_snapshot"):
+            return self._processor.get_pipeline_snapshot()
+        return None
+
     def _worker(self):
         """串行执行滑窗处理：从数据库加载最新缓存续写，或从空缓存开始。"""
         while True:
@@ -1176,6 +1185,17 @@ class RememberTaskQueue:
                 if task.status == "cancelled":
                     self._log_info(f"[Remember] 跳过已删除任务: task_id={_short_task_id(task.task_id)}")
                     continue
+                # Double-check under lock: delete_pending_task may have popped the
+                # task from self._tasks after the cancelled check above but before
+                # _update_task_progress writes status="queued" back to the task
+                # object and _persist re-appends it to the journal.
+                with self._lock:
+                    if task.task_id not in self._tasks:
+                        self._log_info(
+                            f"[Remember] 跳过已删除任务 (不在任务表): "
+                            f"task_id={_short_task_id(task.task_id)}"
+                        )
+                        continue
                 _existing_main_chunks = task.main_done_chunks or 0
                 _existing_step9_chunks = task.step9_done_chunks or 0
                 _existing_step10_chunks = task.step10_done_chunks or task.processed_chunks or 0
@@ -1245,8 +1265,8 @@ class RememberTaskQueue:
                             _pg = min(1.0, float(_pc) / float(_tc))
                             _ml = _t.main_label or ""
                             # 当所有窗口的步骤1-5完成时，更新 main_label 显示完成状态
-                            if _pc >= _tc and not _RE_MAIN_1_5_DONE.search(_ml):
-                                _ml = "步骤1–5/7 已完成"
+                            if _pc >= _tc and not _RE_MAIN_1_8_DONE.search(_ml):
+                                _ml = "步骤1–8/10 已完成"
                             self._update_task_progress(
                                 _t,
                                 main_done_chunks=_pc,
@@ -1361,8 +1381,8 @@ class RememberTaskQueue:
                             status="completed",
                             phase="completed",
                             phase_label="已完成",
-                            phase_current=_tc_done * 7,
-                            phase_total=_tc_done * 7,
+                            phase_current=_tc_done * 10,
+                            phase_total=_tc_done * 10,
                             main_done_chunks=_cp_done,
                             step9_done_chunks=_cp_done,
                             step10_done_chunks=_cp_done,

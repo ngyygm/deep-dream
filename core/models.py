@@ -44,6 +44,7 @@ class Entity:
     confidence: Optional[float] = None  # 置信度评分 (0.0-1.0)
     content_format: str = "plain"  # "plain" (旧) | "markdown" (新)
     community_id: Optional[str] = None  # 社区检测分配的社区ID
+    _pending_patches: list = None  # 内部用：ContentPatch 缓冲，flush 后清空
 
 
 @dataclass(slots=True)
@@ -71,6 +72,7 @@ class Relation:
     confidence: Optional[float] = None  # 置信度评分 (0.0-1.0)
     provenance: Optional[str] = None  # JSON: [{"episode_id": "...", "confidence": 0.9}, ...]
     content_format: str = "plain"  # "plain" (旧) | "markdown" (新)
+    _pending_patches: list = None  # 内部用：ContentPatch 缓冲，flush 后清空
 
 
 @dataclass(slots=True)

@@ -13,6 +13,8 @@ import threading
 import time
 import logging
 from collections import Counter, deque
+
+from core.log import info as _log_info, warn as _log_warn, error as _log_error
 from typing import Deque, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -68,10 +70,13 @@ class EventLog:
 
     def _emit(self, level: str, source: str, message: str, *, stderr: bool = False) -> None:
         ts = time.strftime("%H:%M:%S")
-        text = f"[{ts}] [{source}] {message}"
         if self.mode == LOG_MODE_DETAIL:
-            import sys
-            print(text, file=sys.stderr if stderr else sys.stdout)
+            if level == "ERROR":
+                _log_error(source, message)
+            elif level == "WARN":
+                _log_warn(source, message)
+            else:
+                _log_info(source, message)
         with self._lock:
             self._events.appendleft({
                 "time": ts,
@@ -201,11 +206,13 @@ class GraphMonitor:
         _queue_snap = self._queue.get_monitor_snapshot(limit=10)
         queue = self._collect_queue_stats(_queue_snap)
         threads = self._collect_thread_stats(_queue_snap)
+        pipeline = self._collect_pipeline_snapshot()
         return {
             "graph_id": self.graph_id,
             "storage": storage,
             "queue": queue,
             "threads": threads,
+            "pipeline": pipeline,
         }
 
     def _collect_storage_stats(self) -> dict:
@@ -288,6 +295,10 @@ class GraphMonitor:
                 "llm_threads_alive": llm_alive,
                 "llm_threads_busy": int(processor_stats.get("llm_semaphore_active", 0)),
                 "llm_threads_max": int(processor_stats.get("llm_semaphore_max", 0)),
+                "llm_upstream_active": int(processor_stats.get("llm_upstream_active", 0)),
+                "llm_upstream_max": int(processor_stats.get("llm_upstream_max", 0)),
+                "llm_downstream_active": int(processor_stats.get("llm_downstream_active", 0)),
+                "llm_downstream_max": int(processor_stats.get("llm_downstream_max", 0)),
             }
         except Exception as e:
             logger.warning("收集线程统计失败: %s", e)
@@ -304,7 +315,19 @@ class GraphMonitor:
                 "llm_threads_alive": 0,
                 "llm_threads_busy": 0,
                 "llm_threads_max": 0,
+                "llm_upstream_active": 0,
+                "llm_upstream_max": 0,
+                "llm_downstream_active": 0,
+                "llm_downstream_max": 0,
             }
+
+    def _collect_pipeline_snapshot(self) -> Optional[dict]:
+        try:
+            if hasattr(self._queue, "get_pipeline_snapshot"):
+                return self._queue.get_pipeline_snapshot()
+        except Exception as e:
+            logger.debug("获取 pipeline snapshot 失败: %s", e)
+        return None
 
 
 # ---------------------------------------------------------------------------

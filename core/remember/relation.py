@@ -11,7 +11,11 @@ from core.models import Relation
 from core.storage.neo4j_store import Neo4jStorageManager
 from core.llm.client import LLMClient
 from core.debug_log import log as dbg, log_section as dbg_section, _ENABLED as _dbg_enabled
-from core.utils import wprint_info, normalize_entity_pair
+from core.content_schema import RELATION_SECTIONS, compute_content_patches
+import time as _time
+
+from core.utils import wprint_info, normalize_entity_pair, cosine_similarity
+
 from .helpers import MIN_RELATION_CONTENT_LENGTH
 
 
@@ -23,11 +27,11 @@ def _get_entity_names(relation: Dict[str, str]) -> Tuple[str, str]:
     )
 
 # Shared pool for corroboration calls (avoids per-call thread churn)
-_corrob_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="corrob")
+_corrob_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="corrob")
 
 # Shared pool for batch relation processing
 _REL_POOL: ThreadPoolExecutor | None = None
-_REL_POOL_MAX = 2
+_REL_POOL_MAX = 1
 
 def _get_rel_pool(max_workers: int) -> ThreadPoolExecutor:
     """Return (and lazily create/upgrade) the shared relation ThreadPoolExecutor."""
@@ -62,6 +66,7 @@ class RelationProcessor:
         self.batch_resolution_enabled = True
         self.batch_resolution_confidence_threshold = 0.70
         self.preserve_distinct_relations_per_pair = False
+        self.emb_new_threshold = 0.80
         self._corroboration_queue: List[str] = []  # Batch corroboration family_ids
     
     def build_relations_by_pair_from_inputs(
@@ -102,6 +107,7 @@ class RelationProcessor:
                                 on_relation_done: Optional[callable] = None,
                                 verbose_relation: bool = True,
                                 prepared_relations_by_pair: Optional[Dict[Tuple[str, str], List[Dict[str, str]]]] = None,
+                                window_timings_ref: Optional[Dict[str, float]] = None,
                                 ) -> List[Relation]:
         """按实体对批量 upsert 关系，低置信度时回退单条逻辑。max_workers>1 且实体对数量>1 时并行处理。"""
         dbg(f"process_relations_batch: 输入 {len(extracted_relations)} 个关系, entity_name_to_id 有 {len(entity_name_to_id)} 个映射")
@@ -116,7 +122,12 @@ class RelationProcessor:
             if not relations_by_pair:
                 return []
 
+        _t0_prb = _time.monotonic()
         existing_relations_by_pair = self.storage.get_relations_by_entity_pairs(list(relations_by_pair))
+        _t_prb_elapsed = _time.monotonic() - _t0_prb
+        dbg(f"[step10_timing] get_relations_by_entity_pairs: {_t_prb_elapsed:.2f}s ({len(relations_by_pair)} pairs)")
+        if window_timings_ref is not None:
+            window_timings_ref["step10a-db_read_relations"] = _t_prb_elapsed
 
         # 批量预取所有涉及的实体，避免 _build_new_relation/_build_relation_version 中逐对查询
         unique_eids = set()
@@ -125,6 +136,7 @@ class RelationProcessor:
             unique_eids.add(e2)
         entity_lookup: Dict[str, Any] = {}
         if unique_eids:
+            _t1 = _time.monotonic()
             batch_fn = getattr(self.storage, 'get_entities_by_family_ids', None)
             if batch_fn:
                 try:
@@ -139,10 +151,62 @@ class RelationProcessor:
                     ent = self.storage.get_entity_by_family_id(eid)
                     if ent:
                         entity_lookup[eid] = ent
+            dbg(f"[step10_timing] get_entities_by_family_ids: {_time.monotonic()-_t1:.2f}s ({len(unique_eids)} entities)")
+            if window_timings_ref is not None:
+                window_timings_ref["step10a-db_fetch_entities"] = _time.monotonic() - _t1
+            # Pre-seed entity name cache to eliminate hidden reads in save_relation()
+            for _ent in entity_lookup.values():
+                if hasattr(_ent, 'absolute_id') and hasattr(_ent, 'name'):
+                    self.storage._cache_entity_name(_ent.absolute_id, _ent.name)
+
+        # Embedding fast-path prep
+        embedding_ctx = None
+        emb_client = getattr(self.storage, 'embedding_client', None)
+        if emb_client and emb_client.is_available():
+            _t_emb = _time.monotonic()
+            # 1) 批量获取已有关系的 embedding
+            _existing_fids = set()
+            for pair_rels in existing_relations_by_pair.values():
+                for r in pair_rels:
+                    if r.family_id:
+                        _existing_fids.add(r.family_id)
+            existing_emb_map = {}
+            if _existing_fids:
+                existing_emb_map = self.storage.get_relation_embeddings(list(_existing_fids))
+
+            # 2) 批量编码新关系内容
+            _emb_texts = []
+            _text_to_content = {}
+            for pair_key, pair_rels in relations_by_pair.items():
+                e1_name, e2_name = _get_entity_names(pair_rels[0])
+                for rel in pair_rels:
+                    c = rel.get('content', '')
+                    if c:
+                        text = f"# {e1_name} → {e2_name}\n{c[:512]}"
+                        if text not in _text_to_content:
+                            _emb_texts.append(text)
+                            _text_to_content[text] = c
+
+            new_content_embs = {}
+            if _emb_texts:
+                emb_arrays = emb_client.encode(_emb_texts)
+                if emb_arrays is not None:
+                    for text, emb in zip(_emb_texts, emb_arrays):
+                        new_content_embs[_text_to_content[text]] = emb
+
+            if existing_emb_map or new_content_embs:
+                embedding_ctx = {
+                    'new_embs': new_content_embs,
+                    'existing_embs': existing_emb_map,
+                }
+            dbg(f"[step10_timing] embedding prep: {_time.monotonic()-_t_emb:.2f}s ({len(existing_emb_map)} exist, {len(new_content_embs)} new)")
+            if window_timings_ref is not None:
+                window_timings_ref["step10a-embedding_prep"] = _time.monotonic() - _t_emb
 
         processed_relations: List[Relation] = []
-        relations_to_persist: List[Relation] = []
+        _incremental_save_count = 0
         all_corroborated_family_ids: set = set()
+        _t_loop = _time.monotonic()
 
         use_parallel = max_workers is not None and max_workers > 1 and len(relations_by_pair) > 1
         total_pairs = len(relations_by_pair)
@@ -172,6 +236,7 @@ class RelationProcessor:
                     fallback_to_single=fallback_to_single,
                     verbose_relation=verbose_relation,
                     entity_lookup=entity_lookup,
+                    embedding_ctx=embedding_ctx,
                 )
 
             executor = _get_rel_pool(max_workers)
@@ -185,6 +250,8 @@ class RelationProcessor:
                 _rel_done += 1
                 if on_relation_done:
                     on_relation_done(_rel_done, total_pairs)
+            _all_to_persist = []
+            _all_corrob_fids = set()
             for res in results:
                 if res is None:
                     continue
@@ -192,11 +259,41 @@ class RelationProcessor:
                 if proc:
                     processed_relations.extend(proc)
                 if to_persist:
-                    relations_to_persist.extend(to_persist)
+                    _all_to_persist.extend(to_persist)
                 if corrob_fids:
-                    all_corroborated_family_ids.update(corrob_fids)
+                    _all_corrob_fids.update(corrob_fids)
+            if _all_to_persist:
+                for _rel in _all_to_persist:
+                    try:
+                        _emb_result = self.storage._compute_relation_embedding(_rel)
+                        if _emb_result is not None:
+                            _rel.embedding = _emb_result
+                    except Exception:
+                        pass
+                try:
+                    self.storage.bulk_save_relations_with_embedding(_all_to_persist)
+                except Exception:
+                    for _rel in _all_to_persist:
+                        try:
+                            self.storage.save_relation(_rel)
+                        except Exception:
+                            pass
+                _incremental_save_count += len(_all_to_persist)
+                _all_patches = []
+                for _rel in _all_to_persist:
+                    _rel_patches = getattr(_rel, '_pending_patches', None) or []
+                    _all_patches.extend(_rel_patches)
+                if _all_patches:
+                    try:
+                        self.storage.save_content_patches(_all_patches)
+                    except Exception:
+                        pass
+            all_corroborated_family_ids.update(_all_corrob_fids)
         else:
+            _sum_pair_time = 0.0
+            _seq_all_persist = []
             for pair_key, pair_relations in relations_by_pair.items():
+                _t_pair = _time.monotonic()
                 entity1_id, entity2_id = pair_key
                 entity1_name, entity2_name = _get_entity_names(pair_relations[0])
                 existing_relations = existing_relations_by_pair.get(pair_key, [])
@@ -212,23 +309,62 @@ class RelationProcessor:
                     fallback_to_single=fallback_to_single,
                     verbose_relation=verbose_relation,
                     entity_lookup=entity_lookup,
+                    embedding_ctx=embedding_ctx,
                 )
+                _pair_elapsed = _time.monotonic() - _t_pair
+                _sum_pair_time += _pair_elapsed
+                if _pair_elapsed > 0.05:
+                    _existing = existing_relations_by_pair.get(pair_key, [])
+                    _path = "LLM" if _pair_elapsed > 0.5 else ("VERSION" if len(_existing) > 0 and len(to_persist) > 0 else "NEW")
+                    dbg(f"[step10_timing] pair {_rel_done+1}/{total_pairs}: {_pair_elapsed:.2f}s ({entity1_name}-{entity2_name}, exist={len(_existing)}, persist={len(to_persist)}, {_path})")
                 if proc:
                     processed_relations.extend(proc)
                 if to_persist:
-                    relations_to_persist.extend(to_persist)
+                    _seq_all_persist.extend(to_persist)
                 if corrob_fids:
                     all_corroborated_family_ids.update(corrob_fids)
                 _rel_done += 1
                 if on_relation_done:
                     on_relation_done(_rel_done, total_pairs)
+            if _seq_all_persist:
+                for _rel in _seq_all_persist:
+                    try:
+                        _emb_result = self.storage._compute_relation_embedding(_rel)
+                        if _emb_result is not None:
+                            _rel.embedding = _emb_result
+                    except Exception:
+                        pass
+                try:
+                    self.storage.bulk_save_relations_with_embedding(_seq_all_persist)
+                except Exception:
+                    for _rel in _seq_all_persist:
+                        try:
+                            self.storage.save_relation(_rel)
+                        except Exception:
+                            pass
+                _incremental_save_count += len(_seq_all_persist)
+                _seq_all_patches = []
+                for _rel in _seq_all_persist:
+                    _rel_patches = getattr(_rel, '_pending_patches', None) or []
+                    _seq_all_patches.extend(_rel_patches)
+                if _seq_all_patches:
+                    try:
+                        self.storage.save_content_patches(_seq_all_patches)
+                    except Exception:
+                        pass
 
-        if relations_to_persist:
-            self.storage.bulk_save_relations(relations_to_persist)
-            # Incremental refresh: only fix edges for entity families involved in this batch
-            if hasattr(self.storage, 'refresh_relates_to_edges'):
-                _refresh_fids = list({fid for pair in relations_by_pair for fid in pair})
-                self.storage.refresh_relates_to_edges(family_ids=_refresh_fids)
+        dbg(f"[step10_timing] process loop: {_time.monotonic()-_t_loop:.2f}s ({_incremental_save_count} saved incrementally)")
+        if window_timings_ref is not None:
+            window_timings_ref["step10b-process_loop"] = _time.monotonic() - _t_loop
+
+        # Incremental refresh: fix edges for entity families involved in this batch
+        if relations_by_pair and hasattr(self.storage, 'refresh_relates_to_edges'):
+            _refresh_fids = list({fid for pair in relations_by_pair for fid in pair})
+            _t_ref = _time.monotonic()
+            self.storage.refresh_relates_to_edges(family_ids=_refresh_fids)
+            dbg(f"[step10_timing] refresh_relates_to_edges: {_time.monotonic()-_t_ref:.2f}s ({len(_refresh_fids)} families)")
+            if window_timings_ref is not None:
+                window_timings_ref["step10c-refresh_edges"] = _time.monotonic() - _t_ref
 
         # Confidence corroboration: version-updated relations get confidence boost
         if all_corroborated_family_ids:
@@ -253,6 +389,7 @@ class RelationProcessor:
                     seen_abs_ids.add(r.absolute_id)
 
         # Dream 候选层佐证：remember 提取的关系与 dream 候选关系匹配时，自动佐证
+        _t_dream = _time.monotonic()
         if hasattr(self.storage, 'corroborate_dream_relations_batch'):
             try:
                 self.storage.corroborate_dream_relations_batch(
@@ -277,6 +414,10 @@ class RelationProcessor:
                 else:
                     _corroborate_one(_pair_keys[0])
 
+        dbg(f"[step10_timing] dream_corroboration + cleanup: {_time.monotonic()-_t_dream:.2f}s")
+        if window_timings_ref is not None:
+            window_timings_ref["step10d-dream_corroboration"] = _time.monotonic() - _t_dream
+
         return processed_relations
 
     def _process_one_relation_pair(self,
@@ -290,8 +431,11 @@ class RelationProcessor:
                                    base_time: Optional[datetime] = None,
                                    fallback_to_single: bool = True,
                                    verbose_relation: bool = True,
-                                   entity_lookup: Optional[Dict[str, Any]] = None) -> Tuple[List[Relation], List[Relation], set]:
+                                   entity_lookup: Optional[Dict[str, Any]] = None,
+                                   embedding_ctx: Optional[Dict[str, Any]] = None,
+                                   ) -> Tuple[List[Relation], List[Relation], set]:
         """处理单个实体对的关系，返回 (processed_relations, relations_to_persist, corroborated_family_ids)。"""
+        dbg(f"ENTER {entity1_name}-{entity2_name}: ctx={embedding_ctx is not None} exist={len(existing_relations)}")
         entity1_id, entity2_id = pair_key
         processed_relations: List[Relation] = []
         relations_to_persist: List[Relation] = []
@@ -305,34 +449,21 @@ class RelationProcessor:
         _existing_contents_lower = _existing_by_content_lower.keys()
         # Single pass: compute lower keys once, cache for reuse below
         _new_content_lower: Dict[str, str] = {}
+        _lower_to_orig: Dict[str, str] = {}
         truly_new_contents = []
         for c in new_contents:
             key = c.strip().lower()
             _new_content_lower[c] = key
+            _lower_to_orig[key] = c
             if key not in _existing_contents_lower:
                 truly_new_contents.append(key)
+        dbg(f"[step10_path] {entity1_name}-{entity2_name}: existing={len(existing_relations)}, new={len(new_contents)}, truly_new={len(truly_new_contents)}")
         if not truly_new_contents:
-            # 所有新内容都已是已有关系的精确重复 → 为匹配的关系创建版本（复制内容）
-            for nc in new_contents:
-                _nc_lower = _new_content_lower[nc]  # reuse pre-computed lower key
-                matched = _existing_by_content_lower.get(_nc_lower)
-                if matched:
-                    new_rel = self._build_relation_version(
-                        matched.family_id, entity1_id, entity2_id,
-                        matched.content, episode_id,
-                        source_document=source_document, base_time=base_time,
-                        entity1_name=entity1_name, entity2_name=entity2_name,
-                        entity_lookup=entity_lookup,
-                    )
-                    if new_rel is not None:
-                        relations_to_persist.append(new_rel)
-                        processed_relations.append(new_rel)
-                        corroborated_family_ids.add(matched.family_id)
-                    else:
-                        processed_relations.append(matched)
-                else:
-                    # 兜底：没匹配到则加入已有关系
-                    processed_relations.extend(existing_relations)
+            # 所有新内容都已是已有关系的精确重复 → 直接复用，跳过 _construct_relation
+            processed_relations.extend(existing_relations)
+            for r in existing_relations:
+                if r.family_id:
+                    corroborated_family_ids.add(r.family_id)
             return processed_relations, relations_to_persist, corroborated_family_ids
 
         if self.preserve_distinct_relations_per_pair:
@@ -353,8 +484,9 @@ class RelationProcessor:
                     processed_relations.append(relation)
             return processed_relations, relations_to_persist, corroborated_family_ids
 
-        # ---- Fix 3: 无已有关系 → 直接创建新关系，跳过batch LLM ----
+        # No existing relations → create directly, skip LLM
         if not existing_relations:
+            dbg(f"[step10_path] NO_EXISTING: {entity1_name}-{entity2_name} ({len(truly_new_contents)} new)")
             if len(truly_new_contents) == 1:
                 merged_content = truly_new_contents[0]
             else:
@@ -369,6 +501,52 @@ class RelationProcessor:
                 processed_relations.append(new_rel)
                 relations_to_persist.append(new_rel)
             return processed_relations, relations_to_persist, corroborated_family_ids
+
+        # ---- Embedding 相似度快速过滤 ----
+        if embedding_ctx and existing_relations:
+            _EMB_NEW_THRESHOLD = self.emb_new_threshold
+
+            _new_embs = embedding_ctx.get('new_embs', {})
+            _existing_embs = embedding_ctx.get('existing_embs', {})
+
+            # truly_new_contents = lower-cased keys; _new_embs keys = original content
+            # _lower_to_orig built in initial pass above
+
+            max_sim = 0.0
+            _emb_miss_reason = ""
+            for c_key in truly_new_contents:
+                orig = _lower_to_orig.get(c_key)
+                if not orig:
+                    _emb_miss_reason = "no_orig"
+                    continue
+                new_emb = _new_embs.get(orig)
+                if new_emb is None:
+                    _emb_miss_reason = f"no_new_emb(orig={orig[:40]})"
+                    continue
+                for r in existing_relations:
+                    exist_emb = _existing_embs.get(r.family_id)
+                    if exist_emb is None:
+                        continue
+                    sim = cosine_similarity(new_emb, exist_emb)
+                    if sim > max_sim:
+                        max_sim = sim
+            dbg(f"{entity1_name}-{entity2_name}: max_sim={max_sim:.4f} exist={len(existing_relations)} new_embs={len(_new_embs)} exist_embs={len(_existing_embs)} truly_new={len(truly_new_contents)} miss={_emb_miss_reason or 'none'} decision={'NEW' if max_sim < _EMB_NEW_THRESHOLD else 'LLM'}")
+
+            if max_sim < _EMB_NEW_THRESHOLD:
+                if len(truly_new_contents) == 1:
+                    merged_content = _lower_to_orig.get(truly_new_contents[0], truly_new_contents[0])
+                else:
+                    merged_content = "；".join(truly_new_contents[:3])
+                new_rel = self._build_new_relation(
+                    entity1_id, entity2_id, merged_content, episode_id,
+                    entity1_name=entity1_name, entity2_name=entity2_name,
+                    source_document=source_document, base_time=base_time,
+                    entity_lookup=entity_lookup,
+                )
+                if new_rel:
+                    processed_relations.append(new_rel)
+                    relations_to_persist.append(new_rel)
+                return processed_relations, relations_to_persist, corroborated_family_ids
 
         # Build relations info only when needed for LLM call (lazy construction)
         existing_relations_info = [
@@ -432,6 +610,8 @@ class RelationProcessor:
                     entity2_name=entity2_name,
                     base_time=base_time,
                     entity_lookup=entity_lookup,
+                    old_content=latest_relation.content or "",
+                    old_content_format=latest_relation.content_format or "plain",
                 )
                 if new_relation is not None:
                     relations_to_persist.append(new_relation)
@@ -453,6 +633,8 @@ class RelationProcessor:
                     entity2_name=entity2_name,
                     base_time=base_time,
                     entity_lookup=entity_lookup,
+                    old_content=latest_relation.content or "",
+                    old_content_format=latest_relation.content_format or "plain",
                 )
                 if new_relation is not None:
                     relations_to_persist.append(new_relation)
@@ -925,8 +1107,10 @@ class RelationProcessor:
                                  entity2_name: str = "",
                                  base_time: Optional[datetime] = None,
                                  entity_lookup: Optional[Dict[str, Any]] = None,
-                                 _existing_relation: Optional[Relation] = None) -> Optional[Relation]:
-        """构建关系新版本对象，但不立即写库。"""
+                                 _existing_relation: Optional[Relation] = None,
+                                 old_content: str = "",
+                                 old_content_format: str = "plain") -> Optional[Relation]:
+        """构建关系新版本对象，但不立即写库。附带 section patch 计算。"""
         # 内容过短时，尝试使用已有关系的内容（始终版本化原则）
         _cs = content.strip() if content else ""
         if len(_cs) < MIN_RELATION_CONTENT_LENGTH:
@@ -950,8 +1134,7 @@ class RelationProcessor:
                 return None
 
         # 始终构建版本（每个 episode 提及的关系都版本化）
-
-        return self._construct_relation(
+        relation = self._construct_relation(
             entity1_id, entity2_id, content, episode_id,
             family_id=family_id,
             entity1_name=entity1_name, entity2_name=entity2_name,
@@ -959,6 +1142,21 @@ class RelationProcessor:
             base_time=base_time, entity_lookup=entity_lookup,
             skip_label="关系版本创建",
         )
+        if relation and old_content:
+            patches = compute_content_patches(
+                family_id=family_id,
+                old_content=old_content,
+                old_content_format=old_content_format,
+                new_content=content,
+                new_absolute_id=relation.absolute_id,
+                target_type="Relation",
+                schema=RELATION_SECTIONS,
+                source_document=source_document,
+                event_time=relation.event_time,
+            )
+            if patches:
+                relation._pending_patches = patches
+        return relation
 
     def _create_relation_version(self, family_id: str, entity1_id: str,
                                  entity2_id: str, content: str,

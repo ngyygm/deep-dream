@@ -314,7 +314,7 @@ class _CrossWindowDedupMixin:
                 except Exception as e:
                     return (ent_a.family_id, ent_b.family_id, {"verdict": "error", "confidence": 0.0, "error": str(e)})
 
-            with ThreadPoolExecutor(max_workers=3, thread_name_prefix="alias-llm") as pool:
+            with ThreadPoolExecutor(max_workers=1, thread_name_prefix="alias-llm") as pool:
                 futures = [
                     pool.submit(_verify_pair, ea, eb, ca, cb)
                     for ea, eb, ca, cb, _, _ in _candidates

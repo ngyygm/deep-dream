@@ -6,6 +6,7 @@ import time
 from typing import Optional
 
 from core.llm.client import LLM_PRIORITY_STEP6
+from core.log import warn as _log_warn
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +52,7 @@ def call_llm_with_backoff(
         if attempt <= max_waits:
             wait_seconds = min(backoff_base_seconds ** attempt, 64)
             jitter = wait_seconds * (0.75 + random.random() * 0.5)
-            print(f"[LLM] 访问失败，第 {attempt} 次重试前等待 {jitter:.1f}s；错误: {last_error}")
+            _log_warn("LLM", f"访问失败，第 {attempt} 次重试前等待 {jitter:.1f}s；错误: {last_error}")
             time.sleep(jitter)
 
     raise RuntimeError(f"重试 {max_attempts} 次仍失败: {last_error or '未知错误'}")

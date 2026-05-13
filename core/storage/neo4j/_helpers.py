@@ -5,18 +5,16 @@ All data (graph structure + embeddings + vector indexes) stored in Neo4j.
 """
 
 
-import json
 import logging
-import os
 import re
 import threading
 import time
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Literal, Optional, Set, Tuple
+from datetime import datetime
+from typing import Any, Optional
 
 import numpy as np
 
-from ...models import ContentPatch, Episode, Entity, Relation
+from ...models import Entity, Relation
 
 # Try to get neo4j.time.DateTime for isinstance check (faster than hasattr)
 try:
@@ -24,9 +22,6 @@ try:
     _Neo4jDateTime = _neo4j_time.DateTime
 except ImportError:
     _Neo4jDateTime = type(None)  # isinstance will never match
-from ...utils import clean_markdown_code_blocks
-from ...perf import _perf_timer
-from ..cache import QueryCache
 from functools import lru_cache as _lru_cache
 
 logger = logging.getLogger(__name__)
@@ -66,6 +61,22 @@ _RELATION_RETURN_FIELDS_WITH_EMB = _RELATION_RETURN_FIELDS + ", r.embedding AS e
 # _expand_cypher() 展开为实际字段列表
 _ENT_FIELDS_RETURN = f"RETURN {_ENTITY_RETURN_FIELDS}"
 _REL_FIELDS_RETURN = f"RETURN {_RELATION_RETURN_FIELDS}"
+
+
+def _encode_and_normalize(embedding_client, text: str):
+    """Encode text via embedding client, L2-normalize, return (bytes, ndarray) or None."""
+    if not embedding_client or not embedding_client.is_available():
+        return None
+    embedding = embedding_client.encode(text)
+    if embedding is None or (isinstance(embedding, (list, tuple)) and len(embedding) == 0):
+        return None
+    if isinstance(embedding, np.ndarray) and embedding.size == 0:
+        return None
+    emb_array = np.array(embedding[0] if isinstance(embedding, list) else embedding, dtype=np.float32)
+    norm = np.linalg.norm(emb_array)
+    if norm > 0:
+        emb_array = emb_array / norm
+    return emb_array.tobytes(), emb_array
 
 
 @_lru_cache(maxsize=256)

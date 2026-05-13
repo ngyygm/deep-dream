@@ -236,44 +236,80 @@
   function buildGraphList(graphs) {
     if (!graphs.length) return emptyState(t('dashboard.noGraphs'));
 
-    const cards = graphs.map(g => {
+    const rows = graphs.map(g => {
       const s = g.storage || {};
       const q = g.queue || {};
-      const th = g.threads || {};
       const isActive = (q.running_count || 0) > 0 || (q.queued_count || 0) > 0;
-
-      return `<div class="card mb-3">
-        <div class="card-header">
-          <div style="display:flex;align-items:center;gap:0.5rem;">
-            <i data-lucide="git-branch" style="width:16px;height:16px;color:var(--primary);"></i>
-            <span class="card-title" style="cursor:pointer;" onclick="setGraphId('${escapeHtml(g.graph_id)}');navigate('#graph');">${escapeHtml(g.graph_id)}</span>
-            ${isActive ? `<span class="badge badge-info" style="margin-left:0.25rem;">${t('dashboard.active')}</span>` : ''}
-          </div>
-          <span style="font-size:0.75rem;color:var(--text-muted);">${t('dashboard.queueRunning')}: ${q.running_count || 0} / ${t('dashboard.queueQueued')}: ${q.queued_count || 0}</span>
-        </div>
-        <div class="grid grid-cols-3 gap-4">
-          <div>
-            <div style="font-size:0.75rem;color:var(--text-muted);">${t('dashboard.totalEntities')}</div>
-            <div class="mono" style="font-size:1rem;font-weight:600;">${formatNumber(s.entities)}</div>
-          </div>
-          <div>
-            <div style="font-size:0.75rem;color:var(--text-muted);">${t('dashboard.totalRelations')}</div>
-            <div class="mono" style="font-size:1rem;font-weight:600;">${formatNumber(s.relations)}</div>
-          </div>
-          <div>
-            <div style="font-size:0.75rem;color:var(--text-muted);">${t('dashboard.episodes')}</div>
-            <div class="mono" style="font-size:1rem;font-weight:600;">${formatNumber(s.episodes)}</div>
-          </div>
-        </div>
-        ${(th.python_threads_total > 0) ? `<div style="margin-top:0.5rem;display:flex;flex-wrap:wrap;gap:0.5rem;font-size:0.7rem;">
-          <span style="color:${(th.remember_worker_threads_busy || 0) > 0 ? 'var(--success)' : 'var(--text-muted)'};">${t('dashboard.taskThreads', { busy: th.remember_worker_threads_busy || 0, alive: th.remember_worker_threads_alive || 0 })}</span>
-          <span style="color:${(th.window_threads_busy || 0) > 0 ? 'var(--info)' : 'var(--text-muted)'};">${t('dashboard.windowThreads', { busy: th.window_threads_busy || 0, max: th.window_threads_configured || th.window_threads_alive || 0 })}</span>
-          <span style="color:${(th.llm_threads_busy || 0) > 0 ? 'var(--warning)' : 'var(--text-muted)'};">${t('dashboard.llmThreads', { busy: th.llm_threads_busy || 0, max: th.llm_threads_max || th.llm_threads_alive || 0 })}</span>
-        </div>` : ''}
+      const gid = escapeHtml(g.graph_id);
+      return `<div style="display:flex;align-items:center;gap:0.75rem;padding:0.45rem 0.6rem;border-bottom:1px solid var(--border-color);font-size:0.8125rem;">
+        <i data-lucide="git-branch" style="width:14px;height:14px;color:var(--primary);flex-shrink:0;"></i>
+        <span style="cursor:pointer;font-weight:600;flex-shrink:0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" onclick="setGraphId('${gid}');navigate('#graph');" title="${gid}">${gid}</span>
+        ${isActive ? `<span class="badge badge-info" style="flex-shrink:0;font-size:0.65rem;padding:0 4px;">${t('dashboard.active')}</span>` : ''}
+        <span style="color:var(--text-muted);flex-shrink:0;">E:${formatNumber(s.entities)} R:${formatNumber(s.relations)} Ep:${formatNumber(s.episodes)}</span>
+        <span style="color:var(--text-muted);flex-shrink:0;">${t('dashboard.queueRunning')}:${q.running_count || 0} ${t('dashboard.queueQueued')}:${q.queued_count || 0}</span>
+        <span style="flex:1;"></span>
+        <button class="btn btn-ghost btn-sm btn-graph-clear" data-graph-id="${gid}" title="${t('dashboard.clearGraph')}" style="padding:2px 4px;">
+          <i data-lucide="eraser" style="width:13px;height:13px;"></i>
+        </button>
+        <button class="btn btn-ghost btn-sm btn-graph-delete" data-graph-id="${gid}" title="${t('dashboard.deleteGraph')}" style="padding:2px 4px;color:var(--error);">
+          <i data-lucide="trash-2" style="width:13px;height:13px;"></i>
+        </button>
       </div>`;
     }).join('');
 
-    return cards;
+    return rows;
+  }
+
+  async function dashboardDeleteGraph(graphId) {
+    if (!graphId) return;
+    const graphs = _graphs.map(g => g.graph_id);
+    if (graphs.length <= 1) {
+      showToast(t('dashboard.deleteGraphFailed') + ': at least one graph required', 'warning');
+      return;
+    }
+    const confirmed = await showConfirm({
+      title: t('dashboard.deleteGraph'),
+      message: t('dashboard.deleteGraphConfirm', { name: graphId }),
+      confirmLabel: t('dashboard.deleteGraph'),
+      cancelLabel: t('common.cancel'),
+      destructive: true,
+    });
+    if (!confirmed) return;
+    try {
+      await state.api.deleteGraph(graphId);
+      showToast(t('dashboard.deleteGraphSuccess', { name: graphId }), 'success');
+      _graphs = _graphs.filter(g => g.graph_id !== graphId);
+      updateGraphList();
+      if (typeof setGraphId === 'function' && state.currentGraphId === graphId) {
+        const remaining = _graphs.map(g => g.graph_id);
+        setGraphId(remaining[0] || 'default');
+      }
+      if (typeof loadGraphSelector === 'function') loadGraphSelector();
+      else syncGraphSelector();
+    } catch (e) {
+      showToast(t('dashboard.deleteGraphFailed') + `: ${e.message || e}`, 'error');
+    }
+  }
+
+  async function dashboardClearGraph(graphId) {
+    if (!graphId) return;
+    const confirmed = await showConfirm({
+      title: t('graph.clearTitle'),
+      message: t('graph.clearMessage', { name: graphId }),
+      confirmLabel: t('graph.clearConfirm'),
+      cancelLabel: t('common.cancel'),
+      destructive: true,
+    });
+    if (!confirmed) return;
+    try {
+      await state.api.clearGraph(graphId);
+      showToast(t('graph.clearSuccess', { name: graphId }), 'success');
+      const g = _graphs.find(x => x.graph_id === graphId);
+      if (g && g.storage) { g.storage.entities = 0; g.storage.relations = 0; g.storage.episodes = 0; }
+      updateGraphList();
+    } catch (e) {
+      showToast(t('graph.clearFailed') + `: ${e.message || e}`, 'error');
+    }
   }
 
   /** Build the system logs section. */
@@ -339,19 +375,19 @@
       const pct = tk.progress ?? 0;
       const pctCls = tk.status === 'failed' ? 'error' : tk.status === 'completed' ? 'success' : '';
       const isRunning = tk.status === 'running';
-      const s6p = Math.min(1, Math.max(0, tk.step6_progress ?? 0));
-      const s7p = Math.min(1, Math.max(0, tk.step7_progress ?? 0));
+      const s9p = Math.min(1, Math.max(0, tk.step9_progress ?? 0));
+      const s10p = Math.min(1, Math.max(0, tk.step10_progress ?? 0));
       const smp = Math.min(1, Math.max(0, tk.main_progress ?? 0));
-      const overallPct = Math.min(1, Math.max(0, (smp + s6p + s7p) / 3));
+      const overallPct = Math.min(1, Math.max(0, (smp + s9p + s10p) / 3));
 
-      // 进度区域：running 时显示 总进度 + 滑窗(1–5) + 实体链 + 关系链
+      // 进度区域：running 时显示 总进度 + 滑窗(1–8) + 实体链 + 关系链
       let progressHtml;
       if (isRunning) {
         progressHtml = tripleProgressBar({
-          smp, s6p, s7p,
+          smp, s9p, s10p,
           mainLabel: tk.main_label || '-',
-          step6Label: tk.step6_label || '-',
-          step7Label: tk.step7_label || '-',
+          step9Label: tk.step9_label || '-',
+          step10Label: tk.step10_label || '-',
         });
       } else {
         progressHtml = `
@@ -462,10 +498,29 @@
   async function fetchGraphs() {
     try {
       const res = await state.api.systemGraphs();
+      const prevIds = _graphs.map(g => g.graph_id).join(',');
       _graphs = res.data || [];
       updateGraphList();
-      updateStatCards(); // stat cards also depend on graph storage counts
+      updateStatCards();
+      // Sync top nav selector from same data source
+      const curIds = _graphs.map(g => g.graph_id).join(',');
+      if (prevIds !== curIds) syncGraphSelector();
     } catch (err) { console.warn('fetchGraphs failed:', err); }
+  }
+
+  function syncGraphSelector() {
+    const sel = document.getElementById('graph-selector');
+    if (!sel) return;
+    const ids = _graphs.map(g => g.graph_id);
+    const currentVal = state.currentGraphId;
+    sel.innerHTML = ids.map(g =>
+      `<option value="${escapeHtml(g)}" ${g === currentVal ? 'selected' : ''}>${escapeHtml(g)}</option>`
+    ).join('');
+    if (!ids.includes(currentVal)) {
+      sel.innerHTML = `<option value="${escapeHtml(currentVal)}" selected>${escapeHtml(currentVal)}</option>` + sel.innerHTML;
+    }
+    const delBtn = document.getElementById('graph-delete-btn');
+    if (delBtn) delBtn.style.display = ids.length > 1 ? '' : 'none';
   }
 
   async function fetchTasks() {
@@ -571,6 +626,20 @@
     if (listEl) listEl.innerHTML = buildGraphList(_graphs);
     if (countEl) countEl.textContent = t('dashboard.graphCount', { count: _graphs.length });
     if (window.lucide) lucide.createIcons({ nodes: [listEl] });
+    if (listEl) {
+      listEl.querySelectorAll('.btn-graph-delete').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          await dashboardDeleteGraph(btn.getAttribute('data-graph-id'));
+        });
+      });
+      listEl.querySelectorAll('.btn-graph-clear').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          await dashboardClearGraph(btn.getAttribute('data-graph-id'));
+        });
+      });
+    }
   }
 
   let _lastTasksHtml = '';

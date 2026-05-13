@@ -3,15 +3,14 @@ Entities blueprint — Entity CRUD, search, relations, timeline, intelligence.
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import re as _re
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
-from flask import Blueprint, current_app, request
+from flask import Blueprint, request
 
 from core.models import Entity
 from core.perf import _perf_timer
@@ -28,6 +27,24 @@ _validate_positive_int = _h._validate_positive_int
 
 _VALID_TEXT_MODES = frozenset(("name_only", "content_only", "name_and_content"))
 _VALID_SIM_METHODS = frozenset(("embedding", "text", "jaccard", "bleu"))
+
+
+def _sse_stream(total, items, event_name, serialize_fn):
+    """Generic SSE stream generator: meta → N×event → done."""
+    from core.server.sse import sse_event
+    try:
+        yield sse_event("meta", {"total": total})
+        for item in items:
+            yield sse_event(event_name, serialize_fn(item))
+        yield sse_event("done", {"status": "completed"})
+    except GeneratorExit:
+        pass
+    except Exception as e:
+        logger.warning("%s stream error: %s", event_name, e)
+        try:
+            yield sse_event("error", {"message": str(e)})
+        except (GeneratorExit, StopIteration):
+            pass
 _VALID_SEARCH_MODES = frozenset(("semantic", "bm25", "hybrid"))
 
 # Shared pool for parallel queries (avoids per-request thread creation)
@@ -73,6 +90,76 @@ def find_entities_all():
         })
     except Exception as e:
         return err(str(e), 500)
+
+
+@entities_bp.route("/api/v1/find/graph/stream/entities", methods=["GET"])
+def stream_graph_entities():
+    """SSE streaming — yields entities one by one.  Events: meta → N×entity → done.
+
+    Query params:
+      since — ISO timestamp; if given, only stream entities modified after this time.
+    """
+    from core.server.sse import sse_event, sse_response
+
+    processor = _get_processor()
+    store = processor.storage
+    h = _h
+    since = request.args.get("since")
+
+    def generate():
+        total = store.count_entities_since(since) if since else store.count_unique_entities()
+        yield from _sse_stream(
+            total,
+            store.stream_all_entities(exclude_embedding=True, since=since),
+            "entity",
+            lambda item: h.entity_to_dict(item[0], skip_sections=True, version_count=item[1]),
+        )
+
+    return sse_response(generate())
+
+
+@entities_bp.route("/api/v1/find/graph/stream/relations", methods=["GET"])
+def stream_graph_relations():
+    """SSE streaming — yields relations one by one.  Events: meta → N×relation → done.
+
+    Query params:
+      since — ISO timestamp; if given, only stream relations modified after this time.
+    """
+    from core.server.sse import sse_event, sse_response
+
+    processor = _get_processor()
+    store = processor.storage
+    h = _h
+    since = request.args.get("since")
+
+    def generate():
+        name_map = store.get_all_entity_names_map()
+
+        def _serialize(rel):
+            d = h.relation_to_dict(rel)
+            d['entity1_name'] = name_map.get(rel.entity1_absolute_id, '')
+            d['entity2_name'] = name_map.get(rel.entity2_absolute_id, '')
+            return d
+
+        total = store.count_relations_since(since) if since else store.count_unique_relations()
+        yield from _sse_stream(
+            total,
+            store.stream_all_relations(exclude_embedding=True, since=since),
+            "relation",
+            _serialize,
+        )
+
+    return sse_response(generate())
+
+
+@entities_bp.route("/api/v1/find/graph/version", methods=["GET"])
+@safe_endpoint
+def graph_version():
+    """Lightweight version endpoint — returns counts and last_modified timestamp."""
+    processor = _get_processor()
+    store = processor.storage
+    counts = store.get_graph_version()
+    return ok(counts)
 
 
 @entities_bp.route("/api/v1/find/entities/as-of-time", methods=["GET"])

@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 from core import Neo4jStorageManager, EmbeddingClient
 from core.utils import normalize_entity_pair
+from core.log import info as _log_info, error as _log_error
 
 
 # Load HTML template
@@ -1472,7 +1473,7 @@ class GraphWebServer:
         else:
             embedding_info = "未安装sentence-transformers（将使用文本相似度搜索）"
         
-        print(f"""
+        _log_info("System", f"""
 ╔════════════════════════════════════════╗
 ║   时序记忆图谱可视化 Web 服务            ║
 
@@ -1499,9 +1500,9 @@ API地址:  http://localhost:{self.port}/api/graphs/data
         try:
             self.app.run(host=host, port=self.port, debug=debug)
         except KeyboardInterrupt:
-            print("\n\n👋 服务器已停止")
+            _log_info("System", "服务器已停止")
         except Exception as e:
-            print(f"\n❌ 错误: {e}")
+            _log_error("System", f"服务器错误: {e}")
 
 
 def main():
@@ -1537,7 +1538,7 @@ def main():
 
     if args.config:
         if not Path(args.config).exists():
-            print(f"错误：配置文件不存在: {args.config}")
+            _log_error("System", f"配置文件不存在: {args.config}")
             return 1
         config = load_config(args.config)
         base_path = config.get('storage_path', args.storage)
@@ -1557,8 +1558,8 @@ def main():
     storage_path = str(Path(base_path) / args.graph_id)
 
     if not Path(storage_path).exists():
-        print(f"错误：图谱路径不存在: {storage_path}")
-        print(f"  基础目录: {base_path}，graph_id: {args.graph_id}")
+        _log_error("System", f"图谱路径不存在: {storage_path}")
+        _log_error("System", f"  基础目录: {base_path}，graph_id: {args.graph_id}")
         return 1
 
     # Read port from config if --config is used

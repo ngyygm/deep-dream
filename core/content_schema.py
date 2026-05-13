@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import hashlib
 import re
+import uuid
+from datetime import datetime
 from functools import lru_cache
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 
 # ---------------------------------------------------------------------------
@@ -180,5 +182,53 @@ def sections_equal(old: Dict[str, str], new: Dict[str, str]) -> bool:
 def has_any_change(diff: Dict[str, Dict[str, object]]) -> bool:
     """判断 diff 中是否有任何 section 发生变更。"""
     return any(v.get("changed", False) for v in diff.values())
+
+
+def compute_content_patches(
+    family_id: str,
+    old_content: str,
+    old_content_format: str,
+    new_content: str,
+    new_absolute_id: str,
+    target_type: str,
+    schema: List[str],
+    source_document: str = "",
+    event_time: Optional[datetime] = None,
+) -> list:
+    """计算新旧内容之间的 section 级变更 patches。
+
+    Shared by both Entity and Relation versioning.
+    Returns a list of ContentPatch dataclass instances.
+    """
+    from core.models import ContentPatch
+
+    if not old_content:
+        return []
+    old_sections = content_to_sections(old_content, old_content_format, schema)
+    new_sections = content_to_sections(new_content, "markdown", schema)
+    if sections_equal(old_sections, new_sections):
+        return []
+    diff = compute_section_diff(old_sections, new_sections)
+    if not has_any_change(diff):
+        return []
+    patches = []
+    _now = datetime.now()
+    for key, info in diff.items():
+        if not info.get("changed", False):
+            continue
+        patches.append(ContentPatch(
+            uuid=str(uuid.uuid4()),
+            target_type=target_type,
+            target_absolute_id=new_absolute_id,
+            target_family_id=family_id,
+            section_key=key,
+            change_type=info.get("change_type", "modified"),
+            old_hash=section_hash(info.get("old", "") or ""),
+            new_hash=section_hash(info.get("new", "") or ""),
+            diff_summary=f"Section '{key}' {info.get('change_type', 'modified')}",
+            source_document=source_document,
+            event_time=event_time or _now,
+        ))
+    return patches
 
 

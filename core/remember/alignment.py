@@ -7,23 +7,20 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 import time as _time
 import threading
-from math import ceil
-from pathlib import Path
 import uuid
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 from collections import defaultdict
 from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor, Future
+from concurrent.futures import ThreadPoolExecutor
 
 _HIGH_MEDIUM_SEVERITY = frozenset(("high", "medium"))
 
 # Shared pool for contradiction detection and summary evolution (avoids per-call thread churn)
-_alignment_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="align")
+_alignment_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="align")
 
-from core.models import Episode, Entity
+from core.models import Episode
 from core.debug_log import log as dbg, log_section as dbg_section, _ENABLED as _dbg_enabled
 from core.utils import compute_doc_hash, wprint_info, wprint_warn, wprint_debug
 from core.llm.client import (
@@ -34,8 +31,6 @@ from .helpers import _AlignResult
 from .helpers import (
     _core_entity_name,
     _is_valid_entity_name,
-    validate_written_entities_with_report,
-    validate_extracted_relations_with_report,
     _PAREN_ANNOTATION_RE as _PAREN_ANNOTATION_STRIP_RE,
 )
 
@@ -115,73 +110,6 @@ class _PipelineExtractionMixin:
                 else:
                     for fid in _to_downgrade:
                         self.storage.adjust_confidence_on_contradiction(fid, source_type="entity")
-            except Exception:
-                pass
-
-    def _detect_and_apply_relation_contradictions(self, family_ids: List[str], verbose: bool = False):
-        """对多版本关系运行矛盾检测，发现高严重性矛盾时自动降低置信度。
-
-        这是 remember 流水线的自动关系矛盾检测步骤：
-        1. 批量获取所有 family_id 的版本历史（单次 DB 查询）
-        2. 并行调用 LLM detect_contradictions(concept_type="relation") 检测矛盾
-        3. 对 medium/high 严重性矛盾调用 adjust_confidence_on_contradiction
-        """
-        batch_fn = getattr(self.storage, 'get_relation_versions_batch', None)
-        all_versions = None
-        if batch_fn:
-            try:
-                all_versions = batch_fn(family_ids)
-            except Exception:
-                all_versions = None
-
-        to_check = []
-        for fid in family_ids:
-            versions = (all_versions or {}).get(fid) if all_versions is not None else None
-            if versions is None:
-                try:
-                    versions = self.storage.get_relation_versions(fid)
-                except Exception:
-                    continue
-            if len(versions) >= 2:
-                to_check.append((fid, versions))
-
-        if not to_check:
-            return
-
-        n_workers = min(len(to_check), getattr(self, 'llm_threads', 2))
-
-        def _detect_one(item):
-            fid, versions = item
-            try:
-                return (fid, self.llm_client.detect_contradictions(fid, versions, concept_type="relation"))
-            except Exception as e:
-                if verbose:
-                    wprint_warn(f"【关系矛盾检测】{fid}: 检测失败 ({e})")
-                return (fid, None)
-
-        if n_workers > 1 and len(to_check) > 1:
-            results = list(_alignment_pool.map(_detect_one, to_check))
-        else:
-            results = [_detect_one(item) for item in to_check]
-
-        # Batch apply confidence adjustments
-        _to_downgrade = []
-        for fid, contradictions in results:
-            if not contradictions:
-                continue
-            high_severity = [c for c in contradictions if c.get("severity") in _HIGH_MEDIUM_SEVERITY]
-            if high_severity:
-                _to_downgrade.append(fid)
-                if verbose:
-                    wprint_warn(f"【关系矛盾检测】{fid}: 发现 {len(high_severity)} 个中/高严重性矛盾，降低置信度")
-        if _to_downgrade:
-            try:
-                batch_fn = getattr(self.storage, 'adjust_confidence_on_contradiction_batch', None)
-                if batch_fn:
-                    batch_fn(_to_downgrade, source_type="relation")
-                else:
-                    for fid in _to_downgrade:
-                        self.storage.adjust_confidence_on_contradiction(fid, source_type="relation")
             except Exception:
                 pass
 
@@ -352,34 +280,6 @@ class _PipelineExtractionMixin:
         task_id = getattr(self.llm_client, "_distill_task_id", None) or f"adhoc_{document_name}"
         return Path(root) / "remember_debug" / task_id
 
-    def _write_remember_step_snapshot(
-        self,
-        *,
-        document_name: str,
-        window_index: int,
-        step_name: str,
-        payload: Dict[str, Any],
-    ) -> None:
-        base_dir = self._remember_debug_base_dir(document_name)
-        if base_dir is None:
-            return
-        base_dir.mkdir(parents=True, exist_ok=True)
-        filename = f"window_{window_index + 1:03d}_{step_name}.json"
-        try:
-            with open(base_dir / filename, "w", encoding="utf-8") as f:
-                json.dump(payload, f, ensure_ascii=False, indent=2)
-        except OSError:
-            pass
-
-    @staticmethod
-    def _soft_entity_target(input_text: str, entities_per_100_chars: float) -> int:
-        if entities_per_100_chars <= 0:
-            return 0
-        if not input_text:
-            return 0
-        return max(1, int(ceil(len(input_text) / 100.0 * entities_per_100_chars)))
-
-
     def _extract_only(self, new_episode: Episode, input_text: str,
                       document_name: str, verbose: bool = True,
                       verbose_steps: bool = True,
@@ -437,28 +337,20 @@ class _PipelineExtractionMixin:
                 versions_map = {fid: _dup_vc_map.get(fid, 0) for fid in ids}
 
                 # Same-name entities: always merge — name match is strong signal.
-                should_merge = True
-
-                if should_merge:
-                    primary_id = max(ids, key=lambda fid: versions_map.get(fid, 0))
-                    entity_name_to_id[name] = primary_id
-                    duplicate_pairs = [(fid, primary_id) for fid in ids if fid and fid != primary_id]
-                    if duplicate_pairs:
-                        batch_fn = getattr(self.storage, 'register_entity_redirects_batch', None)
-                        if batch_fn:
-                            batch_fn(duplicate_pairs)
-                        else:
-                            for fid, pid in duplicate_pairs:
-                                self.storage.register_entity_redirect(fid, pid)
-                    if verbose:
-                        wprint_info(
-                            f"【步骤9】冲突｜主实体｜{name}->{primary_id} v{versions_map.get(primary_id, 0)}"
-                        )
-                else:
-                    ambiguous_duplicate_names.add(name)
-                    if verbose:
-                        wprint_info(f"【步骤9】冲突｜跳过｜同名实体 '{name}' 不自动映射")
-                    continue
+                primary_id = max(ids, key=lambda fid: versions_map.get(fid, 0))
+                entity_name_to_id[name] = primary_id
+                duplicate_pairs = [(fid, primary_id) for fid in ids if fid and fid != primary_id]
+                if duplicate_pairs:
+                    batch_fn = getattr(self.storage, 'register_entity_redirects_batch', None)
+                    if batch_fn:
+                        batch_fn(duplicate_pairs)
+                    else:
+                        for fid, pid in duplicate_pairs:
+                            self.storage.register_entity_redirect(fid, pid)
+                if verbose:
+                    wprint_info(
+                        f"【步骤9】冲突｜主实体｜{name}->{primary_id} v{versions_map.get(primary_id, 0)}"
+                    )
             else:
                 entity_name_to_id[name] = ids[0]
 
@@ -611,42 +503,6 @@ class _PipelineExtractionMixin:
         """Contradiction detection & summary evolution — disabled in auto pipeline (too expensive).
         Manual API endpoints (/contradictions, /resolve-contradiction) still work."""
         return
-
-        # Pre-fetch all versions once (shared by contradiction detection and summary evolution)
-        batch_fn = getattr(self.storage, 'get_entity_versions_batch', None)
-        all_versions = None
-        if batch_fn:
-            try:
-                all_versions = batch_fn(_all_fids)
-            except Exception:
-                all_versions = None
-
-        # Derive version counts from pre-fetched data
-        if all_versions is not None:
-            _vc_map = {fid: len(vs) for fid, vs in all_versions.items()}
-        else:
-            _vc_map = self.storage.get_entity_version_counts(_all_fids)
-
-        _versioned_fids = [fid for fid in _all_fids if _vc_map.get(fid, 0) >= 2]
-        _evolve_fids = []  # disabled: content merge already carries all info; 77s LLM cost not justified
-
-        # Run contradiction detection and summary evolution in parallel —
-        # they work on different fields (confidence vs summary) with no dependency
-        _futures = []
-        if _versioned_fids:
-            _futures.append(_alignment_pool.submit(
-                self._detect_and_apply_contradictions,
-                _versioned_fids, verbose, all_versions))
-        if _evolve_fids:
-            _futures.append(_alignment_pool.submit(
-                self._auto_evolve_summaries,
-                _evolve_fids, verbose, all_versions))
-        # Wait for both to complete
-        for f in _futures:
-            try:
-                f.result()
-            except Exception:
-                pass
 
     def _record_entity_mentions(self, unique_entities, entity_name_to_id,
                                  new_episode, verbose=False):
@@ -868,7 +724,7 @@ class _PipelineExtractionMixin:
             if progress_callback:
                 frac = _entity_done / max(1, _entity_total)
                 progress_callback(p_lo + _step_size * frac,
-                    f"{_win_label} · 步骤9/7: 实体对齐 ({_entity_done}/{_entity_total})",
+                    f"{_win_label} · 步骤9/10: 实体对齐 ({_entity_done}/{_entity_total})",
                     f"实体对齐 {_entity_done}/{_entity_total}")
 
         _t_align_start = _time.time()
@@ -885,9 +741,8 @@ class _PipelineExtractionMixin:
             embedding_full_search_threshold=self.embedding_full_search_threshold,
             on_entity_processed=on_entity_processed_callback,
             base_time=new_episode.event_time,
-            # Performance optimization: use higher parallelism floor for non-conservative mode
-            # Conservative mode: serial (1 worker). Non-conservative: max(4, llm_threads) for better throughput.
-            max_workers=(1 if getattr(self, "remember_alignment_conservative", False) else max(4, self.llm_threads)),
+            # Conservative mode: serial (1 worker). Non-conservative: llm_threads for parallel processing.
+            max_workers=(1 if getattr(self, "remember_alignment_conservative", False) else self.llm_threads),
             verbose=verbose,
             entity_embedding_prefetch=entity_embedding_prefetch,
             already_versioned_family_ids=already_versioned_family_ids,
@@ -928,6 +783,9 @@ class _PipelineExtractionMixin:
         entity_name_to_ids = {name: list(fids) for name, fids in _name_to_fids.items()}
 
         # 检测和处理同名实体冲突
+        if progress_callback:
+            progress_callback(p_lo + _step_size * 0.85,
+                f"{_win_label} · 步骤9/10: 同名实体冲突合并", "")
         _t_dup_start = _time.time()
         entity_name_to_id, ambiguous_duplicate_names = self._resolve_same_name_conflicts(
             entity_name_to_ids, verbose=verbose
@@ -958,14 +816,26 @@ class _PipelineExtractionMixin:
                 wprint_info(f"【步骤9】映射｜合并｜{len(merged_mappings)}个")
 
         # 步骤9：构建完整的实体名称→ID映射表，防止关系丢失
+        if progress_callback:
+            progress_callback(p_lo + _step_size * 0.89,
+                f"{_win_label} · 步骤9/10: 关系端点名称解析", "")
+        _t_resolve = _time.time()
         entity_name_to_id, _db_matched, _fuzzy_matched = self._resolve_missing_relation_entity_names(
             pending_relations_from_entities, entity_name_to_id, ambiguous_duplicate_names
         )
+        if window_timings_ref is not None:
+            window_timings_ref["step9-resolve_missing_names"] = _time.time() - _t_resolve
 
         # 名称→ID转换
+        if progress_callback:
+            progress_callback(p_lo + _step_size * 0.93,
+                f"{_win_label} · 步骤9/10: 名称→ID转换", "")
+        _t_convert = _time.time()
         updated_pending_relations, _skipped_relations, _self_relations = self._convert_pending_relations_to_ids(
             pending_relations_from_entities, entity_name_to_id, verbose=verbose
         )
+        if window_timings_ref is not None:
+            window_timings_ref["step9-convert_to_ids"] = _time.time() - _t_convert
 
         if _skipped_relations or _self_relations > 0:
             _parts = [f"成功解析 {len(updated_pending_relations)} 个"]
@@ -1015,13 +885,21 @@ class _PipelineExtractionMixin:
         # Phase B+: 自动矛盾检测 + Phase B++: 自动摘要进化
         self._post_align_entity_maintenance(unique_entities, verbose=verbose)
 
+        # Episode→Entity MENTIONS + corroboration
+        if progress_callback:
+            progress_callback(p_lo + _step_size * 0.97,
+                f"{_win_label} · 步骤9/10: Episode-Entity关联记录", "")
+
         if progress_callback:
             progress_callback(p_hi,
-                f"{_win_label} · 步骤9/7: 实体对齐",
+                f"{_win_label} · 步骤9/10: 实体对齐",
                 f"实体对齐完成，共 {len(unique_entities)} 个实体")
 
         # Phase C: 记录 Episode → Entity MENTIONS
+        _t_mentions = _time.time()
         self._record_entity_mentions(unique_entities, entity_name_to_id, new_episode, verbose=verbose)
+        if window_timings_ref is not None:
+            window_timings_ref["step9-entity_mentions"] = _time.time() - _t_mentions
 
         # Capture validated family_ids to skip redundant re-resolution in step 7
         _validated_fids = set(entity_name_to_id.values()) - {""}
@@ -1076,9 +954,12 @@ class _PipelineExtractionMixin:
         if step10_inputs_cache is not None:
             relation_inputs, entity_name_to_id, unique_pending_relations, all_pending_relations = step10_inputs_cache
         else:
+            _t_inputs = _time.time()
             relation_inputs, entity_name_to_id, unique_pending_relations, all_pending_relations = (
                 self._build_step10_relation_inputs_from_align_result(align_result)
             )
+            if window_timings_ref is not None:
+                window_timings_ref["step10-input_build"] = _time.time() - _t_inputs
 
         if verbose:
             duplicate_count = len(all_pending_relations) - len(unique_pending_relations)
@@ -1109,9 +990,13 @@ class _PipelineExtractionMixin:
             _rel_done[0] = done
             if progress_callback:
                 frac = done / max(1, total)
-                progress_callback(p_lo + _step_size * frac,
-                    f"{_win_label} · 步骤10/7: 关系对齐 ({done}/{total})",
+                progress_callback(p_lo + _step_size * 0.05 + _step_size * 0.85 * frac,
+                    f"{_win_label} · 步骤10/10: 关系对齐 ({done}/{total})",
                     f"关系对齐 {done}/{total}")
+
+        if progress_callback:
+            progress_callback(p_lo + _step_size * 0.01,
+                f"{_win_label} · 步骤10/10: 关系输入构建（{len(unique_pending_relations)}条）", "")
 
         _t_rel_start = _time.time()
         all_processed_relations = self.relation_processor.process_relations_batch(
@@ -1120,13 +1005,13 @@ class _PipelineExtractionMixin:
             new_episode.absolute_id,
             source_document=document_name,
             base_time=new_episode.event_time,
-            # Performance optimization: use higher parallelism floor for non-conservative mode
-            # Conservative mode: serial (1 worker). Non-conservative: max(4, llm_threads) for better throughput.
-            max_workers=(1 if getattr(self, "remember_alignment_conservative", False) else max(4, self.llm_threads)),
+            # Conservative mode: serial (1 worker). Non-conservative: llm_threads for parallel processing.
+            max_workers=(1 if getattr(self, "remember_alignment_conservative", False) else self.llm_threads),
             on_relation_done=_on_relation_pair_done,
             # detail 模式常开 verbose、关 verbose_steps：避免逐条 [关系操作] 刷屏
             verbose_relation=bool(verbose and verbose_steps),
             prepared_relations_by_pair=prepared_relations_by_pair,
+            window_timings_ref=window_timings_ref,
         )
         _t_rel_elapsed = _time.time() - _t_rel_start
         if window_timings_ref is not None:
@@ -1141,6 +1026,10 @@ class _PipelineExtractionMixin:
                 wprint_info(f"【步骤10】关系｜小结｜{len(all_processed_relations)}个")
         elif verbose_steps:
             wprint_info("【步骤10】关系｜完成｜")
+
+        if progress_callback:
+            progress_callback(p_lo + _step_size * 0.92,
+                f"{_win_label} · 步骤10/10: Episode-Relation关联记录", "")
 
         if verbose:
             wprint_info("【窗口】流水｜结束｜")
@@ -1159,7 +1048,7 @@ class _PipelineExtractionMixin:
 
         if progress_callback:
             progress_callback(p_hi,
-                f"{_win_label} · 步骤10/7: 窗口完成",
+                f"{_win_label} · 步骤10/10: 窗口完成",
                 f"{len(unique_entities)} 个实体, {len(all_processed_relations)} 个关系")
 
         # Phase B+: 自动关系矛盾检测 — disabled (too expensive for auto pipeline)
@@ -1269,16 +1158,13 @@ class _PipelineExtractionMixin:
         episode_id: str = "",
         source_document: str = "",
     ) -> int:
-        """清理孤立实体：先尝试补救（找关系），再删除无法补救的。
+        """处理孤立实体：先尝试补救（找关系），再为无法补救的创建兜底共现关系。
 
         在 step10（关系存储）完成后调用。此时关系已经全部写入，
         可以准确判断哪些实体是孤立的。
 
         补救流程：对孤立实体调用 LLM 寻找与其他实体的关系，写入后重新检查度数，
-        仍然为 0 的才删除。
-
-        重要：只删除「本次窗口新创建」的孤立实体。如果实体在对齐前就存在
-        （有历史版本），即使当前无关系也不删除——因为历史版本可能携带重要信息。
+        仍然为 0 的创建兜底共现关系（不再删除）。
 
         Args:
             saved_entities: step9 存入的实体列表（_AlignResult.unique_entities）
@@ -1289,7 +1175,7 @@ class _PipelineExtractionMixin:
             source_document: 来源文档名（补救写关系时使用）
 
         Returns:
-            删除的孤立实体数量
+            删除的孤立实体数量（始终为 0，不再删除）
         """
         if not saved_entities:
             return 0
@@ -1347,39 +1233,92 @@ class _PipelineExtractionMixin:
         if not truly_new_orphans:
             return 0
 
-        # ---- 删除阶段：补救后仍然孤立的实体 ----
-        deleted = 0
-        # Pre-build family_id → entity name lookup (avoids O(F*S) linear scans)
-        _fid_to_name = {e.family_id: getattr(e, 'name', '?') for e in saved_entities if hasattr(e, 'family_id') and e.family_id}
-        if hasattr(self.storage, 'batch_delete_entities'):
-            try:
-                deleted = self.storage.batch_delete_entities(truly_new_orphans)
-                if deleted > 0 and verbose:
-                    for fid in truly_new_orphans:
-                        entity_name = _fid_to_name.get(fid, "?")
-                        wprint_debug(f"  │  清理孤立实体(新): {entity_name} ({fid})")
-            except Exception:
-                pass
-        else:
-            for fid in truly_new_orphans:
-                try:
-                    cnt = self.storage.delete_entity_by_id(fid)
-                    if cnt > 0:
-                        deleted += 1
-                        if verbose:
-                            entity_name = _fid_to_name.get(fid, "?")
-                            wprint_debug(f"  │  清理孤立实体(新): {entity_name} ({fid})")
-                except Exception:
-                    pass
+        # ---- 兜底阶段：为仍然孤立的实体创建共现关系 ----
+        _fallback_count = self._create_fallback_cooccurrence_relations(
+            truly_new_orphans, saved_entities,
+            episode_id, source_document, verbose,
+        )
 
-        if deleted > 0 or recovered > 0:
-            # 清理缓存
+        if _fallback_count > 0 or recovered > 0:
             try:
                 self.storage._cache.invalidate_keys(["graph_stats"])
             except Exception:
                 pass
 
-        return deleted
+        return 0  # 不再删除孤立实体
+
+    def _create_fallback_cooccurrence_relations(
+        self,
+        orphan_fids: List[str],
+        saved_entities: list,
+        episode_id: str,
+        source_document: str,
+        verbose: bool,
+    ) -> int:
+        """为孤立实体创建兜底共现关系，确保每个实体至少有一个关系链接。"""
+        if not orphan_fids:
+            return 0
+
+        # 构建 family_id → entity 映射
+        fid_to_entity = {}
+        for e in saved_entities:
+            fid = getattr(e, 'family_id', None)
+            if fid:
+                fid_to_entity[fid] = e
+
+        # 非孤立实体作为关系目标
+        orphan_fid_set = set(orphan_fids)
+        non_orphan_entities = [
+            e for e in saved_entities
+            if hasattr(e, 'family_id') and e.family_id
+            and e.family_id not in orphan_fid_set
+        ]
+
+        if not non_orphan_entities:
+            if verbose:
+                wprint_info(f"  │  孤立实体兜底｜无法创建共现关系（无非孤立实体）")
+            return 0
+
+        relation_processor = getattr(self, 'relation_processor', None)
+        if not relation_processor or not episode_id:
+            return 0
+
+        if verbose:
+            _orphan_names = [getattr(fid_to_entity.get(fid), 'name', '?') for fid in orphan_fids]
+            wprint_info(f"  │  孤立实体兜底｜为 {len(orphan_fids)} 个实体创建共现关系: {', '.join(_orphan_names[:5])}")
+
+        fallback_count = 0
+        for i, orphan_fid in enumerate(orphan_fids):
+            orphan_entity = fid_to_entity.get(orphan_fid)
+            if not orphan_entity:
+                continue
+
+            # 选择非孤立实体作为关系目标（轮询分配）
+            target_entity = non_orphan_entities[i % len(non_orphan_entities)]
+
+            try:
+                rel = relation_processor._build_new_relation(
+                    orphan_fid,
+                    target_entity.family_id,
+                    f"{orphan_entity.name}与{target_entity.name}在同一文本中出现",
+                    episode_id,
+                    entity1_name=orphan_entity.name,
+                    entity2_name=target_entity.name,
+                    verbose_relation=False,
+                    source_document=source_document,
+                    confidence=0.3,
+                )
+                if rel is not None:
+                    relation_processor.storage.save_relation(rel)
+                    fallback_count += 1
+                    if verbose:
+                        wprint_debug(f"  │  兜底共现关系: {orphan_entity.name} <-> {target_entity.name}")
+            except Exception:
+                pass
+
+        if verbose:
+            wprint_info(f"  │  孤立实体兜底｜{fallback_count}/{len(orphan_fids)} 个实体成功创建共现关系")
+        return fallback_count
 
     def _recover_orphan_relations(
         self,

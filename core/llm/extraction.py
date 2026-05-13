@@ -9,6 +9,7 @@ Designed for capable models (gemma4:26b) with think mode:
 import json
 import re
 import time as _time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional, Tuple
 
 # Pre-compiled regex patterns for _extract_text_from_raw
@@ -384,7 +385,7 @@ class _LLMExtractionMixin:
 
     def batch_write_entity_content(
         self, entity_names: List[str], window_text: str,
-        chunk_size: int = 35,
+        chunk_size: int = 35, max_workers: int = 1,
     ) -> Dict[str, str]:
         """Write descriptions for entities in chunked batch LLM calls.
 
@@ -396,6 +397,7 @@ class _LLMExtractionMixin:
             window_text: Source text for context.
             chunk_size: Max entities per LLM call. Default 20 balances
                 output size vs. think token overhead.
+            max_workers: Max parallel threads for chunk processing. Default 1 (sequential).
 
         Returns:
             Dict mapping entity name -> content string.
@@ -406,12 +408,23 @@ class _LLMExtractionMixin:
         if len(entity_names) <= chunk_size:
             return self._batch_write_entity_content_single(entity_names, window_text)
 
-        # Chunked: split into groups and merge results
+        # Chunked: split into groups and process in parallel
+        chunks = [entity_names[i:i + chunk_size] for i in range(0, len(entity_names), chunk_size)]
+        workers = min(len(chunks), max(1, max_workers))
+        if workers <= 1:
+            merged: Dict[str, str] = {}
+            for chunk in chunks:
+                merged.update(self._batch_write_entity_content_single(chunk, window_text))
+            return merged
+
         merged: Dict[str, str] = {}
-        for i in range(0, len(entity_names), chunk_size):
-            chunk = entity_names[i:i + chunk_size]
-            result = self._batch_write_entity_content_single(chunk, window_text)
-            merged.update(result)
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="batch-econtent") as pool:
+            futures = {pool.submit(self._batch_write_entity_content_single, c, window_text): c for c in chunks}
+            for fut in as_completed(futures):
+                try:
+                    merged.update(fut.result())
+                except Exception:
+                    pass
         return merged
 
     def _batch_write_entity_content_single(
@@ -465,11 +478,14 @@ class _LLMExtractionMixin:
 
     def batch_write_relation_content(
         self, pairs: List[Tuple[str, str]], window_text: str,
-        chunk_size: int = 35,
+        chunk_size: int = 35, max_workers: int = 1,
     ) -> Dict[Tuple[str, str], str]:
         """Write relation descriptions in chunked batch LLM calls.
 
         Splits pairs into chunks to avoid output truncation.
+
+        Args:
+            max_workers: Max parallel threads for chunk processing. Default 1 (sequential).
 
         Returns:
             Dict mapping (entity1, entity2) -> content string.
@@ -479,11 +495,22 @@ class _LLMExtractionMixin:
         if len(pairs) <= chunk_size:
             return self._batch_write_relation_content_single(pairs, window_text)
 
+        chunks = [pairs[i:i + chunk_size] for i in range(0, len(pairs), chunk_size)]
+        workers = min(len(chunks), max(1, max_workers))
+        if workers <= 1:
+            merged: Dict[Tuple[str, str], str] = {}
+            for chunk in chunks:
+                merged.update(self._batch_write_relation_content_single(chunk, window_text))
+            return merged
+
         merged: Dict[Tuple[str, str], str] = {}
-        for i in range(0, len(pairs), chunk_size):
-            chunk = pairs[i:i + chunk_size]
-            result = self._batch_write_relation_content_single(chunk, window_text)
-            merged.update(result)
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="batch-rcontent") as pool:
+            futures = {pool.submit(self._batch_write_relation_content_single, c, window_text): c for c in chunks}
+            for fut in as_completed(futures):
+                try:
+                    merged.update(fut.result())
+                except Exception:
+                    pass
         return merged
 
     def _batch_write_relation_content_single(

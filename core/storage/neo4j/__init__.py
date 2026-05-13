@@ -8,9 +8,8 @@
 import json
 import logging
 import threading
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from ..cache import QueryCache
 
@@ -85,7 +84,7 @@ class Neo4jStorageManager(Neo4jBaseMixin, EntityStoreMixin, RelationStoreMixin, 
         self._neo4j_auth = neo4j_auth
         self._driver = neo4j.GraphDatabase.driver(
             neo4j_uri, auth=neo4j_auth,
-            max_connection_pool_size=50,
+            max_connection_pool_size=100,
             connection_acquisition_timeout=30.0,
             max_transaction_retry_time=15.0,
             notifications_disabled_categories=["UNRECOGNIZED"],
@@ -117,6 +116,8 @@ class Neo4jStorageManager(Neo4jBaseMixin, EntityStoreMixin, RelationStoreMixin, 
 
         # Entity name cache: avoid per-relation Neo4j sessions for embedding text
         self._entity_name_cache: Dict[str, str] = {}
+        self._entity_name_cache_max = 5000
+        self._entity_name_cache_lock = threading.Lock()
 
         # Reverse map: doc_hash suffix → full dir name (for O(1) lookup in _get_cache_dir_by_doc_hash)
         self._doc_hash_to_dirname: Dict[str, str] = {}
@@ -133,6 +134,11 @@ class Neo4jStorageManager(Neo4jBaseMixin, EntityStoreMixin, RelationStoreMixin, 
         self._relation_emb_cache: Optional[List[tuple]] = None
         self._relation_emb_cache_ts: float = 0.0
         self._emb_cache_ttl: float = 5.0
+
+        # Entity abs_id remap cache: avoids full DB scan per _remap_relation_endpoints call
+        self._entity_remap_cache: Optional[dict] = None
+        self._entity_remap_cache_ts: float = 0.0
+        self._entity_remap_cache_ttl: float = 30.0
         self._emb_cache_max_size: int = 10000  # Max entities to cache in memory
 
         # 向量维度（用于创建 HNSW 索引）
@@ -167,6 +173,10 @@ class Neo4jStorageManager(Neo4jBaseMixin, EntityStoreMixin, RelationStoreMixin, 
     def _session(self):
         """创建指向当前图谱数据库的 session。"""
         return self._driver.session(database=self._database)
+
+    def _streaming_session(self):
+        """创建用于 SSE 流式推送的 session，使用更大的 fetch_size 减少批次边界暂停。"""
+        return self._driver.session(database=self._database, fetch_size=10000)
 
 
     def _run(self, session, cypher: str, graph_id_safe: bool = True, **kwargs):
@@ -327,13 +337,40 @@ class Neo4jStorageManager(Neo4jBaseMixin, EntityStoreMixin, RelationStoreMixin, 
                 cnt = result.single()["cnt"]
                 if cnt > 0:
                     logger.debug("migrate_to_concepts: skipped (%d Concept nodes already exist)", cnt)
+                    self._backfill_relation_family_ids()
                     return
                 session.run("MATCH (e:Entity) SET e:Concept, e.role = 'entity'")
                 session.run("MATCH (r:Relation) SET r:Concept, r.role = 'relation'")
                 session.run("MATCH (ep:Episode) SET ep:Concept, ep.role = 'observation'")
                 logger.info("migrate_to_concepts: applied :Concept label and role to all nodes")
+                self._backfill_relation_family_ids()
         except Exception as e:
             logger.warning("migrate_to_concepts failed (non-fatal): %s", e)
+
+    def _backfill_relation_family_ids(self):
+        """Backfill entity1_family_id / entity2_family_id on Relation nodes (idempotent).
+
+        Relations created before the family_id property was added have null values.
+        This resolves the family_id from the linked Entity nodes.
+        """
+        try:
+            with self._session() as session:
+                result = session.run("""
+                    MATCH (r:Relation)
+                    WHERE r.entity1_family_id IS NULL AND r.entity1_absolute_id IS NOT NULL
+                    MATCH (e1:Entity {uuid: r.entity1_absolute_id})
+                    MATCH (e2:Entity {uuid: r.entity2_absolute_id})
+                    SET r.entity1_family_id = e1.family_id,
+                        r.entity2_family_id = e2.family_id
+                    RETURN count(r) AS cnt
+                """)
+                cnt = result.single()["cnt"]
+                if cnt > 0:
+                    logger.info("_backfill_relation_family_ids: updated %d relations", cnt)
+                else:
+                    logger.debug("_backfill_relation_family_ids: no backfill needed")
+        except Exception as e:
+            logger.warning("_backfill_relation_family_ids failed (non-fatal): %s", e)
 
 
     def _migrate_graph_id(self):
@@ -397,3 +434,16 @@ class Neo4jStorageManager(Neo4jBaseMixin, EntityStoreMixin, RelationStoreMixin, 
             self._driver.close()
         except Exception as e:
             logger.warning("Error closing Neo4j driver: %s", e)
+
+    def _cache_entity_name(self, aid: str, name: str) -> None:
+        """Insert into _entity_name_cache with bounded FIFO eviction (thread-safe)."""
+        with self._entity_name_cache_lock:
+            _enc = self._entity_name_cache
+            if len(_enc) >= self._entity_name_cache_max and aid not in _enc:
+                _enc.pop(next(iter(_enc)), None)
+            _enc[aid] = name
+
+    def invalidate_entity_remap_cache(self) -> None:
+        """Invalidate the entity abs_id remap cache (call after entity writes)."""
+        self._entity_remap_cache = None
+        self._entity_remap_cache_ts = 0.0

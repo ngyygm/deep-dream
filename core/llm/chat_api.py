@@ -218,23 +218,6 @@ def ollama_chat_stream(
         raise RuntimeError(f"Ollama /api/chat 连接失败: {e}") from e
 
 
-def ollama_chat_stream_content(
-    messages: List[Dict[str, str]],
-    *,
-    model: str = "qwen3.5:4b",
-    base_url: str = "http://localhost:11434",
-    think: bool = False,
-    timeout: int = 300,
-) -> Iterator[str]:
-    """Ollama 流式 chat：仅产出 content 增量字符串。"""
-    for chunk in ollama_chat_stream(
-        messages, model=model, base_url=base_url, think=think, timeout=timeout
-    ):
-        delta = _extract_ollama_message_content(chunk.get("message") or {})
-        if delta:
-            yield delta
-
-
 def openai_compatible_chat(
     messages: List[Dict[str, str]],
     *,
@@ -259,4 +242,11 @@ def openai_compatible_chat(
         msg = c0.get("message") or {}
         content = msg.get("content") or ""
         finish_reason = c0.get("finish_reason")
-    return OllamaChatResponse(content=content, done_reason=finish_reason, raw=data)
+    usage = data.get("usage") or {}
+    return OllamaChatResponse(
+        content=content,
+        done_reason=finish_reason,
+        raw=data,
+        prompt_eval_count=usage.get("prompt_tokens"),
+        eval_count=usage.get("completion_tokens"),
+    )

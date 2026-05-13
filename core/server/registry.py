@@ -287,16 +287,17 @@ class GraphRegistry:
     # ------------------------------------------------------------------
 
     def list_graphs(self) -> List[str]:
-        """列出基础目录下所有已有图谱。"""
-        result: List[str] = []
-        if not self._base_path.is_dir():
-            return result
-        for child in sorted(self._base_path.iterdir()):
-            if not child.is_dir():
-                continue
-            if (child / "docs").is_dir():
-                result.append(child.name)
-        return result
+        """列出所有已知图谱（文件系统 + 内存缓存）。"""
+        ids: set = set()
+        # 1. 文件系统上有 docs/ 目录的图谱
+        if self._base_path.is_dir():
+            for child in self._base_path.iterdir():
+                if child.is_dir() and (child / "docs").is_dir():
+                    ids.add(child.name)
+        # 2. 已在内存中创建 processor 的图谱（可能还没有 docs/ 目录）
+        with self._lock:
+            ids.update(self._processors.keys())
+        return sorted(ids)
 
     def list_graphs_info(self) -> List[Dict[str, Any]]:
         """列出所有图谱及其元数据和统计信息。"""

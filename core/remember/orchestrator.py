@@ -1,7 +1,7 @@
 """
 主处理流程：整合所有模块，实现完整的文档处理pipeline
 """
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, Future
 import sys
@@ -33,27 +33,22 @@ _REMEMBER_DEFAULTS = {
 import uuid
 
 from .document import DocumentProcessor
-from core.llm.client import (
-    LLMClient,
-    LLM_PRIORITY_STEP1, LLM_PRIORITY_STEP2, LLM_PRIORITY_STEP3,
-    LLM_PRIORITY_STEP4, LLM_PRIORITY_STEP5, LLM_PRIORITY_STEP6, LLM_PRIORITY_STEP7,
-)
+from core.llm.client import LLMClient
 from core.storage.embedding import EmbeddingClient
 from core.storage.neo4j import Neo4jStorageManager as StorageManager
 from core.storage import create_storage_manager
 from .entity import EntityProcessor
 from .relation import RelationProcessor
-from core.models import Episode, Entity
+from core.models import Episode
 from core.utils import (
     clear_parallel_log_context,
     compute_doc_hash,
-    remember_log,
     set_pipeline_role,
     set_window_label,
-    wprint,
     wprint_info,
 )
-from .alignment import _PipelineExtractionMixin, _AlignResult
+from core.log import info as _log_info
+from .alignment import _PipelineExtractionMixin
 from .helpers import dedupe_extraction_lists
 from .steps import _ExtractionStepsMixin
 from .cross_window import _CrossWindowDedupMixin
@@ -184,6 +179,8 @@ class TemporalMemoryGraphProcessor(_PipelineExtractionMixin, _ExtractionStepsMix
             max_workers=_max_concurrent_windows,
             thread_name_prefix="tmg-window",
         )
+        self._current_state = None
+        self._current_state_lock = threading.Lock()
 
     def __init__(self, storage_path: str, window_size: int = 1000, overlap: int = 200,
                  llm_api_key: Optional[str] = None, llm_model: str = "gpt-4",
@@ -377,7 +374,7 @@ class TemporalMemoryGraphProcessor(_PipelineExtractionMixin, _ExtractionStepsMix
             if self.remember_mode not in ("standard", "legacy"):
                 self.remember_mode = "dual_model"
 
-        self.llm_threads = max_llm_concurrency if max_llm_concurrency else 1
+        self.llm_threads = max(1, max_llm_concurrency) if max_llm_concurrency else 1
         self.load_cache_memory = load_cache_memory if load_cache_memory is not None else False
 
         self.jaccard_search_threshold = jaccard_search_threshold
@@ -404,11 +401,51 @@ class TemporalMemoryGraphProcessor(_PipelineExtractionMixin, _ExtractionStepsMix
         if self.llm_client and hasattr(self.llm_client, "get_llm_semaphore_active_count"):
             stats["llm_semaphore_active"] = self.llm_client.get_llm_semaphore_active_count()
             stats["llm_semaphore_max"] = self.llm_client.get_llm_semaphore_max()
+            if hasattr(self.llm_client, "get_llm_semaphore_detail"):
+                det = self.llm_client.get_llm_semaphore_detail()
+                stats["llm_upstream_active"] = det["upstream_active"]
+                stats["llm_upstream_max"] = det["upstream_max"]
+                stats["llm_downstream_active"] = det["downstream_active"]
+                stats["llm_downstream_max"] = det["downstream_max"]
         elif self.llm_client and hasattr(self.llm_client, "_llm_semaphore") and self.llm_client._llm_semaphore:
             sem = self.llm_client._llm_semaphore
             stats["llm_semaphore_active"] = sem.active_count
             stats["llm_semaphore_max"] = sem.max_value
         return stats
+
+    def get_pipeline_snapshot(self) -> Optional[Dict]:
+        """返回当前 remember 流水线的逐窗口状态快照，无任务时返回 None。"""
+        with self._current_state_lock:
+            state = self._current_state
+        if state is None:
+            return None
+
+        windows = []
+        for i in range(state.N):
+            windows.append({
+                "index": i,
+                "extract_done": state.extract_done[i].is_set(),
+                "step9_done": state.step9_done_ev[i].is_set(),
+                "step10_done": state.step10_done_ev[i].is_set(),
+                "has_episode": state.episodes[i] is not None,
+                "has_extract_result": state.extract_results[i] is not None,
+                "has_align_result": state.align_results[i] is not None,
+                "has_step10_result": state.step10_results[i] is not None,
+                "failed": state.window_failures[i] is not None if i < len(state.window_failures) else False,
+                "timings": dict(state.window_timings[i]) if state.window_timings[i] else {},
+            })
+
+        with state.errors_lock:
+            errors = [
+                {"phase": ph, "window": idx, "error": str(e)}
+                for ph, idx, e in state.errors
+            ]
+
+        return {
+            "total_windows": state.N,
+            "errors": errors,
+            "windows": windows,
+        }
 
     def _acquire_window_slot(self) -> None:
         """与 _release_window_slot 成对；占用槽即计入主链窗口（步骤1–5 阶段可见）。"""
@@ -753,8 +790,7 @@ class TemporalMemoryGraphProcessor(_PipelineExtractionMixin, _ExtractionStepsMix
     def _run_step9_worker(self, state, start_chunk, total_chunks, doc_name,
                           verbose, verbose_steps, event_time, progress_callback,
                           step9_chunk_done_callback):
-        """Step6 worker thread: entity alignment, chained across windows."""
-        _already_versioned = set()
+        """Step9 worker thread: entity alignment, chained across windows."""
         _emb_available = bool(self.storage.embedding_client and self.storage.embedding_client.is_available())
         for i in range(state.N):
             state.extract_done[i].wait()
@@ -782,6 +818,7 @@ class TemporalMemoryGraphProcessor(_PipelineExtractionMixin, _ExtractionStepsMix
                 break
             with self._runtime_lock:
                 self._active_step9 += 1
+            _already_versioned = set()
             _t_step9_start = time.time()
             try:
                 mc = state.episodes[i]
@@ -840,7 +877,7 @@ class TemporalMemoryGraphProcessor(_PipelineExtractionMixin, _ExtractionStepsMix
     def _run_step10_worker(self, state, start_chunk, total_chunks, doc_name,
                           verbose, verbose_steps, event_time, progress_callback,
                           chunk_done_callback):
-        """Step7 worker thread: relation alignment, chained across windows."""
+        """Step10 worker thread: relation alignment, chained across windows."""
         for i in range(state.N):
             state.step9_done_ev[i].wait()
             _action = self._poll_control(state, None)
@@ -923,6 +960,7 @@ class TemporalMemoryGraphProcessor(_PipelineExtractionMixin, _ExtractionStepsMix
                 # Phase C-2: Record Episode → Relation MENTIONS
                 if processed_rels:
                     try:
+                        _t_mentions = time.time()
                         _rel_abs_ids = list(set(
                             r.absolute_id for r in processed_rels if r.absolute_id
                         ))
@@ -933,11 +971,16 @@ class TemporalMemoryGraphProcessor(_PipelineExtractionMixin, _ExtractionStepsMix
                             )
                             if verbose or verbose_steps:
                                 wprint_info(f"【步骤10】MENTIONS｜Relation｜{len(_rel_abs_ids)}条")
+                        state.window_timings[i]["step10-relation_mentions"] = time.time() - _t_mentions
                     except Exception as _me:
                         logger.warning("Relation MENTIONS 记录失败: %s", _me)
 
                 if _window_has_entities:
+                    self._safe_progress(progress_callback,
+                        _g_lo + _span * (9.0 / 10.0 + 0.9 / 10.0),
+                        f"窗口 {start_chunk + i + 1}/{total_chunks} · 步骤10/10: 孤立实体处理", "", "step10")
                     try:
+                        _t_orphan = time.time()
                         _orphan_count = self._cleanup_orphaned_entities(
                             ar.unique_entities,
                             verbose=verbose or verbose_steps,
@@ -946,6 +989,7 @@ class TemporalMemoryGraphProcessor(_PipelineExtractionMixin, _ExtractionStepsMix
                             episode_id=getattr(mc, 'cache_id', ''),
                             source_document=doc_name,
                         )
+                        state.window_timings[i]["step10-orphan_cleanup"] = time.time() - _t_orphan
                         if _orphan_count > 0:
                             _window_has_entities = bool(ar.unique_entities) and _orphan_count < len(ar.unique_entities)
                     except Exception as _oe:
@@ -981,9 +1025,21 @@ class TemporalMemoryGraphProcessor(_PipelineExtractionMixin, _ExtractionStepsMix
             "step6_relation_discovery": "6-关系发现",
             "step7_relation_content": "7-关系内容",
             "step8_relation_quality": "8-关系质量门",
-            "step9-process_entities": "9-实体处理",
-            "step9-dedup_merge": "9-同名去重",
-            "step10-process_relations": "10-关系处理",
+            "step9-process_entities": "9a-实体处理",
+            "step9-dedup_merge": "9b-同名去重",
+            "step9-resolve_missing_names": "9c-名称解析",
+            "step9-convert_to_ids": "9d-ID转换",
+            "step9-entity_mentions": "9e-Entity记录",
+            "step10-input_build": "10a-输入构建",
+            "step10-process_relations": "10b-关系处理",
+            "step10a-db_read_relations": "  b1-DB读关系",
+            "step10a-db_fetch_entities": "  b2-DB取实体",
+            "step10a-embedding_prep": "  b3-Embedding",
+            "step10b-process_loop": "  b4-处理循环",
+            "step10c-refresh_edges": "10c-边刷新",
+            "step10d-dream_corroboration": "10d-Dream佐证",
+            "step10-relation_mentions": "10e-Relation记录",
+            "step10-orphan_cleanup": "10f-孤立处理",
         }
         _step_totals = {s: 0.0 for s in _all_steps}
         _sub_totals = {k: 0.0 for k in _sub_step_labels}
@@ -998,14 +1054,14 @@ class TemporalMemoryGraphProcessor(_PipelineExtractionMixin, _ExtractionStepsMix
                 f"{_step_labels[s]}:{_step_totals[s]:.1f}s"
                 for s in _all_steps if _step_totals[s] > 0
             )
-            remember_log(f"计时汇总｜共{_total_elapsed:.1f}s｜{_timing_detail}")
+            _log_info("Remember",f"计时汇总｜共{_total_elapsed:.1f}s｜{_timing_detail}")
             _active_subs = {k: v for k, v in _sub_totals.items() if v > 0.01}
             if _active_subs:
                 _sub_detail = " | ".join(
                     f"{_sub_step_labels[k]}:{v:.1f}s"
                     for k, v in sorted(_active_subs.items(), key=lambda x: -x[1])
                 )
-                remember_log(f"子步骤明细｜{_sub_detail}")
+                _log_info("Remember",f"子步骤明细｜{_sub_detail}")
 
     def remember_text(self, text: str, doc_name: str = "", verbose: bool = False,
                       verbose_steps: bool = True,
@@ -1069,21 +1125,21 @@ class TemporalMemoryGraphProcessor(_PipelineExtractionMixin, _ExtractionStepsMix
             if latest_metadata:
                 self.current_episode = self.storage.load_episode(latest_metadata["absolute_id"])
                 if verbose and self.current_episode:
-                    remember_log(
+                    _log_info("Remember",
                         f"已加载缓存记忆: {self.current_episode.absolute_id}，"
                         f"将在此链上追加（断点续传 start_chunk={start_chunk}）"
                     )
                 elif verbose_steps and self.current_episode:
-                    remember_log("已加载缓存记忆（断点续传）")
+                    _log_info("Remember","已加载缓存记忆（断点续传）")
             else:
                 self.current_episode = None
         else:
             self.current_episode = None
             if start_chunk == 0 and use_load_cache:
                 if verbose:
-                    remember_log("start_chunk=0，从头开始处理，不加载旧缓存链")
+                    _log_info("Remember","start_chunk=0，从头开始处理，不加载旧缓存链")
                 elif verbose_steps:
-                    remember_log("从头开始处理（不加载旧缓存链）")
+                    _log_info("Remember","从头开始处理（不加载旧缓存链）")
 
         if not document_path:
             document_path = f"api://{uuid.uuid4().hex}"
@@ -1113,6 +1169,10 @@ class TemporalMemoryGraphProcessor(_PipelineExtractionMixin, _ExtractionStepsMix
         # 预分配共享状态
         state = self._init_remember_shared_state(N)
 
+        # 暴露 state 引用供 get_pipeline_snapshot() 读取
+        with self._current_state_lock:
+            self._current_state = state
+
         # 启动 step9 / step10 线程
         t9 = threading.Thread(target=self._run_step9_worker, name="tmg-step9-chain", daemon=True,
                               args=(state, start_chunk, total_chunks, doc_name, verbose, verbose_steps,
@@ -1124,9 +1184,9 @@ class TemporalMemoryGraphProcessor(_PipelineExtractionMixin, _ExtractionStepsMix
         t10.start()
 
         if verbose or verbose_steps:
-            remember_log(
+            _log_info("Remember",
                 "并行流水线 · 日志前缀 [窗号][角色]："
-                "主线程=步骤1+提交抽取；抽取=步骤2–5；步骤9/7=链式线程。"
+                "主线程=步骤1+提交抽取；抽取=步骤2–8；步骤9/10=链式线程。"
                 "不同窗会交错，属正常。"
             )
 
@@ -1135,6 +1195,12 @@ class TemporalMemoryGraphProcessor(_PipelineExtractionMixin, _ExtractionStepsMix
             start = start_chunk * stride
 
             for ci in range(N):
+                # Pipeline depth gate: wait for an earlier window's step10 to
+                # finish so that at most ``_max_concurrent_windows`` windows are
+                # active across *all* pipeline stages (step1 through step10).
+                if ci >= self._max_concurrent_windows:
+                    state.step10_done_ev[ci - self._max_concurrent_windows].wait()
+
                 _action = self._poll_control(state, control_callback)
                 if _action:
                     self._signal_control_stop(state, _action, ci)
@@ -1173,12 +1239,12 @@ class TemporalMemoryGraphProcessor(_PipelineExtractionMixin, _ExtractionStepsMix
                     _g_lo = _wi / total_chunks
                     _g_hi = (_wi + 1) / total_chunks
                     _span = _g_hi - _g_lo
-                    _p_after_step1 = _g_lo + _span * (1.0 / 7.0)
+                    _p_after_step1 = _g_lo + _span * (1.0 / 10.0)
                     _p_end_main = _g_lo + _span * (8.0 / 10.0)
                     if progress_callback:
                         self._safe_progress(progress_callback,
                             _g_lo + _span * 0.02,
-                            f"窗口 {start_chunk + ci + 1}/{total_chunks} · 步骤1/7 进行中",
+                            f"窗口 {start_chunk + ci + 1}/{total_chunks} · 步骤1/10 进行中",
                             "", "main",
                         )
 
@@ -1214,7 +1280,7 @@ class TemporalMemoryGraphProcessor(_PipelineExtractionMixin, _ExtractionStepsMix
                                 _run_step1,
                                 chain_id="main",
                                 base_progress=_g_lo + _span * 0.02,
-                                phase_label=f"窗口 {_wi + 1}/{total_chunks} · 步骤1/7 进行中",
+                                phase_label=f"窗口 {_wi + 1}/{total_chunks} · 步骤1/10 进行中",
                                 message="步骤1 更新记忆缓存",
                                 window_label=_wlabel,
                                 pipeline_role="主线程",
@@ -1253,7 +1319,7 @@ class TemporalMemoryGraphProcessor(_PipelineExtractionMixin, _ExtractionStepsMix
                         if progress_callback:
                             self._safe_progress(progress_callback,
                                 _p_end_main,
-                                f"窗口 {_wi + 1}/{total_chunks} · 步骤1–5/7 已完成(缓存)",
+                                f"窗口 {_wi + 1}/{total_chunks} · 步骤1–8/10 已完成(缓存)",
                                 "", "main",
                             )
                         if verbose:
@@ -1265,20 +1331,20 @@ class TemporalMemoryGraphProcessor(_PipelineExtractionMixin, _ExtractionStepsMix
                                 )
                             else:
                                 wprint_info(
-                                    f"【步骤2–5】缓存｜命中｜实体{_ents_count} 关系{_rels_count}"
+                                    f"【步骤2–8】缓存｜命中｜实体{_ents_count} 关系{_rels_count}"
                                 )
                         elif verbose_steps:
                             if existing_mc:
                                 wprint_info(
-                                    f"窗口 {start_chunk + ci + 1}/{total_chunks} · 步骤1–5 已缓存跳过 → 步骤9/7"
+                                    f"窗口 {start_chunk + ci + 1}/{total_chunks} · 步骤1–8 已缓存跳过 → 步骤9/10"
                                 )
                             else:
-                                wprint_info("【步骤2–5】缓存｜跳过｜抽取已存在")
+                                wprint_info("【步骤2–8】缓存｜跳过｜抽取已存在")
                     else:
                         if progress_callback:
                             self._safe_progress(progress_callback,
                                 _p_after_step1,
-                                f"窗口 {_wi + 1}/{total_chunks} · 步骤1/7 完成",
+                                f"窗口 {_wi + 1}/{total_chunks} · 步骤1/10 完成",
                                 "", "main",
                             )
 
@@ -1303,7 +1369,7 @@ class TemporalMemoryGraphProcessor(_PipelineExtractionMixin, _ExtractionStepsMix
                                     verbose=verbose, verbose_steps=verbose_steps, event_time=event_time,
                                     progress_callback=lambda p, l, m: self._safe_progress(progress_callback, p, l, m, "main"),
                                     progress_range=(
-                                        _idx_lo + _idx_span * (1.0 / 7.0),
+                                        _idx_lo + _idx_span * (1.0 / 10.0),
                                         _idx_lo + _idx_span * (8.0 / 10.0),
                                     ),
                                     window_index=start_chunk + idx, total_windows=total_chunks,
@@ -1315,7 +1381,7 @@ class TemporalMemoryGraphProcessor(_PipelineExtractionMixin, _ExtractionStepsMix
                                 _extract_elapsed = time.time() - _t_extract_start
                                 state.window_timings[idx]["step2-8"] = _extract_elapsed
                                 if verbose or verbose_steps:
-                                    wprint_info(f"【步骤2–5】完成｜{_extract_elapsed:.1f}s")
+                                    wprint_info(f"【步骤2–8】完成｜{_extract_elapsed:.1f}s")
                             except Exception as e:
                                 if self._record_window_error(state, "extract", idx, e):
                                     logger.error("extract window %d error: %s", idx, e, exc_info=True)
@@ -1363,11 +1429,11 @@ class TemporalMemoryGraphProcessor(_PipelineExtractionMixin, _ExtractionStepsMix
 
         t9.join(timeout=60)
         if t9.is_alive():
-            remember_log("警告: step9 线程在 join(60s) 超时后仍在运行")
+            _log_info("Remember","警告: step9 线程在 join(60s) 超时后仍在运行")
 
         t10.join(timeout=60)
         if t10.is_alive():
-            remember_log("警告: step10 线程在 join(60s) 超时后仍在运行")
+            _log_info("Remember","警告: step10 线程在 join(60s) 超时后仍在运行")
 
         if state.control_state["action"] is not None:
             raise RememberControlFlow(state.control_state["action"])
@@ -1380,7 +1446,7 @@ class TemporalMemoryGraphProcessor(_PipelineExtractionMixin, _ExtractionStepsMix
         except Exception as e:
             _dedup_exc = e
             logger.error("Cross-window dedup failed: %s", e, exc_info=True)
-            remember_log(f"后处理｜跨窗口去重失败: {e}")
+            _log_info("Remember",f"后处理｜跨窗口去重失败: {e}")
 
         # ========== 计时汇总 ==========
         self._summarize_window_timings(state.window_timings)
@@ -1410,6 +1476,7 @@ class TemporalMemoryGraphProcessor(_PipelineExtractionMixin, _ExtractionStepsMix
             "storage_path": storage_path,
             "entities": total_entities,
             "relations": total_relations,
+            "window_timings": state.window_timings,
         }
 
         if _failed_windows > 0:
@@ -1423,7 +1490,7 @@ class TemporalMemoryGraphProcessor(_PipelineExtractionMixin, _ExtractionStepsMix
                 _failed_windows, N, _error_summary,
                 " (+ cross-window dedup failed)" if _dedup_exc else "",
             )
-            remember_log(
+            _log_info("Remember",
                 f"完成｜成功{_successful_windows}/{N}窗 "
                 f"实体{total_entities} 关系{total_relations} "
                 f"| {_failed_windows}窗失败: {_error_summary}"
@@ -1435,6 +1502,8 @@ class TemporalMemoryGraphProcessor(_PipelineExtractionMixin, _ExtractionStepsMix
             result["warnings"] = [{"phase": "cross_window_dedup", "error": str(_dedup_exc)}]
 
         # Only raise if ALL windows failed -- partial results are still valuable.
+        with self._current_state_lock:
+            self._current_state = None
         if _failed_windows >= N:
             _phase, _idx, exc = state.errors[0]
             raise exc

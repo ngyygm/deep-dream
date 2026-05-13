@@ -330,6 +330,7 @@ def health_llm():
 # ── Stats ───────────────────────────────────────────────────────────────
 
 @system_bp.route("/api/v1/find/stats", methods=["GET"])
+@system_bp.route("/api/v1/graph/stats", methods=["GET"])
 def find_stats():
     try:
         processor = _get_processor()

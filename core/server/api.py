@@ -25,6 +25,8 @@ import os
 import re as _re
 
 logger = logging.getLogger(__name__)
+
+from core.log import info as _log_info, error as _log_error
 import signal
 import socket
 import subprocess
@@ -162,7 +164,7 @@ def create_app(
         response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
         if request.path.startswith("/static/"):
             if request.path.endswith((".js", ".css", ".woff2", ".woff", ".ttf")):
-                response.headers["Cache-Control"] = "public, max-age=86400"
+                response.headers["Cache-Control"] = "public, max-age=0, must-revalidate"
             elif request.path.endswith((".html",)):
                 response.headers["Cache-Control"] = "no-cache"
         elif request.path in ("/", "/index.html"):
@@ -716,7 +718,7 @@ def main() -> int:
 
     config_path = args.config
     if not Path(config_path).exists():
-        print(f"错误：配置文件不存在: {config_path}")
+        _log_error("System", f"配置文件不存在: {config_path}")
         return 1
 
     config = load_config(config_path)
@@ -811,7 +813,7 @@ def main() -> int:
         entities = stats["storage"]["entities"] if stats else 0
         relations = stats["storage"]["relations"] if stats else 0
         caches = stats["storage"]["episodes"] if stats else 0
-        print(f"""
+        _log_info("System", f"""
 ╔══════════════════════════════════════════════════════════╗
 ║     DeepDream — 自然语言记忆图 API           ║
 ╚══════════════════════════════════════════════════════════╝

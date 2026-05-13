@@ -43,7 +43,7 @@ def _pair_key(a: str, b: str) -> Tuple[str, str]:
 # _parallel_map is the hottest parallel utility in the pipeline; a persistent
 # pool saves ~10 create/destroy cycles per remember invocation.
 _SHARED_POOL: Optional[ThreadPoolExecutor] = None
-_SHARED_POOL_MAX_WORKERS = 4  # covers the default n_workers=4
+_SHARED_POOL_MAX_WORKERS = 1
 
 
 def _get_shared_pool(max_workers: int) -> ThreadPoolExecutor:
@@ -71,7 +71,7 @@ def _parallel_map(
     items: List,
     process_fn,
     fallback_fn=None,
-    n_workers: int = 4,
+    n_workers: int = 1,
     thread_prefix: str = "extract",
 ) -> List:
     """Process items in parallel, falling back to sequential on RuntimeError.
@@ -342,24 +342,6 @@ def _format_desc(sentence: str, max_len: int = 200) -> str:
     return sentence
 
 
-def _build_relation_fallback_content(
-    entity_a: str, entity_b: str, prose_index: '_ProseIndex',
-) -> str:
-    """Build relation content from window text when both entities co-occur."""
-    sentences = prose_index.sentences
-    if not sentences:
-        return ""
-    relevant = [s for s in sentences if entity_a in s and entity_b in s]
-    if not relevant:
-        return ""
-    desc = '。'.join(relevant[:2])
-    if len(desc) > 150:
-        desc = desc[:147] + '...'
-    if not desc.endswith('。'):
-        desc += '。'
-    return desc
-
-
 # ---------------------------------------------------------------------------
 # Extraction Pipeline Mixin
 # ---------------------------------------------------------------------------
@@ -477,9 +459,11 @@ class _ExtractionStepsMixin:
         batch_results: Dict[str, str] = {}
         if _needs_llm_names:
             _batch_chunk_size = getattr(self, 'remember_entity_content_batch_size', 10)
+            _step4_workers = getattr(self, 'llm_threads', 1)
             batch_results = self.llm_client.batch_write_entity_content(
                 _needs_llm_names, input_text,
                 chunk_size=_batch_chunk_size,
+                max_workers=_step4_workers,
             )
 
             # 4b: Identify entities the batch missed
@@ -504,7 +488,7 @@ class _ExtractionStepsMixin:
                 _fallback_results = _parallel_map(
                     _missing_names, _write_one_entity,
                     fallback_fn=_entity_fallback,
-                    n_workers=4, thread_prefix="extract-econtent",
+                    n_workers=_step4_workers, thread_prefix="extract-econtent",
                 )
                 for e in _fallback_results:
                     batch_results[e["name"]] = e["content"]
@@ -573,8 +557,12 @@ class _ExtractionStepsMixin:
             if rejected:
                 wprint_info(f"【步骤5】实体质量门｜{rejected}个被过滤，{len(valid_entities)}个通过")
 
-        _record_timing("step5_entity_quality", _time.time() - _t)
-        extracted_entities = valid_entities
+        _elapsed4q = _time.time() - _t
+        _record_timing("step5_entity_quality", _elapsed4q)
+        if verbose or verbose_steps:
+            _q_rejected = len(extracted_entities) - len(valid_entities) + len(rejected_entities)
+            if not (verbose or verbose_steps) or not rejected:
+                wprint_info(f"【步骤5】实体质量门｜{_elapsed4q:.1f}s｜{len(valid_entities)}个通过")
         entity_name_list = [e["name"] for e in extracted_entities]
         entity_name_set = set(entity_name_list)
 
@@ -623,6 +611,7 @@ class _ExtractionStepsMixin:
 
         _check_control()
         # ==============================================================
+        _progress(0.65, f"{_win} · 步骤7: 关系内容写作", f"开始写 {len(relation_pairs)} 对关系")
         _t = _time.time()
 
         # 7a: All relation pairs go through LLM for proper descriptions
@@ -633,9 +622,11 @@ class _ExtractionStepsMixin:
         batch_rel_results: Dict[Tuple[str, str], str] = {}
         if _needs_llm_pairs:
             _rel_batch_size = getattr(self, 'remember_relation_content_batch_size', 10)
+            _step7_workers = getattr(self, 'llm_threads', 1)
             batch_rel_results = self.llm_client.batch_write_relation_content(
                 _needs_llm_pairs, input_text,
                 chunk_size=_rel_batch_size,
+                max_workers=_step7_workers,
             )
 
         # 7c: Per-pair fallback for batch misses
@@ -656,7 +647,7 @@ class _ExtractionStepsMixin:
 
             _fallback_rels = _parallel_map(
                 _missing_pairs, _write_one_relation,
-                n_workers=4, thread_prefix="extract-rcontent",
+                n_workers=_step7_workers, thread_prefix="extract-rcontent",
             )
 
         # Assemble final list: batch > fast-path > per-pair fallback
@@ -695,8 +686,11 @@ class _ExtractionStepsMixin:
             _elapsed6 = _time.time() - _t
         _record_timing("step7_relation_content", _elapsed6)
 
+        _progress(0.80, f"{_win} · 步骤7: 关系内容写作完成", f"{len(extracted_relations)} 条关系")
+
         _check_control()
         # ==============================================================
+        _progress(0.85, f"{_win} · 步骤8: 关系质量门", "开始")
         _t = _time.time()
         valid_relations = []
         for r in extracted_relations:
@@ -710,6 +704,10 @@ class _ExtractionStepsMixin:
                 wprint_info(f"【步骤8】关系质量门｜{rejected_r}条被过滤，{len(valid_relations)}条通过")
         _elapsed7 = _time.time() - _t
         _record_timing("step8_relation_quality", _elapsed7)
+        if verbose or verbose_steps:
+            wprint_info(f"【步骤8】关系质量门｜{_elapsed7:.1f}s｜{len(valid_relations)}条通过")
+
+        _progress(0.90, f"{_win} · 步骤8: 关系质量门完成", f"{len(valid_relations)} 条有效关系")
 
         _progress(0.95, f"{_win} · 完成",
                    f"{len(extracted_entities)} 实体, {len(valid_relations)} 关系")

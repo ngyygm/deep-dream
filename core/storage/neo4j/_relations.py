@@ -12,7 +12,7 @@ import numpy as np
 
 from ...models import Entity, Relation
 from ...perf import _perf_timer
-from ._helpers import _RELATION_RETURN_FIELDS, _RELATION_RETURN_FIELDS_WITH_EMB, _expand_cypher, _fmt_dt, _neo4j_record_to_relation, _q
+from ._helpers import _encode_and_normalize, _RELATION_RETURN_FIELDS, _RELATION_RETURN_FIELDS_WITH_EMB, _expand_cypher, _fmt_dt, _neo4j_record_to_relation, _q
 from ._dream import _dream_source
 
 logger = logging.getLogger(__name__)
@@ -60,9 +60,10 @@ class RelationStoreMixin:
 
         # Seed cache from caller-supplied names (free — no I/O)
         if names:
+            _cache = self._cache_entity_name
             for k, v in names.items():
                 if k not in _enc:
-                    _enc[k] = v
+                    _cache(k, v)
 
         name1 = _enc.get(aid1, ...)
         name2 = _enc.get(aid2, ...)
@@ -78,7 +79,7 @@ class RelationStoreMixin:
                 )
                 for record in result:
                     aid, name = record["aid"], record["name"] or ""
-                    _enc[aid] = name
+                    self._cache_entity_name(aid, name)
                     if aid == aid1:
                         name1 = name
                     else:
@@ -101,30 +102,10 @@ class RelationStoreMixin:
 
     def _compute_relation_embedding(self, relation: Relation,
                                      names: Optional[Dict[str, str]] = None) -> Optional[bytes]:
-        """计算关系的 embedding 向量（L2 归一化后存储）。
-
-        编码 "{entity1_name} {content} {entity2_name}"，让不同实体间的同语义关系产生不同向量。
-
-        Args:
-            relation: The relation to compute embedding for.
-            names: Optional dict[absolute_id -> entity_name]. When the caller
-                   already has entity names (e.g. from a batch lookup), passing
-                   them here avoids a separate Neo4j session per relation.
-        """
-        if not self.embedding_client or not self.embedding_client.is_available():
-            return None
         name1, name2 = self._resolve_entity_names_for_embedding(relation, names=names)
         text = self._build_relation_embedding_text(relation, name1, name2)
-        embedding = self.embedding_client.encode(text)
-        if embedding is None or (isinstance(embedding, (list, tuple)) and len(embedding) == 0):
-            return None
-        if isinstance(embedding, np.ndarray) and embedding.size == 0:
-            return None
-        emb_array = np.array(embedding[0] if isinstance(embedding, list) else embedding, dtype=np.float32)
-        norm = np.linalg.norm(emb_array)
-        if norm > 0:
-            emb_array = emb_array / norm
-        return emb_array.tobytes()
+        result = _encode_and_normalize(self.embedding_client, text)
+        return result[0] if result else None
 
     # ------------------------------------------------------------------
     # Entity 操作
@@ -276,9 +257,9 @@ class RelationStoreMixin:
                     "cache_id": relation.episode_id,
                     "source": relation.source_document,
                     "summary": relation.summary,
-                    "attributes": relation.attributes,
+                    "attributes": json.dumps(relation.attributes, ensure_ascii=False) if isinstance(relation.attributes, (dict, list)) else relation.attributes,
                     "confidence": relation.confidence,
-                    "provenance": relation.provenance,
+                    "provenance": json.dumps(relation.provenance, ensure_ascii=False) if isinstance(relation.provenance, (dict, list)) else relation.provenance,
                     "content_format": getattr(relation, "content_format", "plain"),
                     "valid_at": valid_at,
                     "graph_id": self._graph_id,
@@ -306,14 +287,17 @@ class RelationStoreMixin:
                         r.valid_at = datetime($valid_at),
                         r.graph_id = $graph_id,
                         r.embedding = $embedding
-                    WITH 1 AS _dummy
+                    WITH r, r.entity1_absolute_id AS e1a, r.entity2_absolute_id AS e2a
+                    MATCH (ref1:Entity {uuid: e1a})
+                    MATCH (ref2:Entity {uuid: e2a})
+                    SET r.entity1_family_id = ref1.family_id,
+                        r.entity2_family_id = ref2.family_id
+                    WITH r, ref1, ref2
                     MATCH (old:Relation {family_id: $family_id})
                     WHERE old.uuid <> $uuid AND old.invalid_at IS NULL
                     SET old.invalid_at = datetime($event_time)
-                    WITH 1 AS _dummy2
-                    MATCH (ref1:Entity {uuid: $e1_abs})
+                    WITH r, ref1, ref2
                     MATCH (n1:Entity {family_id: ref1.family_id}) WHERE n1.invalid_at IS NULL
-                    MATCH (ref2:Entity {uuid: $e2_abs})
                     MATCH (n2:Entity {family_id: ref2.family_id}) WHERE n2.invalid_at IS NULL
                     MERGE (n1)-[rel:RELATES_TO {relation_uuid: $uuid}]->(n2)
                     SET rel.fact = $content
@@ -511,9 +495,9 @@ class RelationStoreMixin:
                 "cache_id": relation.episode_id,
                 "source": relation.source_document,
                 "summary": getattr(relation, 'summary', None),
-                "attributes": json.dumps(_attrs) if isinstance(_attrs := getattr(relation, 'attributes', None), dict) else _attrs,
+                "attributes": json.dumps(_attrs, ensure_ascii=False) if isinstance(_attrs := getattr(relation, 'attributes', None), (dict, list)) else _attrs,
                 "confidence": getattr(relation, 'confidence', None),
-                "provenance": getattr(relation, 'provenance', None),
+                "provenance": json.dumps(_prov, ensure_ascii=False) if isinstance(_prov := getattr(relation, 'provenance', None), (dict, list)) else _prov,
                 "content_format": getattr(relation, 'content_format', None),
                 "valid_at": _fmt_dt(relation.valid_at or relation.event_time) if relation.valid_at or relation.event_time else None,
                 "graph_id": self._graph_id,
@@ -541,14 +525,17 @@ class RelationStoreMixin:
                         r.content_format = row.content_format,
                         r.valid_at = CASE WHEN row.valid_at IS NOT NULL THEN datetime(row.valid_at) ELSE NULL END,
                         r.graph_id = row.graph_id
-                    WITH row
+                    WITH r, row
+                    MATCH (ref1:Entity {uuid: row.e1_abs})
+                    MATCH (ref2:Entity {uuid: row.e2_abs})
+                    SET r.entity1_family_id = ref1.family_id,
+                        r.entity2_family_id = ref2.family_id
+                    WITH row, ref1, ref2
                     MATCH (r:Relation {family_id: row.family_id})
                     WHERE r.uuid <> row.uuid AND r.invalid_at IS NULL
                     SET r.invalid_at = datetime(row.event_time)
-                    WITH row
-                    MATCH (ref1:Entity {uuid: row.e1_abs})
+                    WITH row, ref1, ref2
                     MATCH (n1:Entity {family_id: ref1.family_id}) WHERE n1.invalid_at IS NULL
-                    MATCH (ref2:Entity {uuid: row.e2_abs})
                     MATCH (n2:Entity {family_id: ref2.family_id}) WHERE n2.invalid_at IS NULL
                     MERGE (n1)-[rel:RELATES_TO {relation_uuid: row.uuid}]->(n2)
                     SET rel.fact = row.content
@@ -643,6 +630,114 @@ class RelationStoreMixin:
 
             self._invalidate_relation_cache_bulk()
 
+    def bulk_save_relations_with_embedding(self, relations: List[Relation]):
+        """批量保存关系（UNWIND），embedding 已预计算直接写入。
+
+        与 bulk_save_relations 不同：embedding 不延迟到后台线程，立即写入。
+        适用于 step 10 需要立即提供 embedding 供后续查询的场景。
+        """
+        if not relations:
+            return
+
+        rows = []
+        cache_items = []
+        for relation in relations:
+            emb_blob = getattr(relation, 'embedding', None)
+            embedding_list = None
+            emb_array = None
+            if emb_blob is not None:
+                if isinstance(emb_blob, np.ndarray):
+                    emb_array = emb_blob
+                else:
+                    emb_array = np.frombuffer(emb_blob, dtype=np.float32)
+                norm = np.linalg.norm(emb_array)
+                if norm > 0:
+                    emb_array = emb_array / norm
+                embedding_list = emb_array.tolist()
+                relation.embedding = emb_array.tobytes()
+                cache_items.append((relation, emb_array))
+            else:
+                cache_items.append((relation, None))
+
+            _attrs = getattr(relation, 'attributes', None)
+            _prov = getattr(relation, 'provenance', None)
+            rows.append({
+                "uuid": relation.absolute_id,
+                "family_id": relation.family_id,
+                "e1_abs": relation.entity1_absolute_id,
+                "e2_abs": relation.entity2_absolute_id,
+                "content": relation.content,
+                "event_time": _fmt_dt(relation.event_time),
+                "processed_time": _fmt_dt(relation.processed_time),
+                "cache_id": relation.episode_id,
+                "source": relation.source_document,
+                "summary": getattr(relation, 'summary', None),
+                "attributes": json.dumps(_attrs, ensure_ascii=False) if isinstance(_attrs, (dict, list)) else _attrs,
+                "confidence": getattr(relation, 'confidence', None),
+                "provenance": json.dumps(_prov, ensure_ascii=False) if isinstance(_prov, (dict, list)) else _prov,
+                "content_format": getattr(relation, 'content_format', None),
+                "valid_at": _fmt_dt(relation.valid_at or relation.event_time) if relation.valid_at or relation.event_time else None,
+                "graph_id": self._graph_id,
+                "embedding": embedding_list,
+            })
+
+        with self._relation_write_lock:
+            with self._session() as session:
+                self._run_with_retry(session,
+                    """
+                    UNWIND $rows AS row
+                    MERGE (r:Relation {uuid: row.uuid})
+                    SET r:Concept, r.role = 'relation',
+                        r.family_id = row.family_id,
+                        r.entity1_absolute_id = row.e1_abs,
+                        r.entity2_absolute_id = row.e2_abs,
+                        r.content = row.content,
+                        r.event_time = datetime(row.event_time),
+                        r.processed_time = datetime(row.processed_time),
+                        r.episode_id = row.cache_id,
+                        r.source_document = row.source,
+                        r.summary = row.summary,
+                        r.attributes = row.attributes,
+                        r.confidence = row.confidence,
+                        r.provenance = row.provenance,
+                        r.content_format = row.content_format,
+                        r.valid_at = CASE WHEN row.valid_at IS NOT NULL THEN datetime(row.valid_at) ELSE NULL END,
+                        r.graph_id = row.graph_id,
+                        r.embedding = row.embedding
+                    WITH r, row
+                    MATCH (ref1:Entity {uuid: row.e1_abs})
+                    MATCH (ref2:Entity {uuid: row.e2_abs})
+                    SET r.entity1_family_id = ref1.family_id,
+                        r.entity2_family_id = ref2.family_id
+                    WITH row, ref1, ref2
+                    MATCH (r:Relation {family_id: row.family_id})
+                    WHERE r.uuid <> row.uuid AND r.invalid_at IS NULL
+                    SET r.invalid_at = datetime(row.event_time)
+                    WITH row, ref1, ref2
+                    MATCH (n1:Entity {family_id: ref1.family_id}) WHERE n1.invalid_at IS NULL
+                    MATCH (n2:Entity {family_id: ref2.family_id}) WHERE n2.invalid_at IS NULL
+                    MERGE (n1)-[rel:RELATES_TO {relation_uuid: row.uuid}]->(n2)
+                    SET rel.fact = row.content
+                    """,
+                    operation_name="bulk_save_rels_with_emb",
+                    rows=rows,
+                )
+
+        if self._relation_emb_cache is not None and cache_items:
+            if self._relation_emb_fid_idx is not None:
+                fid_to_idx = self._relation_emb_fid_idx
+            else:
+                fid_to_idx = {r.family_id: i for i, (r, _) in enumerate(self._relation_emb_cache)} if self._relation_emb_cache else {}
+                self._relation_emb_fid_idx = fid_to_idx
+            for relation, emb_array in cache_items:
+                idx = fid_to_idx.get(relation.family_id)
+                if idx is not None:
+                    self._relation_emb_cache[idx] = (relation, emb_array)
+                else:
+                    self._relation_emb_cache.append((relation, emb_array))
+                    fid_to_idx[relation.family_id] = len(self._relation_emb_cache) - 1
+        self._invalidate_relation_cache_bulk()
+
 
 
     def count_unique_relations(self) -> int:
@@ -725,6 +820,114 @@ class RelationStoreMixin:
 
         relations = [_neo4j_record_to_relation(r) for r in records]
         return self._filter_dream_candidates(relations, include_candidates)
+
+
+    def _build_entity_abs_id_remap(self, session) -> dict:
+        """Build mapping from any entity absolute_id → latest absolute_id per family_id.
+
+        Results are cached with a TTL to avoid repeated full-entity scans.
+        Invalidate via self.invalidate_entity_remap_cache() after entity writes.
+        """
+        now = time.time()
+        if (self._entity_remap_cache is not None
+                and (now - self._entity_remap_cache_ts) < self._entity_remap_cache_ttl):
+            return self._entity_remap_cache
+
+        result = self._run(session, """
+            MATCH (e:Entity)
+            WITH e.family_id AS fid, COLLECT(e) AS ents
+            UNWIND ents AS e
+            WITH fid, e ORDER BY e.processed_time DESC
+            WITH fid, COLLECT(e.uuid) AS uuids
+            RETURN fid, uuids[0] AS latest, uuids AS all_uuids
+        """)
+        remap = {}
+        for rec in result:
+            latest = rec["latest"]
+            for uuid in rec["all_uuids"]:
+                if uuid != latest:
+                    remap[uuid] = latest
+        self._entity_remap_cache = remap
+        self._entity_remap_cache_ts = now
+        return remap
+
+    def _remap_relation_endpoints(self, relations: list, session=None) -> list:
+        if not relations:
+            return relations
+        own_session = session is None
+        if own_session:
+            with self._session() as session:
+                return self._remap_relation_endpoints(relations, session=session)
+        remap = self._build_entity_abs_id_remap(session)
+        if remap:
+            for rel in relations:
+                rel.entity1_absolute_id = remap.get(rel.entity1_absolute_id, rel.entity1_absolute_id)
+                rel.entity2_absolute_id = remap.get(rel.entity2_absolute_id, rel.entity2_absolute_id)
+        return relations
+
+    def stream_all_relations(self, exclude_embedding: bool = True,
+                             include_candidates: bool = False,
+                             since: Optional[str] = None):
+        """Yield latest-version relations one by one from the Neo4j cursor.
+
+        Unlike get_all_relations(), this does not materialize the full result
+        set — suitable for SSE streaming.
+
+        Relation endpoints are remapped to the latest entity version absolute_id
+        so they match the entities returned by stream_all_entities.
+
+        If *since* (ISO timestamp) is given, only yield relations whose latest
+        version has processed_time > since.
+        """
+        with self._streaming_session() as session:
+            fields = _RELATION_RETURN_FIELDS if exclude_embedding else _RELATION_RETURN_FIELDS_WITH_EMB
+            params = {}
+            if since:
+                query = f"""
+                    MATCH (r:Relation)
+                    WITH r.family_id AS fid, COLLECT(r) AS rels
+                    UNWIND rels AS r
+                    WITH fid, r ORDER BY r.processed_time DESC
+                    WITH fid, HEAD(COLLECT(r)) AS r
+                    WHERE r.processed_time > datetime($since)
+                    RETURN {fields}
+                    ORDER BY r.processed_time ASC
+                """
+                params["since"] = since
+            else:
+                query = f"""
+                    MATCH (r:Relation)
+                    WITH r.family_id AS fid, COLLECT(r) AS rels
+                    UNWIND rels AS r
+                    WITH fid, r ORDER BY r.processed_time DESC
+                    WITH fid, HEAD(COLLECT(r)) AS r
+                    RETURN {fields}
+                    ORDER BY r.processed_time ASC
+                """
+            result = self._run(session, query, **params)
+            remap = self._build_entity_abs_id_remap(session)
+            for record in result:
+                rel = _neo4j_record_to_relation(record)
+                if remap:
+                    rel.entity1_absolute_id = remap.get(rel.entity1_absolute_id, rel.entity1_absolute_id)
+                    rel.entity2_absolute_id = remap.get(rel.entity2_absolute_id, rel.entity2_absolute_id)
+                if not self._is_dream_candidate(rel) or include_candidates:
+                    yield rel
+
+    def count_relations_since(self, since: str) -> int:
+        """Count relations whose latest version has processed_time > since."""
+        with self._session() as session:
+            result = self._run(session, """
+                MATCH (r:Relation)
+                WITH r.family_id AS fid, COLLECT(r) AS rels
+                UNWIND rels AS r
+                WITH fid, r ORDER BY r.processed_time DESC
+                WITH fid, HEAD(COLLECT(r)) AS r
+                WHERE r.processed_time > datetime($since)
+                RETURN COUNT(r) AS cnt
+            """, since=since)
+            rec = result.single()
+            return rec["cnt"] if rec else 0
 
 
 
@@ -904,84 +1107,74 @@ class RelationStoreMixin:
 
 
     def get_relations_by_entity_pairs(self, entity_pairs: List[Tuple[str, str]]) -> Dict[Tuple[str, str], List[Relation]]:
-        """批量获取多个实体对的关系 — Cypher-level pair filtering."""
+        """批量获取多个实体对的关系 — 通过 entity family_id 直接匹配。"""
         if not entity_pairs:
             return {}
 
-        # 收集所有唯一的 family_id
-        all_family_ids = set()
-        for e1, e2 in entity_pairs:
-            all_family_ids.add(e1)
-            all_family_ids.add(e2)
-
-        # 单次查询获取所有相关的绝对 ID
-        with self._session() as session:
-            result = self._run(session,
-                "MATCH (e:Entity) WHERE e.family_id IN $fids AND e.invalid_at IS NULL RETURN e.family_id AS fid, e.uuid AS uuid",
-                fids=list(all_family_ids),
-            )
-            fid_to_aids: Dict[str, List[str]] = defaultdict(list)
-            for record in result:
-                fid_to_aids[record["fid"]].append(record["uuid"])
-
-        # Build pair-level absolute_id pairs for Cypher filtering
-        aid_pairs = []
+        # Deduplicate pair keys (sorted)
         seen_pair_keys: set = set()
-        for e1_fid, e2_fid in entity_pairs:
-            pair_key = (e1_fid, e2_fid) if e1_fid <= e2_fid else (e2_fid, e1_fid)
-            if pair_key in seen_pair_keys:
-                continue
-            seen_pair_keys.add(pair_key)
-            e1_aids = fid_to_aids.get(e1_fid, [])
-            e2_aids = fid_to_aids.get(e2_fid, [])
-            for a1 in e1_aids:
-                for a2 in e2_aids:
-                    aid_pairs.append({"a1": a1, "a2": a2})
+        unique_pairs = []
+        for e1, e2 in entity_pairs:
+            pk = (e1, e2) if e1 <= e2 else (e2, e1)
+            if pk not in seen_pair_keys:
+                seen_pair_keys.add(pk)
+                unique_pairs.append({"f1": pk[0], "f2": pk[1]})
 
-        if not aid_pairs:
-            return {(e1, e2) if e1 <= e2 else (e2, e1): [] for e1, e2 in entity_pairs}
-
-        # Single query with pair-level filtering via UNWIND
+        # Use entity1_family_id / entity2_family_id on Relation nodes (backfilled)
         with self._session() as session:
             result = self._run(session, _q("""
                 UNWIND $pairs AS p
                 MATCH (r:Relation)
                 WHERE r.invalid_at IS NULL
                   AND (
-                    (r.entity1_absolute_id = p.a1 AND r.entity2_absolute_id = p.a2)
-                    OR (r.entity1_absolute_id = p.a2 AND r.entity2_absolute_id = p.a1)
+                    (r.entity1_family_id = p.f1 AND r.entity2_family_id = p.f2)
+                    OR (r.entity1_family_id = p.f2 AND r.entity2_family_id = p.f1)
                   )
-                RETURN __REL_FIELDS__
+                RETURN __REL_FIELDS__,
+                    r.entity1_family_id AS e1fid,
+                    r.entity2_family_id AS e2fid
                 """),
-                pairs=aid_pairs,
+                pairs=unique_pairs,
             )
-            all_relations = [_neo4j_record_to_relation(rec) for rec in result]
+            records = list(result)
 
-        # Group by family_id pair using O(1) index lookup
-        # Build index: (absolute_id_1, absolute_id_2) -> relation list
-        _rel_index: Dict[Tuple[str, str], List[Relation]] = {}
-        for rel in all_relations:
-            _key = (rel.entity1_absolute_id, rel.entity2_absolute_id) if rel.entity1_absolute_id <= rel.entity2_absolute_id else (rel.entity2_absolute_id, rel.entity1_absolute_id)
-            if _key not in _rel_index:
-                _rel_index[_key] = []
-            _rel_index[_key].append(rel)
+        # Group by family_id pair, deduplicate by relation family_id
+        _rel_by_pair: Dict[Tuple[str, str], List[Relation]] = defaultdict(list)
+        seen_rel_fids: set = set()
+        for rec in records:
+            rel = _neo4j_record_to_relation(rec)
+            if rel.family_id in seen_rel_fids:
+                continue
+            seen_rel_fids.add(rel.family_id)
+            f1 = rec.get("e1fid")
+            f2 = rec.get("e2fid")
+            if f1 and f2:
+                pk = (f1, f2) if f1 <= f2 else (f2, f1)
+                _rel_by_pair[pk].append(rel)
 
         results: Dict[Tuple[str, str], List[Relation]] = {}
-        for e1_fid, e2_fid in entity_pairs:
-            pair_key = (e1_fid, e2_fid) if e1_fid <= e2_fid else (e2_fid, e1_fid)
-            if pair_key in results:
-                continue
-            e1_aids = fid_to_aids.get(e1_fid) or ()
-            e2_aids = fid_to_aids.get(e2_fid) or ()
-            pair_rels = []
-            for a1 in e1_aids:
-                for a2 in e2_aids:
-                    _rk = (a1, a2) if a1 <= a2 else (a2, a1)
-                    if _rk in _rel_index:
-                        pair_rels.extend(_rel_index[_rk])
-            results[pair_key] = pair_rels
+        for e1, e2 in entity_pairs:
+            pk = (e1, e2) if e1 <= e2 else (e2, e1)
+            if pk not in results:
+                results[pk] = _rel_by_pair.get(pk, [])
 
         return results
+
+    def get_relation_embeddings(self, family_ids: List[str]) -> Dict[str, Any]:
+        """批量获取关系的 embedding 向量。
+
+        Returns:
+            {family_id: np.ndarray(shape=(dim,), dtype=float32)} — L2 归一化向量。
+        """
+        if not family_ids:
+            return {}
+        with self._session() as session:
+            result = self._run(session,
+                "MATCH (r:Relation) WHERE r.family_id IN $fids AND r.embedding IS NOT NULL AND r.invalid_at IS NULL "
+                "RETURN r.family_id AS fid, r.embedding AS emb",
+                fids=family_ids,
+            )
+            return {rec["fid"]: (np.frombuffer(rec["emb"], dtype=np.float32) if isinstance(rec["emb"], (bytes, bytearray, memoryview)) else np.array(rec["emb"], dtype=np.float32)).copy() for rec in result}
 
 
 
@@ -1032,7 +1225,9 @@ class RelationStoreMixin:
                 """),
                 aid=absolute_id,
             )
-            return [_neo4j_record_to_relation(r) for r in result]
+            rels = [_neo4j_record_to_relation(r) for r in result]
+            self._remap_relation_endpoints(rels, session)
+            return rels
 
 
 
@@ -1099,10 +1294,6 @@ class RelationStoreMixin:
     # ------------------------------------------------------------------
     # Concept 统一查询方法（Phase 2: 所有节点共享 :Concept 标签 + role 属性）
     # ------------------------------------------------------------------
-
-    @staticmethod
-
-
 
     def refresh_relates_to_edges(self, family_ids: List[str] = None):
         """Rebuild RELATES_TO edges that point to invalidated entity versions.

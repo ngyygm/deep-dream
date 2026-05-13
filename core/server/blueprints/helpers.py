@@ -200,8 +200,9 @@ def entity_to_dict(e: Entity, max_content_length: int = 2000,
     }
     if _score is not None:
         d["_score"] = round(_score, 4)
-    if version_count is not None:
-        d["version_count"] = version_count
+    vc = version_count if version_count is not None else getattr(e, 'version_count', None)
+    if vc is not None:
+        d["version_count"] = vc
     return d
 
 

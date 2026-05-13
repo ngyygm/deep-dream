@@ -3,8 +3,7 @@ import json
 import logging
 import threading
 import time
-from datetime import datetime, timezone
-from pathlib import Path
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -12,8 +11,7 @@ import numpy as np
 from ...models import ContentPatch, Entity, Relation
 from ...perf import _perf_timer
 from ...content_schema import parse_markdown_sections, compute_section_diff
-from ..cache import QueryCache
-from ._helpers import _ENTITY_RETURN_FIELDS, _ENTITY_RETURN_FIELDS_WITH_EMB, _fmt_dt, _neo4j_record_to_entity, _neo4j_record_to_relation, _parse_dt, _q
+from ._helpers import _encode_and_normalize, _ENTITY_RETURN_FIELDS, _ENTITY_RETURN_FIELDS_WITH_EMB, _fmt_dt, _neo4j_record_to_entity, _neo4j_record_to_relation, _parse_dt, _q
 
 logger = logging.getLogger(__name__)
 
@@ -45,22 +43,11 @@ class EntityStoreMixin:
             (emb_bytes, emb_array) tuple or None. Caller can use emb_array directly
             to avoid a redundant np.frombuffer round-trip.
         """
-        if not self.embedding_client or not self.embedding_client.is_available():
-            return None
         content = entity.content or ""
         if len(content) > self._EMB_CONTENT_MAX:
             content = content[:self._EMB_CONTENT_MAX]
         text = f"# {entity.name}\n{content}"
-        embedding = self.embedding_client.encode(text)
-        if embedding is None or (isinstance(embedding, (list, tuple)) and len(embedding) == 0):
-            return None
-        if isinstance(embedding, np.ndarray) and embedding.size == 0:
-            return None
-        emb_array = np.array(embedding[0] if isinstance(embedding, list) else embedding, dtype=np.float32)
-        norm = np.linalg.norm(emb_array)
-        if norm > 0:
-            emb_array = emb_array / norm
-        return emb_array.tobytes(), emb_array
+        return _encode_and_normalize(self.embedding_client, text)
 
 
 
@@ -200,14 +187,6 @@ class EntityStoreMixin:
 
 
 
-    def _invalidate_emb_cache(self):
-        """清除 embedding 缓存（仅在不确定增量更新是否安全时调用）。"""
-        self._entity_emb_cache = None
-        self._entity_emb_fid_idx = None
-        self._entity_emb_cache_ts = 0.0
-        self._relation_emb_cache = None
-        self._relation_emb_cache_ts = 0.0
-
     def _update_entity_emb_cache(self, entity: Entity, emb_array: Optional[np.ndarray]):
         """Append-only update to entity embedding cache.
 
@@ -264,6 +243,7 @@ class EntityStoreMixin:
         self._cache.invalidate("entity:")
         self._cache.invalidate("resolve:")
         self._cache.invalidate("sim_search:")
+        self.invalidate_entity_remap_cache()
 
 
 
@@ -541,7 +521,7 @@ class EntityStoreMixin:
                 "cache_id": entity.episode_id,
                 "source": entity.source_document,
                 "summary": entity.summary,
-                "attributes": entity.attributes,
+                "attributes": json.dumps(entity.attributes, ensure_ascii=False) if isinstance(entity.attributes, (dict, list)) else entity.attributes,
                 "confidence": entity.confidence,
                 "valid_at": _fmt_dt(entity.valid_at or entity.event_time),
                 "graph_id": self._graph_id,
@@ -623,6 +603,88 @@ class EntityStoreMixin:
         except Exception:
             logger.debug("Background embedding update failed", exc_info=True)
 
+    def bulk_save_entities_with_embedding(self, entities: List[Entity]):
+        """批量保存实体（UNWIND），embedding 已预计算直接写入。
+
+        与 bulk_save_entities 不同：embedding 不延迟到后台线程，而是立即写入。
+        适用于 step 9 后续 step 10 需要立即读取 embedding 的场景。
+        """
+        if not entities:
+            return
+
+        _now = datetime.now()
+        rows = []
+        cache_items = []
+        for entity in entities:
+            entity.processed_time = _now
+            emb_blob = getattr(entity, 'embedding', None)
+            embedding_list = None
+            emb_array = None
+            if emb_blob is not None:
+                if isinstance(emb_blob, np.ndarray):
+                    emb_array = emb_blob
+                else:
+                    emb_array = np.frombuffer(emb_blob, dtype=np.float32)
+                norm = np.linalg.norm(emb_array)
+                if norm > 0:
+                    emb_array = emb_array / norm
+                embedding_list = emb_array.tolist()
+                entity.embedding = emb_array.tobytes()
+                cache_items.append((entity, emb_array))
+            else:
+                cache_items.append((entity, None))
+
+            rows.append({
+                "uuid": entity.absolute_id,
+                "family_id": entity.family_id,
+                "name": entity.name,
+                "content": entity.content,
+                "event_time": _fmt_dt(entity.event_time),
+                "processed_time": _fmt_dt(entity.processed_time),
+                "cache_id": entity.episode_id,
+                "source": entity.source_document,
+                "summary": entity.summary,
+                "attributes": json.dumps(entity.attributes, ensure_ascii=False) if isinstance(entity.attributes, (dict, list)) else entity.attributes,
+                "confidence": entity.confidence,
+                "content_format": getattr(entity, "content_format", "plain"),
+                "valid_at": _fmt_dt(entity.valid_at or entity.event_time),
+                "graph_id": self._graph_id,
+                "embedding": embedding_list,
+            })
+
+        with self._write_lock:
+            with self._session() as session:
+                self._run_with_retry(session,
+                    """
+                    UNWIND $rows AS row
+                    MERGE (e:Entity {uuid: row.uuid})
+                    SET e:Concept, e.role = 'entity',
+                        e.family_id = row.family_id,
+                        e.name = row.name,
+                        e.content = row.content,
+                        e.event_time = datetime(row.event_time),
+                        e.processed_time = datetime(row.processed_time),
+                        e.episode_id = row.cache_id,
+                        e.source_document = row.source,
+                        e.summary = row.summary,
+                        e.attributes = row.attributes,
+                        e.confidence = row.confidence,
+                        e.content_format = row.content_format,
+                        e.valid_at = datetime(row.valid_at),
+                        e.graph_id = row.graph_id,
+                        e.embedding = row.embedding
+                    WITH row
+                    MATCH (e:Entity {family_id: row.family_id})
+                    WHERE e.uuid <> row.uuid AND e.invalid_at IS NULL
+                    SET e.invalid_at = datetime(row.event_time)
+                    """,
+                    operation_name="bulk_save_entities_with_emb",
+                    rows=rows,
+                )
+
+        for entity in entities:
+            self._invalidate_entity_cache(entity.family_id)
+        self._update_entity_emb_cache_batch(cache_items)
 
 
     def cleanup_invalidated_versions(self, before_date: str = None, dry_run: bool = False) -> Dict[str, Any]:
@@ -712,11 +774,34 @@ class EntityStoreMixin:
     def count_unique_entities(self) -> int:
         """统计有效实体中不重复的 family_id 数量。"""
         with self._session() as session:
-            result = self._run(session, 
+            result = self._run(session,
                 "MATCH (e:Entity) WHERE e.invalid_at IS NULL RETURN COUNT(DISTINCT e.family_id) AS cnt"
             )
             record = result.single()
             return record["cnt"] if record else 0
+
+    def get_graph_version(self) -> dict:
+        """Return entity_count, relation_count, last_modified for cheap polling."""
+        with self._session() as session:
+            result = self._run(session, """
+                MATCH (e:Entity) WHERE e.invalid_at IS NULL
+                WITH COUNT(DISTINCT e.family_id) AS ec, max(e.processed_time) AS et
+                OPTIONAL MATCH (r:Relation) WHERE r.invalid_at IS NULL
+                WITH ec, et, COUNT(DISTINCT r.family_id) AS rc, max(r.processed_time) AS rt
+                RETURN ec AS entity_count, rc AS relation_count,
+                       CASE WHEN et IS NOT NULL AND rt IS NOT NULL AND rt > et THEN rt
+                            WHEN et IS NOT NULL THEN et
+                            ELSE rt END AS last_modified
+            """)
+            rec = result.single()
+            if not rec:
+                return {"entity_count": 0, "relation_count": 0, "last_modified": None}
+            lm = rec["last_modified"]
+            return {
+                "entity_count": rec["entity_count"],
+                "relation_count": rec["relation_count"],
+                "last_modified": lm.isoformat() if hasattr(lm, "isoformat") else str(lm) if lm else None,
+            }
 
 
 
@@ -837,6 +922,64 @@ class EntityStoreMixin:
             records = list(result)
 
         return [_neo4j_record_to_entity(r) for r in records]
+
+
+    def stream_all_entities(self, exclude_embedding: bool = True, since: Optional[str] = None):
+        """Yield latest-version entities one by one from the Neo4j cursor.
+
+        Unlike get_all_entities(), this does not materialize the full result
+        set — records are yielded as they arrive from the Neo4j driver's
+        lazy cursor, making it suitable for SSE streaming.
+
+        If *since* (ISO timestamp) is given, only yield entities whose latest
+        version has processed_time > since.
+        """
+        with self._streaming_session() as session:
+            fields = _ENTITY_RETURN_FIELDS if exclude_embedding else _ENTITY_RETURN_FIELDS_WITH_EMB
+            params = {}
+            if since:
+                query = f"""
+                    MATCH (e:Entity)
+                    WITH e.family_id AS fid, COLLECT(e) AS ents
+                    WITH fid, ents, SIZE(ents) AS vc
+                    UNWIND ents AS e
+                    WITH fid, vc, e ORDER BY e.processed_time DESC
+                    WITH fid, vc, HEAD(COLLECT(e)) AS e
+                    WHERE e.processed_time > datetime($since)
+                    RETURN {fields}, vc AS version_count
+                    ORDER BY e.processed_time ASC
+                """
+                params["since"] = since
+            else:
+                query = f"""
+                    MATCH (e:Entity)
+                    WITH e.family_id AS fid, COLLECT(e) AS ents
+                    WITH fid, ents, SIZE(ents) AS vc
+                    UNWIND ents AS e
+                    WITH fid, vc, e ORDER BY e.processed_time DESC
+                    WITH fid, vc, HEAD(COLLECT(e)) AS e
+                    RETURN {fields}, vc AS version_count
+                    ORDER BY e.processed_time ASC
+                """
+            result = self._run(session, query, **params)
+            for record in result:
+                entity = _neo4j_record_to_entity(record)
+                yield entity, record.get("version_count", 1)
+
+    def count_entities_since(self, since: str) -> int:
+        """Count entities whose latest version has processed_time > since."""
+        with self._session() as session:
+            result = self._run(session, """
+                MATCH (e:Entity)
+                WITH e.family_id AS fid, COLLECT(e) AS ents
+                UNWIND ents AS e
+                WITH fid, e ORDER BY e.processed_time DESC
+                WITH fid, HEAD(COLLECT(e)) AS e
+                WHERE e.processed_time > datetime($since)
+                RETURN COUNT(e) AS cnt
+            """, since=since)
+            rec = result.single()
+            return rec["cnt"] if rec else 0
 
 
 
@@ -1154,6 +1297,18 @@ class EntityStoreMixin:
             )
             return {record["uuid"]: record["name"] for record in result}
 
+    def get_all_entity_names_map(self) -> Dict[str, str]:
+        """Return {uuid: name} for current (non-invalidated) entities.
+
+        Used by the relation SSE stream to resolve endpoint names.
+        Endpoints are remapped to latest absolute_id before lookup.
+        """
+        with self._session() as session:
+            result = self._run(session,
+                "MATCH (e:Entity) WHERE e.invalid_at IS NULL "
+                "RETURN e.uuid AS uuid, e.name AS name",
+            )
+            return {record["uuid"]: record["name"] for record in result}
 
 
     def get_entity_provenance(self, family_id: str) -> List[dict]:
@@ -1240,6 +1395,7 @@ class EntityStoreMixin:
                 query += f" LIMIT {int(limit)}"
             result = self._run(session, query, **params)
             relations = [_neo4j_record_to_relation(r) for r in result]
+            self._remap_relation_endpoints(relations, session)
             return self._filter_dream_candidates(relations, include_candidates)
 
 
@@ -1251,6 +1407,7 @@ class EntityStoreMixin:
         """通过 family_id 获取实体的所有关系（包含所有版本）。"""
         with _perf_timer("get_entity_relations_by_family_id"):
             result = self._get_entity_relations_by_family_id_impl(family_id, limit, time_point, max_version_absolute_id)
+            self._remap_relation_endpoints(result)
             return self._filter_dream_candidates(result, include_candidates)
 
 
@@ -1397,7 +1554,8 @@ class EntityStoreMixin:
                 """,
                 fids=canonical_ids,
             )
-            return {record["family_id"]: record["cnt"] for record in result}
+            canonical_counts = {record["family_id"]: record["cnt"] for record in result}
+        return {fid: canonical_counts.get(canonical, 0) for fid, canonical in resolved_map.items() if canonical}
 
     def count_entity_relations_by_family_ids(self, family_ids: List[str]) -> Dict[str, int]:
         """批量获取多个 family_id 的关系数量（单个 Cypher 聚合查询）。"""
@@ -1655,6 +1813,8 @@ class EntityStoreMixin:
                     "RETURN ec AS entity_count, count(DISTINCT r.family_id) AS relation_count"
                 )
                 row = r.single()
+                if row is None:
+                    return {"entities": 0, "relations": 0}
                 return {"entities": row["entity_count"], "relations": row["relation_count"]}
         except Exception as e:
             logger.warning("get_stats failed: %s", e)
@@ -1695,47 +1855,46 @@ class EntityStoreMixin:
 
         if not patches:
             return
-        with self._entity_write_lock:
-            with self._session() as session:
-                rows = [
-                    {
-                        "uuid": p.uuid,
-                        "target_type": p.target_type,
-                        "target_abs_id": p.target_absolute_id,
-                        "target_family_id": p.target_family_id,
-                        "section_key": p.section_key,
-                        "change_type": p.change_type,
-                        "old_hash": p.old_hash,
-                        "new_hash": p.new_hash,
-                        "diff_summary": p.diff_summary,
-                        "source": p.source_document,
-                        "event_time": _fmt_dt(p.event_time) if p.event_time else datetime.now().isoformat(),
-                    }
-                    for p in patches
-                ]
-                self._run(session,
-                    """
-                    UNWIND $rows AS row
-                    CREATE (cp:ContentPatch {
-                        uuid: row.uuid,
-                        target_type: row.target_type,
-                        target_absolute_id: row.target_abs_id,
-                        target_family_id: row.target_family_id,
-                        section_key: row.section_key,
-                        change_type: row.change_type,
-                        old_hash: row.old_hash,
-                        new_hash: row.new_hash,
-                        diff_summary: row.diff_summary,
-                        source_document: row.source,
-                        event_time: datetime(row.event_time)
-                    })
-                    WITH cp, row.target_abs_id AS abs_id
-                    MATCH (t) WHERE t.uuid = abs_id
-                    MERGE (cp)-[:PATCHES]->(t)
-                    """,
-                    graph_id_safe=False,
-                    rows=rows,
-                )
+        with self._session() as session:
+            rows = [
+                {
+                    "uuid": p.uuid,
+                    "target_type": p.target_type,
+                    "target_abs_id": p.target_absolute_id,
+                    "target_family_id": p.target_family_id,
+                    "section_key": p.section_key,
+                    "change_type": p.change_type,
+                    "old_hash": p.old_hash,
+                    "new_hash": p.new_hash,
+                    "diff_summary": p.diff_summary,
+                    "source": p.source_document,
+                    "event_time": _fmt_dt(p.event_time) if p.event_time else datetime.now().isoformat(),
+                }
+                for p in patches
+            ]
+            self._run(session,
+                """
+                UNWIND $rows AS row
+                CREATE (cp:ContentPatch {
+                    uuid: row.uuid,
+                    target_type: row.target_type,
+                    target_absolute_id: row.target_abs_id,
+                    target_family_id: row.target_family_id,
+                    section_key: row.section_key,
+                    change_type: row.change_type,
+                    old_hash: row.old_hash,
+                    new_hash: row.new_hash,
+                    diff_summary: row.diff_summary,
+                    source_document: row.source,
+                    event_time: datetime(row.event_time)
+                })
+                WITH cp, row.target_abs_id AS abs_id
+                MATCH (t) WHERE t.uuid = abs_id
+                MERGE (cp)-[:PATCHES]->(t)
+                """,
+                graph_id_safe=False,
+                rows=rows,
+            )
 
 
     # ------------------------------------------------------------------
@@ -1803,16 +1962,16 @@ class EntityStoreMixin:
                         content=entity.content,
                         event_time=_fmt_dt(entity.event_time),
                         processed_time=_fmt_dt(entity.processed_time),
-                    cache_id=entity.episode_id,
-                    source=entity.source_document,
-                    summary=entity.summary,
-                    attributes=entity.attributes,
-                    confidence=entity.confidence,
-                    content_format=getattr(entity, "content_format", "plain"),
-                    valid_at=valid_at,
-                    graph_id=self._graph_id,
-                    embedding=embedding_list,
-                )
+                        cache_id=entity.episode_id,
+                        source=entity.source_document,
+                        summary=entity.summary,
+                        attributes=json.dumps(entity.attributes, ensure_ascii=False) if isinstance(entity.attributes, (dict, list)) else entity.attributes,
+                        confidence=entity.confidence,
+                        content_format=getattr(entity, "content_format", "plain"),
+                        valid_at=valid_at,
+                        graph_id=self._graph_id,
+                        embedding=embedding_list,
+                    )
 
             # Incremental cache update
             if embedding_blob:

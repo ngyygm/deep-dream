@@ -24,6 +24,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from core.log import error as _log_error, warn as _log_warn
+
 
 # ---------------------------------------------------------------------------
 # Config helpers
@@ -447,7 +449,7 @@ class SessionManager:
                 try:
                     msg = line.decode().strip()
                     if msg:
-                        sys.stderr.write(f"[claude:{session.session_id[:8]}] {msg}\n")
+                        _log_error("Chat", f"[claude:{session.session_id[:8]}] {msg}")
                 except UnicodeDecodeError:
                     pass
         except (ValueError, OSError):
@@ -531,9 +533,10 @@ class SessionManager:
                     if session.process and session.process.poll() is None:
                         idle_time = now - session.last_active
                         if idle_time > self.idle_timeout:
-                            sys.stderr.write(
-                                f"[chat-session] Reaping idle session {sid[:8]} "
-                                f"(idle {idle_time:.0f}s > {self.idle_timeout}s)\n"
+                            _log_warn(
+                                "Chat",
+                                f"Reaping idle session {sid[:8]} "
+                                f"(idle {idle_time:.0f}s > {self.idle_timeout}s)"
                             )
                             self._terminate_process(session)
 
@@ -551,7 +554,7 @@ class SessionManager:
         active.sort()
         while len(active) >= self.max_processes:
             _, sid, session = active.pop(0)
-            sys.stderr.write(f"[chat-session] Evicting session {sid[:8]} (pool full)\n")
+            _log_warn("Chat", f"Evicting session {sid[:8]} (pool full)")
             self._terminate_process(session)
 
     def _restore_sessions(self):

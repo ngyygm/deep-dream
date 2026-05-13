@@ -47,12 +47,36 @@ distill_pipeline/
 
 # 基准测试结果
 bench_*.json
+benchmark_*.json
+bench_results/
 
 # 实验结果产物（代码保留）
 experiments/*/results/
 
 # 测试结果截图和 dump
 tests/result/
+
+# 中间产物：截图、页面 dump、临时报告
+*.png
+dashboard
+graph-*
+search-*
+
+# 临时 markdown 报告
+Deep-Dream-CLI.md
+SECURITY_AUDIT_REPORT.md
+findings.md
+frontend_improvements_summary.md
+progress.md
+task_plan.md
+dd_report_pipeline_test.md
+
+# 测试备份
+*.bak
+
+# 临时基准测试脚本
+core/tests/test_alignment_benchmark.py
+core/tests/test_pipeline_benchmark.py
 
 # Neo4j bolt 协议误创建的目录
 bolt:
