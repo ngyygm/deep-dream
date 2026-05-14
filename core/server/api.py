@@ -440,6 +440,48 @@ def create_app(
             return jsonify({"success": False, "error": f"Endpoint not found: {request.path}", "elapsed_ms": 0}), 404
         return e
 
+    # ── Compact response middleware (?compact=true) ────────────────────
+    from flask import g as _g
+    from core.server.agent_api import (
+        strip_bulky, compact_lists, compact_item, error_hint as _error_hint_fn,
+    )
+
+    @app.before_request
+    def _detect_compact():
+        _g.compact = request.args.get("compact", "").lower() in ("true", "1", "yes")
+
+    @app.after_request
+    def _apply_compact(response):
+        if not getattr(_g, 'compact', False):
+            return response
+        if response.content_type and 'json' not in response.content_type:
+            return response
+        try:
+            data = response.get_json(silent=True)
+            if not isinstance(data, dict):
+                return response
+            # Error responses: add hint
+            if not data.get("success", True) and "error" in data:
+                err_msg = data["error"]
+                hint = _error_hint_fn(err_msg)
+                if hint:
+                    data["hint"] = hint
+                response.set_data(jsonify(data).get_data())
+                return response
+            # Success responses: strip bulky + compact lists
+            inner = data.get("data", data)
+            if isinstance(inner, dict):
+                inner = strip_bulky(inner)
+                inner = compact_lists(inner)
+                if "data" in data:
+                    data["data"] = inner
+                else:
+                    data.update(inner)
+            response.set_data(jsonify(data).get_data())
+        except Exception:
+            pass
+        return response
+
     # Cleanup shared thread pools on shutdown
     def _shutdown_pools():
         from core.server.blueprints.entities import _shared_pool as _ent_pool

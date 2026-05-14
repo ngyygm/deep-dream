@@ -10,124 +10,136 @@ description: >
 
 # Deep-Dream Knowledge Graph
 
-Natural-language memory graph. **Remember** (write → auto-extract entities/relations) + **Find** (semantic retrieval). All concepts are one primitive with roles: `entity`, `relation`, `observation`. Concept tools (`search_concepts` etc.) provide cross-role access; use specialized tools (`create_entity`, `create_relation`) for type-specific ops.
+Natural-language memory graph. **Remember** (write → auto-extract entities/relations) + **Find** (semantic retrieval). All concepts are one primitive with roles: `entity`, `relation`, `observation`.
 
 ```
-BASE_URL=http://localhost:16200/api/v1   |   graph_id=default   |   Response: {success, data}
+BASE_URL=http://localhost:16200/api/v1   |   graph_id=default (query param)   |   Response: {success, data}
 ```
 
-## CRITICAL: Always Use MCP Tools
+All endpoints accept `?graph_id=<id>` to target a specific graph. Add `&compact=true` to strip embeddings and truncate content for agent-friendly responses.
 
-**NEVER use raw `curl` or direct HTTP calls to the API.** Use the MCP tools listed below (e.g. `get_entity_versions`, `entity_profile`, `search_entities`). The MCP server handles URL construction, response parsing, error handling, and ID validation automatically.
+## Quick Start
 
-If you catch yourself writing `curl -s "http://localhost:16200/api/v1/..."`, stop — use the corresponding MCP tool instead.
+```bash
+# Health check
+curl -s $BASE_URL/health
 
-### Fallback: REST API Direct Access
+# LLM health (check before remember/dream)
+curl -s $BASE_URL/health/llm
 
-If MCP tools are unavailable, use the REST API at `http://localhost:16200/api/v1/`. All endpoints require `?graph_id=default` (or your target graph).
+# Graph overview
+curl -s "$BASE_URL/find/graph-summary?graph_id=default&compact=true"
 
-| MCP Tool | REST Endpoint | Method |
-|---|---|---|
-| `graph_overview` | `/find/graph-summary` | GET |
-| `remember` | `/remember` | POST body: `{text, wait, timeout}` |
-| `quick_search` | `/find` | POST body: `{query}` |
-| `entity_profile` | `/find/entities/{fid}/profile` | GET |
-| `create_entity` | `/find/entities/create` | POST body: `{name, content}` |
-| `create_relation` | `/find/relations/create` | POST body: `{entity1_family_id, entity2_family_id, content}` |
-| `search_entities` | `/find/entities/search?query_name=X` | GET |
-| `dream_run` | `/find/dream/run` | POST body: `{strategy, seed_count}` |
-| `butler_report` | `/butler/report` | GET |
-| `butler_execute` | `/butler/execute` | POST body: `{actions, dry_run}` |
-| `health_check_llm` | `/health/llm` | GET |
-
-Error format: `{"success": false, "error": "...", "elapsed_ms": N}`. Error messages may be in Chinese.
+# List all graphs
+curl -s $BASE_URL/graphs
+```
 
 ## Decision Guide
 
-| Intent | Tool | Key Notes |
-|---|---|---|
-| First call / overview | `graph_overview` | Stats + activity + health |
-| Check LLM health | `health_check_llm` | Verify LLM is reachable before remember/dream |
-| Store text | `remember` (wait=true) | Sync; async returns task_id |
-| Store + explore | `remember_and_explore` | 1 call = write + search |
-| Search anything | `quick_search` | query → entities + relations |
-| Deep topic dive | `explore_topic` | search + traverse |
-| NL question | `ask` | AI reasoning over graph |
-| Find by name | `find_entity_by_name` | Fuzzy match |
-| Entity details | `entity_profile` | Details + relations + versions |
-| Batch entities | `batch_profiles` | Up to 20 |
-| Cross-role search | `search_concepts` | Unified concept search |
-| Concept provenance | `get_concept_provenance` | Trace to source observation |
-| Concept traversal | `traverse_concepts` | Cross-role BFS |
-| Concept neighbors | `get_concept_neighbors` | Unified graph traversal |
-| Dream (full) | `dream_run` | 1 call = full cycle |
-| Dream (quick) | `dream_quick_start` | Lightweight start |
-| Merge entities | `merge_entities` | target + sources |
-| Split mixed entity | `split_entity_version` | Needs absolute_id |
-| Update confidence | API: `PUT .../confidence` | No MCP tool yet |
-| Dream candidates | API: `GET /dream/candidates` | No MCP tool yet |
-| Health / cleanup | `butler_report` → `butler_execute` | 2 calls; valid actions: cleanup_isolated, cleanup_invalidated, detect_communities, evolve_summaries |
-| Communities | `detect_communities` → `get_community` | Neo4j only |
+| Intent | Method | Endpoint | Key Params |
+|---|---|---|---|
+| Store text (sync) | POST | `/remember` | `{text, wait:true, timeout:120}` |
+| Store text (async) | POST | `/remember` | `{text}` → poll task_id |
+| Check remember task | GET | `/remember/tasks/{id}` | — |
+| Search everything | POST | `/find` | `{query, search_mode:"hybrid"}` |
+| Search entities | GET | `/find/entities/search` | `query_name=X` |
+| Search relations | GET | `/find/relations/search` | `query_text=X` |
+| Find by name | GET | `/find/entities/by-name/{name}` | `threshold=0.7` |
+| Entity profile | GET | `/find/entities/{fid}/profile` | — |
+| Quick search | POST | `/find` | `{query}` |
+| Traverse graph | POST | `/find/traverse` | `{start_entity_id, max_depth}` |
+| Shortest path | POST | `/find/paths/shortest` | `{family_id_a, family_id_b}` |
+| Create entity | POST | `/find/entities/create` | `{name, content}` |
+| Create relation | POST | `/find/relations/create` | `{entity1_family_id, entity2_family_id, content}` |
+| Update entity | PUT | `/find/entities/{fid}` | `{name, summary, attributes}` |
+| Merge entities | POST | `/find/entities/merge` | `{family_ids:[...], target_family_id:...}` |
+| Dream cycle | POST | `/find/dream/run` | `{strategy, seed_count}` |
+| Dream status | GET | `/find/dream/status` | — |
+| Ask NL question | POST | `/find/ask` | `{question}` |
+| Butler report | GET | `/butler/report` | — |
+| Butler execute | POST | `/butler/execute` | `{actions:[...], dry_run:true}` |
+| Health report | GET | `/find/maintenance/health` | — |
+| Detect communities | POST | `/communities/detect` | `{algorithm:"louvain"}` |
 
-### More Tools
+## Common Workflows
 
-**Search**: `semantic_search`, `search_entities`, `search_relations`, `traverse_graph`, `search_shortest_path`
+### Write and Verify
+```bash
+# Store text (sync, wait for extraction)
+curl -s -X POST "$BASE_URL/remember?graph_id=default" \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"Alice is a software engineer at Google","wait":true,"timeout":120}'
 
-**Entity**: `get_entity`, `get_entity_versions`, `get_entity_timeline`, `create_entity`, `update_entity`, `delete_entity`, `evolve_entity_summary`, `get_entity_contradictions`, `refresh_graph_edges`
+# Verify extraction
+curl -s "$BASE_URL/find/entities/search?query_name=Alice&graph_id=default"
+```
 
-**Relation**: `get_relations_between`, `create_relation`, `update_relation`, `delete_relation`, `invalidate_relation`, `redirect_relation`
+### Create Entity + Relation
+```bash
+# Create two entities
+E1=$(curl -s -X POST "$BASE_URL/find/entities/create?graph_id=default" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"Project A","content":"A research project"}' | jq -r '.data.family_id')
 
-**Concept**: `search_concepts`, `list_concepts`, `get_concept`, `get_concept_neighbors`, `get_concept_provenance`, `traverse_concepts`, `get_concept_mentions`
+E2=$(curl -s -X POST "$BASE_URL/find/entities/create?graph_id=default" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"Project B","content":"Another project"}' | jq -r '.data.family_id')
 
-**Maintenance**: `maintenance_health`, `maintenance_cleanup`, `cleanup_old_versions`, `detect_communities`
+# Create relation using family_ids (no need for absolute_ids)
+curl -s -X POST "$BASE_URL/find/relations/create?graph_id=default" \
+  -H 'Content-Type: application/json' \
+  -d "{\"entity1_family_id\":\"$E1\",\"entity2_family_id\":\"$E2\",\"content\":\"A and B are related\"}"
+```
 
-**Graph**: `switch_graph`, `list_graphs`, `create_graph`, `delete_graph`
+### Dream Cycle
+```bash
+# Check dream status
+curl -s "$BASE_URL/find/dream/status?graph_id=default"
 
-**Write**: `remember`, `remember_and_explore`, `batch_ingest_episodes`
+# Run a dream cycle
+curl -s -X POST "$BASE_URL/find/dream/run?graph_id=default" \
+  -H 'Content-Type: application/json' \
+  -d '{"strategy":"cross_community","seed_count":5,"max_depth":2}'
+
+# Check dream logs
+curl -s "$BASE_URL/find/dream/logs?graph_id=default"
+```
+
+### Butler Health Check
+```bash
+# Get report
+curl -s "$BASE_URL/butler/report?graph_id=default"
+
+# Preview cleanup (dry_run)
+curl -s -X POST "$BASE_URL/butler/execute?graph_id=default" \
+  -H 'Content-Type: application/json' \
+  -d '{"actions":["cleanup_isolated","cleanup_invalidated"],"dry_run":true}'
+```
 
 ## ID System
 
-`family_id` (stable, `ent_*`/`rel_*`) — most ops | `absolute_id` (UUID version snapshot) — split_entity_version, version diff
+- **family_id** (`ent_*`/`rel_*`): stable ID for most operations. Example: `ent_abc123`
+- **absolute_id** (UUID): version-specific snapshot. Used for: `split_entity_version`, version diff. Example: `entity_20260514_231113_6e558246`
+- `create_relation` accepts **family_ids** (`entity1_family_id`/`entity2_family_id`) — no need to resolve to absolute_id
 
-## Dream Mode
+## Response Format
 
-Triggered by "dream"/"做梦". Use `dream_run` (1 call) or manual: graph_summary → dream/seeds → entity_profile → traverse → create_dream_relation → save_dream_episode. 8 types: free_association, cross_domain, leap, contrastive, temporal_bridge, orphan_adoption, hub_remix, narrative (see `references/dream-types/`). **Rules**: evidence required, honest confidence (0.3-0.5 if unsure), check existing first, always `save_dream_episode`.
+All responses: `{"success": bool, "data": {...}, "elapsed_ms": float}`
 
-Note: Dream relation discovery requires a running LLM. If `dream_run` returns 0 relations with a warning, check `health_check_llm` first.
+Errors: `{"success": false, "error": "message", "hint": "actionable guidance", "elapsed_ms": float}`
 
-## Butler Mode
-
-`butler_report` → `butler_execute`. Or manual: `maintenance_health` → cleanup/communities/evolve → verify with `graph_summary`.
-
-Valid `butler_execute` actions: `cleanup_isolated`, `cleanup_invalidated`, `detect_communities`, `evolve_summaries`. Note: `run_dream` may appear in butler_report recommendations but is NOT a valid butler_execute action — use `dream_run` or `dream_quick_start` instead.
+- Error messages may be in Chinese. The `hint` field provides English guidance.
+- Add `compact=true` query param to strip embeddings and truncate content.
 
 ## Parameter Pitfalls
 
-- `remember`: set `wait=true` for sync mode (blocks until extraction done); default is async (returns task_id to poll)
-- `remember`: if extraction returns 0 entities, check `health_check_llm` — LLM may be down
-- `create_relation`: accepts family_id (`entity1_family_id`) or absolute_id (`entity1_absolute_id`); family_id is simpler
-- `create_dream_relation`: uses family_id (not absolute_id)
+- `remember`: use `wait:true` for sync mode; default is async (returns task_id to poll)
+- Entity search uses `query_name` param, not `q` or `query`
+- Relations between entities uses `family_id_a`/`family_id_b` param names
 - `update_entity`: name/content changes create a new version; summary/attribute changes are in-place
-- `split_entity_version`: needs absolute_id — `get_entity_versions` first
-- Concept tools: accept any prefix (`ent_*`, `rel_*`, `episode`)
-- Destructive ops: **default dry_run=true** (must pass false to execute)
-- search_mode: semantic / bm25 / hybrid
-- relation_scope: accumulated / version_only / all_versions
-
-## Common Mistakes
-
-| Don't | Do |
-|---|---|
-| `get_entity` + `get_entity_relations` | `entity_profile` (1 call) |
-| Manual write + search | `remember_and_explore` (1 call) |
-| Jump to search on first visit | `graph_overview` first |
-| Only `search_entities` for concepts | `search_concepts` (cross-role) |
-| 15-25 manual dream calls | `dream_run` (1 call) |
-| Forget to poll remember | Use `wait=true` |
-| Use `health_check` only | `health_check_llm` to verify LLM before remember/dream |
-| Ignore 0-extraction results | Check `health_check_llm`, may be LLM connectivity issue |
-
-MCP server auto-protects: ID type detection, empty result hints, pagination warnings, response truncation, destructive op safety defaults.
+- Destructive ops: pass `dry_run:true` in body to preview before executing
+- Valid `butler_execute` actions: `cleanup_isolated`, `cleanup_invalidated`, `detect_communities`, `evolve_summaries` (NOT `run_dream`)
+- If remember returns 0 entities, check LLM health: `GET /health/llm`
 
 ## Full API Reference
 
