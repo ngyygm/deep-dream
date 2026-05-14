@@ -170,11 +170,11 @@ def compact_lists(data, max_chars=_MAX_RESPONSE_CHARS):
 # ── Error hints ───────────────────────────────────────────────────────────
 
 _HINT_PATTERNS = [
-    (lambda m: "not found" in m and "entity" in m,
+    (lambda m: ("not found" in m or "未找到" in m) and ("entity" in m or "实体" in m),
      "Hint: use search_entities (GET /find/entities/search?query_name=X) or find_entity_by_name to find the correct family_id."),
-    (lambda m: "not found" in m and "relation" in m,
+    (lambda m: ("not found" in m or "未找到" in m) and ("relation" in m or "关系" in m),
      "Hint: use get_relations_between or search_relations to find the correct relation."),
-    (lambda m: "not found" in m and "episode" in m,
+    (lambda m: ("not found" in m or "未找到" in m) and ("episode" in m or "记忆" in m),
      "Hint: use search_episodes or get_latest_episode to find valid cache_ids."),
     (lambda m: "not found" in m and "community" in m,
      "Hint: use list_communities (GET /communities) to see valid IDs. Run detect_communities first if empty."),
