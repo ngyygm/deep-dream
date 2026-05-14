@@ -32,6 +32,7 @@
 
   // Keyboard shortcut handler reference (for cleanup)
   let _graphKeyHandler = null;
+  let _loadGraphAbort = null;
 
   // Relation strength mode
   let relationStrengthEnabled = false;
@@ -562,6 +563,8 @@
 
   /** Incremental update: fetch only entities/relations since graphLastModified, merge into cache. */
   async function loadGraphIncremental() {
+    if (_loadGraphAbort) _loadGraphAbort.abort();
+    _loadGraphAbort = new AbortController();
     const since = graphLastModified;
     const streamBase = '/api/v1/find/graph/stream/';
     const streamParams = '?graph_id=' + encodeURIComponent(state.currentGraphId) + '&since=' + encodeURIComponent(since);
@@ -865,56 +868,23 @@
     }, 200);
   }
 
-  // ---- SSE consumer (generic, reusable) ----
+  // ---- SSE consumer (thin wrapper around shared SSEClient) ----
   function consumeSSE(url, handlers) {
-    return fetch(url).then(function (res) {
-      if (!res.ok) throw new Error('HTTP ' + res.status);
-      var reader = res.body.getReader();
-      var decoder = new TextDecoder();
-      var buffer = '';
-      var curEvent = '';
-      var curData = '';
-
-      function pump() {
-        return reader.read().then(function (result) {
-          if (result.done) {
-            if (buffer.trim()) parseChunk(buffer + '\n');
-            if (handlers.done_event) handlers.done_event();
-            return;
-          }
-          buffer += decoder.decode(result.value, { stream: true });
-          var lines = buffer.split('\n');
-          buffer = lines.pop() || '';
-          parseChunk(lines.join('\n') + '\n');
-          return pump();
-        });
-      }
-
-      function parseChunk(text) {
-        var lines = text.split('\n');
-        for (var i = 0; i < lines.length; i++) {
-          var line = lines[i];
-          if (line.startsWith('event: ')) {
-            curEvent = line.slice(7).trim();
-          } else if (line.startsWith('data: ')) {
-            curData = line.slice(6);
-          } else if (line === '' && curEvent && curData) {
-            var parsed = null;
-            try { parsed = JSON.parse(curData); } catch (_) {}
-            if (handlers[curEvent]) handlers[curEvent](parsed);
-            curEvent = '';
-            curData = '';
-          }
-        }
-      }
-
-      return pump();
+    return SSEClient.get(url, {
+      onEvent: function (eventType, data) {
+        if (handlers[eventType]) handlers[eventType](data);
+      },
+      onDone: function () {
+        if (handlers.done_event) handlers.done_event();
+      },
     });
   }
 
   // ---- Fetch entities, their relations, and build the graph ----
 
   async function loadGraph() {
+    if (_loadGraphAbort) _loadGraphAbort.abort();
+    _loadGraphAbort = new AbortController();
     const graphId = state.currentGraphId;
     const hopLevel = parseInt(document.getElementById('hop-level').value, 10) || 1;
     currentHopLevel = hopLevel;

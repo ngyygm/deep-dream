@@ -23,11 +23,11 @@ from core.server.blueprints.helpers import (
     enrich_relations,
     episode_to_dict,
     parse_time_point,
+    _get_searcher,
 )
+from core.server.blueprints._constants import _VALID_SEARCH_MODES
 from core.server.sse import sse_response, queue_to_generator
 from core.server.registry import GraphRegistry
-
-_VALID_SEARCH_MODES = frozenset(("semantic", "bm25", "hybrid"))
 
 logger = logging.getLogger(__name__)
 

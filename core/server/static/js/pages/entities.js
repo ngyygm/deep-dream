@@ -15,7 +15,9 @@
   let isSearchMode = false;
   let _currentModalClose = null;
   let _searchSeq = 0;
+  let _searchAbort = null;
   let _cachedGraphId = null;
+  let _entityGraphChangeHandler = null;
 
   // ---- Search & Filter Bar ----
 
@@ -744,6 +746,8 @@
 
   async function searchEntities(query) {
     const seq = ++_searchSeq;
+    if (_searchAbort) _searchAbort.abort();
+    _searchAbort = new AbortController();
     const graphId = state.currentGraphId;
     const res = await state.api.searchEntities(query, graphId);
     if (seq !== _searchSeq) return; // stale result, discard
@@ -1070,6 +1074,10 @@
     clearTimeout(debounceTimer);
     debounceTimer = null;
     _currentModalClose = null;
+    if (_entityGraphChangeHandler) {
+      state.events.removeEventListener('graph-changed', _entityGraphChangeHandler);
+      _entityGraphChangeHandler = null;
+    }
   }
 
   // Expose globally for use by other pages (search, relations, path-finder) and inline onclick handlers
@@ -1077,6 +1085,13 @@
   window.openEditEntityModal = openEditEntityModal;
   window.confirmDeleteEntity = confirmDeleteEntity;
   window.toggleAllEntityCheckboxes = toggleAllEntityCheckboxes;
+
+  // Listen for graph changes from other pages (e.g. memory submission) and invalidate cache
+  if (_entityGraphChangeHandler) state.events.removeEventListener('graph-changed', _entityGraphChangeHandler);
+  _entityGraphChangeHandler = () => {
+    _cachedGraphId = null; // force full reload on next render
+  };
+  state.events.addEventListener('graph-changed', _entityGraphChangeHandler);
 
   registerPage('entities', { render, destroy });
 })();

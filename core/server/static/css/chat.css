@@ -205,56 +205,7 @@
   color: var(--text-primary);
 }
 
-/* Markdown elements inside assistant bubbles */
-.chat-message-assistant .chat-msg-bubble p { margin: 0.5rem 0; }
-.chat-message-assistant .chat-msg-bubble p:first-child { margin-top: 0; }
-.chat-message-assistant .chat-msg-bubble p:last-child { margin-bottom: 0; }
-.chat-message-assistant .chat-msg-bubble ul,
-.chat-message-assistant .chat-msg-bubble ol { margin: 0.5rem 0; padding-left: 1.5rem; }
-.chat-message-assistant .chat-msg-bubble code {
-  background: var(--bg-input);
-  padding: 0.1rem 0.3rem;
-  border-radius: 0.25rem;
-  font-family: var(--font-mono);
-  font-size: 0.82em;
-}
-.chat-message-assistant .chat-msg-bubble pre {
-  background: var(--bg-input);
-  padding: 0.75rem;
-  border-radius: 0.5rem;
-  overflow-x: auto;
-  font-family: var(--font-mono);
-  font-size: 0.82em;
-  margin: 0.5rem 0;
-}
-.chat-message-assistant .chat-msg-bubble pre code {
-  background: none;
-  padding: 0;
-}
-.chat-message-assistant .chat-msg-bubble h1,
-.chat-message-assistant .chat-msg-bubble h2,
-.chat-message-assistant .chat-msg-bubble h3 {
-  margin: 0.75rem 0 0.25rem;
-  font-weight: 600;
-}
-.chat-message-assistant .chat-msg-bubble blockquote {
-  border-left: 3px solid var(--primary);
-  padding-left: 0.75rem;
-  color: var(--text-secondary);
-  margin: 0.5rem 0;
-}
-.chat-message-assistant .chat-msg-bubble a {
-  color: var(--primary-hover);
-}
-.chat-message-assistant .chat-msg-bubble table {
-  border-collapse: collapse;
-  margin: 0.5rem 0;
-}
-.chat-message-assistant .chat-msg-bubble th,
-.chat-message-assistant .chat-msg-bubble td {
-  border: 1px solid var(--border-color);
-  padding: 0.3rem 0.6rem;
-}
+/* Markdown elements inside assistant bubbles — shared via .chat-msg-bubble in app.css prose rules */
 
 .chat-message-system .chat-msg-bubble {
   background: transparent;
@@ -392,32 +343,7 @@
   line-height: 1.7;
 }
 
-.chat-summary p {
-  margin: 0.5rem 0;
-}
-
-.chat-summary ul, .chat-summary ol {
-  margin: 0.5rem 0;
-  padding-left: 1.5rem;
-}
-
-.chat-summary code {
-  background: var(--bg-input);
-  padding: 0.1rem 0.3rem;
-  border-radius: 0.25rem;
-  font-family: var(--font-mono);
-  font-size: 0.82em;
-}
-
-.chat-summary pre {
-  background: var(--bg-input);
-  padding: 0.75rem;
-  border-radius: 0.5rem;
-  overflow-x: auto;
-  font-family: var(--font-mono);
-  font-size: 0.82em;
-  margin: 0.5rem 0;
-}
+/* Markdown inside .chat-summary — shared via .chat-summary in app.css prose rules */
 
 /* --- Input area --- */
 .chat-input-area {

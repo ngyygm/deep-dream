@@ -798,25 +798,30 @@
       fetchGraphStats(),
     ]);
 
-    // --- Independent refresh timers per section ---
-
-    // Tasks: every 3s (progress tracking needs responsiveness)
-    state.refreshTimers.dash_tasks = setInterval(fetchTasks, 3000);
-
-    // Logs: every 10s
-    state.refreshTimers.dash_logs = setInterval(fetchLogs, 10000);
-
-    // Overview + Graphs: every 15s (graphs is expensive: scans filesystem)
-    state.refreshTimers.dash_graphs = setInterval(async () => {
-      await fetchOverview();
-      await fetchGraphs();
-    }, 15000);
-
-    // Access stats: every 30s (analytics, changes slowly)
-    state.refreshTimers.dash_access = setInterval(fetchAccessStats, 30000);
-
-    // Graph stats: every 30s
-    state.refreshTimers.dash_graph_stats = setInterval(fetchGraphStats, 30000);
+    // --- Consolidated refresh timer ---
+    // Groups calls by frequency into a single setInterval to reduce timer overhead.
+    // 3s group: tasks (fast progress tracking)
+    // 10s group: logs
+    // 15s group: overview + graphs (expensive)
+    // 30s group: access stats + graph stats (slow analytics)
+    let dashTick = 0;
+    state.refreshTimers.dash_consolidated = setInterval(async () => {
+      dashTick++;
+      // Every tick (3s): tasks
+      await fetchTasks();
+      // Every ~10s (skip 2 of 3): logs
+      if (dashTick % 3 === 0) await fetchLogs();
+      // Every ~15s (skip 4 of 5): overview + graphs
+      if (dashTick % 5 === 0) {
+        await fetchOverview();
+        await fetchGraphs();
+      }
+      // Every ~30s (skip 9 of 10): access stats + graph stats
+      if (dashTick % 10 === 0) {
+        await fetchAccessStats();
+        await fetchGraphStats();
+      }
+    }, 3000);
   }
 
   // ---------------------------------------------------------------------------

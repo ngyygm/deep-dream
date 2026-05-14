@@ -2,283 +2,44 @@
 
 Shared utilities (_AlignResult, etc.) → extraction_utils.py
 Extraction logic → extraction_pipeline.py
+Sub-mixins → alignment_contradiction.py, alignment_resolution.py,
+             alignment_orphan.py, alignment_cache.py
 """
 from __future__ import annotations
 
-import asyncio
-import json
 import time as _time
-import threading
-import uuid
 from typing import Any, Dict, List, Optional
 from collections import defaultdict
-from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor
-
-_HIGH_MEDIUM_SEVERITY = frozenset(("high", "medium"))
-
-# Shared pool for contradiction detection and summary evolution (avoids per-call thread churn)
-_alignment_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="align")
 
 from core.models import Episode
 from core.debug_log import log as dbg, log_section as dbg_section, _ENABLED as _dbg_enabled
-from core.utils import compute_doc_hash, wprint_info, wprint_warn, wprint_debug
+from core.utils import wprint_info, wprint_warn
 from core.llm.client import (
-    LLM_PRIORITY_STEP1, LLM_PRIORITY_STEP6, LLM_PRIORITY_STEP7,
+    LLM_PRIORITY_STEP6, LLM_PRIORITY_STEP7,
 )
-from core.llm.prompts import RELATION_DISCOVER_SYSTEM, ORPHAN_RECOVERY_USER
 from .helpers import _AlignResult
 from .helpers import (
-    _core_entity_name,
     _is_valid_entity_name,
     _PAREN_ANNOTATION_RE as _PAREN_ANNOTATION_STRIP_RE,
 )
+from .alignment_contradiction import _ContradictionMixin
+from .alignment_resolution import _ResolutionMixin
+from .alignment_orphan import _OrphanMixin
+from .alignment_cache import _CacheMixin
 
 # System leak patterns for entity content quality checks
 _SYSTEM_LEAK_PATTERNS = ("处理进度", "步骤", "缓存", "抽取", "token", "api")
 
 
-class _PipelineExtractionMixin:
-    """抽取相关流水线步骤（mixin，通过 TemporalMemoryGraphProcessor 多继承使用）。"""
+class _PipelineExtractionMixin(_ContradictionMixin, _ResolutionMixin, _OrphanMixin, _CacheMixin):
+    """Core pipeline extraction mixin — step9/step10 alignment plus sub-concerns.
 
-    def _detect_and_apply_contradictions(self, family_ids: List[str], verbose: bool = False,
-                                          pre_fetched_versions=None):
-        """对多版本实体运行矛盾检测，发现高严重性矛盾时自动降低置信度。
-
-        这是 remember 流水线的自动矛盾检测步骤：
-        1. 使用预获取或批量获取所有 family_id 的版本历史
-        2. 并行调用 LLM detect_contradictions 检测矛盾
-        3. 对 medium/high 严重性矛盾调用 adjust_confidence_on_contradiction
-        """
-        # 使用预获取的版本数据，或批量获取
-        all_versions = pre_fetched_versions
-        if all_versions is None:
-            batch_fn = getattr(self.storage, 'get_entity_versions_batch', None)
-            if batch_fn:
-                try:
-                    all_versions = batch_fn(family_ids)
-                except Exception:
-                    all_versions = None
-
-        # 构建待检测列表（跳过版本不足的）
-        to_check = []
-        for fid in family_ids:
-            versions = (all_versions or {}).get(fid) if all_versions is not None else None
-            if versions is None:
-                try:
-                    versions = self.storage.get_entity_versions(fid)
-                except Exception:
-                    continue
-            if len(versions) >= 2:
-                to_check.append((fid, versions))
-
-        if not to_check:
-            return
-
-        # 并行检测矛盾
-        n_workers = min(len(to_check), getattr(self, 'llm_threads', 2))
-
-        def _detect_one(item):
-            fid, versions = item
-            try:
-                return (fid, self.llm_client.detect_contradictions(fid, versions))
-            except Exception as e:
-                if verbose:
-                    wprint_info(f"【矛盾检测】{fid}: 检测失败 ({e})")
-                return (fid, None)
-
-        if n_workers > 1 and len(to_check) > 1:
-            results = list(_alignment_pool.map(_detect_one, to_check))
-        else:
-            results = [_detect_one(item) for item in to_check]
-
-        # Batch apply confidence adjustments
-        _to_downgrade = []
-        for fid, contradictions in results:
-            if not contradictions:
-                continue
-            high_severity = [c for c in contradictions if c.get("severity") in _HIGH_MEDIUM_SEVERITY]
-            if high_severity:
-                _to_downgrade.append(fid)
-                if verbose:
-                    wprint_info(f"【矛盾检测】{fid}: 发现 {len(high_severity)} 个中/高严重性矛盾，降低置信度")
-        if _to_downgrade:
-            try:
-                batch_fn = getattr(self.storage, 'adjust_confidence_on_contradiction_batch', None)
-                if batch_fn:
-                    batch_fn(_to_downgrade, source_type="entity")
-                else:
-                    for fid in _to_downgrade:
-                        self.storage.adjust_confidence_on_contradiction(fid, source_type="entity")
-            except Exception:
-                pass
-
-    # =========================================================================
-    # 自动摘要进化
-    # =========================================================================
-    SUMMARY_EVOLVE_MIN_VERSIONS = 3  # 至少 3 个版本才触发摘要进化
-
-    def _auto_evolve_summaries(self, family_ids: List[str], verbose: bool = False,
-                               pre_fetched_versions=None):
-        """对版本数足够的实体自动进化摘要。
-
-        当实体积累了多个版本后，其 _extract_summary (首行截断) 已无法反映完整信息。
-        此方法调用 LLM 生成综合性摘要，覆盖存储中的 summary 字段。
-
-        阈值：version_count >= SUMMARY_EVOLVE_MIN_VERSIONS
-        """
-
-        # 使用预获取的版本数据，或批量获取
-        all_versions_map = pre_fetched_versions
-        if all_versions_map is None:
-            batch_fn = getattr(self.storage, 'get_entity_versions_batch', None)
-            if batch_fn:
-                try:
-                    all_versions_map = batch_fn(family_ids)
-                except Exception:
-                    all_versions_map = None
-
-        # 收集需要进化的实体（过滤掉不需要的）
-        to_evolve = []
-        for fid in family_ids:
-            try:
-                if all_versions_map is not None:
-                    versions = all_versions_map.get(fid, [])
-                else:
-                    versions = self.storage.get_entity_versions(fid)
-                if len(versions) < self.SUMMARY_EVOLVE_MIN_VERSIONS:
-                    continue
-
-                # versions 按 processed_time ASC 排序，最新在末尾
-                current = versions[-1] if versions else None
-                if not current:
-                    continue
-                old_version = versions[-2] if len(versions) > 1 else None
-
-                # 检查当前 summary 是否已经是 LLM 生成的高质量摘要
-                existing_summary = getattr(current, 'summary', '') or ''
-                if len(existing_summary) > 50:
-                    if old_version and old_version.content == current.content:
-                        continue  # 内容未变，无需进化
-
-                to_evolve.append((fid, current, old_version))
-            except Exception:
-                continue
-
-        if not to_evolve:
-            return
-
-        # 并行进化摘要
-        n_workers = min(len(to_evolve), getattr(self, 'llm_threads', 2))
-
-        # Per-thread persistent event loop — avoids asyncio.run() overhead
-        # (asyncio.run creates/destroys an event loop per call)
-        _local_loop = threading.local()
-
-        def _get_loop():
-            loop = getattr(_local_loop, 'loop', None)
-            if loop is None or loop.is_closed():
-                loop = asyncio.new_event_loop()
-                _local_loop.loop = loop
-            return loop
-
-        def _evolve_one(item):
-            fid, current, old_version = item
-            try:
-                loop = _get_loop()
-                summary = loop.run_until_complete(
-                    self.llm_client.evolve_entity_summary(current, old_version)
-                )
-                return (fid, current, summary)
-            except Exception as e:
-                if verbose:
-                    wprint_info(f"【摘要进化】{fid}: 进化失败 ({e})")
-                return (fid, current, None)
-
-        if n_workers > 1 and len(to_evolve) > 1:
-            results = list(_alignment_pool.map(_evolve_one, to_evolve))
-        else:
-            results = [_evolve_one(item) for item in to_evolve]
-
-        # Batch write summaries to DB
-        summary_updates = {}
-        for fid, current, summary in results:
-            if summary:
-                _s = summary.strip()
-                if _s:
-                    summary_updates[fid] = _s
-                if verbose:
-                    wprint_info(f"【摘要进化】{fid} ({current.name}): 摘要已更新")
-        if summary_updates:
-            batch_fn = getattr(self.storage, 'batch_update_entity_summaries', None)
-            if batch_fn:
-                try:
-                    batch_fn(summary_updates)
-                except Exception:
-                    for fid, summary in summary_updates.items():
-                        try:
-                            self.storage.update_entity_summary(fid, summary)
-                        except Exception:
-                            pass
-            else:
-                for fid, summary in summary_updates.items():
-                    try:
-                        self.storage.update_entity_summary(fid, summary)
-                    except Exception:
-                        pass
-
-    def _update_cache(self, input_text: str, document_name: str,
-                      text_start_pos: int = 0, text_end_pos: int = 0,
-                      total_text_length: int = 0, verbose: bool = True,
-                      verbose_steps: bool = True,
-                      document_path: str = "",
-                      event_time: Optional[datetime] = None,
-                      window_index: int = 0, total_windows: int = 0,
-                      doc_hash: str = "") -> Episode:
-        """步骤1：更新记忆缓存。必须在 _cache_lock 下调用，保证 cache 链串行。"""
-        self.llm_client._priority_local.priority = LLM_PRIORITY_STEP1
-        if verbose:
-            wprint_info("【步骤1】缓存｜开始｜")
-        elif verbose_steps:
-            wprint_info("【步骤1】缓存｜开始｜")
-
-        # 蒸馏数据准备：确保 task_id 在步骤1前生成
-        if self.llm_client._distill_data_dir:
-            if not self.llm_client._distill_task_id:
-                self.llm_client._distill_task_id = f"{document_name}_{uuid.uuid4().hex[:8]}_{int(_time.time() * 1000)}"
-            self.llm_client._current_distill_step = "01_update_cache"
-
-        new_episode = self.llm_client.update_episode(
-            self.current_episode,
-            input_text,
-            document_name=document_name,
-            text_start_pos=text_start_pos,
-            text_end_pos=text_end_pos,
-            total_text_length=total_text_length,
-            event_time=event_time,
-            window_index=window_index,
-            total_windows=total_windows,
-        )
-
-        self.llm_client._current_distill_step = None
-
-        doc_hash = doc_hash or (compute_doc_hash(input_text) if input_text else "")
-        self.storage.save_episode(new_episode, text=input_text, document_path=document_path, doc_hash=doc_hash)
-        self.current_episode = new_episode
-
-        if verbose:
-            wprint_info(f"【步骤1】缓存｜写入｜ID {new_episode.absolute_id}")
-        elif verbose_steps:
-            wprint_info("【步骤1】缓存｜完成｜已更新")
-
-        return new_episode
-
-    def _remember_debug_base_dir(self, document_name: str) -> Optional[Path]:
-        root = getattr(self.llm_client, "_distill_data_dir", None)
-        if not root:
-            return None
-        task_id = getattr(self.llm_client, "_distill_task_id", None) or f"adhoc_{document_name}"
-        return Path(root) / "remember_debug" / task_id
+    Composes:
+      - _ContradictionMixin: contradiction detection + summary evolution
+      - _ResolutionMixin: same-name conflicts, missing-name resolution, name→ID
+      - _OrphanMixin: orphan entity cleanup, fallback cooccurrence, recovery
+      - _CacheMixin: step 1 cache update, debug directory
+    """
 
     def _extract_only(self, new_episode: Episode, input_text: str,
                       document_name: str, verbose: bool = True,
@@ -289,7 +50,7 @@ class _PipelineExtractionMixin:
                       window_index: int = 0,
                       total_windows: int = 1,
                       window_timings_ref: Optional[Dict[str, float]] = None,
-                      control_check_fn=None) -> Tuple[List[Dict], List[Dict]]:
+                      control_check_fn=None):
         """Dispatch extraction to V2 or V3 pipeline. No storage writes; safe for thread pools.
 
         Returns:
@@ -311,193 +72,6 @@ class _PipelineExtractionMixin:
     # =========================================================================
     # 步骤9：实体对齐（写存储，必须串行跨窗口）
     # =========================================================================
-
-    def _resolve_same_name_conflicts(self, entity_name_to_ids, verbose=False):
-        """Detect and resolve same-name entity conflicts by merging into primary."""
-        duplicate_names = {name: ids for name, ids in entity_name_to_ids.items() if len(ids) > 1}
-        ambiguous_duplicate_names = set()
-
-        if not duplicate_names:
-            entity_name_to_id = {name: ids[0] for name, ids in entity_name_to_ids.items()}
-            return entity_name_to_id, ambiguous_duplicate_names
-
-        if verbose:
-            wprint_info(f"【步骤9】警告｜同名｜{len(duplicate_names)}处")
-            for name, ids in duplicate_names.items():
-                wprint_info(
-                    f"【步骤9】冲突｜详情｜{name} {len(ids)}id {ids[:3]}{'...' if len(ids) > 3 else ''}"
-                )
-
-        entity_name_to_id = {}
-        # Batch-fetch version counts for all duplicate-name entities
-        _all_dup_fids = [fid for ids in entity_name_to_ids.values() if len(ids) > 1 for fid in ids]
-        _dup_vc_map = self.storage.get_entity_version_counts(_all_dup_fids) if _all_dup_fids else {}
-        for name, ids in entity_name_to_ids.items():
-            if len(ids) > 1:
-                versions_map = {fid: _dup_vc_map.get(fid, 0) for fid in ids}
-
-                # Same-name entities: always merge — name match is strong signal.
-                primary_id = max(ids, key=lambda fid: versions_map.get(fid, 0))
-                entity_name_to_id[name] = primary_id
-                duplicate_pairs = [(fid, primary_id) for fid in ids if fid and fid != primary_id]
-                if duplicate_pairs:
-                    batch_fn = getattr(self.storage, 'register_entity_redirects_batch', None)
-                    if batch_fn:
-                        batch_fn(duplicate_pairs)
-                    else:
-                        for fid, pid in duplicate_pairs:
-                            self.storage.register_entity_redirect(fid, pid)
-                if verbose:
-                    wprint_info(
-                        f"【步骤9】冲突｜主实体｜{name}->{primary_id} v{versions_map.get(primary_id, 0)}"
-                    )
-            else:
-                entity_name_to_id[name] = ids[0]
-
-        return entity_name_to_id, ambiguous_duplicate_names
-
-    def _resolve_missing_relation_entity_names(self, pending_relations, entity_name_to_id,
-                                                 ambiguous_duplicate_names):
-        """Resolve entity names referenced in relations but missing from the name-to-id map.
-
-        Runs 4 rounds: DB exact match → core-name fuzzy → case-insensitive → substring.
-        Returns (entity_name_to_id, db_matched, fuzzy_matched).
-        """
-        _rel_entity_names = set()
-        # _core_entity_name is already @lru_cache(maxsize=2048) — no local cache needed
-
-        for rel_info in pending_relations:
-            n1 = rel_info.get("entity1_name", "")
-            n2 = rel_info.get("entity2_name", "")
-            if n1:
-                _rel_entity_names.add(n1)
-            if n2:
-                _rel_entity_names.add(n2)
-
-        _missing_names = [n for n in _rel_entity_names
-                          if n not in entity_name_to_id and n not in ambiguous_duplicate_names]
-        _db_matched = 0
-        _fuzzy_matched = 0
-
-        # Rounds 1+2 merged: single DB query with both exact and core names
-        if _missing_names:
-            # Build combined name set: original names + core names for fuzzy match
-            _core_name_map: Dict[str, str] = {}
-            for name, eid in entity_name_to_id.items():
-                core = _core_entity_name(name)
-                if core and core not in _core_name_map:
-                    _core_name_map[core] = eid
-
-            _query_names = set(_missing_names)
-            for missing_name in _missing_names:
-                core_missing = _core_entity_name(missing_name)
-                if core_missing and core_missing not in _core_name_map:
-                    _query_names.add(core_missing)
-
-            _db_map = self.storage.get_family_ids_by_names(list(_query_names))
-
-            # Round 1: resolve exact matches
-            for name in _missing_names:
-                if name in _db_map and name not in entity_name_to_id:
-                    entity_name_to_id[name] = _db_map[name]
-                    _db_matched += 1
-
-            # Round 2: resolve core-name fuzzy matches
-            for core_name, eid in _db_map.items():
-                if core_name not in _core_name_map:
-                    _core_name_map[core_name] = eid
-
-            for missing_name in _missing_names:
-                if missing_name in entity_name_to_id:
-                    continue
-                core_missing = _core_entity_name(missing_name)
-                if core_missing and core_missing in _core_name_map:
-                    entity_name_to_id[missing_name] = _core_name_map[core_missing]
-                    _fuzzy_matched += 1
-
-        # Rounds 3+4: Build lookup structures once, then iterate remaining missing names once
-        _still_missing = [n for n in _rel_entity_names if n not in entity_name_to_id]
-        if _still_missing:
-            # Round 3 structures: case-insensitive lookup
-            _lower_map: Dict[str, str] = {}
-            # Round 4 structures: core name + substring matching
-            _known_cores = []
-            _core_to_known: Dict[str, str] = {}
-            for name, eid in entity_name_to_id.items():
-                low = name.lower()
-                if low not in _lower_map:
-                    _lower_map[low] = eid
-                core = _core_entity_name(name).lower()
-                if core and len(core) >= 2:
-                    _known_cores.append((name, core))
-                    if core not in _core_to_known:
-                        _core_to_known[core] = name
-
-            for missing_name in _still_missing:
-                # Round 3: case-insensitive
-                low_missing = missing_name.lower()
-                if low_missing in _lower_map:
-                    entity_name_to_id[missing_name] = _lower_map[low_missing]
-                    _fuzzy_matched += 1
-                    continue
-                # Round 4: substring fuzzy match
-                core_miss = _core_entity_name(missing_name).lower()
-                if not core_miss or len(core_miss) < 2:
-                    continue
-                if core_miss in _core_to_known:
-                    entity_name_to_id[missing_name] = entity_name_to_id[_core_to_known[core_miss]]
-                    _fuzzy_matched += 1
-                    continue
-                best_match = None
-                best_len = 0
-                for known, core_known in _known_cores:
-                    if core_miss in core_known or core_known in core_miss:
-                        match_len = min(len(core_miss), len(core_known))
-                        if match_len > best_len:
-                            best_len = match_len
-                            best_match = known
-                if best_match:
-                    entity_name_to_id[missing_name] = entity_name_to_id[best_match]
-                    _fuzzy_matched += 1
-
-        return entity_name_to_id, _db_matched, _fuzzy_matched
-
-    def _convert_pending_relations_to_ids(self, pending_relations, entity_name_to_id,
-                                           verbose=False):
-        """Convert relation endpoint names to family_ids. Returns (updated_relations, skipped, self_rels)."""
-        updated_pending_relations = []
-        _skipped_relations = []
-        _self_relations = 0
-        for rel_info in pending_relations:
-            entity1_name = rel_info.get("entity1_name", "")
-            entity2_name = rel_info.get("entity2_name", "")
-            content = rel_info.get("content", "")
-            relation_type = rel_info.get("relation_type", "normal")
-
-            entity1_id = entity_name_to_id.get(entity1_name)
-            entity2_id = entity_name_to_id.get(entity2_name)
-
-            if entity1_id and entity2_id:
-                if entity1_id == entity2_id:
-                    _self_relations += 1
-                    continue
-                updated_pending_relations.append({
-                    "entity1_id": entity1_id,
-                    "entity2_id": entity2_id,
-                    "entity1_name": entity1_name,
-                    "entity2_name": entity2_name,
-                    "content": content,
-                    "relation_type": relation_type
-                })
-            else:
-                _reason = []
-                if not entity1_id:
-                    _reason.append(f"entity1='{entity1_name}'")
-                if not entity2_id:
-                    _reason.append(f"entity2='{entity2_name}'")
-                _skipped_relations.append(f"  {entity1_name} <-> {entity2_name} (无法解析: {', '.join(_reason)})")
-
-        return updated_pending_relations, _skipped_relations, _self_relations
 
     def _post_align_entity_maintenance(self, unique_entities, verbose=False):
         """Contradiction detection & summary evolution — disabled in auto pipeline (too expensive).
@@ -559,7 +133,7 @@ class _PipelineExtractionMixin:
 
     def _build_step10_relation_inputs_from_align_result(
         self, align_result: _AlignResult
-    ) -> Tuple[List[Dict[str, str]], Dict[str, str], List[Dict], List[Dict]]:
+    ):
         """从步骤9输出构造步骤10批处理输入；与 _align_relations 内逻辑一致，供预取与步骤10共用。"""
         entity_name_to_id = dict(align_result.entity_name_to_id)
         pending_relations_from_entities = align_result.pending_relations
@@ -574,7 +148,7 @@ class _PipelineExtractionMixin:
             valid_eids = _pre_resolved
         elif eids_to_resolve:
             # 某些并行实体对齐分支可能留下只存在于内存中的临时 family_id；
-            # Step7 开始前按名称刷新一次，避免关系写入时再命中”family_id 不存在”。
+            # Step7 开始前按名称刷新一次，避免关系写入时再命中"family_id 不存在"。
             resolve_fn = getattr(self.storage, 'resolve_family_ids', None)
             if resolve_fn:
                 try:
@@ -673,7 +247,7 @@ class _PipelineExtractionMixin:
                         progress_range: tuple = (0.5, 0.75),
                         window_index: int = 0,
                         total_windows: int = 1,
-                        entity_embedding_prefetch: Optional[Future] = None,
+                        entity_embedding_prefetch=None,
                         already_versioned_family_ids: Optional[set] = None,
                         window_timings_ref: Optional[Dict[str, float]] = None,
                         control_check_fn=None) -> _AlignResult:
@@ -935,18 +509,11 @@ class _PipelineExtractionMixin:
                          progress_range: tuple = (0.75, 1.0),
                          window_index: int = 0,
                          total_windows: int = 1,
-                         prepared_relations_by_pair: Optional[Dict[Tuple[str, str], List[Dict[str, str]]]] = None,
-                         step10_inputs_cache: Optional[Tuple[List[Dict[str, str]], Dict[str, str], List[Dict], List[Dict]]] = None,
+                         prepared_relations_by_pair=None,
+                         step10_inputs_cache=None,
                          window_timings_ref: Optional[Dict[str, float]] = None,
                          control_check_fn=None,
-                         ) -> List:
-        """步骤10：关系对齐（搜索、合并、写入存储）。串行跨窗口。
-
-        Args:
-            align_result: 步骤9的输出，包含 entity_name_to_id 和 pending_relations。
-            prepared_relations_by_pair: 可选，跨窗预取的按实体对分组结果（须在上一窗 step10 完成后读库）。
-            step10_inputs_cache: 可选，与 _build_step10_relation_inputs_from_align_result 返回值一致，避免重复计算。
-        """
+                         ):
 
         p_lo, p_hi = progress_range
         _win_label = f"窗口 {window_index + 1}/{total_windows}"
@@ -1168,323 +735,6 @@ class _PipelineExtractionMixin:
                 wprint_warn(f"  ⚡ 警告: {warn['type']} — {warn.get('names', warn.get('core_name', ''))}")
 
         return report
-
-    def _cleanup_orphaned_entities(
-        self,
-        saved_entities: list,
-        verbose: bool = False,
-        window_text: str = "",
-        all_entity_names: Optional[List[str]] = None,
-        episode_id: str = "",
-        source_document: str = "",
-    ) -> int:
-        """处理孤立实体：先尝试补救（找关系），再为无法补救的创建兜底共现关系。
-
-        在 step10（关系存储）完成后调用。此时关系已经全部写入，
-        可以准确判断哪些实体是孤立的。
-
-        补救流程：对孤立实体调用 LLM 寻找与其他实体的关系，写入后重新检查度数，
-        仍然为 0 的创建兜底共现关系（不再删除）。
-
-        Args:
-            saved_entities: step9 存入的实体列表（_AlignResult.unique_entities）
-            verbose: 是否打印日志
-            window_text: 当前窗口文本（补救用）
-            all_entity_names: 当前窗口所有实体名称（补救用）
-            episode_id: 当前 episode ID（补救写关系时使用）
-            source_document: 来源文档名（补救写关系时使用）
-
-        Returns:
-            删除的孤立实体数量（始终为 0，不再删除）
-        """
-        if not saved_entities:
-            return 0
-
-        new_family_ids = [e.family_id for e in saved_entities if hasattr(e, 'family_id') and e.family_id]
-        if not new_family_ids:
-            return 0
-
-        # 批量查询度数（关系数）
-        batch_fn = getattr(self.storage, 'batch_get_entity_degrees', None)
-        if batch_fn is None:
-            return 0
-
-        try:
-            degree_map = batch_fn(new_family_ids)
-        except Exception:
-            return 0
-
-        # 收集度数为 0 的实体（无任何关系）
-        orphan_fids = [fid for fid, deg in degree_map.items() if deg == 0]
-        if not orphan_fids:
-            return 0
-
-        # 区分「全新实体」和「对齐到已有实体的更新」
-        # 批量查询版本数：版本数 > 1 说明实体在本次处理前就已存在
-        version_counts = {}
-        try:
-            version_counts = self.storage.get_entity_version_counts(orphan_fids)
-        except Exception:
-            pass  # 查询失败则保守不删
-
-        # 只处理真正全新创建的孤立实体（版本数 == 1 且无关系）
-        truly_new_orphans = [fid for fid in orphan_fids
-                             if version_counts.get(fid, 1) <= 1]
-
-        if not truly_new_orphans:
-            return 0
-
-        # ---- 补救阶段：尝试为孤立实体找关系 ----
-        recovered = 0
-        if window_text and all_entity_names and truly_new_orphans:
-            recovered = self._recover_orphan_relations(
-                truly_new_orphans, saved_entities, all_entity_names,
-                window_text, episode_id, source_document, verbose,
-            )
-
-        # 补救后重新查询度数，只删除仍然孤立的
-        if recovered > 0:
-            try:
-                degree_map = batch_fn(truly_new_orphans)
-                truly_new_orphans = [fid for fid, deg in degree_map.items() if deg == 0]
-            except Exception:
-                pass  # 查询失败则保守不删
-
-        if not truly_new_orphans:
-            return 0
-
-        # ---- 兜底阶段：为仍然孤立的实体创建共现关系 ----
-        _fallback_count = self._create_fallback_cooccurrence_relations(
-            truly_new_orphans, saved_entities,
-            episode_id, source_document, verbose,
-        )
-
-        if _fallback_count > 0 or recovered > 0:
-            try:
-                self.storage._cache.invalidate_keys(["graph_stats"])
-            except Exception:
-                pass
-
-        return 0  # 不再删除孤立实体
-
-    def _create_fallback_cooccurrence_relations(
-        self,
-        orphan_fids: List[str],
-        saved_entities: list,
-        episode_id: str,
-        source_document: str,
-        verbose: bool,
-    ) -> int:
-        """为孤立实体创建兜底共现关系，确保每个实体至少有一个关系链接。"""
-        if not orphan_fids:
-            return 0
-
-        # 构建 family_id → entity 映射
-        fid_to_entity = {}
-        for e in saved_entities:
-            fid = getattr(e, 'family_id', None)
-            if fid:
-                fid_to_entity[fid] = e
-
-        # 非孤立实体作为关系目标
-        orphan_fid_set = set(orphan_fids)
-        non_orphan_entities = [
-            e for e in saved_entities
-            if hasattr(e, 'family_id') and e.family_id
-            and e.family_id not in orphan_fid_set
-        ]
-
-        if not non_orphan_entities:
-            if verbose:
-                wprint_info(f"  │  孤立实体兜底｜无法创建共现关系（无非孤立实体）")
-            return 0
-
-        relation_processor = getattr(self, 'relation_processor', None)
-        if not relation_processor or not episode_id:
-            return 0
-
-        if verbose:
-            _orphan_names = [getattr(fid_to_entity.get(fid), 'name', '?') for fid in orphan_fids]
-            wprint_info(f"  │  孤立实体兜底｜为 {len(orphan_fids)} 个实体创建共现关系: {', '.join(_orphan_names[:5])}")
-
-        fallback_count = 0
-        for i, orphan_fid in enumerate(orphan_fids):
-            orphan_entity = fid_to_entity.get(orphan_fid)
-            if not orphan_entity:
-                continue
-
-            # 选择非孤立实体作为关系目标（轮询分配）
-            target_entity = non_orphan_entities[i % len(non_orphan_entities)]
-
-            try:
-                rel = relation_processor._build_new_relation(
-                    orphan_fid,
-                    target_entity.family_id,
-                    f"{orphan_entity.name}与{target_entity.name}在同一文本中出现",
-                    episode_id,
-                    entity1_name=orphan_entity.name,
-                    entity2_name=target_entity.name,
-                    verbose_relation=False,
-                    source_document=source_document,
-                    confidence=0.3,
-                )
-                if rel is not None:
-                    relation_processor.storage.save_relation(rel)
-                    fallback_count += 1
-                    if verbose:
-                        wprint_debug(f"  │  兜底共现关系: {orphan_entity.name} <-> {target_entity.name}")
-            except Exception:
-                pass
-
-        if verbose:
-            wprint_info(f"  │  孤立实体兜底｜{fallback_count}/{len(orphan_fids)} 个实体成功创建共现关系")
-        return fallback_count
-
-    def _recover_orphan_relations(
-        self,
-        orphan_fids: List[str],
-        saved_entities: list,
-        all_entity_names: List[str],
-        window_text: str,
-        episode_id: str,
-        source_document: str,
-        verbose: bool,
-    ) -> int:
-        """尝试为孤立实体找到并建立关系。
-
-        Returns:
-            成功补救的实体数量（度数从 0 变为 > 0）
-        """
-        # 构建 family_id → entity 映射
-        fid_to_entity = {}
-        for e in saved_entities:
-            fid = getattr(e, 'family_id', None)
-            if fid and fid in orphan_fids:
-                fid_to_entity[fid] = e
-
-        # 构建 entity_name → family_id 映射（所有实体，包括非孤儿）
-        name_to_fid = {}
-        for e in saved_entities:
-            fid = getattr(e, 'family_id', None)
-            name = getattr(e, 'name', None)
-            if fid and name:
-                name_to_fid[name] = fid
-
-        orphan_names = [getattr(fid_to_entity[fid], 'name', '?') for fid in orphan_fids if fid in fid_to_entity]
-        other_names = [n for n in all_entity_names if n not in orphan_names]
-
-        if not orphan_names or not other_names:
-            return 0
-
-        if verbose:
-            wprint_info(f"  │  孤立实体补救｜尝试为 {len(orphan_names)} 个实体找关系: {', '.join(orphan_names[:5])}")
-
-        # 调用 LLM 寻找关系对
-        try:
-            user_prompt = ORPHAN_RECOVERY_USER.format(
-                orphan_names="、".join(orphan_names),
-                other_entity_names="、".join(other_names),
-                window_text=window_text,
-            )
-            messages = [
-                {"role": "system", "content": RELATION_DISCOVER_SYSTEM},
-                {"role": "user", "content": user_prompt},
-            ]
-            parsed, _ = self.llm_client.call_llm_until_json_parses(
-                messages,
-                parse_fn=self.llm_client._parse_pair_list,
-                timeout=120,
-            )
-            raw_pairs = parsed or []
-        except Exception as e:
-            if verbose:
-                wprint_debug(f"  │  孤立实体补救 LLM 调用失败: {e}")
-            return 0
-
-        if not raw_pairs:
-            if verbose:
-                wprint_info("  │  孤立实体补救｜LLM 未发现新关系")
-            return 0
-
-        # 解析并写入关系
-        entity_name_set = set(all_entity_names)
-        recovered_fids = set()
-        relation_processor = getattr(self, 'relation_processor', None)
-        from .steps import _ExtractionStepsMixin as _EPM
-
-        # Phase 1: Resolve names + parallel LLM content writing
-        _name_lookup = _EPM._build_name_lookup(entity_name_set)
-        resolved_pairs = []
-        for a, b in raw_pairs:
-            resolved_a = _EPM._resolve_entity_name(a, entity_name_set, _lookup=_name_lookup)
-            resolved_b = _EPM._resolve_entity_name(b, entity_name_set, _lookup=_name_lookup)
-            if not resolved_a or not resolved_b or resolved_a == resolved_b:
-                continue
-            fid_a = name_to_fid.get(resolved_a)
-            fid_b = name_to_fid.get(resolved_b)
-            if not fid_a or not fid_b:
-                continue
-            resolved_pairs.append((resolved_a, resolved_b, fid_a, fid_b))
-
-        # Batch LLM content writing (1 call instead of N parallel calls)
-        batch_fn = getattr(self.llm_client, 'batch_write_relation_content', None)
-        batch_results = {}
-        if batch_fn and resolved_pairs:
-            try:
-                batch_results = batch_fn(
-                    [(a, b) for a, b, _, _ in resolved_pairs], window_text,
-                )
-            except Exception:
-                pass
-
-        content_results = []
-        for resolved_a, resolved_b, fid_a, fid_b in resolved_pairs:
-            content = batch_results.get((resolved_a, resolved_b), "")
-            if not content:
-                content = batch_results.get((resolved_b, resolved_a), "")
-            if not content:
-                try:
-                    content = self.llm_client.write_relation_content(resolved_a, resolved_b, window_text)
-                except Exception:
-                    content = ""
-            content_results.append((resolved_a, resolved_b, fid_a, fid_b, content))
-
-        # Phase 2: Build relations in batch, then bulk-save
-        if relation_processor and episode_id:
-            batch_relations = []
-            batch_fids = []
-            for resolved_a, resolved_b, fid_a, fid_b, content in content_results:
-                try:
-                    rel = relation_processor._build_new_relation(
-                        fid_a, fid_b, content, episode_id,
-                        entity1_name=resolved_a, entity2_name=resolved_b,
-                        verbose_relation=False, source_document=source_document,
-                    )
-                    if rel is not None:
-                        batch_relations.append(rel)
-                        batch_fids.append((resolved_a, resolved_b, fid_a, fid_b))
-                except Exception:
-                    pass
-            if batch_relations:
-                try:
-                    relation_processor.storage.bulk_save_relations(batch_relations)
-                except Exception:
-                    # Fallback: save individually
-                    for rel in batch_relations:
-                        try:
-                            relation_processor.storage.save_relation(rel)
-                        except Exception:
-                            pass
-                for resolved_a, resolved_b, fid_a, fid_b in batch_fids:
-                    recovered_fids.add(fid_a)
-                    recovered_fids.add(fid_b)
-                    if verbose:
-                        wprint_debug(f"  │  补救关系: {resolved_a} <-> {resolved_b}")
-
-        recovered_count = len(recovered_fids & set(orphan_fids))
-        if verbose:
-            wprint_info(f"  │  孤立实体补救｜{recovered_count}/{len(orphan_names)} 个实体成功建立关系")
-        return recovered_count
 
     def _process_extraction(self, new_episode: Episode, input_text: str,
                             document_name: str, verbose: bool = True,

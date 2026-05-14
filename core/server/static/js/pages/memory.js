@@ -282,6 +282,7 @@
       } else {
         showToast(t('memory.uploadPartialSuccess', { success: successCount, fail: failCount }), failCount === total ? 'error' : 'warning');
       }
+      state.events.dispatchEvent(new CustomEvent('graph-changed', { detail: { graphId: state.currentGraphId } }));
 
       // Reset
       selectedFiles = [];
@@ -315,6 +316,7 @@
       });
       showToast(t('memory.submitSuccess'), 'success');
       document.getElementById('memory-text').value = '';
+      state.events.dispatchEvent(new CustomEvent('graph-changed', { detail: { graphId: state.currentGraphId } }));
       btn.disabled = false;
       btn.innerHTML = `<i data-lucide="send" style="width:16px;height:16px;"></i> ${t('memory.submitMemory')}`;
       if (window.lucide) lucide.createIcons({ nodes: [btn] });
@@ -912,6 +914,22 @@
     }
     scheduleRefresh();
 
+    // Visibility detection: pause polling when tab is hidden, resume when visible
+    const _visHandler = () => {
+      if (document.hidden) {
+        if (state.refreshTimers.memory) {
+          clearInterval(state.refreshTimers.memory);
+          state.refreshTimers.memory = null;
+        }
+      } else {
+        refreshTasks();
+        scheduleRefresh();
+      }
+    };
+    document.addEventListener('visibilitychange', _visHandler);
+    // Store handler for cleanup
+    state._memoryVisHandler = _visHandler;
+
     // Re-render icons
     if (window.lucide) lucide.createIcons();
   }
@@ -921,6 +939,10 @@
     if (state.refreshTimers.memory) {
       clearInterval(state.refreshTimers.memory);
       delete state.refreshTimers.memory;
+    }
+    if (state._memoryVisHandler) {
+      document.removeEventListener('visibilitychange', state._memoryVisHandler);
+      delete state._memoryVisHandler;
     }
   }
 

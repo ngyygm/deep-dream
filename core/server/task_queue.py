@@ -2,525 +2,45 @@
 Remember 任务队列：异步记忆写入任务队列（串行滑窗处理）。
 
 从 server/api.py 提取，消除循环依赖。
+
+子模块：
+- task_progress.py  进度计算纯函数
+- task_journal.py   RememberTask 数据模型 & RememberJournal 持久化
+- task_worker.py    worker 循环、历史修剪、磁盘恢复
 """
 from __future__ import annotations
 
-import json
 import logging
 import queue as _queue
-import re
 import threading
 import time
-from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from core.server.monitor import LOG_MODE_DETAIL
 from core.log import info as _log_info_fn, warn as _log_warn_fn, error as _log_error_fn
 
+# Re-export from sub-modules so that the public import paths stay unchanged:
+#   from core.server.task_queue import RememberTaskQueue, RememberTask
+from core.server.task_progress import (
+    _TERMINAL_STATUSES,
+    _DONE_STATUSES,
+    estimate_chunk_count as _estimate_chunk_count,
+    remember_callback_ui_fields as _remember_callback_ui_fields,
+)
+from core.server.task_journal import (
+    RememberTask,
+    RememberJournal,
+    remember_task_from_record as _remember_task_from_record,
+    short_task_id as _short_task_id,
+)
+from core.server.task_worker import (
+    worker_loop as _worker_loop,
+    trim_history as _trim_history,
+    recover_from_disk as _recover_from_disk,
+)
+
 logger = logging.getLogger(__name__)
-def _estimate_chunk_count(text_length: int, window_size: int, overlap: int) -> int:
-    if text_length <= 0:
-        return 1
-    stride = max(1, window_size - overlap)
-    if text_length <= window_size:
-        return 1
-    return 1 + (max(text_length - window_size, 0) + stride - 1) // stride
-
-
-_RE_WINDOW_STEP = re.compile(r"窗口\s*(\d+)/(\d+)\s*·\s*步骤(\d+)/(\d+)")
-_RE_WINDOW_ONLY = re.compile(r"窗口\s*(\d+)/(\d+)")
-_RE_MAIN_1_8_DONE = re.compile(r"步骤\s*1\s*[–-]\s*8\s*/\s*10")
-_RE_EXTRACT_STEP_NUM = re.compile(r"步骤\s*(\d+)")
-_RE_EXTRACT_STEP_FRAC = re.compile(r"\((\d+)/(\d+)\)\s*$")
-
-# Status / phase frozensets for O(1) membership tests
-_TERMINAL_STATUSES = frozenset(("completed", "failed", "cancelled"))
-_DONE_STATUSES = frozenset(("completed", "failed"))
-_MAIN_PHASES = frozenset(("main", "phase_ab"))
-_STEP910 = frozenset(("step9", "step10"))
-
-
-def _parse_window_phase_label(phase_label: str) -> Optional[tuple]:
-    m = _RE_WINDOW_STEP.match(phase_label or "")
-    if not m:
-        return None
-    return int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4))
-
-
-def _intra_in_window_slice(global_p: float, g_lo: float, g_hi: float) -> float:
-    span = g_hi - g_lo
-    if span <= 1e-15:
-        return 0.0
-    return max(0.0, min(1.0, (global_p - g_lo) / span))
-
-
-def _intra_step9_step10(global_p: float, g_lo: float, g_hi: float, chain_id: str) -> float:
-    """步骤9/10 各占单窗的 1/10（与 orchestrator 传入 extraction 的 progress_range 一致），链内 0–1。"""
-    span = g_hi - g_lo
-    if span <= 1e-15:
-        return 0.0
-    if chain_id == "step9":
-        s_lo = g_lo + span * (8.0 / 10.0)
-        s_hi = g_lo + span * (9.0 / 10.0)
-    elif chain_id == "step10":
-        s_lo = g_lo + span * (9.0 / 10.0)
-        s_hi = g_hi
-    else:
-        return _intra_in_window_slice(global_p, g_lo, g_hi)
-    ss = s_hi - s_lo
-    if ss <= 1e-15:
-        return 0.0
-    return max(0.0, min(1.0, (global_p - s_lo) / ss))
-
-
-def _wf_for_chain(chain_id: str, intra: float) -> float:
-    """单窗内流水线权重：步骤1–8 占 8/10，步骤9 占 1/10，步骤10 占 1/10。"""
-    intra = max(0.0, min(1.0, intra))
-    if chain_id == "phase_ab":
-        return (8.0 / 10.0) * intra
-    if chain_id == "step9":
-        return (8.0 / 10.0) + (1.0 / 10.0) * intra
-    if chain_id == "step10":
-        return (9.0 / 10.0) + (1.0 / 10.0) * intra
-    return (8.0 / 10.0) * intra
-
-
-def _wf_win_steps_1_8(global_p: float, g_lo: float, g_hi: float) -> float:
-    """单窗内步骤1–8 占窗口宽度的前 8/10；返回 [0, 8/10] 的窗口内占比（相对整窗 0–1 的片段）。"""
-    span = g_hi - g_lo
-    if span <= 1e-15:
-        return 0.0
-    return max(0.0, min(8.0 / 10.0, (global_p - g_lo) / span))
-
-
-def _overall_from_window_wf(win_cur: int, win_tot: int, wf: float) -> float:
-    if win_tot <= 0:
-        return 0.0
-    wf = max(0.0, min(1.0, wf))
-    return max(0.0, min(1.0, (win_cur - 1 + wf) / float(win_tot)))
-
-
-def _overall_chain_from_window_intra(win_cur: int, win_tot: int, intra: float) -> float:
-    """链级进度条位置：按窗口累计，当前窗口内按 intra 细分。"""
-    if win_tot <= 0:
-        return 0.0
-    intra = max(0.0, min(1.0, intra))
-    return max(0.0, min(1.0, (win_cur - 1 + intra) / float(win_tot)))
-
-
-def _completed_chunk_fraction(done_chunks: int, total_chunks: int) -> float:
-    if total_chunks <= 0:
-        return 0.0
-    done_chunks = max(0, min(int(done_chunks), int(total_chunks)))
-    return done_chunks / float(total_chunks)
-
-
-def _main_chain_anchor_rank(phase_label: str, tc: int) -> tuple:
-    """主滑窗 1–8 的 UI 锚点优先级：越大越应作为展示锚点（抽取步骤 2–8 / 本窗 1–8 完成 优先于 步骤1 进行中）。
-
-    并行时主线程可能在后序窗跑步骤1，而前序窗已在步骤2–8；此时应用「更靠前」的链上位置为锚点，而非总是跟主线程窗。
-    """
-    pl = (phase_label or "").strip()
-    if not pl:
-        return (-1, 0)
-    if _RE_MAIN_1_8_DONE.search(pl) and ("已完成" in pl or "缓存" in pl):
-        m = _RE_WINDOW_ONLY.search(pl)
-        w = int(m.group(1)) if m else 0
-        if tc > 0:
-            w = max(1, min(w, tc))
-        return (9, w)
-    parsed = _parse_window_phase_label(pl)
-    if parsed:
-        win_cur, _wt, step_cur, _st = parsed
-        if tc > 0:
-            win_cur = max(1, min(win_cur, tc))
-        if 2 <= step_cur <= 8:
-            return (step_cur, win_cur)
-        if step_cur != 1:
-            return (min(step_cur, 9), win_cur)
-        if "进行中" in pl:
-            return (0, win_cur)
-        if "完成" in pl:
-            return (1, win_cur)
-        return (0, win_cur)
-    # 抽取步骤 2-8 标签（如 "窗口 1/1 · 步骤2a: 文本锚点召回"）不匹配 _RE_WINDOW_STEP，
-    # 但包含窗口信息和步骤编号，应赋予高于步骤1的优先级。
-    wm = _RE_WINDOW_ONLY.match(pl)
-    if wm:
-        w = max(1, min(int(wm.group(1)), tc))
-        _sm = _RE_EXTRACT_STEP_NUM.search(pl)
-        step_num = int(_sm.group(1)) if _sm else 2
-        step_num = max(2, min(8, step_num))
-        return (step_num, w)
-    return (-1, 0)
-
-
-def _remember_callback_ui_fields(
-    task: RememberTask,
-    progress: float,
-    phase_label: str,
-    message: str,
-    chain_id: str,
-) -> Dict[str, Any]:
-    """推导总进度：主滑窗链 main（步骤1–8）、步骤9/10 链各自独立进度（0–1 为链内细粒度）。"""
-    parsed = _parse_window_phase_label(phase_label)
-    tc = max(1, int(task.total_chunks or 1))
-    pc = max(0, int(task.processed_chunks or 0))
-    pc_f = pc / float(tc)
-
-    if not parsed:
-        new_o = max(pc_f, max(0.0, min(1.0, float(progress))))
-        pl = phase_label or ""
-        if chain_id in _MAIN_PHASES and _RE_MAIN_1_8_DONE.search(pl) and (
-            "已完成" in pl or "缓存" in pl
-        ):
-            m = _RE_WINDOW_ONLY.search(pl)
-            if m:
-                win_cur = max(1, min(int(m.group(1)), tc))
-                wf_main = 8.0 / 10.0
-                main_global = min(1.0, (win_cur - 1 + wf_main) / float(tc))
-                merged_p = max(new_o, main_global, pc_f)
-                new_rank = _main_chain_anchor_rank(pl, tc)
-                old_rank = _main_chain_anchor_rank(task.main_label or "", tc)
-                if task.main_label and new_rank < old_rank:
-                    return {"progress": merged_p}
-                _pc = (win_cur - 1) * 10 + 8
-                _pt = tc * 10
-                return {
-                    "progress": merged_p,
-                    "phase_label": phase_label,
-                    "message": message,
-                    "phase_current": _pc,
-                    "phase_total": _pt,
-                    "main_progress": main_global,
-                    "main_label": phase_label or message or "",
-                }
-        # 抽取步骤 2–8 的标签不匹配 _RE_WINDOW_STEP（如 "窗口 1/1 · 步骤2a: 文本锚点召回"），
-        # 但仍需更新 main_progress/main_label/phase_current 以避免前端进度条停滞在步骤1。
-        if chain_id in _MAIN_PHASES:
-            wm = _RE_WINDOW_ONLY.match(pl)
-            if wm:
-                win_cur = max(1, min(int(wm.group(1)), tc))
-                g_lo_w = (win_cur - 1) / float(tc)
-                g_hi_w = win_cur / float(tc)
-                wf_main = _wf_win_steps_1_8(float(progress), g_lo_w, g_hi_w)
-                main_global = min(1.0, (win_cur - 1 + wf_main) / float(tc))
-                # 从标签中尝试提取步骤编号（如 "步骤2a"、"步骤3.5"）
-                _sm = _RE_EXTRACT_STEP_NUM.search(pl)
-                estimated_step = int(_sm.group(1)) if _sm else 2
-                estimated_step = max(2, min(8, estimated_step))
-                # 尝试提取子步骤分数（如 "实体对齐 (3/5)"）
-                _fm = _RE_EXTRACT_STEP_FRAC.search(pl)
-                if _fm:
-                    _sub_done = int(_fm.group(1))
-                    _sub_total = max(1, int(_fm.group(2)))
-                    estimated_step = max(estimated_step, min(8, estimated_step + int(_sub_done / max(1, _sub_total))))
-                _pc_phase = (win_cur - 1) * 10 + estimated_step
-                _pt_phase = tc * 10
-                new_rank = _main_chain_anchor_rank(pl, tc)
-                old_rank = _main_chain_anchor_rank(task.main_label or "", tc)
-                if task.main_label and new_rank < old_rank:
-                    return {"progress": max(new_o, main_global)}
-                return {
-                    "progress": max(new_o, main_global),
-                    "phase_label": phase_label,
-                    "message": message,
-                    "phase_current": _pc_phase,
-                    "phase_total": _pt_phase,
-                    "main_progress": main_global,
-                    "main_label": phase_label or message or "",
-                }
-        return {
-            "progress": new_o,
-            "phase_label": phase_label,
-            "message": message,
-        }
-
-    # 仅用标签解析「当前第几窗」；分母必须与 task.total_chunks 一致，否则与 orchestrator
-    # 传入的 progress（按 total_chunks 切片的全局坐标）错位，实体/关系条会不按本窗比例显示。
-    win_cur, _win_tot_label, step_cur, _step_tot = parsed
-    win_cur = max(1, min(win_cur, tc))
-    win_tot_eff = tc
-    g_lo = (win_cur - 1) / float(win_tot_eff)
-    g_hi = win_cur / float(win_tot_eff)
-    if chain_id in _STEP910:
-        intra = _intra_step9_step10(float(progress), g_lo, g_hi, chain_id)
-    else:
-        intra = _intra_in_window_slice(progress, g_lo, g_hi)
-    wf = _wf_for_chain(chain_id, intra)
-    new_o = _overall_from_window_wf(win_cur, win_tot_eff, wf)
-
-    _pc = (win_cur - 1) * 10 + step_cur
-    _pt = win_tot_eff * 10
-
-    wf_main = _wf_win_steps_1_8(float(progress), g_lo, g_hi)
-    main_global = min(1.0, (win_cur - 1 + wf_main) / float(win_tot_eff))
-
-    base: Dict[str, Any] = {
-        "progress": max(pc_f, new_o),
-        "phase_label": phase_label,
-        "message": message,
-        "phase_current": _pc,
-        "phase_total": _pt,
-    }
-
-    # 主滑窗（步骤1–8）：chain main 或历史 phase_ab（锚点优先抽取链上位置，而非主线程步骤1）
-    if chain_id in ("main", "phase_ab"):
-        base["progress"] = max(base["progress"], main_global)
-        new_rank = _main_chain_anchor_rank(phase_label or "", tc)
-        old_rank = _main_chain_anchor_rank(task.main_label or "", tc)
-        merged_p = base["progress"]
-        if task.main_label and new_rank < old_rank:
-            return {"progress": merged_p}
-        base.update(
-            main_progress=main_global,
-            main_label=phase_label or message or "",
-        )
-        return base
-    if chain_id == "step10":
-        step9_global = max(
-            _completed_chunk_fraction(task.step9_done_chunks or 0, tc),
-            _completed_chunk_fraction(win_cur, tc),
-            float(getattr(task, "step9_progress", 0.0) or 0.0),
-        )
-        step10_global = max(
-            _completed_chunk_fraction(task.step10_done_chunks or 0, tc),
-            _overall_chain_from_window_intra(win_cur, win_tot_eff, intra),
-        )
-        base.update(
-            step9_progress=step9_global,
-            step10_progress=step10_global,
-            step10_label=phase_label or message or "",
-        )
-        return base
-    # step9：实体链进度按窗口累计；不要把关系链已完成进度清零。
-    base.update(
-        step9_progress=max(
-            _completed_chunk_fraction(task.step9_done_chunks or 0, tc),
-            _overall_chain_from_window_intra(win_cur, win_tot_eff, intra),
-        ),
-        step9_label=phase_label or message or "",
-    )
-    return base
-
-
-def _short_task_id(task_id: str) -> str:
-    return task_id[:8]
-
-
-@dataclass(slots=True)
-class RememberTask:
-    task_id: str
-    text: str
-    source_name: str
-    load_cache: Optional[bool]
-    control_action: Optional[str]
-    event_time: Optional[datetime]
-    original_path: str
-    status: str = "queued"          # queued | running | completed | failed
-    result: Optional[Dict] = None
-    error: Optional[str] = None
-    created_at: float = field(default_factory=time.time)
-    started_at: Optional[float] = None
-    finished_at: Optional[float] = None
-    phase: str = "queued"
-    phase_label: str = "等待处理"
-    phase_current: int = 0
-    phase_total: int = 0
-    main_done_chunks: int = 0
-    step9_done_chunks: int = 0
-    step10_done_chunks: int = 0
-    processed_chunks: int = 0
-    total_chunks: int = 0
-    run_start_chunks: int = 0      # 本轮开始时已有的 chunk 数（用于断点续传预估）
-    progress: float = 0.0
-    message: str = "等待进入处理队列"
-    step9_progress: float = 0.0
-    step9_label: str = ""
-    step10_progress: float = 0.0
-    step10_label: str = ""
-    main_progress: float = 0.0
-    main_label: str = ""
-    last_update: float = field(default_factory=time.time)
-    done_event: threading.Event = field(default_factory=threading.Event)
-
-
-class RememberJournal:
-    """将 remember 任务落盘到 storage_path/tasks/queue.jsonl，单文件管理。
-    - 活跃任务（queued/running）始终保留在文件中
-    - 已完成/失败/已取消的任务在最终持久化后从文件中移除
-    - 进程崩溃重启后从文件中恢复未完成任务
-    """
-
-    def __init__(self, storage_root: Path):
-        self.dir = Path(storage_root) / "tasks"
-        self.dir.mkdir(parents=True, exist_ok=True)
-        self._file = self.dir / "queue.jsonl"
-        self._lock = threading.Lock()
-
-    def _task_to_dict(self, task: RememberTask) -> Dict[str, Any]:
-        return {
-            "task_id": task.task_id,
-            "source_name": task.source_name,
-            "original_path": task.original_path,
-            "status": task.status,
-            "event_time": task.event_time.isoformat() if task.event_time else None,
-            "load_cache": task.load_cache,
-            "control_action": task.control_action,
-            "created_at": task.created_at,
-            "started_at": task.started_at,
-            "finished_at": task.finished_at,
-            "error": task.error,
-            "result": task.result,
-            "phase": task.phase,
-            "phase_label": task.phase_label,
-            "phase_current": task.phase_current,
-            "phase_total": task.phase_total,
-            "main_done_chunks": task.main_done_chunks,
-            "step9_done_chunks": task.step9_done_chunks,
-            "step10_done_chunks": task.step10_done_chunks,
-            "processed_chunks": task.processed_chunks,
-            "total_chunks": task.total_chunks,
-            "run_start_chunks": task.run_start_chunks,
-            "progress": task.progress,
-            "message": task.message,
-            "step9_progress": task.step9_progress,
-            "step9_label": task.step9_label,
-            "step10_progress": task.step10_progress,
-            "step10_label": task.step10_label,
-            "main_progress": task.main_progress,
-            "main_label": task.main_label,
-            "last_update": task.last_update,
-        }
-
-    def write(self, task: RememberTask) -> None:
-        """写入/更新任务：如果已完成/失败/已取消则从文件中移除，否则更新行。"""
-        with self._lock:
-            self._write_unlocked(task)
-
-    def _write_unlocked(self, task: RememberTask) -> None:
-        """内部方法，不加锁（由调用方保证线程安全）。"""
-        d = self._task_to_dict(task)
-        line = json.dumps(d, ensure_ascii=False)
-        tid = task.task_id
-
-        # 读取现有内容，更新或移除该任务
-        lines: List[str] = []
-        if self._file.exists():
-            try:
-                with open(self._file, "r", encoding="utf-8") as f:
-                    for raw_line in f:
-                        raw_line = raw_line.strip()
-                        if not raw_line:
-                            continue
-                        try:
-                            rec = json.loads(raw_line)
-                            if rec.get("task_id") == tid:
-                                continue  # 移除旧行
-                        except Exception as _json_err:
-                            logger.debug("任务日志行 JSON 解析失败: %s", _json_err)
-                            pass  # 保留无法解析的行（ corrupted JSON ）
-                        lines.append(raw_line)
-            except Exception as e:
-                logger.warning("读取任务日志失败: %s", e)
-                lines = []
-
-        # 活跃任务写回，终态任务不写（从队列中移除）
-        if task.status not in _TERMINAL_STATUSES:
-            lines.append(line)
-
-        # 原子写入
-        tmp = self._file.with_suffix(".jsonl.tmp")
-        with open(tmp, "w", encoding="utf-8") as f:
-            f.write("\n".join(lines))
-            if lines:
-                f.write("\n")
-        tmp.replace(self._file)
-
-    def read_record(self, task_id: str) -> Optional[Dict[str, Any]]:
-        if not self._file.exists():
-            return None
-        try:
-            with open(self._file, "r", encoding="utf-8") as f:
-                for raw_line in f:
-                    raw_line = raw_line.strip()
-                    if not raw_line:
-                        continue
-                    try:
-                        rec = json.loads(raw_line)
-                        if rec.get("task_id") == task_id:
-                            return rec
-                    except Exception as _json_err:
-                        logger.debug("跳过损坏的 JSON 行: %s", _json_err)
-                        continue
-        except Exception as e:
-            logger.debug("查找任务记录失败 %s: %s", task_id, e)
-        return None
-
-    def iter_records(self) -> List[Dict[str, Any]]:
-        out: List[Dict[str, Any]] = []
-        if not self._file.exists():
-            return out
-        try:
-            with open(self._file, "r", encoding="utf-8") as f:
-                for raw_line in f:
-                    raw_line = raw_line.strip()
-                    if not raw_line:
-                        continue
-                    try:
-                        out.append(json.loads(raw_line))
-                    except Exception as _json_err:
-                        logger.debug("跳过损坏的 JSON 行: %s", _json_err)
-                        continue
-        except Exception as e:
-            logger.debug("遍历任务记录失败: %s", e)
-        return out
-
-
-def _remember_task_from_record(rec: Dict[str, Any], text: str) -> RememberTask:
-    et_raw = rec.get("event_time")
-    event_time: Optional[datetime] = None
-    if et_raw:
-        try:
-            event_time = datetime.fromisoformat(str(et_raw).replace("Z", "+00:00"))
-        except ValueError:
-            event_time = None
-    return RememberTask(
-        task_id=str(rec["task_id"]),
-        text=text,
-        source_name=str(rec.get("source_name") or "api_input"),
-        load_cache=rec.get("load_cache"),
-        control_action=rec.get("control_action"),
-        event_time=event_time,
-        original_path=str(rec.get("original_path") or ""),
-        status=str(rec.get("status") or "queued"),
-        result=rec.get("result"),
-        error=rec.get("error"),
-        created_at=float(rec.get("created_at") or time.time()),
-        started_at=rec.get("started_at"),
-        finished_at=rec.get("finished_at"),
-        phase=str(rec.get("phase") or "queued"),
-        phase_label=str(rec.get("phase_label") or "等待处理"),
-        phase_current=int(rec.get("phase_current") or 0),
-        phase_total=int(rec.get("phase_total") or 0),
-        main_done_chunks=int(rec.get("main_done_chunks") or rec.get("processed_chunks") or 0),
-        step9_done_chunks=int(rec.get("step9_done_chunks") or rec.get("processed_chunks") or 0),
-        step10_done_chunks=int(rec.get("step10_done_chunks") or rec.get("processed_chunks") or 0),
-        processed_chunks=int(rec.get("processed_chunks") or 0),
-        total_chunks=int(rec.get("total_chunks") or 0),
-        run_start_chunks=int(rec.get("run_start_chunks") or 0),
-        progress=float(rec.get("progress") or 0.0),
-        message=str(rec.get("message") or "等待进入处理队列"),
-        step9_progress=float(rec.get("step9_progress") or 0.0),
-        step9_label=str(rec.get("step9_label") or ""),
-        step10_progress=float(rec.get("step10_progress") or 0.0),
-        step10_label=str(rec.get("step10_label") or ""),
-        main_progress=float(rec.get("main_progress") or 0.0),
-        main_label=str(rec.get("main_label") or ""),
-        last_update=float(rec.get("last_update") or time.time()),
-    )
 
 
 class RememberTaskQueue:
@@ -559,9 +79,18 @@ class RememberTaskQueue:
         self._detail_logs = event_log is not None and event_log.mode == LOG_MODE_DETAIL
         self._window_size = max(1, int(getattr(self._processor.document_processor, "window_size", 1000)))
         self._overlap = max(0, int(getattr(self._processor.document_processor, "overlap", 200)))
-        self._recover_from_disk()
+        _recover_from_disk(
+            journal=self._journal,
+            tasks=self._tasks,
+            task_queue=self._queue,
+            lock=self._lock,
+            window_size=self._window_size,
+            overlap=self._overlap,
+            persist_fn=self._persist,
+            log_info_fn=self._log_info,
+        )
         for i in range(max(1, max_workers)):
-            t = threading.Thread(target=self._worker, name=f"remember-worker-{i}", daemon=True)
+            t = threading.Thread(target=_worker_loop, args=(self,), name=f"remember-worker-{i}", daemon=True)
             t.start()
             self._workers.append(t)
 
@@ -670,7 +199,7 @@ class RememberTaskQueue:
                 new_m = max(0.0, min(1.0, float(main_progress)))
                 if status is not None and status != "running":
                     task.main_progress = new_m
-                elif status == "running":
+                elif task.status == "running":
                     task.main_progress = max(task.main_progress, new_m)
                 else:
                     if task.status == "running":
@@ -746,141 +275,19 @@ class RememberTaskQueue:
         try:
             self._journal.write(task)
         except Exception as e:
-            self._log_warn(f"[Remember] journal 写入失败 task_id={_short_task_id(task.task_id)}: {e}")
-
-    def _recover_from_disk(self) -> None:
-        n_resume = 0
-        records = self._journal.iter_records()
-        # 同一个 task_id 取最后一条记录（JSONL 追加写入，后面的覆盖前面的）
-        latest_by_tid: Dict[str, Dict[str, Any]] = {}
-        for rec in records:
-            tid = rec.get("task_id")
-            if tid:
-                latest_by_tid[str(tid)] = rec
-        records = sorted(
-            latest_by_tid.values(),
-            key=lambda rec: (
-                float(rec.get("created_at") or 0.0),
-                str(rec.get("task_id") or ""),
-            ),
-        )
-        for rec in records:
-            tid = rec.get("task_id")
-            if not tid:
-                continue
-            st = rec.get("status")
-            if st in _TERMINAL_STATUSES:
-                continue
-            if st == "paused":
-                try:
-                    text = ""
-                    op = rec.get("original_path")
-                    if op and Path(op).exists():
-                        text = Path(op).read_text(encoding="utf-8")
-                    task = _remember_task_from_record(rec, text=text)
-                    task.status = "paused"
-                    task.phase = "paused"
-                    task.phase_label = "服务重启后保持暂停"
-                    task.message = "任务在服务重启后保持暂停，可手动继续"
-                    task.last_update = time.time()
-                    with self._lock:
-                        self._tasks[tid] = task
-                    self._persist(task)
-                except Exception as e:
-                    logger.debug("恢复暂停任务 %s 失败: %s", tid, e)
-                continue  # Paused tasks don't auto-resume
-            # Non-paused pending/processing tasks: attempt recovery
-            op = rec.get("original_path")
-            if not op or not Path(op).exists():
-                rec2 = dict(rec)
-                rec2["status"] = "failed"
-                rec2["error"] = "重启恢复失败：原始文本文件不存在"
-                rec2["finished_at"] = time.time()
-                try:
-                    tdead = _remember_task_from_record(rec2, text="")
-                    self._journal.write(tdead)
-                except Exception as e:
-                    logger.debug("写入恢复失败记录 %s: %s", tid, e)
-                self._log_warn(f"[Remember] 恢复跳过 task_id={_short_task_id(str(tid))}: 原文缺失")
-                continue
-            try:
-                text = Path(op).read_text(encoding="utf-8")
-            except Exception as e:
-                rec2 = dict(rec)
-                rec2["status"] = "failed"
-                rec2["error"] = f"重启恢复失败：无法读取原文: {e}"
-                rec2["finished_at"] = time.time()
-                try:
-                    tdead = _remember_task_from_record(rec2, text="")
-                    self._journal.write(tdead)
-                except Exception as _journal_err:
-                    logger.warning("写入恢复失败记录到日志失败: %s", _journal_err)
-                continue
-            task = _remember_task_from_record(rec, text=text)
-            task.status = "queued"
-            task.started_at = None
-            task.finished_at = None
-            task.error = None
-            task.result = None
-            task.phase = "queued"
-            task.phase_label = "恢复后等待处理"
-            task.phase_current = 0
-            task.phase_total = 0
-            task.total_chunks = max(
-                task.total_chunks,
-                _estimate_chunk_count(len(task.text), self._window_size, self._overlap),
-            )
-            # 三条链的断点分别恢复；processed_chunks 继续兼容为 step10 已完成窗口数。
-            _tc = max(0, int(task.total_chunks or 0))
-            _step10_done = min(_tc, max(0, int(task.step10_done_chunks or task.processed_chunks or 0)))
-            _step9_done = min(_tc, max(_step10_done, int(task.step9_done_chunks or task.processed_chunks or 0)))
-            _main_done = min(_tc, max(_step9_done, int(task.main_done_chunks or task.processed_chunks or 0)))
-            task.main_done_chunks = _main_done
-            task.step9_done_chunks = _step9_done
-            task.step10_done_chunks = _step10_done
-            task.processed_chunks = _step10_done
-            # 根据关系链已完成窗口数恢复总进度
-            if task.total_chunks > 0 and task.step10_done_chunks > 0:
-                task.progress = task.step10_done_chunks / task.total_chunks
-            else:
-                task.progress = 0.0
-            task.main_progress = (_main_done / task.total_chunks) if task.total_chunks > 0 else 0.0
-            if task.step10_done_chunks > 0 or task.step9_done_chunks > 0 or task.main_done_chunks > 0:
-                task.message = (
-                    "服务重启后已恢复入队（"
-                    f"主链 {task.main_done_chunks}/{task.total_chunks} · "
-                    f"实体 {task.step9_done_chunks}/{task.total_chunks} · "
-                    f"关系 {task.step10_done_chunks}/{task.total_chunks}）"
-                )
-            else:
-                task.message = "服务重启后已恢复入队"
-            task.last_update = time.time()
-            with self._lock:
-                self._tasks[tid] = task
-            self._queue.put(task)
-            self._persist(task)
-            n_resume += 1
-            self._log_info(
-                f"[Remember] 恢复未完成任务并入队: task_id={_short_task_id(tid)}, "
-                f"source_name={task.source_name!r}"
-            )
-        if n_resume:
-            self._log_info(
-                f"[Remember] 启动恢复：重新入队 {n_resume} 个未完成任务"
-                "（已完成/失败仅保留在 journal，按需通过 status 查询）"
-            )
+            self._log_warn("[Remember] journal 写入失败 task_id=%s: %s" % (_short_task_id(task.task_id), e))
 
     def submit(self, task: RememberTask) -> str:
         # 立即将原文保存到磁盘，确保崩溃重启后可恢复
         if task.text and not task.original_path:
             originals_dir = self._journal.dir / "originals"
             originals_dir.mkdir(parents=True, exist_ok=True)
-            original_path = originals_dir / f"{task.task_id}.txt"
+            original_path = originals_dir / ("%s.txt" % task.task_id)
             try:
                 original_path.write_text(task.text, encoding="utf-8")
                 task.original_path = str(original_path)
             except Exception as e:
-                self._log_warn(f"[Remember] 原文保存失败 task_id={_short_task_id(task.task_id)}: {e}")
+                self._log_warn("[Remember] 原文保存失败 task_id=%s: %s" % (_short_task_id(task.task_id), e))
         task.total_chunks = max(
             task.total_chunks,
             _estimate_chunk_count(len(task.text), self._window_size, self._overlap),
@@ -891,14 +298,14 @@ class RememberTaskQueue:
         task.phase_total = 0
         task.processed_chunks = 0
         task.progress = 0.0
-        task.message = f"已入队，预计 {task.total_chunks} 个窗口"
+        task.message = "已入队，预计 %d 个窗口" % task.total_chunks
         task.last_update = time.time()
         with self._lock:
             self._tasks[task.task_id] = task
-            self._trim_history()
+            _trim_history(self._tasks, self._max_history, self._lock)
         self._persist(task)
         self._queue.put(task)
-        self._log_info(f"[Remember] 任务入队: task_id={_short_task_id(task.task_id)}, source_name={task.source_name!r}")
+        self._log_info("[Remember] 任务入队: task_id=%s, source_name=%r" % (_short_task_id(task.task_id), task.source_name))
         return task.task_id
 
     def wait_for_task(self, task_id: str, timeout: float = 300) -> Optional[RememberTask]:
@@ -982,8 +389,8 @@ class RememberTaskQueue:
 
         detail = "（已从待处理队列移除）" if removed_from_queue else "（已标记删除，待 worker 跳过）"
         self._log_info(
-            f"[Remember] 删除待执行任务: task_id={_short_task_id(task_id)}, "
-            f"source_name={task.source_name!r}{detail}"
+            "[Remember] 删除待执行任务: task_id=%s, source_name=%r%s"
+            % (_short_task_id(task_id), task.source_name, detail)
         )
         return True, "已删除"
 
@@ -1003,8 +410,8 @@ class RememberTaskQueue:
             task.last_update = time.time()
         self._persist(task)
         self._log_info(
-            f"[Remember] 请求暂停任务: task_id={_short_task_id(task_id)}, "
-            f"source_name={task.source_name!r}"
+            "[Remember] 请求暂停任务: task_id=%s, source_name=%r"
+            % (_short_task_id(task_id), task.source_name)
         )
         return True, "已请求暂停", "pausing"
 
@@ -1026,8 +433,8 @@ class RememberTaskQueue:
             self._queue.put(task)
         self._persist(task)
         self._log_info(
-            f"[Remember] 恢复暂停任务: task_id={_short_task_id(task_id)}, "
-            f"source_name={task.source_name!r}"
+            "[Remember] 恢复暂停任务: task_id=%s, source_name=%r"
+            % (_short_task_id(task_id), task.source_name)
         )
         return True, "已继续", "queued"
 
@@ -1062,8 +469,8 @@ class RememberTaskQueue:
                 except Exception as e:
                     logger.debug("删除原文文件失败 %s: %s", task.original_path, e)
             self._log_info(
-                f"[Remember] 删除暂停任务: task_id={_short_task_id(task_id)}, "
-                f"source_name={task.source_name!r}"
+                "[Remember] 删除暂停任务: task_id=%s, source_name=%r"
+                % (_short_task_id(task_id), task.source_name)
             )
             return True, "已删除", "deleted"
         if status != "running":
@@ -1079,8 +486,8 @@ class RememberTaskQueue:
             task.last_update = time.time()
         self._persist(task)
         self._log_info(
-            f"[Remember] 请求删除运行中任务: task_id={_short_task_id(task_id)}, "
-            f"source_name={task.source_name!r}"
+            "[Remember] 请求删除运行中任务: task_id=%s, source_name=%r"
+            % (_short_task_id(task_id), task.source_name)
         )
         return True, "已请求删除", "cancelling"
 
@@ -1176,342 +583,3 @@ class RememberTaskQueue:
         if hasattr(self._processor, "get_pipeline_snapshot"):
             return self._processor.get_pipeline_snapshot()
         return None
-
-    def _worker(self):
-        """串行执行滑窗处理：从数据库加载最新缓存续写，或从空缓存开始。"""
-        while True:
-            task = self._queue.get()
-            try:
-                if task.status == "cancelled":
-                    self._log_info(f"[Remember] 跳过已删除任务: task_id={_short_task_id(task.task_id)}")
-                    continue
-                # Double-check under lock: delete_pending_task may have popped the
-                # task from self._tasks after the cancelled check above but before
-                # _update_task_progress writes status="queued" back to the task
-                # object and _persist re-appends it to the journal.
-                with self._lock:
-                    if task.task_id not in self._tasks:
-                        self._log_info(
-                            f"[Remember] 跳过已删除任务 (不在任务表): "
-                            f"task_id={_short_task_id(task.task_id)}"
-                        )
-                        continue
-                _existing_main_chunks = task.main_done_chunks or 0
-                _existing_step9_chunks = task.step9_done_chunks or 0
-                _existing_step10_chunks = task.step10_done_chunks or task.processed_chunks or 0
-                _init_progress = _existing_step10_chunks / task.total_chunks if task.total_chunks > 0 else 0.0
-                _resume_hint = (
-                    "断点续传："
-                    f"主链 {_existing_main_chunks}/{task.total_chunks} · "
-                    f"实体 {_existing_step9_chunks}/{task.total_chunks} · "
-                    f"关系 {_existing_step10_chunks}/{task.total_chunks}"
-                    if (_existing_main_chunks > 0 or _existing_step9_chunks > 0 or _existing_step10_chunks > 0)
-                    and task.total_chunks > 0
-                    else ("断点续传" if (_existing_main_chunks > 0 or _existing_step9_chunks > 0 or _existing_step10_chunks > 0) else "开始处理")
-                )
-                _start_chunk = task.step10_done_chunks or task.processed_chunks or 0
-                _uses_external_cache = self._task_uses_external_cache(task)
-                _task_processor = self._processor if _uses_external_cache else self._processor_factory()
-                self._update_task_progress(
-                    task,
-                    status="queued",
-                    phase="waiting_cache_chain" if _uses_external_cache else "queued",
-                    phase_label="等待前序缓存链" if _uses_external_cache else "等待开始",
-                    phase_current=_existing_step10_chunks,
-                    phase_total=max(1, task.total_chunks),
-                    main_done_chunks=_existing_main_chunks,
-                    step9_done_chunks=_existing_step9_chunks,
-                    step10_done_chunks=_existing_step10_chunks,
-                    processed_chunks=_existing_step10_chunks,
-                    total_chunks=task.total_chunks,
-                    run_start_chunks=_existing_step10_chunks,
-                    progress=_init_progress,
-                    # 勿用「下一窗编号」预填 step9/10，否则 Web 端会误以为已在做实体/关系对齐；
-                    # 主滑窗进度由 chain main 回调写入 main_*；实体/关系链写入 step9_* / step10_*。
-                    step9_progress=0.0,
-                    step9_label="",
-                    step10_progress=0.0,
-                    step10_label="",
-                    main_progress=0.0,
-                    main_label="",
-                    message=("等待前一个接续缓存链的任务完成后开始" if _uses_external_cache else "等待工作线程开始"),
-                    started_at=None,
-                    finished_at=None,
-                    error=None,
-                )
-                self._persist(task)
-                if _uses_external_cache and self._phase2_lock.locked():
-                    self._log_info(
-                        f"[Remember] 等待串行执行: task_id={_short_task_id(task.task_id)}, "
-                        f"source_name={task.source_name!r}"
-                    )
-
-                last_exc = None
-                for attempt in range(self._max_retries + 1):
-                    try:
-                        # 构建进度回调：将处理器的进度更新转发到任务跟踪
-                        _task_ref = task  # 闭包引用
-
-                        def _on_progress(progress: float, phase_label: str, message: str, chain_id: str = "step9", _t=_task_ref):
-                            _fields = _remember_callback_ui_fields(
-                                _t, progress, phase_label, message, chain_id,
-                            )
-                            self._update_task_progress(_t, **_fields)
-                            self._persist(_t)
-
-                        def _on_main_chunk_done(processed_count: int, _t=_task_ref):
-                            _tc = max(1, int(_t.total_chunks or 1))
-                            _pc = max(0, int(processed_count))
-                            _pg = min(1.0, float(_pc) / float(_tc))
-                            _ml = _t.main_label or ""
-                            # 当所有窗口的步骤1-5完成时，更新 main_label 显示完成状态
-                            if _pc >= _tc and not _RE_MAIN_1_8_DONE.search(_ml):
-                                _ml = "步骤1–8/10 已完成"
-                            self._update_task_progress(
-                                _t,
-                                main_done_chunks=_pc,
-                                main_progress=_pg,
-                                main_label=_ml,
-                            )
-                            self._persist(_t)
-
-                        def _on_step9_chunk_done(processed_count: int, _t=_task_ref):
-                            _pc = max(0, int(processed_count))
-                            self._update_task_progress(
-                                _t,
-                                step9_done_chunks=_pc,
-                            )
-                            self._persist(_t)
-
-                        def _on_chunk_done(processed_count: int, _t=_task_ref):
-                            """窗口 step10 完成后更新 processed_chunks；总进度与已完成窗数一致（单调递增）。"""
-                            _tc = max(1, int(_t.total_chunks or 1))
-                            _pc = max(0, int(processed_count))
-                            _pg = min(1.0, float(_pc) / float(_tc))
-                            self._update_task_progress(
-                                _t,
-                                step10_done_chunks=_pc,
-                                processed_chunks=_pc,
-                                progress=_pg,
-                            )
-                            self._persist(_t)
-
-                        def _run_task():
-                            self._set_active_processor(task.task_id, _task_processor)
-                            try:
-                                return _task_processor.remember_text(
-                                    text=task.text,
-                                    source_document=task.source_name,
-                                    verbose=self._detail_logs,
-                                    verbose_steps=not self._detail_logs,
-                                    load_cache_memory=_uses_external_cache,
-                                    event_time=task.event_time,
-                                    document_path=task.original_path,
-                                    progress_callback=_on_progress,
-                                    control_callback=lambda _t=task: _t.control_action,
-                                    start_chunk=_start_chunk,
-                                    main_chunk_done_callback=_on_main_chunk_done,
-                                    step9_chunk_done_callback=_on_step9_chunk_done,
-                                    chunk_done_callback=_on_chunk_done,
-                                )
-                            finally:
-                                self._clear_active_processor(task.task_id, _task_processor)
-
-                        def _mark_task_running():
-                            started_at = task.started_at or time.time()
-                            self._update_task_progress(
-                                task,
-                                status="running",
-                                phase="processing",
-                                phase_label=_resume_hint,
-                                phase_current=_existing_step10_chunks,
-                                phase_total=max(1, task.total_chunks),
-                                main_done_chunks=_existing_main_chunks,
-                                step9_done_chunks=_existing_step9_chunks,
-                                step10_done_chunks=_existing_step10_chunks,
-                                processed_chunks=_existing_step10_chunks,
-                                total_chunks=task.total_chunks,
-                                run_start_chunks=_existing_step10_chunks,
-                                progress=_init_progress,
-                                step9_progress=0.0,
-                                step9_label="",
-                                step10_progress=0.0,
-                                step10_label="",
-                                main_progress=0.0,
-                                main_label="",
-                                message=_resume_hint,
-                                started_at=started_at,
-                                finished_at=None,
-                                error=None,
-                            )
-                            self._persist(task)
-                            self._log_info(
-                                f"[Remember] 开始处理: task_id={_short_task_id(task.task_id)}, "
-                                f"source_name={task.source_name!r}, 文本长度={len(task.text)} 字符, "
-                                f"load_cache_memory={_uses_external_cache}"
-                            )
-
-                        if _uses_external_cache:
-                            with self._phase2_lock:
-                                if task.status == "cancelled":
-                                    self._log_info(
-                                        f"[Remember] 跳过已删除任务: task_id={_short_task_id(task.task_id)}"
-                                    )
-                                    break
-                                if attempt == 0:
-                                    _mark_task_running()
-                                result = _run_task()
-                        else:
-                            if task.status == "cancelled":
-                                self._log_info(
-                                    f"[Remember] 跳过已删除任务: task_id={_short_task_id(task.task_id)}"
-                                )
-                                break
-                            if attempt == 0:
-                                _mark_task_running()
-                            result = _run_task()
-
-                        result["original_path"] = task.original_path
-                        finished_at = time.time()
-                        _tc_done = max(1, int(task.total_chunks))
-                        _cp_done = int(result.get("chunks_processed") or 0)
-                        _cp_done = max(0, min(_cp_done, _tc_done))
-                        self._update_task_progress(
-                            task,
-                            status="completed",
-                            phase="completed",
-                            phase_label="已完成",
-                            phase_current=_tc_done * 10,
-                            phase_total=_tc_done * 10,
-                            main_done_chunks=_cp_done,
-                            step9_done_chunks=_cp_done,
-                            step10_done_chunks=_cp_done,
-                            processed_chunks=_cp_done,
-                            progress=1.0,
-                            message="处理完成",
-                            result=result,
-                            finished_at=finished_at,
-                            step9_progress=1.0,
-                            step10_progress=1.0,
-                            step9_label="",
-                            step10_label="",
-                            main_progress=1.0,
-                            main_label="",
-                        )
-                        self._persist(task)
-                        elapsed = (task.finished_at or 0) - (task.started_at or 0)
-                        self._log_info(
-                            f"[Remember] 完成: task_id={_short_task_id(task.task_id)}, "
-                            f"chunks_processed={result.get('chunks_processed')}, 耗时={elapsed:.1f}s"
-                        )
-                        last_exc = None
-                        break
-                    except Exception as exc:
-                        _control_action = getattr(exc, "remember_control_action", None)
-                        if _control_action == "pause":
-                            self._update_task_progress(
-                                task,
-                                status="paused",
-                                phase="paused",
-                                phase_label="已暂停",
-                                progress=task.progress,
-                                message="任务已暂停，可继续",
-                                error=None,
-                                finished_at=None,
-                            )
-                            task.control_action = None
-                            self._persist(task)
-                            self._log_info(
-                                f"[Remember] 已暂停: task_id={_short_task_id(task.task_id)}, "
-                                f"source_name={task.source_name!r}"
-                            )
-                            last_exc = None
-                            break
-                        if _control_action == "cancel":
-                            self._update_task_progress(
-                                task,
-                                status="cancelled",
-                                phase="cancelled",
-                                phase_label="已删除",
-                                progress=task.progress,
-                                message="运行中任务已删除",
-                                error=None,
-                                finished_at=time.time(),
-                            )
-                            task.control_action = None
-                            self._persist(task)
-                            with self._lock:
-                                self._tasks.pop(task.task_id, None)
-                            self._log_info(
-                                f"[Remember] 已删除运行中任务: task_id={_short_task_id(task.task_id)}, "
-                                f"source_name={task.source_name!r}"
-                            )
-                            last_exc = None
-                            break
-                        last_exc = exc
-                        if attempt < self._max_retries:
-                            delay = self._retry_delay
-                            self._update_task_progress(
-                                task,
-                                status="running",
-                                phase=task.phase,
-                                phase_label=task.phase_label,
-                                progress=task.progress,
-                                message=f"失败后重试中，第 {attempt + 1} 次，{delay}s 后继续",
-                                error=str(exc),
-                            )
-                            self._persist(task)
-                            self._log_warn(
-                                f"[Remember] 失败将重试: task_id={_short_task_id(task.task_id)}, "
-                                f"attempt={attempt + 1}, error={exc!r}, {delay}s 后重试"
-                            )
-                            time.sleep(delay)
-                        else:
-                            self._update_task_progress(
-                                task,
-                                status="failed",
-                                phase="failed",
-                                phase_label="失败",
-                                progress=task.progress,
-                                message="处理失败",
-                                error=str(exc),
-                                finished_at=time.time(),
-                            )
-                            self._persist(task)
-                            self._log_error(
-                                f"[Remember] 失败: task_id={_short_task_id(task.task_id)}, error={exc!r}"
-                            )
-            except Exception as exc:
-                self._update_task_progress(
-                    task,
-                    status="failed",
-                    phase="failed",
-                    phase_label="失败",
-                    progress=task.progress,
-                    message="处理失败",
-                    error=str(exc),
-                    finished_at=time.time(),
-                )
-                self._persist(task)
-                self._log_error(f"[Remember] 失败: task_id={_short_task_id(task.task_id)}, error={exc!r}")
-            finally:
-                # 任务结束（无论成功失败），清理入队时保存的临时原文
-                if task.original_path and task.status in _TERMINAL_STATUSES:
-                    try:
-                        p = Path(task.original_path)
-                        if p.exists() and "originals" in p.parts:
-                            p.unlink(missing_ok=True)
-                    except Exception as e:
-                        logger.debug("清理原文文件失败: %s", e)
-                self._queue.task_done()
-
-    def _trim_history(self):
-        if len(self._tasks) <= self._max_history:
-            return
-        items = sorted(self._tasks.values(), key=lambda t: t.created_at)
-        to_remove = len(self._tasks) - self._max_history
-        removed = 0
-        for t in items:
-            if t.status in _DONE_STATUSES and removed < to_remove:
-                del self._tasks[t.task_id]
-                removed += 1

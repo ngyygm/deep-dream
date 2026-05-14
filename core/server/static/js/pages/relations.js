@@ -15,6 +15,8 @@
 
   // ---- UI state only (cleared on destroy) ----
   let searchTimer = null;
+  let _searchAbort = null;
+  let _relationGraphChangeHandler = null;
 
   // ---- Helpers ----
   function entityName(absoluteId, fallbackName) {
@@ -413,6 +415,8 @@
   // ---- Tab 2: Search Relations ----
 
   async function doSearch(query) {
+    if (_searchAbort) _searchAbort.abort();
+    _searchAbort = new AbortController();
     const resultsEl = document.getElementById('relations-search-results');
     if (!query || query.trim().length === 0) {
       resultsEl.innerHTML = emptyState(t('relations.searchInput'));
@@ -741,6 +745,10 @@
     }
     activeTab = 'all';
     if (typeof PathFinder !== 'undefined') PathFinder.destroy();
+    if (_relationGraphChangeHandler) {
+      state.events.removeEventListener('graph-changed', _relationGraphChangeHandler);
+      _relationGraphChangeHandler = null;
+    }
   }
 
   // ---- Edit relation modal ----
@@ -799,6 +807,13 @@
   window.showRelationDetail = showRelationDetail;
   window.openEditRelationModal = openEditRelationModal;
   window.confirmDeleteRelation = confirmDeleteRelation;
+
+  // Listen for graph changes from other pages (e.g. memory submission) and invalidate cache
+  if (_relationGraphChangeHandler) state.events.removeEventListener('graph-changed', _relationGraphChangeHandler);
+  _relationGraphChangeHandler = () => {
+    _cachedGraphId = null; // force full reload on next render
+  };
+  state.events.addEventListener('graph-changed', _relationGraphChangeHandler);
 
   registerPage('relations', { render, destroy });
 })();

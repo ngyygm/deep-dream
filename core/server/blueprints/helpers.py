@@ -17,6 +17,8 @@ from flask import current_app, jsonify, request
 _BOOL_TRUE = frozenset(("1", "true", "yes", "on"))
 _BOOL_FALSE = frozenset(("0", "false", "no", "off"))
 
+from core.find.hybrid import HybridSearcher
+
 from core.models import Entity, Episode, Relation
 from core.content_schema import parse_markdown_sections
 from core.perf import _perf_timer
@@ -309,6 +311,20 @@ def _get_processor():
 def _get_queue():
     """获取当前请求对应的 RememberTaskQueue。"""
     return current_app.config["registry"].get_queue(request.graph_id)
+
+
+def _get_searcher(storage):
+    """Get or create a cached HybridSearcher for the given storage."""
+    searcher = getattr(storage, '_hybrid_searcher', None)
+    if searcher is None:
+        searcher = HybridSearcher(storage)
+        storage._hybrid_searcher = searcher
+    return searcher
+
+
+def _get_system_monitor():
+    """Get the SystemMonitor from app config."""
+    return current_app.config.get("system_monitor")
 
 
 # ── Time parsing helpers ─────────────────────────────────────────────────

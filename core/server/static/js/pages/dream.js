@@ -4,6 +4,8 @@ registerPage('dream', (function() {
   'use strict';
 
   let _refreshTimer = null;
+  let _dreamTasksActive = false;
+  let _dreamVisHandler = null;
 
   // ── Helpers ──────────────────────────────────────────────
   function priorityClass(p) {
@@ -72,11 +74,35 @@ registerPage('dream', (function() {
     `;
     if (window.lucide) lucide.createIcons();
     await loadAll();
-    _refreshTimer = setInterval(loadAll, 30000);
+    // Smart polling: check if dream tasks are running after initial load
+    _scheduleDreamPolling();
+
+    // Visibility detection: pause polling when tab is hidden
+    _dreamVisHandler = () => {
+      if (document.hidden) {
+        if (_refreshTimer) { clearInterval(_refreshTimer); _refreshTimer = null; }
+      } else {
+        loadAll();
+        _scheduleDreamPolling();
+      }
+    };
+    document.addEventListener('visibilitychange', _dreamVisHandler);
+  }
+
+  function _scheduleDreamPolling() {
+    if (_refreshTimer) { clearInterval(_refreshTimer); _refreshTimer = null; }
+    if (_dreamTasksActive) {
+      _refreshTimer = setInterval(loadAll, 10000);
+    }
   }
 
   function destroy() {
     if (_refreshTimer) { clearInterval(_refreshTimer); _refreshTimer = null; }
+    if (_dreamVisHandler) {
+      document.removeEventListener('visibilitychange', _dreamVisHandler);
+      _dreamVisHandler = null;
+    }
+    _dreamTasksActive = false;
   }
 
   // ── Data Loading ────────────────────────────────────────
@@ -169,8 +195,12 @@ registerPage('dream', (function() {
       const d = res.data || {};
       if (d.status === 'no_cycles' || d.status === 'not_available') {
         el.innerHTML = `<div style="color:var(--text-muted);font-size:0.85rem;">${t('dream.noLogs')}</div>`;
+        _dreamTasksActive = false;
+        _scheduleDreamPolling();
         return;
       }
+      _dreamTasksActive = d.status === 'running' || d.status === 'pending';
+      _scheduleDreamPolling();
       el.innerHTML = `
         <div style="display:grid;grid-template-columns:auto 1fr;gap:0.25rem 0.75rem;font-size:0.85rem;">
           <span style="color:var(--text-muted);">${t('dream.status')}:</span>
