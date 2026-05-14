@@ -433,22 +433,12 @@ def create_app(
     app.register_blueprint(dream_bp)
     app.register_blueprint(concepts_bp)
 
-    # ── /find/ alias redirects ─────────────────────────────────────────
-    # Common mistake: calling /api/v1/entities/{id}/versions instead of
-    # /api/v1/find/entities/{id}/versions.  Redirect automatically (308).
-    _FIND_ALIAS_RESOURCES = ("entities", "relations")
-
-    @app.before_request
-    def _find_alias_redirect():
-        path = request.path
-        if not path.startswith("/api/v1/"):
-            return None
-        for res in _FIND_ALIAS_RESOURCES:
-            old = f"/api/v1/{res}/"
-            if path.startswith(old):
-                target = f"/api/v1/find/{res}/" + path[len(old):]
-                return redirect(target, code=308)
-        return None
+    # JSON 404 for API routes (HTML 404 for everything else)
+    @app.errorhandler(404)
+    def _api_not_found(e):
+        if request.path.startswith("/api/"):
+            return jsonify({"success": False, "error": f"Endpoint not found: {request.path}", "elapsed_ms": 0}), 404
+        return e
 
     # Cleanup shared thread pools on shutdown
     def _shutdown_pools():

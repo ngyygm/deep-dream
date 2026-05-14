@@ -195,6 +195,7 @@ class DreamResult:
     relations_created: List[Dict[str, Any]]
     stats: Dict[str, Any]
     cycle_summary: str
+    warnings: List[str] = field(default_factory=list)
 
 
 class DreamOrchestrator:
@@ -269,7 +270,7 @@ class DreamOrchestrator:
         entity_lookup, seen_ids, explored, relation_context = self._explore_graph(seeds, run_config)
 
         # Step 3: 关联发现
-        relations_created, pairs_checked = self._discover_relations(
+        relations_created, pairs_checked, pair_errors = self._discover_relations(
             seeds, explored, entity_lookup, cycle_id, run_config,
             relation_context=relation_context,
         )
@@ -292,6 +293,14 @@ class DreamOrchestrator:
         # Step 6: 记录策略效果
         self._history.record_strategy_result(effective_strategy, len(relations_created))
 
+        # Detect potential LLM failure
+        warnings = []
+        if pairs_checked > 0 and len(relations_created) == 0 and pair_errors > 0:
+            warnings.append(
+                f"LLM may be unavailable: {pair_errors}/{pairs_checked} pair judgments failed. "
+                "Use health_check_llm to verify."
+            )
+
         return DreamResult(
             cycle_id=cycle_id,
             strategy=effective_strategy,
@@ -303,9 +312,11 @@ class DreamOrchestrator:
                 "entities_explored": len(seen_ids),
                 "pairs_checked": pairs_checked,
                 "relations_created_count": len(relations_created),
+                "pair_errors": pair_errors,
                 "strategy_rotated": auto_rotate,
             },
             cycle_summary=cycle_summary,
+            warnings=warnings,
         )
 
     # ------------------------------------------------------------------
@@ -530,6 +541,7 @@ class DreamOrchestrator:
 
         relations_created: List[Dict[str, Any]] = []
         pairs_checked = 0
+        pair_errors = 0
 
         # Batch pre-fetch all entities involved in pairs (avoid N+1 in save_dream_relation)
         _all_pair_fids = involved_fids_set  # already computed above (superset of filtered pairs' fids)
@@ -628,9 +640,10 @@ class DreamOrchestrator:
                     "result": save_result,
                 })
             except Exception as exc:
+                pair_errors += 1
                 logger.warning("Dream: 检查关系 %s↔%s 时出错: %s", pair[0], pair[2], exc)
 
-        return relations_created, pairs_checked
+        return relations_created, pairs_checked, pair_errors
 
     def _prefilter_pairs_by_similarity(
         self,

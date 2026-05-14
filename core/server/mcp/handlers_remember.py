@@ -20,11 +20,26 @@ def remember(args):
         body["source_name"] = args["source"]
     if _arg(args, "metadata"):
         body["metadata"] = args["metadata"]
+    if _arg(args, "wait"):
+        body["wait"] = args["wait"]
+    if _arg(args, "timeout"):
+        body["timeout"] = args["timeout"]
     data, code = _post("/api/v1/remember", body)
     if code < 400 and isinstance(data, dict):
-        task_id = _inner(data).get("task_id", "")
-        if task_id:
-            _hint(data, f"\n→ Poll with remember_task_status(task_id='{task_id}') to check extraction progress.")
+        inner = _inner(data)
+        # Sync mode: show extraction results directly
+        if body.get("wait") and inner.get("status") == "completed":
+            result = inner.get("result", {})
+            entities = result.get("entities", 0) if isinstance(result, dict) else 0
+            relations = result.get("relations", 0) if isinstance(result, dict) else 0
+            if entities == 0 and relations == 0:
+                _hint(data, "\n→ Warning: extraction completed but found 0 entities and 0 relations. Check health_check_llm to verify LLM availability.")
+            else:
+                _hint(data, f"\n→ Extracted {entities} entities and {relations} relations. Use quick_search to verify, or entity_profile for details.")
+        else:
+            task_id = inner.get("task_id", "")
+            if task_id:
+                _hint(data, f"\n→ Poll with remember_task_status(task_id='{task_id}') to check extraction progress.")
     return _result(data, code)
 
 

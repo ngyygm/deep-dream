@@ -349,7 +349,7 @@ def dream_run():
         else:
             result = _run_dream()
 
-        return ok({
+        resp = {
             "cycle_id": result.cycle_id,
             "strategy": result.strategy,
             "seeds": result.seeds,
@@ -358,7 +358,10 @@ def dream_run():
             "stats": result.stats,
             "strategy_stats": orchestrator._history.get_strategy_stats(),
             "cycle_summary": result.cycle_summary,
-        })
+        }
+        if result.warnings:
+            resp["warnings"] = result.warnings
+        return ok(resp)
     except Exception as e:
         return err(str(e), 500)
 

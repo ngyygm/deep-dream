@@ -393,6 +393,15 @@ def worker_loop(q: "RememberTaskQueue") -> None:  # noqa: C901 — legacy comple
                             _mark_task_running()
                         result = _run_task()
 
+                    # Warn on zero extractions (possible LLM issue)
+                    if isinstance(result, dict):
+                        entities = result.get("entities", 0)
+                        relations = result.get("relations", 0)
+                        if entities == 0 and relations == 0:
+                            result["warning"] = (
+                                "Extraction completed with 0 entities and 0 relations. "
+                                "This may indicate an LLM connectivity issue — verify with health_check_llm."
+                            )
                     result["original_path"] = task.original_path
                     finished_at = time.time()
                     _tc_done = max(1, int(task.total_chunks))

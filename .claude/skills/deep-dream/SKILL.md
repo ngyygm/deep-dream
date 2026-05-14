@@ -22,13 +22,32 @@ BASE_URL=http://localhost:16200/api/v1   |   graph_id=default   |   Response: {s
 
 If you catch yourself writing `curl -s "http://localhost:16200/api/v1/..."`, stop — use the corresponding MCP tool instead.
 
-The only exception is endpoints without MCP tools yet (marked "No MCP tool yet" in the Decision Guide).
+### Fallback: REST API Direct Access
+
+If MCP tools are unavailable, use the REST API at `http://localhost:16200/api/v1/`. All endpoints require `?graph_id=default` (or your target graph).
+
+| MCP Tool | REST Endpoint | Method |
+|---|---|---|
+| `graph_overview` | `/find/graph-summary` | GET |
+| `remember` | `/remember` | POST body: `{text, wait, timeout}` |
+| `quick_search` | `/find` | POST body: `{query}` |
+| `entity_profile` | `/find/entities/{fid}/profile` | GET |
+| `create_entity` | `/find/entities/create` | POST body: `{name, content}` |
+| `create_relation` | `/find/relations/create` | POST body: `{entity1_family_id, entity2_family_id, content}` |
+| `search_entities` | `/find/entities/search?query_name=X` | GET |
+| `dream_run` | `/find/dream/run` | POST body: `{strategy, seed_count}` |
+| `butler_report` | `/butler/report` | GET |
+| `butler_execute` | `/butler/execute` | POST body: `{actions, dry_run}` |
+| `health_check_llm` | `/health/llm` | GET |
+
+Error format: `{"success": false, "error": "...", "elapsed_ms": N}`. Error messages may be in Chinese.
 
 ## Decision Guide
 
 | Intent | Tool | Key Notes |
 |---|---|---|
 | First call / overview | `graph_overview` | Stats + activity + health |
+| Check LLM health | `health_check_llm` | Verify LLM is reachable before remember/dream |
 | Store text | `remember` (wait=true) | Sync; async returns task_id |
 | Store + explore | `remember_and_explore` | 1 call = write + search |
 | Search anything | `quick_search` | query → entities + relations |
@@ -47,7 +66,7 @@ The only exception is endpoints without MCP tools yet (marked "No MCP tool yet" 
 | Split mixed entity | `split_entity_version` | Needs absolute_id |
 | Update confidence | API: `PUT .../confidence` | No MCP tool yet |
 | Dream candidates | API: `GET /dream/candidates` | No MCP tool yet |
-| Health / cleanup | `butler_report` → `butler_execute` | 2 calls |
+| Health / cleanup | `butler_report` → `butler_execute` | 2 calls; valid actions: cleanup_isolated, cleanup_invalidated, detect_communities, evolve_summaries |
 | Communities | `detect_communities` → `get_community` | Neo4j only |
 
 ### More Tools
@@ -74,15 +93,21 @@ The only exception is endpoints without MCP tools yet (marked "No MCP tool yet" 
 
 Triggered by "dream"/"做梦". Use `dream_run` (1 call) or manual: graph_summary → dream/seeds → entity_profile → traverse → create_dream_relation → save_dream_episode. 8 types: free_association, cross_domain, leap, contrastive, temporal_bridge, orphan_adoption, hub_remix, narrative (see `references/dream-types/`). **Rules**: evidence required, honest confidence (0.3-0.5 if unsure), check existing first, always `save_dream_episode`.
 
+Note: Dream relation discovery requires a running LLM. If `dream_run` returns 0 relations with a warning, check `health_check_llm` first.
+
 ## Butler Mode
 
 `butler_report` → `butler_execute`. Or manual: `maintenance_health` → cleanup/communities/evolve → verify with `graph_summary`.
 
+Valid `butler_execute` actions: `cleanup_isolated`, `cleanup_invalidated`, `detect_communities`, `evolve_summaries`. Note: `run_dream` may appear in butler_report recommendations but is NOT a valid butler_execute action — use `dream_run` or `dream_quick_start` instead.
+
 ## Parameter Pitfalls
 
-- `remember`: wait=true for sync; default is async (returns task_id)
-- `create_relation`: supports family_id (`entity1_family_id`), no need for absolute_id
+- `remember`: set `wait=true` for sync mode (blocks until extraction done); default is async (returns task_id to poll)
+- `remember`: if extraction returns 0 entities, check `health_check_llm` — LLM may be down
+- `create_relation`: accepts family_id (`entity1_family_id`) or absolute_id (`entity1_absolute_id`); family_id is simpler
 - `create_dream_relation`: uses family_id (not absolute_id)
+- `update_entity`: name/content changes create a new version; summary/attribute changes are in-place
 - `split_entity_version`: needs absolute_id — `get_entity_versions` first
 - Concept tools: accept any prefix (`ent_*`, `rel_*`, `episode`)
 - Destructive ops: **default dry_run=true** (must pass false to execute)
@@ -99,7 +124,8 @@ Triggered by "dream"/"做梦". Use `dream_run` (1 call) or manual: graph_summary
 | Only `search_entities` for concepts | `search_concepts` (cross-role) |
 | 15-25 manual dream calls | `dream_run` (1 call) |
 | Forget to poll remember | Use `wait=true` |
-| Raw `curl` to API endpoints | Use MCP tools instead |
+| Use `health_check` only | `health_check_llm` to verify LLM before remember/dream |
+| Ignore 0-extraction results | Check `health_check_llm`, may be LLM connectivity issue |
 
 MCP server auto-protects: ID type detection, empty result hints, pagination warnings, response truncation, destructive op safety defaults.
 
