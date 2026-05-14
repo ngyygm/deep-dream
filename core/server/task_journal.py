@@ -46,6 +46,7 @@ class RememberTask:
     processed_chunks: int = 0
     total_chunks: int = 0
     run_start_chunks: int = 0      # 本轮开始时已有的 chunk 数（用于断点续传预估）
+    task_seq: int = 0
     progress: float = 0.0
     message: str = "等待进入处理队列"
     step9_progress: float = 0.0
@@ -83,6 +84,7 @@ def task_to_dict(task: RememberTask) -> Dict[str, Any]:
         "processed_chunks": task.processed_chunks,
         "total_chunks": task.total_chunks,
         "run_start_chunks": task.run_start_chunks,
+        "task_seq": task.task_seq,
         "progress": task.progress,
         "message": task.message,
         "step9_progress": task.step9_progress,
@@ -128,6 +130,7 @@ def remember_task_from_record(rec: Dict[str, Any], text: str) -> RememberTask:
         processed_chunks=int(rec.get("processed_chunks") or 0),
         total_chunks=int(rec.get("total_chunks") or 0),
         run_start_chunks=int(rec.get("run_start_chunks") or 0),
+        task_seq=int(rec.get("task_seq") or 0),
         progress=float(rec.get("progress") or 0.0),
         message=str(rec.get("message") or "等待进入处理队列"),
         step9_progress=float(rec.get("step9_progress") or 0.0),
