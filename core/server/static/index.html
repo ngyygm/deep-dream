@@ -34,6 +34,7 @@
   <!-- Custom Styles -->
   <link rel="stylesheet" href="/static/css/app.css">
   <link rel="stylesheet" href="/static/css/chat.css">
+  <link rel="stylesheet" href="/static/css/graph-timeline.css">
 </head>
 <body class="overflow-hidden" style="background:var(--bg-primary);color:var(--text-primary);">
   <div class="flex h-screen">
@@ -173,17 +174,30 @@
   <script src="/static/js/i18n/index.js"></script>
 
   <!-- Scripts (order matters) -->
+  <script src="/static/js/shared/sse-client.js"></script>
+  <script src="/static/js/shared/api-helpers.js"></script>
+  <script src="/static/js/shared/format.js"></script>
+  <script src="/static/js/shared/ui-utils.js"></script>
   <script src="/static/vendor/marked.min.js"></script>
   <script src="/static/js/app.js"></script>
   <script src="/static/js/components/toast.js"></script>
   <script src="/static/js/components/modal.js"></script>
   <script src="/static/js/graph-utils.js"></script>
   <script src="/static/js/path-finder.js"></script>
+  <!-- GraphExplorer sub-modules (must load before graph-explorer.js) -->
+  <script src="/static/js/graph-explorer/diff.js"></script>
+  <script src="/static/js/graph-explorer/versions.js"></script>
+  <script src="/static/js/graph-explorer/detail.js"></script>
+  <script src="/static/js/graph-explorer/focus.js"></script>
   <script src="/static/js/graph-explorer.js"></script>
   <script src="/static/js/chat/stream.js"></script>
   <script src="/static/js/chat/renderer.js"></script>
   <script src="/static/js/pages/chat.js"></script>
   <script src="/static/js/pages/dashboard.js"></script>
+  <!-- Graph page sub-modules (must load before pages/graph.js) -->
+  <script src="/static/js/pages/graph/loading.js"></script>
+  <script src="/static/js/pages/graph/layout.js"></script>
+  <script src="/static/js/pages/graph/timeline-ui.js"></script>
   <script src="/static/js/pages/graph.js"></script>
   <script src="/static/js/pages/memory.js"></script>
   <script src="/static/js/pages/search.js"></script>

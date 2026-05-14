@@ -2,6 +2,12 @@
    GraphExplorer — Shared graph visualization
    Used by graph.js, communities.js
    Factory pattern: GraphExplorer.create(options)
+
+   Sub-modules (loaded before this file):
+     graph-explorer/diff.js      → window.GraphExplorerDiff
+     graph-explorer/versions.js  → window.GraphExplorerVersions
+     graph-explorer/detail.js    → window.GraphExplorerDetail
+     graph-explorer/focus.js     → window.GraphExplorerFocus
    ========================================== */
 
 window.GraphExplorer = (function () {
@@ -62,7 +68,6 @@ window.GraphExplorer = (function () {
           for (var ei = 0; ei < endpoints.length; ei++) {
             var eid = endpoints[ei];
             if (eid === highlightAbsId) continue;
-            // Skip hop 2+ entities — their colors are determined by propagation (phase 2)
             if (hopMap && hopMap[eid] !== undefined && hopMap[eid] > 1) continue;
             if (!entityTypes[eid]) entityTypes[eid] = new Set();
             if (hasInherited && inheritedRelationIds.has(r.absolute_id)) entityTypes[eid].add('inherited');
@@ -74,9 +79,8 @@ window.GraphExplorer = (function () {
         for (var ti = 0; ti < entityTypesKeys.length; ti++) {
           var teid = entityTypesKeys[ti];
           var types = entityTypes[teid];
-          // Priority: current > inherited > future
           if (types.has('current')) {
-            // default blue — don't add to any set
+            // default blue
           } else if (types.has('inherited')) {
             inheritedEntityIds.add(teid);
           } else if (types.has('future')) {
@@ -87,7 +91,6 @@ window.GraphExplorer = (function () {
 
       // Propagate entity types from hop 1 to hop 2+ via cascading parent chain
       if (hopMap && (inheritedEntityIds.size > 0 || futureEntityIds.size > 0)) {
-        // Build classification map: abs_id → 'inherited' | 'future'
         var entityClassMap = {};
         inheritedEntityIds.forEach(function (id) { entityClassMap[id] = 'inherited'; });
         futureEntityIds.forEach(function (id) { entityClassMap[id] = 'future'; });
@@ -97,7 +100,6 @@ window.GraphExplorer = (function () {
           if (hopMap[mhid] > maxHop) maxHop = hopMap[mhid];
         }
 
-        // Cascade from hop 2 to maxHop
         for (var ch = 2; ch <= maxHop; ch++) {
           var childTypes = {};
           for (var pi = 0; pi < relations.length; pi++) {
@@ -115,22 +117,19 @@ window.GraphExplorer = (function () {
             var ptype = entityClassMap[parent];
             if (!ptype) ptype = 'current';
 
-            // Classify connecting edge (only if not already classified by API)
             if (!inheritedRelationIds.has(pr.absolute_id) && !futureRelationIds.has(pr.absolute_id)) {
               if (ptype === 'inherited') inheritedRelationIds.add(pr.absolute_id);
               else if (ptype === 'future') futureRelationIds.add(pr.absolute_id);
             }
 
-            // Collect type for child entity
             if (!childTypes[child]) childTypes[child] = new Set();
             childTypes[child].add(ptype);
           }
 
-          // Apply priority for each child entity
           var childKeys = Object.keys(childTypes);
           for (var ci = 0; ci < childKeys.length; ci++) {
             var ceid = childKeys[ci];
-            if (entityClassMap[ceid]) continue; // already classified by earlier hop
+            if (entityClassMap[ceid]) continue;
             var ctypes = childTypes[ceid];
             if (ctypes.has('current')) { /* default blue */ }
             else if (ctypes.has('inherited')) {
@@ -172,10 +171,10 @@ window.GraphExplorer = (function () {
 
       // Compute relation count per entity for node sizing
       var relationCounts = {};
-      for (var ri = 0; ri < relations.length; ri++) {
-        var r = relations[ri];
-        relationCounts[r.entity1_absolute_id] = (relationCounts[r.entity1_absolute_id] || 0) + 1;
-        relationCounts[r.entity2_absolute_id] = (relationCounts[r.entity2_absolute_id] || 0) + 1;
+      for (var ri2 = 0; ri2 < relations.length; ri2++) {
+        var r2 = relations[ri2];
+        relationCounts[r2.entity1_absolute_id] = (relationCounts[r2.entity1_absolute_id] || 0) + 1;
+        relationCounts[r2.entity2_absolute_id] = (relationCounts[r2.entity2_absolute_id] || 0) + 1;
       }
       buildNodesOpts.relationCounts = relationCounts;
 
@@ -200,15 +199,14 @@ window.GraphExplorer = (function () {
           hasRestoredPositions = true;
         }
       });
-      // Merge saved positions into _pinnedNodePositions
       if (savedPositions) {
         Object.keys(savedPositions).forEach(function (k) {
           if (visibleNodeIds.has(k)) _pinnedNodePositions[k] = savedPositions[k];
         });
       }
       var pinnedKeys = Object.keys(_pinnedNodePositions);
-      for (var pi = 0; pi < pinnedKeys.length; pi++) {
-        if (!visibleNodeIds.has(pinnedKeys[pi])) delete _pinnedNodePositions[pinnedKeys[pi]];
+      for (var pi2 = 0; pi2 < pinnedKeys.length; pi2++) {
+        if (!visibleNodeIds.has(pinnedKeys[pi2])) delete _pinnedNodePositions[pinnedKeys[pi2]];
       }
       _entityMap = eMap;
 
@@ -220,8 +218,6 @@ window.GraphExplorer = (function () {
         nodes.update({ id: highlightAbsId, x: fcx, y: fcy, fixed: { x: true, y: true } });
         _pinnedNodePositions[highlightAbsId] = { x: fcx, y: fcy };
       }
-
-      // Hub coloring — no position pinning, let physics engine arrange
 
       var buildEdgesOpts = {
         inheritedRelationIds: inheritedRelationIds,
@@ -244,7 +240,6 @@ window.GraphExplorer = (function () {
         _network = null;
       }
 
-      // When restoring from saved positions (most nodes positioned), skip physics entirely
       var skipPhysics = hasRestoredPositions && (Object.keys(restorePositions).length >= visibleNodeIds.size * 0.7);
 
       var visOpts;
@@ -264,15 +259,13 @@ window.GraphExplorer = (function () {
 
       _network = new vis.Network(container, { nodes: nodes, edges: edges }, visOpts);
 
-      // Invalidate hover panel — vis.Network may have cleared the container DOM
+      // Invalidate hover panel
       _hoverPanel = null;
 
       if (skipPhysics) {
-        // Instant render — no stabilization needed
         renderVersionBadges(nodes);
       } else {
         _network.once('stabilizationIterationsDone', function () {
-          // Freeze after stabilization: stop simulation but keep interaction working
           _network.setOptions({ physics: { enabled: false } });
           if (highlightAbsId) {
             _network.focus(highlightAbsId, { scale: 1.2, animation: { duration: 500, easingFunction: 'easeInOutQuad' } });
@@ -293,12 +286,10 @@ window.GraphExplorer = (function () {
       });
 
       _network.on('hoverNode', function (params) {
-        var nodeId = params.node;
-        showNodeHover(nodeId, params);
+        showNodeHover(params.node, params);
       });
       _network.on('hoverEdge', function (params) {
-        var edgeId = params.edge;
-        showEdgeHover(edgeId, params);
+        showEdgeHover(params.edge, params);
       });
       _network.on('blurNode', function () {
         hideNodeHover();
@@ -307,7 +298,6 @@ window.GraphExplorer = (function () {
         hideNodeHover();
       });
 
-      // Allow re-dragging: enable physics during drag so unfixed nodes respond to forces
       _network.on('dragStart', function (params) {
         if (params.nodes.length === 0) return;
         params.nodes.forEach(function (nodeId) {
@@ -333,10 +323,8 @@ window.GraphExplorer = (function () {
         _network.setOptions({ physics: { enabled: false } });
       });
 
-      // Update version badge positions on zoom/pan/drag
       _network.on('zoom', function () { updateBadgePositions(); updateNodeHoverPosition(); });
       _network.on('dragEnd', function () {
-        // The dragEnd above handles node dragging; this is for canvas panning
         setTimeout(updateBadgePositions, 50);
         updateNodeHoverPosition();
       });
@@ -344,7 +332,6 @@ window.GraphExplorer = (function () {
     }
 
     // ---- Incremental graph building for smooth animations ----
-    // Creates an empty network with persistent DataSets for incremental .add()
 
     function initEmptyGraph(hubLayout) {
       _entityMap = {};
@@ -380,7 +367,6 @@ window.GraphExplorer = (function () {
 
       _network = new vis.Network(container, { nodes: _nodesDataSet, edges: _edgesDataSet }, visOpts);
 
-      // Invalidate hover panel — vis.Network may have cleared the container DOM
       _hoverPanel = null;
 
       _network.on('click', function (params) {
@@ -395,19 +381,13 @@ window.GraphExplorer = (function () {
       });
 
       _network.on('hoverNode', function (params) {
-        var nodeId = params.node;
-        showNodeHover(nodeId, params);
+        showNodeHover(params.node, params);
       });
       _network.on('hoverEdge', function (params) {
-        var edgeId = params.edge;
-        showEdgeHover(edgeId, params);
+        showEdgeHover(params.edge, params);
       });
-      _network.on('blurNode', function () {
-        hideNodeHover();
-      });
-      _network.on('blurEdge', function () {
-        hideNodeHover();
-      });
+      _network.on('blurNode', function () { hideNodeHover(); });
+      _network.on('blurEdge', function () { hideNodeHover(); });
 
       _network.on('dragStart', function (params) {
         if (params.nodes.length === 0) return;
@@ -437,17 +417,13 @@ window.GraphExplorer = (function () {
       _network.on('zoom', function () { updateBadgePositions(); updateNodeHoverPosition(); });
       _network.on('dragEnd', function () { setTimeout(updateBadgePositions, 50); updateNodeHoverPosition(); });
       _network.on('viewChanged', function () { updateBadgePositions(); updateNodeHoverPosition(); });
-
-      // Hub coloring — no position pinning
     }
 
     // Incrementally add entities and relations to the existing network
-    // Uses DataSet .add() for smooth, non-destructive updates
 
     function addNodesAndEdges(newEntities, newRelations, hubLayout, totalNodeEstimate) {
       if (!_network || !_nodesDataSet) return;
 
-      // Build vis node objects from raw entity data
       var colorMode = hubLayout && hubLayout.hubMap ? 'hub' : 'default';
       var buildNodesOpts = {
         colorMode: colorMode,
@@ -459,16 +435,13 @@ window.GraphExplorer = (function () {
         buildNodesOpts.hubNeighborIds = hubLayout.hubNeighborIds;
       }
 
-      // Compute relation count from ALL currently visible edges for accurate sizing
       var allEdges = _edgesDataSet.get();
       var relationCounts = {};
       for (var ri = 0; ri < allEdges.length; ri++) {
         var re = allEdges[ri];
-        // vis edge 'from'/'to' map to entity absolute_ids (node IDs)
         relationCounts[re.from] = (relationCounts[re.from] || 0) + 1;
         relationCounts[re.to] = (relationCounts[re.to] || 0) + 1;
       }
-      // Also count new relations not yet in DataSet
       for (var ri2 = 0; ri2 < newRelations.length; ri2++) {
         var nr = newRelations[ri2];
         var nFrom = nr.entity1_family_id || nr.entity1_absolute_id;
@@ -481,26 +454,21 @@ window.GraphExplorer = (function () {
       var result = GraphUtils.buildNodes(newEntities, buildNodesOpts);
       var newNodes = result.nodes.get();
 
-      // Update entity map
       for (var ek in result.entityMap) {
         _entityMap[ek] = result.entityMap[ek];
       }
 
-      // Compute smart positions for new nodes based on their connected existing nodes
       var existingPositions = _network.getPositions();
       var existingNodeIds = new Set(_nodesDataSet.getIds());
 
-      // Build a lookup: newEntity absolute_id -> list of connected existing nodeIds
       var newNodeConnections = {};
       for (var ni = 0; ni < newNodes.length; ni++) {
         newNodeConnections[newNodes[ni].id] = [];
       }
-      // Check newRelations for connections to existing nodes
-      for (var ri = 0; ri < newRelations.length; ri++) {
-        var rel = newRelations[ri];
+      for (var ri3 = 0; ri3 < newRelations.length; ri3++) {
+        var rel = newRelations[ri3];
         var e1Id = rel.entity1_family_id || rel.entity1_absolute_id;
         var e2Id = rel.entity2_family_id || rel.entity2_absolute_id;
-        // If one end is new and the other is existing, record the connection
         if (!existingNodeIds.has(e1Id) && existingNodeIds.has(e2Id)) {
           if (newNodeConnections[e1Id]) newNodeConnections[e1Id].push(e2Id);
         } else if (existingNodeIds.has(e1Id) && !existingNodeIds.has(e2Id)) {
@@ -508,21 +476,16 @@ window.GraphExplorer = (function () {
         }
       }
 
-      // Assign positions: new nodes appear near their connected existing neighbors
       var canvasEl = document.getElementById(_opts.canvasId);
       var cx = canvasEl ? canvasEl.offsetWidth / 2 : 400;
       var cy = canvasEl ? canvasEl.offsetHeight / 2 : 300;
       var maxRadius = Math.min(cx, cy) * 0.85;
-
-      // Use golden-angle spiral for unconnected nodes (natural spread)
       var goldenAngle = Math.PI * (3 - Math.sqrt(5));
 
-      for (var ni = 0; ni < newNodes.length; ni++) {
-        var node = newNodes[ni];
-
+      for (var ni2 = 0; ni2 < newNodes.length; ni2++) {
+        var node = newNodes[ni2];
         var connections = newNodeConnections[node.id];
         if (connections && connections.length > 0) {
-          // Average position of connected existing nodes
           var sumX = 0, sumY = 0, count = 0;
           for (var ci = 0; ci < connections.length; ci++) {
             var cpos = existingPositions[connections[ci]];
@@ -536,7 +499,6 @@ window.GraphExplorer = (function () {
             node.y = cy + (Math.random() - 0.5) * 200;
           }
         } else {
-          // No connection info — use spiral placement with global counter
           var idx = _spiralIdx++;
           var totalEst = totalNodeEstimate || 200;
           var r = maxRadius * Math.sqrt((idx + 0.5) / totalEst);
@@ -546,10 +508,8 @@ window.GraphExplorer = (function () {
         }
       }
 
-      // Add to DataSet (triggers smooth network update)
       _nodesDataSet.add(newNodes);
 
-      // Brief highlight pulse for newly added nodes (grow animation effect)
       if (newNodes.length > 0 && newNodes.length <= 50) {
         var newNodeIds = newNodes.map(function(n) { return n.id; });
         _network.selectNodes(newNodeIds);
@@ -558,7 +518,6 @@ window.GraphExplorer = (function () {
         }, 300);
       }
 
-      // Build vis edge objects — use ALL visible node IDs as the filter
       var allNodeIds = new Set(_nodesDataSet.getIds());
       var buildEdgesOpts = {};
       if (_opts.relationStrengthEnabled) buildEdgesOpts.weightMode = 'count';
@@ -567,51 +526,38 @@ window.GraphExplorer = (function () {
       var edgeResult = GraphUtils.buildEdges(newRelations, allNodeIds, buildEdgesOpts);
       var newEdges = edgeResult.edges.get();
 
-      // Update relation map
       for (var rk in edgeResult.relationMap) {
         _relationMap[rk] = edgeResult.relationMap[rk];
       }
 
-      // Add edges (triggers smooth network update)
       _edgesDataSet.add(newEdges);
 
-      // Skip expensive per-tick operations during streaming animation
       if (!_streamingMode) {
         _recalcNodeSizes();
-
-        // Auto-fit viewport
         try { _network.fit({ animation: false }); } catch (_) {}
       }
     }
 
     /**
      * Incrementally remove nodes and edges from the current network.
-     * Used by timeline drag to hide entities/relations outside the time window.
-     * @param {string[]} nodeAbsIds - absolute_ids of nodes to remove
-     * @param {string[]} edgeAbsIds - absolute_ids of edges to remove
      */
     function removeNodesAndEdges(nodeAbsIds, edgeAbsIds) {
       if (!_network || !_nodesDataSet) return;
 
-      // Remove edges first (to avoid dangling references)
       if (edgeAbsIds && edgeAbsIds.length > 0) {
         _edgesDataSet.remove(edgeAbsIds);
-        // Clean up relationMap
         for (var i = 0; i < edgeAbsIds.length; i++) {
           delete _relationMap[edgeAbsIds[i]];
         }
       }
 
-      // Remove nodes
       if (nodeAbsIds && nodeAbsIds.length > 0) {
         _nodesDataSet.remove(nodeAbsIds);
-        // Clean up entityMap
         for (var j = 0; j < nodeAbsIds.length; j++) {
           delete _entityMap[nodeAbsIds[j]];
         }
       }
 
-      // Update version badges
       renderVersionBadges(_nodesDataSet);
 
       // Recalculate node sizes after edge removal
@@ -641,103 +587,10 @@ window.GraphExplorer = (function () {
         _nodesDataSet.update(remainUpdates);
       }
 
-      // Re-fit viewport
       try { _network.fit({ animation: false }); } catch (_) {}
     }
 
-    // ---- FocusSession: minimal accumulation tracker ----
-
-    function FocusSession() {
-      this.focusFamilyId = null;
-      this.accumulatedRelationIds = new Set();
-    }
-
-    FocusSession.prototype.reset = function (familyId) {
-      this.focusFamilyId = familyId;
-      this.accumulatedRelationIds = new Set();
-    };
-
-    FocusSession.prototype.merge = function (familyId, currentRelationAbsIds) {
-      if (this.focusFamilyId !== familyId) {
-        this.reset(familyId);
-        return new Set();
-      }
-      var inherited = new Set();
-      var self = this;
-      this.accumulatedRelationIds.forEach(function (id) {
-        if (!currentRelationAbsIds.has(id)) inherited.add(id);
-      });
-      currentRelationAbsIds.forEach(function (id) { self.accumulatedRelationIds.add(id); });
-      return inherited;
-    };
-
-    // ---- Family-ID-Based BFS (no API calls) ----
-
-    function focusBFS(startFamilyId, hopLevel) {
-      var entityCache = _opts.entityCache || {};
-
-      // Build abs_id → family_id map
-      var absToFid = {};
-      for (var absId in entityCache) {
-        absToFid[absId] = entityCache[absId].family_id;
-      }
-
-      // Build family_id → [relation] index from main view cache
-      var familyIndex = {};
-      var mainRels = _mainViewRelations || [];
-      for (var i = 0; i < mainRels.length; i++) {
-        var r = mainRels[i];
-        var fid1 = absToFid[r.entity1_absolute_id];
-        var fid2 = absToFid[r.entity2_absolute_id];
-        if (!fid1 || !fid2) continue;
-        if (!familyIndex[fid1]) familyIndex[fid1] = [];
-        if (!familyIndex[fid2]) familyIndex[fid2] = [];
-        familyIndex[fid1].push(r);
-        if (fid1 !== fid2) familyIndex[fid2].push(r);
-      }
-
-      // BFS using family_id keys
-      var visited = new Set([startFamilyId]);
-      var hopMapFid = {};
-      hopMapFid[startFamilyId] = 0;
-      var discoveredRelations = new Map();
-      var frontier = [startFamilyId];
-
-      for (var h = 1; h <= hopLevel; h++) {
-        var nextFrontier = [];
-        for (var fi = 0; fi < frontier.length; fi++) {
-          var fid = frontier[fi];
-          var rels = familyIndex[fid] || [];
-          for (var ri = 0; ri < rels.length; ri++) {
-            var rel = rels[ri];
-            discoveredRelations.set(rel.absolute_id, rel);
-            var otherFid = absToFid[rel.entity1_absolute_id] === fid
-              ? absToFid[rel.entity2_absolute_id]
-              : (absToFid[rel.entity2_absolute_id] === fid
-                ? absToFid[rel.entity1_absolute_id]
-                : null);
-            if (otherFid && !visited.has(otherFid)) {
-              visited.add(otherFid);
-              hopMapFid[otherFid] = h;
-              nextFrontier.push(otherFid);
-            }
-          }
-        }
-        frontier = nextFrontier;
-      }
-
-      var relations = [];
-      discoveredRelations.forEach(function (rel) { relations.push(rel); });
-
-      return {
-        familyIds: visited,
-        hopMapFid: hopMapFid,
-        relations: relations,
-        absToFid: absToFid
-      };
-    }
-
-    // ---- Focus on a specific entity version ----
+    // ---- Focus: delegates to GraphExplorerFocus ----
 
     async function focusOnEntity(absoluteId, opts) {
       opts = opts || {};
@@ -764,10 +617,10 @@ window.GraphExplorer = (function () {
         var familyId = entity.family_id;
         var hopLevel = _opts.defaultHopLevel || 1;
 
-        // 2. BFS topology (family-id based, no API calls)
-        var bfs = focusBFS(familyId, hopLevel);
+        // 2. BFS topology
+        var bfs = GraphExplorerFocus.focusBFS(familyId, hopLevel, _opts.entityCache || {}, _mainViewRelations || []);
 
-        // 2b. Fetch ALL relations for the focused entity from API (supplement main view cache)
+        // 2b. Fetch ALL relations for the focused entity from API
         var _apiRelationAbsIds = new Set();
         if (!isVersionSwitch) {
           try {
@@ -788,14 +641,14 @@ window.GraphExplorer = (function () {
                 _apiRelationAbsIds.add(apiRel.entity2_absolute_id);
               }
             }
-          } catch (_) { /* non-fatal: proceed with main view cache only */ }
+          } catch (_) {}
         }
 
         // 3. Build familyIdToLatest with focus override
         var familyIdToLatest = _opts.familyIdToLatest ? Object.assign({}, _opts.familyIdToLatest()) : {};
         familyIdToLatest[familyId] = absoluteId;
 
-        // 4. Resolve missing absolute_ids (endpoints not in entityCache)
+        // 4. Resolve missing absolute_ids
         var absToFid = Object.assign({}, bfs.absToFid);
         if (!isVersionSwitch) {
           var unresolvedAbsIds = [];
@@ -825,7 +678,7 @@ window.GraphExplorer = (function () {
           }
         }
 
-        // 4b. Add family_ids discovered from API relations to BFS visited set
+        // 4b. Add family_ids discovered from API relations
         _apiRelationAbsIds.forEach(function(apiAbsId) {
           var fid = absToFid[apiAbsId];
           if (fid && !bfs.familyIds.has(fid)) {
@@ -874,7 +727,7 @@ window.GraphExplorer = (function () {
           relAbsIdSet.add(r.absolute_id);
         }
 
-        // 7. Convert hopMap: family_id → absolute_id keys
+        // 7. Convert hopMap: family_id -> absolute_id keys
         var hopMap = {};
         var fids = Object.keys(bfs.hopMapFid);
         for (var hi = 0; hi < fids.length; hi++) {
@@ -882,12 +735,10 @@ window.GraphExplorer = (function () {
           if (hAbsId) hopMap[hAbsId] = bfs.hopMapFid[fids[hi]];
         }
 
-        // 8. API classification (parallel) — get _inherited / _future markers
+        // 8. API classification
         var inheritedRelationIds = new Set();
         var futureRelationIds = new Set();
         var scope = _relationScope;
-
-        // Optimize: skip API if viewing latest version in accumulated scope OR version switch
         var latestAbsForFocus = _opts.familyIdToLatest ? _opts.familyIdToLatest()[familyId] : null;
         var isLatestVersion = (absoluteId === latestAbsForFocus);
 
@@ -914,9 +765,9 @@ window.GraphExplorer = (function () {
           await Promise.all(apiPromises);
         }
 
-        // 9. Session merge for version switch accumulation
+        // 9. Session merge
         var doSessionMerge = _session && _session.focusFamilyId === familyId;
-        if (!_session) _session = new FocusSession();
+        if (!_session) _session = new GraphExplorerFocus.FocusSession();
         if (doSessionMerge) {
           var sessionInherited = _session.merge(familyId, relAbsIdSet);
           sessionInherited.forEach(function (id) { inheritedRelationIds.add(id); });
@@ -930,7 +781,7 @@ window.GraphExplorer = (function () {
         }
         entities = entities.filter(function (e) { return connAbsIds.has(e.absolute_id); });
 
-        // 11. Fetch version counts (skip on version switch — already cached)
+        // 11. Fetch version counts
         if (!isVersionSwitch) {
           var allFids = [];
           var vseenIds = new Set();
@@ -988,471 +839,51 @@ window.GraphExplorer = (function () {
       }
     }
 
-    // ---- Show entity detail in the sidebar ----
+    // ---- Hover panel: delegates to GraphExplorerDetail ----
 
-    // ---- Content diff helper (LCS-based inline diff) ----
-
-    // Shared LCS engine: builds DP table once, backtracks to produce diff ops.
-    // oldArr/newArr are arrays of tokens (chars or lines).
-    // Returns [{type:'equal'|'del'|'ins', text: string}]
-    function _lcsDiff(oldArr, newArr) {
-      var n = oldArr.length, m = newArr.length;
-      var dp = [new Array(m + 1).fill(0)];
-      for (var i = 1; i <= n; i++) {
-        var row = [0];
-        for (var j = 1; j <= m; j++) {
-          if (oldArr[i - 1] === newArr[j - 1]) row[j] = dp[i - 1][j - 1] + 1;
-          else row[j] = Math.max(dp[i - 1][j], row[j - 1]);
-        }
-        dp.push(row);
-      }
-      var ops = [];
-      var ci = n, cj = m;
-      while (ci > 0 || cj > 0) {
-        if (ci > 0 && cj > 0 && oldArr[ci - 1] === newArr[cj - 1]) {
-          ops.push({ type: 'equal', text: oldArr[ci - 1] });
-          ci--; cj--;
-        } else if (cj > 0 && (ci === 0 || dp[ci][cj - 1] >= dp[ci - 1][cj])) {
-          ops.push({ type: 'ins', text: newArr[cj - 1] });
-          cj--;
-        } else {
-          ops.push({ type: 'del', text: oldArr[ci - 1] });
-          ci--;
-        }
-      }
-      ops.reverse();
-      return ops;
-    }
-
-    function computeInlineDiff(oldText, newText) {
-      oldText = oldText || '';
-      newText = newText || '';
-      if (oldText === newText) return null;
-
-      var n = oldText.length, m = newText.length;
-      // For very long texts, fall back to line-level diff
-      if (n * m > 4000000) {
-        var oldLines = oldText.split('\n');
-        var newLines = newText.split('\n');
-        return _lcsDiff(oldLines, newLines);
-      }
-
-      // Character-level diff
-      var chars = _lcsDiff(oldText.split(''), newText.split(''));
-      // Merge consecutive same-type ops into runs
-      var runs = [];
-      for (var k = 0; k < chars.length; k++) {
-        var op = chars[k];
-        if (runs.length > 0 && runs[runs.length - 1].type === op.type) {
-          runs[runs.length - 1].text += op.text;
-        } else {
-          runs.push({ type: op.type, text: op.text });
-        }
-      }
-      return runs;
-    }
-
-    function _renderDiffSpans(runs) {
-      var html = '';
-      for (var i = 0; i < runs.length; i++) {
-        var r = runs[i];
-        var escaped = escapeHtml(r.text);
-        if (r.type === 'equal') {
-          html += '<span style="color:var(--text-secondary);">' + escaped + '</span>';
-        } else if (r.type === 'del') {
-          html += '<span style="color:var(--error);text-decoration:line-through;">' + escaped + '</span>';
-        } else {
-          html += '<span style="color:var(--success);font-weight:500;">' + escaped + '</span>';
-        }
-      }
-      return html;
-    }
-
-    function renderDiffPreview(runs) {
-      if (!runs || runs.length === 0) return '';
-      var delCount = 0, insCount = 0;
-      for (var i = 0; i < runs.length; i++) {
-        if (runs[i].type === 'del') delCount += runs[i].text.length;
-        if (runs[i].type === 'ins') insCount += runs[i].text.length;
-      }
-      var html = '<div class="version-diff-container">';
-      html += '<div class="version-diff-header"><span>' + t('entities.changes') + '</span><span style="color:var(--success);">+' + insCount + '</span>/<span style="color:var(--error);">-' + delCount + '</span></div>';
-      html += '<div class="version-diff-body" style="white-space:pre-wrap;word-break:break-all;line-height:1.6;">';
-      html += _renderDiffSpans(runs);
-      html += '</div></div>';
-      return html;
-    }
-
-    // ---- Version evolution summary ----
-
-    function renderVersionContext(versions, currentIdx) {
-      var v = versions[currentIdx];
-      if (!v) return '';
-      var html = '<div class="version-context-card">';
-
-      // Version creation time
-      html += '<div class="version-ctx-row">';
-      html += '<span class="version-ctx-label">' + t('graph.processedTime') + '</span>';
-      html += '<span class="version-ctx-value">' + (v.processed_time ? formatDateMs(v.processed_time) : '-') + '</span>';
-      html += '</div>';
-
-      // Source document
-      if (v.source_document) {
-        html += '<div class="version-ctx-row">';
-        html += '<span class="version-ctx-label">' + t('graph.sourceDoc') + '</span>';
-        html += '<span class="version-ctx-value mono" style="font-size:0.6875rem;">' + escapeHtml(v.source_document) + '</span>';
-        html += '</div>';
-      }
-
-      // Episode ID (clickable)
-      if (v.episode_id) {
-        html += '<div class="version-ctx-row">';
-        html += '<span class="version-ctx-label">' + t('graph.episodeId') + '</span>';
-        html += '<span class="doc-link version-ctx-value mono" style="font-size:0.6875rem;" data-view-episode="' + escapeHtml(v.episode_id) + '">' + escapeHtml(v.episode_id) + '</span>';
-        html += '</div>';
-      }
-
-      // Change indicator: first version vs update
-      if (currentIdx === 0) {
-        html += '<div class="version-ctx-tag tag-created">Created</div>';
-      } else {
-        var hasContentChange = (v.content || '') !== (versions[currentIdx - 1].content || '');
-        var hasNameChange = (v.name || '') !== (versions[currentIdx - 1].name || '');
-        var tags = [];
-        if (hasContentChange) tags.push('Content updated');
-        if (hasNameChange) tags.push('Renamed');
-        if (tags.length === 0) tags.push('Metadata update');
-        html += '<div class="version-ctx-tag tag-updated">' + tags.join(' + ') + '</div>';
-      }
-
-      html += '</div>';
-      return html;
-    }
-
-    function renderVersionEvolutionSummary(versions) {
-      if (versions.length < 2) return '';
-      var changeCount = 0;
-      for (var i = 1; i < versions.length; i++) {
-        if ((versions[i].content || '') !== (versions[i - 1].content || '') ||
-            (versions[i].name || '') !== (versions[i - 1].name || '')) {
-          changeCount++;
-        }
-      }
-
-      var times = versions.map(function(v) { return v.processed_time ? new Date(v.processed_time).getTime() : 0; }).filter(function(t) { return t > 0; });
-      var timeSpan = '';
-      if (times.length >= 2) {
-        var diff = Math.max.apply(null, times) - Math.min.apply(null, times);
-        if (diff < 3600000) timeSpan = Math.round(diff / 60000) + 'm';
-        else if (diff < 86400000) timeSpan = (diff / 3600000).toFixed(1) + 'h';
-        else timeSpan = (diff / 86400000).toFixed(1) + 'd';
-      }
-
-      var nameChanges = 0;
-      var contentChanges = 0;
-      for (var j = 1; j < versions.length; j++) {
-        if (versions[j].name !== versions[j - 1].name) nameChanges++;
-        if (versions[j].content !== versions[j - 1].content) contentChanges++;
-      }
-
-      return '<div class="version-evolution-summary">' +
-        '<div class="version-evo-stat"><div class="version-evo-stat-value">' + versions.length + '</div><div class="version-evo-stat-label">' + t('graph.versions') + '</div></div>' +
-        '<div class="version-evo-stat"><div class="version-evo-stat-value">' + changeCount + '</div><div class="version-evo-stat-label">' + t('entities.changes') + '</div></div>' +
-        (timeSpan ? '<div class="version-evo-stat"><div class="version-evo-stat-value">' + timeSpan + '</div><div class="version-evo-stat-label">' + t('graph.timeSpan') + '</div></div>' : '') +
-        (nameChanges > 0 ? '<div class="version-evo-stat"><div class="version-evo-stat-value" style="color:var(--warning);">' + nameChanges + '</div><div class="version-evo-stat-label">' + t('graph.nameChanges') + '</div></div>' : '') +
-      '</div>';
-    }
-
-    // ---- Keyboard shortcut hints ----
-
-    function renderKeyboardHints() {
-      return '<div class="keyboard-hints">' +
-        '<span class="kb-hint"><span class="kb-key">&larr;</span><span class="kb-key">&rarr;</span> ' + t('graph.switchVersion') + '</span>' +
-        '<span class="kb-hint"><span class="kb-key">Space</span> ' + t('graph.playPause') + '</span>' +
-        '<span class="kb-hint"><span class="kb-key">Esc</span> ' + t('graph.exitFocus') + '</span>' +
-      '</div>';
-    }
-
-    // ---- Mini version timeline widget ----
-
-    function renderMiniVersionTimeline(versions, currentIdx, prefix) {
-      if (versions.length < 2) return '';
-      var html = '<div class="version-mini-timeline" style="margin-bottom:0.75rem;">';
-
-      // Time range
-      var times = versions.map(function (v) {
-        return v.processed_time ? new Date(v.processed_time).getTime() : 0;
-      });
-      var validTimes = times.filter(function (t) { return t > 0; });
-      var minT = validTimes.length > 0 ? Math.min.apply(null, validTimes) : 0;
-      var maxT = validTimes.length > 0 ? Math.max.apply(null, validTimes) : 0;
-      var range = maxT - minT || 1;
-
-      // Version dots with gap indicators
-      html += '<div class="version-mini-track">';
-      for (var i = 0; i < versions.length; i++) {
-        var t = times[i] || 0;
-        var pct = t > 0 && range > 0 ? ((t - minT) / range * 100) : (i / Math.max(versions.length - 1, 1) * 100);
-        var isCurrent = i === currentIdx;
-        var cls = 'version-mini-dot' + (isCurrent ? ' current' : '');
-        var timeStr = versions[i].processed_time ? formatDateMs(versions[i].processed_time) : '';
-
-        // Source label (episode source or version number)
-        var sourceLabel = '';
-        if (versions[i].source_document) {
-          sourceLabel = versions[i].source_document.replace(/^document:/, '').substring(0, 20);
-        } else {
-          sourceLabel = 'v' + (i + 1);
-        }
-
-        // Time gap from previous version
-        var gapLabel = '';
-        if (i > 0 && times[i] > 0 && times[i - 1] > 0) {
-          var gapMs = times[i] - times[i - 1];
-          if (gapMs < 60000) gapLabel = gapMs + 'ms';
-          else if (gapMs < 3600000) gapLabel = Math.round(gapMs / 60000) + 'm';
-          else if (gapMs < 86400000) gapLabel = (gapMs / 3600000).toFixed(1) + 'h';
-          else gapLabel = (gapMs / 86400000).toFixed(1) + 'd';
-        }
-
-        html += '<div class="' + cls + '" style="left:' + pct.toFixed(1) + '%;" data-ver-idx="' + i + '" title="v' + (i + 1) + ' — ' + timeStr + '">';
-        // Version number badge inside dot
-        html += '<span class="version-mini-dot-num">' + (i + 1) + '</span>';
-        html += '</div>';
-
-        // Source label below the dot
-        html += '<div class="version-mini-source" style="left:' + pct.toFixed(1) + '%;">' + escapeHtml(sourceLabel) + '</div>';
-
-        // Gap indicator between dots
-        if (gapLabel && i > 0) {
-          var prevPct = times[i - 1] > 0 && range > 0 ? ((times[i - 1] - minT) / range * 100) : ((i - 1) / Math.max(versions.length - 1, 1) * 100);
-          var midPct = (prevPct + pct) / 2;
-          html += '<div class="version-mini-gap" style="left:' + midPct.toFixed(1) + '%;">' + gapLabel + '</div>';
-        }
-      }
-      // Connecting line
-      html += '<div class="version-mini-line"></div>';
-      html += '</div>';
-
-      // Timestamp labels
-      if (versions.length >= 2) {
-        html += '<div class="version-mini-labels">';
-        html += '<span class="version-mini-label">' + (versions[0].processed_time ? formatDateMs(versions[0].processed_time) : 'v1') + '</span>';
-        html += '<span class="version-mini-label">' + (versions[versions.length - 1].processed_time ? formatDateMs(versions[versions.length - 1].processed_time) : 'v' + versions.length) + '</span>';
-        html += '</div>';
-      }
-
-      html += '</div>';
-      return html;
-    }
-
-    // ---- Version badge overlays on vis-network canvas ----
-    // Version information shown via node border styling (amber border + glow)
-    // No DOM overlays — version count visible in tooltip and detail sidebar
-
-    function renderVersionBadges(nodesDataSet) {
-      if (!_network) return;
-      var container = _el(_opts.canvasId);
-      if (!container) return;
-
-      // Remove any legacy overlay badges
-      var oldBadges = container.querySelectorAll('.version-badge-overlay');
-      for (var oi = 0; oi < oldBadges.length; oi++) oldBadges[oi].remove();
-
-      // Add watermark
-      var oldWatermark = container.querySelector('.graph-deepdream-watermark');
-      if (!oldWatermark) {
-        var wm = document.createElement('div');
-        wm.className = 'graph-deepdream-watermark';
-        wm.textContent = 'Deep-Dream';
-        container.appendChild(wm);
-      }
-    }
-
-    function updateBadgePositions() {
-      // No-op: version info is in node border styling, no overlay to update
-    }
-
-    // ---- Node hover info panel ----
     var _hoverPanel = null;
     var _hoverNodeId = null;
 
     function showNodeHover(nodeId, params) {
-      if (!_network) return;
-      var entity = _entityMap[nodeId];
-      if (!entity) return;
-
-      var container = _el(_opts.canvasId);
-      if (!container) return;
-
-      // Create panel if needed (also recreate if detached from DOM by vis-network rebuild)
-      if (!_hoverPanel || !_hoverPanel.parentElement) {
-        _hoverPanel = document.createElement('div');
-        _hoverPanel.className = 'node-hover-info';
-        _hoverPanel.style.opacity = '0';
-        container.appendChild(_hoverPanel);
-      }
-
-      // Build content
-      var name = entity.name || entity.family_id || nodeId;
-      var vc = _versionCounts[entity.family_id] || _versionCounts[nodeId] || 0;
-      var summary = entity.summary || '';
-      var content = entity.content || '';
-
-      var html = '<div class="nhv-name">' + escapeHtml(name);
-      if (vc > 1) {
-        html += ' <span class="nhv-version">[v' + vc + ']</span>';
-      }
-      html += '</div>';
-      // Prefer summary for preview, fall back to content
-      var preview = summary || content || '';
-      if (preview) {
-        if (preview.length > 150) preview = preview.substring(0, 150) + '...';
-        html += '<div class="nhv-content">' + escapeHtml(preview) + '</div>';
-      }
-      if (entity.processed_time) {
-        html += '<div style="font-size:0.6875rem;color:var(--text-muted);margin-top:0.25rem;">' + formatDate(entity.processed_time) + '</div>';
-      }
-
-      _hoverPanel.innerHTML = html;
-      _hoverNodeId = nodeId;
-
-      // Position near the node
-      updateNodeHoverPosition();
-
-      // Show with slight delay for smooth appearance
-      requestAnimationFrame(function () {
-        if (_hoverPanel) _hoverPanel.style.opacity = '1';
+      _hoverPanel = GraphExplorerDetail.showNodeHover({
+        nodeId: nodeId,
+        network: _network,
+        entityMap: _entityMap,
+        versionCounts: _versionCounts,
+        canvasId: _opts.canvasId,
+        hoverPanel: _hoverPanel,
+        setHoverPanel: function(p) { _hoverPanel = p; },
+        setHoverNodeId: function(id) { _hoverNodeId = id; },
       });
     }
 
     function hideNodeHover() {
-      if (_hoverPanel) {
-        _hoverPanel.style.opacity = '0';
-      }
-      _hoverNodeId = null;
+      GraphExplorerDetail.hideNodeHover(_hoverPanel, function(id) { _hoverNodeId = id; });
     }
 
     function updateNodeHoverPosition() {
-      if (!_hoverPanel || !_hoverNodeId || !_network) return;
-
-      var container = _el(_opts.canvasId);
-      if (!container) return;
-
-      // Edge hover — reposition at edge midpoint
-      if (_hoverNodeId.indexOf('__edge__') === 0) {
-        var edgeId = _hoverNodeId.replace('__edge__', '');
-        var edgeEnds = _network.getConnectedNodes(edgeId);
-        if (edgeEnds && edgeEnds.length === 2) {
-          var positions = _network.getPositions(edgeEnds);
-          var p1 = positions[edgeEnds[0]];
-          var p2 = positions[edgeEnds[1]];
-          if (p1 && p2) {
-            var midCanvas = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
-            var domPos = _network.canvasToDOM(midCanvas);
-            _hoverPanel.style.left = domPos.x + 'px';
-            _hoverPanel.style.top = (domPos.y - 30) + 'px';
-          }
-        }
-        return;
-      }
-
-      var canvasPos = _network.getPositions([_hoverNodeId]);
-      if (!canvasPos[_hoverNodeId]) return;
-
-      var domPos = _network.canvasToDOM({ x: canvasPos[_hoverNodeId].x, y: canvasPos[_hoverNodeId].y });
-
-      // Get node size to offset positioning
-      var node = _network.body.nodes[_hoverNodeId];
-      var nodeSize = node ? (node.options.size || 20) : 20;
-
-      var left = domPos.x + nodeSize + 12;
-      var top = domPos.y - 20;
-
-      // Keep panel within container bounds
-      var panelRect = _hoverPanel.getBoundingClientRect();
-      var containerRect = container.getBoundingClientRect();
-      if (left + 240 > containerRect.width) {
-        left = domPos.x - nodeSize - 252;
-      }
-      if (top + 100 > containerRect.height) {
-        top = containerRect.height - 110;
-      }
-      if (top < 10) top = 10;
-      if (left < 10) left = 10;
-
-      _hoverPanel.style.left = left + 'px';
-      _hoverPanel.style.top = top + 'px';
-    }
-
-    var escapeHtml = window.escapeHtml || function escapeHtml(text) {
-      var div = document.createElement('div');
-      div.appendChild(document.createTextNode(text));
-      return div.innerHTML;
-    };
-
-    function showEdgeHover(edgeId, params) {
-      if (!_network) return;
-      var relation = _relationMap[edgeId];
-      if (!relation) return;
-
-      var container = _el(_opts.canvasId);
-      if (!container) return;
-
-      // Reuse or create panel (also recreate if detached from DOM)
-      if (!_hoverPanel || !_hoverPanel.parentElement) {
-        _hoverPanel = document.createElement('div');
-        _hoverPanel.className = 'node-hover-info';
-        _hoverPanel.style.opacity = '0';
-        container.appendChild(_hoverPanel);
-      }
-
-      // Look up endpoint entity names
-      var e1Name = '';
-      var e2Name = '';
-      if (relation.entity1_absolute_id && _entityMap[relation.entity1_absolute_id]) {
-        e1Name = _entityMap[relation.entity1_absolute_id].name || '';
-      }
-      if (relation.entity2_absolute_id && _entityMap[relation.entity2_absolute_id]) {
-        e2Name = _entityMap[relation.entity2_absolute_id].name || '';
-      }
-
-      var html = '';
-      if (e1Name || e2Name) {
-        html += '<div class="nhv-name" style="font-size:0.75rem;">' + escapeHtml(e1Name || '?') + ' <span style="color:var(--text-muted);margin:0 0.25rem;">&harr;</span> ' + escapeHtml(e2Name || '?') + '</div>';
-      }
-      var content = relation.content || relation.summary || '';
-      if (content) {
-        var preview = content.length > 150 ? content.substring(0, 150) + '...' : content;
-        html += '<div class="nhv-content" style="margin-top:0.25rem;">' + escapeHtml(preview) + '</div>';
-      }
-      if (relation.processed_time) {
-        html += '<div style="font-size:0.6875rem;color:var(--text-muted);margin-top:0.25rem;">' + formatDate(relation.processed_time) + '</div>';
-      }
-
-      if (!html) return; // Don't show empty panel
-
-      _hoverPanel.innerHTML = html;
-      _hoverNodeId = '__edge__' + edgeId;
-
-      // Position at edge midpoint
-      var edgeEnds = _network.getConnectedNodes(edgeId);
-      if (edgeEnds && edgeEnds.length === 2) {
-        var positions = _network.getPositions(edgeEnds);
-        var p1 = positions[edgeEnds[0]];
-        var p2 = positions[edgeEnds[1]];
-        if (p1 && p2) {
-          var midCanvas = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
-          var domPos = _network.canvasToDOM(midCanvas);
-          _hoverPanel.style.left = domPos.x + 'px';
-          _hoverPanel.style.top = (domPos.y - 30) + 'px';
-        }
-      }
-
-      requestAnimationFrame(function () {
-        if (_hoverPanel) _hoverPanel.style.opacity = '1';
+      GraphExplorerDetail.updateNodeHoverPosition({
+        hoverPanel: _hoverPanel,
+        hoverNodeId: _hoverNodeId,
+        network: _network,
+        canvasId: _opts.canvasId,
       });
     }
+
+    function showEdgeHover(edgeId, params) {
+      _hoverPanel = GraphExplorerDetail.showEdgeHover({
+        edgeId: edgeId,
+        network: _network,
+        relationMap: _relationMap,
+        entityMap: _entityMap,
+        canvasId: _opts.canvasId,
+        hoverPanel: _hoverPanel,
+        setHoverPanel: function(p) { _hoverPanel = p; },
+        setHoverNodeId: function(id) { _hoverNodeId = id; },
+      });
+    }
+
+    // ---- Entity detail: uses GraphExplorerDiff + GraphExplorerVersions ----
 
     async function showEntityDetail(absoluteId) {
       var entity = _entityMap[absoluteId];
@@ -1464,7 +895,6 @@ window.GraphExplorer = (function () {
       }
       if (!entity) return;
 
-      // Determine back navigation
       var _hasBack = _detailBackStack.length > 0;
       var _backTo = _hasBack ? _detailBackStack[_detailBackStack.length - 1] : null;
       if (_hasBack) {
@@ -1496,7 +926,7 @@ window.GraphExplorer = (function () {
 
       var versionDiff = null;
       if (totalVersions > 1 && _currentVersionIdx > 0) {
-        versionDiff = computeInlineDiff(
+        versionDiff = GraphExplorerDiff.computeInlineDiff(
           versions[_currentVersionIdx - 1].content,
           versions[_currentVersionIdx].content
         );
@@ -1528,17 +958,10 @@ window.GraphExplorer = (function () {
           (totalVersions > 1 ? ' <span style="color:var(--text-muted);font-size:0.85rem;font-weight:400;"> [' + (_currentVersionIdx + 1) + '/' + totalVersions + ']</span>' : '') +
         '</h3>' +
 
-        // Version evolution summary (if > 1 version)
-        (totalVersions > 1 ? renderVersionEvolutionSummary(versions) : '') +
-
-        // Mini version timeline (if > 1 version)
-        (totalVersions > 1 ? renderMiniVersionTimeline(versions, _currentVersionIdx, prefix) : '') +
-
-        // Content diff preview (if version changed from previous)
-        (versionDiff ? renderDiffPreview(versionDiff) : '') +
-
-        // Version context: which episode/source created this version
-        renderVersionContext(versions, _currentVersionIdx) +
+        (totalVersions > 1 ? GraphExplorerVersions.renderVersionEvolutionSummary(versions) : '') +
+        (totalVersions > 1 ? GraphExplorerVersions.renderMiniVersionTimeline(versions, _currentVersionIdx, prefix) : '') +
+        (versionDiff ? GraphExplorerDiff.renderDiffPreview(versionDiff) : '') +
+        GraphExplorerVersions.renderVersionContext(versions, _currentVersionIdx) +
 
         '<div class="flex flex-wrap gap-2 mb-3">' +
           '<button class="btn btn-secondary btn-sm" id="' + prefix + 'view-versions-btn">' +
@@ -1565,8 +988,7 @@ window.GraphExplorer = (function () {
           '</div>'
         : '') +
 
-        // Keyboard shortcut hints
-        (totalVersions > 1 ? renderKeyboardHints() : '') +
+        (totalVersions > 1 ? GraphExplorerVersions.renderKeyboardHints() : '') +
 
         '<div class="divider"></div>' +
 
@@ -1644,7 +1066,6 @@ window.GraphExplorer = (function () {
         focusOnEntity(absoluteId);
       });
 
-      // Mini version timeline dot clicks
       detailContent.querySelectorAll('.version-mini-dot').forEach(function (dot) {
         dot.addEventListener('click', function () {
           var idx = parseInt(dot.getAttribute('data-ver-idx'), 10);
@@ -1656,7 +1077,6 @@ window.GraphExplorer = (function () {
       if (scopeSel) {
         scopeSel.addEventListener('change', function () {
           _relationScope = scopeSel.value;
-          // Reset session — scope change is a new focus context
           _session = null;
           focusOnEntity(absoluteId);
         });
@@ -1675,11 +1095,9 @@ window.GraphExplorer = (function () {
         });
       }
 
-      // Back button: return to relation detail
       var backBtn = document.getElementById('detail-back-btn');
       if (backBtn && _backTo) {
         backBtn.addEventListener('click', function () {
-          // Pop the current entity + the target entry so it gets re-pushed as fresh
           while (_detailBackStack.length > 0) {
             var top = _detailBackStack.pop();
             if (top.type === _backTo.type && top.id === _backTo.id) break;
@@ -1693,13 +1111,13 @@ window.GraphExplorer = (function () {
       }
     }
 
-    // ---- Show relation detail in the sidebar ----
+    // ---- Show relation detail ----
 
     function showRelationDetail(absoluteId) {
       var relation = _relationMap[absoluteId];
       if (!relation) return;
 
-      _detailBackStack = [];  // top-level relation click clears back stack
+      _detailBackStack = [];
       _detailBackStack.push({type: 'relation', id: absoluteId});
 
       var detailContent = _el(_opts.detailContentId);
@@ -1800,7 +1218,7 @@ window.GraphExplorer = (function () {
       if (window.lucide) lucide.createIcons({ nodes: [detailContent] });
     }
 
-    // ---- Switch to a different version of the current entity ----
+    // ---- Switch to a different version ----
 
     async function switchVersion(newIdx) {
       if (!_currentVersions[newIdx]) return;
@@ -1823,13 +1241,11 @@ window.GraphExplorer = (function () {
         var baseName = version.name || familyId || 'unnamed';
         var newLabel = baseName + ' ' + (newIdx + 1) + '/' + _currentVersions.length;
 
-        // Revert old focus node to normal style
         if (oldFocusId !== absoluteId) {
           var oldEnt = _entityMap[oldFocusId];
           var oldBaseName = oldEnt ? (oldEnt.name || oldEnt.family_id || 'unnamed') : 'unnamed';
           var oldLabel = oldBaseName;
           if (vc > 1) oldLabel = oldBaseName + ' [v' + vc + ']';
-          // If old node exists in DataSet, update it; otherwise skip
           if (_nodesDataSet.get(oldFocusId)) {
             _nodesDataSet.update({
               id: oldFocusId,
@@ -1839,7 +1255,6 @@ window.GraphExplorer = (function () {
           }
         }
 
-        // Add or update the new focus node
         if (_nodesDataSet.get(absoluteId)) {
           _nodesDataSet.update({
             id: absoluteId,
@@ -1851,7 +1266,6 @@ window.GraphExplorer = (function () {
             },
           });
         } else {
-          // New version node not yet in graph — add it at the old focus position
           var oldPos = _pinnedNodePositions[oldFocusId] || _network.getPositions([oldFocusId])[oldFocusId];
           var nodeData = {
             id: absoluteId,
@@ -1873,7 +1287,6 @@ window.GraphExplorer = (function () {
           _nodesDataSet.add(nodeData);
         }
 
-        // Re-wire edges: move edges from old focus id to new focus id
         if (oldFocusId !== absoluteId) {
           var edges = _edgesDataSet.get();
           var edgeUpdates = [];
@@ -1887,7 +1300,6 @@ window.GraphExplorer = (function () {
           if (edgeUpdates.length > 0) _edgesDataSet.update(edgeUpdates);
         }
 
-        // Animate focus to new node
         try {
           _network.focus(absoluteId, { scale: 1.2, animation: { duration: 400, easingFunction: 'easeInOutQuad' } });
         } catch (_) {}
@@ -1896,7 +1308,6 @@ window.GraphExplorer = (function () {
         return;
       }
 
-      // Fallback: full rebuild (first focus or network not initialized)
       await focusOnEntity(absoluteId, { isVersionSwitch: true });
       await showEntityDetail(absoluteId);
     }
@@ -1922,7 +1333,6 @@ window.GraphExplorer = (function () {
           return;
         }
 
-        // Build rich version timeline with inline diff
         var sorted = versions.slice().sort(function(a, b) {
           var ta = a.processed_time ? new Date(a.processed_time).getTime() : 0;
           var tb = b.processed_time ? new Date(b.processed_time).getTime() : 0;
@@ -1931,7 +1341,7 @@ window.GraphExplorer = (function () {
 
         function simpleContentDiff(current, previous) {
           if (!previous) return null;
-          return computeInlineDiff(previous.content, current.content);
+          return GraphExplorerDiff.computeInlineDiff(previous.content, current.content);
         }
 
         var items = sorted.map(function(v, i) {
@@ -1940,7 +1350,6 @@ window.GraphExplorer = (function () {
           var hasNameChange = prev && v.name !== prev.name;
           var verNum = sorted.length - i;
 
-          // Time gap indicator
           var gapHtml = '';
           if (prev) {
             var curTime = v.processed_time ? new Date(v.processed_time).getTime() : 0;
@@ -1954,11 +1363,9 @@ window.GraphExplorer = (function () {
             gapHtml = '<span style="position:absolute;left:-1.25rem;top:50%;transform:translateY(-50%);font-size:0.625rem;color:var(--text-muted);background:var(--bg-surface);padding:0 0.25rem;white-space:nowrap;z-index:1;">' + gapText + '</span>';
           }
 
-          // Source label
           var sourceLabel = v.source_document || '';
           if (sourceLabel.length > 25) sourceLabel = sourceLabel.substring(0, 22) + '...';
 
-          // Episode ID (clickable to view source episode)
           var episodeHtml = '';
           if (v.episode_id) {
             var shortEpId = v.episode_id.length > 16 ? v.episode_id.substring(0, 8) + '...' + v.episode_id.substring(v.episode_id.length - 4) : v.episode_id;
@@ -1978,10 +1385,9 @@ window.GraphExplorer = (function () {
             + (episodeHtml ? '<span style="font-size:0.6875rem;color:var(--text-muted);">episode: ' + episodeHtml + '</span>' : '')
             + '</div>';
 
-          // Inline diff
           if (diff) {
             headerHtml += '<div style="margin-top:0.5rem;border-left:3px solid var(--primary);padding:0.375rem 0.5rem;background:var(--bg-input);border-radius:0 0.375rem 0.375rem 0;font-size:0.8125rem;white-space:pre-wrap;word-break:break-all;line-height:1.6;">';
-            headerHtml += _renderDiffSpans(diff);
+            headerHtml += GraphExplorerDiff._renderDiffSpans(diff);
             headerHtml += '</div>';
           }
 
@@ -2011,7 +1417,6 @@ window.GraphExplorer = (function () {
           + '</div>'
           + '<p style="margin-top:0.75rem;font-size:0.75rem;color:var(--text-muted);">' + t('graph.versionCount', { count: versions.length }) + '</p>';
 
-        // Attach expand/collapse
         modal.overlay.querySelectorAll('[id^="graph-version-toggle-"]').forEach(function(toggle) {
           toggle.addEventListener('click', function() {
             var idx = toggle.id.replace('graph-version-toggle-', '');
@@ -2020,7 +1425,6 @@ window.GraphExplorer = (function () {
           });
         });
 
-        // Attach episode ID click handlers
         modal.overlay.querySelectorAll('[data-view-episode]').forEach(function(el) {
           el.addEventListener('click', function(e) {
             e.stopPropagation();
@@ -2055,7 +1459,6 @@ window.GraphExplorer = (function () {
         var res = await state.api.entityRelations(familyId, graphId);
         var relations = res.data || [];
 
-        // Apply optional filter callback
         if (_opts.onFilterRelations) {
           relations = _opts.onFilterRelations(relations);
         }
@@ -2133,6 +1536,27 @@ window.GraphExplorer = (function () {
       renderVersionBadges(_nodesDataSet);
     }
 
+    function renderVersionBadges(nodesDataSet) {
+      if (!_network) return;
+      var container = _el(_opts.canvasId);
+      if (!container) return;
+
+      var oldBadges = container.querySelectorAll('.version-badge-overlay');
+      for (var oi = 0; oi < oldBadges.length; oi++) oldBadges[oi].remove();
+
+      var oldWatermark = container.querySelector('.graph-deepdream-watermark');
+      if (!oldWatermark) {
+        var wm = document.createElement('div');
+        wm.className = 'graph-deepdream-watermark';
+        wm.textContent = 'Deep-Dream';
+        container.appendChild(wm);
+      }
+    }
+
+    function updateBadgePositions() {
+      // No-op: version info is in node border styling
+    }
+
     // ---- Public API ----
 
     return {
@@ -2157,7 +1581,6 @@ window.GraphExplorer = (function () {
         _streamingMode = !!enabled;
         if (_network) {
           if (enabled) {
-            // Streaming: short springs, stiff, fast clustering
             _network.setOptions({
               physics: {
                 enabled: true,
@@ -2172,7 +1595,6 @@ window.GraphExplorer = (function () {
               }
             });
           } else {
-            // Restore normal physics (canonical values from getPhysicsOptions)
             var _po = GraphUtils.getPhysicsOptions();
             _po.stabilization = { enabled: false };
             _network.setOptions({ physics: _po });
@@ -2188,7 +1610,6 @@ window.GraphExplorer = (function () {
         try { _network.fit({ animation: true }); } catch (_) {}
       },
       applyHubColors: function (hubLayout) {
-        // Recolor existing nodes + all edges based on hub layout
         if (!_network || !_nodesDataSet || !hubLayout) return;
         var light = isLightTheme();
         var hubMap = hubLayout.hubMap;
@@ -2223,7 +1644,6 @@ window.GraphExplorer = (function () {
         }
         if (colorUpdates.length > 0) _nodesDataSet.update(colorUpdates);
 
-        // Recolor edges
         var allEdges = _edgesDataSet.get();
         var edgeUpdates = [];
         for (var ei = 0; ei < allEdges.length; ei++) {
@@ -2279,7 +1699,6 @@ window.GraphExplorer = (function () {
         return _network.body.data.edges.get();
       },
       getPinnedPositions: function () {
-        // Snapshot current positions from the network (more complete than just _pinnedNodePositions)
         if (_network) {
           var allIds = _nodesDataSet ? _nodesDataSet.getIds() : [];
           if (allIds.length > 0) {
@@ -2287,7 +1706,6 @@ window.GraphExplorer = (function () {
             return positions || {};
           }
         }
-        // Fallback to tracked pinned positions
         var copy = {};
         Object.keys(_pinnedNodePositions).forEach(function (k) { copy[k] = _pinnedNodePositions[k]; });
         return copy;

@@ -23,6 +23,9 @@
   let pathLeftSelected = 0;
   let pathRightSelected = 0;
   let pathResults = null;
+  let _searchAbort = null;
+  let _batchAbort = null;
+  let _traverseAbort = null;
 
   // ---- Path finder (delegated to shared PathFinder component) ----
 
@@ -633,6 +636,8 @@
 
   // ---- Execute single search ----
   async function executeSearch() {
+    if (_searchAbort) _searchAbort.abort();
+    _searchAbort = new AbortController();
     const input = document.getElementById('search-input');
     const query = input ? input.value.trim() : '';
     if (!query) {
@@ -683,6 +688,8 @@
 
   // ---- Execute batch search ----
   async function executeBatchSearch() {
+    if (_batchAbort) _batchAbort.abort();
+    _batchAbort = new AbortController();
     const inputs = document.querySelectorAll('.multi-query-input');
     const queries = Array.from(inputs).map(inp => inp.value.trim()).filter(Boolean);
 
@@ -1057,6 +1064,8 @@
 
   // ---- Execute graph traversal ----
   async function executeTraversal() {
+    if (_traverseAbort) _traverseAbort.abort();
+    _traverseAbort = new AbortController();
     const seedsInput = document.getElementById('traverse-seeds');
     const seeds = seedsInput ? seedsInput.value.trim() : '';
     if (!seeds) {
