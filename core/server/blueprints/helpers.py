@@ -132,6 +132,11 @@ def err(message: str, status: int = 400) -> tuple:
         # For 4xx errors, log at warning level
         logger.warning("API error (%d): %s", status, message)
     out: Dict[str, Any] = {"success": False, "error": message}
+    # Auto-detect actionable hint from error message
+    from core.server.agent_api import error_hint
+    hint = error_hint(message)
+    if hint:
+        out["hint"] = hint
     try:
         if hasattr(request, "start_time"):
             out["elapsed_ms"] = round((time.time() - request.start_time) * 1000, 2)
