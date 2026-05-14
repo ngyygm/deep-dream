@@ -28,6 +28,7 @@ _EMOJI_LEAD_RE = re.compile(r'^[\U0001F300-\U0001F9FF\U00002600-\U000027BF\u2702
 _BULLET_LABEL_RE = re.compile(r'^[-*]\s+[✅❌👉]')
 _SENTENCE_SPLIT_RE = re.compile(r'[。！？\n]')
 from .helpers import _clean_entity_name, _is_valid_entity_name, _core_entity_name
+from ._shared import _get_or_create_pool
 
 
 def _pair_key(a: str, b: str) -> Tuple[str, str]:
@@ -40,31 +41,13 @@ def _pair_key(a: str, b: str) -> Tuple[str, str]:
 # ---------------------------------------------------------------------------
 
 # Lazily-initialized shared pool — avoids thread creation/teardown per call.
-# _parallel_map is the hottest parallel utility in the pipeline; a persistent
-# pool saves ~10 create/destroy cycles per remember invocation.
-_SHARED_POOL: Optional[ThreadPoolExecutor] = None
-_SHARED_POOL_MAX_WORKERS = 1
+_SHARED_POOL: list = [None]
+_SHARED_POOL_MAX_WORKERS: list = [1]
 
 
 def _get_shared_pool(max_workers: int) -> ThreadPoolExecutor:
     """Return (and lazily create) the shared ThreadPoolExecutor."""
-    global _SHARED_POOL, _SHARED_POOL_MAX_WORKERS
-    if _SHARED_POOL is not None:
-        # Grow pool if caller needs more workers
-        if max_workers > _SHARED_POOL_MAX_WORKERS:
-            try:
-                _SHARED_POOL.shutdown(wait=False)
-            except Exception:
-                pass
-            _SHARED_POOL = None
-        else:
-            return _SHARED_POOL
-    _SHARED_POOL_MAX_WORKERS = max(max_workers, _SHARED_POOL_MAX_WORKERS)
-    _SHARED_POOL = ThreadPoolExecutor(
-        max_workers=_SHARED_POOL_MAX_WORKERS,
-        thread_name_prefix="extract",
-    )
-    return _SHARED_POOL
+    return _get_or_create_pool(_SHARED_POOL, max_workers, _SHARED_POOL_MAX_WORKERS, "extract")
 
 
 def _parallel_map(

@@ -30,31 +30,15 @@ def _get_entity_names(relation: Dict[str, str]) -> Tuple[str, str]:
 _corrob_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="corrob")
 
 # Shared pool for batch relation processing
-_REL_POOL: ThreadPoolExecutor | None = None
-_REL_POOL_MAX = 1
+_REL_POOL: list = [None]
+_REL_POOL_MAX: list = [1]
 
 def _get_rel_pool(max_workers: int) -> ThreadPoolExecutor:
     """Return (and lazily create/upgrade) the shared relation ThreadPoolExecutor."""
-    global _REL_POOL, _REL_POOL_MAX
-    if _REL_POOL is not None:
-        if max_workers > _REL_POOL_MAX:
-            try:
-                _REL_POOL.shutdown(wait=False)
-            except Exception:
-                pass
-            _REL_POOL = None
-        else:
-            return _REL_POOL
-    _REL_POOL_MAX = max(max_workers, _REL_POOL_MAX)
-    _REL_POOL = ThreadPoolExecutor(
-        max_workers=_REL_POOL_MAX,
-        thread_name_prefix="tmg-rel",
-    )
-    return _REL_POOL
+    return _get_or_create_pool(_REL_POOL, max_workers, _REL_POOL_MAX, "tmg-rel")
 
 
-def _doc_basename(source_document: str) -> str:
-    return source_document.rpartition('/')[-1] if source_document else ""
+from ._shared import _doc_basename, _get_or_create_pool
 
 
 class RelationProcessor:

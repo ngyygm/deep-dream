@@ -17,15 +17,14 @@ from core.server.blueprints.helpers import (
     _validate_graph_id,
     _validate_text_input,
     _validate_positive_int,
+    _get_system_monitor,
     err,
     ok,
 )
+from core.server.blueprints._constants import _BOOL_TRUE, _BOOL_FALSE
 from core.server.monitor import LOG_MODE_DETAIL
 from core.server.task_queue import RememberTask
 from core.llm.sanitize import sanitize_user_input
-
-_BOOL_TRUE = frozenset(("1", "true", "yes", "on"))
-_BOOL_FALSE = frozenset(("0", "false", "no", "off"))
 
 # Security: Maximum text length to prevent DoS
 _MAX_TEXT_LENGTH = 10_000_000  # 10MB
@@ -35,11 +34,6 @@ _ALLOWED_FILE_EXTENSIONS = {'.txt', '.md', '.json', '.html', '.htm'}
 logger = logging.getLogger(__name__)
 
 remember_bp = Blueprint("remember", __name__)
-
-
-def _get_system_monitor():
-    """Retrieve the SystemMonitor stored on the Flask app config."""
-    return current_app.config.get("system_monitor")
 
 
 # ── Request parsing helpers (module-level) ──────────────────────────────────

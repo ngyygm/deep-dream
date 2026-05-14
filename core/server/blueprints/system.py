@@ -11,7 +11,7 @@ from flask import Blueprint, current_app, request
 
 from core.llm.client import LLM_PRIORITY_STEP6
 from core.server.llm_utils import call_llm_with_backoff, check_llm_available
-from core.server.blueprints.helpers import ok, err, _get_processor
+from core.server.blueprints.helpers import ok, err, _get_processor, _get_system_monitor
 
 logger = logging.getLogger(__name__)
 
@@ -20,11 +20,6 @@ system_bp = Blueprint("system", __name__)
 # Rate limit for LLM health check (prevent credit burn)
 _last_llm_health_time = 0.0
 _LLM_HEALTH_MIN_INTERVAL = 30.0  # seconds
-
-
-def _get_system_monitor():
-    """Get the SystemMonitor from app config."""
-    return current_app.config.get("system_monitor")
 
 
 # LLM helpers - delegate to shared modules
