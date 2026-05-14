@@ -424,11 +424,11 @@ def find_relations_search():
                 return body[name]
             return request.args.get(name, default)
 
-        query_text = str(_get_value("query_text", "") or "").strip()
+        query_text = str(_get_value("query_text") or _get_value("query") or "").strip()
         if not query_text:
             return err("query_text 为必填参数", 400)
         threshold = float(_get_value("similarity_threshold") or _get_value("threshold", 0.5))
-        max_results = int(_get_value("max_results", 10))
+        max_results = int(_get_value("max_results") or _get_value("limit", 10))
 
         search_mode = str(_get_value("search_mode", "semantic") or "semantic").strip().lower()
         if search_mode not in _VALID_SEARCH_MODES:

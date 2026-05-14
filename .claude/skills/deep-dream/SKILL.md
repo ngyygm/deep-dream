@@ -16,6 +16,14 @@ Natural-language memory graph. **Remember** (write → auto-extract entities/rel
 BASE_URL=http://localhost:16200/api/v1   |   graph_id=default   |   Response: {success, data}
 ```
 
+## CRITICAL: Always Use MCP Tools
+
+**NEVER use raw `curl` or direct HTTP calls to the API.** Use the MCP tools listed below (e.g. `get_entity_versions`, `entity_profile`, `search_entities`). The MCP server handles URL construction, response parsing, error handling, and ID validation automatically.
+
+If you catch yourself writing `curl -s "http://localhost:16200/api/v1/..."`, stop — use the corresponding MCP tool instead.
+
+The only exception is endpoints without MCP tools yet (marked "No MCP tool yet" in the Decision Guide).
+
 ## Decision Guide
 
 | Intent | Tool | Key Notes |
@@ -91,6 +99,7 @@ Triggered by "dream"/"做梦". Use `dream_run` (1 call) or manual: graph_summary
 | Only `search_entities` for concepts | `search_concepts` (cross-role) |
 | 15-25 manual dream calls | `dream_run` (1 call) |
 | Forget to poll remember | Use `wait=true` |
+| Raw `curl` to API endpoints | Use MCP tools instead |
 
 MCP server auto-protects: ID type detection, empty result hints, pagination warnings, response truncation, destructive op safety defaults.
 

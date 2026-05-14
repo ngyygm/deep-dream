@@ -109,18 +109,34 @@ class _LLMExtractionMixin:
 
         messages.append({"role": "assistant", "content": response_text})
 
+        # Trim conversation to prevent Xinference 'choices' crash on long chats
+        _MAX_MESSAGES = 8
+
+        def _trim_msgs(msgs: list) -> list:
+            if len(msgs) <= _MAX_MESSAGES:
+                return msgs
+            return msgs[:2] + msgs[-(_MAX_MESSAGES - 2):]
+
         # Refinement rounds
+        _consecutive_empty = 0
         for round_i in range(max_refine_rounds):
+            # Append current item list so LLM avoids returning duplicates
+            _refine_ctx = refine_prompt
+            if all_items:
+                _refine_ctx += (
+                    f"\n\n已找到的概念：{'、'.join(str(i) for i in all_items[:50])}"
+                    "\n请只输出不在上述列表中的新概念。"
+                )
             if not self._can_continue_multi_round(
-                messages, next_user_content=refine_prompt,
+                messages, next_user_content=_refine_ctx,
                 stage_label=f"{stage_label}精炼",
             ):
                 break
-            messages.append({"role": "user", "content": refine_prompt})
+            messages.append({"role": "user", "content": _refine_ctx})
             try:
                 _tr0 = _time.monotonic()
                 round_items, round_text = self.call_llm_until_json_parses(
-                    messages, parse_fn=parse_fn, json_parse_retries=2,
+                    _trim_msgs(messages), parse_fn=parse_fn, json_parse_retries=2,
                 )
                 from ..utils import wprint_info as _wp
                 _wp(f"[extraction_timing] {stage_label} refine r{round_i+1}: {_time.monotonic()-_tr0:.1f}s ({len(round_items)} items, +{len([i for i in round_items if key_fn(i) not in seen])} new)")
@@ -133,11 +149,21 @@ class _LLMExtractionMixin:
                     seen.add(k)
                     new_items.append(item)
             if not new_items:
-                break
+                messages.append({"role": "assistant", "content": round_text})
+                if len(messages) > _MAX_MESSAGES:
+                    del messages[2: len(messages) - _MAX_MESSAGES + 2]
+                _consecutive_empty += 1
+                if _consecutive_empty >= 2:
+                    break
+                continue
+            _consecutive_empty = 0
             all_items.extend(new_items)
             refine_stats["rounds_run"] = round_i + 1
             refine_stats["refine_added"] += len(new_items)
             messages.append({"role": "assistant", "content": round_text})
+            # In-place trim to prevent unbounded growth
+            if len(messages) > _MAX_MESSAGES:
+                del messages[2: len(messages) - _MAX_MESSAGES + 2]
 
         return all_items, refine_stats
 
@@ -218,8 +244,20 @@ class _LLMExtractionMixin:
 
         messages.append({"role": "assistant", "content": response_text})
 
+        # Helper: trim conversation to prevent Xinference 'choices' crash on long chats.
+        # Keeps system prompt + first user prompt + latest N exchanges.
+        _MAX_MESSAGES = 8  # Xinference/llama.cpp crashes around 10+ messages depending on content length
+
+        def _trim_messages(msgs: list) -> list:
+            if len(msgs) <= _MAX_MESSAGES:
+                return msgs
+            # Keep system (0), first user (1), and the latest messages
+            head = msgs[:2]  # system + initial user prompt
+            tail = msgs[-(_MAX_MESSAGES - 2):]
+            return head + tail
+
         # ── Phase A: Orphan recovery loop (no round limit) ──
-        max_orphan_rounds = 5  # safety cap
+        max_orphan_rounds = 2  # safety cap (reduced from 5)
         for orphan_round in range(max_orphan_rounds):
             paired_entities = set()
             for a, b in all_pairs:
@@ -244,7 +282,7 @@ class _LLMExtractionMixin:
             try:
                 _t0 = _time.monotonic()
                 new_items, new_text = self.call_llm_until_json_parses(
-                    messages, parse_fn=self._parse_pair_list, json_parse_retries=2,
+                    _trim_messages(messages), parse_fn=self._parse_pair_list, json_parse_retries=2,
                 )
                 from ..utils import wprint_info as _wp
                 _wp(f"[extraction_timing] 关系 orphan r{orphan_round+1}: {_time.monotonic()-_t0:.1f}s ({len(new_items)} pairs for {len(orphans)} orphans)")
@@ -262,19 +300,30 @@ class _LLMExtractionMixin:
             if added == 0:
                 break
             messages.append({"role": "assistant", "content": new_text})
+            # In-place trim to prevent unbounded growth
+            if len(messages) > _MAX_MESSAGES:
+                del messages[2: len(messages) - _MAX_MESSAGES + 2]
 
         # ── Phase B: Adversarial refinement rounds ──
+        _consecutive_empty_rel = 0
         for round_i in range(max_refine_rounds):
+            # Append existing pair list so LLM avoids returning duplicates
+            _rel_refine_ctx = RELATION_REFINE_USER
+            if all_pairs:
+                _rel_refine_ctx += (
+                    f"\n\n已发现的关系对：{'、'.join(f'{a}↔{b}' for a, b in all_pairs[:30])}"
+                    "\n请只输出不在上述列表中的新关系对。"
+                )
             if not self._can_continue_multi_round(
-                messages, next_user_content=RELATION_REFINE_USER,
+                messages, next_user_content=_rel_refine_ctx,
                 stage_label="关系精炼",
             ):
                 break
-            messages.append({"role": "user", "content": RELATION_REFINE_USER})
+            messages.append({"role": "user", "content": _rel_refine_ctx})
             try:
                 _tr0 = _time.monotonic()
                 round_items, round_text = self.call_llm_until_json_parses(
-                    messages, parse_fn=self._parse_pair_list, json_parse_retries=2,
+                    _trim_messages(messages), parse_fn=self._parse_pair_list, json_parse_retries=2,
                 )
                 from ..utils import wprint_info as _wp2
                 _new_count = len([p for p in round_items if p not in seen])
@@ -291,8 +340,18 @@ class _LLMExtractionMixin:
             stats["refine_added"] += added
             stats["rounds_run"] = stats["orphan_rounds"] + round_i + 1
             if added == 0:
-                break
+                messages.append({"role": "assistant", "content": round_text})
+                if len(messages) > _MAX_MESSAGES:
+                    del messages[2: len(messages) - _MAX_MESSAGES + 2]
+                _consecutive_empty_rel += 1
+                if _consecutive_empty_rel >= 2:
+                    break
+                continue
+            _consecutive_empty_rel = 0
             messages.append({"role": "assistant", "content": round_text})
+            # In-place trim to prevent unbounded growth
+            if len(messages) > _MAX_MESSAGES:
+                del messages[2: len(messages) - _MAX_MESSAGES + 2]
 
         return all_pairs, stats
 

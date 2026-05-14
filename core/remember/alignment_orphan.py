@@ -18,6 +18,7 @@ class _OrphanMixin:
         all_entity_names: Optional[List[str]] = None,
         episode_id: str = "",
         source_document: str = "",
+        progress_callback=None,
     ) -> int:
         """处理孤立实体：先尝试补救（找关系），再为无法补救的创建兜底共现关系。
 
@@ -58,6 +59,8 @@ class _OrphanMixin:
         # 收集度数为 0 的实体（无任何关系）
         orphan_fids = [fid for fid, deg in degree_map.items() if deg == 0]
         if not orphan_fids:
+            if progress_callback:
+                progress_callback(1.0, "无孤立实体", f"{len(new_family_ids)}个实体均有关系", "step10")
             return 0
 
         # 区分「全新实体」和「对齐到已有实体的更新」
@@ -73,11 +76,15 @@ class _OrphanMixin:
                              if version_counts.get(fid, 1) <= 1]
 
         if not truly_new_orphans:
+            if progress_callback:
+                progress_callback(1.0, "无孤立实体", "均非全新实体", "step10")
             return 0
 
         # ---- 补救阶段：尝试为孤立实体找关系 ----
         recovered = 0
         if window_text and all_entity_names and truly_new_orphans:
+            if progress_callback:
+                progress_callback(0.2, "补救中", f"{len(truly_new_orphans)}个孤立实体 · 调用LLM找关系", "step10")
             recovered = self._recover_orphan_relations(
                 truly_new_orphans, saved_entities, all_entity_names,
                 window_text, episode_id, source_document, verbose,
@@ -92,9 +99,13 @@ class _OrphanMixin:
                 pass  # 查询失败则保守不删
 
         if not truly_new_orphans:
+            if progress_callback:
+                progress_callback(1.0, "补救完成", f"成功补救{recovered}个实体", "step10")
             return 0
 
         # ---- 兜底阶段：为仍然孤立的实体创建共现关系 ----
+        if progress_callback:
+            progress_callback(0.6, "创建兜底关系", f"为{len(truly_new_orphans)}个未补救实体创建共现关系", "step10")
         _fallback_count = self._create_fallback_cooccurrence_relations(
             truly_new_orphans, saved_entities,
             episode_id, source_document, verbose,
@@ -105,6 +116,11 @@ class _OrphanMixin:
                 self.storage._cache.invalidate_keys(["graph_stats"])
             except Exception:
                 pass
+
+        if progress_callback:
+            progress_callback(1.0, "完成",
+                f"补救{recovered}个 · 兜底{_fallback_count}个",
+                "step10")
 
         return 0  # 不再删除孤立实体
 

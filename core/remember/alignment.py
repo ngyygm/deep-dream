@@ -50,7 +50,8 @@ class _PipelineExtractionMixin(_ContradictionMixin, _ResolutionMixin, _OrphanMix
                       window_index: int = 0,
                       total_windows: int = 1,
                       window_timings_ref: Optional[Dict[str, float]] = None,
-                      control_check_fn=None):
+                      control_check_fn=None,
+                      early_entity_done_fn=None) -> Tuple[List[Dict], List[Dict]]:
         """Dispatch extraction to V2 or V3 pipeline. No storage writes; safe for thread pools.
 
         Returns:
@@ -66,6 +67,7 @@ class _PipelineExtractionMixin(_ContradictionMixin, _ResolutionMixin, _OrphanMix
                 window_index=window_index, total_windows=total_windows,
                 window_timings_ref=window_timings_ref,
                 control_check_fn=control_check_fn,
+                early_entity_done_fn=early_entity_done_fn,
             )
         raise ValueError(f"Unsupported extraction mode: {mode!r}")
 
@@ -265,6 +267,10 @@ class _PipelineExtractionMixin(_ContradictionMixin, _ResolutionMixin, _OrphanMix
             wprint_info("【步骤9】实体｜开始｜对齐写入")
         elif verbose_steps:
             wprint_info("【步骤9】实体｜开始｜")
+        if progress_callback:
+            progress_callback(p_lo,
+                f"{_win_label} · 步骤9/10: 实体对齐 · 开始",
+                f"{len(extracted_entities)}个实体, {len(extracted_relations) if extracted_relations else 0}条待处理关系")
 
         self.llm_client._current_distill_step = "06_entity_alignment"
 
@@ -494,6 +500,97 @@ class _PipelineExtractionMixin(_ContradictionMixin, _ResolutionMixin, _OrphanMix
             unique_entities=unique_entities,
             unique_pending_relations=updated_pending_relations,
             resolved_family_ids=_validated_fids,
+            ambiguous_duplicate_names=ambiguous_duplicate_names,
+        )
+
+    def _complete_align_relations(self, phase_a_result: _AlignResult,
+                                   extracted_relations: List[Dict],
+                                   verbose: bool = True,
+                                   verbose_steps: bool = True,
+                                   progress_callback=None,
+                                   progress_range: tuple = (0.5, 0.75),
+                                   window_index: int = 0,
+                                   total_windows: int = 1,
+                                   window_timings_ref: Optional[Dict[str, float]] = None):
+        """步骤9 Phase B: 将抽取结果中的关系数据附加到 Phase A 的对齐结果中。
+
+        在 Phase A (实体处理) 完成后、_extract_only 全部步骤完成后调用。
+        用 entity_name_to_id 把关系端点名称解析为 family_id，构建完整的 _AlignResult。
+        """
+        p_lo, p_hi = progress_range
+        _win_label = f"窗口 {window_index + 1}/{total_windows}"
+
+        # Build pending relations from real extracted_relations
+        all_pending_relations_by_name = []
+        if extracted_relations:
+            for rel in extracted_relations:
+                entity1_name = rel.get('entity1_name') or rel.get('from_entity_name', '').strip()
+                entity2_name = rel.get('entity2_name') or rel.get('to_entity_name', '').strip()
+                content = rel.get('content', '').strip()
+                if entity1_name and entity2_name:
+                    all_pending_relations_by_name.append({
+                        "entity1_name": entity1_name,
+                        "entity2_name": entity2_name,
+                        "content": content,
+                        "relation_type": "normal"
+                    })
+
+        if not all_pending_relations_by_name:
+            return phase_a_result
+
+        entity_name_to_id = dict(phase_a_result.entity_name_to_id)
+        _ambiguous = phase_a_result.ambiguous_duplicate_names
+
+        # Resolve missing entity names
+        _t_resolve = _time.time()
+        entity_name_to_id, _db_matched, _fuzzy_matched = self._resolve_missing_relation_entity_names(
+            all_pending_relations_by_name, entity_name_to_id, _ambiguous
+        )
+        if window_timings_ref is not None:
+            window_timings_ref["step9b-resolve_missing_names"] = _time.time() - _t_resolve
+
+        # Convert to IDs
+        _t_convert = _time.time()
+        updated_pending_relations, _skipped_relations, _self_relations = self._convert_pending_relations_to_ids(
+            all_pending_relations_by_name, entity_name_to_id, verbose=verbose
+        )
+        if window_timings_ref is not None:
+            window_timings_ref["step9b-convert_to_ids"] = _time.time() - _t_convert
+
+        if _skipped_relations or _self_relations > 0:
+            _parts = [f"成功解析 {len(updated_pending_relations)} 个"]
+            if _db_matched > 0:
+                _parts.append(f"数据库补全 {_db_matched} 个")
+            if _fuzzy_matched > 0:
+                _parts.append(f"模糊匹配 {_fuzzy_matched} 个")
+            if _self_relations > 0:
+                _parts.append(f"自关系 {_self_relations} 个")
+            if _skipped_relations:
+                _parts.append(f"无法解析 {len(_skipped_relations)} 个")
+            if verbose:
+                wprint_info(
+                    f"【步骤9B】关系｜待处理｜{len(all_pending_relations_by_name)}→{', '.join(_parts)}"
+                )
+                if _skipped_relations:
+                    for _sr in _skipped_relations[:5]:
+                        wprint_info(f"【步骤9B】关系｜跳过｜{_sr}")
+        else:
+            if verbose:
+                wprint_info(
+                    f"【步骤9B】关系｜待处理｜{len(all_pending_relations_by_name)}→全解析"
+                    + (f"·库补{_db_matched}" if _db_matched > 0 else "")
+                )
+        if verbose_steps and not verbose:
+            wprint_info("【步骤9B】关系｜完成｜映射")
+
+        _validated_fids = set(entity_name_to_id.values()) - {""}
+        return _AlignResult(
+            entity_name_to_id=entity_name_to_id,
+            pending_relations=all_pending_relations_by_name,
+            unique_entities=phase_a_result.unique_entities,
+            unique_pending_relations=updated_pending_relations,
+            resolved_family_ids=_validated_fids,
+            ambiguous_duplicate_names=_ambiguous,
         )
 
     # =========================================================================
@@ -524,6 +621,12 @@ class _PipelineExtractionMixin(_ContradictionMixin, _ResolutionMixin, _OrphanMix
             wprint_info("【步骤10】关系｜开始｜对齐写入")
         elif verbose_steps:
             wprint_info("【步骤10】关系｜开始｜")
+        _ent_count = len(align_result.unique_entities) if align_result and align_result.unique_entities else 0
+        _rel_count = len(align_result.pending_relations) if align_result and align_result.pending_relations else 0
+        if progress_callback:
+            progress_callback(p_lo,
+                f"{_win_label} · 步骤10/10: 关系对齐 · 开始",
+                f"{_ent_count}个实体, {_rel_count}条待处理关系")
 
         self.llm_client._current_distill_step = "07_relation_alignment"
 

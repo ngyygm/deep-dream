@@ -61,6 +61,7 @@ class RememberTaskQueue:
         max_retries: int = 2,
         retry_delay_seconds: float = 2,
         event_log=None,
+        stall_timeout_seconds: float = 600,
     ):
         self._processor = processor
         self._processor_factory = processor_factory
@@ -69,10 +70,12 @@ class RememberTaskQueue:
         self._tasks: Dict[str, RememberTask] = {}
         self._active_processors: Dict[str, Any] = {}
         self._lock = threading.Lock()
+        self._seq_counter = 0
         self._max_history = max_history
         self._max_retries = max(0, max_retries)
         self._retry_delay = max(0.0, retry_delay_seconds)
         self._phase2_lock = threading.Lock()
+        self._stall_timeout = max(60.0, stall_timeout_seconds)
         self._workers: List[threading.Thread] = []
         self._event_log = event_log
         self._last_persist_ts: Dict[str, float] = {}  # debounce: task_id → last disk write timestamp
@@ -93,6 +96,43 @@ class RememberTaskQueue:
             t = threading.Thread(target=_worker_loop, args=(self,), name=f"remember-worker-{i}", daemon=True)
             t.start()
             self._workers.append(t)
+        self._watchdog = threading.Thread(
+            target=self._watchdog_loop, name="remember-watchdog", daemon=True,
+        )
+        self._watchdog.start()
+
+    def _watchdog_loop(self):
+        """Periodically check for stalled running tasks and mark them failed."""
+        while True:
+            time.sleep(60)
+            try:
+                now = time.time()
+                stalled_ids = []
+                with self._lock:
+                    for task in list(self._tasks.values()):
+                        if task.status != "running":
+                            continue
+                        if now - task.last_update > self._stall_timeout:
+                            stalled_ids.append(task.task_id)
+                            task.status = "failed"
+                            task.phase = "failed"
+                            task.phase_label = "超时失败（看门狗）"
+                            task.error = (
+                                f"任务停滞超过 {self._stall_timeout:.0f}s "
+                                f"无进度更新，看门狗自动标记失败"
+                            )
+                            task.finished_at = now
+                            task.last_update = now
+                            task.done_event.set()
+                            self._persist(task)
+                            self._tasks.pop(task.task_id, None)
+                for tid in stalled_ids:
+                    self._log_warn(
+                        f"[Remember] 看门狗: 标记停滞任务失败: "
+                        f"task_id={_short_task_id(tid)}"
+                    )
+            except Exception as e:
+                logger.error("watchdog error: %s", e)
 
     def _task_uses_external_cache(self, task: RememberTask) -> bool:
         """None 表示沿用 processor 默认配置；False 时仅禁用外部链接续，不影响任务内部滑窗 cache 链。"""
@@ -226,6 +266,7 @@ class RememberTaskQueue:
         anchor = t.started_at or t.created_at or now
         return {
             "task_id": t.task_id,
+            "task_seq": t.task_seq,
             "source_name": t.source_name,
             "load_cache_memory": t.load_cache,
             "status": t.status,
@@ -301,6 +342,8 @@ class RememberTaskQueue:
         task.message = "已入队，预计 %d 个窗口" % task.total_chunks
         task.last_update = time.time()
         with self._lock:
+            self._seq_counter += 1
+            task.task_seq = self._seq_counter
             self._tasks[task.task_id] = task
             _trim_history(self._tasks, self._max_history, self._lock)
         self._persist(task)
@@ -323,12 +366,32 @@ class RememberTaskQueue:
         task.done_event.wait(timeout=timeout)
         return task
 
+    def _resolve_task_id(self, task_id_or_seq: str) -> Optional[str]:
+        """Resolve a task_seq (e.g. '1', '2') or full task_id to a real task_id."""
+        # Try as seq number first
+        try:
+            seq = int(task_id_or_seq)
+            if seq > 0:
+                with self._lock:
+                    for t in self._tasks.values():
+                        if t.task_seq == seq:
+                            return t.task_id
+                # Also check journal
+                for rec in self._journal.iter_records():
+                    if rec.get("task_seq") == seq:
+                        return rec.get("task_id")
+        except (ValueError, TypeError):
+            pass
+        # Fall back: treat as full task_id
+        return task_id_or_seq
+
     def get_status(self, task_id: str) -> Optional[RememberTask]:
+        resolved = self._resolve_task_id(task_id)
         with self._lock:
-            t = self._tasks.get(task_id)
+            t = self._tasks.get(resolved)
         if t is not None:
             return t
-        rec = self._journal.read_record(task_id)
+        rec = self._journal.read_record(resolved)
         if rec is None:
             return None
         text = ""
@@ -394,7 +457,8 @@ class RememberTaskQueue:
         )
         return True, "已删除"
 
-    def request_pause_task(self, task_id: str) -> tuple[bool, str, str]:
+    def request_pause_task(self, task_id_or_seq: str) -> tuple[bool, str, str]:
+        task_id = self._resolve_task_id(task_id_or_seq)
         with self._lock:
             task = self._tasks.get(task_id)
             if task is None:
@@ -415,7 +479,8 @@ class RememberTaskQueue:
         )
         return True, "已请求暂停", "pausing"
 
-    def resume_task(self, task_id: str) -> tuple[bool, str, str]:
+    def resume_task(self, task_id_or_seq: str) -> tuple[bool, str, str]:
+        task_id = self._resolve_task_id(task_id_or_seq)
         with self._lock:
             task = self._tasks.get(task_id)
             if task is None:
@@ -438,7 +503,8 @@ class RememberTaskQueue:
         )
         return True, "已继续", "queued"
 
-    def request_delete_task(self, task_id: str) -> tuple[bool, str, str]:
+    def request_delete_task(self, task_id_or_seq: str) -> tuple[bool, str, str]:
+        task_id = self._resolve_task_id(task_id_or_seq)
         with self._lock:
             task = self._tasks.get(task_id)
             if task is None:

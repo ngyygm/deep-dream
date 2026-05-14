@@ -374,3 +374,4 @@ class _AlignResult:
     unique_entities: List[Entity] = field(default_factory=list)
     unique_pending_relations: List[Dict] = field(default_factory=list)
     resolved_family_ids: Optional[set] = None  # set of validated family_ids (skip re-resolution)
+    ambiguous_duplicate_names: set = field(default_factory=set)

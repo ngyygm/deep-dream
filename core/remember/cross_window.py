@@ -51,13 +51,15 @@ class _CrossWindowDedupMixin:
 
         # Pre-fetch content for entities missing it — batch query to avoid N+1
         _content_cache: Dict[str, str] = {}
+        _fid_to_name: Dict[str, str] = {}
         _fids_needing_content = set()
         # Single pass: populate cache from entities with content, track missing ones
         for name, ents in dupes.items():
             for e in ents:
+                _fid_to_name[e.family_id] = name
                 if (e.content or "")[:1]:
                     if e.family_id not in _content_cache:
-                        _content_cache[e.family_id] = (e.content or "")[:500]
+                        _content_cache[e.family_id] = f"# {name}\n{(e.content or '')[:500]}"
                 else:
                     _fids_needing_content.add(e.family_id)
         if _fids_needing_content:
@@ -67,7 +69,7 @@ class _CrossWindowDedupMixin:
                     _fetched = batch_fn(list(_fids_needing_content)) or {}
                     for fid, ent in _fetched.items():
                         if ent and ent.content:
-                            _content_cache[fid] = (ent.content or "")[:500]
+                            _content_cache[fid] = f"# {_fid_to_name.get(fid, '')}\n{(ent.content or '')[:500]}"
                 except Exception:
                     pass
             else:
@@ -75,7 +77,7 @@ class _CrossWindowDedupMixin:
                     try:
                         versions = self.storage.get_entity_versions(fid)
                         if versions and versions[0].content:
-                            _content_cache[fid] = (versions[0].content or "")[:500]
+                            _content_cache[fid] = f"# {_fid_to_name.get(fid, '')}\n{(versions[0].content or '')[:500]}"
                     except Exception:
                         pass
         # Batch pre-compute embeddings for all unique content strings
@@ -177,8 +179,8 @@ class _CrossWindowDedupMixin:
 
         Uses pre-built content_cache and emb_cache to avoid per-pair encode calls.
         """
-        c1 = (entity1.content or "")[:500]
-        c2 = (entity2.content or "")[:500]
+        c1 = f"# {entity1.name}\n{(entity1.content or '')[:500]}"
+        c2 = f"# {entity2.name}\n{(entity2.content or '')[:500]}"
 
         # Use cache (preferred — avoids DB calls in O(n^2) loops)
         if not c1 and content_cache:

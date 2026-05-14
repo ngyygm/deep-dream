@@ -351,6 +351,7 @@ class _ExtractionStepsMixin:
         total_windows: int = 1,
         window_timings_ref: Optional[Dict[str, float]] = None,
         control_check_fn=None,
+        early_entity_done_fn=None,
     ) -> Tuple[List[Dict[str, str]], List[Dict[str, str]]]:
         """
         Dual-model extraction pipeline.
@@ -437,6 +438,23 @@ class _ExtractionStepsMixin:
         # All entities go through LLM for proper concept descriptions
         _fast_path_names: List[str] = []
         _needs_llm_names: List[str] = list(entity_names)
+
+        # ── Launch Step 6 (relation discovery) in parallel with Step 4 ──
+        # Step 6 only needs entity names (available after Step 3), not entity content.
+        _step6_future = None
+        _step6_raw_pairs: List = []
+        _step6_stats: Dict = {}
+        _step6_entity_names = list(entity_names)  # snapshot for thread safety
+
+        if len(entity_names) >= 2:
+            def _run_step6():
+                _t6 = _time.time()
+                _raw, _stats = extraction_client.discover_relations(
+                    _step6_entity_names, input_text, max_refine_rounds=self.relation_rounds
+                )
+                return _raw, _stats, _time.time() - _t6
+
+            _step6_future = ThreadPoolExecutor(max_workers=1).submit(_run_step6)
 
         # 4a: Batch write only for entities needing LLM content
         batch_results: Dict[str, str] = {}
@@ -551,22 +569,32 @@ class _ExtractionStepsMixin:
 
         _progress(0.50, f"{_win} · 步骤5: 实体质量门", f"{len(extracted_entities)} 个有效实体")
 
+        if early_entity_done_fn:
+            early_entity_done_fn(valid_entities)
+
         _check_control()
-        # Step 6b: Conversational refinement
+        # ==============================================================
+        # Step 6: Relation discovery (may have been launched in parallel with Step 4)
         # ==============================================================
         _t = _time.time()
         relation_pairs = []
-        if len(extracted_entities) >= 2:
-            _progress(0.53, f"{_win} · 步骤6: 关系发现（强模型）", "开始")
+        if _step6_future is not None:
+            # Collect result from parallel step 6
+            _progress(0.53, f"{_win} · 步骤6: 关系发现（强模型）", "等待结果")
+            try:
+                _step6_raw_pairs, _step6_stats, _step6_wall = _step6_future.result()
+            except Exception:
+                _step6_raw_pairs, _step6_stats, _step6_wall = [], {}, 0.0
+            _step6_future = None
 
-            # Normalize helper
+            # Normalize pairs using the entity name set from step 3
             seen_pairs = set()
-            _name_lookup = self._build_name_lookup(entity_name_set)
+            _name_lookup = self._build_name_lookup(set(_step6_entity_names))
             def _add_pairs(raw_list):
                 added = 0
                 for a, b in raw_list:
-                    a = self._resolve_entity_name(a, entity_name_set, _lookup=_name_lookup)
-                    b = self._resolve_entity_name(b, entity_name_set, _lookup=_name_lookup)
+                    a = self._resolve_entity_name(a, set(_step6_entity_names), _lookup=_name_lookup)
+                    b = self._resolve_entity_name(b, set(_step6_entity_names), _lookup=_name_lookup)
                     if a and b and a != b:
                         pair_key = _pair_key(a, b)
                         if pair_key not in seen_pairs:
@@ -575,19 +603,15 @@ class _ExtractionStepsMixin:
                             added += 1
                 return added
 
-            # Single conversation: initial + refine (coverage handled by refine prompt)
-            raw_pairs, rel_stats = extraction_client.discover_relations(
-                entity_name_list, input_text, max_refine_rounds=self.relation_rounds
-            )
-            _initial_count = _add_pairs(raw_pairs)
+            _initial_count = _add_pairs(_step6_raw_pairs)
             _refine_added = len(relation_pairs) - _initial_count
+            _elapsed5 = _step6_wall
 
             if verbose or verbose_steps:
-                _elapsed5 = _time.time() - _t
                 _ref_tag = f" +精炼{_refine_added}对" if _refine_added else ""
-                wprint_info(f"【步骤6】关系对发现｜{_initial_count}对初始{_ref_tag} → 总{len(relation_pairs)}对｜{_elapsed5:.1f}s")
-            else:
-                _elapsed5 = _time.time() - _t
+                wprint_info(f"【步骤6】关系对发现（并行）｜{_initial_count}对初始{_ref_tag} → 总{len(relation_pairs)}对｜{_elapsed5:.1f}s (wall)")
+        else:
+            _elapsed5 = 0.0
         _record_timing("step6_relation_discovery", _elapsed5)
 
         _progress(0.60, f"{_win} · 步骤6: 关系发现完成", f"{len(relation_pairs)} 对")
@@ -604,7 +628,7 @@ class _ExtractionStepsMixin:
         # 7b: Batch write for pairs needing LLM content
         batch_rel_results: Dict[Tuple[str, str], str] = {}
         if _needs_llm_pairs:
-            _rel_batch_size = getattr(self, 'remember_relation_content_batch_size', 10)
+            _rel_batch_size = getattr(self, 'remember_relation_content_batch_size', 20)
             _step7_workers = getattr(self, 'llm_threads', 1)
             batch_rel_results = self.llm_client.batch_write_relation_content(
                 _needs_llm_pairs, input_text,

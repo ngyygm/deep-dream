@@ -295,8 +295,9 @@ def remember():
             "success": True,
             "data": {
                 "task_id": task.task_id,
+                "task_seq": task.task_seq,
                 "status": "queued",
-                "message": "已加入队列；Find 与 Remember 可并发。崩溃重启后未完成任务会从 journal 恢复。GET /api/v1/remember/tasks/<task_id> 查询进度",
+                "message": f"已加入队列 (#{task.task_seq})。GET /api/v1/remember/tasks/{task.task_seq} 查询进度",
                 "original_path": task.original_path,
             },
         }), 202)
@@ -317,7 +318,7 @@ def remember_status(task_id: str):
             deleted, message, status = remember_queue.request_delete_task(task_id)
             if not deleted:
                 if message == "任务不存在":
-                    return err(message, 404)
+                    return err(f"任务不存在。GET /api/v1/remember/tasks 查看所有任务", 404)
                 return err(message, 409)
             return ok({
                 "task_id": task_id,
@@ -326,7 +327,7 @@ def remember_status(task_id: str):
             })
         t = remember_queue.get_status(task_id)
         if t is None:
-            return err("任务不存在", 404)
+            return err(f"任务不存在。GET /api/v1/remember/tasks 查看所有任务", 404)
         data: Dict[str, Any] = remember_queue._task_to_dict(t)
         data["original_path"] = t.original_path
         if t.status == "completed" and t.result:
@@ -412,6 +413,7 @@ def remember_monitor():
             "storage": detail["storage"],
             "queue": detail["queue"],
             "threads": detail["threads"],
+            "pipeline": detail.get("pipeline"),
         })
     except Exception as e:
         return err(str(e), 500)

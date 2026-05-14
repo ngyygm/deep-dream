@@ -37,9 +37,12 @@ from .json_repair import (
 from .mock_response import _mock_json_fence, mock_llm_response
 from .priority_semaphore import PrioritySemaphore, _is_rate_limit_tpm_error
 
-# 非 TPM 类错误：失败后等待 3^1, 3^2, … 秒再重试，最多 5 轮（第 6 次失败则放弃）
-_LLM_BACKOFF_BASE = 3
+# 非 TPM 类错误：失败后等待秒数，最多 5 轮（第 6 次失败则放弃）
+_LLM_BACKOFF_SCHEDULE = [2, 5, 10, 20, 30]  # capped exponential, not 3^n
 _LLM_MAX_FAILURE_ROUNDS = 5
+# Xinference 500 内部错误（如 'choices' KeyError）的快速重试 schedule
+# 这些是临时性故障，快速重试通常就能成功
+_XINFERENCE_500_BACKOFF = [0.5, 1, 2, 4, 8]
 # 单次等待上限，避免 TPM 无限重试时指数爆炸占满进程
 _LLM_TPM_SLEEP_CAP_SECONDS = 3601
 _DISTILL_SKIP_STEPS = frozenset(("02_extract_entities", "03_extract_relations"))
@@ -728,6 +731,33 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
                     wprint_info(str(e))
                     raise
 
+                # Xinference 500 内部错误（如 'choices' KeyError）：快速重试
+                # 这类错误是 Xinference/llama.cpp 的临时性 bug，快速重试通常即可恢复
+                _sc = getattr(e, "status_code", None)
+                if _sc == 500:
+                    _normal_failures += 1
+                    if _normal_failures <= _LLM_MAX_FAILURE_ROUNDS:
+                        _idx = min(_normal_failures - 1, len(_XINFERENCE_500_BACKOFF) - 1)
+                        wait_seconds = _XINFERENCE_500_BACKOFF[_idx]
+                        wprint_info(
+                            f"LLM 服务端 500 错误（第 {_normal_failures}/{_LLM_MAX_FAILURE_ROUNDS} 次）: {e}"
+                        )
+                        wprint_info(f"{wait_seconds}s 后快速重试...")
+                        if _sem is not None:
+                            _sem.release()
+                        _sem_held = False
+                        if _cancel_fn and _cancel_fn():
+                            raise CancelledError("LLM call cancelled by pipeline control")
+                        time.sleep(wait_seconds)
+                        continue
+                    wprint_info(f"LLM 服务端 500 错误已达 {_LLM_MAX_FAILURE_ROUNDS} 轮: {e}")
+                    if _sem is not None:
+                        _sem.release()
+                    _sem_held = False
+                    if allow_mock_fallback:
+                        return self._mock_llm_response(prompt)
+                    return ""
+
                 # max_tokens 超限：自动降低重试（不计入退避轮次）
                 if "max_tokens" in error_str or "max_completion_tokens" in error_str or "too large" in error_str:
                     if _effective_max_tokens and _effective_max_tokens > 1:
@@ -759,11 +789,11 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
                     time.sleep(wait_seconds)
                     continue
 
-                # 连接错误：最多 5 轮，等待 3^n 秒
+                # 连接错误：最多 5 轮，等待固定退避
                 if is_connection_error:
                     _conn_failures += 1
                     if _conn_failures <= _LLM_MAX_FAILURE_ROUNDS:
-                        wait_seconds = _LLM_BACKOFF_BASE ** _conn_failures
+                        wait_seconds = _LLM_BACKOFF_SCHEDULE[min(_conn_failures - 1, len(_LLM_BACKOFF_SCHEDULE) - 1)]
                         wprint_info(f"LLM连接错误（第 {_conn_failures}/{_LLM_MAX_FAILURE_ROUNDS} 次失败）: {e}")
                         wprint_info(f"{wait_seconds} 秒后重试...")
                         if _sem is not None:
@@ -779,10 +809,10 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
                     _sem_held = False
                     raise
 
-                # 其它错误（含超时）：最多 5 轮，等待 3^n 秒
+                # 其它错误（含超时）：最多 5 轮，等待固定退避
                 _normal_failures += 1
                 if _normal_failures <= _LLM_MAX_FAILURE_ROUNDS:
-                    wait_seconds = _LLM_BACKOFF_BASE ** _normal_failures
+                    wait_seconds = _LLM_BACKOFF_SCHEDULE[min(_normal_failures - 1, len(_LLM_BACKOFF_SCHEDULE) - 1)]
                     if is_timeout:
                         wprint_info(f"LLM调用超时（第 {_normal_failures}/{_LLM_MAX_FAILURE_ROUNDS} 次失败，超时: {timeout}s）: {e}")
                     else:

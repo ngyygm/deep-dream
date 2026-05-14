@@ -216,6 +216,7 @@ class GraphRegistry:
             max_retries=self._config.get("remember_max_retries", 2),
             retry_delay_seconds=self._config.get("remember_retry_delay_seconds", 2),
             event_log=event_log,
+            stall_timeout_seconds=self._config.get("remember_stall_timeout_seconds", 600),
         )
 
         with self._lock:

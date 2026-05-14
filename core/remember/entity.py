@@ -142,7 +142,7 @@ class EntityProcessor:
         snip = self.llm_client.effective_entity_snippet_length()
         N = len(extracted_entities)
         name_texts = [e["name"] for e in extracted_entities]
-        full_texts = [f"{e['name']} {e['content'][:snip]}" for e in extracted_entities]
+        full_texts = [f"# {e['name']}\n{e['content'][:snip]}" for e in extracted_entities]
         all_embeddings = self.storage.embedding_client.encode(name_texts + full_texts)
         return all_embeddings[:N], all_embeddings[N:]
 
@@ -429,15 +429,13 @@ class EntityProcessor:
             if new_content.startswith(old_content):
                 return new_content
             # Fast path: high content overlap → use the longer content (avoids LLM call)
-            # For same-name entities with very similar content, the longer version
-            # typically subsumes the shorter one. Character bigram Jaccard >= 0.55
-            # captures "same concept, different wording" cases.
             _min_len = min(len(old_content), len(new_content))
-            if _min_len > 15:
+            if _min_len > 10:
                 _old_bigrams = set(zip(old_content, old_content[1:]))
                 _new_bigrams = set(zip(new_content, new_content[1:]))
                 if _old_bigrams and _new_bigrams:
                     _jaccard = len(_old_bigrams & _new_bigrams) / len(_old_bigrams | _new_bigrams)
+                    # Same-name entities with even moderate overlap don't need LLM merge
                     if _jaccard >= 0.55:
                         return max(old_content, new_content, key=len)
             return self.llm_client.merge_multiple_entity_contents(
@@ -775,8 +773,8 @@ class EntityProcessor:
                     wprint_info(f"[entity_timing] '{entity_name}' exact_match_fast → {time.monotonic() - _t_entity_start:.1f}s")
                     return _r
 
-        # ---- Fix 2b: 全部候选低相似度 → 直接新建，跳过LLM ----
-        if candidates[0].get("combined_score", 0) < 0.4:
+        # ---- Low similarity fast path: skip LLM when best candidate score is very low ----
+        if candidates[0].get("combined_score", 0) < 0.25:
             if self._entity_tree_log():
                 wprint_info(f"  │  快捷路径：候选相似度过低({candidates[0].get('combined_score', 0):.2f})→新建")
             _dbg_struct("decision_low_similarity",
@@ -786,7 +784,7 @@ class EntityProcessor:
             if new_entity:
                 self._mark_versioned(new_entity.family_id, already_versioned_family_ids, _version_lock)
             if new_entity:
-                wprint_info(f"[entity_timing] '{entity_name}' low_similarity(score<{0.4}) → {time.monotonic() - _t_entity_start:.1f}s")
+                wprint_info(f"[entity_timing] '{entity_name}' low_similarity(score<0.25) → {time.monotonic() - _t_entity_start:.1f}s")
                 return new_entity, [], {entity_name: new_entity.family_id, new_entity.name: new_entity.family_id}, new_entity
 
         # ---- Context-based alias bypass (skip LLM for obvious aliases) ----
@@ -810,7 +808,6 @@ class EntityProcessor:
                         action="alias_merge_guard_verified")
             wprint_info(f"[entity_timing] '{entity_name}' alias_merge → {time.monotonic() - _t_entity_start:.1f}s")
             return alias_merged
-
         batch_result = self.llm_client.resolve_entity_candidates_batch(
             {
                 "family_id": "NEW_ENTITY",
@@ -836,47 +833,6 @@ class EntityProcessor:
         # confidence is just self-reported noise. create_new = no match = fast path.
         _safe_create_new = (update_mode == "create_new")
 
-        # Lightweight path: when batch gives a merge/reuse decision with moderate confidence,
-        # verify with a single _alignment_guard instead of falling back to the
-        # full sequential path.
-        _moderate_conf_merge = (
-            update_mode in ("merge_into_latest", "reuse_existing")
-            and confidence < self.batch_resolution_confidence_threshold
-            and self.batch_resolution_enabled
-        )
-        if _moderate_conf_merge:
-            match_existing_id = (batch_result.get("match_existing_id") or "").strip()
-            if match_existing_id:
-                _cand_by_fid = {c.get("family_id"): c for c in candidates if c.get("family_id")}
-                _matched_cand = _cand_by_fid.get(match_existing_id)
-                _guard = self._alignment_guard(
-                    entity_name, entity_content,
-                    _matched_cand.get("name", "") if _matched_cand else "",
-                    _matched_cand.get("content", "") if _matched_cand else "",
-                    name_match_type=_matched_cand.get("name_match_type", "none") if _matched_cand else "none",
-                    require_content=False,
-                )
-                if _guard:
-                    if self._entity_tree_log():
-                        wprint_info(f"  │  中等置信合并被 alignment_guard 拒绝 (conf={confidence:.2f})→新建")
-                    _dbg_struct("decision_moderate_guard_reject",
-                                name=entity_name, match_fid=match_existing_id,
-                                batch_conf=f"{confidence:.2f}",
-                                guard_verdict=_guard[0], guard_conf=f"{_guard[1]:.2f}",
-                                action="create_new")
-                    new_entity = self._build_new_entity(entity_name, entity_content, episode_id, source_document, base_time=base_time, confidence=confidence)
-                    self._mark_versioned(new_entity.family_id, already_versioned_family_ids, _version_lock)
-                    wprint_info(f"[entity_timing] '{entity_name}' moderate_guard_reject → {time.monotonic() - _t_entity_start:.1f}s")
-                    return new_entity, [], {entity_name: new_entity.family_id, new_entity.name: new_entity.family_id}, new_entity
-                # Guard passed — proceed with the merge/reuse decision below
-                if self._entity_tree_log():
-                    wprint_info(f"  │  中等置信合并通过 guard (conf={confidence:.2f}), 跳过完整 fallback")
-            else:
-                # No match_existing_id — treat as create_new
-                new_entity = self._build_new_entity(entity_name, entity_content, episode_id, source_document, base_time=base_time, confidence=confidence)
-                self._mark_versioned(new_entity.family_id, already_versioned_family_ids, _version_lock)
-                wprint_info(f"[entity_timing] '{entity_name}' moderate_no_match → {time.monotonic() - _t_entity_start:.1f}s")
-                return new_entity, [], {entity_name: new_entity.family_id, new_entity.name: new_entity.family_id}, new_entity
 
         _need_full_fallback = (not self.batch_resolution_enabled) or update_mode == "fallback"
         if _need_full_fallback:
@@ -956,67 +912,8 @@ class EntityProcessor:
                                 wprint_info(f"  │  Within-batch alias: '{batch_name}' not yet in entity_name_to_id, creating new entity")
                     else:
                         match_existing_id = ""
-        # 合并安全检查：如果匹配的候选 merge_safe=False（仅名字字面匹配），
-        # 不允许合并或复用，改为创建新实体
-        # 但是：如果候选内容提及当前实体名称（别名证据），允许合并
         if match_existing_id:
             matched_candidate = _cand_by_fid.get(match_existing_id)
-            if matched_candidate and not matched_candidate.get("merge_safe", True):
-                # Check for content-mention evidence (alias signal)
-                mc_name = matched_candidate.get("name", "")
-                mc_content = matched_candidate.get("content", "")
-                has_content_mention = (
-                    (entity_name in mc_content and len(entity_name) >= 2)
-                    or (mc_name in entity_content and len(mc_name) >= 2)
-                )
-                if not has_content_mention:
-                    if update_mode in ("merge_into_latest", "reuse_existing"):
-                        if self._entity_tree_log():
-                            wprint_info("  │  批量裁决: merge_safe=False，禁止合并/复用，创建新实体")
-                        _dbg_struct("decision_merge_unsafe_reject",
-                                    name=entity_name, match_fid=match_existing_id,
-                                    matched_name=mc_name, update_mode=update_mode,
-                                    action="create_new")
-                        new_entity = self._build_new_entity(entity_name, entity_content, episode_id, source_document, base_time=base_time, confidence=confidence)
-                        self._mark_versioned(new_entity.family_id, already_versioned_family_ids, _version_lock)
-                        wprint_info(f"[entity_timing] '{entity_name}' merge_unsafe_reject → {time.monotonic() - _t_entity_start:.1f}s")
-                        return new_entity, relations_to_create, {
-                            entity_name: new_entity.family_id,
-                            new_entity.name: new_entity.family_id,
-                        }, new_entity
-            # ---- Three-way alignment verification (Phase 4) ----
-            # Only verify when batch confidence is below threshold — high-confidence
-            # batch results already made a well-informed same/different decision.
-            _batch_conf = confidence  # reuse cached value from line 920
-            if _batch_conf < 0.8:
-                _matched_cand = _cand_by_fid.get(match_existing_id)
-                _guard = self._alignment_guard(
-                    entity_name, entity_content,
-                    _matched_cand.get("name", "") if _matched_cand else "",
-                    _matched_cand.get("content", "") if _matched_cand else "",
-                    name_match_type=_matched_cand.get("name_match_type", "none") if _matched_cand else "none",
-                    require_content=False,
-                )
-                if _guard:
-                    _align_verdict, _align_confidence = _guard
-                    if self._entity_tree_log():
-                        wprint_info(f"  │  三值对齐: verdict={_align_verdict} (conf={_align_confidence:.2f}), 拒绝合并→新建")
-                    _dbg_struct("decision_guard_reject",
-                                name=entity_name, match_fid=match_existing_id,
-                                batch_conf=f"{_batch_conf:.2f}",
-                                guard_verdict=_align_verdict,
-                                guard_conf=f"{_align_confidence:.2f}",
-                                action="create_new")
-                    new_entity = self._build_new_entity(entity_name, entity_content, episode_id, source_document, base_time=base_time, confidence=confidence)
-                    self._mark_versioned(new_entity.family_id, already_versioned_family_ids, _version_lock)
-                    wprint_info(f"[entity_timing] '{entity_name}' guard_reject(conf={_batch_conf:.2f}) → {time.monotonic() - _t_entity_start:.1f}s")
-                    return new_entity, relations_to_create, {
-                        entity_name: new_entity.family_id,
-                        new_entity.name: new_entity.family_id,
-                    }, new_entity
-            elif self._entity_tree_log() and _batch_conf >= 0.8:
-                wprint_info(f"  │  三值对齐: batch conf={_batch_conf:.2f} >= 0.8, 跳过验证")
-
             latest_entity = matched_candidate.get("entity") if matched_candidate else None
             if not latest_entity:
                 # Try redirect resolution first

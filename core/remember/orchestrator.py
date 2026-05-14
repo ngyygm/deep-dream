@@ -18,8 +18,8 @@ _REMEMBER_DEFAULTS = {
     "abstract_recall_rounds": 1,
     "coverage_gap_rounds": 1,
     "missing_concept_rounds": 1,
-    "entity_write_batch_size": 6,
-    "entity_content_batch_size": 6,
+    "entity_write_batch_size": 20,
+    "entity_content_batch_size": 20,
     "relation_hint_rounds": 1,
     "relation_candidate_rounds": 1,
     "relation_expand_rounds": 1,
@@ -356,7 +356,7 @@ class TemporalMemoryGraphProcessor(_PipelineExtractionMixin, _ExtractionStepsMix
         _er = entity_rounds if entity_rounds is not None else entity_refine_rounds
         self.entity_rounds = _er if _er is not None else 2
         _rr = relation_rounds if relation_rounds is not None else relation_refine_rounds
-        self.relation_rounds = _rr if _rr is not None else 2
+        self.relation_rounds = _rr if _rr is not None else 3
 
         # Extraction client (dual-model pipeline)
         _el = extraction_llm or {}
@@ -650,9 +650,9 @@ class TemporalMemoryGraphProcessor(_PipelineExtractionMixin, _ExtractionStepsMix
 
         if verbose or verbose_steps:
             _log_info("Remember",
-                "并行流水线 · 日志前缀 [窗号][角色]："
-                "主线程=步骤1+提交抽取；抽取=步骤2–8；步骤9/10=链式线程。"
-                "不同窗会交错，属正常。"
+                f"流水线启动｜{total_chunks}窗口×{N}待处理｜并发={self._max_concurrent_windows}｜"
+                f"step1串行→step2-8并行→step9/10链式｜"
+                f"{'注意: window_workers=1 时流水线完全串行，窗口2必须等窗口1全部完成' if self._max_concurrent_windows <= 1 else ''}"
             )
 
         # ========== 主线程：Phase A（step1 串行）+ 提交 Phase B（step2-8）==========
@@ -762,6 +762,7 @@ class TemporalMemoryGraphProcessor(_PipelineExtractionMixin, _ExtractionStepsMix
                     _action = self._poll_control(state, control_callback)
                     if _action:
                         self._signal_control_stop(state, _action, ci + 1)
+                        state.entity_content_done[ci].set()
                         state.extract_done[ci].set()
                         state.step9_done_ev[ci].set()
                         state.step10_done_ev[ci].set()
@@ -775,7 +776,9 @@ class TemporalMemoryGraphProcessor(_PipelineExtractionMixin, _ExtractionStepsMix
                             _saved_extraction[0], _saved_extraction[1]
                         )
                         state.extract_results[ci] = (_dedup_ents, _dedup_rels)
+                        state.early_entity_results[ci] = _dedup_ents
                         state.window_timings[ci]["step2-8"] = 0.0
+                        state.entity_content_done[ci].set()
                         state.extract_done[ci].set()
                         if main_chunk_done_callback:
                             main_chunk_done_callback(start_chunk + ci + 1)
@@ -825,6 +828,9 @@ class TemporalMemoryGraphProcessor(_PipelineExtractionMixin, _ExtractionStepsMix
                                     self._peak_window_extractions,
                                     self._active_window_extractions,
                                 )
+                            def _early_entity_cb(valid_entities):
+                                state.early_entity_results[idx] = valid_entities
+                                state.entity_content_done[idx].set()
                             try:
                                 _idx_lo = (start_chunk + idx) / total_chunks
                                 _idx_hi = (start_chunk + idx + 1) / total_chunks
@@ -840,6 +846,7 @@ class TemporalMemoryGraphProcessor(_PipelineExtractionMixin, _ExtractionStepsMix
                                     window_index=start_chunk + idx, total_windows=total_chunks,
                                     window_timings_ref=state.window_timings[idx],
                                     control_check_fn=lambda _s=state, _cb=control_callback: self._poll_control(_s, _cb),
+                                    early_entity_done_fn=_early_entity_cb,
                                 )
                                 state.extract_results[idx] = (ents, rels)
                                 self.storage.save_extraction_result(__hash, ents, rels, document_path=document_path)
@@ -856,6 +863,8 @@ class TemporalMemoryGraphProcessor(_PipelineExtractionMixin, _ExtractionStepsMix
                             finally:
                                 with self._runtime_lock:
                                     self._active_window_extractions = max(0, self._active_window_extractions - 1)
+                                # Ensure entity_content_done is always set to prevent step9 deadlock
+                                state.entity_content_done[idx].set()
                                 state.extract_done[idx].set()
                                 if _success_main and main_chunk_done_callback:
                                     main_chunk_done_callback(start_chunk + idx + 1)
@@ -878,12 +887,23 @@ class TemporalMemoryGraphProcessor(_PipelineExtractionMixin, _ExtractionStepsMix
             with state.errors_lock:
                 state.errors.append(("main", 0, e))
             logger.error("main pipeline error: %s", e, exc_info=True)
+            # Signal remaining windows so step9/10 threads and the wait loop
+            # below don't hang forever when the main pipeline dies mid-way.
+            _crash_ci = ci if 'ci' in dir() else 0
+            self._signal_control_stop(state, None, _crash_ci)
+            _main_pipeline_exc = e
+        else:
+            _main_pipeline_exc = None
         finally:
             clear_parallel_log_context()
 
-        # 等待所有窗口 step10 完成
+        # 等待所有窗口 step10 完成（异常后仍需等待，否则 step9/10 线程可能写已释放的 state）
         for i in range(N):
             state.step10_done_ev[i].wait()
+
+        # 无论成功还是异常，都清理 _current_state，避免残留上一个任务的快照
+        with self._current_state_lock:
+            self._current_state = None
 
         # Clean shutdown of prefetch executor with proper timeout
         try:
@@ -906,6 +926,11 @@ class TemporalMemoryGraphProcessor(_PipelineExtractionMixin, _ExtractionStepsMix
         if state.control_state["action"] is not None:
             raise RememberControlFlow(state.control_state["action"])
 
+        # If the main pipeline crashed (not just individual window errors),
+        # propagate the exception so the worker can retry.
+        if _main_pipeline_exc is not None:
+            raise _main_pipeline_exc
+
         # ========== Post-window cross-window dedup (always runs, even for N=1) ==========
         # Run cross-window dedup even when some windows failed -- partial results are valuable.
         _dedup_exc = None
@@ -920,9 +945,7 @@ class TemporalMemoryGraphProcessor(_PipelineExtractionMixin, _ExtractionStepsMix
         self._summarize_window_timings(state.window_timings)
 
         storage_path = str(self.storage.storage_path)
-        total_entities = sum(
-            len(ar.unique_entities) for ar in state.align_results if ar is not None
-        )
+        total_entities = sum(state.aligned_entity_counts)
         total_relations = sum(
             len(rl) for rl in state.step10_results if rl is not None
         )
@@ -970,8 +993,6 @@ class TemporalMemoryGraphProcessor(_PipelineExtractionMixin, _ExtractionStepsMix
             result["warnings"] = [{"phase": "cross_window_dedup", "error": str(_dedup_exc)}]
 
         # Only raise if ALL windows failed -- partial results are still valuable.
-        with self._current_state_lock:
-            self._current_state = None
         if _failed_windows >= N:
             _phase, _idx, exc = state.errors[0]
             raise exc
