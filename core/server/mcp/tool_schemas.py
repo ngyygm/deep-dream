@@ -35,10 +35,12 @@ def _t(name, desc, params, required=None):
 
 # ── Remember (7) ──────────────────────────────────────────────────────────
 
-_t("remember", "Submit text for async entity/relation extraction. Returns immediately with a task_id — poll remember_task_status(task_id='...') to check progress. The pipeline extracts entities and relations from the text and adds them to the knowledge graph. Typical workflow: remember(content='...') → remember_task_status(task_id='...') → repeat until completed.", {
+_t("remember", "Submit text for entity/relation extraction. By default async (returns task_id to poll). Set wait=true for synchronous mode — blocks until extraction completes, recommended for short texts. Typical async workflow: remember(content='...') → remember_task_status(task_id='...'). Typical sync workflow: remember(content='...', wait=true) → result includes extraction counts.", {
     "content": {"type": "string", "description": "Text content to remember"},
     "source": {"type": "string", "description": "Source label (e.g. 'user', 'document:file.txt')"},
     "metadata": {"type": "object", "description": "Optional metadata dict"},
+    "wait": {"type": "boolean", "description": "Wait for extraction to complete (default: false). Recommended for short texts."},
+    "timeout": {"type": "integer", "description": "Max wait seconds when wait=true (default: 300, range: 10-3600)"},
 }, ["content"])
 
 _t("remember_tasks", "List remember task queue. Use status filter to see pending/processing/completed/failed tasks. For a specific task, use remember_task_status(task_id=...).", {
@@ -280,32 +282,34 @@ _t("get_relation_versions", "Get all versions of a relation. Each version repres
 }, ["family_id"])
 
 _t("get_relations_between", "Find all relations connecting two entities. Returns both directions. Use this to verify if/how two entities are linked. For discovering indirect connections, use search_shortest_path or traverse_graph.", {
-    "entity_a": {"type": "string", "description": "First entity family_id"},
-    "entity_b": {"type": "string", "description": "Second entity family_id"},
-}, ["entity_a", "entity_b"])
+    "family_id_a": {"type": "string", "description": "First entity family_id (e.g. 'ent_abc123')"},
+    "family_id_b": {"type": "string", "description": "Second entity family_id (e.g. 'ent_xyz789')"},
+}, ["family_id_a", "family_id_b"])
 
 _t("search_shortest_path", "Find the shortest path between two entities in the graph. Returns intermediate entities and relations along the path. Use this to discover how two seemingly unrelated entities are connected. Requires Neo4j backend. Start with max_depth=5, increase for sparse graphs.", {
-    "from_entity": {"type": "string", "description": "Start entity family_id"},
-    "to_entity": {"type": "string", "description": "End entity family_id"},
+    "family_id_a": {"type": "string", "description": "Start entity family_id"},
+    "family_id_b": {"type": "string", "description": "End entity family_id"},
     "max_depth": {"type": "integer", "description": "Max search depth (default 5). Increase for sparse graphs."},
-}, ["from_entity", "to_entity"])
+}, ["family_id_a", "family_id_b"])
 
 _t("search_shortest_path_cypher", "Find shortest path using native Cypher query. Same as search_shortest_path but uses Neo4j Cypher directly. Prefer search_shortest_path unless you need Cypher-specific behavior.", {
-    "from_entity": {"type": "string", "description": "Start entity family_id"},
-    "to_entity": {"type": "string", "description": "End entity family_id"},
+    "family_id_a": {"type": "string", "description": "Start entity family_id"},
+    "family_id_b": {"type": "string", "description": "End entity family_id"},
     "max_depth": {"type": "integer", "description": "Max search depth (default 5)"},
 }, ["from_entity", "to_entity"])
 
 
 # ── Relation CRUD (7) ────────────────────────────────────────────────────
 
-_t("create_relation", "Create a new relation between two entities. IMPORTANT: requires absolute_ids (version-specific IDs like UUIDs), NOT family_ids (like 'ent_abc123'). Workflow: (1) get_entity(family_id='ent_X') → note the absolute_id from response, (2) get_entity(family_id='ent_Y') → note absolute_id, (3) create_relation with those absolute_ids. For dream-discovered relations, prefer create_dream_relation which uses family_ids directly.", {
-    "entity1_absolute_id": {"type": "string", "description": "Absolute ID (version ID) of the first entity — use get_entity(family_id=...) to find this"},
-    "entity2_absolute_id": {"type": "string", "description": "Absolute ID (version ID) of the second entity — use get_entity(family_id=...) to find this"},
+_t("create_relation", "Create a new relation between two entities. Accepts either absolute_ids or family_ids (server resolves family_ids automatically). For dream-discovered relations, prefer create_dream_relation which is simpler.", {
+    "entity1_absolute_id": {"type": "string", "description": "Absolute ID of first entity (alternative to entity1_family_id)"},
+    "entity2_absolute_id": {"type": "string", "description": "Absolute ID of second entity (alternative to entity2_family_id)"},
+    "entity1_family_id": {"type": "string", "description": "Family ID of first entity (e.g. 'ent_abc123') — simpler than absolute_id"},
+    "entity2_family_id": {"type": "string", "description": "Family ID of second entity (e.g. 'ent_xyz789') — simpler than absolute_id"},
     "content": {"type": "string", "description": "Relation content/description"},
     "episode_id": {"type": "string", "description": "Episode ID to link (optional)"},
     "source_document": {"type": "string", "description": "Source document label (optional)"},
-}, ["entity1_absolute_id", "entity2_absolute_id", "content"])
+}, ["content"])
 
 _t("update_relation", "Update relation metadata by family_id. Changes the current version without creating a new version. For fixing incorrect entity linkages, use redirect_relation instead.", {
     "family_id": {"type": "string", "description": "Relation family ID (e.g. 'rel_abc123')"},

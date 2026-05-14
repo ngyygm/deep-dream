@@ -433,6 +433,13 @@ def create_app(
     app.register_blueprint(dream_bp)
     app.register_blueprint(concepts_bp)
 
+    # JSON 404 for API routes (HTML 404 for everything else)
+    @app.errorhandler(404)
+    def _api_not_found(e):
+        if request.path.startswith("/api/"):
+            return jsonify({"success": False, "error": f"Endpoint not found: {request.path}", "elapsed_ms": 0}), 404
+        return e
+
     # Cleanup shared thread pools on shutdown
     def _shutdown_pools():
         from core.server.blueprints.entities import _shared_pool as _ent_pool

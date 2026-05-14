@@ -275,6 +275,10 @@ def _error_hint(data):
         hints.append("Hint: check the tool's required parameters. Missing or empty fields cause validation errors.")
     if "conflict" in lower or "409" in str(data.get("status_code", "")):
         hints.append("Hint: resource state conflict. The data may have changed since last read — refresh with get_entity or entity_profile.")
+    if ("graph" in lower or "图谱" in lower) and ("not found" in lower or "不存在" in lower):
+        hints.append("Hint: use list_graphs to see available graphs.")
+    if ("graph" in lower or "图谱" in lower) and "already exists" in lower:
+        hints.append("Hint: use a different graph_id. Use list_graphs to see existing graphs.")
 
     return " ".join(hints) if hints else ""
 

@@ -64,7 +64,7 @@ def get_relation_versions(args):
 
 
 def get_relations_between(args):
-    body = {"family_id_a": args["entity_a"], "family_id_b": args["entity_b"]}
+    body = {"family_id_a": args["family_id_a"], "family_id_b": args["family_id_b"]}
     data, code = _post("/api/v1/find/relations/between", body)
     if code < 400:
         data = _compact_list(data, _compact_relation, "relations")
@@ -80,7 +80,7 @@ def get_relations_between(args):
 
 
 def search_shortest_path(args):
-    body = {"family_id_a": args["from_entity"], "family_id_b": args["to_entity"]}
+    body = {"family_id_a": args["family_id_a"], "family_id_b": args["family_id_b"]}
     if _arg(args, "max_depth"):
         body["max_depth"] = args["max_depth"]
     data, code = _post("/api/v1/find/paths/shortest", body)
@@ -97,7 +97,7 @@ def search_shortest_path(args):
 
 
 def search_shortest_path_cypher(args):
-    body = {"family_id_a": args["from_entity"], "family_id_b": args["to_entity"]}
+    body = {"family_id_a": args["family_id_a"], "family_id_b": args["family_id_b"]}
     if _arg(args, "max_depth"):
         body["max_depth"] = args["max_depth"]
     data, code = _post("/api/v1/find/paths/shortest-cypher", body)
@@ -110,18 +110,32 @@ def search_shortest_path_cypher(args):
 
 
 def create_relation(args):
-    e1 = args["entity1_absolute_id"]
-    e2 = args["entity2_absolute_id"]
-    _validate_absolute_id(e1, "entity1_absolute_id")
-    _validate_absolute_id(e2, "entity2_absolute_id")
     content = args.get("content", "").strip()
     if not content:
         raise ValueError("content is required for create_relation (describes how the two entities are related)")
-    body = {
-        "entity1_absolute_id": e1,
-        "entity2_absolute_id": e2,
-        "content": content,
-    }
+    body = {"content": content}
+
+    # Accept either absolute_ids or family_ids; API resolves family_ids automatically
+    e1_abs = _arg(args, "entity1_absolute_id")
+    e2_abs = _arg(args, "entity2_absolute_id")
+    e1_fid = _arg(args, "entity1_family_id")
+    e2_fid = _arg(args, "entity2_family_id")
+
+    if e1_abs and e2_abs:
+        _validate_absolute_id(e1_abs, "entity1_absolute_id")
+        _validate_absolute_id(e2_abs, "entity2_absolute_id")
+        body["entity1_absolute_id"] = e1_abs
+        body["entity2_absolute_id"] = e2_abs
+    elif e1_fid and e2_fid:
+        body["entity1_family_id"] = e1_fid
+        body["entity2_family_id"] = e2_fid
+    else:
+        raise ValueError(
+            "Provide either entity1_absolute_id+entity2_absolute_id or "
+            "entity1_family_id+entity2_family_id. "
+            "Use get_entity(family_id=...) to find absolute_id if needed."
+        )
+
     for k in ("episode_id", "source_document"):
         if _arg(args, k):
             body[k] = args[k]
@@ -131,9 +145,9 @@ def create_relation(args):
         e1_name = inner.get("entity1_name", "")
         e2_name = inner.get("entity2_name", "")
         if e1_name and e2_name:
-            hint = f"\n→ Relation created between '{e1_name}' and '{e2_name}'. Verify with get_relations_between(entity_a=..., entity_b=...)."
+            hint = f"\n→ Relation created between '{e1_name}' and '{e2_name}'. Verify with get_relations_between(family_id_a=..., family_id_b=...)."
         else:
-            hint = "\n→ Relation created. Verify with get_relations_between(entity_a=..., entity_b=...)."
+            hint = "\n→ Relation created. Verify with get_relations_between(family_id_a=..., family_id_b=...)."
         _hint(data, hint)
     return _result(data, code)
 
