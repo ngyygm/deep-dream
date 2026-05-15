@@ -62,6 +62,11 @@ curl -s $BASE_URL/graphs
 | Health report | GET | `/find/maintenance/health` | — |
 | Detect communities | POST | `/communities/detect` | `{algorithm:"louvain"}` |
 | List communities | GET | `/communities` | `min_size=3, limit=50` |
+| Entity neighbors | GET | `/find/entities/{fid}/neighbors` | `depth=1` (accepts family_id) |
+| Concept provenance | GET | `/concepts/{fid}/provenance` | `time_point=ISO8601` |
+| Concept mentions | GET | `/concepts/{fid}/mentions` | `time_point=ISO8601` |
+| Search episodes | POST | `/find/episodes/search` | `{query, limit:20}` |
+| Episode text | GET | `/find/episodes/{cache_id}/text` | — |
 
 ## Response Format
 
