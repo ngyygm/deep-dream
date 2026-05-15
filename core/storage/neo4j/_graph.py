@@ -350,6 +350,8 @@ class GraphTraversalMixin:
                 """,
                 uuid=entity_uuid,
             )
+            # Build name lookup: center entity + all neighbor nodes
+            name_map = {center_node["uuid"]: center_node["name"]}
             neighbors = {
                 "entity": center_node,
                 "nodes": [],
@@ -366,11 +368,14 @@ class GraphTraversalMixin:
                         "family_id": record["family_id"],
                     })
                     seen.add(uuid_val)
+                    name_map[uuid_val] = record["name"]
                 edge_key = (record.get("source_uuid"), record.get("target_uuid"))
                 if edge_key[0] and edge_key[1] and edge_key not in seen_edges:
                     neighbors["edges"].append({
                         "source_uuid": edge_key[0],
                         "target_uuid": edge_key[1],
+                        "source_name": name_map.get(edge_key[0]),
+                        "target_name": name_map.get(edge_key[1]),
                         "content": record["fact"],
                         "relation_uuid": record.get("relation_uuid"),
                     })
@@ -520,6 +525,13 @@ class GraphTraversalMixin:
                     )
                     for record in result:
                         entities_updated += record["cnt"]
+
+                    # Ensure target entity remains canonical (latest processed_time)
+                    if new_abs_id:
+                        self._run(session,
+                            "MATCH (e:Entity {uuid: $uuid}) SET e.processed_time = datetime($now)",
+                            uuid=new_abs_id, now=now_iso,
+                        )
 
                     # Create redirects
                     self._run(session,

@@ -529,6 +529,23 @@ class EntityQueryMixin:
                 return record["embedding"][:num_values]
         return None
 
+    def get_entity_names_by_family_ids(self, family_ids: List[str]) -> Dict[str, str]:
+        """批量根据 family_id 查询实体最新名称。"""
+        if not family_ids:
+            return {}
+        with self._session() as session:
+            result = self._run(session,
+                "MATCH (e:Entity) WHERE e.family_id IN $fids AND e.invalid_at IS NULL "
+                "WITH e.family_id AS fid, e.name AS name ORDER BY e.processed_time DESC "
+                "RETURN fid, name",
+                fids=family_ids,
+            )
+            out = {}
+            for r in result:
+                if r["fid"] not in out:
+                    out[r["fid"]] = r["name"]
+            return out
+
     def get_entity_names_by_absolute_ids(self, absolute_ids: List[str]) -> Dict[str, str]:
         """批量根据 absolute_id 查询实体名称。"""
         if not absolute_ids:

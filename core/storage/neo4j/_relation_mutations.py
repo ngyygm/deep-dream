@@ -766,6 +766,23 @@ class RelationMutationMixin:
             if emb_array is not None:
                 self._update_relation_emb_cache(relation, emb_array)
 
+    def update_entity_names_in_relations(self, family_id: str, new_name: str) -> int:
+        """Update entity1_name/entity2_name in all relations referencing this family_id."""
+        with self._session() as session:
+            r1 = self._run(session,
+                "MATCH (r:Relation) WHERE r.entity1_family_id = $fid AND r.invalid_at IS NULL "
+                "SET r.entity1_name = $name RETURN count(r) AS c",
+                fid=family_id, name=new_name,
+            )
+            c1 = (r1.single() or {}).get("c", 0)
+            r2 = self._run(session,
+                "MATCH (r:Relation) WHERE r.entity2_family_id = $fid AND r.invalid_at IS NULL "
+                "SET r.entity2_name = $name RETURN count(r) AS c",
+                fid=family_id, name=new_name,
+            )
+            c2 = (r2.single() or {}).get("c", 0)
+            return c1 + c2
+
     def update_relation_by_absolute_id(self, absolute_id: str, **fields) -> Optional[Relation]:
         """Update specified fields by absolute_id, return updated Relation or None.
 

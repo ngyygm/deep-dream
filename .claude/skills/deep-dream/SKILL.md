@@ -47,7 +47,7 @@ curl -s $BASE_URL/graphs
 | Find by name | GET | `/find/entities/by-name/{name}` | `threshold=0.7` |
 | Entity profile | GET | `/find/entities/{fid}/profile` | — |
 | Quick search | POST | `/find` | `{query}` |
-| Traverse graph | POST | `/find/traverse` | `{seed_family_ids:[...], max_depth}` |
+| Traverse graph | POST | `/find/traverse` | `{seed_family_ids:["ent_abc",...], max_depth:2}` |
 | Shortest path | POST | `/find/paths/shortest` | `{family_id_a, family_id_b}` |
 | Create entity | POST | `/find/entities/create` | `{name, content}` |
 | Create relation | POST | `/find/relations/create` | `{entity1_family_id, entity2_family_id, content}` |
@@ -61,7 +61,7 @@ curl -s $BASE_URL/graphs
 | Butler execute | POST | `/butler/execute` | `{actions:[...], dry_run:true}` |
 | Health report | GET | `/find/maintenance/health` | — |
 | Detect communities | POST | `/communities/detect` | `{algorithm:"louvain"}` |
-| List communities | GET | `/communities` | `min_size=3, limit=50` |
+| List communities | GET | `/communities` | `min_size=3, limit=50` (returns `data.communities` list, requires `detect_communities` first) |
 | Entity neighbors | GET | `/find/entities/{fid}/neighbors` | `depth=1` (accepts family_id) |
 | Concept provenance | GET | `/concepts/{fid}/provenance` | `time_point=ISO8601` |
 | Concept mentions | GET | `/concepts/{fid}/mentions` | `time_point=ISO8601` |
@@ -81,7 +81,9 @@ All responses: `{"success": bool, "data": ..., "elapsed_ms": float}`
   - **List**: `data: [{...}, ...]` (search, find entities, list)
   - **Aggregation**: `data: {entities: [...], relations: [...], ...}` (find, graph-summary, recent-activity)
   - **Counts**: `data: {total, count, ...}` (routes, counts)
-  - **Neighbors**: `data: {entity: {uuid, name, family_id}, nodes: [...], edges: [...]}` (neighbors)
+  - **Neighbors**: `data: {entity: {uuid, name, family_id}, nodes: [{uuid, name, family_id}], edges: [{source_uuid, target_uuid, source_name, target_name, content, relation_uuid}]}` (neighbors)
+  - **Traverse**: `data: {entities: [...], relations: [...], visited_count}` (traverse)
+  - **Update**: `data: {family_id, name, content, summary, community_id, ...}` (update — returns full entity)
 - Errors: `{"success": false, "error": "message", "hint": "actionable guidance", "elapsed_ms": float}`
 - Error messages may be in Chinese. The `hint` field provides English guidance.
 - Add `compact=true` query param to strip embeddings and truncate content.
@@ -251,9 +253,9 @@ When the extraction pipeline cannot determine an entity name, it creates `auto_X
 - `remember` sync mode: if extraction takes longer than `timeout` seconds (default 300), returns HTTP 202 with `status:"running"` — continue polling via task endpoint
 - Entity search uses `query_name` param, not `q` or `query`
 - Shortest path uses `family_id_a`/`family_id_b` (or aliases `entity1_family_id`/`entity2_family_id`)
-- `update_entity`: name/content changes create a new version (preserves summary, confidence, community_id); summary/attribute changes are in-place
+- `update_entity`: returns full updated entity. name/content changes create a new version (preserves summary, confidence, community_id); summary/attribute changes are in-place. Entity rename auto-propagates to relation records and refreshes RELATES_TO edges
 - `shortest_path`: returns 404 if either entity family_id doesn't exist; returns `path_length:-1` if entities exist but are disconnected
-- `merge`: auto-redirects Relation endpoints and refreshes RELATES_TO edges — no manual refresh-edges needed after merge
+- `merge`: target entity stays canonical (name/content preserved); source entities are absorbed. Auto-redirects Relation endpoints and refreshes RELATES_TO edges
 - `merge`: rejects with HTTP 409 if source/target names have < 20% character overlap; pass `skip_name_check: true` in body to override
 - `merge`: response data is nested at `data.merged_count` (not flat in `data`)
 - `dry_run:true` only works for `butler/execute`, NOT for merge or other destructive ops
@@ -262,6 +264,9 @@ When the extraction pipeline cannot determine an entity name, it creates `auto_X
 - `neighbors` / `profile`: returns `success: true` with null entity/empty arrays for nonexistent family_ids — not a 404
 - Chinese characters in curl URLs: use `--data-urlencode` or Python urllib to avoid encoding issues
 - Entity versions are ordered by `processed_time` (ingestion time), NOT `event_time` (when the event occurred)
+- `traverse`: requires RELATES_TO edges to exist. If traverse returns empty but neighbors works, run `POST /find/entities/refresh-edges` first
+- `communities/list`: returns empty or 500 if `detect_communities` hasn't been called — always POST `/communities/detect` first
+- `search` results may show stale family_ids for entities that were merged/redirected — profile endpoint resolves correctly
 
 ## Slow Endpoints
 

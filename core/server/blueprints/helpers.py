@@ -247,24 +247,39 @@ def relation_to_dict(r: Relation, _score: Optional[float] = None,
 
 def enrich_relations(relations_dicts, processor):
     """为关系列表补充 entity1_name / entity2_name 及缺失的 family_id。"""
+    family_ids = set()
     abs_ids = set()
     needs_family_id = False
     for rd in relations_dicts:
-        if rd.get('entity1_absolute_id'):
+        if rd.get('entity1_family_id'):
+            family_ids.add(rd['entity1_family_id'])
+        elif rd.get('entity1_absolute_id'):
             abs_ids.add(rd['entity1_absolute_id'])
-        if rd.get('entity2_absolute_id'):
+        if rd.get('entity2_family_id'):
+            family_ids.add(rd['entity2_family_id'])
+        elif rd.get('entity2_absolute_id'):
             abs_ids.add(rd['entity2_absolute_id'])
         if not rd.get('entity1_family_id') or not rd.get('entity2_family_id'):
             needs_family_id = True
-    if not abs_ids:
+    name_map = {}
+    if family_ids and hasattr(processor.storage, 'get_entity_names_by_family_ids'):
+        name_map = processor.storage.get_entity_names_by_family_ids(list(family_ids))
+    if abs_ids:
+        abs_name_map = processor.storage.get_entity_names_by_absolute_ids(list(abs_ids))
+        name_map.update(abs_name_map)
+    if not name_map and not abs_ids:
         return relations_dicts
-    name_map = processor.storage.get_entity_names_by_absolute_ids(list(abs_ids))
     fid_map = {}
     if needs_family_id and hasattr(processor.storage, 'get_family_ids_by_absolute_ids'):
-        fid_map = processor.storage.get_family_ids_by_absolute_ids(list(abs_ids))
+        fid_map = processor.storage.get_family_ids_by_absolute_ids(list(abs_ids | set(
+            rd.get('entity1_family_id', '') or rd.get('entity2_family_id', '')
+            for rd in relations_dicts
+        ) - {''}))
     for rd in relations_dicts:
-        rd['entity1_name'] = name_map.get(rd.get('entity1_absolute_id'), '')
-        rd['entity2_name'] = name_map.get(rd.get('entity2_absolute_id'), '')
+        rd['entity1_name'] = name_map.get(rd.get('entity1_family_id'), 
+            name_map.get(rd.get('entity1_absolute_id'), ''))
+        rd['entity2_name'] = name_map.get(rd.get('entity2_family_id'),
+            name_map.get(rd.get('entity2_absolute_id'), ''))
         if needs_family_id:
             if not rd.get('entity1_family_id'):
                 rd['entity1_family_id'] = fid_map.get(rd.get('entity1_absolute_id'), '')
