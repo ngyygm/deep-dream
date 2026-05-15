@@ -60,6 +60,7 @@ curl -s $BASE_URL/graphs
 | Butler report | GET | `/butler/report` | — |
 | Butler execute | POST | `/butler/execute` | `{actions:[...], dry_run:true}` |
 | Health report | GET | `/find/maintenance/health` | — |
+| Fix dangling refs | POST | `/butler/execute` | `{actions:["fix_dangling_refs"]}` |
 | Detect communities | POST | `/communities/detect` | `{algorithm:"louvain"}` |
 | List communities | GET | `/communities` | `min_size=3, limit=50` (returns `data.communities` list, requires `detect_communities` first) |
 | Entity neighbors | GET | `/find/entities/{fid}/neighbors` | `depth=1` (accepts family_id) |
@@ -262,7 +263,7 @@ When the extraction pipeline cannot determine an entity name, it creates `auto_X
 - `merge`: auto-updates source entity names to target name and refreshes RELATES_TO edges
 - Auto-named entities (`auto_XXXXXXXX`) may outrank real entities in search results — filter by checking `content` field
 - `dry_run:true` only works for `butler/execute`, NOT for merge or other destructive ops
-- Valid `butler_execute` actions: `cleanup_isolated`, `cleanup_invalidated`, `detect_communities`, `evolve_summaries` (NOT `run_dream`)
+- Valid `butler_execute` actions: `cleanup_isolated`, `cleanup_invalidated`, `fix_dangling_refs`, `detect_communities`, `evolve_summaries` (NOT `run_dream`)
 - If remember returns 0 entities, check LLM health: `GET /health/llm`
 - `profile`: returns 404 `{success: false, error: "..."}` for nonexistent family_ids (not `success: true` with null). `neighbors` returns `success: true` with empty arrays for nonexistent IDs
 - Chinese characters in curl URLs: use `--data-urlencode` or Python urllib to avoid encoding issues

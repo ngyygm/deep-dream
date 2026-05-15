@@ -783,6 +783,114 @@ class RelationMutationMixin:
             c2 = (r2.single() or {}).get("c", 0)
             return c1 + c2
 
+    def fix_dangling_relation_refs(self, dry_run: bool = False) -> dict:
+        """Fix relations whose entity1/2_absolute_id points to a non-existent entity.
+        Rewrites stale UUIDs to the latest valid UUID for the same family_id.
+        """
+        with self._session() as session:
+            # Find all distinct absolute_ids referenced by valid relations
+            r = self._run(session, """
+                MATCH (rel:Relation) WHERE rel.invalid_at IS NULL
+                WITH collect(DISTINCT rel.entity1_absolute_id) + collect(DISTINCT rel.entity2_absolute_id) AS all_aids
+                UNWIND all_aids AS aid
+                RETURN collect(DISTINCT aid) AS rel_aids
+            """)
+            row = r.single()
+            rel_aids = set(row["rel_aids"] or ())
+
+            # Find all valid entity UUIDs
+            r2 = self._run(session, """
+                MATCH (e:Entity) WHERE e.invalid_at IS NULL
+                RETURN collect(DISTINCT e.uuid) AS ent_uuids
+            """)
+            row2 = r2.single()
+            valid_uuids = set(row2["ent_uuids"] or ())
+
+            dangling = rel_aids - valid_uuids
+            if not dangling:
+                return {"fixed": 0, "dangling_found": 0, "dry_run": dry_run}
+
+            if dry_run:
+                return {"fixed": 0, "dangling_found": len(dangling), "dry_run": True}
+
+            # For each dangling UUID, find the family_id and latest valid UUID
+            dangling_list = list(dangling)
+            r3 = self._run(session, """
+                UNWIND $dangling AS aid
+                MATCH (e:Entity {uuid: aid})
+                RETURN e.uuid AS old_uuid, e.family_id AS fid
+            """, dangling=dangling_list)
+            old_to_fid = {rec["old_uuid"]: rec["fid"] for rec in r3 if rec.get("fid")}
+
+            # Also look up family_ids from Relation nodes for fully deleted entities
+            if len(old_to_fid) < len(dangling):
+                missing_uuids = [u for u in dangling_list if u not in old_to_fid]
+                r3b = self._run(session, """
+                    UNWIND $missing AS aid
+                    MATCH (r:Relation) WHERE r.entity1_absolute_id = aid AND r.invalid_at IS NULL
+                    RETURN aid AS old_uuid, r.entity1_family_id AS fid
+                """, missing=missing_uuids[:500])
+                for rec in r3b:
+                    if rec.get("fid") and rec["old_uuid"] not in old_to_fid:
+                        old_to_fid[rec["old_uuid"]] = rec["fid"]
+                r3c = self._run(session, """
+                    UNWIND $missing AS aid
+                    MATCH (r:Relation) WHERE r.entity2_absolute_id = aid AND r.invalid_at IS NULL
+                    RETURN aid AS old_uuid, r.entity2_family_id AS fid
+                """, missing=missing_uuids[:500])
+                for rec in r3c:
+                    if rec.get("fid") and rec["old_uuid"] not in old_to_fid:
+                        old_to_fid[rec["old_uuid"]] = rec["fid"]
+
+            if not old_to_fid:
+                return {"fixed": 0, "dangling_found": len(dangling), "dry_run": False}
+
+            # Get latest valid UUID for each family_id
+            fids = list(set(old_to_fid.values()))
+            r4 = self._run(session, """
+                UNWIND $fids AS fid
+                MATCH (e:Entity {family_id: fid})
+                WHERE e.invalid_at IS NULL
+                WITH fid, e ORDER BY e.processed_time DESC
+                WITH fid, HEAD(collect(e.uuid)) AS latest_uuid
+                RETURN fid, latest_uuid
+            """, fids=fids)
+            fid_to_latest = {rec["fid"]: rec["latest_uuid"] for rec in r4 if rec.get("latest_uuid")}
+
+            # Build old_uuid -> latest_uuid mapping
+            remap = {}
+            for old_uuid, fid in old_to_fid.items():
+                latest = fid_to_latest.get(fid)
+                if latest and latest != old_uuid:
+                    remap[old_uuid] = latest
+
+            if not remap:
+                return {"fixed": 0, "dangling_found": len(dangling), "dry_run": False, "remappable": 0}
+
+            # Apply fixes
+            fixed1 = 0
+            fixed2 = 0
+            for old_uuid, new_uuid in remap.items():
+                r5 = self._run(session,
+                    "MATCH (r:Relation) WHERE r.entity1_absolute_id = $old AND r.invalid_at IS NULL "
+                    "SET r.entity1_absolute_id = $new RETURN count(r) AS c",
+                    old=old_uuid, new=new_uuid,
+                )
+                fixed1 += (r5.single() or {}).get("c", 0)
+                r6 = self._run(session,
+                    "MATCH (r:Relation) WHERE r.entity2_absolute_id = $old AND r.invalid_at IS NULL "
+                    "SET r.entity2_absolute_id = $new RETURN count(r) AS c",
+                    old=old_uuid, new=new_uuid,
+                )
+                fixed2 += (r6.single() or {}).get("c", 0)
+
+            return {
+                "fixed": fixed1 + fixed2,
+                "dangling_found": len(dangling),
+                "remapped_uuids": len(remap),
+                "dry_run": False,
+            }
+
     def update_relation_by_absolute_id(self, absolute_id: str, **fields) -> Optional[Relation]:
         """Update specified fields by absolute_id, return updated Relation or None.
 

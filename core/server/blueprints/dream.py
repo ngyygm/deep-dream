@@ -814,7 +814,7 @@ def butler_execute():
         results = {}
 
         # Partition actions: independent ones can run in parallel
-        _independent_actions = {"cleanup_isolated", "cleanup_invalidated", "detect_communities"}
+        _independent_actions = {"cleanup_isolated", "cleanup_invalidated", "detect_communities", "fix_dangling_refs"}
         independent = [a for a in actions if a in _independent_actions]
         sequential = [a for a in actions if a not in _independent_actions]
 
@@ -838,6 +838,11 @@ def butler_execute():
                 if hasattr(storage, 'detect_communities'):
                     return storage.detect_communities()
                 return {"status": "skipped", "reason": "需要 Neo4j 后端"}
+
+            elif action == "fix_dangling_refs":
+                if hasattr(storage, "fix_dangling_relation_refs"):
+                    return storage.fix_dangling_relation_refs(dry_run=dry_run)
+                return {"status": "skipped", "reason": "当前存储后端不支持"}
 
             return {"status": "unknown", "reason": f"未知操作: {action}"}
 

@@ -105,27 +105,42 @@ class EntityQueryMixin:
             all_aids.update(aids)
 
         relations_map: Dict[str, List] = {fid: [] for fid in canonical_set}
+        _fids_list = list(canonical_set)
         if all_aids:
             with self._session() as session:
                 result = self._run(session, _q("""
                     MATCH (r:Relation)
-                    WHERE (r.entity1_absolute_id IN $aids OR r.entity2_absolute_id IN $aids)
+                    WHERE (r.entity1_absolute_id IN $aids OR r.entity2_absolute_id IN $aids
+                           OR r.entity1_family_id IN $fids OR r.entity2_family_id IN $fids)
                       AND r.invalid_at IS NULL
                     RETURN __REL_FIELDS__
                     """),
-                    aids=list(all_aids),
+                    aids=list(all_aids), fids=_fids_list,
                 )
                 all_rels = [_neo4j_record_to_relation(rec) for rec in result]
 
-            # 分配关系到对应的 family_id (O(R) via reverse lookup)
+            # Deduplicate by relation family_id (may match via both absolute_id and family_id)
+            _seen_rel_fids = set()
+            _deduped_rels = []
+            for rel in all_rels:
+                if rel.family_id and rel.family_id in _seen_rel_fids:
+                    continue
+                if rel.family_id:
+                    _seen_rel_fids.add(rel.family_id)
+                _deduped_rels.append(rel)
+
+            # Assign relations to family_id (prefer absolute_id match, fall back to family_id)
             aid_to_fid = {}
             for fid, aids in fid_to_aids.items():
                 for aid in aids:
                     aid_to_fid[aid] = fid
-            _seen_rel_fids = set()
-            for rel in all_rels:
-                fid1 = aid_to_fid.get(rel.entity1_absolute_id)
-                fid2 = aid_to_fid.get(rel.entity2_absolute_id)
+            for rel in _deduped_rels:
+                fid1 = aid_to_fid.get(rel.entity1_absolute_id) or (
+                    rel.entity1_family_id if rel.entity1_family_id in canonical_set else None
+                )
+                fid2 = aid_to_fid.get(rel.entity2_absolute_id) or (
+                    rel.entity2_family_id if rel.entity2_family_id in canonical_set else None
+                )
                 if fid1:
                     relations_map[fid1].append(rel)
                 if fid2 and fid2 != fid1:
