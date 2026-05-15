@@ -749,11 +749,16 @@ def update_entity_v2(family_id: str):
         summary = body.get("summary")
         attributes = body.get("attributes")
 
-        if summary is not None:
-            processor.storage.update_entity_summary(family_id, str(summary))
-        if attributes is not None:
-            attr_str = json.dumps(attributes, ensure_ascii=False) if isinstance(attributes, dict) else str(attributes)
-            processor.storage.update_entity_attributes(family_id, attr_str)
+        if summary is not None or attributes is not None:
+            existing = processor.storage.get_entity_by_family_id(family_id)
+            if existing is None:
+                return err(f"未找到实体: {family_id}", 404)
+            if summary is not None:
+                processor.storage.update_entity_summary(family_id, str(summary))
+            if attributes is not None:
+                attr_str = json.dumps(attributes, ensure_ascii=False) if isinstance(attributes, dict) else str(attributes)
+                processor.storage.update_entity_attributes(family_id, attr_str)
+            return ok({"message": "实体属性已更新", "family_id": family_id})
 
         if summary is None and attributes is None:
             name = body.get("name")

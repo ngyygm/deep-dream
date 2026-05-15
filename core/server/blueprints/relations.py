@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional, Set
 # Shared pool for find_unified — avoids thread creation/destruction per request
 _shared_pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="find-unified")
 
-from flask import Blueprint, request
+from flask import Blueprint, current_app, request
 
 from core.models import Entity, Relation
 from core.find.hybrid import HybridSearcher
@@ -1097,6 +1097,10 @@ def find_graph_stats():
 def graph_summary():
     """聚合返回：图谱统计 + 健康状态。"""
     try:
+        graph_id = _get_graph_id()
+        registry = current_app.config["registry"]
+        if graph_id not in registry.list_graphs():
+            return err(f"图不存在: {graph_id}", 404)
         processor = _get_processor()
         stats = processor.storage.get_graph_statistics()
         embedding_available = (
@@ -1105,7 +1109,7 @@ def graph_summary():
         )
         storage_backend = "neo4j"
         return ok({
-            "graph_id": _get_graph_id(),
+            "graph_id": graph_id,
             "storage_backend": storage_backend,
             "embedding_available": embedding_available,
             "statistics": stats,

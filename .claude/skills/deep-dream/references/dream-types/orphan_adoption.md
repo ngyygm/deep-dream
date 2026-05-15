@@ -49,7 +49,7 @@ get_dream_seeds(strategy=orphan, count=5)
 
   # 方式 2: 通过共同领域
   candidate_rels = get_entity_relations(family_id=candidate)
-  orphan_neighborhood = traverse_graph(start_entity_id=orphan, max_depth=2)
+  orphan_neighborhood = traverse_graph(seed_family_ids=[orphan], max_depth=2)
 
   如果找到共同邻居：
     → create_dream_relation + 额外记录共同邻居

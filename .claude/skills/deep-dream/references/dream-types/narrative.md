@@ -49,7 +49,7 @@ timeline = get_entity_timeline(family_id=hub, limit=20)
 ### 4. 多视角叙事
 ```
 对每个辅助视角实体 V:
-  traverse_graph(start_entity_id=V, max_depth=2)
+  traverse_graph(seed_family_ids=[V], max_depth=2)
 
   如果 V 的子图与核心叙事有交集：
     → 从 V 的视角重新审视交集部分
