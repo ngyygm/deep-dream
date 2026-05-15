@@ -110,10 +110,10 @@ class RelationMutationMixin:
                     SET r.entity1_family_id = ref1.family_id,
                         r.entity2_family_id = ref2.family_id
                     WITH r, ref1, ref2
-                    MATCH (old:Relation {family_id: $family_id})
+                    OPTIONAL MATCH (old:Relation {family_id: $family_id})
                     WHERE old.uuid <> $uuid AND old.invalid_at IS NULL
                     SET old.invalid_at = datetime($event_time)
-                    WITH r, ref1, ref2
+                    WITH r, ref1, ref2 WHERE r IS NOT NULL
                     MATCH (n1:Entity {family_id: ref1.family_id}) WHERE n1.invalid_at IS NULL
                     MATCH (n2:Entity {family_id: ref2.family_id}) WHERE n2.invalid_at IS NULL
                     MERGE (n1)-[rel:RELATES_TO {relation_uuid: $uuid}]->(n2)
@@ -255,10 +255,10 @@ class RelationMutationMixin:
                     SET r.entity1_family_id = ref1.family_id,
                         r.entity2_family_id = ref2.family_id
                     WITH row, ref1, ref2
-                    MATCH (r:Relation {family_id: row.family_id})
+                    OPTIONAL MATCH (r:Relation {family_id: row.family_id})
                     WHERE r.uuid <> row.uuid AND r.invalid_at IS NULL
                     SET r.invalid_at = datetime(row.event_time)
-                    WITH row, ref1, ref2
+                    WITH row, ref1, ref2 WHERE row IS NOT NULL
                     MATCH (n1:Entity {family_id: ref1.family_id}) WHERE n1.invalid_at IS NULL
                     MATCH (n2:Entity {family_id: ref2.family_id}) WHERE n2.invalid_at IS NULL
                     MERGE (n1)-[rel:RELATES_TO {relation_uuid: row.uuid}]->(n2)
@@ -435,10 +435,10 @@ class RelationMutationMixin:
                     SET r.entity1_family_id = ref1.family_id,
                         r.entity2_family_id = ref2.family_id
                     WITH row, ref1, ref2
-                    MATCH (r:Relation {family_id: row.family_id})
+                    OPTIONAL MATCH (r:Relation {family_id: row.family_id})
                     WHERE r.uuid <> row.uuid AND r.invalid_at IS NULL
                     SET r.invalid_at = datetime(row.event_time)
-                    WITH row, ref1, ref2
+                    WITH row, ref1, ref2 WHERE row IS NOT NULL
                     MATCH (n1:Entity {family_id: ref1.family_id}) WHERE n1.invalid_at IS NULL
                     MATCH (n2:Entity {family_id: ref2.family_id}) WHERE n2.invalid_at IS NULL
                     MERGE (n1)-[rel:RELATES_TO {relation_uuid: row.uuid}]->(n2)
