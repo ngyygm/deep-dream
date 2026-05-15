@@ -748,8 +748,8 @@ class DreamMixin:
         report = SimpleNamespace(
             cycle_id=dream_cycle_id,
             graph_id=self._graph_id,
-            start_time=now,
-            end_time=now,
+            start_time=cycle_start_time or now,
+            end_time=cycle_end_time or now,
             status="completed",
             narrative=content[:2000],
             insights=[],

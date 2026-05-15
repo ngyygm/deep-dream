@@ -87,11 +87,13 @@ class CommunityMixin:
         # 加载所有 Entity + RELATES_TO 边
         with self._session() as session:
             result = self._run(session, 
-                "MATCH (e:Entity) RETURN e.uuid AS uuid, e.family_id AS fid, e.name AS name"
+                "MATCH (e:Entity) WHERE e.invalid_at IS NULL RETURN e.uuid AS uuid, e.family_id AS fid, e.name AS name"
             )
             entity_map = {}  # uuid -> fid
+            entity_names = {}  # uuid -> name
             for r in result:
                 entity_map[r["uuid"]] = r["fid"]
+                entity_names[r["uuid"]] = r.get("name", "")
 
             result = self._run(session, 
                 "MATCH (a:Entity)-[r:RELATES_TO]->(b:Entity) "
@@ -121,9 +123,26 @@ class CommunityMixin:
 
         elapsed = time.time() - t0
         community_sizes = [len(c) for c in communities]
+        # Build per-community member lists (top entities by name)
+        community_members = []
+        for cid, community_set in enumerate(communities):
+            members = []
+            for uuid_val in community_set:
+                fid = entity_map.get(uuid_val, "")
+                name = entity_names.get(uuid_val, "")
+                if fid:
+                    members.append({"family_id": fid, "name": name})
+            community_members.append({
+                "community_id": cid,
+                "size": len(members),
+                "members": members[:20],
+            })
+        # Sort by size descending
+        community_members.sort(key=lambda c: c["size"], reverse=True)
         return {
             "total_communities": len(communities),
             "community_sizes": sorted(community_sizes, reverse=True),
+            "communities": community_members[:50],
             "elapsed_seconds": round(elapsed, 3),
         }
 

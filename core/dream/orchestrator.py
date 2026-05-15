@@ -223,6 +223,8 @@ class DreamOrchestrator:
         config = self.config
         self._cycle_count += 1
         cycle_id = f"dream_{uuid.uuid4().hex[:12]}"
+        import time as _time
+        cycle_start = _time.time()
 
         # Step 0: 策略轮换（如果启用）
         effective_strategy = config.strategy
@@ -281,8 +283,10 @@ class DreamOrchestrator:
             f"探索实体={len(seen_ids)}，检查配对={pairs_checked}，"
             f"创建关系={len(relations_created)}"
         )
+        cycle_end = _time.time()
         self._save_episode(
             cycle_id, cycle_summary, seen_ids, relations_created, run_config,
+            start_time=cycle_start, end_time=cycle_end,
         )
 
         # Step 5: 更新跨周期历史
@@ -826,9 +830,14 @@ class DreamOrchestrator:
         seen_ids: Set[str],
         relations_created: List[Dict[str, Any]],
         config: DreamConfig,
+        start_time: float = None,
+        end_time: float = None,
     ) -> None:
         """保存梦境周期记录。"""
         try:
+            from datetime import datetime as _dt
+            st = _dt.fromtimestamp(start_time) if start_time else None
+            et = _dt.fromtimestamp(end_time) if end_time else None
             self.storage.save_dream_episode(
                 content=cycle_summary,
                 entities_examined=list(seen_ids)[:50],
@@ -839,6 +848,8 @@ class DreamOrchestrator:
                 strategy_used=config.strategy,
                 dream_cycle_id=cycle_id,
                 relations_created_count=len(relations_created),
+                cycle_start_time=st,
+                cycle_end_time=et,
             )
         except Exception as exc:
             logger.warning("Dream: 保存梦境记录失败: %s", exc)

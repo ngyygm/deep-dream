@@ -430,9 +430,9 @@ def find_relations_search():
         threshold = float(_get_value("similarity_threshold") or _get_value("threshold", 0.5))
         max_results = int(_get_value("max_results") or _get_value("limit", 10))
 
-        search_mode = str(_get_value("search_mode", "semantic") or "semantic").strip().lower()
+        search_mode = str(_get_value("search_mode", "hybrid") or "hybrid").strip().lower()
         if search_mode not in _VALID_SEARCH_MODES:
-            search_mode = "semantic"
+            search_mode = "hybrid"
 
         searcher = _get_searcher(processor.storage)
         if search_mode == "hybrid":
@@ -478,7 +478,7 @@ def find_relations_search():
                             if r.absolute_id not in seen_ids:
                                 seen_ids.add(r.absolute_id)
                                 all_rels.append(r)
-                    ranked = [(r, 0.5) for r in all_rels[:max_results]]
+                    ranked = [(r, max(0.3, getattr(r, "confidence", None) or 0.5)) for r in all_rels[:max_results]]
             except Exception:
                 pass
         dicts = [relation_to_dict(r, _score=score) for r, score in ranked]
