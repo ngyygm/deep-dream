@@ -252,6 +252,8 @@ def detect_communities():
         resolution = min(max(resolution, 0.1), 10.0)
         result = processor.storage.detect_communities(algorithm=algorithm, resolution=resolution)
         return ok(result)
+    except ValueError as ve:
+        return err(str(ve), 400)
     except Exception as e:
         return err(str(e), 500)
 

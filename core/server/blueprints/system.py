@@ -274,6 +274,12 @@ _API_ROUTE_INDEX = {
 }
 
 
+@system_bp.route("/api/v1/routes", methods=["GET"])
+def route_index():
+    """Return API route index."""
+    return ok(_API_ROUTE_INDEX)
+
+
 # ── Health ──────────────────────────────────────────────────────────────
 
 @system_bp.route("/api/v1/health", methods=["GET"])

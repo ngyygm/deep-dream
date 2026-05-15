@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import logging
 
-from flask import request
+from flask import current_app, request
 
 from core.find.graph_traversal import GraphTraversalSearcher
 from core.server.blueprints import helpers as _h
@@ -166,6 +166,10 @@ def find_graph_stats():
 def graph_summary():
     """Aggregated response: graph statistics + health status."""
     try:
+        graph_id = _get_graph_id()
+        registry = current_app.config["registry"]
+        if graph_id not in registry.list_graphs():
+            return err(f"图不存在: {graph_id}", 404)
         processor = _get_processor()
         stats = processor.storage.get_graph_statistics()
         embedding_available = (

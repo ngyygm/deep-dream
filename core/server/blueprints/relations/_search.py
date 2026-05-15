@@ -454,6 +454,24 @@ def find_relations_search():
                 )
             ranked = [(r, 1.0 - i * 0.01) for i, r in enumerate(relations)]
         ranked = searcher.confidence_rerank(ranked, alpha=0.2, time_decay_half_life_days=90.0)
+
+        # Fallback: if no results and query is short, try entity name prefix -> their relations
+        if not ranked and 1 <= len(query_text) <= 50 and hasattr(processor.storage, 'find_entity_by_name_prefix'):
+            try:
+                prefix_matches = processor.storage.find_entity_by_name_prefix(query_text, limit=3)
+                if prefix_matches:
+                    fids = [e.family_id for e in prefix_matches[:3]]
+                    all_rels = []
+                    seen_ids = set()
+                    for fid in fids:
+                        rels = processor.storage.get_entity_relations_by_family_id(fid)
+                        for r in rels:
+                            if r.absolute_id not in seen_ids:
+                                seen_ids.add(r.absolute_id)
+                                all_rels.append(r)
+                    ranked = [(r, 0.5) for r in all_rels[:max_results]]
+            except Exception:
+                pass
         dicts = [relation_to_dict(r, _score=score) for r, score in ranked]
         enrich_relation_version_counts(dicts, processor.storage)
         enrich_relations(dicts, processor)
