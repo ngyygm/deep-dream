@@ -206,6 +206,8 @@ _HINT_PATTERNS = [
      "Hint: check the required parameters. Missing or empty fields cause validation errors."),
     (lambda m: "conflict" in m,
      "Hint: resource state conflict. The data may have changed since last read — refresh with get_entity or entity_profile."),
+    (lambda m: "为必填" in m or "必填" in m or "required" in m.lower() and "parameter" in m.lower(),
+     "Hint: a required parameter is missing. Check the API docs for required fields."),
     (lambda m: ("graph" in m or "图谱" in m) and ("not found" in m or "不存在" in m),
      "Hint: use list_graphs (GET /graphs) to see available graphs."),
     (lambda m: ("graph" in m or "图谱" in m) and "already exists" in m,

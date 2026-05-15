@@ -533,6 +533,15 @@ class GraphTraversalMixin:
                             uuid=new_abs_id, now=now_iso,
                         )
 
+                    # Update names on source entity versions to match target (prevents stale search hits)
+                    target_ent = self.get_entity_by_family_id(target_family_id)
+                    if target_ent:
+                        self._run(session,
+                            "UNWIND $pairs AS p MATCH (e:Entity {family_id: p.tid}) "
+                            "WHERE e.uuid <> $keep_uuid SET e.name = $new_name",
+                            pairs=pairs, keep_uuid=target_ent.absolute_id, new_name=target_ent.name,
+                        )
+
                     # Create redirects
                     self._run(session,
                         """

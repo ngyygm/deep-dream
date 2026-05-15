@@ -227,6 +227,11 @@ def merge_entities():
         result = processor.storage.merge_entity_families(target_id, source_ids, skip_name_check=skip_name_check)
         if result.get("rejected"):
             return err("合并被拒绝：源实体与目标实体名称差异过大。使用 skip_name_check: true 强制合并。", 409)
+        # Update entity names in relations to reflect merge
+        if hasattr(processor.storage, 'update_entity_names_in_relations'):
+            target_ent = processor.storage.get_entity_by_family_id(target_id)
+            if target_ent:
+                processor.storage.update_entity_names_in_relations(target_id, target_ent.name)
         return ok({"message": "实体合并完成", "target_family_id": target_id, "source_family_ids": source_ids, "merged_count": result})
     except Exception as e:
         return err(str(e), 500)
