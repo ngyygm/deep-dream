@@ -631,53 +631,44 @@ class EntityQueryMixin:
             # Single combined query: collect abs_ids + get version times + get relations
             # Uses CALL subqueries to keep the pipeline in one round-trip
             result = self._run(session, """
-                // Step 1: Collect all absolute_ids for this family_id
-                MATCH (e:Entity {family_id: $fid})
-                WITH collect(e.uuid) AS abs_ids
-
-                // Step 2: Get version processed_times
-                CALL () {
-                    WITH abs_ids
-                    MATCH (e:Entity)
-                    WHERE e.uuid IN $version_abs_ids
-                    RETURN e.uuid AS uuid, e.processed_time AS pt
-                    ORDER BY e.processed_time ASC
-                }
-                WITH abs_ids, collect({uuid: uuid, pt: pt}) AS version_times
-
-                // Step 3: Get latest-version relations referencing any abs_id
-                CALL () {
-                    WITH abs_ids
-                    UNWIND abs_ids AS aid
-                    MATCH (r:Relation)
-                    WHERE (r.entity1_absolute_id = aid OR r.entity2_absolute_id = aid)
-                    WITH r.family_id AS fid, COLLECT(r) AS rels
-                    UNWIND rels AS r
-                    WITH fid, r ORDER BY r.processed_time DESC
-                    WITH fid, HEAD(COLLECT(r)) AS r
-                    RETURN r.uuid AS uuid, r.family_id AS family_id,
-                           r.content AS content, r.event_time AS event_time,
-                           r.processed_time AS processed_time
-                }
-
-                // Step 4: Return both version_times and relations
-                RETURN version_times,
-                       collect({
-                           uuid: uuid, family_id: family_id,
-                           content: content, event_time: event_time,
-                           processed_time: processed_time
-                       }) AS relations
+                // Step 1: Get version processed_times
+                MATCH (e:Entity)
+                WHERE e.uuid IN $version_abs_ids
+                RETURN e.uuid AS uuid, e.processed_time AS pt
+                ORDER BY e.processed_time ASC
             """, fid=family_id, version_abs_ids=version_abs_ids, graph_id_safe=False)
+            version_times = [{"uuid": rec["uuid"], "pt": rec["pt"]} for rec in result]
 
-            record = result.single()
-            if not record:
-                return []
-
-            version_times = record["version_times"]
             if not version_times:
                 return []
 
-            relations = record["relations"]
+            # Step 2: Get all absolute_ids for this family
+            result2 = self._run(session, """
+                MATCH (e:Entity {family_id: $fid})
+                RETURN collect(e.uuid) AS abs_ids
+            """, fid=family_id, graph_id_safe=False)
+            rec2 = result2.single()
+            if not rec2:
+                return []
+            abs_ids = rec2["abs_ids"]
+
+            # Step 3: Get latest-version relations referencing any abs_id
+            result3 = self._run(session, """
+                UNWIND $aids AS aid
+                MATCH (r:Relation)
+                WHERE (r.entity1_absolute_id = aid OR r.entity2_absolute_id = aid)
+                WITH r.family_id AS fid, COLLECT(r) AS rels
+                UNWIND rels AS r
+                WITH fid, r ORDER BY r.processed_time DESC
+                WITH fid, HEAD(COLLECT(r)) AS r
+                RETURN r.uuid AS uuid, r.family_id AS family_id,
+                       r.content AS content, r.event_time AS event_time,
+                       r.processed_time AS processed_time
+            """, aids=abs_ids, graph_id_safe=False)
+            relations = [rec for rec in result3]
+
+            if not relations:
+                return []
 
             # Filter: only include relations that appeared before at least one version time point
             timeline = []

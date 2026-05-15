@@ -486,8 +486,8 @@ def find_relations_between():
         processor = _get_processor()
         body = request.get_json(silent=True) if request.method == "POST" else None
         body = body if isinstance(body, dict) else {}
-        family_id_a = (body.get("family_id_a") or body.get("from_family_id") or request.args.get("family_id_a") or request.args.get("from_family_id") or "").strip()
-        family_id_b = (body.get("family_id_b") or body.get("to_family_id") or request.args.get("family_id_b") or request.args.get("to_family_id") or "").strip()
+        family_id_a = (body.get("family_id_a") or body.get("from_family_id") or body.get("entity1_family_id") or request.args.get("family_id_a") or request.args.get("from_family_id") or request.args.get("entity1_family_id") or "").strip()
+        family_id_b = (body.get("family_id_b") or body.get("to_family_id") or body.get("entity2_family_id") or request.args.get("family_id_b") or request.args.get("to_family_id") or request.args.get("entity2_family_id") or "").strip()
         if not family_id_a or not family_id_b:
             return err("family_id_a 与 family_id_b 为必填参数", 400)
         with _perf_timer("find_relations_between"):
