@@ -317,19 +317,24 @@ class GraphTraversalMixin:
 
 
 
-    def get_entity_neighbors(self, entity_uuid: str, depth: int = 1) -> Dict:
-        """获取实体的邻居图，返回完整的 nodes + edges 结构。"""
+    def get_entity_neighbors(self, entity_id: str, depth: int = 1) -> Dict:
+        """获取实体的邻居图，返回完整的 nodes + edges 结构。
+        
+        entity_id 可以是 family_id (ent_xxx) 或 absolute_id (entity_xxx)。
+        """
         with self._session() as session:
-            # 先获取中心节点
-            center = self._run(session, 
-                "MATCH (e:Entity {uuid: $uuid}) RETURN e.uuid AS uuid, e.name AS name, e.family_id AS family_id",
-                uuid=entity_uuid,
+            # Resolve to absolute_id, accepting either family_id or uuid
+            resolve = self._run(session,
+                "MATCH (e:Entity) WHERE e.family_id = $id OR e.uuid = $id "
+                "RETURN e.uuid AS uuid, e.name AS name, e.family_id AS family_id LIMIT 1",
+                id=entity_id,
             )
-            center_records = list(center)
-            center_node = None
-            if center_records:
-                r = center_records[0]
-                center_node = {"uuid": r["uuid"], "name": r["name"], "family_id": r["family_id"]}
+            resolved = list(resolve)
+            if not resolved:
+                return {"entity": None, "nodes": [], "edges": []}
+            center_rec = resolved[0]
+            entity_uuid = center_rec["uuid"]
+            center_node = {"uuid": center_rec["uuid"], "name": center_rec["name"], "family_id": center_rec["family_id"]}
 
             # 获取所有邻居节点和边
             result = self._run(session, 

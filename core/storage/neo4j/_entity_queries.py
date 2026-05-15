@@ -567,15 +567,9 @@ class EntityQueryMixin:
             # fall back to indirect MENTIONS via relations
             result = self._run(session, """
                 MATCH (e:Entity {family_id: $fid})
-                WITH collect(e.uuid) AS abs_ids
-                CALL () {
-                    WITH abs_ids
-                    MATCH (ep:Episode)-[m:MENTIONS]->(e:Entity)
-                    WHERE e.uuid IN abs_ids AND e.graph_id = $graph_id
-                    RETURN DISTINCT ep.uuid AS episode_id, m.context AS context, 0 AS priority
-                }
-                RETURN episode_id, context, priority
-                ORDER BY priority
+                MATCH (ep:Episode)-[m:MENTIONS]->(e)
+                WHERE e.graph_id = $graph_id
+                RETURN DISTINCT ep.uuid AS episode_id, m.context AS context
             """, fid=family_id, graph_id=self._graph_id, graph_id_safe=False)
             provenance = [{"episode_id": r["episode_id"], "context": r.get("context", "")} for r in result]
 
@@ -586,11 +580,10 @@ class EntityQueryMixin:
             # Re-collect abs_ids in subquery to avoid carrying state
             result = self._run(session, """
                 MATCH (e:Entity {family_id: $fid})
-                WITH collect(e.uuid) AS abs_ids
-                UNWIND abs_ids AS aid
-                MATCH (ep:Episode)-[m:MENTIONS]->(r:Relation)
-                WHERE (r.entity1_absolute_id = aid OR r.entity2_absolute_id = aid)
+                MATCH (r:Relation)
+                WHERE (r.entity1_absolute_id = e.uuid OR r.entity2_absolute_id = e.uuid)
                       AND r.graph_id = $graph_id
+                MATCH (ep:Episode)-[m:MENTIONS]->(r)
                 RETURN DISTINCT ep.uuid AS episode_id, m.context AS context
             """, fid=family_id, graph_id=self._graph_id, graph_id_safe=False)
             return [{"episode_id": r["episode_id"], "context": r.get("context", "")} for r in result]
