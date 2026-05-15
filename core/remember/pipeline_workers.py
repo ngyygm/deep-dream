@@ -156,6 +156,7 @@ def run_step9_worker(processor, state, start_chunk, total_chunks, doc_name,
                 control_check_fn=lambda: poll_control(state, None),
             )
             state.align_results[i] = ar
+            state.aligned_entity_counts[i] = len(ar.unique_entities)
             _success = True
             _step9_elapsed = time.time() - _t_step9_start
             state.window_timings[i]["step9"] = _step9_elapsed

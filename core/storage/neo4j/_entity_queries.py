@@ -52,7 +52,6 @@ class EntityQueryMixin:
             return [{"family_id": fid, "entity": None, "relations": [], "version_count": 0} for fid in family_ids]
 
         # Session 1: 批量获取实体 + 版本数 + 所有 absolute_ids（单次查询）
-        # 2026-04-26: Optimized - use efficient aggregation pattern without HEAD(COLLECT())
         with self._session() as session:
             result = self._run(session,
                 f"""
@@ -60,9 +59,11 @@ class EntityQueryMixin:
                 WHERE e.family_id IN $fids AND e.invalid_at IS NULL
                 WITH e.family_id AS fid, e
                 ORDER BY e.processed_time DESC
-                WITH fid, COLLECT(e) AS entities, COUNT(e) AS vcnt
-                WITH entities[0] AS latest, vcnt, [entity IN entities | entity.uuid] AS all_uuids
-                RETURN latest AS e, vcnt, all_uuids
+                WITH fid, COLLECT(e) AS entities, [entity IN entities | entity.uuid] AS all_uuids
+                WITH entities[0] AS latest, all_uuids, fid
+                MATCH (all:Entity {{family_id: fid}})
+                WITH latest, all_uuids, COUNT(all) AS total_vcnt
+                RETURN latest AS e, total_vcnt, all_uuids
                 ORDER BY e.processed_time DESC
                 """,
                 fids=canonical_set,
@@ -74,7 +75,7 @@ class EntityQueryMixin:
         all_aids = set()
         for record in records:
             entity = _neo4j_record_to_entity(record["e"])
-            vc = record.get("vcnt", 1)
+            vc = record.get("total_vcnt", 1)
             entity_map[entity.family_id] = (entity, vc)
             aids = record.get("all_uuids", [])
             fid_to_aids[entity.family_id] = aids

@@ -261,6 +261,11 @@ def find_entities_search():
                 )
             ranked = [(e, 1.0 - i * 0.01) for i, e in enumerate(entities)]
         ranked = searcher.confidence_rerank(ranked, alpha=0.2, time_decay_half_life_days=90.0)
+
+        # Fallback: if no results and query looks like an entity name, try prefix match
+        if not ranked and 1 <= len(query_name) <= 50 and hasattr(processor.storage, 'find_entity_by_name_prefix'):
+            prefix_matches = processor.storage.find_entity_by_name_prefix(query_name, limit=max_results)
+            ranked = [(e, 0.6) for e in prefix_matches]
         dicts = [h.entity_to_dict(e, _score=score, skip_sections=True) for e, score in ranked]
         h.enrich_entity_version_counts(dicts, processor.storage)
         return ok(dicts)
