@@ -455,17 +455,26 @@ def find_relations_search():
             ranked = [(r, 1.0 - i * 0.01) for i, r in enumerate(relations)]
         ranked = searcher.confidence_rerank(ranked, alpha=0.2, time_decay_half_life_days=90.0)
 
-        # Fallback: if no results and query is short, try entity name prefix -> their relations
-        if not ranked and 1 <= len(query_text) <= 50 and hasattr(processor.storage, 'find_entity_by_name_prefix'):
+        # Fallback: if no results, find entities matching query and return their relations
+        if not ranked and 1 <= len(query_text) <= 200:
             try:
-                prefix_matches = processor.storage.find_entity_by_name_prefix(query_text, limit=3)
-                if prefix_matches:
-                    fids = [e.family_id for e in prefix_matches[:3]]
+                matched_fids = set()
+                # Try name prefix match
+                if hasattr(processor.storage, 'find_entity_by_name_prefix'):
+                    for e in processor.storage.find_entity_by_name_prefix(query_text, limit=3):
+                        matched_fids.add(e.family_id)
+                # Also try BM25 entity search
+                if len(matched_fids) < 3:
+                    try:
+                        for e in processor.storage.search_entities_by_bm25(query_text, limit=3):
+                            matched_fids.add(e.family_id)
+                    except Exception:
+                        pass
+                if matched_fids:
                     all_rels = []
                     seen_ids = set()
-                    for fid in fids:
-                        rels = processor.storage.get_entity_relations_by_family_id(fid)
-                        for r in rels:
+                    for fid in list(matched_fids)[:5]:
+                        for r in processor.storage.get_entity_relations_by_family_id(fid):
                             if r.absolute_id not in seen_ids:
                                 seen_ids.add(r.absolute_id)
                                 all_rels.append(r)
