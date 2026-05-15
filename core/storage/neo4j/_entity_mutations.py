@@ -300,23 +300,50 @@ class EntityMutationMixin:
                     "message": f"预览：将删除 {entity_count} 个已失效实体版本和 {relation_count} 个已失效关系版本",
                 }
 
-            # Combined delete query for both entities and relations
-            r = self._run(session, f"""
-                CALL {{
-                    MATCH (e:Entity) WHERE e.invalid_at IS NOT NULL {date_filter}
-                    DELETE e
-                    RETURN count(*) AS deleted_entities
-                }}
-                CALL {{
+            # Batched delete: relations first, then edges, then entities
+            deleted_entities = 0
+            deleted_relations = 0
+            batch_size = 200
+            # Step 1: Delete invalidated relations (they reference entity UUIDs)
+            while True:
+                r = self._run(session, f"""
                     MATCH (r:Relation) WHERE r.invalid_at IS NOT NULL {date_filter}
+                    WITH r LIMIT $batch_size
+                    DETACH DELETE r
+                    RETURN count(*) AS cnt
+                """, graph_id_safe=False, batch_size=batch_size, **params)
+                row = r.single()
+                batch_del = row["cnt"] if row else 0
+                deleted_relations += batch_del
+                if batch_del < batch_size:
+                    break
+            # Step 2: Remove RELATES_TO edges pointing to invalidated entities
+            # (valid entities may have edges to their old invalidated versions)
+            while True:
+                r = self._run(session, f"""
+                    MATCH (e:Entity) WHERE e.invalid_at IS NOT NULL {date_filter}
+                    MATCH (e)-[r:RELATES_TO]-()
+                    WITH r LIMIT $batch_size
                     DELETE r
-                    RETURN count(*) AS deleted_relations
-                }}
-                RETURN deleted_entities, deleted_relations
-            """, graph_id_safe=False, **params)
-            row = r.single()
-            deleted_entities = row["deleted_entities"] if row else 0
-            deleted_relations = row["deleted_relations"] if row else 0
+                    RETURN count(*) AS cnt
+                """, graph_id_safe=False, batch_size=batch_size, **params)
+                row = r.single()
+                batch_del = row["cnt"] if row else 0
+                if batch_del < batch_size:
+                    break
+            # Step 3: Delete invalidated entities (DETACH DELETE for remaining edges)
+            while True:
+                r = self._run(session, f"""
+                    MATCH (e:Entity) WHERE e.invalid_at IS NOT NULL {date_filter}
+                    WITH e LIMIT $batch_size
+                    DETACH DELETE e
+                    RETURN count(*) AS cnt
+                """, graph_id_safe=False, batch_size=batch_size, **params)
+                row = r.single()
+                batch_del = row["cnt"] if row else 0
+                deleted_entities += batch_del
+                if batch_del < batch_size:
+                    break
 
             return {
                 "dry_run": False,

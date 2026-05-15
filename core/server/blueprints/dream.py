@@ -871,8 +871,8 @@ def butler_execute():
                     # Parallelize LLM calls
                     summaries = {}
                     if len(to_evolve) > 1:
-                        for fid, summary, err in _dream_pool.map(_evolve_one, to_evolve):
-                            if err:
+                        for fid, summary, _evo_err in _dream_pool.map(_evolve_one, to_evolve):
+                            if _evo_err:
                                 logger.warning("evolve_entity_summary %s 失败: %s", fid, err)
                                 failed += 1
                             else:
@@ -880,8 +880,8 @@ def butler_execute():
                                 evolved += 1
                     else:
                         for e in to_evolve:
-                            fid, summary, err = _evolve_one(e)
-                            if err:
+                            fid, summary, _evo_err = _evolve_one(e)
+                            if _evo_err:
                                 logger.warning("evolve_entity_summary %s 失败: %s", fid, err)
                                 failed += 1
                             else:
