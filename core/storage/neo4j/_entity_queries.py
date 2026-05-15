@@ -193,17 +193,12 @@ class EntityQueryMixin:
             return {orig: counts.get(resolved, 0) for orig, resolved in resolved_map.items() if resolved}
 
     def count_isolated_entities(self) -> int:
-        """统计孤立实体数量。"""
+        """统计孤立实体数量（基于 RELATES_TO 图边，与 get_isolated_entities 一致）。"""
         with self._session() as session:
             r = self._run(session, """
-                MATCH (rel:Relation) WHERE rel.invalid_at IS NULL
-                WITH collect(DISTINCT rel.entity1_absolute_id)
-                   + collect(DISTINCT rel.entity2_absolute_id) AS aids
-                UNWIND aids AS aid
-                WITH collect(DISTINCT aid) AS connected
                 MATCH (e:Entity)
                 WHERE e.invalid_at IS NULL AND e.family_id IS NOT NULL
-                  AND NOT e.uuid IN connected
+                  AND NOT EXISTS { MATCH (e)-[:RELATES_TO]-() }
                 RETURN count(DISTINCT e.family_id) AS cnt
             """)
             row = r.single()
@@ -939,10 +934,10 @@ class EntityQueryMixin:
             }
 
             if entity_count > 0 and row.get("isolated_count") is not None:
-                isolated = row["isolated_count"]
                 stats["avg_relations_per_entity"] = round(row["avg_degree"], 2)
                 stats["max_relations_per_entity"] = row["max_degree_raw"]
-                stats["isolated_entities"] = isolated
+                # Use RELATES_TO edge-based count for consistency with other endpoints
+                stats["isolated_entities"] = self.count_isolated_entities()
 
                 if entity_count > 1:
                     max_possible = entity_count * (entity_count - 1) / 2

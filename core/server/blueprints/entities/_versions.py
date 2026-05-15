@@ -370,9 +370,7 @@ def get_entity_contradictions(family_id: str):
         if len(versions) < 2:
             return ok([])
 
-        contradictions = run_async(
-            processor.llm_client.detect_contradictions(family_id, versions)
-        )
+        contradictions = processor.llm_client.detect_contradictions(family_id, versions)
 
         return ok(contradictions)
     except Exception as e:
@@ -389,9 +387,7 @@ def resolve_entity_contradiction(family_id: str):
             return err("contradiction 为必填字段", 400)
 
         processor = _get_processor()
-        resolution = run_async(
-            processor.llm_client.resolve_contradiction(contradiction)
-        )
+        resolution = processor.llm_client.resolve_contradiction(contradiction)
 
         return ok(resolution)
     except Exception as e:

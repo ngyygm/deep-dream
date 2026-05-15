@@ -325,8 +325,10 @@ class GraphTraversalMixin:
         with self._session() as session:
             # Resolve to absolute_id, accepting either family_id or uuid
             resolve = self._run(session,
-                "MATCH (e:Entity) WHERE e.family_id = $id OR e.uuid = $id "
-                "RETURN e.uuid AS uuid, e.name AS name, e.family_id AS family_id LIMIT 1",
+                "MATCH (e:Entity) WHERE (e.family_id = $id OR e.uuid = $id) "
+                "AND e.invalid_at IS NULL "
+                "RETURN e.uuid AS uuid, e.name AS name, e.family_id AS family_id "
+                "ORDER BY e.processed_time DESC LIMIT 1",
                 id=entity_id,
             )
             resolved = list(resolve)
