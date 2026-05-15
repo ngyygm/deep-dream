@@ -47,12 +47,12 @@ curl -s $BASE_URL/graphs
 | Find by name | GET | `/find/entities/by-name/{name}` | `threshold=0.7` |
 | Entity profile | GET | `/find/entities/{fid}/profile` | — |
 | Quick search | POST | `/find` | `{query}` |
-| Traverse graph | POST | `/find/traverse` | `{start_entity_id, max_depth}` |
+| Traverse graph | POST | `/find/traverse` | `{seed_family_ids:[...], max_depth}` |
 | Shortest path | POST | `/find/paths/shortest` | `{family_id_a, family_id_b}` |
 | Create entity | POST | `/find/entities/create` | `{name, content}` |
 | Create relation | POST | `/find/relations/create` | `{entity1_family_id, entity2_family_id, content}` |
 | Update entity | PUT | `/find/entities/{fid}` | `{name, summary, attributes}` |
-| Merge entities | POST | `/find/entities/merge` | `{family_ids:[...], target_family_id:...}` |
+| Merge entities | POST | `/find/entities/merge` | `{source_family_ids:[...], target_family_id:...}` |
 | Dream cycle | POST | `/find/dream/run` | `{strategy, seed_count}` |
 | Dream status | GET | `/find/dream/status` | — |
 | Ask NL question | POST | `/find/ask` | `{question}` |

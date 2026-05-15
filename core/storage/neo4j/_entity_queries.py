@@ -64,18 +64,22 @@ class EntityQueryMixin:
             )
             vcnt_map = {rec["fid"]: rec["total_vcnt"] for rec in vcnt_result}
 
-        # Query 1b: Get latest valid entities + all valid absolute_ids
+        # Query 1b: Get latest valid entity for display + ALL absolute_ids for relation matching
         with self._session() as session:
             result = self._run(session,
                 f"""
                 MATCH (e:Entity)
-                WHERE e.family_id IN $fids AND e.invalid_at IS NULL
-                WITH e.family_id AS fid, e
-                ORDER BY e.processed_time DESC
-                WITH fid, COLLECT(e) AS entities
-                WITH fid, entities[0] AS latest, [ent IN entities | ent.uuid] AS all_uuids
+                WHERE e.family_id IN $fids
+                WITH e.family_id AS fid, COLLECT(e.uuid) AS all_uuids
+                // Collect ALL version UUIDs for relation lookup (including invalidated)
+                WITH fid, all_uuids
+                // Find latest valid entity for display
+                MATCH (latest:Entity {{family_id: fid}})
+                WHERE latest.invalid_at IS NULL
+                WITH fid, all_uuids, latest
+                ORDER BY latest.processed_time DESC
+                WITH fid, all_uuids, HEAD(COLLECT(latest)) AS latest
                 RETURN latest AS e, fid, all_uuids
-                ORDER BY e.processed_time DESC
                 """,
                 fids=canonical_set,
             )
