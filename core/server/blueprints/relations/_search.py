@@ -537,6 +537,14 @@ def find_shortest_paths():
             max_paths = request.args.get("max_paths", type=int)
         max_paths = max_paths or 10
 
+        # Validate both entities exist
+        source_ent = processor.storage.get_entity_by_family_id(family_id_a)
+        target_ent = processor.storage.get_entity_by_family_id(family_id_b)
+        if not source_ent:
+            return err(f"未找到实体: {family_id_a}", 404)
+        if not target_ent:
+            return err(f"未找到实体: {family_id_b}", 404)
+
         result = processor.storage.find_shortest_paths(
             source_family_id=family_id_a,
             target_family_id=family_id_b,

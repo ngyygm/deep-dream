@@ -370,6 +370,11 @@ def update_entity_v2(family_id: str):
                 episode_id=current.episode_id,
                 source_document=current.source_document,
                 valid_at=now,
+                summary=getattr(current, 'summary', None),
+                attributes=getattr(current, 'attributes', None),
+                confidence=getattr(current, 'confidence', None),
+                content_format=getattr(current, 'content_format', 'plain'),
+                community_id=getattr(current, 'community_id', None),
             )
             processor.storage.save_entity(updated)
             return ok({"message": "实体已更新", "absolute_id": updated.absolute_id})

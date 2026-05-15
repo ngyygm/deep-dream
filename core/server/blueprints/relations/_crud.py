@@ -294,11 +294,19 @@ def create_relation():
                     and not processor.storage.get_relation_by_family_id(family_id)):
                 break
 
+        # Resolve family_ids for entity1 and entity2
+        _e1_ent = processor.storage.get_entity_by_absolute_id(e1) if e1 else None
+        _e2_ent = processor.storage.get_entity_by_absolute_id(e2) if e2 else None
+        e1_fid_resolved = _e1_ent.family_id if _e1_ent else ''
+        e2_fid_resolved = _e2_ent.family_id if _e2_ent else ''
+
         relation = Relation(
             absolute_id=absolute_id,
             family_id=family_id,
             entity1_absolute_id=e1,
             entity2_absolute_id=e2,
+            entity1_family_id=e1_fid_resolved,
+            entity2_family_id=e2_fid_resolved,
             content=content,
             event_time=now,
             processed_time=now,
