@@ -55,11 +55,13 @@ curl -s $BASE_URL/graphs
 | Merge entities | POST | `/find/entities/merge` | `{source_family_ids:[...], target_family_id:...}` |
 | Dream cycle | POST | `/find/dream/run` | `{strategy, seed_count}` |
 | Dream status | GET | `/find/dream/status` | — |
+| Dream logs | GET | `/find/dream/logs` | — |
 | Ask NL question | POST | `/find/ask` | `{question}` |
 | Butler report | GET | `/butler/report` | — |
 | Butler execute | POST | `/butler/execute` | `{actions:[...], dry_run:true}` |
 | Health report | GET | `/find/maintenance/health` | — |
 | Detect communities | POST | `/communities/detect` | `{algorithm:"louvain"}` |
+| List communities | GET | `/communities` | `min_size=3, limit=50` |
 
 ## Response Format
 
@@ -97,8 +99,8 @@ TASK_ID=$(echo $RESP | jq -r '.data.task_id')
 
 # Poll every 5 seconds until complete (typical: 30s-5min)
 curl -s "$BASE_URL/remember/tasks/$TASK_ID?graph_id=default"
-# Response: {"success":true,"data":{"status":"completed","entities":[...],"relations":[...]}}
-# or: {"success":true,"data":{"status":"processing","progress":0.5}}
+# Response: {"success":true,"data":{"status":"completed",...}}
+# or: {"success":true,"data":{"status":"running","progress":0.5},...}
 ```
 
 ### Create Entity + Relation
@@ -178,12 +180,14 @@ When the extraction pipeline cannot determine an entity name, it creates `auto_X
 ## Parameter Pitfalls
 
 - `remember`: use `wait:true` for sync mode; default is async (returns task_id to poll)
+- `remember` sync mode: if extraction takes longer than `timeout` seconds (default 300), returns HTTP 202 with `status:"running"` — continue polling via task endpoint
 - Entity search uses `query_name` param, not `q` or `query`
 - Shortest path uses `family_id_a`/`family_id_b` (or aliases `entity1_family_id`/`entity2_family_id`)
 - `update_entity`: name/content changes create a new version; summary/attribute changes are in-place
 - Destructive ops: pass `dry_run:true` in body to preview before executing
 - Valid `butler_execute` actions: `cleanup_isolated`, `cleanup_invalidated`, `detect_communities`, `evolve_summaries` (NOT `run_dream`)
 - If remember returns 0 entities, check LLM health: `GET /health/llm`
+- Chinese characters in curl URLs: use `--data-urlencode` or Python urllib to avoid encoding issues
 
 ## Slow Endpoints
 
@@ -192,6 +196,7 @@ These endpoints may take 5-15+ seconds. Use `timeout` param or increase curl tim
 - `POST /find/dream/run` — LLM-powered exploration (~30s-5min)
 - `POST /remember` with `wait:true` — extraction pipeline (~30s-5min)
 - `GET /find/graph-summary` — aggregation over all nodes (~3-10s)
+- `POST /communities/detect` — graph loading + Louvain algorithm (~5-30s)
 
 ## Full API Reference
 
