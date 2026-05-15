@@ -61,6 +61,19 @@ curl -s $BASE_URL/graphs
 | Health report | GET | `/find/maintenance/health` | — |
 | Detect communities | POST | `/communities/detect` | `{algorithm:"louvain"}` |
 
+## Response Format
+
+All responses: `{"success": bool, "data": ..., "elapsed_ms": float}`
+
+- `data` type varies by endpoint:
+  - **Single item**: `data: {family_id, name, content, ...}` (profile, by-name, create)
+  - **List**: `data: [{...}, ...]` (search, find entities, list)
+  - **Aggregation**: `data: {entities: [...], relations: [...], ...}` (find, graph-summary, recent-activity)
+  - **Counts**: `data: {total, count, ...}` (routes, counts)
+- Errors: `{"success": false, "error": "message", "hint": "actionable guidance", "elapsed_ms": float}`
+- Error messages may be in Chinese. The `hint` field provides English guidance.
+- Add `compact=true` query param to strip embeddings and truncate content.
+
 ## Common Workflows
 
 ### Write and Verify
@@ -72,6 +85,20 @@ curl -s -X POST "$BASE_URL/remember?graph_id=default" \
 
 # Verify extraction
 curl -s "$BASE_URL/find/entities/search?query_name=Alice&graph_id=default"
+```
+
+### Remember Async Polling
+```bash
+# Async remember returns immediately with task_id
+RESP=$(curl -s -X POST "$BASE_URL/remember?graph_id=default" \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"Long document text here"}')
+TASK_ID=$(echo $RESP | jq -r '.data.task_id')
+
+# Poll every 5 seconds until complete (typical: 30s-5min)
+curl -s "$BASE_URL/remember/tasks/$TASK_ID?graph_id=default"
+# Response: {"success":true,"data":{"status":"completed","entities":[...],"relations":[...]}}
+# or: {"success":true,"data":{"status":"processing","progress":0.5}}
 ```
 
 ### Create Entity + Relation
@@ -91,6 +118,19 @@ curl -s -X POST "$BASE_URL/find/relations/create?graph_id=default" \
   -d "{\"entity1_family_id\":\"$E1\",\"entity2_family_id\":\"$E2\",\"content\":\"A and B are related\"}"
 ```
 
+### Merge Duplicate Entities
+```bash
+# Merge multiple entities into one target
+curl -s -X POST "$BASE_URL/find/entities/merge?graph_id=default" \
+  -H 'Content-Type: application/json' \
+  -d '{"source_family_ids":["ent_dup1","ent_dup2"],"target_family_id":"ent_main"}'
+
+# After merge, refresh edges to update relation endpoints
+curl -s -X POST "$BASE_URL/find/entities/refresh-edges?graph_id=default" \
+  -H 'Content-Type: application/json' \
+  -d '{"family_id":"ent_main"}'
+```
+
 ### Dream Cycle
 ```bash
 # Check dream status
@@ -107,13 +147,18 @@ curl -s "$BASE_URL/find/dream/logs?graph_id=default"
 
 ### Butler Health Check
 ```bash
-# Get report
+# Get report (note: may take 10-15 seconds)
 curl -s "$BASE_URL/butler/report?graph_id=default"
 
 # Preview cleanup (dry_run)
 curl -s -X POST "$BASE_URL/butler/execute?graph_id=default" \
   -H 'Content-Type: application/json' \
   -d '{"actions":["cleanup_isolated","cleanup_invalidated"],"dry_run":true}'
+
+# Execute cleanup
+curl -s -X POST "$BASE_URL/butler/execute?graph_id=default" \
+  -H 'Content-Type: application/json' \
+  -d '{"actions":["cleanup_isolated","cleanup_invalidated"]}'
 ```
 
 ## ID System
@@ -121,25 +166,32 @@ curl -s -X POST "$BASE_URL/butler/execute?graph_id=default" \
 - **family_id** (`ent_*`/`rel_*`): stable ID for most operations. Example: `ent_abc123`
 - **absolute_id** (UUID): version-specific snapshot. Used for: `split_entity_version`, version diff. Example: `entity_20260514_231113_6e558246`
 - `create_relation` accepts **family_ids** (`entity1_family_id`/`entity2_family_id`) — no need to resolve to absolute_id
+- Relation responses include both `entity1_absolute_id`/`entity2_absolute_id` AND `entity1_family_id`/`entity2_family_id`
 
-## Response Format
+## Auto-named Entities
 
-All responses: `{"success": bool, "data": {...}, "elapsed_ms": float}`
-
-Errors: `{"success": false, "error": "message", "hint": "actionable guidance", "elapsed_ms": float}`
-
-- Error messages may be in Chinese. The `hint` field provides English guidance.
-- Add `compact=true` query param to strip embeddings and truncate content.
+When the extraction pipeline cannot determine an entity name, it creates `auto_XXXXXXXX` placeholder names. These indicate:
+- The entity was extracted but lacked a clear name in the source text
+- You can find all auto-named entities by searching: `GET /find/entities/search?query_name=auto_`
+- To clean up: rename them with `PUT /find/entities/{fid}` with `{name:"Better Name"}`, or merge into an existing entity
 
 ## Parameter Pitfalls
 
 - `remember`: use `wait:true` for sync mode; default is async (returns task_id to poll)
 - Entity search uses `query_name` param, not `q` or `query`
-- Relations between entities uses `family_id_a`/`family_id_b` param names
+- Shortest path uses `family_id_a`/`family_id_b` (or aliases `entity1_family_id`/`entity2_family_id`)
 - `update_entity`: name/content changes create a new version; summary/attribute changes are in-place
 - Destructive ops: pass `dry_run:true` in body to preview before executing
 - Valid `butler_execute` actions: `cleanup_isolated`, `cleanup_invalidated`, `detect_communities`, `evolve_summaries` (NOT `run_dream`)
 - If remember returns 0 entities, check LLM health: `GET /health/llm`
+
+## Slow Endpoints
+
+These endpoints may take 5-15+ seconds. Use `timeout` param or increase curl timeout:
+- `GET /butler/report` — scans full graph (~10-15s)
+- `POST /find/dream/run` — LLM-powered exploration (~30s-5min)
+- `POST /remember` with `wait:true` — extraction pipeline (~30s-5min)
+- `GET /find/graph-summary` — aggregation over all nodes (~3-10s)
 
 ## Full API Reference
 

@@ -305,6 +305,21 @@ class EntityQueryMixin:
             )
             return {record["uuid"]: record["name"] for record in result}
 
+    def get_family_ids_by_absolute_ids(self, absolute_ids: List[str]) -> Dict[str, str]:
+        """批量根据 absolute_id 查询实体 family_id。"""
+        if not absolute_ids:
+            return {}
+        with self._session() as session:
+            result = self._run(session,
+                """
+                MATCH (e:Entity)
+                WHERE e.uuid IN $uuids
+                RETURN e.uuid AS uuid, e.family_id AS family_id
+                """,
+                uuids=absolute_ids,
+            )
+            return {record["uuid"]: record["family_id"] for record in result}
+
     def get_content_patches(self, family_id: str, section_key: str = None) -> list:
         """查询指定 family_id 的 ContentPatch 记录。"""
         _PATCH_FIELDS = (

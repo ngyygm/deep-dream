@@ -36,6 +36,8 @@ class Entity:
     processed_time: datetime  # 系统实际处理时间
     episode_id: str  # 记录当前更新是基于什么记忆环境下的判断
     source_document: str  # 来源文档名称
+    entity1_family_id: str = ""  # 第一个实体的家族ID（冗余存储，便于查询）
+    entity2_family_id: str = ""  # 第二个实体的家族ID（冗余存储，便于查询）
     embedding: Optional[bytes] = None  # Embedding向量（BLOB格式，可选）
     valid_at: Optional[datetime] = None  # 事实生效时间
     invalid_at: Optional[datetime] = None  # 事实失效时间（被新版本替代）
@@ -64,6 +66,8 @@ class Relation:
     processed_time: datetime  # 系统实际处理时间
     episode_id: str  # 记录当前更新是基于什么记忆环境下的判断
     source_document: str  # 来源文档名称
+    entity1_family_id: str = ""  # 第一个实体的家族ID（冗余存储，便于查询）
+    entity2_family_id: str = ""  # 第二个实体的家族ID（冗余存储，便于查询）
     embedding: Optional[bytes] = None  # Embedding向量（BLOB格式，可选）
     valid_at: Optional[datetime] = None  # 事实生效时间
     invalid_at: Optional[datetime] = None  # 事实失效时间（被新版本替代）

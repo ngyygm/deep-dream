@@ -223,6 +223,8 @@ def relation_to_dict(r: Relation, _score: Optional[float] = None,
         "family_id": r.family_id,
         "entity1_absolute_id": r.entity1_absolute_id,
         "entity2_absolute_id": r.entity2_absolute_id,
+        "entity1_family_id": getattr(r, "entity1_family_id", "") or "",
+        "entity2_family_id": getattr(r, "entity2_family_id", "") or "",
         "content": r.content,
         "event_time": _fd(r.event_time),
         "processed_time": _fd(r.processed_time),
@@ -244,19 +246,30 @@ def relation_to_dict(r: Relation, _score: Optional[float] = None,
 
 
 def enrich_relations(relations_dicts, processor):
-    """为关系列表补充 entity1_name / entity2_name"""
+    """为关系列表补充 entity1_name / entity2_name 及缺失的 family_id。"""
     abs_ids = set()
+    needs_family_id = False
     for rd in relations_dicts:
         if rd.get('entity1_absolute_id'):
             abs_ids.add(rd['entity1_absolute_id'])
         if rd.get('entity2_absolute_id'):
             abs_ids.add(rd['entity2_absolute_id'])
+        if not rd.get('entity1_family_id') or not rd.get('entity2_family_id'):
+            needs_family_id = True
     if not abs_ids:
         return relations_dicts
     name_map = processor.storage.get_entity_names_by_absolute_ids(list(abs_ids))
+    fid_map = {}
+    if needs_family_id and hasattr(processor.storage, 'get_family_ids_by_absolute_ids'):
+        fid_map = processor.storage.get_family_ids_by_absolute_ids(list(abs_ids))
     for rd in relations_dicts:
         rd['entity1_name'] = name_map.get(rd.get('entity1_absolute_id'), '')
         rd['entity2_name'] = name_map.get(rd.get('entity2_absolute_id'), '')
+        if needs_family_id:
+            if not rd.get('entity1_family_id'):
+                rd['entity1_family_id'] = fid_map.get(rd.get('entity1_absolute_id'), '')
+            if not rd.get('entity2_family_id'):
+                rd['entity2_family_id'] = fid_map.get(rd.get('entity2_absolute_id'), '')
     return relations_dicts
 
 
