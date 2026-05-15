@@ -185,6 +185,8 @@ When the extraction pipeline cannot determine an entity name, it creates `auto_X
 - Shortest path uses `family_id_a`/`family_id_b` (or aliases `entity1_family_id`/`entity2_family_id`)
 - `update_entity`: name/content changes create a new version (preserves summary, confidence, community_id); summary/attribute changes are in-place
 - `shortest_path`: returns 404 if either entity family_id doesn't exist
+- `merge`: auto-redirects Relation endpoints and refreshes RELATES_TO edges — no manual refresh-edges needed after merge
+- `merge`: response data is nested at `data.merged_count` (not flat in `data`)
 - Destructive ops: pass `dry_run:true` in body to preview before executing
 - Valid `butler_execute` actions: `cleanup_isolated`, `cleanup_invalidated`, `detect_communities`, `evolve_summaries` (NOT `run_dream`)
 - If remember returns 0 entities, check LLM health: `GET /health/llm`
