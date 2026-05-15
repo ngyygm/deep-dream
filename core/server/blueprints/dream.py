@@ -93,12 +93,13 @@ def _execute_ask_search(processor, query_type: str, query_text: str, intent: dic
     return entities, relations, entity_score_map, relation_score_map
 
 
-def _serialize_ask_results(entities, relations, entity_score_map, relation_score_map, storage):
+def _serialize_ask_results(entities, relations, entity_score_map, relation_score_map, processor):
     """Serialize search results to dicts with scores and version counts."""
     entity_dicts = [entity_to_dict(e, _score=entity_score_map.get(e.absolute_id)) for e in entities]
     relation_dicts = [relation_to_dict(r, _score=relation_score_map.get(r.absolute_id)) for r in relations]
-    enrich_entity_version_counts(entity_dicts, storage)
-    enrich_relation_version_counts(relation_dicts, storage)
+    enrich_entity_version_counts(entity_dicts, processor.storage)
+    enrich_relation_version_counts(relation_dicts, processor.storage)
+    enrich_relations(relation_dicts, processor)
     return entity_dicts, relation_dicts
 
 
@@ -393,7 +394,7 @@ def agent_ask():
             processor, query_type, query_text, intent,
         )
         entity_dicts, relation_dicts = _serialize_ask_results(
-            entities, relations, entity_score_map, relation_score_map, processor.storage,
+            entities, relations, entity_score_map, relation_score_map, processor,
         )
         result["results"] = {
             "entities": entity_dicts,
@@ -468,7 +469,7 @@ def agent_ask_stream():
 
                 # Serialize results using shared helper
                 entity_dicts, relation_dicts = _serialize_ask_results(
-                    entities, relations, entity_score_map, relation_score_map, processor.storage,
+                    entities, relations, entity_score_map, relation_score_map, processor,
                 )
                 result["results"] = {
                     "entities": entity_dicts,

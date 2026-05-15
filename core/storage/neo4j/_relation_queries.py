@@ -458,6 +458,8 @@ class RelationQueryMixin:
                 "family_id": family_id,
                 "entity1_absolute_id": node.get("entity1_absolute_id", ""),
                 "entity2_absolute_id": node.get("entity2_absolute_id", ""),
+                "entity1_family_id": node.get("entity1_family_id", ""),
+                "entity2_family_id": node.get("entity2_family_id", ""),
                 "content": node.get("content", ""),
                 "event_time": node.get("event_time"),
                 "processed_time": node.get("processed_time"),

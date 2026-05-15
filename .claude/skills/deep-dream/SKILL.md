@@ -261,7 +261,7 @@ When the extraction pipeline cannot determine an entity name, it creates `auto_X
 - `dry_run:true` only works for `butler/execute`, NOT for merge or other destructive ops
 - Valid `butler_execute` actions: `cleanup_isolated`, `cleanup_invalidated`, `detect_communities`, `evolve_summaries` (NOT `run_dream`)
 - If remember returns 0 entities, check LLM health: `GET /health/llm`
-- `neighbors` / `profile`: returns `success: true` with null entity/empty arrays for nonexistent family_ids — not a 404
+- `profile`: returns 404 `{success: false, error: "..."}` for nonexistent family_ids (not `success: true` with null). `neighbors` returns `success: true` with empty arrays for nonexistent IDs
 - Chinese characters in curl URLs: use `--data-urlencode` or Python urllib to avoid encoding issues
 - Entity versions are ordered by `processed_time` (ingestion time), NOT `event_time` (when the event occurred)
 - `traverse`: requires RELATES_TO edges to exist. If traverse returns empty but neighbors works, run `POST /find/entities/refresh-edges` first

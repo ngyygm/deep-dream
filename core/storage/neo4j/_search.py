@@ -310,6 +310,8 @@ class SearchMixin:
                        RETURN node.uuid AS uuid, node.family_id AS family_id,
                               node.entity1_absolute_id AS entity1_absolute_id,
                               node.entity2_absolute_id AS entity2_absolute_id,
+                              node.entity1_family_id AS entity1_family_id,
+                              node.entity2_family_id AS entity2_family_id,
                               node.content AS content,
                               node.event_time AS event_time,
                               node.processed_time AS processed_time,
