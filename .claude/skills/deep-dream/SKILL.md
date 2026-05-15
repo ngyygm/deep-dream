@@ -183,7 +183,8 @@ When the extraction pipeline cannot determine an entity name, it creates `auto_X
 - `remember` sync mode: if extraction takes longer than `timeout` seconds (default 300), returns HTTP 202 with `status:"running"` — continue polling via task endpoint
 - Entity search uses `query_name` param, not `q` or `query`
 - Shortest path uses `family_id_a`/`family_id_b` (or aliases `entity1_family_id`/`entity2_family_id`)
-- `update_entity`: name/content changes create a new version; summary/attribute changes are in-place
+- `update_entity`: name/content changes create a new version (preserves summary, confidence, community_id); summary/attribute changes are in-place
+- `shortest_path`: returns 404 if either entity family_id doesn't exist
 - Destructive ops: pass `dry_run:true` in body to preview before executing
 - Valid `butler_execute` actions: `cleanup_isolated`, `cleanup_invalidated`, `detect_communities`, `evolve_summaries` (NOT `run_dream`)
 - If remember returns 0 entities, check LLM health: `GET /health/llm`
