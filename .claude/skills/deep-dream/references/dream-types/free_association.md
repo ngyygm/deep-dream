@@ -19,7 +19,7 @@ print(f"从 {seed.name} 出发")
 ### 3. 漫步（最多 5 步）
 每一步：
 ```
-neighbors = traverse_graph(start_entity_id, direction=both, max_depth=1)
+neighbors = traverse_graph(seed_family_ids=[entity_id], max_depth=1)
 
 选择标准（按优先级）：
 1. 关系类型最模糊/抽象的邻居（如 "influences", "related_to"）

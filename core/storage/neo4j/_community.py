@@ -75,6 +75,10 @@ class CommunityMixin:
 
     def detect_communities(self, algorithm: str = 'louvain', resolution: float = 1.0) -> Dict:
         """从 Neo4j 加载图 → networkx Louvain → 写回 community_id。"""
+        _VALID_ALGORITHMS = {'louvain'}
+        if algorithm not in _VALID_ALGORITHMS:
+            raise ValueError(f"不支持的算法: {algorithm}，可选: {', '.join(sorted(_VALID_ALGORITHMS))}")
+
         if nx is None:
             return {"error": "networkx not installed", "communities": 0}
 

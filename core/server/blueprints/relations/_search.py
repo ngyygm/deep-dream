@@ -607,6 +607,9 @@ def find_relations_by_entity_absolute_id(entity_absolute_id: str):
 
 # -- Quick search (Agent workflows) -----------------------------------------
 
+# =========================================================
+# Convenience endpoints for Agent workflows
+# =========================================================
 @relations_bp.route("/api/v1/find/quick-search", methods=["POST"])
 def quick_search():
     """One-shot search: hybrid BM25+embedding RRF fusion with name boosting."""
