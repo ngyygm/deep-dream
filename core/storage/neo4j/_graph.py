@@ -457,7 +457,49 @@ class GraphTraversalMixin:
                         continue
                     canonical_source_ids.append(source_id)
 
-                # Batch: rewrite all source family_ids to target in one UNWIND query
+                # Step 1: Collect old absolute_ids BEFORE rewriting family_ids
+                relations_updated = 0
+                source_old_abs_ids = []
+                new_abs_id = None
+                if canonical_source_ids:
+                    # Get target's latest absolute_id
+                    target_abs_result = self._run(session,
+                        "MATCH (e:Entity {family_id: $fid}) "
+                        "RETURN e.uuid AS uuid ORDER BY e.processed_time DESC LIMIT 1",
+                        fid=target_family_id,
+                    )
+                    target_rec = target_abs_result.single()
+                    if target_rec:
+                        new_abs_id = target_rec["uuid"]
+                    # Get all old absolute_ids for source families (BEFORE rewrite!)
+                    old_abs_result = self._run(session,
+                        "MATCH (e:Entity) WHERE e.family_id IN $fids RETURN e.uuid AS uuid",
+                        fids=canonical_source_ids,
+                    )
+                    source_old_abs_ids = [r["uuid"] for r in old_abs_result]
+
+                # Step 2: Redirect Relation endpoints (before family_id rewrite)
+                if source_old_abs_ids and new_abs_id:
+                    upd1 = self._run(session,
+                        "MATCH (r:Relation) WHERE r.entity1_absolute_id IN $old_ids "
+                        "SET r.entity1_absolute_id = $new_id, "
+                        "r.entity1_family_id = $new_fid "
+                        "RETURN count(r) AS cnt",
+                        old_ids=source_old_abs_ids, new_id=new_abs_id, new_fid=target_family_id,
+                    )
+                    c1 = upd1.single()
+                    relations_updated += (c1["cnt"] if c1 else 0)
+                    upd2 = self._run(session,
+                        "MATCH (r:Relation) WHERE r.entity2_absolute_id IN $old_ids "
+                        "SET r.entity2_absolute_id = $new_id, "
+                        "r.entity2_family_id = $new_fid "
+                        "RETURN count(r) AS cnt",
+                        old_ids=source_old_abs_ids, new_id=new_abs_id, new_fid=target_family_id,
+                    )
+                    c2 = upd2.single()
+                    relations_updated += (c2["cnt"] if c2 else 0)
+
+                # Step 3: Rewrite all source family_ids to target
                 if canonical_source_ids:
                     pairs = [{"sid": sid, "tid": target_family_id} for sid in canonical_source_ids]
                     result = self._run(session,
@@ -472,7 +514,7 @@ class GraphTraversalMixin:
                     for record in result:
                         entities_updated += record["cnt"]
 
-                    # Batch: create all redirects in one UNWIND query
+                    # Create redirects
                     self._run(session,
                         """
                         UNWIND $pairs AS p
@@ -483,9 +525,25 @@ class GraphTraversalMixin:
                         now=now_iso,
                     )
 
+                    # Refresh RELATES_TO graph edges
+                    all_affected_fids = [target_family_id] + canonical_source_ids
+                    try:
+                        self.refresh_relates_to_edges(family_ids=all_affected_fids)
+                    except Exception as _e:
+                        logger.warning("merge_entity_families: refresh_relates_to_edges failed: %s", _e)
+
+                # Invalidate caches for all affected family_ids
+                all_affected_fids = [target_family_id] + canonical_source_ids
+                try:
+                    for fid in all_affected_fids:
+                        self._invalidate_entity_cache(fid)
+                    self._cache.invalidate_keys(["graph_stats"])
+                except Exception:
+                    pass
+
                 return {
                     "entities_updated": entities_updated,
-                    "relations_updated": 0,
+                    "relations_updated": relations_updated,
                     "target_family_id": target_family_id,
                     "merged_source_ids": canonical_source_ids,
                 }

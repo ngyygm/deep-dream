@@ -79,7 +79,15 @@ class EntityQueryMixin:
                 WITH fid, all_uuids, latest
                 ORDER BY latest.processed_time DESC
                 WITH fid, all_uuids, HEAD(COLLECT(latest)) AS latest
-                RETURN latest AS e, fid, all_uuids
+                RETURN latest.uuid AS uuid, latest.family_id AS family_id, latest.name AS name,
+                      latest.content AS content, latest.summary AS summary,
+                      latest.attributes AS attributes, latest.confidence AS confidence,
+                      latest.content_format AS content_format, latest.community_id AS community_id,
+                      latest.valid_at AS valid_at, latest.invalid_at AS invalid_at,
+                      latest.event_time AS event_time, latest.processed_time AS processed_time,
+                      latest.episode_id AS episode_id, latest.source_document AS source_document,
+                      latest.embedding AS embedding,
+                      fid, all_uuids
                 """,
                 fids=canonical_set,
             )
@@ -89,7 +97,7 @@ class EntityQueryMixin:
         fid_to_aids: Dict[str, List[str]] = {}
         all_aids = set()
         for record in records:
-            entity = _neo4j_record_to_entity(record["e"])
+            entity = _neo4j_record_to_entity(record)
             vc = vcnt_map.get(entity.family_id, 1)
             entity_map[entity.family_id] = (entity, vc)
             aids = record.get("all_uuids", [])

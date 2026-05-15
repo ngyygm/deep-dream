@@ -124,6 +124,17 @@ class SearchMixin:
         cached = self._cache.get(cache_key)
         if cached is not None:
             return cached
+
+        # Escape Lucene special characters to prevent parse errors
+        # Keep only alphanumerics, CJK characters, spaces, and underscores
+        _lucene_special = r'\+-&&||!(){}[]^"~*?:/'
+        safe_query = query
+        for ch in _lucene_special:
+            safe_query = safe_query.replace(ch, ' ')
+        safe_query = ' '.join(safe_query.split())  # normalize whitespace
+        if not safe_query.strip():
+            return []
+
         try:
             with self._session() as session:
                 # 多取一些再在 Python 层去重，确保 limit 个 unique family_id
@@ -145,7 +156,7 @@ class SearchMixin:
                               score AS bm25_score
                        ORDER BY score DESC
                        LIMIT $raw_limit""",
-                    search_query=query, raw_limit=raw_limit,
+                    search_query=safe_query, raw_limit=raw_limit,
                 )
                 seen_fids = set()
                 raw_entities = []
@@ -303,7 +314,7 @@ class SearchMixin:
                               score AS bm25_score
                        ORDER BY score DESC
                        LIMIT $raw_limit""",
-                    search_query=query, raw_limit=raw_limit,
+                    search_query=safe_query, raw_limit=raw_limit,
                 )
                 seen_fids = set()
                 relations = []
