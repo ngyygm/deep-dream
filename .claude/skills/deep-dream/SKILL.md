@@ -258,6 +258,9 @@ When the extraction pipeline cannot determine an entity name, it creates `auto_X
 - `merge`: target entity stays canonical (name/content preserved); source entities are absorbed. Auto-redirects Relation endpoints and refreshes RELATES_TO edges
 - `merge`: rejects with HTTP 409 if source/target names have < 20% character overlap; pass `skip_name_check: true` in body to override
 - `merge`: response data is nested at `data.merged_count` (not flat in `data`)
+- `merge`: if a relation connects source and target entities, both endpoints resolve to target after merge (self-loop). No warning is returned
+- `merge`: auto-updates source entity names to target name and refreshes RELATES_TO edges
+- Auto-named entities (`auto_XXXXXXXX`) may outrank real entities in search results — filter by checking `content` field
 - `dry_run:true` only works for `butler/execute`, NOT for merge or other destructive ops
 - Valid `butler_execute` actions: `cleanup_isolated`, `cleanup_invalidated`, `detect_communities`, `evolve_summaries` (NOT `run_dream`)
 - If remember returns 0 entities, check LLM health: `GET /health/llm`
