@@ -102,6 +102,7 @@ class EntityMutationMixin:
                 "confidence": entity.confidence,
                 "valid_at": _fmt_dt(entity.valid_at or entity.event_time),
                 "graph_id": self._graph_id,
+                "community_id": entity.community_id,
             })
 
         with self._write_lock:
@@ -122,7 +123,8 @@ class EntityMutationMixin:
                         e.attributes = row.attributes,
                         e.confidence = row.confidence,
                         e.valid_at = datetime(row.valid_at),
-                        e.graph_id = row.graph_id
+                        e.graph_id = row.graph_id,
+                        e.community_id = row.community_id
                     WITH row
                     MATCH (e:Entity {family_id: row.family_id})
                     WHERE e.uuid <> row.uuid AND e.invalid_at IS NULL
@@ -226,6 +228,7 @@ class EntityMutationMixin:
                 "content_format": getattr(entity, "content_format", "plain"),
                 "valid_at": _fmt_dt(entity.valid_at or entity.event_time),
                 "graph_id": self._graph_id,
+                "community_id": entity.community_id,
                 "embedding": embedding_list,
             })
 
@@ -249,6 +252,7 @@ class EntityMutationMixin:
                         e.content_format = row.content_format,
                         e.valid_at = datetime(row.valid_at),
                         e.graph_id = row.graph_id,
+                        e.community_id = row.community_id,
                         e.embedding = row.embedding
                     WITH row
                     MATCH (e:Entity {family_id: row.family_id})
@@ -547,6 +551,7 @@ class EntityMutationMixin:
                             e.content_format = $content_format,
                             e.valid_at = datetime($valid_at),
                             e.graph_id = $graph_id,
+                            e.community_id = $community_id,
                             e.embedding = $embedding
                         WITH $uuid AS abs_id, $family_id AS fid, $event_time AS et
                         MATCH (e:Entity {family_id: fid})
@@ -568,6 +573,7 @@ class EntityMutationMixin:
                         content_format=getattr(entity, "content_format", "plain"),
                         valid_at=valid_at,
                         graph_id=self._graph_id,
+                        community_id=entity.community_id,
                         embedding=embedding_list,
                     )
 

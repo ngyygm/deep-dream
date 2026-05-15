@@ -67,6 +67,7 @@ curl -s $BASE_URL/graphs
 | Concept mentions | GET | `/concepts/{fid}/mentions` | `time_point=ISO8601` |
 | Search episodes | POST | `/find/episodes/search` | `{query, limit:20}` |
 | Episode text | GET | `/find/episodes/{cache_id}/text` | — |
+| Recent activity | GET | `/find/recent-activity` | — |
 | Refresh graph edges | POST | `/find/entities/refresh-edges` | — |
 
 ## Response Format
@@ -74,7 +75,8 @@ curl -s $BASE_URL/graphs
 All responses: `{"success": bool, "data": ..., "elapsed_ms": float}`
 
 - `data` type varies by endpoint:
-  - **Single item**: `data: {family_id, name, content, ...}` (by-name, create)
+  - **Single item**: `data: {family_id, name, content, ...}` (create)
+  - **By-name** (nested): `data: {entity: {...}, relations: [...]}` — same structure as profile
   - **Profile** (nested): `data: {entity: {...}, relations: [...], relation_count, version_count}` (profile)
   - **List**: `data: [{...}, ...]` (search, find entities, list)
   - **Aggregation**: `data: {entities: [...], relations: [...], ...}` (find, graph-summary, recent-activity)
@@ -229,7 +231,7 @@ When searching returns multiple entities with the same or similar names:
 
 | Endpoint | Returns | Behavior |
 |---|---|---|
-| `by-name` | Single entity | Fuzzy match, arbitrary pick if multiple |
+| `by-name` | Nested `{entity, relations}` | Fuzzy match, returns single best match with relations. NOT flat. |
 | `search` | Scored list | Multiple results with scores |
 | `neighbors` | Graph nodes/edges | Traverses RELATES_TO graph edges |
 | Relations search | List of Relation nodes | Queries Relation node properties directly |
@@ -252,10 +254,12 @@ When the extraction pipeline cannot determine an entity name, it creates `auto_X
 - `update_entity`: name/content changes create a new version (preserves summary, confidence, community_id); summary/attribute changes are in-place
 - `shortest_path`: returns 404 if either entity family_id doesn't exist; returns `path_length:-1` if entities exist but are disconnected
 - `merge`: auto-redirects Relation endpoints and refreshes RELATES_TO edges — no manual refresh-edges needed after merge
+- `merge`: rejects with HTTP 409 if source/target names have < 20% character overlap; pass `skip_name_check: true` in body to override
 - `merge`: response data is nested at `data.merged_count` (not flat in `data`)
 - `dry_run:true` only works for `butler/execute`, NOT for merge or other destructive ops
 - Valid `butler_execute` actions: `cleanup_isolated`, `cleanup_invalidated`, `detect_communities`, `evolve_summaries` (NOT `run_dream`)
 - If remember returns 0 entities, check LLM health: `GET /health/llm`
+- `neighbors` / `profile`: returns `success: true` with null entity/empty arrays for nonexistent family_ids — not a 404
 - Chinese characters in curl URLs: use `--data-urlencode` or Python urllib to avoid encoding issues
 - Entity versions are ordered by `processed_time` (ingestion time), NOT `event_time` (when the event occurred)
 
@@ -268,6 +272,13 @@ These endpoints may take 5-15+ seconds. Use `timeout` param or increase curl tim
 - `GET /find/graph-summary` — aggregation over all nodes (~3-10s)
 - `POST /communities/detect` — graph loading + Louvain algorithm (~5-30s)
 - `POST /find/entities/refresh-edges` — regenerates all RELATES_TO edges (~5-30s)
+
+## Episode Text Availability
+
+- `/find/episodes/{cache_id}/text` returns the original source text for an episode
+- **Older episodes may return 404** — source text can be evicted from cache over time
+- Episode search (`POST /find/episodes/search`) always works, but `source_text` field may be empty
+- Recent episodes (within current session) are most likely to have text available
 
 ## Full API Reference
 

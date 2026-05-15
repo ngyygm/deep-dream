@@ -225,6 +225,8 @@ def merge_entities():
             return err(f"目标实体不存在: {target_id}", 404)
         skip_name_check = body.get("skip_name_check", False)
         result = processor.storage.merge_entity_families(target_id, source_ids, skip_name_check=skip_name_check)
+        if result.get("rejected"):
+            return err("合并被拒绝：源实体与目标实体名称差异过大。使用 skip_name_check: true 强制合并。", 409)
         return ok({"message": "实体合并完成", "target_family_id": target_id, "source_family_ids": source_ids, "merged_count": result})
     except Exception as e:
         return err(str(e), 500)

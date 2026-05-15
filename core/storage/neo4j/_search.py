@@ -290,6 +290,16 @@ class SearchMixin:
         cached = self._cache.get(cache_key)
         if cached is not None:
             return cached
+
+        # Escape Lucene special characters
+        _lucene_special = r'\+-&&||!(){}[]^"~*?:/'
+        safe_query = query
+        for ch in _lucene_special:
+            safe_query = safe_query.replace(ch, ' ')
+        safe_query = ' '.join(safe_query.split())
+        if not safe_query.strip():
+            return []
+
         try:
             with self._session() as session:
                 raw_limit = min(limit * 5, 500)

@@ -931,6 +931,7 @@ class EntityQueryMixin:
                 "relation_count": relation_count,
                 "total_entity_versions": total_entity_versions,
                 "total_relation_versions": total_relation_versions,
+                "episode_count": self.count_episodes(),
             }
 
             if entity_count > 0 and row.get("isolated_count") is not None:
