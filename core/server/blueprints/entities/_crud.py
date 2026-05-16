@@ -351,7 +351,9 @@ def update_entity_v2(family_id: str):
             if attributes is not None:
                 attr_str = json.dumps(attributes, ensure_ascii=False) if isinstance(attributes, dict) else str(attributes)
                 processor.storage.update_entity_attributes(family_id, attr_str)
-            return ok({"message": "实体属性已更新", "family_id": family_id})
+            updated_entity = processor.storage.get_entity_by_family_id(family_id)
+            vc_map = processor.storage.get_entity_version_counts([family_id]) if family_id else {}
+            return ok(_h.entity_to_dict(updated_entity, version_count=vc_map.get(family_id)))
 
         if summary is None and attributes is None:
             name = body.get("name")
@@ -379,6 +381,7 @@ def update_entity_v2(family_id: str):
                 community_id=getattr(current, 'community_id', None),
             )
             processor.storage.save_entity(updated)
-            return ok({"message": "实体已更新", "absolute_id": updated.absolute_id})
+            vc_map = processor.storage.get_entity_version_counts([family_id]) if family_id else {}
+            return ok(_h.entity_to_dict(updated, version_count=vc_map.get(family_id)))
     except Exception as e:
         return err(str(e), 500)

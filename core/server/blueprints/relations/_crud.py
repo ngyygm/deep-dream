@@ -16,6 +16,7 @@ from core.server.blueprints import helpers as _h
 from core.server.blueprints.relations import relations_bp
 
 ok, err = _h.ok, _h.err
+safe_endpoint = _h.safe_endpoint
 _get_processor = _h._get_processor
 _get_searcher = _h._get_searcher
 relation_to_dict = _h.relation_to_dict
@@ -25,6 +26,23 @@ parse_time_point = _h.parse_time_point
 logger = logging.getLogger(__name__)
 
 _VALID_RELATION_SCOPES = frozenset(("accumulated", "version_only", "all_versions"))
+
+
+# -- Relation by family_id (GET) ----------------------------------------------
+
+@relations_bp.route("/api/v1/find/relations/<family_id>", methods=["GET"])
+@safe_endpoint
+def find_relation_by_family_id(family_id: str):
+    try:
+        processor = _get_processor()
+        relation = processor.storage.get_relation_by_family_id(family_id)
+        if relation is None:
+            return err(f"未找到关系: {family_id}", 404)
+        d = relation_to_dict(relation)
+        enrich_relations([d], processor)
+        return ok(d)
+    except Exception as e:
+        return err(str(e), 500)
 
 
 # -- Relation by absolute_id (GET) -------------------------------------------
