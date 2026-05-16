@@ -52,6 +52,7 @@ curl -s $BASE_URL/graphs
 | Create entity | POST | `/find/entities/create` | `{name, content}` |
 | Create relation | POST | `/find/relations/create` | `{entity1_family_id, entity2_family_id, content}` |
 | Update entity | PUT | `/find/entities/{fid}` | `{name, summary, attributes}` |
+| Get relation | GET | `/find/relations/{fid}` | Returns latest valid version |
 | Update relation | PUT | `/find/relations/{fid}` | `{content, summary, attributes, confidence}` (content optional for metadata-only updates) |
 | Delete entity | DELETE | `/find/entities/{fid}` | `?cascade=true` to remove connected relations (default: false, leaves orphans) |
 | Delete relation | DELETE | `/find/relations/{fid}` | `?cascade=false` |
@@ -272,6 +273,7 @@ When the extraction pipeline cannot determine an entity name, it creates `auto_X
 - `ask` endpoint uses `question` param (not `query` or `query_name`) — different from other search endpoints
 - Shortest path uses `family_id_a`/`family_id_b` (or aliases `entity1_family_id`/`entity2_family_id`)
 - `update_entity`: returns full updated entity. name/content changes create a new version (preserves summary, confidence, community_id); summary/attribute changes are in-place. Entity rename auto-propagates to relation records and refreshes RELATES_TO edges
+- **Entity rename collision**: renaming an entity to include another entity's name can cause `by-name` to return the wrong entity (e.g., renaming to "Sarah Chen Metadata" may shadow "Dr. Sarah Chen"). Prefer unique, descriptive names.
 - `update_relation` (PUT /find/relations/{fid}): creates a new version. `content` is optional — omit for metadata-only updates. Pass `summary`, `confidence`, `attributes` to override; omitted fields carry forward from previous version. Returns full relation dict.
 - `delete_entity`: default `cascade=false` leaves orphaned relations connected to the deleted entity. Use `?cascade=true` to also delete connected relations. After deletion, absolute_id lookups may return stale data briefly (cache invalidation is immediate but in-flight requests may complete with cached data).
 - `relations/between`: returns only the latest valid version per relation (excludes invalidated versions)
@@ -279,7 +281,8 @@ When the extraction pipeline cannot determine an entity name, it creates `auto_X
 - `merge`: target entity stays canonical (name/content preserved); source entities are absorbed. Auto-redirects Relation endpoints and refreshes RELATES_TO edges
 - `merge`: rejects with HTTP 409 if source/target names have insufficient word overlap (uses word-level Jaccard for multi-word names, character-level for single-word); pass `skip_name_check: true` in body to override
 - `merge`: returns 400 if target is in source list (self-merge) or if source entities don't exist
-- `merge`: response data is nested at `data.merged_count` (not flat in `data`)
+- `merge`: response data is nested at `data.merged_count` (not flat in `data`). Response includes `relations_updated` count
+- `merge`: after merge, butler dry-run may still show the absorbed entity family_id until caches expire (TTL ~30s)
 - `merge`: if a relation connects source and target entities, both endpoints resolve to target after merge (self-loop). No warning is returned
 - `merge`: auto-updates source entity names to target name and refreshes RELATES_TO edges
 - Auto-named entities (`auto_XXXXXXXX`) may outrank real entities in search results — filter by checking `content` field
