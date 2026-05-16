@@ -314,20 +314,22 @@ def find_entity_by_name(name: str):
                     if name.lower() in cname.lower():
                         best = candidate
                         break
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("by-name prefix match failed for '%s': %s", name, e)
 
         # Step 3: BM25 text search
         if not best:
             try:
                 entities = processor.storage.search_entities_by_bm25(name, limit=1)
+                logger.warning("by-name BM25 for '%s': got %d entities", name, len(entities))
                 if entities:
                     candidate = entities[0]
                     score = getattr(candidate, '_score', 0) or 0
+                    logger.warning("by-name BM25 top score: %s (name=%s)", score, getattr(candidate, 'name', ''))
                     if score >= 0.7:
                         best = candidate
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("by-name BM25 failed for '%s': %s", name, e)
 
         # Step 4: Embedding fallback (semantic, slower)
         if not best:
