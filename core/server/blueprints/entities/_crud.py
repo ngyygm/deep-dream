@@ -355,6 +355,11 @@ def update_entity_v2(family_id: str):
         if not has_metadata_update and not has_version_update:
             return err("name, content, summary 或 attributes 至少需要提供一个", 400)
 
+        if name is not None and not str(name).strip():
+            return err("name 不能为空字符串", 400)
+        if content is not None and not str(content).strip():
+            return err("content 不能为空字符串", 400)
+
         current = processor.storage.get_entity_by_family_id(family_id)
         if current is None:
             return err(f"未找到实体: {family_id}", 404)
