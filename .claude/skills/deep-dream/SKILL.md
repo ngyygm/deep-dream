@@ -236,7 +236,7 @@ curl -s -X POST "$BASE_URL/find/episodes/search?graph_id=default" \
 
 When searching returns multiple entities with the same or similar names:
 1. Check `content` field to distinguish — each entity's content describes what it represents
-2. Use `GET /find/entities/by-name/{name}` for name lookup (returns 404 if no close match exists; uses exact → prefix → BM25 → embedding cascade)
+2. Use `GET /find/entities/by-name/{name}` for name lookup (returns 404 if no close match exists; uses exact → prefix → BM25 → embedding cascade). Response includes `match_method` and `match_score` — check these before trusting results. BM25 with Chinese can produce false positives (e.g., "林黛玉" matches "贾宝玉" with 0.96 score). If `match_score < 0.8`, a `hint` field warns about low confidence
 3. Use `GET /find/entities/search?query_name=X` for scored list of candidates
 4. Use entity profile `GET /find/entities/{fid}/profile` to see full context including relations
 
@@ -280,7 +280,7 @@ When the extraction pipeline cannot determine an entity name, it creates `auto_X
 - `shortest_path`: depends on RELATES_TO graph edges (same as traverse), NOT on Relation records visible in profile. Returns 404 if either entity family_id doesn't exist; returns `path_length:-1` if entities exist but lack connecting RELATES_TO edges. If entities have Relations but shortest-path returns -1, run `POST /find/entities/refresh-edges` to regenerate RELATES_TO edges
 - `shortest_path`: response can be very large (90KB+) as it includes full entity/relation data for the entire path. No `compact` parameter available — client-side filtering recommended
 - `merge`: target entity stays canonical (name/content preserved); source entities are absorbed. Auto-redirects Relation endpoints and refreshes RELATES_TO edges
-- `merge`: rejects with HTTP 409 if source/target names have insufficient word overlap (uses word-level Jaccard for multi-word names, character-level for single-word); pass `skip_name_check: true` in body to override
+- `merge`: rejects with HTTP 409 if source/target names have insufficient word overlap (uses word-level Jaccard for multi-word names, character-level for single-word); pass `skip_name_check: true` in body to override. **Chinese courtesy names (字) always need `skip_name_check`** since they share zero characters (e.g., 孔明 vs 诸葛亮)
 - `merge`: returns 400 if target is in source list (self-merge) or if source entities don't exist
 - `merge`: response data is nested at `data.merged_count` (not flat in `data`). Response includes `relations_updated` count
 - `merge`: after merge, butler dry-run may still show the absorbed entity family_id until caches expire (TTL ~30s)
