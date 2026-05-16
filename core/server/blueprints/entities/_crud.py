@@ -20,6 +20,7 @@ _get_processor = _h._get_processor
 
 # Import validation helpers
 _validate_text_input = _h._validate_text_input
+get_json_body = _h.get_json_body
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +33,7 @@ def update_entity_absolute(absolute_id: str):
     try:
         processor = _get_processor()
         h = _h
-        body = request.get_json(silent=True) or {}
+        body = get_json_body()
         fields = {}
         for key in ("name", "content", "summary", "attributes", "confidence"):
             if key in body:
@@ -76,7 +77,7 @@ def create_entity():
     try:
         processor = _get_processor()
         h = _h
-        body = request.get_json(silent=True) or {}
+        body = get_json_body()
         name = str(body.get("name") or "").strip()
         content = str(body.get("content") or "").strip()
         if not name:
@@ -121,7 +122,7 @@ def create_entity():
 def batch_delete_entities():
     try:
         processor = _get_processor()
-        body = request.get_json(silent=True) or {}
+        body = get_json_body()
         family_ids = body.get("family_ids") or body.get("entity_ids", [])
         if not isinstance(family_ids, list) or not family_ids:
             return err("family_ids 需为非空数组", 400)
@@ -139,7 +140,7 @@ def batch_delete_entity_versions():
     try:
         processor = _get_processor()
         h = _h
-        body = request.get_json(silent=True) or {}
+        body = get_json_body()
         absolute_ids = body.get("absolute_ids", [])
         if not isinstance(absolute_ids, list) or not absolute_ids:
             return err("absolute_ids 需为非空数组", 400)
@@ -185,7 +186,7 @@ def split_entity_version():
     try:
         processor = _get_processor()
         h = _h
-        body = request.get_json(silent=True) or {}
+        body = get_json_body()
         absolute_id = (body.get("absolute_id") or "").strip()
         if not absolute_id:
             return err("absolute_id 为必填", 400)
@@ -214,7 +215,7 @@ def split_entity_version():
 def merge_entities():
     try:
         processor = _get_processor()
-        body = request.get_json(silent=True) or {}
+        body = get_json_body()
         target_id = (body.get("target_family_id") or "").strip()
         source_ids = body.get("source_family_ids", [])
         if not target_id or not isinstance(source_ids, list) or not source_ids:
@@ -289,7 +290,7 @@ def delete_isolated_entities():
         h = _h
         if not hasattr(processor.storage, 'get_isolated_entities'):
             return ok({"message": "当前存储后端不支持孤立实体检测", "deleted": 0})
-        dry_run_body = request.get_json(silent=True) or {}
+        dry_run_body = get_json_body()
         dry_run = dry_run_body.get("dry_run", False) if isinstance(dry_run_body, dict) else False
         isolated = processor.storage.get_isolated_entities(limit=10000)
         if not isolated:
@@ -341,7 +342,7 @@ def delete_entity_family(family_id: str):
 def update_entity_v2(family_id: str):
     try:
         processor = _get_processor()
-        body = request.get_json(silent=True) or {}
+        body = get_json_body()
         summary = body.get("summary")
         attributes = body.get("attributes")
         name = body.get("name")

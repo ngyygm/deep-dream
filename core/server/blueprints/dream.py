@@ -29,6 +29,7 @@ from core.server.blueprints.helpers import (
     enrich_relation_version_counts,
     parse_time_point,
     run_async,
+    get_json_body,
 )
 from core.server.sse import sse_response, sse_event, queue_to_generator
 from core.server.llm_utils import call_llm_with_backoff
@@ -167,7 +168,7 @@ def dream_log_detail(cycle_id: str):
 def dream_seeds():
     """获取梦境种子实体，支持多种策略。"""
     try:
-        body = request.get_json(silent=True) or {}
+        body = get_json_body()
         strategy = str(body.get("strategy", "random")).strip()
         count = min(int(body.get("count", 10)), 100)
         exclude_ids = body.get("exclude_family_ids") or []
@@ -211,7 +212,7 @@ def dream_seeds():
 def dream_create_relation():
     """创建梦境发现的关系。"""
     try:
-        body = request.get_json(silent=True) or {}
+        body = get_json_body()
         entity1_id = (body.get("entity1_id") or "").strip()
         entity2_id = (body.get("entity2_id") or "").strip()
         content = (body.get("content") or "").strip()
@@ -259,7 +260,7 @@ def dream_create_relation():
 def dream_save_episode():
     """保存梦境 episode。"""
     try:
-        body = request.get_json(silent=True) or {}
+        body = get_json_body()
         content = (body.get("content") or "").strip()
         entities_examined = body.get("entities_examined") or []
         relations_created = body.get("relations_created") or []
@@ -312,7 +313,7 @@ def dream_run():
         由 DreamHistory 根据跨周期效果自动选择下一个策略
     """
     try:
-        body = request.get_json(silent=True) or {}
+        body = get_json_body()
 
         processor = _get_processor()
         graph_id = request.graph_id or "default"
@@ -382,7 +383,7 @@ def dream_run():
 def agent_ask():
     """Agent 元查询：自然语言问题 → 结构化查询 + 回答。"""
     try:
-        body = request.get_json(silent=True) or {}
+        body = get_json_body()
         question = (body.get("question") or "").strip()
         if not question:
             return err("question 为必填", 400)
@@ -427,7 +428,7 @@ def agent_ask():
 @dream_bp.route("/api/v1/find/ask/stream", methods=["POST"])
 def agent_ask_stream():
     """SSE streaming endpoint for Ask Agent."""
-    body = request.get_json(silent=True) or {}
+    body = get_json_body()
     question = (body.get("question") or "").strip()
     if not question:
         return err("question 为必填", 400)
@@ -533,7 +534,7 @@ def agent_ask_stream():
 def explain_entity():
     """自然语言解释实体。"""
     try:
-        body = request.get_json(silent=True) or {}
+        body = get_json_body()
         family_id = (body.get("family_id") or "").strip()
         aspect = (body.get("aspect") or "summary").strip()
         if not family_id:
@@ -587,7 +588,7 @@ def cleanup_invalidated_versions():
     """清理已失效的旧版本节点。"""
     try:
         processor = _get_processor()
-        body = request.get_json(silent=True) or {}
+        body = get_json_body()
         before_date = body.get("before_date")
         dry_run = body.get("dry_run", False)
         result = processor.storage.cleanup_invalidated_versions(
@@ -623,7 +624,7 @@ def maintenance_cleanup():
     """一键清理：失效版本 + 孤立实体。"""
     try:
         processor = _get_processor()
-        body = request.get_json(silent=True) or {}
+        body = get_json_body()
         dry_run = body.get("dry_run", False)
         results = {}
         # 清理失效版本
@@ -822,7 +823,7 @@ def butler_execute():
       dry_run: bool — 仅预览不实际执行（默认 false）
     """
     try:
-        body = request.get_json(silent=True) or {}
+        body = get_json_body()
         actions = body.get("actions", [])
         dry_run = body.get("dry_run", False)
         if not isinstance(actions, list) or not actions:
@@ -982,7 +983,7 @@ def promote_dream_candidate(family_id: str):
     """将候选关系提升为已验证状态。"""
     try:
         processor = _get_processor()
-        body = request.get_json(silent=True) or {}
+        body = get_json_body()
         evidence_source = body.get("evidence_source", "manual")
         new_confidence = body.get("confidence")
         if new_confidence is not None:
@@ -1001,7 +1002,7 @@ def demote_dream_candidate(family_id: str):
     """将候选关系降级为已拒绝状态。"""
     try:
         processor = _get_processor()
-        body = request.get_json(silent=True) or {}
+        body = get_json_body()
         reason = body.get("reason", "")
         result = processor.storage.demote_candidate_relation(family_id, reason=reason)
         return ok(result)
@@ -1016,7 +1017,7 @@ def corroborate_dream_candidate():
     """对 Dream 候选关系进行佐证检查。"""
     try:
         processor = _get_processor()
-        body = request.get_json(silent=True) or {}
+        body = get_json_body()
         entity1_family_id = body.get("entity1_family_id", "")
         entity2_family_id = body.get("entity2_family_id", "")
         if not entity1_family_id or not entity2_family_id:

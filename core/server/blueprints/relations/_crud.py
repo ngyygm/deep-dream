@@ -22,6 +22,7 @@ _get_searcher = _h._get_searcher
 relation_to_dict = _h.relation_to_dict
 enrich_relations = _h.enrich_relations
 parse_time_point = _h.parse_time_point
+get_json_body = _h.get_json_body
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +83,7 @@ def update_relation_by_family(family_id: str):
     """Edit relation: create new version. Content optional for metadata-only updates."""
     try:
         processor = _get_processor()
-        body = request.get_json(silent=True) or {}
+        body = get_json_body()
 
         current_versions = processor.storage.get_relation_versions(family_id)
         if not current_versions:
@@ -155,7 +156,7 @@ def batch_delete_relations():
     """Batch delete relations."""
     try:
         processor = _get_processor()
-        body = request.get_json(silent=True) or {}
+        body = get_json_body()
         family_ids = body.get("family_ids") or body.get("relation_ids", [])
         if not isinstance(family_ids, list) or not family_ids:
             return err("family_ids 需为非空数组", 400)
@@ -289,7 +290,7 @@ def create_relation():
     """Manually create a relation (generates new family_id + absolute_id)."""
     try:
         processor = _get_processor()
-        body = request.get_json(silent=True) or {}
+        body = get_json_body()
 
         # Resolve entity IDs: prefer absolute_id, fall back to family_id
         e1 = (body.get("entity1_absolute_id") or "").strip()
@@ -373,7 +374,7 @@ def update_relation_absolute(absolute_id: str):
     """Update a specific relation version."""
     try:
         processor = _get_processor()
-        body = request.get_json(silent=True) or {}
+        body = get_json_body()
         fields = {}
         for key in ("content", "summary", "attributes", "confidence"):
             if key in body:
@@ -410,7 +411,7 @@ def batch_delete_relation_versions():
     """Batch delete relation versions."""
     try:
         processor = _get_processor()
-        body = request.get_json(silent=True) or {}
+        body = get_json_body()
         absolute_ids = body.get("absolute_ids", [])
         if not isinstance(absolute_ids, list) or not absolute_ids:
             return err("absolute_ids 需为非空数组", 400)

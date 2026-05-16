@@ -21,6 +21,7 @@ _get_searcher = _h._get_searcher
 # Import validation helpers
 _validate_text_input = _h._validate_text_input
 _validate_positive_int = _h._validate_positive_int
+get_json_body = _h.get_json_body
 
 logger = logging.getLogger(__name__)
 
@@ -163,7 +164,7 @@ def find_entities_all_before_time():
 def find_entity_version_counts():
     try:
         processor = _get_processor()
-        body = request.get_json(silent=True)
+        body = get_json_body()
         if not isinstance(body, dict):
             body = {}
         family_ids = body.get("family_ids")
@@ -200,7 +201,7 @@ def find_entities_search():
     try:
         processor = _get_processor()
         h = _h
-        body = request.get_json(silent=True) if request.method == "POST" else None
+        body = get_json_body() if request.method == "POST" else None
         body = body if isinstance(body, dict) else {}
 
         def _get_value(name: str, default: Any = None) -> Any:
@@ -384,7 +385,7 @@ def batch_profiles():
     try:
         processor = _get_processor()
         h = _h
-        body = request.get_json(silent=True) or {}
+        body = get_json_body()
         family_ids = body.get("family_ids", [])
         if not family_ids:
             return err("family_ids is required", 400)

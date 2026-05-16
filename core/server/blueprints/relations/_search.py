@@ -27,6 +27,7 @@ enrich_relation_version_counts = _h.enrich_relation_version_counts
 parse_time_point = _h.parse_time_point
 _normalize_time_for_compare = _h._normalize_time_for_compare
 _extract_candidate_ids = _h._extract_candidate_ids
+get_json_body = _h.get_json_body
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +53,7 @@ def find_unified():
         relations: matched concept relations
     """
     try:
-        body = request.get_json(silent=True) or {}
+        body = get_json_body()
         query = (body.get("query") or "").strip()
         if not query:
             return err("query 为必填字段", 400)
@@ -404,7 +405,7 @@ def find_query_one():
     """Return candidate entities and relations matching request body conditions."""
     try:
         processor = _get_processor()
-        body = request.get_json(silent=True) or {}
+        body = get_json_body()
         include_entities = body.get("include_entities", True)
         include_relations = body.get("include_relations", True)
         try:
@@ -461,7 +462,7 @@ def find_relations_all():
 def find_relations_search():
     try:
         processor = _get_processor()
-        body = request.get_json(silent=True) if request.method == "POST" else None
+        body = get_json_body() if request.method == "POST" else None
         body = body if isinstance(body, dict) else {}
 
         def _get_value(name: str, default: Any = None) -> Any:
@@ -538,7 +539,7 @@ def find_relations_search():
 def find_relations_between():
     try:
         processor = _get_processor()
-        body = request.get_json(silent=True) if request.method == "POST" else None
+        body = get_json_body() if request.method == "POST" else None
         body = body if isinstance(body, dict) else {}
         family_id_a = (body.get("family_id_a") or body.get("from_family_id") or body.get("entity1_family_id") or request.args.get("family_id_a") or request.args.get("from_family_id") or request.args.get("entity1_family_id") or "").strip()
         family_id_b = (body.get("family_id_b") or body.get("to_family_id") or body.get("entity2_family_id") or request.args.get("family_id_b") or request.args.get("to_family_id") or request.args.get("entity2_family_id") or "").strip()
@@ -561,7 +562,7 @@ def find_shortest_paths():
     """Find shortest paths between two entities."""
     try:
         processor = _get_processor()
-        body = request.get_json(silent=True) if request.method == "POST" else None
+        body = get_json_body() if request.method == "POST" else None
         body = body if isinstance(body, dict) else {}
         family_id_a = (body.get("family_id_a") or body.get("from_family_id")
                          or request.args.get("family_id_a")
@@ -630,7 +631,7 @@ def find_shortest_path_cypher():
         processor = _get_processor()
         if not hasattr(processor.storage, 'find_shortest_path_cypher'):
             return err("此功能需要 Neo4j 后端", 400)
-        body = request.get_json(silent=True) or {}
+        body = get_json_body()
         entity_a = (body.get("family_id_a") or body.get("entity_a") or "").strip()
         entity_b = (body.get("family_id_b") or body.get("entity_b") or "").strip()
         if not entity_a or not entity_b:
@@ -695,7 +696,7 @@ def quick_search():
     """One-shot search: hybrid BM25+embedding RRF fusion with name boosting."""
     try:
         processor = _get_processor()
-        body = request.get_json(silent=True) or {}
+        body = get_json_body()
         query = body.get("query", "").strip()
         if not query:
             return err("query is required", 400)

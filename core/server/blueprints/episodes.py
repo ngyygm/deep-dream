@@ -21,6 +21,7 @@ from core.server.blueprints.helpers import (
     enrich_relations,
     episode_to_dict,
     parse_time_point,
+    get_json_body,
 )
 from core.models import Episode
 
@@ -113,7 +114,7 @@ def find_episode_doc(cache_id: str):
 def search_episodes():
     """搜索 Episode。"""
     try:
-        body = request.get_json(silent=True) or {}
+        body = get_json_body()
         query = (body.get("query") or "").strip()
         if not query:
             return err("query 为必填", 400)
@@ -148,7 +149,7 @@ def find_episode_delete(cache_id: str):
 def batch_ingest_episodes():
     """批量导入 Episode。使用 bulk_save 优化写入性能。"""
     try:
-        body = request.get_json(silent=True) or {}
+        body = get_json_body()
         episodes = body.get("episodes", [])
         if not isinstance(episodes, list):
             return err("episodes 需为数组", 400)
@@ -295,7 +296,7 @@ def neo4j_search_episodes():
         processor = _get_processor()
         if not hasattr(processor.storage, 'search_episodes'):
             return err("此功能需要 Neo4j 后端", 400)
-        body = request.get_json(silent=True) or {}
+        body = get_json_body()
         query = (body.get("query") or "").strip()
         if not query:
             return err("query 不能为空", 400)
