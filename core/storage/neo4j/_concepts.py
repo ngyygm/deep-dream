@@ -318,7 +318,7 @@ class ConceptMixin:
                 abs_to_fid = {v: k for k, v in frontier_abs_ids.items()}
 
                 # --- Batch RELATES_TO neighbors (1 query) ---
-                relates_result = self._run(session, """
+                relates_result = list(self._run(session, """
                     UNWIND $abs_ids AS aid
                     MATCH (c:Entity {uuid: aid})-[:RELATES_TO]-(other:Entity)
                     WHERE ($tp IS NULL OR other.valid_at IS NULL OR other.valid_at <= $tp)
@@ -326,10 +326,10 @@ class ConceptMixin:
                     RETURN DISTINCT aid AS source_abs_id,
                            other.family_id AS family_id, other.uuid AS id,
                            other.name AS name, 'entity' AS role
-                """, abs_ids=abs_id_list, tp=tp)
+                """, abs_ids=abs_id_list, tp=tp))
 
                 # --- Batch Relation neighbors (1 query) ---
-                rel_result = self._run(session, """
+                rel_result = list(self._run(session, """
                     UNWIND $abs_ids AS aid
                     MATCH (rel:Relation)
                     WHERE (rel.entity1_absolute_id = aid OR rel.entity2_absolute_id = aid)
@@ -338,7 +338,7 @@ class ConceptMixin:
                     RETURN DISTINCT aid AS source_abs_id,
                            rel.family_id AS family_id, rel.uuid AS id,
                            rel.name AS name, 'relation' AS role
-                """, abs_ids=abs_id_list, tp=tp)
+                """, abs_ids=abs_id_list, tp=tp))
 
             # Collect edges and next frontier
             next_queue = []
