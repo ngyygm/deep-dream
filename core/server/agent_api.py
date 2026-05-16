@@ -65,8 +65,8 @@ def compact_relation(item):
     if not isinstance(item, dict):
         return item
     out = {}
-    for k in ("family_id", "entity1_id", "entity2_id", "entity1_name", "entity2_name",
-               "relation_type", "event_time", "confidence"):
+    for k in ("family_id", "entity1_family_id", "entity2_family_id",
+               "entity1_name", "entity2_name", "relation_type", "event_time", "confidence"):
         if k in item:
             out[k] = item[k]
     if "_score" in item:
