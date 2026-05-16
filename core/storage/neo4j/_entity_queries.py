@@ -198,7 +198,8 @@ class EntityQueryMixin:
                 MATCH (e:Entity {family_id: fid})
                 WITH fid, e.uuid AS aid
                 OPTIONAL MATCH (r:Relation)
-                WHERE r.entity1_absolute_id = aid OR r.entity2_absolute_id = aid
+                WHERE (r.entity1_absolute_id = aid OR r.entity2_absolute_id = aid)
+                  AND r.invalid_at IS NULL
                 RETURN fid AS family_id, count(DISTINCT r) AS cnt
                 """,
                 fids=canonical_ids,
@@ -610,6 +611,7 @@ class EntityQueryMixin:
                 MATCH (r:Relation)
                 WHERE (r.entity1_absolute_id = e.uuid OR r.entity2_absolute_id = e.uuid)
                       AND r.graph_id = $graph_id
+                      AND r.invalid_at IS NULL
                 MATCH (ep:Episode)-[m:MENTIONS]->(r)
                 RETURN DISTINCT ep.uuid AS episode_id, m.context AS context
             """, fid=family_id, graph_id=self._graph_id, graph_id_safe=False)
@@ -625,6 +627,7 @@ class EntityQueryMixin:
                     MATCH (r:Relation)
                     WHERE (r.entity1_absolute_id = $abs_id OR r.entity2_absolute_id = $abs_id)
                     AND r.event_time <= datetime($tp)
+                    AND r.invalid_at IS NULL
                     WITH r.family_id AS fid, COLLECT(r) AS rels
                     UNWIND rels AS r
                     WITH fid, r ORDER BY r.processed_time DESC
@@ -637,6 +640,7 @@ class EntityQueryMixin:
                 query = _q("""
                     MATCH (r:Relation)
                     WHERE (r.entity1_absolute_id = $abs_id OR r.entity2_absolute_id = $abs_id)
+                    AND r.invalid_at IS NULL
                     WITH r.family_id AS fid, COLLECT(r) AS rels
                     UNWIND rels AS r
                     WITH fid, r ORDER BY r.processed_time DESC
@@ -704,6 +708,7 @@ class EntityQueryMixin:
                 UNWIND $aids AS aid
                 MATCH (r:Relation)
                 WHERE (r.entity1_absolute_id = aid OR r.entity2_absolute_id = aid)
+                  AND r.invalid_at IS NULL
                 WITH r.family_id AS fid, COLLECT(r) AS rels
                 UNWIND rels AS r
                 WITH fid, r ORDER BY r.processed_time DESC
