@@ -181,7 +181,7 @@ _HINT_PATTERNS = [
     (lambda m: ("not found" in m or "未找到" in m) and ("relation" in m or "关系" in m),
      "Hint: use get_relations_between or search_relations to find the correct relation."),
     (lambda m: ("not found" in m or "未找到" in m) and ("episode" in m or "记忆" in m),
-     "Hint: use search_episodes or get_latest_episode to find valid cache_ids."),
+     "Hint: use POST /find/episodes/search to find valid cache_ids."),
     (lambda m: "not found" in m and "community" in m,
      "Hint: use list_communities (GET /communities) to see valid IDs. Run detect_communities first if empty."),
     (lambda m: "not found" in m and "task" in m,
