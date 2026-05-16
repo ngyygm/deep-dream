@@ -87,9 +87,8 @@ def create_entity():
         if content:
             _validate_text_input(content, "content", min_len=0, max_len=100000)
 
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         ts = now.strftime("%Y%m%d_%H%M%S")
-        # Single loop: check both IDs together (collision probability is ~0 with 12+8 hex chars)
         for _ in range(10):
             family_id = f"ent_{uuid.uuid4().hex[:12]}"
             absolute_id = f"entity_{ts}_{uuid.uuid4().hex[:8]}"
@@ -362,7 +361,6 @@ def update_entity_v2(family_id: str):
             current = processor.storage.get_entity_by_family_id(family_id)
             if current is None:
                 return err(f"未找到实体: {family_id}", 404)
-            now = datetime.now(timezone.utc)
             now = datetime.now(timezone.utc)
             ts = now.strftime("%Y%m%d_%H%M%S")
             updated = Entity(

@@ -2,7 +2,7 @@
 import hashlib
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List
 
@@ -40,7 +40,7 @@ class EpisodeMutationMixin:
         """
         if not episodes:
             return 0
-        _now_iso = datetime.now().isoformat()
+        _now_iso = datetime.now(timezone.utc).isoformat()
 
         # Compute embeddings BEFORE write
         embeddings = None
@@ -134,7 +134,7 @@ class EpisodeMutationMixin:
         if not doc_hash:
             doc_hash = "unknown"
 
-        _now = datetime.now()
+        _now = datetime.now(timezone.utc)
         _has_pt = hasattr(cache, 'processed_time')
         ts_prefix = cache.event_time.strftime("%Y%m%d_%H%M%S") if cache.event_time else _now.strftime("%Y%m%d_%H%M%S")
         dir_name = f"{ts_prefix}_{doc_hash}"
