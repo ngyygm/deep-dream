@@ -341,47 +341,54 @@ def update_entity_v2(family_id: str):
         body = request.get_json(silent=True) or {}
         summary = body.get("summary")
         attributes = body.get("attributes")
+        name = body.get("name")
+        content = body.get("content")
 
-        if summary is not None or attributes is not None:
-            existing = processor.storage.get_entity_by_family_id(family_id)
-            if existing is None:
-                return err(f"未找到实体: {family_id}", 404)
-            if summary is not None:
-                processor.storage.update_entity_summary(family_id, str(summary))
-            if attributes is not None:
-                attr_str = json.dumps(attributes, ensure_ascii=False) if isinstance(attributes, dict) else str(attributes)
-                processor.storage.update_entity_attributes(family_id, attr_str)
-            updated_entity = processor.storage.get_entity_by_family_id(family_id)
-            vc_map = processor.storage.get_entity_version_counts([family_id]) if family_id else {}
-            return ok(_h.entity_to_dict(updated_entity, version_count=vc_map.get(family_id)))
+        has_metadata_update = summary is not None or attributes is not None
+        has_version_update = name is not None or content is not None
 
-        if summary is None and attributes is None:
-            name = body.get("name")
-            content = body.get("content")
-            if not name and not content:
-                return err("name 或 content 至少需要提供一个", 400)
-            current = processor.storage.get_entity_by_family_id(family_id)
-            if current is None:
-                return err(f"未找到实体: {family_id}", 404)
+        if not has_metadata_update and not has_version_update:
+            return err("name, content, summary 或 attributes 至少需要提供一个", 400)
+
+        current = processor.storage.get_entity_by_family_id(family_id)
+        if current is None:
+            return err(f"未找到实体: {family_id}", 404)
+
+        # Apply metadata updates in-place first
+        if summary is not None:
+            processor.storage.update_entity_summary(family_id, str(summary))
+        if attributes is not None:
+            attr_str = json.dumps(attributes, ensure_ascii=False) if isinstance(attributes, dict) else str(attributes)
+            processor.storage.update_entity_attributes(family_id, attr_str)
+
+        # Create new version if name/content changed
+        if has_version_update:
+            # Re-fetch to get updated summary/attributes
+            refreshed = processor.storage.get_entity_by_family_id(family_id)
             now = datetime.now(timezone.utc)
             ts = now.strftime("%Y%m%d_%H%M%S")
             updated = Entity(
                 absolute_id=f"entity_{ts}_{uuid.uuid4().hex[:8]}",
                 family_id=family_id,
-                name=name if name else current.name,
-                content=content if content else current.content,
+                name=name if name else refreshed.name,
+                content=content if content else refreshed.content,
                 event_time=now, processed_time=now,
-                episode_id=current.episode_id,
-                source_document=current.source_document,
+                episode_id=refreshed.episode_id,
+                source_document=refreshed.source_document,
                 valid_at=now,
-                summary=getattr(current, 'summary', None),
-                attributes=getattr(current, 'attributes', None),
-                confidence=getattr(current, 'confidence', None),
-                content_format=getattr(current, 'content_format', 'plain'),
-                community_id=getattr(current, 'community_id', None),
+                summary=getattr(refreshed, 'summary', None),
+                attributes=getattr(refreshed, 'attributes', None),
+                confidence=getattr(refreshed, 'confidence', None),
+                content_format=getattr(refreshed, 'content_format', 'plain'),
+                community_id=getattr(refreshed, 'community_id', None),
             )
             processor.storage.save_entity(updated)
             vc_map = processor.storage.get_entity_version_counts([family_id]) if family_id else {}
             return ok(_h.entity_to_dict(updated, version_count=vc_map.get(family_id)))
+
+        # Metadata-only path: return updated entity
+        updated_entity = processor.storage.get_entity_by_family_id(family_id)
+        vc_map = processor.storage.get_entity_version_counts([family_id]) if family_id else {}
+        return ok(_h.entity_to_dict(updated_entity, version_count=vc_map.get(family_id)))
     except Exception as e:
         return err(str(e), 500)
