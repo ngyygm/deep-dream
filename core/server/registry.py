@@ -268,7 +268,7 @@ class GraphRegistry:
         metadata = self.get_graph_metadata(graph_id)
         # Ensure graph_id is in metadata
         metadata.setdefault("graph_id", graph_id)
-        # Try to get counts from core (lazy — won't trigger init if not loaded)
+        # Try to get counts from any loaded processor (all graphs share same Neo4j)
         entity_count = 0
         relation_count = 0
         processor = self._processors.get(graph_id)
@@ -279,9 +279,40 @@ class GraphRegistry:
                 relation_count = stats.get("relations", 0)
             except Exception:
                 pass
+        else:
+            # Processor not loaded — query via any loaded processor's Neo4j session
+            try:
+                entity_count, relation_count = self._count_via_neo4j(graph_id)
+            except Exception:
+                pass
+            except Exception:
+                pass
         metadata["entity_count"] = entity_count
         metadata["relation_count"] = relation_count
         return metadata
+
+    def _count_via_neo4j(self, graph_id: str) -> tuple:
+        """Query entity/relation counts for a graph via any loaded processor's Neo4j session."""
+        with self._lock:
+            processors = list(self._processors.values())
+        for proc in processors:
+            if hasattr(proc, "storage") and hasattr(proc.storage, "_session"):
+                try:
+                    with proc.storage._session() as session:
+                        result = session.run(
+                            "MATCH (e:Entity) WHERE e.graph_id = $gid AND e.invalid_at IS NULL RETURN count(e) AS cnt",
+                            gid=graph_id,
+                        )
+                        entity_count = result.single()["cnt"] if result.peek() else 0
+                        result = session.run(
+                            "MATCH (r:Relation) WHERE r.graph_id = $gid AND r.invalid_at IS NULL RETURN count(r) AS cnt",
+                            gid=graph_id,
+                        )
+                        relation_count = result.single()["cnt"] if result.peek() else 0
+                        return entity_count, relation_count
+                except Exception:
+                    continue
+        return 0, 0
 
     # ------------------------------------------------------------------
     # 图谱列表
