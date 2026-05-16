@@ -662,27 +662,14 @@ class DreamOrchestrator:
 
                 reasoning = f"梦境发现：{seed_name} 与 {nb_name} 存在潜在关联（策略: {config.strategy}）"
 
-                # Use fast path with pre-fetched entities if available
-                _e1 = _entity_lookup.get(seed_fid)
-                _e2 = _entity_lookup.get(nb_fid)
-                if _e1 and _e2:
-                    save_result = self.storage.save_dream_relation_fast(
-                        entity1=_e1, entity2=_e2,
-                        resolved1=seed_fid, resolved2=nb_fid,
-                        content=result["content"],
-                        confidence=confidence,
-                        reasoning=reasoning,
-                        dream_cycle_id=cycle_id,
-                    )
-                else:
-                    save_result = self.storage.save_dream_relation(
-                        entity1_id=seed_fid,
-                        entity2_id=nb_fid,
-                        content=result["content"],
-                        confidence=confidence,
-                        reasoning=reasoning,
-                        dream_cycle_id=cycle_id,
-                    )
+                save_result = self.storage.save_dream_relation(
+                    entity1_id=seed_fid,
+                    entity2_id=nb_fid,
+                    content=result["content"],
+                    confidence=confidence,
+                    reasoning=reasoning,
+                    dream_cycle_id=cycle_id,
+                )
                 relations_created.append({
                     "entity1_id": seed_fid,
                     "entity1_name": seed_name,
