@@ -232,7 +232,10 @@ class SearchMixin:
                 entities = entities[:limit]
                 if with_scores:
                     return entities
-                result = [e for e, _ in entities]
+                result = []
+                for e, score in entities:
+                    e._score = score
+                    result.append(e)
                 self._cache.set(cache_key, result, ttl=30)
                 return result
         except Exception as e:
