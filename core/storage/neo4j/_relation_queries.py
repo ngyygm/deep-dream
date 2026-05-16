@@ -235,6 +235,7 @@ class RelationQueryMixin:
             query = _q("""
                 MATCH (r:Relation)
                 WHERE (r.entity1_absolute_id IN $abs_ids OR r.entity2_absolute_id IN $abs_ids)
+                  AND r.invalid_at IS NULL
                 WITH r.family_id AS fid, COLLECT(r) AS rels
                 UNWIND rels AS r
                 WITH fid, r ORDER BY r.processed_time DESC

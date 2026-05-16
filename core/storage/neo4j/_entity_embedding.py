@@ -147,6 +147,7 @@ class EntityEmbeddingMixin:
                     MATCH (r:Relation)
                     WHERE (r.entity1_absolute_id = aid OR r.entity2_absolute_id = aid)
                     AND r.event_time <= datetime($tp)
+                    AND r.invalid_at IS NULL
                     WITH r.family_id AS fid, COLLECT(r) AS rels
                     UNWIND rels AS r
                     WITH fid, r ORDER BY r.processed_time DESC
@@ -158,6 +159,7 @@ class EntityEmbeddingMixin:
                     UNWIND abs_ids AS aid
                     MATCH (r:Relation)
                     WHERE (r.entity1_absolute_id = aid OR r.entity2_absolute_id = aid)
+                    AND r.invalid_at IS NULL
                     WITH r.family_id AS fid, COLLECT(r) AS rels
                     UNWIND rels AS r
                     WITH fid, r ORDER BY r.processed_time DESC
