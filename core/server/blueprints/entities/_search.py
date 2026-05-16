@@ -366,8 +366,8 @@ def find_entity_by_name(name: str):
             "match_score": best_score,
             "match_method": match_method,
         }
-        if best_score < 0.8:
-            result["hint"] = "Low match confidence — result may not be the intended entity"
+        if match_method in ("bm25", "embedding"):
+            result["hint"] = "Fuzzy match — verify this is the intended entity"
         return ok(result)
     except Exception as e:
         return err(str(e), 500)
