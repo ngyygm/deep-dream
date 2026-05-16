@@ -282,6 +282,7 @@ When the extraction pipeline cannot determine an entity name, it creates `auto_X
 - `relations/between`: returns only the latest valid version per relation (excludes invalidated versions)
 - `shortest_path`: depends on RELATES_TO graph edges (same as traverse), NOT on Relation records visible in profile. Returns 404 if either entity family_id doesn't exist; returns `path_length:-1` if entities exist but lack connecting RELATES_TO edges. If entities have Relations but shortest-path returns -1, run `POST /find/entities/refresh-edges` to regenerate RELATES_TO edges
 - `shortest_path`: response can be very large (90KB+) as it includes full entity/relation data for the entire path. No `compact` parameter available — client-side filtering recommended
+- `shortest_path`: response paths use `entities` and `relations` arrays (NOT `nodes` and `edges`). Each path has `{entities: [...], relations: [...], length: N}`
 - `merge`: target entity stays canonical (name/content preserved); source entities are absorbed. Auto-redirects Relation endpoints and refreshes RELATES_TO edges
 - `merge`: rejects with HTTP 409 if source/target names have insufficient word overlap (uses word-level Jaccard for multi-word names, character-level for single-word); pass `skip_name_check: true` in body to override. **Chinese courtesy names (字) always need `skip_name_check`** since they share zero characters (e.g., 孔明 vs 诸葛亮)
 - `merge`: returns 400 if target is in source list (self-merge) or if source entities don't exist
@@ -289,7 +290,8 @@ When the extraction pipeline cannot determine an entity name, it creates `auto_X
 - `merge`: after merge, butler dry-run may still show the absorbed entity family_id until caches expire (TTL ~30s)
 - `merge`: if a relation connects source and target entities, both endpoints resolve to target after merge (self-loop). No warning is returned
 - `merge`: auto-updates source entity names to target name and refreshes RELATES_TO edges
-- Auto-named entities (`auto_XXXXXXXX`) may outrank real entities in search results — filter by checking `content` field
+- Auto-named entities (`auto_XXXXXXXX`) may outrank real entities in search results — filter by checking `content` field. The auto_* document-wrapper entity often scores higher than the actual extracted entity
+- **by-name vs search score scales differ**: by-name reports raw BM25 scores (can be 5-20+), search reports normalized scores (0-1). An exact by-name match shows `match_score: 1.0`. These are not comparable across endpoints
 - `dry_run:true` only works for `butler/execute`, NOT for merge or other destructive ops
 - Valid `butler_execute` actions: `cleanup_isolated`, `cleanup_invalidated`, `fix_dangling_refs`, `cleanup_stale_redirects`, `detect_communities`, `evolve_summaries` (NOT `run_dream`)
 - `butler_execute`: returns `success: true` even if individual actions fail — check each action's `status` field for errors
