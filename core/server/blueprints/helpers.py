@@ -62,6 +62,22 @@ def _validate_text_input(text, field_name="text", min_len=1, max_len=100000):
     return text
 
 
+def get_json_body():
+    """Parse JSON body with malformed-JSON detection.
+
+    Returns parsed dict, or empty dict if no body.
+    Raises ValueError if request has body content that isn't valid JSON.
+    """
+    if not request.data:
+        return {}
+    body = request.get_json(silent=True)
+    if body is not None:
+        return body
+    # Body was present but not valid JSON
+    raw = request.data[:200].decode('utf-8', errors='replace')
+    raise ValueError(f"请求体不是有效的 JSON（请检查格式）")
+
+
 def _validate_positive_int(value, field_name="value"):
     """Validate positive integer.
 

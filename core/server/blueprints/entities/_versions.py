@@ -16,6 +16,7 @@ from core.server.blueprints.entities import entities_bp
 ok, err, run_async = _h.ok, _h.err, _h.run_async
 safe_endpoint = _h.safe_endpoint
 _get_processor = _h._get_processor
+get_json_body = _h.get_json_body
 
 logger = logging.getLogger(__name__)
 
@@ -341,7 +342,7 @@ def get_entity_provenance(family_id: str):
 def update_entity_confidence(family_id: str):
     """手动设置实体置信度（覆盖自动演化值）。"""
     try:
-        body = request.get_json(silent=True) or {}
+        body = get_json_body()
         confidence = body.get("confidence")
         if confidence is None:
             return err("confidence 为必填字段", 400)
@@ -383,7 +384,7 @@ def get_entity_contradictions(family_id: str):
 @safe_endpoint
 def resolve_entity_contradiction(family_id: str):
     try:
-        body = request.get_json(silent=True) or {}
+        body = get_json_body()
         contradiction = body.get("contradiction")
         if not contradiction or not isinstance(contradiction, dict):
             return err("contradiction 为必填字段", 400)

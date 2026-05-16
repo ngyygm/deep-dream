@@ -18,6 +18,7 @@ from core.server.blueprints.helpers import (
     _validate_text_input,
     _validate_positive_int,
     _get_system_monitor,
+    get_json_body,
     err,
     ok,
 )
@@ -261,7 +262,7 @@ def remember():
         remember_queue = _get_queue()
         post_json: Dict[str, Any] = {}
         if request.method == "POST":
-            pj = request.get_json(silent=True)
+            pj = get_json_body()
             if isinstance(pj, dict):
                 post_json = pj
 

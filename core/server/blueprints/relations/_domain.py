@@ -22,6 +22,7 @@ enrich_relations = _h.enrich_relations
 entity_to_dict = _h.entity_to_dict
 enrich_entity_version_counts = _h.enrich_entity_version_counts
 enrich_relation_version_counts = _h.enrich_relation_version_counts
+get_json_body = _h.get_json_body
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +36,7 @@ def redirect_relation():
     """Redirect relation entity endpoint."""
     try:
         processor = _get_processor()
-        body = request.get_json(silent=True) or {}
+        body = get_json_body()
         family_id = (body.get("family_id") or "").strip()
         side = (body.get("side") or "").strip()
         new_family_id = (body.get("new_family_id") or "").strip()
@@ -61,7 +62,7 @@ def update_relation_confidence(family_id: str):
     """Manually set relation confidence (overrides automatic evolution)."""
     try:
         processor = _get_processor()
-        body = request.get_json(silent=True) or {}
+        body = get_json_body()
         confidence = body.get("confidence")
         if confidence is None:
             return err("confidence 为必填字段", 400)
@@ -86,7 +87,7 @@ def invalidate_relation(family_id: str):
     """Mark relation as invalidated (not deleted, preserved for history)."""
     try:
         processor = _get_processor()
-        body = request.get_json(silent=True) or {}
+        body = get_json_body()
         reason = body.get("reason", "")
         count = processor.storage.invalidate_relation(family_id, reason)
         if count == 0:
@@ -134,7 +135,7 @@ def get_relation_contradictions(family_id: str):
 def resolve_relation_contradiction(family_id: str):
     """Resolve contradictions between relation versions."""
     try:
-        body = request.get_json(silent=True) or {}
+        body = get_json_body()
         contradiction = body.get("contradiction")
         if not contradiction or not isinstance(contradiction, dict):
             return err("contradiction 为必填字段", 400)
@@ -193,7 +194,7 @@ def graph_summary():
 def traverse_graph():
     """BFS graph traversal search."""
     try:
-        body = request.get_json(silent=True) or {}
+        body = get_json_body()
         seed_ids = body.get("seed_family_ids") or body.get("start_entity_ids", [])
         if not isinstance(seed_ids, list) or not seed_ids:
             return err("seed_family_ids 需为非空数组", 400)

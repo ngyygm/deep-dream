@@ -24,6 +24,7 @@ from core.server.blueprints.helpers import (
     episode_to_dict,
     parse_time_point,
     _get_searcher,
+    get_json_body,
 )
 from core.server.blueprints._constants import _VALID_SEARCH_MODES
 from core.server.sse import sse_response, queue_to_generator
@@ -52,7 +53,7 @@ def search_concepts():
         storage = processor.storage
         if not hasattr(storage, 'search_concepts_by_bm25'):
             return err("此功能需要 Neo4j 后端", 400)
-        body = request.get_json(silent=True) or {}
+        body = get_json_body()
         query = (body.get("query") or "").strip()
         if not query:
             return err("query 不能为空", 400)
@@ -208,7 +209,7 @@ def traverse_concepts():
         storage = processor.storage
         if not hasattr(storage, 'traverse_concepts'):
             return err("此功能需要 Neo4j 后端", 400)
-        body = request.get_json(silent=True) or {}
+        body = get_json_body()
         start_ids = body.get("start_family_ids") or []
         if not start_ids:
             return err("start_family_ids 不能为空", 400)
@@ -246,7 +247,7 @@ def detect_communities():
         processor = _get_processor()
         if not hasattr(processor.storage, 'detect_communities'):
             return err("此功能需要 Neo4j 后端", 400)
-        body = request.get_json(silent=True) or {}
+        body = get_json_body()
         algorithm = (body.get("algorithm") or "louvain").strip()
         resolution = float(body.get("resolution", 1.0))
         resolution = min(max(resolution, 0.1), 10.0)
@@ -441,7 +442,7 @@ def chat_list_sessions():
 @concepts_bp.route("/api/v1/chat/sessions", methods=["POST"])
 def chat_create_session():
     """Create a new chat session."""
-    body = request.get_json(silent=True) or {}
+    body = get_json_body()
     graph_id = body.get("graph_id", "default")
     title = body.get("title")
     try:
@@ -466,7 +467,7 @@ def chat_get_session(sid):
 @concepts_bp.route("/api/v1/chat/sessions/<sid>", methods=["PUT"])
 def chat_update_session(sid):
     """Update session metadata (graph_id, title)."""
-    body = request.get_json(silent=True) or {}
+    body = get_json_body()
     mgr = _get_chat_mgr()
     if not mgr.update_session(sid, **body):
         return err("Session not found", 404)
@@ -494,7 +495,7 @@ def chat_close_session(sid):
 @concepts_bp.route("/api/v1/chat/sessions/<sid>/stream", methods=["POST"])
 def chat_send_message(sid):
     """Send a message to a session. Returns SSE stream of events."""
-    body = request.get_json(silent=True) or {}
+    body = get_json_body()
     message = body.get("message", "")
     attachments = body.get("attachments")
 
