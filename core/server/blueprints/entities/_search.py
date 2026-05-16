@@ -331,13 +331,10 @@ def find_entity_by_name(name: str):
                 entities = processor.storage.search_entities_by_bm25(name, limit=5)
                 for candidate in entities:
                     cname = getattr(candidate, 'name', '')
-                    # Require significant character overlap: at least 50% of query chars in name
-                    _q_chars = set(name.replace(' ', '').lower()) - {'（', '）', '(', ')', '，', '。', '、'}
-                    _c_chars = set(cname.replace(' ', '').lower()) - {'（', '）', '(', ')', '，', '。', '、'}
-                    if _q_chars:
-                        overlap_ratio = len(_q_chars & _c_chars) / len(_q_chars)
-                        if overlap_ratio < 0.5:
-                            continue
+                    # Require the query name to appear as substring in candidate name
+                    # (case-insensitive), or candidate name contains query as a word token
+                    if name.lower() not in cname.lower():
+                        continue
                     score = getattr(candidate, '_score', 0) or 0
                     best = candidate
                     best._score = score
@@ -358,12 +355,8 @@ def find_entity_by_name(name: str):
             )
             for candidate in entities:
                 cname = getattr(candidate, 'name', '')
-                _q_chars = set(name.replace(' ', '').lower()) - {'（', '）', '(', ')', '，', '。', '、'}
-                _c_chars = set(cname.replace(' ', '').lower()) - {'（', '）', '(', ')', '，', '。', '、'}
-                if _q_chars:
-                    overlap_ratio = len(_q_chars & _c_chars) / len(_q_chars)
-                    if overlap_ratio < 0.5:
-                        continue
+                if name.lower() not in cname.lower():
+                    continue
                 score = getattr(candidate, '_score', 0) or 0
                 if score >= threshold:
                     best = candidate
