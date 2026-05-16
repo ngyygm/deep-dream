@@ -345,7 +345,7 @@ class SearchMixin:
                     if len(relations) >= limit:
                         break
                 result = self._filter_dream_candidates(relations, include_candidates)
-                self._cache.set(cache_key, result)
+                self._cache.set(cache_key, result, ttl=30)
                 return result
         except Exception as e:
             logger.warning("BM25 search failed, falling back to empty: %s", e)
