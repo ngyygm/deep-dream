@@ -129,7 +129,7 @@ def batch_delete_entities():
         if len(family_ids) > 100:
             return err("单次批量删除上限 100 个", 400)
         total = processor.storage.batch_delete_entities(family_ids)
-        return ok({"message": f"已删除 {total} 个实体版本", "count": len(family_ids)})
+        return ok({"message": f"已删除 {total} 个实体版本", "count": total, "requested": len(family_ids)})
     except Exception as e:
         return err(str(e), 500)
 

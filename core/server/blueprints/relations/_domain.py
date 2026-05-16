@@ -198,8 +198,8 @@ def traverse_graph():
         seed_ids = body.get("seed_family_ids") or body.get("start_entity_ids", [])
         if not isinstance(seed_ids, list) or not seed_ids:
             return err("seed_family_ids 需为非空数组", 400)
-        max_depth = int(body.get("max_depth", 2))
-        max_nodes = int(body.get("max_nodes", 50))
+        max_depth = min(max(int(body.get("max_depth", 2)), 1), 5)
+        max_nodes = min(max(int(body.get("max_nodes", 50)), 1), 200)
         time_point = body.get("time_point")
 
         processor = _get_processor()
