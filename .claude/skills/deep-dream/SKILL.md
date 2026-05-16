@@ -235,7 +235,7 @@ curl -s -X POST "$BASE_URL/find/episodes/search?graph_id=default" \
 
 When searching returns multiple entities with the same or similar names:
 1. Check `content` field to distinguish — each entity's content describes what it represents
-2. Use `GET /find/entities/by-name/{name}` for fuzzy match (returns single best match, not a list)
+2. Use `GET /find/entities/by-name/{name}` for name lookup (returns 404 if no close match exists; uses exact → prefix → BM25 → embedding cascade)
 3. Use `GET /find/entities/search?query_name=X` for scored list of candidates
 4. Use entity profile `GET /find/entities/{fid}/profile` to see full context including relations
 
@@ -269,14 +269,16 @@ When the extraction pipeline cannot determine an entity name, it creates `auto_X
 - `remember` sync mode: if extraction takes longer than `timeout` seconds (default 300), returns HTTP 202 with `status:"running"` — continue polling via task endpoint
 - `remember` async mode: tasks queue serially — a stuck task blocks all subsequent tasks. If polling shows persistent `"queued"` status, the pipeline may be stuck. Try `POST /find/entities/create` + `POST /find/relations/create` as fallback.
 - Entity search uses `query_name` param, not `q` or `query`
+- `ask` endpoint uses `question` param (not `query` or `query_name`) — different from other search endpoints
 - Shortest path uses `family_id_a`/`family_id_b` (or aliases `entity1_family_id`/`entity2_family_id`)
 - `update_entity`: returns full updated entity. name/content changes create a new version (preserves summary, confidence, community_id); summary/attribute changes are in-place. Entity rename auto-propagates to relation records and refreshes RELATES_TO edges
 - `update_relation` (PUT /find/relations/{fid}): creates a new version. `content` is optional — omit for metadata-only updates. Pass `summary`, `confidence`, `attributes` to override; omitted fields carry forward from previous version. Returns full relation dict.
-- `delete_entity`: default `cascade=false` leaves orphaned relations connected to the deleted entity. Use `?cascade=true` to also delete connected relations.
+- `delete_entity`: default `cascade=false` leaves orphaned relations connected to the deleted entity. Use `?cascade=true` to also delete connected relations. After deletion, absolute_id lookups may return stale data briefly (cache invalidation is immediate but in-flight requests may complete with cached data).
 - `relations/between`: returns only the latest valid version per relation (excludes invalidated versions)
 - `shortest_path`: depends on RELATES_TO graph edges (same as traverse), NOT on Relation records visible in profile. Returns 404 if either entity family_id doesn't exist; returns `path_length:-1` if entities exist but lack connecting RELATES_TO edges. If entities have Relations but shortest-path returns -1, run `POST /find/entities/refresh-edges` to regenerate RELATES_TO edges
 - `merge`: target entity stays canonical (name/content preserved); source entities are absorbed. Auto-redirects Relation endpoints and refreshes RELATES_TO edges
 - `merge`: rejects with HTTP 409 if source/target names have insufficient word overlap (uses word-level Jaccard for multi-word names, character-level for single-word); pass `skip_name_check: true` in body to override
+- `merge`: returns 400 if target is in source list (self-merge) or if source entities don't exist
 - `merge`: response data is nested at `data.merged_count` (not flat in `data`)
 - `merge`: if a relation connects source and target entities, both endpoints resolve to target after merge (self-loop). No warning is returned
 - `merge`: auto-updates source entity names to target name and refreshes RELATES_TO edges
