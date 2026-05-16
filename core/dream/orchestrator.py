@@ -16,6 +16,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from core.llm.json_repair import parse_json_response
+
 import numpy as np
 
 
@@ -859,7 +861,7 @@ class DreamOrchestrator:
         ]
         judge_obj, _ = self.llm_client.call_llm_until_json_parses(
             judge_messages,
-            parse_fn=json.loads,
+            parse_fn=parse_json_response,
             json_parse_retries=1,
             timeout=config.llm_timeout,
         )
