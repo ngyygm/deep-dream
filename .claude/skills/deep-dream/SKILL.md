@@ -82,6 +82,7 @@ curl -s $BASE_URL/graphs
 | Recent activity | GET | `/find/recent-activity` | — |
 | Graph version | GET | `/find/graph/version` | Returns `{entity_count, relation_count, last_modified}` |
 | Refresh graph edges | POST | `/find/entities/refresh-edges` | — |
+| Detect duplicate entities | GET | `/concepts/duplicates` | `limit=500` (returns entities grouped by normalized name) |
 | Stream entities (SSE) | GET | `/find/graph/stream/entities` | `since=ISO8601` for incremental; returns SSE events |
 | Stream relations (SSE) | GET | `/find/graph/stream/relations` | `since=ISO8601` for incremental; returns SSE events |
 
@@ -281,7 +282,7 @@ When the extraction pipeline cannot determine an entity name, it creates `auto_X
 - Entity search uses `query_name` param, not `q` or `query`
 - `ask` endpoint uses `question` param (not `query` or `query_name`) — different from other search endpoints
 - Shortest path uses `family_id_a`/`family_id_b` (or aliases `entity1_family_id`/`entity2_family_id`)
-- `update_entity`: returns full updated entity. name/content changes create a new version (preserves summary, confidence, community_id); summary/attribute changes are in-place. Entity rename auto-propagates to relation records and refreshes RELATES_TO edges
+- `update_entity`: returns full updated entity. name/content changes create a new version (preserves summary, confidence, community_id); summary/attribute changes are in-place. Entity rename auto-propagates to relation records and refreshes RELATES_TO edges. **Version updates auto-refresh RELATES_TO edges** (no manual refresh-edges needed)
 - **Entity rename collision**: renaming an entity to include another entity's name can cause `by-name` to return the wrong entity (e.g., renaming to "Sarah Chen Metadata" may shadow "Dr. Sarah Chen"). Prefer unique, descriptive names.
 - `update_relation` (PUT /find/relations/{fid}): creates a new version. `content` is optional — omit for metadata-only updates. Pass `summary`, `confidence`, `attributes` to override; omitted fields carry forward from previous version. Returns full relation dict.
 - `delete_entity`: default `cascade=false` leaves orphaned relations connected to the deleted entity. Use `?cascade=true` to also delete connected relations. After deletion, absolute_id lookups may return stale data briefly (cache invalidation is immediate but in-flight requests may complete with cached data).
@@ -314,6 +315,7 @@ When the extraction pipeline cannot determine an entity name, it creates `auto_X
 - **Community detect response size**: `POST /communities/detect` returns the full community assignment map (30KB+). Follow with `GET /communities` for structured/paginated view
 - **Graph fragmentation**: `shortest_path` returns -1 for many cross-community pairs even when RELATES_TO edges exist. The graph naturally fragments into disconnected clusters — this is expected, not an error. Cross-domain queries typically show no path
 - **by-name search strictness**: `GET /find/entities/by-name/{name}` uses BM25 with threshold 0.7. Short names or translated names may not match if the stored entity name differs. Try `POST /find` with `search_mode:"hybrid"` as fallback
+- **remember pipeline is adaptive**: short text (<200 chars) skips refinement rounds and orphan recovery; medium text (<500 chars) uses 1 round instead of the default 2-3. Long text gets full multi-round extraction. Expect ~30-50% faster remember for short inputs
 - **remember pipeline reliability**: if the server is under load, the relation alignment step (step 10/10) may hit Neo4j Bolt connection timeouts. If a task stalls at 99%, extraction results are likely saved but final relation writes failed — entities should still be searchable
 - **remember stuck task blocks server**: a stuck remember task (stalled at step 9-10) can make the entire server unresponsive to other requests. If endpoints return empty/error responses unexpectedly, check for running tasks via `GET /remember/tasks`
 - **remember timeout for large graphs**: graphs with 500+ entities may need `timeout:600` instead of default 300. Steps 9-10 (entity/relation alignment) are the bottleneck
@@ -326,7 +328,8 @@ When the extraction pipeline cannot determine an entity name, it creates `auto_X
 - **compact=true truncates relation content**: relation `content` is truncated to ~80 chars with `compact=true`. For full content, omit compact or use the absolute_id lookup. Also strips `entity1_family_id`/`entity2_family_id` from relation objects (shows `null`)
 - **Community response structure**: community list uses `members` array (not `entities`), each member has `family_id`, `name`, `uuid`. Community `name` field returns `N/A` (not auto-named)
 - **Dream cycle response**: `POST /dream/run` returns synchronously with `{explored, seeds, stats, cycle_summary}` — NOT async. The `GET /dream/status` endpoint returns the previous completed cycle, not the current one
-- **Dream cycle effectiveness**: dream creates relations via cross-neighbor pair generation. Use `discovery_mode:true` to lower confidence threshold (0.5→0.3) and find more connections. Best with `cross_community` strategy. Without discovery_mode, dream may still create 0 relations if entity pairs lack strong connections
+- **Dream cycle effectiveness**: dream now generates three pair types: (1) seed-to-seed — especially valuable for `cross_community` strategy, (2) cross-seed neighbor pairs, (3) intra-neighborhood "friend-of-friend" pairs. Use `discovery_mode:true` to lower confidence threshold (0.5→0.3) and find more connections. Best with `cross_community` strategy
+- **Dream pipeline retry**: dream seed selection, dream log read/write, and `dream_status` now retry on transient Neo4j connection errors (3 attempts with exponential backoff). Previously, these operations would fail on any transient connection issue
 - **Neighbors endpoint reliability**: may return transient 500 errors for entities with many relations. Retry after 1-2 seconds
 - **Merge 0-update warning**: when merge rejects all sources (name similarity check), response includes `warning` field. Check `data.merged_count.entities_updated` — if 0, pass `skip_name_check: true`
 
@@ -343,7 +346,7 @@ When the extraction pipeline cannot determine an entity name, it creates `auto_X
 - **Graph counts in /graphs**: `GET /graphs` now shows accurate entity/relation counts for all graphs, including those not yet accessed in the current server session
 - **DELETE /graphs/{id}**: removes the graph data and metadata completely. Graph will no longer appear in `/graphs` listing
 - **Concept search is POST-only**: `GET /concepts/search` returns 404. Use `POST /concepts/search` with JSON body `{query: "..."}`
-- **Ask endpoint language**: `POST /find/ask` works best with specific English entity names in the question. Vague Chinese questions (e.g. "谁和谁有关系？") may return empty results
+- **Ask endpoint language**: `POST /find/ask` works best with specific entity names in the question. Vague/broad questions (e.g. "what are the main research areas?", "谁和谁有关系？") return empty results — use `POST /find` with `search_mode:"hybrid"` for broad queries, `POST /find/paths/shortest` for connection queries
 
 ## Slow Endpoints
 

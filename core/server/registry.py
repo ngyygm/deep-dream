@@ -73,12 +73,23 @@ class GraphRegistry:
     # ------------------------------------------------------------------
 
     def get_processor(self, graph_id: str) -> TemporalMemoryGraphProcessor:
-        """获取或创建指定图谱的 Processor（线程安全）。"""
+        """获取或创建指定图谱的 Processor（线程安全，带重试）。"""
         with self._lock:
             if graph_id not in self._processors:
                 storage_path = str(self._base_path / graph_id)
                 self._processors[graph_id] = self._build_processor(storage_path)
             return self._processors[graph_id]
+
+    def get_processor_with_retry(self, graph_id: str, max_retries: int = 2) -> TemporalMemoryGraphProcessor:
+        """获取 Processor，首次构建失败时自动重试。"""
+        for attempt in range(max_retries + 1):
+            try:
+                return self.get_processor(graph_id)
+            except Exception as e:
+                if attempt == max_retries:
+                    raise
+                import time
+                time.sleep(0.5 * (attempt + 1))
 
     def create_task_processor(self, graph_id: str) -> TemporalMemoryGraphProcessor:
         """为单个 remember task 创建独立 Processor 实例。
@@ -283,8 +294,6 @@ class GraphRegistry:
             # Processor not loaded — query via any loaded processor's Neo4j session
             try:
                 entity_count, relation_count = self._count_via_neo4j(graph_id)
-            except Exception:
-                pass
             except Exception:
                 pass
         metadata["entity_count"] = entity_count

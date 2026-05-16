@@ -527,8 +527,27 @@ class DreamOrchestrator:
             neighbors = exp["neighbors"][:config.max_neighbors_per_seed]
             seed_neighbor_map[seed_fid] = neighbors
 
-        # Generate cross-seed pairs: neighbor of seed_i ↔ neighbor of seed_j
         seed_fids = list(seed_neighbor_map.keys())
+
+        # Generate seed-to-seed pairs — especially valuable for cross_community
+        # where seeds come from different communities and may have hidden connections
+        for i in range(len(seed_fids)):
+            for j in range(i + 1, len(seed_fids)):
+                fid_i, fid_j = seed_fids[i], seed_fids[j]
+                pair_key = (min(fid_i, fid_j), max(fid_i, fid_j))
+                if pair_key in _seen_pair_set:
+                    continue
+                _seen_pair_set.add(pair_key)
+                if _history.was_checked(fid_i, fid_j):
+                    skipped_by_history += 1
+                    continue
+                name_i = entity_lookup.get(fid_i, {}).get("name", fid_i)
+                name_j = entity_lookup.get(fid_j, {}).get("name", fid_j)
+                pairs.append((fid_i, name_i, fid_j, name_j))
+                involved_fids_set.add(fid_i)
+                involved_fids_set.add(fid_j)
+
+        # Generate cross-seed pairs: neighbor of seed_i ↔ neighbor of seed_j
         for i in range(len(seed_fids)):
             for j in range(i + 1, len(seed_fids)):
                 fid_i, fid_j = seed_fids[i], seed_fids[j]
@@ -570,6 +589,26 @@ class DreamOrchestrator:
                     pairs.append((fid_i, seed_name, nfid, nb["name"]))
                     involved_fids_set.add(fid_i)
                     involved_fids_set.add(nfid)
+
+        # Intra-neighborhood "friend-of-friend" pairs within same seed
+        # Entities that share a neighbor but aren't directly connected
+        for fid in seed_fids:
+            nbs = seed_neighbor_map[fid]
+            for a in range(len(nbs)):
+                for b in range(a + 1, len(nbs)):
+                    nfid_a, nfid_b = nbs[a]["family_id"], nbs[b]["family_id"]
+                    if nfid_a == nfid_b:
+                        continue
+                    pair_key = (min(nfid_a, nfid_b), max(nfid_a, nfid_b))
+                    if pair_key in _seen_pair_set:
+                        continue
+                    _seen_pair_set.add(pair_key)
+                    if _history.was_checked(nfid_a, nfid_b):
+                        skipped_by_history += 1
+                        continue
+                    pairs.append((nfid_a, nbs[a]["name"], nfid_b, nbs[b]["name"]))
+                    involved_fids_set.add(nfid_a)
+                    involved_fids_set.add(nfid_b)
 
         if skipped_by_history:
             logger.info("Dream: 跳过 %d 对历史已检查的配对", skipped_by_history)
@@ -872,11 +911,39 @@ class DreamOrchestrator:
         start_time: float = None,
         end_time: float = None,
     ) -> None:
-        """保存梦境周期记录。"""
+        """保存梦境周期记录。先写 DreamLog（确保状态可查），再写 Episode。"""
+        from datetime import datetime as _dt
+        from types import SimpleNamespace
+        st = _dt.fromtimestamp(start_time) if start_time else None
+        et = _dt.fromtimestamp(end_time) if end_time else None
+
+        # Step A: DreamLog — must succeed so dream_status/dream_logs work
         try:
-            from datetime import datetime as _dt
-            st = _dt.fromtimestamp(start_time) if start_time else None
-            et = _dt.fromtimestamp(end_time) if end_time else None
+            now = _dt.now()
+            report = SimpleNamespace(
+                cycle_id=cycle_id,
+                graph_id=self.storage._graph_id,
+                start_time=st or now,
+                end_time=et or now,
+                status="completed",
+                narrative=cycle_summary[:2000],
+                insights=[],
+                new_connections=[
+                    r.get("result", {}).get("family_id", "")
+                    for r in relations_created if r.get("result")
+                ],
+                consolidations=[],
+                strategy=config.strategy,
+                entities_examined=min(len(seen_ids), 50),
+                relations_created=len(relations_created),
+                episode_ids=[],
+            )
+            self.storage.save_dream_log(report)
+        except Exception as exc:
+            logger.error("Dream: save_dream_log 失败: %s", exc)
+
+        # Step B: Episode + mentions — best-effort, non-blocking
+        try:
             self.storage.save_dream_episode(
                 content=cycle_summary,
                 entities_examined=list(seen_ids)[:50],
@@ -891,5 +958,5 @@ class DreamOrchestrator:
                 cycle_end_time=et,
             )
         except Exception as exc:
-            logger.warning("Dream: 保存梦境记录失败: %s", exc)
+            logger.warning("Dream: save_dream_episode 失败（DreamLog已保存）: %s", exc)
 

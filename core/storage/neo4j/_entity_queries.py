@@ -118,6 +118,8 @@ class EntityQueryMixin:
                     aids=list(all_aids), fids=_fids_list,
                 )
                 all_rels = [_neo4j_record_to_relation(rec) for rec in result]
+                # Consistent with get_entity_relations_by_family_id: filter dream candidates
+                all_rels = self._filter_dream_candidates(all_rels)
 
             # Deduplicate by relation family_id (may match via both absolute_id and family_id)
             _seen_rel_fids = set()

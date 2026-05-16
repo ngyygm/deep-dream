@@ -358,8 +358,8 @@ def _get_graph_id() -> str:
 
 
 def _get_processor():
-    """获取当前请求对应的 Processor。"""
-    return current_app.config["registry"].get_processor(request.graph_id)
+    """获取当前请求对应的 Processor（带重试以应对瞬态连接问题）。"""
+    return current_app.config["registry"].get_processor_with_retry(request.graph_id)
 
 
 def _get_queue():

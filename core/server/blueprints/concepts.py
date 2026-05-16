@@ -62,7 +62,7 @@ def search_concepts():
         threshold = float(body.get("threshold", 0.5))
         search_mode = str(body.get("search_mode", "bm25") or "bm25").strip().lower()
         if search_mode not in _VALID_SEARCH_MODES:
-            search_mode = "bm25"
+            return err(f"search_mode '{search_mode}' 无效，可选: {', '.join(_VALID_SEARCH_MODES)}", 400)
         time_point = (body.get("time_point") or "").strip() or None
 
         if search_mode == "bm25":
