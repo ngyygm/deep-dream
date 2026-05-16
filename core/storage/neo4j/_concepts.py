@@ -391,13 +391,13 @@ class ConceptMixin:
         with self._session() as session:
             role_filter = " AND c.role = $role" if role else ""
             # 尝试全文索引搜索（真正的 BM25 排序）
-            # For Chinese text, segment with jieba and construct AND query for better precision
+            # For Chinese text, segment with jieba and join with space (OR) for broad recall
             try:
-                # Build Lucene query: segment Chinese text and join with AND
+                # Build Lucene query: segment Chinese text, filter stopwords, join with space
                 try:
                     if _jieba_tokens is not None:
                         if len(_jieba_tokens) > 1:
-                            search_query = " AND ".join(_jieba_tokens)
+                            search_query = " ".join(_jieba_tokens)
                         else:
                             search_query = query
                     else:
