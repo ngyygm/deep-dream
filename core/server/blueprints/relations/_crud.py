@@ -362,7 +362,10 @@ def create_relation():
             attributes=json.dumps(body["attributes"], ensure_ascii=False) if isinstance(body.get("attributes"), dict) else body.get("attributes"),
         )
         processor.storage.save_relation(relation)
-        return ok(relation_to_dict(relation))
+        resp = relation_to_dict(relation)
+        resp["entity1_name"] = _e1_ent.name if _e1_ent else None
+        resp["entity2_name"] = _e2_ent.name if _e2_ent else None
+        return ok(resp)
     except Exception as e:
         return err(str(e), 500)
 

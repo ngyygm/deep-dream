@@ -683,7 +683,7 @@ class TemporalMemoryGraphProcessor(_PipelineExtractionMixin, _ExtractionStepsMix
 
                     end = min(start + window_size, total_length)
                     chunk = text[start:end]
-                    if start == 0:
+                    if start == 0 and doc_name and not doc_name.startswith(("auto_", "api:")):
                         chunk = f"[文档元数据] 文档名：{doc_name} [/文档元数据]\n\n{chunk}"
 
                     _wlabel = f"W{start_chunk + ci + 1}/{total_chunks}"
