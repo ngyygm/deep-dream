@@ -124,13 +124,24 @@ def _call_llm_with_backoff(processor, prompt, timeout=60, max_waits=5, backoff_b
 
 @dream_bp.route("/api/v1/find/dream/status", methods=["GET"])
 def dream_status():
-    """查询梦境状态（最近一次）。"""
+    """查询梦境状态（最近一次）+ 当前是否正在执行。"""
     try:
+        graph_id = request.graph_id or "default"
         processor = _get_processor()
-        logs = processor.storage.list_dream_logs(request.graph_id or "default", limit=1)
+
+        # Check in-memory lock state
+        currently_running = False
+        registry = current_app.config.get("registry")
+        if registry is not None:
+            lock = registry.get_dream_lock(graph_id)
+            if lock is not None and lock.locked():
+                currently_running = True
+
+        logs = processor.storage.list_dream_logs(graph_id, limit=1)
         if logs:
+            logs[0]["currently_running"] = currently_running
             return ok(logs[0])
-        return ok({"status": "no_cycles"})
+        return ok({"status": "no_cycles", "currently_running": currently_running})
     except Exception as e:
         return err(str(e), 500)
 
@@ -351,7 +362,8 @@ def dream_run():
 
         if dream_lock is not None:
             if not dream_lock.acquire(timeout=5):
-                return err("梦境周期正在执行中，请稍后再试", 429)
+                return err("梦境周期正在执行中，请稍后再试", 429,
+                           hint="A dream cycle is currently running. Check GET /find/dream/status for progress.")
             try:
                 result = _run_dream()
             finally:

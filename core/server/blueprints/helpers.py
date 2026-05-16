@@ -155,7 +155,7 @@ def ok(data: Any) -> tuple:
     return jsonify(out), 200
 
 
-def err(message: str, status: int = 400) -> tuple:
+def err(message: str, status: int = 400, hint: str = None) -> tuple:
     if status >= 500:
         # Security: Log full error details server-side, but don't expose them to client
         logger.error("API error (%d): %s", status, message, exc_info=True)
@@ -165,11 +165,14 @@ def err(message: str, status: int = 400) -> tuple:
         # For 4xx errors, log at warning level
         logger.warning("API error (%d): %s", status, message)
     out: Dict[str, Any] = {"success": False, "error": message}
-    # Auto-detect actionable hint from error message
-    from core.server.agent_api import error_hint
-    hint = error_hint(message)
+    # Use explicit hint if provided, otherwise auto-detect from error message
     if hint:
         out["hint"] = hint
+    else:
+        from core.server.agent_api import error_hint
+        _hint = error_hint(message)
+        if _hint:
+            out["hint"] = _hint
     try:
         if hasattr(request, "start_time"):
             out["elapsed_ms"] = round((time.time() - request.start_time) * 1000, 2)
