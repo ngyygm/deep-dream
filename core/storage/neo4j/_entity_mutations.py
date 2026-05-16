@@ -566,7 +566,7 @@ class EntityMutationMixin:
                 result = self._run(session,
                     f"""
                     MATCH (e:Entity {{uuid: $aid}})
-                    SET e.family_id = $new_fid
+                    SET e.family_id = $new_fid, e.invalid_at = NULL
                     RETURN {_ENTITY_RETURN_FIELDS}
                     """,
                     aid=absolute_id,
