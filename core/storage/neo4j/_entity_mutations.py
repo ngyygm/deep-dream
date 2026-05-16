@@ -301,19 +301,20 @@ class EntityMutationMixin:
                 }
 
             # Combined delete query for both entities and relations
+            # Use DETACH DELETE to remove nodes that still have edges (RELATES_TO, etc.)
             r = self._run(session, f"""
                 CALL {{
                     MATCH (e:Entity) WHERE e.invalid_at IS NOT NULL {date_filter}
-                    DELETE e
+                    DETACH DELETE e
                     RETURN count(*) AS deleted_entities
                 }}
                 CALL {{
                     MATCH (r:Relation) WHERE r.invalid_at IS NOT NULL {date_filter}
-                    DELETE r
+                    DETACH DELETE r
                     RETURN count(*) AS deleted_relations
                 }}
                 RETURN deleted_entities, deleted_relations
-            """, graph_id_safe=False, **params)
+            """, **params)
             row = r.single()
             deleted_entities = row["deleted_entities"] if row else 0
             deleted_relations = row["deleted_relations"] if row else 0
