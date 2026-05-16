@@ -129,6 +129,20 @@ class EpisodeQueryMixin:
                 return meta.get("text", "")
             except Exception as e:
                 logger.debug("Failed to read episode text from fallback json: %s", e)
+
+        # Fallback: query Neo4j source_text property
+        try:
+            with self._session() as session:
+                result = self._run(session,
+                    "MATCH (ep:Episode {uuid: $uuid}) "
+                    "RETURN ep.source_text AS source_text",
+                    uuid=cache_id,
+                )
+                record = result.single()
+                if record and record.get("source_text"):
+                    return record["source_text"]
+        except Exception as e:
+            logger.debug("Neo4j fallback for episode text failed: %s", e)
         return None
 
     def get_latest_episode(self, activity_type: Optional[str] = None) -> Optional[Episode]:

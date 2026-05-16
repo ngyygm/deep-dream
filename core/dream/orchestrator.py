@@ -25,6 +25,7 @@ def _trunc(s: str, n: int = 200) -> str:
 
 from core.llm.prompts import (
     JUDGE_AND_GENERATE_RELATION_SYSTEM_PROMPT,
+    JUDGE_AND_GENERATE_RELATION_DISCOVERY_PROMPT,
 )
 from core.find.graph_traversal import GraphTraversalSearcher
 
@@ -172,6 +173,7 @@ class DreamConfig:
     llm_timeout: int = 60
     llm_concurrency: int = 3
     min_pair_similarity: float = 0.0
+    discovery_mode: bool = False
 
     def __post_init__(self):
         if self.strategy not in VALID_STRATEGIES:
@@ -234,7 +236,8 @@ class DreamOrchestrator:
 
         # 创建临时 config（不修改 self.config，保证线程安全）
         # Short-circuit when no rotation and no exclude_ids — config is identical
-        if not auto_rotate and not config.exclude_ids:
+        _discovery_lower_conf = config.discovery_mode and config.min_confidence >= 0.5
+        if not auto_rotate and not config.exclude_ids and not _discovery_lower_conf:
             run_config = config
         else:
             run_config = DreamConfig(
@@ -242,13 +245,14 @@ class DreamOrchestrator:
                 seed_count=config.seed_count,
                 max_depth=config.max_depth,
                 max_relations=config.max_relations,
-                min_confidence=config.min_confidence,
+                min_confidence=0.3 if _discovery_lower_conf else config.min_confidence,
                 max_explore_entities=config.max_explore_entities,
                 max_neighbors_per_seed=config.max_neighbors_per_seed,
                 exclude_ids=list(config.exclude_ids) if config.exclude_ids else [],
                 llm_timeout=config.llm_timeout,
                 llm_concurrency=config.llm_concurrency,
                 min_pair_similarity=config.min_pair_similarity,
+                discovery_mode=config.discovery_mode,
             )
 
         # Step 1: 种子选择（排除近期探索过的实体）
@@ -791,8 +795,11 @@ class DreamOrchestrator:
         topology_block = ("\n\n".join(topology_lines) + "\n\n") if topology_lines else ""
 
         # LLM 判断 + 生成（单次调用）
+        _system_prompt = (JUDGE_AND_GENERATE_RELATION_DISCOVERY_PROMPT
+                          if config.discovery_mode
+                          else JUDGE_AND_GENERATE_RELATION_SYSTEM_PROMPT)
         judge_messages = [
-            {"role": "system", "content": JUDGE_AND_GENERATE_RELATION_SYSTEM_PROMPT},
+            {"role": "system", "content": _system_prompt},
             {"role": "user", "content": (
                 f"实体A: {seed_name}\n描述: {seed_content}\n\n"
                 f"实体B: {nb_name}\n描述: {nb_content}\n\n"

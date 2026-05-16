@@ -417,6 +417,7 @@ class HybridSearcher:
         items: List[Tuple[Any, float]],
         alpha: float = 0.2,
         time_decay_half_life_days: float = 0.0,
+        demote_auto_sources: bool = True,
     ) -> List[Tuple[Any, float]]:
         """置信度 + 时间衰减重排序：低置信度、长期未更新的概念排名靠后。
 
@@ -431,6 +432,7 @@ class HybridSearcher:
             items: [(Entity/Relation, score), ...] 原始排序
             alpha: 置信度影响因子（0-1）
             time_decay_half_life_days: 时间衰减半衰期（天），0表示禁用
+            demote_auto_sources: 降低 auto_/api: 开头的 source_document 实体排名
 
         Returns:
             重排序后的 [(item, adjusted_score), ...]
@@ -472,6 +474,12 @@ class HybridSearcher:
                 if days_old is not None:
                     decay = math.exp(-ln2 * days_old / time_decay_half_life_days)
                     adjusted *= decay
+
+            # Demote auto-sourced entities (auto_* or api:* source_document)
+            if demote_auto_sources:
+                sd = getattr(item, 'source_document', '') or ''
+                if sd.startswith('auto_') or sd.startswith('api:'):
+                    adjusted *= 0.5
 
             results.append((item, round(adjusted, 6)))
 
