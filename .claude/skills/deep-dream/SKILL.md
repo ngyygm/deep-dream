@@ -278,6 +278,7 @@ When the extraction pipeline cannot determine an entity name, it creates `auto_X
 - `delete_entity`: default `cascade=false` leaves orphaned relations connected to the deleted entity. Use `?cascade=true` to also delete connected relations. After deletion, absolute_id lookups may return stale data briefly (cache invalidation is immediate but in-flight requests may complete with cached data).
 - `relations/between`: returns only the latest valid version per relation (excludes invalidated versions)
 - `shortest_path`: depends on RELATES_TO graph edges (same as traverse), NOT on Relation records visible in profile. Returns 404 if either entity family_id doesn't exist; returns `path_length:-1` if entities exist but lack connecting RELATES_TO edges. If entities have Relations but shortest-path returns -1, run `POST /find/entities/refresh-edges` to regenerate RELATES_TO edges
+- `shortest_path`: response can be very large (90KB+) as it includes full entity/relation data for the entire path. No `compact` parameter available — client-side filtering recommended
 - `merge`: target entity stays canonical (name/content preserved); source entities are absorbed. Auto-redirects Relation endpoints and refreshes RELATES_TO edges
 - `merge`: rejects with HTTP 409 if source/target names have insufficient word overlap (uses word-level Jaccard for multi-word names, character-level for single-word); pass `skip_name_check: true` in body to override
 - `merge`: returns 400 if target is in source list (self-merge) or if source entities don't exist
@@ -300,11 +301,23 @@ When the extraction pipeline cannot determine an entity name, it creates `auto_X
 - **Semantic false positives**: entity search may return entities whose name contains a query substring — e.g., "Google AI Quantum" appears for "AI safety" queries because "AI" matches. Use `search_mode:"bm25"` or filter by `community_id` for precision
 - **LLM health response**: `GET /health/llm` may return Chinese messages in the `message` field during cooldown. Check `llm_available: true/false` as the definitive field
 - **Community detect response size**: `POST /communities/detect` returns the full community assignment map (30KB+). Follow with `GET /communities` for structured/paginated view
+- **Graph fragmentation**: `shortest_path` returns -1 for many cross-community pairs even when RELATES_TO edges exist. The graph naturally fragments into disconnected clusters — this is expected, not an error. Cross-domain queries typically show no path
+- **by-name search strictness**: `GET /find/entities/by-name/{name}` uses BM25 with threshold 0.7. Short names or translated names may not match if the stored entity name differs. Try `POST /find` with `search_mode:"hybrid"` as fallback
+- **remember pipeline reliability**: if the server is under load, the relation alignment step (step 10/10) may hit Neo4j Bolt connection timeouts. If a task stalls at 99%, extraction results are likely saved but final relation writes failed — entities should still be searchable
+- **remember stuck task blocks server**: a stuck remember task (stalled at step 9-10) can make the entire server unresponsive to other requests. If endpoints return empty/error responses unexpectedly, check for running tasks via `GET /remember/tasks`
+- **remember timeout for large graphs**: graphs with 500+ entities may need `timeout:600` instead of default 300. Steps 9-10 (entity/relation alignment) are the bottleneck
+- **Content language mismatch**: the LLM generates entity content/summaries in its default language (Chinese in most deployments) regardless of input text language. Manually update summaries to English via `PUT /find/entities/{fid}` if needed
+- **Post-ingestion merge workflow**: the remember pipeline creates new entities even when similar ones exist. After ingestion, recommended workflow: search for potential duplicates (`GET /find/entities/search` or `by-name`), then `POST /find/entities/merge` to consolidate
+- **Dream cycle side effects**: dream cycles may create new entities without connecting them, increasing the isolated entity count. Check isolated count before/after dream runs. Historical dream cycles frequently create 0 new relations
+- **Dream status caching**: `GET /find/dream/status` may return stale data (previous cycle) after a new cycle completes. The log endpoint (`GET /find/dream/logs`) is more reliable for recent activity
+- **Count discrepancies between endpoints**: `graph-summary` and `maintenance/health` return different entity/relation counts. `graph-summary` is faster (cached) but may be slightly stale; `maintenance/health` does a fresh scan
+- **Contradictions endpoint**: returns empty (no error) when an entity has versions but no contradictions detected. Slow even for empty results (~3s) due to LLM call
+- **compact=true truncates relation content**: relation `content` is truncated to ~80 chars with `compact=true`. For full content, omit compact or use the absolute_id lookup
 
 ## Slow Endpoints
 
 These endpoints may take 5-15+ seconds. Use `timeout` param or increase curl timeout:
-- `POST /find/ask` — LLM-powered natural language Q&A (~5-20s depending on graph size)
+- `POST /find/ask` — LLM-powered natural language Q&A (~5-20s depending on graph size). Responses include full entity/relation data and can be 60KB+; `compact=true` query param does NOT reduce ask response size
 - `POST /find/dream/run` — LLM-powered exploration (~30s-5min)
 - `POST /remember` with `wait:true` — extraction pipeline (~30s-5min)
 - `GET /find/graph-summary` — aggregation over all nodes (~3-15s depending on graph size)
