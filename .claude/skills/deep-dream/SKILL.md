@@ -324,6 +324,11 @@ When the extraction pipeline cannot determine an entity name, it creates `auto_X
 - **Neighbors endpoint reliability**: may return transient 500 errors for entities with many relations. Retry after 1-2 seconds
 - **Merge 0-update warning**: when merge rejects all sources (name similarity check), response includes `warning` field. Check `data.merged_count.entities_updated` — if 0, pass `skip_name_check: true`
 
+- **Malformed JSON detection**: all POST endpoints now return `"请求体不是有效的 JSON（请检查格式）"` with 400 status when body is present but not valid JSON (previously returned misleading "missing field" errors)
+- **Summary update behavior**: updating only `summary` or `attributes` (without name/content) is in-place — does NOT create a new version. If name/content is also updated, a new version IS created AND the metadata updates are applied to it
+- **Relation create entity names**: `POST /find/relations/create` may return `entity1_name`/`entity2_name` as `null` in the response. Entity order may be swapped (sorted by absolute_id). Verify via the returned `family_id` fields, not names
+- **GET search for Chinese**: the server auto-corrects URL encoding issues for Chinese query parameters. Both raw UTF-8 and percent-encoded work correctly
+
 ## Slow Endpoints
 
 These endpoints may take 5-15+ seconds. Use `timeout` param or increase curl timeout:
