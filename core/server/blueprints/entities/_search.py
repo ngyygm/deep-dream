@@ -339,10 +339,12 @@ def find_entity_by_name(name: str):
         rels = processor.storage.get_entity_relations_by_family_id(best.family_id)
         rel_dicts = [h.relation_to_dict(r) for r in rels]
         h.enrich_relations(rel_dicts, processor)
+        vc_map = processor.storage.get_entity_version_counts([best.family_id])
         return ok({
             "entity": h.entity_to_dict(best),
             "relations": rel_dicts,
             "relation_count": len(rel_dicts),
+            "version_count": vc_map.get(best.family_id, 1),
         })
     except Exception as e:
         return err(str(e), 500)
