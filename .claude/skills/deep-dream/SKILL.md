@@ -16,7 +16,7 @@ Natural-language memory graph. **Remember** (write → auto-extract entities/rel
 BASE_URL=http://localhost:16200/api/v1   |   graph_id=default (query param)   |   Response: {success, data}
 ```
 
-All endpoints accept `?graph_id=<id>` to target a specific graph. Add `&compact=true` to strip embeddings and truncate content for agent-friendly responses.
+All endpoints accept `?graph_id=<id>` to target a specific graph. **Always add `&compact=true`** to strip embeddings and truncate content — responses can be 10x+ larger without it.
 
 ## Quick Start
 
@@ -84,7 +84,8 @@ All responses: `{"success": bool, "data": ..., "elapsed_ms": float}`
   - **By-name** (nested): `data: {entity: {...}, relations: [...]}` — same structure as profile. Returns 404 `{success: false}` for non-existent names (not `{success: true, entity: null}`)
   - **Profile** (nested): `data: {entity: {...}, relations: [...], relation_count, version_count}` (profile)
   - **List**: `data: [{...}, ...]` (search, find entities, list)
-  - **Aggregation**: `data: {entities: [...], relations: [...], ...}` (find, graph-summary)
+  - **Aggregation**: `data: {entities: [...], relations: [...], ...}` (find)
+  - **Graph summary**: `data: {embedding_available: bool, graph_id: str, statistics: {entity_count, relation_count, ...}, storage_backend: str}` (graph-summary — returns counts/flags, NOT entity/relation lists)
   - **Recent activity**: `data: {latest_entities: [...], latest_relations: [...], statistics: {...}}` (note: `latest_entities`/`latest_relations`, not `entities`/`relations`)
   - **Counts**: `data: {total, count, ...}` (routes, counts)
   - **Ask**: `data: {answer: string, query_plan: {query_text, query_type, ...}, results: {entities: [...], relations: [...]}}` (natural language Q&A)
@@ -273,7 +274,7 @@ When the extraction pipeline cannot determine an entity name, it creates `auto_X
 - `update_relation` (PUT /find/relations/{fid}): creates a new version. `content` is optional — omit for metadata-only updates. Pass `summary`, `confidence`, `attributes` to override; omitted fields carry forward from previous version. Returns full relation dict.
 - `delete_entity`: default `cascade=false` leaves orphaned relations connected to the deleted entity. Use `?cascade=true` to also delete connected relations.
 - `relations/between`: returns only the latest valid version per relation (excludes invalidated versions)
-- `shortest_path`: returns 404 if either entity family_id doesn't exist; returns `path_length:-1` if entities exist but are disconnected
+- `shortest_path`: depends on RELATES_TO graph edges (same as traverse), NOT on Relation records visible in profile. Returns 404 if either entity family_id doesn't exist; returns `path_length:-1` if entities exist but lack connecting RELATES_TO edges. If entities have Relations but shortest-path returns -1, run `POST /find/entities/refresh-edges` to regenerate RELATES_TO edges
 - `merge`: target entity stays canonical (name/content preserved); source entities are absorbed. Auto-redirects Relation endpoints and refreshes RELATES_TO edges
 - `merge`: rejects with HTTP 409 if source/target names have insufficient word overlap (uses word-level Jaccard for multi-word names, character-level for single-word); pass `skip_name_check: true` in body to override
 - `merge`: response data is nested at `data.merged_count` (not flat in `data`)
@@ -294,13 +295,14 @@ When the extraction pipeline cannot determine an entity name, it creates `auto_X
 ## Slow Endpoints
 
 These endpoints may take 5-15+ seconds. Use `timeout` param or increase curl timeout:
-- `GET /butler/report` — scans full graph (~10-15s)
-- `GET /find/maintenance/health` — quality + statistics scan (~5-15s)
+- `POST /find/ask` — LLM-powered natural language Q&A (~5-20s depending on graph size)
 - `POST /find/dream/run` — LLM-powered exploration (~30s-5min)
 - `POST /remember` with `wait:true` — extraction pipeline (~30s-5min)
-- `GET /find/graph-summary` — aggregation over all nodes (~3-10s)
+- `GET /find/graph-summary` — aggregation over all nodes (~3-15s depending on graph size)
 - `POST /communities/detect` — graph loading + Louvain algorithm (~5-30s)
 - `POST /find/entities/refresh-edges` — regenerates all RELATES_TO edges (~5-30s)
+- `GET /butler/report` — scans full graph (~0.2-15s depending on graph size)
+- `GET /find/maintenance/health` — quality + statistics scan (~0.4-15s)
 - `GET /find/entities/{fid}/contradictions` — LLM-powered version analysis (~2-5s)
 
 ## Episode Text Availability
