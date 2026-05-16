@@ -346,7 +346,7 @@ def find_entity_by_name(name: str):
             except Exception as e:
                 logger.debug("by-name BM25 failed for '%s': %s", name, e)
 
-        # Step 4: Embedding fallback (semantic, slower)
+        # Step 4: Embedding fallback (semantic, slower) — same overlap check as BM25
         if not best:
             entities = processor.storage.search_entities_by_similarity(
                 query_name=name,
@@ -356,13 +356,20 @@ def find_entity_by_name(name: str):
                 text_mode="name_only",
                 similarity_method="embedding",
             )
-            if entities:
-                candidate = entities[0]
+            for candidate in entities:
+                cname = getattr(candidate, 'name', '')
+                _q_chars = set(name.replace(' ', '')) - {'（', '）', '(', ')', '，', '。', '、'}
+                _c_chars = set(cname.replace(' ', '')) - {'（', '）', '(', ')', '，', '。', '、'}
+                if _q_chars:
+                    overlap_ratio = len(_q_chars & _c_chars) / len(_q_chars)
+                    if overlap_ratio < 0.3:
+                        continue
                 score = getattr(candidate, '_score', 0) or 0
                 if score >= threshold:
                     best = candidate
-
+                    best._score = score
                     match_method = "embedding"
+                    break
         if not best:
             return err(f"No entity found matching '{name}'", 404)
         rels = processor.storage.get_entity_relations_by_family_id(best.family_id)
