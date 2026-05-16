@@ -64,6 +64,13 @@ def _execute_ask_search(processor, query_type: str, query_text: str, intent: dic
             if seed_ids:
                 searcher = GraphTraversalSearcher(processor.storage)
                 entities = searcher.bfs_expand(seed_ids, max_depth=2, max_nodes=20)
+                # Fetch relations for the expanded entities
+                seen_rids = set()
+                for e in entities:
+                    for r in processor.storage.get_entity_relations_by_family_id(e.family_id, limit=10):
+                        if r.family_id not in seen_rids:
+                            seen_rids.add(r.family_id)
+                            relations.append(r)
     else:
         # Compute query embedding for hybrid search (vector + BM25)
         query_embedding = None
