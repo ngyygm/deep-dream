@@ -519,6 +519,7 @@ class EntityQueryMixin:
                 result = self._run(session,
                     f"""
                     MATCH (e:Entity {{family_id: $fid}})
+                    WHERE e.invalid_at IS NULL
                     RETURN {_ENTITY_RETURN_FIELDS_WITH_EMB}
                     ORDER BY e.processed_time DESC LIMIT 1
                     """,
