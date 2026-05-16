@@ -69,7 +69,7 @@ def _fix_query_param(value: Optional[str]) -> Optional[str]:
     Werkzeug may decode them as Latin-1, producing garbled strings like
     'è´¾å®ç' instead of '贾宝玉'. This detects and reverses the damage.
     """
-    if not value:
+    if not value or not isinstance(value, str):
         return value
     try:
         raw = value.encode('latin-1')

@@ -468,7 +468,7 @@ def find_relations_search():
         def _get_value(name: str, default: Any = None) -> Any:
             if name in body and body[name] is not None:
                 return body[name]
-            return request.args.get(name, default)
+            return _h._fix_query_param(request.args.get(name, default))
 
         query_text = str(_get_value("query_text") or _get_value("query") or "").strip()
         if not query_text:
