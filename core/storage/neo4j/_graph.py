@@ -365,13 +365,18 @@ class GraphTraversalMixin:
             seen_edges = set()
             for record in result:
                 uuid_val = record["uuid"]
+                fid = record["family_id"]
+                if fid and fid in seen:
+                    continue
                 if uuid_val and uuid_val not in seen:
                     neighbors["nodes"].append({
                         "uuid": uuid_val,
                         "name": record["name"],
-                        "family_id": record["family_id"],
+                        "family_id": fid,
                     })
                     seen.add(uuid_val)
+                    if fid:
+                        seen.add(fid)
                     name_map[uuid_val] = record["name"]
                 edge_key = (record.get("source_uuid"), record.get("target_uuid"))
                 if edge_key[0] and edge_key[1] and edge_key not in seen_edges:
