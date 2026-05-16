@@ -297,6 +297,7 @@ def find_entity_by_name(name: str):
         if name_map:
             fid = list(name_map.values())[0]
             best = processor.storage.get_entity_by_family_id(fid)
+            best._score = 1.0
             match_method = "exact"
 
         # Step 2B: Prefix match -- find entities whose name starts with query + "("
@@ -311,11 +312,13 @@ def find_entity_by_name(name: str):
                     # Exact core-name match or parenthetical pattern
                     if ccore == name or cname.startswith(name + '（') or cname.startswith(name + '('):
                         best = candidate
+                        best._score = 0.95
                         match_method = 'prefix_exact'
                         break
                     # Substring containment: query is contained in entity name
                     if name.lower() in cname.lower():
                         best = candidate
+                        best._score = 0.9
                         match_method = 'prefix'
                         break
             except Exception as e:
