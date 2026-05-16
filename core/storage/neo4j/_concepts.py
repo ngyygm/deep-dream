@@ -384,7 +384,8 @@ class ConceptMixin:
         _jieba_tokens = None
         if _jieba:
             try:
-                _jieba_tokens = [t.strip() for t in _jieba.cut(query) if t.strip()]
+                from ._search import _CN_STOPWORDS
+                _jieba_tokens = [t.strip() for t in _jieba.cut(query) if t.strip() and t.strip() not in _CN_STOPWORDS]
             except Exception:
                 pass
         with self._session() as session:

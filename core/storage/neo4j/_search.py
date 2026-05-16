@@ -12,6 +12,9 @@ try:
 except ImportError:
     pass
 
+# Chinese stopwords — single-char function words that produce AND-clauses too broad for fulltext
+_CN_STOPWORDS = frozenset("的了是在我你他她它们和与或但也而就把被从向给让用对以到得都很这那为所以因为如果虽然".split())
+
 from ...models import Entity, Relation
 from ...perf import _perf_timer
 from ._helpers import _ENTITY_RETURN_FIELDS, _neo4j_record_to_entity, _neo4j_record_to_relation
@@ -150,7 +153,7 @@ class SearchMixin:
         # Apply jieba segmentation for Chinese text (same pattern as _concepts.py)
         if _jieba:
             try:
-                _jieba_tokens = [t.strip() for t in _jieba.cut(safe_query) if t.strip()]
+                _jieba_tokens = [t.strip() for t in _jieba.cut(safe_query) if t.strip() and t.strip() not in _CN_STOPWORDS]
                 if len(_jieba_tokens) > 1:
                     safe_query = " AND ".join(_jieba_tokens)
             except Exception:
@@ -329,7 +332,7 @@ class SearchMixin:
         # Apply jieba segmentation for Chinese text
         if _jieba:
             try:
-                _jieba_tokens = [t.strip() for t in _jieba.cut(safe_query) if t.strip()]
+                _jieba_tokens = [t.strip() for t in _jieba.cut(safe_query) if t.strip() and t.strip() not in _CN_STOPWORDS]
                 if len(_jieba_tokens) > 1:
                     safe_query = " AND ".join(_jieba_tokens)
             except Exception:
