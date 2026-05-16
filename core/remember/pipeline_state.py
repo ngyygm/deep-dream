@@ -31,8 +31,11 @@ def init_remember_shared_state(N: int) -> types.SimpleNamespace:
     s.episodes = [None] * N
     s.input_texts = [None] * N
     s.extract_results = [None] * N
+    s.early_entity_results = [None] * N
+    s.entity_content_done = [threading.Event() for _ in range(N)]
     s.align_results = [None] * N
     s.step10_results = [None] * N
+    s.aligned_entity_counts = [0] * N
     s.window_timings = [{} for _ in range(N)]
     s.extract_done = [threading.Event() for _ in range(N)]
     s.step9_done_ev = [threading.Event() for _ in range(N)]

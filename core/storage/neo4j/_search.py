@@ -160,7 +160,6 @@ class SearchMixin:
             with self._session() as session:
                 # 多取一些再在 Python 层去重，确保 limit 个 unique family_id
                 raw_limit = min(limit * 5, 500)
-                logger.warning("BM25 search: query=%r limit=%d graph_id=%s", safe_query, limit, getattr(self, '_graph_id', '?'))
                 result = self._run(session,
                     """CALL db.index.fulltext.queryNodes('entityFulltext', $search_query)
                        YIELD node, score
@@ -191,7 +190,6 @@ class SearchMixin:
                     raw_entities.append((fid, _neo4j_record_to_entity(record), float(record.get("bm25_score", 0.0))))
                     if len(raw_entities) >= limit:
                         break
-                logger.warning("BM25 search done: query=%r raw_entities=%d graph_id=%s", safe_query, len(raw_entities), getattr(self, '_graph_id', '?'))
 
                 # ---- 核心名称前缀匹配补充 ----
                 # 检查 BM25 结果中是否已有核心名称匹配

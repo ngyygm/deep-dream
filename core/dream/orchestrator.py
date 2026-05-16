@@ -505,6 +505,12 @@ class DreamOrchestrator:
     ) -> tuple:
         """并发发现实体间的隐含关联。
 
+        Generates two kinds of candidate pairs:
+        1. Cross-neighbor pairs: entities from *different* seeds' neighborhoods
+           that may not yet be connected (primary discovery mechanism).
+        2. Seed-to-neighbor pairs: only included when discovery_mode is true,
+           as these usually already have relations.
+
         Returns:
             (relations_created, pairs_checked)
         """
@@ -568,6 +574,7 @@ class DreamOrchestrator:
                     pairs.append((fid_i, seed_name, nfid, nb["name"]))
                     involved_fids_set.add(fid_i)
                     involved_fids_set.add(nfid)
+
 
         if skipped_by_history:
             logger.info("Dream: 跳过 %d 对历史已检查的配对", skipped_by_history)

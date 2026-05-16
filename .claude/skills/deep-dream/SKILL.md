@@ -45,7 +45,7 @@ curl -s $BASE_URL/graphs
 | Search everything | POST | `/find` | `{query, search_mode:"hybrid"}` |
 | Search entities | GET | `/find/entities/search` | `query_name=X` |
 | Search relations | GET | `/find/relations/search` | `query_text=X` |
-| Find by name | GET | `/find/entities/by-name/{name}` | `threshold=0.7` |
+| Find by name | GET | `/find/entities/by-name/{name}` | `threshold=0.7` (fuzzy: "Sarah Chen" matches "Dr. Sarah Chen") |
 | Entity profile | GET | `/find/entities/{fid}/profile` | — |
 | Quick search | POST | `/find` | `{query, search_mode:"hybrid"}` (modes: `hybrid`, `semantic`, `bm25`) |
 | Traverse graph | POST | `/find/traverse` | `{seed_family_ids:["ent_abc",...], max_depth:2}` |
@@ -61,13 +61,13 @@ curl -s $BASE_URL/graphs
 | Delete relation version | DELETE | `/find/relations/absolute/{aid}` | Delete single version, others unaffected |
 | Relations between | GET | `/find/relations/between` | `family_id_a=X&family_id_b=Y` |
 | Merge entities | POST | `/find/entities/merge` | `{source_family_ids:[...], target_family_id:...}` |
-| Dream cycle | POST | `/find/dream/run` | `{strategy, seed_count}` |
+| Dream cycle | POST | `/find/dream/run` | `{strategy, seed_count, discovery_mode:true}` |
 | Dream status | GET | `/find/dream/status` | — |
 | Dream logs | GET | `/find/dream/logs` | — |
 | Ask NL question | POST | `/find/ask` | `{question}` |
 | Butler report | GET | `/butler/report` | — |
 | Butler execute | POST | `/butler/execute` | `{actions:[...], dry_run:true}` |
-| Health report | GET | `/find/maintenance/health` | — |
+| Health report | GET | `/find/maintenance/health` | fast (<1s, cached 60s) |
 | Fix dangling refs | POST | `/butler/execute` | `{actions:["fix_dangling_refs"]}` |
 | Cleanup stale redirects | POST | `/butler/execute` | `{actions:["cleanup_stale_redirects"]}` |
 | Detect communities | POST | `/communities/detect` | `{algorithm:"louvain"}` |
@@ -148,7 +148,7 @@ curl -s -X POST "$BASE_URL/find/relations/create?graph_id=default" \
   -d "{\"entity1_family_id\":\"$E1\",\"entity2_family_id\":\"$E2\",\"content\":\"A and B are related\"}"
 ```
 
-**Note:** Relations are undirected — the API normalizes entity order by absolute_id. Your `entity1`/`entity2` may appear swapped in the response. Also accepts optional `summary`, `confidence`, and `attributes` fields.
+**Note:** Relations are undirected — the API normalizes entity order by absolute_id. Your `entity1`/`entity2` may appear swapped in the response. Also accepts optional `summary`, `confidence`, and `attributes` fields. Self-referencing relations (entity1 == entity2) are rejected with 400.
 
 ### Merge Duplicate Entities
 ```bash
@@ -272,22 +272,25 @@ When the extraction pipeline cannot determine an entity name, it creates `auto_X
 - **Content truncation**: Entity `content` is truncated to ~2000 chars with `content_truncated: true` flag. For longer content, split into multiple entities or use shorter summaries.
 - **split-version on single-version entity**: Splits the only version into a new family_id, leaving the original family_id empty (returns 404). This is a move, not a copy.
 - **Episode search language**: `POST /find/episodes/search` uses substring matching (`CONTAINS`). Query language must match content language — use Chinese queries for Chinese content, English for English.
-- **BM25 search ranking for Chinese**: BM25 does character-level token matching. Searching "张三" may rank "桃园三结义" higher than the actual entity "张三" due to character overlap. Use `GET /find/entities/by-name/{name}` for precise name lookup.
+- **BM25 search ranking for Chinese**: BM25 now uses jieba word segmentation for Chinese queries, improving multi-token search quality. Single-character queries still use character-level matching. Use `GET /find/entities/by-name/{name}` for precise name lookup.
 - `remember`: use `wait:true` for sync mode; default is async (returns task_id to poll)
 - `remember` sync mode: if extraction takes longer than `timeout` seconds (default 300), returns HTTP 202 with `status:"running"` — continue polling via task endpoint
 - `remember` async mode: tasks queue serially — a stuck task blocks all subsequent tasks. If polling shows persistent `"queued"` status, the pipeline may be stuck. Try `POST /find/entities/create` + `POST /find/relations/create` as fallback.
 - Entity search uses `query_name` param, not `q` or `query`
 - `ask` endpoint uses `question` param (not `query` or `query_name`) — different from other search endpoints
+- `ask` endpoint: only works for questions about **specific named entities** (e.g. "What is quantum computing?"). Broad/analytical questions (e.g. "What are the main research areas?") return empty results — use `POST /find` with `search_mode:"hybrid"` or `GET /find/graph-summary` instead
+- `concepts/traverse`: requires `start_family_ids` (plural array), NOT `start_family_id` or `seed_family_ids`. Returns `{concepts: {fid: {...}}, edges: [{from, to, to_name}]}` — concepts is keyed by family_id
 - Shortest path uses `family_id_a`/`family_id_b` (or aliases `entity1_family_id`/`entity2_family_id`)
 - `update_entity`: returns full updated entity. name/content changes create a new version (preserves summary, confidence, community_id); summary/attribute changes are in-place. Entity rename auto-propagates to relation records and refreshes RELATES_TO edges
 - **Entity rename collision**: renaming an entity to include another entity's name can cause `by-name` to return the wrong entity (e.g., renaming to "Sarah Chen Metadata" may shadow "Dr. Sarah Chen"). Prefer unique, descriptive names.
 - `update_relation` (PUT /find/relations/{fid}): creates a new version. `content` is optional — omit for metadata-only updates. Pass `summary`, `confidence`, `attributes` to override; omitted fields carry forward from previous version. Returns full relation dict.
 - `delete_entity`: default `cascade=false` leaves orphaned relations connected to the deleted entity. Use `?cascade=true` to also delete connected relations. After deletion, absolute_id lookups may return stale data briefly (cache invalidation is immediate but in-flight requests may complete with cached data).
 - `relations/between`: returns only the latest valid version per relation (excludes invalidated versions)
-- `shortest_path`: depends on RELATES_TO graph edges (same as traverse), NOT on Relation records visible in profile. Returns 404 if either entity family_id doesn't exist; returns `path_length:-1` if entities exist but lack connecting RELATES_TO edges. If entities have Relations but shortest-path returns -1, run `POST /find/entities/refresh-edges` to regenerate RELATES_TO edges
+- `shortest_path`: depends on RELATES_TO graph edges (same as traverse), NOT on Relation records visible in profile. Returns 404 if either entity family_id doesn't exist; returns `path_length:-1` if entities exist but no connecting RELATES_TO edges found. If entities have Relations but shortest-path returns -1, run `POST /find/entities/refresh-edges` to regenerate RELATES_TO edges
 - `shortest_path`: response can be very large (90KB+) as it includes full entity/relation data for the entire path. No `compact` parameter available — client-side filtering recommended
 - `shortest_path`: response paths use `entities` and `relations` arrays (NOT `nodes` and `edges`). Each path has `{entities: [...], relations: [...], length: N}`
 - `merge`: target entity stays canonical (name/content preserved); source entities are absorbed. Auto-redirects Relation endpoints and refreshes RELATES_TO edges
+- `dream`: `discovery_mode:true` lowers confidence threshold (0.5→0.3) and uses a more permissive LLM prompt to find potential connections. Best with `cross_community` strategy.
 - `merge`: rejects with HTTP 409 if source/target names have insufficient word overlap (uses word-level Jaccard for multi-word names, character-level for single-word); pass `skip_name_check: true` in body to override. **Chinese courtesy names (字) always need `skip_name_check`** since they share zero characters (e.g., 孔明 vs 诸葛亮)
 - `merge`: returns 400 if target is in source list (self-merge) or if source entities don't exist
 - `merge`: response data is nested at `data.merged_count` (not flat in `data`). Response includes `relations_updated` count
