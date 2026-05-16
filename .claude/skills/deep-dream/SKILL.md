@@ -251,6 +251,10 @@ When the extraction pipeline cannot determine an entity name, it creates `auto_X
 
 ## Parameter Pitfalls
 
+- **Entity prefix search**: There is no dedicated prefix/name-filter endpoint. `GET /find/entities/search?query_name=auto_` uses semantic similarity, not text prefix — results may miss some `auto_*` entities and include false positives. For reliable prefix matching, use `POST /find` with `search_mode:"text"` or filter client-side from a full entity list.
+- **split-version on single-version entity**: Splits the only version into a new family_id, leaving the original family_id empty (returns 404). This is a move, not a copy.
+- **Episode search language**: `POST /find/episodes/search` uses substring matching (`CONTAINS`). Query language must match content language — use Chinese queries for Chinese content, English for English.
+- **BM25 search ranking for Chinese**: BM25 does character-level token matching. Searching "张三" may rank "桃园三结义" higher than the actual entity "张三" due to character overlap. Use `GET /find/entities/by-name/{name}` for precise name lookup.
 - `remember`: use `wait:true` for sync mode; default is async (returns task_id to poll)
 - `remember` sync mode: if extraction takes longer than `timeout` seconds (default 300), returns HTTP 202 with `status:"running"` — continue polling via task endpoint
 - Entity search uses `query_name` param, not `q` or `query`
@@ -258,7 +262,7 @@ When the extraction pipeline cannot determine an entity name, it creates `auto_X
 - `update_entity`: returns full updated entity. name/content changes create a new version (preserves summary, confidence, community_id); summary/attribute changes are in-place. Entity rename auto-propagates to relation records and refreshes RELATES_TO edges
 - `shortest_path`: returns 404 if either entity family_id doesn't exist; returns `path_length:-1` if entities exist but are disconnected
 - `merge`: target entity stays canonical (name/content preserved); source entities are absorbed. Auto-redirects Relation endpoints and refreshes RELATES_TO edges
-- `merge`: rejects with HTTP 409 if source/target names have < 20% character overlap; pass `skip_name_check: true` in body to override
+- `merge`: rejects with HTTP 409 if source/target names have insufficient word overlap (uses word-level Jaccard for multi-word names, character-level for single-word); pass `skip_name_check: true` in body to override
 - `merge`: response data is nested at `data.merged_count` (not flat in `data`)
 - `merge`: if a relation connects source and target entities, both endpoints resolve to target after merge (self-loop). No warning is returned
 - `merge`: auto-updates source entity names to target name and refreshes RELATES_TO edges

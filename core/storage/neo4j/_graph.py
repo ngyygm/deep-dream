@@ -317,19 +317,26 @@ class GraphTraversalMixin:
 
 
 
-    def get_entity_neighbors(self, entity_uuid: str, depth: int = 1) -> Dict:
-        """获取实体的邻居图，返回完整的 nodes + edges 结构。"""
+    def get_entity_neighbors(self, entity_id: str, depth: int = 1) -> Dict:
+        """获取实体的邻居图，返回完整的 nodes + edges 结构。
+        
+        entity_id 可以是 family_id (ent_xxx) 或 absolute_id (entity_xxx)。
+        """
         with self._session() as session:
-            # 先获取中心节点
-            center = self._run(session, 
-                "MATCH (e:Entity {uuid: $uuid}) RETURN e.uuid AS uuid, e.name AS name, e.family_id AS family_id",
-                uuid=entity_uuid,
+            # Resolve to absolute_id, accepting either family_id or uuid
+            resolve = self._run(session,
+                "MATCH (e:Entity) WHERE (e.family_id = $id OR e.uuid = $id) "
+                "AND e.invalid_at IS NULL "
+                "RETURN e.uuid AS uuid, e.name AS name, e.family_id AS family_id "
+                "ORDER BY e.processed_time DESC LIMIT 1",
+                id=entity_id,
             )
-            center_records = list(center)
-            center_node = None
-            if center_records:
-                r = center_records[0]
-                center_node = {"uuid": r["uuid"], "name": r["name"], "family_id": r["family_id"]}
+            resolved = list(resolve)
+            if not resolved:
+                return {"entity": None, "nodes": [], "edges": []}
+            center_rec = resolved[0]
+            entity_uuid = center_rec["uuid"]
+            center_node = {"uuid": center_rec["uuid"], "name": center_rec["name"], "family_id": center_rec["family_id"]}
 
             # 获取所有邻居节点和边
             result = self._run(session, 
@@ -343,6 +350,8 @@ class GraphTraversalMixin:
                 """,
                 uuid=entity_uuid,
             )
+            # Build name lookup: center entity + all neighbor nodes
+            name_map = {center_node["uuid"]: center_node["name"]}
             neighbors = {
                 "entity": center_node,
                 "nodes": [],
@@ -359,11 +368,14 @@ class GraphTraversalMixin:
                         "family_id": record["family_id"],
                     })
                     seen.add(uuid_val)
+                    name_map[uuid_val] = record["name"]
                 edge_key = (record.get("source_uuid"), record.get("target_uuid"))
                 if edge_key[0] and edge_key[1] and edge_key not in seen_edges:
                     neighbors["edges"].append({
                         "source_uuid": edge_key[0],
                         "target_uuid": edge_key[1],
+                        "source_name": name_map.get(edge_key[0]),
+                        "target_name": name_map.get(edge_key[1]),
                         "content": record["fact"],
                         "relation_uuid": record.get("relation_uuid"),
                     })
@@ -406,8 +418,21 @@ class GraphTraversalMixin:
 
             target_entity = fid_to_entity.get(target_family_id) or self.get_entity_by_family_id(target_family_id)
             target_name = target_entity.name if target_entity else ""
-            _target_chars = set(target_name) if target_name else set()
             rejected_ids = set()
+
+            def _name_similarity(a: str, b: str) -> float:
+                """Word-level Jaccard for multi-word names, char-level for single-word."""
+                import re as _re
+                _ws = r'[\s\-_.,;:]+'
+                a_words = set(w.lower() for w in _re.split(_ws, a) if w)
+                b_words = set(w.lower() for w in _re.split(_ws, b) if w)
+                if len(a_words) > 1 or len(b_words) > 1:
+                    if not a_words or not b_words:
+                        return 0.0
+                    return len(a_words & b_words) / len(a_words | b_words)
+                a_chars = set(a)
+                b_chars = set(b)
+                return len(a_chars & b_chars) / len(a_chars | b_chars) if a_chars | b_chars else 0.0
 
             for source_id in source_family_ids:
                 resolved_source = resolved_sources.get(source_id, source_id)
@@ -418,11 +443,8 @@ class GraphTraversalMixin:
                     continue
                 source_name = source_entity.name
                 if target_name and source_name:
-                    _source_chars = set(source_name)
-                    shared = len(_source_chars & _target_chars)
-                    total = len(_source_chars | _target_chars)
-                    overlap = shared / total if total > 0 else 0
-                    if overlap < 0.2:
+                    overlap = _name_similarity(target_name, source_name)
+                    if overlap < 0.3:
                         logging.getLogger(__name__).warning(
                             f"拒绝合并：名称差异过大 — "
                             f"target={target_name}({target_family_id}) "
@@ -513,6 +535,22 @@ class GraphTraversalMixin:
                     )
                     for record in result:
                         entities_updated += record["cnt"]
+
+                    # Ensure target entity remains canonical (latest processed_time)
+                    if new_abs_id:
+                        self._run(session,
+                            "MATCH (e:Entity {uuid: $uuid}) SET e.processed_time = datetime($now)",
+                            uuid=new_abs_id, now=now_iso,
+                        )
+
+                    # Update names on source entity versions to match target (prevents stale search hits)
+                    target_ent = self.get_entity_by_family_id(target_family_id)
+                    if target_ent:
+                        self._run(session,
+                            "UNWIND $pairs AS p MATCH (e:Entity {family_id: p.tid}) "
+                            "WHERE e.uuid <> $keep_uuid SET e.name = $new_name",
+                            pairs=pairs, keep_uuid=target_ent.absolute_id, new_name=target_ent.name,
+                        )
 
                     # Create redirects
                     self._run(session,
