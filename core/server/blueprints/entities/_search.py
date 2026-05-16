@@ -286,6 +286,7 @@ def find_entity_by_name(name: str):
         threshold = float(request.args.get("threshold", "0.5"))
         limit = int(request.args.get("limit", "5"))
         best = None
+        match_method = "none"
 
         # Step 1+2: Combined exact + core-name match in single lookup
         core = _CORE_NAME_RE.sub('', name).strip()
@@ -296,6 +297,7 @@ def find_entity_by_name(name: str):
         if name_map:
             fid = list(name_map.values())[0]
             best = processor.storage.get_entity_by_family_id(fid)
+            match_method = "exact"
 
         # Step 2B: Prefix match -- find entities whose name starts with query + "("
         # Handles searching for short name that has parenthetical annotation
@@ -309,10 +311,12 @@ def find_entity_by_name(name: str):
                     # Exact core-name match or parenthetical pattern
                     if ccore == name or cname.startswith(name + '（') or cname.startswith(name + '('):
                         best = candidate
+                        match_method = 'prefix_exact'
                         break
                     # Substring containment: query is contained in entity name
                     if name.lower() in cname.lower():
                         best = candidate
+                        match_method = 'prefix'
                         break
             except Exception as e:
                 logger.debug("by-name prefix match failed for '%s': %s", name, e)
@@ -326,6 +330,7 @@ def find_entity_by_name(name: str):
                     score = getattr(candidate, '_score', 0) or 0
                     if score >= 0.7:
                         best = candidate
+                        match_method = "bm25"
             except Exception as e:
                 logger.debug("by-name BM25 failed for '%s': %s", name, e)
 
@@ -345,18 +350,25 @@ def find_entity_by_name(name: str):
                 if score >= threshold:
                     best = candidate
 
+                    match_method = "embedding"
         if not best:
             return err(f"No entity found matching '{name}'", 404)
         rels = processor.storage.get_entity_relations_by_family_id(best.family_id)
         rel_dicts = [h.relation_to_dict(r) for r in rels]
         h.enrich_relations(rel_dicts, processor)
         vc_map = processor.storage.get_entity_version_counts([best.family_id])
-        return ok({
+        best_score = getattr(best, '_score', 0) or 0
+        result = {
             "entity": h.entity_to_dict(best),
             "relations": rel_dicts,
             "relation_count": len(rel_dicts),
             "version_count": vc_map.get(best.family_id, 1),
-        })
+            "match_score": best_score,
+            "match_method": match_method,
+        }
+        if best_score < 0.8:
+            result["hint"] = "Low match confidence — result may not be the intended entity"
+        return ok(result)
     except Exception as e:
         return err(str(e), 500)
 
