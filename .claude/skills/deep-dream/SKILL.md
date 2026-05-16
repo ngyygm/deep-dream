@@ -296,6 +296,10 @@ When the extraction pipeline cannot determine an entity name, it creates `auto_X
 - `traverse`: requires RELATES_TO edges to exist. If traverse returns empty but neighbors works, run `POST /find/entities/refresh-edges` first
 - `communities/list`: returns empty or 500 if `detect_communities` hasn't been called — always POST `/communities/detect` first
 - `search` results may show stale family_ids for entities that were merged/redirected — profile endpoint resolves correctly
+- **neighbors edge naming**: edge fields use `source_uuid`/`target_uuid` (not `source_family_id`/`target_family_id`). Inconsistent with other endpoints' `entity1_family_id`/`entity2_family_id` naming
+- **Semantic false positives**: entity search may return entities whose name contains a query substring — e.g., "Google AI Quantum" appears for "AI safety" queries because "AI" matches. Use `search_mode:"bm25"` or filter by `community_id` for precision
+- **LLM health response**: `GET /health/llm` may return Chinese messages in the `message` field during cooldown. Check `llm_available: true/false` as the definitive field
+- **Community detect response size**: `POST /communities/detect` returns the full community assignment map (30KB+). Follow with `GET /communities` for structured/paginated view
 
 ## Slow Endpoints
 
