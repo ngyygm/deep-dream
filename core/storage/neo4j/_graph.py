@@ -345,6 +345,7 @@ class GraphTraversalMixin:
             result = self._run(session, 
                 f"""
                 MATCH (e:Entity {{uuid: $uuid}})-[r:RELATES_TO*1..{depth}]-(neighbor:Entity)
+                WHERE neighbor.invalid_at IS NULL
                 UNWIND r AS rel
                 WITH DISTINCT neighbor, rel LIMIT 500
                 RETURN neighbor.uuid AS uuid, neighbor.name AS name, neighbor.family_id AS family_id,
