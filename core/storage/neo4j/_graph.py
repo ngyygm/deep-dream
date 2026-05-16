@@ -421,18 +421,14 @@ class GraphTraversalMixin:
             rejected_ids = set()
 
             def _name_similarity(a: str, b: str) -> float:
-                """Word-level Jaccard for multi-word names, char-level for single-word."""
+                """Word-level Jaccard. Split on spaces/punctuation/hyphens."""
                 import re as _re
                 _ws = r'[\s\-_.,;:]+'
                 a_words = set(w.lower() for w in _re.split(_ws, a) if w)
                 b_words = set(w.lower() for w in _re.split(_ws, b) if w)
-                if len(a_words) > 1 or len(b_words) > 1:
-                    if not a_words or not b_words:
-                        return 0.0
-                    return len(a_words & b_words) / len(a_words | b_words)
-                a_chars = set(a)
-                b_chars = set(b)
-                return len(a_chars & b_chars) / len(a_chars | b_chars) if a_chars | b_chars else 0.0
+                if not a_words or not b_words:
+                    return 0.0
+                return len(a_words & b_words) / len(a_words | b_words)
 
             for source_id in source_family_ids:
                 resolved_source = resolved_sources.get(source_id, source_id)
