@@ -317,7 +317,10 @@ def find_entity_by_name(name: str):
             try:
                 entities = processor.storage.search_entities_by_bm25(name, limit=1)
                 if entities:
-                    best = entities[0]
+                    candidate = entities[0]
+                    score = getattr(candidate, '_score', 0) or 0
+                    if score >= 1.0:
+                        best = candidate
             except Exception:
                 pass
 
@@ -332,7 +335,10 @@ def find_entity_by_name(name: str):
                 similarity_method="embedding",
             )
             if entities:
-                best = entities[0]
+                candidate = entities[0]
+                score = getattr(candidate, '_score', 0) or 0
+                if score >= threshold:
+                    best = candidate
 
         if not best:
             return err(f"No entity found matching '{name}'", 404)

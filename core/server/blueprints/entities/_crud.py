@@ -220,6 +220,8 @@ def merge_entities():
         source_ids = body.get("source_family_ids", [])
         if not target_id or not isinstance(source_ids, list) or not source_ids:
             return err("target_family_id 和 source_family_ids 为必填", 400)
+        if target_id in source_ids:
+            return err("目标实体不能同时是源实体（不能合并自身）", 400)
         target = processor.storage.get_entity_by_family_id(target_id)
         if target is None:
             return err(f"目标实体不存在: {target_id}", 404)
@@ -233,6 +235,8 @@ def merge_entities():
             if target_ent:
                 processor.storage.update_entity_names_in_relations(target_id, target_ent.name)
         return ok({"message": "实体合并完成", "target_family_id": target_id, "source_family_ids": source_ids, "merged_count": result})
+    except ValueError as e:
+        return err(str(e), 400)
     except Exception as e:
         return err(str(e), 500)
 

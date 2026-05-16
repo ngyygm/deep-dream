@@ -35,6 +35,7 @@ class RelationQueryMixin:
         with self._session() as session:
             result = self._run(session, """
                 MATCH (r:Relation)
+                WHERE r.invalid_at IS NULL
                 WITH r.family_id AS fid, COLLECT(r) AS rels
                 UNWIND rels AS r
                 WITH fid, r ORDER BY r.processed_time DESC
@@ -112,6 +113,7 @@ class RelationQueryMixin:
             result = self._run(session,
                 f"""
                 MATCH (r:Relation {{family_id: $fid}})
+                WHERE r.invalid_at IS NULL
                 RETURN {_RELATION_RETURN_FIELDS_WITH_EMB}
                 ORDER BY r.processed_time DESC LIMIT 1
                 """,
@@ -341,7 +343,8 @@ class RelationQueryMixin:
         with self._session() as session:
             result = self._run(session, _q("""
                 MATCH (r:Relation)
-                WHERE r.entity1_absolute_id = $aid OR r.entity2_absolute_id = $aid
+                WHERE (r.entity1_absolute_id = $aid OR r.entity2_absolute_id = $aid)
+                  AND r.invalid_at IS NULL
                 RETURN __REL_FIELDS__
                 """),
                 aid=absolute_id,
@@ -370,6 +373,7 @@ class RelationQueryMixin:
             if since:
                 query = f"""
                     MATCH (r:Relation)
+                    WHERE r.invalid_at IS NULL
                     WITH r.family_id AS fid, COLLECT(r) AS rels
                     UNWIND rels AS r
                     WITH fid, r ORDER BY r.processed_time DESC
@@ -382,6 +386,7 @@ class RelationQueryMixin:
             else:
                 query = f"""
                     MATCH (r:Relation)
+                    WHERE r.invalid_at IS NULL
                     WITH r.family_id AS fid, COLLECT(r) AS rels
                     UNWIND rels AS r
                     WITH fid, r ORDER BY r.processed_time DESC

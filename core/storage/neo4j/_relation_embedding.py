@@ -186,6 +186,7 @@ class RelationEmbeddingMixin:
             result = self._run(session,
                 f"""
                 MATCH (r:Relation)
+                WHERE r.invalid_at IS NULL
                 WITH r.family_id AS fid, COLLECT(r) AS rels
                 UNWIND rels AS r
                 WITH fid, r ORDER BY r.processed_time DESC
