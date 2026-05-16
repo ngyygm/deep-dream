@@ -134,6 +134,8 @@ curl -s -X POST "$BASE_URL/find/relations/create?graph_id=default" \
   -d "{\"entity1_family_id\":\"$E1\",\"entity2_family_id\":\"$E2\",\"content\":\"A and B are related\"}"
 ```
 
+**Note:** Relations are undirected — the API normalizes entity order by absolute_id. Your `entity1`/`entity2` may appear swapped in the response. Also accepts optional `summary`, `confidence`, and `attributes` fields.
+
 ### Merge Duplicate Entities
 ```bash
 # Merge multiple entities into one target

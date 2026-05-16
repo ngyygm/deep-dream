@@ -3,6 +3,7 @@ Relation CRUD operations — create, update, delete, version lookup, batch ops.
 """
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -312,6 +313,9 @@ def create_relation():
             processed_time=now,
             episode_id=body.get("episode_id", ""),
             source_document=body.get("source_document", ""),
+            summary=body.get("summary"),
+            confidence=body.get("confidence"),
+            attributes=json.dumps(body["attributes"], ensure_ascii=False) if isinstance(body.get("attributes"), dict) else body.get("attributes"),
         )
         processor.storage.save_relation(relation)
         return ok(relation_to_dict(relation))
