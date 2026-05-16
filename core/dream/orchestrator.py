@@ -459,7 +459,7 @@ class DreamOrchestrator:
                     sim_results = self.storage.search_entities_by_similarity(
                         query_name=seed_name,
                         query_content=seed_content,
-                        limit=config.max_neighbors_per_seed,
+                        max_results=config.max_neighbors_per_seed,
                     )
                     for ent in sim_results:
                         efid = ent.family_id
@@ -509,22 +509,65 @@ class DreamOrchestrator:
             (relations_created, pairs_checked)
         """
         # 收集所有待检查的配对（跳过历史已检查的）
+        # Strategy: cross-neighbor pairs (A's neighbor ↔ B's neighbor) instead of
+        # seed-to-own-neighbor (which always get filtered by existing-pairs check).
         pairs: List[tuple] = []
         skipped_by_history = 0
         involved_fids_set: set = set()
         _history = self._history
+        _seen_pair_set: set = set()
+
+        # Build per-seed neighbor lists
+        seed_neighbor_map: Dict[str, List[Dict]] = {}
         for exp in explored:
             seed_info = exp["seed"]
             seed_fid = seed_info["family_id"]
-            seed_name = seed_info["name"]
-            for neighbor in exp["neighbors"][:config.max_neighbors_per_seed]:
-                nb_fid = neighbor["family_id"]
-                if _history.was_checked(seed_fid, nb_fid):
-                    skipped_by_history += 1
+            neighbors = exp["neighbors"][:config.max_neighbors_per_seed]
+            seed_neighbor_map[seed_fid] = neighbors
+
+        # Generate cross-seed pairs: neighbor of seed_i ↔ neighbor of seed_j
+        seed_fids = list(seed_neighbor_map.keys())
+        for i in range(len(seed_fids)):
+            for j in range(i + 1, len(seed_fids)):
+                fid_i, fid_j = seed_fids[i], seed_fids[j]
+                for nb_i in seed_neighbor_map[fid_i]:
+                    for nb_j in seed_neighbor_map[fid_j]:
+                        nfid_i = nb_i["family_id"]
+                        nfid_j = nb_j["family_id"]
+                        if nfid_i == nfid_j:
+                            continue
+                        pair_key = (min(nfid_i, nfid_j), max(nfid_i, nfid_j))
+                        if pair_key in _seen_pair_set:
+                            continue
+                        _seen_pair_set.add(pair_key)
+                        if _history.was_checked(nfid_i, nfid_j):
+                            skipped_by_history += 1
+                            continue
+                        pairs.append((nfid_i, nb_i["name"], nfid_j, nb_j["name"]))
+                        involved_fids_set.add(nfid_i)
+                        involved_fids_set.add(nfid_j)
+
+        # Also add seed-to-neighbor from DIFFERENT seeds' neighborhoods
+        for i in range(len(seed_fids)):
+            for j in range(len(seed_fids)):
+                if i == j:
                     continue
-                pairs.append((seed_fid, seed_name, nb_fid, neighbor["name"]))
-                involved_fids_set.add(seed_fid)
-                involved_fids_set.add(nb_fid)
+                fid_i = seed_fids[i]
+                for nb in seed_neighbor_map[seed_fids[j]]:
+                    nfid = nb["family_id"]
+                    if fid_i == nfid:
+                        continue
+                    pair_key = (min(fid_i, nfid), max(fid_i, nfid))
+                    if pair_key in _seen_pair_set:
+                        continue
+                    _seen_pair_set.add(pair_key)
+                    if _history.was_checked(fid_i, nfid):
+                        skipped_by_history += 1
+                        continue
+                    seed_name = entity_lookup.get(fid_i, {}).get("name", fid_i)
+                    pairs.append((fid_i, seed_name, nfid, nb["name"]))
+                    involved_fids_set.add(fid_i)
+                    involved_fids_set.add(nfid)
 
         if skipped_by_history:
             logger.info("Dream: 跳过 %d 对历史已检查的配对", skipped_by_history)
