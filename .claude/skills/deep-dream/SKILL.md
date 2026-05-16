@@ -40,7 +40,8 @@ curl -s $BASE_URL/graphs
 |---|---|---|---|
 | Store text (sync) | POST | `/remember` | `{text, wait:true, timeout:120}` |
 | Store text (async) | POST | `/remember` | `{text}` → poll task_id |
-| Check remember task | GET | `/remember/tasks/{id}` | — |
+| List remember tasks | GET | `/remember/tasks` | Lists all tasks (omit `{id}`) |
+| Check remember task | GET | `/remember/tasks/{id}` | Check specific task |
 | Search everything | POST | `/find` | `{query, search_mode:"hybrid"}` |
 | Search entities | GET | `/find/entities/search` | `query_name=X` |
 | Search relations | GET | `/find/relations/search` | `query_text=X` |
@@ -77,6 +78,7 @@ curl -s $BASE_URL/graphs
 | Search episodes | POST | `/find/episodes/search` | `{query, limit:20}` |
 | Episode text | GET | `/find/episodes/{cache_id}/text` | — |
 | Recent activity | GET | `/find/recent-activity` | — |
+| Graph version | GET | `/find/graph/version` | Returns `{entity_count, relation_count, last_modified}` |
 | Refresh graph edges | POST | `/find/entities/refresh-edges` | — |
 
 ## Response Format

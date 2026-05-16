@@ -124,7 +124,8 @@ def strip_bulky(obj):
 
 # ── List compaction with binary-search trimming ───────────────────────────
 
-_LIST_KEYS = ("entities", "relations", "versions", "episodes", "items", "explored", "seeds")
+_LIST_KEYS = ("entities", "relations", "versions", "episodes", "items", "explored", "seeds",
+              "latest_entities", "latest_relations")
 
 
 def compact_lists(data, max_chars=_MAX_RESPONSE_CHARS):
