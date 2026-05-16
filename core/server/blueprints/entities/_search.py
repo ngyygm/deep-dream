@@ -299,14 +299,19 @@ def find_entity_by_name(name: str):
 
         # Step 2B: Prefix match -- find entities whose name starts with query + "("
         # Handles searching for short name that has parenthetical annotation
+        # Also handles title prefix differences (Dr., Prof., etc.)
         if not best and hasattr(processor.storage, 'find_entity_by_name_prefix'):
             try:
-                prefix_matches = processor.storage.find_entity_by_name_prefix(name, limit=3)
+                prefix_matches = processor.storage.find_entity_by_name_prefix(name, limit=5)
                 for candidate in prefix_matches:
                     cname = getattr(candidate, 'name', '')
-                    # Core-name must match exactly (not just prefix of core)
                     ccore = _CORE_NAME_RE.sub('', cname).strip()
+                    # Exact core-name match or parenthetical pattern
                     if ccore == name or cname.startswith(name + '（') or cname.startswith(name + '('):
+                        best = candidate
+                        break
+                    # Substring containment: query is contained in entity name
+                    if name.lower() in cname.lower():
                         best = candidate
                         break
             except Exception:
@@ -319,7 +324,7 @@ def find_entity_by_name(name: str):
                 if entities:
                     candidate = entities[0]
                     score = getattr(candidate, '_score', 0) or 0
-                    if score >= 1.0:
+                    if score >= 0.7:
                         best = candidate
             except Exception:
                 pass

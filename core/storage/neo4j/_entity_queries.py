@@ -901,60 +901,25 @@ class EntityQueryMixin:
     def get_graph_statistics(self) -> Dict[str, Any]:
         """返回图谱结构统计数据（仅统计有效版本，排除已失效的旧版本节点）
 
-        优化：合并 9 次串行 Cypher 为 3 次：
-        1. 基础计数 + 度数统计（一条 UNWIND 聚合）
-        2. 实体时间趋势
-        3. 关系时间趋势
+        优化：拆分为轻量查询，避免 UNWIND+OPTIONAL MATCH 的 O(n*m) 展开。
+        度数统计直接用 RELATES_TO 边按 family_id 聚合。
         """
         cached = self._cache.get("graph_stats")
         if cached is not None:
             return cached
         with self._session() as session:
-            # Query 1: 基础计数 + 度数统计（合并原 6 次查询为 1 次）
+            # Query 1: 基础计数 (fast, no joins)
             r = self._run(session, """
-                // 基础计数
-                MATCH (all_e:Entity)
-                WITH count(all_e) AS total_entity_versions
-                MATCH (all_r:Relation)
-                WITH total_entity_versions, count(all_r) AS total_relation_versions
+                MATCH (all_e:Entity) WITH count(all_e) AS total_entity_versions
+                MATCH (all_r:Relation) WITH total_entity_versions, count(all_r) AS total_relation_versions
                 MATCH (valid_e:Entity) WHERE valid_e.invalid_at IS NULL
                 WITH total_entity_versions, total_relation_versions,
                      count(DISTINCT valid_e.family_id) AS entity_count
                 MATCH (valid_r:Relation) WHERE valid_r.invalid_at IS NULL
-                WITH total_entity_versions, total_relation_versions, entity_count,
-                     count(DISTINCT valid_r.family_id) AS relation_count
-                // 度数：统计每个 family 有多少条不同的 Relation
-                UNWIND CASE WHEN entity_count > 0 THEN [1] ELSE [] END AS _trigger
-                MATCH (e:Entity) WHERE e.invalid_at IS NULL AND e.family_id IS NOT NULL
-                WITH total_entity_versions, total_relation_versions, entity_count,
-                     relation_count, e.family_id AS fid, collect(DISTINCT e.uuid) AS uuids
-                UNWIND uuids AS uid
-                OPTIONAL MATCH (r:Relation) WHERE r.invalid_at IS NULL
-                    AND (r.entity1_absolute_id = uid OR r.entity2_absolute_id = uid)
-                WITH total_entity_versions, total_relation_versions, entity_count,
-                     relation_count, fid, count(DISTINCT r) AS degree
                 RETURN total_entity_versions, total_relation_versions,
-                       entity_count, relation_count,
-                       avg(toFloat(degree)) AS avg_degree,
-                       max(degree) AS max_degree_raw,
-                       sum(CASE WHEN degree = 0 THEN 1 ELSE 0 END) AS isolated_count
+                       entity_count, count(DISTINCT valid_r.family_id) AS relation_count
             """)
             row = r.single()
-
-            # When entity_count=0, UNWIND produces no rows -> r.single() returns None.
-            # Fall back to a lightweight count-only query.
-            if row is None:
-                r2 = self._run(session, """
-                    MATCH (all_e:Entity)  WITH count(all_e) AS total_entity_versions
-                    MATCH (all_r:Relation) WITH total_entity_versions, count(all_r) AS total_relation_versions
-                    MATCH (valid_e:Entity) WHERE valid_e.invalid_at IS NULL
-                    WITH total_entity_versions, total_relation_versions, count(DISTINCT valid_e.family_id) AS entity_count
-                    MATCH (valid_r:Relation) WHERE valid_r.invalid_at IS NULL
-                    RETURN total_entity_versions, total_relation_versions,
-                           entity_count, count(DISTINCT valid_r.family_id) AS relation_count
-                """)
-                row = r2.single()
-
             if row is None:
                 return {}
 
@@ -972,11 +937,27 @@ class EntityQueryMixin:
                 "community_count": self.count_communities(),
             }
 
-            if entity_count > 0 and row.get("isolated_count") is not None:
-                stats["avg_relations_per_entity"] = round(row["avg_degree"], 2)
-                stats["max_relations_per_entity"] = row["max_degree_raw"]
-                # Use RELATES_TO edge-based count for consistency with other endpoints
-                stats["isolated_entities"] = self.count_isolated_entities()
+            if entity_count > 0:
+                # Query 2: 度数统计 — direct RELATES_TO edge aggregation (no UNWIND)
+                r2 = self._run(session, """
+                    MATCH (e:Entity) WHERE e.invalid_at IS NULL AND e.family_id IS NOT NULL
+                    WITH e.family_id AS fid
+                    OPTIONAL MATCH (e2:Entity {family_id: fid})-[:RELATES_TO]-(other:Entity)
+                    WHERE e2.invalid_at IS NULL
+                    WITH fid, count(DISTINCT other.family_id) AS degree
+                    RETURN avg(toFloat(degree)) AS avg_degree,
+                           max(degree) AS max_degree_raw,
+                           sum(CASE WHEN degree = 0 THEN 1 ELSE 0 END) AS isolated_count
+                """)
+                deg_row = r2.single()
+                if deg_row:
+                    stats["avg_relations_per_entity"] = round(deg_row["avg_degree"], 2)
+                    stats["max_relations_per_entity"] = deg_row["max_degree_raw"]
+                    stats["isolated_entities"] = deg_row["isolated_count"]
+                else:
+                    stats["avg_relations_per_entity"] = 0
+                    stats["max_relations_per_entity"] = 0
+                    stats["isolated_entities"] = entity_count
 
                 if entity_count > 1:
                     max_possible = entity_count * (entity_count - 1) / 2
@@ -991,8 +972,8 @@ class EntityQueryMixin:
                     "graph_density": 0.0,
                 })
 
-            # Query 2: 实体时间趋势
-            r = self._run(session, """
+            # Query 3: 实体时间趋势
+            r3 = self._run(session, """
                 MATCH (e:Entity)
                 WHERE e.invalid_at IS NULL AND e.event_time IS NOT NULL
                 WITH date(e.event_time) AS d, e.family_id AS fid
@@ -1000,10 +981,10 @@ class EntityQueryMixin:
                 ORDER BY d
                 LIMIT 30
             """)
-            stats["entity_count_over_time"] = [{"date": str(rec["date"]), "count": rec["cnt"]} for rec in r]
+            stats["entity_count_over_time"] = [{"date": str(rec["date"]), "count": rec["cnt"]} for rec in list(r3)]
 
-            # Query 3: 关系时间趋势
-            r = self._run(session, """
+            # Query 4: 关系时间趋势
+            r4 = self._run(session, """
                 MATCH (r:Relation)
                 WHERE r.invalid_at IS NULL AND r.event_time IS NOT NULL
                 WITH date(r.event_time) AS d, r.family_id AS fid
@@ -1011,7 +992,7 @@ class EntityQueryMixin:
                 ORDER BY d
                 LIMIT 30
             """)
-            stats["relation_count_over_time"] = [{"date": str(rec["date"]), "count": rec["cnt"]} for rec in r]
+            stats["relation_count_over_time"] = [{"date": str(rec["date"]), "count": rec["cnt"]} for rec in list(r4)]
 
         self._cache.set("graph_stats", stats, ttl=60)
         return stats
