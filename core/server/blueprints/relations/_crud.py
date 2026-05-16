@@ -298,6 +298,10 @@ def create_relation():
         if not e1 or not e2:
             return err("需要 entity1_absolute_id 或 entity1_family_id（entity2 同理）", 400)
 
+        # Self-referencing relation check
+        if e1 == e2:
+            return err("不能在同一个实体上创建自引用关系 (entity1 == entity2)", 400)
+
         content = (body.get("content") or "").strip()
         if not content:
             return err("content 为必填", 400)
