@@ -312,7 +312,7 @@ class SearchMixin:
         try:
             with self._session() as session:
                 raw_limit = min(limit * 5, 500)
-                result = self._run(session, 
+                result = self._run(session,
                     """CALL db.index.fulltext.queryNodes('relationFulltext', $search_query)
                        YIELD node, score
                        WHERE node.invalid_at IS NULL

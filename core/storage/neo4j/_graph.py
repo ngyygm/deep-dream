@@ -172,6 +172,7 @@ class GraphTraversalMixin:
             result = self._run(session, 
                 """
                 MATCH (a:Entity {family_id: $sid}), (b:Entity {family_id: $tid})
+                WHERE a.invalid_at IS NULL AND b.invalid_at IS NULL
                 MATCH path = shortestPath((a)-[:RELATES_TO*1..""" + str(max_depth) + """]-(b))
                 RETURN [n IN nodes(path) | n.name] AS names
                 """,
@@ -224,6 +225,7 @@ class GraphTraversalMixin:
                 """
                 MATCH (source:Entity {family_id: $sid}),
                       (target:Entity {family_id: $tid})
+                WHERE source.invalid_at IS NULL AND target.invalid_at IS NULL
                 MATCH path = allShortestPaths((source)-[:RELATES_TO*1..""" + str(max_depth) + """]-(target))
                 WITH path, [n IN nodes(path) | {uuid: n.uuid, family_id: n.family_id}] AS node_infos,
                           [r IN relationships(path) | {uuid: r.relation_uuid}] AS rel_infos
@@ -282,12 +284,13 @@ class GraphTraversalMixin:
             paths_result = []
             for node_infos, rel_infos in paths_raw:
                 path_entities = []
-                seen_abs: Set[str] = set()
+                seen_fid: Set[str] = set()
                 for node_info in node_infos:
                     abs_id = node_info["uuid"]
-                    if abs_id not in seen_abs and abs_id in abs_entity_map:
+                    fid = node_info.get("family_id", abs_id)
+                    if fid not in seen_fid and abs_id in abs_entity_map:
                         path_entities.append(abs_entity_map[abs_id])
-                        seen_abs.add(abs_id)
+                        seen_fid.add(fid)
 
                 path_relations = []
                 for rel_info in rel_infos:
