@@ -270,7 +270,8 @@ When the extraction pipeline cannot determine an entity name, it creates `auto_X
 - `merge`: auto-updates source entity names to target name and refreshes RELATES_TO edges
 - Auto-named entities (`auto_XXXXXXXX`) may outrank real entities in search results — filter by checking `content` field
 - `dry_run:true` only works for `butler/execute`, NOT for merge or other destructive ops
-- Valid `butler_execute` actions: `cleanup_isolated`, `cleanup_invalidated`, `fix_dangling_refs`, `detect_communities`, `evolve_summaries` (NOT `run_dream`)
+- Valid `butler_execute` actions: `cleanup_isolated`, `cleanup_invalidated`, `fix_dangling_refs`, `cleanup_stale_redirects`, `detect_communities`, `evolve_summaries` (NOT `run_dream`)
+- `butler_execute`: returns `success: true` even if individual actions fail — check each action's `status` field for errors
 - If remember returns 0 entities, check LLM health: `GET /health/llm`
 - `profile`: returns 404 `{success: false, error: "..."}` for nonexistent family_ids (not `success: true` with null). `neighbors` returns `success: true` with empty arrays for nonexistent IDs
 - Chinese characters in curl URLs: use `--data-urlencode` or Python urllib to avoid encoding issues
@@ -283,11 +284,13 @@ When the extraction pipeline cannot determine an entity name, it creates `auto_X
 
 These endpoints may take 5-15+ seconds. Use `timeout` param or increase curl timeout:
 - `GET /butler/report` — scans full graph (~10-15s)
+- `GET /find/maintenance/health` — quality + statistics scan (~5-15s)
 - `POST /find/dream/run` — LLM-powered exploration (~30s-5min)
 - `POST /remember` with `wait:true` — extraction pipeline (~30s-5min)
 - `GET /find/graph-summary` — aggregation over all nodes (~3-10s)
 - `POST /communities/detect` — graph loading + Louvain algorithm (~5-30s)
 - `POST /find/entities/refresh-edges` — regenerates all RELATES_TO edges (~5-30s)
+- `GET /find/entities/{fid}/contradictions` — LLM-powered version analysis (~2-5s)
 
 ## Episode Text Availability
 

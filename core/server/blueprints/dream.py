@@ -934,7 +934,11 @@ def butler_execute():
             else:
                 results[action] = {"status": "unknown", "reason": f"未知操作: {action}"}
 
-        return ok({"actions": results, "dry_run": dry_run})
+        _errors = [a for a, r in results.items() if isinstance(r, dict) and r.get("status") == "error"]
+        resp = {"actions": results, "dry_run": dry_run}
+        if _errors and not dry_run:
+            resp["warnings"] = f"{len(_errors)} action(s) had errors: {', '.join(_errors)}"
+        return ok(resp)
     except Exception as e:
         return err(str(e), 500)
 
