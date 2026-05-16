@@ -62,6 +62,7 @@ class RelationQueryMixin:
             fields = _RELATION_RETURN_FIELDS if exclude_embedding else _RELATION_RETURN_FIELDS_WITH_EMB
             query = f"""
                 MATCH (r:Relation)
+                WHERE r.invalid_at IS NULL
                 WITH r.family_id AS fid, COLLECT(r) AS rels
                 UNWIND rels AS r
                 WITH fid, r ORDER BY r.processed_time DESC

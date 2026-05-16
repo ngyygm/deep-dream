@@ -52,7 +52,8 @@ curl -s $BASE_URL/graphs
 | Create entity | POST | `/find/entities/create` | `{name, content}` |
 | Create relation | POST | `/find/relations/create` | `{entity1_family_id, entity2_family_id, content}` |
 | Update entity | PUT | `/find/entities/{fid}` | `{name, summary, attributes}` |
-| Update relation | PUT | `/find/relations/{fid}` | `{content, summary, attributes}` |
+| Update relation | PUT | `/find/relations/{fid}` | `{content, summary, attributes, confidence}` (content optional for metadata-only updates) |
+| Delete entity | DELETE | `/find/entities/{fid}` | `?cascade=true` to remove connected relations (default: false, leaves orphans) |
 | Delete relation | DELETE | `/find/relations/{fid}` | `?cascade=false` |
 | Merge entities | POST | `/find/entities/merge` | `{source_family_ids:[...], target_family_id:...}` |
 | Dream cycle | POST | `/find/dream/run` | `{strategy, seed_count}` |
@@ -80,7 +81,7 @@ All responses: `{"success": bool, "data": ..., "elapsed_ms": float}`
 
 - `data` type varies by endpoint:
   - **Single item**: `data: {family_id, name, content, ...}` (create)
-  - **By-name** (nested): `data: {entity: {...}, relations: [...]}` — same structure as profile
+  - **By-name** (nested): `data: {entity: {...}, relations: [...]}` — same structure as profile. Returns 404 `{success: false}` for non-existent names (not `{success: true, entity: null}`)
   - **Profile** (nested): `data: {entity: {...}, relations: [...], relation_count, version_count}` (profile)
   - **List**: `data: [{...}, ...]` (search, find entities, list)
   - **Aggregation**: `data: {entities: [...], relations: [...], ...}` (find, graph-summary)
@@ -269,6 +270,9 @@ When the extraction pipeline cannot determine an entity name, it creates `auto_X
 - Entity search uses `query_name` param, not `q` or `query`
 - Shortest path uses `family_id_a`/`family_id_b` (or aliases `entity1_family_id`/`entity2_family_id`)
 - `update_entity`: returns full updated entity. name/content changes create a new version (preserves summary, confidence, community_id); summary/attribute changes are in-place. Entity rename auto-propagates to relation records and refreshes RELATES_TO edges
+- `update_relation` (PUT /find/relations/{fid}): creates a new version. `content` is optional — omit for metadata-only updates. Pass `summary`, `confidence`, `attributes` to override; omitted fields carry forward from previous version. Returns full relation dict.
+- `delete_entity`: default `cascade=false` leaves orphaned relations connected to the deleted entity. Use `?cascade=true` to also delete connected relations.
+- `relations/between`: returns only the latest valid version per relation (excludes invalidated versions)
 - `shortest_path`: returns 404 if either entity family_id doesn't exist; returns `path_length:-1` if entities exist but are disconnected
 - `merge`: target entity stays canonical (name/content preserved); source entities are absorbed. Auto-redirects Relation endpoints and refreshes RELATES_TO edges
 - `merge`: rejects with HTTP 409 if source/target names have insufficient word overlap (uses word-level Jaccard for multi-word names, character-level for single-word); pass `skip_name_check: true` in body to override
