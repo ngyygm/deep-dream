@@ -467,6 +467,18 @@ class GraphTraversalMixin:
         if not source_family_ids:
             return {"entities_updated": 0, "relations_updated": 0, "rejected": True}
 
+        # Validate that source entities actually exist
+        missing_sources = []
+        for s in source_family_ids:
+            resolved = resolved_map.get(s)
+            if not resolved:
+                missing_sources.append(s)
+        if missing_sources:
+            raise ValueError(f"源实体不存在: {', '.join(missing_sources)}")
+
+        # Remove target from sources (redundant safety check)
+        source_family_ids = [s for s in source_family_ids if resolved_map.get(s, s) != target_family_id]
+
         with self._write_lock:
             with self._session() as session:
                 entities_updated = 0
