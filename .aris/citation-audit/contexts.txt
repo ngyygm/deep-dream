@@ -1,0 +1,31 @@
+# Citation Contexts Extracted from workspace/drafts/paper.tex
+# Format: KEY | FILE:LINE | CONTEXT SENTENCE
+
+bordes2013transe | workspace/drafts/paper.tex:43 | "TransE~\citep{bordes2013transe} models relations as translations in embedding space, while ConvE~\citep{dettmers2018conve} applies convolutional neural networks to capture richer interaction patterns."
+bordes2013transe | workspace/drafts/paper.tex:155 | "We compare against static methods (TransE~\citep{bordes2013transe}, ConvE~\citep{dettmers2018conve}, RotatE~\citep{sun2019rotate}) and temporal methods..."
+
+dettmers2018conve | workspace/drafts/paper.tex:43 | "ConvE~\citep{dettmers2018conve} applies convolutional neural networks to capture richer interaction patterns."
+dettmers2018conve | workspace/drafts/paper.tex:155 | "...static methods (TransE~\citep{bordes2013transe}, ConvE~\citep{dettmers2018conve}, RotatE~\citep{sun2019rotate})..."
+
+sun2019rotate | workspace/drafts/paper.tex:43 | "RotatE~\citep{sun2019rotate} models relations as rotations in complex space, and HousE further refines geometric modeling through household rotations."
+sun2019rotate | workspace/drafts/paper.tex:155 | "...static methods (...RotatE~\citep{sun2019rotate})..."
+
+jin2020renet | workspace/drafts/paper.tex:26 | "Recurrent Event Networks~\citep{jin2020renet} model temporal sequences with RNNs, while CyGNet~\citep{zhu2021cygnet} leverages historical fact repetition through copy mechanisms."
+jin2020renet | workspace/drafts/paper.tex:47 | "RE-NET~\citep{jin2020renet} employs recurrent neural networks to model sequences of KG snapshots, capturing temporal dependencies through autoregressive inference."
+jin2020renet | workspace/drafts/paper.tex:155 | "...temporal methods (RE-NET~\citep{jin2020renet}, CyGNet~\citep{zhu2021cygnet}, RE-GCN, HiSMatch, TANGO)."
+
+zhu2021cygnet | workspace/drafts/paper.tex:26 | "CyGNet~\citep{zhu2021cygnet} leverages historical fact repetition through copy mechanisms."
+zhu2021cygnet | workspace/drafts/paper.tex:47 | "CyGNet~\citep{zhu2021cygnet} introduces a copy-generation mechanism that leverages historical fact repetition patterns."
+zhu2021cygnet | workspace/drafts/paper.tex:155 | "...temporal methods (RE-NET~\citep{jin2020renet}, CyGNet~\citep{zhu2021cygnet}, RE-GCN, HiSMatch, TANGO)."
+
+graves2014ntm | workspace/drafts/paper.tex:53 | "Neural Turing Machines~\citep{graves2014ntm} and the Differentiable Neural Computer~\citep{graves2016dnc} introduce differentiable external memory with content-based addressing."
+
+graves2016dnc | workspace/drafts/paper.tex:53 | "Neural Turing Machines~\citep{graves2014ntm} and the Differentiable Neural Computer~\citep{graves2016dnc} introduce differentiable external memory with content-based addressing."
+graves2016dnc | workspace/drafts/paper.tex:105 | "The episode prototype is written to the memory matrix using content-based addressing~\citep{graves2016dnc}."
+
+sukhbaatar2015memnn | workspace/drafts/paper.tex:53 | "End-to-End Memory Networks~\citep{sukhbaatar2015memnn} enable multi-hop reasoning over memory slots."
+
+vaswani2017attention | workspace/drafts/paper.tex:85 | "The absolute component follows the sinusoidal encoding scheme of~\citet{vaswani2017attention}."
+vaswani2017attention | workspace/drafts/paper.tex:126 | "The scaling factor $\sqrt{d}$ follows the dot-product attention of~\citet{vaswani2017attention}."
+
+loshchilov2018adamw | workspace/drafts/paper.tex:143 | "We optimize with AdamW~\citep{loshchilov2018adamw} using a learning rate of $1 \times 10^{-4}$."

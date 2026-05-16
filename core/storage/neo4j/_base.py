@@ -489,6 +489,9 @@ class Neo4jBaseMixin:
     def resolve_family_ids(self, family_ids: List[str]) -> Dict[str, str]:
         """批量解析 family_id 到 canonical id。利用缓存 + 一次 Cypher 查询未缓存项。
 
+        Handles stale redirects: if a resolved target no longer has Entity nodes,
+        falls back to the original family_id and cleans up the stale redirect.
+
         Returns:
             {原始 family_id: canonical family_id} 映射
         """
@@ -513,7 +516,6 @@ class Neo4jBaseMixin:
         if uncached:
             with _perf_timer("resolve_family_ids_batch"):
                 with self._session() as session:
-                    # 使用 optional 2-hop path 一次查出完整链
                     cypher = """
                     UNWIND $ids AS sid
                     OPTIONAL MATCH (r1:EntityRedirect {source_id: sid})
@@ -531,12 +533,65 @@ class Neo4jBaseMixin:
                         result[r["source"]] = resolved
                         self._cache.set(f"resolve:{r['source']}", resolved, ttl=600)
 
+        # 第三步：验证 resolved targets 是否存在，清理 stale redirects
+        _redirected = {src: tgt for src, tgt in result.items() if src != tgt}
+        if _redirected:
+            target_fids = list(set(_redirected.values()))
+            existing_targets = set()
+            try:
+                with self._session() as session:
+                    recs = session.run(
+                        "UNWIND $fids AS fid MATCH (e:Entity {family_id: fid}) "
+                        "RETURN DISTINCT e.family_id AS fid",
+                        fids=target_fids,
+                    )
+                    existing_targets = {rec["fid"] for rec in recs}
+            except Exception:
+                pass
+
+            stale_sources = []
+            for src, tgt in _redirected.items():
+                if tgt not in existing_targets:
+                    result[src] = src
+                    self._cache.set(f"resolve:{src}", src, ttl=600)
+                    stale_sources.append(src)
+
+            if stale_sources:
+                try:
+                    with self._session() as session:
+                        session.run(
+                            "UNWIND $ids AS sid MATCH (r:EntityRedirect {source_id: sid}) DELETE r",
+                            ids=stale_sources,
+                        )
+                    logger.info("Cleaned up %d stale redirects: %s", len(stale_sources), stale_sources[:5])
+                except Exception:
+                    pass
+
         # 构建输出映射（处理可能有重复的 family_ids）
         output: Dict[str, str] = {}
         for fid in family_ids:
             key = fid.strip() if fid else ""
             output[fid] = result.get(key, key)
         return output
+
+    def cleanup_stale_redirects(self) -> int:
+        """Delete EntityRedirect nodes whose target entity no longer exists."""
+        try:
+            with self._session() as session:
+                result = session.run("""
+                    MATCH (r:EntityRedirect)
+                    WITH r
+                    OPTIONAL MATCH (target:Entity {family_id: r.target_id})
+                    WITH r, target
+                    WHERE target IS NULL
+                    DELETE r
+                    RETURN count(r) AS deleted
+                """)
+                for rec in result:
+                    return rec["deleted"]
+            return 0
+        except Exception:
+            return 0
 
 
 @lru_cache(maxsize=256)

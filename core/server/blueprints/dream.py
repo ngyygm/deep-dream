@@ -733,6 +733,18 @@ def butler_report():
                 "dry_run_available": True,
             })
 
+        # Dangling entity refs in relations
+        quality_rels = quality.get("relations", {})
+        dangling_count = quality_rels.get("dangling_entity_refs", 0) if isinstance(quality_rels, dict) else 0
+        if dangling_count > 0:
+            recommendations.append({
+                "action": "fix_dangling_refs",
+                "priority": "high" if dangling_count > 20 else "medium",
+                "description": f"发现 {dangling_count} 个关系中的悬空实体引用，建议修复",
+                "estimated_impact": f"修复约 {dangling_count} 个数据完整性问题",
+                "dry_run_available": True,
+            })
+
         total_ent = health["total_entities"]
         total_rel = health["total_relations"]
         if total_ent > 0 and total_rel < total_ent * 0.3:
@@ -814,7 +826,7 @@ def butler_execute():
         results = {}
 
         # Partition actions: independent ones can run in parallel
-        _independent_actions = {"cleanup_isolated", "cleanup_invalidated", "detect_communities", "fix_dangling_refs"}
+        _independent_actions = {"cleanup_isolated", "cleanup_invalidated", "detect_communities", "fix_dangling_refs", "cleanup_stale_redirects"}
         independent = [a for a in actions if a in _independent_actions]
         sequential = [a for a in actions if a not in _independent_actions]
 
@@ -843,6 +855,12 @@ def butler_execute():
                 if hasattr(storage, "fix_dangling_relation_refs"):
                     return storage.fix_dangling_relation_refs(dry_run=dry_run)
                 return {"status": "skipped", "reason": "当前存储后端不支持"}
+
+            elif action == "cleanup_stale_redirects":
+                if dry_run:
+                    return {"status": "preview", "message": "Will delete stale EntityRedirect nodes whose target entities no longer exist"}
+                deleted = storage.cleanup_stale_redirects()
+                return {"status": "done", "deleted": deleted}
 
             return {"status": "unknown", "reason": f"未知操作: {action}"}
 
@@ -916,7 +934,11 @@ def butler_execute():
             else:
                 results[action] = {"status": "unknown", "reason": f"未知操作: {action}"}
 
-        return ok({"actions": results, "dry_run": dry_run})
+        _errors = [a for a, r in results.items() if isinstance(r, dict) and r.get("status") == "error"]
+        resp = {"actions": results, "dry_run": dry_run}
+        if _errors and not dry_run:
+            resp["warnings"] = f"{len(_errors)} action(s) had errors: {', '.join(_errors)}"
+        return ok(resp)
     except Exception as e:
         return err(str(e), 500)
 

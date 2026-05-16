@@ -1,0 +1,7 @@
+{
+  "fig_episodic_memory_overview": "Overview of Episodic Memory Networks. (Left) Temporal KG facts scattered across time. (Center) Facts are grouped into coherent episodic memory traces via temporal clustering and content-based addressing. (Right) Gated attention retrieves relevant episodes for query reasoning, achieving improved prediction accuracy.",
+  "fig_main_results_comparison": "Link prediction performance (MRR, Hits@1, Hits@10) of all methods on ICEWS14, ICEWS18, and GDELT benchmarks. EMN consistently outperforms all baselines across datasets.",
+  "fig_training_curves": "Validation MRR over training epochs on ICEWS14. EMN converges faster and achieves higher final performance compared to RE-NET, CyGNet, RE-GCN, and TANGO.",
+  "fig_ablation_study": "Ablation study on ICEWS14. Removing each component (temporal position encoder, episodic grouping, gated attention) results in measurable performance degradation, confirming the contribution of each architectural element.",
+  "fig_attention_heatmap": "Attention weight heatmap for representative queries on ICEWS14. Brighter cells indicate higher attention scores. The model learns to attend to temporally and semantically related episodes."
+}

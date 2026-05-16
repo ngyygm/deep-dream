@@ -335,7 +335,7 @@ def find_entity_by_name(name: str):
                 best = entities[0]
 
         if not best:
-            return ok({"entity": None, "message": f"No entity found matching '{name}'"})
+            return err(f"No entity found matching '{name}'", 404)
         rels = processor.storage.get_entity_relations_by_family_id(best.family_id)
         rel_dicts = [h.relation_to_dict(r) for r in rels]
         h.enrich_relations(rel_dicts, processor)

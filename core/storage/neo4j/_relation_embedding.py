@@ -134,13 +134,14 @@ class RelationEmbeddingMixin:
             if not from_ids or not to_ids:
                 return []
 
-            # Step 2: Query relations
+            # Step 2: Query relations (exclude invalidated)
             from ._helpers import _q
             result = self._run(session,
                 _q("""
                 MATCH (r:Relation)
-                WHERE (r.entity1_absolute_id IN $from_ids AND r.entity2_absolute_id IN $to_ids)
-                   OR (r.entity1_absolute_id IN $to_ids AND r.entity2_absolute_id IN $from_ids)
+                WHERE r.invalid_at IS NULL
+                  AND ((r.entity1_absolute_id IN $from_ids AND r.entity2_absolute_id IN $to_ids)
+                    OR (r.entity1_absolute_id IN $to_ids AND r.entity2_absolute_id IN $from_ids))
                 WITH r.family_id AS fid, COLLECT(r) AS rels
                 UNWIND rels AS r
                 WITH fid, r ORDER BY r.processed_time DESC

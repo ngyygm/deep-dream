@@ -132,6 +132,11 @@ def compact_lists(data, max_chars=_MAX_RESPONSE_CHARS):
     if not isinstance(data, dict):
         return data
 
+    # Recurse into nested dicts (e.g. results.entities in /find/ask)
+    for k, v in list(data.items()):
+        if isinstance(v, dict) and not k.endswith(("_total", "_shown")):
+            data[k] = compact_lists(v, max_chars=max_chars)
+
     for key in _LIST_KEYS:
         items = data.get(key)
         if not isinstance(items, list) or len(items) <= 3:
@@ -190,7 +195,11 @@ _HINT_PATTERNS = [
      "Hint: the operation took too long. Try with smaller input or fewer items."),
     (lambda m: "rate limit" in m or "429" in m,
      "Hint: too many requests. Wait a moment and retry."),
-    (lambda m: "invalid" in m and ("id" in m or "identifier" in m),
+    (lambda m: "策略" in m or "strategy" in m,
+     "Hint: check the strategy parameter. Valid strategies: random, hub, cross_community, orphan, time_gap, low_confidence."),
+    (lambda m: "search_mode" in m,
+     "Hint: check the search_mode parameter. Valid modes: hybrid, semantic, bm25."),
+    (lambda m: ("invalid" in m or "无效" in m) and ("family_id" in m or "_id" in m or "identifier" in m),
      "Hint: check that the ID format is correct. family_ids start with 'ent_' or 'rel_', absolute_ids are UUIDs."),
     (lambda m: "merge" in m and ("same" in m or "cannot" in m or "error" in m),
      "Hint: merge_entities requires at least 2 different entity family_ids."),
@@ -206,6 +215,10 @@ _HINT_PATTERNS = [
      "Hint: check the required parameters. Missing or empty fields cause validation errors."),
     (lambda m: "conflict" in m,
      "Hint: resource state conflict. The data may have changed since last read — refresh with get_entity or entity_profile."),
+    (lambda m: "至少需要提供" in m or "至少需要一个" in m,
+     "Hint: provide at least one of: name, content, summary, or attributes in the request body."),
+    (lambda m: "需为非空数组" in m or "non-empty array" in m,
+     "Hint: the array parameter must contain at least one item."),
     (lambda m: "为必填" in m or "必填" in m or "required" in m.lower() and "parameter" in m.lower(),
      "Hint: a required parameter is missing. Check the API docs for required fields."),
     (lambda m: ("graph" in m or "图谱" in m) and ("not found" in m or "不存在" in m),

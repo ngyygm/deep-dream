@@ -3,6 +3,7 @@ Relation CRUD operations — create, update, delete, version lookup, batch ops.
 """
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -60,34 +61,56 @@ def find_relation_versions(family_id: str):
 
 @relations_bp.route("/api/v1/find/relations/<family_id>", methods=["PUT"])
 def update_relation_by_family(family_id: str):
-    """Edit relation: create new version."""
+    """Edit relation: create new version. Content optional for metadata-only updates."""
     try:
         processor = _get_processor()
         body = request.get_json(silent=True) or {}
-        content = body.get("content")
-        if not content:
-            return err("content 为必填字段", 400)
 
         current_versions = processor.storage.get_relation_versions(family_id)
         if not current_versions:
             return err(f"未找到关系: {family_id}", 404)
         current = current_versions[0]  # latest version
 
+        content = body.get("content") or current.content
+        if not content:
+            return err("content 为必填字段（或当前版本无 content）", 400)
+
+        # Carry forward metadata, allow override from body
+        summary = body["summary"] if "summary" in body else current.summary
+        confidence = body["confidence"] if "confidence" in body else current.confidence
+        attributes = body["attributes"] if "attributes" in body else current.attributes
+
         now = datetime.now(timezone.utc)
+        ts = now.strftime("%Y%m%d_%H%M%S")
+        absolute_id = f"relation_{ts}_{uuid.uuid4().hex[:8]}"
+
         updated = Relation(
-            absolute_id=str(uuid.uuid4()),
+            absolute_id=absolute_id,
             family_id=family_id,
             entity1_absolute_id=current.entity1_absolute_id,
             entity2_absolute_id=current.entity2_absolute_id,
+            entity1_family_id=getattr(current, 'entity1_family_id', ''),
+            entity2_family_id=getattr(current, 'entity2_family_id', ''),
             content=content,
             event_time=now,
             processed_time=now,
             episode_id=current.episode_id,
             source_document=current.source_document,
             valid_at=now,
+            summary=summary,
+            confidence=confidence,
+            attributes=json.dumps(attributes, ensure_ascii=False) if isinstance(attributes, dict) else attributes,
         )
+        # Invalidate previous version before saving new one
+        now_iso = now.isoformat()
+        with processor.storage._session() as session:
+            processor.storage._run(session,
+                "MATCH (r:Relation {uuid: $abs_id}) WHERE r.invalid_at IS NULL SET r.invalid_at = $now",
+                abs_id=current.absolute_id, now=now_iso,
+            )
+
         processor.storage.save_relation(updated)
-        return ok({"message": "关系已更新", "absolute_id": updated.absolute_id, "family_id": family_id})
+        return ok(relation_to_dict(updated))
     except Exception as e:
         return err(str(e), 500)
 
@@ -312,6 +335,9 @@ def create_relation():
             processed_time=now,
             episode_id=body.get("episode_id", ""),
             source_document=body.get("source_document", ""),
+            summary=body.get("summary"),
+            confidence=body.get("confidence"),
+            attributes=json.dumps(body["attributes"], ensure_ascii=False) if isinstance(body.get("attributes"), dict) else body.get("attributes"),
         )
         processor.storage.save_relation(relation)
         return ok(relation_to_dict(relation))

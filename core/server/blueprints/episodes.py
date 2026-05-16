@@ -119,8 +119,13 @@ def search_episodes():
             return err("query 为必填", 400)
         limit = int(body.get("limit", 20))
         processor = _get_processor()
-        results = processor.storage.search_episodes_by_bm25(query, limit=limit)
-        return ok([episode_to_dict(c) for c in results])
+        # Use Neo4j-based search (handles all backends)
+        # Falls back to file-based BM25 if Neo4j search returns empty
+        results = processor.storage.search_episodes(query, limit=limit)
+        if not results:
+            results = processor.storage.search_episodes_by_bm25(query, limit=limit)
+            return ok([episode_to_dict(c) for c in results])
+        return ok(results)
     except Exception as e:
         return err(str(e), 500)
 

@@ -46,12 +46,15 @@ curl -s $BASE_URL/graphs
 | Search relations | GET | `/find/relations/search` | `query_text=X` |
 | Find by name | GET | `/find/entities/by-name/{name}` | `threshold=0.7` |
 | Entity profile | GET | `/find/entities/{fid}/profile` | — |
-| Quick search | POST | `/find` | `{query}` |
+| Quick search | POST | `/find` | `{query, search_mode:"hybrid"}` (modes: `hybrid`, `semantic`, `bm25`) |
 | Traverse graph | POST | `/find/traverse` | `{seed_family_ids:["ent_abc",...], max_depth:2}` |
 | Shortest path | POST | `/find/paths/shortest` | `{family_id_a, family_id_b}` |
 | Create entity | POST | `/find/entities/create` | `{name, content}` |
 | Create relation | POST | `/find/relations/create` | `{entity1_family_id, entity2_family_id, content}` |
 | Update entity | PUT | `/find/entities/{fid}` | `{name, summary, attributes}` |
+| Update relation | PUT | `/find/relations/{fid}` | `{content, summary, attributes, confidence}` (content optional for metadata-only updates) |
+| Delete entity | DELETE | `/find/entities/{fid}` | `?cascade=true` to remove connected relations (default: false, leaves orphans) |
+| Delete relation | DELETE | `/find/relations/{fid}` | `?cascade=false` |
 | Merge entities | POST | `/find/entities/merge` | `{source_family_ids:[...], target_family_id:...}` |
 | Dream cycle | POST | `/find/dream/run` | `{strategy, seed_count}` |
 | Dream status | GET | `/find/dream/status` | — |
@@ -61,6 +64,7 @@ curl -s $BASE_URL/graphs
 | Butler execute | POST | `/butler/execute` | `{actions:[...], dry_run:true}` |
 | Health report | GET | `/find/maintenance/health` | — |
 | Fix dangling refs | POST | `/butler/execute` | `{actions:["fix_dangling_refs"]}` |
+| Cleanup stale redirects | POST | `/butler/execute` | `{actions:["cleanup_stale_redirects"]}` |
 | Detect communities | POST | `/communities/detect` | `{algorithm:"louvain"}` |
 | List communities | GET | `/communities` | `min_size=3, limit=50` (returns `data.communities` list, requires `detect_communities` first) |
 | Entity neighbors | GET | `/find/entities/{fid}/neighbors` | `depth=1` (accepts family_id) |
@@ -77,11 +81,13 @@ All responses: `{"success": bool, "data": ..., "elapsed_ms": float}`
 
 - `data` type varies by endpoint:
   - **Single item**: `data: {family_id, name, content, ...}` (create)
-  - **By-name** (nested): `data: {entity: {...}, relations: [...]}` — same structure as profile
+  - **By-name** (nested): `data: {entity: {...}, relations: [...]}` — same structure as profile. Returns 404 `{success: false}` for non-existent names (not `{success: true, entity: null}`)
   - **Profile** (nested): `data: {entity: {...}, relations: [...], relation_count, version_count}` (profile)
   - **List**: `data: [{...}, ...]` (search, find entities, list)
-  - **Aggregation**: `data: {entities: [...], relations: [...], ...}` (find, graph-summary, recent-activity)
+  - **Aggregation**: `data: {entities: [...], relations: [...], ...}` (find, graph-summary)
+  - **Recent activity**: `data: {latest_entities: [...], latest_relations: [...], statistics: {...}}` (note: `latest_entities`/`latest_relations`, not `entities`/`relations`)
   - **Counts**: `data: {total, count, ...}` (routes, counts)
+  - **Ask**: `data: {answer: string, query_plan: {query_text, query_type, ...}, results: {entities: [...], relations: [...]}}` (natural language Q&A)
   - **Neighbors**: `data: {entity: {uuid, name, family_id}, nodes: [{uuid, name, family_id}], edges: [{source_uuid, target_uuid, source_name, target_name, content, relation_uuid}]}` (neighbors)
   - **Traverse**: `data: {entities: [...], relations: [...], visited_count}` (traverse)
   - **Update**: `data: {family_id, name, content, summary, community_id, ...}` (update — returns full entity)
@@ -132,6 +138,8 @@ curl -s -X POST "$BASE_URL/find/relations/create?graph_id=default" \
   -H 'Content-Type: application/json' \
   -d "{\"entity1_family_id\":\"$E1\",\"entity2_family_id\":\"$E2\",\"content\":\"A and B are related\"}"
 ```
+
+**Note:** Relations are undirected — the API normalizes entity order by absolute_id. Your `entity1`/`entity2` may appear swapped in the response. Also accepts optional `summary`, `confidence`, and `attributes` fields.
 
 ### Merge Duplicate Entities
 ```bash
@@ -250,20 +258,31 @@ When the extraction pipeline cannot determine an entity name, it creates `auto_X
 
 ## Parameter Pitfalls
 
+- **Entity prefix search**: There is no dedicated prefix/name-filter endpoint. `GET /find/entities/search?query_name=auto_` uses semantic similarity, not text prefix — results may miss some `auto_*` entities and include false positives. For reliable prefix matching, use `POST /find` with `search_mode:"bm25"` or filter client-side from a full entity list.
+- **search_mode validation**: `POST /find` accepts only `hybrid`, `semantic`, `bm25`. Invalid modes return 400 with hint.
+- **Content truncation**: Entity `content` is truncated to ~2000 chars with `content_truncated: true` flag. For longer content, split into multiple entities or use shorter summaries.
+- **split-version on single-version entity**: Splits the only version into a new family_id, leaving the original family_id empty (returns 404). This is a move, not a copy.
+- **Episode search language**: `POST /find/episodes/search` uses substring matching (`CONTAINS`). Query language must match content language — use Chinese queries for Chinese content, English for English.
+- **BM25 search ranking for Chinese**: BM25 does character-level token matching. Searching "张三" may rank "桃园三结义" higher than the actual entity "张三" due to character overlap. Use `GET /find/entities/by-name/{name}` for precise name lookup.
 - `remember`: use `wait:true` for sync mode; default is async (returns task_id to poll)
 - `remember` sync mode: if extraction takes longer than `timeout` seconds (default 300), returns HTTP 202 with `status:"running"` — continue polling via task endpoint
+- `remember` async mode: tasks queue serially — a stuck task blocks all subsequent tasks. If polling shows persistent `"queued"` status, the pipeline may be stuck. Try `POST /find/entities/create` + `POST /find/relations/create` as fallback.
 - Entity search uses `query_name` param, not `q` or `query`
 - Shortest path uses `family_id_a`/`family_id_b` (or aliases `entity1_family_id`/`entity2_family_id`)
 - `update_entity`: returns full updated entity. name/content changes create a new version (preserves summary, confidence, community_id); summary/attribute changes are in-place. Entity rename auto-propagates to relation records and refreshes RELATES_TO edges
+- `update_relation` (PUT /find/relations/{fid}): creates a new version. `content` is optional — omit for metadata-only updates. Pass `summary`, `confidence`, `attributes` to override; omitted fields carry forward from previous version. Returns full relation dict.
+- `delete_entity`: default `cascade=false` leaves orphaned relations connected to the deleted entity. Use `?cascade=true` to also delete connected relations.
+- `relations/between`: returns only the latest valid version per relation (excludes invalidated versions)
 - `shortest_path`: returns 404 if either entity family_id doesn't exist; returns `path_length:-1` if entities exist but are disconnected
 - `merge`: target entity stays canonical (name/content preserved); source entities are absorbed. Auto-redirects Relation endpoints and refreshes RELATES_TO edges
-- `merge`: rejects with HTTP 409 if source/target names have < 20% character overlap; pass `skip_name_check: true` in body to override
+- `merge`: rejects with HTTP 409 if source/target names have insufficient word overlap (uses word-level Jaccard for multi-word names, character-level for single-word); pass `skip_name_check: true` in body to override
 - `merge`: response data is nested at `data.merged_count` (not flat in `data`)
 - `merge`: if a relation connects source and target entities, both endpoints resolve to target after merge (self-loop). No warning is returned
 - `merge`: auto-updates source entity names to target name and refreshes RELATES_TO edges
 - Auto-named entities (`auto_XXXXXXXX`) may outrank real entities in search results — filter by checking `content` field
 - `dry_run:true` only works for `butler/execute`, NOT for merge or other destructive ops
-- Valid `butler_execute` actions: `cleanup_isolated`, `cleanup_invalidated`, `fix_dangling_refs`, `detect_communities`, `evolve_summaries` (NOT `run_dream`)
+- Valid `butler_execute` actions: `cleanup_isolated`, `cleanup_invalidated`, `fix_dangling_refs`, `cleanup_stale_redirects`, `detect_communities`, `evolve_summaries` (NOT `run_dream`)
+- `butler_execute`: returns `success: true` even if individual actions fail — check each action's `status` field for errors
 - If remember returns 0 entities, check LLM health: `GET /health/llm`
 - `profile`: returns 404 `{success: false, error: "..."}` for nonexistent family_ids (not `success: true` with null). `neighbors` returns `success: true` with empty arrays for nonexistent IDs
 - Chinese characters in curl URLs: use `--data-urlencode` or Python urllib to avoid encoding issues
@@ -276,15 +295,18 @@ When the extraction pipeline cannot determine an entity name, it creates `auto_X
 
 These endpoints may take 5-15+ seconds. Use `timeout` param or increase curl timeout:
 - `GET /butler/report` — scans full graph (~10-15s)
+- `GET /find/maintenance/health` — quality + statistics scan (~5-15s)
 - `POST /find/dream/run` — LLM-powered exploration (~30s-5min)
 - `POST /remember` with `wait:true` — extraction pipeline (~30s-5min)
 - `GET /find/graph-summary` — aggregation over all nodes (~3-10s)
 - `POST /communities/detect` — graph loading + Louvain algorithm (~5-30s)
 - `POST /find/entities/refresh-edges` — regenerates all RELATES_TO edges (~5-30s)
+- `GET /find/entities/{fid}/contradictions` — LLM-powered version analysis (~2-5s)
 
 ## Episode Text Availability
 
 - `/find/episodes/{cache_id}/text` returns the original source text for an episode
+- **Episode search returns `uuid` field** (e.g. `cache_abc123`) — use this value as `cache_id` in the text endpoint URL
 - **Older episodes may return 404** — source text can be evicted from cache over time
 - Episode search (`POST /find/episodes/search`) always works, but `source_text` field may be empty
 - Recent episodes (within current session) are most likely to have text available

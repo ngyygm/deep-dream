@@ -67,7 +67,7 @@ def find_unified():
 
         search_mode = (body.get("search_mode", "hybrid") or "hybrid").strip().lower()
         if search_mode not in _VALID_SEARCH_MODES:
-            search_mode = "hybrid"
+            return err(f"无效 search_mode: {search_mode}，可选: {', '.join(sorted(_VALID_SEARCH_MODES))}", 400)
 
         try:
             time_before_dt = parse_time_point(time_before) if time_before else None
@@ -329,12 +329,16 @@ def find_unified():
                     cr["type"] = r.relation_type
                 compact_relations.append(cr)
 
-            return ok({
+            resp = {
                 "query": query,
                 "entities": compact_entities,
                 "relations": compact_relations,
                 "counts": {"entities": len(compact_entities), "relations": len(compact_relations)},
-            })
+            }
+            if not compact_entities and not compact_relations:
+                from core.server.agent_api import empty_search_hint
+                resp["hint"] = empty_search_hint("query")
+            return ok(resp)
 
         # Full format (default): backward compatible
         result: Dict[str, Any] = {
@@ -344,6 +348,9 @@ def find_unified():
             "entity_count": len(final_entities),
             "relation_count": len(final_relations),
         }
+        if not final_entities and not final_relations:
+            from core.server.agent_api import empty_search_hint
+            result["hint"] = empty_search_hint("query")
         # Parallelize 3 independent enrichment DB calls (reuse shared pool)
         _evc_fut = _shared_pool.submit(enrich_entity_version_counts, result["entities"], processor.storage)
         _rvc_fut = _shared_pool.submit(enrich_relation_version_counts, result["relations"], processor.storage)
@@ -432,7 +439,7 @@ def find_relations_search():
 
         search_mode = str(_get_value("search_mode", "hybrid") or "hybrid").strip().lower()
         if search_mode not in _VALID_SEARCH_MODES:
-            search_mode = "hybrid"
+            return err(f"无效 search_mode: {search_mode}，可选: {', '.join(sorted(_VALID_SEARCH_MODES))}", 400)
 
         searcher = _get_searcher(processor.storage)
         if search_mode == "hybrid":

@@ -418,8 +418,21 @@ class GraphTraversalMixin:
 
             target_entity = fid_to_entity.get(target_family_id) or self.get_entity_by_family_id(target_family_id)
             target_name = target_entity.name if target_entity else ""
-            _target_chars = set(target_name) if target_name else set()
             rejected_ids = set()
+
+            def _name_similarity(a: str, b: str) -> float:
+                """Word-level Jaccard for multi-word names, char-level for single-word."""
+                import re as _re
+                _ws = r'[\s\-_.,;:]+'
+                a_words = set(w.lower() for w in _re.split(_ws, a) if w)
+                b_words = set(w.lower() for w in _re.split(_ws, b) if w)
+                if len(a_words) > 1 or len(b_words) > 1:
+                    if not a_words or not b_words:
+                        return 0.0
+                    return len(a_words & b_words) / len(a_words | b_words)
+                a_chars = set(a)
+                b_chars = set(b)
+                return len(a_chars & b_chars) / len(a_chars | b_chars) if a_chars | b_chars else 0.0
 
             for source_id in source_family_ids:
                 resolved_source = resolved_sources.get(source_id, source_id)
@@ -430,11 +443,8 @@ class GraphTraversalMixin:
                     continue
                 source_name = source_entity.name
                 if target_name and source_name:
-                    _source_chars = set(source_name)
-                    shared = len(_source_chars & _target_chars)
-                    total = len(_source_chars | _target_chars)
-                    overlap = shared / total if total > 0 else 0
-                    if overlap < 0.2:
+                    overlap = _name_similarity(target_name, source_name)
+                    if overlap < 0.3:
                         logging.getLogger(__name__).warning(
                             f"拒绝合并：名称差异过大 — "
                             f"target={target_name}({target_family_id}) "

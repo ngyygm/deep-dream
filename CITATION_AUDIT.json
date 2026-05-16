@@ -1,0 +1,125 @@
+{
+  "audit_skill": "citation-audit",
+  "verdict": "WARN",
+  "reason_code": "metadata_drift",
+  "summary": "9 of 10 entries are clean (KEEP). 1 entry (sukhbaatar2015memnn) has incomplete author list (missing Arthur Szlam). No wrong-context citations or hallucinated entries found.",
+  "audited_input_hashes": {
+    "workspace/refs.bib": "sha256:aff26894668a85d63b4a4cfaaf39d09cad8927722a596b699c12510baa8a8a47",
+    "workspace/drafts/paper.tex": "sha256:7181b877cac46b505d84e8adf15885e916fd8435ee65b5f1cbdab09731a12d9b"
+  },
+  "trace_path": ".aris/traces/citation-audit/2026-05-15_run01/",
+  "thread_id": "local-audit-2026-05-15",
+  "reviewer_model": "web-search-verified",
+  "reviewer_reasoning": "manual",
+  "generated_at": "2026-05-15T18:40:00Z",
+  "details": {
+    "total_entries": 10,
+    "counts": {
+      "KEEP": 9,
+      "FIX": 1,
+      "REPLACE": 0,
+      "REMOVE": 0
+    },
+    "per_entry": [
+      {
+        "key": "bordes2013transe",
+        "verdict": "KEEP",
+        "axis_failures": [],
+        "note": "Title, authors (Bordes, Usunier, Garcia-Duran, Weston, Yakhnenko), venue (NeurIPS 2013), and year (2013) all verified correct. Context supports claims.",
+        "uses": [
+          {"file": "workspace/drafts/paper.tex", "line": 43, "verdict": "SUPPORTS", "claim": "models relations as translations in embedding space"},
+          {"file": "workspace/drafts/paper.tex", "line": 155, "verdict": "SUPPORTS", "claim": "baseline static method"}
+        ]
+      },
+      {
+        "key": "dettmers2018conve",
+        "verdict": "KEEP",
+        "axis_failures": [],
+        "note": "Title, authors (Dettmers, Minervini, Stenetorp, Riedel), venue (AAAI 2018), year (2018) all verified correct.",
+        "uses": [
+          {"file": "workspace/drafts/paper.tex", "line": 43, "verdict": "SUPPORTS", "claim": "applies convolutional neural networks to capture richer interaction patterns"},
+          {"file": "workspace/drafts/paper.tex", "line": 155, "verdict": "SUPPORTS", "claim": "baseline static method"}
+        ]
+      },
+      {
+        "key": "sun2019rotate",
+        "verdict": "KEEP",
+        "axis_failures": [],
+        "note": "Title, authors (Sun, Deng, Nie, Tang), venue (ICLR 2019), year (2019) all verified correct.",
+        "uses": [
+          {"file": "workspace/drafts/paper.tex", "line": 43, "verdict": "SUPPORTS", "claim": "models relations as rotations in complex space"},
+          {"file": "workspace/drafts/paper.tex", "line": 155, "verdict": "SUPPORTS", "claim": "baseline static method"}
+        ]
+      },
+      {
+        "key": "jin2020renet",
+        "verdict": "KEEP",
+        "axis_failures": [],
+        "note": "Title, authors (Jin, Qu, Jin, Ren), venue (EMNLP 2020), year (2020) all verified correct.",
+        "uses": [
+          {"file": "workspace/drafts/paper.tex", "line": 26, "verdict": "SUPPORTS", "claim": "model temporal sequences with RNNs"},
+          {"file": "workspace/drafts/paper.tex", "line": 47, "verdict": "SUPPORTS", "claim": "employs recurrent neural networks to model sequences of KG snapshots"},
+          {"file": "workspace/drafts/paper.tex", "line": 155, "verdict": "SUPPORTS", "claim": "baseline temporal method"}
+        ]
+      },
+      {
+        "key": "zhu2021cygnet",
+        "verdict": "KEEP",
+        "axis_failures": [],
+        "note": "Title, authors (Zhu, Chen, Fan, Cheng, Zhang), venue (AAAI 2021), year (2021) all verified correct.",
+        "uses": [
+          {"file": "workspace/drafts/paper.tex", "line": 26, "verdict": "SUPPORTS", "claim": "leverages historical fact repetition through copy mechanisms"},
+          {"file": "workspace/drafts/paper.tex", "line": 47, "verdict": "SUPPORTS", "claim": "copy-generation mechanism leverages historical fact repetition patterns"},
+          {"file": "workspace/drafts/paper.tex", "line": 155, "verdict": "SUPPORTS", "claim": "baseline temporal method"}
+        ]
+      },
+      {
+        "key": "graves2014ntm",
+        "verdict": "KEEP",
+        "axis_failures": [],
+        "note": "Title, authors (Graves, Wayne, Danihelka), venue (arXiv:1410.5401), year (2014) all verified correct.",
+        "uses": [
+          {"file": "workspace/drafts/paper.tex", "line": 53, "verdict": "SUPPORTS", "claim": "introduce differentiable external memory with content-based addressing"}
+        ]
+      },
+      {
+        "key": "graves2016dnc",
+        "verdict": "KEEP",
+        "axis_failures": [],
+        "note": "Title, authors (Graves, Wayne, Reynolds, Harley, Danihelka, + 15 others), venue (Nature 538), year (2016) all verified correct. Bib uses 'and others' convention for 20 authors.",
+        "uses": [
+          {"file": "workspace/drafts/paper.tex", "line": 53, "verdict": "SUPPORTS", "claim": "introduce differentiable external memory with content-based addressing"},
+          {"file": "workspace/drafts/paper.tex", "line": 105, "verdict": "SUPPORTS", "claim": "content-based addressing for memory write"}
+        ]
+      },
+      {
+        "key": "sukhbaatar2015memnn",
+        "verdict": "FIX",
+        "axis_failures": ["METADATA"],
+        "note": "Author list incomplete. Bib has 3 authors (Sukhbaatar, Weston, Fergus). Canonical NeurIPS 2015 publication has 4 authors: Sainbayar Sukhbaatar, Arthur Szlam, Jason Weston, Rob Fergus. Missing: Arthur Szlam. All context uses are correct.",
+        "uses": [
+          {"file": "workspace/drafts/paper.tex", "line": 53, "verdict": "SUPPORTS", "claim": "enable multi-hop reasoning over memory slots"}
+        ]
+      },
+      {
+        "key": "vaswani2017attention",
+        "verdict": "KEEP",
+        "axis_failures": [],
+        "note": "Title, authors (Vaswani, Shazeer, Parmar, Uszkoreit, Jones, Gomez, Kaiser, Polosukhin), venue (NeurIPS 2017), year (2017) all verified correct.",
+        "uses": [
+          {"file": "workspace/drafts/paper.tex", "line": 85, "verdict": "SUPPORTS", "claim": "sinusoidal encoding scheme"},
+          {"file": "workspace/drafts/paper.tex", "line": 126, "verdict": "SUPPORTS", "claim": "dot-product attention scaling"}
+        ]
+      },
+      {
+        "key": "loshchilov2018adamw",
+        "verdict": "KEEP",
+        "axis_failures": [],
+        "note": "Title, authors (Loshchilov, Hutter) verified correct. Bib lists year=2018 and journal=arXiv. Published version is ICLR 2019. Using arXiv year is common convention. Consider updating to ICLR 2019 venue for the published version.",
+        "uses": [
+          {"file": "workspace/drafts/paper.tex", "line": 143, "verdict": "SUPPORTS", "claim": "AdamW optimizer"}
+        ]
+      }
+    ]
+  }
+}
