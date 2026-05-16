@@ -335,6 +335,14 @@ When the extraction pipeline cannot determine an entity name, it creates `auto_X
 - **Summary update behavior**: updating only `summary` or `attributes` (without name/content) is in-place — does NOT create a new version. If name/content is also updated, a new version IS created AND the metadata updates are applied to it
 - **Relation create entity names**: `POST /find/relations/create` may return `entity1_name`/`entity2_name` as `null` in the response. Entity order may be swapped (sorted by absolute_id). Verify via the returned `family_id` fields, not names
 - **GET search for Chinese**: the server auto-corrects URL encoding issues for Chinese query parameters. Both raw UTF-8 and percent-encoded work correctly
+- **Concurrent load**: when 3+ clients hit the API simultaneously (especially during remember pipeline), Neo4j connection pool may exhaust causing transient 500 errors on traverse, neighbors, and search endpoints. All such errors resolve on retry after 2-3 seconds. Sequential usage is reliable
+- **Concept data model differences**: `observation` concepts lack `family_id` (use `id`/UUID instead). `relation` concepts have `name: null` (use `content` for display). These are by design, not bugs
+- **Orphaned relations after delete**: `DELETE /entities/{fid}?cascade=false` leaves relations intact but the deleted entity's name resolves to empty string in relation lists. Use `cascade=true` to clean up relations, or filter orphaned relations client-side
+- **Concept traverse response size**: `POST /concepts/traverse` with depth 3 can return 500KB+ responses (502 concepts, 2281 edges). Use smaller `max_depth` or filter client-side
+- **Stats count discrepancies**: `GET /find/graph-summary` uses cached counts; `GET /find/stats` uses live counts. Differences of 5-10 entities are normal due to cache TTL (~30s)
+- **Remember input validation**: rejects empty text, whitespace-only text, and punctuation-only text (e.g. `"..."`, `"!!!"`). Returns 400 with Chinese error message
+- **Graph counts in /graphs**: `GET /graphs` now shows accurate entity/relation counts for all graphs, including those not yet accessed in the current server session
+- **DELETE /graphs/{id}**: removes the graph data and metadata completely. Graph will no longer appear in `/graphs` listing
 
 ## Slow Endpoints
 
