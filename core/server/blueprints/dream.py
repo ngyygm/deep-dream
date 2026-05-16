@@ -703,7 +703,7 @@ def butler_report():
             dream_status_data = {
                 "status": last.get("status", "completed"),
                 "last_cycle_id": last.get("cycle_id"),
-                "last_cycle_time": last.get("started_at") or last.get("created_at"),
+                "last_cycle_time": last.get("end_time") or last.get("start_time") or last.get("started_at") or last.get("created_at"),
                 "entities_explored": last.get("entities_explored", 0),
                 "relations_created": last.get("relations_created", 0),
             }
