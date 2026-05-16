@@ -61,7 +61,7 @@ curl -s $BASE_URL/graphs
 | Delete relation version | DELETE | `/find/relations/absolute/{aid}` | Delete single version, others unaffected |
 | Relations between | GET | `/find/relations/between` | `family_id_a=X&family_id_b=Y` |
 | Merge entities | POST | `/find/entities/merge` | `{source_family_ids:[...], target_family_id:...}` |
-| Dream cycle | POST | `/find/dream/run` | `{strategy, seed_count}` |
+| Dream cycle | POST | `/find/dream/run` | `{strategy, seed_count, discovery_mode:true}` — seed_count is advisory; discovery_mode lowers confidence 0.5→0.3 |
 | Dream status | GET | `/find/dream/status` | — |
 | Dream logs | GET | `/find/dream/logs` | — |
 | Ask NL question | POST | `/find/ask` | `{question}` |
@@ -349,7 +349,7 @@ When the extraction pipeline cannot determine an entity name, it creates `auto_X
 
 These endpoints may take 5-15+ seconds. Use `timeout` param or increase curl timeout:
 - `POST /find/ask` — LLM-powered natural language Q&A (~5-20s depending on graph size). Responses include full entity/relation data and can be 60KB+; `compact=true` query param does NOT reduce ask response size
-- `POST /find/dream/run` — LLM-powered exploration (~30s-5min)
+- `POST /find/dream/run` — LLM-powered exploration (~30s-5min). No server-side timeout param (unlike remember). Synchronous — blocks until complete
 - `POST /remember` with `wait:true` — extraction pipeline (~30s-5min)
 - `GET /find/graph-summary` — aggregation over all nodes (~3-15s depending on graph size)
 - `POST /communities/detect` — graph loading + Louvain algorithm (~5-30s)
