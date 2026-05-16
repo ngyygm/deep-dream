@@ -80,6 +80,8 @@ curl -s $BASE_URL/graphs
 | Recent activity | GET | `/find/recent-activity` | — |
 | Graph version | GET | `/find/graph/version` | Returns `{entity_count, relation_count, last_modified}` |
 | Refresh graph edges | POST | `/find/entities/refresh-edges` | — |
+| Stream entities (SSE) | GET | `/find/graph/stream/entities` | `since=ISO8601` for incremental; returns SSE events |
+| Stream relations (SSE) | GET | `/find/graph/stream/relations` | `since=ISO8601` for incremental; returns SSE events |
 
 ## Response Format
 
