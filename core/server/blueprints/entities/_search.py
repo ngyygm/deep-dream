@@ -328,14 +328,16 @@ def find_entity_by_name(name: str):
         # Step 3: BM25 text search (require name overlap to prevent false positives)
         if not best:
             try:
-                entities = processor.storage.search_entities_by_bm25(name, limit=3)
+                entities = processor.storage.search_entities_by_bm25(name, limit=5)
                 for candidate in entities:
                     cname = getattr(candidate, 'name', '')
-                    # Require at least 1 shared non-whitespace char between query and result name
-                    _q_chars = set(name.replace(' ', '')) - {'（', '）', '(', ')'}
-                    _c_chars = set(cname.replace(' ', '')) - {'（', '）', '(', ')'}
-                    if _q_chars and _c_chars and not (_q_chars & _c_chars):
-                        continue
+                    # Require significant character overlap: at least 30% of query chars
+                    _q_chars = set(name.replace(' ', '')) - {'（', '）', '(', ')', '，', '。', '、'}
+                    _c_chars = set(cname.replace(' ', '')) - {'（', '）', '(', ')', '，', '。', '、'}
+                    if _q_chars:
+                        overlap_ratio = len(_q_chars & _c_chars) / len(_q_chars)
+                        if overlap_ratio < 0.3:
+                            continue
                     score = getattr(candidate, '_score', 0) or 0
                     best = candidate
                     best._score = score
