@@ -75,6 +75,8 @@ curl -s $BASE_URL/graphs
 | Entity neighbors | GET | `/find/entities/{fid}/neighbors` | `depth=1` (accepts family_id) |
 | Concept provenance | GET | `/concepts/{fid}/provenance` | `time_point=ISO8601` |
 | Concept mentions | GET | `/concepts/{fid}/mentions` | `time_point=ISO8601` |
+| Search concepts | POST | `/concepts/search` | `{query, role, limit, search_mode:"bm25"}` — POST only |
+| List concepts | GET | `/concepts` | `limit=N, role="entity|relation|observation"` |
 | Search episodes | POST | `/find/episodes/search` | `{query, limit:20}` |
 | Episode text | GET | `/find/episodes/{cache_id}/text` | — |
 | Recent activity | GET | `/find/recent-activity` | — |
@@ -340,6 +342,8 @@ When the extraction pipeline cannot determine an entity name, it creates `auto_X
 - **Remember input validation**: rejects empty text, whitespace-only text, and punctuation-only text (e.g. `"..."`, `"!!!"`). Returns 400 with Chinese error message
 - **Graph counts in /graphs**: `GET /graphs` now shows accurate entity/relation counts for all graphs, including those not yet accessed in the current server session
 - **DELETE /graphs/{id}**: removes the graph data and metadata completely. Graph will no longer appear in `/graphs` listing
+- **Concept search is POST-only**: `GET /concepts/search` returns 404. Use `POST /concepts/search` with JSON body `{query: "..."}`
+- **Ask endpoint language**: `POST /find/ask` works best with specific English entity names in the question. Vague Chinese questions (e.g. "谁和谁有关系？") may return empty results
 
 ## Slow Endpoints
 
