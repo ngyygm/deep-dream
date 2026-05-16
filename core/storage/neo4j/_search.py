@@ -6,6 +6,12 @@ from typing import Any, Dict, List, Literal, Optional
 
 import numpy as np
 
+_jieba = None
+try:
+    import jieba as _jieba
+except ImportError:
+    pass
+
 from ...models import Entity, Relation
 from ...perf import _perf_timer
 from ._helpers import _ENTITY_RETURN_FIELDS, _neo4j_record_to_entity, _neo4j_record_to_relation
@@ -140,6 +146,15 @@ class SearchMixin:
         safe_query = ' '.join(safe_query.split())  # normalize whitespace
         if not safe_query.strip():
             return []
+
+        # Apply jieba segmentation for Chinese text (same pattern as _concepts.py)
+        if _jieba:
+            try:
+                _jieba_tokens = [t.strip() for t in _jieba.cut(safe_query) if t.strip()]
+                if len(_jieba_tokens) > 1:
+                    safe_query = " AND ".join(_jieba_tokens)
+            except Exception:
+                pass
 
         try:
             with self._session() as session:
@@ -313,7 +328,14 @@ class SearchMixin:
         safe_query = ' '.join(safe_query.split())
         if not safe_query.strip():
             return []
-
+        # Apply jieba segmentation for Chinese text
+        if _jieba:
+            try:
+                _jieba_tokens = [t.strip() for t in _jieba.cut(safe_query) if t.strip()]
+                if len(_jieba_tokens) > 1:
+                    safe_query = " AND ".join(_jieba_tokens)
+            except Exception:
+                pass
         try:
             with self._session() as session:
                 raw_limit = min(limit * 5, 500)

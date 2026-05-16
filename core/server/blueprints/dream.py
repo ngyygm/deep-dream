@@ -333,6 +333,7 @@ def dream_run():
             exclude_ids=body.get("exclude_ids") or body.get("exclude_family_ids") or [],
             llm_concurrency=int(body.get("llm_concurrency", 3)),
             min_pair_similarity=float(body.get("min_pair_similarity", 0.0)),
+            discovery_mode=bool(body.get("discovery_mode", False)),
         )
 
         # Use persistent orchestrator from registry (preserves cross-cycle LRU history)

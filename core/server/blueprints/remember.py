@@ -131,9 +131,8 @@ def _parse_remember_input(post_json: Dict[str, Any]):
     if sn or sd or dn:
         source_name = sn or sd or dn
     else:
-        _hash = hashlib.md5(text.encode('utf-8')).hexdigest()[:8]
         _preview = text[:40].strip().replace('\n', ' ')[:30]
-        source_name = f"auto_{_hash}_{_preview}"
+        source_name = f"api:{_preview}"
 
     processor = _get_processor()
     load_cache = _remember_get_bool("load_cache_memory", post_json)

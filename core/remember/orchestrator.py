@@ -380,7 +380,7 @@ class TemporalMemoryGraphProcessor(_PipelineExtractionMixin, _ExtractionStepsMix
             if self.remember_mode not in ("standard", "legacy"):
                 self.remember_mode = "dual_model"
 
-        self.llm_threads = max(1, max_llm_concurrency) if max_llm_concurrency else 1
+        self.llm_threads = max(1, max_llm_concurrency) if max_llm_concurrency else 3
         self.load_cache_memory = load_cache_memory if load_cache_memory is not None else False
 
         self.jaccard_search_threshold = jaccard_search_threshold
