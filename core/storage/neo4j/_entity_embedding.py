@@ -218,10 +218,15 @@ class EntityEmbeddingMixin:
         Replaces broad pattern invalidation to preserve cache entries
         for unrelated entities during batch processing.
         """
-        self._cache.invalidate_keys([
+        keys = [
             f"entity:by_fid:{family_id}",
             f"resolve:{family_id}",
-        ])
+        ]
+        # Also invalidate absolute_id cache entries for all versions
+        abs_ids = self._get_all_absolute_ids_for_entity(family_id)
+        for aid in abs_ids:
+            keys.append(f"entity:by_abs:{aid}")
+        self._cache.invalidate_keys(keys)
 
     def _invalidate_entity_cache_bulk(self):
         """Broad entity cache invalidation — only for bulk operations."""

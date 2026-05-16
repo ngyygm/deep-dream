@@ -87,9 +87,8 @@ def create_entity():
         if content:
             _validate_text_input(content, "content", min_len=0, max_len=100000)
 
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         ts = now.strftime("%Y%m%d_%H%M%S")
-        # Single loop: check both IDs together (collision probability is ~0 with 12+8 hex chars)
         for _ in range(10):
             family_id = f"ent_{uuid.uuid4().hex[:12]}"
             absolute_id = f"entity_{ts}_{uuid.uuid4().hex[:8]}"
@@ -227,13 +226,6 @@ def merge_entities():
             return err(f"目标实体不存在: {target_id}", 404)
         skip_name_check = body.get("skip_name_check", False)
         result = processor.storage.merge_entity_families(target_id, source_ids, skip_name_check=skip_name_check)
-        if result.get("rejected"):
-            return err("合并被拒绝：源实体与目标实体名称差异过大。使用 skip_name_check: true 强制合并。", 409)
-        # Update entity names in relations to reflect merge
-        if hasattr(processor.storage, 'update_entity_names_in_relations'):
-            target_ent = processor.storage.get_entity_by_family_id(target_id)
-            if target_ent:
-                processor.storage.update_entity_names_in_relations(target_id, target_ent.name)
         return ok({"message": "实体合并完成", "target_family_id": target_id, "source_family_ids": source_ids, "merged_count": result})
     except ValueError as e:
         return err(str(e), 400)
@@ -349,59 +341,44 @@ def update_entity_v2(family_id: str):
         body = request.get_json(silent=True) or {}
         summary = body.get("summary")
         attributes = body.get("attributes")
-        name = body.get("name")
-        content = body.get("content")
 
-        current = processor.storage.get_entity_by_family_id(family_id)
-        if current is None:
-            return err(f"未找到实体: {family_id}", 404)
+        if summary is not None or attributes is not None:
+            existing = processor.storage.get_entity_by_family_id(family_id)
+            if existing is None:
+                return err(f"未找到实体: {family_id}", 404)
+            if summary is not None:
+                processor.storage.update_entity_summary(family_id, str(summary))
+            if attributes is not None:
+                attr_str = json.dumps(attributes, ensure_ascii=False) if isinstance(attributes, dict) else str(attributes)
+                processor.storage.update_entity_attributes(family_id, attr_str)
+            return ok({"message": "实体属性已更新", "family_id": family_id})
 
-        # Step 1: Apply in-place summary/attributes updates
-        if summary is not None:
-            processor.storage.update_entity_summary(family_id, str(summary))
-        if attributes is not None:
-            attr_str = json.dumps(attributes, ensure_ascii=False) if isinstance(attributes, dict) else str(attributes)
-            processor.storage.update_entity_attributes(family_id, attr_str)
-
-        # Step 2: If name or content changed, create a new version
-        if name or content:
-            # Re-fetch to pick up summary/attribute changes from Step 1
-            refreshed = processor.storage.get_entity_by_family_id(family_id) or current
+        if summary is None and attributes is None:
+            name = body.get("name")
+            content = body.get("content")
+            if not name and not content:
+                return err("name 或 content 至少需要提供一个", 400)
+            current = processor.storage.get_entity_by_family_id(family_id)
+            if current is None:
+                return err(f"未找到实体: {family_id}", 404)
             now = datetime.now(timezone.utc)
             ts = now.strftime("%Y%m%d_%H%M%S")
             updated = Entity(
                 absolute_id=f"entity_{ts}_{uuid.uuid4().hex[:8]}",
                 family_id=family_id,
-                name=name if name else refreshed.name,
-                content=content if content else refreshed.content,
+                name=name if name else current.name,
+                content=content if content else current.content,
                 event_time=now, processed_time=now,
-                episode_id=refreshed.episode_id,
-                source_document=refreshed.source_document,
+                episode_id=current.episode_id,
+                source_document=current.source_document,
                 valid_at=now,
-                summary=getattr(refreshed, 'summary', None),
-                attributes=getattr(refreshed, 'attributes', None),
-                confidence=getattr(refreshed, 'confidence', None),
-                content_format=getattr(refreshed, 'content_format', 'plain'),
-                community_id=getattr(refreshed, 'community_id', None),
+                summary=getattr(current, 'summary', None),
+                attributes=getattr(current, 'attributes', None),
+                confidence=getattr(current, 'confidence', None),
+                content_format=getattr(current, 'content_format', 'plain'),
+                community_id=getattr(current, 'community_id', None),
             )
             processor.storage.save_entity(updated)
-            # Update entity name in all existing relations
-            new_name = name if name else refreshed.name
-            if hasattr(processor.storage, 'update_entity_names_in_relations'):
-                processor.storage.update_entity_names_in_relations(family_id, new_name)
-            # Refresh RELATES_TO edges so new version is connected for traversal
-            try:
-                if hasattr(processor.storage, 'refresh_relates_to_edges'):
-                    processor.storage.refresh_relates_to_edges(family_ids=[family_id])
-            except Exception:
-                pass
-            return ok(_h.entity_to_dict(updated))
-
-        # Step 3: Summary/attributes-only update — return updated entity
-        if summary is not None or attributes is not None:
-            updated = processor.storage.get_entity_by_family_id(family_id)
-            return ok(_h.entity_to_dict(updated)) if updated else ok({"message": "实体属性已更新", "family_id": family_id})
-
-        return err("name, content, summary 或 attributes 至少需要提供一个", 400)
+            return ok({"message": "实体已更新", "absolute_id": updated.absolute_id})
     except Exception as e:
         return err(str(e), 500)

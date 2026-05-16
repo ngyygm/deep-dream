@@ -669,7 +669,7 @@ class RelationMutationMixin:
             old_prov.append(new_prov_entry)
 
             # Create new version (keep same family_id)
-            now = datetime.now()
+            now = datetime.now(timezone.utc)
             record_id = f"relation_{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
             source_doc = _dream_source(dream_cycle_id)
             merged_content = f"{latest.content}\n[Dream update] {content}" if content != latest.content else latest.content
@@ -714,7 +714,7 @@ class RelationMutationMixin:
         else:
             e1_abs, e2_abs = entity2.absolute_id, entity1.absolute_id
 
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         family_id = f"rel_{uuid.uuid4().hex[:12]}"
         record_id = f"relation_{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
 

@@ -302,9 +302,8 @@ def create_relation():
         if not content:
             return err("content 为必填", 400)
 
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         ts = now.strftime("%Y%m%d_%H%M%S")
-        # Ensure entity1 < entity2 (undirected relation)
         if e1 > e2:
             e1, e2 = e2, e1
         family_id = f"rel_{uuid.uuid4().hex[:12]}"
