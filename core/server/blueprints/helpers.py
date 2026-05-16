@@ -62,6 +62,23 @@ def _validate_text_input(text, field_name="text", min_len=1, max_len=100000):
     return text
 
 
+def _fix_query_param(value: Optional[str]) -> Optional[str]:
+    """Fix UTF-8 mojibake in query parameters.
+
+    When clients send raw UTF-8 bytes in URLs without percent-encoding,
+    Werkzeug may decode them as Latin-1, producing garbled strings like
+    'è´¾å®ç' instead of '贾宝玉'. This detects and reverses the damage.
+    """
+    if not value:
+        return value
+    try:
+        raw = value.encode('latin-1')
+        fixed = raw.decode('utf-8')
+        return fixed
+    except (UnicodeDecodeError, UnicodeEncodeError):
+        return value
+
+
 def get_json_body():
     """Parse JSON body with malformed-JSON detection.
 
