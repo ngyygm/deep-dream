@@ -317,7 +317,7 @@ When the extraction pipeline cannot determine an entity name, it creates `auto_X
 - **Dream status caching**: `GET /find/dream/status` may return stale data (previous cycle) after a new cycle completes. The log endpoint (`GET /find/dream/logs`) is more reliable for recent activity
 - **Count discrepancies between endpoints**: `graph-summary` and `maintenance/health` return different entity/relation counts. `graph-summary` is faster (cached) but may be slightly stale; `maintenance/health` does a fresh scan
 - **Contradictions endpoint**: returns empty (no error) when an entity has versions but no contradictions detected. Slow even for empty results (~3s) due to LLM call
-- **compact=true truncates relation content**: relation `content` is truncated to ~80 chars with `compact=true`. For full content, omit compact or use the absolute_id lookup
+- **compact=true truncates relation content**: relation `content` is truncated to ~80 chars with `compact=true`. For full content, omit compact or use the absolute_id lookup. Also strips `entity1_family_id`/`entity2_family_id` from relation objects (shows `null`)
 - **Community response structure**: community list uses `members` array (not `entities`), each member has `family_id`, `name`, `uuid`. Community `name` field returns `N/A` (not auto-named)
 - **Dream cycle response**: `POST /dream/run` returns synchronously with `{explored, seeds, stats, cycle_summary}` — NOT async. The `GET /dream/status` endpoint returns the previous completed cycle, not the current one
 - **Dream cycle effectiveness**: dream consistently creates 0 new relations across all strategies (random, hub, cross_community). The LLM evaluates pairs conservatively. Dream is useful for exploration logs but not for automatic graph enrichment
