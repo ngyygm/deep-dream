@@ -116,6 +116,11 @@ def _parse_remember_input(post_json: Dict[str, Any]):
     if '\x00' in text:
         return err("文本包含非法字符（null bytes）", 400)
 
+    # Reject text with no alphanumeric/CJK content (punctuation-only like "..." or "!!!")
+    import re as _re
+    if not _re.search(r'[\w一-鿿぀-ゟ゠-ヿ가-힯]', text):
+        return err("文本缺少有效内容（仅包含标点/空白字符）", 400)
+
     # Security: Sanitize for LLM prompt safety
     text, was_sanitized = sanitize_user_input(text)
     if was_sanitized:
