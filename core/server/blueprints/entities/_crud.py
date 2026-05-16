@@ -393,6 +393,13 @@ def update_entity_v2(family_id: str):
                 community_id=getattr(refreshed, 'community_id', None),
             )
             processor.storage.save_entity(updated)
+            # Refresh RELATES_TO edges: new version has a new absolute_id,
+            # stale edges still point to the old one
+            try:
+                if hasattr(processor.storage, 'refresh_relates_to_edges'):
+                    processor.storage.refresh_relates_to_edges(family_ids=[family_id])
+            except Exception:
+                pass  # non-critical; full refresh available via POST /refresh-edges
             vc_map = processor.storage.get_entity_version_counts([family_id]) if family_id else {}
             return ok(_h.entity_to_dict(updated, version_count=vc_map.get(family_id)))
 

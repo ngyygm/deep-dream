@@ -256,8 +256,11 @@ class _LLMExtractionMixin:
             tail = msgs[-(_MAX_MESSAGES - 2):]
             return head + tail
 
-        # ── Phase A: Orphan recovery loop (no round limit) ──
-        max_orphan_rounds = 2  # safety cap (reduced from 5)
+        # ── Phase A: Orphan recovery loop ──
+        # Skip orphan recovery entirely for small entity sets — with ≤5 entities,
+        # the initial extraction almost always covers all meaningful pairs, and
+        # orphan rounds just add redundant LLM calls.
+        max_orphan_rounds = 0 if len(entity_names) <= 5 else 2
         for orphan_round in range(max_orphan_rounds):
             paired_entities = set()
             for a, b in all_pairs:

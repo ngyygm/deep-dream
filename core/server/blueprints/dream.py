@@ -19,6 +19,7 @@ from flask import Blueprint, current_app, request
 
 from core.server.blueprints.helpers import (
     ok,
+    safe_endpoint,
     err,
     _get_processor,
     _get_graph_id,
@@ -674,6 +675,7 @@ def maintenance_cleanup():
 # =========================================================
 
 @dream_bp.route("/api/v1/butler/report", methods=["GET"])
+@safe_endpoint
 def butler_report():
     """管家报告：一次调用获取完整图谱健康状况、推荐操作。
 

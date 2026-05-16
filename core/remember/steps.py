@@ -396,8 +396,15 @@ class _ExtractionStepsMixin:
         # ==============================================================
         _progress(0.03, f"{_win} · 步骤2: 实体提取（强模型）", "开始")
         _t = _time.time()
+        # Adaptive rounds: short text rarely benefits from multiple refinement rounds
+        _input_len = len(input_text)
+        _adaptive_entity_rounds = self.entity_rounds
+        if _input_len < 200:
+            _adaptive_entity_rounds = min(_adaptive_entity_rounds, 0)
+        elif _input_len < 500:
+            _adaptive_entity_rounds = min(_adaptive_entity_rounds, 1)
         raw_names, ent_refine = extraction_client.extract_entities(
-            input_text, max_refine_rounds=self.entity_rounds
+            input_text, max_refine_rounds=_adaptive_entity_rounds
         )
         _elapsed = _time.time() - _t
         _record_timing("step2_entity_extract", _elapsed)
@@ -427,13 +434,21 @@ class _ExtractionStepsMixin:
         _fallback_cache: Dict[str, str] = {}
         def _cached_fallback(name: str) -> str:
             if name not in _fallback_cache:
-                _fallback_cache[name] = _build_entity_fallback_content(name, _prose_index)
+                _fallback_cache[name] = _build_entity_fallback_content(name, _get_prose_index())
             return _fallback_cache[name]
 
         _t = _time.time()
 
-        # Pre-compute prose index once for all fallback content calls
-        _prose_index = _ProseIndex(_prepare_prose_sentences(input_text))
+        # Lazy prose index — only build when fallback content is needed
+        _prose_index = None
+        _prose_sentences = None
+
+        def _get_prose_index():
+            nonlocal _prose_index, _prose_sentences
+            if _prose_index is None:
+                _prose_sentences = _prepare_prose_sentences(input_text)
+                _prose_index = _ProseIndex(_prose_sentences)
+            return _prose_index
 
         # All entities go through LLM for proper concept descriptions
         _fast_path_names: List[str] = []
@@ -446,15 +461,22 @@ class _ExtractionStepsMixin:
         _step6_stats: Dict = {}
         _step6_entity_names = list(entity_names)  # snapshot for thread safety
 
+        # Adaptive relation rounds: scale with input length and entity count
+        _adaptive_rel_rounds = self.relation_rounds
+        if _input_len < 200:
+            _adaptive_rel_rounds = min(_adaptive_rel_rounds, 0)
+        elif _input_len < 500:
+            _adaptive_rel_rounds = min(_adaptive_rel_rounds, 1)
+
         if len(entity_names) >= 2:
             def _run_step6():
                 _t6 = _time.time()
                 _raw, _stats = extraction_client.discover_relations(
-                    _step6_entity_names, input_text, max_refine_rounds=self.relation_rounds
+                    _step6_entity_names, input_text, max_refine_rounds=_adaptive_rel_rounds
                 )
                 return _raw, _stats, _time.time() - _t6
 
-            _step6_future = ThreadPoolExecutor(max_workers=1).submit(_run_step6)
+            _step6_future = _get_shared_pool(1).submit(_run_step6)
 
         # 4a: Batch write only for entities needing LLM content
         batch_results: Dict[str, str] = {}

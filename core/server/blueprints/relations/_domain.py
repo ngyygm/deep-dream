@@ -23,6 +23,7 @@ entity_to_dict = _h.entity_to_dict
 enrich_entity_version_counts = _h.enrich_entity_version_counts
 enrich_relation_version_counts = _h.enrich_relation_version_counts
 get_json_body = _h.get_json_body
+safe_endpoint = _h.safe_endpoint
 
 logger = logging.getLogger(__name__)
 
@@ -191,6 +192,7 @@ def graph_summary():
 # -- Traversal (BFS + MMR) ---------------------------------------------------
 
 @relations_bp.route("/api/v1/find/traverse", methods=["POST"])
+@safe_endpoint
 def traverse_graph():
     """BFS graph traversal search."""
     try:

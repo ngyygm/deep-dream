@@ -97,7 +97,7 @@ class DreamMixin:
         with self._session() as session:
             # Use RELATES_TO edges only (not MENTIONS) to compute meaningful graph degree
             # Pre-limit candidates to avoid full-graph sort
-            result = self._run(session, """
+            result = self._run_with_retry(session, """
                 MATCH (e:Entity)-[:RELATES_TO]-(other:Entity)
                 WHERE e.invalid_at IS NULL
                   AND NOT e.uuid IN $exclude_uuids
@@ -108,14 +108,14 @@ class DreamMixin:
                        e.name AS name, e.content AS content,
                        e.confidence AS confidence, e.event_time AS event_time,
                        e.community_id AS community_id, degree
-            """, exclude_uuids=list(exclude_uuids), cid=community_id, count=count)
+            """, operation_name="dream_seeds_hub", exclude_uuids=list(exclude_uuids), cid=community_id, count=count)
             return [dict(r) for r in result]
 
 
 
     def _dream_seeds_low_confidence(self, count, exclude_uuids, community_id):
         with self._session() as session:
-            result = self._run(session, """
+            result = self._run_with_retry(session, """
                 MATCH (e:Entity)
                 WHERE e.invalid_at IS NULL
                   AND e.confidence IS NOT NULL AND e.confidence < 0.5
@@ -127,14 +127,14 @@ class DreamMixin:
                        e.confidence AS confidence, e.event_time AS event_time,
                        e.community_id AS community_id,
                        size([(e)-[:RELATES_TO]-() | 1]) AS degree
-            """, exclude_uuids=list(exclude_uuids), cid=community_id, count=count)
+            """, operation_name="dream_seeds_low_conf", exclude_uuids=list(exclude_uuids), cid=community_id, count=count)
             return [dict(r) for r in result]
 
 
 
     def _dream_seeds_orphan(self, count, exclude_uuids, community_id):
         with self._session() as session:
-            result = self._run(session, """
+            result = self._run_with_retry(session, """
                 MATCH (e:Entity)
                 WHERE e.invalid_at IS NULL
                   AND NOT (e)-[:RELATES_TO]-()
@@ -145,7 +145,7 @@ class DreamMixin:
                        e.confidence AS confidence, e.event_time AS event_time,
                        e.community_id AS community_id, 0 AS degree
                 LIMIT $count
-            """, exclude_uuids=list(exclude_uuids), cid=community_id, count=count)
+            """, operation_name="dream_seeds_orphan", exclude_uuids=list(exclude_uuids), cid=community_id, count=count)
             return [dict(r) for r in result]
 
 
@@ -153,7 +153,7 @@ class DreamMixin:
     def _dream_seeds_random(self, count, exclude_uuids, community_id):
         """Random seed selection — single query with ORDER BY rand()."""
         with self._session() as session:
-            result = self._run(session, """
+            result = self._run_with_retry(session, """
                 MATCH (e:Entity)
                 WHERE e.invalid_at IS NULL
                   AND NOT e.uuid IN $exclude_uuids
@@ -165,14 +165,14 @@ class DreamMixin:
                        e.confidence AS confidence, e.event_time AS event_time,
                        e.community_id AS community_id,
                        size([(e)-[:RELATES_TO]-() | 1]) AS degree
-            """, exclude_uuids=list(exclude_uuids), cid=community_id, count=count)
+            """, operation_name="dream_seeds_random", exclude_uuids=list(exclude_uuids), cid=community_id, count=count)
             return [dict(r) for r in result]
 
 
 
     def _dream_seeds_time_gap(self, count, exclude_uuids, community_id):
         with self._session() as session:
-            result = self._run(session, """
+            result = self._run_with_retry(session, """
                 MATCH (e:Entity)
                 WHERE e.invalid_at IS NULL
                   AND e.processed_time IS NOT NULL
@@ -185,7 +185,7 @@ class DreamMixin:
                        e.confidence AS confidence, e.event_time AS event_time,
                        e.community_id AS community_id,
                        size([(e)-[:RELATES_TO]-() | 1]) AS degree
-            """, exclude_uuids=list(exclude_uuids), cid=community_id, count=count)
+            """, operation_name="dream_seeds_time_gap", exclude_uuids=list(exclude_uuids), cid=community_id, count=count)
             return [dict(r) for r in result]
 
 
@@ -452,7 +452,7 @@ class DreamMixin:
     def get_dream_log(self, cycle_id: str) -> Optional[dict]:
         """获取单条梦境日志。"""
         with self._session() as session:
-            result = self._run(session, """
+            result = self._run_with_retry(session, """
                 MATCH (d:DreamLog {cycle_id: $cycle_id})
                 RETURN d.cycle_id AS cycle_id, d.graph_id AS graph_id,
                        d.start_time AS start_time, d.end_time AS end_time,
@@ -462,7 +462,7 @@ class DreamMixin:
                        d.strategy AS strategy, d.entities_examined AS entities_examined,
                        d.relations_created AS relations_created,
                        d.episode_ids AS episode_ids
-            """, cycle_id=cycle_id)
+            """, operation_name="get_dream_log", cycle_id=cycle_id)
             r = result.single()
             if not r:
                 return None
@@ -524,7 +524,7 @@ class DreamMixin:
     def list_dream_logs(self, graph_id: str = "default", limit: int = 20) -> List[dict]:
         """列出梦境日志。"""
         with self._session() as session:
-            result = self._run(session, """
+            result = self._run_with_retry(session, """
                 MATCH (d:DreamLog)
                 WHERE d.graph_id = $graph_id
                 RETURN d.cycle_id AS cycle_id, d.graph_id AS graph_id,
@@ -537,7 +537,7 @@ class DreamMixin:
                        d.episode_ids AS episode_ids
                 ORDER BY d.start_time DESC
                 LIMIT $limit
-            """, graph_id=graph_id, limit=limit)
+            """, operation_name="list_dream_logs", graph_id=graph_id, limit=limit)
             logs = []
             for r in result:
                 logs.append(self._parse_dream_log_record(r))
@@ -775,7 +775,7 @@ class DreamMixin:
     def save_dream_log(self, report):
         """保存梦境日志。"""
         with self._session() as session:
-            self._run(session, """
+            self._run_with_retry(session, """
                 MERGE (d:DreamLog {cycle_id: $cycle_id})
                 SET d.graph_id = $graph_id,
                     d.start_time = datetime($start_time),
