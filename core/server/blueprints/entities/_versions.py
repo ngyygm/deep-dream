@@ -411,6 +411,8 @@ def find_entity_neighbors(entity_uuid: str):
         depth = min(max(int(request.args.get('depth', 1)), 1), 5)
         with _perf_timer(f"find_entity_neighbors | depth={depth}"):
             result = processor.storage.get_entity_neighbors(entity_uuid, depth=depth)
+        if result.get("entity") is None:
+            return err(f"未找到实体: {entity_uuid}", 404)
         return ok(result)
     except Exception as e:
         return err(str(e), 500)

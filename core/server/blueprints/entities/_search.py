@@ -222,7 +222,7 @@ def find_entities_search():
             query_content = _validate_text_input(query_content, "query_content", min_len=0, max_len=10000)
 
         threshold = float(_get_value("similarity_threshold") or _get_value("threshold", 0.5))
-        max_results_raw = _get_value("max_results", 10)
+        max_results_raw = _get_value("max_results") or _get_value("limit", 10)
         max_results = _validate_positive_int(max_results_raw, "max_results")
         max_results = min(max_results, 500)  # Cap at 500
 
@@ -325,16 +325,22 @@ def find_entity_by_name(name: str):
             except Exception as e:
                 logger.debug("by-name prefix match failed for '%s': %s", name, e)
 
-        # Step 3: BM25 text search
+        # Step 3: BM25 text search (require name overlap to prevent false positives)
         if not best:
             try:
-                entities = processor.storage.search_entities_by_bm25(name, limit=1)
-                if entities:
-                    candidate = entities[0]
+                entities = processor.storage.search_entities_by_bm25(name, limit=3)
+                for candidate in entities:
+                    cname = getattr(candidate, 'name', '')
+                    # Require at least 1 shared non-whitespace char between query and result name
+                    _q_chars = set(name.replace(' ', '')) - {'（', '）', '(', ')'}
+                    _c_chars = set(cname.replace(' ', '')) - {'（', '）', '(', ')'}
+                    if _q_chars and _c_chars and not (_q_chars & _c_chars):
+                        continue
                     score = getattr(candidate, '_score', 0) or 0
-                    if score >= 0.7:
-                        best = candidate
-                        match_method = "bm25"
+                    best = candidate
+                    best._score = score
+                    match_method = "bm25"
+                    break
             except Exception as e:
                 logger.debug("by-name BM25 failed for '%s': %s", name, e)
 

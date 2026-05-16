@@ -181,6 +181,16 @@ def create_app(
         _now = time.time()
         request.start_time = _now
         request._monitor_start = _now
+        # Eagerly validate JSON on POST/PUT/PATCH — before route handlers run
+        if request.method in ("POST", "PUT", "PATCH") and request.content_type and "json" in request.content_type:
+            if request.data and request.get_json(silent=True) is None:
+                from flask import jsonify
+                return jsonify({
+                    "success": False,
+                    "error": "请求体不是有效的 JSON（请检查格式）",
+                    "hint": "Check that the request body is valid JSON. Keys must be quoted, no trailing commas.",
+                    "elapsed_ms": 0,
+                }), 400
 
     @app.after_request
     def _track_access(response):
