@@ -132,6 +132,11 @@ def compact_lists(data, max_chars=_MAX_RESPONSE_CHARS):
     if not isinstance(data, dict):
         return data
 
+    # Recurse into nested dicts (e.g. results.entities in /find/ask)
+    for k, v in list(data.items()):
+        if isinstance(v, dict) and not k.endswith(("_total", "_shown")):
+            data[k] = compact_lists(v, max_chars=max_chars)
+
     for key in _LIST_KEYS:
         items = data.get(key)
         if not isinstance(items, list) or len(items) <= 3:
@@ -192,6 +197,8 @@ _HINT_PATTERNS = [
      "Hint: too many requests. Wait a moment and retry."),
     (lambda m: "策略" in m or "strategy" in m,
      "Hint: check the strategy parameter. Valid strategies: random, hub, cross_community, orphan, time_gap, low_confidence."),
+    (lambda m: "search_mode" in m,
+     "Hint: check the search_mode parameter. Valid modes: hybrid, semantic, bm25."),
     (lambda m: ("invalid" in m or "无效" in m) and ("family_id" in m or "_id" in m or "identifier" in m),
      "Hint: check that the ID format is correct. family_ids start with 'ent_' or 'rel_', absolute_ids are UUIDs."),
     (lambda m: "merge" in m and ("same" in m or "cannot" in m or "error" in m),
