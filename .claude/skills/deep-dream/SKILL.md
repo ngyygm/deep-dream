@@ -55,7 +55,10 @@ curl -s $BASE_URL/graphs
 | Get relation | GET | `/find/relations/{fid}` | Returns latest valid version |
 | Update relation | PUT | `/find/relations/{fid}` | `{content, summary, attributes, confidence}` (content optional for metadata-only updates) |
 | Delete entity | DELETE | `/find/entities/{fid}` | `?cascade=true` to remove connected relations (default: false, leaves orphans) |
-| Delete relation | DELETE | `/find/relations/{fid}` | `?cascade=false` |
+| Delete relation | DELETE | `/find/relations/{fid}` | Deletes all versions |
+| Relation versions | GET | `/find/relations/{fid}/versions` | List all versions, ordered by processed_time |
+| Delete relation version | DELETE | `/find/relations/absolute/{aid}` | Delete single version, others unaffected |
+| Relations between | GET | `/find/relations/between` | `family_id_a=X&family_id_b=Y` |
 | Merge entities | POST | `/find/entities/merge` | `{source_family_ids:[...], target_family_id:...}` |
 | Dream cycle | POST | `/find/dream/run` | `{strategy, seed_count}` |
 | Dream status | GET | `/find/dream/status` | — |
