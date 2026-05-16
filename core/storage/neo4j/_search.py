@@ -150,12 +150,12 @@ class SearchMixin:
         if not safe_query.strip():
             return []
 
-        # Apply jieba segmentation for Chinese text (same pattern as _concepts.py)
+        # Apply jieba segmentation for Chinese text — use OR for broad recall
         if _jieba:
             try:
                 _jieba_tokens = [t.strip() for t in _jieba.cut(safe_query) if t.strip() and t.strip() not in _CN_STOPWORDS]
                 if len(_jieba_tokens) > 1:
-                    safe_query = " AND ".join(_jieba_tokens)
+                    safe_query = " ".join(_jieba_tokens)
             except Exception:
                 pass
 
@@ -330,12 +330,12 @@ class SearchMixin:
         safe_query = ' '.join(safe_query.split())
         if not safe_query.strip():
             return []
-        # Apply jieba segmentation for Chinese text
+        # Apply jieba segmentation for Chinese text — use OR for broad recall
         if _jieba:
             try:
                 _jieba_tokens = [t.strip() for t in _jieba.cut(safe_query) if t.strip() and t.strip() not in _CN_STOPWORDS]
                 if len(_jieba_tokens) > 1:
-                    safe_query = " AND ".join(_jieba_tokens)
+                    safe_query = " ".join(_jieba_tokens)
             except Exception:
                 pass
         try:
