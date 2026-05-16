@@ -43,12 +43,12 @@ curl -s $BASE_URL/graphs
 | List remember tasks | GET | `/remember/tasks` | Lists all tasks (omit `{id}`) |
 | Check remember task | GET | `/remember/tasks/{id}` | Check specific task |
 | Search everything | POST | `/find` | `{query, search_mode:"hybrid"}` |
-| Search entities | GET | `/find/entities/search` | `query_name=X` |
+| Search entities | GET | `/find/entities/search` | `query_name=X`, `limit=N` (or `max_results=N`) |
 | Search relations | GET | `/find/relations/search` | `query_text=X` |
 | Find by name | GET | `/find/entities/by-name/{name}` | `threshold=0.7` |
 | Entity profile | GET | `/find/entities/{fid}/profile` | — |
 | Quick search | POST | `/find` | `{query, search_mode:"hybrid"}` (modes: `hybrid`, `semantic`, `bm25`) |
-| Traverse graph | POST | `/find/traverse` | `{seed_family_ids:["ent_abc",...], max_depth:2}` |
+| Traverse graph | POST | `/find/traverse` | `{seed_family_ids:["ent_abc",...], max_depth:2}` (max 5, max_nodes 200) |
 | Shortest path | POST | `/find/paths/shortest` | `{family_id_a, family_id_b}` |
 | Create entity | POST | `/find/entities/create` | `{name, content}` |
 | Create relation | POST | `/find/relations/create` | `{entity1_family_id, entity2_family_id, content}` |
@@ -300,7 +300,7 @@ When the extraction pipeline cannot determine an entity name, it creates `auto_X
 - Valid `butler_execute` actions: `cleanup_isolated`, `cleanup_invalidated`, `fix_dangling_refs`, `cleanup_stale_redirects`, `detect_communities`, `evolve_summaries` (NOT `run_dream`)
 - `butler_execute`: returns `success: true` even if individual actions fail — check each action's `status` field for errors
 - If remember returns 0 entities, check LLM health: `GET /health/llm`
-- `profile`: returns 404 `{success: false, error: "..."}` for nonexistent family_ids (not `success: true` with null). `neighbors` returns `success: true` with empty arrays for nonexistent IDs
+- `profile`: returns 404 `{success: false, error: "..."}` for nonexistent family_ids (not `success: true` with null). `neighbors` also returns 404 for nonexistent IDs
 - Chinese characters in curl URLs: use `--data-urlencode` or Python urllib to avoid encoding issues
 - Entity versions are ordered by `processed_time` (ingestion time), NOT `event_time` (when the event occurred)
 - `traverse`: requires RELATES_TO edges to exist. If traverse returns empty but neighbors works, run `POST /find/entities/refresh-edges` first
@@ -324,7 +324,7 @@ When the extraction pipeline cannot determine an entity name, it creates `auto_X
 - **compact=true truncates relation content**: relation `content` is truncated to ~80 chars with `compact=true`. For full content, omit compact or use the absolute_id lookup. Also strips `entity1_family_id`/`entity2_family_id` from relation objects (shows `null`)
 - **Community response structure**: community list uses `members` array (not `entities`), each member has `family_id`, `name`, `uuid`. Community `name` field returns `N/A` (not auto-named)
 - **Dream cycle response**: `POST /dream/run` returns synchronously with `{explored, seeds, stats, cycle_summary}` — NOT async. The `GET /dream/status` endpoint returns the previous completed cycle, not the current one
-- **Dream cycle effectiveness**: dream consistently creates 0 new relations across all strategies (random, hub, cross_community). The LLM evaluates pairs conservatively. Dream is useful for exploration logs but not for automatic graph enrichment
+- **Dream cycle effectiveness**: dream creates relations via cross-neighbor pair generation. Use `discovery_mode:true` to lower confidence threshold (0.5→0.3) and find more connections. Best with `cross_community` strategy. Without discovery_mode, dream may still create 0 relations if entity pairs lack strong connections
 - **Neighbors endpoint reliability**: may return transient 500 errors for entities with many relations. Retry after 1-2 seconds
 - **Merge 0-update warning**: when merge rejects all sources (name similarity check), response includes `warning` field. Check `data.merged_count.entities_updated` — if 0, pass `skip_name_check: true`
 
