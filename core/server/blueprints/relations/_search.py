@@ -79,7 +79,7 @@ def find_unified():
         storage = processor.storage
 
         # Create HybridSearcher once, shared for entity and relation search
-        _hybrid_searcher = _get_searcher(storage) if search_mode == "hybrid" else None
+        _hybrid_searcher = _get_searcher(storage) if search_mode in ("hybrid", "semantic") else None
 
         # --- Step 1+2: Entity and relation recall run in parallel ---
         entity_score_map: Dict[str, float] = {}
@@ -89,7 +89,11 @@ def find_unified():
             """Step 1: Entity recall by search_mode."""
             with _perf_timer("find_unified | step1_entity_recall"):
                 if search_mode == "bm25":
-                    entities = storage.search_entities_by_bm25(query, limit=max_entities)
+                    scored_entities = storage.search_entities_by_bm25(query, limit=max_entities, with_scores=True)
+                    entities = []
+                    for e, score in scored_entities:
+                        entities.append(e)
+                        entity_score_map[e.absolute_id] = score
                 elif search_mode == "hybrid":
                     hybrid_entities = _hybrid_searcher.search_entities(
                         query_text=query, top_k=max_entities,
@@ -100,13 +104,25 @@ def find_unified():
                         entities.append(e)
                         entity_score_map[e.absolute_id] = score
                 else:
-                    entities = storage.search_entities_by_similarity(
-                        query_name=query, query_content=query,
-                        threshold=similarity_threshold,
-                        max_results=max_entities,
-                        text_mode="name_and_content",
-                        similarity_method="embedding",
-                    )
+                    # Semantic mode: use hybrid searcher with pure vector weights for scores
+                    if _hybrid_searcher:
+                        semantic_entities = _hybrid_searcher.search_entities(
+                            query_text=query, top_k=max_entities,
+                            semantic_threshold=similarity_threshold,
+                            vector_weight=1.0, bm25_weight=0.0, graph_weight=0.0,
+                        )
+                        entities = []
+                        for e, score in semantic_entities:
+                            entities.append(e)
+                            entity_score_map[e.absolute_id] = score
+                    else:
+                        entities = storage.search_entities_by_similarity(
+                            query_name=query, query_content=query,
+                            threshold=similarity_threshold,
+                            max_results=max_entities,
+                            text_mode="name_and_content",
+                            similarity_method="embedding",
+                        )
 
                 # Core name prefix match supplement
                 if len(query) >= 2 and len(query) <= 20 and entities:
@@ -130,7 +146,15 @@ def find_unified():
             """Step 2: Relation recall by search_mode."""
             with _perf_timer("find_unified | step2_relation_recall"):
                 if search_mode == "bm25":
-                    rels = storage.search_relations_by_bm25(query, limit=max_relations)
+                    scored_rels = storage.search_relations_by_bm25(query, limit=max_relations)
+                    rels = []
+                    for r in scored_rels:
+                        rels.append(r)
+                        # BM25 scores not available from relation search; derive from entity scores
+                        e1_score = entity_score_map.get(r.entity1_absolute_id, 0.0)
+                        e2_score = entity_score_map.get(r.entity2_absolute_id, 0.0)
+                        if e1_score or e2_score:
+                            relation_score_map[r.absolute_id] = max(e1_score, e2_score)
                 elif search_mode == "hybrid":
                     hybrid_relations = _hybrid_searcher.search_relations(
                         query_text=query, top_k=max_relations,
@@ -141,11 +165,23 @@ def find_unified():
                         rels.append(r)
                         relation_score_map[r.absolute_id] = score
                 else:
-                    rels = storage.search_relations_by_similarity(
-                        query_text=query,
-                        threshold=similarity_threshold,
-                        max_results=max_relations,
-                    )
+                    # Semantic: use hybrid searcher with pure vector weights
+                    if _hybrid_searcher:
+                        semantic_rels = _hybrid_searcher.search_relations(
+                            query_text=query, top_k=max_relations,
+                            semantic_threshold=similarity_threshold,
+                            vector_weight=1.0, bm25_weight=0.0,
+                        )
+                        rels = []
+                        for r, score in semantic_rels:
+                            rels.append(r)
+                            relation_score_map[r.absolute_id] = score
+                    else:
+                        rels = storage.search_relations_by_similarity(
+                            query_text=query,
+                            threshold=similarity_threshold,
+                            max_results=max_relations,
+                        )
             return rels
 
         _ent_fut = _shared_pool.submit(_recall_entities)

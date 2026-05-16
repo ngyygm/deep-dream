@@ -111,19 +111,25 @@ class SearchMixin:
 
     # ------------------------------------------------------------------
 
-    def search_entities_by_bm25(self, query: str, limit: int = 20) -> List[Entity]:
+    def search_entities_by_bm25(self, query: str, limit: int = 20,
+                                 with_scores: bool = False) -> list:
         """BM25 全文搜索实体（Neo4j 5.x 全文索引），去重 family_id 只保留最高分版本。
 
         增强逻辑：当 BM25 结果中不包含核心名称匹配的实体时，用前缀匹配补充
         （解决"曹操"搜不到"曹操（155年－220年）"的问题）。
+
+        Args:
+            with_scores: if True, return List[Tuple[Entity, float]] instead of List[Entity]
         """
         if not query:
             return []
         # Short TTL cache — same query within a pipeline run benefits from dedup
-        cache_key = f"bm25_entity:{hash(query)}:{limit}"
-        cached = self._cache.get(cache_key)
-        if cached is not None:
-            return cached
+        # Cache only works for no-score mode (default)
+        if not with_scores:
+            cache_key = f"bm25_entity:{hash(query)}:{limit}"
+            cached = self._cache.get(cache_key)
+            if cached is not None:
+                return cached
 
         # Escape Lucene special characters to prevent parse errors
         # Keep only alphanumerics, CJK characters, spaces, and underscores
@@ -166,7 +172,7 @@ class SearchMixin:
                         continue
                     if fid:
                         seen_fids.add(fid)
-                    raw_entities.append((fid, _neo4j_record_to_entity(record)))
+                    raw_entities.append((fid, _neo4j_record_to_entity(record), float(record.get("bm25_score", 0.0))))
                     if len(raw_entities) >= limit:
                         break
 
@@ -175,7 +181,7 @@ class SearchMixin:
                 _has_core_match = False
                 _prefix_cjk = query + '\uff08'  # '（'
                 _prefix_ascii = query + '('
-                for _, ent in raw_entities:
+                for _, ent, _ in raw_entities:
                     name = getattr(ent, 'name', '')
                     # 精确匹配 或 名称以 query 开头（消歧括号场景）
                     if name == query or name.startswith(_prefix_cjk) or name.startswith(_prefix_ascii):
@@ -209,21 +215,24 @@ class SearchMixin:
                                 continue
                             if fid:
                                 seen_fids.add(fid)
-                            raw_entities.append((fid, _neo4j_record_to_entity(record)))
+                            raw_entities.append((fid, _neo4j_record_to_entity(record), 0.0))
                     except Exception:
                         pass
 
                 # Resolve family_id redirects (merged entities point to canonical id)
-                raw_fids = [fid for fid, _ in raw_entities if fid]
+                raw_fids = [fid for fid, _, _ in raw_entities if fid]
                 resolved_map = self.resolve_family_ids(raw_fids) if raw_fids else {}
 
                 entities = []
-                for fid, ent in raw_entities:
+                for fid, ent, score in raw_entities:
                     resolved_fid = resolved_map.get(fid, fid) if fid else fid
                     if resolved_fid != fid:
                         ent.family_id = resolved_fid  # Mutate — dataclasses are mutable
-                    entities.append(ent)
-                result = entities[:limit]
+                    entities.append((ent, score))
+                entities = entities[:limit]
+                if with_scores:
+                    return entities
+                result = [e for e, _ in entities]
                 self._cache.set(cache_key, result, ttl=30)
                 return result
         except Exception as e:
