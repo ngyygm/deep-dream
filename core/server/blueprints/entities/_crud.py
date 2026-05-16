@@ -228,8 +228,9 @@ def merge_entities():
         skip_name_check = body.get("skip_name_check", False)
         result = processor.storage.merge_entity_families(target_id, source_ids, skip_name_check=skip_name_check)
         response = {"message": "实体合并完成", "target_family_id": target_id, "source_family_ids": source_ids, "merged_count": result}
-        if result.get("entities_updated", 0) == 0:
+        if result.get("entities_updated", 0) == 0 and not skip_name_check:
             response["warning"] = "No entities were actually merged — name similarity check may have rejected all sources. Pass skip_name_check: true to override."
+            response["hint"] = "Retrying with skip_name_check:true will bypass the name similarity check (useful for cross-language synonyms like 中文↔English)."
         return ok(response)
     except ValueError as e:
         return err(str(e), 400)
