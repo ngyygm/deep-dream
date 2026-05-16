@@ -93,12 +93,13 @@ def _execute_ask_search(processor, query_type: str, query_text: str, intent: dic
     return entities, relations, entity_score_map, relation_score_map
 
 
-def _serialize_ask_results(entities, relations, entity_score_map, relation_score_map, storage):
+def _serialize_ask_results(entities, relations, entity_score_map, relation_score_map, processor):
     """Serialize search results to dicts with scores and version counts."""
     entity_dicts = [entity_to_dict(e, _score=entity_score_map.get(e.absolute_id)) for e in entities]
     relation_dicts = [relation_to_dict(r, _score=relation_score_map.get(r.absolute_id)) for r in relations]
-    enrich_entity_version_counts(entity_dicts, storage)
-    enrich_relation_version_counts(relation_dicts, storage)
+    enrich_entity_version_counts(entity_dicts, processor.storage)
+    enrich_relation_version_counts(relation_dicts, processor.storage)
+    enrich_relations(relation_dicts, processor)
     return entity_dicts, relation_dicts
 
 
@@ -393,7 +394,7 @@ def agent_ask():
             processor, query_type, query_text, intent,
         )
         entity_dicts, relation_dicts = _serialize_ask_results(
-            entities, relations, entity_score_map, relation_score_map, processor.storage,
+            entities, relations, entity_score_map, relation_score_map, processor,
         )
         result["results"] = {
             "entities": entity_dicts,
@@ -468,7 +469,7 @@ def agent_ask_stream():
 
                 # Serialize results using shared helper
                 entity_dicts, relation_dicts = _serialize_ask_results(
-                    entities, relations, entity_score_map, relation_score_map, processor.storage,
+                    entities, relations, entity_score_map, relation_score_map, processor,
                 )
                 result["results"] = {
                     "entities": entity_dicts,
@@ -732,6 +733,18 @@ def butler_report():
                 "dry_run_available": True,
             })
 
+        # Dangling entity refs in relations
+        quality_rels = quality.get("relations", {})
+        dangling_count = quality_rels.get("dangling_entity_refs", 0) if isinstance(quality_rels, dict) else 0
+        if dangling_count > 0:
+            recommendations.append({
+                "action": "fix_dangling_refs",
+                "priority": "high" if dangling_count > 20 else "medium",
+                "description": f"发现 {dangling_count} 个关系中的悬空实体引用，建议修复",
+                "estimated_impact": f"修复约 {dangling_count} 个数据完整性问题",
+                "dry_run_available": True,
+            })
+
         total_ent = health["total_entities"]
         total_rel = health["total_relations"]
         if total_ent > 0 and total_rel < total_ent * 0.3:
@@ -813,7 +826,7 @@ def butler_execute():
         results = {}
 
         # Partition actions: independent ones can run in parallel
-        _independent_actions = {"cleanup_isolated", "cleanup_invalidated", "detect_communities"}
+        _independent_actions = {"cleanup_isolated", "cleanup_invalidated", "detect_communities", "fix_dangling_refs", "cleanup_stale_redirects"}
         independent = [a for a in actions if a in _independent_actions]
         sequential = [a for a in actions if a not in _independent_actions]
 
@@ -837,6 +850,17 @@ def butler_execute():
                 if hasattr(storage, 'detect_communities'):
                     return storage.detect_communities()
                 return {"status": "skipped", "reason": "需要 Neo4j 后端"}
+
+            elif action == "fix_dangling_refs":
+                if hasattr(storage, "fix_dangling_relation_refs"):
+                    return storage.fix_dangling_relation_refs(dry_run=dry_run)
+                return {"status": "skipped", "reason": "当前存储后端不支持"}
+
+            elif action == "cleanup_stale_redirects":
+                if dry_run:
+                    return {"status": "preview", "message": "Will delete stale EntityRedirect nodes whose target entities no longer exist"}
+                deleted = storage.cleanup_stale_redirects()
+                return {"status": "done", "deleted": deleted}
 
             return {"status": "unknown", "reason": f"未知操作: {action}"}
 
@@ -871,8 +895,8 @@ def butler_execute():
                     # Parallelize LLM calls
                     summaries = {}
                     if len(to_evolve) > 1:
-                        for fid, summary, err in _dream_pool.map(_evolve_one, to_evolve):
-                            if err:
+                        for fid, summary, _evo_err in _dream_pool.map(_evolve_one, to_evolve):
+                            if _evo_err:
                                 logger.warning("evolve_entity_summary %s 失败: %s", fid, err)
                                 failed += 1
                             else:
@@ -880,8 +904,8 @@ def butler_execute():
                                 evolved += 1
                     else:
                         for e in to_evolve:
-                            fid, summary, err = _evolve_one(e)
-                            if err:
+                            fid, summary, _evo_err = _evolve_one(e)
+                            if _evo_err:
                                 logger.warning("evolve_entity_summary %s 失败: %s", fid, err)
                                 failed += 1
                             else:

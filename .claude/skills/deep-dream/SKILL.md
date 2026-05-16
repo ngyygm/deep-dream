@@ -47,7 +47,7 @@ curl -s $BASE_URL/graphs
 | Find by name | GET | `/find/entities/by-name/{name}` | `threshold=0.7` |
 | Entity profile | GET | `/find/entities/{fid}/profile` | — |
 | Quick search | POST | `/find` | `{query}` |
-| Traverse graph | POST | `/find/traverse` | `{seed_family_ids:[...], max_depth}` |
+| Traverse graph | POST | `/find/traverse` | `{seed_family_ids:["ent_abc",...], max_depth:2}` |
 | Shortest path | POST | `/find/paths/shortest` | `{family_id_a, family_id_b}` |
 | Create entity | POST | `/find/entities/create` | `{name, content}` |
 | Create relation | POST | `/find/relations/create` | `{entity1_family_id, entity2_family_id, content}` |
@@ -60,18 +60,32 @@ curl -s $BASE_URL/graphs
 | Butler report | GET | `/butler/report` | — |
 | Butler execute | POST | `/butler/execute` | `{actions:[...], dry_run:true}` |
 | Health report | GET | `/find/maintenance/health` | — |
+| Fix dangling refs | POST | `/butler/execute` | `{actions:["fix_dangling_refs"]}` |
+| Cleanup stale redirects | POST | `/butler/execute` | `{actions:["cleanup_stale_redirects"]}` |
 | Detect communities | POST | `/communities/detect` | `{algorithm:"louvain"}` |
-| List communities | GET | `/communities` | `min_size=3, limit=50` |
+| List communities | GET | `/communities` | `min_size=3, limit=50` (returns `data.communities` list, requires `detect_communities` first) |
+| Entity neighbors | GET | `/find/entities/{fid}/neighbors` | `depth=1` (accepts family_id) |
+| Concept provenance | GET | `/concepts/{fid}/provenance` | `time_point=ISO8601` |
+| Concept mentions | GET | `/concepts/{fid}/mentions` | `time_point=ISO8601` |
+| Search episodes | POST | `/find/episodes/search` | `{query, limit:20}` |
+| Episode text | GET | `/find/episodes/{cache_id}/text` | — |
+| Recent activity | GET | `/find/recent-activity` | — |
+| Refresh graph edges | POST | `/find/entities/refresh-edges` | — |
 
 ## Response Format
 
 All responses: `{"success": bool, "data": ..., "elapsed_ms": float}`
 
 - `data` type varies by endpoint:
-  - **Single item**: `data: {family_id, name, content, ...}` (profile, by-name, create)
+  - **Single item**: `data: {family_id, name, content, ...}` (create)
+  - **By-name** (nested): `data: {entity: {...}, relations: [...]}` — same structure as profile
+  - **Profile** (nested): `data: {entity: {...}, relations: [...], relation_count, version_count}` (profile)
   - **List**: `data: [{...}, ...]` (search, find entities, list)
   - **Aggregation**: `data: {entities: [...], relations: [...], ...}` (find, graph-summary, recent-activity)
   - **Counts**: `data: {total, count, ...}` (routes, counts)
+  - **Neighbors**: `data: {entity: {uuid, name, family_id}, nodes: [{uuid, name, family_id}], edges: [{source_uuid, target_uuid, source_name, target_name, content, relation_uuid}]}` (neighbors)
+  - **Traverse**: `data: {entities: [...], relations: [...], visited_count}` (traverse)
+  - **Update**: `data: {family_id, name, content, summary, community_id, ...}` (update — returns full entity)
 - Errors: `{"success": false, "error": "message", "hint": "actionable guidance", "elapsed_ms": float}`
 - Error messages may be in Chinese. The `hint` field provides English guidance.
 - Add `compact=true` query param to strip embeddings and truncate content.
@@ -127,10 +141,22 @@ curl -s -X POST "$BASE_URL/find/entities/merge?graph_id=default" \
   -H 'Content-Type: application/json' \
   -d '{"source_family_ids":["ent_dup1","ent_dup2"],"target_family_id":"ent_main"}'
 
-# After merge, refresh edges to update relation endpoints
-curl -s -X POST "$BASE_URL/find/entities/refresh-edges?graph_id=default" \
+# Merge auto-redirects Relation endpoints and refreshes RELATES_TO edges — no manual refresh needed
+```
+
+### Explore Entity Connections
+```bash
+# Get entity profile (includes relations, version count)
+curl -s "$BASE_URL/find/entities/{fid}/profile?graph_id=default&compact=true"
+
+# Get neighbors (graph traversal via RELATES_TO edges)
+curl -s "$BASE_URL/find/entities/{fid}/neighbors?graph_id=default&depth=2"
+
+# Find shortest path between two entities
+curl -s -X POST "$BASE_URL/find/paths/shortest?graph_id=default" \
   -H 'Content-Type: application/json' \
-  -d '{"family_id":"ent_main"}'
+  -d '{"family_id_a":"ent_abc","family_id_b":"ent_xyz"}'
+# Returns path_length=-1 if entities exist but are disconnected (not 404)
 ```
 
 ### Dream Cycle
@@ -147,12 +173,15 @@ curl -s -X POST "$BASE_URL/find/dream/run?graph_id=default" \
 curl -s "$BASE_URL/find/dream/logs?graph_id=default"
 ```
 
-### Butler Health Check
+### Graph Maintenance
 ```bash
-# Get report (note: may take 10-15 seconds)
+# Health report (isolated entities, data quality)
+curl -s "$BASE_URL/find/maintenance/health?graph_id=default"
+
+# Butler report (detailed, 10-15s)
 curl -s "$BASE_URL/butler/report?graph_id=default"
 
-# Preview cleanup (dry_run)
+# Preview cleanup (dry_run only works for butler/execute, NOT merge)
 curl -s -X POST "$BASE_URL/butler/execute?graph_id=default" \
   -H 'Content-Type: application/json' \
   -d '{"actions":["cleanup_isolated","cleanup_invalidated"],"dry_run":true}'
@@ -161,6 +190,29 @@ curl -s -X POST "$BASE_URL/butler/execute?graph_id=default" \
 curl -s -X POST "$BASE_URL/butler/execute?graph_id=default" \
   -H 'Content-Type: application/json' \
   -d '{"actions":["cleanup_isolated","cleanup_invalidated"]}'
+
+# Regenerate RELATES_TO graph edges (fixes missing traversal paths)
+curl -s -X POST "$BASE_URL/find/entities/refresh-edges?graph_id=default"
+```
+
+### Version History and Provenance
+```bash
+# Get entity versions (ordered by processed_time, NOT event_time)
+curl -s "$BASE_URL/find/entities/{fid}/versions?graph_id=default&compact=true"
+
+# Detect contradictions between versions
+curl -s "$BASE_URL/find/entities/{fid}/contradictions?graph_id=default"
+
+# Concept provenance (which episodes contributed)
+curl -s "$BASE_URL/concepts/{fid}/provenance?graph_id=default"
+
+# Concept mentions (episodes referencing this concept)
+curl -s "$BASE_URL/concepts/{fid}/mentions?graph_id=default"
+
+# Search episodes by content
+curl -s -X POST "$BASE_URL/find/episodes/search?graph_id=default" \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"machine learning","limit":20}'
 ```
 
 ## ID System
@@ -169,6 +221,26 @@ curl -s -X POST "$BASE_URL/butler/execute?graph_id=default" \
 - **absolute_id** (UUID): version-specific snapshot. Used for: `split_entity_version`, version diff. Example: `entity_20260514_231113_6e558246`
 - `create_relation` accepts **family_ids** (`entity1_family_id`/`entity2_family_id`) — no need to resolve to absolute_id
 - Relation responses include both `entity1_absolute_id`/`entity2_absolute_id` AND `entity1_family_id`/`entity2_family_id`
+- Relation `entity1_name`/`entity2_name` fields may be `null` for some relations
+
+## Entity Disambiguation
+
+When searching returns multiple entities with the same or similar names:
+1. Check `content` field to distinguish — each entity's content describes what it represents
+2. Use `GET /find/entities/by-name/{name}` for fuzzy match (returns single best match, not a list)
+3. Use `GET /find/entities/search?query_name=X` for scored list of candidates
+4. Use entity profile `GET /find/entities/{fid}/profile` to see full context including relations
+
+## Key Behavioral Differences
+
+| Endpoint | Returns | Behavior |
+|---|---|---|
+| `by-name` | Nested `{entity, relations}` | Fuzzy match, returns single best match with relations. NOT flat. |
+| `search` | Scored list | Multiple results with scores |
+| `neighbors` | Graph nodes/edges | Traverses RELATES_TO graph edges |
+| Relations search | List of Relation nodes | Queries Relation node properties directly |
+| `profile` | Nested `{entity, relations}` | Not flat — access `data.entity`, `data.relations` |
+| `shortest_path` | `{path_length, paths}` | Returns `path_length=-1` for disconnected, 404 for missing entities |
 
 ## Auto-named Entities
 
@@ -183,14 +255,23 @@ When the extraction pipeline cannot determine an entity name, it creates `auto_X
 - `remember` sync mode: if extraction takes longer than `timeout` seconds (default 300), returns HTTP 202 with `status:"running"` — continue polling via task endpoint
 - Entity search uses `query_name` param, not `q` or `query`
 - Shortest path uses `family_id_a`/`family_id_b` (or aliases `entity1_family_id`/`entity2_family_id`)
-- `update_entity`: name/content changes create a new version (preserves summary, confidence, community_id); summary/attribute changes are in-place
-- `shortest_path`: returns 404 if either entity family_id doesn't exist
-- `merge`: auto-redirects Relation endpoints and refreshes RELATES_TO edges — no manual refresh-edges needed after merge
+- `update_entity`: returns full updated entity. name/content changes create a new version (preserves summary, confidence, community_id); summary/attribute changes are in-place. Entity rename auto-propagates to relation records and refreshes RELATES_TO edges
+- `shortest_path`: returns 404 if either entity family_id doesn't exist; returns `path_length:-1` if entities exist but are disconnected
+- `merge`: target entity stays canonical (name/content preserved); source entities are absorbed. Auto-redirects Relation endpoints and refreshes RELATES_TO edges
+- `merge`: rejects with HTTP 409 if source/target names have < 20% character overlap; pass `skip_name_check: true` in body to override
 - `merge`: response data is nested at `data.merged_count` (not flat in `data`)
-- Destructive ops: pass `dry_run:true` in body to preview before executing
-- Valid `butler_execute` actions: `cleanup_isolated`, `cleanup_invalidated`, `detect_communities`, `evolve_summaries` (NOT `run_dream`)
+- `merge`: if a relation connects source and target entities, both endpoints resolve to target after merge (self-loop). No warning is returned
+- `merge`: auto-updates source entity names to target name and refreshes RELATES_TO edges
+- Auto-named entities (`auto_XXXXXXXX`) may outrank real entities in search results — filter by checking `content` field
+- `dry_run:true` only works for `butler/execute`, NOT for merge or other destructive ops
+- Valid `butler_execute` actions: `cleanup_isolated`, `cleanup_invalidated`, `fix_dangling_refs`, `detect_communities`, `evolve_summaries` (NOT `run_dream`)
 - If remember returns 0 entities, check LLM health: `GET /health/llm`
+- `profile`: returns 404 `{success: false, error: "..."}` for nonexistent family_ids (not `success: true` with null). `neighbors` returns `success: true` with empty arrays for nonexistent IDs
 - Chinese characters in curl URLs: use `--data-urlencode` or Python urllib to avoid encoding issues
+- Entity versions are ordered by `processed_time` (ingestion time), NOT `event_time` (when the event occurred)
+- `traverse`: requires RELATES_TO edges to exist. If traverse returns empty but neighbors works, run `POST /find/entities/refresh-edges` first
+- `communities/list`: returns empty or 500 if `detect_communities` hasn't been called — always POST `/communities/detect` first
+- `search` results may show stale family_ids for entities that were merged/redirected — profile endpoint resolves correctly
 
 ## Slow Endpoints
 
@@ -200,6 +281,14 @@ These endpoints may take 5-15+ seconds. Use `timeout` param or increase curl tim
 - `POST /remember` with `wait:true` — extraction pipeline (~30s-5min)
 - `GET /find/graph-summary` — aggregation over all nodes (~3-10s)
 - `POST /communities/detect` — graph loading + Louvain algorithm (~5-30s)
+- `POST /find/entities/refresh-edges` — regenerates all RELATES_TO edges (~5-30s)
+
+## Episode Text Availability
+
+- `/find/episodes/{cache_id}/text` returns the original source text for an episode
+- **Older episodes may return 404** — source text can be evicted from cache over time
+- Episode search (`POST /find/episodes/search`) always works, but `source_text` field may be empty
+- Recent episodes (within current session) are most likely to have text available
 
 ## Full API Reference
 

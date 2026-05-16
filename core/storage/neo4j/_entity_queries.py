@@ -105,27 +105,42 @@ class EntityQueryMixin:
             all_aids.update(aids)
 
         relations_map: Dict[str, List] = {fid: [] for fid in canonical_set}
+        _fids_list = list(canonical_set)
         if all_aids:
             with self._session() as session:
                 result = self._run(session, _q("""
                     MATCH (r:Relation)
-                    WHERE (r.entity1_absolute_id IN $aids OR r.entity2_absolute_id IN $aids)
+                    WHERE (r.entity1_absolute_id IN $aids OR r.entity2_absolute_id IN $aids
+                           OR r.entity1_family_id IN $fids OR r.entity2_family_id IN $fids)
                       AND r.invalid_at IS NULL
                     RETURN __REL_FIELDS__
                     """),
-                    aids=list(all_aids),
+                    aids=list(all_aids), fids=_fids_list,
                 )
                 all_rels = [_neo4j_record_to_relation(rec) for rec in result]
 
-            # 分配关系到对应的 family_id (O(R) via reverse lookup)
+            # Deduplicate by relation family_id (may match via both absolute_id and family_id)
+            _seen_rel_fids = set()
+            _deduped_rels = []
+            for rel in all_rels:
+                if rel.family_id and rel.family_id in _seen_rel_fids:
+                    continue
+                if rel.family_id:
+                    _seen_rel_fids.add(rel.family_id)
+                _deduped_rels.append(rel)
+
+            # Assign relations to family_id (prefer absolute_id match, fall back to family_id)
             aid_to_fid = {}
             for fid, aids in fid_to_aids.items():
                 for aid in aids:
                     aid_to_fid[aid] = fid
-            _seen_rel_fids = set()
-            for rel in all_rels:
-                fid1 = aid_to_fid.get(rel.entity1_absolute_id)
-                fid2 = aid_to_fid.get(rel.entity2_absolute_id)
+            for rel in _deduped_rels:
+                fid1 = aid_to_fid.get(rel.entity1_absolute_id) or (
+                    rel.entity1_family_id if rel.entity1_family_id in canonical_set else None
+                )
+                fid2 = aid_to_fid.get(rel.entity2_absolute_id) or (
+                    rel.entity2_family_id if rel.entity2_family_id in canonical_set else None
+                )
                 if fid1:
                     relations_map[fid1].append(rel)
                 if fid2 and fid2 != fid1:
@@ -193,17 +208,12 @@ class EntityQueryMixin:
             return {orig: counts.get(resolved, 0) for orig, resolved in resolved_map.items() if resolved}
 
     def count_isolated_entities(self) -> int:
-        """统计孤立实体数量。"""
+        """统计孤立实体数量（基于 RELATES_TO 图边，与 get_isolated_entities 一致）。"""
         with self._session() as session:
             r = self._run(session, """
-                MATCH (rel:Relation) WHERE rel.invalid_at IS NULL
-                WITH collect(DISTINCT rel.entity1_absolute_id)
-                   + collect(DISTINCT rel.entity2_absolute_id) AS aids
-                UNWIND aids AS aid
-                WITH collect(DISTINCT aid) AS connected
                 MATCH (e:Entity)
                 WHERE e.invalid_at IS NULL AND e.family_id IS NOT NULL
-                  AND NOT e.uuid IN connected
+                  AND NOT EXISTS { MATCH (e)-[:RELATES_TO]-() }
                 RETURN count(DISTINCT e.family_id) AS cnt
             """)
             row = r.single()
@@ -534,6 +544,23 @@ class EntityQueryMixin:
                 return record["embedding"][:num_values]
         return None
 
+    def get_entity_names_by_family_ids(self, family_ids: List[str]) -> Dict[str, str]:
+        """批量根据 family_id 查询实体最新名称。"""
+        if not family_ids:
+            return {}
+        with self._session() as session:
+            result = self._run(session,
+                "MATCH (e:Entity) WHERE e.family_id IN $fids AND e.invalid_at IS NULL "
+                "WITH e.family_id AS fid, e.name AS name ORDER BY e.processed_time DESC "
+                "RETURN fid, name",
+                fids=family_ids,
+            )
+            out = {}
+            for r in result:
+                if r["fid"] not in out:
+                    out[r["fid"]] = r["name"]
+            return out
+
     def get_entity_names_by_absolute_ids(self, absolute_ids: List[str]) -> Dict[str, str]:
         """批量根据 absolute_id 查询实体名称。"""
         if not absolute_ids:
@@ -567,15 +594,9 @@ class EntityQueryMixin:
             # fall back to indirect MENTIONS via relations
             result = self._run(session, """
                 MATCH (e:Entity {family_id: $fid})
-                WITH collect(e.uuid) AS abs_ids
-                CALL () {
-                    WITH abs_ids
-                    MATCH (ep:Episode)-[m:MENTIONS]->(e:Entity)
-                    WHERE e.uuid IN abs_ids AND e.graph_id = $graph_id
-                    RETURN DISTINCT ep.uuid AS episode_id, m.context AS context, 0 AS priority
-                }
-                RETURN episode_id, context, priority
-                ORDER BY priority
+                MATCH (ep:Episode)-[m:MENTIONS]->(e)
+                WHERE e.graph_id = $graph_id
+                RETURN DISTINCT ep.uuid AS episode_id, m.context AS context
             """, fid=family_id, graph_id=self._graph_id, graph_id_safe=False)
             provenance = [{"episode_id": r["episode_id"], "context": r.get("context", "")} for r in result]
 
@@ -586,11 +607,10 @@ class EntityQueryMixin:
             # Re-collect abs_ids in subquery to avoid carrying state
             result = self._run(session, """
                 MATCH (e:Entity {family_id: $fid})
-                WITH collect(e.uuid) AS abs_ids
-                UNWIND abs_ids AS aid
-                MATCH (ep:Episode)-[m:MENTIONS]->(r:Relation)
-                WHERE (r.entity1_absolute_id = aid OR r.entity2_absolute_id = aid)
+                MATCH (r:Relation)
+                WHERE (r.entity1_absolute_id = e.uuid OR r.entity2_absolute_id = e.uuid)
                       AND r.graph_id = $graph_id
+                MATCH (ep:Episode)-[m:MENTIONS]->(r)
                 RETURN DISTINCT ep.uuid AS episode_id, m.context AS context
             """, fid=family_id, graph_id=self._graph_id, graph_id_safe=False)
             return [{"episode_id": r["episode_id"], "context": r.get("context", "")} for r in result]
@@ -943,13 +963,15 @@ class EntityQueryMixin:
                 "relation_count": relation_count,
                 "total_entity_versions": total_entity_versions,
                 "total_relation_versions": total_relation_versions,
+                "episode_count": self.count_episodes(),
+                "community_count": self.count_communities(),
             }
 
             if entity_count > 0 and row.get("isolated_count") is not None:
-                isolated = row["isolated_count"]
                 stats["avg_relations_per_entity"] = round(row["avg_degree"], 2)
                 stats["max_relations_per_entity"] = row["max_degree_raw"]
-                stats["isolated_entities"] = isolated
+                # Use RELATES_TO edge-based count for consistency with other endpoints
+                stats["isolated_entities"] = self.count_isolated_entities()
 
                 if entity_count > 1:
                     max_possible = entity_count * (entity_count - 1) / 2
