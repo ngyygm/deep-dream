@@ -77,8 +77,8 @@ def create_entity():
         processor = _get_processor()
         h = _h
         body = request.get_json(silent=True) or {}
-        name = (body.get("name") or "").strip()
-        content = (body.get("content") or "").strip()
+        name = str(body.get("name") or "").strip()
+        content = str(body.get("content") or "").strip()
         if not name:
             return err("name 为必填", 400)
 

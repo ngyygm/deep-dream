@@ -437,6 +437,8 @@ def find_relations_all():
     try:
         processor = _get_processor()
         limit = request.args.get("limit", type=int)
+        if limit is not None and limit < 1:
+            return err("limit must be a positive integer", 400)
         offset = request.args.get("offset", type=int, default=0) or 0
         total = processor.storage.count_unique_relations()
         relations = processor.storage.get_all_relations(
