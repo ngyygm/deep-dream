@@ -47,6 +47,7 @@ class Entity:
     content_format: str = "plain"  # "plain" (旧) | "markdown" (新)
     community_id: Optional[str] = None  # 社区检测分配的社区ID
     _pending_patches: list = None  # 内部用：ContentPatch 缓冲，flush 后清空
+    _score: float = 0.0  # search relevance score (BM25/embedding)
 
 
 @dataclass(slots=True)
