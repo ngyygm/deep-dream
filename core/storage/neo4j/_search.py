@@ -13,7 +13,7 @@ except ImportError:
     pass
 
 # Chinese stopwords — single-char function words that produce AND-clauses too broad for fulltext
-_CN_STOPWORDS = frozenset("的了是在我你他她它们和与或但也而就把被从向给让用对以到得都很这那为所以因为如果虽然".split())
+_CN_STOPWORDS = frozenset("的了是在我你他她它们和与或但也而就把被从向给让用对以到得都很这那为所以因为如果虽然")
 
 from ...models import Entity, Relation
 from ...perf import _perf_timer
