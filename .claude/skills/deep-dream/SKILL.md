@@ -52,6 +52,8 @@ curl -s $BASE_URL/graphs
 | Create entity | POST | `/find/entities/create` | `{name, content}` |
 | Create relation | POST | `/find/relations/create` | `{entity1_family_id, entity2_family_id, content}` |
 | Update entity | PUT | `/find/entities/{fid}` | `{name, summary, attributes}` |
+| Update relation | PUT | `/find/relations/{fid}` | `{content, summary, attributes}` |
+| Delete relation | DELETE | `/find/relations/{fid}` | `?cascade=false` |
 | Merge entities | POST | `/find/entities/merge` | `{source_family_ids:[...], target_family_id:...}` |
 | Dream cycle | POST | `/find/dream/run` | `{strategy, seed_count}` |
 | Dream status | GET | `/find/dream/status` | — |
@@ -263,6 +265,7 @@ When the extraction pipeline cannot determine an entity name, it creates `auto_X
 - **BM25 search ranking for Chinese**: BM25 does character-level token matching. Searching "张三" may rank "桃园三结义" higher than the actual entity "张三" due to character overlap. Use `GET /find/entities/by-name/{name}` for precise name lookup.
 - `remember`: use `wait:true` for sync mode; default is async (returns task_id to poll)
 - `remember` sync mode: if extraction takes longer than `timeout` seconds (default 300), returns HTTP 202 with `status:"running"` — continue polling via task endpoint
+- `remember` async mode: tasks queue serially — a stuck task blocks all subsequent tasks. If polling shows persistent `"queued"` status, the pipeline may be stuck. Try `POST /find/entities/create` + `POST /find/relations/create` as fallback.
 - Entity search uses `query_name` param, not `q` or `query`
 - Shortest path uses `family_id_a`/`family_id_b` (or aliases `entity1_family_id`/`entity2_family_id`)
 - `update_entity`: returns full updated entity. name/content changes create a new version (preserves summary, confidence, community_id); summary/attribute changes are in-place. Entity rename auto-propagates to relation records and refreshes RELATES_TO edges
