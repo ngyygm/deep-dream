@@ -593,6 +593,104 @@ class Neo4jBaseMixin:
         except Exception:
             return 0
 
+    def fix_dangling_relation_refs(self, dry_run: bool = False) -> Dict[str, Any]:
+        """Fix relations that reference deleted/non-existent entity absolute_ids.
+
+        For each dangling ref: find the family_id's latest valid entity version
+        and remap the relation endpoint. If the family has no valid versions,
+        invalidate the relation.
+        """
+        with self._session() as session:
+            # Step 1: Find all dangling absolute_ids in relations
+            result = self._run(session, """
+                MATCH (rel:Relation) WHERE rel.invalid_at IS NULL
+                WITH collect(DISTINCT rel.entity1_absolute_id) + collect(DISTINCT rel.entity2_absolute_id) AS aids
+                UNWIND aids AS aid
+                WITH DISTINCT aid
+                OPTIONAL MATCH (e:Entity {uuid: aid}) WHERE e.invalid_at IS NULL
+                WITH aid, e
+                WHERE e IS NULL
+                RETURN collect(aid) AS dangling_aids
+            """)
+            row = result.single()
+            dangling_aids = row["dangling_aids"] if row else []
+            if not dangling_aids:
+                return {"status": "done", "fixed": 0, "invalidated": 0, "dangling_found": 0}
+
+            # Step 2: For each dangling aid, find family_id and remap target
+            remap = {}
+            no_remap = []
+            for aid in dangling_aids:
+                r2 = self._run(session, """
+                    MATCH (e:Entity {uuid: $aid})
+                    RETURN e.family_id AS fid, e.invalid_at AS inv
+                """, aid=aid)
+                rec = r2.single()
+                if not rec or not rec["fid"]:
+                    no_remap.append(aid)
+                    continue
+                fid = rec["fid"]
+                # Find latest valid version for this family
+                r3 = self._run(session, """
+                    MATCH (e:Entity {family_id: $fid})
+                    WHERE e.invalid_at IS NULL
+                    RETURN e.uuid AS uuid ORDER BY e.processed_time DESC LIMIT 1
+                """, fid=fid)
+                latest = r3.single()
+                if latest and latest["uuid"] != aid:
+                    remap[aid] = latest["uuid"]
+                else:
+                    no_remap.append(aid)
+
+            if dry_run:
+                return {
+                    "status": "preview",
+                    "dangling_found": len(dangling_aids),
+                    "would_remap": len(remap),
+                    "would_invalidate": len(no_remap),
+                    "remap_details": {k: v for k, v in list(remap.items())[:10]},
+                }
+
+            # Step 3: Apply remaps
+            fixed = 0
+            for old_aid, new_aid in remap.items():
+                r4 = self._run(session, """
+                    MATCH (rel:Relation)
+                    WHERE rel.invalid_at IS NULL
+                      AND (rel.entity1_absolute_id = $old OR rel.entity2_absolute_id = $old)
+                    SET rel.entity1_absolute_id = CASE
+                        WHEN rel.entity1_absolute_id = $old THEN $new
+                        ELSE rel.entity1_absolute_id END,
+                        rel.entity2_absolute_id = CASE
+                        WHEN rel.entity2_absolute_id = $old THEN $new
+                        ELSE rel.entity2_absolute_id END
+                    RETURN count(rel) AS cnt
+                """, old=old_aid, new=new_aid)
+                rec = r4.single()
+                fixed += rec["cnt"] if rec else 0
+
+            # Step 4: Invalidate relations with unrecoverable refs
+            invalidated = 0
+            if no_remap:
+                now_iso = datetime.now(timezone.utc).isoformat()
+                for aid in no_remap:
+                    r5 = self._run(session, """
+                        MATCH (rel:Relation)
+                        WHERE rel.invalid_at IS NULL
+                          AND (rel.entity1_absolute_id = $old OR rel.entity2_absolute_id = $old)
+                        SET rel.invalid_at = datetime($now)
+                        RETURN count(rel) AS cnt
+                    """, old=aid, now=now_iso)
+                    rec = r5.single()
+                    invalidated += rec["cnt"] if rec else 0
+
+            return {
+                "status": "done",
+                "dangling_found": len(dangling_aids),
+                "fixed": fixed,
+                "invalidated": invalidated,
+            }
+
 
 @lru_cache(maxsize=256)
 def _cached_tp_to_datetime(tp):
