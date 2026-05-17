@@ -96,3 +96,6 @@ nul
 # LLM 模型文件
 Gemma4-*
 .claude/worktrees/
+
+# Migration test data
+graph_migrated*/
