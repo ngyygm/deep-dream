@@ -239,7 +239,7 @@ def entity_to_dict(e: Entity, max_content_length: int = 2000,
         "confidence": e.confidence,
         "community_id": e.community_id,
         "valid_at": _fd(e.valid_at),
-        "invalid_at": _fd(e.invalid_at),
+        "version_seq": e.version_seq,
     }
     if _score is not None:
         d["_score"] = round(_score, 4)
@@ -272,7 +272,7 @@ def relation_to_dict(r: Relation, _score: Optional[float] = None,
         "attributes": r.attributes,
         "confidence": r.confidence,
         "valid_at": _fd(r.valid_at),
-        "invalid_at": _fd(r.invalid_at),
+        "version_seq": r.version_seq,
     }
     if _score is not None:
         d["_score"] = round(_score, 4)

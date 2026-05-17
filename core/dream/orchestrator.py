@@ -465,7 +465,7 @@ class DreamOrchestrator:
                     )
                     for ent in sim_results:
                         efid = ent.family_id
-                        if efid and efid != fid and ent.invalid_at is None:
+                        if efid and efid != fid:
                             info = {
                                 "family_id": efid,
                                 "name": ent.name,

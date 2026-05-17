@@ -68,7 +68,7 @@ def _row_to_entity(row: dict, _now: Optional[datetime] = None) -> Entity:
         source_document=row.get("source_document") or "",
         embedding=_emb,
         valid_at=_parse_dt(row.get("valid_at")),
-        invalid_at=_parse_dt(row.get("invalid_at")),
+        version_seq=row.get("version_seq", 1) or 1,
         summary=row.get("summary"),
         attributes=row.get("attributes"),
         confidence=float(row["confidence"]) if row.get("confidence") is not None else None,
@@ -100,7 +100,7 @@ def _row_to_relation(row: dict, _now: Optional[datetime] = None) -> Relation:
         source_document=row.get("source_document") or "",
         embedding=_emb,
         valid_at=_parse_dt(row.get("valid_at")),
-        invalid_at=_parse_dt(row.get("invalid_at")),
+        version_seq=row.get("version_seq", 1) or 1,
         summary=row.get("summary"),
         attributes=row.get("attributes"),
         confidence=float(row["confidence"]) if row.get("confidence") is not None else None,
@@ -143,7 +143,7 @@ def _get_cached_now() -> datetime:
 ENTITY_COLUMNS = [
     "uuid", "family_id", "graph_id", "name", "content", "summary",
     "attributes", "confidence", "content_format", "community_id",
-    "valid_at", "invalid_at", "event_time", "processed_time",
+    "version_seq", "valid_at", "event_time", "processed_time",
     "episode_id", "source_document", "embedding",
 ]
 
@@ -153,7 +153,7 @@ RELATION_COLUMNS = [
     "entity1_family_id", "entity2_family_id",
     "content", "summary", "attributes", "confidence", "provenance",
     "content_format",
-    "valid_at", "invalid_at", "event_time", "processed_time",
+    "version_seq", "valid_at", "event_time", "processed_time",
     "episode_id", "source_document", "embedding",
 ]
 
