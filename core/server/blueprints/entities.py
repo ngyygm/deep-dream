@@ -1009,7 +1009,7 @@ def resolve_entity_contradiction(family_id: str):
         return err(str(e), 500)
 
 
-# ── Entity neighbors (Neo4j) ──────────────────────────────────────────────
+# ── Entity neighbors ──────────────────────────────────────────────────
 
 @entities_bp.route("/api/v1/find/entities/<entity_uuid>/neighbors", methods=["GET"])
 @safe_endpoint
@@ -1017,7 +1017,7 @@ def find_entity_neighbors(entity_uuid: str):
     try:
         processor = _get_processor()
         if not hasattr(processor.storage, 'get_entity_neighbors'):
-            return err("此功能需要 Neo4j 后端", 400)
+            return err("此功能暂不可用", 400)
         depth = min(max(int(request.args.get('depth', 1)), 1), 5)
         with _perf_timer(f"find_entity_neighbors | depth={depth}"):
             result = processor.storage.get_entity_neighbors(entity_uuid, depth=depth)

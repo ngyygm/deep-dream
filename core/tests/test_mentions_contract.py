@@ -148,7 +148,7 @@ class TestMENTIONSProperties:
 
 
 class TestMENTIONSWithMockedStorage:
-    """Test MENTIONS creation with mocked Neo4j storage."""
+    """Test MENTIONS creation with mocked storage backend."""
 
     @pytest.fixture
     def mock_storage(self):
@@ -327,61 +327,6 @@ class TestMENTIONSEpisodeDeletion:
         mock_storage.delete_episode_mentions.assert_called_once_with(episode_id)
 
 
-
-
-class TestMENTIONSWithNeo4jStorage:
-    """Test MENTIONS contract with Neo4j storage backend."""
-
-    def test_neo4j_mentions_edge_creation(self):
-        """Neo4j creates MENTIONS relationship between Episode and Entity."""
-        episode_id = "ep_neo_001"
-        entity_id = "ent_neo_a"
-        graph_id = "test_graph"
-
-        # Expected Cypher pattern:
-        # MATCH (ep:Episode {uuid: $ep_id})
-        # MATCH (e:Entity {uuid: $abs_id})
-        # MERGE (ep)-[m:MENTIONS]->(e)
-
-        expected_elements = {
-            "episode_label": "Episode",
-            "entity_label": "Entity",
-            "relationship_type": "MENTIONS",
-            "episode_uuid": episode_id,
-            "entity_uuid": entity_id
-        }
-
-        assert expected_elements["episode_label"] == "Episode"
-        assert expected_elements["relationship_type"] == "MENTIONS"
-
-    def test_neo4j_mentions_with_graph_id_isolation(self):
-        """MENTIONS edges respect graph_id for multi-tenant isolation."""
-        graph_id = "tenant_123"
-        episode_id = "ep_tenant"
-        entity_id = "ent_tenant"
-
-        # Graph isolation ensures MENTIONS from one graph
-        # don't leak to another
-        isolation_context = {
-            "graph_id": graph_id,
-            "episode_id": episode_id,
-            "entity_id": entity_id
-        }
-
-        assert isolation_context["graph_id"] == "tenant_123"
-
-    def test_neo4j_mentions_unwind_batch_insert(self):
-        """Neo4j uses UNWIND for batch MENTIONS insertion."""
-        episode_id = "ep_batch"
-        entity_ids = [f"ent_{i}" for i in range(100)]
-
-        # Expected Cypher pattern:
-        # UNWIND $items AS item
-        # MATCH (e:Entity {uuid: item.abs_id})
-        # MERGE (ep:Episode {uuid: $ep_id})-[m:MENTIONS]->(e)
-
-        assert len(entity_ids) == 100
-        assert all(eid.startswith("ent_") for eid in entity_ids)
 
 
 class TestMENTIONSRelationType:

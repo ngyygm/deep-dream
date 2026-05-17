@@ -28,7 +28,7 @@ class HybridSearcher:
     def __init__(self, storage: Any):
         """
         Args:
-            storage: Neo4jStorageManager 实例
+            storage: SQLiteGraphStorageManager 实例
         """
         self.storage = storage
         self._traverser = None  # Lazy-initialized GraphTraversalSearcher

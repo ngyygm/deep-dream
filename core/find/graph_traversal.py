@@ -66,7 +66,7 @@ class GraphTraversalSearcher:
         Returns:
             (entities, relations, visited_family_ids)
         """
-        # 优先使用批量 BFS（Neo4j 后端）
+        # 优先使用批量 BFS
         if hasattr(self.storage, 'batch_bfs_traverse'):
             try:
                 entities, relations, visited = self.storage.batch_bfs_traverse(

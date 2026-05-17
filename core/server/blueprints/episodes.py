@@ -1,6 +1,6 @@
 """
 Episodes blueprint — Episode CRUD, search, batch ingest, snapshots, changes,
-Neo4j episode list, and document management routes.
+episode list, and document management routes.
 """
 from __future__ import annotations
 
@@ -164,7 +164,7 @@ def batch_ingest_episodes():
             )
             episode_objects.append(mc)
         if episode_objects:
-            # Use bulk save for Neo4j
+            # Use bulk save if available
             if hasattr(processor.storage, 'bulk_save_episodes'):
                 processor.storage.bulk_save_episodes(episode_objects)
             else:
@@ -235,7 +235,7 @@ def find_changes():
 
 
 # =========================================================
-# Neo4j Episodes
+# Episodes
 # =========================================================
 
 @episodes_bp.route("/api/v1/episodes", methods=["GET"])
@@ -244,7 +244,7 @@ def list_episodes():
     try:
         processor = _get_processor()
         if not hasattr(processor.storage, 'list_episodes'):
-            return err("此功能需要 Neo4j 后端", 400)
+            return err("此功能需要 SQLite 后端", 400)
         limit = min(max(int(request.args.get('limit', 20)), 1), 100)
         offset = max(int(request.args.get('offset', 0)), 0)
         include_text = request.args.get('include_text', '0') in ('1', 'true')
@@ -261,7 +261,7 @@ def get_episode(uuid: str):
     try:
         processor = _get_processor()
         if not hasattr(processor.storage, 'get_episode'):
-            return err("此功能需要 Neo4j 后端", 400)
+            return err("此功能需要 SQLite 后端", 400)
         episode = processor.storage.get_episode(uuid)
         if episode is None:
             return err("Episode 不存在", 404)
@@ -276,7 +276,7 @@ def get_episode_entities(uuid: str):
     try:
         processor = _get_processor()
         if not hasattr(processor.storage, 'get_episode_entities'):
-            return err("此功能需要 Neo4j 后端", 400)
+            return err("此功能需要 SQLite 后端", 400)
         entities = processor.storage.get_episode_entities(uuid)
         return ok({"entities": entities})
     except Exception as e:
@@ -284,12 +284,12 @@ def get_episode_entities(uuid: str):
 
 
 @episodes_bp.route("/api/v1/episodes/search", methods=["POST"])
-def neo4j_search_episodes():
-    """搜索 Episodes（Neo4j 专属）。"""
+def search_episodes_v2():
+    """搜索 Episodes。"""
     try:
         processor = _get_processor()
         if not hasattr(processor.storage, 'search_episodes'):
-            return err("此功能需要 Neo4j 后端", 400)
+            return err("此功能需要 SQLite 后端", 400)
         body = request.get_json(silent=True) or {}
         query = (body.get("query") or "").strip()
         if not query:
@@ -302,12 +302,12 @@ def neo4j_search_episodes():
 
 
 @episodes_bp.route("/api/v1/episodes/<uuid>", methods=["DELETE"])
-def neo4j_delete_episode(uuid: str):
-    """删除 Episode（Neo4j 专属）。"""
+def delete_episode(uuid: str):
+    """删除 Episode。"""
     try:
         processor = _get_processor()
         if not hasattr(processor.storage, 'delete_episode'):
-            return err("此功能需要 Neo4j 后端", 400)
+            return err("此功能需要 SQLite 后端", 400)
         success = processor.storage.delete_episode(uuid)
         if not success:
             return err("Episode 不存在或删除失败", 404)

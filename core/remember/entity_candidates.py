@@ -163,14 +163,14 @@ class EntityCandidateBuilder:
         _t_encode = time.monotonic()
         wprint_info(f"[candidate_timing] embedding encode: {_t_encode - _t_proj:.3f}s ({len(extracted_entities)} entities)")
 
-        # Vectorized similarity via Neo4j vector index top-K queries
+        # Vectorized similarity via embedding top-K queries
         top_k = max(len(projections), self.max_alignment_candidates or 50, 50)
         name_emb_scores, full_emb_scores = self._search_embedding_top_k(
             extracted_entities, name_embeddings, full_embeddings, top_k,
         )
 
         _t_matrix = time.monotonic()
-        wprint_info(f"[candidate_timing] Neo4j vector top-K search: {_t_matrix - _t_encode:.3f}s")
+        wprint_info(f"[candidate_timing] embedding vector top-K search: {_t_matrix - _t_encode:.3f}s")
 
         # Pre-compute core names for all projections (avoids E × P calls to normalize function)
         for p in projections:
@@ -285,7 +285,7 @@ class EntityCandidateBuilder:
         return candidate_table
 
     # ------------------------------------------------------------------
-    # Internal: Neo4j vector index top-K search
+    # Internal: embedding vector top-K search
     # ------------------------------------------------------------------
 
     def _search_embedding_top_k(
@@ -295,7 +295,7 @@ class EntityCandidateBuilder:
         full_embeddings,
         top_k: int,
     ) -> Tuple[Dict[int, Dict[str, float]], Dict[int, Dict[str, float]]]:
-        """Use Neo4j vector index to find top-K similar entities per extracted entity.
+        """Use embedding search to find top-K similar entities per extracted entity.
 
         Returns:
             (name_scores, full_scores) — each is {extracted_idx: {family_id: cosine_score}}
@@ -303,7 +303,7 @@ class EntityCandidateBuilder:
         name_scores: Dict[int, Dict[str, float]] = {}
         full_scores: Dict[int, Dict[str, float]] = {}
 
-        if not hasattr(self.storage, '_session'):
+        if not hasattr(self.storage, '_session') and not hasattr(self.storage, 'search_entities_by_similarity'):
             return name_scores, full_scores
 
         for idx in range(len(extracted_entities)):
@@ -314,7 +314,7 @@ class EntityCandidateBuilder:
                     norm = np.linalg.norm(query_emb)
                     if norm > 0:
                         query_emb = query_emb / norm
-                    name_scores[idx] = self._neo4j_vector_search(query_emb.tolist(), top_k)
+                    name_scores[idx] = self._backend_vector_search(query_emb.tolist(), top_k)
 
             # Full text (name + content) search
             if full_embeddings is not None:
@@ -323,34 +323,24 @@ class EntityCandidateBuilder:
                     norm = np.linalg.norm(query_emb)
                     if norm > 0:
                         query_emb = query_emb / norm
-                    full_scores[idx] = self._neo4j_vector_search(query_emb.tolist(), top_k)
+                    full_scores[idx] = self._backend_vector_search(query_emb.tolist(), top_k)
 
         return name_scores, full_scores
 
-    def _neo4j_vector_search(self, query_vector: List[float], top_k: int) -> Dict[str, float]:
-        """Execute a single Neo4j vector index query, returning {family_id: score}."""
+    def _backend_vector_search(self, query_vector: List[float], top_k: int) -> Dict[str, float]:
+        """Execute a vector search using the storage backend, returning {family_id: score}."""
         results = {}
         try:
-            with self.storage._session() as session:
-                graph_id = getattr(self.storage, '_graph_id', 'default')
-                result = session.run(
-                    """
-                    CALL db.index.vector.queryNodes('entity_embedding', $k, $queryVector)
-                    YIELD node, score
-                    WHERE node.graph_id = $graph_id AND node.invalid_at IS NULL
-                    RETURN node.family_id AS family_id, score
-                    ORDER BY score DESC
-                    """,
-                    k=top_k,
-                    queryVector=query_vector,
-                    graph_id=graph_id,
-                )
-                for record in result:
-                    fid = record["family_id"]
+            if hasattr(self.storage, 'search_entities_by_similarity'):
+                # SQLite or other backends with a native similarity search method
+                hits = self.storage.search_entities_by_similarity(query_vector, limit=top_k)
+                for hit in hits:
+                    fid = hit.family_id if hasattr(hit, 'family_id') else hit.get('family_id')
+                    score = hit.score if hasattr(hit, 'score') else hit.get('score', 0.0)
                     if fid:
-                        results[fid] = float(record["score"])
+                        results[fid] = float(score)
         except Exception as e:
-            logger.debug("Neo4j vector search in alignment failed: %s", e)
+            logger.debug("Vector search in alignment failed: %s", e)
         return results
 
     def _compute_sim_matrix(self, query_embeddings, stored_emb_matrix, stored_dim, label):

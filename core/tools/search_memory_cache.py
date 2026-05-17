@@ -32,9 +32,9 @@ else:
     sys.path.insert(0, str(Path("/home/linkco/exa/DeepDream")))
 
 try:
-    from core.storage.neo4j import Neo4jStorageManager
+    from core.storage.sqlite.manager import SQLiteGraphStorageManager
 except ImportError:
-    print("错误: 无法导入 Neo4jStorageManager")
+    print("错误: 无法导入 SQLiteGraphStorageManager")
     print("请确保 DeepDream 在正确的位置")
     sys.exit(1)
 
@@ -155,13 +155,10 @@ def main():
 
     args = parser.parse_args()
 
-    storage = Neo4jStorageManager(
-        args.storage_path,
-        neo4j_uri=os.environ.get("NEO4J_URI", "bolt://localhost:7687"),
-        neo4j_auth=(
-            os.environ.get("NEO4J_USER", "neo4j"),
-            os.environ.get("NEO4J_PASSWORD", "password"),
-        ),
+    storage = SQLiteGraphStorageManager(
+        storage_path=args.storage_path,
+        vector_dim=1024,
+        graph_id="default",
     )
 
     print("=" * 80)

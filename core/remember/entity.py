@@ -17,7 +17,6 @@ logger = logging.getLogger(__name__)
 
 from core.debug_log import log as dbg, log_struct as _dbg_struct, log_section as _dbg_section
 from core.models import Entity, Episode, ContentPatch
-from core.storage.neo4j_store import Neo4jStorageManager
 from core.llm.client import LLMClient
 from core.utils import wprint_info, calculate_jaccard_similarity, cosine_similarity
 
@@ -87,7 +86,7 @@ def _preprocess_extraction_context(extracted_entities, extracted_relations):
 class EntityProcessor:
     """实体处理器 - 负责实体的搜索、对齐、更新和新建"""
     
-    def __init__(self, storage: Neo4jStorageManager, llm_client: LLMClient,
+    def __init__(self, storage, llm_client: LLMClient,
                  max_similar_entities: int = 10, content_snippet_length: int = 50,
                  max_alignment_candidates: Optional[int] = None,
                  verbose: bool = True,
@@ -521,9 +520,9 @@ class EntityProcessor:
                 if self._entity_tree_log():
                     wprint_info(f"  │  持久化去重: 移除 {_dup_count} 个重复 family_id 的待持久化实体")
                 entities_to_persist_final = _deduped
-            # 批量保存实体（UNWIND 一次写入，减少 Neo4j 连接数）
+            # 批量保存实体
             _corro_fids = []
-            # 预计算所有 embedding（CPU 密集，不需要 Neo4j session）
+            # 预计算所有 embedding（CPU 密集）
             for e in entities_to_persist_final:
                 try:
                     _emb_result = self.storage._compute_entity_embedding(e)

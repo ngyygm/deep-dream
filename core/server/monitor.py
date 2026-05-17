@@ -331,7 +331,7 @@ class GraphMonitor:
 
 
 # ---------------------------------------------------------------------------
-# RetryCounter — Retry tracking for LLM and Neo4j operations
+# RetryCounter — Retry tracking for LLM and storage operations
 # ---------------------------------------------------------------------------
 
 class RetryCounter:
@@ -345,9 +345,9 @@ class RetryCounter:
         """Increment retry count for a given category and label.
 
         Args:
-            category: Either "llm" or "neo4j"
+            category: Either "llm" or "storage"
             label: For LLM: error type (e.g., "rate_limit", "timeout")
-                    For Neo4j: operation name (e.g., "bulk_save_entities", "save_relation")
+                    For storage: operation name (e.g., "bulk_save_entities", "save_relation")
         """
         with self._lock:
             key = (category, label)
@@ -357,15 +357,15 @@ class RetryCounter:
         """Return current retry statistics, grouped by category."""
         with self._lock:
             llm_stats: Dict[str, int] = {}
-            neo4j_stats: Dict[str, int] = {}
+            storage_stats: Dict[str, int] = {}
             for (category, label), count in self._counts.items():
                 if category == "llm":
                     llm_stats[label] = count
-                elif category == "neo4j":
-                    neo4j_stats[label] = count
+                elif category == "storage":
+                    storage_stats[label] = count
             return {
                 "llm": llm_stats,
-                "neo4j": neo4j_stats,
+                "storage": storage_stats,
                 "total_retries": sum(self._counts.values()),
             }
 

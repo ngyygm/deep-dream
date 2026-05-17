@@ -18,7 +18,6 @@ from core.storage.embedding import EmbeddingClient
 from core.storage import create_storage_manager
 from core.remember.orchestrator import TemporalMemoryGraphProcessor
 from core.dream import DreamOrchestrator, DreamConfig
-from core.storage.neo4j_store import Neo4jStorageManager
 
 if TYPE_CHECKING:
     from core.server.monitor import SystemMonitor
@@ -315,20 +314,24 @@ class GraphRegistry:
                 raise KeyError(f"Graph '{graph_id}' not found")
 
             storage = processor.storage
-            with storage._session() as session:
-                gid = storage._graph_id
-                session.run(
-                    "MATCH (ep:Episode) WHERE ep.graph_id = $gid DETACH DELETE ep",
-                    gid=gid,
-                )
-                session.run(
-                    "MATCH (r:Relation) WHERE r.graph_id = $gid DETACH DELETE r",
-                    gid=gid,
-                )
-                session.run(
-                    "MATCH (e:Entity) WHERE e.graph_id = $gid DETACH DELETE e",
-                    gid=gid,
-                )
+            # Use backend-agnostic clear method if available, otherwise fall back to _session
+            if hasattr(storage, "clear_graph_data"):
+                storage.clear_graph_data()
+            else:
+                with storage._session() as session:
+                    gid = storage._graph_id
+                    session.run(
+                        "MATCH (ep:Episode) WHERE ep.graph_id = $gid DETACH DELETE ep",
+                        gid=gid,
+                    )
+                    session.run(
+                        "MATCH (r:Relation) WHERE r.graph_id = $gid DETACH DELETE r",
+                        gid=gid,
+                    )
+                    session.run(
+                        "MATCH (e:Entity) WHERE e.graph_id = $gid DETACH DELETE e",
+                        gid=gid,
+                    )
 
             # 清理文件系统：docs 目录下的 episode 文件
             import shutil
@@ -340,7 +343,7 @@ class GraphRegistry:
                             shutil.rmtree(child, ignore_errors=True)
 
             logging.getLogger(__name__).info(
-                "Cleared Neo4j data + file cache for graph '%s'", graph_id,
+                "Cleared graph data + file cache for graph '%s'", graph_id,
             )
 
     def delete_graph(self, graph_id: str) -> None:
@@ -365,29 +368,32 @@ class GraphRegistry:
             # 3. 移除 processor（关闭 DB 连接）
             processor = self._processors.pop(graph_id, None)
 
-            # 4. 删除该 graph_id 的所有 Neo4j 节点
+            # 4. 删除该 graph_id 的所有数据节点
             if processor:
                 try:
-                    with processor.storage._session() as session:
-                        gid = processor.storage._graph_id
-                        session.run(
-                            "MATCH (ep:Episode) WHERE ep.graph_id = $gid DETACH DELETE ep",
-                            gid=gid,
-                        )
-                        session.run(
-                            "MATCH (r:Relation) WHERE r.graph_id = $gid DETACH DELETE r",
-                            gid=gid,
-                        )
-                        session.run(
-                            "MATCH (e:Entity) WHERE e.graph_id = $gid DETACH DELETE e",
-                            gid=gid,
-                        )
+                    if hasattr(processor.storage, "delete_graph_data"):
+                        processor.storage.delete_graph_data()
+                    else:
+                        with processor.storage._session() as session:
+                            gid = processor.storage._graph_id
+                            session.run(
+                                "MATCH (ep:Episode) WHERE ep.graph_id = $gid DETACH DELETE ep",
+                                gid=gid,
+                            )
+                            session.run(
+                                "MATCH (r:Relation) WHERE r.graph_id = $gid DETACH DELETE r",
+                                gid=gid,
+                            )
+                            session.run(
+                                "MATCH (e:Entity) WHERE e.graph_id = $gid DETACH DELETE e",
+                                gid=gid,
+                            )
                     logging.getLogger(__name__).info(
-                        "Deleted Neo4j data for graph '%s'", graph_id,
+                        "Deleted graph data for graph '%s'", graph_id,
                     )
                 except Exception as _e:
                     logging.getLogger(__name__).warning(
-                        "删除 graph %s Neo4j 数据失败: %s", graph_id, _e,
+                        "删除 graph %s 数据失败: %s", graph_id, _e,
                     )
 
             if processor and hasattr(processor.storage, "close"):

@@ -680,7 +680,7 @@ def butler_report():
             processor.embedding_client is not None
             and processor.embedding_client.is_available()
         )
-        storage_backend = "neo4j"
+        storage_backend = "sqlite"
 
         health = {
             "graph_id": request.graph_id,
@@ -833,7 +833,7 @@ def butler_execute():
             elif action == "detect_communities":
                 if hasattr(storage, 'detect_communities'):
                     return storage.detect_communities()
-                return {"status": "skipped", "reason": "需要 Neo4j 后端"}
+                return {"status": "skipped", "reason": "当前存储后端不支持社区检测"}
 
             return {"status": "unknown", "reason": f"未知操作: {action}"}
 

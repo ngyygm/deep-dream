@@ -580,11 +580,11 @@ def find_shortest_paths():
 
 @relations_bp.route("/api/v1/find/paths/shortest-cypher", methods=["POST"])
 def find_shortest_path_cypher():
-    """使用 Cypher shortestPath 查找路径（Neo4j 专属）。"""
+    """使用 Cypher shortestPath 查找路径。"""
     try:
         processor = _get_processor()
         if not hasattr(processor.storage, 'find_shortest_path_cypher'):
-            return err("此功能需要 Neo4j 后端", 400)
+            return err("当前存储后端不支持 Cypher 路径查询", 400)
         body = request.get_json(silent=True) or {}
         entity_a = (body.get("family_id_a") or body.get("entity_a") or "").strip()
         entity_b = (body.get("family_id_b") or body.get("entity_b") or "").strip()
@@ -1103,7 +1103,7 @@ def graph_summary():
             processor.embedding_client is not None
             and processor.embedding_client.is_available()
         )
-        storage_backend = "neo4j"
+        storage_backend = "sqlite"
         return ok({
             "graph_id": _get_graph_id(),
             "storage_backend": storage_backend,

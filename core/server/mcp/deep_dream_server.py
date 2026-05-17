@@ -380,8 +380,8 @@ def _error_hint(data):
         hints.append("Hint: use list_communities to see valid community IDs. Run detect_communities first if empty.")
     if "not found" in lower and "task" in lower:
         hints.append("Hint: use remember_tasks to list all tasks with valid IDs.")
-    if "neo4j" in lower and "not available" in lower:
-        hints.append("Hint: this feature requires Neo4j backend.")
+    if "sqlite" in lower and "not available" in lower:
+        hints.append("Hint: this feature requires SQLite backend.")
     if "context budget" in lower or "token" in lower:
         hints.append("Hint: reduce max_entities/max_relations or shorten your query.")
     if "already exists" in lower:
@@ -783,13 +783,13 @@ _t("get_relations_between", "Find all relations connecting two entities. Returns
     "entity_b": {"type": "string", "description": "Second entity family_id"},
 }, ["entity_a", "entity_b"])
 
-_t("search_shortest_path", "Find the shortest path between two entities in the graph. Returns intermediate entities and relations along the path. Use this to discover how two seemingly unrelated entities are connected. Requires Neo4j backend. Start with max_depth=5, increase for sparse graphs.", {
+_t("search_shortest_path", "Find the shortest path between two entities in the graph. Returns intermediate entities and relations along the path. Use this to discover how two seemingly unrelated entities are connected. Start with max_depth=5, increase for sparse graphs.", {
     "from_entity": {"type": "string", "description": "Start entity family_id"},
     "to_entity": {"type": "string", "description": "End entity family_id"},
     "max_depth": {"type": "integer", "description": "Max search depth (default 5). Increase for sparse graphs."},
 }, ["from_entity", "to_entity"])
 
-_t("search_shortest_path_cypher", "Find shortest path using native Cypher query. Same as search_shortest_path but uses Neo4j Cypher directly. Prefer search_shortest_path unless you need Cypher-specific behavior.", {
+_t("search_shortest_path_cypher", "Find shortest path using native Cypher query. Same as search_shortest_path but uses Cypher directly. Prefer search_shortest_path unless you need Cypher-specific behavior.", {
     "from_entity": {"type": "string", "description": "Start entity family_id"},
     "to_entity": {"type": "string", "description": "End entity family_id"},
     "max_depth": {"type": "integer", "description": "Max search depth (default 5)"},
@@ -935,7 +935,7 @@ _t("get_suggestions", "Get AI-curated suggestions for entities worth exploring. 
 
 # ── Communities (5) ──────────────────────────────────────────────────────
 
-_t("detect_communities", "Run community detection on the graph. Returns community assignments for entities. Requires Neo4j backend. After detection, use list_communities to see results and get_community to inspect members. Higher resolution = more, smaller communities.", {
+_t("detect_communities", "Run community detection on the graph. Returns community assignments for entities. After detection, use list_communities to see results and get_community to inspect members. Higher resolution = more, smaller communities.", {
     "algorithm": {"type": "string", "description": "Algorithm: louvain (default) or label_propagation"},
     "resolution": {"type": "number", "description": "Resolution parameter for louvain (default 1.0). Higher values produce more, smaller communities."},
 })
@@ -983,21 +983,21 @@ _t("get_doc_content", "Get the full content of a stored document by filename. Us
 }, ["filename"])
 
 
-# ── Neo4j (3) ────────────────────────────────────────────────────────────
+# ── Low-level (3) ─────────────────────────────────────────────────────────
 
-_t("get_entity_neighbors", "Get immediate graph neighbors of an entity from Neo4j. Requires the entity's UUID (Neo4j internal ID, not family_id). For most use cases, entity_profile or traverse_graph are easier as they accept family_id. Only use this for low-level Neo4j access.", {
-    "uuid": {"type": "string", "description": "Entity UUID (Neo4j internal ID, not family_id)"},
+_t("get_entity_neighbors", "Get immediate graph neighbors of an entity. Requires the entity's UUID (internal ID, not family_id). For most use cases, entity_profile or traverse_graph are easier as they accept family_id. Only use this for low-level access.", {
+    "uuid": {"type": "string", "description": "Entity UUID (internal ID, not family_id)"},
     "direction": {"type": "string", "description": "Edge direction: 'outgoing', 'incoming', or 'both' (default)"},
     "limit": {"type": "integer", "description": "Max neighbors to return"},
 }, ["uuid"])
 
-_t("list_episodes", "List all episodes stored in Neo4j with pagination. For searching episode content, use search_episodes. Requires Neo4j backend.", {
+_t("list_episodes", "List all episodes with pagination. For searching episode content, use search_episodes.", {
     "limit": {"type": "integer", "description": "Max results to return"},
     "offset": {"type": "integer", "description": "Offset for pagination (0-based)"},
 })
 
-_t("get_neo4j_episode", "Get a specific episode by its Neo4j UUID. Returns the full episode record. For cache_id based access, use get_episode_by_id instead.", {
-    "uuid": {"type": "string", "description": "Episode UUID (Neo4j internal ID)"},
+_t("get_episode_by_uuid", "Get a specific episode by its UUID. Returns the full episode record. For cache_id based access, use get_episode_by_id instead.", {
+    "uuid": {"type": "string", "description": "Episode UUID (internal ID)"},
 }, ["uuid"])
 
 
@@ -2560,7 +2560,7 @@ def get_doc_content(args):
     return _result(*_get(f"/api/v1/docs/{args['filename']}"))
 
 
-# ── Neo4j ─────────────────────────────────────────────────────────────────
+# ── Low-level ────────────────────────────────────────────────────────────────
 
 @_register
 def get_entity_neighbors(args):
@@ -2571,7 +2571,7 @@ def get_entity_neighbors(args):
         qp["limit"] = str(args["limit"])
     data, code = _get(f"/api/v1/find/entities/{args['uuid']}/neighbors", **qp)
     if code < 400 and isinstance(data, dict):
-        _hint(data, "\n→ Neo4j neighbors. For family_id-based access, use traverse_graph or entity_profile instead.")
+        _hint(data, "\n→ Entity neighbors. For family_id-based access, use traverse_graph or entity_profile instead.")
     return _result(data, code)
 
 
@@ -2597,7 +2597,7 @@ def list_episodes(args):
 
 
 @_register
-def get_neo4j_episode(args):
+def get_episode_by_uuid(args):
     data, code = _get(f"/api/v1/episodes/{args['uuid']}")
     if code < 400 and isinstance(data, dict):
         inner = _inner(data)
