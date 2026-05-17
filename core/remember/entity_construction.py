@@ -8,7 +8,7 @@ import uuid
 import logging
 
 from core.models import Entity
-from core.storage.neo4j_store import Neo4jStorageManager
+from core.storage.sqlite.manager import SQLiteGraphStorageManager as Neo4jStorageManager
 from core.content_schema import (
     ENTITY_SECTIONS,
     compute_content_patches,

@@ -70,6 +70,9 @@ class Relation:
     entity1_family_id: str = ""  # 第一个实体的家族ID（冗余存储，便于查询）
     entity2_family_id: str = ""  # 第二个实体的家族ID（冗余存储，便于查询）
     version_seq: int = 1  # 版本序号，每次跨 Episode 提及递增
+    embedding: Optional[bytes] = None  # Embedding向量（BLOB格式，可选）
+    valid_at: Optional[datetime] = None  # 事实生效时间
+    summary: Optional[str] = None  # 关系摘要（由 LLM 进化维护）
     attributes: Optional[str] = None  # JSON 字符串，结构化属性字典
     confidence: Optional[float] = None  # 置信度评分 (0.0-1.0)
     provenance: Optional[str] = None  # JSON: [{"episode_id": "...", "confidence": 0.9}, ...]

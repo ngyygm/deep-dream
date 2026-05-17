@@ -10,7 +10,7 @@ import numpy as np
 import logging
 
 from core.models import Entity
-from core.storage.neo4j_store import Neo4jStorageManager
+from core.storage.sqlite.manager import SQLiteGraphStorageManager as Neo4jStorageManager
 from core.llm.client import LLMClient
 from core.utils import wprint_info
 from core.debug_log import log_struct as _dbg_struct

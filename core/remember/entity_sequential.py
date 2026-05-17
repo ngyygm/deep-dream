@@ -8,7 +8,7 @@ import logging
 import numpy as np
 
 from core.models import Entity, Episode
-from core.storage.neo4j_store import Neo4jStorageManager
+from core.storage.sqlite.manager import SQLiteGraphStorageManager as Neo4jStorageManager
 from core.llm.client import LLMClient
 from core.utils import wprint_info
 from core.debug_log import log_struct as _dbg_struct
