@@ -1,7 +1,7 @@
 """Schema creation for SQLite graph storage."""
 
 _SCHEMA_SQL = """
--- Entities (versioned by family_id)
+-- Entities (versioned by family_id, append-only version chain)
 CREATE TABLE IF NOT EXISTS entity (
     uuid TEXT PRIMARY KEY,
     family_id TEXT NOT NULL,
@@ -13,8 +13,8 @@ CREATE TABLE IF NOT EXISTS entity (
     confidence REAL,
     content_format TEXT DEFAULT 'plain',
     community_id TEXT,
+    version_seq INTEGER DEFAULT 1,
     valid_at TEXT,
-    invalid_at TEXT,
     event_time TEXT,
     processed_time TEXT,
     episode_id TEXT DEFAULT '',
@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS entity (
     embedding BLOB
 );
 
--- Relations (versioned by family_id)
+-- Relations (versioned by family_id, append-only version chain)
 CREATE TABLE IF NOT EXISTS relation (
     uuid TEXT PRIMARY KEY,
     family_id TEXT NOT NULL,
@@ -37,8 +37,8 @@ CREATE TABLE IF NOT EXISTS relation (
     confidence REAL,
     provenance TEXT,
     content_format TEXT DEFAULT 'plain',
+    version_seq INTEGER DEFAULT 1,
     valid_at TEXT,
-    invalid_at TEXT,
     event_time TEXT,
     processed_time TEXT,
     episode_id TEXT DEFAULT '',
@@ -134,25 +134,22 @@ CREATE INDEX IF NOT EXISTS idx_entity_graph_uuid ON entity(graph_id, uuid);
 CREATE INDEX IF NOT EXISTS idx_entity_name ON entity(name);
 CREATE INDEX IF NOT EXISTS idx_entity_processed_time ON entity(processed_time);
 CREATE INDEX IF NOT EXISTS idx_entity_event_time ON entity(event_time);
-CREATE INDEX IF NOT EXISTS idx_entity_graph_family_invalid ON entity(graph_id, family_id, invalid_at);
-CREATE INDEX IF NOT EXISTS idx_entity_invalid_at ON entity(invalid_at);
+CREATE INDEX IF NOT EXISTS idx_entity_graph_family_vseq ON entity(graph_id, family_id, version_seq DESC);
 CREATE INDEX IF NOT EXISTS idx_entity_valid_at ON entity(valid_at);
 CREATE INDEX IF NOT EXISTS idx_entity_confidence ON entity(confidence);
 CREATE INDEX IF NOT EXISTS idx_entity_community ON entity(community_id);
 CREATE INDEX IF NOT EXISTS idx_entity_episode_id ON entity(episode_id);
 CREATE INDEX IF NOT EXISTS idx_entity_source_document ON entity(source_document);
-CREATE INDEX IF NOT EXISTS idx_entity_graph_invalid ON entity(graph_id, invalid_at);
 
 CREATE INDEX IF NOT EXISTS idx_relation_family_id ON relation(family_id);
 CREATE INDEX IF NOT EXISTS idx_relation_graph_family ON relation(graph_id, family_id);
 CREATE INDEX IF NOT EXISTS idx_relation_graph_uuid ON relation(graph_id, uuid);
 CREATE INDEX IF NOT EXISTS idx_relation_entities ON relation(entity1_absolute_id, entity2_absolute_id);
-CREATE INDEX IF NOT EXISTS idx_relation_graph_family_invalid ON relation(graph_id, family_id, invalid_at);
+CREATE INDEX IF NOT EXISTS idx_relation_graph_family_vseq ON relation(graph_id, family_id, version_seq DESC);
 CREATE INDEX IF NOT EXISTS idx_relation_processed_time ON relation(processed_time);
 CREATE INDEX IF NOT EXISTS idx_relation_source_document ON relation(source_document);
-CREATE INDEX IF NOT EXISTS idx_relation_invalid_at ON relation(invalid_at);
-CREATE INDEX IF NOT EXISTS idx_relation_graph_e1_invalid ON relation(graph_id, entity1_absolute_id, invalid_at);
-CREATE INDEX IF NOT EXISTS idx_relation_graph_e2_invalid ON relation(graph_id, entity2_absolute_id, invalid_at);
+CREATE INDEX IF NOT EXISTS idx_relation_graph_e1_family ON relation(graph_id, entity1_family_id);
+CREATE INDEX IF NOT EXISTS idx_relation_graph_e2_family ON relation(graph_id, entity2_family_id);
 
 CREATE INDEX IF NOT EXISTS idx_episode_graph_uuid ON episode(graph_id, uuid);
 CREATE INDEX IF NOT EXISTS idx_episode_doc_hash ON episode(doc_hash);
@@ -171,9 +168,26 @@ CREATE INDEX IF NOT EXISTS idx_mentions_target ON mentions(target_uuid);
 CREATE INDEX IF NOT EXISTS idx_mentions_entity_abs ON mentions(entity_absolute_id);
 """
 
+_MIGRATION_SQL = """
+-- Migration: add version_seq column to tables that lack it.
+-- Called by init_schema() when detecting old schema.
+"""
+
+_MIGRATION_INDEXES_SQL = """
+-- Drop old invalid_at indexes (safe IF EXISTS)
+DROP INDEX IF EXISTS idx_entity_graph_family_invalid;
+DROP INDEX IF EXISTS idx_entity_invalid_at;
+DROP INDEX IF EXISTS idx_entity_graph_invalid;
+DROP INDEX IF EXISTS idx_relation_graph_family_invalid;
+DROP INDEX IF EXISTS idx_relation_invalid_at;
+DROP INDEX IF EXISTS idx_relation_graph_e1_invalid;
+DROP INDEX IF EXISTS idx_relation_graph_e2_invalid;
+"""
+
 
 def init_schema(conn):
-    """Create all tables and indexes."""
+    """Create all tables and indexes. Handles migration from old schema."""
+    _migrate_if_needed(conn)
     for stmt in _SCHEMA_SQL.split(";"):
         stmt = stmt.strip()
         if stmt:
@@ -182,4 +196,53 @@ def init_schema(conn):
         stmt = stmt.strip()
         if stmt:
             conn.execute(stmt)
+    conn.commit()
+
+
+def _migrate_if_needed(conn):
+    """Detect and migrate old schema (with invalid_at, without version_seq)."""
+    # Check if entity table exists and has version_seq column
+    try:
+        cols = [row[1] for row in conn.execute("PRAGMA table_info(entity)").fetchall()]
+    except Exception:
+        return  # Unexpected error, skip migration
+    if not cols:
+        return  # Table doesn't exist yet, fresh schema will be created
+    if "version_seq" in cols:
+        return  # Already migrated
+
+    # Old schema detected — add version_seq column
+    has_invalid_at = "invalid_at" in cols
+
+    conn.execute("ALTER TABLE entity ADD COLUMN version_seq INTEGER DEFAULT 1")
+    conn.execute("ALTER TABLE relation ADD COLUMN version_seq INTEGER DEFAULT 1")
+
+    # Assign version_seq via ROW_NUMBER partitioned by family_id, ordered by processed_time
+    conn.execute("""
+        UPDATE entity SET version_seq = sub.rn
+        FROM (
+            SELECT uuid, ROW_NUMBER() OVER (PARTITION BY family_id, graph_id ORDER BY processed_time ASC) AS rn
+            FROM entity
+        ) sub
+        WHERE entity.uuid = sub.uuid
+    """)
+    conn.execute("""
+        UPDATE relation SET version_seq = sub.rn
+        FROM (
+            SELECT uuid, ROW_NUMBER() OVER (PARTITION BY family_id, graph_id ORDER BY processed_time ASC) AS rn
+            FROM relation
+        ) sub
+        WHERE relation.uuid = sub.uuid
+    """)
+
+    # Drop old invalid_at indexes
+    if has_invalid_at:
+        for stmt in _MIGRATION_INDEXES_SQL.split(";"):
+            stmt = stmt.strip()
+            if stmt:
+                try:
+                    conn.execute(stmt)
+                except Exception:
+                    pass  # Index may not exist
+
     conn.commit()

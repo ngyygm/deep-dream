@@ -495,7 +495,7 @@ class SQLiteGraphStorageManager:
             try:
                 # Get new abs_id
                 row = conn.execute(
-                    "SELECT uuid FROM entity WHERE family_id = ? AND graph_id = ? AND invalid_at IS NULL ORDER BY processed_time DESC LIMIT 1",
+                    "SELECT uuid FROM entity WHERE family_id = ? AND graph_id = ? ORDER BY version_seq DESC LIMIT 1",
                     (new_family_id, self._graph_id),
                 ).fetchone()
                 if not row:
@@ -565,7 +565,7 @@ class SQLiteGraphStorageManager:
                 for old_fid, new_fid in resolved_pairs:
                     # Get new abs_id
                     row = conn.execute(
-                        "SELECT uuid FROM entity WHERE family_id = ? AND graph_id = ? AND invalid_at IS NULL ORDER BY processed_time DESC LIMIT 1",
+                        "SELECT uuid FROM entity WHERE family_id = ? AND graph_id = ? ORDER BY version_seq DESC LIMIT 1",
                         (new_fid, self._graph_id),
                     ).fetchone()
                     if not row:
@@ -731,9 +731,9 @@ class SQLiteGraphStorageManager:
             rows = conn.execute(
                 "SELECT e.* FROM entity e "
                 "INNER JOIN ("
-                "  SELECT family_id, MAX(processed_time) AS max_pt FROM entity "
-                "  WHERE invalid_at IS NULL AND graph_id = ? GROUP BY family_id"
-                ") latest ON e.family_id = latest.family_id AND e.processed_time = latest.max_pt "
+                "  SELECT family_id, MAX(version_seq) AS max_vs FROM entity "
+                "  WHERE graph_id = ? GROUP BY family_id"
+                ") latest ON e.family_id = latest.family_id AND e.version_seq = latest.max_vs "
                 "WHERE e.graph_id = ? ORDER BY e.processed_time DESC LIMIT ?",
                 (self._graph_id, self._graph_id, self._emb_cache_max_size),
             ).fetchall()
@@ -766,6 +766,13 @@ class SQLiteGraphStorageManager:
             with self._write_lock:
                 conn = self._connect()
                 try:
+                    # Compute version_seq: max existing + 1
+                    if entity.version_seq <= 1:
+                        row = conn.execute(
+                            "SELECT MAX(version_seq) FROM entity WHERE family_id = ? AND graph_id = ?",
+                            (entity.family_id, self._graph_id),
+                        ).fetchone()
+                        entity.version_seq = (row[0] or 0) + 1
                     conn.execute(
                         f"INSERT OR REPLACE INTO entity ({', '.join(ENTITY_COLUMNS)}) VALUES ({', '.join('?' * len(ENTITY_COLUMNS))})",
                         (
@@ -774,16 +781,12 @@ class SQLiteGraphStorageManager:
                             attrs, entity.confidence,
                             getattr(entity, "content_format", "plain"),
                             entity.community_id,
-                            valid_at, None,
+                            entity.version_seq,
+                            valid_at,
                             _fmt_dt(entity.event_time), _fmt_dt(entity.processed_time),
                             entity.episode_id, entity.source_document,
                             embedding_blob,
                         ),
-                    )
-                    # Invalidate old versions
-                    conn.execute(
-                        "UPDATE entity SET invalid_at = ? WHERE family_id = ? AND uuid != ? AND invalid_at IS NULL AND graph_id = ?",
-                        (_fmt_dt(entity.event_time), entity.family_id, entity.absolute_id, self._graph_id),
                     )
                     # Update FTS
                     conn.execute("DELETE FROM entity_fts WHERE rowid = (SELECT rowid FROM entity WHERE uuid = ?)",
@@ -813,6 +816,25 @@ class SQLiteGraphStorageManager:
         emb_map = self._bulk_compute_entity_embeddings(entities)
         rows = []
         cache_items = []
+        with self._write_lock:
+            conn = self._connect()
+            try:
+                # Batch compute version_seq for all family_ids
+                fid_map = {}
+                for entity in entities:
+                    fid_map.setdefault(entity.family_id, []).append(entity)
+                for fid, fid_entities in fid_map.items():
+                    row = conn.execute(
+                        "SELECT MAX(version_seq) FROM entity WHERE family_id = ? AND graph_id = ?",
+                        (fid, self._graph_id),
+                    ).fetchone()
+                    next_seq = (row[0] or 0) + 1
+                    for entity in fid_entities:
+                        if entity.version_seq <= 1:
+                            entity.version_seq = next_seq
+                            next_seq += 1
+            finally:
+                conn.rollback()
         for entity in entities:
             entity.processed_time = _now
             emb_blob = emb_map.get(entity.absolute_id)
@@ -823,7 +845,8 @@ class SQLiteGraphStorageManager:
                 entity.name, entity.content, entity.summary, attrs,
                 entity.confidence, getattr(entity, "content_format", "plain"),
                 entity.community_id,
-                _fmt_dt(entity.valid_at or entity.event_time), None,
+                entity.version_seq,
+                _fmt_dt(entity.valid_at or entity.event_time),
                 _fmt_dt(entity.event_time), _fmt_dt(entity.processed_time),
                 entity.episode_id, entity.source_document, emb_blob,
             ))
@@ -838,15 +861,6 @@ class SQLiteGraphStorageManager:
                     f"INSERT OR REPLACE INTO entity ({', '.join(ENTITY_COLUMNS)}) VALUES ({', '.join('?' * len(ENTITY_COLUMNS))})",
                     rows,
                 )
-                # Batch-invalidate old versions: collect unique (family_id, new_uuid, event_time)
-                fid_map = {}
-                for entity in entities:
-                    fid_map.setdefault(entity.family_id, (entity.absolute_id, _fmt_dt(entity.event_time)))
-                for fid, (new_uuid, evt) in fid_map.items():
-                    conn.execute(
-                        "UPDATE entity SET invalid_at = ? WHERE family_id = ? AND uuid != ? AND invalid_at IS NULL AND graph_id = ?",
-                        (evt, fid, new_uuid, self._graph_id),
-                    )
                 conn.commit()
             finally:
                 conn.rollback()
@@ -861,6 +875,25 @@ class SQLiteGraphStorageManager:
         _now = datetime.now()
         rows = []
         cache_items = []
+        # Pre-compute version_seq per family_id
+        with self._write_lock:
+            conn = self._connect()
+            try:
+                fid_map = {}
+                for entity in entities:
+                    fid_map.setdefault(entity.family_id, []).append(entity)
+                for fid, fid_entities in fid_map.items():
+                    row = conn.execute(
+                        "SELECT MAX(version_seq) FROM entity WHERE family_id = ? AND graph_id = ?",
+                        (fid, self._graph_id),
+                    ).fetchone()
+                    next_seq = (row[0] or 0) + 1
+                    for entity in fid_entities:
+                        if entity.version_seq <= 1:
+                            entity.version_seq = next_seq
+                            next_seq += 1
+            finally:
+                conn.rollback()
         for entity in entities:
             entity.processed_time = _now
             emb_blob = getattr(entity, 'embedding', None)
@@ -883,7 +916,8 @@ class SQLiteGraphStorageManager:
                 entity.name, entity.content, entity.summary, attrs,
                 entity.confidence, getattr(entity, "content_format", "plain"),
                 entity.community_id,
-                _fmt_dt(entity.valid_at or entity.event_time), None,
+                entity.version_seq,
+                _fmt_dt(entity.valid_at or entity.event_time),
                 _fmt_dt(entity.event_time), _fmt_dt(entity.processed_time),
                 entity.episode_id, entity.source_document, entity.embedding,
             ))
@@ -894,11 +928,6 @@ class SQLiteGraphStorageManager:
                     f"INSERT OR REPLACE INTO entity ({', '.join(ENTITY_COLUMNS)}) VALUES ({', '.join('?' * len(ENTITY_COLUMNS))})",
                     rows,
                 )
-                for entity in entities:
-                    conn.execute(
-                        "UPDATE entity SET invalid_at = ? WHERE family_id = ? AND uuid != ? AND invalid_at IS NULL AND graph_id = ?",
-                        (_fmt_dt(entity.event_time), entity.family_id, entity.absolute_id, self._graph_id),
-                    )
                 conn.commit()
             finally:
                 conn.rollback()
@@ -946,7 +975,7 @@ class SQLiteGraphStorageManager:
         conn = self._connect()
         try:
             row = conn.execute(
-                f"SELECT {', '.join(ENTITY_COLUMNS)} FROM entity WHERE family_id = ? AND graph_id = ? ORDER BY processed_time DESC LIMIT 1",
+                f"SELECT {', '.join(ENTITY_COLUMNS)} FROM entity WHERE family_id = ? AND graph_id = ? ORDER BY version_seq DESC LIMIT 1",
                 (family_id, self._graph_id),
             ).fetchone()
         finally:
@@ -979,9 +1008,9 @@ class SQLiteGraphStorageManager:
                 rows = conn.execute(
                     f"SELECT e.* FROM entity e "
                     f"INNER JOIN ("
-                    f"  SELECT family_id, MAX(processed_time) AS max_pt FROM entity "
-                    f"  WHERE family_id IN ({placeholders}) AND invalid_at IS NULL AND graph_id = ? GROUP BY family_id"
-                    f") latest ON e.family_id = latest.family_id AND e.processed_time = latest.max_pt "
+                    f"  SELECT family_id, MAX(version_seq) AS max_vs FROM entity "
+                    f"  WHERE family_id IN ({placeholders}) AND graph_id = ? GROUP BY family_id"
+                    f") latest ON e.family_id = latest.family_id AND e.version_seq = latest.max_vs "
                     f"WHERE e.graph_id = ?",
                     list(uncached) + [self._graph_id, self._graph_id],
                 ).fetchall()
@@ -1002,7 +1031,7 @@ class SQLiteGraphStorageManager:
         conn = self._connect()
         try:
             placeholders = ",".join("?" * len(absolute_ids))
-            extra = " AND invalid_at IS NULL" if valid_only else ""
+            extra = " AND version_seq = (SELECT MAX(e2.version_seq) FROM entity e2 WHERE e2.family_id = entity.family_id AND e2.graph_id = entity.graph_id)" if valid_only else ""
             rows = conn.execute(
                 f"SELECT {', '.join(ENTITY_COLUMNS)} FROM entity WHERE uuid IN ({placeholders}) AND graph_id = ?{extra}",
                 absolute_ids + [self._graph_id],
@@ -1019,8 +1048,8 @@ class SQLiteGraphStorageManager:
             placeholders = ",".join("?" * len(family_ids))
             rows = conn.execute(
                 f"SELECT family_id, uuid FROM entity "
-                f"WHERE family_id IN ({placeholders}) AND invalid_at IS NULL AND graph_id = ? "
-                f"GROUP BY family_id HAVING processed_time = MAX(processed_time)",
+                f"WHERE family_id IN ({placeholders}) AND graph_id = ? "
+                f"GROUP BY family_id HAVING version_seq = MAX(version_seq)",
                 family_ids + [self._graph_id],
             ).fetchall()
         finally:
@@ -1161,7 +1190,7 @@ class SQLiteGraphStorageManager:
                 "WHERE (r.entity1_absolute_id = ? OR r.entity2_absolute_id = ?) "
                 "AND r.graph_id = ? "
                 f"{tp_filter} "
-                "ORDER BY r.processed_time DESC"
+                "ORDER BY r.version_seq DESC"
             )
             if limit is not None:
                 query += f" LIMIT {int(limit)}"
@@ -1180,9 +1209,9 @@ class SQLiteGraphStorageManager:
             return []
         conn = self._connect()
         try:
-            # Get all abs_ids for this family
+            # Get all abs_ids for this family (current versions only)
             abs_rows = conn.execute(
-                "SELECT uuid FROM entity WHERE family_id = ? AND graph_id = ?",
+                "SELECT uuid FROM entity WHERE family_id = ? AND graph_id = ? ORDER BY version_seq DESC",
                 (family_id, self._graph_id),
             ).fetchall()
             abs_ids = [r["uuid"] for r in abs_rows]
@@ -1315,7 +1344,7 @@ class SQLiteGraphStorageManager:
         try:
             placeholders = ",".join("?" * len(canonical_set))
             rows = conn.execute(
-                f"SELECT {', '.join(ENTITY_COLUMNS)} FROM entity WHERE family_id IN ({placeholders}) AND invalid_at IS NULL AND graph_id = ? ORDER BY processed_time DESC",
+                f"SELECT {', '.join(ENTITY_COLUMNS)} FROM entity WHERE family_id IN ({placeholders}) AND graph_id = ? ORDER BY version_seq DESC",
                 canonical_set + [self._graph_id],
             ).fetchall()
         finally:
@@ -1340,7 +1369,7 @@ class SQLiteGraphStorageManager:
             try:
                 placeholders = ",".join("?" * len(all_aids))
                 rel_rows = conn.execute(
-                    f"SELECT {', '.join(RELATION_COLUMNS)} FROM relation WHERE (entity1_absolute_id IN ({placeholders}) OR entity2_absolute_id IN ({placeholders})) AND invalid_at IS NULL AND graph_id = ?",
+                    f"SELECT {', '.join(RELATION_COLUMNS)} FROM relation WHERE (entity1_absolute_id IN ({placeholders}) OR entity2_absolute_id IN ({placeholders})) AND graph_id = ?",
                     list(all_aids) + list(all_aids) + [self._graph_id],
                 ).fetchall()
             finally:
@@ -1520,7 +1549,7 @@ class SQLiteGraphStorageManager:
         conn = self._connect()
         try:
             row = conn.execute(
-                "SELECT uuid FROM entity WHERE family_id = ? AND invalid_at IS NULL AND graph_id = ? ORDER BY processed_time DESC LIMIT 1",
+                "SELECT uuid FROM entity WHERE family_id = ? AND graph_id = ? ORDER BY version_seq DESC LIMIT 1",
                 (family_id, self._graph_id),
             ).fetchone()
             if row:
@@ -1540,7 +1569,7 @@ class SQLiteGraphStorageManager:
         conn = self._connect()
         try:
             row = conn.execute(
-                "SELECT uuid FROM entity WHERE family_id = ? AND invalid_at IS NULL AND graph_id = ? ORDER BY processed_time DESC LIMIT 1",
+                "SELECT uuid FROM entity WHERE family_id = ? AND graph_id = ? ORDER BY version_seq DESC LIMIT 1",
                 (resolved, self._graph_id),
             ).fetchone()
             if row:
@@ -1560,7 +1589,7 @@ class SQLiteGraphStorageManager:
                 resolved = resolved_map.get(orig_fid)
                 if resolved:
                     row = conn.execute(
-                        "SELECT uuid FROM entity WHERE family_id = ? AND invalid_at IS NULL AND graph_id = ? ORDER BY processed_time DESC LIMIT 1",
+                        "SELECT uuid FROM entity WHERE family_id = ? AND graph_id = ? ORDER BY version_seq DESC LIMIT 1",
                         (resolved, self._graph_id),
                     ).fetchone()
                     if row:
@@ -1577,7 +1606,7 @@ class SQLiteGraphStorageManager:
         conn = self._connect()
         try:
             row = conn.execute(
-                "SELECT uuid FROM entity WHERE family_id = ? AND invalid_at IS NULL AND graph_id = ? ORDER BY processed_time DESC LIMIT 1",
+                "SELECT uuid FROM entity WHERE family_id = ? AND graph_id = ? ORDER BY version_seq DESC LIMIT 1",
                 (resolved, self._graph_id),
             ).fetchone()
             if row:
@@ -1618,8 +1647,8 @@ class SQLiteGraphStorageManager:
         try:
             conn.execute(
                 f"UPDATE {table} SET confidence = MAX(confidence - 0.1, 0.0) "
-                f"WHERE family_id = ? AND invalid_at IS NULL AND confidence IS NOT NULL AND graph_id = ? "
-                f"AND uuid = (SELECT uuid FROM {table} WHERE family_id = ? AND invalid_at IS NULL AND graph_id = ? ORDER BY processed_time DESC LIMIT 1)",
+                f"WHERE family_id = ? AND confidence IS NOT NULL AND graph_id = ? "
+                f"AND uuid = (SELECT uuid FROM {table} WHERE family_id = ? AND graph_id = ? ORDER BY version_seq DESC LIMIT 1)",
                 (family_id, self._graph_id, family_id, self._graph_id),
             )
             conn.commit()
@@ -1639,8 +1668,8 @@ class SQLiteGraphStorageManager:
             for fid in family_ids:
                 conn.execute(
                     f"UPDATE {table} SET confidence = MAX(confidence - 0.1, 0.0) "
-                    f"WHERE family_id = ? AND invalid_at IS NULL AND confidence IS NOT NULL AND graph_id = ? "
-                    f"AND uuid = (SELECT uuid FROM {table} WHERE family_id = ? AND invalid_at IS NULL AND graph_id = ? ORDER BY processed_time DESC LIMIT 1)",
+                    f"WHERE family_id = ? AND confidence IS NOT NULL AND graph_id = ? "
+                    f"AND uuid = (SELECT uuid FROM {table} WHERE family_id = ? AND graph_id = ? ORDER BY version_seq DESC LIMIT 1)",
                     (fid, self._graph_id, fid, self._graph_id),
                 )
             conn.commit()
@@ -1658,8 +1687,8 @@ class SQLiteGraphStorageManager:
         try:
             conn.execute(
                 f"UPDATE {table} SET confidence = MIN(confidence + ?, 1.0) "
-                f"WHERE family_id = ? AND invalid_at IS NULL AND confidence IS NOT NULL AND graph_id = ? "
-                f"AND uuid = (SELECT uuid FROM {table} WHERE family_id = ? AND invalid_at IS NULL AND graph_id = ? ORDER BY processed_time DESC LIMIT 1)",
+                f"WHERE family_id = ? AND confidence IS NOT NULL AND graph_id = ? "
+                f"AND uuid = (SELECT uuid FROM {table} WHERE family_id = ? AND graph_id = ? ORDER BY version_seq DESC LIMIT 1)",
                 (delta, family_id, self._graph_id, family_id, self._graph_id),
             )
             conn.commit()
@@ -1680,8 +1709,8 @@ class SQLiteGraphStorageManager:
             for fid in family_ids:
                 conn.execute(
                     f"UPDATE {table} SET confidence = MIN(confidence + ?, 1.0) "
-                    f"WHERE family_id = ? AND invalid_at IS NULL AND confidence IS NOT NULL AND graph_id = ? "
-                    f"AND uuid = (SELECT uuid FROM {table} WHERE family_id = ? AND invalid_at IS NULL AND graph_id = ? ORDER BY processed_time DESC LIMIT 1)",
+                    f"WHERE family_id = ? AND confidence IS NOT NULL AND graph_id = ? "
+                    f"AND uuid = (SELECT uuid FROM {table} WHERE family_id = ? AND graph_id = ? ORDER BY version_seq DESC LIMIT 1)",
                     (delta, fid, self._graph_id, fid, self._graph_id),
                 )
             conn.commit()
@@ -1770,7 +1799,7 @@ class SQLiteGraphStorageManager:
         conn = self._connect()
         try:
             rows = conn.execute(
-                f"SELECT {', '.join(ENTITY_COLUMNS)} FROM entity WHERE (name LIKE ? OR name = ?) AND invalid_at IS NULL AND graph_id = ? ORDER BY processed_time DESC LIMIT ?",
+                f"SELECT {', '.join(ENTITY_COLUMNS)} FROM entity WHERE (name LIKE ? OR name = ?) AND graph_id = ? ORDER BY version_seq DESC LIMIT ?",
                 (prefix + "%", prefix, self._graph_id, limit),
             ).fetchall()
         finally:
@@ -1830,7 +1859,7 @@ class SQLiteGraphStorageManager:
         conn = self._connect()
         try:
             placeholders = ",".join("?" * len(absolute_ids))
-            rows = conn.execute(f"SELECT uuid, name FROM entity WHERE uuid IN ({placeholders})", absolute_ids).fetchall()
+            rows = conn.execute(f"SELECT uuid, name FROM entity WHERE uuid IN ({placeholders}) AND graph_id = ?", absolute_ids + [self._graph_id]).fetchall()
         finally:
             conn.rollback()
         return {r["uuid"]: r["name"] for r in rows}
@@ -1838,7 +1867,7 @@ class SQLiteGraphStorageManager:
     def get_all_entity_names_map(self) -> Dict[str, str]:
         conn = self._connect()
         try:
-            rows = conn.execute("SELECT uuid, name FROM entity WHERE invalid_at IS NULL AND graph_id = ?", (self._graph_id,)).fetchall()
+            rows = conn.execute("SELECT uuid, name FROM entity WHERE graph_id = ?", (self._graph_id,)).fetchall()
         finally:
             conn.rollback()
         return {r["uuid"]: r["name"] for r in rows}
@@ -1850,7 +1879,7 @@ class SQLiteGraphStorageManager:
         try:
             placeholders = ",".join("?" * len(names))
             rows = conn.execute(
-                f"SELECT name, family_id FROM entity WHERE name IN ({placeholders}) AND invalid_at IS NULL AND graph_id = ? ORDER BY processed_time DESC",
+                f"SELECT name, family_id FROM entity WHERE name IN ({placeholders}) AND graph_id = ? ORDER BY version_seq DESC",
                 names + [self._graph_id],
             ).fetchall()
         finally:
@@ -1870,9 +1899,9 @@ class SQLiteGraphStorageManager:
             query = (
                 f"SELECT e.* FROM entity e "
                 f"INNER JOIN ("
-                f"  SELECT family_id, MAX(processed_time) AS max_pt FROM entity "
-                f"  WHERE invalid_at IS NULL AND graph_id = ? GROUP BY family_id"
-                f") latest ON e.family_id = latest.family_id AND e.processed_time = latest.max_pt "
+                f"  SELECT family_id, MAX(version_seq) AS max_vs FROM entity "
+                f"  WHERE graph_id = ? GROUP BY family_id"
+                f") latest ON e.family_id = latest.family_id AND e.version_seq = latest.max_vs "
                 f"WHERE e.graph_id = ? ORDER BY e.processed_time DESC"
             )
             params: list = [self._graph_id, self._graph_id]
@@ -1900,7 +1929,7 @@ class SQLiteGraphStorageManager:
         try:
             row = conn.execute(
                 "SELECT COUNT(DISTINCT family_id) AS cnt FROM entity "
-                "WHERE invalid_at IS NULL AND processed_time > ? AND graph_id = ?",
+                "WHERE processed_time > ? AND graph_id = ?",
                 (since, self._graph_id),
             ).fetchone()
         finally:
@@ -1914,9 +1943,9 @@ class SQLiteGraphStorageManager:
             query = (
                 "SELECT e.* FROM entity e "
                 "INNER JOIN ("
-                "  SELECT family_id, MAX(processed_time) AS max_pt FROM entity "
-                "  WHERE event_time <= ? AND invalid_at IS NULL AND graph_id = ? GROUP BY family_id"
-                ") latest ON e.family_id = latest.family_id AND e.processed_time = latest.max_pt "
+                "  SELECT family_id, MAX(version_seq) AS max_vs FROM entity "
+                "  WHERE event_time <= ? AND graph_id = ? GROUP BY family_id"
+                ") latest ON e.family_id = latest.family_id AND e.version_seq = latest.max_vs "
                 "WHERE e.graph_id = ? ORDER BY e.processed_time DESC"
             )
             params = [time_point.isoformat(), self._graph_id, self._graph_id]
@@ -1949,7 +1978,7 @@ class SQLiteGraphStorageManager:
         try:
             rows = conn.execute(
                 "SELECT e.* FROM entity e "
-                "WHERE e.invalid_at IS NULL AND e.family_id IS NOT NULL AND e.graph_id = ? "
+                "WHERE e.family_id IS NOT NULL AND e.graph_id = ? "
                 "AND e.uuid NOT IN (SELECT entity1_uuid FROM relates_to WHERE graph_id = ? UNION SELECT entity2_uuid FROM relates_to WHERE graph_id = ?) "
                 "ORDER BY e.processed_time DESC LIMIT ? OFFSET ?",
                 (self._graph_id, self._graph_id, self._graph_id, limit, offset),
@@ -1963,7 +1992,7 @@ class SQLiteGraphStorageManager:
         try:
             row = conn.execute(
                 "SELECT COUNT(DISTINCT e.family_id) AS cnt FROM entity e "
-                "WHERE e.invalid_at IS NULL AND e.family_id IS NOT NULL AND e.graph_id = ? "
+                "WHERE e.family_id IS NOT NULL AND e.graph_id = ? "
                 "AND e.uuid NOT IN (SELECT entity1_uuid FROM relates_to WHERE graph_id = ? UNION SELECT entity2_uuid FROM relates_to WHERE graph_id = ?)",
                 (self._graph_id, self._graph_id, self._graph_id),
             ).fetchone()
@@ -1974,27 +2003,58 @@ class SQLiteGraphStorageManager:
     def count_unique_entities(self) -> int:
         conn = self._connect()
         try:
-            row = conn.execute("SELECT COUNT(DISTINCT family_id) AS cnt FROM entity WHERE invalid_at IS NULL AND graph_id = ?", (self._graph_id,)).fetchone()
+            row = conn.execute("SELECT COUNT(DISTINCT family_id) AS cnt FROM entity WHERE graph_id = ?", (self._graph_id,)).fetchone()
         finally:
             conn.rollback()
         return row["cnt"] if row else 0
 
-    def cleanup_invalidated_versions(self, before_date: str = None, dry_run: bool = False) -> Dict[str, Any]:
+    def cleanup_old_versions(self, before_date: str = None, dry_run: bool = False) -> Dict[str, Any]:
+        """Delete old entity/relation versions while keeping the latest per family_id."""
         conn = self._connect()
         try:
-            date_filter = f" AND invalid_at < '{before_date}'" if before_date else ""
-            ent_count = conn.execute(f"SELECT COUNT(*) AS cnt FROM entity WHERE invalid_at IS NOT NULL{date_filter}").fetchone()["cnt"]
-            rel_count = conn.execute(f"SELECT COUNT(*) AS cnt FROM relation WHERE invalid_at IS NOT NULL{date_filter}").fetchone()["cnt"]
+            date_filter = f" AND processed_time < '{before_date}'" if before_date else ""
+            # Count entity versions that are NOT the latest per family_id
+            ent_count = conn.execute(
+                f"SELECT COUNT(*) AS cnt FROM entity WHERE graph_id = ?{date_filter} "
+                f"AND uuid NOT IN (SELECT e2.uuid FROM entity e2 "
+                f"WHERE e2.family_id = entity.family_id AND e2.graph_id = entity.graph_id "
+                f"ORDER BY e2.version_seq DESC LIMIT 1)",
+                (self._graph_id,),
+            ).fetchone()["cnt"]
+            rel_count = conn.execute(
+                f"SELECT COUNT(*) AS cnt FROM relation WHERE graph_id = ?{date_filter} "
+                f"AND uuid NOT IN (SELECT r2.uuid FROM relation r2 "
+                f"WHERE r2.family_id = relation.family_id AND r2.graph_id = relation.graph_id "
+                f"ORDER BY r2.version_seq DESC LIMIT 1)",
+                (self._graph_id,),
+            ).fetchone()["cnt"]
             if dry_run:
                 return {"dry_run": True, "entities_to_remove": ent_count, "relations_to_remove": rel_count,
-                        "message": f"预览：将删除 {ent_count} 个已失效实体版本和 {rel_count} 个已失效关系版本"}
-            conn.execute(f"DELETE FROM entity WHERE invalid_at IS NOT NULL{date_filter}")
-            conn.execute(f"DELETE FROM relation WHERE invalid_at IS NOT NULL{date_filter}")
+                        "message": f"Preview: will delete {ent_count} old entity versions and {rel_count} old relation versions"}
+            # Delete old entity versions, keeping latest per family_id
+            conn.execute(
+                f"DELETE FROM entity WHERE graph_id = ?{date_filter} "
+                f"AND uuid NOT IN (SELECT e2.uuid FROM entity e2 "
+                f"WHERE e2.family_id = entity.family_id AND e2.graph_id = entity.graph_id "
+                f"ORDER BY e2.version_seq DESC LIMIT 1)",
+                (self._graph_id,),
+            )
+            conn.execute(
+                f"DELETE FROM relation WHERE graph_id = ?{date_filter} "
+                f"AND uuid NOT IN (SELECT r2.uuid FROM relation r2 "
+                f"WHERE r2.family_id = relation.family_id AND r2.graph_id = relation.graph_id "
+                f"ORDER BY r2.version_seq DESC LIMIT 1)",
+                (self._graph_id,),
+            )
             conn.commit()
             return {"dry_run": False, "deleted_entity_versions": ent_count, "deleted_relation_versions": rel_count,
-                    "message": f"已删除 {ent_count} 个已失效实体版本和 {rel_count} 个已失效关系版本"}
+                    "message": f"Deleted {ent_count} old entity versions and {rel_count} old relation versions"}
         finally:
             conn.rollback()
+
+    # Keep old name as alias for backward compatibility
+    def cleanup_invalidated_versions(self, before_date: str = None, dry_run: bool = False) -> Dict[str, Any]:
+        return self.cleanup_old_versions(before_date=before_date, dry_run=dry_run)
 
     def get_version_diff(self, family_id: str, v1: str, v2: str) -> dict:
         from ...content_schema import parse_markdown_sections, compute_section_diff
@@ -2022,8 +2082,8 @@ class SQLiteGraphStorageManager:
         try:
             conn = self._connect()
             try:
-                ec = conn.execute("SELECT COUNT(DISTINCT family_id) AS cnt FROM entity WHERE invalid_at IS NULL AND graph_id = ?", (self._graph_id,)).fetchone()
-                rc = conn.execute("SELECT COUNT(DISTINCT family_id) AS cnt FROM relation WHERE invalid_at IS NULL AND graph_id = ?", (self._graph_id,)).fetchone()
+                ec = conn.execute("SELECT COUNT(DISTINCT family_id) AS cnt FROM entity WHERE graph_id = ?", (self._graph_id,)).fetchone()
+                rc = conn.execute("SELECT COUNT(DISTINCT family_id) AS cnt FROM relation WHERE graph_id = ?", (self._graph_id,)).fetchone()
             finally:
                 conn.rollback()
             return {"entities": ec["cnt"] if ec else 0, "relations": rc["cnt"] if rc else 0}
@@ -2034,8 +2094,8 @@ class SQLiteGraphStorageManager:
     def get_graph_version(self) -> dict:
         conn = self._connect()
         try:
-            ec = conn.execute("SELECT COUNT(DISTINCT family_id) AS cnt FROM entity WHERE invalid_at IS NULL AND graph_id = ?", (self._graph_id,)).fetchone()
-            rc = conn.execute("SELECT COUNT(DISTINCT family_id) AS cnt FROM relation WHERE invalid_at IS NULL AND graph_id = ?", (self._graph_id,)).fetchone()
+            ec = conn.execute("SELECT COUNT(DISTINCT family_id) AS cnt FROM entity WHERE graph_id = ?", (self._graph_id,)).fetchone()
+            rc = conn.execute("SELECT COUNT(DISTINCT family_id) AS cnt FROM relation WHERE graph_id = ?", (self._graph_id,)).fetchone()
             et = conn.execute("SELECT MAX(processed_time) AS pt FROM entity WHERE graph_id = ?", (self._graph_id,)).fetchone()
             rt = conn.execute("SELECT MAX(processed_time) AS pt FROM relation WHERE graph_id = ?", (self._graph_id,)).fetchone()
             e_pt = et["pt"] if et and et["pt"] else None
@@ -2053,8 +2113,8 @@ class SQLiteGraphStorageManager:
         try:
             total_e = conn.execute("SELECT COUNT(*) AS cnt FROM entity WHERE graph_id = ?", (self._graph_id,)).fetchone()["cnt"]
             total_r = conn.execute("SELECT COUNT(*) AS cnt FROM relation WHERE graph_id = ?", (self._graph_id,)).fetchone()["cnt"]
-            valid_e = conn.execute("SELECT COUNT(DISTINCT family_id) AS cnt FROM entity WHERE invalid_at IS NULL AND graph_id = ?", (self._graph_id,)).fetchone()["cnt"]
-            valid_r = conn.execute("SELECT COUNT(DISTINCT family_id) AS cnt FROM relation WHERE invalid_at IS NULL AND graph_id = ?", (self._graph_id,)).fetchone()["cnt"]
+            valid_e = conn.execute("SELECT COUNT(DISTINCT family_id) AS cnt FROM entity WHERE graph_id = ?", (self._graph_id,)).fetchone()["cnt"]
+            valid_r = conn.execute("SELECT COUNT(DISTINCT family_id) AS cnt FROM relation WHERE graph_id = ?", (self._graph_id,)).fetchone()["cnt"]
 
             stats = {
                 "entity_count": valid_e,
@@ -2072,8 +2132,8 @@ class SQLiteGraphStorageManager:
                 degree_rows = conn.execute(
                     "SELECT e.family_id, COUNT(DISTINCT r.uuid) AS degree "
                     "FROM entity e "
-                    "LEFT JOIN relation r ON (r.entity1_absolute_id = e.uuid OR r.entity2_absolute_id = e.uuid) AND r.invalid_at IS NULL AND r.graph_id = ? "
-                    "WHERE e.invalid_at IS NULL AND e.family_id IS NOT NULL AND e.graph_id = ? "
+                    "LEFT JOIN relation r ON (r.entity1_absolute_id = e.uuid OR r.entity2_absolute_id = e.uuid) AND r.graph_id = ? "
+                    "WHERE e.family_id IS NOT NULL AND e.graph_id = ? "
                     "GROUP BY e.family_id",
                     (self._graph_id, self._graph_id),
                 ).fetchall()
@@ -2089,12 +2149,12 @@ class SQLiteGraphStorageManager:
 
             # Time trends
             e_trend = conn.execute(
-                "SELECT DATE(event_time) AS d, COUNT(DISTINCT family_id) AS cnt FROM entity WHERE invalid_at IS NULL AND event_time IS NOT NULL AND graph_id = ? GROUP BY d ORDER BY d LIMIT 30",
+                "SELECT DATE(event_time) AS d, COUNT(DISTINCT family_id) AS cnt FROM entity WHERE event_time IS NOT NULL AND graph_id = ? GROUP BY d ORDER BY d LIMIT 30",
                 (self._graph_id,),
             ).fetchall()
             stats["entity_count_over_time"] = [{"date": r["d"], "count": r["cnt"]} for r in e_trend]
             r_trend = conn.execute(
-                "SELECT DATE(event_time) AS d, COUNT(DISTINCT family_id) AS cnt FROM relation WHERE invalid_at IS NULL AND event_time IS NOT NULL AND graph_id = ? GROUP BY d ORDER BY d LIMIT 30",
+                "SELECT DATE(event_time) AS d, COUNT(DISTINCT family_id) AS cnt FROM relation WHERE event_time IS NOT NULL AND graph_id = ? GROUP BY d ORDER BY d LIMIT 30",
                 (self._graph_id,),
             ).fetchall()
             stats["relation_count_over_time"] = [{"date": r["d"], "count": r["cnt"]} for r in r_trend]
@@ -2106,19 +2166,28 @@ class SQLiteGraphStorageManager:
     def get_data_quality_report(self) -> Dict[str, Any]:
         conn = self._connect()
         try:
-            valid_families = conn.execute("SELECT COUNT(DISTINCT family_id) AS cnt FROM entity WHERE invalid_at IS NULL AND family_id IS NOT NULL AND graph_id = ?", (self._graph_id,)).fetchone()["cnt"]
-            valid_nodes = conn.execute("SELECT COUNT(*) AS cnt FROM entity WHERE invalid_at IS NULL AND graph_id = ?", (self._graph_id,)).fetchone()["cnt"]
-            inv_e = conn.execute("SELECT COUNT(*) AS cnt FROM entity WHERE invalid_at IS NOT NULL AND graph_id = ?", (self._graph_id,)).fetchone()["cnt"]
+            valid_families = conn.execute("SELECT COUNT(DISTINCT family_id) AS cnt FROM entity WHERE family_id IS NOT NULL AND graph_id = ?", (self._graph_id,)).fetchone()["cnt"]
+            valid_nodes = conn.execute("SELECT COUNT(*) AS cnt FROM entity WHERE graph_id = ?", (self._graph_id,)).fetchone()["cnt"]
             no_fid = conn.execute("SELECT COUNT(*) AS cnt FROM entity WHERE family_id IS NULL AND graph_id = ?", (self._graph_id,)).fetchone()["cnt"]
-            valid_r_families = conn.execute("SELECT COUNT(DISTINCT family_id) AS cnt FROM relation WHERE invalid_at IS NULL AND graph_id = ?", (self._graph_id,)).fetchone()["cnt"]
-            valid_r_nodes = conn.execute("SELECT COUNT(*) AS cnt FROM relation WHERE invalid_at IS NULL AND graph_id = ?", (self._graph_id,)).fetchone()["cnt"]
-            inv_r = conn.execute("SELECT COUNT(*) AS cnt FROM relation WHERE invalid_at IS NOT NULL AND graph_id = ?", (self._graph_id,)).fetchone()["cnt"]
+            valid_r_families = conn.execute("SELECT COUNT(DISTINCT family_id) AS cnt FROM relation WHERE graph_id = ?", (self._graph_id,)).fetchone()["cnt"]
+            valid_r_nodes = conn.execute("SELECT COUNT(*) AS cnt FROM relation WHERE graph_id = ?", (self._graph_id,)).fetchone()["cnt"]
+            # Compute old versions count (all versions minus latest per family)
+            inv_e = conn.execute(
+                "SELECT COUNT(*) AS cnt FROM entity WHERE graph_id = ? "
+                "AND uuid NOT IN (SELECT e2.uuid FROM entity e2 WHERE e2.family_id = entity.family_id AND e2.graph_id = entity.graph_id ORDER BY e2.version_seq DESC LIMIT 1)",
+                (self._graph_id,),
+            ).fetchone()["cnt"]
+            inv_r = conn.execute(
+                "SELECT COUNT(*) AS cnt FROM relation WHERE graph_id = ? "
+                "AND uuid NOT IN (SELECT r2.uuid FROM relation r2 WHERE r2.family_id = relation.family_id AND r2.graph_id = relation.graph_id ORDER BY r2.version_seq DESC LIMIT 1)",
+                (self._graph_id,),
+            ).fetchone()["cnt"]
         finally:
             conn.rollback()
         isolated = self.count_isolated_entities()
         return {
-            "entities": {"valid_unique": valid_families, "valid_versions": valid_nodes, "invalidated_versions": inv_e, "no_family_id": no_fid, "isolated": isolated},
-            "relations": {"valid_unique": valid_r_families, "valid_versions": valid_r_nodes, "invalidated_versions": inv_r},
+            "entities": {"valid_unique": valid_families, "valid_versions": valid_nodes, "old_versions": inv_e, "no_family_id": no_fid, "isolated": isolated},
+            "relations": {"valid_unique": valid_r_families, "valid_versions": valid_r_nodes, "old_versions": inv_r},
             "total_nodes": valid_nodes + inv_e + valid_r_nodes + inv_r + no_fid,
         }
 
@@ -2277,9 +2346,9 @@ class SQLiteGraphStorageManager:
             rows = conn.execute(
                 f"SELECT r.* FROM relation r "
                 f"INNER JOIN ("
-                f"  SELECT family_id, MAX(processed_time) AS max_pt FROM relation "
-                f"  WHERE invalid_at IS NULL AND graph_id = ? GROUP BY family_id"
-                f") latest ON r.family_id = latest.family_id AND r.processed_time = latest.max_pt "
+                f"  SELECT family_id, MAX(version_seq) AS max_vs FROM relation "
+                f"  WHERE graph_id = ? GROUP BY family_id"
+                f") latest ON r.family_id = latest.family_id AND r.version_seq = latest.max_vs "
                 f"WHERE r.graph_id = ? ORDER BY r.processed_time DESC LIMIT ?",
                 (self._graph_id, self._graph_id, limit),
             ).fetchall()
@@ -2306,6 +2375,13 @@ class SQLiteGraphStorageManager:
         with self._relation_write_lock:
             conn = self._connect()
             try:
+                # Auto-increment version_seq
+                max_vs_row = conn.execute(
+                    "SELECT MAX(version_seq) AS max_vs FROM relation WHERE family_id = ? AND graph_id = ?",
+                    (relation.family_id, self._graph_id),
+                ).fetchone()
+                version_seq = (max_vs_row["max_vs"] or 0) + 1
+                relation.version_seq = version_seq
                 attrs = json.dumps(relation.attributes, ensure_ascii=False) if isinstance(relation.attributes, (dict, list)) else relation.attributes
                 prov = json.dumps(relation.provenance, ensure_ascii=False) if isinstance(relation.provenance, (dict, list)) else relation.provenance
                 conn.execute(
@@ -2318,7 +2394,7 @@ class SQLiteGraphStorageManager:
                         relation.content, relation.summary, attrs,
                         relation.confidence, prov,
                         getattr(relation, "content_format", "plain"),
-                        valid_at, None,  # invalid_at
+                        version_seq, valid_at,
                         _fmt_dt(relation.event_time), _fmt_dt(relation.processed_time),
                         relation.episode_id, relation.source_document,
                         relation.embedding,
@@ -2333,21 +2409,15 @@ class SQLiteGraphStorageManager:
                     "UPDATE relation SET entity1_family_id = ?, entity2_family_id = ? WHERE uuid = ? AND graph_id = ?",
                     (e1_fid, e2_fid, relation.absolute_id, self._graph_id),
                 )
-                # Invalidate old versions
-                event_time_str = _fmt_dt(relation.event_time)
-                conn.execute(
-                    "UPDATE relation SET invalid_at = ? WHERE family_id = ? AND uuid <> ? AND invalid_at IS NULL AND graph_id = ?",
-                    (event_time_str, relation.family_id, relation.absolute_id, self._graph_id),
-                )
                 # Update RELATES_TO edges
                 if e1_fid and e2_fid:
-                    # Get latest valid entities for each family
+                    # Get latest entities for each family
                     e1_latest = conn.execute(
-                        "SELECT uuid FROM entity WHERE family_id = ? AND invalid_at IS NULL AND graph_id = ? ORDER BY processed_time DESC LIMIT 1",
+                        "SELECT uuid FROM entity WHERE family_id = ? AND graph_id = ? ORDER BY version_seq DESC LIMIT 1",
                         (e1_fid, self._graph_id),
                     ).fetchone()
                     e2_latest = conn.execute(
-                        "SELECT uuid FROM entity WHERE family_id = ? AND invalid_at IS NULL AND graph_id = ? ORDER BY processed_time DESC LIMIT 1",
+                        "SELECT uuid FROM entity WHERE family_id = ? AND graph_id = ? ORDER BY version_seq DESC LIMIT 1",
                         (e2_fid, self._graph_id),
                     ).fetchone()
                     if e1_latest and e2_latest:
@@ -2386,7 +2456,7 @@ class SQLiteGraphStorageManager:
                 json.dumps(_prov, ensure_ascii=False) if isinstance(_prov, (dict, list)) else _prov,
                 getattr(relation, 'content_format', None),
                 _fmt_dt(relation.valid_at or relation.event_time) if (relation.valid_at or relation.event_time) else None,
-                None,
+                None,  # placeholder - will be replaced with version_seq below
                 _fmt_dt(relation.event_time), _fmt_dt(relation.processed_time),
                 relation.episode_id, relation.source_document,
                 emb_blob,
@@ -2398,9 +2468,30 @@ class SQLiteGraphStorageManager:
         with self._relation_write_lock:
             conn = self._connect()
             try:
+                # Auto-increment version_seq per family_id
+                fid_to_max_vs = {}
+                for relation in relations:
+                    fid = relation.family_id
+                    if fid not in fid_to_max_vs:
+                        row = conn.execute(
+                            "SELECT MAX(version_seq) AS max_vs FROM relation WHERE family_id = ? AND graph_id = ?",
+                            (fid, self._graph_id),
+                        ).fetchone()
+                        fid_to_max_vs[fid] = row["max_vs"] or 0
+
+                # Replace the version_seq placeholder (index 13) in each row
+                final_rows = []
+                for i, relation in enumerate(relations):
+                    row = list(rows[i])
+                    fid = relation.family_id
+                    fid_to_max_vs[fid] += 1
+                    row[13] = fid_to_max_vs[fid]
+                    relation.version_seq = fid_to_max_vs[fid]
+                    final_rows.append(tuple(row))
+
                 conn.executemany(
                     f"INSERT OR REPLACE INTO relation ({', '.join(RELATION_COLUMNS)}) VALUES ({', '.join('?' * len(RELATION_COLUMNS))})",
-                    rows,
+                    final_rows,
                 )
                 # Batch-lookup entity family_ids: collect all unique abs_ids
                 all_abs_ids = set()
@@ -2424,22 +2515,18 @@ class SQLiteGraphStorageManager:
                     fid_list = list(all_fids)
                     ph = ",".join("?" * len(fid_list))
                     for row in conn.execute(
-                        f"SELECT family_id, uuid FROM entity WHERE family_id IN ({ph}) AND invalid_at IS NULL AND graph_id = ? ORDER BY processed_time DESC",
+                        f"SELECT family_id, uuid FROM entity WHERE family_id IN ({ph}) AND graph_id = ? ORDER BY version_seq DESC",
                         fid_list + [self._graph_id],
                     ).fetchall():
                         fid_to_latest.setdefault(row["family_id"], row["uuid"])
 
-                # Apply family_ids, version invalidation, and RELATES_TO edges
+                # Apply family_ids and RELATES_TO edges
                 fid_update_rows = []
-                invalidation_map = {}
                 relates_to_rows = []
                 for relation in relations:
                     e1_fid = uuid_to_fid.get(relation.entity1_absolute_id)
                     e2_fid = uuid_to_fid.get(relation.entity2_absolute_id)
                     fid_update_rows.append((e1_fid, e2_fid, relation.absolute_id, self._graph_id))
-                    fid = relation.family_id
-                    if fid not in invalidation_map:
-                        invalidation_map[fid] = (relation.absolute_id, _fmt_dt(relation.event_time))
                     if e1_fid and e2_fid:
                         e1_latest = fid_to_latest.get(e1_fid)
                         e2_latest = fid_to_latest.get(e2_fid)
@@ -2449,11 +2536,6 @@ class SQLiteGraphStorageManager:
                     "UPDATE relation SET entity1_family_id = ?, entity2_family_id = ? WHERE uuid = ? AND graph_id = ?",
                     fid_update_rows,
                 )
-                for fid, (new_uuid, evt) in invalidation_map.items():
-                    conn.execute(
-                        "UPDATE relation SET invalid_at = ? WHERE family_id = ? AND uuid <> ? AND invalid_at IS NULL AND graph_id = ?",
-                        (evt, fid, new_uuid, self._graph_id),
-                    )
                 if relates_to_rows:
                     conn.executemany(
                         "INSERT OR REPLACE INTO relates_to (entity1_uuid, entity2_uuid, relation_uuid, fact, graph_id) VALUES (?, ?, ?, ?, ?)",
@@ -2497,7 +2579,7 @@ class SQLiteGraphStorageManager:
                 json.dumps(_prov, ensure_ascii=False) if isinstance(_prov, (dict, list)) else _prov,
                 getattr(relation, 'content_format', None),
                 _fmt_dt(relation.valid_at or relation.event_time) if (relation.valid_at or relation.event_time) else None,
-                None,
+                None,  # placeholder - will be replaced with version_seq below
                 _fmt_dt(relation.event_time), _fmt_dt(relation.processed_time),
                 relation.episode_id, relation.source_document,
                 relation.embedding,
@@ -2505,9 +2587,30 @@ class SQLiteGraphStorageManager:
         with self._relation_write_lock:
             conn = self._connect()
             try:
+                # Auto-increment version_seq per family_id
+                fid_to_max_vs = {}
+                for relation in relations:
+                    fid = relation.family_id
+                    if fid not in fid_to_max_vs:
+                        row = conn.execute(
+                            "SELECT MAX(version_seq) AS max_vs FROM relation WHERE family_id = ? AND graph_id = ?",
+                            (fid, self._graph_id),
+                        ).fetchone()
+                        fid_to_max_vs[fid] = row["max_vs"] or 0
+
+                # Replace the version_seq placeholder (index 13) in each row
+                final_rows = []
+                for i, relation in enumerate(relations):
+                    row = list(rows[i])
+                    fid = relation.family_id
+                    fid_to_max_vs[fid] += 1
+                    row[13] = fid_to_max_vs[fid]
+                    relation.version_seq = fid_to_max_vs[fid]
+                    final_rows.append(tuple(row))
+
                 conn.executemany(
                     f"INSERT OR REPLACE INTO relation ({', '.join(RELATION_COLUMNS)}) VALUES ({', '.join('?' * len(RELATION_COLUMNS))})",
-                    rows,
+                    final_rows,
                 )
                 for relation in relations:
                     e1_row = conn.execute("SELECT family_id FROM entity WHERE uuid = ? AND graph_id = ?", (relation.entity1_absolute_id, self._graph_id)).fetchone()
@@ -2518,17 +2621,13 @@ class SQLiteGraphStorageManager:
                         "UPDATE relation SET entity1_family_id = ?, entity2_family_id = ? WHERE uuid = ? AND graph_id = ?",
                         (e1_fid, e2_fid, relation.absolute_id, self._graph_id),
                     )
-                    conn.execute(
-                        "UPDATE relation SET invalid_at = ? WHERE family_id = ? AND uuid <> ? AND invalid_at IS NULL AND graph_id = ?",
-                        (_fmt_dt(relation.event_time), relation.family_id, relation.absolute_id, self._graph_id),
-                    )
                     if e1_fid and e2_fid:
                         e1_latest = conn.execute(
-                            "SELECT uuid FROM entity WHERE family_id = ? AND invalid_at IS NULL AND graph_id = ? ORDER BY processed_time DESC LIMIT 1",
+                            "SELECT uuid FROM entity WHERE family_id = ? AND graph_id = ? ORDER BY version_seq DESC LIMIT 1",
                             (e1_fid, self._graph_id),
                         ).fetchone()
                         e2_latest = conn.execute(
-                            "SELECT uuid FROM entity WHERE family_id = ? AND invalid_at IS NULL AND graph_id = ? ORDER BY processed_time DESC LIMIT 1",
+                            "SELECT uuid FROM entity WHERE family_id = ? AND graph_id = ? ORDER BY version_seq DESC LIMIT 1",
                             (e2_fid, self._graph_id),
                         ).fetchone()
                         if e1_latest and e2_latest:
@@ -2569,7 +2668,7 @@ class SQLiteGraphStorageManager:
         conn = self._connect()
         try:
             row = conn.execute(
-                f"SELECT {', '.join(RELATION_COLUMNS)} FROM relation WHERE family_id = ? AND graph_id = ? ORDER BY processed_time DESC LIMIT 1",
+                f"SELECT {', '.join(RELATION_COLUMNS)} FROM relation WHERE family_id = ? AND graph_id = ? ORDER BY version_seq DESC LIMIT 1",
                 (family_id, self._graph_id),
             ).fetchone()
         finally:
@@ -2641,7 +2740,7 @@ class SQLiteGraphStorageManager:
         conn = self._connect()
         try:
             placeholders = ",".join("?" * len(absolute_ids))
-            extra = " AND invalid_at IS NULL" if valid_only else ""
+            extra = " AND version_seq = (SELECT MAX(r2.version_seq) FROM relation r2 WHERE r2.family_id = relation.family_id AND r2.graph_id = relation.graph_id)" if valid_only else ""
             rows = conn.execute(
                 f"SELECT {', '.join(RELATION_COLUMNS)} FROM relation WHERE uuid IN ({placeholders}){extra}",
                 absolute_ids,
@@ -2677,9 +2776,9 @@ class SQLiteGraphStorageManager:
             rows = conn.execute(
                 f"SELECT r.* FROM relation r "
                 f"INNER JOIN ("
-                f"  SELECT family_id, MAX(processed_time) AS max_pt FROM relation "
-                f"  WHERE invalid_at IS NULL AND graph_id = ? GROUP BY family_id"
-                f") latest ON r.family_id = latest.family_id AND r.processed_time = latest.max_pt "
+                f"  SELECT family_id, MAX(version_seq) AS max_vs FROM relation "
+                f"  WHERE graph_id = ? GROUP BY family_id"
+                f") latest ON r.family_id = latest.family_id AND r.version_seq = latest.max_vs "
                 f"WHERE r.graph_id = ? "
                 f"AND ((r.entity1_absolute_id IN ({from_ph}) AND r.entity2_absolute_id IN ({to_ph})) "
                 f"  OR (r.entity1_absolute_id IN ({to_ph}) AND r.entity2_absolute_id IN ({from_ph}))) "
@@ -2700,9 +2799,9 @@ class SQLiteGraphStorageManager:
             query = (
                 f"SELECT r.* FROM relation r "
                 f"INNER JOIN ("
-                f"  SELECT family_id, MAX(processed_time) AS max_pt FROM relation "
-                f"  WHERE invalid_at IS NULL AND graph_id = ? GROUP BY family_id"
-                f") latest ON r.family_id = latest.family_id AND r.processed_time = latest.max_pt "
+                f"  SELECT family_id, MAX(version_seq) AS max_vs FROM relation "
+                f"  WHERE graph_id = ? GROUP BY family_id"
+                f") latest ON r.family_id = latest.family_id AND r.version_seq = latest.max_vs "
                 f"WHERE r.graph_id = ? "
                 f"AND (r.entity1_absolute_id IN ({placeholders}) OR r.entity2_absolute_id IN ({placeholders})) "
                 f"ORDER BY r.processed_time DESC"
@@ -2723,7 +2822,7 @@ class SQLiteGraphStorageManager:
         try:
             rows = conn.execute(
                 f"SELECT {', '.join(RELATION_COLUMNS)}, entity1_family_id, entity2_family_id "
-                f"FROM relation WHERE invalid_at IS NULL AND graph_id = ?",
+                f"FROM relation WHERE graph_id = ?",
                 (self._graph_id,),
             ).fetchall()
         finally:
@@ -2754,7 +2853,7 @@ class SQLiteGraphStorageManager:
         try:
             placeholders = ",".join("?" * len(family_ids))
             rows = conn.execute(
-                f"SELECT family_id, embedding FROM relation WHERE family_id IN ({placeholders}) AND embedding IS NOT NULL AND invalid_at IS NULL AND graph_id = ?",
+                f"SELECT family_id, embedding FROM relation WHERE family_id IN ({placeholders}) AND embedding IS NOT NULL AND graph_id = ?",
                 family_ids + [self._graph_id],
             ).fetchall()
         finally:
@@ -2780,8 +2879,8 @@ class SQLiteGraphStorageManager:
             query = (
                 f"SELECT DISTINCT r.* FROM entity e "
                 f"INNER JOIN relation r ON (r.entity1_absolute_id = e.uuid OR r.entity2_absolute_id = e.uuid) "
-                f"WHERE e.family_id IN ({placeholders}) AND e.invalid_at IS NULL AND e.graph_id = ? "
-                f"AND r.invalid_at IS NULL AND r.graph_id = ?{tp_filter} "
+                f"WHERE e.family_id IN ({placeholders}) AND e.graph_id = ? "
+                f"AND r.graph_id = ?{tp_filter} "
                 f"LIMIT ?"
             )
             params = family_ids + [self._graph_id, self._graph_id] + tp_params + [limit]
@@ -2816,9 +2915,9 @@ class SQLiteGraphStorageManager:
             query = (
                 f"SELECT r.* FROM relation r "
                 f"INNER JOIN ("
-                f"  SELECT family_id, MAX(processed_time) AS max_pt FROM relation "
-                f"  WHERE invalid_at IS NULL AND graph_id = ? GROUP BY family_id"
-                f") latest ON r.family_id = latest.family_id AND r.processed_time = latest.max_pt "
+                f"  SELECT family_id, MAX(version_seq) AS max_vs FROM relation "
+                f"  WHERE graph_id = ? GROUP BY family_id"
+                f") latest ON r.family_id = latest.family_id AND r.version_seq = latest.max_vs "
                 f"WHERE r.graph_id = ? ORDER BY r.processed_time DESC"
             )
             params: list = [self._graph_id, self._graph_id]
@@ -2851,7 +2950,7 @@ class SQLiteGraphStorageManager:
         try:
             row = conn.execute(
                 "SELECT COUNT(DISTINCT family_id) AS cnt FROM relation "
-                "WHERE invalid_at IS NULL AND processed_time > ? AND graph_id = ?",
+                "WHERE processed_time > ? AND graph_id = ?",
                 (since, self._graph_id),
             ).fetchone()
         finally:
@@ -2862,18 +2961,23 @@ class SQLiteGraphStorageManager:
         conn = self._connect()
         try:
             row = conn.execute(
-                "SELECT COUNT(DISTINCT family_id) AS cnt FROM relation WHERE invalid_at IS NULL AND graph_id = ?",
+                "SELECT COUNT(DISTINCT family_id) AS cnt FROM relation WHERE graph_id = ?",
                 (self._graph_id,),
             ).fetchone()
         finally:
             conn.rollback()
         return row["cnt"] if row else 0
 
-    def get_invalidated_relations(self, limit: int = 100) -> List[Relation]:
+    def get_old_relation_versions(self, limit: int = 100) -> List[Relation]:
+        """Get relation versions that are not the latest per family_id."""
         conn = self._connect()
         try:
             rows = conn.execute(
-                f"SELECT {', '.join(RELATION_COLUMNS)} FROM relation WHERE invalid_at IS NOT NULL AND graph_id = ? ORDER BY invalid_at DESC LIMIT ?",
+                f"SELECT {', '.join(RELATION_COLUMNS)} FROM relation WHERE graph_id = ? "
+                f"AND uuid NOT IN (SELECT r2.uuid FROM relation r2 "
+                f"WHERE r2.family_id = relation.family_id AND r2.graph_id = relation.graph_id "
+                f"ORDER BY r2.version_seq DESC LIMIT 1) "
+                f"ORDER BY processed_time DESC LIMIT ?",
                 (self._graph_id, limit),
             ).fetchall()
         finally:
@@ -2980,12 +3084,14 @@ class SQLiteGraphStorageManager:
         return result_map
 
     def invalidate_relation(self, family_id: str, reason: str = "") -> int:
-        now = datetime.now(timezone.utc).isoformat()
+        """Delete all but the latest version of a relation."""
         conn = self._connect()
         try:
+            # Delete old versions, keep latest per version_seq
             cursor = conn.execute(
-                "UPDATE relation SET invalid_at = ? WHERE family_id = ? AND invalid_at IS NULL AND graph_id = ?",
-                (now, family_id, self._graph_id),
+                "DELETE FROM relation WHERE family_id = ? AND graph_id = ? "
+                "AND uuid NOT IN (SELECT r2.uuid FROM relation r2 WHERE r2.family_id = ? AND r2.graph_id = ? ORDER BY r2.version_seq DESC LIMIT 1)",
+                (family_id, self._graph_id, family_id, self._graph_id),
             )
             conn.commit()
         finally:
@@ -3074,8 +3180,8 @@ class SQLiteGraphStorageManager:
         conn = self._connect()
         try:
             conn.execute(
-                "UPDATE relation SET confidence = ? WHERE family_id = ? AND invalid_at IS NULL AND graph_id = ? "
-                "AND uuid = (SELECT uuid FROM relation WHERE family_id = ? AND invalid_at IS NULL AND graph_id = ? ORDER BY processed_time DESC LIMIT 1)",
+                "UPDATE relation SET confidence = ? WHERE family_id = ? AND graph_id = ? "
+                "AND uuid = (SELECT uuid FROM relation WHERE family_id = ? AND graph_id = ? ORDER BY version_seq DESC LIMIT 1)",
                 (confidence, family_id, self._graph_id, family_id, self._graph_id),
             )
             conn.commit()
@@ -3092,15 +3198,15 @@ class SQLiteGraphStorageManager:
                 # Delete stale edges
                 conn.execute(
                     f"DELETE FROM relates_to WHERE graph_id = ? AND "
-                    f"(entity1_uuid IN (SELECT uuid FROM entity WHERE family_id IN ({placeholders}) AND invalid_at IS NOT NULL AND graph_id = ?) "
-                    f"OR entity2_uuid IN (SELECT uuid FROM entity WHERE family_id IN ({placeholders}) AND invalid_at IS NOT NULL AND graph_id = ?))",
+                    f"(entity1_uuid IN (SELECT uuid FROM entity WHERE family_id IN ({placeholders}) AND graph_id = ?) "
+                    f"OR entity2_uuid IN (SELECT uuid FROM entity WHERE family_id IN ({placeholders}) AND graph_id = ?))",
                     [self._graph_id] + family_ids + [self._graph_id] + family_ids + [self._graph_id],
                 )
                 # Recreate edges for valid relations involving these families
                 rows = conn.execute(
                     f"SELECT r.uuid AS r_uuid, r.content, r.entity1_absolute_id, r.entity2_absolute_id "
                     f"FROM relation r "
-                    f"WHERE r.invalid_at IS NULL AND r.graph_id = ? "
+                    f"WHERE r.graph_id = ? "
                     f"AND (r.entity1_absolute_id IN (SELECT uuid FROM entity WHERE family_id IN ({placeholders}) AND graph_id = ?) "
                     f"OR r.entity2_absolute_id IN (SELECT uuid FROM entity WHERE family_id IN ({placeholders}) AND graph_id = ?))",
                     [self._graph_id] + family_ids + [self._graph_id] + family_ids + [self._graph_id],
@@ -3110,11 +3216,11 @@ class SQLiteGraphStorageManager:
                     e2_row = conn.execute("SELECT family_id FROM entity WHERE uuid = ? AND graph_id = ?", (r["entity2_absolute_id"], self._graph_id)).fetchone()
                     if e1_row and e2_row:
                         e1_latest = conn.execute(
-                            "SELECT uuid FROM entity WHERE family_id = ? AND invalid_at IS NULL AND graph_id = ? ORDER BY processed_time DESC LIMIT 1",
+                            "SELECT uuid FROM entity WHERE family_id = ? AND graph_id = ? ORDER BY version_seq DESC LIMIT 1",
                             (e1_row["family_id"], self._graph_id),
                         ).fetchone()
                         e2_latest = conn.execute(
-                            "SELECT uuid FROM entity WHERE family_id = ? AND invalid_at IS NULL AND graph_id = ? ORDER BY processed_time DESC LIMIT 1",
+                            "SELECT uuid FROM entity WHERE family_id = ? AND graph_id = ? ORDER BY version_seq DESC LIMIT 1",
                             (e2_row["family_id"], self._graph_id),
                         ).fetchone()
                         if e1_latest and e2_latest:
@@ -3132,7 +3238,7 @@ class SQLiteGraphStorageManager:
                 conn.execute("DELETE FROM relates_to WHERE graph_id = ?", (self._graph_id,))
                 rows = conn.execute(
                     "SELECT r.uuid AS r_uuid, r.content, r.entity1_absolute_id, r.entity2_absolute_id "
-                    "FROM relation r WHERE r.invalid_at IS NULL AND r.graph_id = ?",
+                    "FROM relation r WHERE r.graph_id = ?",
                     (self._graph_id,),
                 ).fetchall()
                 created = 0
@@ -3141,11 +3247,11 @@ class SQLiteGraphStorageManager:
                     e2_row = conn.execute("SELECT family_id FROM entity WHERE uuid = ? AND graph_id = ?", (r["entity2_absolute_id"], self._graph_id)).fetchone()
                     if e1_row and e2_row:
                         e1_latest = conn.execute(
-                            "SELECT uuid FROM entity WHERE family_id = ? AND invalid_at IS NULL AND graph_id = ? ORDER BY processed_time DESC LIMIT 1",
+                            "SELECT uuid FROM entity WHERE family_id = ? AND graph_id = ? ORDER BY version_seq DESC LIMIT 1",
                             (e1_row["family_id"], self._graph_id),
                         ).fetchone()
                         e2_latest = conn.execute(
-                            "SELECT uuid FROM entity WHERE family_id = ? AND invalid_at IS NULL AND graph_id = ? ORDER BY processed_time DESC LIMIT 1",
+                            "SELECT uuid FROM entity WHERE family_id = ? AND graph_id = ? ORDER BY version_seq DESC LIMIT 1",
                             (e2_row["family_id"], self._graph_id),
                         ).fetchone()
                         if e1_latest and e2_latest:
@@ -4033,7 +4139,7 @@ class SQLiteGraphStorageManager:
                     # Fallback to LIKE
                     rows = conn.execute(
                         f"SELECT {', '.join(ENTITY_COLUMNS)} FROM entity "
-                        f"WHERE (name LIKE ? OR content LIKE ?) AND invalid_at IS NULL AND graph_id = ? "
+                        f"WHERE (name LIKE ? OR content LIKE ?) AND graph_id = ? "
                         f"ORDER BY processed_time DESC LIMIT ?",
                         (f"%{query}%", f"%{query}%", self._graph_id, raw_limit),
                     ).fetchall()
@@ -4044,7 +4150,7 @@ class SQLiteGraphStorageManager:
                     rid_ph = ",".join("?" * len(rowids))
                     rows = conn.execute(
                         f"SELECT {', '.join(ENTITY_COLUMNS)} FROM entity "
-                        f"WHERE rowid IN ({rid_ph}) AND invalid_at IS NULL AND graph_id = ? "
+                        f"WHERE rowid IN ({rid_ph}) AND graph_id = ? "
                         f"ORDER BY processed_time DESC",
                         rowids + [self._graph_id],
                     ).fetchall()
@@ -4073,7 +4179,7 @@ class SQLiteGraphStorageManager:
                 try:
                     prefix_rows = conn.execute(
                         f"SELECT {', '.join(ENTITY_COLUMNS)} FROM entity "
-                        f"WHERE (name LIKE ? OR name = ?) AND invalid_at IS NULL AND graph_id = ? "
+                        f"WHERE (name LIKE ? OR name = ?) AND graph_id = ? "
                         f"ORDER BY processed_time DESC LIMIT 5",
                         (query + "%", query, self._graph_id),
                     ).fetchall()
@@ -4212,7 +4318,7 @@ class SQLiteGraphStorageManager:
                 if not fts_rows:
                     rows = conn.execute(
                         f"SELECT {', '.join(RELATION_COLUMNS)} FROM relation "
-                        f"WHERE content LIKE ? AND invalid_at IS NULL AND graph_id = ? "
+                        f"WHERE content LIKE ? AND graph_id = ? "
                         f"ORDER BY processed_time DESC LIMIT ?",
                         (f"%{query}%", self._graph_id, raw_limit),
                     ).fetchall()
@@ -4221,7 +4327,7 @@ class SQLiteGraphStorageManager:
                     rid_ph = ",".join("?" * len(rowids))
                     rows = conn.execute(
                         f"SELECT {', '.join(RELATION_COLUMNS)} FROM relation "
-                        f"WHERE rowid IN ({rid_ph}) AND invalid_at IS NULL AND graph_id = ? "
+                        f"WHERE rowid IN ({rid_ph}) AND graph_id = ? "
                         f"ORDER BY processed_time DESC",
                         rowids + [self._graph_id],
                     ).fetchall()
@@ -4351,7 +4457,7 @@ class SQLiteGraphStorageManager:
             # Get seed absolute_ids
             placeholders = ",".join("?" * len(seed_family_ids))
             seed_rows = conn.execute(
-                "SELECT family_id, uuid FROM entity WHERE family_id IN ({}) AND invalid_at IS NULL AND graph_id = ?".format(placeholders),
+                "SELECT family_id, uuid FROM entity WHERE family_id IN ({}) AND graph_id = ?".format(placeholders),
                 seed_family_ids + [self._graph_id],
             ).fetchall()
             seed_abs_to_fid = {r["uuid"]: r["family_id"] for r in seed_rows}
@@ -4391,7 +4497,7 @@ class SQLiteGraphStorageManager:
                 if current_frontier:
                     ph = ",".join("?" * len(current_frontier))
                     frontier_rows = conn.execute(
-                        f"SELECT {', '.join(ENTITY_COLUMNS)} FROM entity WHERE uuid IN ({ph}) AND invalid_at IS NULL AND graph_id = ?",
+                        f"SELECT {', '.join(ENTITY_COLUMNS)} FROM entity WHERE uuid IN ({ph}) AND graph_id = ?",
                         current_frontier + [self._graph_id],
                     ).fetchall()
                     for r in frontier_rows:
@@ -4434,14 +4540,14 @@ class SQLiteGraphStorageManager:
             degree_map = {}
             for fid in family_ids:
                 rows = conn.execute(
-                    "SELECT uuid FROM entity WHERE family_id = ? AND invalid_at IS NULL AND graph_id = ?",
+                    "SELECT uuid FROM entity WHERE family_id = ? AND graph_id = ?",
                     (fid, self._graph_id),
                 ).fetchall()
                 abs_ids = [r["uuid"] for r in rows]
                 if abs_ids:
                     ph = ",".join("?" * len(abs_ids))
                     cnt = conn.execute(
-                        f"SELECT COUNT(DISTINCT uuid) AS cnt FROM relation WHERE (entity1_absolute_id IN ({ph}) OR entity2_absolute_id IN ({ph})) AND invalid_at IS NULL AND graph_id = ?",
+                        f"SELECT COUNT(DISTINCT uuid) AS cnt FROM relation WHERE (entity1_absolute_id IN ({ph}) OR entity2_absolute_id IN ({ph})) AND graph_id = ?",
                         abs_ids + abs_ids + [self._graph_id],
                     ).fetchone()["cnt"]
                     degree_map[fid] = cnt
@@ -4831,7 +4937,7 @@ class SQLiteGraphStorageManager:
         try:
             query = (
                 "SELECT uuid, family_id, name, content, confidence, event_time, community_id FROM entity "
-                "WHERE invalid_at IS NULL AND graph_id = ? "
+                "WHERE graph_id = ? "
             )
             params: list = [self._graph_id]
             if exclude_uuids:
@@ -4853,7 +4959,7 @@ class SQLiteGraphStorageManager:
         try:
             query = (
                 "SELECT e.uuid, e.family_id, e.name, e.content, e.confidence, e.event_time, e.community_id "
-                "FROM entity e WHERE e.invalid_at IS NULL AND e.graph_id = ? "
+                "FROM entity e WHERE e.graph_id = ? "
                 "AND e.uuid NOT IN (SELECT entity1_uuid FROM relates_to WHERE graph_id = ? UNION SELECT entity2_uuid FROM relates_to WHERE graph_id = ?) "
             )
             params: list = [self._graph_id, self._graph_id, self._graph_id]
@@ -4879,7 +4985,7 @@ class SQLiteGraphStorageManager:
                 "COUNT(DISTINCT rt.entity2_uuid) AS degree "
                 "FROM entity e "
                 "INNER JOIN relates_to rt ON rt.entity1_uuid = e.uuid AND rt.graph_id = ? "
-                "WHERE e.invalid_at IS NULL AND e.graph_id = ? "
+                "WHERE e.graph_id = ? "
             )
             params: list = [self._graph_id, self._graph_id]
             if exclude_uuids:
@@ -4901,7 +5007,7 @@ class SQLiteGraphStorageManager:
         try:
             query = (
                 "SELECT uuid, family_id, name, content, confidence, event_time, community_id "
-                "FROM entity WHERE invalid_at IS NULL AND graph_id = ? "
+                "FROM entity WHERE graph_id = ? "
                 "AND processed_time IS NOT NULL AND julianday('now') - julianday(processed_time) > 30 "
             )
             params: list = [self._graph_id]
@@ -4924,7 +5030,7 @@ class SQLiteGraphStorageManager:
         try:
             query = (
                 "SELECT uuid, family_id, name, content, confidence, event_time, community_id "
-                "FROM entity WHERE invalid_at IS NULL AND graph_id = ? "
+                "FROM entity WHERE graph_id = ? "
                 "AND confidence IS NOT NULL AND confidence < 0.5 "
             )
             params: list = [self._graph_id]
@@ -5034,7 +5140,7 @@ class SQLiteGraphStorageManager:
     def count_candidate_relations(self, status: str = None) -> int:
         conn = self._connect()
         try:
-            query = "SELECT COUNT(DISTINCT family_id) AS cnt FROM relation WHERE source_document LIKE 'dream%' AND invalid_at IS NULL AND graph_id = ?"
+            query = "SELECT COUNT(DISTINCT family_id) AS cnt FROM relation WHERE source_document LIKE 'dream%' AND graph_id = ?"
             params: list = [self._graph_id]
             if status:
                 query += " AND attributes LIKE ?"
@@ -5051,7 +5157,7 @@ class SQLiteGraphStorageManager:
                 f"SELECT r.* FROM relation r "
                 f"INNER JOIN ("
                 f"  SELECT family_id, MAX(processed_time) AS max_pt FROM relation "
-                f"  WHERE invalid_at IS NULL AND graph_id = ? AND source_document LIKE 'dream%' "
+                f"  WHERE graph_id = ? AND source_document LIKE 'dream%' "
                 f"  GROUP BY family_id"
                 f") latest ON r.family_id = latest.family_id AND r.processed_time = latest.max_pt "
                 f"WHERE r.graph_id = ? "
@@ -5276,18 +5382,18 @@ class SQLiteGraphStorageManager:
         try:
             total = 0
             if role is None or role == "entity":
-                query = "SELECT COUNT(DISTINCT family_id) AS cnt FROM entity WHERE invalid_at IS NULL AND graph_id = ?"
+                query = "SELECT COUNT(DISTINCT family_id) AS cnt FROM entity WHERE graph_id = ?"
                 params = [self._graph_id]
                 if tp_iso:
-                    query += " AND (valid_at IS NULL OR valid_at <= ?) AND (invalid_at IS NULL OR invalid_at > ?)"
-                    params.extend([tp_iso, tp_iso])
+                    query += " AND (valid_at IS NULL OR valid_at <= ?)"
+                    params.append(tp_iso)
                 total += conn.execute(query, params).fetchone()["cnt"]
             if role is None or role == "relation":
-                query = "SELECT COUNT(DISTINCT family_id) AS cnt FROM relation WHERE invalid_at IS NULL AND graph_id = ?"
+                query = "SELECT COUNT(DISTINCT family_id) AS cnt FROM relation WHERE graph_id = ?"
                 params = [self._graph_id]
                 if tp_iso:
-                    query += " AND (valid_at IS NULL OR valid_at <= ?) AND (invalid_at IS NULL OR invalid_at > ?)"
-                    params.extend([tp_iso, tp_iso])
+                    query += " AND (valid_at IS NULL OR valid_at <= ?)"
+                    params.append(tp_iso)
                 total += conn.execute(query, params).fetchone()["cnt"]
             if role is None or role == "observation":
                 query = "SELECT COUNT(*) AS cnt FROM episode WHERE graph_id = ?"
@@ -5306,9 +5412,9 @@ class SQLiteGraphStorageManager:
             query = f"SELECT {', '.join(ENTITY_COLUMNS)} FROM entity WHERE family_id = ? AND graph_id = ?"
             params = [family_id, self._graph_id]
             if tp_iso:
-                query += " AND (valid_at IS NULL OR valid_at <= ?) AND (invalid_at IS NULL OR invalid_at > ?)"
-                params.extend([tp_iso, tp_iso])
-            query += " ORDER BY processed_time DESC LIMIT 1"
+                query += " AND (valid_at IS NULL OR valid_at <= ?)"
+                params.append(tp_iso)
+            query += " ORDER BY version_seq DESC LIMIT 1"
             row = conn.execute(query, params).fetchone()
             if row:
                 entity = _row_to_entity(dict(row))
@@ -5320,9 +5426,9 @@ class SQLiteGraphStorageManager:
             query = f"SELECT {', '.join(RELATION_COLUMNS)} FROM relation WHERE family_id = ? AND graph_id = ?"
             params = [family_id, self._graph_id]
             if tp_iso:
-                query += " AND (valid_at IS NULL OR valid_at <= ?) AND (invalid_at IS NULL OR invalid_at > ?)"
-                params.extend([tp_iso, tp_iso])
-            query += " ORDER BY processed_time DESC LIMIT 1"
+                query += " AND (valid_at IS NULL OR valid_at <= ?)"
+                params.append(tp_iso)
+            query += " ORDER BY version_seq DESC LIMIT 1"
             row = conn.execute(query, params).fetchone()
             if row:
                 rel = _row_to_relation(dict(row))
@@ -5366,13 +5472,13 @@ class SQLiteGraphStorageManager:
                 if neighbor_uuids:
                     ph = ",".join("?" * len(neighbor_uuids))
                     ent_rows = conn.execute(
-                        f"SELECT DISTINCT family_id, uuid AS id, name, 'entity' AS role, content FROM entity WHERE uuid IN ({ph}) AND invalid_at IS NULL AND graph_id = ?",
+                        f"SELECT DISTINCT family_id, uuid AS id, name, 'entity' AS role, content FROM entity WHERE uuid IN ({ph}) AND graph_id = ?",
                         list(neighbor_uuids) + [self._graph_id],
                     ).fetchall()
                     neighbors.extend([dict(r) for r in ent_rows])
                 # Relations referencing this entity
                 rel_rows = conn.execute(
-                    "SELECT DISTINCT family_id, uuid AS id, '' AS name, 'relation' AS role, content FROM relation WHERE (entity1_absolute_id = ? OR entity2_absolute_id = ?) AND invalid_at IS NULL AND graph_id = ?",
+                    "SELECT DISTINCT family_id, uuid AS id, '' AS name, 'relation' AS role, content FROM relation WHERE (entity1_absolute_id = ? OR entity2_absolute_id = ?) AND graph_id = ?",
                     (abs_id, abs_id, self._graph_id),
                 ).fetchall()
                 neighbors.extend([dict(r) for r in rel_rows])
@@ -5383,7 +5489,7 @@ class SQLiteGraphStorageManager:
                     eids = [rel.entity1_absolute_id, rel.entity2_absolute_id]
                     ph = ",".join("?" * len(eids))
                     ent_rows = conn.execute(
-                        f"SELECT DISTINCT family_id, uuid AS id, name, 'entity' AS role, content FROM entity WHERE uuid IN ({ph}) AND invalid_at IS NULL AND graph_id = ?",
+                        f"SELECT DISTINCT family_id, uuid AS id, name, 'entity' AS role, content FROM entity WHERE uuid IN ({ph}) AND graph_id = ?",
                         eids + [self._graph_id],
                     ).fetchall()
                     neighbors.extend([dict(r) for r in ent_rows])
@@ -5486,11 +5592,11 @@ class SQLiteGraphStorageManager:
         conn = self._connect()
         try:
             if role is None or role == "entity":
-                query = f"SELECT {', '.join(ENTITY_COLUMNS)} FROM entity WHERE invalid_at IS NULL AND graph_id = ?"
+                query = f"SELECT {', '.join(ENTITY_COLUMNS)} FROM entity WHERE graph_id = ?"
                 params = [self._graph_id]
                 if tp_iso:
-                    query += " AND (valid_at IS NULL OR valid_at <= ?) AND (invalid_at IS NULL OR invalid_at > ?)"
-                    params.extend([tp_iso, tp_iso])
+                    query += " AND (valid_at IS NULL OR valid_at <= ?)"
+                    params.append(tp_iso)
                 query += " ORDER BY processed_time DESC LIMIT ? OFFSET ?"
                 params.extend([limit, offset])
                 rows = conn.execute(query, params).fetchall()
@@ -5500,11 +5606,11 @@ class SQLiteGraphStorageManager:
                                     "name": ent.name, "content": ent.content,
                                     "event_time": _fmt_dt(ent.event_time), "processed_time": _fmt_dt(ent.processed_time)})
             if role is None or role == "relation":
-                query = f"SELECT {', '.join(RELATION_COLUMNS)} FROM relation WHERE invalid_at IS NULL AND graph_id = ?"
+                query = f"SELECT {', '.join(RELATION_COLUMNS)} FROM relation WHERE graph_id = ?"
                 params = [self._graph_id]
                 if tp_iso:
-                    query += " AND (valid_at IS NULL OR valid_at <= ?) AND (invalid_at IS NULL OR invalid_at > ?)"
-                    params.extend([tp_iso, tp_iso])
+                    query += " AND (valid_at IS NULL OR valid_at <= ?)"
+                    params.append(tp_iso)
                 query += " ORDER BY processed_time DESC LIMIT ? OFFSET ?"
                 params.extend([limit, offset])
                 rows = conn.execute(query, params).fetchall()
@@ -5631,16 +5737,16 @@ class SQLiteGraphStorageManager:
         try:
             ent_rows = conn.execute(
                 f"SELECT {', '.join(ENTITY_COLUMNS)} FROM entity "
-                f"WHERE (valid_at IS NULL OR valid_at <= ?) AND (invalid_at IS NULL OR invalid_at > ?) AND graph_id = ? "
+                f"WHERE (valid_at IS NULL OR valid_at <= ?) AND graph_id = ? "
                 f"ORDER BY event_time DESC LIMIT ?",
-                (time_iso, time_iso, self._graph_id, _limit),
+                (time_iso, self._graph_id, _limit),
             ).fetchall()
             entities = [_row_to_entity(dict(r)) for r in ent_rows]
             rel_rows = conn.execute(
                 f"SELECT {', '.join(RELATION_COLUMNS)} FROM relation "
-                f"WHERE (valid_at IS NULL OR valid_at <= ?) AND (invalid_at IS NULL OR invalid_at > ?) AND graph_id = ? "
+                f"WHERE (valid_at IS NULL OR valid_at <= ?) AND graph_id = ? "
                 f"ORDER BY event_time DESC LIMIT ?",
-                (time_iso, time_iso, self._graph_id, _limit),
+                (time_iso, self._graph_id, _limit),
             ).fetchall()
             relations = [_row_to_relation(dict(r)) for r in rel_rows]
         finally:

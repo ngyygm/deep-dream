@@ -36,9 +36,9 @@ class Entity:
     processed_time: datetime  # 系统实际处理时间
     episode_id: str  # 记录当前更新是基于什么记忆环境下的判断
     source_document: str  # 来源文档名称
+    version_seq: int = 1  # 版本序号，每次跨 Episode 提及递增
     embedding: Optional[bytes] = None  # Embedding向量（BLOB格式，可选）
     valid_at: Optional[datetime] = None  # 事实生效时间
-    invalid_at: Optional[datetime] = None  # 事实失效时间（被新版本替代）
     summary: Optional[str] = None  # 实体摘要（由 LLM 进化维护）
     attributes: Optional[str] = None  # JSON 字符串，结构化属性字典
     confidence: Optional[float] = None  # 置信度评分 (0.0-1.0)
@@ -64,9 +64,9 @@ class Relation:
     processed_time: datetime  # 系统实际处理时间
     episode_id: str  # 记录当前更新是基于什么记忆环境下的判断
     source_document: str  # 来源文档名称
+    version_seq: int = 1  # 版本序号，每次跨 Episode 提及递增
     embedding: Optional[bytes] = None  # Embedding向量（BLOB格式，可选）
     valid_at: Optional[datetime] = None  # 事实生效时间
-    invalid_at: Optional[datetime] = None  # 事实失效时间（被新版本替代）
     summary: Optional[str] = None  # 关系摘要（由 LLM 进化维护）
     attributes: Optional[str] = None  # JSON 字符串，结构化属性字典
     confidence: Optional[float] = None  # 置信度评分 (0.0-1.0)
@@ -108,8 +108,8 @@ class ConceptVersion:
     content: str  # 该版本的内容快照
     source_concept_id: str  # 产生该版本的源 observation 概念 ID
     processed_time: datetime  # 该版本的产生时间
+    version_seq: int = 1  # 版本序号
     valid_at: Optional[datetime] = None  # 有效期起始
-    invalid_at: Optional[datetime] = None  # 有效期结束（被新版本替代时设置）
 
 
 @dataclass(slots=True)

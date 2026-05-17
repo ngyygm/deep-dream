@@ -1,11 +1,11 @@
 """
 Tests for cross-window version creation logic.
 
-Verifies that version management follows the rules from Deep-Dream-CLI.md:
+Verifies that version management follows the Concept Principles:
 - Each cross-window mention creates a new version (new absolute_id)
 - family_id stays constant across versions (stable logical identity)
-- valid_at/invalid_at time windows are correct
-- Version count = number of windows that mentioned the concept
+- version_seq increments per cross-Episode mention
+- Version count = number of Episodes that mentioned the concept
 """
 import pytest
 from datetime import datetime, timezone
@@ -14,7 +14,7 @@ from unittest.mock import Mock, MagicMock, patch
 
 # Required Entity fields based on core.models.py:
 # absolute_id, family_id, name, content, event_time, processed_time,
-# episode_id, source_document, [embedding, valid_at, invalid_at, summary,
+# episode_id, source_document, [embedding, version_seq, valid_at, summary,
 # attributes, confidence, content_format, community_id]
 
 
@@ -138,11 +138,11 @@ class TestVersionCreation:
         assert e1.family_id == e2.family_id
 
 
-class TestTimeWindows:
-    """Test valid_at/invalid_at time window management."""
+class TestVersionSequence:
+    """Test version_seq incrementing and ordering."""
 
-    def test_time_window_coverage(self):
-        """Old version's invalid_at should be <= new version's valid_at."""
+    def test_version_seq_increments(self):
+        """Each version should have a higher version_seq than the previous."""
         from core.models import Entity
 
         t1 = datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc)
@@ -158,7 +158,7 @@ class TestTimeWindows:
             episode_id="ep1",
             source_document="doc1.txt",
             valid_at=t1,
-            invalid_at=t2,
+            version_seq=1,
         )
         e2 = Entity(
             name="Test",
@@ -170,12 +170,11 @@ class TestTimeWindows:
             episode_id="ep2",
             source_document="doc2.txt",
             valid_at=t2,
-            invalid_at=None,  # Current version
+            version_seq=2,
         )
 
-        assert e1.invalid_at is not None
-        assert e1.invalid_at <= e2.valid_at
-        assert e2.invalid_at is None  # Latest version has no end
+        assert e1.version_seq < e2.version_seq
+        assert e2.version_seq == e1.version_seq + 1
 
     def test_version_ordering_by_processed_time(self):
         """Versions must be strictly ordered by processing time."""
