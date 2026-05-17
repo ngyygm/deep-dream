@@ -6,36 +6,10 @@ HTTP status codes. They don't test functionality deeply, just ensure endpoints r
 
 Run with: pytest core/tests/test_api_smoke.py -v
 
-Run without Neo4j-dependent tests: pytest core/tests/test_api_smoke.py -v -m "not neo4j"
 """
 import os
 import pytest
 from core.tests.conftest import TEST_GRAPH_ID
-
-
-# Neo4j availability check for skipif decorators
-def _neo4j_available() -> bool:
-    """Check if Neo4j is available for testing."""
-    neo4j_uri = os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687")
-    neo4j_user = os.getenv("NEO4J_TEST_USER", "neo4j")
-    neo4j_password = os.getenv("NEO4J_TEST_PASSWORD", "tmg2024secure")
-
-    try:
-        from neo4j import GraphDatabase
-        driver = GraphDatabase.driver(neo4j_uri, auth=(neo4j_user, neo4j_password))
-        driver.verify_connectivity()
-        driver.close()
-        return True
-    except Exception:
-        return False
-
-
-NEO4J_AVAILABLE = _neo4j_available()
-
-skip_if_no_neo4j = pytest.mark.skipif(
-    not NEO4J_AVAILABLE,
-    reason="Neo4j not available - set NEO4J_TEST_URI, NEO4J_TEST_USER, NEO4J_TEST_PASSWORD"
-)
 
 
 # ============================================================================

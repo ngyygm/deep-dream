@@ -18,7 +18,7 @@ from datetime import datetime
 project_root = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(project_root / "DeepDream"))
 
-from core.storage.neo4j import Neo4jStorageManager
+from core.storage.sqlite.manager import SQLiteGraphStorageManager
 from core.models import Entity, Relation
 
 
@@ -26,13 +26,10 @@ class DeepDreamQueryTool:
     """DeepDream 查询工具"""
 
     def __init__(self, storage_path: str):
-        self.storage = Neo4jStorageManager(
-            storage_path,
-            neo4j_uri=os.environ.get("NEO4J_URI", "bolt://localhost:7687"),
-            neo4j_auth=(
-                os.environ.get("NEO4J_USER", "neo4j"),
-                os.environ.get("NEO4J_PASSWORD", "password"),
-            ),
+        self.storage = SQLiteGraphStorageManager(
+            storage_path=storage_path,
+            vector_dim=1024,
+            graph_id="default",
         )
 
     # ==================== Find 阶段 ====================

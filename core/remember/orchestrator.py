@@ -35,7 +35,6 @@ import uuid
 from .document import DocumentProcessor
 from core.llm.client import LLMClient
 from core.storage.embedding import EmbeddingClient
-from core.storage.neo4j import Neo4jStorageManager as StorageManager
 from core.storage import create_storage_manager
 from .entity import EntityProcessor
 from .relation import RelationProcessor
@@ -296,11 +295,13 @@ class TemporalMemoryGraphProcessor(_PipelineExtractionMixin, _ExtractionStepsMix
                 graph_id=graph_id,
             )
         else:
-            self.storage = StorageManager(
-                storage_path,
+            self.storage = create_storage_manager(
+                {"storage": {"backend": "sqlite"}},
                 embedding_client=self.embedding_client,
+                storage_path=storage_path,
                 entity_content_snippet_length=_content_snippet_length,
-                relation_content_snippet_length=_relation_content_snippet_length
+                relation_content_snippet_length=_relation_content_snippet_length,
+                graph_id=graph_id,
             )
         self.document_processor = DocumentProcessor(window_size, overlap)
         _al = alignment_llm or {}

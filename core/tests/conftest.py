@@ -6,6 +6,7 @@ knowledge graph system, including Flask test client, processor, and storage
 fixtures.
 """
 import os
+import shutil
 import sys
 import pytest
 from pathlib import Path
@@ -20,7 +21,7 @@ from core.server.api import create_app
 from core.server.registry import GraphRegistry
 from core.server.config import load_config
 from core.server.monitor import SystemMonitor, LOG_MODE_DETAIL
-from core.storage.neo4j import Neo4jStorageManager
+from core.storage.sqlite.manager import SQLiteGraphStorageManager
 
 
 # Test configuration
@@ -34,9 +35,10 @@ def test_config():
     if TEST_CONFIG_PATH.exists():
         return load_config(str(TEST_CONFIG_PATH))
     else:
-        # Minimal fallback config for testing
+        # Minimal fallback config for testing (SQLite by default)
         return {
             "storage_path": "./graph/test",
+            "storage": {"backend": "sqlite"},
             "host": "127.0.0.1",
             "port": 16200,
             "llm": {
@@ -100,18 +102,32 @@ def client(test_app):
 
 @pytest.fixture(scope="function")
 def processor(registry):
-    """Get a test processor with Neo4j storage."""
+    """Get a test processor with configured storage backend."""
     try:
         proc = registry.get_processor(TEST_GRAPH_ID)
         yield proc
     except Exception as e:
-        pytest.skip(f"Could not create processor (Neo4j unavailable?): {e}")
+        pytest.skip(f"Could not create processor: {e}")
 
 
 @pytest.fixture(scope="function")
 def storage(processor):
-    """Get test storage (Neo4j)."""
+    """Get test storage backend."""
     yield processor.storage
+
+
+@pytest.fixture(scope="function")
+def sqlite_storage(tmp_path):
+    """Direct SQLite storage manager for unit tests (no Flask/registry overhead)."""
+    from core.storage.sqlite.manager import SQLiteGraphStorageManager
+    mgr = SQLiteGraphStorageManager(
+        storage_path=str(tmp_path / "graph"),
+        vector_dim=1024,
+        graph_id="test",
+    )
+    yield mgr
+    mgr.close()
+    shutil.rmtree(str(tmp_path / "graph"), ignore_errors=True)
 
 
 class TestHelpers:

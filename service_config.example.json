@@ -6,12 +6,7 @@
   "monitor_refresh_seconds": 1.0,
   "storage_path": "./graph",
   "storage": {
-    "backend": "neo4j",
-    "neo4j": {
-      "uri": "bolt://localhost:7687",
-      "user": "neo4j",
-      "password": "tmg2024secure"
-    },
+    "backend": "sqlite",
     "vector_dim": 1024
   },
   "llm": {

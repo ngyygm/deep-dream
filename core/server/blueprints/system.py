@@ -282,17 +282,37 @@ def route_index():
 
 # ── Health ──────────────────────────────────────────────────────────────
 
+@system_bp.route("/api/v1/routes", methods=["GET"])
+def route_index():
+    """返回所有已注册的 API 路由。"""
+    routes = []
+    for rule in current_app.url_map.iter_rules():
+        if rule.endpoint == "static":
+            continue
+        routes.append({
+            "path": rule.rule,
+            "methods": sorted(rule.methods - {"HEAD", "OPTIONS"}),
+        })
+    routes.sort(key=lambda r: r["path"])
+    return ok({"routes": routes, "count": len(routes)})
+
+
 @system_bp.route("/api/v1/health", methods=["GET"])
 def health():
     """健康检查；推荐使用 /api/v1/health。"""
     try:
         gid = getattr(request, 'graph_id', None) or request.args.get('graph_id', 'default')
+        try:
+            from core.server.registry import GraphRegistry
+            GraphRegistry.validate_graph_id(gid)
+        except ValueError as e:
+            return err(str(e), 400)
         processor = current_app.config["registry"].get_processor(gid)
         embedding_available = (
             processor.embedding_client is not None
             and processor.embedding_client.is_available()
         )
-        storage_backend = "neo4j"
+        storage_backend = "sqlite"
         return ok({
             "graph_id": gid,
             "storage_backend": storage_backend,

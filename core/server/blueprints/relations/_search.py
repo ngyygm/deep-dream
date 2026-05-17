@@ -626,11 +626,11 @@ def find_shortest_paths():
 
 @relations_bp.route("/api/v1/find/paths/shortest-cypher", methods=["POST"])
 def find_shortest_path_cypher():
-    """Use Cypher shortestPath to find paths (Neo4j only)."""
+    """使用 Cypher shortestPath 查找路径。"""
     try:
         processor = _get_processor()
         if not hasattr(processor.storage, 'find_shortest_path_cypher'):
-            return err("此功能需要 Neo4j 后端", 400)
+            return err("当前存储后端不支持 Cypher 路径查询", 400)
         body = get_json_body()
         entity_a = (body.get("family_id_a") or body.get("entity_a") or "").strip()
         entity_b = (body.get("family_id_b") or body.get("entity_b") or "").strip()
@@ -687,6 +687,505 @@ def find_relations_by_entity_absolute_id(entity_absolute_id: str):
 
 
 # -- Quick search (Agent workflows) -----------------------------------------
+
+@relations_bp.route("/api/v1/find/relations/<family_id>/versions", methods=["GET"])
+@relations_bp.route("/api/v1/find/relations/<family_id>/versions", methods=["GET"])
+def find_relation_versions(family_id: str):
+    try:
+        processor = _get_processor()
+        versions = processor.storage.get_relation_versions(family_id)
+        dicts = [relation_to_dict(r) for r in versions]
+        enrich_relations(dicts, processor)
+        return ok(dicts)
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@relations_bp.route("/api/v1/find/relations/<family_id>", methods=["PUT"])
+def update_relation_by_family(family_id: str):
+    """编辑关系：创建新版本。"""
+    try:
+        processor = _get_processor()
+        body = request.get_json(silent=True) or {}
+        content = body.get("content")
+        if not content:
+            return err("content 为必填字段", 400)
+
+        current_versions = processor.storage.get_relation_versions(family_id)
+        if not current_versions:
+            return err(f"未找到关系: {family_id}", 404)
+        current = current_versions[0]  # 最新版本
+
+        now = datetime.now(timezone.utc)
+        updated = Relation(
+            absolute_id=str(uuid.uuid4()),
+            family_id=family_id,
+            entity1_absolute_id=current.entity1_absolute_id,
+            entity2_absolute_id=current.entity2_absolute_id,
+            content=content,
+            event_time=now,
+            processed_time=now,
+            episode_id=current.episode_id,
+            source_document=current.source_document,
+            valid_at=now,
+        )
+        processor.storage.save_relation(updated)
+        return ok({"message": "关系已更新", "absolute_id": updated.absolute_id, "family_id": family_id})
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@relations_bp.route("/api/v1/find/relations/<family_id>", methods=["DELETE"])
+def delete_relation_family(family_id: str):
+    """删除关系所有版本。"""
+    try:
+        processor = _get_processor()
+        count = processor.storage.delete_relation_all_versions(family_id)
+        if count == 0:
+            return err(f"未找到关系: {family_id}", 404)
+        return ok({"message": f"已删除 {count} 个关系版本", "family_id": family_id})
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@relations_bp.route("/api/v1/find/relations/batch-delete", methods=["POST"])
+def batch_delete_relations():
+    """批量删除关系。"""
+    try:
+        processor = _get_processor()
+        body = request.get_json(silent=True) or {}
+        family_ids = body.get("family_ids") or body.get("relation_ids", [])
+        if not isinstance(family_ids, list) or not family_ids:
+            return err("family_ids 需为非空数组", 400)
+        if len(family_ids) > 100:
+            return err("单次批量删除上限 100 个", 400)
+        total = processor.storage.batch_delete_relations(family_ids)
+        return ok({"message": f"已删除 {total} 个关系版本", "count": len(family_ids)})
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@relations_bp.route("/api/v1/find/entities/<family_id>/relations", methods=["GET"])
+def find_relations_by_entity(family_id: str):
+    try:
+        processor = _get_processor()
+        limit = request.args.get("limit", type=int)
+        time_point_str = request.args.get("time_point")
+        try:
+            time_point = parse_time_point(time_point_str)
+        except ValueError as ve:
+            return err(str(ve), 400)
+        max_version_absolute_id = (request.args.get("max_version_absolute_id") or "").strip() or None
+        relation_scope = (request.args.get("relation_scope") or "accumulated").strip()
+
+        if relation_scope not in _VALID_RELATION_SCOPES:
+            relation_scope = "accumulated"
+
+        # When no max_version_absolute_id, all modes degenerate to returning all relations
+        if not max_version_absolute_id:
+            relations = processor.storage.get_entity_relations_by_family_id(
+                family_id=family_id,
+                limit=limit,
+                time_point=time_point,
+                max_version_absolute_id=None,
+            )
+            dicts = [relation_to_dict(r) for r in relations]
+            enrich_relations(dicts, processor)
+            return ok(dicts)
+
+        # ---- Shared queries ----
+        # current_rels: relations directly linked to the focused version only
+        current_rels = processor.storage.get_entity_relations(
+            max_version_absolute_id,
+            limit=limit,
+            time_point=time_point,
+        )
+        # accum_rels: accumulated relations from v1 through focused version
+        accum_rels = processor.storage.get_entity_relations_by_family_id(
+            family_id=family_id,
+            limit=limit,
+            time_point=time_point,
+            max_version_absolute_id=max_version_absolute_id,
+        )
+
+        # Dedup by family_id
+        accum_by_rid = {r.family_id: r for r in accum_rels}
+        current_by_rid = {r.family_id: r for r in current_rels}
+        accum_rids = set(accum_by_rid)
+        current_rids = set(current_by_rid)
+
+        # ---- version_only: only relations directly linked to this version ----
+        if relation_scope == "version_only":
+            dicts = [relation_to_dict(r) for r in current_rels]
+            enrich_relations(dicts, processor)
+            return ok(dicts)
+
+        # ---- shared latest_rels (used by both accumulated and all_versions) ----
+        latest_rels = processor.storage.get_entity_relations_by_family_id(
+            family_id=family_id,
+            limit=limit,
+            time_point=time_point,
+            max_version_absolute_id=None,
+        )
+        latest_by_rid = {r.family_id: r for r in latest_rels}
+        latest_rids = set(latest_by_rid)
+        union_rids = accum_rids | latest_rids
+
+        # ---- accumulated: v1..vN union + future from latest ----
+        if relation_scope == "accumulated":
+            all_rels = []
+            for rid in union_rids:
+                if rid in current_rids:
+                    all_rels.append(current_by_rid[rid])
+                elif rid in accum_rids:
+                    all_rels.append(accum_by_rid[rid])
+                else:
+                    all_rels.append(latest_by_rid[rid])
+
+            dicts = [relation_to_dict(r) for r in all_rels]
+            enrich_relations(dicts, processor)
+
+            for d in dicts:
+                rid = d["family_id"]
+                if rid not in current_rids:
+                    if rid not in accum_rids:
+                        d["_future"] = True
+                    else:
+                        d["_inherited"] = True
+
+            return ok(dicts)
+
+        # ---- all_versions: (v1..vN) ∪ latest, classify as current/inherited/future ----
+        all_rels = []
+        for rid in union_rids:
+            if rid in latest_rids:
+                all_rels.append(latest_by_rid[rid])
+            else:
+                all_rels.append(accum_by_rid[rid])
+
+        dicts = [relation_to_dict(r) for r in all_rels]
+        enrich_relations(dicts, processor)
+
+        for d in dicts:
+            rid = d["family_id"]
+            if rid in current_rids:
+                d["_version_scope"] = "current"
+            elif rid in accum_rids:
+                d["_version_scope"] = "inherited"
+            else:
+                d["_version_scope"] = "future"
+
+        return ok(dicts)
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@relations_bp.route("/api/v1/find/relations/create", methods=["POST"])
+def create_relation():
+    """手动创建关系（生成新 family_id + absolute_id）。
+
+    实体 ID 参数支持两种形式（二选一，优先使用 absolute_id）：
+      - entity1_absolute_id / entity2_absolute_id（版本快照 ID）
+      - entity1_family_id / entity2_family_id（逻辑 ID，自动解析为最新 absolute_id）
+    """
+    try:
+        processor = _get_processor()
+        body = request.get_json(silent=True) or {}
+
+        # Resolve entity IDs: prefer absolute_id, fall back to family_id
+        e1 = (body.get("entity1_absolute_id") or "").strip()
+        e2 = (body.get("entity2_absolute_id") or "").strip()
+
+        if not e1:
+            e1_fid = (body.get("entity1_family_id") or "").strip()
+            if e1_fid:
+                entity1 = processor.storage.get_entity_by_family_id(e1_fid)
+                if entity1:
+                    e1 = entity1.absolute_id
+                else:
+                    return err(f"entity1_family_id '{e1_fid}' 未找到对应实体", 404)
+
+        if not e2:
+            e2_fid = (body.get("entity2_family_id") or "").strip()
+            if e2_fid:
+                entity2 = processor.storage.get_entity_by_family_id(e2_fid)
+                if entity2:
+                    e2 = entity2.absolute_id
+                else:
+                    return err(f"entity2_family_id '{e2_fid}' 未找到对应实体", 404)
+
+        if not e1 or not e2:
+            return err("需要 entity1_absolute_id 或 entity1_family_id（entity2 同理）", 400)
+
+        content = (body.get("content") or "").strip()
+        if not content:
+            return err("content 为必填", 400)
+
+        now = datetime.now()
+        ts = now.strftime("%Y%m%d_%H%M%S")
+        # 确保 entity1 < entity2（无向关系）
+        if e1 > e2:
+            e1, e2 = e2, e1
+        family_id = f"rel_{uuid.uuid4().hex[:12]}"
+        absolute_id = f"relation_{ts}_{uuid.uuid4().hex[:8]}"
+        # Single loop: check both IDs together (collision probability ~0)
+        for _ in range(10):
+            family_id = f"rel_{uuid.uuid4().hex[:12]}"
+            absolute_id = f"relation_{ts}_{uuid.uuid4().hex[:8]}"
+            if (not processor.storage.get_relation_by_absolute_id(absolute_id)
+                    and not processor.storage.get_relation_by_family_id(family_id)):
+                break
+
+        relation = Relation(
+            absolute_id=absolute_id,
+            family_id=family_id,
+            entity1_absolute_id=e1,
+            entity2_absolute_id=e2,
+            content=content,
+            event_time=now,
+            processed_time=now,
+            episode_id=body.get("episode_id", ""),
+            source_document=body.get("source_document", ""),
+        )
+        processor.storage.save_relation(relation)
+        return ok(relation_to_dict(relation))
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@relations_bp.route("/api/v1/find/relations/absolute/<absolute_id>", methods=["PUT"])
+def update_relation_absolute(absolute_id: str):
+    """更新指定版本关系。"""
+    try:
+        processor = _get_processor()
+        body = request.get_json(silent=True) or {}
+        fields = {}
+        for key in ("content", "summary", "attributes", "confidence"):
+            if key in body:
+                fields[key] = body[key]
+        if not fields:
+            return err("至少提供一个可更新字段", 400)
+        updated = processor.storage.update_relation_by_absolute_id(absolute_id, **fields)
+        if not updated:
+            return err(f"未找到关系版本: {absolute_id}", 404)
+        return ok(relation_to_dict(updated))
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@relations_bp.route("/api/v1/find/relations/absolute/<absolute_id>", methods=["DELETE"])
+def delete_relation_absolute(absolute_id: str):
+    """删除指定版本关系。"""
+    try:
+        processor = _get_processor()
+        success = processor.storage.delete_relation_by_absolute_id(absolute_id)
+        if not success:
+            return err(f"未找到关系版本: {absolute_id}", 404)
+        return ok({"absolute_id": absolute_id, "deleted": True})
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@relations_bp.route("/api/v1/find/relations/batch-delete-versions", methods=["POST"])
+def batch_delete_relation_versions():
+    """批量删除关系版本。"""
+    try:
+        processor = _get_processor()
+        body = request.get_json(silent=True) or {}
+        absolute_ids = body.get("absolute_ids", [])
+        if not isinstance(absolute_ids, list) or not absolute_ids:
+            return err("absolute_ids 需为非空数组", 400)
+        deleted_count = processor.storage.batch_delete_relation_versions_by_absolute_ids(absolute_ids)
+        return ok({
+            "deleted": absolute_ids[:deleted_count],
+            "failed": absolute_ids[deleted_count:] if deleted_count < len(absolute_ids) else [],
+            "summary": {"deleted_count": deleted_count, "failed_count": len(absolute_ids) - deleted_count},
+        })
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@relations_bp.route("/api/v1/find/relations/redirect", methods=["POST"])
+def redirect_relation():
+    """重定向关系的实体端点。"""
+    try:
+        processor = _get_processor()
+        body = request.get_json(silent=True) or {}
+        family_id = (body.get("family_id") or "").strip()
+        side = (body.get("side") or "").strip()
+        new_family_id = (body.get("new_family_id") or "").strip()
+        if not family_id or not side or not new_family_id:
+            return err("family_id, side, new_family_id 为必填", 400)
+        if side not in _VALID_SIDES:
+            return err("side 必须为 entity1 或 entity2", 400)
+        count = processor.storage.redirect_relation(family_id, side, new_family_id)
+        return ok({
+            "family_id": family_id,
+            "side": side,
+            "new_family_id": new_family_id,
+            "relations_updated": count,
+        })
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@relations_bp.route("/api/v1/find/relations/<family_id>/confidence", methods=["PUT"])
+def update_relation_confidence(family_id: str):
+    """手动设置关系置信度（覆盖自动演化值）。"""
+    try:
+        processor = _get_processor()
+        body = request.get_json(silent=True) or {}
+        confidence = body.get("confidence")
+        if confidence is None:
+            return err("confidence 为必填字段", 400)
+        confidence = float(confidence)
+        if not (0.0 <= confidence <= 1.0):
+            return err("confidence 必须在 0.0 ~ 1.0 之间", 400)
+        relation = processor.storage.get_relation_by_family_id(family_id)
+        if not relation:
+            return err(f"关系不存在: {family_id}", 404)
+        processor.storage.update_relation_confidence(family_id, confidence)
+        # Patch in-memory instead of re-reading from DB
+        relation.confidence = confidence
+        return ok(relation_to_dict(relation))
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@relations_bp.route("/api/v1/find/relations/<family_id>/invalidate", methods=["POST"])
+def invalidate_relation(family_id: str):
+    """标记关系为失效（不删除，保留历史）"""
+    try:
+        processor = _get_processor()
+        body = request.get_json(silent=True) or {}
+        reason = body.get("reason", "")
+        count = processor.storage.invalidate_relation(family_id, reason)
+        if count == 0:
+            return err(f"未找到可失效的关系: {family_id}", 404)
+        return ok({"message": f"已标记 {count} 个关系版本为失效", "family_id": family_id})
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@relations_bp.route("/api/v1/find/relations/<family_id>/contradictions", methods=["GET"])
+def get_relation_contradictions(family_id: str):
+    """检测关系版本间的矛盾。"""
+    try:
+        processor = _get_processor()
+        versions = processor.storage.get_relation_versions(family_id)
+        if len(versions) < 2:
+            return ok([])
+
+        contradictions = run_async(
+            processor.llm_client.detect_contradictions(family_id, versions, concept_type="relation")
+        )
+
+        return ok(contradictions)
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@relations_bp.route("/api/v1/find/relations/<family_id>/resolve-contradiction", methods=["POST"])
+def resolve_relation_contradiction(family_id: str):
+    """裁决关系版本间矛盾。"""
+    try:
+        body = request.get_json(silent=True) or {}
+        contradiction = body.get("contradiction")
+        if not contradiction or not isinstance(contradiction, dict):
+            return err("contradiction 为必填字段", 400)
+
+        processor = _get_processor()
+        resolution = run_async(
+            processor.llm_client.resolve_contradiction(contradiction)
+        )
+
+        return ok(resolution)
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@relations_bp.route("/api/v1/find/relations/invalidated", methods=["GET"])
+def find_invalidated_relations():
+    """列出所有已失效的关系"""
+    try:
+        processor = _get_processor()
+        limit = request.args.get("limit", type=int, default=100)
+        relations = processor.storage.get_invalidated_relations(limit)
+        dicts = [relation_to_dict(r) for r in relations]
+        enrich_relations(dicts, processor)
+        return ok(dicts)
+    except Exception as e:
+        return err(str(e), 500)
+
+
+# =========================================================
+# 图谱结构统计
+# =========================================================
+@relations_bp.route("/api/v1/find/graph-stats", methods=["GET"])
+def find_graph_stats():
+    """图谱结构统计"""
+    try:
+        processor = _get_processor()
+        stats = processor.storage.get_graph_statistics()
+        return ok(stats)
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@relations_bp.route("/api/v1/find/graph-summary", methods=["GET"])
+def graph_summary():
+    """聚合返回：图谱统计 + 健康状态。"""
+    try:
+        processor = _get_processor()
+        stats = processor.storage.get_graph_statistics()
+        embedding_available = (
+            processor.embedding_client is not None
+            and processor.embedding_client.is_available()
+        )
+        storage_backend = "sqlite"
+        return ok({
+            "graph_id": _get_graph_id(),
+            "storage_backend": storage_backend,
+            "embedding_available": embedding_available,
+            "statistics": stats,
+        })
+    except Exception as e:
+        return err(str(e), 500)
+
+
+# =========================================================
+# Phase B: Advanced Search — BFS 遍历 + MMR 重排序
+# =========================================================
+@relations_bp.route("/api/v1/find/traverse", methods=["POST"])
+def traverse_graph():
+    """BFS 图遍历搜索。"""
+    try:
+        body = request.get_json(silent=True) or {}
+        seed_ids = body.get("seed_family_ids") or body.get("start_entity_ids", [])
+        if not isinstance(seed_ids, list) or not seed_ids:
+            return err("seed_family_ids 需为非空数组", 400)
+        max_depth = int(body.get("max_depth", 2))
+        max_nodes = int(body.get("max_nodes", 50))
+        time_point = body.get("time_point")
+
+        processor = _get_processor()
+        searcher = GraphTraversalSearcher(processor.storage)
+        entities, relations, visited = searcher.bfs_expand_with_relations(
+            seed_ids, max_depth=max_depth, max_nodes=max_nodes,
+            time_point=time_point)
+        ent_dicts = [entity_to_dict(e) for e in entities]
+        rel_dicts = [relation_to_dict(r) for r in relations]
+        enrich_entity_version_counts(ent_dicts, processor.storage)
+        enrich_relation_version_counts(rel_dicts, processor.storage)
+        enrich_relations(rel_dicts, processor)
+        return ok({
+            "entities": ent_dicts,
+            "relations": rel_dicts,
+            "visited_count": len(visited),
+        })
+    except Exception as e:
+        return err(str(e), 500)
+
 
 # =========================================================
 # Convenience endpoints for Agent workflows

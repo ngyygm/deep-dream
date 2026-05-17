@@ -8,7 +8,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import uuid
 
 from core.models import Relation
-from core.storage.neo4j_store import Neo4jStorageManager
 from core.llm.client import LLMClient
 from core.debug_log import log as dbg, log_section as dbg_section, _ENABLED as _dbg_enabled
 from core.content_schema import RELATION_SECTIONS, compute_content_patches
@@ -44,7 +43,7 @@ from ._shared import _doc_basename, _get_or_create_pool
 class RelationProcessor:
     """关系处理器 - 负责关系的搜索、对齐、更新和新建"""
     
-    def __init__(self, storage: Neo4jStorageManager, llm_client: LLMClient):
+    def __init__(self, storage, llm_client: LLMClient):
         self.storage = storage
         self.llm_client = llm_client
         self.batch_resolution_enabled = True
