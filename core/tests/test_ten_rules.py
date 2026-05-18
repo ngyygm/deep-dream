@@ -2,6 +2,7 @@
 端到端测试：验证 Deep-Dream 十条概念守则
 
 使用 API 发送文本 → 检查存储结果 → 逐条验证准则。
+需要运行中的服务器 (localhost:16200)。
 """
 from __future__ import annotations
 
@@ -10,7 +11,10 @@ import sys
 import time
 import uuid
 
+import pytest
 import requests
+
+pytestmark = pytest.mark.skip(reason="E2E test — requires live server at localhost:16200")
 
 BASE = "http://localhost:16200/api/v1"
 GRAPH_ID = f"test_rules_{uuid.uuid4().hex[:8]}"

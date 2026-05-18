@@ -36,40 +36,27 @@ from .json_repair import (
 )
 from .mock_response import _mock_json_fence, mock_llm_response
 from .priority_semaphore import PrioritySemaphore, _is_rate_limit_tpm_error
-
-# 非 TPM 类错误：失败后等待秒数，最多 5 轮（第 6 次失败则放弃）
-_LLM_BACKOFF_SCHEDULE = [2, 5, 10, 20, 30]  # capped exponential, not 3^n
-_LLM_MAX_FAILURE_ROUNDS = 5
-# Xinference 500 内部错误（如 'choices' KeyError）的快速重试 schedule
-# 这些是临时性故障，快速重试通常就能成功
-_XINFERENCE_500_BACKOFF = [0.5, 1, 2, 4, 8]
-# 单次等待上限，避免 TPM 无限重试时指数爆炸占满进程
-_LLM_TPM_SLEEP_CAP_SECONDS = 3601
-_DISTILL_SKIP_STEPS = frozenset(("02_extract_entities", "03_extract_relations"))
-
-_CONNECTION_ERROR_KEYWORDS = frozenset((
-    "connection refused", "connectionerror",
-    "failed to establish a new connection", "newconnectionerror",
-    "temporarily unreachable", "temporary failure in name resolution",
-    "name or service not known", "connection aborted",
-    "connection reset", "errno 111",
-))
-_CONTEXT_OVERFLOW_NEEDLES = (
-    "context length", "maximum context", "max context", "context window",
-    "token limit", "too many tokens", "maximum tokens", "exceeds the maximum",
-    "prompt is too long", "input is too long", "input length", "length limit",
-    "reduce the length", "payload too large", "请求过长", "上下文长度",
-    "上下文超限", "tokens 超", "token 超", "invalid prompt", "context_limit",
+from .prompts import (
+    _LLM_BACKOFF_SCHEDULE,
+    _LLM_MAX_FAILURE_ROUNDS,
+    _XINFERENCE_500_BACKOFF,
+    _LLM_TPM_SLEEP_CAP_SECONDS,
+    _DISTILL_SKIP_STEPS,
+    _CONNECTION_ERROR_KEYWORDS,
+    _CONTEXT_OVERFLOW_NEEDLES,
+    LLM_PRIORITY_STEP1,
+    LLM_PRIORITY_STEP2,
+    LLM_PRIORITY_STEP3,
+    LLM_PRIORITY_STEP4,
+    LLM_PRIORITY_STEP5,
+    LLM_PRIORITY_STEP6,
+    LLM_PRIORITY_STEP7,
+    estimate_text_token_count,
+    estimate_messages_token_count,
+    error_suggests_context_overflow,
+    ollama_root_from,
+    is_valid_utf8,
 )
-
-# 优先级常量（越小优先级越高）
-LLM_PRIORITY_STEP1 = 0   # 更新缓存
-LLM_PRIORITY_STEP2 = 1   # 抽取实体
-LLM_PRIORITY_STEP3 = 2   # 抽取关系
-LLM_PRIORITY_STEP4 = 3   # 补全实体内容
-LLM_PRIORITY_STEP5 = 4   # 补全关系内容
-LLM_PRIORITY_STEP6 = 5   # 实体对齐
-LLM_PRIORITY_STEP7 = 6   # 关系对齐
 
 
 class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
@@ -252,11 +239,7 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
 
     @staticmethod
     def _ollama_root_from(base: Optional[str]) -> str:
-        """将 base_url 规范化为 Ollama 根地址（不含 /v1），供 /api/chat 使用。"""
-        b = (base or "http://localhost:11434").rstrip("/")
-        if b.endswith("/v1"):
-            b = b[:-3]
-        return b
+        return ollama_root_from(base)
 
     def set_cancel_check(self, fn):
         """设置取消检查回调（返回 True 表示应取消）。"""
@@ -302,36 +285,10 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
 
     @staticmethod
     def _estimate_text_token_count(text: Any) -> int:
-        """保守估算 token 数。
-
-        这里不追求精确 tokenizer 一致性，只需要在请求前避免总预算超过 8K。
-        对中文与 JSON 来说，字符数近似 token 数，适合做服务保护上限。
-        """
-        if text is None:
-            return 0
-        if not isinstance(text, str):
-            text = str(text)
-        return len(text)
+        return estimate_text_token_count(text)
 
     def _estimate_messages_token_count(self, messages: List[Dict[str, Any]]) -> int:
-        total = 0
-        for msg in messages:
-            total += 8  # role / 分隔符等固定开销
-            total += self._estimate_text_token_count(msg.get("role", ""))
-            content = msg.get("content", "")
-            if isinstance(content, list):
-                for part in content:
-                    # Fast length estimation — avoid json.dumps per part
-                    if isinstance(part, dict):
-                        part_len = sum(len(v) for v in part.values() if isinstance(v, str))
-                    elif isinstance(part, str):
-                        part_len = len(part)
-                    else:
-                        part_len = len(str(part))
-                    total += part_len  # _estimate_text_token_count uses len() ≈ tokens
-            else:
-                total += self._estimate_text_token_count(content)
-        return total + 16  # 请求包尾部保留固定开销
+        return estimate_messages_token_count(messages)
 
     def _can_continue_multi_round(
         self,
@@ -356,26 +313,7 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
 
     @staticmethod
     def _error_suggests_context_overflow(err: BaseException) -> bool:
-        """服务端错误是否与上下文/token/长度相关（仅此类错误才转储完整 messages）。"""
-        sc = getattr(err, "status_code", None)
-        if sc == 413:
-            return True
-        # Fast path: check primary error string before building full concat
-        primary = str(err).lower()
-        if any(n in primary for n in _CONTEXT_OVERFLOW_NEEDLES):
-            return True
-        # Slower path: check repr and nested body/response
-        chunks: List[str] = [repr(err)]
-        body = getattr(err, "body", None)
-        if body is not None:
-            chunks.append(str(body))
-        response = getattr(err, "response", None)
-        if response is not None:
-            text = getattr(response, "text", None)
-            if text:
-                chunks.append(str(text)[:4000])
-        s = "\n".join(chunks).lower()
-        return any(n in s for n in _CONTEXT_OVERFLOW_NEEDLES)
+        return error_suggests_context_overflow(err)
 
     def _resolve_request_max_tokens(
         self,
@@ -427,15 +365,7 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
         return False
 
     def _is_valid_utf8(self, text: str) -> bool:
-        """检测文本是否包含 Unicode 替换字符（乱码标志）。
-
-        Python str 始终是有效 Unicode，无需 encode/decode 往返。
-        仅需检测 \\ufffd 替换字符（编码错误的标志）。
-        """
-        if not text:
-            return True
-        # Unicode 替换字符是编码错误的标志
-        return '' not in text
+        return is_valid_utf8(text)
 
     def _select_llm_semaphore(self, priority: int) -> Optional[PrioritySemaphore]:
         """步骤2–8 用上游池，步骤9–10 用下游池；未拆分（单槽）时仅上游。"""

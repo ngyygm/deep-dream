@@ -16,21 +16,18 @@ _TRUE_WORDS = frozenset(("true", "yes", "是", "需要更新", "需要"))
 
 
 def _contents_fast_path(contents: List[str]) -> Optional[str]:
-    """Check if all contents are identical or new is a subset. Returns winner or None."""
+    """Check if all contents are identical. Returns winner or None."""
     if not contents:
         return ""
     if len(contents) == 1:
         return contents[0]
     if len(contents) == 2:
-        # Most common case: avoid list allocation, compare directly
         s0 = contents[0].strip()
         s1 = contents[1].strip()
         if s0 == s1:
             return contents[0]
-        if s1 and s1 in s0:
-            return contents[0]
         return None
-    # 3+ contents: generator-based check avoids list allocation
+    # 3+ contents: all identical to first?
     base = contents[0].strip()
     if all(c.strip() == base for c in contents[1:]):
         return contents[0]
@@ -78,14 +75,6 @@ class _ContentMergerMixin:
         _new_s = new_content.strip()
         if _old_s == _new_s:
             return False
-
-        # 快速路径：新内容是旧内容的子串 → 旧内容已包含新内容，无需更新
-        if _new_s and _new_s in _old_s:
-            return False
-
-        # 快速路径：旧内容是新内容的前缀 → 增量增长，需要更新
-        if _old_s and _new_s.startswith(_old_s):
-            return True
 
         # 使用LLM判断新内容是否已经被旧内容包含
         system_prompt = JUDGE_CONTENT_NEED_UPDATE_SYSTEM_PROMPT
@@ -199,14 +188,6 @@ class _ContentMergerMixin:
         if not existing_relations:
             return None
 
-        # Fast-path: check if new content matches or is substring of any existing
-        _new_content = (extracted_relation.get('content') or '').strip()
-        if _new_content:
-            for r in existing_relations:
-                _existing = (r.get('content') or '').strip()
-                if _existing and (_new_content == _existing or _new_content in _existing):
-                    return {"family_id": r['family_id'], "need_update": False}
-
         system_prompt = JUDGE_RELATION_MATCH_SYSTEM_PROMPT
 
         # Cap existing relations to avoid blowing up LLM context for hub entities
@@ -269,8 +250,7 @@ class _ContentMergerMixin:
             return new_content
         if not _new_s:
             return old_content
-        # Inline 2-element fast path to avoid temp list allocation
-        if _old_s == _new_s or (_new_s and _new_s in _old_s):
+        if _old_s == _new_s:
             return old_content
         return self.merge_multiple_relation_contents(
             [old_content, new_content],

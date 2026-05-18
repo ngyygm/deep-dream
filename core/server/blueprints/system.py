@@ -276,14 +276,6 @@ _API_ROUTE_INDEX = {
 
 @system_bp.route("/api/v1/routes", methods=["GET"])
 def route_index():
-    """Return API route index."""
-    return ok(_API_ROUTE_INDEX)
-
-
-# ── Health ──────────────────────────────────────────────────────────────
-
-@system_bp.route("/api/v1/routes", methods=["GET"])
-def route_index():
     """返回所有已注册的 API 路由。"""
     routes = []
     for rule in current_app.url_map.iter_rules():
