@@ -22,17 +22,14 @@ import atexit
 import errno
 import logging
 import os
-import re as _re
 
 logger = logging.getLogger(__name__)
 
 from core.log import info as _log_info, error as _log_error
 import signal
-import socket
-import subprocess
 import threading
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from flask import Flask, abort, jsonify, make_response, redirect, request
 
@@ -40,7 +37,7 @@ _MUTATING_METHODS = frozenset(("POST", "PUT", "DELETE", "PATCH"))
 _MUTATING_JSON_METHODS = frozenset(("POST", "PUT", "PATCH"))
 from werkzeug.exceptions import NotFound
 
-from core.server.config import load_config, merge_llm_alignment, resolve_embedding_model
+from core.server.config import load_config
 from core.server.monitor import LOG_MODE_DETAIL, LOG_MODE_MONITOR, SystemMonitor
 from core.server.task_queue import RememberTask, RememberTaskQueue
 from core.server.registry import GraphRegistry
@@ -50,72 +47,20 @@ from core import TemporalMemoryGraphProcessor
 from core.llm.client import LLM_PRIORITY_STEP6
 from core.server.llm_utils import check_llm_available, call_llm_with_backoff
 
-
-# ----------------------------------------------------------------------
-# Input validation helpers
-# ----------------------------------------------------------------------
-
-def _validate_graph_id(graph_id: Any) -> Tuple[bool, Optional[str], int]:
-    """Validate graph_id parameter. Returns (is_valid, error_message, status_code)."""
-    if not graph_id:
-        return False, "graph_id is required", 400
-    if not isinstance(graph_id, str):
-        return False, "graph_id must be a string", 400
-    try:
-        GraphRegistry.validate_graph_id(graph_id)
-        return True, None, 200
-    except ValueError as e:
-        return False, str(e), 400
-
-
-def _validate_text_input(text: Any, field_name: str = "text", min_length: int = 1,
-                          max_length: int = 10_000_000) -> Tuple[bool, Optional[str], int]:
-    """Validate text input parameters. Returns (is_valid, error_message, status_code)."""
-    if text is None:
-        return False, f"{field_name} is required", 400
-    if not isinstance(text, str):
-        return False, f"{field_name} must be a string", 400
-    text = text.strip()
-    if len(text) < min_length:
-        return False, f"{field_name} must be at least {min_length} character(s)", 400
-    if len(text) > max_length:
-        return False, f"{field_name} exceeds maximum length of {max_length} characters", 400
-    return True, None, 200
-
-
-def _validate_positive_int(value: Any, field_name: str = "value",
-                           min_val: int = 1, max_val: int = 10000) -> Tuple[bool, Optional[str], int]:
-    """Validate positive integer parameters. Returns (is_valid, error_message, status_code)."""
-    if value is None:
-        return True, None, 200  # Optional parameter
-    try:
-        int_val = int(value)
-        if int_val < min_val:
-            return False, f"{field_name} must be at least {min_val}", 400
-        if int_val > max_val:
-            return False, f"{field_name} must not exceed {max_val}", 400
-        return True, None, 200
-    except (ValueError, TypeError):
-        return False, f"{field_name} must be a valid integer", 400
-
-
-def _validate_float_range(value: Any, field_name: str = "value",
-                          min_val: float = 0.0, max_val: float = 1.0) -> Tuple[bool, Optional[str], int]:
-    """Validate float parameters in a range. Returns (is_valid, error_message, status_code)."""
-    if value is None:
-        return True, None, 200  # Optional parameter
-    try:
-        float_val = float(value)
-        if float_val < min_val or float_val > max_val:
-            return False, f"{field_name} must be between {min_val} and {max_val}", 400
-        return True, None, 200
-    except (ValueError, TypeError):
-        return False, f"{field_name} must be a valid number", 400
-
-
-def _make_validation_error(message: str) -> tuple:
-    """Return a standardized validation error response."""
-    return jsonify({"success": False, "error": message}), 400
+# Re-export helpers for backward-compatible imports
+from core.server.api_helpers import (  # noqa: F401
+    validate_graph_id as _validate_graph_id,
+    validate_text_input as _validate_text_input,
+    validate_positive_int as _validate_positive_int,
+    validate_float_range as _validate_float_range,
+    make_validation_error as _make_validation_error,
+    build_processor,
+    tcp_bind_probe as _tcp_bind_probe,
+    get_port_pids as _get_port_pids,
+    kill_port_occupants as _kill_port_occupants,
+    resolve_listen_port as _resolve_listen_port,
+    check_storage_writable as _check_storage_writable,
+)
 
 
 def create_app(
@@ -532,72 +477,6 @@ def create_app(
     return app
 
 
-def build_processor(config: Dict[str, Any]) -> TemporalMemoryGraphProcessor:
-    storage_path = config.get("storage_path", "./graph/tmg_storage")
-    chunking = config.get("chunking") or {}
-    window_size = chunking.get("window_size", 1000)
-    overlap = chunking.get("overlap", 200)
-    llm = config.get("llm") or {}
-    embedding = config.get("embedding") or {}
-    pipeline = config.get("pipeline") or {}
-    runtime = config.get("runtime") or {}
-    runtime_concurrency = runtime.get("concurrency") or {}
-    runtime_task = runtime.get("task") or {}
-    pipeline_search = pipeline.get("search") or {}
-    pipeline_alignment = pipeline.get("alignment") or {}
-    pipeline_extraction = pipeline.get("extraction") or {}
-    pipeline_remember = pipeline.get("remember") or {}
-    pipeline_debug = pipeline.get("debug") or {}
-    max_concurrency = llm.get("max_concurrency")
-    model_path, model_name, use_local = resolve_embedding_model(embedding)
-    kwargs: Dict[str, Any] = {
-        "storage_path": storage_path,
-        "window_size": window_size,
-        "overlap": overlap,
-        "llm_api_key": llm.get("api_key"),
-        "llm_model": llm.get("model", "gpt-4"),
-        "llm_base_url": llm.get("base_url"),
-        "alignment_llm": merge_llm_alignment(llm),
-        "llm_think_mode": bool(llm.get("think", llm.get("think_mode", False))),
-        "llm_max_tokens": llm.get("max_tokens") if llm.get("max_tokens") else None,
-        "llm_context_window_tokens": llm.get("context_window_tokens"),
-        "max_llm_concurrency": max_concurrency,
-        "llm_timeout_seconds": llm.get("timeout_seconds", 300),
-        "llm_connect_timeout_seconds": llm.get("connect_timeout_seconds", 30),
-        "embedding_model_path": model_path,
-        "embedding_model_name": model_name,
-        "embedding_device": embedding.get("device", "cpu"),
-        "embedding_use_local": use_local,
-        "embedding_cache_max_size": embedding.get("cache_max_size"),
-        "embedding_cache_ttl": embedding.get("cache_ttl"),
-        "load_cache_memory": runtime_task.get("load_cache_memory", pipeline.get("load_cache_memory")),
-        "max_concurrent_windows": runtime_concurrency.get("window_workers", pipeline.get("max_concurrent_windows")),
-    }
-    for key in (
-        "similarity_threshold", "max_similar_entities", "content_snippet_length",
-        "relation_content_snippet_length", "relation_endpoint_jaccard_threshold",
-        "relation_endpoint_embedding_threshold",
-        "jaccard_search_threshold",
-        "embedding_name_search_threshold", "embedding_full_search_threshold",
-    ):
-        if key in pipeline_search:
-            kwargs[key] = pipeline_search[key]
-    if "max_alignment_candidates" in pipeline_alignment:
-        kwargs["max_alignment_candidates"] = pipeline_alignment["max_alignment_candidates"]
-    for key in (
-        "extraction_rounds", "entity_extraction_rounds", "relation_extraction_rounds",
-        "entity_post_enhancement", "prompt_episode_max_chars",
-        "compress_multi_round_extraction",
-    ):
-        if key in pipeline_extraction:
-            kwargs[key] = pipeline_extraction[key]
-    if pipeline_remember:
-        kwargs["remember_config"] = pipeline_remember
-    if "distill_data_dir" in pipeline_debug:
-        kwargs["distill_data_dir"] = pipeline_debug["distill_data_dir"]
-    return TemporalMemoryGraphProcessor(**kwargs)
-
-
 def _check_llm_available(processor) -> tuple[bool, str | None]:
     """启动前握手：检查上游 LLM；若启用 alignment 专用通道，再按步骤 6/7 优先级检查对齐端点。"""
     return check_llm_available(processor, priority_steps=[6])
@@ -606,139 +485,6 @@ def _check_llm_available(processor) -> tuple[bool, str | None]:
 def _call_llm_with_backoff(processor, prompt, timeout=60, max_waits=5, backoff_base_seconds=3):
     """调用 LLM（指数退避重试）—— 代理到共享模块。"""
     return call_llm_with_backoff(processor, prompt, timeout=timeout, max_waits=max_waits, backoff_base_seconds=backoff_base_seconds)
-
-
-def _tcp_bind_probe(host: str, port: int) -> Tuple[bool, Optional[str]]:
-    """尝试在 host:port 上独占 bind，用于启动前检测端口是否可用。"""
-    bind_addr = host if host not in ("", "0.0.0.0") else "0.0.0.0"
-    sock: Optional[socket.socket] = None
-    try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.bind((bind_addr, int(port)))
-        return True, None
-    except OSError as e:
-        if e.errno == errno.EADDRINUSE:
-            return False, "端口已被占用 (EADDRINUSE)"
-        return False, str(e)
-    finally:
-        if sock is not None:
-            try:
-                sock.close()
-            except OSError:
-                pass
-
-
-def _get_port_pids(port: int) -> List[int]:
-    """获取占用指定端口的 PID 列表（排除自身）。"""
-    my_pid = os.getpid()
-    pids: List[int] = []
-
-    # 优先用 ss（更快、更普遍）
-    try:
-        result = subprocess.run(
-            ["ss", "-tlnp", f"sport = :{port}"],
-            capture_output=True, text=True, timeout=5,
-        )
-        for m in _re.finditer(r"pid=(\d+)", result.stdout):
-            pid = int(m.group(1))
-            if pid != my_pid:
-                pids.append(pid)
-        if pids:
-            return pids
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
-
-    # 回退到 lsof
-    try:
-        result = subprocess.run(
-            ["lsof", "-t", "-i", f":{port}"],
-            capture_output=True, text=True, timeout=5,
-        )
-        for line in result.stdout.strip().splitlines():
-            pid = int(line.strip())
-            if pid != my_pid:
-                pids.append(pid)
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
-
-    return pids
-
-
-def _kill_port_occupants(port: int) -> bool:
-    """Kill processes occupying the given port. Returns True if all killed."""
-    pids = _get_port_pids(port)
-    if not pids:
-        return True
-
-    all_killed = True
-    for pid in pids:
-        try:
-            os.kill(pid, signal.SIGTERM)
-            logging.info("已发送 SIGTERM 到进程 %d (占用端口 %d)", pid, port)
-        except ProcessLookupError:
-            pass
-        except PermissionError:
-            logging.warning("无权限终止进程 %d", pid)
-            all_killed = False
-
-    # 轮询等待进程退出（最多 3 秒）
-    for _ in range(15):
-        remaining = _get_port_pids(port)
-        if not remaining:
-            return True
-        time.sleep(0.2)
-
-    # SIGTERM 没杀掉，升级到 SIGKILL
-    remaining = _get_port_pids(port)
-    for pid in remaining:
-        try:
-            os.kill(pid, signal.SIGKILL)
-            logging.warning("SIGTERM 无效，已发送 SIGKILL 到进程 %d (占用端口 %d)", pid, port)
-        except ProcessLookupError:
-            pass
-        except PermissionError:
-            logging.warning("无权限终止进程 %d", pid)
-            all_killed = False
-
-    # 再等 1 秒确认
-    time.sleep(1)
-    return not _get_port_pids(port)
-
-
-def _resolve_listen_port(
-    host: str,
-    preferred_port: int,
-    auto_fallback: bool,
-    max_extra: int = 10,
-) -> Tuple[int, bool]:
-    """
-    若 preferred_port 可 bind 则用之；否则在 auto_fallback 时尝试 preferred_port+1 … +max_extra。
-    返回 (实际端口, 是否发生了端口切换)。
-    """
-    ok, _ = _tcp_bind_probe(host, preferred_port)
-    if ok:
-        return preferred_port, False
-    if not auto_fallback:
-        return preferred_port, False
-    for delta in range(1, max_extra + 1):
-        p = preferred_port + delta
-        ok2, _ = _tcp_bind_probe(host, p)
-        if ok2:
-            return p, True
-    return preferred_port, False
-
-
-def _check_storage_writable(storage_root: Path) -> Optional[str]:
-    """在 storage_path 下尝试创建/删除测试文件，不可写则返回错误说明。"""
-    probe = storage_root / ".tmg_write_probe"
-    try:
-        storage_root.mkdir(parents=True, exist_ok=True)
-        probe.write_text("ok", encoding="utf-8")
-        probe.unlink(missing_ok=True)
-        return None
-    except OSError as e:
-        return f"存储路径不可写或无法创建: {storage_root} ({e})"
 
 
 def main() -> int:

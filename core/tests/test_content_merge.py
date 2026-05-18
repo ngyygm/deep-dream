@@ -46,12 +46,11 @@ class TestContentMergeFastPath:
         assert result == "same content"
 
     def test_fast_path_new_is_subset_of_old(self):
-        """Test fast path when new content is subset of old (fast-forward)."""
+        """Subset is no longer a fast path — must go through LLM."""
         old = "This is a long content with lots of details"
         new = "long content"
         result = _contents_fast_path([old, new])
-        # Old contains new → return old (fast-forward)
-        assert result == old
+        assert result is None
 
     def test_fast_path_no_match(self):
         """Test fast path when contents are different."""
@@ -106,7 +105,7 @@ class TestMergeTwoContents:
             mock_merge.assert_not_called()
 
     def test_merge_old_is_substring_of_new(self, processor):
-        """Test merge when old content is substring of new (fast-forward)."""
+        """Test merge when old content is substring of new — still calls LLM."""
         from core.models import Entity
         from datetime import datetime, timezone
 
@@ -125,6 +124,8 @@ class TestMergeTwoContents:
         )
 
         with patch.object(processor.llm_client, 'merge_multiple_entity_contents') as mock_merge:
+            mock_merge.return_value = new_content
+
             result = processor.entity_processor._merge_two_contents(
                 old_entity,
                 "TestEntity",
@@ -133,12 +134,11 @@ class TestMergeTwoContents:
                 "test_ep",
             )
 
-            # Fast-forward: return new content without LLM call
+            mock_merge.assert_called_once()
             assert result == new_content
-            mock_merge.assert_not_called()
 
     def test_merge_new_starts_with_old(self, processor):
-        """Test merge when new content starts with old (incremental growth)."""
+        """Test merge when new content starts with old — still calls LLM."""
         from core.models import Entity
         from datetime import datetime, timezone
 
@@ -157,6 +157,8 @@ class TestMergeTwoContents:
         )
 
         with patch.object(processor.llm_client, 'merge_multiple_entity_contents') as mock_merge:
+            mock_merge.return_value = new_content
+
             result = processor.entity_processor._merge_two_contents(
                 old_entity,
                 "TestEntity",
@@ -165,9 +167,8 @@ class TestMergeTwoContents:
                 "test_ep",
             )
 
-            # Incremental growth: return new content without LLM call
+            mock_merge.assert_called_once()
             assert result == new_content
-            mock_merge.assert_not_called()
 
     def test_merge_requires_llm(self, processor):
         """Test merge when LLM is needed (no fast path)."""
@@ -251,7 +252,7 @@ class TestJudgeContentNeedUpdate:
             mock_llm.assert_not_called()
 
     def test_judge_new_is_substring_of_old(self, processor):
-        """Test judgment when new is substring of old."""
+        """Test judgment when new is substring of old — goes to LLM."""
         with patch.object(processor.llm_client, '_call_llm') as mock_llm:
             mock_llm.return_value = "false"
 
@@ -260,23 +261,23 @@ class TestJudgeContentNeedUpdate:
                 new_content="content with all",
             )
 
-            # Fast path: new is substring of old → no update needed
+            # No fast path — LLM decides
+            mock_llm.assert_called_once()
             assert result is False
-            mock_llm.assert_not_called()
 
     def test_judge_old_is_prefix_of_new(self, processor):
-        """Test judgment when old is prefix of new."""
+        """Test judgment when old is prefix of new — goes to LLM."""
         with patch.object(processor.llm_client, '_call_llm') as mock_llm:
-            mock_llm.return_value = "false"
+            mock_llm.return_value = "true"
 
             result = processor.llm_client.judge_content_need_update(
                 old_content="Base info",
                 new_content="Base info extended",
             )
 
-            # Fast path: old is prefix → update needed
+            # No fast path — LLM decides
+            mock_llm.assert_called_once()
             assert result is True
-            mock_llm.assert_not_called()
 
     def test_judge_requires_llm(self, processor):
         """Test judgment when LLM is needed."""
@@ -308,15 +309,18 @@ class TestMergeRelationContent:
             mock_merge.assert_not_called()
 
     def test_merge_relation_new_is_substring(self, processor):
-        """Test relation merge when new is substring of old."""
+        """Test relation merge when new is substring of old — goes to LLM."""
         with patch.object(processor.llm_client, 'merge_multiple_relation_contents') as mock_merge:
+            mock_merge.return_value = "Long relation description with details"
+
             result = processor.llm_client.merge_relation_content(
                 old_content="Long relation description with details",
                 new_content="relation description",
             )
 
+            # No fast path — LLM merge decides
+            mock_merge.assert_called_once()
             assert result == "Long relation description with details"
-            mock_merge.assert_not_called()
 
     def test_merge_relation_empty_old(self, processor):
         """Test relation merge when old is empty."""
@@ -468,9 +472,9 @@ class TestContentMergeIntegration:
                 "test_ep",
             )
 
-            # Fast-forward: new starts with old
+            # LLM merge called, returns merged content
             assert result == new_content
-            mock_merge.assert_not_called()
+            mock_merge.assert_called_once()
 
 
 class TestContentSchemaSections:
@@ -676,6 +680,8 @@ class TestFastForwardMergeStrategy:
         )
 
         with patch.object(processor.llm_client, 'merge_multiple_entity_contents') as mock_merge:
+            mock_merge.return_value = new_content
+
             result = processor.entity_processor._merge_two_contents(
                 old_entity,
                 "Python",
@@ -684,9 +690,8 @@ class TestFastForwardMergeStrategy:
                 "test_ep",
             )
 
-            # old_content in new_content → fast-forward, return new (superset)
-            assert result == new_content
-            mock_merge.assert_not_called()
+            # LLM merge called for content superset
+            mock_merge.assert_called_once()
 
     def test_real_increment_minimal_insertion(self, processor):
         """
@@ -713,6 +718,8 @@ class TestFastForwardMergeStrategy:
         )
 
         with patch.object(processor.llm_client, 'merge_multiple_entity_contents') as mock_merge:
+            mock_merge.return_value = new_content
+
             result = processor.entity_processor._merge_two_contents(
                 old_entity,
                 "JavaScript",
@@ -721,9 +728,9 @@ class TestFastForwardMergeStrategy:
                 "test_ep",
             )
 
-            # New starts with old → incremental growth, use new
+            # LLM merge called for incremental content
             assert result == new_content
-            mock_merge.assert_not_called()
+            mock_merge.assert_called_once()
 
     def test_factual_error_correction(self, processor):
         """

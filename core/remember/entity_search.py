@@ -13,7 +13,7 @@ from core.storage.sqlite.manager import SQLiteGraphStorageManager as Neo4jStorag
 from core.llm.client import LLMClient
 from core.utils import wprint_info, calculate_jaccard_similarity, cosine_similarity
 from core.debug_log import log_struct as _dbg_struct
-from core.remember.entity_candidates import _TITLE_SUFFIXES_RE
+from core.remember._shared import _TITLE_SUFFIXES_RE
 from core.remember._shared import _doc_basename
 
 logger = logging.getLogger(__name__)

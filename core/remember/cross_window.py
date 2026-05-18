@@ -14,7 +14,7 @@ from typing import Dict, List, Optional
 
 from core.models import Entity
 from core.utils import wprint_info, cosine_similarity
-from .entity_candidates import _TITLE_SUFFIXES_RE
+from ._shared import _TITLE_SUFFIXES_RE
 from .helpers import _PAREN_ANNOTATION_RE
 
 
