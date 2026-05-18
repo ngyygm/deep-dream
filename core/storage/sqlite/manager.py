@@ -1916,13 +1916,15 @@ class SQLiteGraphStorageManager:
 
     def stream_all_entities(self, exclude_embedding: bool = True, since: Optional[str] = None):
         entities = self.get_all_entities(exclude_embedding=exclude_embedding)
+        # Batch-fetch version counts to avoid N+1 queries
+        family_ids = [e.family_id for e in entities]
+        vc_map = self.get_entity_version_counts(family_ids) if family_ids else {}
         for entity in entities:
             if since:
                 pt = _fmt_dt(entity.processed_time)
                 if pt and pt <= since:
                     continue
-            vc = self.get_entity_version_count(entity.family_id)
-            yield entity, vc
+            yield entity, vc_map.get(entity.family_id, 1)
 
     def count_entities_since(self, since: str) -> int:
         conn = self._connect()

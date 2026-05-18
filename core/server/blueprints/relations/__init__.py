@@ -29,7 +29,5 @@ _PAREN_ANNOTATION_RE = _re.compile(r'[（(][^）)]+[）)]')  # keep in sync with
 # time.  Each sub-module imports ``relations_bp`` from this package.
 # ---------------------------------------------------------------------------
 from core.server.blueprints.relations import _search   # noqa: E402, F401
-from core.server.blueprints.relations import _crud      # noqa: E402, F401
-from core.server.blueprints.relations import _domain     # noqa: E402, F401
 
 __all__ = ["relations_bp", "_shared_pool"]

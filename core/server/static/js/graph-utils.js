@@ -589,7 +589,7 @@ window.GraphUtils = (function () {
       },
       stabilization: {
         enabled: true,
-        iterations: 1500,
+        iterations: 300,
         updateInterval: 25,
       },
     };

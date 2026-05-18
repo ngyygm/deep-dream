@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 from core.debug_log import log_struct as _dbg_struct
-from core.utils import wprint_info
+from core.utils import wprint_info, _bigrams, _jaccard_from_bigrams
 from .helpers import _PAREN_ANNOTATION_RE
 from functools import lru_cache
 import re
