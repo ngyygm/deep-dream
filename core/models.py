@@ -2,7 +2,7 @@
 核心数据结构定义
 
 旧模型（Entity, Relation, Episode）保留用于向后兼容。
-新模型（Concept）是统一的概念原语，参见 docs/vision.md。
+新模型（Concept）是统一的概念原语；Entity/Relation/Episode DTO 仅作为流水线适配对象。
 """
 from datetime import datetime
 from typing import List, Optional
@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 class Episode:
     """Episode — 知识图谱的一等节点
 
-    每次写入（remember / dream）产生一个 Episode，包含当时的记忆上下文和原始文本。
+    每次写入产生一个 Episode，包含当时的记忆上下文和原始文本。
     抽取出的实体/关系通过 MENTIONS 边连接回 Episode，实现事实溯源。
     """
     absolute_id: str
@@ -22,7 +22,7 @@ class Episode:
     source_document: str  # 来源文档名称
     processed_time: Optional[datetime] = None  # 系统处理时间
     activity_type: Optional[str] = None  # 可选的活动类型，如"阅读小说"、"处理文档"等
-    episode_type: Optional[str] = None  # Episode 类型: "narrative" | "fact" | "conversation" | "dream"
+    episode_type: Optional[str] = None  # Episode 类型: "narrative" | "fact" | "conversation"
 
 
 @dataclass(slots=True)
@@ -124,7 +124,8 @@ class Concept:
     万物皆概念。Entity、Relation、Observation 只是角色的不同，
     不是类型系统的区分。所有概念遵循相同的存储、版本、检索、遍历规则。
 
-    详见 docs/vision.md 第二节"核心概念模型"。
+    当前 v1 存储中，Document、Episode、Entity、Relation 都会落到
+    concept family/version/edge 图谱模型。
     """
     family_id: str  # 逻辑身份，跨版本不变
     role: str  # 角色：entity | relation | observation

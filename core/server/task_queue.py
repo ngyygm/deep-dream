@@ -149,6 +149,17 @@ class RememberTaskQueue:
     def _log_error(self, message: str) -> None:
         _log_error_fn("Remember", message)
 
+    def _estimate_total_chunks(self, text: str) -> int:
+        """Use the same markdown/window chunker as the remember pipeline."""
+        try:
+            document_processor = getattr(self._processor, "document_processor", None)
+            chunk_text = getattr(document_processor, "chunk_text", None)
+            if callable(chunk_text):
+                return max(1, len(chunk_text(text or "")))
+        except Exception as e:
+            self._log_warn("[Remember] chunk 数估算回退: %s" % e)
+        return _estimate_chunk_count(len(text or ""), self._window_size, self._overlap)
+
     def _update_task_progress(
         self,
         task: RememberTask,
@@ -331,7 +342,7 @@ class RememberTaskQueue:
                 self._log_warn("[Remember] 原文保存失败 task_id=%s: %s" % (_short_task_id(task.task_id), e))
         task.total_chunks = max(
             task.total_chunks,
-            _estimate_chunk_count(len(task.text), self._window_size, self._overlap),
+            self._estimate_total_chunks(task.text),
         )
         task.phase = "queued"
         task.phase_label = "等待处理"

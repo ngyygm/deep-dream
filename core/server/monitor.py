@@ -221,15 +221,17 @@ class GraphMonitor:
             storage = self._processor.storage
             total_entities = storage.count_unique_entities()
             total_relations = storage.count_unique_relations()
-            cache_json_dir = storage.cache_json_dir
-            cache_dir = storage.cache_dir
-            # 优先从 docs/ 新结构计数
-            docs_meta_files = list(storage.docs_dir.glob("*/meta.json")) if storage.docs_dir.is_dir() else []
-            if docs_meta_files:
-                total_episodes = len(docs_meta_files)
+            if hasattr(storage, "count_episodes"):
+                total_episodes = storage.count_episodes()
             else:
-                json_files = list(cache_json_dir.glob("*.json"))
-                total_episodes = len(json_files) if json_files else len(list(cache_dir.glob("*.json")))
+                cache_json_dir = storage.cache_json_dir
+                cache_dir = storage.cache_dir
+                docs_meta_files = list(storage.docs_dir.glob("*/meta.json")) if storage.docs_dir.is_dir() else []
+                if docs_meta_files:
+                    total_episodes = len(docs_meta_files)
+                else:
+                    json_files = list(cache_json_dir.glob("*.json"))
+                    total_episodes = len(json_files) if json_files else len(list(cache_dir.glob("*.json")))
             return {
                 "entities": total_entities,
                 "relations": total_relations,
@@ -493,7 +495,7 @@ class SystemMonitor:
                         storage = {
                             "entities": st.count_unique_entities(),
                             "relations": st.count_unique_relations(),
-                            "episodes": sum(1 for _ in (st.docs_dir.glob("*/meta.json") if st.docs_dir.is_dir() else [])),
+                            "episodes": st.count_episodes() if hasattr(st, "count_episodes") else sum(1 for _ in (st.docs_dir.glob("*/meta.json") if st.docs_dir.is_dir() else [])),
                         }
                     except Exception:
                         pass
@@ -595,7 +597,7 @@ class SystemMonitor:
                         storage = {
                             "entities": st.count_unique_entities(),
                             "relations": st.count_unique_relations(),
-                            "episodes": sum(1 for _ in (st.docs_dir.glob("*/meta.json") if st.docs_dir.is_dir() else [])),
+                            "episodes": st.count_episodes() if hasattr(st, "count_episodes") else sum(1 for _ in (st.docs_dir.glob("*/meta.json") if st.docs_dir.is_dir() else [])),
                         }
                     except Exception:
                         pass

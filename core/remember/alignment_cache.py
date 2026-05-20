@@ -51,7 +51,14 @@ class _CacheMixin:
         self.llm_client._current_distill_step = None
 
         doc_hash = doc_hash or (compute_doc_hash(input_text) if input_text else "")
-        self.storage.save_episode(new_episode, text=input_text, document_path=document_path, doc_hash=doc_hash)
+        self.storage.save_episode(
+            new_episode,
+            text=input_text,
+            document_path=document_path,
+            doc_hash=doc_hash,
+            start_offset=text_start_pos,
+            end_offset=text_end_pos,
+        )
         self.current_episode = new_episode
 
         if verbose:

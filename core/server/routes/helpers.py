@@ -1,5 +1,5 @@
 """
-Shared helpers for all blueprint modules.
+Shared helpers for all route modules.
 
 Provides access to the request-scoped processor, queue, and graph_id,
 as well as common response helpers and serialization functions.
@@ -117,13 +117,13 @@ def _validate_positive_int(value, field_name="value"):
 # ── Safe endpoint decorator ─────────────────────────────────────────────────
 
 def safe_endpoint(func):
-    """Decorator that standardizes error handling for blueprint endpoints.
+    """Decorator that standardizes error handling for route endpoints.
 
     - ValueError / TypeError → 400 with the message (client errors)
     - Other exceptions → 500 with generic message (internal errors, details logged server-side)
 
     Usage:
-        @entities_bp.route("/api/v1/...")
+        @concepts_bp.route("/api/v1/...")
         @safe_endpoint
         def my_endpoint():
             ...

@@ -25,14 +25,6 @@
       "base_url": "http://127.0.0.1:11435",
       "think": false,
       "max_tokens": 8192
-    },
-    "dream": {
-      "enabled": false,
-      "api_key": "ollama",
-      "model": "dream_model_name",
-      "base_url": "http://127.0.0.1:11434",
-      "think": false,
-      "max_tokens": 4096
     }
   },
   "embedding": {

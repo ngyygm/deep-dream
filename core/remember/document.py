@@ -4,6 +4,7 @@
 from typing import List, Iterator, Tuple, Optional
 from pathlib import Path
 
+from core.text_chunking import split_markdown_chunks
 from core.utils import wprint_info
 
 
@@ -20,6 +21,18 @@ class DocumentProcessor:
         """
         self.window_size = window_size
         self.overlap = overlap
+
+    def chunk_text(self, content: str) -> List[Tuple[str, int, int]]:
+        """Split Markdown by headings, then paragraph/sentence boundaries."""
+        chunks = split_markdown_chunks(
+            content or "",
+            window_size=self.window_size,
+            overlap=self.overlap,
+        )
+        return [
+            (str(chunk["content"]), int(chunk["start_offset"]), int(chunk["end_offset"]))
+            for chunk in chunks
+        ]
     
     def process_documents(self, document_paths: List[str],
                          resume_document_path: Optional[str] = None,
@@ -77,26 +90,26 @@ class DocumentProcessor:
                 start = 0
                 is_first_doc = False
             
+            chunks = self.chunk_text(content)
+            if start > 0:
+                chunks = [(chunk, s, e) for chunk, s, e in chunks if e > start]
+                if chunks:
+                    first_chunk, first_start, first_end = chunks[0]
+                    if first_start < start < first_end:
+                        chunks[0] = (content[start:first_end], start, first_end)
             is_first_chunk = (start == 0)
             # Pre-compute doc prefix outside the loop (invariant per document)
             _doc_prefix = f"[文档元数据] 文档名：{document_name} [/文档元数据]\n\n"
-            
-            while start < total_length:
-                end = min(start + self.window_size, total_length)
-                chunk = content[start:end]
+
+            for chunk, start_pos, end in chunks:
 
                 # 如果是新文档的第一块，添加提示
-                is_new_doc = is_first_chunk and start == 0
+                is_new_doc = is_first_chunk and start_pos == 0
                 if is_first_chunk:
                     chunk = _doc_prefix + chunk
                     is_first_chunk = False
 
-                yield (chunk, document_name, is_new_doc, start, end, total_length, doc_path)
-
-                # 移动到下一个窗口（考虑重叠）
-                if end >= total_length:
-                    break
-                start = end - self.overlap
+                yield (chunk, document_name, is_new_doc, start_pos, end, total_length, doc_path)
     
     def _reorder_documents_for_resume(self, document_paths: List[str],
                                       resume_document_path: Optional[str],

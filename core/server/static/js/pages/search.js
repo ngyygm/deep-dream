@@ -7,7 +7,7 @@
   const MAX_HISTORY = 10;
 
   // ---- Local state ----
-  let searchMode = 'normal';  // 'normal' | 'multi' | 'path' | 'traverse' | 'ask'
+  let searchMode = 'normal';  // 'normal' | 'multi' | 'traverse'
   let multiQueries = [''];
   let batchResults = {};   // { queryIndex: { entities, relations } }
   let activeBatchTab = 0;
@@ -136,8 +136,6 @@
           ${t('search.addQuery')}
         </button>
       `;
-    } else if (searchMode === 'path') {
-      modeContent = `<div id="pf-container"></div>`;
     } else if (searchMode === 'traverse') {
       modeContent = `
         <p style="font-size:0.85rem;color:var(--text-muted);margin-bottom:12px;">${t('search.traverseHint')}</p>
@@ -162,20 +160,6 @@
           </button>
         </div>
       `;
-    } else if (searchMode === 'ask') {
-      modeContent = `
-        <p style="font-size:0.85rem;color:var(--text-muted);margin-bottom:12px;">${t('search.agentAskHint')}</p>
-        <div style="display:flex;gap:10px;align-items:stretch;">
-          <div style="flex:1;">
-            <textarea id="ask-question" class="input" rows="3" placeholder="${t('search.questionPlaceholder')}" style="resize:vertical;"></textarea>
-          </div>
-          <button class="btn btn-primary" id="ask-btn" style="align-self:flex-end;">
-            <i data-lucide="send" style="width:16px;height:16px;margin-right:4px;"></i>
-            ${t('search.ask')}
-          </button>
-        </div>
-        <div id="ask-result" style="margin-top:12px;"></div>
-      `;
     }
 
     return `
@@ -195,17 +179,9 @@
             <i data-lucide="layers" style="width:14px;height:14px;margin-right:4px;"></i>
             ${t('search.multiQuery')}
           </button>
-          <button class="tab ${searchMode === 'path' ? 'active' : ''}" data-search-mode="path">
-            <i data-lucide="route" style="width:14px;height:14px;margin-right:4px;"></i>
-            ${t('search.pathFinder')}
-          </button>
           <button class="tab ${searchMode === 'traverse' ? 'active' : ''}" data-search-mode="traverse">
             <i data-lucide="git-merge" style="width:14px;height:14px;margin-right:4px;"></i>
             ${t('search.traverse')}
-          </button>
-          <button class="tab ${searchMode === 'ask' ? 'active' : ''}" data-search-mode="ask">
-            <i data-lucide="brain" style="width:14px;height:14px;margin-right:4px;"></i>
-            ${t('search.agentAsk')}
           </button>
         </div>
         <div style="padding:16px 20px;" id="mode-content">
@@ -907,8 +883,8 @@
     bindEvents(area);
     bindResultEvents(area);
 
-    // Init PathFinder component for path mode
-    if (searchMode === 'path') {
+    // Path finder mode was removed from the v1 UI because the old endpoint set is gone.
+    if (searchMode === 'path' && window.PathFinder) {
       const pfContainer = document.getElementById('pf-container');
       if (pfContainer) {
         PathFinder.init(pfContainer, {
@@ -1002,8 +978,6 @@
     // Traverse mode events
     if (searchMode === 'traverse') bindTraverseEvents(container);
 
-    // Ask mode events
-    if (searchMode === 'ask') bindAskEvents(container);
   }
 
   // ---- Bind multi-query specific events ----
@@ -1102,58 +1076,6 @@
       showToast(t('search.traverseSuccess', { count: entities.length }), 'success');
     } catch (err) {
       showToast(`${t('search.traverseFailed')}: ${err.message}`, 'error');
-    } finally {
-      if (btn) {
-        btn.disabled = false;
-        btn.innerHTML = originalBtnHtml;
-        if (window.lucide) lucide.createIcons({ nodes: [btn] });
-      }
-    }
-  }
-
-  // ---- Bind ask mode events ----
-  function bindAskEvents(container) {
-    const askBtn = container.querySelector('#ask-btn');
-    if (askBtn) {
-      askBtn.addEventListener('click', executeAgentAsk);
-    }
-    const askInput = container.querySelector('#ask-question');
-    if (askInput) {
-      askInput.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) executeAgentAsk();
-      });
-    }
-  }
-
-  // ---- Execute agent ask ----
-  async function executeAgentAsk() {
-    const questionEl = document.getElementById('ask-question');
-    const question = questionEl ? questionEl.value.trim() : '';
-    if (!question) {
-      showToast(t('search.noQuery'), 'warning');
-      return;
-    }
-    const btn = document.getElementById('ask-btn');
-    const resultEl = document.getElementById('ask-result');
-    const originalBtnHtml = btn ? btn.innerHTML : '';
-
-    if (btn) {
-      btn.disabled = true;
-      btn.innerHTML = `${spinnerHtml('spinner-sm')} ${t('search.asking')}`;
-    }
-    if (resultEl) resultEl.innerHTML = `<div class="flex items-center gap-2 p-4">${spinnerHtml()}<span style="color:var(--text-muted);">${t('search.asking')}</span></div>`;
-
-    try {
-      const res = await state.api.agentAsk(question, state.currentGraphId);
-      const answer = res.data?.answer || res.data?.response || res.data?.text || '';
-      if (resultEl) {
-        resultEl.innerHTML = answer
-          ? `<div style="background:var(--bg-secondary);padding:1rem;border-radius:0.5rem;border:1px solid var(--border-color);font-size:0.9rem;line-height:1.7;white-space:pre-wrap;word-break:break-word;">${escapeHtml(answer)}</div>`
-          : `<div style="color:var(--text-muted);">${t('search.noAnswer')}</div>`;
-      }
-    } catch (err) {
-      if (resultEl) resultEl.innerHTML = `<div style="color:var(--error);">${t('search.askFailed')}: ${escapeHtml(err.message)}</div>`;
-      showToast(`${t('search.askFailed')}: ${err.message}`, 'error');
     } finally {
       if (btn) {
         btn.disabled = false;
@@ -1326,7 +1248,7 @@
     }
     searchEntityMap = {};
     searchRelationMap = {};
-    PathFinder.destroy();
+    if (window.PathFinder && typeof PathFinder.destroy === 'function') PathFinder.destroy();
   }
 
   registerPage('search', { render, destroy });

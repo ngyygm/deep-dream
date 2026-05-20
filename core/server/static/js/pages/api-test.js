@@ -154,86 +154,39 @@
       ],
     },
     {
-      category: 'Entities',
+      category: 'Concepts',
       endpoints: [
         {
-          name: 'List Entities',
+          name: 'List Concepts',
           method: 'GET',
-          path: '/api/v1/find/entities',
+          path: '/api/v1/concepts',
           params: [
             { name: 'graph_id', type: 'text', default: 'default' },
-            { name: 'limit', type: 'number', default: '' },
-          ],
-        },
-        {
-          name: 'Search Entities',
-          method: 'POST',
-          path: '/api/v1/find/entities/search',
-          contentType: 'json',
-          params: [
-            { name: 'query_name', type: 'text', default: '' },
-            { name: 'graph_id', type: 'text', default: 'default' },
-            { name: 'query_content', type: 'text', default: '' },
-            { name: 'similarity_threshold', type: 'number', default: 0.7 },
-            { name: 'max_results', type: 'number', default: 20 },
-            { name: 'text_mode', type: 'select', options: ['name_and_content', 'name_only', 'content_only'], default: 'name_and_content' },
-            { name: 'similarity_method', type: 'select', options: ['embedding', 'keyword'], default: 'embedding' },
-          ],
-        },
-        {
-          name: 'Entity Versions',
-          method: 'GET',
-          path: '/api/v1/find/entities/{family_id}/versions',
-          params: [
-            { name: 'family_id', type: 'text', default: '', pathParam: true },
-            { name: 'graph_id', type: 'text', default: 'default' },
-          ],
-        },
-        {
-          name: 'Entity Relations',
-          method: 'GET',
-          path: '/api/v1/find/entities/{family_id}/relations',
-          params: [
-            { name: 'family_id', type: 'text', default: '', pathParam: true },
-            { name: 'graph_id', type: 'text', default: 'default' },
-            { name: 'limit', type: 'number', default: '' },
-          ],
-        },
-      ],
-    },
-    {
-      category: 'Relations',
-      endpoints: [
-        {
-          name: 'List Relations',
-          method: 'GET',
-          path: '/api/v1/find/relations',
-          params: [
-            { name: 'graph_id', type: 'text', default: 'default' },
+            { name: 'role', type: 'select', options: ['', 'document', 'episode', 'entity', 'relation'], default: '' },
             { name: 'limit', type: 'number', default: '' },
             { name: 'offset', type: 'number', default: '' },
           ],
         },
         {
-          name: 'Search Relations',
+          name: 'Search Concepts',
           method: 'POST',
-          path: '/api/v1/find/relations/search',
+          path: '/api/v1/concepts/search',
           contentType: 'json',
           params: [
-            { name: 'query_text', type: 'text', default: '' },
+            { name: 'query', type: 'text', default: '' },
             { name: 'graph_id', type: 'text', default: 'default' },
-            { name: 'similarity_threshold', type: 'number', default: 0.3 },
-            { name: 'max_results', type: 'number', default: 20 },
+            { name: 'role', type: 'select', options: ['', 'document', 'episode', 'entity', 'relation'], default: '' },
+            { name: 'search_mode', type: 'select', options: ['bm25', 'semantic', 'hybrid'], default: 'bm25' },
+            { name: 'threshold', type: 'number', default: 0.5 },
+            { name: 'limit', type: 'number', default: 20 },
           ],
         },
         {
-          name: 'Relations Between',
-          method: 'POST',
-          path: '/api/v1/find/relations/between',
-          contentType: 'json',
+          name: 'Concept Versions',
+          method: 'GET',
+          path: '/api/v1/concepts/{family_id}/versions',
           params: [
-            { name: 'family_id_a', type: 'text', default: '' },
-            { name: 'family_id_b', type: 'text', default: '' },
+            { name: 'family_id', type: 'text', default: '', pathParam: true },
             { name: 'graph_id', type: 'text', default: 'default' },
           ],
         },
@@ -245,7 +198,7 @@
         {
           name: 'List Documents',
           method: 'GET',
-          path: '/api/v1/docs',
+          path: '/api/v1/documents',
           params: [
             { name: 'graph_id', type: 'text', default: 'default' },
           ],

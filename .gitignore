@@ -1,6 +1,9 @@
 # 排除运行时数据目录
 graph/
+graphs/
 data/
+output/
+registry.json
 
 # 本地配置（含路径、API 等），不提交；仅提交 service_config.example.json
 service_config.json

@@ -8,22 +8,8 @@
   <!-- Fonts (local) -->
   <link rel="stylesheet" href="/static/vendor/fonts.css">
 
-  <!-- Tailwind CSS (local) -->
-  <script src="/static/vendor/tailwindcss.js"></script>
-  <script>
-    tailwind.config = {
-      darkMode: 'class',
-      theme: {
-        extend: {
-          colors: {
-            surface: '#1c1520',
-            'surface-hover': '#2a1e28',
-            'bg-input': '#170f14',
-          }
-        }
-      }
-    }
-  </script>
+  <!-- Tailwind CSS (prebuilt local stylesheet) -->
+  <link rel="stylesheet" href="/static/css/tailwind-output.css">
 
   <!-- vis-network.js (local) -->
   <script src="/static/vendor/vis-network.min.js"></script>
@@ -33,7 +19,6 @@
 
   <!-- Custom Styles -->
   <link rel="stylesheet" href="/static/css/app.css">
-  <link rel="stylesheet" href="/static/css/chat.css">
   <link rel="stylesheet" href="/static/css/graph-timeline.css">
 </head>
 <body class="overflow-hidden" style="background:var(--bg-primary);color:var(--text-primary);">
@@ -48,52 +33,32 @@
           </div>
           <div>
             <div class="text-sm font-bold leading-tight" style="color:var(--text-primary);">DeepDream</div>
-            <div id="sidebar-slogan" class="text-[10px] leading-tight" style="color:var(--text-muted);" data-i18n="slogan.chat">探索知识的深层梦境</div>
+            <div id="sidebar-slogan" class="text-[10px] leading-tight" style="color:var(--text-muted);" data-i18n="slogan.dashboard">文档优先记忆图谱</div>
           </div>
         </div>
       </div>
 
       <!-- Navigation -->
       <nav class="flex-1 px-3 py-3 space-y-0.5 overflow-y-auto">
-        <a class="sidebar-link" href="#chat" data-page="chat">
-          <i data-lucide="message-circle"></i>
-          <span data-i18n="nav.chat">Chat</span>
-        </a>
         <a class="sidebar-link active" href="#dashboard" data-page="dashboard">
           <i data-lucide="layout-dashboard"></i>
           <span data-i18n="nav.dashboard">仪表盘</span>
-        </a>
-        <a class="sidebar-link" href="#graph" data-page="graph">
-          <i data-lucide="network"></i>
-          <span data-i18n="nav.graph">图谱</span>
         </a>
         <a class="sidebar-link" href="#memory" data-page="memory">
           <i data-lucide="database"></i>
           <span data-i18n="nav.memory">记忆</span>
         </a>
+        <a class="sidebar-link" href="#graph" data-page="graph">
+          <i data-lucide="git-fork"></i>
+          <span data-i18n="nav.graph">图谱</span>
+        </a>
         <a class="sidebar-link" href="#search" data-page="search">
           <i data-lucide="search"></i>
           <span data-i18n="nav.search">检索</span>
         </a>
-        <a class="sidebar-link" href="#entities" data-page="entities">
-          <i data-lucide="circle-dot"></i>
-          <span data-i18n="nav.entities">实体</span>
-        </a>
-        <a class="sidebar-link" href="#relations" data-page="relations">
-          <i data-lucide="git-branch"></i>
-          <span data-i18n="nav.relations">关系</span>
-        </a>
         <a class="sidebar-link" href="#communities" data-page="communities" id="nav-communities" style="display:none;">
           <i data-lucide="layout-grid"></i>
           <span data-i18n="nav.communities">Communities</span>
-        </a>
-        <a class="sidebar-link" href="#episodes" data-page="episodes" id="nav-episodes" style="display:none;">
-          <i data-lucide="film"></i>
-          <span data-i18n="nav.episodes">Episodes</span>
-        </a>
-        <a class="sidebar-link" href="#dream" data-page="dream">
-          <i data-lucide="moon"></i>
-          <span data-i18n="nav.dream">DeepDream</span>
         </a>
         <a class="sidebar-link" href="#api-test" data-page="api-test">
           <i data-lucide="terminal"></i>
@@ -182,30 +147,12 @@
   <script src="/static/js/app.js"></script>
   <script src="/static/js/components/toast.js"></script>
   <script src="/static/js/components/modal.js"></script>
-  <script src="/static/js/graph-utils.js"></script>
-  <script src="/static/js/path-finder.js"></script>
-  <!-- GraphExplorer sub-modules (must load before graph-explorer.js) -->
-  <script src="/static/js/graph-explorer/diff.js"></script>
-  <script src="/static/js/graph-explorer/versions.js"></script>
-  <script src="/static/js/graph-explorer/detail.js"></script>
-  <script src="/static/js/graph-explorer/focus.js"></script>
-  <script src="/static/js/graph-explorer.js"></script>
-  <script src="/static/js/chat/stream.js"></script>
-  <script src="/static/js/chat/renderer.js"></script>
-  <script src="/static/js/pages/chat.js"></script>
   <script src="/static/js/pages/dashboard.js"></script>
-  <!-- Graph page sub-modules (must load before pages/graph.js) -->
-  <script src="/static/js/pages/graph/loading.js"></script>
-  <script src="/static/js/pages/graph/layout.js"></script>
-  <script src="/static/js/pages/graph/timeline-ui.js"></script>
-  <script src="/static/js/pages/graph.js"></script>
   <script src="/static/js/pages/memory.js"></script>
+  <script src="/static/js/graph-utils.js"></script>
+  <script src="/static/js/pages/graph.js"></script>
   <script src="/static/js/pages/search.js"></script>
-  <script src="/static/js/pages/entities.js"></script>
-  <script src="/static/js/pages/relations.js"></script>
-  <script src="/static/js/pages/episodes.js"></script>
   <script src="/static/js/pages/communities.js"></script>
-  <script src="/static/js/pages/dream.js"></script>
   <script src="/static/js/pages/api-test.js"></script>
 </body>
 </html>

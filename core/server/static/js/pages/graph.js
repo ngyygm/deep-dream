@@ -1,2257 +1,2350 @@
-/* ==========================================
-   Graph Explorer Page
-   ========================================== */
-
 (function () {
-  let explorer = null;
-  let isFirstRender = true;
+  let docs = [];
+  let filteredDocs = [];
+  let selectedDocVersions = new Set();
+  let graphData = null;
+  let graphModel = null;
+  let network = null;
+  let nodesDataSet = null;
+  let edgesDataSet = null;
+  let edgeMetaById = new Map();
+  let nodeMetaById = new Map();
+  let pinnedPositions = {};
+  let hoverPanel = null;
+  let loadingGraph = false;
+  let physicsFreezeTimer = null;
+  let naturalFitTimer = null;
+  let lastNaturalFitAt = 0;
+  let relationStreamTimer = null;
+  let growthController = null;
+  let growthControllers = new Map();
+  let loadedDocVersions = new Set();
+  let growthOutlinesByDoc = new Map();
+  let growthRunId = 0;
+  let growthPauseRequested = false;
+  let growthLoaded = { episodes: 0, concepts: 0, relations: 0, edges: 0 };
+  let growthTotals = null;
+  let growthOutline = null;
+  let growthRatePerSecond = 60;
+  const GROWTH_RATE_OPTIONS = [60, 100, 40, 20];
 
-  // Focus state
-  let focusAbsoluteId = null;
-  let cachedAllNodes = [];       // default view: all nodes (seed + related)
-  let cachedAllEdges = [];       // default view: all edges
-  let cachedAllEntities = {};    // absolute_id -> entity data (from full entity list)
-  let cachedPinnedPositions = null; // saved node positions for instant restore
-  let graphDataLoaded = false;   // whether SSE data has been fetched at least once
-  let graphLastModified = null;  // ISO timestamp from /graph/version — used for incremental updates
-  let versionPollTimer = null;   // setInterval handle for periodic /version polling
+  let showRelations = true;
+  let showSourceEdges = false;
+  let showLabels = true;
+  let focusFamilyId = null;
+  let docsCollapsed = false;
 
-  // Advanced options panel state
-  let advancedOptionsOpen = false;
+  let playbackTimer = null;
+  let playbackStep = -1; // -1 means full graph.
+  let playbackSpeed = 1.0;
 
-  // Hop & version accumulation state
-  let relationScope = 'accumulated';
-  let currentHopLevel = 1;
-  let cachedInheritedRelationIds = null; // Set of relation absolute_ids inherited in main view
-  let cachedAllRawRelations = null; // original raw relations from API (before remapping)
-  let cachedRemappedMainRelations = null; // remapped relations for main view
+  const ROLE_COLORS = {
+    document: { bg: '#d946ef', border: '#f0abfc', glow: 'rgba(217,70,239,0.28)' },
+    episode: { bg: '#0ea5e9', border: '#7dd3fc', glow: 'rgba(14,165,233,0.22)' },
+    entity: { bg: '#14b8a6', border: '#5eead4', glow: 'rgba(20,184,166,0.20)' },
+    relation: { bg: '#f59e0b', border: '#fbbf24', glow: 'rgba(245,158,11,0.28)' },
+  };
 
-  // Community coloring state
-  let communityColoringEnabled = false;
-  let communityMap = null; // absolute_id -> community_id
+  function docTitle(doc) {
+    return doc.version_title || doc.title || doc.relative_path || doc.absolute_path || doc.source_id || 'Untitled';
+  }
 
-  // Keyboard shortcut handler reference (for cleanup)
-  let _graphKeyHandler = null;
-  let _loadGraphAbort = null;
+  function docPath(doc) {
+    return doc.relative_path || doc.absolute_path || doc.uri || doc.source_id || '';
+  }
 
-  // Relation strength mode
-  let relationStrengthEnabled = false;
+  function conceptTitle(concept) {
+    return concept.name || concept.summary || truncate(concept.content || concept.family_id || '', 72);
+  }
 
-  // Time travel snapshot state
-  let snapshotMode = false;
-  let snapshotTime = null;
+  function isLightTheme() {
+    return document.documentElement.getAttribute('data-theme') === 'light';
+  }
 
-  // Color palettes and shared graph builders are in GraphUtils (graph-utils.js)
+  function labelColor() {
+    return isLightTheme() ? '#1e293b' : '#e2e8f0';
+  }
 
-  // ---- Build the page layout and kick off initial load ----
+  function mutedColor() {
+    return isLightTheme() ? '#64748b' : '#94a3b8';
+  }
 
-  async function render(container, params) {
+  function field(label, value) {
+    return `<div class="graph-field">
+      <span>${escapeHtml(label)}</span>
+      <strong>${value || '-'}</strong>
+    </div>`;
+  }
+
+  function pill(text, color) {
+    return `<span class="graph-pill" style="${color ? `border-color:${color};color:${color};` : ''}">${escapeHtml(text || '-')}</span>`;
+  }
+
+  function normalizeText(value, limit) {
+    return truncate(String(value || '').replace(/\s+/g, ' ').trim(), limit || 120);
+  }
+
+  function render(container) {
     container.innerHTML = `
-      <div class="page-enter" style="display:flex;gap:1rem;height:100%;overflow:hidden;">
-        <!-- Left column: toolbar + canvas + timeline (aligns together) -->
-        <div class="flex-1 flex flex-col" style="min-width:0;">
-          <!-- Toolbar card — only canvas width -->
-          <div class="card" style="flex-shrink:0;padding:0.5rem 0.75rem;margin-bottom:0.375rem;">
-            <div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:nowrap;">
-              <!-- Left: graph ID + stats -->
-              <div style="display:flex;align-items:center;gap:0.5rem;flex-shrink:0;">
-                <i data-lucide="git-branch" style="width:14px;height:14px;color:var(--primary);"></i>
-                <span class="badge badge-primary mono" id="graph-id-badge">-</span>
-                <span id="focus-mode-badge" class="badge badge-warning" style="display:none;">
-                  <i data-lucide="crosshair" style="width:12px;height:12px;margin-right:2px;"></i>
-                  ${t('graph.focusMode')}
-                </span>
-                <span id="graph-stats" class="mono" style="font-size:0.75rem;color:var(--text-muted);"></span>
-              </div>
-              <!-- Center: search -->
-              <div style="flex:1;display:flex;justify-content:center;">
-                <div style="position:relative;width:100%;max-width:280px;">
-                  <input type="text" class="input" id="graph-entity-search" placeholder="${t('graph.searchEntity') || 'Find entity...'}" style="width:100%;font-size:0.75rem;padding-left:24px;padding-top:2px;padding-bottom:2px;">
-                  <i data-lucide="search" style="width:12px;height:12px;position:absolute;left:6px;top:50%;transform:translateY(-50%);color:var(--text-muted);pointer-events:none;"></i>
-                  <div id="graph-search-dropdown" style="display:none;position:absolute;top:100%;left:0;width:100%;min-width:260px;max-height:200px;overflow-y:auto;background:var(--bg-surface);border:1px solid var(--border-color);border-radius:0.5rem;z-index:100;margin-top:4px;box-shadow:0 4px 12px rgba(0,0,0,0.3);"></div>
-                </div>
-              </div>
-              <!-- Right: actions -->
-              <div style="display:flex;align-items:center;gap:0.375rem;flex-shrink:0;">
-                <button class="btn btn-primary btn-sm" id="load-graph-btn">
-                  <i data-lucide="refresh-cw" style="width:14px;height:14px;"></i>
-                  ${t('graph.loadGraph')}
-                </button>
-                <button class="btn btn-secondary btn-sm" id="exit-focus-btn" style="display:none;">
-                  <i data-lucide="maximize-2" style="width:14px;height:14px;"></i>
-                  ${t('graph.exitFocus')}
-                </button>
-                ${isNeo4j() ? `
-                <button class="btn btn-ghost btn-sm" id="community-coloring-toggle" title="${t('graph.communityColoring') || 'Community coloring'}" style="color:var(--text-muted);">
-                  <i data-lucide="layers" style="width:14px;height:14px;"></i>
-                  <span id="community-coloring-status" style="font-size:0.65rem;margin-left:2px;opacity:0.5;">OFF</span>
-                </button>
-                ` : ''}
-                <button class="btn btn-ghost btn-sm" id="toggle-graph-options-btn" style="color:var(--text-muted);">
-                  <i data-lucide="sliders-horizontal" style="width:14px;height:14px;"></i>
-                  <i data-lucide="chevron-down" style="width:12px;height:12px;transition:transform 0.2s;" id="graph-options-chevron"></i>
-                </button>
-                <button class="btn btn-ghost btn-sm" id="graph-shortcuts-btn" title="Keyboard shortcuts" style="color:var(--text-muted);">
-                  <i data-lucide="keyboard" style="width:14px;height:14px;"></i>
-                </button>
-              </div>
+      <div class="page-enter graph-viz-shell">
+        <aside class="card graph-doc-panel">
+          <div class="card-header" style="gap:0.75rem;align-items:flex-start;">
+            <button id="graph-doc-collapse" class="btn btn-secondary btn-sm" title="收起文档栏" style="flex-shrink:0;">
+              <i data-lucide="panel-left-close" style="width:14px;height:14px;"></i>
+            </button>
+            <div class="graph-doc-head-text" style="min-width:0;">
+              <div class="card-title">Markdown 文档</div>
+              <div class="graph-subtitle">按入库时间排序，选择后渲染子图</div>
             </div>
+            <button id="graph-doc-refresh" class="btn btn-secondary btn-sm graph-doc-refresh" title="刷新文档">
+              <i data-lucide="refresh-cw" style="width:14px;height:14px;"></i>
+            </button>
+          </div>
+          <div class="graph-doc-collapsed-label">文档</div>
+          <div class="graph-doc-tools">
+            <input id="graph-doc-filter" class="input" placeholder="搜索文档标题或路径..." />
+            <div style="display:flex;gap:0.45rem;flex-wrap:wrap;">
+              <button id="graph-select-visible" class="btn btn-secondary btn-sm">全选列表</button>
+              <button id="graph-clear-selection" class="btn btn-secondary btn-sm">清空</button>
+            </div>
+            <div id="graph-doc-count" class="graph-subtitle"></div>
+          </div>
+          <div id="graph-doc-list" class="graph-doc-list"></div>
+        </aside>
 
-            <div id="graph-advanced-options" style="display:none;margin-top:6px;padding:8px 12px;background:var(--bg-input);border-radius:6px;border:1px solid var(--border-color);">
-              <div style="display:flex;gap:0.75rem;align-items:center;flex-wrap:wrap;">
-                <div style="display:flex;align-items:center;gap:4px;">
-                  <label class="form-label" style="margin:0;font-size:0.75rem;">${t('graph.maxEntities')}</label>
-                  <input type="number" class="input" id="entity-limit" min="0" max="5000" value="" placeholder="Auto" step="100" style="width:80px;font-size:0.75rem;padding:2px 6px;">
-                </div>
-                <div style="display:flex;align-items:center;gap:4px;">
-                  <label class="form-label" style="margin:0;font-size:0.75rem;">${t('graph.hopLevel')}</label>
-                  <input type="number" class="input" id="hop-level" min="1" max="3" value="${currentHopLevel}" step="1" style="width:60px;font-size:0.75rem;padding:2px 6px;">
-                </div>
-                <button class="btn btn-secondary btn-sm" id="apply-hop-btn" title="${t('graph.apply')}">
-                  <i data-lucide="check" style="width:14px;height:14px;"></i>
-                  ${t('graph.apply')}
-                </button>
-                ${isNeo4j() ? `
-                <label style="display:flex;align-items:center;gap:4px;font-size:0.75rem;cursor:pointer;color:var(--text-secondary);">
-                  <input type="checkbox" id="community-coloring" style="cursor:pointer;">
-                  ${t('graph.communityColoring')}
-                </label>` : ''}
-                <label style="display:flex;align-items:center;gap:4px;font-size:0.75rem;cursor:pointer;color:var(--text-secondary);">
-                  <input type="checkbox" id="relation-strength-mode" style="cursor:pointer;">
-                  ${t('graph.relationStrength')}
-                </label>
-                <div style="display:flex;align-items:center;gap:4px;">
-                  <input type="datetime-local" id="graph-snapshot-time" class="input" style="width:180px;font-size:0.75rem;padding:2px 6px;">
-                  <button class="btn btn-sm btn-primary" id="load-snapshot-btn" title="${t('timeTravel.title')}">
-                    <i data-lucide="clock" style="width:14px;height:14px;"></i>
-                  </button>
-                  ${snapshotMode ? `
-                  <button class="btn btn-sm btn-secondary" id="clear-snapshot-btn" title="${t('graph.exitFocus')}">
-                    <i data-lucide="rotate-ccw" style="width:14px;height:14px;"></i>
-                  </button>
-                  ` : ''}
-                </div>
-              </div>
+        <section class="card graph-canvas-card">
+          <div class="card-header graph-toolbar">
+            <div style="min-width:0;margin-right:auto;">
+              <div id="graph-main-title" class="card-title">图谱可视化</div>
+              <div id="graph-summary" class="graph-subtitle">选择一个或多个文档</div>
+            </div>
+            <label class="graph-toggle"><input id="graph-toggle-relations" type="checkbox" checked> 关系边</label>
+            <label class="graph-toggle"><input id="graph-toggle-source" type="checkbox"> 溯源边</label>
+            <label class="graph-toggle"><input id="graph-toggle-labels" type="checkbox" checked> 标签</label>
+            <button id="graph-exit-focus" class="btn btn-secondary btn-sm" style="display:none;">退出聚焦</button>
+            <button id="graph-fit" class="btn btn-secondary btn-sm">适配视图</button>
+          </div>
+          <div id="document-graph-canvas" class="graph-canvas-wrap">
+            <div id="graph-empty" class="empty-state graph-empty">
+              <i data-lucide="git-fork"></i>
+              <p>选择左侧 Markdown 文档后显示文档、Episode、实体和关系边。</p>
             </div>
           </div>
-
-          <!-- Graph canvas -->
-          <div class="relative" style="flex:1;min-height:0;">
-              <div id="graph-canvas" style="width:100%;height:100%;"></div>
-              <div id="graph-loading" class="absolute inset-0 flex items-center justify-center" style="background:var(--bg-input);border-radius:0.5rem;display:none;">
-                ${spinnerHtml()}
-              </div>
-              <div id="snapshot-overlay" style="display:none;position:absolute;top:0.75rem;left:0.75rem;z-index:10;">
-                <div class="snapshot-badge-overlay">
-                  <i data-lucide="clock" style="width:12px;height:12px;"></i>
-                  <span id="snapshot-overlay-time"></span>
-                  <span id="snapshot-overlay-stats" style="font-size:0.6875rem;color:var(--text-muted);margin-left:0.25rem;"></span>
-                  <button class="snapshot-return-btn" id="snapshot-return-live" title="${t('timeline.resetToLive')}">
-                    <i data-lucide="zap" style="width:10px;height:10px;"></i>
-                    ${t('timeline.live')}
-                  </button>
-                </div>
-              </div>
-              <div id="canvas-time-overlay" style="display:none;position:absolute;bottom:1.25rem;left:50%;transform:translateX(-50%);z-index:10;">
-                <div class="canvas-time-badge">
-                  <span class="canvas-time-label" id="canvas-time-text"></span>
-                  <span class="canvas-time-progress" id="canvas-time-progress"></span>
-                </div>
-              </div>
+          <div id="graph-playback" class="graph-playback" style="display:none;">
+            <div class="timeline-live-dot"></div>
+            <button id="graph-step-back" class="timeline-btn" title="后退一步"><i data-lucide="skip-back" style="width:11px;height:11px;"></i></button>
+            <button id="graph-play" class="timeline-btn" title="播放"><i data-lucide="play" style="width:11px;height:11px;"></i></button>
+            <button id="graph-step-forward" class="timeline-btn" title="前进一步"><i data-lucide="skip-forward" style="width:11px;height:11px;"></i></button>
+            <button id="graph-reset-full" class="timeline-btn" title="回到完整图"><i data-lucide="maximize-2" style="width:11px;height:11px;"></i></button>
+            <button id="graph-speed" class="timeline-btn" title="速度">60/s</button>
+            <div class="graph-play-track" id="graph-play-track">
+              <div class="graph-play-fill" id="graph-play-fill"></div>
             </div>
-            <!-- Timeline slider bar — aligned with canvas width only -->
-            <div id="timeline-container" style="flex-shrink:0;"></div>
+            <span id="graph-play-label" class="mono graph-play-label">完整图</span>
           </div>
+        </section>
 
-          <!-- Detail sidebar — full height, aligned to top -->
-          <div id="detail-sidebar" style="width:30%;min-width:280px;max-width:420px;">
-            <div class="card h-full flex flex-col">
-              <div class="card-header">
-                <span class="card-title">${t('common.detail')}</span>
-              </div>
-              <div id="detail-content" style="overflow-y:auto;flex:1;">
-                ${emptyState(t('common.clickToView'), 'mouse-pointer-click')}
-              </div>
+        <aside class="card graph-detail-panel">
+          <div class="card-header">
+            <div>
+              <div class="card-title">详情</div>
+              <div id="graph-detail-subtitle" class="graph-subtitle">点击节点或关系边查看详情</div>
             </div>
           </div>
+          <div id="graph-detail" class="graph-detail-body">
+            ${emptyState('暂无选中节点')}
+          </div>
+        </aside>
       </div>
+      <style>
+        .graph-viz-shell{height:calc(100vh - 6.5rem);min-height:640px;display:grid;grid-template-columns:310px minmax(0,1fr) 360px;gap:1rem;transition:grid-template-columns 0.18s ease;}
+        .graph-viz-shell.docs-collapsed{grid-template-columns:52px minmax(0,1fr) 360px;}
+        .graph-doc-panel,.graph-detail-panel,.graph-canvas-card{min-height:0;display:flex;flex-direction:column;overflow:hidden;}
+        .graph-doc-collapsed-label{display:none;writing-mode:vertical-rl;letter-spacing:0.18em;color:var(--text-secondary);font-weight:600;align-self:center;margin-top:0.75rem;}
+        .graph-viz-shell.docs-collapsed .graph-doc-head-text,
+        .graph-viz-shell.docs-collapsed .graph-doc-refresh,
+        .graph-viz-shell.docs-collapsed .graph-doc-tools,
+        .graph-viz-shell.docs-collapsed .graph-doc-list{display:none;}
+        .graph-viz-shell.docs-collapsed .graph-doc-panel .card-header{padding:0.65rem;justify-content:center;}
+        .graph-viz-shell.docs-collapsed .graph-doc-collapsed-label{display:block;}
+        .graph-doc-tools{padding:0 1rem 0.75rem;display:flex;flex-direction:column;gap:0.55rem;}
+        .graph-doc-list{min-height:0;overflow:auto;padding:0 0.5rem 0.75rem;}
+        .graph-subtitle{font-size:0.75rem;color:var(--text-muted);margin-top:0.18rem;}
+        .graph-toolbar{gap:0.75rem;flex-wrap:wrap;}
+        .graph-toggle{display:flex;align-items:center;gap:0.35rem;font-size:0.78rem;color:var(--text-secondary);white-space:nowrap;}
+        .doc-graph-item{display:grid;grid-template-columns:auto 1fr;gap:0.55rem;padding:0.65rem;border-radius:0.5rem;cursor:pointer;border:1px solid transparent;}
+        .doc-graph-item:hover{background:var(--bg-surface-hover);}
+        .doc-graph-item.selected{background:var(--primary-dim);border-color:var(--primary);}
+        .doc-graph-title{font-size:0.85rem;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-primary);}
+        .doc-graph-meta{font-size:0.72rem;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:0.15rem;}
+        .graph-canvas-wrap{position:relative;min-height:0;flex:1;background:
+          radial-gradient(circle at 25% 20%, color-mix(in srgb, var(--primary) 8%, transparent), transparent 28%),
+          radial-gradient(circle at 80% 70%, rgba(14,165,233,0.08), transparent 30%),
+          var(--bg-secondary);border-top:1px solid var(--border-color);overflow:hidden;}
+        .graph-canvas-wrap::after{content:"DOCUMENT FIRST GRAPH";position:absolute;right:12px;bottom:10px;font-size:0.68rem;letter-spacing:0.08em;color:color-mix(in srgb,var(--text-muted) 35%,transparent);pointer-events:none;}
+        .graph-empty{height:100%;}
+        .graph-detail-body{min-height:0;overflow:auto;padding:1rem;font-size:0.85rem;}
+        .graph-field{display:grid;grid-template-columns:92px minmax(0,1fr);gap:0.35rem 0.65rem;font-size:0.8rem;align-items:start;margin-bottom:0.42rem;}
+        .graph-field span{color:var(--text-muted);}
+        .graph-field strong{font-weight:500;color:var(--text-secondary);min-width:0;overflow-wrap:anywhere;}
+        .graph-pill{display:inline-flex;align-items:center;border:1px solid var(--border-color);border-radius:999px;padding:0.12rem 0.45rem;font-size:0.68rem;background:var(--bg-surface-hover);color:var(--text-secondary);margin-right:0.25rem;margin-top:0.35rem;}
+        .graph-detail-section{border-top:1px solid var(--border-color);padding-top:0.8rem;margin-top:0.8rem;}
+        .graph-detail-actions{display:flex;gap:0.45rem;flex-wrap:wrap;margin:0.8rem 0;}
+        .graph-playback{flex-shrink:0;display:flex;align-items:center;gap:0.45rem;padding:0.45rem 0.65rem;border-top:1px solid var(--border-color);background:color-mix(in srgb,var(--bg-surface) 92%,transparent);}
+        .graph-play-track{position:relative;flex:1;height:6px;border-radius:999px;background:var(--bg-input);overflow:hidden;border:1px solid var(--border-color);}
+        .graph-play-fill{height:100%;width:100%;background:linear-gradient(90deg,#0ea5e9,#14b8a6,#f59e0b);transition:width 0.18s ease;}
+        .graph-play-label{font-size:0.72rem;color:var(--text-muted);min-width:92px;text-align:right;}
+        .graph-version-row{border:1px solid var(--border-color);border-radius:0.5rem;padding:0.55rem;background:var(--bg-secondary);margin-bottom:0.45rem;}
+        .graph-modal-grid{display:grid;grid-template-columns:110px minmax(0,1fr);gap:0.45rem 0.75rem;font-size:0.82rem;}
+        .graph-modal-grid span{color:var(--text-muted);}
+        .graph-modal-grid strong{font-weight:500;overflow-wrap:anywhere;}
+        .graph-kind-badge{display:inline-flex;align-items:center;border-radius:999px;padding:0.14rem 0.5rem;font-size:0.7rem;font-weight:600;margin-bottom:0.6rem;}
+        .graph-document-source{max-height:58vh;overflow:auto;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:0.5rem;padding:0.8rem;font-family:var(--font-mono);font-size:0.8rem;line-height:1.65;white-space:pre-wrap;word-break:break-word;color:var(--text-secondary);}
+      </style>
     `;
-
+    bindEvents();
     if (window.lucide) lucide.createIcons();
+  }
 
-    // Snapshot overlay return-to-live button
-    const snapshotReturnBtn = document.getElementById('snapshot-return-live');
-    if (snapshotReturnBtn) {
-      snapshotReturnBtn.addEventListener('click', function () {
-        resetToLive();
-        renderTimeline(document.getElementById('timeline-container'));
+  function bindEvents() {
+    document.getElementById('graph-doc-collapse')?.addEventListener('click', () => setDocsCollapsed(!docsCollapsed));
+    document.getElementById('graph-doc-refresh')?.addEventListener('click', loadDocs);
+    document.getElementById('graph-doc-filter')?.addEventListener('input', debounce(applyFilter, 150));
+    document.getElementById('graph-select-visible')?.addEventListener('click', () => {
+      filteredDocs.forEach(d => selectedDocVersions.add(d.document_version_id));
+      updateDocsList();
+      loadSelectedGraph();
+    });
+    document.getElementById('graph-clear-selection')?.addEventListener('click', () => {
+      selectedDocVersions.clear();
+      updateDocsList();
+      clearGraphCanvas();
+    });
+    document.getElementById('graph-toggle-relations')?.addEventListener('change', (e) => {
+      showRelations = e.target.checked;
+      drawGraph(playbackStep);
+    });
+    document.getElementById('graph-toggle-source')?.addEventListener('change', (e) => {
+      showSourceEdges = e.target.checked;
+      drawGraph(playbackStep);
+    });
+    document.getElementById('graph-toggle-labels')?.addEventListener('change', (e) => {
+      showLabels = e.target.checked;
+      drawGraph(playbackStep);
+    });
+    document.getElementById('graph-exit-focus')?.addEventListener('click', () => focusConcept(null));
+    document.getElementById('graph-fit')?.addEventListener('click', () => network?.fit({ animation: { duration: 420, easingFunction: 'easeInOutQuad' } }));
+    bindPlaybackEvents();
+  }
+
+  function bindPlaybackEvents() {
+    document.getElementById('graph-play')?.addEventListener('click', () => {
+      if (!toggleGraphGrowthPause()) togglePlayback();
+    });
+    document.getElementById('graph-step-back')?.addEventListener('click', () => stepPlayback(-1));
+    document.getElementById('graph-step-forward')?.addEventListener('click', () => stepPlayback(1));
+    document.getElementById('graph-reset-full')?.addEventListener('click', () => {
+      stopPlayback();
+      playbackStep = -1;
+      drawGraph(-1);
+    });
+    document.getElementById('graph-speed')?.addEventListener('click', () => {
+      if (hasActiveGrowth()) {
+        const idx = GROWTH_RATE_OPTIONS.indexOf(growthRatePerSecond);
+        growthRatePerSecond = GROWTH_RATE_OPTIONS[(idx + 1) % GROWTH_RATE_OPTIONS.length];
+        document.getElementById('graph-speed').textContent = `${growthRatePerSecond}/s`;
+        updateSummary(graphModel ? visibleModelForStep(-1) : null);
+        return;
+      }
+      const speeds = [1.0, 0.6, 0.3, 1.5];
+      const idx = speeds.indexOf(playbackSpeed);
+      playbackSpeed = speeds[(idx + 1) % speeds.length];
+      document.getElementById('graph-speed').textContent = `${playbackSpeed}s`;
+      if (playbackTimer) {
+        stopPlayback();
+        startPlayback();
+      }
+    });
+  }
+
+  async function loadDocs() {
+    const list = document.getElementById('graph-doc-list');
+    if (list) list.innerHTML = `<div style="padding:1rem;">${spinnerHtml()} 加载文档...</div>`;
+    try {
+      const res = await state.api.listDocs(state.currentGraphId);
+      docs = (res.data?.docs || []).slice().sort((a, b) => String(b.processed_time || '').localeCompare(String(a.processed_time || '')));
+      selectedDocVersions = new Set([...selectedDocVersions].filter(id => docs.some(d => d.document_version_id === id)));
+      applyFilter();
+      updateGraphTitle();
+    } catch (err) {
+      if (list) list.innerHTML = emptyState(`加载文档失败: ${escapeHtml(err.message)}`);
+    }
+  }
+
+  function applyFilter() {
+    const q = (document.getElementById('graph-doc-filter')?.value || '').trim().toLowerCase();
+    filteredDocs = q
+      ? docs.filter(d => `${docTitle(d)} ${docPath(d)} ${d.content_hash || ''}`.toLowerCase().includes(q))
+      : docs.slice();
+    updateDocsList();
+  }
+
+  function updateDocsList() {
+    const countEl = document.getElementById('graph-doc-count');
+    if (countEl) countEl.textContent = `${filteredDocs.length} 个文档，已选 ${selectedDocVersions.size} 个`;
+    const list = document.getElementById('graph-doc-list');
+    if (!list) return;
+    if (!docs.length) {
+      list.innerHTML = emptyState('暂无 Markdown 文档。先在记忆页上传文件，或调用 vault index。');
+      return;
+    }
+    if (!filteredDocs.length) {
+      list.innerHTML = emptyState('没有匹配的文档');
+      return;
+    }
+    list.innerHTML = filteredDocs.map(d => {
+      const id = d.document_version_id;
+      const selected = selectedDocVersions.has(id);
+      return `
+        <div class="doc-graph-item ${selected ? 'selected' : ''}" data-doc-id="${escapeAttr(id)}">
+          <input class="doc-graph-check" type="checkbox" ${selected ? 'checked' : ''} data-doc-id="${escapeAttr(id)}" style="margin-top:0.2rem;">
+          <div style="min-width:0;">
+            <div class="doc-graph-title" title="${escapeAttr(docTitle(d))}">${escapeHtml(docTitle(d))}</div>
+            <div class="doc-graph-meta" title="${escapeAttr(docPath(d))}">${escapeHtml(docPath(d) || d.source_id || '-')}</div>
+            <div class="doc-graph-meta">${formatDateMs(d.processed_time || d.updated_at || d.created_at)}</div>
+          </div>
+        </div>
+      `;
+    }).join('');
+    list.querySelectorAll('.doc-graph-check').forEach(cb => {
+      cb.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const id = cb.getAttribute('data-doc-id');
+        if (cb.checked) selectedDocVersions.add(id);
+        else selectedDocVersions.delete(id);
+        updateDocsList();
+        loadSelectedGraph();
       });
+    });
+    list.querySelectorAll('.doc-graph-item').forEach(item => {
+      item.addEventListener('click', () => {
+        const id = item.getAttribute('data-doc-id');
+        if (!selectedDocVersions.has(id)) selectedDocVersions.add(id);
+        updateDocsList();
+        loadSelectedGraph();
+      });
+    });
+  }
+
+  async function loadSelectedGraph() {
+    if (!selectedDocVersions.size) {
+      clearGraphCanvas();
+      return;
+    }
+    const selected = [...selectedDocVersions];
+
+    if (!graphData || !graphModel) {
+      cancelGraphGrowth();
+      stopPlayback();
+      playbackStep = -1;
+      focusFamilyId = null;
+      loadedDocVersions = new Set();
+      growthOutlinesByDoc = new Map();
+      growthOutline = null;
+      growthTotals = null;
+      growthLoaded = { episodes: 0, concepts: 0, relations: 0, edges: 0 };
+      const exitFocus = document.getElementById('graph-exit-focus');
+      if (exitFocus) exitFocus.style.display = 'none';
+      const selectedDocRows = docs.filter(doc => selectedDocVersions.has(doc.document_version_id));
+      graphData = normalizeGraphPayload({ documents: selectedDocRows, episodes: [], concepts: [], edges: [], versions: {}, counts: {} });
+      graphModel = buildGraphModel(graphData);
+      updateGraphTitle();
+      drawGraph(-1, { progressive: true, skeleton: true });
     }
 
-    // ---- Keyboard shortcuts for time+version navigation ----
-    _graphKeyHandler = function (e) {
-      // Only handle when graph page is visible
-      if (!container.offsetParent) return;
+    const removed = [...loadedDocVersions].filter(id => !selectedDocVersions.has(id));
+    if (removed.length) {
+      rebuildSelectedGraph();
+      return;
+    }
 
-      const key = e.key;
+    const activeOrLoaded = new Set([...loadedDocVersions, ...growthControllers.keys()]);
+    const additions = selected.filter(id => !activeOrLoaded.has(id));
+    if (!additions.length) {
+      updateGraphTitle();
+      updateSummary(graphModel ? visibleModelForStep(-1) : null);
+      return;
+    }
+    updateGraphTitle();
+    appendDocuments(additions);
+  }
 
-      // Space — play/pause timeline
-      if (key === ' ' && !e.target.matches('input, textarea, select')) {
-        e.preventDefault();
-        if (tlPlaybackTimer) {
-          stopTimelinePlayback();
-        } else {
-          startTimelinePlayback();
+  async function rebuildSelectedGraph() {
+    cancelGraphGrowth();
+    const keepSelected = [...selectedDocVersions];
+    graphData = null;
+    graphModel = null;
+    loadedDocVersions = new Set();
+    growthOutlinesByDoc = new Map();
+    growthOutline = null;
+    growthTotals = null;
+    growthLoaded = { episodes: 0, concepts: 0, relations: 0, edges: 0 };
+    if (!keepSelected.length) {
+      clearGraphCanvas();
+      return;
+    }
+    const selectedDocRows = docs.filter(doc => selectedDocVersions.has(doc.document_version_id));
+    graphData = normalizeGraphPayload({ documents: selectedDocRows, episodes: [], concepts: [], edges: [], versions: {}, counts: {} });
+    graphModel = buildGraphModel(graphData);
+    updateGraphTitle();
+    drawGraph(-1, { progressive: true, skeleton: true });
+    appendDocuments(keepSelected);
+  }
+
+  function appendDocuments(documentVersionIds) {
+    documentVersionIds.forEach(id => appendDocumentGraph(id));
+  }
+
+  async function appendDocumentGraph(documentVersionId) {
+    if (!documentVersionId || loadedDocVersions.has(documentVersionId) || growthControllers.has(documentVersionId)) return;
+    const loadingController = { key: documentVersionId, cancelled: false, loading: true };
+    growthControllers.set(documentVersionId, loadingController);
+    refreshPrimaryGrowthController();
+    updatePlaybackControls();
+    const summary = document.getElementById('graph-summary');
+    if (summary) summary.textContent = '加载文档骨架中...';
+    try {
+      const res = await state.api.documentGraphOutline(state.currentGraphId, {
+        documentVersionIds: [documentVersionId],
+        maxEpisodes: 10000,
+      });
+      if (loadingController.cancelled || growthControllers.get(documentVersionId) !== loadingController) return;
+      const outline = normalizeGraphPayload(res.data || {});
+      loadedDocVersions.add(documentVersionId);
+      growthOutlinesByDoc.set(documentVersionId, outline);
+      growthOutline = mergeGraphPayload(growthOutline || {}, outline);
+      growthTotals = summarizeGrowthTotals();
+      const docOnly = initialDocumentOnlyGraph(outline);
+      graphData = mergeGraphPayload(graphData, docOnly);
+      graphData.counts = growthTotals || {};
+      graphModel = buildGraphModel(graphData);
+      updateGraphTitle();
+      if (network && nodesDataSet && edgesDataSet) {
+        updateGraphStep(-1, { fitDelay: 80, fitDuration: 300, progressive: true });
+      } else {
+        drawGraph(-1, { progressive: true, skeleton: true });
+      }
+      updatePlaybackControls();
+      startGraphGrowth({
+        key: documentVersionId,
+        documentVersionIds: [documentVersionId],
+        cursor: outline.next_cursor ?? 0,
+        limit: 1,
+      });
+    } catch (err) {
+      if (growthControllers.get(documentVersionId) === loadingController) {
+        growthControllers.delete(documentVersionId);
+        refreshPrimaryGrowthController();
+      }
+      const summaryEl = document.getElementById('graph-summary');
+      if (summaryEl) summaryEl.textContent = `加载文档失败: ${err.message}`;
+    }
+  }
+
+  async function loadSelectedGraphFullFallback() {
+    const res = await state.api.documentGraph(state.currentGraphId, {
+        documentVersionIds: [...selectedDocVersions],
+        includeRelations: true,
+        includeVersions: true,
+      });
+    graphData = normalizeGraphPayload(res.data || {});
+    graphModel = buildGraphModel(graphData);
+    updateGraphTitle();
+    drawGraph(-1);
+    updatePlaybackControls();
+  }
+
+  function clearGraphCanvas(message) {
+    cancelGraphGrowth();
+    stopPlayback();
+    destroyNetwork();
+    graphData = null;
+    graphModel = null;
+    growthLoaded = { episodes: 0, concepts: 0, relations: 0, edges: 0 };
+    growthTotals = null;
+    growthOutline = null;
+    loadedDocVersions = new Set();
+    growthOutlinesByDoc = new Map();
+    edgeMetaById = new Map();
+    nodeMetaById = new Map();
+    const canvas = document.getElementById('document-graph-canvas');
+    if (canvas) {
+      canvas.innerHTML = `<div id="graph-empty" class="empty-state graph-empty"><i data-lucide="git-fork"></i><p>${message || '选择左侧 Markdown 文档后显示文档、Episode、实体和关系边。'}</p></div>`;
+    }
+    const summary = document.getElementById('graph-summary');
+    if (summary) summary.textContent = selectedDocVersions.size ? '未加载图谱' : '选择一个或多个文档';
+    updateGraphTitle();
+    const playback = document.getElementById('graph-playback');
+    if (playback) playback.style.display = 'none';
+    const exitFocus = document.getElementById('graph-exit-focus');
+    if (exitFocus) exitFocus.style.display = 'none';
+    const detail = document.getElementById('graph-detail');
+    if (detail) detail.innerHTML = emptyState('暂无选中节点');
+    if (window.lucide) lucide.createIcons();
+  }
+
+  function destroyNetwork() {
+    clearTimeout(relationStreamTimer);
+    relationStreamTimer = null;
+    if (network) {
+      network.destroy();
+      network = null;
+    }
+    nodesDataSet = null;
+    edgesDataSet = null;
+    hoverPanel = null;
+    window.__documentGraphNetwork = null;
+    window.__documentGraphData = null;
+    clearTimeout(physicsFreezeTimer);
+    physicsFreezeTimer = null;
+    clearTimeout(naturalFitTimer);
+    naturalFitTimer = null;
+    lastNaturalFitAt = 0;
+  }
+
+  function cancelGraphGrowth() {
+    growthRunId += 1;
+    growthControllers.forEach(controller => { controller.cancelled = true; });
+    growthControllers = new Map();
+    if (growthController) growthController.cancelled = true;
+    growthController = null;
+    growthPauseRequested = false;
+  }
+
+  function hasActiveGrowth() {
+    return growthControllers.size > 0;
+  }
+
+  function refreshPrimaryGrowthController() {
+    growthController = growthControllers.values().next().value || null;
+  }
+
+  function summarizeGrowthTotals() {
+    const totals = { episodes: 0, concepts: 0, relations: 0 };
+    growthOutlinesByDoc.forEach(outline => {
+      const counts = outline.counts || outline.totals || {};
+      totals.episodes += Number(counts.episodes || outline.episodes?.length || 0);
+      totals.concepts += Number(counts.concepts || 0);
+      totals.relations += Number(counts.relations || 0);
+    });
+    return totals;
+  }
+
+  function normalizeGraphPayload(data) {
+    return {
+      documents: data.documents || [],
+      episodes: data.episodes || [],
+      concepts: data.concepts || [],
+      edges: data.edges || [],
+      versions: data.versions || {},
+      counts: data.counts || data.totals || {},
+      episode_counts: data.episode_counts || {},
+      cursor: data.cursor ?? 0,
+      next_cursor: data.next_cursor ?? null,
+    };
+  }
+
+  function initialDocumentOnlyGraph(outline) {
+    const normalized = normalizeGraphPayload(outline || {});
+    return {
+      ...normalized,
+      episodes: [],
+      concepts: [],
+      edges: (normalized.edges || []).filter(e => e.edge_type === 'DOCUMENT_LINK'),
+      versions: {},
+      cursor: 0,
+      next_cursor: normalized.next_cursor,
+    };
+  }
+
+  function chooseChunkLimit(episodeCount) {
+    if (episodeCount > 160) return 8;
+    if (episodeCount > 80) return 10;
+    return 14;
+  }
+
+  function mergeGraphChunk(chunk) {
+    graphData = mergeGraphPayload(graphData, chunk);
+    growthLoaded = {
+      episodes: graphData.episodes.length,
+      concepts: graphData.concepts.filter(c => c.role !== 'relation').length,
+      relations: graphData.concepts.filter(c => c.role === 'relation').length,
+      edges: graphData.edges.length,
+    };
+  }
+
+  function mergeGraphPayload(base, chunk) {
+    const current = normalizeGraphPayload(base || {});
+    const next = normalizeGraphPayload(chunk || {});
+    const byDoc = new Map((current.documents || []).map(item => [item.document_version_id, item]));
+    next.documents.forEach(item => byDoc.set(item.document_version_id, item));
+    const byEpisode = new Map((current.episodes || []).map(item => [item.version_id, item]));
+    next.episodes.forEach(item => byEpisode.set(item.version_id, item));
+    const byConcept = new Map((current.concepts || []).map(item => [item.family_id, item]));
+    next.concepts.forEach(item => byConcept.set(item.family_id, item));
+    const byEdge = new Map((current.edges || []).map(item => [item.edge_id || item.id, item]));
+    next.edges.forEach(item => byEdge.set(item.edge_id || item.id, item));
+
+    return {
+      ...current,
+      documents: [...byDoc.values()],
+      episodes: [...byEpisode.values()],
+      concepts: [...byConcept.values()],
+      edges: [...byEdge.values()],
+      versions: { ...(current.versions || {}), ...(next.versions || {}) },
+      counts: current.counts || next.counts || next.totals || {},
+      episode_counts: { ...(current.episode_counts || {}), ...(next.episode_counts || {}) },
+      cursor: next.cursor,
+      next_cursor: next.next_cursor,
+    };
+  }
+
+  async function startGraphGrowth({ key, documentVersionIds, cursor, limit }) {
+    const runId = ++growthRunId;
+    const controllerKey = key || documentVersionIds.join('|');
+    const controller = { key: controllerKey, runId, cancelled: false };
+    growthControllers.set(controllerKey, controller);
+    growthController = controller;
+    updatePlaybackControls();
+    let nextCursor = cursor;
+    if (nextCursor === null || nextCursor === undefined) {
+      growthControllers.delete(controllerKey);
+      refreshPrimaryGrowthController();
+      updateSummary(graphModel ? visibleModelForStep(-1) : null);
+      return;
+    }
+
+    try {
+      while (!controller.cancelled && growthControllers.get(controllerKey) === controller && nextCursor !== null) {
+        while (growthPauseRequested && !controller.cancelled) {
+          await sleep(120);
         }
-        renderTimeline(document.getElementById('timeline-container'));
-        return;
+        if (controller.cancelled || growthControllers.get(controllerKey) !== controller) return;
+        const chunk = await state.api.documentGraphChunk(state.currentGraphId, {
+          documentVersionIds,
+          cursor: nextCursor,
+          limit,
+          includeRelations: true,
+          includeVersions: true,
+        });
+        if (controller.cancelled || growthControllers.get(controllerKey) !== controller) return;
+        const data = chunk.data || {};
+        await animateEpisodeChunk(data, controller);
+        nextCursor = data.next_cursor;
+        await sleep(120);
       }
 
-      // Left/Right arrows — version navigation (only when detail sidebar is showing entity)
-      if ((key === 'ArrowLeft' || key === 'ArrowRight') && !e.target.matches('input, textarea, select')) {
-        if (explorer && explorer.getState().focusAbsoluteId) {
-          e.preventDefault();
-          var st = explorer.getState();
-          if (key === 'ArrowLeft' && st.currentVersionIdx > 0) {
-            explorer.switchVersion(st.currentVersionIdx - 1);
-          } else if (key === 'ArrowRight' && st.currentVersionIdx < st.currentVersions.length - 1) {
-            explorer.switchVersion(st.currentVersionIdx + 1);
-          }
-        } else if (key === 'ArrowLeft') {
-          // Step timeline backward
-          e.preventDefault();
-          stepTimeline(-1);
-        } else if (key === 'ArrowRight') {
-          // Step timeline forward
-          e.preventDefault();
-          stepTimeline(1);
-        }
+      if (growthControllers.get(controllerKey) === controller) {
+        growthControllers.delete(controllerKey);
+        refreshPrimaryGrowthController();
+        updatePlaybackControls();
+        updateSummary(graphModel ? visibleModelForStep(-1) : null);
+        if (!hasActiveGrowth()) schedulePhysicsFreeze(graphData.concepts?.length > 2500 ? 6500 : 3800);
+      }
+    } catch (err) {
+      if (controller.cancelled || growthControllers.get(controllerKey) !== controller) return;
+      growthControllers.delete(controllerKey);
+      refreshPrimaryGrowthController();
+      const summary = document.getElementById('graph-summary');
+      if (summary) summary.textContent = `增量加载失败，尝试全量加载: ${err.message}`;
+      try {
+        await loadSelectedGraphFullFallback();
+      } catch (fallbackErr) {
+        clearGraphCanvas(`加载子图失败: ${escapeHtml(fallbackErr.message)}`);
+      }
+    }
+  }
+
+  function toggleGraphGrowthPause() {
+    if (!hasActiveGrowth()) return false;
+    growthPauseRequested = !growthPauseRequested;
+    updatePlaybackControls();
+    updateSummary(graphModel ? visibleModelForStep(-1) : null);
+    return true;
+  }
+
+  async function animateEpisodeChunk(chunk, controller) {
+    const next = normalizeGraphPayload(chunk || {});
+    const episode = next.episodes?.[0];
+    if (!episode || !network || !nodesDataSet || !edgesDataSet) {
+      mergeGraphChunk(next);
+      graphModel = buildGraphModel(graphData);
+      updateGraphStep(-1, { fitDelay: 90, fitDuration: 260, freezeDelay: 5200, progressive: true });
+      return;
+    }
+
+    const hasEpisodeEdge = (growthOutline?.edges || [])
+      .find(edge => edge.edge_type === 'HAS_EPISODE' && edge.target_version_id === episode.version_id);
+    if (hasEpisodeEdge && !next.edges.some(edge => (edge.edge_id || edge.id) === (hasEpisodeEdge.edge_id || hasEpisodeEdge.id))) {
+      next.edges.push(hasEpisodeEdge);
+    }
+    const targetData = mergeGraphPayload(graphData, next);
+    const previousData = graphData;
+    const previousModel = graphModel;
+    graphData = targetData;
+    graphModel = buildGraphModel(targetData);
+    const targetVisible = visibleModelForStep(-1);
+    const targetVis = buildVisData(targetVisible);
+    graphData = previousData;
+    graphModel = previousModel;
+
+    const nodeById = new Map(targetVis.nodes.map(node => [node.id, node]));
+    const edgeById = new Map(targetVis.edges.map(edge => [edge.id, edge]));
+    const episodeNodeId = `episode:${episode.version_id}`;
+    const hasEpisodeEdgeId = hasEpisodeEdge?.edge_id || hasEpisodeEdge?.id;
+    const conceptFamilyIds = next.concepts
+      .filter(concept => concept.role !== 'relation')
+      .map(concept => concept.family_id);
+    const mentionEdges = next.edges
+      .filter(edge => edge.edge_type === 'MENTIONS')
+      .map(edge => edge.edge_id || edge.id);
+    const relationEdges = targetVisible.relationEdges
+      .filter(edge => edge.relation?.episode_version_id === episode.version_id)
+      .map(edge => edge.id);
+
+    graphData = targetData;
+    graphModel = buildGraphModel(graphData);
+    window.__documentGraphData = graphData;
+    window.__documentGraphVisual = { graphModel, visible: targetVisible, playbackStep: -1 };
+
+    await waitGrowth(controller);
+    addVisualNode(nodeById.get(episodeNodeId));
+    growthLoaded.episodes = Math.max(growthLoaded.episodes, graphData.episodes.length);
+    updateSummary(targetVisible);
+    network.setOptions({ physics: { enabled: true } });
+    if (hasEpisodeEdgeId) addVisualEdge(edgeById.get(hasEpisodeEdgeId));
+    await sleep(220);
+
+    for (const familyId of conceptFamilyIds) {
+      await waitGrowth(controller);
+      const nodeId = `concept:${familyId}`;
+      const added = addVisualNode(nodeById.get(nodeId));
+      mentionEdges
+        .map(id => edgeById.get(id))
+        .filter(edge => edge && edge.to === nodeId)
+        .forEach(edge => addVisualEdge(edge));
+      if (added) growthLoaded.concepts += 1;
+      updateSummary(targetVisible);
+      await sleep(1000 / growthRatePerSecond);
+    }
+
+    for (const edgeId of relationEdges) {
+      await waitGrowth(controller);
+      const edge = edgeById.get(edgeId);
+      if (!edge) continue;
+      if (!nodesDataSet.get(edge.from) || !nodesDataSet.get(edge.to)) continue;
+      if (addVisualEdge(edge)) growthLoaded.relations += 1;
+      updateSummary(targetVisible);
+      await sleep(1000 / growthRatePerSecond);
+    }
+
+    growthLoaded.edges = edgesDataSet.getIds().length;
+    updateSummary(targetVisible);
+    scheduleNaturalFit(180);
+  }
+
+  async function waitGrowth(controller) {
+    while (growthPauseRequested && !controller.cancelled) {
+      await sleep(120);
+    }
+    if (controller.cancelled || growthControllers.get(controller.key) !== controller) {
+      throw new Error("graph growth cancelled");
+    }
+  }
+
+  function addVisualNode(nodeWithMeta) {
+    if (!nodeWithMeta || !nodesDataSet) return false;
+    nodeMetaById.set(nodeWithMeta.id, nodeWithMeta._meta);
+    if (nodesDataSet.get(nodeWithMeta.id)) return false;
+    const { _meta, ...node } = nodeWithMeta;
+    nodesDataSet.add(node);
+    network?.setOptions({ physics: { enabled: true } });
+    scheduleNaturalFit(120);
+    return true;
+  }
+
+  function addVisualEdge(edgeWithMeta) {
+    if (!edgeWithMeta || !edgesDataSet) return false;
+    edgeMetaById.set(edgeWithMeta.id, edgeWithMeta._meta);
+    if (edgesDataSet.get(edgeWithMeta.id)) return false;
+    if (!nodesDataSet?.get(edgeWithMeta.from) || !nodesDataSet?.get(edgeWithMeta.to)) return false;
+    const { _meta, ...edge } = edgeWithMeta;
+    edgesDataSet.add(edge);
+    network?.setOptions({ physics: { enabled: true } });
+    scheduleNaturalFit(160);
+    return true;
+  }
+
+  function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  function buildGraphModel(data) {
+    const model = {
+      documents: data.documents || [],
+      episodes: (data.episodes || []).slice().sort((a, b) => {
+        const da = String(a.document_version_id || '').localeCompare(String(b.document_version_id || ''));
+        if (da !== 0) return da;
+        return (a.chunk_index ?? 0) - (b.chunk_index ?? 0) || String(a.processed_time || '').localeCompare(String(b.processed_time || ''));
+      }),
+      entities: [],
+      relations: [],
+      sourceEdges: [],
+      relationEdges: [],
+      nodesById: new Map(),
+      relationByEdgeId: new Map(),
+      conceptByFamily: new Map(),
+      versions: data.versions || {},
+    };
+
+    (data.concepts || []).forEach(c => {
+      model.conceptByFamily.set(c.family_id, c);
+      if (c.role === 'relation') model.relations.push(c);
+      else model.entities.push(c);
+    });
+
+    const existingNodeIds = new Set();
+    model.documents.forEach(doc => existingNodeIds.add(`doc:${doc.document_version_id}`));
+    model.episodes.forEach(ep => existingNodeIds.add(`episode:${ep.version_id}`));
+    model.entities.forEach(c => existingNodeIds.add(`concept:${c.family_id}`));
+
+    (data.edges || []).forEach(e => {
+      if (!e.from || !e.to) return;
+      if (e.edge_type === 'CONNECTS') return;
+      if (isRelationRef(e.from, model) || isRelationRef(e.to, model)) return;
+      if (!existingNodeIds.has(e.from) || !existingNodeIds.has(e.to)) return;
+      model.sourceEdges.push({ ...e, id: e.edge_id || `${e.from}-${e.to}-${e.edge_type}` });
+    });
+
+    const groupedByPair = new Map();
+    model.relations.forEach(rel => {
+      const endpoints = relationEndpoints(rel, data);
+      if (endpoints.length < 2) return;
+      const from = `concept:${endpoints[0]}`;
+      const to = `concept:${endpoints[1]}`;
+      if (!existingNodeIds.has(from) || !existingNodeIds.has(to)) return;
+      const key = [from, to].sort().join('|');
+      if (!groupedByPair.has(key)) groupedByPair.set(key, []);
+      groupedByPair.get(key).push({ rel, from, to, key });
+    });
+    groupedByPair.forEach(items => {
+      items.forEach((item, idx) => {
+        const total = items.length;
+        const curveIndex = idx - (total - 1) / 2;
+        const direction = idx % 2 === 0 ? 'curvedCW' : 'curvedCCW';
+        const roundness = Math.min(0.55, 0.12 + Math.abs(curveIndex) * 0.14);
+        const edge = {
+          id: `relation:${item.rel.family_id}`,
+          from: item.from,
+          to: item.to,
+          edge_kind: 'relation_concept',
+          relation_family_id: item.rel.family_id,
+          relation_version_id: item.rel.version_id,
+          relation: item.rel,
+          parallel_count: total,
+          parallel_index: idx,
+          smooth: { enabled: true, type: total === 1 ? 'continuous' : direction, roundness },
+        };
+        model.relationEdges.push(edge);
+        model.relationByEdgeId.set(edge.id, item.rel);
+      });
+    });
+
+    return model;
+  }
+
+  function isRelationRef(ref, model) {
+    if (!ref || !String(ref).startsWith('concept:')) return false;
+    const familyId = String(ref).slice('concept:'.length);
+    return model.conceptByFamily.get(familyId)?.role === 'relation';
+  }
+
+  function relationEndpoints(rel, data) {
+    const meta = rel.metadata || {};
+    const endpoints = [];
+    if (meta.entity1_family_id) endpoints.push(meta.entity1_family_id);
+    if (meta.entity2_family_id && meta.entity2_family_id !== meta.entity1_family_id) endpoints.push(meta.entity2_family_id);
+    if (endpoints.length >= 2) return endpoints.slice(0, 2);
+    (data.edges || [])
+      .filter(e => e.edge_type === 'CONNECTS' && (e.relation_family_id === rel.family_id || e.source_family_id === rel.family_id))
+      .forEach(e => {
+        const fid = e.target_family_id && e.target_family_id !== rel.family_id ? e.target_family_id : e.source_family_id;
+        if (fid && fid !== rel.family_id && !endpoints.includes(fid)) endpoints.push(fid);
+      });
+    return endpoints.slice(0, 2);
+  }
+
+  function drawGraph(step, options = {}) {
+    if (!graphModel || !graphModel.documents.length) {
+      clearGraphCanvas('所选文档没有可展示的子图');
+      return;
+    }
+    const canvas = document.getElementById('document-graph-canvas');
+    if (!canvas) return;
+    destroyNetwork();
+    canvas.innerHTML = '';
+
+    const visible = visibleModelForStep(step);
+    const { nodes, edges } = buildVisData(visible);
+    nodeMetaById = new Map(nodes.map(n => [n.id, n._meta]));
+    edgeMetaById = new Map(edges.map(e => [e.id, e._meta]));
+    const streamRelations = step < 0 && showRelations && !focusFamilyId && visible.relationEdges.length > 800;
+    const initialEdges = streamRelations ? edges.filter(e => e._meta?.type !== 'relation') : edges;
+    const delayedRelationEdges = streamRelations ? edges.filter(e => e._meta?.type === 'relation') : [];
+    nodesDataSet = new vis.DataSet(nodes.map(({ _meta, ...node }) => node));
+    edgesDataSet = new vis.DataSet(initialEdges.map(({ _meta, ...edge }) => edge));
+
+    network = new vis.Network(canvas, { nodes: nodesDataSet, edges: edgesDataSet }, networkOptions(nodes.length, edges.length, options));
+    window.__documentGraphNetwork = network;
+    window.__documentGraphData = graphData;
+    window.__documentGraphVisual = { graphModel, visible, playbackStep: step };
+
+    bindNetworkEvents(canvas);
+    updateSummary(visible);
+    updatePlaybackControls();
+
+    network.once('stabilizationIterationsDone', () => {
+      network?.fit({ animation: { duration: 700, easingFunction: 'easeInOutQuad' } });
+      schedulePhysicsFreeze(1200);
+    });
+    setTimeout(() => network?.fit({ animation: { duration: 520, easingFunction: 'easeInOutQuad' } }), 600);
+    setTimeout(() => network?.fit({ animation: { duration: 700, easingFunction: 'easeInOutQuad' } }), 2200);
+    if (streamRelations) {
+      startRelationEdgeStream(delayedRelationEdges);
+    } else {
+      schedulePhysicsFreeze(nodes.length > 2500 ? 9000 : 5000);
+    }
+  }
+
+  function updateGraphStep(step, options = {}) {
+    if (!graphModel || !graphModel.documents.length) {
+      clearGraphCanvas('所选文档没有可展示的子图');
+      return;
+    }
+    if (!network || !nodesDataSet || !edgesDataSet) {
+      drawGraph(step);
+      return;
+    }
+
+    const visible = visibleModelForStep(step);
+    const { nodes, edges } = buildVisData(visible);
+    nodeMetaById = new Map(nodes.map(n => [n.id, n._meta]));
+    edgeMetaById = new Map(edges.map(e => [e.id, e._meta]));
+
+    const currentNodeIds = nodesDataSet.getIds();
+    const currentPositions = network.getPositions(currentNodeIds);
+    syncDataSet(nodesDataSet, nodes, { preservePosition: true, positions: currentPositions });
+    syncDataSet(edgesDataSet, edges);
+
+    window.__documentGraphData = graphData;
+    window.__documentGraphVisual = { graphModel, visible, playbackStep: step };
+    updateSummary(visible);
+    updatePlaybackControls();
+
+    network.setOptions({ physics: { enabled: true } });
+    clearTimeout(updateGraphStep._freezeTimer);
+    updateGraphStep._freezeTimer = setTimeout(() => {
+      if (!network) return;
+      updateGraphStep._progressiveFitCounter = (updateGraphStep._progressiveFitCounter || 0) + 1;
+      const shouldFit = !options.progressive || updateGraphStep._progressiveFitCounter % 3 === 0 || !hasActiveGrowth();
+      if (shouldFit) {
+        network.fit({
+          animation: { duration: options.fitDuration || 420, easingFunction: 'easeInOutQuad' },
+        });
+      }
+      schedulePhysicsFreeze(options.freezeDelay || 1800);
+    }, options.fitDelay || 260);
+  }
+
+  function syncDataSet(dataSet, items, options = {}) {
+    const nextIds = new Set(items.map(item => item.id));
+    const existingIds = new Set(dataSet.getIds());
+    const add = [];
+    const update = [];
+    items.forEach(({ _meta, ...item }) => {
+      if (!existingIds.has(item.id)) {
+        add.push(item);
         return;
       }
+      if (options.preservePosition) {
+        const current = dataSet.get(item.id) || {};
+        const pos = options.positions?.[item.id] || {};
+        update.push({
+          ...item,
+          x: pos.x ?? current.x,
+          y: pos.y ?? current.y,
+          fixed: current.fixed,
+        });
+      } else {
+        update.push(item);
+      }
+    });
+    const remove = [...existingIds].filter(id => !nextIds.has(id));
+    if (remove.length) dataSet.remove(remove);
+    if (add.length) dataSet.add(add);
+    if (update.length) dataSet.update(update);
+  }
 
-      // Escape — close shortcuts overlay, then exit snapshot/focus mode
-      if (key === 'Escape') {
-        var shortcutsOverlay = document.getElementById('graph-shortcuts-overlay');
-        if (shortcutsOverlay) {
-          shortcutsOverlay.remove();
-          return;
+  function visibleModelForStep(step) {
+    const all = {
+      documents: graphModel.documents,
+      episodes: graphModel.episodes,
+      entities: graphModel.entities,
+      sourceEdges: graphModel.sourceEdges,
+      relationEdges: showRelations ? graphModel.relationEdges : [],
+    };
+    if (step < 0) return focusFamilyId ? focusedVisibleModel(all, focusFamilyId) : all;
+
+    const episodeIds = new Set(graphModel.episodes.slice(0, step).map(e => e.version_id));
+    const visibleDocIds = new Set(graphModel.documents.map(d => d.document_version_id));
+    const visibleEpisodeNodeIds = new Set([...episodeIds].map(id => `episode:${id}`));
+    const visibleConceptFamilies = new Set();
+
+    graphModel.sourceEdges.forEach(e => {
+      if (e.edge_type === 'MENTIONS' && episodeIds.has(e.episode_version_id) && e.target_family_id) {
+        const concept = graphModel.conceptByFamily.get(e.target_family_id);
+        if (concept && concept.role !== 'relation') visibleConceptFamilies.add(e.target_family_id);
+      }
+    });
+    graphModel.relationEdges.forEach(e => {
+      const rel = e.relation;
+      if (rel && episodeIds.has(rel.episode_version_id)) {
+        const fromFamily = String(e.from).slice('concept:'.length);
+        const toFamily = String(e.to).slice('concept:'.length);
+        if (visibleConceptFamilies.has(fromFamily) && visibleConceptFamilies.has(toFamily)) {
+          visibleConceptFamilies.add(fromFamily);
+          visibleConceptFamilies.add(toFamily);
         }
-        if (focusAbsoluteId) {
-          focusAbsoluteId = null;
-          explorer.exitFocus();
-        } else if (snapshotMode) {
-          resetToLive();
-          renderTimeline(document.getElementById('timeline-container'));
+      }
+    });
+
+    const visibleNodeIds = new Set([
+      ...[...visibleDocIds].map(id => `doc:${id}`),
+      ...visibleEpisodeNodeIds,
+      ...[...visibleConceptFamilies].map(fid => `concept:${fid}`),
+    ]);
+
+    const visible = {
+      documents: graphModel.documents,
+      episodes: graphModel.episodes.filter(e => episodeIds.has(e.version_id)),
+      entities: graphModel.entities.filter(c => visibleConceptFamilies.has(c.family_id)),
+      sourceEdges: graphModel.sourceEdges.filter(e => visibleNodeIds.has(e.from) && visibleNodeIds.has(e.to)),
+      relationEdges: showRelations ? graphModel.relationEdges.filter(e => {
+        const rel = e.relation;
+        return rel && episodeIds.has(rel.episode_version_id) && visibleNodeIds.has(e.from) && visibleNodeIds.has(e.to);
+      }) : [],
+    };
+    return focusFamilyId ? focusedVisibleModel(visible, focusFamilyId) : visible;
+  }
+
+  function focusedVisibleModel(base, familyId) {
+    if (!familyId) return base;
+    const conceptId = `concept:${familyId}`;
+    const nodeIds = new Set([conceptId]);
+    const focusedEdges = [];
+    base.sourceEdges.forEach(edge => {
+      if (edge.from === conceptId || edge.to === conceptId || edge.target_family_id === familyId || edge.source_family_id === familyId) {
+        focusedEdges.push(edge);
+        if (edge.from) nodeIds.add(edge.from);
+        if (edge.to) nodeIds.add(edge.to);
+      }
+    });
+    const focusedRelations = [];
+    base.relationEdges.forEach(edge => {
+      if (edge.from === conceptId || edge.to === conceptId || edge.relation_family_id === familyId) {
+        focusedRelations.push(edge);
+        nodeIds.add(edge.from);
+        nodeIds.add(edge.to);
+      }
+    });
+    focusedEdges.forEach(edge => {
+      if (String(edge.from || '').startsWith('episode:')) {
+        const epId = String(edge.from).slice('episode:'.length);
+        const ep = graphModel.episodes.find(item => item.version_id === epId);
+        if (ep?.document_version_id) nodeIds.add(`doc:${ep.document_version_id}`);
+      }
+    });
+    const docs = base.documents.filter(doc => nodeIds.has(`doc:${doc.document_version_id}`));
+    const episodes = base.episodes.filter(ep => nodeIds.has(`episode:${ep.version_id}`));
+    const entities = base.entities.filter(c => nodeIds.has(`concept:${c.family_id}`));
+    return { documents: docs, episodes, entities, sourceEdges: focusedEdges, relationEdges: focusedRelations };
+  }
+
+  function ringPosition(idx, total, cx, cy, baseRadius, ringGap, minArc, phase) {
+    let remaining = idx;
+    let ring = 0;
+    while (true) {
+      const radius = baseRadius + ring * ringGap;
+      const cap = Math.max(8, Math.floor((Math.PI * 2 * radius) / minArc));
+      if (remaining < cap) {
+        const angle = (remaining / cap) * Math.PI * 2 - Math.PI / 2 + ring * 0.31 + (phase || 0);
+        const squash = total > 80 ? 0.78 : 0.86;
+        return { x: cx + Math.cos(angle) * radius, y: cy + Math.sin(angle) * radius * squash };
+      }
+      remaining -= cap;
+      ring += 1;
+    }
+  }
+
+  function spiralOffset(idx, baseRadius, gap, scale) {
+    const angle = idx * 2.399963229728653;
+    const radius = baseRadius + Math.sqrt(idx) * gap * (scale || 1);
+    return { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius * 0.82 };
+  }
+
+  function averagePositions(points) {
+    if (!points.length) return null;
+    const sum = points.reduce((acc, p) => ({ x: acc.x + p.x, y: acc.y + p.y }), { x: 0, y: 0 });
+    return { x: sum.x / points.length, y: sum.y / points.length };
+  }
+
+  function fallbackEntityAnchor(idx, total) {
+    const radius = Math.max(480, Math.min(1800, 260 + Math.sqrt(Math.max(1, total)) * 28));
+    const angle = idx * 2.399963229728653;
+    return { x: Math.cos(angle) * radius, y: 120 + Math.sin(angle) * radius * 0.82 };
+  }
+
+  function entityCirclePosition(idx, total) {
+    return ringPosition(idx, total, 0, 130, 760, 92, 54, 0);
+  }
+
+  function computeRelationComponents(relationEdges) {
+    const parent = new Map();
+    const families = new Set();
+    const familyFromNode = id => String(id || '').startsWith('concept:') ? String(id).slice('concept:'.length) : '';
+    const find = fid => {
+      if (!parent.has(fid)) parent.set(fid, fid);
+      const p = parent.get(fid);
+      if (p === fid) return fid;
+      const root = find(p);
+      parent.set(fid, root);
+      return root;
+    };
+    const union = (a, b) => {
+      if (!a || !b || a === b) return;
+      const ra = find(a);
+      const rb = find(b);
+      if (ra !== rb) parent.set(rb, ra);
+    };
+    (relationEdges || []).forEach(edge => {
+      const a = familyFromNode(edge.from);
+      const b = familyFromNode(edge.to);
+      if (!a || !b) return;
+      families.add(a);
+      families.add(b);
+      union(a, b);
+    });
+
+    const groups = new Map();
+    families.forEach(fid => {
+      const root = find(fid);
+      if (!groups.has(root)) groups.set(root, []);
+      groups.get(root).push(fid);
+    });
+    const sortedGroups = [...groups.values()].sort((a, b) => b.length - a.length);
+    const offsetByFamily = new Map();
+    const anchorByFamily = new Map();
+    sortedGroups.forEach((group, groupIdx) => {
+      const groupAnchor = entityCirclePosition(groupIdx, Math.max(sortedGroups.length, 1));
+      group.forEach((fid, idx) => {
+        const local = spiralOffset(idx, 0, 18, Math.max(0.6, Math.min(1.2, group.length / 18)));
+        anchorByFamily.set(fid, groupAnchor);
+        offsetByFamily.set(fid, { x: local.x * 0.45, y: local.y * 0.45 });
+      });
+    });
+    return { anchorByFamily, offsetByFamily };
+  }
+
+  function buildVisData(visible) {
+    const relationCount = {};
+    visible.relationEdges.forEach(e => {
+      relationCount[e.from] = (relationCount[e.from] || 0) + 1;
+      relationCount[e.to] = (relationCount[e.to] || 0) + 1;
+    });
+    visible.sourceEdges.forEach(e => {
+      if (e.edge_type === 'MENTIONS') {
+        relationCount[e.to] = (relationCount[e.to] || 0) + 0.35;
+      }
+    });
+
+    const nodes = [];
+    const docs = visible.documents;
+    const docSpacing = docs.length > 1 ? Math.max(720, Math.min(1100, 4800 / docs.length)) : 0;
+    const startX = -((docs.length - 1) * docSpacing) / 2;
+    const docX = new Map();
+    const docY = -260;
+    docs.forEach((doc, idx) => {
+      const id = `doc:${doc.document_version_id}`;
+      const x = startX + idx * docSpacing;
+      docX.set(doc.document_version_id, x);
+      nodes.push(makeBubbleNode({
+        id,
+        role: 'document',
+        label: docTitle(doc),
+        size: 36,
+        x,
+        y: docY,
+        fixed: true,
+        meta: { type: 'document', item: doc },
+        title: docPath(doc),
+      }));
+    });
+
+    const epsByDoc = {};
+    visible.episodes.forEach(ep => {
+      if (!epsByDoc[ep.document_version_id]) epsByDoc[ep.document_version_id] = [];
+      epsByDoc[ep.document_version_id].push(ep);
+    });
+    const episodePos = new Map();
+    Object.entries(epsByDoc).forEach(([docVersionId, eps]) => {
+      const cx = docX.get(docVersionId) || 0;
+      eps.forEach((ep, idx) => {
+        const pos = ringPosition(idx, eps.length, cx, docY + 260, 210, 74, 64, idx * 0.003);
+        episodePos.set(ep.version_id, pos);
+        nodes.push(makeBubbleNode({
+          id: `episode:${ep.version_id}`,
+          role: 'episode',
+          label: ep.heading_path || ep.name || `Episode ${idx + 1}`,
+          size: 18,
+          x: pos.x,
+          y: pos.y,
+          fixed: true,
+          meta: { type: 'episode', item: ep },
+          title: normalizeText(ep.content, 180),
+        }));
+      });
+    });
+
+    const entityEpisodes = new Map();
+    visible.sourceEdges.forEach(e => {
+      if (e.edge_type !== 'MENTIONS' || !e.target_family_id || !e.episode_version_id) return;
+      if (!entityEpisodes.has(e.target_family_id)) entityEpisodes.set(e.target_family_id, []);
+      const list = entityEpisodes.get(e.target_family_id);
+      if (!list.includes(e.episode_version_id)) list.push(e.episode_version_id);
+    });
+    const entitiesByEpisode = new Map();
+    visible.entities.forEach(c => {
+      const epIds = entityEpisodes.get(c.family_id) || [];
+      const primary = epIds.find(id => episodePos.has(id)) || '__unplaced__';
+      if (!entitiesByEpisode.has(primary)) entitiesByEpisode.set(primary, []);
+      entitiesByEpisode.get(primary).push(c);
+    });
+    const entityLocalIndex = new Map();
+    entitiesByEpisode.forEach(group => {
+      group
+        .slice()
+        .sort((a, b) => (relationCount[`concept:${b.family_id}`] || 0) - (relationCount[`concept:${a.family_id}`] || 0))
+        .forEach((c, idx) => entityLocalIndex.set(c.family_id, idx));
+    });
+    const relationComponents = computeRelationComponents(visible.relationEdges);
+
+    visible.entities.forEach((c, idx) => {
+      const id = `concept:${c.family_id}`;
+      const size = Math.max(14, Math.min(32, Math.round(14 + Math.sqrt(relationCount[id] || 1) * 4)));
+      const versionTotal = graphModel.versions?.[c.family_id]?.total || 1;
+      const epIds = entityEpisodes.get(c.family_id) || [];
+      const attached = epIds.map(epId => episodePos.get(epId)).filter(Boolean);
+      const anchored = !!attached.length;
+      const componentAnchor = relationComponents.anchorByFamily.get(c.family_id);
+      const anchor = anchored ? averagePositions(attached) : (componentAnchor || entityCirclePosition(idx, visible.entities.length));
+      const localIdx = entityLocalIndex.get(c.family_id) ?? idx;
+      const spread = anchored ? spiralOffset(localIdx, 82, 23, relationCount[id] > 5 ? 0.8 : 1) : { x: 0, y: 0 };
+      const componentPull = relationComponents.offsetByFamily.get(c.family_id) || { x: 0, y: 0 };
+      nodes.push(makeBubbleNode({
+        id,
+        role: 'entity',
+        label: conceptTitle(c),
+        size,
+        x: anchor.x + spread.x + componentPull.x,
+        y: anchor.y + spread.y + componentPull.y,
+        versionTotal,
+        meta: { type: 'entity', item: c },
+        title: normalizeText(c.content || c.summary, 180),
+      }));
+    });
+
+    const edges = [];
+    visible.sourceEdges.forEach(e => {
+      const style = sourceEdgeStyle(e.edge_type);
+      edges.push({
+        id: e.id,
+        from: e.from,
+        to: e.to,
+        label: showLabels && e.edge_type === 'HAS_EPISODE' ? '' : '',
+        color: style.color,
+        dashes: style.dashes,
+        width: style.width,
+        arrows: { to: { enabled: false } },
+        smooth: { enabled: true, type: 'continuous', roundness: 0.12 },
+        _meta: { type: 'source_edge', item: e },
+      });
+    });
+    visible.relationEdges.forEach(e => {
+      const rel = e.relation;
+      const title = conceptTitle(rel);
+      edges.push({
+        id: e.id,
+        from: e.from,
+        to: e.to,
+        label: showLabels ? truncate(title, 34) : '',
+        color: {
+          color: ROLE_COLORS.relation.bg,
+          highlight: ROLE_COLORS.relation.border,
+          hover: ROLE_COLORS.relation.border,
+        },
+        width: e.parallel_count > 1 ? 1.8 : 2.2,
+        dashes: false,
+        arrows: { to: { enabled: false } },
+        smooth: e.smooth,
+        font: {
+          size: 10,
+          color: mutedColor(),
+          strokeWidth: 3,
+          strokeColor: isLightTheme() ? '#ffffff' : '#0f172a',
+          align: 'middle',
+        },
+        shadow: {
+          enabled: true,
+          color: ROLE_COLORS.relation.glow,
+          size: 6,
+          x: 0,
+          y: 0,
+        },
+        _meta: { type: 'relation', item: rel, edge: e },
+      });
+    });
+    return { nodes, edges };
+  }
+
+  function makeBubbleNode({ id, role, label, size, x, y, fixed, versionTotal, meta, title }) {
+    const colors = ROLE_COLORS[role] || ROLE_COLORS.entity;
+    const multi = versionTotal > 1;
+    const saved = pinnedPositions[id];
+    return {
+      id,
+      label: showLabels ? truncate(label || id, role === 'document' ? 28 : 24) + (multi ? ` [v${versionTotal}]` : '') : '',
+      shape: 'dot',
+      size,
+      x: saved ? saved.x : x,
+      y: saved ? saved.y : y,
+      fixed: saved ? { x: true, y: true } : (fixed ? { x: true, y: true } : false),
+      color: {
+        background: colors.bg,
+        border: multi ? '#fbbf24' : colors.border,
+        highlight: { background: colors.bg, border: multi ? '#fde68a' : colors.border },
+        hover: { background: colors.bg, border: multi ? '#fde68a' : colors.border },
+      },
+      borderWidth: multi ? 3 : (role === 'document' ? 2.5 : 1.5),
+      borderWidthSelected: 4,
+      shadow: {
+        enabled: true,
+        color: multi ? 'rgba(251,191,36,0.45)' : colors.glow,
+        size: multi ? Math.min(18, 7 + versionTotal) : 8,
+        x: 0,
+        y: 0,
+      },
+      font: {
+        color: role === 'document' ? '#111827' : labelColor(),
+        size: role === 'document' ? 14 : 11,
+        face: 'Inter, sans-serif',
+        strokeWidth: role === 'document' ? 4 : 3,
+        strokeColor: role === 'document' ? '#fdf4ff' : (isLightTheme() ? '#ffffff' : '#0f172a'),
+        background: role === 'document' ? 'rgba(253,244,255,0.72)' : undefined,
+      },
+      _meta: { ...meta, role, title, versionTotal: versionTotal || 1 },
+    };
+  }
+
+  function sourceEdgeStyle(type) {
+    if (type === 'HAS_EPISODE') return { color: { color: '#64748b', highlight: '#cbd5e1', hover: '#94a3b8' }, width: 1.4, dashes: false };
+    if (type === 'MENTIONS' && !showSourceEdges) {
+      return {
+        color: { color: 'rgba(56,189,248,0.035)', highlight: '#bae6fd', hover: '#7dd3fc' },
+        width: 0.25,
+        dashes: false,
+      };
+    }
+    if (type === 'MENTIONS') return { color: { color: 'rgba(56,189,248,0.42)', highlight: '#bae6fd', hover: '#7dd3fc' }, width: 0.85, dashes: [3, 5] };
+    return { color: { color: '#475569', highlight: '#94a3b8', hover: '#94a3b8' }, width: 1, dashes: true };
+  }
+
+  function schedulePhysicsFreeze(delayMs) {
+    clearTimeout(physicsFreezeTimer);
+    physicsFreezeTimer = setTimeout(() => {
+      if (!network) return;
+      network.setOptions({ physics: { enabled: true } });
+      network.fit({ animation: { duration: 520, easingFunction: 'easeInOutQuad' } });
+    }, delayMs);
+  }
+
+  function scheduleNaturalFit(delayMs = 120) {
+    if (!network) return;
+    if (naturalFitTimer) return;
+    const now = Date.now();
+    const minGap = hasActiveGrowth() ? 850 : 1300;
+    const waitForGap = Math.max(0, minGap - (now - lastNaturalFitAt));
+    const wait = Math.max(delayMs, waitForGap);
+    naturalFitTimer = setTimeout(() => {
+      naturalFitTimer = null;
+      if (!network) return;
+      lastNaturalFitAt = Date.now();
+      network.setOptions({ physics: { enabled: true } });
+      network.fit({ animation: { duration: hasActiveGrowth() ? 380 : 520, easingFunction: 'easeInOutQuad' } });
+    }, wait);
+  }
+
+  function startRelationEdgeStream(relationEdges) {
+    clearTimeout(relationStreamTimer);
+    if (!relationEdges.length || !edgesDataSet) {
+      schedulePhysicsFreeze(5000);
+      return;
+    }
+    const queue = relationEdges.slice();
+    const total = queue.length;
+    let added = 0;
+    network?.setOptions({ physics: { enabled: true } });
+
+    const tick = () => {
+      if (!network || !edgesDataSet) return;
+      const batchSize = total > 6000 ? 260 : total > 2500 ? 180 : 100;
+      const batch = queue.splice(0, batchSize).map(({ _meta, ...edge }) => edge);
+      if (batch.length) {
+        edgesDataSet.add(batch);
+        added += batch.length;
+        if (added === batch.length || added % 1200 < batchSize) {
+          network.fit({ animation: { duration: 260, easingFunction: 'easeInOutQuad' } });
         }
-        return;
+      }
+      if (queue.length) {
+        relationStreamTimer = setTimeout(tick, 70);
+      } else {
+        relationStreamTimer = null;
+        network.fit({ animation: { duration: 560, easingFunction: 'easeInOutQuad' } });
+        schedulePhysicsFreeze(total > 5000 ? 9000 : 6000);
       }
     };
-    document.addEventListener('keydown', _graphKeyHandler);
+    relationStreamTimer = setTimeout(tick, 260);
+  }
 
-    // ---- Create GraphExplorer instance ----
-    explorer = GraphExplorer.create({
-      canvasId: 'graph-canvas',
-      detailContentId: 'detail-content',
-      loadingId: 'graph-loading',
-      exitFocusBtnId: 'exit-focus-btn',
-      focusBadgeId: 'focus-mode-badge',
-      idPrefix: '',
-      entityCache: cachedAllEntities,
-      defaultHopLevel: currentHopLevel,
-      maxPerHop: 20,
-      communityColoringEnabled: communityColoringEnabled,
-      communityMap: communityMap,
-      relationStrengthEnabled: relationStrengthEnabled,
-      familyIdToLatest: function () {
-        var map = {};
-        for (var absId in cachedAllEntities) {
-          map[cachedAllEntities[absId].family_id] = absId;
-        }
-        return map;
+  function networkOptions(nodeCount, edgeCount, options = {}) {
+    const basePhysics = window.GraphUtils?.getPhysicsOptions ? window.GraphUtils.getPhysicsOptions() : {
+      enabled: true,
+      solver: 'forceAtlas2Based',
+      forceAtlas2Based: { gravitationalConstant: -130, centralGravity: 0.006, springLength: 150, springConstant: 0.04, damping: 0.58, avoidOverlap: 0.75 },
+      stabilization: { enabled: true, iterations: 300, updateInterval: 25 },
+    };
+    const large = nodeCount > 2500 || options.progressive;
+    const huge = nodeCount > 7000;
+    const physics = {
+      ...basePhysics,
+      enabled: true,
+      solver: 'forceAtlas2Based',
+      forceAtlas2Based: {
+        ...(basePhysics.forceAtlas2Based || {}),
+        gravitationalConstant: huge ? -260 : large ? -210 : -160,
+        centralGravity: huge ? 0.004 : large ? 0.005 : 0.008,
+        springLength: huge ? 190 : large ? 175 : 155,
+        springConstant: huge ? 0.022 : large ? 0.028 : 0.036,
+        damping: 0.68,
+        avoidOverlap: 1,
       },
-      onAfterFocus: function () {
-        focusAbsoluteId = explorer.getState().focusAbsoluteId;
+      timestep: huge ? 0.38 : 0.48,
+      minVelocity: huge ? 0.45 : 0.3,
+      stabilization: {
+        enabled: !large,
+        iterations: huge ? 0 : large ? 0 : 260,
+        updateInterval: 40,
+        fit: false,
       },
-      onRestoreDefaultView: function () {
-        var hubLayout = computeHubLayout(cachedAllEdges);
-        return {
-          entities: cachedAllNodes,
-          relations: cachedAllEdges,
-          inheritedRelationIds: cachedInheritedRelationIds,
-          hubLayout: hubLayout,
-        };
+    };
+    const interaction = window.GraphUtils?.getInteractionOptions
+      ? window.GraphUtils.getInteractionOptions()
+      : { hover: true, zoomView: true, dragView: true, keyboard: false };
+    // Some older DeepDream visual defaults include vis-network options that were
+    // removed from the bundled version. Strip them before constructing Network.
+    delete interaction.hideTooltipOnDragMove;
+    return {
+      autoResize: true,
+      physics,
+      layout: { improvedLayout: false },
+      interaction,
+      nodes: { chosen: true },
+      edges: {
+        arrows: { to: { enabled: false } },
+        selectionWidth: 2,
+        hoverWidth: 1.5,
       },
+    };
+  }
+
+  function bindNetworkEvents(canvas) {
+    network.on('click', params => {
+      hideHover();
+      if (params.nodes?.length) showNodeDetail(params.nodes[0]);
+      else if (params.edges?.length) showEdgeDetail(params.edges[0]);
     });
-
-    const loadBtn = document.getElementById('load-graph-btn');
-    const graphBadge = document.getElementById('graph-id-badge');
-
-    graphBadge.textContent = state.currentGraphId;
-
-    loadBtn.addEventListener('click', () => loadGraph());
-
-    // Graph entity search with dropdown
-    const searchInput = document.getElementById('graph-entity-search');
-    const searchDropdown = document.getElementById('graph-search-dropdown');
-    if (searchInput && searchDropdown) {
-      let _searchTimeout = null;
-      searchInput.addEventListener('input', () => {
-        clearTimeout(_searchTimeout);
-        const query = (searchInput.value || '').trim().toLowerCase();
-        if (!query || query.length < 1) { searchDropdown.style.display = 'none'; return; }
-        _searchTimeout = setTimeout(() => {
-          const matches = [];
-          for (const absId in cachedAllEntities) {
-            const e = cachedAllEntities[absId];
-            if ((e.name || '').toLowerCase().includes(query)) {
-              matches.push(e);
-              if (matches.length >= 8) break;
-            }
-          }
-          if (matches.length === 0) {
-            searchDropdown.innerHTML = '<div style="padding:0.5rem 0.75rem;font-size:0.8rem;color:var(--text-muted);">No matches</div>';
-          } else {
-            // Build version counts index for search results
-            var vcMap = explorer.getState().versionCounts || {};
-            searchDropdown.innerHTML = matches.map(e => {
-              var vc = vcMap[e.family_id] || 1;
-              var versionTag = vc > 1
-                ? ' <span style="display:inline-block;padding:0 0.25rem;background:color-mix(in srgb, #f59e0b 15%, transparent);color:#f59e0b;border-radius:3px;font-size:0.65rem;font-weight:500;font-family:var(--font-mono);">[v' + vc + ']</span>'
-                : '';
-              return '<div class="graph-search-item" data-abs-id="' + escapeHtml(e.absolute_id) + '" style="padding:0.5rem 0.75rem;cursor:pointer;font-size:0.8rem;border-bottom:1px solid var(--border-color);" onmouseover="this.style.background=\'var(--bg-input)\'" onmouseout="this.style.background=\'transparent\'">' +
-              '<strong>' + escapeHtml(e.name || '-') + '</strong>' + versionTag +
-              '<div style="font-size:0.7rem;color:var(--text-muted);margin-top:2px;">' + escapeHtml((e.content || '').slice(0, 60)) + '</div>' +
-              '</div>';
-            }).join('');
-          }
-          searchDropdown.style.display = 'block';
-        }, 200);
-      });
-      searchDropdown.addEventListener('click', (ev) => {
-        const item = ev.target.closest('.graph-search-item');
-        if (!item) return;
-        const absId = item.getAttribute('data-abs-id');
-        if (absId && explorer) {
-          explorer.focusOnEntity(absId).then(() => {
-            focusAbsoluteId = explorer.getState().focusAbsoluteId;
-          });
-        }
-        searchDropdown.style.display = 'none';
-        searchInput.value = '';
-      });
-      document.addEventListener('click', (ev) => {
-        if (!searchInput.contains(ev.target) && !searchDropdown.contains(ev.target)) {
-          searchDropdown.style.display = 'none';
-        }
-      });
-    }
-    document.getElementById('exit-focus-btn').addEventListener('click', () => {
-      focusAbsoluteId = null;
-      explorer.exitFocus();
+    network.on('hoverNode', params => showHoverForNode(params.node, canvas));
+    network.on('hoverEdge', params => showHoverForEdge(params.edge, canvas));
+    network.on('blurNode', hideHover);
+    network.on('blurEdge', hideHover);
+    canvas.addEventListener('mouseleave', hideHover);
+    network.on('dragStart', params => {
+      hideHover();
+      if (!params.nodes?.length) return;
+      params.nodes.forEach(id => nodesDataSet.update({ id, fixed: false }));
+      network.setOptions({ physics: { enabled: true } });
     });
-
-    const applyBtn = document.getElementById('apply-hop-btn');
-    if (applyBtn) {
-      applyBtn.addEventListener('click', () => {
-        const newHop = parseInt(document.getElementById('hop-level').value, 10) || 1;
-        currentHopLevel = newHop;
-        explorer.setState('defaultHopLevel', currentHopLevel);
-        if (focusAbsoluteId) {
-          explorer.focusOnEntity(focusAbsoluteId).then(() => {
-            focusAbsoluteId = explorer.getState().focusAbsoluteId;
-          });
-        } else {
-          applyHopToMainView();
-        }
+    network.on('dragEnd', params => {
+      if (!params.nodes?.length) return;
+      const pos = network.getPositions(params.nodes);
+      params.nodes.forEach(id => {
+        if (!pos[id]) return;
+        pinnedPositions[id] = { x: pos[id].x, y: pos[id].y };
+        nodesDataSet.update({ id, x: pos[id].x, y: pos[id].y, fixed: { x: true, y: true } });
       });
-    }
-
-    // Advanced options toggle
-    const toggleBtn = document.getElementById('toggle-graph-options-btn');
-    const optionsPanel = document.getElementById('graph-advanced-options');
-    const chevron = document.getElementById('graph-options-chevron');
-    if (toggleBtn && optionsPanel) {
-      toggleBtn.addEventListener('click', () => {
-        const isOpen = optionsPanel.style.display !== 'none';
-        optionsPanel.style.display = isOpen ? 'none' : 'block';
-        if (chevron) chevron.style.transform = isOpen ? 'rotate(0deg)' : 'rotate(180deg)';
-        advancedOptionsOpen = !isOpen;
-      });
-      if (advancedOptionsOpen) {
-        optionsPanel.style.display = 'block';
-        if (chevron) chevron.style.transform = 'rotate(180deg)';
-      }
-    }
-
-    // Keyboard shortcuts overlay
-    const shortcutsBtn = document.getElementById('graph-shortcuts-btn');
-    if (shortcutsBtn) {
-      var shortcutsOverlay = null;
-      shortcutsBtn.addEventListener('click', function () {
-        if (shortcutsOverlay) {
-          shortcutsOverlay.remove();
-          shortcutsOverlay = null;
-          return;
-        }
-        shortcutsOverlay = document.createElement('div');
-        shortcutsOverlay.id = 'graph-shortcuts-overlay';
-        shortcutsOverlay.innerHTML =
-          '<div style="position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:1000;display:flex;align-items:center;justify-content:center;">' +
-            '<div style="background:var(--bg-surface);border:1px solid var(--border-color);border-radius:0.75rem;padding:1.25rem 1.5rem;max-width:360px;width:90%;box-shadow:0 8px 32px rgba(0,0,0,0.3);">' +
-              '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.75rem;">' +
-                '<h3 style="font-size:0.9375rem;font-weight:600;">' + t('common.keyboardShortcuts') + '</h3>' +
-                '<button id="graph-shortcuts-close" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:1.25rem;line-height:1;">&times;</button>' +
-              '</div>' +
-              '<div style="display:grid;grid-template-columns:auto 1fr;gap:0.375rem 1rem;font-size:0.8125rem;">' +
-                '<kbd style="background:var(--bg-input);border:1px solid var(--border-color);border-radius:4px;padding:0.125rem 0.5rem;font-family:var(--font-mono);font-size:0.75rem;text-align:center;">Space</kbd>' +
-                '<span style="color:var(--text-secondary);">' + t('graph.sc_playPause') + '</span>' +
-                '<kbd style="background:var(--bg-input);border:1px solid var(--border-color);border-radius:4px;padding:0.125rem 0.5rem;font-family:var(--font-mono);font-size:0.75rem;text-align:center;">&larr; &rarr;</kbd>' +
-                '<span style="color:var(--text-secondary);">' + t('graph.sc_stepTimeline') + '</span>' +
-                '<kbd style="background:var(--bg-input);border:1px solid var(--border-color);border-radius:4px;padding:0.125rem 0.5rem;font-family:var(--font-mono);font-size:0.75rem;text-align:center;">Esc</kbd>' +
-                '<span style="color:var(--text-secondary);">' + t('graph.sc_exitFocus') + '</span>' +
-                '<kbd style="background:var(--bg-input);border:1px solid var(--border-color);border-radius:4px;padding:0.125rem 0.5rem;font-family:var(--font-mono);font-size:0.75rem;text-align:center;">Click</kbd>' +
-                '<span style="color:var(--text-secondary);">' + t('graph.sc_entityDetail') + '</span>' +
-                '<kbd style="background:var(--bg-input);border:1px solid var(--border-color);border-radius:4px;padding:0.125rem 0.5rem;font-family:var(--font-mono);font-size:0.75rem;text-align:center;">Hover</kbd>' +
-                '<span style="color:var(--text-secondary);">' + t('graph.sc_hoverPreview') + '</span>' +
-              '</div>' +
-              '<div style="margin-top:0.75rem;padding-top:0.5rem;border-top:1px solid var(--border-color);font-size:0.75rem;color:var(--text-muted);">' +
-                '<span style="color:#f59e0b;">&#9679;</span> ' + t('graph.sc_amberGlow') + ' &nbsp; ' +
-                '<span style="color:var(--text-muted);">' + t('graph.sc_versionBadge') + '</span>' +
-              '</div>' +
-            '</div>' +
-          '</div>';
-        document.body.appendChild(shortcutsOverlay);
-        // Close handlers
-        var closeBtn = document.getElementById('graph-shortcuts-close');
-        if (closeBtn) closeBtn.addEventListener('click', function () {
-          if (shortcutsOverlay) { shortcutsOverlay.remove(); shortcutsOverlay = null; }
-        });
-        shortcutsOverlay.addEventListener('click', function (ev) {
-          if (ev.target === shortcutsOverlay || ev.target === shortcutsOverlay.firstElementChild.parentElement) {
-            shortcutsOverlay.remove();
-            shortcutsOverlay = null;
-          }
-        });
-      });
-    }
-
-    // Community coloring toggle
-    const commCheckbox = document.getElementById('community-coloring');
-    if (commCheckbox) {
-      commCheckbox.addEventListener('change', async () => {
-        communityColoringEnabled = commCheckbox.checked;
-        explorer.setState('communityColoringEnabled', communityColoringEnabled);
-        if (communityColoringEnabled && !communityMap) {
-          await loadCommunityMap();
-          explorer.setState('communityMap', communityMap);
-        }
-        if (cachedAllEntities && Object.keys(cachedAllEntities).length > 0) {
-          if (focusAbsoluteId) {
-            explorer.focusOnEntity(focusAbsoluteId).then(() => {
-              focusAbsoluteId = explorer.getState().focusAbsoluteId;
-            });
-          } else {
-            rebuildMainView();
-          }
-        }
-        updateCommunityColoringUI();
-      });
-    }
-
-    // Community coloring toggle button (toolbar button)
-    const commToggleBtn = document.getElementById('community-coloring-toggle');
-    if (commToggleBtn) {
-      commToggleBtn.addEventListener('click', async () => {
-        communityColoringEnabled = !communityColoringEnabled;
-        explorer.setState('communityColoringEnabled', communityColoringEnabled);
-        if (communityColoringEnabled && !communityMap) {
-          await loadCommunityMap();
-          explorer.setState('communityMap', communityMap);
-        }
-        if (cachedAllEntities && Object.keys(cachedAllEntities).length > 0) {
-          if (focusAbsoluteId) {
-            explorer.focusOnEntity(focusAbsoluteId).then(() => {
-              focusAbsoluteId = explorer.getState().focusAbsoluteId;
-            });
-          } else {
-            rebuildMainView();
-          }
-        }
-        updateCommunityColoringUI();
-      });
-    }
-
-    // Initialize community coloring UI state
-    updateCommunityColoringUI();
-
-    // Relation strength toggle
-    const strengthCheckbox = document.getElementById('relation-strength-mode');
-    if (strengthCheckbox) {
-      strengthCheckbox.checked = relationStrengthEnabled;
-      strengthCheckbox.addEventListener('change', () => {
-        relationStrengthEnabled = strengthCheckbox.checked;
-        explorer.setState('relationStrengthEnabled', relationStrengthEnabled);
-        if (cachedAllEntities && Object.keys(cachedAllEntities).length > 0) {
-          if (focusAbsoluteId) {
-            explorer.focusOnEntity(focusAbsoluteId).then(() => {
-              focusAbsoluteId = explorer.getState().focusAbsoluteId;
-            });
-          } else {
-            rebuildMainView();
-          }
-        }
-      });
-    }
-
-    // Time travel snapshot button
-    const snapshotBtn = document.getElementById('load-snapshot-btn');
-    if (snapshotBtn) {
-      snapshotBtn.addEventListener('click', () => loadGraphSnapshot());
-    }
-
-    // Clear snapshot button
-    const clearSnapshotBtn = document.getElementById('clear-snapshot-btn');
-    if (clearSnapshotBtn) {
-      clearSnapshotBtn.addEventListener('click', () => clearSnapshot());
-    }
-
-    stopVersionPoll();
-    window.__graphRenderDebug = { isFirstRender, graphDataLoaded, cachedNodes: cachedAllNodes.length, graphLastModified };
-    if (isFirstRender || !graphDataLoaded) {
-      isFirstRender = false;
-      await loadGraph();
-    } else if (cachedAllNodes.length > 0) {
-      // Has data — check if server has newer data before restoring cache
-      const needsIncremental = await checkGraphVersion();
-      window.__graphRenderDebug.needsIncremental = needsIncremental;
-      if (needsIncremental === false) {
-        restoreCachedGraph();
-      } else {
-        await loadGraphIncremental();
-      }
-    }
-    startVersionPoll();
+      network.setOptions({ physics: { enabled: true } });
+      scheduleNaturalFit(280);
+    });
+    network.on('zoom', () => updateHoverPosition(canvas));
+    network.on('dragging', () => updateHoverPosition(canvas));
   }
 
-  // ---- Version-aware graph loading ----
-
-  function restoreCachedGraph() {
-    const hubLayout = computeHubLayout(cachedAllEdges);
-    explorer.buildGraph(cachedAllNodes, cachedAllEdges, null, null, cachedInheritedRelationIds, undefined, hubLayout, cachedPinnedPositions);
-    const statsEl = document.getElementById('graph-stats');
-    if (statsEl) statsEl.textContent = t('graph.loaded', { entities: cachedAllNodes.length, relations: cachedAllEdges.length });
-    const exitBtn = document.getElementById('exit-focus-btn');
-    if (exitBtn) exitBtn.style.display = focusAbsoluteId ? '' : 'none';
-    const focusBadge = document.getElementById('focus-mode-badge');
-    if (focusBadge) focusBadge.style.display = focusAbsoluteId ? '' : 'none';
+  function ensureHover(canvas) {
+    if (hoverPanel && hoverPanel.parentElement) return hoverPanel;
+    hoverPanel = document.createElement('div');
+    hoverPanel.className = 'node-hover-info';
+    hoverPanel.style.opacity = '0';
+    canvas.appendChild(hoverPanel);
+    return hoverPanel;
   }
 
-  /** Check /graph/version against cached last_modified.
-   *  Returns true if server has newer data, false if unchanged, null on error. */
-  async function checkGraphVersion() {
-    if (!graphLastModified) { window.__graphRenderDebug.checkResult = 'no-lastmod'; return true; } // never fetched version before
-    try {
-      const res = await fetch('/api/v1/find/graph/version?graph_id=' + encodeURIComponent(state.currentGraphId));
-      if (!res.ok) return null;
-      const data = (await res.json()).data;
-      if (!data || !data.last_modified) return true;
-      return data.last_modified !== graphLastModified;
-    } catch (_) {
-      return null; // network error — fall through to cache restore
-    }
+  function showHoverForNode(id, canvas) {
+    const meta = nodeMetaById.get(id);
+    if (!meta) return;
+    const item = meta.item;
+    const typeLabel = meta.type === 'document' ? 'Document' : meta.type === 'episode' ? 'Episode' : 'Entity';
+    const name = meta.type === 'document' ? docTitle(item) : meta.type === 'episode' ? (item.heading_path || item.name || 'Episode') : conceptTitle(item);
+    const content = meta.type === 'episode' ? item.content : item.content || item.summary || docPath(item);
+    const panel = ensureHover(canvas);
+    panel.dataset.targetType = 'node';
+    panel.dataset.targetId = id;
+    panel.innerHTML = `
+      <div class="nhv-name">${escapeHtml(name)}</div>
+      <span class="nhv-version">${escapeHtml(typeLabel)}${meta.versionTotal > 1 ? ` · v${meta.versionTotal}` : ''}</span>
+      <div class="nhv-content">${escapeHtml(normalizeText(content, 180))}</div>
+      <div style="font-size:0.6875rem;color:var(--text-muted);margin-top:0.25rem;">${formatDateMs(item.processed_time || item.updated_at || item.created_at)}</div>
+    `;
+    positionHoverForNode(id, canvas);
+    requestAnimationFrame(() => { if (hoverPanel) hoverPanel.style.opacity = '1'; });
   }
 
-  /** Incremental update: fetch only entities/relations since graphLastModified, merge into cache. */
-  async function loadGraphIncremental() {
-    if (_loadGraphAbort) _loadGraphAbort.abort();
-    _loadGraphAbort = new AbortController();
-    const since = graphLastModified;
-    const streamBase = '/api/v1/find/graph/stream/';
-    const streamParams = '?graph_id=' + encodeURIComponent(state.currentGraphId) + '&since=' + encodeURIComponent(since);
-    const statsEl = document.getElementById('graph-stats');
-    const loadingEl = document.getElementById('graph-loading');
+  function showHoverForEdge(id, canvas) {
+    const meta = edgeMetaById.get(id);
+    if (!meta) return;
+    const panel = ensureHover(canvas);
+    panel.dataset.targetType = 'edge';
+    panel.dataset.targetId = id;
+    const rel = meta.item;
+    panel.innerHTML = meta.type === 'relation'
+      ? `<div class="nhv-name">${escapeHtml(conceptTitle(rel))}</div>
+         <span class="nhv-version">Relation${graphModel.versions?.[rel.family_id]?.total > 1 ? ` · v${graphModel.versions[rel.family_id].total}` : ''}</span>
+         <div class="nhv-content">${escapeHtml(normalizeText(rel.content || rel.summary, 180))}</div>
+         <div style="font-size:0.6875rem;color:var(--text-muted);margin-top:0.25rem;">${formatDateMs(rel.processed_time)}</div>`
+      : `<div class="nhv-name">${escapeHtml(meta.item.edge_type || 'Edge')}</div>`;
+    positionHoverForEdge(id, canvas);
+    requestAnimationFrame(() => { if (hoverPanel) hoverPanel.style.opacity = '1'; });
+  }
 
-    if (loadingEl) loadingEl.style.display = 'flex';
-    if (statsEl) statsEl.textContent = t('common.loading');
+  function updateHoverPosition(canvas) {
+    if (!hoverPanel || hoverPanel.style.opacity === '0') return;
+    const type = hoverPanel.dataset.targetType;
+    const id = hoverPanel.dataset.targetId;
+    if (type === 'node') positionHoverForNode(id, canvas);
+    else if (type === 'edge') positionHoverForEdge(id, canvas);
+  }
 
-    var newEntities = [];
-    var newRelations = [];
+  function positionHoverForNode(id, canvas) {
+    if (!network || !hoverPanel) return;
+    const pos = network.getPositions([id])[id];
+    if (!pos) return;
+    const dom = network.canvasToDOM(pos);
+    placeHover(dom.x, dom.y - 18, canvas);
+  }
 
-    var entPromise = consumeSSE(streamBase + 'entities' + streamParams, {
-      entity: function (d) { if (d) newEntities.push(d); },
-      error: function () {}
-    }).catch(function () {});
+  function positionHoverForEdge(id, canvas) {
+    if (!network || !hoverPanel) return;
+    const edge = edgesDataSet.get(id);
+    if (!edge) return;
+    const positions = network.getPositions([edge.from, edge.to]);
+    const a = positions[edge.from];
+    const b = positions[edge.to];
+    if (!a || !b) return;
+    const dom = network.canvasToDOM({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+    placeHover(dom.x, dom.y - 20, canvas);
+  }
 
-    var relPromise = consumeSSE(streamBase + 'relations' + streamParams, {
-      relation: function (d) { if (d) newRelations.push(d); },
-      error: function () {}
-    }).catch(function () {});
+  function placeHover(x, y, canvas) {
+    const rect = canvas.getBoundingClientRect();
+    const panelRect = hoverPanel.getBoundingClientRect();
+    const left = Math.min(Math.max(8, x - panelRect.width / 2), rect.width - panelRect.width - 8);
+    const top = Math.min(Math.max(8, y - panelRect.height), rect.height - panelRect.height - 8);
+    hoverPanel.style.left = `${left}px`;
+    hoverPanel.style.top = `${top}px`;
+  }
 
-    await Promise.all([entPromise, relPromise]);
+  function hideHover() {
+    if (hoverPanel) hoverPanel.style.opacity = '0';
+  }
 
-    if (newEntities.length === 0 && newRelations.length === 0) {
-      // No actual changes — just restore cache
-      if (loadingEl) loadingEl.style.display = 'none';
-      restoreCachedGraph();
+  function showNodeDetail(id) {
+    const meta = nodeMetaById.get(id);
+    if (!meta) return;
+    const detail = document.getElementById('graph-detail');
+    const subtitle = document.getElementById('graph-detail-subtitle');
+    if (!detail) return;
+    if (subtitle) subtitle.textContent = id;
+    if (meta.type === 'document') detail.innerHTML = renderDocumentDetail(meta.item);
+    else if (meta.type === 'episode') detail.innerHTML = renderEpisodeDetail(meta.item);
+    else detail.innerHTML = renderConceptDetail(meta.item);
+    bindDetailActions(detail, meta);
+  }
+
+  function showEdgeDetail(id) {
+    const meta = edgeMetaById.get(id);
+    if (!meta) return;
+    const detail = document.getElementById('graph-detail');
+    const subtitle = document.getElementById('graph-detail-subtitle');
+    if (!detail) return;
+    if (meta.type === 'relation') {
+      if (subtitle) subtitle.textContent = `relation:${meta.item.family_id}`;
+      detail.innerHTML = renderRelationDetail(meta.item);
+      bindDetailActions(detail, meta);
+      loadConceptVersions(meta.item.family_id);
       return;
     }
-
-    // Merge new entities into cache (add or update by absolute_id)
-    for (var i = 0; i < newEntities.length; i++) {
-      var e = newEntities[i];
-      cachedAllEntities[e.absolute_id] = e;
-    }
-    var knownIds = new Set(Object.keys(cachedAllEntities));
-
-    // Rebuild full node list from entity cache
-    cachedAllNodes = Object.values(cachedAllEntities);
-
-    // Merge new valid relations
-    var validNewRels = newRelations.filter(function (r) {
-      return knownIds.has(r.entity1_absolute_id) && knownIds.has(r.entity2_absolute_id);
-    });
-    if (!cachedAllRawRelations) cachedAllRawRelations = [];
-
-    // Update raw relations and full edge list
-    var existingRelIds = new Set((cachedAllRawRelations || []).map(function (r) { return r.absolute_id; }));
-    for (var j = 0; j < validNewRels.length; j++) {
-      if (!existingRelIds.has(validNewRels[j].absolute_id)) {
-        cachedAllRawRelations.push(validNewRels[j]);
-      }
-    }
-    cachedAllEdges = (cachedAllRawRelations || []).filter(function (r) {
-      return knownIds.has(r.entity1_absolute_id) && knownIds.has(r.entity2_absolute_id);
-    });
-
-    // Rebuild graph with updated data
-    var hubLayout = computeHubLayout(cachedAllEdges);
-    explorer.buildGraph(cachedAllNodes, cachedAllEdges, null, null, cachedInheritedRelationIds, undefined, hubLayout);
-    explorer.setEntityCache(cachedAllEntities);
-    explorer.setMainViewCache(cachedAllEdges, cachedAllNodes, cachedInheritedRelationIds || new Set());
-
-    graphDataLoaded = true;
-
-    if (loadingEl) loadingEl.style.display = 'none';
-    if (statsEl) {
-      statsEl.textContent = t('graph.loaded', { entities: cachedAllNodes.length, relations: cachedAllEdges.length });
-    }
-
-    // Update last_modified from version endpoint
-    try {
-      const vr = await fetch('/api/v1/find/graph/version?graph_id=' + encodeURIComponent(state.currentGraphId));
-      if (vr.ok) {
-        const vd = (await vr.json()).data;
-        if (vd && vd.last_modified) graphLastModified = vd.last_modified;
-      }
-    } catch (_) {}
+    if (subtitle) subtitle.textContent = id;
+    const edgeEvidence = renderEvidenceList(meta.item?.provenance?.evidence || []);
+    detail.innerHTML = `
+      <h3 style="font-size:1.05rem;font-weight:700;margin-bottom:0.75rem;">Edge</h3>
+      ${field('类型', escapeHtml(meta.item.edge_type || 'edge'))}
+      ${field('From', `<span class="mono">${escapeHtml(meta.item.from || '')}</span>`)}
+      ${field('To', `<span class="mono">${escapeHtml(meta.item.to || '')}</span>`)}
+      ${edgeEvidence ? `<div class="graph-detail-section"><div style="font-weight:600;margin-bottom:0.35rem;">原文证据</div>${edgeEvidence}</div>` : ''}
+    `;
   }
 
-  function startVersionPoll() {
-    stopVersionPoll();
-    versionPollTimer = setInterval(async function () {
-      const changed = await checkGraphVersion();
-      if (changed === true && graphDataLoaded) {
-        await loadGraphIncremental();
-      }
-    }, 30000);
+  function renderDocumentDetail(doc) {
+    return `
+      ${kindBadge('Document', ROLE_COLORS.document)}
+      <h3 style="font-size:1.05rem;font-weight:700;margin-bottom:0.75rem;overflow-wrap:anywhere;">${escapeHtml(doc.title || docTitle(doc))}</h3>
+      ${field('版本', `<span class="mono">${escapeHtml(doc.document_version_id || doc.version_id || '')}</span>`)}
+      ${field('Family', `<span class="mono">${escapeHtml(doc.family_id || '')}</span>`)}
+      ${field('路径', escapeHtml(docPath(doc) || '-'))}
+      ${field('Hash', `<span class="mono">${escapeHtml(doc.content_hash || '')}</span>`)}
+      ${field('大小', `${Number(doc.size || 0).toLocaleString()} B`)}
+      ${field('入库时间', formatDateMs(doc.processed_time))}
+      <div class="graph-detail-actions">
+        <button class="btn btn-secondary btn-sm" data-graph-action="more-document">更多详情</button>
+      </div>
+    `;
   }
 
-  function stopVersionPoll() {
-    if (versionPollTimer) {
-      clearInterval(versionPollTimer);
-      versionPollTimer = null;
-    }
+  function renderEpisodeDetail(ep) {
+    const concepts = (graphData.edges || []).filter(e => e.episode_version_id === ep.version_id && ['MENTIONS', 'ASSERTS'].includes(e.edge_type)).length;
+    const original = episodeOriginalText(ep);
+    return `
+      ${kindBadge('Episode', ROLE_COLORS.episode)}
+      <h3 style="font-size:1.05rem;font-weight:700;margin-bottom:0.75rem;">${escapeHtml(ep.heading_path || ep.name || 'Episode')}</h3>
+      ${field('版本', `<span class="mono">${escapeHtml(ep.version_id || '')}</span>`)}
+      ${field('文档版本', `<span class="mono">${escapeHtml(ep.document_version_id || '')}</span>`)}
+      ${field('Offset', `${ep.start_offset ?? '-'} - ${ep.end_offset ?? '-'}`)}
+      ${field('概念数', String(concepts))}
+      <div class="graph-detail-section">
+        <div class="graph-tabbar" data-episode-tabs style="display:flex;gap:0.4rem;margin-bottom:0.5rem;">
+          <button class="btn btn-secondary btn-sm active" data-episode-tab="thinking">思考内容</button>
+          <button class="btn btn-secondary btn-sm" data-episode-tab="source">原文切片</button>
+        </div>
+        <div class="md-content graph-episode-pane" data-episode-pane="thinking" style="max-height:280px;overflow:auto;background:var(--bg-secondary);padding:0.75rem;border-radius:0.5rem;font-size:0.8rem;line-height:1.55;">${renderMarkdown(ep.content || '')}</div>
+        <div class="md-content graph-episode-pane" data-episode-pane="source" style="display:none;max-height:280px;overflow:auto;background:var(--bg-secondary);padding:0.75rem;border-radius:0.5rem;font-size:0.8rem;line-height:1.55;">${renderMarkdown(original || '')}</div>
+      </div>
+      <div class="graph-detail-actions">
+        <button class="btn btn-secondary btn-sm" data-graph-action="more-episode">更多详情</button>
+      </div>
+    `;
   }
 
-  // ---- Expand N-hop neighbors from seed entities (client-side BFS) ----
-
-  function expandNHops(seedAbsIds, allRelations, hopLevel) {
-    const result = new Set(seedAbsIds);
-    let frontier = new Set(seedAbsIds);
-    for (let h = 1; h <= hopLevel; h++) {
-      const nextFrontier = new Set();
-      for (const r of allRelations) {
-        if (frontier.has(r.entity1_absolute_id) && !result.has(r.entity2_absolute_id)) {
-          nextFrontier.add(r.entity2_absolute_id);
-        }
-        if (frontier.has(r.entity2_absolute_id) && !result.has(r.entity1_absolute_id)) {
-          nextFrontier.add(r.entity1_absolute_id);
-        }
-      }
-      for (const id of nextFrontier) result.add(id);
-      frontier = nextFrontier;
-    }
-    return result;
+  function renderConceptDetail(concept) {
+    const versionInfo = graphModel.versions?.[concept.family_id];
+    const evidenceHtml = renderEvidenceList(mentionEvidenceForConcept(concept.family_id));
+    return `
+      ${kindBadge('Entity', ROLE_COLORS.entity)}
+      <h3 style="font-size:1.05rem;font-weight:700;margin-bottom:0.75rem;overflow-wrap:anywhere;">${escapeHtml(conceptTitle(concept) || 'Concept')}</h3>
+      ${versionInfo?.total > 1 ? `<div style="margin-bottom:0.55rem;">${pill(`${versionInfo.total} versions`, '#f59e0b')}</div>` : ''}
+      ${field('Family', `<span class="mono">${escapeHtml(concept.family_id || '')}</span>`)}
+      ${field('版本', `<span class="mono">${escapeHtml(concept.version_id || '')}</span>`)}
+      ${field('置信度', concept.confidence == null ? '-' : String(concept.confidence))}
+      ${field('来源', escapeHtml(concept.source_document || '-'))}
+      ${field('时间', formatDateMs(concept.processed_time))}
+      ${versionInfo?.total > 1 ? `<div class="graph-detail-section" data-version-switcher="${escapeAttr(concept.family_id)}">${spinnerHtml('spinner-sm')} 加载版本切换器...</div>` : ''}
+      <div class="graph-detail-section">
+        <div style="font-weight:600;margin-bottom:0.35rem;">内容</div>
+        <div class="md-content" data-concept-version-content style="max-height:220px;overflow:auto;background:var(--bg-secondary);padding:0.75rem;border-radius:0.5rem;font-size:0.8rem;line-height:1.55;">${renderMarkdown(concept.content || concept.summary || '')}</div>
+      </div>
+      <div class="graph-detail-section" data-concept-version-evidence style="${evidenceHtml ? '' : 'display:none;'}"><div style="font-weight:600;margin-bottom:0.35rem;">原文句子</div>${evidenceHtml}</div>
+      <div class="graph-detail-actions">
+        <button class="btn btn-secondary btn-sm" data-graph-action="more-concept">更多详情</button>
+        <button class="btn btn-primary btn-sm" data-graph-action="versions">版本历史</button>
+        <button class="btn btn-secondary btn-sm" data-graph-action="focus-concept">聚焦模式</button>
+        ${focusFamilyId ? '<button class="btn btn-secondary btn-sm" data-graph-action="exit-focus">退出聚焦</button>' : ''}
+      </div>
+    `;
   }
 
-  // ---- Compute top-3 hub entities and their 1-hop neighbors ----
-
-  function computeHubLayout(visibleRelations) {
-    if (!visibleRelations || visibleRelations.length === 0) return null;
-
-    const relCounts = {};
-    for (const r of visibleRelations) {
-      relCounts[r.entity1_absolute_id] = (relCounts[r.entity1_absolute_id] || 0) + 1;
-      relCounts[r.entity2_absolute_id] = (relCounts[r.entity2_absolute_id] || 0) + 1;
-    }
-    const sorted = Object.entries(relCounts).sort((a, b) => b[1] - a[1]);
-    const hubIds = sorted.slice(0, 3).map(e => e[0]);
-    if (hubIds.length === 0) return null;
-
-    // hubMap: absoluteId -> hubIndex (0/1/2)
-    const hubMap = {};
-    for (let i = 0; i < hubIds.length; i++) {
-      hubMap[hubIds[i]] = i;
-    }
-
-    // 1-hop neighbors inherit hub color
-    const hubNeighborIds = new Set();
-    for (const r of visibleRelations) {
-      const e1 = r.entity1_absolute_id, e2 = r.entity2_absolute_id;
-      const h1 = hubMap[e1], h2 = hubMap[e2];
-      if (h1 !== undefined && h2 === undefined) {
-        hubMap[e2] = h1;
-        hubNeighborIds.add(e2);
-      } else if (h2 !== undefined && h1 === undefined) {
-        hubMap[e1] = h2;
-        hubNeighborIds.add(e1);
-      }
-    }
-
-    return { hubMap, hubIds, hubNeighborIds };
+  function renderRelationDetail(rel) {
+    const endpoints = relationEndpoints(rel, graphData);
+    const endpointNames = endpoints.map(fid => conceptTitle(graphModel.conceptByFamily.get(fid) || { family_id: fid }));
+    const versionInfo = graphModel.versions?.[rel.family_id];
+    return `
+      ${kindBadge('Relation', ROLE_COLORS.relation)}
+      <h3 style="font-size:1.05rem;font-weight:700;margin-bottom:0.75rem;overflow-wrap:anywhere;">${escapeHtml(conceptTitle(rel) || 'Relation')}</h3>
+      ${versionInfo?.total > 1 ? `<div style="margin-bottom:0.55rem;">${pill(`${versionInfo.total} versions`, '#f59e0b')}</div>` : ''}
+      ${field('Family', `<span class="mono">${escapeHtml(rel.family_id || '')}</span>`)}
+      ${field('版本', `<span class="mono">${escapeHtml(rel.version_id || '')}</span>`)}
+      ${field('连接', endpointNames.map(x => escapeHtml(x)).join(' ↔ '))}
+      ${field('来源', escapeHtml(rel.source_document || '-'))}
+      ${field('时间', formatDateMs(rel.processed_time))}
+      ${versionInfo?.total > 1 ? `<div class="graph-detail-section" data-version-switcher="${escapeAttr(rel.family_id)}">${spinnerHtml('spinner-sm')} 加载版本切换器...</div>` : ''}
+      <div class="graph-detail-section">
+        <div style="font-weight:600;margin-bottom:0.35rem;">内容</div>
+        <div class="md-content" data-concept-version-content style="max-height:220px;overflow:auto;background:var(--bg-secondary);padding:0.75rem;border-radius:0.5rem;font-size:0.8rem;line-height:1.55;">${renderMarkdown(rel.content || rel.summary || '')}</div>
+      </div>
+      <div class="graph-detail-actions">
+        <button class="btn btn-secondary btn-sm" data-graph-action="more-relation">更多详情</button>
+        <button class="btn btn-primary btn-sm" data-graph-action="versions">版本历史</button>
+        <button class="btn btn-secondary btn-sm" data-graph-action="focus-concept">聚焦模式</button>
+        ${focusFamilyId ? '<button class="btn btn-secondary btn-sm" data-graph-action="exit-focus">退出聚焦</button>' : ''}
+      </div>
+      <div class="graph-detail-section">
+        <div style="font-weight:600;margin-bottom:0.5rem;">版本历史</div>
+        <div id="graph-version-list">${spinnerHtml()} 加载版本...</div>
+      </div>
+    `;
   }
 
-  // ---- Resolve unknown relation endpoints and remap to current entity versions ----
+  function episodeOriginalText(ep) {
+    return ep?.metadata?.source_text || ep?.source_text || ep?.source_span?.source_text || ep?.content || '';
+  }
 
-  async function resolveAndRemapRelations(entities, relations, graphId) {
-    const currentAbsIds = new Set(entities.map(e => e.absolute_id));
-    const currentEntityIds = {};
-    for (const e of entities) {
-      currentEntityIds[e.family_id] = e.absolute_id;
-    }
-
-    // Collect unknown endpoint absolute_ids
-    const unknownAbsIds = new Set();
-    for (const r of relations) {
-      if (!currentAbsIds.has(r.entity1_absolute_id)) unknownAbsIds.add(r.entity1_absolute_id);
-      if (!currentAbsIds.has(r.entity2_absolute_id)) unknownAbsIds.add(r.entity2_absolute_id);
-    }
-
-    // Batch resolve unknown endpoints in concurrent batches of 50
-    const resolved = {};
-    const toResolve = [...unknownAbsIds];
-    const batchSize = 50;
-    for (let i = 0; i < toResolve.length; i += batchSize) {
-      const batch = toResolve.slice(i, i + batchSize);
-      const promises = batch.map(async (absId) => {
-        try {
-          const res = await state.api.entityByAbsoluteId(absId, graphId);
-          if (res.data) resolved[absId] = res.data;
-        } catch (_) {}
+  function mentionEvidenceForConcept(familyId, limit = 6, versionId = '') {
+    const items = [];
+    const seen = new Set();
+    (graphData.edges || []).forEach(edge => {
+      if (edge.edge_type !== 'MENTIONS' || edge.target_family_id !== familyId) return;
+      if (versionId && edge.target_version_id !== versionId) return;
+      (edge.provenance?.evidence || []).forEach(ev => {
+        const key = `${ev.start_offset}:${ev.end_offset}:${ev.sentence}`;
+        if (seen.has(key)) return;
+        seen.add(key);
+        items.push({ ...ev, episode_version_id: edge.episode_version_id });
       });
-      await Promise.all(promises);
-    }
-
-    // Remap relations: replace old absolute_ids with current versions
-    const remapped = [];
-    const inheritedRelationIds = new Set();
-
-    for (const r of relations) {
-      let e1AbsId = r.entity1_absolute_id;
-      let e2AbsId = r.entity2_absolute_id;
-      let remapped1 = false, remapped2 = false;
-
-      if (!currentAbsIds.has(e1AbsId)) {
-        const oldEntity = resolved[e1AbsId];
-        if (oldEntity && currentEntityIds[oldEntity.family_id]) {
-          e1AbsId = currentEntityIds[oldEntity.family_id];
-          remapped1 = true;
-        }
-      }
-      if (!currentAbsIds.has(e2AbsId)) {
-        const oldEntity = resolved[e2AbsId];
-        if (oldEntity && currentEntityIds[oldEntity.family_id]) {
-          e2AbsId = currentEntityIds[oldEntity.family_id];
-          remapped2 = true;
-        }
-      }
-
-      if (remapped1 || remapped2) {
-        inheritedRelationIds.add(r.absolute_id);
-        remapped.push({ ...r, entity1_absolute_id: e1AbsId, entity2_absolute_id: e2AbsId });
-      } else {
-        remapped.push(r);
-      }
-    }
-
-    return { relations: remapped, inheritedRelationIds };
+    });
+    return items.slice(0, limit);
   }
 
-  // ---- Apply hop level to main view without full reload ----
-
-  async function applyHopToMainView() {
-    if (cachedAllEntities && Object.keys(cachedAllEntities).length > 0) {
-      if (!cachedAllRawRelations) {
-        await loadGraph();
-        return;
-      }
-      rebuildMainView();
-    } else {
-      await loadGraph();
-    }
-  }
-
-  function rebuildMainView() {
-    const allKnownEntities = Object.values(cachedAllEntities);
-    const hopLevel = currentHopLevel;
-
-    // Dynamic seed limit: show all by default
-    var entityLimit = parseInt(document.getElementById('entity-limit').value, 10);
-    if (!entityLimit || entityLimit <= 0) {
-      entityLimit = allKnownEntities.length;
-    }
-    const seedEntities = allKnownEntities.slice(0, entityLimit);
-    const seedAbsIds = new Set(seedEntities.map(e => e.absolute_id));
-
-    // Use remapped relations if available (background task completed), otherwise raw
-    const allRels = cachedRemappedMainRelations || cachedAllRawRelations;
-    const visibleAbsIds = expandNHops(seedAbsIds, allRels, hopLevel);
-
-    const visibleRelations = allRels.filter(r =>
-      visibleAbsIds.has(r.entity1_absolute_id) && visibleAbsIds.has(r.entity2_absolute_id)
-    );
-
-    const allVisible = [...visibleAbsIds]
-      .map(aid => cachedAllEntities[aid])
-      .filter(Boolean);
-
-    cachedAllNodes = allVisible;
-    cachedAllEdges = visibleRelations;
-
-    const hubLayout = computeHubLayout(visibleRelations);
-    explorer.buildGraph(allVisible, visibleRelations, null, null, cachedInheritedRelationIds, undefined, hubLayout);
-
-    const statsEl = document.getElementById('graph-stats');
-    if (statsEl) {
-      statsEl.textContent = t('graph.loaded', { entities: allVisible.length, relations: visibleRelations.length });
-    }
-  }
-
-  // Shared: background remap of inherited relations (called from loadGraph and finishGrowAnimation)
-  function remapInheritedRelations(statsEl) {
-    if (!cachedAllRawRelations || cachedAllRawRelations.length <= cachedAllEdges.length) return;
-    setTimeout(async function () {
-      try {
-        var allEntities = Object.values(cachedAllEntities);
-        var remapResult = await resolveAndRemapRelations(allEntities, cachedAllRawRelations, state.currentGraphId);
-        cachedInheritedRelationIds = remapResult.inheritedRelationIds;
-        cachedRemappedMainRelations = remapResult.relations;
-
-        var existingRelIds = new Set(cachedAllEdges.map(function (r) { return r.absolute_id; }));
-        var knownIds = new Set(Object.keys(cachedAllEntities));
-        var inheritedRels = remapResult.relations.filter(function (r) {
-          return !existingRelIds.has(r.absolute_id) &&
-            knownIds.has(r.entity1_absolute_id) && knownIds.has(r.entity2_absolute_id);
+  function bindEpisodeTabs(root) {
+    root.querySelectorAll('[data-episode-tab]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const target = btn.getAttribute('data-episode-tab');
+        root.querySelectorAll('[data-episode-tab]').forEach(x => x.classList.toggle('active', x === btn));
+        root.querySelectorAll('[data-episode-pane]').forEach(pane => {
+          pane.style.display = pane.getAttribute('data-episode-pane') === target ? '' : 'none';
         });
-
-        if (inheritedRels.length > 0) {
-          explorer.addNodesAndEdges([], inheritedRels, null);
-          cachedAllEdges = cachedAllEdges.concat(inheritedRels);
-          explorer.setMainViewCache(cachedAllEdges, cachedAllNodes, remapResult.inheritedRelationIds);
-          if (statsEl) {
-            statsEl.textContent = t('graph.loaded', { entities: cachedAllNodes.length, relations: cachedAllEdges.length });
-          }
-        }
-      } catch (err) {
-        console.warn('Background remap failed:', err);
-      }
-    }, 200);
-  }
-
-  // ---- SSE consumer (thin wrapper around shared SSEClient) ----
-  function consumeSSE(url, handlers) {
-    return SSEClient.get(url, {
-      onEvent: function (eventType, data) {
-        if (handlers[eventType]) handlers[eventType](data);
-      },
-      onDone: function () {
-        if (handlers.done_event) handlers.done_event();
-      },
+      });
     });
   }
 
-  // ---- Fetch entities, their relations, and build the graph ----
+  function renderVersionSwitcher(versions, currentVersionId) {
+    if (!versions?.length) return '';
+    const sorted = versions.slice().sort(compareVersionTime);
+    const currentIdx = Math.max(0, sorted.findIndex(v => v.version_id === currentVersionId));
+    return `
+      <div style="display:flex;gap:0.4rem;align-items:center;flex-wrap:wrap;">
+        <button class="btn btn-secondary btn-sm" data-version-nav="-1" ${currentIdx <= 0 ? 'disabled' : ''}>上一版</button>
+        <select class="input" data-version-select style="flex:1;min-width:160px;height:34px;">
+          ${sorted.map((v, idx) => `<option value="${escapeAttr(v.version_id)}" ${idx === currentIdx ? 'selected' : ''}>v${v.version_seq || idx + 1} · ${escapeHtml(formatDateMs(v.processed_time))}</option>`).join('')}
+        </select>
+        <button class="btn btn-secondary btn-sm" data-version-nav="1" ${currentIdx >= sorted.length - 1 ? 'disabled' : ''}>下一版</button>
+      </div>
+    `;
+  }
 
-  async function loadGraph() {
-    if (_loadGraphAbort) _loadGraphAbort.abort();
-    _loadGraphAbort = new AbortController();
-    const graphId = state.currentGraphId;
-    const hopLevel = parseInt(document.getElementById('hop-level').value, 10) || 1;
-    currentHopLevel = hopLevel;
-    if (explorer) explorer.setState('defaultHopLevel', currentHopLevel);
-    const loadingEl = document.getElementById('graph-loading');
-    const statsEl = document.getElementById('graph-stats');
-
-    // Reset state
-    cachedAllNodes = [];
-    cachedAllEdges = [];
-    cachedAllEntities = {};
-    cachedAllRawRelations = null;
-    cachedRemappedMainRelations = null;
-    cachedInheritedRelationIds = null;
-
-    if (loadingEl) loadingEl.style.display = 'flex';
-    if (statsEl) statsEl.textContent = t('common.loading');
-
-    var totalEntities = 0;
-    var totalRelations = 0;
-
-    var streamBase = '/api/v1/find/graph/stream/';
-    var streamParams = '?graph_id=' + encodeURIComponent(graphId);
-
-    // Phase 1: Collect all data via SSE (zero vis-network operations)
-    var entityFailed = false;
-    var relFailed = false;
-
-    var entityPromise = consumeSSE(streamBase + 'entities' + streamParams, {
-      meta: function (d) { if (d) totalEntities = d.total || 0; },
-      entity: function (d) {
-        if (!d) return;
-        cachedAllEntities[d.absolute_id] = d;
-        cachedAllNodes.push(d);
-        if (statsEl && totalEntities > 0) {
-          statsEl.textContent = cachedAllNodes.length + ' / ' + totalEntities + 'E \xB7 ' + Math.round(cachedAllNodes.length / totalEntities * 100) + '%';
-        }
-      },
-      error: function (d) {
-        console.error('Entity stream error:', (d || {}).message);
-        entityFailed = true;
-        showToast(t('graph.loadFailed') + ': ' + ((d || {}).message || 'entity stream'), 'error');
-      }
-    }).catch(function (err) {
-      console.error('Entity stream failed:', err);
-      entityFailed = true;
-    });
-
-    var relPromise = consumeSSE(streamBase + 'relations' + streamParams, {
-      meta: function (d) { if (d) totalRelations = d.total || 0; },
-      relation: function (d) {
-        if (!d) return;
-        if (!cachedAllRawRelations) cachedAllRawRelations = [];
-        cachedAllRawRelations.push(d);
-        if (statsEl && totalRelations > 0) {
-          statsEl.textContent = cachedAllNodes.length + 'E \xB7 ' + cachedAllRawRelations.length + ' / ' + totalRelations + 'R';
-        }
-      },
-      error: function (d) {
-        console.error('Relation stream error:', (d || {}).message);
-        relFailed = true;
-        showToast(t('graph.loadFailed') + ': ' + ((d || {}).message || 'relation stream'), 'error');
-      }
-    }).catch(function (err) {
-      console.error('Relation stream failed:', err);
-      relFailed = true;
-    });
-
-    // Wait for both streams to complete
-    await Promise.all([entityPromise, relPromise]);
-
-    if (entityFailed && relFailed) {
-      if (loadingEl) loadingEl.style.display = 'none';
-      if (statsEl) statsEl.textContent = t('graph.loadFailed');
-      return;
-    }
-
-    // Phase 2: Build valid edges
-    if (cachedAllNodes.length === 0) {
-      if (loadingEl) loadingEl.style.display = 'none';
-      if (statsEl) statsEl.textContent = t('graph.loaded', { entities: 0, relations: 0 });
-      return;
-    }
-
-    // Filter relations where both endpoints exist
-    var knownIds = new Set(Object.keys(cachedAllEntities));
-    var _droppedRels = [];
-    cachedAllEdges = (cachedAllRawRelations || []).filter(function (r) {
-      var ok = knownIds.has(r.entity1_absolute_id) && knownIds.has(r.entity2_absolute_id);
-      if (!ok) _droppedRels.push(r);
-      return ok;
-    });
-    if (_droppedRels.length > 0) {
-      console.warn('[graph] Dropped ' + _droppedRels.length + '/' + (cachedAllRawRelations || []).length +
-        ' relations with unknown endpoints. Sample:', _droppedRels.slice(0, 3).map(function (r) {
-          return { abs: r.absolute_id, e1: r.entity1_absolute_id, e2: r.entity2_absolute_id,
-                   e1_known: knownIds.has(r.entity1_absolute_id), e2_known: knownIds.has(r.entity2_absolute_id) };
-        }));
-    }
-
-    // Set version counts from SSE data
-    applyVersionCounts();
-
-    // One-shot graph rendering
-    var hubLayout = computeHubLayout(cachedAllEdges);
-    explorer.buildGraph(cachedAllNodes, cachedAllEdges, null, null, null, null, hubLayout);
-    explorer.setEntityCache(cachedAllEntities);
-
-    graphDataLoaded = true;
-    // Fetch version timestamp for future incremental updates
+  async function loadInlineVersionSwitcher(detail, concept) {
+    const box = detail.querySelector('[data-version-switcher]');
+    if (!box || !concept?.family_id) return;
     try {
-      const vr = await fetch('/api/v1/find/graph/version?graph_id=' + encodeURIComponent(state.currentGraphId));
-      if (vr.ok) {
-        const vd = (await vr.json()).data;
-        if (vd && vd.last_modified) graphLastModified = vd.last_modified;
-      }
-    } catch (_) {}
-    computeTimeRange();
-
-    explorer.setMainViewCache(cachedAllEdges, cachedAllNodes, cachedInheritedRelationIds || new Set());
-
-    tlIsLive = true;
-    tlCurrentPos = 1.0;
-    resetFocusUI();
-
-    initTimeline();
-    renderTimeline(document.getElementById('timeline-container'));
-
-    if (loadingEl) loadingEl.style.display = 'none';
-    if (statsEl) {
-      statsEl.textContent = t('graph.loaded', { entities: cachedAllNodes.length, relations: cachedAllEdges.length });
+      const res = await state.api.entityVersions(concept.family_id, state.currentGraphId);
+      const versions = res.data?.versions || [];
+      box.innerHTML = renderVersionSwitcher(versions, concept.version_id);
+      const select = box.querySelector('[data-version-select]');
+      const applyVersion = (versionId) => {
+        const selected = versions.find(v => v.version_id === versionId) || concept;
+        const content = detail.querySelector('[data-concept-version-content]');
+        if (content) content.innerHTML = renderMarkdown(selected.content || selected.summary || selected.name || '');
+        const evidenceBox = detail.querySelector('[data-concept-version-evidence]');
+        if (evidenceBox) {
+          const evidenceHtml = renderEvidenceList(mentionEvidenceForConcept(concept.family_id, 6, selected.version_id));
+          evidenceBox.style.display = evidenceHtml ? '' : 'none';
+          evidenceBox.innerHTML = `<div style="font-weight:600;margin-bottom:0.35rem;">原文句子</div>${evidenceHtml}`;
+        }
+        box.innerHTML = renderVersionSwitcher(versions, selected.version_id);
+        bindInlineVersionSwitcher(detail, concept, versions, applyVersion);
+      };
+      bindInlineVersionSwitcher(detail, concept, versions, applyVersion);
+    } catch (err) {
+      box.innerHTML = `<span style="color:var(--danger);">版本加载失败: ${escapeHtml(err.message)}</span>`;
     }
-
-    stopPhysicsAfter(8000);
-
-    remapInheritedRelations(statsEl);
   }
 
-  // ---- Load community map from API ----
-  async function loadCommunityMap() {
-    if (!isNeo4j()) return;
+  function bindInlineVersionSwitcher(detail, concept, versions, applyVersionFn) {
+    const box = detail.querySelector('[data-version-switcher]');
+    if (!box) return;
+    const applyVersion = applyVersionFn || ((versionId) => {
+      const selected = versions.find(v => v.version_id === versionId);
+      if (!selected) return;
+      const content = detail.querySelector('[data-concept-version-content]');
+      if (content) content.innerHTML = renderMarkdown(selected.content || selected.summary || selected.name || '');
+    });
+    const select = box.querySelector('[data-version-select]');
+    if (select) select.addEventListener('change', () => applyVersion(select.value));
+    box.querySelectorAll('[data-version-nav]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const current = box.querySelector('[data-version-select]');
+        const idx = versions.findIndex(v => v.version_id === current?.value);
+        const next = versions[Math.max(0, Math.min(versions.length - 1, idx + Number(btn.getAttribute('data-version-nav') || 0)))];
+        if (next) applyVersion(next.version_id);
+      });
+    });
+  }
+
+  function focusConcept(familyId) {
+    focusFamilyId = familyId || null;
+    updateGraphStep(playbackStep, { fitDelay: 40, fitDuration: 320 });
+    const exit = document.getElementById('graph-exit-focus');
+    if (exit) exit.style.display = focusFamilyId ? '' : 'none';
+  }
+
+  function renderEvidenceList(evidence) {
+    if (!Array.isArray(evidence) || !evidence.length) return '';
+    return `
+      <div style="display:flex;flex-direction:column;gap:0.45rem;">
+        ${evidence.map(ev => `
+          <div style="border:1px solid var(--border-color);background:var(--bg-secondary);border-radius:0.55rem;padding:0.55rem 0.65rem;">
+            <div style="font-size:0.78rem;line-height:1.55;color:var(--text-primary);">${highlightEvidenceSentence(ev)}</div>
+            <div style="margin-top:0.35rem;display:flex;gap:0.35rem;flex-wrap:wrap;">
+              ${pill(ev.match_type || 'match', '#38bdf8')}
+              ${ev.confidence != null ? pill(`conf ${Number(ev.confidence).toFixed(2)}`, '#22c55e') : ''}
+              ${ev.start_offset != null ? pill(`${ev.start_offset}-${ev.end_offset}`, '#94a3b8') : ''}
+            </div>
+          </div>
+        `).join('')}
+      </div>
+    `;
+  }
+
+  function highlightEvidenceSentence(ev) {
+    const sentence = String(ev?.sentence || '');
+    const quote = String(ev?.quote || '');
+    if (!sentence || !quote) return escapeHtml(sentence || quote);
+    const idx = sentence.indexOf(quote);
+    if (idx < 0) return escapeHtml(sentence);
+    return `${escapeHtml(sentence.slice(0, idx))}<mark style="background:rgba(250,204,21,0.35);color:inherit;border-radius:0.2rem;padding:0 0.08rem;">${escapeHtml(quote)}</mark>${escapeHtml(sentence.slice(idx + quote.length))}`;
+  }
+
+  function kindBadge(text, color) {
+    return `<span class="graph-kind-badge" style="background:${color.glow};color:${color.border};border:1px solid ${color.bg};">${escapeHtml(text)}</span>`;
+  }
+
+  function bindDetailActions(detail, meta) {
+    bindEpisodeTabs(detail);
+    if (meta.type === 'entity' || meta.type === 'relation') {
+      loadInlineVersionSwitcher(detail, meta.item);
+    }
+    detail.querySelector('[data-graph-action="more-document"]')?.addEventListener('click', () => openDocumentModal(meta.item));
+    detail.querySelector('[data-graph-action="more-episode"]')?.addEventListener('click', () => openEpisodeModal(meta.item));
+    detail.querySelector('[data-graph-action="more-concept"]')?.addEventListener('click', () => openConceptModal(meta.item));
+    detail.querySelector('[data-graph-action="more-relation"]')?.addEventListener('click', () => openConceptModal(meta.item));
+    detail.querySelector('[data-graph-action="versions"]')?.addEventListener('click', () => openVersionsModal(meta.item));
+    detail.querySelector('[data-graph-action="focus-concept"]')?.addEventListener('click', () => focusConcept(meta.item.family_id));
+    detail.querySelector('[data-graph-action="exit-focus"]')?.addEventListener('click', () => focusConcept(null));
+    if (window.lucide) lucide.createIcons({ nodes: [detail] });
+  }
+
+  function openDocumentModal(doc) {
+    const modal = showModal({
+      title: docTitle(doc),
+      size: 'lg',
+      content: `
+        <div class="graph-modal-grid">
+          <span>Document</span><strong class="mono">${escapeHtml(doc.document_version_id || '')}</strong>
+          <span>Family</span><strong class="mono">${escapeHtml(doc.family_id || '')}</strong>
+          <span>Path</span><strong>${escapeHtml(docPath(doc) || '-')}</strong>
+          <span>Hash</span><strong class="mono">${escapeHtml(doc.content_hash || '')}</strong>
+          <span>Processed</span><strong>${formatDateMs(doc.processed_time)}</strong>
+        </div>
+        <div class="graph-detail-section">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:0.75rem;margin-bottom:0.5rem;">
+            <div style="font-weight:600;">Markdown 原文</div>
+            <span id="graph-doc-content-status" class="mono" style="font-size:0.72rem;color:var(--text-muted);"></span>
+          </div>
+          <div id="graph-doc-content" class="graph-document-source">${spinnerHtml()} 加载文档正文...</div>
+          <div style="display:flex;justify-content:center;margin-top:0.65rem;">
+            <button id="graph-doc-load-more" class="btn btn-secondary btn-sm" style="display:none;">加载更多</button>
+          </div>
+        </div>
+      `,
+    });
+    loadDocumentContent(modal, doc, 0, false);
+  }
+
+  async function loadDocumentContent(modal, doc, offset, append) {
+    const body = modal.overlay.querySelector('#graph-doc-content');
+    const status = modal.overlay.querySelector('#graph-doc-content-status');
+    const more = modal.overlay.querySelector('#graph-doc-load-more');
+    if (!body || !doc.document_version_id) return;
+    if (!append) body.innerHTML = `${spinnerHtml()} 加载文档正文...`;
+    if (more) more.style.display = 'none';
     try {
-      const res = await state.api.listCommunities(state.currentGraphId, 1, 200);
-      const communities = res.data?.communities || [];
-      communityMap = {};
-      for (const c of communities) {
-        for (const m of (c.members || [])) {
-          communityMap[m.uuid] = c.community_id;
-        }
+      const res = await state.api.documentContent(doc.document_version_id, state.currentGraphId, {
+        offset,
+        limit: 20000,
+      });
+      const data = res.data || {};
+      const chunk = escapeHtml(data.content || '');
+      if (append) body.innerHTML += chunk;
+      else body.innerHTML = chunk || '<span style="color:var(--text-muted);">空文档</span>';
+      if (status) {
+        const shown = Math.min(Number(data.next_offset || data.total_chars || 0), Number(data.total_chars || 0));
+        status.textContent = `${shown.toLocaleString()} / ${Number(data.total_chars || 0).toLocaleString()} chars`;
+      }
+      if (more && data.next_offset != null) {
+        more.style.display = 'inline-flex';
+        more.onclick = () => loadDocumentContent(modal, doc, data.next_offset, true);
       }
     } catch (err) {
-      console.warn('Failed to load community map:', err);
-      communityMap = null;
+      body.innerHTML = `<div style="color:var(--danger);">加载文档正文失败: ${escapeHtml(err.message)}</div>`;
     }
   }
 
-  // ---- Update community coloring UI state ----
-  function updateCommunityColoringUI() {
-    const commCheckbox = document.getElementById('community-coloring');
-    const commStatus = document.getElementById('community-coloring-status');
-    const commToggleBtn = document.getElementById('community-coloring-toggle');
-
-    if (commCheckbox) {
-      commCheckbox.checked = communityColoringEnabled;
-    }
-    if (commStatus) {
-      commStatus.textContent = communityColoringEnabled ? 'ON' : 'OFF';
-      commStatus.style.opacity = communityColoringEnabled ? '1' : '0.5';
-      commStatus.style.color = communityColoringEnabled ? 'var(--primary)' : 'inherit';
-    }
-    if (commToggleBtn) {
-      commToggleBtn.style.color = communityColoringEnabled ? 'var(--primary)' : 'var(--text-muted)';
-    }
+  function openEpisodeModal(ep) {
+    const original = episodeOriginalText(ep);
+    const modal = showModal({
+      title: ep.heading_path || ep.name || 'Episode',
+      size: 'lg',
+      content: `
+        <div class="graph-modal-grid">
+          <span>Episode</span><strong class="mono">${escapeHtml(ep.version_id || '')}</strong>
+          <span>Document</span><strong class="mono">${escapeHtml(ep.document_version_id || '')}</strong>
+          <span>Offset</span><strong>${ep.start_offset ?? '-'} - ${ep.end_offset ?? '-'}</strong>
+          <span>Chunk</span><strong class="mono">${escapeHtml(ep.chunk_hash || '')}</strong>
+        </div>
+        <div class="graph-detail-section">
+          <div class="graph-tabbar" data-episode-tabs style="display:flex;gap:0.4rem;margin-bottom:0.5rem;">
+            <button class="btn btn-secondary btn-sm active" data-episode-tab="thinking">思考内容</button>
+            <button class="btn btn-secondary btn-sm" data-episode-tab="source">原文切片</button>
+          </div>
+          <div class="graph-episode-pane md-content" data-episode-pane="thinking">${renderMarkdown(ep.content || '')}</div>
+          <div class="graph-episode-pane md-content" data-episode-pane="source" style="display:none;">${renderMarkdown(original || '')}</div>
+        </div>
+      `,
+    });
+    bindEpisodeTabs(modal.overlay);
   }
 
-  // ---- Time Travel: load graph snapshot ----
-
-  async function loadGraphSnapshot() {
-    const timeInput = document.getElementById('graph-snapshot-time');
-    const time = timeInput ? timeInput.value : null;
-    if (!time) {
-      showToast(t('timeTravel.time') + ' ' + t('common.required'), 'warning');
-      return;
-    }
-
-    const loadingEl = document.getElementById('graph-loading');
-    const statsEl = document.getElementById('graph-stats');
-    if (loadingEl) loadingEl.style.display = 'flex';
-    if (statsEl) statsEl.textContent = t('common.loading');
-
-    try {
-      const timeParam = time + ':00';
-      const res = await state.api.getSnapshot(timeParam, state.currentGraphId);
-
-      renderSnapshotData(res.data || res);
-      snapshotMode = true;
-      snapshotTime = time;
-      showToast(t('timeTravel.snapshot') + ': ' + time, 'success');
-    } catch (err) {
-      console.error('Snapshot load failed:', err);
-      showToast(t('graph.loadFailed') + ': ' + err.message, 'error');
-    } finally {
-      if (loadingEl) loadingEl.style.display = 'none';
-    }
-  }
-
-  // ---- Snapshot transition animation ----
-
-  function playSnapshotTransition() {
-    const canvasParent = document.getElementById('graph-canvas');
-    if (!canvasParent) return;
-
-    // Remove any existing overlay
-    const oldOverlay = canvasParent.querySelector('.snapshot-transition-overlay');
-    if (oldOverlay) oldOverlay.remove();
-
-    const overlay = document.createElement('div');
-    overlay.className = 'snapshot-transition-overlay';
-
-    // Flash effect
-    const flash = document.createElement('div');
-    flash.className = 'snapshot-flash';
-    overlay.appendChild(flash);
-
-    // Scanline (delayed slightly for layered effect)
-    setTimeout(function () {
-      const scanline = document.createElement('div');
-      scanline.className = 'snapshot-scanline';
-      overlay.appendChild(scanline);
-    }, 80);
-
-    // Ripple (delayed)
-    setTimeout(function () {
-      const ripple = document.createElement('div');
-      ripple.className = 'snapshot-ripple';
-      overlay.appendChild(ripple);
-    }, 150);
-
-    canvasParent.appendChild(overlay);
-
-    // Clean up after animation
-    setTimeout(function () { if (overlay.parentNode) overlay.remove(); }, 1500);
-  }
-
-  function renderSnapshotData(data, isTimelineDriven) {
-    const snapshotEntities = data.entities || [];
-    const snapshotRelations = data.relations || [];
-
-    // Filter out isolated entities — only keep entities that have at least one relation
-    const connectedAbsIds = new Set();
-    for (const r of snapshotRelations) {
-      if (r.entity1_absolute_id) connectedAbsIds.add(r.entity1_absolute_id);
-      if (r.entity2_absolute_id) connectedAbsIds.add(r.entity2_absolute_id);
-    }
-    const filteredEntities = snapshotEntities.filter(e => connectedAbsIds.has(e.absolute_id));
-    const filteredRelations = snapshotRelations.filter(r =>
-      connectedAbsIds.has(r.entity1_absolute_id) && connectedAbsIds.has(r.entity2_absolute_id)
+  function openConceptModal(concept) {
+    const isRelation = concept.role === 'relation';
+    const provenance = (graphData.edges || []).filter(e =>
+      e.target_family_id === concept.family_id || e.relation_family_id === concept.family_id || e.source_family_id === concept.family_id
     );
-
-    if (filteredEntities.length === 0) {
-      const statsEl = document.getElementById('graph-stats');
-      if (statsEl) statsEl.textContent = t('graph.noEntities');
-      // Only show toast for explicit snapshot button clicks, not timeline scrubbing/playback
-      // During timeline playback, early time points legitimately have no connected entities
-      if (!isTimelineDriven) {
-        showToast(t('common.noData'), 'warning');
-      }
-      return;
-    }
-
-    cachedAllNodes = filteredEntities;
-    cachedAllEdges = filteredRelations;
-    cachedInheritedRelationIds = null;
-
-    // Play time warp transition animation
-    playSnapshotTransition();
-
-    var vc = {};
-    for (var vi = 0; vi < filteredEntities.length; vi++) {
-      var fid = filteredEntities[vi].family_id;
-      vc[fid] = (vc[fid] || 0) + 1;
-    }
-    if (explorer) explorer.setVersionCounts(vc);
-
-    explorer.buildGraph(filteredEntities, filteredRelations, null, null, null);
-
-    const statsEl = document.getElementById('graph-stats');
-    if (statsEl) {
-      statsEl.textContent = t('graph.loaded', {
-        entities: filteredEntities.length,
-        relations: filteredRelations.length,
-      }) + ' [' + t('timeTravel.snapshot') + ']';
-    }
-    updateSnapshotOverlay(snapshotTime ? new Date(snapshotTime).toLocaleString() : t('timeline.snapshot'), filteredEntities.length, filteredRelations.length);
-
-    focusAbsoluteId = null;
-    const exitBtn = document.getElementById('exit-focus-btn');
-    if (exitBtn) exitBtn.style.display = 'none';
-    const focusBadge = document.getElementById('focus-mode-badge');
-    if (focusBadge) focusBadge.style.display = 'none';
+    const evidenceHtml = !isRelation ? renderEvidenceList(mentionEvidenceForConcept(concept.family_id, 12)) : '';
+    showModal({
+      title: conceptTitle(concept),
+      size: 'lg',
+      content: `
+        <div style="display:flex;gap:0.4rem;flex-wrap:wrap;margin-bottom:0.75rem;">
+          ${kindBadge(isRelation ? 'Relation' : 'Entity', isRelation ? ROLE_COLORS.relation : ROLE_COLORS.entity)}
+          ${pill(`${graphModel.versions?.[concept.family_id]?.total || 1} versions`, '#f59e0b')}
+        </div>
+        <div class="graph-modal-grid">
+          <span>Family</span><strong class="mono">${escapeHtml(concept.family_id || '')}</strong>
+          <span>Version</span><strong class="mono">${escapeHtml(concept.version_id || '')}</strong>
+          <span>Source</span><strong>${escapeHtml(concept.source_document || '-')}</strong>
+          <span>Episode</span><strong class="mono">${escapeHtml(concept.episode_version_id || '')}</strong>
+          <span>Processed</span><strong>${formatDateMs(concept.processed_time)}</strong>
+        </div>
+        <div class="graph-detail-section md-content">${renderMarkdown(concept.content || concept.summary || '')}</div>
+        ${evidenceHtml ? `<div class="graph-detail-section"><div style="font-weight:600;margin-bottom:0.4rem;">原文句子</div>${evidenceHtml}</div>` : ''}
+        <div class="graph-detail-section">
+          <div style="font-weight:600;margin-bottom:0.4rem;">Provenance edges</div>
+          ${provenance.slice(0, 30).map(e => pill(e.edge_type || 'edge')).join('') || emptyState('暂无溯源')}
+        </div>
+      `,
+    });
   }
 
-  function clearSnapshot() {
-    snapshotMode = false;
-    snapshotTime = null;
-    const timeInput = document.getElementById('graph-snapshot-time');
-    if (timeInput) timeInput.value = '';
-    updateSnapshotOverlay(null);
-    loadGraph();
-  }
-
-  // ---- Snapshot overlay badge ----
-
-  function updateSnapshotOverlay(timeStr, entityCount, relationCount) {
-    const overlay = document.getElementById('snapshot-overlay');
-    const timeEl = document.getElementById('snapshot-overlay-time');
-    const statsEl = document.getElementById('snapshot-overlay-stats');
-    if (!overlay) return;
-    if (timeStr) {
-      overlay.style.display = '';
-      if (timeEl) timeEl.textContent = timeStr;
-      if (statsEl && entityCount !== undefined) {
-        statsEl.textContent = 'E:' + entityCount + ' R:' + relationCount;
-      }
-      if (window.lucide) lucide.createIcons({ nodes: [overlay] });
-    } else {
-      overlay.style.display = 'none';
-    }
-  }
-
-  // ---- Cleanup on page leave ----
-
-  function destroy() {
-    stopGrowAnimation();
-    stopVersionPoll();
-    if (explorer) {
-      cachedPinnedPositions = explorer.getPinnedPositions();
-      explorer.destroy();
-      explorer = null;
-    }
-    stopTimelinePlayback();
-    if (_graphKeyHandler) {
-      document.removeEventListener('keydown', _graphKeyHandler);
-    }
-    isFirstRender = false;
-  }
-
-  // ==================================================================
-  // Timeline Slider — Deep-Dream Time + Version Visualization
-  // ==================================================================
-
-  // ---- Canvas time indicator overlay ----
-
-  function showCanvasTimeOverlay(timeStr, progressStr) {
-    const overlay = document.getElementById('canvas-time-overlay');
-    const textEl = document.getElementById('canvas-time-text');
-    const progressEl = document.getElementById('canvas-time-progress');
-    if (!overlay) return;
-    if (textEl) textEl.textContent = timeStr || '';
-    if (progressEl) progressEl.textContent = progressStr || '';
-    overlay.style.display = '';
-  }
-
-  function hideCanvasTimeOverlay() {
-    const overlay = document.getElementById('canvas-time-overlay');
-    if (overlay) overlay.style.display = 'none';
-  }
-
-  function formatTimeShort(ts) {
-    if (!ts) return '';
-    const d = new Date(ts);
-    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ' ' +
-      d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
-  }
-
-  // Timeline state
-  let tlEpisodes = [];      // sorted episode list [{time, label, type, data}]
-  let tlMinTime = 0;
-  let tlMaxTime = 0;
-  let tlCurrentPos = 1.0;   // 0..1 where 1 = live (rightmost)
-  let tlIsLive = true;
-  let tlIsDragging = false;
-  let tlPlaybackTimer = null;
-  let tlPlaybackIndex = -1;
-  let tlPlaybackSpeed = 1;  // seconds between steps
-  let tlPlaybackMode = 'grow';  // 'grow' = entity-by-entity animation, 'snapshot' = episode snapshots
-
-  // Shared helpers used by both loadGraph and finishGrowAnimation
-
-  function applyVersionCounts() {
-    var vc = {};
-    for (var fi = 0; fi < cachedAllNodes.length; fi++) {
-      var ne = cachedAllNodes[fi];
-      if (ne.family_id && ne.version_count) vc[ne.family_id] = ne.version_count;
-    }
-    if (explorer && Object.keys(vc).length > 0) explorer.setVersionCounts(vc);
-  }
-
-  function computeTimeRange() {
-    var times = cachedAllNodes
-      .map(function (e) { return e.processed_time ? new Date(e.processed_time).getTime() : 0; })
-      .filter(function (t) { return t > 0; });
-    if (times.length > 0) {
-      tlMinTime = Math.min.apply(null, times);
-      tlMaxTime = Math.max.apply(null, times);
-    }
-    if (tlMinTime === tlMaxTime) tlMinTime = tlMaxTime - 86400000;
-  }
-
-  function resetFocusUI() {
-    focusAbsoluteId = null;
-    var exitBtn = document.getElementById('exit-focus-btn');
-    if (exitBtn) exitBtn.style.display = 'none';
-    var focusBadge = document.getElementById('focus-mode-badge');
-    if (focusBadge) focusBadge.style.display = 'none';
-  }
-
-  function stopPhysicsAfter(ms) {
-    setTimeout(function () {
-      if (explorer) explorer.setPhysics(false);
-    }, ms);
-  }
-
-  // Grow-mode state
-  let growEpisodeGroups = []; // entities+relations grouped by episode_id, sorted by time
-  let growAnimTimer = null;   // animation interval
-  let growIndex = 0;          // current episode group index
-  let growActive = false;
-  let growVisibleNodes = [];  // accumulated visible nodes during animation
-  let growVisibleEdges = [];  // accumulated visible edges during animation
-  let growVisibleNodeIds = new Set(); // incremental Set for O(1) lookup
-  let growVisibleEdgeIds = new Set(); // incremental Set for O(1) dedup
-  let growCachedHubLayout = null; // cached hub layout (compute once, not per frame)
-
-  // Timeline drag animation state
-  let tlDragSortedNodes = [];   // nodes sorted by processed_time (for drag filtering)
-  let tlDragSortedEdges = [];   // edges sorted by max endpoint processed_time
-  let tlDragVisibleNodeIds = new Set();  // currently visible node absolute_ids during drag
-  let tlDragVisibleEdgeIds = new Set();  // currently visible edge absolute_ids during drag
-  let tlDragLastTime = 0;       // last target time during drag (to skip redundant updates)
-  let tlDragRafPending = false; // requestAnimationFrame throttle
-  let tlDragHubLayout = null;   // cached hub layout for drag session
-
-  async function initTimeline() {
-    const container = document.getElementById('timeline-container');
-    if (!container) return;
-
-    // Fetch episodes for event markers
+  async function openVersionsModal(concept) {
+    const modal = showModal({
+      title: `版本历史 - ${truncate(conceptTitle(concept), 48)}`,
+      size: 'lg',
+      content: `<div style="padding:1rem;">${spinnerHtml()} 加载版本...</div>`,
+    });
     try {
-      const res = await state.api.listEpisodes(state.currentGraphId, 100, 0);
-      const episodes = res.data?.episodes || [];
-      tlEpisodes = episodes
-        .filter(e => e.created_at || e.processed_time)
-        .map((e, i) => ({
-          time: new Date(e.created_at || e.processed_time).getTime(),
-          label: e.source_document || t('timeline.episode', { index: i + 1 }),
-          type: (e.source_document || '').includes('dream') ? 'dream' : 'remember',
-          data: e,
-          entityCount: (e.entity_count || (e.data && e.data.entity_count)),
-          relationCount: (e.relation_count || (e.data && e.data.relation_count)),
-        }))
-        .sort((a, b) => a.time - b.time);
-    } catch (_) {
-      tlEpisodes = [];
-    }
-
-    // Compute time range from entities
-    if (cachedAllNodes.length > 0) {
-      const times = cachedAllNodes
-        .map(e => e.processed_time ? new Date(e.processed_time).getTime() : 0)
-        .filter(t => t > 0);
-      if (times.length > 0) {
-        tlMinTime = Math.min(...times);
-        tlMaxTime = Math.max(...times);
-      }
-    }
-    if (tlMinTime === tlMaxTime) {
-      tlMinTime = tlMaxTime - 86400000; // fallback: 1 day range
-    }
-
-    tlIsLive = !snapshotMode;
-    tlCurrentPos = 1.0;
-
-    renderTimeline(container);
-
-    // Auto-load recent changes if episodes exist
-    if (tlEpisodes.length > 0) {
-      loadTimelineChanges();
+      const res = await state.api.entityVersions(concept.family_id, state.currentGraphId);
+      const versions = res.data?.versions || [];
+      modal.overlay.querySelector('.modal-body').innerHTML = renderVersionsTimeline(versions);
+    } catch (err) {
+      modal.overlay.querySelector('.modal-body').innerHTML = `<div style="color:var(--danger);">加载版本失败: ${escapeHtml(err.message)}</div>`;
     }
   }
 
-  function renderTimeline(container) {
-    const timeRange = tlMaxTime - tlMinTime;
-    const posPercent = (tlCurrentPos * 100).toFixed(2);
+  function renderVersionsTimeline(versions) {
+    if (!versions.length) return emptyState('暂无版本');
+    const sorted = versions.slice().sort(compareVersionTime);
+    const newestFirst = sorted.slice().reverse();
+    return `
+      <div style="max-height:62vh;overflow:auto;padding:0.25rem;">
+        ${newestFirst.map((v, idx) => {
+          const chronologicalIndex = sorted.findIndex(item => item.version_id === v.version_id);
+          const prev = chronologicalIndex > 0 ? sorted[chronologicalIndex - 1] : null;
+          return `
+          <div style="position:relative;padding-left:1.4rem;padding-bottom:1rem;">
+            ${idx < newestFirst.length - 1 ? '<div style="position:absolute;left:5px;top:13px;bottom:0;width:1px;background:var(--border-color);"></div>' : ''}
+            <div style="position:absolute;left:0;top:4px;width:12px;height:12px;border-radius:50%;background:${v.content_changed ? 'var(--primary)' : 'var(--border-color)'};border:2px solid ${v.content_changed ? 'var(--primary-hover)' : 'var(--border-hover)'};"></div>
+            <div class="graph-version-row">
+              <div style="display:flex;justify-content:space-between;gap:0.5rem;margin-bottom:0.25rem;">
+                <span class="mono" style="font-size:0.72rem;">${escapeHtml(v.version_id || '')}</span>
+                <span class="badge ${v.content_changed ? 'badge-primary' : ''}">${v.content_changed ? 'changed' : 'same'}</span>
+              </div>
+              <div style="font-size:0.75rem;color:var(--text-muted);">${formatDateMs(v.processed_time)} · ${escapeHtml(v.source_document || '')}</div>
+              ${renderVersionDiff(v, prev)}
+              <details class="graph-version-full">
+                <summary>完整内容</summary>
+                <div class="md-content" style="font-size:0.8rem;margin-top:0.45rem;line-height:1.5;">${renderMarkdown(versionText(v))}</div>
+              </details>
+            </div>
+          </div>
+        `;}).join('')}
+      </div>
+    `;
+  }
 
-    // Build version density bars — shows entity activity distribution
-    let densityHtml = '';
-    if (cachedAllNodes.length > 0 && timeRange > 0) {
-      const BINS = 50;
-      const bins = new Array(BINS).fill(0);
-      for (const e of cachedAllNodes) {
-        const t = e.processed_time ? new Date(e.processed_time).getTime() : 0;
-        if (t >= tlMinTime && t <= tlMaxTime) {
-          const idx = Math.min(Math.floor((t - tlMinTime) / timeRange * BINS), BINS - 1);
-          bins[idx]++;
-        }
-      }
-      const maxBin = Math.max(...bins, 1);
-      const barWidth = (100 / BINS).toFixed(3);
-      densityHtml = '<div class="timeline-density-bar">';
-      for (let b = 0; b < BINS; b++) {
-        const h = Math.max(bins[b] / maxBin * 100, 0).toFixed(1);
-        const opacity = Math.max(bins[b] / maxBin, 0.05).toFixed(2);
-        const binPct = ((b + 0.5) / BINS * 100).toFixed(2);
-        densityHtml += '<div class="timeline-density-col" style="width:' + barWidth + '%;height:' + h + '%;opacity:' + opacity + ';" data-bin-pct="' + binPct + '" title="' + bins[b] + ' entities"></div>';
-      }
-      densityHtml += '</div>';
+  function compareVersionTime(a, b) {
+    const ta = a.processed_time ? new Date(a.processed_time).getTime() : 0;
+    const tb = b.processed_time ? new Date(b.processed_time).getTime() : 0;
+    if (ta !== tb) return ta - tb;
+    return String(a.version_id || '').localeCompare(String(b.version_id || ''));
+  }
+
+  function versionText(v) {
+    return String(v.content || v.summary || v.name || '').trim();
+  }
+
+  function tokenizeDiffText(text) {
+    const tokens = String(text || '').match(/[\u3400-\u9fff]|[A-Za-z0-9_]+|[\r\n]+|\s+|[^\sA-Za-z0-9_\u3400-\u9fff]/g);
+    return tokens || [];
+  }
+
+  function renderVersionDiff(current, previous) {
+    const currentText = versionText(current);
+    const previousText = previous ? versionText(previous) : '';
+    if (!previous) {
+      return `
+        <div class="version-diff-container graph-version-diff">
+          <div class="version-diff-header">
+            <span>初始版本</span>
+            <span>+${tokenizeDiffText(currentText).filter(t => t.trim()).length}</span>
+          </div>
+          <div class="version-diff-body version-diff-inline">
+            ${currentText ? `<span class="version-diff-token added">${escapeHtml(currentText)}</span>` : '<span class="version-diff-line unchanged">空内容</span>'}
+          </div>
+        </div>
+      `;
     }
 
-    const markerHtml = tlEpisodes.map((ep, i) => {
-      if (timeRange === 0) return '';
-      const pct = ((ep.time - tlMinTime) / timeRange * 100).toFixed(2);
-      const statsHtml = (ep.entityCount || ep.relationCount)
-        ? '<br><span style="font-size:0.625rem;">E:' + (ep.entityCount || '?') + ' R:' + (ep.relationCount || '?') + '</span>'
-        : '';
-      const typeIcon = ep.type === 'dream'
-        ? '<span style="color:var(--warning);font-size:0.6875rem;">&#9728;</span> '
-        : '<span style="color:var(--primary);font-size:0.6875rem;">&#9679;</span> ';
-      return '<div class="timeline-marker type-' + ep.type + '" style="left:' + pct + '%;" data-ep-idx="' + i + '">' +
-        '<div class="timeline-tooltip">' + typeIcon + escapeHtml(ep.label) + '<br><span style="color:var(--text-muted);">' + formatDate(new Date(ep.time).toISOString()) + '</span>' + statsHtml + '</div>' +
-      '</div>';
+    if (currentText === previousText) {
+      return `
+        <div class="version-diff-container graph-version-diff">
+          <div class="version-diff-header">
+            <span>相比上一版本</span>
+            <span>无内容变化</span>
+          </div>
+          <div class="version-diff-body">
+            <div class="version-diff-line unchanged">${escapeHtml(truncate(currentText || '空内容', 220))}</div>
+          </div>
+        </div>
+      `;
+    }
+
+    const diff = buildInlineDiff(previousText, currentText);
+    return `
+      <div class="version-diff-container graph-version-diff">
+        <div class="version-diff-header">
+          <span>相比上一版本</span>
+          <span><span class="diff-count added">+${diff.added}</span> <span class="diff-count removed">-${diff.removed}</span></span>
+        </div>
+        <div class="version-diff-body version-diff-inline">${diff.html}</div>
+      </div>
+    `;
+  }
+
+  function buildInlineDiff(oldText, newText) {
+    const oldTokens = tokenizeDiffText(oldText);
+    const newTokens = tokenizeDiffText(newText);
+    if (oldTokens.length * newTokens.length > 120000) {
+      return buildCoarseDiff(oldText, newText);
+    }
+
+    const rows = oldTokens.length + 1;
+    const cols = newTokens.length + 1;
+    const dp = Array.from({ length: rows }, () => new Uint16Array(cols));
+    for (let i = oldTokens.length - 1; i >= 0; i--) {
+      for (let j = newTokens.length - 1; j >= 0; j--) {
+        dp[i][j] = oldTokens[i] === newTokens[j]
+          ? dp[i + 1][j + 1] + 1
+          : Math.max(dp[i + 1][j], dp[i][j + 1]);
+      }
+    }
+
+    const parts = [];
+    let added = 0;
+    let removed = 0;
+    let i = 0;
+    let j = 0;
+    while (i < oldTokens.length && j < newTokens.length) {
+      if (oldTokens[i] === newTokens[j]) {
+        parts.push({ type: 'same', text: oldTokens[i] });
+        i++;
+        j++;
+      } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+        parts.push({ type: 'removed', text: oldTokens[i] });
+        if (oldTokens[i].trim()) removed++;
+        i++;
+      } else {
+        parts.push({ type: 'added', text: newTokens[j] });
+        if (newTokens[j].trim()) added++;
+        j++;
+      }
+    }
+    while (i < oldTokens.length) {
+      parts.push({ type: 'removed', text: oldTokens[i] });
+      if (oldTokens[i].trim()) removed++;
+      i++;
+    }
+    while (j < newTokens.length) {
+      parts.push({ type: 'added', text: newTokens[j] });
+      if (newTokens[j].trim()) added++;
+      j++;
+    }
+
+    const merged = [];
+    parts.forEach(part => {
+      const last = merged[merged.length - 1];
+      if (last && last.type === part.type) last.text += part.text;
+      else merged.push({ ...part });
+    });
+    const html = merged.map(part => {
+      if (!part.text) return '';
+      if (part.type === 'same') return `<span class="version-diff-token unchanged">${escapeHtml(part.text)}</span>`;
+      return `<span class="version-diff-token ${part.type}">${escapeHtml(part.text)}</span>`;
     }).join('');
-
-    const minLabel = tlMinTime ? new Date(tlMinTime).toLocaleDateString() : '-';
-    const maxLabel = tlMaxTime ? new Date(tlMaxTime).toLocaleDateString() : '-';
-    const currentTime = tlCurrentPos < 1
-      ? new Date(tlMinTime + tlCurrentPos * timeRange)
-      : null;
-    const currentTimeStr = currentTime
-      ? currentTime.toLocaleString()
-      : '';
-
-    container.innerHTML =
-      '<div class="timeline-bar" style="display:flex;align-items:center;gap:0.5rem;padding:0.375rem 0.75rem;">' +
-        // Left: live/snapshot indicator + controls
-        '<div style="display:flex;align-items:center;gap:0.25rem;flex-shrink:0;">' +
-          (tlIsLive
-            ? '<span class="timeline-live-dot"></span>'
-            : '<span class="timeline-live-dot snapshot"></span>') +
-          '<button class="timeline-btn" id="tl-step-back" title="' + t('timeline.stepBack') + '" ' + (tlIsLive ? 'disabled' : '') + '>' +
-            '<i data-lucide="skip-back" style="width:11px;height:11px;"></i>' +
-          '</button>' +
-          '<button class="timeline-btn' + (tlPlaybackTimer ? ' active' : '') + '" id="tl-play-btn" title="' + (tlPlaybackTimer ? t('timeline.pause') : t('timeline.play')) + '">' +
-            '<i data-lucide="' + (tlPlaybackTimer ? 'pause' : 'play') + '" style="width:11px;height:11px;"></i>' +
-          '</button>' +
-          '<button class="timeline-btn" id="tl-step-forward" title="' + t('timeline.stepForward') + '">' +
-            '<i data-lucide="skip-forward" style="width:11px;height:11px;"></i>' +
-          '</button>' +
-          '<button class="timeline-btn" id="tl-reset-live" title="' + t('timeline.resetToLive') + '" ' + (tlIsLive ? 'disabled' : '') + '>' +
-            '<i data-lucide="zap" style="width:11px;height:11px;"></i>' +
-          '</button>' +
-          '<button class="timeline-btn tl-mode-btn' + (tlPlaybackMode === 'grow' ? ' active' : '') + '" id="tl-mode-grow" title="Grow">' +
-            '<i data-lucide="sprout" style="width:11px;height:11px;"></i>' +
-          '</button>' +
-          '<button class="timeline-btn tl-mode-btn' + (tlPlaybackMode === 'snapshot' ? ' active' : '') + '" id="tl-mode-snapshot" title="Snapshot">' +
-            '<i data-lucide="camera" style="width:11px;height:11px;"></i>' +
-          '</button>' +
-        '</div>' +
-        // Center: density + track + thumb (flex:1 fills remaining space)
-        '<div style="flex:1;min-width:0;position:relative;">' +
-          densityHtml +
-          '<div class="timeline-track" id="tl-track" style="position:relative;">' +
-            '<div class="timeline-track-fill" style="width:' + posPercent + '%;"></div>' +
-            markerHtml +
-            '<div class="timeline-thumb' + (tlIsDragging ? ' dragging' : '') + '" id="tl-thumb" style="left:' + posPercent + '%;"></div>' +
-          '</div>' +
-        '</div>' +
-        // Right: time label
-        '<div style="flex-shrink:0;text-align:right;min-width:120px;">' +
-          '<span class="mono" style="font-size:0.6875rem;color:var(--text-secondary);" id="tl-current-time">' +
-            (currentTimeStr || maxLabel) +
-          '</span>' +
-        '</div>' +
-      '</div>';
-
-    if (window.lucide) lucide.createIcons({ nodes: [container] });
-
-    // Wire up interactions
-    wireTimelineEvents(container);
+    return { html, added, removed };
   }
 
-  function wireTimelineEvents(container) {
-    const track = document.getElementById('tl-track');
-    const thumb = document.getElementById('tl-thumb');
-    if (!track || !thumb) return;
-
-    // Drag handling
-    function onDragStart(e) {
-      e.preventDefault();
-      tlIsDragging = true;
-      thumb.classList.add('dragging');
-      document.addEventListener('mousemove', onDragMove);
-      document.addEventListener('mouseup', onDragEnd);
-      document.addEventListener('touchmove', onDragMove, { passive: false });
-      document.addEventListener('touchend', onDragEnd);
-    }
-
-    function onDragMove(e) {
-      if (!tlIsDragging) return;
-      e.preventDefault();
-      const rect = track.getBoundingClientRect();
-      const clientX = e.touches ? e.touches[0].clientX : e.clientX;
-      let pct = (clientX - rect.left) / rect.width;
-      pct = Math.max(0, Math.min(1, pct));
-      tlCurrentPos = pct;
-      updateThumbPosition();
-      // Show canvas time indicator during drag
-      const timeRange = tlMaxTime - tlMinTime;
-      if (timeRange > 0) {
-        const t = tlMinTime + tlCurrentPos * timeRange;
-        showCanvasTimeOverlay(formatTimeShort(t), '');
-        // Throttle graph updates to animation frames
-        if (!tlDragRafPending) {
-          tlDragRafPending = true;
-          requestAnimationFrame(function () {
-            tlDragRafPending = false;
-            applyDragTimeFilter(t);
-          });
-        }
-      }
-    }
-
-    function onDragEnd() {
-      if (!tlIsDragging) return;
-      tlIsDragging = false;
-      thumb.classList.remove('dragging');
-      document.removeEventListener('mousemove', onDragMove);
-      document.removeEventListener('mouseup', onDragEnd);
-      document.removeEventListener('touchmove', onDragMove);
-      document.removeEventListener('touchend', onDragEnd);
-      hideCanvasTimeOverlay();
-      // If near right edge, reset to live mode (full graph, no snapshot)
-      if (tlCurrentPos >= 0.995) {
-        resetToLive();
-        renderTimeline(document.getElementById('timeline-container'));
-        return;
-      }
-      // Finalize drag animation state
-      snapshotMode = true;
-      tlIsLive = false;
-      const timeRange = tlMaxTime - tlMinTime;
-      if (timeRange > 0) {
-        snapshotTime = new Date(tlMinTime + tlCurrentPos * timeRange).toISOString().replace('Z', '');
-      }
-      // Show stats overlay
-      const entityCount = tlDragVisibleNodeIds.size;
-      const relationCount = tlDragVisibleEdgeIds.size;
-      const targetTime = timeRange > 0 ? new Date(tlMinTime + tlCurrentPos * timeRange) : null;
-      if (targetTime) {
-        showCanvasTimeOverlay(formatTimeShort(targetTime.getTime()), entityCount + 'E ' + relationCount + 'R');
-        setTimeout(hideCanvasTimeOverlay, 2500);
-      }
-      renderTimeline(document.getElementById('timeline-container'));
-      showToast(t('timeline.snapshotAt', { time: targetTime ? targetTime.toLocaleString() : '' }), 'info');
-    }
-
-    thumb.addEventListener('mousedown', onDragStart);
-    thumb.addEventListener('touchstart', onDragStart);
-
-    // Click on track to jump
-    track.addEventListener('click', function (e) {
-      if (e.target.classList.contains('timeline-marker')) {
-        // Click on marker — jump to that event's time
-        const idx = parseInt(e.target.getAttribute('data-ep-idx'), 10);
-        if (!isNaN(idx) && tlEpisodes[idx]) {
-          const timeRange = tlMaxTime - tlMinTime;
-          if (timeRange > 0) {
-            tlCurrentPos = (tlEpisodes[idx].time - tlMinTime) / timeRange;
-            tlCurrentPos = Math.max(0, Math.min(1, tlCurrentPos));
-            updateThumbPosition();
-            applyTimelinePosition();
-          }
-        }
-        return;
-      }
-      if (e.target === thumb) return;
-      const rect = track.getBoundingClientRect();
-      let pct = (e.clientX - rect.left) / rect.width;
-      pct = Math.max(0, Math.min(1, pct));
-      tlCurrentPos = pct;
-      updateThumbPosition();
-      applyTimelinePosition();
-    });
-
-    // Playback controls
-    const playBtn = document.getElementById('tl-play-btn');
-    if (playBtn) {
-      playBtn.addEventListener('click', function () {
-        if (tlPlaybackTimer || growActive) {
-          stopTimelinePlayback();
-          stopGrowAnimation();
-        } else if (tlPlaybackMode === 'grow') {
-          startGrowAnimation();
-        } else {
-          startTimelinePlayback();
-        }
-        renderTimeline(container);
-      });
-    }
-
-    const stepBackBtn = document.getElementById('tl-step-back');
-    if (stepBackBtn) {
-      stepBackBtn.addEventListener('click', function () {
-        stepTimeline(-1);
-      });
-    }
-
-    const stepFwdBtn = document.getElementById('tl-step-forward');
-    if (stepFwdBtn) {
-      stepFwdBtn.addEventListener('click', function () {
-        stepTimeline(1);
-      });
-    }
-
-    const resetBtn = document.getElementById('tl-reset-live');
-    if (resetBtn) {
-      resetBtn.addEventListener('click', function () {
-        resetToLive();
-        renderTimeline(container);
-      });
-    }
-
-    const speedBtn = document.getElementById('tl-speed');
-    if (speedBtn) {
-      speedBtn.addEventListener('click', function () {
-        const speeds = [0.5, 1, 2, 3, 5];
-        const curIdx = speeds.indexOf(tlPlaybackSpeed);
-        tlPlaybackSpeed = speeds[(curIdx + 1) % speeds.length];
-        speedBtn.textContent = tlPlaybackSpeed + 's';
-        // Update grow animation speed if running
-        if (growAnimTimer) {
-          clearInterval(growAnimTimer);
-          growAnimTimer = setInterval(growStep, Math.max(tlPlaybackSpeed * 100, 50));
-        }
-      });
-    }
-
-    // Mode toggle buttons
-    const growModeBtn = document.getElementById('tl-mode-grow');
-    const snapModeBtn = document.getElementById('tl-mode-snapshot');
-    if (growModeBtn) {
-      growModeBtn.addEventListener('click', function () {
-        tlPlaybackMode = 'grow';
-        stopTimelinePlayback();
-        stopGrowAnimation();
-        renderTimeline(container);
-      });
-    }
-    if (snapModeBtn) {
-      snapModeBtn.addEventListener('click', function () {
-        tlPlaybackMode = 'snapshot';
-        stopTimelinePlayback();
-        stopGrowAnimation();
-        renderTimeline(container);
-      });
-    }
-
-    // Density bar click to navigate time
-    const densityCols = container.querySelectorAll('.timeline-density-col');
-    densityCols.forEach(function (col) {
-      col.style.cursor = 'pointer';
-      col.addEventListener('click', function (e) {
-        e.stopPropagation();
-        var pct = parseFloat(col.getAttribute('data-bin-pct')) / 100;
-        if (!isNaN(pct)) {
-          tlCurrentPos = Math.max(0, Math.min(1, pct));
-          updateThumbPosition();
-          applyTimelinePosition();
-        }
-      });
-      col.addEventListener('mouseenter', function () {
-        var pct = parseFloat(col.getAttribute('data-bin-pct')) / 100;
-        if (!isNaN(pct)) {
-          var timeRange = tlMaxTime - tlMinTime;
-          var t = tlMinTime + pct * timeRange;
-          showCanvasTimeOverlay(formatTimeShort(t), col.getAttribute('title') || '');
-        }
-      });
-      col.addEventListener('mouseleave', function () {
-        if (!growActive) hideCanvasTimeOverlay();
-      });
-    });
+  function buildCoarseDiff(oldText, newText) {
+    const oldLines = String(oldText || '').split(/\n+/).filter(Boolean);
+    const newLines = String(newText || '').split(/\n+/).filter(Boolean);
+    return {
+      added: newLines.length,
+      removed: oldLines.length,
+      html: `
+        ${oldLines.map(line => `<div class="version-diff-line removed">-${escapeHtml(line)}</div>`).join('')}
+        ${newLines.map(line => `<div class="version-diff-line added">+${escapeHtml(line)}</div>`).join('')}
+      `,
+    };
   }
 
-  function updateThumbPosition() {
-    const fill = document.querySelector('.timeline-track-fill');
-    const thumb = document.getElementById('tl-thumb');
-    const curTime = document.getElementById('tl-current-time');
-    if (fill) fill.style.width = (tlCurrentPos * 100).toFixed(2) + '%';
-    if (thumb) thumb.style.left = (tlCurrentPos * 100).toFixed(2) + '%';
-
-    const timeRange = tlMaxTime - tlMinTime;
-    if (curTime && timeRange > 0 && tlCurrentPos < 1) {
-      const t = new Date(tlMinTime + tlCurrentPos * timeRange);
-      curTime.textContent = t.toLocaleString();
-    } else if (curTime) {
-      curTime.textContent = '';
-    }
-  }
-
-  async function applyTimelinePosition() {
-    if (tlCurrentPos >= 0.995) {
-      // Close enough to right edge = live
-      if (!tlIsLive) {
-        resetToLive();
-        renderTimeline(document.getElementById('timeline-container'));
-      }
-      return;
-    }
-
-    const timeRange = tlMaxTime - tlMinTime;
-    const targetTime = new Date(tlMinTime + tlCurrentPos * timeRange);
-    const isoTime = targetTime.toISOString().replace('Z', '');
-
-    // Use local cache for instant response (no API call needed)
-    if (cachedAllNodes.length > 0) {
-      snapshotMode = true;
-      snapshotTime = isoTime;
-      tlIsLive = false;
-
-      // Reset drag state and use applyDragTimeFilter for smooth transition
-      tlDragSortedNodes = [];
-      tlDragSortedEdges = [];
-      tlDragVisibleNodeIds = new Set();
-      tlDragVisibleEdgeIds = new Set();
-      tlDragLastTime = 0;
-
-      applyDragTimeFilter(targetTime.getTime());
-
-      const entityCount = tlDragVisibleNodeIds.size;
-      const relationCount = tlDragVisibleEdgeIds.size;
-      showCanvasTimeOverlay(
-        formatTimeShort(targetTime.getTime()),
-        entityCount + 'E ' + relationCount + 'R'
-      );
-      setTimeout(hideCanvasTimeOverlay, 2500);
-
-      renderTimeline(document.getElementById('timeline-container'));
-      showToast(t('timeline.snapshotAt', { time: targetTime.toLocaleString() }), 'info');
-      return;
-    }
-
-    // Fallback: use API if no cached data
-    const loadingEl = document.getElementById('graph-loading');
-    if (loadingEl) loadingEl.style.display = 'flex';
-
+  async function loadConceptVersions(familyId) {
+    const el = document.getElementById('graph-version-list');
+    if (!el) return;
     try {
-      const res = await state.api.getSnapshot(isoTime, state.currentGraphId);
-      renderSnapshotData(res.data || res, true);
-      snapshotMode = true;
-      snapshotTime = isoTime;
-      tlIsLive = false;
-
-      const snapData = res.data || res;
-      const snapEntities = (snapData.entities || []).length;
-      const snapRelations = (snapData.relations || []).length;
-      showCanvasTimeOverlay(
-        formatTimeShort(targetTime.getTime()),
-        snapEntities + 'E ' + snapRelations + 'R'
-      );
-      setTimeout(hideCanvasTimeOverlay, 2500);
-
-      renderTimeline(document.getElementById('timeline-container'));
-      showToast(t('timeline.snapshotAt', { time: targetTime.toLocaleString() }), 'info');
+      const res = await state.api.entityVersions(familyId, state.currentGraphId);
+      const versions = res.data?.versions || [];
+      el.innerHTML = versions.length ? versions.slice().reverse().slice(0, 6).map(v => `
+        <div class="graph-version-row">
+          <div style="display:flex;justify-content:space-between;gap:0.5rem;margin-bottom:0.25rem;">
+            <span class="mono" style="font-size:0.72rem;">${escapeHtml(v.version_id || '')}</span>
+            <span class="badge ${v.content_changed ? 'badge-primary' : ''}">${v.content_changed ? 'changed' : 'same'}</span>
+          </div>
+          <div style="font-size:0.75rem;color:var(--text-muted);">${formatDateMs(v.processed_time)}</div>
+          <div style="font-size:0.8rem;margin-top:0.4rem;line-height:1.45;">${escapeHtml(truncate(v.content || v.summary || v.name || '', 160))}</div>
+        </div>
+      `).join('') : emptyState('暂无版本');
     } catch (err) {
-      console.error('Timeline snapshot failed:', err);
-      showToast(t('graph.loadFailed') + ': ' + err.message, 'error');
-    } finally {
-      if (loadingEl) loadingEl.style.display = 'none';
+      el.innerHTML = `<div style="color:var(--danger);">加载版本失败: ${escapeHtml(err.message)}</div>`;
     }
   }
 
-  function stepTimeline(direction) {
-    // Step through episode markers
-    if (tlEpisodes.length === 0) return;
-    const timeRange = tlMaxTime - tlMinTime;
-    if (timeRange === 0) return;
-
-    // Find nearest episode index based on current position
-    const currentTime = tlMinTime + tlCurrentPos * timeRange;
-    let nearestIdx = -1;
-
-    if (direction > 0) {
-      // Step forward: find next episode after current time
-      for (let i = 0; i < tlEpisodes.length; i++) {
-        if (tlEpisodes[i].time > currentTime + 1000) {
-          nearestIdx = i;
-          break;
-        }
-      }
-      if (nearestIdx < 0) nearestIdx = tlEpisodes.length - 1;
-    } else {
-      // Step backward: find previous episode before current time
-      for (let i = tlEpisodes.length - 1; i >= 0; i--) {
-        if (tlEpisodes[i].time < currentTime - 1000) {
-          nearestIdx = i;
-          break;
-        }
-      }
-      if (nearestIdx < 0) {
-        // Before first episode — reset to live
-        resetToLive();
-        renderTimeline(document.getElementById('timeline-container'));
-        return;
-      }
-    }
-
-    const ep = tlEpisodes[nearestIdx];
-    tlCurrentPos = (ep.time - tlMinTime) / timeRange;
-    tlCurrentPos = Math.max(0, Math.min(1, tlCurrentPos));
-    tlIsLive = false;
-    updateThumbPosition();
-    applyTimelinePosition();
-  }
-
-  // ---- Timeline drag animation: filter graph by time during drag ----
-
-  function prepareDragSortedData() {
-    if (tlDragSortedNodes.length > 0) return; // already prepared
-    // Sort nodes by processed_time
-    tlDragSortedNodes = cachedAllNodes.slice().sort(function (a, b) {
-      var ta = a.processed_time ? new Date(a.processed_time).getTime() : 0;
-      var tb = b.processed_time ? new Date(b.processed_time).getTime() : 0;
-      return ta - tb;
-    });
-    // Sort edges by the later of their two endpoint times
-    tlDragSortedEdges = cachedAllEdges.slice().sort(function (a, b) {
-      var ta1 = (cachedAllEntities[a.entity1_absolute_id] || {}).processed_time;
-      var ta2 = (cachedAllEntities[a.entity2_absolute_id] || {}).processed_time;
-      var tb1 = (cachedAllEntities[b.entity1_absolute_id] || {}).processed_time;
-      var tb2 = (cachedAllEntities[b.entity2_absolute_id] || {}).processed_time;
-      var taMax = Math.max(ta1 ? new Date(ta1).getTime() : 0, ta2 ? new Date(ta2).getTime() : 0);
-      var tbMax = Math.max(tb1 ? new Date(tb1).getTime() : 0, tb2 ? new Date(tb2).getTime() : 0);
-      return taMax - tbMax;
-    });
-  }
-
-  function applyDragTimeFilter(targetTimeMs) {
-    if (!explorer || cachedAllNodes.length === 0) return;
-
-    // Debounce: skip if time hasn't changed meaningfully (within 1 second)
-    if (Math.abs(targetTimeMs - tlDragLastTime) < 1000 && tlDragVisibleNodeIds.size > 0) return;
-    tlDragLastTime = targetTimeMs;
-
-    // Stop any running grow animation
-    if (growActive) stopGrowAnimation();
-
-    // Prepare sorted data on first drag
-    prepareDragSortedData();
-
-    // Find nodes with processed_time <= targetTimeMs using binary search
-    var nodeEndIdx = tlDragSortedNodes.length;
-    for (var i = 0; i < tlDragSortedNodes.length; i++) {
-      var nt = tlDragSortedNodes[i].processed_time ? new Date(tlDragSortedNodes[i].processed_time).getTime() : 0;
-      if (nt > targetTimeMs) { nodeEndIdx = i; break; }
-    }
-    // Find edges with max endpoint time <= targetTimeMs
-    var edgeEndIdx = tlDragSortedEdges.length;
-    for (var j = 0; j < tlDragSortedEdges.length; j++) {
-      var ea1 = (cachedAllEntities[tlDragSortedEdges[j].entity1_absolute_id] || {}).processed_time;
-      var ea2 = (cachedAllEntities[tlDragSortedEdges[j].entity2_absolute_id] || {}).processed_time;
-      var eMaxT = Math.max(ea1 ? new Date(ea1).getTime() : 0, ea2 ? new Date(ea2).getTime() : 0);
-      if (eMaxT > targetTimeMs) { edgeEndIdx = j; break; }
-    }
-
-    // Determine target visible sets
-    var targetNodeIds = new Set();
-    var targetNodeData = [];
-    for (var ni = 0; ni < nodeEndIdx; ni++) {
-      targetNodeIds.add(tlDragSortedNodes[ni].absolute_id);
-      targetNodeData.push(tlDragSortedNodes[ni]);
-    }
-    // Edges: only include if both endpoints are visible
-    var targetEdgeIds = new Set();
-    var targetEdgeData = [];
-    for (var ei = 0; ei < edgeEndIdx; ei++) {
-      var edge = tlDragSortedEdges[ei];
-      if (targetNodeIds.has(edge.entity1_absolute_id) && targetNodeIds.has(edge.entity2_absolute_id)) {
-        targetEdgeIds.add(edge.absolute_id);
-        targetEdgeData.push(edge);
-      }
-    }
-
-    // If first drag frame, seed from current visible state
-    if (tlDragVisibleNodeIds.size === 0) {
-      tlDragHubLayout = computeHubLayout(cachedAllEdges);
-      // Seed from current graph state instead of clearing to empty
-      var currentVisNodes = explorer.getCurrentNodes();
-      var currentVisEdges = explorer.getCurrentEdges();
-      if (currentVisNodes.length > 0) {
-        for (var si = 0; si < currentVisNodes.length; si++) {
-          tlDragVisibleNodeIds.add(currentVisNodes[si].id);
-        }
-        for (var sj = 0; sj < currentVisEdges.length; sj++) {
-          tlDragVisibleEdgeIds.add(currentVisEdges[sj].id);
-        }
-      } else {
-        // Empty graph — start fresh
-        explorer.initEmptyGraph(tlDragHubLayout);
-      }
-    }
-
-    // Compute diffs: what to add and what to remove
-    var nodesToAdd = [];
-    for (var ai = 0; ai < targetNodeData.length; ai++) {
-      if (!tlDragVisibleNodeIds.has(targetNodeData[ai].absolute_id)) {
-        nodesToAdd.push(targetNodeData[ai]);
-      }
-    }
-    var nodesToRemove = [];
-    tlDragVisibleNodeIds.forEach(function (absId) {
-      if (!targetNodeIds.has(absId)) nodesToRemove.push(absId);
-    });
-    var edgesToAdd = [];
-    for (var aei = 0; aei < targetEdgeData.length; aei++) {
-      if (!tlDragVisibleEdgeIds.has(targetEdgeData[aei].absolute_id)) {
-        edgesToAdd.push(targetEdgeData[aei]);
-      }
-    }
-    var edgesToRemove = [];
-    tlDragVisibleEdgeIds.forEach(function (absId) {
-      if (!targetEdgeIds.has(absId)) edgesToRemove.push(absId);
-    });
-
-    // Update state before modifying graph
-    tlDragVisibleNodeIds = targetNodeIds;
-    tlDragVisibleEdgeIds = targetEdgeIds;
-
-    // Apply incremental changes (use cached hub layout)
-    if (nodesToAdd.length > 0 || edgesToAdd.length > 0) {
-      explorer.addNodesAndEdges(nodesToAdd, edgesToAdd, tlDragHubLayout);
-    }
-    if (nodesToRemove.length > 0 || edgesToRemove.length > 0) {
-      explorer.removeNodesAndEdges(nodesToRemove, edgesToRemove);
-    }
-  }
-
-  // ---- Grow Animation: entity-by-entity graph building ----
-
-  function startGrowAnimation() {
-    if (cachedAllNodes.length === 0) return;
-
-    // Group entities by episode_id
-    var epEntMap = {};
-    var noEpNodes = [];
-    for (var i = 0; i < cachedAllNodes.length; i++) {
-      var node = cachedAllNodes[i];
-      if (node.episode_id) {
-        if (!epEntMap[node.episode_id]) epEntMap[node.episode_id] = [];
-        epEntMap[node.episode_id].push(node);
-      } else {
-        noEpNodes.push(node);
-      }
-    }
-
-    // Group relations by episode_id
-    var epRelMap = {};
-    var noEpRels = [];
-    for (var ri = 0; ri < cachedAllEdges.length; ri++) {
-      var rel = cachedAllEdges[ri];
-      if (rel.episode_id) {
-        if (!epRelMap[rel.episode_id]) epRelMap[rel.episode_id] = [];
-        epRelMap[rel.episode_id].push(rel);
-      } else {
-        noEpRels.push(rel);
-      }
-    }
-
-    // Build episode groups: entities + relations together
-    var allEpIds = new Set([].concat(Object.keys(epEntMap), Object.keys(epRelMap)));
-    var groups = [];
-    allEpIds.forEach(function (epId) {
-      var ents = epEntMap[epId] || [];
-      var rels = epRelMap[epId] || [];
-      var minTime = Infinity;
-      var maxTime = 0;
-      for (var k = 0; k < ents.length; k++) {
-        var t = ents[k].processed_time ? new Date(ents[k].processed_time).getTime() : 0;
-        if (t > 0 && t < minTime) minTime = t;
-        if (t > maxTime) maxTime = t;
-      }
-      if (minTime === Infinity) minTime = 0;
-      groups.push({ episode_id: epId, entities: ents, relations: rels, minTime: minTime, maxTime: maxTime });
-    });
-    groups.sort(function (a, b) { return a.minTime - b.minTime; });
-
-    // No-episode data goes first
-    if (noEpNodes.length > 0 || noEpRels.length > 0) {
-      var noEpMax = 0;
-      for (var ni = 0; ni < noEpNodes.length; ni++) {
-        var nt = noEpNodes[ni].processed_time ? new Date(noEpNodes[ni].processed_time).getTime() : 0;
-        if (nt > noEpMax) noEpMax = nt;
-      }
-      groups.unshift({ episode_id: null, entities: noEpNodes, relations: noEpRels, minTime: 0, maxTime: noEpMax });
-    }
-
-    growEpisodeGroups = groups;
-
-    growIndex = 0;
-    growActive = true;
-    growVisibleNodes = [];
-    growVisibleEdges = [];
-    growVisibleNodeIds = new Set();
-    growVisibleEdgeIds = new Set();
-    tlIsLive = false;
-
-    growCachedHubLayout = computeHubLayout(cachedAllEdges);
-    explorer.initEmptyGraph(growCachedHubLayout);
-
-    playSnapshotTransition();
-
-    var interval = Math.max(tlPlaybackSpeed * 100, 50);
-    growAnimTimer = setInterval(growStep, interval);
-
-    renderTimeline(document.getElementById('timeline-container'));
-  }
-
-  function growStep() {
-    if (!growActive || !explorer) {
-      stopGrowAnimation();
+  function updateSummary(visible) {
+    const summary = document.getElementById('graph-summary');
+    if (!summary) return;
+    if (!visible) {
+      summary.textContent = '选择一个或多个文档';
       return;
     }
-
-    if (growIndex >= growEpisodeGroups.length) {
-      finishGrowAnimation();
-      return;
-    }
-
-    // One episode group per tick
-    var group = growEpisodeGroups[growIndex];
-    growIndex++;
-
-    var addedNodes = group.entities;
-    var currentNodeTime = group.maxTime;
-
-    // Add new entity IDs to the incremental Set
-    for (var ai = 0; ai < addedNodes.length; ai++) {
-      growVisibleNodeIds.add(addedNodes[ai].absolute_id);
-    }
-
-    // Filter this episode's relations: both endpoints must be visible
-    var validRels = [];
-    for (var ri = 0; ri < group.relations.length; ri++) {
-      var r = group.relations[ri];
-      if (growVisibleNodeIds.has(r.entity1_absolute_id) && growVisibleNodeIds.has(r.entity2_absolute_id)
-          && !growVisibleEdgeIds.has(r.absolute_id)) {
-        validRels.push(r);
-        growVisibleEdgeIds.add(r.absolute_id);
-      }
-    }
-
-    // Append in-place instead of creating new arrays
-    Array.prototype.push.apply(growVisibleNodes, addedNodes);
-    Array.prototype.push.apply(growVisibleEdges, validRels);
-
-    explorer.addNodesAndEdges(addedNodes, validRels, growCachedHubLayout);
-    explorer.fitViewport();
-
-    // Update timeline position
-    var timeRange = tlMaxTime - tlMinTime;
-    if (timeRange > 0 && currentNodeTime > 0) {
-      tlCurrentPos = Math.min((currentNodeTime - tlMinTime) / timeRange, 1);
-      updateThumbPosition();
-    }
-
-    // Update stats
-    var statsEl = document.getElementById('graph-stats');
-    if (statsEl) {
-      var pct = Math.round(growIndex / growEpisodeGroups.length * 100);
-      statsEl.textContent = t('graph.loaded', { entities: growVisibleNodes.length, relations: growVisibleEdges.length })
-        + ' (' + pct + '%)';
-    }
-
-    if (currentNodeTime > 0) {
-      showCanvasTimeOverlay(
-        formatTimeShort(currentNodeTime),
-        growVisibleNodes.length + 'E ' + growVisibleEdges.length + 'R'
-      );
-    }
+    const relCount = visible.relationEdges.length;
+    const total = growthTotals || graphData?.counts || {};
+    const growing = hasActiveGrowth();
+    const loading = growing ? (growthPauseRequested ? '已暂停 · ' : `并行生长中(${growthControllers.size}) · `) : '';
+    const shownEpisodes = growing ? growthLoaded.episodes : visible.episodes.length;
+    const shownEntities = growing ? growthLoaded.concepts : visible.entities.length;
+    const shownRelations = growing ? growthLoaded.relations : relCount;
+    const totalHint = total.concepts || total.relations
+      ? ` · 进度 ${formatNumber(shownEntities)}/${formatNumber(total.concepts || visible.entities.length)} 实体，${formatNumber(shownRelations)}/${formatNumber(total.relations || relCount)} 关系`
+      : '';
+    summary.textContent = `${loading}${focusFamilyId ? '聚焦模式 · ' : ''}${visible.documents.length} 文档 / ${shownEpisodes} Episode / ${shownEntities} 实体节点 / ${shownRelations} 关系边${totalHint}`;
   }
 
-  function finishGrowAnimation() {
-    growActive = false;
-    if (growAnimTimer) {
-      clearInterval(growAnimTimer);
-      growAnimTimer = null;
-    }
-    hideCanvasTimeOverlay();
-    tlIsLive = true;
-    tlCurrentPos = 1.0;
-    updateThumbPosition();
-
-    // Final sweep: add any edges missed during episode playback
-    if (explorer) {
-      var missedEdges = [];
-      for (var mi = 0; mi < cachedAllEdges.length; mi++) {
-        var me = cachedAllEdges[mi];
-        if (!growVisibleEdgeIds.has(me.absolute_id)
-            && growVisibleNodeIds.has(me.entity1_absolute_id)
-            && growVisibleNodeIds.has(me.entity2_absolute_id)) {
-          missedEdges.push(me);
-        }
-      }
-      if (missedEdges.length > 0) {
-        explorer.addNodesAndEdges([], missedEdges, growCachedHubLayout);
-        Array.prototype.push.apply(growVisibleEdges, missedEdges);
-        cachedAllEdges = growVisibleEdges.slice();
-      }
-    }
-
-    // Version counts from cached data
-    applyVersionCounts();
-
-    if (explorer) {
-      explorer.setStreamingMode(false);
-      explorer.recalcGraphState();
-      explorer.setEntityCache(cachedAllEntities);
-    }
-
-    computeTimeRange();
-
-    if (explorer) {
-      explorer.setMainViewCache(cachedAllEdges, cachedAllNodes, cachedInheritedRelationIds || new Set());
-    }
-
-    var statsEl = document.getElementById('graph-stats');
-    if (statsEl) {
-      statsEl.textContent = t('graph.loaded', { entities: cachedAllNodes.length, relations: cachedAllEdges.length });
-    }
-
-    resetFocusUI();
-
-    initTimeline();
-
-    stopPhysicsAfter(15000);
-
-    remapInheritedRelations(statsEl);
-
-    growCachedHubLayout = null;
-
-    renderTimeline(document.getElementById('timeline-container'));
-    showToast('Graph growth animation complete!', 'success');
+  function selectedDocNames() {
+    const names = docs
+      .filter(d => selectedDocVersions.has(d.document_version_id))
+      .map(d => docTitle(d));
+    return names;
   }
 
-  function stopGrowAnimation() {
-    growActive = false;
-    growCachedHubLayout = null;
-    if (growAnimTimer) {
-      clearInterval(growAnimTimer);
-      growAnimTimer = null;
-    }
-    hideCanvasTimeOverlay();
-  }
-
-  function startTimelinePlayback() {
-    if (tlEpisodes.length === 0) return;
-
-    // Start from first episode if currently live
-    if (tlIsLive) {
-      const timeRange = tlMaxTime - tlMinTime;
-      if (timeRange > 0 && tlEpisodes.length > 0) {
-        tlPlaybackIndex = 0;
-        tlCurrentPos = (tlEpisodes[0].time - tlMinTime) / timeRange;
-      }
+  function updateGraphTitle() {
+    const title = document.getElementById('graph-main-title');
+    if (!title) return;
+    const names = selectedDocNames();
+    if (!names.length) {
+      title.textContent = '图谱可视化';
+    } else if (names.length === 1) {
+      title.textContent = names[0];
     } else {
-      // Find current position in episode list
-      const timeRange = tlMaxTime - tlMinTime;
-      const currentTime = tlMinTime + tlCurrentPos * timeRange;
-      tlPlaybackIndex = 0;
-      for (let i = 0; i < tlEpisodes.length; i++) {
-        if (tlEpisodes[i].time >= currentTime) {
-          tlPlaybackIndex = i;
-          break;
-        }
+      title.textContent = `${names.length} 个文档：${truncate(names.slice(0, 3).join('、'), 42)}`;
+    }
+  }
+
+  function setDocsCollapsed(collapsed) {
+    docsCollapsed = !!collapsed;
+    const shell = document.querySelector('.graph-viz-shell');
+    shell?.classList.toggle('docs-collapsed', docsCollapsed);
+    const btn = document.getElementById('graph-doc-collapse');
+    if (btn) {
+      btn.title = docsCollapsed ? '展开文档栏' : '收起文档栏';
+      btn.innerHTML = `<i data-lucide="${docsCollapsed ? 'panel-left-open' : 'panel-left-close'}" style="width:14px;height:14px;"></i>`;
+    }
+    if (window.lucide) lucide.createIcons({ nodes: [btn || document.body] });
+    setTimeout(() => network?.fit({ animation: { duration: 240, easingFunction: 'easeInOutQuad' } }), 220);
+  }
+
+  function updatePlaybackControls() {
+    const bar = document.getElementById('graph-playback');
+    if (!bar || !graphModel) return;
+    bar.style.display = graphModel.episodes.length ? 'flex' : 'none';
+    const label = document.getElementById('graph-play-label');
+    const fill = document.getElementById('graph-play-fill');
+    const playBtn = document.getElementById('graph-play');
+    const speedBtn = document.getElementById('graph-speed');
+    const total = graphModel.episodes.length;
+    const pos = playbackStep < 0 ? total : playbackStep;
+    if (fill) fill.style.width = `${Math.round((pos / Math.max(1, total)) * 100)}%`;
+    if (label) {
+      if (hasActiveGrowth()) label.textContent = growthPauseRequested ? '增量加载已暂停' : `并行增量加载中(${growthControllers.size})`;
+      else if (playbackStep < 0) label.textContent = '完整图';
+      else if (playbackStep === 0) label.textContent = '仅文档';
+      else {
+        const ep = graphModel.episodes[playbackStep - 1];
+        label.textContent = `${playbackStep}/${total}: ${truncate(ep.heading_path || ep.name || 'Episode', 22)}`;
       }
     }
+    if (playBtn) {
+      const active = hasActiveGrowth() ? !growthPauseRequested : !!playbackTimer;
+      const icon = hasActiveGrowth() ? (growthPauseRequested ? 'play' : 'pause') : (playbackTimer ? 'pause' : 'play');
+      playBtn.innerHTML = `<i data-lucide="${icon}" style="width:11px;height:11px;"></i>`;
+      playBtn.classList.toggle('active', active);
+    }
+    if (speedBtn) speedBtn.textContent = hasActiveGrowth() ? `${growthRatePerSecond}/s` : `${playbackSpeed}s`;
+    if (window.lucide) lucide.createIcons({ nodes: [bar] });
+  }
 
-    function playStep() {
-      if (tlPlaybackIndex >= tlEpisodes.length) {
-        stopTimelinePlayback();
-        resetToLive();
-        renderTimeline(document.getElementById('timeline-container'));
+  function togglePlayback() {
+    if (playbackTimer) stopPlayback();
+    else startPlayback();
+  }
+
+  function startPlayback() {
+    if (!graphModel?.episodes?.length) return;
+    if (playbackStep < 0 || playbackStep >= graphModel.episodes.length) playbackStep = 0;
+    updateGraphStep(playbackStep, { fitDelay: 60, fitDuration: 300 });
+    playbackTimer = setInterval(() => {
+      if (!graphModel || playbackStep >= graphModel.episodes.length) {
+        stopPlayback();
+        playbackStep = -1;
+        updateGraphStep(-1, { fitDelay: 80, fitDuration: 360 });
         return;
       }
-
-      const ep = tlEpisodes[tlPlaybackIndex];
-      const timeRange = tlMaxTime - tlMinTime;
-      if (timeRange > 0) {
-        tlCurrentPos = (ep.time - tlMinTime) / timeRange;
-        tlCurrentPos = Math.max(0, Math.min(1, tlCurrentPos));
-      }
-
-      // Apply snapshot
-      const isoTime = new Date(ep.time).toISOString().replace('Z', '');
-      state.api.getSnapshot(isoTime, state.currentGraphId).then(function (res) {
-        renderSnapshotData(res.data || res, true);
-        snapshotMode = true;
-        tlIsLive = false;
-        updateThumbPosition();
-
-        // Update current time display
-        const curTime = document.getElementById('tl-current-time');
-        if (curTime) curTime.textContent = new Date(ep.time).toLocaleString();
-
-        tlPlaybackIndex++;
-        tlPlaybackTimer = setTimeout(playStep, tlPlaybackSpeed * 1000);
-      }).catch(function () {
-        tlPlaybackIndex++;
-        tlPlaybackTimer = setTimeout(playStep, tlPlaybackSpeed * 1000);
-      });
-    }
-
-    playStep();
+      playbackStep += 1;
+      updateGraphStep(playbackStep, { fitDelay: 80, fitDuration: 360 });
+    }, Math.max(120, playbackSpeed * 1000));
+    updatePlaybackControls();
   }
 
-  function stopTimelinePlayback() {
-    if (tlPlaybackTimer) {
-      clearTimeout(tlPlaybackTimer);
-      tlPlaybackTimer = null;
-    }
-    tlPlaybackIndex = -1;
+  function stopPlayback() {
+    if (playbackTimer) clearInterval(playbackTimer);
+    playbackTimer = null;
+    updatePlaybackControls();
   }
 
-  function resetToLive() {
-    stopTimelinePlayback();
-    tlIsLive = true;
-    tlCurrentPos = 1.0;
-    snapshotMode = false;
-    snapshotTime = null;
-    updateSnapshotOverlay(null);
-    // Clear drag animation state
-    tlDragSortedNodes = [];
-    tlDragSortedEdges = [];
-    tlDragVisibleNodeIds = new Set();
-    tlDragVisibleEdgeIds = new Set();
-    tlDragLastTime = 0;
-    tlDragHubLayout = null;
-    // Rebuild graph from cache
-    if (cachedAllNodes.length > 0) {
-      const hubLayout = computeHubLayout(cachedAllEdges);
-      explorer.buildGraph(cachedAllNodes, cachedAllEdges, null, null, cachedInheritedRelationIds, undefined, hubLayout);
-    }
+  function stepPlayback(direction) {
+    if (!graphModel?.episodes?.length) return;
+    stopPlayback();
+    const total = graphModel.episodes.length;
+    const current = playbackStep < 0 ? total : playbackStep;
+    playbackStep = Math.max(0, Math.min(total, current + direction));
+    updateGraphStep(playbackStep, { fitDelay: 80, fitDuration: 360 });
   }
 
-  async function loadTimelineChanges() {
-    // Load recent changes to enrich timeline markers
-    try {
-      if (!tlMaxTime) return;
-      const since = new Date(tlMinTime).toISOString();
-      const res = await state.api.getChanges(since, null, state.currentGraphId);
-      const changes = res.data?.changes || res.data || [];
-      // Add change events as additional markers (if not already covered by episodes)
-      // We don't need to do much here — episodes are the primary markers
-    } catch (_) {}
-  }
-
-  // ---- Register this page ----
-
-  registerPage('graph', { render, destroy });
+  registerPage('graph', {
+    async render(container) {
+      selectedDocVersions = new Set();
+      graphData = null;
+      graphModel = null;
+      focusFamilyId = null;
+      playbackStep = -1;
+      render(container);
+      setDocsCollapsed(false);
+      await loadDocs();
+    },
+    destroy() {
+      stopPlayback();
+      destroyNetwork();
+      window.__documentGraphVisual = null;
+    },
+    getCommands() {
+      return [
+        { label: '刷新文档图谱', icon: 'refresh-cw', action: () => loadDocs() },
+        { label: '播放 Episode 展示', icon: 'play', action: () => startPlayback() },
+        { label: '适配图谱视图', icon: 'maximize', action: () => network?.fit({ animation: true }) },
+      ];
+    },
+  });
 })();

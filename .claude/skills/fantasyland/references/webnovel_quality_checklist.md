@@ -128,5 +128,7 @@
 - [ ] 完整章节已 `remember` 存入
 - [ ] 状态变更已 `remember` 记录
 - [ ] 关键角色 `evolve_entity_summary` 已更新
-- [ ] 已 `dream_run` 发现新关联
+- [ ] 已 `concept_search` 发现新关联
 - [ ] 伏笔操作已记录在记忆中
+
+

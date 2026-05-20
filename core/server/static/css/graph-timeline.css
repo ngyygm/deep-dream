@@ -827,6 +827,63 @@
   opacity: 0.6;
 }
 
+.graph-version-diff {
+  margin-top: 0.55rem;
+  margin-bottom: 0.55rem;
+}
+
+.version-diff-body.version-diff-inline {
+  padding: 0.45rem 0.55rem;
+  max-height: 190px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.version-diff-token {
+  border-radius: 0.2rem;
+  padding: 0.02rem 0.06rem;
+}
+
+.version-diff-token.added {
+  background: color-mix(in srgb, var(--success) 18%, transparent);
+  color: color-mix(in srgb, var(--success) 88%, var(--text-primary));
+}
+
+.version-diff-token.removed {
+  background: color-mix(in srgb, var(--error) 18%, transparent);
+  color: color-mix(in srgb, var(--error) 88%, var(--text-primary));
+  text-decoration: line-through;
+  text-decoration-thickness: 2px;
+}
+
+.version-diff-token.unchanged {
+  color: var(--text-secondary);
+}
+
+.diff-count.added {
+  color: var(--success);
+}
+
+.diff-count.removed {
+  color: var(--error);
+}
+
+.graph-version-full {
+  margin-top: 0.4rem;
+}
+
+.graph-version-full summary {
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  user-select: none;
+}
+
+.graph-version-full summary:hover {
+  color: var(--primary);
+}
+
 /* ==========================================
    Version evolution summary
    ========================================== */

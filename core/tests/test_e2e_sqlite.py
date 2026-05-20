@@ -1,8 +1,8 @@
 """
 End-to-end tests for SQLite graph storage through the Flask API.
 
-Tests the full remember → find → dream lifecycle using the actual Flask
-test client with SQLite backend (no real LLM calls).
+Tests the storage compatibility adapters plus the v1 concept/document API using
+the actual Flask test client with SQLite backend (no real LLM calls).
 Run with: pytest core/tests/test_e2e_sqlite.py -v -s --tb=short
 """
 import json
@@ -268,9 +268,8 @@ class TestAPIE2E:
         data = response.get_json()["data"]
         assert data["storage_backend"] == "sqlite"
 
-    def test_entity_crud_via_api(self, client):
-        """Create and retrieve entities through API."""
-        # Get stats to verify empty-ish state
+    def test_concept_stats_via_api(self, client):
+        """Read concept graph stats through API."""
         response = client.get(f"/api/v1/find/stats?graph_id={TEST_GRAPH_ID}")
         assert response.status_code == 200
 

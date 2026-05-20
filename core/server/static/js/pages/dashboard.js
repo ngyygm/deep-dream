@@ -217,8 +217,8 @@
     if (isNeo4jBackend) {
       html += `
       <!-- Episodes (Neo4j only) -->
-      <div class="stat-card" style="cursor:pointer;" onclick="navigate('#episodes')">
-        <div class="stat-label">${t('nav.episodes')}</div>
+      <div class="stat-card">
+        <div class="stat-label">Episodes</div>
         <div class="stat-value" style="color:#14b8a6;">${formatNumber(totalEpisodes)}</div>
       </div>
       <!-- Communities (Neo4j only) -->
@@ -244,7 +244,7 @@
       return `<div style="padding:0.4rem 0.6rem;border-bottom:1px solid var(--border-color);font-size:0.8125rem;">
         <div style="display:flex;align-items:center;gap:0.5rem;">
           <i data-lucide="git-branch" style="width:14px;height:14px;color:var(--primary);flex-shrink:0;"></i>
-          <span style="cursor:pointer;font-weight:600;flex-shrink:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" onclick="setGraphId('${gid}');navigate('#graph');" title="${gid}">${gid}</span>
+          <span style="cursor:pointer;font-weight:600;flex-shrink:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" onclick="setGraphId('${gid}');navigate('#memory');" title="${gid}">${gid}</span>
           ${isActive ? `<span class="badge badge-info" style="flex-shrink:0;font-size:0.65rem;padding:0 4px;">${t('dashboard.active')}</span>` : ''}
           <span style="flex:1;"></span>
           <button class="btn btn-ghost btn-sm btn-graph-clear" data-graph-id="${gid}" title="${t('dashboard.clearGraph')}" style="padding:2px 4px;">
@@ -566,6 +566,12 @@
     try {
       const res = await state.api.getGraphStats(state.currentGraphId);
       const stats = res.data || res;
+      const entityCount = stats.entity_count ?? stats.total_entities ?? stats.entities ?? 0;
+      const relationCount = stats.relation_count ?? stats.total_relations ?? stats.relations ?? 0;
+      const episodeCount = stats.episode_count ?? stats.total_episodes ?? stats.episodes ?? 0;
+      const documentCount = stats.document_count ?? stats.total_documents ?? stats.documents ?? 0;
+      const conceptCount = stats.concept_count ?? stats.total_concepts ?? stats.concepts ?? (entityCount + relationCount + episodeCount + documentCount);
+      const avgRelations = entityCount > 0 ? relationCount / entityCount : 0;
       const container = document.getElementById('graphStatsContainer');
       if (!container) return;
       const graphLabel = state.currentGraphId || 'default';
@@ -580,28 +586,28 @@
           </div>
           <div class="stats-grid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:1rem;">
             <div class="stat-card">
-              <div class="stat-value">${formatNumber(stats.entity_count || 0)}</div>
+              <div class="stat-value">${formatNumber(entityCount)}</div>
               <div class="stat-label" data-i18n="dashboard.totalEntities">${t('dashboard.totalEntities')}</div>
             </div>
             <div class="stat-card">
-              <div class="stat-value">${formatNumber(stats.relation_count || 0)}</div>
+              <div class="stat-value">${formatNumber(relationCount)}</div>
               <div class="stat-label" data-i18n="dashboard.totalRelations">${t('dashboard.totalRelations')}</div>
             </div>
             <div class="stat-card">
-              <div class="stat-value">${(stats.avg_relations_per_entity || 0).toFixed(2)}</div>
+              <div class="stat-value">${formatNumber(episodeCount)}</div>
+              <div class="stat-label">Episodes</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-value">${formatNumber(documentCount)}</div>
+              <div class="stat-label">Documents</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-value">${formatNumber(conceptCount)}</div>
+              <div class="stat-label">Concepts</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-value">${avgRelations.toFixed(2)}</div>
               <div class="stat-label" data-i18n="stats.avgRelations">${t('stats.avgRelations')}</div>
-            </div>
-            <div class="stat-card">
-              <div class="stat-value">${formatNumber(stats.max_relations_per_entity || 0)}</div>
-              <div class="stat-label" data-i18n="stats.maxRelations">${t('stats.maxRelations')}</div>
-            </div>
-            <div class="stat-card">
-              <div class="stat-value">${formatNumber(stats.isolated_entities || 0)}</div>
-              <div class="stat-label" data-i18n="stats.isolatedEntities">${t('stats.isolatedEntities')}</div>
-            </div>
-            <div class="stat-card">
-              <div class="stat-value">${(stats.graph_density || 0).toFixed(4)}</div>
-              <div class="stat-label" data-i18n="stats.density">${t('stats.density')}</div>
             </div>
           </div>
         </div>`;
@@ -710,21 +716,9 @@
           <i data-lucide="search" style="width:14px;height:14px;margin-right:4px;"></i>
           ${t('nav.search') || 'Search'}
         </a>
-        <a href="#chat" class="btn btn-secondary btn-sm" style="text-decoration:none;">
-          <i data-lucide="message-circle" style="width:14px;height:14px;margin-right:4px;"></i>
-          ${t('nav.chat') || 'Chat'}
-        </a>
         <a href="#memory" class="btn btn-secondary btn-sm" style="text-decoration:none;">
           <i data-lucide="database" style="width:14px;height:14px;margin-right:4px;"></i>
           ${t('nav.memory') || 'Remember'}
-        </a>
-        <a href="#dream" class="btn btn-secondary btn-sm" style="text-decoration:none;">
-          <i data-lucide="moon" style="width:14px;height:14px;margin-right:4px;"></i>
-          ${t('nav.dream') || 'Dream'}
-        </a>
-        <a href="#graph" class="btn btn-secondary btn-sm" style="text-decoration:none;">
-          <i data-lucide="network" style="width:14px;height:14px;margin-right:4px;"></i>
-          ${t('nav.graph') || 'Graph'}
         </a>
       </div>
 
@@ -750,7 +744,7 @@
               </div>
               <span style="font-size:0.75rem;color:var(--text-muted);" id="dashboard-task-count">-</span>
             </div>
-            <div id="dashboard-tasks">${spinnerHtml()}</div>
+            <div id="dashboard-tasks">${emptyState(t('dashboard.noTasks'))}</div>
           </div>
 
           <div id="dashboard-logs">${spinnerHtml()}</div>

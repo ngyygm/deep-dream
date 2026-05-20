@@ -1,4 +1,4 @@
-"""Shared constants for all blueprint modules."""
+"""Shared constants for all route modules."""
 
 _BOOL_TRUE = frozenset(("1", "true", "yes", "on"))
 _BOOL_FALSE = frozenset(("0", "false", "no", "off"))

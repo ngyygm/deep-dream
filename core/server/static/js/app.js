@@ -170,84 +170,81 @@ class DeepDreamApi {
     return this.post('/api/v1/find', body);
   }
 
-  // Entities
+  // Concept compatibility helpers used by the existing graph/search UI.
   listEntities(graphId = 'default', limit, offset) {
-    let q = `graph_id=${encodeURIComponent(graphId)}`;
+    let q = `graph_id=${encodeURIComponent(graphId)}&role=entity`;
     if (limit) q += `&limit=${limit}`;
     if (offset) q += `&offset=${offset}`;
-    return this.get(`/api/v1/find/entities?${q}`);
+    return this.get(`/api/v1/concepts?${q}`).then(res => ({
+      ...res,
+      data: { ...(res.data || {}), entities: res.data?.concepts || [] },
+    }));
   }
   getCounts(graphId = 'default') {
     return this.get(`/api/v1/stats/counts?graph_id=${encodeURIComponent(graphId)}`);
   }
   searchEntities(query, graphId = 'default', options = {}) {
     const body = {
-      query_name: query,
+      query,
       graph_id: graphId,
-      query_content: options.queryContent || query,
-      similarity_threshold: options.threshold ?? 0.7,
-      max_results: options.maxResults ?? 20,
-      text_mode: options.textMode || 'name_and_content',
-      similarity_method: options.method || 'embedding',
+      role: 'entity',
+      threshold: options.threshold ?? 0.7,
+      limit: options.maxResults ?? 20,
     };
     if (options.searchMode) body.search_mode = options.searchMode;
-    return this.post('/api/v1/find/entities/search', body);
+    return this.post('/api/v1/concepts/search', body).then(res => ({
+      ...res,
+      data: { ...(res.data || {}), entities: res.data?.concepts || [] },
+    }));
   }
   entityVersions(familyId, graphId = 'default') {
-    return this.get(`/api/v1/find/entities/${encodeURIComponent(familyId)}/versions?graph_id=${encodeURIComponent(graphId)}`);
+    return this.get(`/api/v1/concepts/${encodeURIComponent(familyId)}/versions?graph_id=${encodeURIComponent(graphId)}`);
   }
   entityVersionDiff(familyId, v1, v2, graphId = 'default') {
-    return this.get(`/api/v1/find/entities/${encodeURIComponent(familyId)}/version-diff?v1=${encodeURIComponent(v1)}&v2=${encodeURIComponent(v2)}&graph_id=${encodeURIComponent(graphId)}`);
+    return Promise.reject(new Error('Version diff is not available in the concept graph UI'));
   }
   entityRelations(familyId, graphId = 'default', options = {}) {
-    let q = `graph_id=${encodeURIComponent(graphId)}`;
-    if (options.limit) q += `&limit=${options.limit}`;
-    if (options.maxVersionAbsoluteId) q += `&max_version_absolute_id=${encodeURIComponent(options.maxVersionAbsoluteId)}`;
-    if (options.relationScope) q += `&relation_scope=${encodeURIComponent(options.relationScope)}`;
-    return this.get(`/api/v1/find/entities/${encodeURIComponent(familyId)}/relations?${q}`);
+    let q = `graph_id=${encodeURIComponent(graphId)}&max_depth=1`;
+    if (options.timePoint) q += `&time_point=${encodeURIComponent(options.timePoint)}`;
+    return this.get(`/api/v1/concepts/${encodeURIComponent(familyId)}/neighbors?${q}`);
   }
   entityVersionCounts(familyIds, graphId = 'default') {
-    return this.post('/api/v1/find/entities/version-counts', {
-      family_ids: familyIds,
-      graph_id: graphId,
-    });
+    return Promise.resolve({ success: true, data: { counts: Object.fromEntries((familyIds || []).map(id => [id, 0])) } });
   }
   entityOneHop(absoluteId, graphId = 'default') {
-    return this.get(`/api/v1/find/entities/absolute/${encodeURIComponent(absoluteId)}/relations?graph_id=${encodeURIComponent(graphId)}`);
+    return this.entityRelations(absoluteId, graphId);
   }
   entityByAbsoluteId(absoluteId, graphId = 'default') {
-    return this.get(`/api/v1/find/entities/absolute/${encodeURIComponent(absoluteId)}?graph_id=${encodeURIComponent(graphId)}`);
+    return this.get(`/api/v1/concepts/${encodeURIComponent(absoluteId)}?graph_id=${encodeURIComponent(graphId)}`);
   }
 
   entityEmbeddingPreview(absoluteId, numValues = 5, graphId = 'default') {
-    return this.get(`/api/v1/find/entities/absolute/${encodeURIComponent(absoluteId)}/embedding-preview?num_values=${numValues}&graph_id=${encodeURIComponent(graphId)}`);
+    return Promise.resolve({ success: true, data: { values: [] } });
   }
 
   updateEntity(familyId, data, graphId = 'default') {
-    return this.request('PUT', `/api/v1/find/entities/${encodeURIComponent(familyId)}?graph_id=${encodeURIComponent(graphId)}`, {
-      json: data,
-    });
+    return Promise.reject(new Error('Concept editing is not available in v1'));
   }
 
   evolveEntitySummary(familyId, graphId = 'default') {
-    return this.post(`/api/v1/find/entities/${encodeURIComponent(familyId)}/evolve-summary?graph_id=${encodeURIComponent(graphId)}`, {});
+    return Promise.reject(new Error('Summary evolution is not available in v1'));
   }
 
   entityContradictions(familyId, graphId = 'default') {
-    return this.get(`/api/v1/find/entities/${encodeURIComponent(familyId)}/contradictions?graph_id=${encodeURIComponent(graphId)}`);
+    return Promise.resolve({ success: true, data: { contradictions: [] } });
   }
 
   resolveContradiction(familyId, data, graphId = 'default') {
-    return this.post(`/api/v1/find/entities/${encodeURIComponent(familyId)}/resolve-contradiction?graph_id=${encodeURIComponent(graphId)}`, data);
+    return Promise.reject(new Error('Contradiction resolution is not available in v1'));
   }
 
   entityProvenance(familyId, graphId = 'default') {
-    return this.get(`/api/v1/find/entities/${encodeURIComponent(familyId)}/provenance?graph_id=${encodeURIComponent(graphId)}`);
+    return this.get(`/api/v1/concepts/${encodeURIComponent(familyId)}/provenance?graph_id=${encodeURIComponent(graphId)}`);
   }
 
   traverseGraph(seedFamilyIds, maxDepth = 3, maxNodes = 100, graphId = 'default') {
-    return this.post('/api/v1/find/traverse', {
-      seed_family_ids: seedFamilyIds,
+    return this.post('/api/v1/traverse', {
+      start_family_ids: seedFamilyIds,
       max_depth: maxDepth,
       max_nodes: maxNodes,
       graph_id: graphId,
@@ -255,110 +252,99 @@ class DeepDreamApi {
   }
 
   batchIngestEpisodes(episodes, graphId = 'default') {
-    return this.post('/api/v1/find/episodes/batch-ingest', { episodes, graph_id: graphId });
+    return Promise.reject(new Error('Episode batch ingest is not available in v1'));
   }
 
   deleteEntity(familyId, cascade = false, graphId = 'default') {
-    return this.request('DELETE', `/api/v1/find/entities/${encodeURIComponent(familyId)}?cascade=${cascade}&graph_id=${encodeURIComponent(graphId)}`);
+    return Promise.reject(new Error('Concept deletion is not available in v1'));
   }
 
   batchDeleteEntities(familyIds, cascade = false, graphId = 'default') {
-    return this.request('POST', '/api/v1/find/entities/batch-delete', {
-      json: { family_ids: familyIds, cascade, graph_id: graphId },
-    });
+    return Promise.reject(new Error('Concept deletion is not available in v1'));
   }
 
   updateRelation(familyId, data, graphId = 'default') {
-    return this.request('PUT', `/api/v1/find/relations/${encodeURIComponent(familyId)}?graph_id=${encodeURIComponent(graphId)}`, {
-      json: data,
-    });
+    return Promise.reject(new Error('Concept editing is not available in v1'));
   }
 
   deleteRelation(familyId, graphId = 'default') {
-    return this.request('DELETE', `/api/v1/find/relations/${encodeURIComponent(familyId)}?graph_id=${encodeURIComponent(graphId)}`);
+    return Promise.reject(new Error('Concept deletion is not available in v1'));
   }
 
   batchDeleteRelations(familyIds, graphId = 'default') {
-    return this.request('POST', '/api/v1/find/relations/batch-delete', {
-      json: { family_ids: familyIds, graph_id: graphId },
-    });
+    return Promise.reject(new Error('Concept deletion is not available in v1'));
   }
 
   mergeEntities(targetFamilyId, sourceFamilyIds, graphId = 'default') {
-    return this.post('/api/v1/find/entities/merge', { target_family_id: targetFamilyId, source_family_ids: sourceFamilyIds, graph_id: graphId });
+    return Promise.reject(new Error('Concept merge is not available in v1'));
   }
 
   relationVersions(familyId, graphId = 'default') {
-    return this.get(`/api/v1/find/relations/${encodeURIComponent(familyId)}/versions?graph_id=${encodeURIComponent(graphId)}`);
+    return this.get(`/api/v1/concepts/${encodeURIComponent(familyId)}/versions?graph_id=${encodeURIComponent(graphId)}`);
   }
   relationByAbsoluteId(absoluteId, graphId = 'default') {
-    return this.get(`/api/v1/find/relations/absolute/${encodeURIComponent(absoluteId)}?graph_id=${encodeURIComponent(graphId)}`);
+    return this.get(`/api/v1/concepts/${encodeURIComponent(absoluteId)}?graph_id=${encodeURIComponent(graphId)}`);
   }
 
   relationEmbeddingPreview(absoluteId, numValues = 5, graphId = 'default') {
-    return this.get(`/api/v1/find/relations/absolute/${encodeURIComponent(absoluteId)}/embedding-preview?num_values=${numValues}&graph_id=${encodeURIComponent(graphId)}`);
+    return Promise.resolve({ success: true, data: { values: [] } });
   }
 
   listRelations(graphId = 'default', limit, offset) {
-    let q = `graph_id=${encodeURIComponent(graphId)}`;
+    let q = `graph_id=${encodeURIComponent(graphId)}&role=relation`;
     if (limit) q += `&limit=${limit}`;
     if (offset) q += `&offset=${offset}`;
-    return this.get(`/api/v1/find/relations?${q}`);
+    return this.get(`/api/v1/concepts?${q}`).then(res => ({
+      ...res,
+      data: { ...(res.data || {}), relations: res.data?.concepts || [] },
+    }));
   }
   searchRelations(query, graphId = 'default', options = {}) {
     const body = {
-      query_text: query,
+      query,
       graph_id: graphId,
-      similarity_threshold: options.threshold ?? 0.3,
-      max_results: options.maxResults ?? 20,
+      role: 'relation',
+      threshold: options.threshold ?? 0.3,
+      limit: options.maxResults ?? 20,
     };
     if (options.searchMode) body.search_mode = options.searchMode;
-    return this.post('/api/v1/find/relations/search', body);
+    return this.post('/api/v1/concepts/search', body).then(res => ({
+      ...res,
+      data: { ...(res.data || {}), relations: res.data?.concepts || [] },
+    }));
   }
   relationsBetween(entityA, entityB, graphId = 'default') {
-    return this.post('/api/v1/find/relations/between', {
-      family_id_a: entityA,
-      family_id_b: entityB,
-      graph_id: graphId,
-    });
+    return this.traverseGraph([entityA, entityB], 1, 100, graphId);
   }
   shortestPaths(entityA, entityB, graphId = 'default', options = {}) {
-    return this.post('/api/v1/find/paths/shortest', {
-      family_id_a: entityA,
-      family_id_b: entityB,
-      graph_id: graphId,
-      max_depth: options.maxDepth || 6,
-      max_paths: options.maxPaths || 10,
-    });
+    return this.traverseGraph([entityA, entityB], options.maxDepth || 6, 200, graphId);
   }
 
   entityNeighbors(entityUuid, graphId = 'default', depth = 1) {
-    return this.get(`/api/v1/find/entities/${encodeURIComponent(entityUuid)}/neighbors?graph_id=${encodeURIComponent(graphId)}&depth=${depth}`);
+    return this.get(`/api/v1/concepts/${encodeURIComponent(entityUuid)}/neighbors?graph_id=${encodeURIComponent(graphId)}&max_depth=${depth}`);
   }
 
   shortestPathCypher(entityA, entityB, graphId = 'default', maxDepth = 6) {
-    return this.post('/api/v1/find/paths/shortest-cypher', {
-      family_id_a: entityA,
-      family_id_b: entityB,
-      graph_id: graphId,
-      max_depth: maxDepth,
-    });
+    return this.traverseGraph([entityA, entityB], maxDepth, 200, graphId);
   }
 
   listEpisodes(graphId = 'default', limit = 20, offset = 0) {
-    return this.get(`/api/v1/episodes?graph_id=${encodeURIComponent(graphId)}&limit=${limit}&offset=${offset}`);
+    return this.get(`/api/v1/concepts?graph_id=${encodeURIComponent(graphId)}&role=episode&limit=${limit}&offset=${offset}`).then(res => ({
+      ...res,
+      data: { ...(res.data || {}), episodes: res.data?.concepts || [] },
+    }));
   }
   getEpisode(uuid, graphId = 'default') {
-    return this.get(`/api/v1/episodes/${encodeURIComponent(uuid)}?graph_id=${encodeURIComponent(graphId)}`);
+    return this.get(`/api/v1/concepts/${encodeURIComponent(uuid)}?graph_id=${encodeURIComponent(graphId)}`);
   }
   getEpisodeEntities(uuid, graphId = 'default') {
-    return this.get(`/api/v1/episodes/${encodeURIComponent(uuid)}/entities?graph_id=${encodeURIComponent(graphId)}`);
+    return this.get(`/api/v1/concepts/${encodeURIComponent(uuid)}/neighbors?graph_id=${encodeURIComponent(graphId)}&max_depth=1`);
   }
   searchEpisodes(query, graphId = 'default', limit = 20) {
-    return this.post('/api/v1/episodes/search', { query, graph_id: graphId, limit });
+    return this.post('/api/v1/concepts/search', { query, role: 'episode', graph_id: graphId, limit });
   }
   deleteEpisode(uuid, graphId = 'default') {
-    return this.delete(`/api/v1/episodes/${encodeURIComponent(uuid)}?graph_id=${encodeURIComponent(graphId)}`);
+    return Promise.reject(new Error('Episode deletion is not available in v1'));
   }
 
   detectCommunities(graphId = 'default', algorithm = 'louvain', resolution = 1.0) {
@@ -378,48 +364,85 @@ class DeepDreamApi {
   }
 
   getSnapshot(time, graphId = 'default') {
-    return this.get(`/api/v1/find/snapshot?time=${encodeURIComponent(time)}&graph_id=${encodeURIComponent(graphId)}`);
+    return this.get(`/api/v1/concepts?time_point=${encodeURIComponent(time)}&graph_id=${encodeURIComponent(graphId)}&limit=200`);
   }
 
   getChanges(since, until, graphId = 'default') {
-    let url = `/api/v1/find/changes?since=${encodeURIComponent(since)}&graph_id=${encodeURIComponent(graphId)}`;
-    if (until) url += `&until=${encodeURIComponent(until)}`;
-    return this.get(url);
+    return Promise.resolve({ success: true, data: { changes: [], since, until, graph_id: graphId } });
   }
 
   invalidateRelation(familyId, reason = '', graphId = 'default') {
-    return this.post(`/api/v1/find/relations/${encodeURIComponent(familyId)}/invalidate?graph_id=${encodeURIComponent(graphId)}`, { reason });
+    return Promise.reject(new Error('Concept invalidation is not available in v1'));
   }
 
   getInvalidatedRelations(limit = 100, graphId = 'default') {
-    return this.get(`/api/v1/find/relations/invalidated?limit=${limit}&graph_id=${encodeURIComponent(graphId)}`);
+    return Promise.resolve({ success: true, data: { relations: [] } });
   }
 
   getGraphStats(graphId = 'default') {
-    return this.get(`/api/v1/find/graph-stats?graph_id=${encodeURIComponent(graphId)}`);
+    return this.get(`/api/v1/stats/counts?graph_id=${encodeURIComponent(graphId)}`);
   }
 
   getEntityTimeline(familyId, graphId = 'default') {
-    return this.get(`/api/v1/find/entities/${encodeURIComponent(familyId)}/timeline?graph_id=${encodeURIComponent(graphId)}`);
+    return this.get(`/api/v1/concepts/${encodeURIComponent(familyId)}/versions?graph_id=${encodeURIComponent(graphId)}`);
   }
 
   listDocs(graphId = 'default') {
-    return this.get(`/api/v1/docs?graph_id=${encodeURIComponent(graphId)}`);
+    return this.get(`/api/v1/documents?graph_id=${encodeURIComponent(graphId)}`).then(res => ({
+      ...res,
+      data: { ...(res.data || {}), docs: res.data?.documents || [] },
+    }));
+  }
+  documentGraph(graphId = 'default', options = {}) {
+    return this.post('/api/v1/documents/graph', {
+      graph_id: graphId,
+      document_version_ids: options.documentVersionIds || [],
+      document_family_ids: options.documentFamilyIds || [],
+      include_relations: options.includeRelations !== false,
+      include_versions: options.includeVersions !== false,
+      max_episodes: options.maxEpisodes || 5000,
+      max_concepts: options.maxConcepts || 20000,
+    });
+  }
+  documentGraphOutline(graphId = 'default', options = {}) {
+    return this.post('/api/v1/documents/graph/outline', {
+      graph_id: graphId,
+      document_version_ids: options.documentVersionIds || [],
+      document_family_ids: options.documentFamilyIds || [],
+      max_episodes: options.maxEpisodes || 10000,
+    });
+  }
+  documentGraphChunk(graphId = 'default', options = {}) {
+    return this.post('/api/v1/documents/graph/chunk', {
+      graph_id: graphId,
+      document_version_ids: options.documentVersionIds || [],
+      document_family_ids: options.documentFamilyIds || [],
+      cursor: options.cursor || 0,
+      limit: options.limit || 12,
+      include_relations: options.includeRelations !== false,
+      include_versions: options.includeVersions !== false,
+      max_concepts: options.maxConcepts || 8000,
+    });
+  }
+  documentContent(documentVersionId, graphId = 'default', options = {}) {
+    const offset = options.offset || 0;
+    const limit = options.limit || 20000;
+    return this.get(`/api/v1/documents/${encodeURIComponent(documentVersionId)}/content?graph_id=${encodeURIComponent(graphId)}&offset=${encodeURIComponent(offset)}&limit=${encodeURIComponent(limit)}`);
   }
   getDocContent(filename, graphId = 'default') {
-    return this.get(`/api/v1/docs/${encodeURIComponent(filename)}?graph_id=${encodeURIComponent(graphId)}`);
+    return this.get(`/api/v1/documents?graph_id=${encodeURIComponent(graphId)}&source=${encodeURIComponent(filename)}`);
   }
 
   agentAsk(question, graphId = 'default') {
-    return this.post('/api/v1/find/ask', { question, graph_id: graphId });
+    return Promise.reject(new Error('Ask is not available in the concept graph API'));
   }
 
   explainEntity(familyId, aspect, graphId = 'default') {
-    return this.post('/api/v1/find/explain', { family_id: familyId, aspect, graph_id: graphId });
+    return this.get(`/api/v1/concepts/${encodeURIComponent(familyId)}/provenance?graph_id=${encodeURIComponent(graphId)}`);
   }
 
   smartSuggestions(graphId = 'default') {
-    return this.get(`/api/v1/find/suggestions?graph_id=${encodeURIComponent(graphId)}`);
+    return Promise.resolve({ success: true, data: { suggestions: [] } });
   }
 
   systemOverview() { return this.get('/api/v1/system/overview'); }
@@ -441,76 +464,66 @@ class DeepDreamApi {
     return this.get(`/api/v1/system/dashboard?${q}`);
   }
 
-  butlerReport(graphId = 'default') {
-    return this.get(`/api/v1/butler/report?graph_id=${encodeURIComponent(graphId)}`);
-  }
-  butlerExecute(actions, dryRun = false, graphId = 'default') {
-    return this.post(`/api/v1/butler/execute?graph_id=${encodeURIComponent(graphId)}`, {
-      actions,
-      dry_run: dryRun,
-    });
-  }
-
-  dreamStatus(graphId = 'default') {
-    return this.get(`/api/v1/find/dream/status?graph_id=${encodeURIComponent(graphId)}`);
-  }
-  dreamLogs(graphId = 'default', limit = 20) {
-    return this.get(`/api/v1/find/dream/logs?graph_id=${encodeURIComponent(graphId)}&limit=${limit}`);
-  }
-  dreamLogDetail(cycleId, graphId = 'default') {
-    return this.get(`/api/v1/find/dream/logs/${encodeURIComponent(cycleId)}?graph_id=${encodeURIComponent(graphId)}`);
-  }
-  dreamSeeds(graphId = 'default', strategy = 'random', count = 5) {
-    return this.post(`/api/v1/find/dream/seeds?graph_id=${encodeURIComponent(graphId)}`, {
-      strategy, count,
-    });
-  }
-
   qualityReport(graphId = 'default') {
-    return this.get(`/api/v1/find/quality-report?graph_id=${encodeURIComponent(graphId)}`);
+    return Promise.resolve({ success: true, data: { issues: [], warnings: [] } });
   }
   maintenanceHealth(graphId = 'default') {
-    return this.get(`/api/v1/find/maintenance/health?graph_id=${encodeURIComponent(graphId)}`);
+    return this.health(graphId);
   }
   maintenanceCleanup(dryRun = false, graphId = 'default') {
-    return this.post(`/api/v1/find/maintenance/cleanup?graph_id=${encodeURIComponent(graphId)}`, { dry_run: dryRun });
+    return Promise.resolve({ success: true, data: { dry_run: dryRun, cleaned: 0 } });
   }
   graphSummary(graphId = 'default') {
-    return this.get(`/api/v1/find/graph-summary?graph_id=${encodeURIComponent(graphId)}`);
+    return this.getGraphStats(graphId);
   }
 
   quickSearch(query, options = {}) {
-    return this.post('/api/v1/find/quick-search', {
+    return this.post('/api/v1/concepts/search', {
       query,
       graph_id: options.graphId || 'default',
-      similarity_threshold: options.threshold ?? 0.4,
-      max_entities: options.maxEntities ?? 10,
-      max_relations: options.maxRelations ?? 20,
+      threshold: options.threshold ?? 0.4,
+      limit: options.maxResults ?? options.maxEntities ?? 10,
     });
   }
 
   findEntityByName(name, options = {}) {
-    return this.get(`/api/v1/find/entities/by-name/${encodeURIComponent(name)}?graph_id=${encodeURIComponent(options.graphId || 'default')}&threshold=${options.threshold || 0.7}&limit=${options.limit || 5}`);
+    return this.post('/api/v1/concepts/search', {
+      query: name,
+      role: 'entity',
+      graph_id: options.graphId || 'default',
+      threshold: options.threshold || 0.7,
+      limit: options.limit || 5,
+    });
   }
 
   createEntity(data, graphId = 'default') {
-    return this.post(`/api/v1/find/entities/create?graph_id=${encodeURIComponent(graphId)}`, data);
+    return Promise.reject(new Error('Manual concept creation is not available in v1'));
   }
 
   createRelation(data, graphId = 'default') {
-    return this.post(`/api/v1/find/relations/create?graph_id=${encodeURIComponent(graphId)}`, data);
+    return Promise.reject(new Error('Manual relation creation is not available in v1'));
   }
 
   recentActivity(graphId = 'default', limit = 10) {
-    return this.get(`/api/v1/find/recent-activity?graph_id=${encodeURIComponent(graphId)}&limit=${limit}`);
+    return this.get(`/api/v1/concepts?graph_id=${encodeURIComponent(graphId)}&limit=${limit}`);
   }
 
   refreshGraphEdges(graphId = 'default') {
-    return this.post(`/api/v1/find/entities/refresh-edges?graph_id=${encodeURIComponent(graphId)}`, {});
+    return Promise.resolve({ success: true, data: { refreshed: 0, graph_id: graphId } });
   }
 
   entityProfile(familyId, graphId = 'default') {
-    return this.get(`/api/v1/find/entities/${encodeURIComponent(familyId)}/profile?graph_id=${encodeURIComponent(graphId)}`);
+    return Promise.all([
+      this.get(`/api/v1/concepts/${encodeURIComponent(familyId)}?graph_id=${encodeURIComponent(graphId)}`),
+      this.get(`/api/v1/concepts/${encodeURIComponent(familyId)}/neighbors?graph_id=${encodeURIComponent(graphId)}&max_depth=1`),
+    ]).then(([concept, neighbors]) => ({
+      success: true,
+      data: {
+        entity: concept.data,
+        relations: neighbors.data?.neighbors || [],
+        relation_count: (neighbors.data?.neighbors || []).length,
+      },
+    }));
   }
 
   searchConcepts(query, options = {}) {
@@ -531,17 +544,32 @@ class DeepDreamApi {
   }
 
   batchProfiles(familyIds, graphId = 'default') {
-    return this.post('/api/v1/find/batch-profiles', { family_ids: familyIds, graph_id: graphId });
+    return Promise.reject(new Error('Batch profiles are not available in v1'));
   }
 }
 
 // ---- Global State ----
+function getUrlGraphId() {
+  try {
+    const searchGraph = new URLSearchParams(window.location.search).get('graph_id');
+    if (searchGraph) return searchGraph.trim();
+    const hash = window.location.hash || '';
+    const queryIndex = hash.indexOf('?');
+    if (queryIndex >= 0) {
+      const hashGraph = new URLSearchParams(hash.slice(queryIndex + 1)).get('graph_id');
+      if (hashGraph) return hashGraph.trim();
+    }
+  } catch {}
+  return '';
+}
+
 const state = {
   api: new DeepDreamApi(),
-  currentGraphId: localStorage.getItem('deepdream_graph_id') || localStorage.getItem('tmg_graph_id') || 'default',
+  currentGraphId: getUrlGraphId() || localStorage.getItem('deepdream_graph_id') || localStorage.getItem('tmg_graph_id') || 'default',
   refreshTimers: {},
   currentPage: null,
-  backendType: 'neo4j',
+  backendType: 'sqlite',
+  events: new EventTarget(),
 };
 
 function isNeo4j() {
@@ -551,6 +579,11 @@ function isNeo4j() {
 function setGraphId(id) {
   state.currentGraphId = id;
   localStorage.setItem('deepdream_graph_id', id);
+  try {
+    const url = new URL(window.location.href);
+    url.searchParams.set('graph_id', id);
+    window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
+  } catch {}
   const sel = document.getElementById('graph-selector');
   if (sel) sel.value = id;
   state.api.health(id).then(h => {
@@ -583,26 +616,38 @@ function renderMarkdown(text) {
 // ---- Router ----
 const pages = {};
 const _pageTitleKeys = {
-  chat: 'nav.chat', dashboard: 'nav.dashboard', graph: 'nav.graph',
-  memory: 'nav.memory', search: 'nav.search', entities: 'nav.entities',
-  relations: 'nav.relations', episodes: 'nav.episodes', communities: 'nav.communities',
-  dream: 'nav.dream', 'api-test': 'nav.apiTest',
+  dashboard: 'nav.dashboard',
+  memory: 'nav.memory', graph: 'nav.graph', search: 'nav.search', communities: 'nav.communities',
+  'api-test': 'nav.apiTest',
 };
 
 const _pageSloganKeys = {
-  chat: 'slogan.chat', dashboard: 'slogan.dashboard', graph: 'slogan.graph',
-  memory: 'slogan.memory', search: 'slogan.search', entities: 'slogan.entities',
-  relations: 'slogan.relations', episodes: 'slogan.episodes', communities: 'slogan.communities',
-  dream: 'slogan.dream', 'api-test': 'slogan.apiTest',
+  dashboard: 'slogan.dashboard',
+  memory: 'slogan.memory', graph: 'slogan.graph', search: 'slogan.search', communities: 'slogan.communities',
+  'api-test': 'slogan.apiTest',
 };
 
 function registerPage(name, module) { pages[name] = module; }
 function navigate(hash) { window.location.hash = hash; }
 
 async function handleRoute() {
-  const hash = (window.location.hash || '#chat').slice(1);
+  const rawHash = (window.location.hash || '#dashboard').slice(1);
+  const [hash, hashQuery = ''] = rawHash.split('?');
+  try {
+    const hashGraph = new URLSearchParams(hashQuery).get('graph_id');
+    if (hashGraph && hashGraph !== state.currentGraphId) {
+      state.currentGraphId = hashGraph;
+      localStorage.setItem('deepdream_graph_id', hashGraph);
+      const sel = document.getElementById('graph-selector');
+      if (sel) sel.value = hashGraph;
+    }
+  } catch {}
   const [page, ...params] = hash.split('/').filter(Boolean);
-  const pageName = page || 'chat';
+  let pageName = page || 'dashboard';
+  if (pageName === 'chat') {
+    window.location.hash = '#dashboard';
+    return;
+  }
   const pageModule = pages[pageName];
 
   Object.values(state.refreshTimers).forEach(t => clearInterval(t));
@@ -630,7 +675,7 @@ async function handleRoute() {
   }
 
   const sloganEl = document.getElementById('sidebar-slogan');
-  if (sloganEl) sloganEl.textContent = t(_pageSloganKeys[pageName] || _pageSloganKeys['chat']);
+  if (sloganEl) sloganEl.textContent = t(_pageSloganKeys[pageName] || _pageSloganKeys['dashboard']);
 
   if (state.currentPage && pages[state.currentPage] && pages[state.currentPage].destroy) { pages[state.currentPage].destroy(); }
 
@@ -692,10 +737,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   const graphClearBtn = document.getElementById('graph-clear-btn');
   if (graphClearBtn) graphClearBtn.addEventListener('click', clearCurrentGraph);
   window.addEventListener('hashchange', handleRoute);
+  try { const h = await state.api.health(state.currentGraphId); if (h.data?.storage_backend) state.backendType = h.data.storage_backend; } catch {}
   handleRoute();
   loadGraphSelector();
-  try { const h = await state.api.health(state.currentGraphId); if (h.data?.storage_backend) state.backendType = h.data.storage_backend; } catch {}
-  ['nav-episodes', 'nav-communities'].forEach(id => { const el = document.getElementById(id); if (el) el.style.display = isNeo4j() ? '' : 'none'; });
+  ['nav-communities'].forEach(id => { const el = document.getElementById(id); if (el) el.style.display = isNeo4j() ? '' : 'none'; });
   const toggle = document.getElementById('sidebar-toggle');
   const sidebar = document.getElementById('sidebar');
   if (toggle && sidebar) {
@@ -745,26 +790,19 @@ registerShortcut('k', 'Open command palette', () => _openCommandPalette(), { ctr
 registerShortcut('/', 'Focus search', () => { navigate('#search'); setTimeout(() => { const el = document.getElementById('search-input'); if (el) el.focus(); }, 100); }, { global: true });
 registerShortcut('b', 'Toggle sidebar', () => { const sidebar = document.getElementById('sidebar'); if (sidebar) sidebar.classList.toggle('collapsed'); }, { ctrlKey: true, global: true });
 registerShortcut('?', 'Show shortcuts', () => _showShortcutsHelp(), { ctrlKey: true, global: true });
-registerShortcut('1', 'Chat', () => navigate('#chat'), { altKey: true });
-registerShortcut('2', 'Dashboard', () => navigate('#dashboard'), { altKey: true });
+registerShortcut('1', 'Dashboard', () => navigate('#dashboard'), { altKey: true });
+registerShortcut('2', 'Memory', () => navigate('#memory'), { altKey: true });
 registerShortcut('3', 'Graph', () => navigate('#graph'), { altKey: true });
-registerShortcut('4', 'Memory', () => navigate('#memory'), { altKey: true });
-registerShortcut('5', 'Search', () => navigate('#search'), { altKey: true });
-registerShortcut('6', 'Entities', () => navigate('#entities'), { altKey: true });
-registerShortcut('7', 'Relations', () => navigate('#relations'), { altKey: true });
-registerShortcut('8', 'Dream', () => navigate('#dream'), { altKey: true });
+registerShortcut('4', 'Search', () => navigate('#search'), { altKey: true });
+registerShortcut('5', 'API Test', () => navigate('#api-test'), { altKey: true });
 
 // ---- Command Palette ---- (unchanged from original, shortened for readability)
 function _openCommandPalette() {
   const commands = [
-    { label: t('nav.chat') || 'Chat', icon: 'message-circle', action: () => navigate('#chat') },
     { label: t('nav.dashboard') || 'Dashboard', icon: 'layout-dashboard', action: () => navigate('#dashboard') },
-    { label: t('nav.graph') || 'Graph', icon: 'network', action: () => navigate('#graph') },
     { label: t('nav.memory') || 'Memory', icon: 'database', action: () => navigate('#memory') },
+    { label: t('nav.graph') || 'Graph', icon: 'git-fork', action: () => navigate('#graph') },
     { label: t('nav.search') || 'Search', icon: 'search', action: () => navigate('#search') },
-    { label: t('nav.entities') || 'Entities', icon: 'circle-dot', action: () => navigate('#entities') },
-    { label: t('nav.relations') || 'Relations', icon: 'git-branch', action: () => navigate('#relations') },
-    { label: t('nav.dream') || 'Dream', icon: 'moon', action: () => navigate('#dream') },
     { label: t('nav.apiTest') || 'API Test', icon: 'terminal', action: () => navigate('#api-test') },
     { label: t('common.toggleTheme') || 'Toggle Theme', icon: 'sun', action: () => toggleTheme() },
     { label: t('common.writeMemory') || 'Write Memory', icon: 'plus', action: () => navigate('#memory') },

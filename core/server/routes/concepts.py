@@ -1,5 +1,5 @@
 """
-Concepts blueprint — Concept CRUD/search/traverse, communities, graphs management,
+Concept routes — Concept CRUD/search/traverse, communities, graphs management,
 and chat session routes.
 """
 from __future__ import annotations
@@ -13,7 +13,7 @@ from typing import Any, Dict
 
 from flask import Blueprint, current_app, request
 
-from core.server.blueprints.helpers import (
+from core.server.routes.helpers import (
     ok,
     err,
     _get_processor,
@@ -26,7 +26,7 @@ from core.server.blueprints.helpers import (
     _get_searcher,
     get_json_body,
 )
-from core.server.blueprints._constants import _VALID_SEARCH_MODES
+from core.server.routes._constants import _VALID_SEARCH_MODES
 from core.server.sse import sse_response, queue_to_generator
 from core.server.registry import GraphRegistry
 
@@ -46,6 +46,7 @@ _PAREN_ANNOTATION_RE = _re.compile(r'\s*[（(][^）)]+[）)]\s*')
 # =========================================================
 
 @concepts_bp.route("/api/v1/concepts/search", methods=["POST"])
+@concepts_bp.route("/api/v1/find", methods=["POST"])
 def search_concepts():
     """统一概念搜索（可选 role 过滤，支持 semantic/bm25/hybrid 模式）。"""
     try:
@@ -65,15 +66,28 @@ def search_concepts():
             return err(f"search_mode '{search_mode}' 无效，可选: {', '.join(_VALID_SEARCH_MODES)}", 400)
         time_point = (body.get("time_point") or "").strip() or None
 
-        if search_mode == "bm25":
-            results = storage.search_concepts_by_bm25(query, role=role, limit=limit, time_point=time_point)
-        elif search_mode == "semantic":
-            results = storage.search_concepts_by_similarity(
-                query_text=query, role=role, threshold=threshold, max_results=limit, time_point=time_point
-            )
-        else:
-            # hybrid: merge BM25 + semantic via RRF
-            results = _hybrid_concept_search(storage, query, role, limit, threshold, time_point=time_point)
+        def _search(role_filter, result_limit):
+            if search_mode == "bm25":
+                return storage.search_concepts_by_bm25(query, role=role_filter, limit=result_limit, time_point=time_point)
+            if search_mode == "semantic":
+                return storage.search_concepts_by_similarity(
+                    query_text=query, role=role_filter, threshold=threshold, max_results=result_limit, time_point=time_point
+                )
+            return _hybrid_concept_search(storage, query, role_filter, result_limit, threshold, time_point=time_point)
+
+        if request.path == "/api/v1/find":
+            max_entities = min(max(int(body.get("max_entities", body.get("maxEntities", 20))), 1), 100)
+            max_relations = min(max(int(body.get("max_relations", body.get("maxRelations", 50))), 1), 100)
+            entities = _search("entity", max_entities)
+            relations = _search("relation", max_relations)
+            return ok({
+                "entities": entities,
+                "relations": relations,
+                "concepts": entities + relations,
+                "total": len(entities) + len(relations),
+            })
+
+        results = _search(role, limit)
         return ok({"concepts": results, "total": len(results)})
     except Exception as e:
         return err(str(e), 500)
@@ -170,6 +184,22 @@ def get_concept(family_id: str):
         return err(str(e), 500)
 
 
+@concepts_bp.route("/api/v1/concepts/<family_id>/versions", methods=["GET"])
+def get_concept_versions(family_id: str):
+    """List all versions for a concept family."""
+    try:
+        processor = _get_processor()
+        storage = processor.storage
+        if not hasattr(storage, "get_concept_versions"):
+            return err("此功能暂不可用", 400)
+        versions = storage.get_concept_versions(family_id)
+        if not versions:
+            return err("概念不存在", 404)
+        return ok({"family_id": family_id, "versions": versions, "total": len(versions)})
+    except Exception as e:
+        return err(str(e), 500)
+
+
 @concepts_bp.route("/api/v1/concepts/<family_id>/neighbors", methods=["GET"])
 def get_concept_neighbors(family_id: str):
     """获取概念邻居（无论 role）。"""
@@ -195,6 +225,8 @@ def get_concept_provenance(family_id: str):
         if not hasattr(storage, 'get_concept_provenance'):
             return err("此功能暂不可用", 400)
         time_point = (request.args.get("time_point") or "").strip() or None
+        if hasattr(storage, "get_concept_by_family_id") and storage.get_concept_by_family_id(family_id, time_point=time_point) is None:
+            return err("概念不存在", 404)
         provenance = storage.get_concept_provenance(family_id, time_point=time_point)
         return ok({"family_id": family_id, "provenance": provenance})
     except Exception as e:
@@ -202,6 +234,7 @@ def get_concept_provenance(family_id: str):
 
 
 @concepts_bp.route("/api/v1/concepts/traverse", methods=["POST"])
+@concepts_bp.route("/api/v1/traverse", methods=["POST"])
 def traverse_concepts():
     """BFS 遍历概念图。"""
     try:
@@ -215,7 +248,167 @@ def traverse_concepts():
             return err("start_family_ids 不能为空", 400)
         max_depth = min(max(int(body.get('max_depth', 2)), 1), 5)
         time_point = (body.get("time_point") or "").strip() or None
-        result = storage.traverse_concepts(start_ids, max_depth=max_depth, time_point=time_point)
+        edge_types = body.get("edge_types") or body.get("edge_type") or None
+        if isinstance(edge_types, str):
+            edge_types = [edge_types]
+        result = storage.traverse_concepts(start_ids, max_depth=max_depth, time_point=time_point, edge_types=edge_types)
+        return ok(result)
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@concepts_bp.route("/api/v1/documents", methods=["GET"])
+def list_documents():
+    """List indexed Markdown documents for the current graph."""
+    try:
+        processor = _get_processor()
+        storage = processor.storage
+        if not hasattr(storage, "list_documents"):
+            return err("此功能暂不可用", 400)
+        limit = min(max(int(request.args.get("limit", 50)), 1), 200)
+        offset = max(int(request.args.get("offset", 0)), 0)
+        documents = storage.list_documents(limit=limit, offset=offset)
+        return ok({"documents": documents, "total": len(documents), "limit": limit, "offset": offset})
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@concepts_bp.route("/api/v1/documents/graph", methods=["POST"])
+def get_documents_graph():
+    """Return a Document -> Episode -> Concept subgraph for selected documents."""
+    try:
+        processor = _get_processor()
+        storage = processor.storage
+        if not hasattr(storage, "get_document_graph"):
+            return err("此功能暂不可用", 400)
+        body = get_json_body()
+        document_version_ids = body.get("document_version_ids") or []
+        document_family_ids = body.get("document_family_ids") or []
+        if isinstance(document_version_ids, str):
+            document_version_ids = [document_version_ids]
+        if isinstance(document_family_ids, str):
+            document_family_ids = [document_family_ids]
+        if not document_version_ids and not document_family_ids:
+            return err("document_version_ids 或 document_family_ids 至少提供一个", 400)
+        include_relations = bool(body.get("include_relations", True))
+        include_versions = bool(body.get("include_versions", True))
+        max_episodes = min(max(int(body.get("max_episodes", 5000)), 1), 10000)
+        max_concepts = min(max(int(body.get("max_concepts", 20000)), 1), 50000)
+        result = storage.get_document_graph(
+            document_version_ids=document_version_ids,
+            document_family_ids=document_family_ids,
+            include_relations=include_relations,
+            include_versions=include_versions,
+            max_episodes=max_episodes,
+            max_concepts=max_concepts,
+        )
+        return ok(result)
+    except ValueError as e:
+        return err(str(e), 400)
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@concepts_bp.route("/api/v1/documents/graph/outline", methods=["POST"])
+def get_documents_graph_outline():
+    """Return the fast Document -> Episode skeleton for progressive graph rendering."""
+    try:
+        processor = _get_processor()
+        storage = processor.storage
+        if not hasattr(storage, "get_document_graph_outline"):
+            return err("此功能暂不可用", 400)
+        body = get_json_body()
+        document_version_ids = body.get("document_version_ids") or []
+        document_family_ids = body.get("document_family_ids") or []
+        if isinstance(document_version_ids, str):
+            document_version_ids = [document_version_ids]
+        if isinstance(document_family_ids, str):
+            document_family_ids = [document_family_ids]
+        if not document_version_ids and not document_family_ids:
+            return err("document_version_ids 或 document_family_ids 至少提供一个", 400)
+        max_episodes = min(max(int(body.get("max_episodes", 10000)), 1), 10000)
+        result = storage.get_document_graph_outline(
+            document_version_ids=document_version_ids,
+            document_family_ids=document_family_ids,
+            max_episodes=max_episodes,
+        )
+        return ok(result)
+    except ValueError as e:
+        return err(str(e), 400)
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@concepts_bp.route("/api/v1/documents/graph/chunk", methods=["POST"])
+def get_documents_graph_chunk():
+    """Return one episode-ordered concept batch for progressive graph rendering."""
+    try:
+        processor = _get_processor()
+        storage = processor.storage
+        if not hasattr(storage, "get_document_graph_chunk"):
+            return err("此功能暂不可用", 400)
+        body = get_json_body()
+        document_version_ids = body.get("document_version_ids") or []
+        document_family_ids = body.get("document_family_ids") or []
+        if isinstance(document_version_ids, str):
+            document_version_ids = [document_version_ids]
+        if isinstance(document_family_ids, str):
+            document_family_ids = [document_family_ids]
+        if not document_version_ids and not document_family_ids:
+            return err("document_version_ids 或 document_family_ids 至少提供一个", 400)
+        cursor = max(int(body.get("cursor", 0)), 0)
+        limit = min(max(int(body.get("limit", 12)), 1), 100)
+        include_relations = bool(body.get("include_relations", True))
+        include_versions = bool(body.get("include_versions", True))
+        max_concepts = min(max(int(body.get("max_concepts", 8000)), 1), 50000)
+        result = storage.get_document_graph_chunk(
+            document_version_ids=document_version_ids,
+            document_family_ids=document_family_ids,
+            cursor=cursor,
+            limit=limit,
+            include_relations=include_relations,
+            include_versions=include_versions,
+            max_concepts=max_concepts,
+        )
+        return ok(result)
+    except ValueError as e:
+        return err(str(e), 400)
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@concepts_bp.route("/api/v1/documents/<document_version_id>/content", methods=["GET"])
+def get_document_content(document_version_id: str):
+    """Return Markdown source content for a document version."""
+    try:
+        processor = _get_processor()
+        storage = processor.storage
+        if not hasattr(storage, "get_document_content"):
+            return err("此功能暂不可用", 400)
+        offset = max(int(request.args.get("offset", 0)), 0)
+        limit = min(max(int(request.args.get("limit", 20000)), 1), 200000)
+        result = storage.get_document_content(document_version_id, offset=offset, limit=limit)
+        return ok(result)
+    except KeyError as e:
+        return err(str(e), 404)
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@concepts_bp.route("/api/v1/vaults/index", methods=["POST"])
+def index_vault():
+    """Index a read-only Markdown/Obsidian vault into the current graph."""
+    try:
+        processor = _get_processor()
+        storage = processor.storage
+        if not hasattr(storage, "index_vault"):
+            return err("此功能暂不可用", 400)
+        body = get_json_body()
+        path = (body.get("path") or body.get("vault_path") or "").strip()
+        if not path:
+            return err("path 不能为空", 400)
+        force = bool(body.get("force", False))
+        result = storage.index_vault(path, force=force)
         return ok(result)
     except Exception as e:
         return err(str(e), 500)
@@ -265,7 +458,7 @@ def list_communities():
     try:
         processor = _get_processor()
         if not hasattr(processor.storage, 'get_communities'):
-            return err("此功能暂不可用", 400)
+            return err("此功能暂不可用", 404)
         min_size = max(int(request.args.get('min_size', 3)), 1)
         limit = min(max(int(request.args.get('limit', 50)), 1), 200)
         offset = max(int(request.args.get('offset', 0)), 0)
@@ -281,7 +474,7 @@ def get_community(cid: int):
     try:
         processor = _get_processor()
         if not hasattr(processor.storage, 'get_community'):
-            return err("此功能暂不可用", 400)
+            return err("此功能暂不可用", 404)
         community = processor.storage.get_community(cid)
         if community is None:
             return err("社区不存在", 404)
@@ -296,7 +489,7 @@ def get_community_graph(cid: int):
     try:
         processor = _get_processor()
         if not hasattr(processor.storage, 'get_community_graph'):
-            return err("此功能暂不可用", 400)
+            return err("此功能暂不可用", 404)
         graph_data = processor.storage.get_community_graph(cid)
         return ok(graph_data)
     except Exception as e:
@@ -575,3 +768,4 @@ def find_duplicate_entities():
         return ok({"duplicates": duplicates, "count": len(duplicates)})
     except Exception as e:
         return err(str(e), 500)
+

@@ -5,7 +5,7 @@
 
 (function() {
   // ---- Smart refresh state ----
-  let _hasActiveTasks = true;
+  let _hasActiveTasks = false;
 
   // ---- Helpers ----
 
@@ -64,7 +64,7 @@
             <div id="file-list-area">
               <p style="color:var(--text-muted);font-size:0.75rem;margin:0;" id="file-status-text">${t('memory.noFiles')}</p>
             </div>
-            <input type="file" id="file-input" multiple style="display:none;">
+            <input type="file" id="file-input" multiple accept=".md,.markdown,.txt,.text,.json,.html,.htm,.csv,.log,.pdf,.doc,.docx" style="display:none;">
           </div>
           <div style="display:flex;gap:1rem;align-items:flex-end;margin-top:0.75rem;flex-wrap:wrap;">
             <div style="flex:1;min-width:180px;">
@@ -716,13 +716,16 @@
 
     const rows = pageDocs.map((d, i) => {
       const idx = start + i;
+      const hash = d.content_hash || d.doc_hash || d.source_id || '-';
+      const title = d.version_title || d.title || d.source_document || d.doc_name || '-';
+      const processed = d.processed_time || d.updated_at || d.created_at;
       return `
         <tr>
-          <td><span class="mono" title="${escapeHtml(d.doc_hash)}">${escapeHtml(d.doc_hash || '-')}</span></td>
-          <td>${escapeHtml(truncate(d.source_document || d.doc_name || '-', 32))}</td>
-          <td>${formatDate(d.event_time)}</td>
-          <td>${formatDateMs(d.processed_time)}</td>
-          <td class="mono">${d.text_length != null ? d.text_length.toLocaleString() : '-'}</td>
+          <td><span class="mono" title="${escapeHtml(hash)}">${escapeHtml(truncate(hash, 20))}</span></td>
+          <td>${escapeHtml(truncate(title, 32))}</td>
+          <td>${formatDate(d.created_at)}</td>
+          <td>${formatDateMs(processed)}</td>
+          <td class="mono">${d.content_length != null ? d.content_length.toLocaleString() : '-'}</td>
           <td><button class="btn btn-secondary btn-sm doc-detail-btn" data-doc-idx="${idx}">${t('common.detail')}</button></td>
         </tr>
       `;
@@ -813,13 +816,13 @@
       if (b < 1024 * 1024) return (b / 1024).toFixed(1) + ' KB';
       return (b / (1024 * 1024)).toFixed(1) + ' MB';
     };
-    const name = doc.source_document || doc.doc_name || '-';
-    const textLen = doc.text_length != null ? doc.text_length.toLocaleString() : '-';
-    const origSize = fmtSize(doc.original_size);
-    const cacheSize = fmtSize(doc.cache_size);
-    const eventTime = formatDate(doc.event_time);
-    const procTime = formatDateMs(doc.processed_time);
-    const hash = doc.doc_hash || '-';
+    const name = doc.version_title || doc.title || doc.source_document || doc.doc_name || '-';
+    const textLen = doc.content_length != null ? doc.content_length.toLocaleString() : '-';
+    const origSize = fmtSize(doc.blob_size);
+    const cacheSize = fmtSize(doc.content_length);
+    const eventTime = formatDate(doc.created_at);
+    const procTime = formatDateMs(doc.processed_time || doc.updated_at || doc.created_at);
+    const hash = doc.content_hash || doc.doc_hash || doc.source_id || '-';
 
     const rows = [
       [t('memory.taskSource') || '来源', escapeHtml(truncate(name, 60))],
@@ -893,7 +896,7 @@
     container.innerHTML = `
       <div class="page-enter">
         ${renderUploadSection()}
-        <div id="task-list-wrapper">${spinnerHtml()}</div>
+        <div id="task-list-wrapper">${renderTaskSection([], 0)}</div>
         <div id="docs-list-wrapper">${spinnerHtml()}</div>
       </div>
     `;

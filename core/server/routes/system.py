@@ -1,5 +1,5 @@
 """
-System blueprint — Health checks, system monitoring, stats, and route index.
+System routes — Health checks, system monitoring, stats, and route index.
 """
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from flask import Blueprint, current_app, request
 
 from core.llm.client import LLM_PRIORITY_STEP6
 from core.server.llm_utils import call_llm_with_backoff, check_llm_available
-from core.server.blueprints.helpers import ok, err, _get_processor, _get_system_monitor
+from core.server.routes.helpers import ok, err, _get_processor, _get_system_monitor
 
 logger = logging.getLogger(__name__)
 
@@ -31,245 +31,35 @@ _check_llm_available = lambda processor: check_llm_available(processor, priority
 
 _API_ROUTE_INDEX = {
     "health": [
-        {
-            "path": "/api/v1/health",
-            "methods": ["GET"],
-            "summary": "服务健康检查",
-            "query": {"graph_id": "string，必填"},
-            "aliases": ["/health"],
-        },
-        {
-            "path": "/api/v1/health/llm",
-            "methods": ["GET"],
-            "summary": "LLM 连通性检查",
-            "query": {"graph_id": "string，必填"},
-        },
+        {"path": "/api/v1/health", "methods": ["GET"], "summary": "服务健康检查"},
+        {"path": "/api/v1/health/llm", "methods": ["GET"], "summary": "LLM 连通性检查"},
     ],
     "remember": [
-        {
-            "path": "/api/v1/remember",
-            "methods": ["POST"],
-            "summary": "提交异步记忆写入任务",
-            "body": {
-                "graph_id": "string，必填，目标图谱 ID",
-                "text": "string，或通过 file 上传（二选一必填）",
-                "file": "multipart 文件上传",
-                "file_path": "string，服务端本地文件路径（可选）",
-                "source_name": "string，可选",
-                "doc_name": "string，可选，兼容旧字段（内部映射为 source_document）",
-                "source_document": "string，可选，新字段（优先于 doc_name）",
-                "load_cache_memory": "bool，可选",
-                "event_time": "ISO 8601 string，可选",
-            },
-        },
-        {
-            "path": "/api/v1/remember/tasks/<task_id>",
-            "methods": ["GET", "DELETE"],
-            "summary": "查询或删除 remember 任务",
-        },
-        {
-            "path": "/api/v1/remember/tasks/<task_id>/pause",
-            "methods": ["POST"],
-            "summary": "暂停运行中的 remember 任务",
-        },
-        {
-            "path": "/api/v1/remember/tasks/<task_id>/resume",
-            "methods": ["POST"],
-            "summary": "继续已暂停的 remember 任务",
-        },
-        {
-            "path": "/api/v1/remember/tasks",
-            "methods": ["GET"],
-            "summary": "查看 remember 任务队列",
-            "query": {"limit": "int，可选，默认 50"},
-        },
-        {
-            "path": "/api/v1/remember/monitor",
-            "methods": ["GET"],
-            "summary": "获取 remember 实时监控快照",
-            "query": {"limit": "int，可选，默认 6"},
-        },
+        {"path": "/api/v1/remember", "methods": ["POST"], "summary": "写入 Markdown/text 记忆"},
+        {"path": "/api/v1/remember/tasks", "methods": ["GET"], "summary": "查看 remember 任务队列"},
     ],
-    "find": [
-        {
-            "path": "/api/v1/find",
-            "methods": ["POST"],
-            "summary": "统一语义检索入口",
-            "body": {
-                "graph_id": "string，必填，目标图谱 ID",
-                "query": "string，必填",
-                "similarity_threshold": "float，可选，默认 0.5",
-                "max_entities": "int，可选，默认 20",
-                "max_relations": "int，可选，默认 50",
-                "expand": "bool，可选，默认 true",
-                "time_before": "ISO 8601 string，可选",
-                "time_after": "ISO 8601 string，可选",
-            },
-        },
-        {
-            "path": "/api/v1/find/candidates",
-            "methods": ["POST"],
-            "summary": "一次性按条件返回候选实体与关系",
-        },
-        {
-            "path": "/api/v1/find/entities/search",
-            "methods": ["GET", "POST"],
-            "summary": "按文本搜索实体",
-            "body_or_query": {
-                "query_name": "string，必填",
-                "query_content": "string，可选",
-                "similarity_threshold": "float，可选",
-                "max_results": "int，可选",
-                "text_mode": "name_only | content_only | name_and_content",
-                "similarity_method": "embedding | text | jaccard | bleu",
-            },
-        },
-        {
-            "path": "/api/v1/find/relations/search",
-            "methods": ["GET", "POST"],
-            "summary": "按文本搜索关系",
-            "body_or_query": {
-                "query_text": "string，必填",
-                "similarity_threshold": "float，可选",
-                "max_results": "int，可选",
-            },
-        },
+    "documents": [
+        {"path": "/api/v1/vaults/index", "methods": ["POST"], "summary": "索引只读 Markdown/Obsidian vault"},
+        {"path": "/api/v1/documents", "methods": ["GET"], "summary": "列出文档版本"},
+        {"path": "/api/v1/documents/graph", "methods": ["POST"], "summary": "读取文档到 Episode 和 Concept 的可视化子图"},
     ],
-    "entity": [
-        {
-            "path": "/api/v1/find/entities",
-            "methods": ["GET"],
-            "summary": "列出实体",
-            "query": {"limit": "int，可选"},
-        },
-        {
-            "path": "/api/v1/find/entities/as-of-time",
-            "methods": ["GET"],
-            "summary": "列出每个实体在指定时间点的最新版本",
-            "query": {
-                "time_point": "ISO 8601 string，必填",
-                "limit": "int，可选",
-            },
-        },
-        {
-            "path": "/api/v1/find/entities/absolute/<absolute_id>",
-            "methods": ["GET"],
-            "summary": "按实体 absolute_id 读取单个实体版本",
-        },
-        {
-            "path": "/api/v1/find/entities/<family_id>/as-of-time",
-            "methods": ["GET"],
-            "summary": "返回该实体在指定时间点的最近过去版本",
-            "query": {"time_point": "ISO 8601 string，必填"},
-        },
-        {
-            "path": "/api/v1/find/entities/<family_id>/nearest-to-time",
-            "methods": ["GET"],
-            "summary": "返回该实体距离指定时间点最近的版本",
-            "query": {
-                "time_point": "ISO 8601 string，必填",
-                "max_delta_seconds": "float，可选",
-            },
-        },
-        {
-            "path": "/api/v1/find/entities/<family_id>/around-time",
-            "methods": ["GET"],
-            "summary": "返回该实体在指定时间点附近窗口内的所有版本",
-            "query": {
-                "time_point": "ISO 8601 string，必填",
-                "within_seconds": "float，必填",
-            },
-        },
-        {
-            "path": "/api/v1/find/entities/<family_id>/relations",
-            "methods": ["GET"],
-            "summary": "按实体业务 ID 查询相关关系",
-        },
+    "concepts": [
+        {"path": "/api/v1/concepts", "methods": ["GET"], "summary": "列出概念"},
+        {"path": "/api/v1/concepts/search", "methods": ["POST"], "summary": "搜索概念"},
+        {"path": "/api/v1/concepts/<family_id>", "methods": ["GET"], "summary": "读取概念"},
+        {"path": "/api/v1/concepts/<family_id>/versions", "methods": ["GET"], "summary": "读取概念版本"},
+        {"path": "/api/v1/concepts/<family_id>/provenance", "methods": ["GET"], "summary": "读取概念溯源"},
+        {"path": "/api/v1/traverse", "methods": ["POST"], "summary": "遍历概念图"},
     ],
-    "relation": [
-        {
-            "path": "/api/v1/find/relations",
-            "methods": ["GET"],
-            "summary": "列出关系",
-            "query": {
-                "limit": "int，可选",
-                "offset": "int，可选，默认 0",
-            },
-        },
-        {
-            "path": "/api/v1/find/relations/absolute/<absolute_id>",
-            "methods": ["GET"],
-            "summary": "按关系 absolute_id 读取单条关系版本",
-        },
-        {
-            "path": "/api/v1/find/relations/between",
-            "methods": ["GET", "POST"],
-            "summary": "查询两个实体之间的关系",
-            "body_or_query": {
-                "family_id_a": "string，必填",
-                "family_id_b": "string，必填",
-            },
-        },
-        {
-            "path": "/api/v1/find/paths/shortest",
-            "methods": ["GET", "POST"],
-            "summary": "查找两个实体之间的最短路径",
-            "body_or_query": {
-                "family_id_a": "string，必填",
-                "family_id_b": "string，必填",
-                "max_depth": "int，可选，默认6",
-                "max_paths": "int，可选，默认10",
-            },
-        },
-    ],
-    "episode": [
-        {
-            "path": "/api/v1/find/episodes/latest",
-            "methods": ["GET"],
-            "summary": "读取最新 Episode",
-        },
-        {
-            "path": "/api/v1/find/episodes/latest/metadata",
-            "methods": ["GET"],
-            "summary": "读取最新 Episode 元数据",
-        },
-        {
-            "path": "/api/v1/find/episodes/<cache_id>",
-            "methods": ["GET"],
-            "summary": "按 cache_id 读取 Episode",
-        },
+    "graphs": [
+        {"path": "/api/v1/graphs", "methods": ["GET", "POST"], "summary": "列出或创建物理隔离图谱"},
+        {"path": "/api/v1/graphs/<graph_id>", "methods": ["GET", "DELETE"], "summary": "读取或删除图谱"},
+        {"path": "/api/v1/graphs/<graph_id>/clear", "methods": ["POST"], "summary": "清空图谱"},
     ],
     "system": [
-        {
-            "path": "/api/v1/system/overview",
-            "methods": ["GET"],
-            "summary": "系统总览：图谱数量、运行时间、线程数",
-        },
-        {
-            "path": "/api/v1/system/graphs",
-            "methods": ["GET"],
-            "summary": "所有图谱摘要列表",
-        },
-        {
-            "path": "/api/v1/system/graphs/<graph_id>",
-            "methods": ["GET"],
-            "summary": "单图谱详细状态",
-        },
-        {
-            "path": "/api/v1/system/tasks",
-            "methods": ["GET"],
-            "summary": "所有图谱的任务列表",
-        },
-        {
-            "path": "/api/v1/system/logs",
-            "methods": ["GET"],
-            "summary": "最近系统日志",
-        },
-        {
-            "path": "/api/v1/system/access-stats",
-            "methods": ["GET"],
-            "summary": "API 访问统计",
-        },
+        {"path": "/api/v1/routes", "methods": ["GET"], "summary": "动态路由索引"},
+        {"path": "/api/v1/stats/counts", "methods": ["GET"], "summary": "概念计数"},
+        {"path": "/api/v1/system/overview", "methods": ["GET"], "summary": "系统总览"},
     ],
 }
 
@@ -329,6 +119,10 @@ def health_llm():
         })
     _last_llm_health_time = now
     try:
+        cfg = current_app.config.get("config") or {}
+        llm_cfg = cfg.get("llm") or {}
+        if not llm_cfg.get("api_key") and not llm_cfg.get("base_url"):
+            return err("大模型未配置", 503)
         processor = current_app.config["registry"].get_processor(gid)
         response = _call_llm_with_backoff(
             processor,
@@ -370,6 +164,8 @@ def find_stats():
             total_communities = processor.storage.count_communities()
 
         return ok({
+            "total_concepts": processor.storage.count_concepts() if hasattr(processor.storage, "count_concepts") else total_entities + total_relations + total_episodes,
+            "total_documents": processor.storage.count_concepts("document") if hasattr(processor.storage, "count_concepts") else 0,
             "total_entities": total_entities,
             "total_relations": total_relations,
             "total_episodes": total_episodes,
@@ -486,3 +282,5 @@ def system_access_stats():
         return ok(system_monitor.access_stats(since_seconds=since))
     except Exception as e:
         return err(str(e), 500)
+
+

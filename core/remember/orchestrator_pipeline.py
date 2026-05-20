@@ -108,16 +108,9 @@ class _PipelineMixin:
 
         if not document_path:
             document_path = f"api://{uuid.uuid4().hex}"
-        window_size = self.document_processor.window_size
-        overlap = self.document_processor.overlap
         total_length = len(text)
-
-        # 计算总窗口数
-        stride = max(1, window_size - overlap)
-        if total_length <= window_size:
-            total_chunks = 1
-        else:
-            total_chunks = 1 + (max(total_length - window_size, 0) + stride - 1) // stride
+        chunks = self.document_processor.chunk_text(text)
+        total_chunks = len(chunks)
 
         # 所有窗口已处理完毕（断点续传恢复后无需重跑）
         if start_chunk >= total_chunks:
@@ -157,8 +150,6 @@ class _PipelineMixin:
 
         # ========== 主线程：Phase A（step1 串行）+ 提交 Phase B（step2-8）==========
         try:
-            start = start_chunk * stride
-
             for ci in range(N):
                 # Pipeline depth gate: wait for an earlier window's step10 to
                 # finish so that at most ``_max_concurrent_windows`` windows are
@@ -181,9 +172,9 @@ class _PipelineMixin:
                         _slot_acquired = False
                         break
 
-                    end = min(start + window_size, total_length)
-                    chunk = text[start:end]
-                    if start == 0 and doc_name and not doc_name.startswith(("auto_", "api:")):
+                    _wi = start_chunk + ci
+                    chunk, start, end = chunks[_wi]
+                    if _wi == 0 and doc_name and not doc_name.startswith(("auto_", "api:")):
                         chunk = f"[文档元数据] 文档名：{doc_name} [/文档元数据]\n\n{chunk}"
 
                     _wlabel = f"W{start_chunk + ci + 1}/{total_chunks}"
@@ -200,7 +191,6 @@ class _PipelineMixin:
                             f"【窗口】{_wlabel}｜{doc_name}｜[{start}-{end}/{total_length}]"
                         )
 
-                    _wi = start_chunk + ci
                     _g_lo = _wi / total_chunks
                     _g_hi = (_wi + 1) / total_chunks
                     _span = _g_hi - _g_lo
@@ -377,9 +367,6 @@ class _PipelineMixin:
                             _do_extract()
                         _slot_acquired = False
 
-                    if end >= total_length:
-                        break
-                    start = end - overlap
                 finally:
                     if _slot_acquired:
                         self._release_window_slot()

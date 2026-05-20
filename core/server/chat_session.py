@@ -61,10 +61,9 @@ def _get_db(db_path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(db_path), check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute(_CREATE_TABLE_SQL)
-    # Migrate: rename dream_session_id -> claude_session_id if needed
     cols = [row[1] for row in conn.execute("PRAGMA table_info(chat_sessions)").fetchall()]
-    if "dream_session_id" in cols and "claude_session_id" not in cols:
-        conn.execute("ALTER TABLE chat_sessions RENAME COLUMN dream_session_id TO claude_session_id")
+    if "legacy_session_id" in cols and "claude_session_id" not in cols:
+        conn.execute("ALTER TABLE chat_sessions RENAME COLUMN legacy_session_id TO claude_session_id")
     conn.commit()
     return conn
 

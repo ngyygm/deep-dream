@@ -1,7 +1,4 @@
-"""
-多图谱注册表：按 graph_id 管理多个 Processor + Queue 实例。
-每个 graph_id 对应 {storage_path}/{graph_id}/ 下的独立数据库。
-"""
+"""Graph registry for physically isolated SQLite concept graphs."""
 from __future__ import annotations
 
 import json
@@ -13,26 +10,26 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
+from core.remember.orchestrator import TemporalMemoryGraphProcessor
 from core.server.config import merge_llm_alignment, merge_llm_extraction, resolve_embedding_model  # noqa: F401
 from core.storage.embedding import EmbeddingClient
-from core.storage import create_storage_manager
-from core.remember.orchestrator import TemporalMemoryGraphProcessor
-from core.dream import DreamOrchestrator, DreamConfig
 
 if TYPE_CHECKING:
     from core.server.monitor import SystemMonitor
 
-# 图谱 ID 只允许：字母、数字、下划线、连字符（禁止路径穿越）
+logger = logging.getLogger(__name__)
+
 _GRAPH_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 
 
 class GraphRegistry:
-    """多图谱注册表：按 graph_id 管理多个 Processor + RememberTaskQueue 实例。
+    """Owns graph-local processors, queues, and metadata.
 
-    - 不同图谱完全隔离，各自独立的 processor + DB + queue
-    - 所有图谱共享一个 EmbeddingClient 实例（线程安全，省内存）
-    - Processor 延迟初始化：首次访问某 graph_id 时才创建
-    - 首次创建图谱时自动注册到 SystemMonitor
+    Business graph data is physically isolated under:
+        {storage_root}/graphs/{graph_id}/
+
+    The root-level registry.json only stores graph metadata. It never stores
+    concept families, versions, edges, documents, blobs, or vector indexes.
     """
 
     def __init__(
@@ -42,17 +39,74 @@ class GraphRegistry:
         system_monitor: Optional["SystemMonitor"] = None,
     ):
         self._base_path = Path(base_storage_path)
+        self._graphs_path = self._base_path / "graphs"
+        self._registry_path = self._base_path / "registry.json"
         self._config = config
         self._system_monitor = system_monitor
         self._embedding_client: Optional[EmbeddingClient] = None
         self._processors: Dict[str, TemporalMemoryGraphProcessor] = {}
         self._queues: Dict[str, object] = {}
-        self._orchestrators: Dict[str, DreamOrchestrator] = {}
-        self._dream_locks: Dict[str, threading.Lock] = {}
         self._lock = threading.RLock()
 
+        self._base_path.mkdir(parents=True, exist_ok=True)
+        self._graphs_path.mkdir(parents=True, exist_ok=True)
+        if not self._registry_path.exists():
+            self._write_registry({"graphs": {}})
+
     # ------------------------------------------------------------------
-    # 共享 EmbeddingClient（延迟初始化，所有图谱共用）
+    # Paths and registry metadata
+    # ------------------------------------------------------------------
+
+    def graph_dir(self, graph_id: str) -> Path:
+        self.validate_graph_id(graph_id)
+        return self._graphs_path / graph_id
+
+    def _read_registry(self) -> Dict[str, Any]:
+        try:
+            data = json.loads(self._registry_path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                data.setdefault("graphs", {})
+                return data
+        except (OSError, json.JSONDecodeError):
+            pass
+        return {"graphs": {}}
+
+    def _write_registry(self, data: Dict[str, Any]) -> None:
+        data.setdefault("graphs", {})
+        self._base_path.mkdir(parents=True, exist_ok=True)
+        tmp = self._registry_path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(self._registry_path)
+
+    def get_graph_metadata(self, graph_id: str) -> Dict[str, Any]:
+        self.validate_graph_id(graph_id)
+        registry = self._read_registry()
+        meta = dict((registry.get("graphs") or {}).get(graph_id) or {})
+        return meta
+
+    def set_graph_metadata(self, graph_id: str, **kwargs) -> Dict[str, Any]:
+        self.validate_graph_id(graph_id)
+        registry = self._read_registry()
+        graphs = registry.setdefault("graphs", {})
+        existing = dict(graphs.get(graph_id) or {})
+        existing.setdefault("graph_id", graph_id)
+        existing.setdefault("created_at", datetime.now(timezone.utc).isoformat())
+        for key, value in kwargs.items():
+            if value is not None:
+                existing[key] = value
+        existing["updated_at"] = datetime.now(timezone.utc).isoformat()
+        graphs[graph_id] = existing
+        self._write_registry(registry)
+        return dict(existing)
+
+    def _remove_graph_metadata(self, graph_id: str) -> None:
+        registry = self._read_registry()
+        graphs = registry.setdefault("graphs", {})
+        graphs.pop(graph_id, None)
+        self._write_registry(registry)
+
+    # ------------------------------------------------------------------
+    # Shared EmbeddingClient
     # ------------------------------------------------------------------
 
     def _get_embedding_client(self) -> EmbeddingClient:
@@ -68,40 +122,37 @@ class GraphRegistry:
         return self._embedding_client
 
     # ------------------------------------------------------------------
-    # Processor 管理
+    # Processor lifecycle
     # ------------------------------------------------------------------
 
     def get_processor(self, graph_id: str) -> TemporalMemoryGraphProcessor:
-        """获取或创建指定图谱的 Processor（线程安全，带重试）。"""
+        self.validate_graph_id(graph_id)
         with self._lock:
             if graph_id not in self._processors:
-                storage_path = str(self._base_path / graph_id)
-                self._processors[graph_id] = self._build_processor(storage_path)
+                graph_dir = self.graph_dir(graph_id)
+                graph_dir.mkdir(parents=True, exist_ok=True)
+                self.set_graph_metadata(graph_id)
+                self._processors[graph_id] = self._build_processor(str(graph_dir), graph_id)
             return self._processors[graph_id]
 
     def get_processor_with_retry(self, graph_id: str, max_retries: int = 2) -> TemporalMemoryGraphProcessor:
-        """获取 Processor，首次构建失败时自动重试。"""
         for attempt in range(max_retries + 1):
             try:
                 return self.get_processor(graph_id)
-            except Exception as e:
+            except Exception:
                 if attempt == max_retries:
                     raise
                 import time
+
                 time.sleep(0.5 * (attempt + 1))
 
     def create_task_processor(self, graph_id: str) -> TemporalMemoryGraphProcessor:
-        """为单个 remember task 创建独立 Processor 实例。
+        self.validate_graph_id(graph_id)
+        graph_dir = self.graph_dir(graph_id)
+        graph_dir.mkdir(parents=True, exist_ok=True)
+        return self._build_processor(str(graph_dir), graph_id)
 
-        用于 load_cache_memory=False 的独立任务并行执行，避免共享
-        current_episode 等运行时状态。
-        """
-        with self._lock:
-            storage_path = str(self._base_path / graph_id)
-        return self._build_processor(storage_path)
-
-    def _build_processor(self, storage_path: str) -> TemporalMemoryGraphProcessor:
-        """根据 config 构建一个 Processor 实例，使用共享的 EmbeddingClient。"""
+    def _build_processor(self, storage_path: str, graph_id: str) -> TemporalMemoryGraphProcessor:
         config = self._config
         chunking = config.get("chunking") or {}
         window_size = chunking.get("window_size", 1000)
@@ -116,9 +167,7 @@ class GraphRegistry:
         pipeline_extraction = pipeline.get("extraction") or {}
         pipeline_remember = pipeline.get("remember") or {}
         pipeline_debug = pipeline.get("debug") or {}
-        max_concurrency = llm.get("max_concurrency")
-        # 从 storage_path 提取 graph_id（路径格式: {base_path}/{graph_id}/）
-        graph_id = Path(storage_path).name
+
         kwargs: dict = {
             "storage_path": storage_path,
             "config": config,
@@ -134,16 +183,20 @@ class GraphRegistry:
             "embedding_client": self._get_embedding_client(),
             "llm_max_tokens": llm.get("max_tokens"),
             "llm_context_window_tokens": llm.get("context_window_tokens"),
-            "max_llm_concurrency": max_concurrency,
+            "max_llm_concurrency": llm.get("max_concurrency"),
             "load_cache_memory": runtime_task.get("load_cache_memory", pipeline.get("load_cache_memory")),
             "max_concurrent_windows": runtime_concurrency.get("window_workers", pipeline.get("max_concurrent_windows")),
         }
         for key in (
-            "similarity_threshold", "max_similar_entities", "content_snippet_length",
-            "relation_content_snippet_length", "relation_endpoint_jaccard_threshold",
+            "similarity_threshold",
+            "max_similar_entities",
+            "content_snippet_length",
+            "relation_content_snippet_length",
+            "relation_endpoint_jaccard_threshold",
             "relation_endpoint_embedding_threshold",
             "jaccard_search_threshold",
-            "embedding_name_search_threshold", "embedding_full_search_threshold",
+            "embedding_name_search_threshold",
+            "embedding_full_search_threshold",
         ):
             if key in pipeline_search:
                 kwargs[key] = pipeline_search[key]
@@ -151,8 +204,10 @@ class GraphRegistry:
             kwargs["max_alignment_candidates"] = pipeline_alignment["max_alignment_candidates"]
         for key in (
             "prompt_episode_max_chars",
-            "entity_rounds", "relation_rounds",
-            "entity_refine_rounds", "relation_refine_rounds",
+            "entity_rounds",
+            "relation_rounds",
+            "entity_refine_rounds",
+            "relation_refine_rounds",
         ):
             if key in pipeline_extraction:
                 kwargs[key] = pipeline_extraction[key]
@@ -163,64 +218,22 @@ class GraphRegistry:
         return TemporalMemoryGraphProcessor(**kwargs)
 
     # ------------------------------------------------------------------
-    # DreamOrchestrator 管理（持久化跨周期历史）
-    # ------------------------------------------------------------------
-
-    def get_dream_orchestrator(
-        self,
-        graph_id: str,
-        config: Optional["DreamConfig"] = None,
-    ) -> DreamOrchestrator:
-        """获取或创建指定图谱的持久化 DreamOrchestrator。
-
-        每个 graph_id 持有一个 orchestrator 实例，保留跨周期的 LRU 历史。
-        每次调用可传入新的 config 覆盖参数（如 strategy、seed_count），
-        但 _history 和 _cycle_count 在实例生命周期内持久保留。
-        """
-        with self._lock:
-            if graph_id not in self._orchestrators:
-                processor = self.get_processor(graph_id)
-                self._orchestrators[graph_id] = DreamOrchestrator(
-                    processor.storage, processor.llm_client, config
-                )
-            orch = self._orchestrators[graph_id]
-            if config is not None:
-                orch.config = config
-            return orch
-
-    def get_dream_lock(self, graph_id: str) -> threading.Lock:
-        """获取指定图谱的 dream cycle 互斥锁。
-
-        防止同一图谱上并发执行 dream cycle，避免重复关系创建。
-        """
-        with self._lock:
-            if graph_id not in self._dream_locks:
-                self._dream_locks[graph_id] = threading.Lock()
-            return self._dream_locks[graph_id]
-
-    # ------------------------------------------------------------------
-    # Queue 管理（延迟导入避免循环依赖）
+    # Queue lifecycle
     # ------------------------------------------------------------------
 
     def get_queue(self, graph_id: str):
-        """获取或创建指定图谱的 RememberTaskQueue。"""
-        # 快速路径：已存在则直接返回
+        self.validate_graph_id(graph_id)
         with self._lock:
             if graph_id in self._queues:
                 return self._queues[graph_id]
 
-        # 构造 RememberTaskQueue（会启动 worker 线程），必须在锁外执行，
-        # 否则 worker 调用 create_task_processor() 时会死锁。
         from core.server.task_queue import RememberTaskQueue
 
         processor = self.get_processor(graph_id)
-        storage_path = Path(processor.storage.storage_path)
-        event_log = None
-        if self._system_monitor is not None:
-            event_log = self._system_monitor.event_log
+        event_log = self._system_monitor.event_log if self._system_monitor is not None else None
         queue = RememberTaskQueue(
             processor,
-            storage_path,
+            Path(processor.storage.storage_path),
             processor_factory=lambda gid=graph_id: self.create_task_processor(gid),
             max_workers=self._config.get("remember_workers", 1),
             max_retries=self._config.get("remember_max_retries", 2),
@@ -230,7 +243,6 @@ class GraphRegistry:
         )
 
         with self._lock:
-            # 双重检查：防止并发重复创建
             if graph_id not in self._queues:
                 self._queues[graph_id] = queue
                 if self._system_monitor is not None:
@@ -238,243 +250,110 @@ class GraphRegistry:
             return self._queues[graph_id]
 
     # ------------------------------------------------------------------
-    # 图谱元数据（metadata.json）
-    # ------------------------------------------------------------------
-
-    def _metadata_path(self, graph_id: str) -> Path:
-        """Return the path to a graph's metadata.json."""
-        return self._base_path / graph_id / "metadata.json"
-
-    def get_graph_metadata(self, graph_id: str) -> Dict[str, Any]:
-        """Read metadata for a graph. Returns empty dict if not stored."""
-        mp = self._metadata_path(graph_id)
-        if mp.is_file():
-            try:
-                return json.loads(mp.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
-                pass
-        return {}
-
-    def set_graph_metadata(self, graph_id: str, **kwargs) -> Dict[str, Any]:
-        """Write or merge metadata for a graph. Returns the full metadata after write."""
-        mp = self._metadata_path(graph_id)
-        existing = self.get_graph_metadata(graph_id)
-        # Only update keys that are provided and non-None
-        for k, v in kwargs.items():
-            if v is not None:
-                existing[k] = v
-        mp.parent.mkdir(parents=True, exist_ok=True)
-        mp.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
-        return existing
-
-    def get_graph_info(self, graph_id: str) -> Optional[Dict[str, Any]]:
-        """Get full info for a single graph: metadata + entity/relation counts.
-
-        Returns None if the graph directory does not exist.
-        """
-        graph_dir = self._base_path / graph_id
-        if not graph_dir.is_dir():
-            return None
-        metadata = self.get_graph_metadata(graph_id)
-        # Ensure graph_id is in metadata
-        metadata.setdefault("graph_id", graph_id)
-        # Try to get counts from any loaded processor (all graphs share same Neo4j)
-        entity_count = 0
-        relation_count = 0
-        processor = self._processors.get(graph_id)
-        if processor and hasattr(processor, "storage"):
-            try:
-                stats = processor.storage.get_stats()
-                entity_count = stats.get("entities", 0)
-                relation_count = stats.get("relations", 0)
-            except Exception:
-                pass
-        else:
-            # Processor not loaded — query via any loaded processor's Neo4j session
-            try:
-                entity_count, relation_count = self._count_via_neo4j(graph_id)
-            except Exception:
-                pass
-        metadata["entity_count"] = entity_count
-        metadata["relation_count"] = relation_count
-        return metadata
-
-    def _count_via_neo4j(self, graph_id: str) -> tuple:
-        """Query entity/relation counts for a graph via any loaded processor's Neo4j session."""
-        with self._lock:
-            processors = list(self._processors.values())
-        for proc in processors:
-            if hasattr(proc, "storage") and hasattr(proc.storage, "_session"):
-                try:
-                    with proc.storage._session() as session:
-                        result = session.run(
-                            "MATCH (e:Entity) WHERE e.graph_id = $gid AND e.invalid_at IS NULL RETURN count(e) AS cnt",
-                            gid=graph_id,
-                        )
-                        entity_count = result.single()["cnt"] if result.peek() else 0
-                        result = session.run(
-                            "MATCH (r:Relation) WHERE r.graph_id = $gid AND r.invalid_at IS NULL RETURN count(r) AS cnt",
-                            gid=graph_id,
-                        )
-                        relation_count = result.single()["cnt"] if result.peek() else 0
-                        return entity_count, relation_count
-                except Exception:
-                    continue
-        return 0, 0
-
-    # ------------------------------------------------------------------
-    # 图谱列表
+    # Graph list/info
     # ------------------------------------------------------------------
 
     def list_graphs(self) -> List[str]:
-        """列出所有已知图谱（文件系统 + 内存缓存）。"""
-        ids: set = set()
-        # 1. 文件系统上有 docs/ 目录的图谱
-        if self._base_path.is_dir():
-            for child in self._base_path.iterdir():
-                if child.is_dir() and (child / "docs").is_dir():
+        ids: set[str] = set()
+        registry_graphs = self._read_registry().get("graphs") or {}
+        ids.update(registry_graphs.keys())
+        if self._graphs_path.is_dir():
+            for child in self._graphs_path.iterdir():
+                if child.is_dir() and ((child / "graph.db").exists() or child.name in registry_graphs):
                     ids.add(child.name)
-        # 2. 已在内存中创建 processor 的图谱（可能还没有 docs/ 目录）
         with self._lock:
             ids.update(self._processors.keys())
         return sorted(ids)
 
+    def get_graph_info(self, graph_id: str) -> Optional[Dict[str, Any]]:
+        self.validate_graph_id(graph_id)
+        graph_dir = self.graph_dir(graph_id)
+        metadata = self.get_graph_metadata(graph_id)
+        if not graph_dir.is_dir() and not metadata and graph_id not in self._processors:
+            return None
+        metadata.setdefault("graph_id", graph_id)
+        metadata.setdefault("path", str(graph_dir))
+
+        stats = {}
+        processor = self._processors.get(graph_id)
+        try:
+            if processor and hasattr(processor, "storage"):
+                stats = processor.storage.get_stats()
+            elif (graph_dir / "graph.db").exists():
+                from core.storage import create_storage_manager
+
+                storage = create_storage_manager(self._config, embedding_client=None, storage_path=str(graph_dir), graph_id=graph_id)
+                try:
+                    stats = storage.get_stats()
+                finally:
+                    storage.close()
+        except Exception as exc:
+            logger.debug("Failed to read graph stats for %s: %s", graph_id, exc)
+
+        metadata["entity_count"] = int(stats.get("entities", 0) or 0)
+        metadata["relation_count"] = int(stats.get("relations", 0) or 0)
+        metadata["document_count"] = int(stats.get("documents", 0) or 0)
+        metadata["episode_count"] = int(stats.get("episodes", 0) or 0)
+        return metadata
+
     def list_graphs_info(self) -> List[Dict[str, Any]]:
-        """列出所有图谱及其元数据和统计信息。"""
         return [info for gid in self.list_graphs() if (info := self.get_graph_info(gid)) is not None]
 
     # ------------------------------------------------------------------
-    # 图谱删除
+    # Graph deletion/clear
     # ------------------------------------------------------------------
 
     def clear_graph(self, graph_id: str) -> None:
-        """清空指定图谱的所有数据（实体、关系、Episode + 文件缓存），但保留图谱本身。"""
-        with self._lock:
-            processor = self._processors.get(graph_id)
-            if not processor:
-                raise KeyError(f"Graph '{graph_id}' not found")
-
-            storage = processor.storage
-            # Use backend-agnostic clear method if available, otherwise fall back to _session
-            if hasattr(storage, "clear_graph_data"):
-                storage.clear_graph_data()
-            else:
-                with storage._session() as session:
-                    gid = storage._graph_id
-                    session.run(
-                        "MATCH (ep:Episode) WHERE ep.graph_id = $gid DETACH DELETE ep",
-                        gid=gid,
-                    )
-                    session.run(
-                        "MATCH (r:Relation) WHERE r.graph_id = $gid DETACH DELETE r",
-                        gid=gid,
-                    )
-                    session.run(
-                        "MATCH (e:Entity) WHERE e.graph_id = $gid DETACH DELETE e",
-                        gid=gid,
-                    )
-
-            # 清理文件系统：docs 目录下的 episode 文件
-            import shutil
-            for subdir in ("docs",):
-                d = storage.storage_path / subdir
-                if d.is_dir():
-                    for child in d.iterdir():
-                        if child.is_dir():
-                            shutil.rmtree(child, ignore_errors=True)
-
-            logging.getLogger(__name__).info(
-                "Cleared graph data + file cache for graph '%s'", graph_id,
-            )
+        self.validate_graph_id(graph_id)
+        processor = self.get_processor(graph_id)
+        if hasattr(processor.storage, "clear_graph_data"):
+            processor.storage.clear_graph_data()
+        self.set_graph_metadata(graph_id, cleared_at=datetime.now(timezone.utc).isoformat())
+        logger.info("Cleared graph '%s'", graph_id)
 
     def delete_graph(self, graph_id: str) -> None:
-        """删除指定图谱：停止任务队列、关闭 processor 连接、删除数据目录。
-
-        Raises:
-            KeyError: 如果 graph_id 不存在。
-        """
+        self.validate_graph_id(graph_id)
         with self._lock:
-            # 1. 停止并移除任务队列
             queue = self._queues.pop(graph_id, None)
             if queue and hasattr(queue, "shutdown"):
                 try:
                     queue.shutdown()
-                except Exception as _e:
-                    logging.getLogger(__name__).warning("关闭 graph %s 任务队列失败: %s", graph_id, _e)
+                except Exception as exc:
+                    logger.warning("Failed to shut down graph %s queue: %s", graph_id, exc)
 
-            # 2. 移除 dream orchestrator
-            self._orchestrators.pop(graph_id, None)
-            self._dream_locks.pop(graph_id, None)
-
-            # 3. 移除 processor（关闭 DB 连接）
             processor = self._processors.pop(graph_id, None)
-
-            # 4. 删除该 graph_id 的所有数据节点
-            if processor:
-                try:
-                    if hasattr(processor.storage, "delete_graph_data"):
-                        processor.storage.delete_graph_data()
-                    else:
-                        with processor.storage._session() as session:
-                            gid = processor.storage._graph_id
-                            session.run(
-                                "MATCH (ep:Episode) WHERE ep.graph_id = $gid DETACH DELETE ep",
-                                gid=gid,
-                            )
-                            session.run(
-                                "MATCH (r:Relation) WHERE r.graph_id = $gid DETACH DELETE r",
-                                gid=gid,
-                            )
-                            session.run(
-                                "MATCH (e:Entity) WHERE e.graph_id = $gid DETACH DELETE e",
-                                gid=gid,
-                            )
-                    logging.getLogger(__name__).info(
-                        "Deleted graph data for graph '%s'", graph_id,
-                    )
-                except Exception as _e:
-                    logging.getLogger(__name__).warning(
-                        "删除 graph %s 数据失败: %s", graph_id, _e,
-                    )
-
             if processor and hasattr(processor.storage, "close"):
                 try:
                     processor.storage.close()
-                except Exception as _e:
-                    logging.getLogger(__name__).warning("关闭 graph %s 存储连接失败: %s", graph_id, _e)
+                except Exception as exc:
+                    logger.warning("Failed to close graph %s storage: %s", graph_id, exc)
 
-            # 5. 删除数据目录
-            graph_dir = self._base_path / graph_id
+            graph_dir = self.graph_dir(graph_id)
             if graph_dir.is_dir():
                 shutil.rmtree(graph_dir)
 
-            # 6. 从系统监控中移除
+            self._remove_graph_metadata(graph_id)
             if self._system_monitor is not None:
                 self._system_monitor.detach_graph(graph_id)
+            logger.info("Deleted graph '%s'", graph_id)
 
     # ------------------------------------------------------------------
-    # graph_id 校验
+    # Validation
     # ------------------------------------------------------------------
 
     @staticmethod
     def validate_graph_id(graph_id: str) -> None:
-        """校验 graph_id：只允许字母数字、下划线、连字符，禁止路径穿越。
-
-        Raises:
-            ValueError: 如果 graph_id 不合法。
-        """
         if not isinstance(graph_id, str) or not graph_id.strip():
-            raise ValueError("graph_id 为必填参数")
+            raise ValueError("graph_id is required")
         graph_id = graph_id.strip()
-        # Security: Additional path traversal checks
-        if graph_id in ('.', '..'):
-            raise ValueError(f"graph_id 不合法: {graph_id!r}")
-        if '/' in graph_id or '\\' in graph_id:
-            raise ValueError(f"graph_id 不合法: {graph_id!r}")
-        if '\x00' in graph_id:
-            raise ValueError(f"graph_id 包含非法字符")
+        if graph_id in (".", ".."):
+            raise ValueError(f"invalid graph_id: {graph_id!r}")
+        if "/" in graph_id or "\\" in graph_id:
+            raise ValueError(f"invalid graph_id: {graph_id!r}")
+        if "\x00" in graph_id:
+            raise ValueError("graph_id contains illegal characters")
         if not _GRAPH_ID_RE.match(graph_id):
             raise ValueError(
-                f"graph_id 不合法: {graph_id!r}（只允许字母、数字、下划线、连字符，"
-                "长度 1-128，以字母或数字开头）"
+                f"invalid graph_id: {graph_id!r} "
+                "(allowed: letters, numbers, underscore, hyphen; length 1-128; starts with letter/number)"
             )

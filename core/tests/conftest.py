@@ -33,24 +33,28 @@ TEST_CONFIG_PATH = _project_root / "service_config.json"
 def test_config():
     """Load test configuration."""
     if TEST_CONFIG_PATH.exists():
-        return load_config(str(TEST_CONFIG_PATH))
-    else:
-        # Minimal fallback config for testing (SQLite by default)
-        return {
-            "storage_path": "./graph/test",
-            "storage": {"backend": "sqlite"},
-            "host": "127.0.0.1",
-            "port": 16200,
-            "llm": {
-                "api_key": "test",
-                "model": "test-model",
-                "base_url": "http://localhost:11434/v1",
-            },
-            "embedding": {
-                "model_path": "sentence-transformers/all-MiniLM-L6-v2",
-                "device": "cpu",
-            },
-        }
+        try:
+            return load_config(str(TEST_CONFIG_PATH))
+        except Exception:
+            pass
+    # Minimal fallback config for testing (SQLite by default)
+    return {
+        "storage_path": "./graph/test",
+        "storage": {"backend": "sqlite"},
+        "host": "127.0.0.1",
+        "port": 16200,
+        "auth": {"enabled": False},
+        "llm": {
+            "api_key": "test",
+            "model": "test-model",
+            "base_url": "http://localhost:11434/v1",
+        },
+        "embedding": {
+            "use_local": False,
+            "model_path": "",
+            "device": "cpu",
+        },
+    }
 
 
 @pytest.fixture(scope="session")

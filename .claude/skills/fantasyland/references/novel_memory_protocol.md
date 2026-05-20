@@ -39,7 +39,7 @@ create_relation        → 补全遗漏关系
 ```
 quick_search           → 读取已有设定
 remember               → 存储大纲
-dream_run              → 发现隐藏关联
+concept_search              → 发现隐藏关联
 ```
 
 ### 章节开始前（每章一次）
@@ -70,7 +70,7 @@ remember               → 存储写好的段落
 remember               → 存储完整章节
 remember               → 记录状态变更
 evolve_entity_summary  → 更新关键角色状态
-dream_run              → 发现新关联
+concept_search              → 发现新关联
 ```
 
 ## 调用频率参考
@@ -79,7 +79,7 @@ dream_run              → 发现新关联
 |------|------------|---------|
 | 章节预设 | 3-5 | quick_search, ask, batch_profiles, remember |
 | 段落写作 | 每段 3-6 | quick_search, ask, remember |
-| 章节收尾 | 3-5 | remember, dream_run, evolve_entity_summary |
+| 章节收尾 | 3-5 | remember, concept_search |
 | **每章总计** | **约 20-40** | |
 
 ## 记忆内容规范
@@ -183,12 +183,12 @@ ask(question="""
 """)
 ```
 
-## Dream 使用策略
+## 关联探索策略
 
 ### 每章写完后
 
 ```
-dream_run(strategy="narrative", seed_count=3)
+concept search / traverse
 ```
 
 目标：发现本章内容与已有设定的新关联，为后续章节提供灵感。
@@ -196,8 +196,8 @@ dream_run(strategy="narrative", seed_count=3)
 ### 大纲完成后
 
 ```
-dream_run(strategy="cross_domain", seed_count=5, max_depth=3)
-dream_run(strategy="contrastive", seed_count=4)
+concept search / traverse
+concept search / traverse
 ```
 
 目标：发现设定间隐藏联系，为伏笔设计提供素材。
@@ -205,7 +205,7 @@ dream_run(strategy="contrastive", seed_count=4)
 ### 感觉卡文时
 
 ```
-dream_run(strategy="free_association", seed_count=5)
+concept search / traverse
 ```
 
 目标：自由联想，打破创作僵局。
@@ -213,8 +213,8 @@ dream_run(strategy="free_association", seed_count=5)
 ### 发现伏笔机会时
 
 ```
-dream_run(strategy="leap", seed_count=3)
-dream_run(strategy="temporal_bridge", seed_count=3)
+concept search / traverse
+concept search / traverse
 ```
 
 目标：远距离联想、时间线关联，创造意外伏笔。
@@ -228,3 +228,5 @@ dream_run(strategy="temporal_bridge", seed_count=3)
 | ask 返回矛盾信息 | 检查 source_name 是否有重复写入，用 timeline 追溯冲突来源 |
 | 角色状态不明 | 用 entity_profile + get_entity_timeline 完整回溯 |
 | 伏笔丢失 | 检查 source_name="伏笔-*" 的 episode，重新确认状态 |
+
+

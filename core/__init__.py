@@ -1,10 +1,9 @@
 """
 Deep-Dream Core
 
-唯一的代码目录，包含三大功能模块和共享基础设施：
+唯一的代码目录，包含核心功能模块和共享基础设施：
 - remember/ — 知识图谱构建管道
 - find/ — 混合搜索引擎
-- dream/ — 隐含关系发现
 - llm/ — LLM 客户端
 - storage/ — 图存储（SQLite + hnswlib + FTS5）
 """

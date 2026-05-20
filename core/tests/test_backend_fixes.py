@@ -165,12 +165,12 @@ class TestHealthLlmRateLimit:
     """Verify LLM health check has rate limiting."""
 
     def test_rate_limit_module_variable(self):
-        from core.server.blueprints import system
+        from core.server.routes import system
         assert hasattr(system, '_LLM_HEALTH_MIN_INTERVAL')
         assert system._LLM_HEALTH_MIN_INTERVAL == 30.0
 
     def test_rate_limit_cooldown_tracking(self):
-        from core.server.blueprints import system
+        from core.server.routes import system
         assert hasattr(system, '_last_llm_health_time')
         assert isinstance(system._last_llm_health_time, float)
 
@@ -196,17 +196,9 @@ class TestEntityAbsoluteIdFormat:
 class TestThreadPoolCleanup:
     """Verify shared thread pools are registered for cleanup."""
 
-    def test_entities_pool_exists(self):
-        from core.server.blueprints.entities import _shared_pool
+    def test_concepts_pool_exists(self):
+        from core.server.routes.concepts import _shared_pool
+
         assert _shared_pool is not None
         assert _shared_pool._max_workers == 3
 
-    def test_relations_pool_exists(self):
-        from core.server.blueprints.relations import _shared_pool
-        assert _shared_pool is not None
-        assert _shared_pool._max_workers == 3
-
-    def test_dream_pool_exists(self):
-        from core.server.blueprints.dream import _dream_pool
-        assert _dream_pool is not None
-        assert _dream_pool._max_workers == 4

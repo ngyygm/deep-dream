@@ -4,13 +4,17 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import re
+import shutil
+import subprocess
+import tempfile
 import uuid
 from datetime import datetime
 from typing import Any, Dict, Optional
 
 from flask import Blueprint, current_app, jsonify, make_response, request
 
-from core.server.blueprints.helpers import (
+from core.server.routes.helpers import (
     _get_processor,
     _get_queue,
     _parse_bool_query,
@@ -22,7 +26,7 @@ from core.server.blueprints.helpers import (
     err,
     ok,
 )
-from core.server.blueprints._constants import _BOOL_TRUE, _BOOL_FALSE
+from core.server.routes._constants import _BOOL_TRUE, _BOOL_FALSE
 from core.server.monitor import LOG_MODE_DETAIL
 from core.server.task_queue import RememberTask
 from core.llm.sanitize import sanitize_user_input
@@ -30,7 +34,7 @@ from core.llm.sanitize import sanitize_user_input
 # Security: Maximum text length to prevent DoS
 _MAX_TEXT_LENGTH = 10_000_000  # 10MB
 _MAX_FILE_SIZE = 10_000_000  # 10MB
-_ALLOWED_FILE_EXTENSIONS = {'.txt', '.md', '.json', '.html', '.htm'}
+_ALLOWED_FILE_EXTENSIONS = {'.txt', '.text', '.md', '.markdown', '.json', '.html', '.htm', '.csv', '.log', '.pdf', '.docx', '.doc'}
 
 logger = logging.getLogger(__name__)
 
@@ -96,14 +100,14 @@ def _parse_remember_input(post_json: Dict[str, Any]):
             if file_ext and file_ext not in _ALLOWED_FILE_EXTENSIONS:
                 return err(f"不支持的文件类型: {file_ext}", 400)
 
-            # Security: Validate content is valid UTF-8 without null bytes
             content = file.read()
-            if b'\x00' in content:
-                return err("文件包含非法字符（null bytes）", 400)
             try:
-                text = content.decode("utf-8")
-            except UnicodeDecodeError:
-                return err("文件编码错误，仅支持 UTF-8", 400)
+                text = _uploaded_file_to_markdown(content, file.filename, file_ext)
+            except ValueError as exc:
+                return err(str(exc), 400)
+            except Exception as exc:
+                logger.exception("Failed to convert uploaded file %s", file.filename)
+                return err(f"文件转换失败: {exc}", 400)
 
     if not text:
         return err("缺少 text 或 file（必填其一）", 400)
@@ -126,6 +130,7 @@ def _parse_remember_input(post_json: Dict[str, Any]):
     if was_sanitized:
         logger.warning("Remember input was sanitized due to security concerns")
 
+    processor = _get_processor()
     sn = _remember_get_str("source_name", post_json)
     dn = _remember_get_str("doc_name", post_json)
     sd = _remember_get_str("source_document", post_json)
@@ -136,10 +141,8 @@ def _parse_remember_input(post_json: Dict[str, Any]):
     if sn or sd or dn:
         source_name = sn or sd or dn
     else:
-        _preview = text[:40].strip().replace('\n', ' ')[:30]
-        source_name = f"api:{_preview}"
+        source_name = _generate_default_document_name(text, processor)
 
-    processor = _get_processor()
     load_cache = _remember_get_bool("load_cache_memory", post_json)
     if load_cache is None:
         # 任务入队时就固化默认值，避免服务重启或配置变更后语义漂移。
@@ -156,6 +159,268 @@ def _parse_remember_input(post_json: Dict[str, Any]):
             return err("event_time 需为 ISO 8601 格式", 400)
 
     return text, source_name, load_cache, event_time
+
+
+def _generate_default_document_name(text: str, processor: Any) -> str:
+    """Generate a short display document name for raw text remember requests."""
+    title = ""
+    llm_client = getattr(processor, "llm_client", None)
+    if llm_client is not None and getattr(llm_client, "_endpoint_available", False):
+        try:
+            prompt = (
+                "请为下面这段用户记忆生成一个中文 Markdown 文档名。\n"
+                "要求：15个汉字以内；不要扩展名；不要引号；不要解释；保留核心主题。\n\n"
+                f"内容：\n{text[:2000]}"
+            )
+            raw = llm_client._call_llm(
+                prompt,
+                system_prompt="你只输出一个短文档名。",
+                max_retries=1,
+                timeout=20,
+                allow_mock_fallback=False,
+                request_max_tokens_scale=0.05,
+            )
+            title = _sanitize_generated_title(raw)
+        except Exception as exc:
+            logger.debug("LLM document title generation failed: %s", exc)
+    if not title:
+        title = _fallback_document_title(text)
+    return f"{title}.md"
+
+
+def _uploaded_file_to_markdown(content: bytes, filename: str, file_ext: str) -> str:
+    """Convert supported uploaded files into Markdown text for the remember pipeline."""
+    ext = (file_ext or "").lower()
+    display_name = os.path.basename(filename or "uploaded")
+    if ext in {".md", ".markdown"}:
+        return _decode_text_upload(content)
+    if ext in {".txt", ".text", ".csv", ".log"}:
+        return f"# {display_name}\n\n{_decode_text_upload(content)}"
+    if ext == ".json":
+        return f"# {display_name}\n\n```json\n{_decode_text_upload(content)}\n```"
+    if ext in {".html", ".htm"}:
+        return f"# {display_name}\n\n{_html_to_markdownish(_decode_text_upload(content))}"
+    if ext == ".pdf":
+        return f"# {display_name}\n\n{_pdf_to_markdown(content)}"
+    if ext == ".docx":
+        return f"# {display_name}\n\n{_docx_to_markdown(content)}"
+    if ext == ".doc":
+        return f"# {display_name}\n\n{_doc_to_markdown(content)}"
+    raise ValueError(f"不支持的文件类型: {ext or '(无扩展名)'}")
+
+
+def _decode_text_upload(content: bytes) -> str:
+    encodings = []
+    if content.startswith((b"\xff\xfe", b"\xfe\xff")):
+        encodings.extend(["utf-16", "utf-16-le", "utf-16-be"])
+    elif b"\x00" in content[:4096]:
+        even_nulls = content[:4096:2].count(0)
+        odd_nulls = content[1:4096:2].count(0)
+        if odd_nulls > even_nulls:
+            encodings.extend(["utf-16-le", "utf-16"])
+        else:
+            encodings.extend(["utf-16-be", "utf-16"])
+    encodings.extend(["utf-8-sig", "utf-8", "gb18030", "cp936", "big5", "shift_jis"])
+    detected = _detect_text_encoding(content)
+    if detected:
+        encodings.append(detected)
+    encodings.append("latin-1")
+
+    last_error = None
+    for encoding in dict.fromkeys(encodings):
+        try:
+            text = content.decode(encoding)
+            if "\x00" in text:
+                last_error = ValueError("文本解码后仍包含 null bytes")
+                continue
+            return text
+        except (UnicodeDecodeError, UnicodeError, ValueError) as exc:
+            last_error = exc
+            continue
+    raise ValueError(f"文件编码错误，无法识别文本编码: {last_error}")
+
+
+def _detect_text_encoding(content: bytes) -> str:
+    try:
+        from charset_normalizer import from_bytes  # type: ignore
+        best = from_bytes(content).best()
+        if best and best.encoding:
+            return str(best.encoding)
+    except Exception:
+        pass
+    try:
+        import chardet  # type: ignore
+        result = chardet.detect(content)
+        if result and result.get("encoding") and float(result.get("confidence") or 0) >= 0.5:
+            return str(result["encoding"])
+    except Exception:
+        pass
+    return ""
+
+
+def _html_to_markdownish(html: str) -> str:
+    try:
+        from bs4 import BeautifulSoup  # type: ignore
+        soup = BeautifulSoup(html or "", "html.parser")
+        for tag in soup(["script", "style"]):
+            tag.decompose()
+        return soup.get_text("\n")
+    except Exception:
+        text = re.sub(r"(?is)<(script|style).*?>.*?</\1>", "", html or "")
+        text = re.sub(r"(?i)<br\s*/?>", "\n", text)
+        text = re.sub(r"(?i)</p\s*>", "\n\n", text)
+        text = re.sub(r"<[^>]+>", "", text)
+        return text
+
+
+def _pdf_to_markdown(content: bytes) -> str:
+    errors = []
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+        tmp.write(content)
+        tmp_path = tmp.name
+    try:
+        try:
+            from pypdf import PdfReader  # type: ignore
+            reader = PdfReader(tmp_path)
+            pages = []
+            for idx, page in enumerate(reader.pages, 1):
+                pages.append(f"## Page {idx}\n\n{page.extract_text() or ''}".strip())
+            text = "\n\n".join(pages).strip()
+            if text:
+                return text
+        except Exception as exc:
+            errors.append(f"pypdf: {exc}")
+        try:
+            import pdfplumber  # type: ignore
+            with pdfplumber.open(tmp_path) as pdf:
+                pages = [f"## Page {idx}\n\n{page.extract_text() or ''}".strip() for idx, page in enumerate(pdf.pages, 1)]
+            text = "\n\n".join(pages).strip()
+            if text:
+                return text
+        except Exception as exc:
+            errors.append(f"pdfplumber: {exc}")
+        try:
+            import fitz  # type: ignore
+            doc = fitz.open(tmp_path)
+            pages = [f"## Page {idx}\n\n{page.get_text() or ''}".strip() for idx, page in enumerate(doc, 1)]
+            doc.close()
+            text = "\n\n".join(pages).strip()
+            if text:
+                return text
+        except Exception as exc:
+            errors.append(f"pymupdf: {exc}")
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+    raise ValueError("PDF 未能提取文本" + (f"（{'; '.join(errors[:2])}）" if errors else ""))
+
+
+def _docx_to_markdown(content: bytes) -> str:
+    try:
+        from docx import Document  # type: ignore
+    except Exception as exc:
+        raise ValueError(f"DOCX 转换需要 python-docx: {exc}") from exc
+    with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp:
+        tmp.write(content)
+        tmp_path = tmp.name
+    try:
+        doc = Document(tmp_path)
+        blocks = []
+        for para in doc.paragraphs:
+            text = para.text.strip()
+            if not text:
+                continue
+            style = (para.style.name or "").lower() if para.style else ""
+            if "heading 1" in style:
+                blocks.append(f"# {text}")
+            elif "heading 2" in style:
+                blocks.append(f"## {text}")
+            elif "heading 3" in style:
+                blocks.append(f"### {text}")
+            else:
+                blocks.append(text)
+        for table in doc.tables:
+            for row in table.rows:
+                cells = [cell.text.strip().replace("\n", " ") for cell in row.cells]
+                if any(cells):
+                    blocks.append("| " + " | ".join(cells) + " |")
+        text = "\n\n".join(blocks).strip()
+        if not text:
+            raise ValueError("DOCX 未提取到文本")
+        return text
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+
+def _doc_to_markdown(content: bytes) -> str:
+    antiword = shutil.which("antiword")
+    if antiword:
+        with tempfile.NamedTemporaryFile(suffix=".doc", delete=False) as tmp:
+            tmp.write(content)
+            tmp_path = tmp.name
+        try:
+            result = subprocess.run([antiword, tmp_path], capture_output=True, text=True, timeout=30)
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout.strip()
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+    try:
+        import win32com.client  # type: ignore
+    except Exception as exc:
+        raise ValueError("DOC 转换需要安装 Microsoft Word/pywin32 或 antiword；建议另存为 DOCX/PDF 后上传") from exc
+    with tempfile.TemporaryDirectory() as td:
+        doc_path = os.path.join(td, "input.doc")
+        txt_path = os.path.join(td, "output.txt")
+        with open(doc_path, "wb") as f:
+            f.write(content)
+        word = win32com.client.Dispatch("Word.Application")
+        word.Visible = False
+        try:
+            doc = word.Documents.Open(doc_path)
+            doc.SaveAs(txt_path, FileFormat=2)
+            doc.Close(False)
+            return _decode_text_upload(open(txt_path, "rb").read())
+        finally:
+            word.Quit()
+
+
+def _sanitize_generated_title(raw: str) -> str:
+    title = str(raw or "").strip()
+    title = re.sub(r"```(?:json|text)?|```", "", title, flags=re.I).strip()
+    if title.startswith("{"):
+        try:
+            import json as _json
+            obj = _json.loads(title)
+            if isinstance(obj, dict):
+                title = str(obj.get("title") or obj.get("name") or obj.get("document_name") or title)
+        except Exception:
+            pass
+    title = title.splitlines()[0].strip() if title else ""
+    title = re.sub(r"^[\"'“”‘’《<]+|[\"'“”‘’》>]+$", "", title).strip()
+    title = re.sub(r"[\s\t\r\n]+", "", title)
+    title = re.sub(r"[\\/:*?\"<>|#\[\]{}]+", "", title)
+    title = re.sub(r"\.(md|markdown|txt)$", "", title, flags=re.I)
+    return title[:15] if title else ""
+
+
+def _fallback_document_title(text: str) -> str:
+    first_heading = re.search(r"^\s{0,3}#{1,6}\s+(.+?)\s*$", text or "", flags=re.M)
+    if first_heading:
+        title = _sanitize_generated_title(first_heading.group(1))
+        if title:
+            return title
+    compact = re.sub(r"\s+", "", text or "")
+    compact = re.sub(r"[\\/:*?\"<>|#\[\]{}]+", "", compact)
+    compact = compact.strip("，。！？；：,.!?;:、 \t\r\n")
+    return (compact[:15] or f"文本记忆{hashlib.sha256((text or '').encode('utf-8')).hexdigest()[:6]}")
 
 
 def _build_remember_task(text: str, source_name: str, load_cache: bool,
@@ -422,3 +687,4 @@ def remember_monitor():
         })
     except Exception as e:
         return err(str(e), 500)
+

@@ -8,7 +8,7 @@ DeepDream 自然语言记忆图 API（多图谱模式）
 多图谱模式：支持按 graph_id 隔离不同知识图谱，所有 API 请求需带 graph_id 参数。
 系统不负责 select，外部智能体根据 find 结果自行决策。
 
-路由已拆分至 server/blueprints/ 下的各 Blueprint 模块，此文件仅作为应用工厂。
+路由已拆分至 server/routes/ 下的 route 模块，此文件仅作为应用工厂。
 """
 from __future__ import annotations
 
@@ -21,9 +21,14 @@ import argparse
 import atexit
 import errno
 import logging
+import mimetypes
 import os
 
 logger = logging.getLogger(__name__)
+
+mimetypes.add_type("application/javascript", ".js")
+mimetypes.add_type("application/javascript", ".mjs")
+mimetypes.add_type("text/css", ".css")
 
 from core.log import info as _log_info, error as _log_error
 import signal
@@ -73,6 +78,7 @@ def create_app(
     app.json.ensure_ascii = False
     app.config["system_monitor"] = system_monitor
     app.config["registry"] = registry
+    app.config["config"] = config or {}
 
     # Build version for cache-busting (hash of static dir mtime)
     _static_version = str(int(static_dir.stat().st_mtime))
@@ -176,8 +182,10 @@ def create_app(
 
     # Read-only endpoints that can be accessed with read permission
     _READ_ONLY_ROUTES = {
-        "/api/v1/find", "/api/v1/find/entities",
-        "/api/v1/find/relations", "/api/v1/find/episodes",
+        "/api/v1/find",
+        "/api/v1/concepts",
+        "/api/v1/documents",
+        "/api/v1/traverse",
         "/api/v1/stats",
     }
 
@@ -371,21 +379,13 @@ def create_app(
     def _api_root_redirect():
         return redirect("/api/v1/", code=308)
 
-    # ── Register all Blueprint modules ────────────────────────────────────
-    from core.server.blueprints.system import system_bp
-    from core.server.blueprints.remember import remember_bp
-    from core.server.blueprints.entities import entities_bp
-    from core.server.blueprints.relations import relations_bp
-    from core.server.blueprints.episodes import episodes_bp
-    from core.server.blueprints.dream import dream_bp
-    from core.server.blueprints.concepts import concepts_bp
+    # ── Register all Route modules ────────────────────────────────────
+    from core.server.routes.system import system_bp
+    from core.server.routes.remember import remember_bp
+    from core.server.routes.concepts import concepts_bp
 
     app.register_blueprint(system_bp)
     app.register_blueprint(remember_bp)
-    app.register_blueprint(entities_bp)
-    app.register_blueprint(relations_bp)
-    app.register_blueprint(episodes_bp)
-    app.register_blueprint(dream_bp)
     app.register_blueprint(concepts_bp)
 
     # JSON 404 for API routes (HTML 404 for everything else)
@@ -439,11 +439,9 @@ def create_app(
 
     # Cleanup shared thread pools on shutdown
     def _shutdown_pools():
-        from core.server.blueprints.entities import _shared_pool as _ent_pool
-        from core.server.blueprints.relations import _shared_pool as _rel_pool
-        from core.server.blueprints.dream import _dream_pool
-        for pool in (_ent_pool, _rel_pool, _dream_pool):
-            pool.shutdown(wait=False)
+        from core.server.routes.concepts import _shared_pool as _concept_pool
+
+        _concept_pool.shutdown(wait=False)
     atexit.register(_shutdown_pools)
 
     # ── SPA fallback routes (must be last) ─────────────────────────────────
@@ -638,9 +636,9 @@ def main() -> int:
   访问统计: GET  http://{host}:{listen_port}/api/v1/system/access-stats
   语义检索: POST http://{host}:{listen_port}/api/v1/find
   接口索引: GET  http://{host}:{listen_port}/api/v1/routes
-  原子查询: GET  http://{host}:{listen_port}/api/v1/find/...
+  概念查询: GET  http://{host}:{listen_port}/api/v1/concepts
 
-  存储基础路径: {storage_path} （各图谱在 {storage_path}/<graph_id>/ 下）
+  存储基础路径: {storage_path} （各图谱在 {storage_path}/graphs/<graph_id>/ 下）
   HTTP 多线程: 处理中 Find 与 Remember 可并行（Flask threaded）
   多图谱模式: 所有 API 请求需带 graph_id 参数
   日志模式: {log_mode}
@@ -699,3 +697,4 @@ def main() -> int:
 if __name__ == "__main__":
     import sys
     sys.exit(main())
+

@@ -54,21 +54,17 @@ DEFAULT_PERMISSIONS = {
         "read",
         "find:read",
         "remember:write",
-        "entities:read",
-        "relations:read",
-        "episodes:read",
+        "concepts:read",
+        "documents:read",
     },
     "jwt": {
         "read",
         "find:read",
         "remember:write",
-        "entities:read",
-        "entities:write",
-        "relations:read",
-        "relations:write",
-        "episodes:read",
-        "dream:read",
-        "dream:write",
+        "concepts:read",
+        "concepts:write",
+        "documents:read",
+        "documents:write",
     },
 }
 
@@ -398,9 +394,9 @@ PUBLIC_ENDPOINTS = {
 # Read-only endpoints that only need read permission
 READ_ONLY_ENDPOINTS = {
     "/api/v1/find",
-    "/api/v1/find/entities",
-    "/api/v1/find/relations",
-    "/api/v1/find/episodes",
+    "/api/v1/concepts",
+    "/api/v1/documents",
+    "/api/v1/traverse",
 }
 
 

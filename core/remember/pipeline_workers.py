@@ -355,7 +355,6 @@ def summarize_window_timings(window_timings):
         "step10a-embedding_prep": "  b3-Embedding",
         "step10b-process_loop": "  b4-处理循环",
         "step10c-refresh_edges": "10c-边刷新",
-        "step10d-dream_corroboration": "10d-Dream佐证",
         "step10-relation_mentions": "10e-Relation记录",
         "step10-orphan_cleanup": "10f-孤立处理",
     }

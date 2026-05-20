@@ -127,8 +127,8 @@ remember(text="第X章结束状态变更：...",
 # 更新角色
 evolve_entity_summary(family_id="ent_xxx")
 
-# Dream 探索
-dream_run(strategy="narrative", seed_count=3)
+# 关联探索
+concept search / traverse
 ```
 
 ---
@@ -159,4 +159,6 @@ dream_run(strategy="narrative", seed_count=3)
 - [ ] 完整章节已 `remember` 存入
 - [ ] 状态变更已 `remember` 存入
 - [ ] 角色摘要已 `evolve_entity_summary` 更新
-- [ ] 已 `dream_run` 发现新关联
+- [ ] 已 `concept_search` 发现新关联
+
+

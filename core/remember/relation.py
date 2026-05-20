@@ -25,9 +25,6 @@ def _get_entity_names(relation: Dict[str, str]) -> Tuple[str, str]:
         relation.get('entity2_name') or relation.get('to_entity_name', ''),
     )
 
-# Shared pool for corroboration calls (avoids per-call thread churn)
-_corrob_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="corrob")
-
 # Shared pool for batch relation processing
 _REL_POOL: list = [None]
 _REL_POOL_MAX: list = [1]
@@ -371,36 +368,6 @@ class RelationProcessor(_RelationConstructionMixin):
                 if r.absolute_id and r.absolute_id not in seen_abs_ids:
                     processed_relations.append(r)
                     seen_abs_ids.add(r.absolute_id)
-
-        # Dream 候选层佐证：remember 提取的关系与 dream 候选关系匹配时，自动佐证
-        _t_dream = _time.monotonic()
-        if hasattr(self.storage, 'corroborate_dream_relations_batch'):
-            try:
-                self.storage.corroborate_dream_relations_batch(
-                    list(relations_by_pair), corroboration_source="remember",
-                )
-            except Exception:
-                pass
-        else:
-            # Batch corroborate in parallel to avoid N+1 sequential DB calls
-            _pair_keys = list(relations_by_pair)
-            if _pair_keys:
-                def _corroborate_one(pair_key):
-                    try:
-                        self.storage.corroborate_dream_relation(
-                            pair_key[0], pair_key[1], corroboration_source="remember",
-                        )
-                    except Exception:
-                        pass
-
-                if len(_pair_keys) > 1:
-                    list(_corrob_pool.map(_corroborate_one, _pair_keys))
-                else:
-                    _corroborate_one(_pair_keys[0])
-
-        dbg(f"[step10_timing] dream_corroboration + cleanup: {_time.monotonic()-_t_dream:.2f}s")
-        if window_timings_ref is not None:
-            window_timings_ref["step10d-dream_corroboration"] = _time.monotonic() - _t_dream
 
         return processed_relations
 
