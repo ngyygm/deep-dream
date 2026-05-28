@@ -220,6 +220,26 @@ def worker_loop(q: "RememberTaskQueue") -> None:  # noqa: C901 — legacy comple
             _existing_main_chunks = task.main_done_chunks or 0
             _existing_step9_chunks = task.step9_done_chunks or 0
             _existing_step10_chunks = task.step10_done_chunks or task.processed_chunks or 0
+            if not task.failed_window_indices and (
+                _existing_main_chunks > 0 or _existing_step9_chunks > 0 or _existing_step10_chunks > 0
+            ):
+                try:
+                    _missing = q.detect_repair_windows(task)
+                    if _missing:
+                        task.failed_window_indices = list(_missing)
+                        task.failed_window_errors = [
+                            {
+                                "phase": s.get("missing_phase") or "missing",
+                                "window_index": s.get("window_index"),
+                                "error": "窗口缺失或落库不完整",
+                            }
+                            for s in (task.repair_window_statuses or [])
+                        ]
+                        _existing_main_chunks = max(0, task.total_chunks - len(_missing))
+                        _existing_step9_chunks = _existing_main_chunks
+                        _existing_step10_chunks = _existing_main_chunks
+                except Exception as exc:
+                    q._log_warn("[Remember] 补缺检测失败，将按断点继续: %s" % exc)
             _init_progress = _existing_step10_chunks / task.total_chunks if task.total_chunks > 0 else 0.0
             _resume_hint = (
                 "断点续传："
@@ -235,6 +255,13 @@ def worker_loop(q: "RememberTaskQueue") -> None:  # noqa: C901 — legacy comple
                 else ("断点续传" if (_existing_main_chunks > 0 or _existing_step9_chunks > 0 or _existing_step10_chunks > 0) else "开始处理")
             )
             _start_chunk = task.step10_done_chunks or task.processed_chunks or 0
+            _is_targeted_retry = bool(task.failed_window_indices)
+            if _is_targeted_retry:
+                _start_chunk = 0
+                _target_indices = sorted(task.failed_window_indices)
+                _init_progress = max(0, (task.total_chunks - len(_target_indices))) / task.total_chunks if task.total_chunks > 0 else 0.0
+            else:
+                _target_indices = None
             _uses_external_cache = q._task_uses_external_cache(task)
             _task_processor = q._processor if _uses_external_cache else q._processor_factory()
             q._update_task_progress(
@@ -285,6 +312,8 @@ def worker_loop(q: "RememberTaskQueue") -> None:  # noqa: C901 — legacy comple
                     def _on_main_chunk_done(processed_count: int, _t=_task_ref):
                         _tc = max(1, int(_t.total_chunks or 1))
                         _pc = max(0, int(processed_count))
+                        if _is_targeted_retry:
+                            _pc = min(_tc, max(0, _tc - len(_target_indices) + _pc))
                         _pg = min(1.0, float(_pc) / float(_tc))
                         _ml = _t.main_label or ""
                         # 当所有窗口的步骤1-5完成时，更新 main_label 显示完成状态
@@ -292,17 +321,20 @@ def worker_loop(q: "RememberTaskQueue") -> None:  # noqa: C901 — legacy comple
                             _ml = "步骤1–8/10 已完成"
                         q._update_task_progress(
                             _t,
-                            main_done_chunks=_pc,
-                            main_progress=_pg,
+                            main_done_chunks=max(_pc, int(_t.main_done_chunks or 0)),
+                            main_progress=max(_pg, float(_t.main_progress or 0.0)),
                             main_label=_ml,
                         )
                         q._persist(_t)
 
                     def _on_step9_chunk_done(processed_count: int, _t=_task_ref):
+                        _tc = max(1, int(_t.total_chunks or 1))
                         _pc = max(0, int(processed_count))
+                        if _is_targeted_retry:
+                            _pc = min(_tc, max(0, _tc - len(_target_indices) + _pc))
                         q._update_task_progress(
                             _t,
-                            step9_done_chunks=_pc,
+                            step9_done_chunks=max(_pc, int(_t.step9_done_chunks or 0)),
                         )
                         q._persist(_t)
 
@@ -310,29 +342,59 @@ def worker_loop(q: "RememberTaskQueue") -> None:  # noqa: C901 — legacy comple
                         """窗口 step10 完成后更新 processed_chunks；总进度与已完成窗数一致（单调递增）。"""
                         _tc = max(1, int(_t.total_chunks or 1))
                         _pc = max(0, int(processed_count))
+                        if _is_targeted_retry:
+                            _pc = min(_tc, max(0, _tc - len(_target_indices) + _pc))
                         _pg = min(1.0, float(_pc) / float(_tc))
                         q._update_task_progress(
                             _t,
-                            step10_done_chunks=_pc,
-                            processed_chunks=_pc,
-                            progress=_pg,
+                            step10_done_chunks=max(_pc, int(_t.step10_done_chunks or 0)),
+                            processed_chunks=max(_pc, int(_t.processed_chunks or 0)),
+                            progress=max(_pg, float(_t.progress or 0.0)),
                         )
                         q._persist(_t)
 
                     def _run_task():
                         q._set_active_processor(task.task_id, _task_processor)
                         try:
-                            return _task_processor.remember_text(
+                            _document_path = task.cache_document_path or task.original_path
+                            _kwargs = dict(
                                 text=task.text,
                                 source_document=task.source_name,
                                 verbose=q._detail_logs,
                                 verbose_steps=not q._detail_logs,
                                 load_cache_memory=_uses_external_cache,
                                 event_time=task.event_time,
-                                document_path=task.original_path,
+                                document_path=_document_path,
                                 progress_callback=_on_progress,
                                 control_callback=lambda _t=task: _t.control_action,
                                 start_chunk=_start_chunk,
+                                main_chunk_done_callback=_on_main_chunk_done,
+                                step9_chunk_done_callback=_on_step9_chunk_done,
+                                chunk_done_callback=_on_chunk_done,
+                            )
+                            if _is_targeted_retry:
+                                _kwargs["target_window_indices"] = _target_indices
+                            return _task_processor.remember_text(**_kwargs)
+                        finally:
+                            q._clear_active_processor(task.task_id, _task_processor)
+
+                    def _run_task_with_targets(target_indices):
+                        """Run pipeline targeting specific window indices (for retry)."""
+                        q._set_active_processor(task.task_id, _task_processor)
+                        try:
+                            _document_path = task.cache_document_path or task.original_path
+                            return _task_processor.remember_text(
+                                text=task.text,
+                                source_document=task.source_name,
+                                verbose=q._detail_logs,
+                                verbose_steps=not q._detail_logs,
+                                load_cache_memory=False,
+                                event_time=task.event_time,
+                                document_path=_document_path,
+                                progress_callback=_on_progress,
+                                control_callback=lambda _t=task: _t.control_action,
+                                start_chunk=0,
+                                target_window_indices=target_indices,
                                 main_chunk_done_callback=_on_main_chunk_done,
                                 step9_chunk_done_callback=_on_step9_chunk_done,
                                 chunk_done_callback=_on_chunk_done,
@@ -342,11 +404,20 @@ def worker_loop(q: "RememberTaskQueue") -> None:  # noqa: C901 — legacy comple
 
                     def _mark_task_running():
                         started_at = task.started_at or time.time()
+                        task.chain_started_at = {}
+                        task.chain_run_start_chunks = {
+                            "main": int(_existing_main_chunks or 0),
+                            "step9": int(_existing_step9_chunks or 0),
+                            "step10": int(_existing_step10_chunks or 0),
+                        }
+                        _phase_label = _resume_hint
+                        if _is_targeted_retry:
+                            _phase_label = f"补跑 {len(_target_indices)} 个缺失/失败窗口"
                         q._update_task_progress(
                             task,
                             status="running",
                             phase="processing",
-                            phase_label=_resume_hint,
+                            phase_label=_phase_label,
                             phase_current=_existing_step10_chunks,
                             phase_total=max(1, task.total_chunks),
                             main_done_chunks=_existing_main_chunks,
@@ -368,10 +439,16 @@ def worker_loop(q: "RememberTaskQueue") -> None:  # noqa: C901 — legacy comple
                             error=None,
                         )
                         q._persist(task)
-                        q._log_info(
-                            "[Remember] 开始处理: task_id=%s, source_name=%r, 文本长度=%d 字符, load_cache_memory=%s"
-                            % (short_task_id(task.task_id), task.source_name, len(task.text), _uses_external_cache)
-                        )
+                        if _is_targeted_retry:
+                            q._log_info(
+                                "[Remember] 目标补跑: task_id=%s, source_name=%r, 窗口=%s"
+                                % (short_task_id(task.task_id), task.source_name, _target_indices)
+                            )
+                        else:
+                            q._log_info(
+                                "[Remember] 开始处理: task_id=%s, source_name=%r, 文本长度=%d 字符, load_cache_memory=%s"
+                                % (short_task_id(task.task_id), task.source_name, len(task.text), _uses_external_cache)
+                            )
 
                     if _uses_external_cache:
                         with q._phase2_lock:
@@ -393,6 +470,14 @@ def worker_loop(q: "RememberTaskQueue") -> None:  # noqa: C901 — legacy comple
                             _mark_task_running()
                         result = _run_task()
 
+                    if task.control_action == "cancel" or task.status == "cancelled":
+                        q._log_info(
+                            "[Remember] 任务已删除，忽略后续完成状态: task_id=%s"
+                            % short_task_id(task.task_id)
+                        )
+                        last_exc = None
+                        break
+
                     # Warn on zero extractions (possible LLM issue)
                     if isinstance(result, dict):
                         entities = result.get("entities", 0)
@@ -406,8 +491,118 @@ def worker_loop(q: "RememberTaskQueue") -> None:  # noqa: C901 — legacy comple
                     finished_at = time.time()
                     _tc_done = max(1, int(task.total_chunks))
                     _cp_done = int(result.get("chunks_processed") or 0)
+                    if _is_targeted_retry and int(result.get("failed_windows") or 0) == 0:
+                        _cp_done = _tc_done
                     _cp_done = max(0, min(_cp_done, _tc_done))
-                    q._update_task_progress(
+                    _failed_windows = int(result.get("failed_windows") or 0) if isinstance(result, dict) else 0
+
+                    # ── Targeted auto-retry for failed windows ──
+                    if _failed_windows > 0 and task.max_retries > 0:
+                        _failed_indices = result.get("failed_window_indices", [])
+                        _failed_errors = result.get("failed_window_errors", [])
+                        task.failed_window_indices = _failed_indices
+                        task.failed_window_errors = _failed_errors
+                        q._log_warn(
+                            "[Remember] %d 窗口失败，启动自动重试: task_id=%s, windows=%s"
+                            % (_failed_windows, short_task_id(task.task_id), _failed_indices)
+                        )
+                        _retry_success = False
+                        _retry_delays = [5.0, 15.0, 45.0]
+                        for _retry_round in range(task.max_retries):
+                            task.retry_attempt = _retry_round + 1
+                            _delay = _retry_delays[min(_retry_round, len(_retry_delays) - 1)]
+                            q._update_task_progress(
+                                task,
+                                status="running",
+                                phase="retrying",
+                                phase_label=f"自动补跑失败窗口 (第{_retry_round + 1}/{task.max_retries}次)",
+                                message=f"等待 {_delay:.0f}s 后补跑 {len(_failed_indices)} 个失败窗口...",
+                            )
+                            q._persist(task)
+                            time.sleep(_delay)
+                            if task.control_action == "cancel" or task.status == "cancelled":
+                                break
+                            try:
+                                _retry_result = _run_task_with_targets(_failed_indices)
+                                _new_failures = int(_retry_result.get("failed_windows") or 0)
+                                if _new_failures == 0:
+                                    _retry_success = True
+                                    result["failed_windows"] = 0
+                                    result["failed_window_indices"] = []
+                                    result["chunks_processed"] = task.total_chunks
+                                    result["entities"] = (result.get("entities") or 0) + (_retry_result.get("entities") or 0)
+                                    result["relations"] = (result.get("relations") or 0) + (_retry_result.get("relations") or 0)
+                                    task.failed_window_indices = []
+                                    task.failed_window_errors = []
+                                    q._log_info(
+                                        "[Remember] 重试成功: task_id=%s, 第%d次" % (short_task_id(task.task_id), _retry_round + 1)
+                                    )
+                                    break
+                                else:
+                                    _failed_indices = _retry_result.get("failed_window_indices", [])
+                                    task.failed_window_indices = _failed_indices
+                                    task.failed_window_errors = _retry_result.get("failed_window_errors", [])
+                                    q._log_warn(
+                                        "[Remember] 重试仍有 %d 窗口失败: task_id=%s, round=%d"
+                                        % (_new_failures, short_task_id(task.task_id), _retry_round + 1)
+                                    )
+                            except Exception as _retry_exc:
+                                q._log_error(
+                                    "[Remember] 重试异常: task_id=%s, round=%d, error=%s"
+                                    % (short_task_id(task.task_id), _retry_round + 1, _retry_exc)
+                                )
+
+                        if not _retry_success and task.failed_window_indices:
+                            _remaining = len(task.failed_window_indices)
+                            q._update_task_progress(
+                                task,
+                                status="paused",
+                                phase="paused",
+                                phase_label=f"部分窗口未完整落库 (重试{task.retry_attempt}次后)",
+                                phase_current=_cp_done,
+                                phase_total=_tc_done,
+                                main_done_chunks=max(int(task.main_done_chunks or 0), _cp_done),
+                                step9_done_chunks=max(int(task.step9_done_chunks or 0), _cp_done),
+                                step10_done_chunks=_cp_done,
+                                processed_chunks=_cp_done,
+                                progress=(_cp_done / _tc_done) if _tc_done > 0 else task.progress,
+                                message="自动重试已耗尽，已暂停",
+                                result=result,
+                                error=f"有 {_remaining} 个窗口在 {task.max_retries} 次自动重试后仍失败，请手动重试或重新导入",
+                                finished_at=finished_at,
+                                step9_progress=task.step9_progress,
+                                step10_progress=task.step10_progress,
+                                main_progress=task.main_progress,
+                            )
+                            q._persist(task)
+                            q._log_error(
+                                "[Remember] 自动重试耗尽: task_id=%s, %d 窗口仍失败: %s"
+                                % (short_task_id(task.task_id), _remaining, task.failed_window_indices)
+                            )
+                            last_exc = None
+                            break
+
+                    if task.control_action == "cancel" or task.status == "cancelled":
+                        q._log_info(
+                            "[Remember] 任务已删除，忽略后续完成状态: task_id=%s"
+                            % short_task_id(task.task_id)
+                        )
+                        last_exc = None
+                        break
+
+                    if int(result.get("failed_windows") or 0) > 0:
+                        # Failed windows remain after retry — already handled above
+                        pass
+                    else:
+                        _cp_done = int(result.get("chunks_processed") or 0)
+                        if _is_targeted_retry:
+                            _cp_done = _tc_done
+                        _cp_done = max(0, min(_cp_done, _tc_done))
+                        task.failed_window_indices = []
+                        task.failed_window_errors = []
+                        task.repair_window_indices = []
+                        task.repair_window_statuses = []
+                        q._update_task_progress(
                         task,
                         status="completed",
                         phase="completed",
@@ -421,6 +616,7 @@ def worker_loop(q: "RememberTaskQueue") -> None:  # noqa: C901 — legacy comple
                         progress=1.0,
                         message="处理完成",
                         result=result,
+                        error=None,
                         finished_at=finished_at,
                         step9_progress=1.0,
                         step10_progress=1.0,

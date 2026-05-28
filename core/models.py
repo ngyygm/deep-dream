@@ -41,7 +41,6 @@ class Entity:
     version_seq: int = 1  # 版本序号，每次跨 Episode 提及递增
     embedding: Optional[bytes] = None  # Embedding向量（BLOB格式，可选）
     valid_at: Optional[datetime] = None  # 事实生效时间
-    summary: Optional[str] = None  # 实体摘要（由 LLM 进化维护）
     attributes: Optional[str] = None  # JSON 字符串，结构化属性字典
     confidence: Optional[float] = None  # 置信度评分 (0.0-1.0)
     content_format: str = "plain"  # "plain" (旧) | "markdown" (新)
@@ -72,12 +71,12 @@ class Relation:
     version_seq: int = 1  # 版本序号，每次跨 Episode 提及递增
     embedding: Optional[bytes] = None  # Embedding向量（BLOB格式，可选）
     valid_at: Optional[datetime] = None  # 事实生效时间
-    summary: Optional[str] = None  # 关系摘要（由 LLM 进化维护）
     attributes: Optional[str] = None  # JSON 字符串，结构化属性字典
     confidence: Optional[float] = None  # 置信度评分 (0.0-1.0)
     provenance: Optional[str] = None  # JSON: [{"episode_id": "...", "confidence": 0.9}, ...]
     content_format: str = "plain"  # "plain" (旧) | "markdown" (新)
     _pending_patches: list = None  # 内部用：ContentPatch 缓冲，flush 后清空
+    _score: float = 0.0  # search relevance score (BM25/embedding)
 
 
 @dataclass(slots=True)
@@ -132,7 +131,6 @@ class Concept:
     name: Optional[str] = None  # 显示名称（entity 用）
     content: Optional[str] = None  # 当前版本的内容
     embedding: Optional[bytes] = None  # 语义向量
-    summary: Optional[str] = None  # 概念摘要（派生视图，可由 LLM 重新生成）
     confidence: Optional[float] = None  # 置信度 (0.0-1.0)
     attributes: Optional[str] = None  # JSON 字符串，结构化属性
 

@@ -37,6 +37,90 @@ window.UIUtils = (function () {
     return '<div class="progress-bar"><div class="progress-bar-fill ' + cls + '" style="width:' + w.toFixed(1) + '%"></div></div>';
   }
 
+  function _fmtSeconds(seconds) {
+    if (seconds == null || isNaN(Number(seconds))) return '-';
+    return window.Format ? window.Format.formatRelativeTime(Number(seconds)) : Math.round(Number(seconds)) + 's';
+  }
+
+  function taskTimingText(task) {
+    var detail = task && task.progress_detail;
+    if (detail) {
+      if (task.status === 'queued') {
+        var created = Number(task.created_at || 0);
+        if (created && created < 4102444800000) created *= 1000;
+        var waitSeconds = created ? Math.max(0, Math.round((Date.now() - created) / 1000)) : null;
+        return (t('dashboard.waiting') || 'Wait') + ' ' + _fmtSeconds(waitSeconds);
+      }
+      var elapsed = _fmtSeconds(detail.elapsed_seconds);
+      if (task.status === 'completed' || task.status === 'failed' || task.status === 'cancelled') {
+        return elapsed;
+      }
+      if (task.status === 'paused') {
+        return elapsed + ' / ' + (t('memory.statusPausing') || 'Paused');
+      }
+      if (detail.eta_seconds != null) {
+        var confidence = detail.confidence === 'high' ? '~' : (detail.confidence === 'medium' ? '~' : '~~');
+        return elapsed + ' / ' + (t('common.remaining') || '~') + _fmtSeconds(detail.eta_seconds) + ' ' + confidence;
+      }
+      return elapsed;
+    }
+    if (window.Format && task && task.started_at) {
+      return window.Format.getElapsed(task.started_at || task.created_at, task.finished_at);
+    }
+    return '-';
+  }
+
+  function renderTaskProgress(task, opts) {
+    opts = opts || {};
+    var pCls = opts.progressClass || '';
+    var isRunning = task && task.status === 'running';
+    var detail = task && task.progress_detail;
+    var smp = Math.min(1, Math.max(0, (detail?.chains?.[0]?.progress ?? task?.main_progress ?? 0)));
+    var s9p = Math.min(1, Math.max(0, (detail?.chains?.[1]?.progress ?? task?.step9_progress ?? 0)));
+    var s10p = Math.min(1, Math.max(0, (detail?.chains?.[2]?.progress ?? task?.step10_progress ?? 0)));
+    var overallP = Math.min(1, Math.max(0, detail?.overall_progress ?? ((smp + s9p + s10p) / 3) ?? task?.progress ?? 0));
+    var eta = task?.status === 'running' && detail?.eta_seconds != null ? ' · ' + (t('common.remaining') || '~') + _fmtSeconds(detail.eta_seconds) : '';
+    var confidence = detail?.confidence && !['final', 'queued', 'warming_up'].includes(detail.confidence)
+      ? ' · ' + detail.confidence
+      : '';
+
+    if (isRunning || detail?.chains?.length) {
+      var html = tripleProgressBar({
+        smp: smp,
+        s9p: s9p,
+        s10p: s10p,
+        mainLabel: detail?.chains?.[0]?.current_label || task.main_label || '-',
+        step9Label: detail?.chains?.[1]?.current_label || task.step9_label || '-',
+        step10Label: detail?.chains?.[2]?.current_label || task.step10_label || '-',
+        showOverall: true,
+        overallP: overallP,
+      });
+      if (opts.showEta !== false) {
+        html += '<div style="font-size:0.65rem;color:var(--text-muted);margin-top:4px;">'
+          + _fmtSeconds(detail?.elapsed_seconds ?? task?.elapsed_seconds) + eta + confidence
+          + '</div>';
+      }
+      return html;
+    }
+    return '<div style="min-width:100px;">' + progressBar(task?.progress || 0, pCls) + '</div>';
+  }
+
+  function renderTaskChainDetails(task) {
+    var chains = task?.progress_detail?.chains || [];
+    if (!chains.length) return '';
+    return '<div style="display:grid;grid-template-columns:auto auto auto 1fr;gap:0.35rem 0.75rem;font-size:0.78rem;align-items:center;">'
+      + chains.map(function(c) {
+        var pct = Math.max(0, Math.min(1, c.progress || 0));
+        return '<span style="color:var(--text-muted);">' + escapeHtml(c.label || c.id) + '</span>'
+          + '<span class="mono">' + escapeHtml(String(c.done_chunks || 0)) + '/' + escapeHtml(String(c.total_chunks || 0)) + '</span>'
+          + '<span class="mono">' + (pct * 100).toFixed(1) + '%</span>'
+          + '<span style="color:var(--text-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'
+          + escapeHtml(c.current_label || (c.eta_seconds != null ? ((t('common.remaining') || '~') + _fmtSeconds(c.eta_seconds)) : '-'))
+          + '</span>';
+      }).join('')
+      + '</div>';
+  }
+
   function spinnerHtml(cls) {
     cls = cls || '';
     return '<div class="spinner ' + cls + '"></div>';
@@ -128,6 +212,9 @@ window.UIUtils = (function () {
   return {
     tripleProgressBar: tripleProgressBar,
     progressBar: progressBar,
+    renderTaskProgress: renderTaskProgress,
+    renderTaskChainDetails: renderTaskChainDetails,
+    taskTimingText: taskTimingText,
     spinnerHtml: spinnerHtml,
     emptyState: emptyState,
     statusBadge: statusBadge,

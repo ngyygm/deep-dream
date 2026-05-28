@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import tempfile
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from flask import Blueprint, current_app, jsonify, make_response, request
@@ -101,6 +101,9 @@ def _parse_remember_input(post_json: Dict[str, Any]):
                 return err(f"不支持的文件类型: {file_ext}", 400)
 
             content = file.read()
+            # Reject empty files (0 bytes) early
+            if len(content) == 0:
+                return err("文件为空（0 字节），无法处理", 400)
             try:
                 text = _uploaded_file_to_markdown(content, file.filename, file_ext)
             except ValueError as exc:
@@ -112,6 +115,12 @@ def _parse_remember_input(post_json: Dict[str, Any]):
     if not text:
         return err("缺少 text 或 file（必填其一）", 400)
 
+    # Reject text that is only whitespace or headers (no actual prose content)
+    import re as _re
+    _stripped = _re.sub(r'#+\s+[^\n]*\n*', '', text).strip()
+    if not _stripped:
+        return err("文件内容为空（无有效文本内容）", 400)
+
     # Security: Validate text length
     if len(text) > _MAX_TEXT_LENGTH:
         return err(f"文本长度超过限制 ({_MAX_TEXT_LENGTH / 1_000_000}MB)", 400)
@@ -121,12 +130,11 @@ def _parse_remember_input(post_json: Dict[str, Any]):
         return err("文本包含非法字符（null bytes）", 400)
 
     # Reject text with no alphanumeric/CJK content (punctuation-only like "..." or "!!!")
-    import re as _re
     if not _re.search(r'[\w一-鿿぀-ゟ゠-ヿ가-힯]', text):
         return err("文本缺少有效内容（仅包含标点/空白字符）", 400)
 
     # Security: Sanitize for LLM prompt safety
-    text, was_sanitized = sanitize_user_input(text)
+    text, was_sanitized = sanitize_user_input(text, max_length=_MAX_TEXT_LENGTH)
     if was_sanitized:
         logger.warning("Remember input was sanitized due to security concerns")
 
@@ -149,7 +157,7 @@ def _parse_remember_input(post_json: Dict[str, Any]):
         load_cache = bool(getattr(processor, "load_cache_memory", False))
 
     # 以"首次接收请求的时间"为基准：若未传 event_time，则使用当前接收时间并持久化到 journal。
-    receive_time = datetime.now()
+    receive_time = datetime.now(timezone.utc)
     event_time: Optional[datetime] = receive_time
     et_str = _remember_get_str("event_time", post_json) or None
     if et_str:
@@ -383,13 +391,24 @@ def _doc_to_markdown(content: bytes) -> str:
             f.write(content)
         word = win32com.client.Dispatch("Word.Application")
         word.Visible = False
+        doc = None
         try:
             doc = word.Documents.Open(doc_path)
             doc.SaveAs(txt_path, FileFormat=2)
             doc.Close(False)
-            return _decode_text_upload(open(txt_path, "rb").read())
+            doc = None
+            with open(txt_path, "rb") as f:
+                return _decode_text_upload(f.read())
         finally:
-            word.Quit()
+            if doc is not None:
+                try:
+                    doc.Close(False)
+                except Exception:
+                    pass
+            try:
+                word.Quit()
+            except Exception:
+                pass
 
 
 def _sanitize_generated_title(raw: str) -> str:
@@ -440,40 +459,73 @@ def _build_remember_task(text: str, source_name: str, load_cache: bool,
 
 def _handle_sync_wait(remember_queue, task_id: str, timeout: float):
     """Block until task completes or timeout. Returns Flask response."""
+    import time as _time
+    wait_start = _time.monotonic()
+
     done_task = remember_queue.wait_for_task(task_id, timeout=timeout)
     if done_task is None:
         return err(f"任务 {task_id} 未找到", 404)
     task_dict = remember_queue._task_to_dict(done_task)
+    elapsed_ms = round((_time.monotonic() - wait_start) * 1000, 1)
+
     if done_task.status == "completed":
+        # Extract user-facing fields only; omit internal pipeline progress fields
+        result = done_task.result or {}
+        user_data = {
+            "task_id": task_id,
+            "task_seq": task_dict.get("task_seq"),
+            "status": "completed",
+            "source_name": done_task.source_name,
+            "elapsed_seconds": task_dict.get("elapsed_seconds"),
+            "document_version_id": result.get("document_version_id"),
+            "result": {
+                "chunks_processed": result.get("chunks_processed"),
+                "entities": result.get("entities"),
+                "relations": result.get("relations"),
+                "episode_id": result.get("episode_id"),
+            },
+        }
+        # Include timing_summary only when present and useful
+        timing = result.get("timing_summary")
+        if timing:
+            user_data["result"]["timing_seconds"] = timing.get("total_stage_seconds")
         return make_response(jsonify({
             "success": True,
-            "data": {
-                "task_id": task_id,
-                "status": "completed",
-                "result": done_task.result,
-                **task_dict,
-            },
+            "data": user_data,
+            "elapsed_ms": elapsed_ms,
         }), 200)
     elif done_task.status == "failed":
         return make_response(jsonify({
             "success": False,
             "data": {
                 "task_id": task_id,
+                "task_seq": task_dict.get("task_seq"),
                 "status": "failed",
+                "source_name": done_task.source_name,
                 "error": done_task.error,
-                **task_dict,
             },
+            "elapsed_ms": elapsed_ms,
         }), 500)
     else:
         # Timeout: still running, return current state with 202
+        # Include progress fields only for running tasks
+        progress_fields = {
+            "progress": task_dict.get("progress"),
+            "message": task_dict.get("message"),
+            "processed_chunks": task_dict.get("processed_chunks"),
+            "total_chunks": task_dict.get("total_chunks"),
+        }
         return make_response(jsonify({
             "success": True,
             "data": {
                 "task_id": task_id,
+                "task_seq": task_dict.get("task_seq"),
                 "status": done_task.status,
+                "source_name": done_task.source_name,
                 "message": f"同步等待超时（{timeout}秒），任务仍在处理中。GET /api/v1/remember/tasks/{task_id} 继续轮询",
-                **task_dict,
+                **progress_fields,
             },
+            "elapsed_ms": elapsed_ms,
         }), 202)
 
 
@@ -543,6 +595,14 @@ def remember():
         text, source_name, load_cache, event_time = parsed
 
         _log_remember_request(text, source_name, event_time)
+
+        # Save submitted content to library/content/
+        try:
+            storage_path = _get_processor().storage.storage_path
+            from core.storage.sqlite.content_fs import write_submitted_content
+            write_submitted_content(storage_path, source_name, text)
+        except Exception:
+            logger.debug("Failed to save content file", exc_info=True)
 
         task = _build_remember_task(text, source_name, load_cache, event_time)
         remember_queue.submit(task)
@@ -649,6 +709,44 @@ def remember_resume(task_id: str):
         return err(str(e), 500)
 
 
+@remember_bp.route("/api/v1/remember/tasks/<task_id>/retry", methods=["POST"])
+def remember_retry(task_id: str):
+    """手动重试失败窗口（仅处理失败的窗口，不重跑已成功的部分）。"""
+    try:
+        remember_queue = _get_queue()
+        task = remember_queue.get_status(task_id)
+        if task is None:
+            return err("任务不存在", 404)
+        if not task.failed_window_indices and hasattr(remember_queue, "detect_repair_windows"):
+            remember_queue.detect_repair_windows(task)
+            if task.repair_window_indices:
+                task.failed_window_indices = list(task.repair_window_indices)
+                task.failed_window_errors = [
+                    {
+                        "phase": s.get("missing_phase") or "missing",
+                        "window_index": s.get("window_index"),
+                        "error": "窗口缺失或落库不完整",
+                    }
+                    for s in (task.repair_window_statuses or [])
+                ]
+        if not task.failed_window_indices:
+            return err("该任务没有需要补跑的失败或缺失窗口", 400)
+        if task.status not in ("paused", "failed"):
+            return err(f"仅暂停或失败的任务可以重试 (当前: {task.status})", 409)
+        ok_resume, message, status = remember_queue.resume_task(task_id)
+        if not ok_resume:
+            return err(message, 409)
+        return ok({
+            "task_id": task_id,
+            "status": status,
+            "message": f"已重新入队，将只补跑 {len(task.failed_window_indices)} 个失败/缺失窗口",
+            "retry_windows": task.failed_window_indices,
+            "retry_errors": task.failed_window_errors,
+        })
+    except Exception as e:
+        return err(str(e), 500)
+
+
 # ── GET /api/v1/remember/tasks ────────────────────────────────────────────
 
 @remember_bp.route("/api/v1/remember/tasks", methods=["GET"])
@@ -659,6 +757,52 @@ def remember_queue_list():
         limit = min(request.args.get("limit", 50, type=int), 200)
         tasks = remember_queue.list_tasks(limit=limit)
         return ok({"tasks": tasks, "count": len(tasks)})
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@remember_bp.route("/api/v1/remember/tasks/resume-all", methods=["POST"])
+def remember_resume_all():
+    """恢复当前图谱内所有已暂停任务，按原入队顺序继续。"""
+    try:
+        remember_queue = _get_queue()
+        result = remember_queue.resume_all_paused()
+        return ok(result)
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@remember_bp.route("/api/v1/documents/<document_version_id>/integrity", methods=["GET", "POST"])
+def document_integrity_check(document_version_id: str):
+    """Check whether a document has missing/incomplete remember windows."""
+    try:
+        remember_queue = _get_queue()
+        if not hasattr(remember_queue, "assess_document_integrity"):
+            return err("当前后端不支持文档完整性检查", 400)
+        result = remember_queue.assess_document_integrity(document_version_id)
+        try:
+            storage = getattr(getattr(remember_queue, "_processor", None), "storage", None)
+            if storage and hasattr(storage, "update_document_integrity_metadata"):
+                storage.update_document_integrity_metadata(document_version_id, result)
+        except Exception:
+            pass
+        return ok(result)
+    except KeyError as e:
+        return err(str(e.args[0]) if e.args else str(e), 404)
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@remember_bp.route("/api/v1/documents/<document_version_id>/repair", methods=["POST"])
+def document_repair(document_version_id: str):
+    """Create a targeted repair task for missing/incomplete windows only."""
+    try:
+        remember_queue = _get_queue()
+        if not hasattr(remember_queue, "submit_document_repair"):
+            return err("当前后端不支持文档修复", 400)
+        return ok(remember_queue.submit_document_repair(document_version_id))
+    except KeyError as e:
+        return err(str(e.args[0]) if e.args else str(e), 404)
     except Exception as e:
         return err(str(e), 500)
 

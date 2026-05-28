@@ -241,9 +241,8 @@ def register_graph_routes(server):
                 logger.debug("Embedding客户端可用: %s", server.embedding_client.is_available() if server.embedding_client else False)
 
                 matched_entities = server.storage.search_entities_by_similarity(
-                    query_name=query, query_content=query,
+                    query,
                     threshold=0.3, max_results=max_results,
-                    content_snippet_length=100
                 )
 
                 matched_relations = server.storage.search_relations_by_similarity(

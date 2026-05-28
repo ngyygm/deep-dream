@@ -15,6 +15,15 @@
     return '';
   }
 
+  function formatDocSize(bytes) {
+    const n = Number(bytes || 0);
+    if (!Number.isFinite(n) || n <= 0) return '0 B';
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+    if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+    return `${(n / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+  }
+
   // ---- Upload Section ----
 
   function renderUploadSection() {
@@ -333,46 +342,33 @@
 
   function renderTaskSection(tasks, count) {
     const badge = `<span class="badge badge-primary" style="margin-left:0.5rem;">${escapeHtml(String(count ?? 0))}</span>`;
+    const activeTasks = (tasks || []).filter(task => ['running', 'queued', 'paused'].includes(task.status) || ['pausing', 'cancelling'].includes(task.phase));
+    const historyTasks = (tasks || []).filter(task => !activeTasks.includes(task));
 
-    let tableHtml;
-    if (!tasks || tasks.length === 0) {
-      tableHtml = emptyState(t('memory.noTasks'));
-    } else {
-      const rows = tasks.map(task => {
+    function taskTable(items, emptyText) {
+      if (!items || items.length === 0) return emptyState(emptyText);
+      const rows = items.map(task => {
         const pCls = progressClass(task.status);
-        const elapsed = getElapsed(task.started_at || task.created_at, task.finished_at);
-        const isRunning = task.status === 'running';
+        const elapsed = taskTimingText(task);
+        const docSize = formatDocSize(task.document_size_bytes ?? task.text_size_bytes ?? task.size_bytes ?? 0);
         const isPaused = task.status === 'paused';
         const isPausePending = task.phase === 'pausing';
         const loadCacheLabel = task.load_cache_memory ? t('memory.loadCacheOn') : t('memory.loadCacheOff');
         const canDelete = task.status === 'queued' || task.status === 'running' || task.status === 'paused';
         const canPause = task.status === 'running' && !isPausePending;
-        const canResume = task.status === 'paused';
-        const hasTriple = isRunning;
-        const s9p = Math.min(1, Math.max(0, task.step9_progress ?? 0));
-        const s10p = Math.min(1, Math.max(0, task.step10_progress ?? 0));
-        const smp = Math.min(1, Math.max(0, task.main_progress ?? 0));
-        const overallP = Math.min(1, Math.max(0, (smp + s9p + s10p) / 3));
-        let progressCell;
-        if (hasTriple) {
-          progressCell = tripleProgressBar({
-            smp, s9p, s10p,
-            mainLabel: task.main_label || '-',
-            step9Label: task.step9_label || '-',
-            step10Label: task.step10_label || '-',
-            showOverall: true,
-            overallP: overallP,
-          });
-        } else {
-          progressCell = `<div style="min-width:100px;">${progressBar(task.progress, pCls)}</div>`;
-        }
+        const canResume = isPaused;
+        const progressCell = renderTaskProgress(task, { progressClass: pCls });
+        const repairCount = Number(task.repair_window_count || task.repair_window_indices?.length || task.failed_window_indices?.length || 0);
+        const repairHint = repairCount > 0
+          ? `<div style="font-size:0.7rem;color:var(--warning);margin-top:0.2rem;">只补跑 ${escapeHtml(String(repairCount))} 个缺失/失败窗口</div>`
+          : '';
         return `
           <tr data-task-id="${escapeHtml(task.task_id)}" title="${t('memory.taskDetail')}">
-            <td><span class="mono" title="${escapeHtml(task.task_id)}">${escapeHtml(truncate(task.task_id, 12))}</span></td>
             <td>${escapeHtml(truncate(task.source_name || '-', 24))}</td>
+            <td><span class="mono" title="${escapeHtml(String(task.document_size_bytes || 0))} bytes">${escapeHtml(docSize)}</span></td>
             <td>${escapeHtml(loadCacheLabel)}</td>
             <td>${statusBadge(task.status, task.phase)}</td>
-            <td>${progressCell}</td>
+            <td>${progressCell}${repairHint}</td>
             <td>${escapeHtml(task.phase_label || '-')}</td>
             <td>${elapsed}</td>
             <td>
@@ -410,14 +406,13 @@
           </tr>
         `;
       }).join('');
-
-      tableHtml = `
+      return `
         <div class="table-container">
           <table class="data-table">
             <thead>
               <tr>
-                <th>${t('memory.taskId')}</th>
                 <th>${t('memory.taskSource')}</th>
+                <th>${t('memory.documentSize')}</th>
                 <th>${t('memory.taskLoadCache')}</th>
                 <th>${t('memory.taskStatus')}</th>
                 <th>${t('memory.taskProgress')}</th>
@@ -432,10 +427,29 @@
       `;
     }
 
+    let tableHtml;
+    if (!tasks || tasks.length === 0) {
+      tableHtml = emptyState(t('memory.noTasks'));
+    } else {
+      tableHtml = `
+        <div style="margin-bottom:1rem;">
+          ${taskTable(activeTasks, t('memory.noActiveTasks'))}
+        </div>
+        <details style="border-top:1px solid var(--border-color);padding-top:0.75rem;">
+          <summary style="cursor:pointer;color:var(--text-secondary);font-weight:600;">${t('memory.historyTasks')} (${historyTasks.length})</summary>
+          <div style="margin-top:0.75rem;">${taskTable(historyTasks, t('memory.noHistoryTasks'))}</div>
+        </details>
+      `;
+    }
+
     return `
       <div class="card" style="margin-bottom:1rem;">
         <div class="card-header">
           <span class="card-title">${t('memory.processQueue')}${badge}</span>
+          <button class="btn btn-secondary btn-sm" id="btn-resume-all-tasks">
+            <i data-lucide="play" style="width:14px;height:14px;"></i>
+            ${t('memory.resumeAll')}
+          </button>
         </div>
         <div id="task-list">${tableHtml}</div>
       </div>
@@ -486,6 +500,10 @@
           const taskId = btn.getAttribute('data-task-id');
           await resumeTask(taskId);
         });
+      });
+      el.querySelector('#btn-resume-all-tasks')?.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        await resumeAllTasks();
       });
 
       if (window.lucide) lucide.createIcons({ nodes: [el] });
@@ -546,6 +564,17 @@
     }
   }
 
+  async function resumeAllTasks() {
+    try {
+      const res = await state.api.rememberResumeAll(state.currentGraphId);
+      showToast(t('memory.resumeAllSuccess', { count: res.data?.count || 0 }), 'success');
+      refreshTasks();
+    } catch (err) {
+      showToast(t('memory.resumeAllFailed') + ': ' + err.message, 'error');
+      refreshTasks();
+    }
+  }
+
   async function showTaskDetail(taskId) {
     try {
       const res = await state.api.rememberStatus(taskId, state.currentGraphId);
@@ -554,45 +583,49 @@
       const pCls = progressClass(task.status);
       const isRunning = task.status === 'running';
       const isPausePending = task.phase === 'pausing';
-      const hasTriple = isRunning;
       const loadCacheLabel = task.load_cache_memory ? t('memory.loadCacheOn') : t('memory.loadCacheOff');
-      const s9p = Math.min(1, Math.max(0, task.step9_progress ?? 0));
-      const s10p = Math.min(1, Math.max(0, task.step10_progress ?? 0));
-      const smp = Math.min(1, Math.max(0, task.main_progress ?? 0));
-      const overallPd = Math.min(1, Math.max(0, (smp + s9p + s10p) / 3));
-      let progressDetail;
-      if (hasTriple) {
-        progressDetail = tripleProgressBar({
-          smp, s9p, s10p,
-          mainLabel: task.main_label || '-',
-          step9Label: task.step9_label || '-',
-          step10Label: task.step10_label || '-',
-          showOverall: true,
-          overallP: overallPd,
-        });
-      } else {
-        progressDetail = `<div style="min-width:120px;">${progressBar(task.progress, pCls)}</div>`;
-      }
+      const progressDetail = renderTaskProgress(task, { progressClass: pCls });
+      const chainDetail = renderTaskChainDetails(task);
+      const docSize = formatDocSize(task.document_size_bytes ?? task.text_size_bytes ?? task.size_bytes ?? 0);
+      const repairCount = Number(task.repair_window_count || task.repair_window_indices?.length || task.failed_window_indices?.length || 0);
       let body = `
         <div style="margin-bottom:1rem;">
           <div style="display:grid;grid-template-columns:auto 1fr;gap:0.5rem 1rem;font-size:0.8125rem;">
-            <span style="color:var(--text-muted);">${t('memory.taskId')}</span>
-            <span class="mono">${escapeHtml(task.task_id)}</span>
+            <span style="color:var(--text-muted);">${t('memory.taskSource')}</span>
+            <span>${escapeHtml(task.source_name || '-')}</span>
+            <span style="color:var(--text-muted);">${t('memory.documentSize')}</span>
+            <span class="mono">${escapeHtml(docSize)}</span>
             <span style="color:var(--text-muted);">${t('memory.taskStatus')}</span>
             <span>${statusBadge(task.status, task.phase)}</span>
             <span style="color:var(--text-muted);">${t('memory.taskLoadCache')}</span>
             <span>${escapeHtml(loadCacheLabel)}</span>
             <span style="color:var(--text-muted);">${t('memory.taskProgress')}</span>
             ${progressDetail}
+            <span style="color:var(--text-muted);">${t('memory.elapsedEstimated')}</span>
+            <span>${escapeHtml(taskTimingText(task))}</span>
             <span style="color:var(--text-muted);">${t('memory.taskPhase')}</span>
             <span>${escapeHtml(task.phase_label || '-')}</span>
             <span style="color:var(--text-muted);">${t('memory.taskCreated')}</span>
             <span>${formatDate(task.created_at)}</span>
             <span style="color:var(--text-muted);">${t('memory.taskStarted')}</span>
             <span>${formatDate(task.started_at)}</span>
+            ${repairCount > 0 ? `
+              <span style="color:var(--text-muted);">补跑窗口</span>
+              <span style="color:var(--warning);">只处理 ${escapeHtml(String(repairCount))} 个缺失/失败窗口：${escapeHtml((task.repair_window_indices || task.failed_window_indices || []).slice(0, 20).join(', '))}${repairCount > 20 ? ' ...' : ''}</span>
+            ` : ''}
           </div>
         </div>
       `;
+
+      if (chainDetail) {
+        body += `
+          <div class="divider"></div>
+          <div>
+            <span class="form-label" style="margin-bottom:0.5rem;">${t('memory.phaseProgress')}</span>
+            ${chainDetail}
+          </div>
+        `;
+      }
 
       if (task.result) {
         body += `
@@ -704,6 +737,97 @@
   let _allDocs = [];
   let _docsPage = 1;
   let _docsPageSize = 10;
+  let _deletingDocIds = new Set();
+  let _selectedDocIds = new Set();
+
+  // ---- Multi-select helpers ----
+
+  function toggleSelectAll() {
+    const total = _allDocs.length;
+    if (_selectedDocIds.size === total) {
+      _selectedDocIds.clear();
+    } else {
+      _selectedDocIds = new Set(_allDocs.map(d => d.document_version_id).filter(Boolean));
+    }
+    updateDocsTable();
+    updateSelectionUI();
+  }
+
+  function toggleSelectDoc(docVersionId) {
+    if (!docVersionId) return;
+    if (_selectedDocIds.has(docVersionId)) {
+      _selectedDocIds.delete(docVersionId);
+    } else {
+      _selectedDocIds.add(docVersionId);
+    }
+    updateSelectionUI();
+  }
+
+  function updateSelectionUI() {
+    const total = _allDocs.length;
+    const validTotal = _allDocs.filter(d => d.document_version_id).length;
+    const selectedCount = _selectedDocIds.size;
+
+    // Update select-all checkbox
+    const selectAllCheckbox = document.getElementById('docs-select-all');
+    if (selectAllCheckbox) {
+      selectAllCheckbox.checked = selectedCount === validTotal && validTotal > 0;
+      selectAllCheckbox.indeterminate = selectedCount > 0 && selectedCount < validTotal;
+    }
+
+    // Update batch delete button
+    const batchBtn = document.getElementById('docs-batch-delete');
+    if (batchBtn) {
+      batchBtn.disabled = selectedCount === 0;
+    }
+
+    // Update batch count badge
+    const batchCount = document.getElementById('docs-batch-count');
+    if (batchCount) {
+      batchCount.textContent = selectedCount > 0 ? ` (${selectedCount})` : '';
+    }
+
+    // Update row highlights and per-row checkboxes
+    document.querySelectorAll('.doc-row-checkbox').forEach(cb => {
+      const id = cb.getAttribute('data-doc-id');
+      if (!id) return;
+      cb.checked = _selectedDocIds.has(id);
+      const row = cb.closest('tr');
+      if (row) {
+        row.style.background = _selectedDocIds.has(id) ? 'rgba(59,130,246,0.08)' : '';
+      }
+    });
+  }
+
+  async function batchDeleteDocuments() {
+    const ids = Array.from(_selectedDocIds);
+    const count = ids.length;
+    if (!count) return;
+    const confirmed = await showConfirm({
+      message: t('documents.batchDeleteConfirm').replace('{count}', String(count)),
+      destructive: true,
+    });
+    if (!confirmed) return;
+    try {
+      _selectedDocIds.clear();
+      const res = await state.api.batchDeleteDocuments(ids, state.currentGraphId);
+      const data = res.data;
+      if (res.success || data) {
+        const deleted = data?.deleted || 0;
+        const failed = count - deleted;
+        if (failed > 0) {
+          showToast(t('documents.batchPartialFail').replace('{failed}', String(failed)), 'warning');
+        } else {
+          showToast(t('documents.batchDeleted').replace('{count}', String(deleted)), 'success');
+        }
+      } else {
+        showToast(res.error || t('documents.batchDeleteFailed'), 'error');
+      }
+      await loadDocs();
+    } catch (e) {
+      showToast(t('documents.batchDeleteFailed') + ': ' + e.message, 'error');
+    }
+  }
 
   function renderDocsTableHtml() {
     const total = _allDocs.length;
@@ -716,17 +840,40 @@
 
     const rows = pageDocs.map((d, i) => {
       const idx = start + i;
-      const hash = d.content_hash || d.doc_hash || d.source_id || '-';
       const title = d.version_title || d.title || d.source_document || d.doc_name || '-';
       const processed = d.processed_time || d.updated_at || d.created_at;
+      const size = formatDocSize(Number(d.byte_size || d.size || d.blob_size || 0));
+      const entityCount = Number(d.entity_count || 0).toLocaleString();
+      const relationCount = Number(d.relation_count || 0).toLocaleString();
+      const docId = d.document_version_id || '';
+      const invalid = !docId;
+      const deleting = _deletingDocIds.has(docId);
+      const selected = _selectedDocIds.has(docId);
+      const integrity = d.integrity || {};
+      const missingWindows = Number(integrity.missing_windows || 0);
+      const integrityHtml = integrity.complete === false
+        ? `<div style="font-size:0.7rem;color:var(--warning);margin-top:0.2rem;">缺失 ${escapeHtml(String(missingWindows))} 个窗口</div>`
+        : integrity.complete === true
+          ? `<div style="font-size:0.7rem;color:var(--success);margin-top:0.2rem;">完整</div>`
+          : '';
       return `
-        <tr>
-          <td><span class="mono" title="${escapeHtml(hash)}">${escapeHtml(truncate(hash, 20))}</span></td>
-          <td>${escapeHtml(truncate(title, 32))}</td>
+        <tr style="${(deleting || invalid) ? 'opacity:0.55;' : ''}${selected && !deleting && !invalid ? 'background:rgba(59,130,246,0.08);' : ''}">
+          <td style="width:2rem;text-align:center;">
+            <input type="checkbox" class="doc-row-checkbox" data-doc-id="${escapeHtml(docId)}" ${selected ? 'checked' : ''} ${(deleting || invalid) ? 'disabled' : ''}>
+          </td>
+          <td>${escapeHtml(truncate(title, 32))}${integrityHtml}</td>
+          <td class="mono">${escapeHtml(size)}</td>
+          <td>${entityCount} / ${relationCount}</td>
           <td>${formatDate(d.created_at)}</td>
-          <td>${formatDateMs(processed)}</td>
-          <td class="mono">${d.content_length != null ? d.content_length.toLocaleString() : '-'}</td>
-          <td><button class="btn btn-secondary btn-sm doc-detail-btn" data-doc-idx="${idx}">${t('common.detail')}</button></td>
+          <td>${invalid ? t('memory.invalidRecord') : deleting ? t('memory.deleting') : formatDateMs(processed)}</td>
+          <td style="display:flex;gap:0.35rem;flex-wrap:wrap;">
+            <button class="btn btn-secondary btn-sm doc-detail-btn" data-doc-idx="${idx}" ${(deleting || invalid) ? 'disabled' : ''}>${t('common.detail')}</button>
+            <button class="btn btn-secondary btn-sm doc-integrity-btn" data-doc-idx="${idx}" ${(deleting || invalid) ? 'disabled' : ''}>检查</button>
+            ${missingWindows > 0 ? `<button class="btn btn-secondary btn-sm doc-repair-btn" data-doc-idx="${idx}" ${(deleting || invalid) ? 'disabled' : ''}>修复</button>` : ''}
+            <button class="btn btn-secondary btn-sm doc-delete-btn" data-doc-idx="${idx}" style="color:var(--error);" ${(deleting || invalid) ? 'disabled' : ''}>
+              ${deleting ? spinnerHtml('spinner-sm') : '<i data-lucide="trash-2" style="width:14px;height:14px;"></i>'}
+            </button>
+          </td>
         </tr>
       `;
     }).join('');
@@ -742,11 +889,12 @@
         <table class="data-table">
           <thead>
             <tr>
-              <th>${t('memory.docHash')}</th>
+              <th style="width:2rem;text-align:center;"><input type="checkbox" id="docs-select-all"></th>
               <th>${t('memory.taskSource')}</th>
+              <th>${t('memory.docSize')}</th>
+              <th>${t('memory.entityRelation')}</th>
               <th>${t('memory.docTime')}</th>
               <th>${t('memory.processedTime')}</th>
-              <th>${t('memory.docTextLength')}</th>
               <th>${t('common.detail')}</th>
             </tr>
           </thead>
@@ -771,6 +919,10 @@
       <div class="card">
         <div class="card-header">
           <span class="card-title">${t('memory.docs')}${badge}</span>
+          <button class="btn btn-secondary btn-sm" id="docs-batch-delete" disabled style="color:var(--error);">
+            <i data-lucide="trash-2" style="width:14px;height:14px;"></i>
+            ${t('documents.batchDelete')}<span id="docs-batch-count"></span>
+          </button>
         </div>
         <div id="docs-list">${renderDocsTableHtml()}</div>
       </div>
@@ -809,56 +961,263 @@
     }
   }
 
-  function showDocPreview(doc) {
-    const fmtSize = (b) => {
-      if (b == null) return '-';
-      if (b < 1024) return b + ' B';
-      if (b < 1024 * 1024) return (b / 1024).toFixed(1) + ' KB';
-      return (b / (1024 * 1024)).toFixed(1) + ' MB';
-    };
+  async function copyTextToClipboard(text) {
+    const value = String(text || '');
+    if (!value) return false;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(value);
+        return true;
+      }
+    } catch (_) {}
+    const ta = document.createElement('textarea');
+    ta.value = value;
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch (_) {}
+    ta.remove();
+    return ok;
+  }
+
+  function formatPathValue(path) {
+    return path ? `<span class="mono" style="word-break:break-all;">${escapeHtml(path)}</span>` : '<span style="color:var(--text-muted);">-</span>';
+  }
+
+  async function showDocPreview(doc) {
     const name = doc.version_title || doc.title || doc.source_document || doc.doc_name || '-';
-    const textLen = doc.content_length != null ? doc.content_length.toLocaleString() : '-';
-    const origSize = fmtSize(doc.blob_size);
-    const cacheSize = fmtSize(doc.content_length);
+    const size = formatDocSize(doc.byte_size || doc.size || doc.blob_size || 0);
+    const entityCount = Number(doc.entity_count || 0).toLocaleString();
+    const relationCount = Number(doc.relation_count || 0).toLocaleString();
     const eventTime = formatDate(doc.created_at);
     const procTime = formatDateMs(doc.processed_time || doc.updated_at || doc.created_at);
     const hash = doc.content_hash || doc.doc_hash || doc.source_id || '-';
+    const readPath = doc.read_path || doc.absolute_path || doc.managed_path || doc.snapshot_path || doc.blob_path || '';
+    const charCount = Number(doc.char_count || 0).toLocaleString();
+    const lineCount = Number(doc.line_count || 0).toLocaleString();
+    const integrity = doc.integrity || {};
+    const missingWindows = Number(integrity.missing_windows || 0);
+    const integrityText = integrity.complete === false
+      ? `缺失 ${missingWindows} / ${Number(integrity.total_windows || 0)} 个窗口`
+      : integrity.complete === true
+        ? `完整 ${Number(integrity.complete_windows || 0)} / ${Number(integrity.total_windows || 0)}`
+        : '未检查';
 
     const rows = [
-      [t('memory.taskSource') || '来源', escapeHtml(truncate(name, 60))],
-      [t('memory.docHash') || 'Hash', `<span class="mono">${escapeHtml(hash)}</span>`],
-      [t('memory.docTextLength') || '文本长度', textLen],
-      [t('memory.originalSize') || '原文大小', origSize],
-      [t('memory.cacheSize') || '缓存大小', cacheSize],
-      [t('memory.docTime') || '文档时间', eventTime],
-      [t('memory.processedTime') || '处理时间', procTime],
+      [t('memory.taskSource'), escapeHtml(truncate(name, 60))],
+      [t('memory.documentSize'), `<span class="mono">${escapeHtml(size)}</span>`],
+      ['来源模式', escapeHtml(doc.source_mode || '-')],
+      ['可读路径', formatPathValue(readPath)],
+      ['Managed', formatPathValue(doc.managed_path || '')],
+      ['External', formatPathValue(doc.absolute_path || '')],
+      ['Snapshot', formatPathValue(doc.snapshot_path || doc.blob_path || '')],
+      ['字符 / 行数', `<span class="mono">${escapeHtml(charCount)} / ${escapeHtml(lineCount)}</span>`],
+      [t('memory.entityRelation'), `${entityCount} / ${relationCount}`],
+      [t('memory.docHash'), `<span class="mono">${escapeHtml(hash)}</span>`],
+      ['完整性', escapeHtml(integrityText)],
+      [t('memory.docTime'), eventTime],
+      [t('memory.processedTime'), procTime],
     ];
     const grid = rows.map(([k, v]) =>
       `<span style="color:var(--text-secondary);white-space:nowrap;">${k}:</span><span>${v}</span>`
     ).join('');
 
-    showModal({
-      title: t('memory.docPreview') || '文档预览',
-      content: `<div style="display:grid;grid-template-columns:auto 1fr;gap:0.4rem 0.75rem;font-size:0.85rem;">${grid}</div>`,
+    const modal = showModal({
+      title: t('memory.docPreview'),
+      size: 'lg',
+      content: `
+        <div style="display:grid;grid-template-columns:auto 1fr;gap:0.4rem 0.75rem;font-size:0.85rem;">${grid}</div>
+        <div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:1rem;">
+          <button class="btn btn-secondary btn-sm doc-copy-path-btn" ${readPath ? '' : 'disabled'}>复制路径</button>
+          <button class="btn btn-secondary btn-sm doc-fulltext-btn" ${doc.document_version_id ? '' : 'disabled'}>查看全文</button>
+          <button class="btn btn-secondary btn-sm modal-integrity-btn" ${doc.document_version_id ? '' : 'disabled'}>检查完整性</button>
+          ${missingWindows > 0 ? `<button class="btn btn-secondary btn-sm modal-repair-btn">修复文档</button>` : ''}
+        </div>
+        <pre class="doc-fulltext-box" style="display:none;margin-top:0.75rem;max-height:50vh;overflow:auto;padding:0.75rem;border:1px solid var(--border);border-radius:8px;background:var(--bg-secondary);white-space:pre-wrap;word-break:break-word;font-size:0.8rem;"></pre>
+      `,
     });
+    const copyBtn = modal.overlay.querySelector('.doc-copy-path-btn');
+    if (copyBtn) {
+      copyBtn.addEventListener('click', async () => {
+        const ok = await copyTextToClipboard(readPath);
+        showToast(ok ? '已复制路径' : '复制失败', ok ? 'success' : 'error');
+      });
+    }
+    const fullBtn = modal.overlay.querySelector('.doc-fulltext-btn');
+    const fullBox = modal.overlay.querySelector('.doc-fulltext-box');
+    if (fullBtn && fullBox) {
+      fullBtn.addEventListener('click', async () => {
+        fullBtn.disabled = true;
+        fullBtn.innerHTML = `${spinnerHtml('spinner-sm')} 加载中`;
+        try {
+          const res = await state.api.documentContent(doc.document_version_id, state.currentGraphId, { offset: 0, limit: 200000 });
+          const data = res.data || {};
+          fullBox.style.display = '';
+          fullBox.textContent = (data.content || '') + (data.truncated ? '\n\n[内容较大，已显示前 200000 字符]' : '');
+          fullBtn.innerHTML = '已加载全文';
+        } catch (err) {
+          fullBtn.disabled = false;
+          fullBtn.textContent = '查看全文';
+          showToast('加载全文失败: ' + err.message, 'error');
+        }
+      });
+    }
+    const integrityBtn = modal.overlay.querySelector('.modal-integrity-btn');
+    if (integrityBtn) {
+      integrityBtn.addEventListener('click', async () => {
+        integrityBtn.disabled = true;
+        integrityBtn.innerHTML = spinnerHtml('spinner-sm');
+        try {
+          await checkDocumentIntegrity(doc);
+          modal.close?.();
+          await loadDocs();
+        } catch (err) {
+          integrityBtn.disabled = false;
+          integrityBtn.textContent = '检查完整性';
+        }
+      });
+    }
+    const repairBtn = modal.overlay.querySelector('.modal-repair-btn');
+    if (repairBtn) {
+      repairBtn.addEventListener('click', async () => {
+        repairBtn.disabled = true;
+        repairBtn.innerHTML = spinnerHtml('spinner-sm');
+        try {
+          await repairDocument(doc);
+          modal.close?.();
+          await Promise.all([loadDocs(), refreshTasks()]);
+        } catch (err) {
+          repairBtn.disabled = false;
+          repairBtn.textContent = '修复文档';
+        }
+      });
+    }
   }
 
   function bindDocsEvents() {
     if (window.lucide) lucide.createIcons({ nodes: [document.getElementById('docs-list-wrapper')] });
     bindDocsPagination();
-    document.querySelectorAll('.doc-detail-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const idx = parseInt(btn.getAttribute('data-doc-idx'), 10);
-        if (isNaN(idx) || idx < 0 || idx >= _allDocs.length) return;
-        showDocPreview(_allDocs[idx]);
+
+    // Select-all checkbox
+    const selectAllCb = document.getElementById('docs-select-all');
+    if (selectAllCb) {
+      selectAllCb.addEventListener('change', () => {
+        toggleSelectAll();
+      });
+    }
+
+    // Per-row checkboxes
+    document.querySelectorAll('.doc-row-checkbox').forEach(cb => {
+      cb.addEventListener('change', () => {
+        const docId = cb.getAttribute('data-doc-id');
+        toggleSelectDoc(docId);
       });
     });
+
+    // Batch delete button
+    const batchBtn = document.getElementById('docs-batch-delete');
+    if (batchBtn) {
+      batchBtn.addEventListener('click', () => {
+        batchDeleteDocuments();
+      });
+    }
+
+    document.querySelectorAll('.doc-detail-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const idx = parseInt(btn.getAttribute('data-doc-idx'), 10);
+        if (isNaN(idx) || idx < 0 || idx >= _allDocs.length) return;
+        await showDocPreview(_allDocs[idx]);
+      });
+    });
+    document.querySelectorAll('.doc-integrity-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const idx = parseInt(btn.getAttribute('data-doc-idx'), 10);
+        if (isNaN(idx) || idx < 0 || idx >= _allDocs.length) return;
+        await checkDocumentIntegrity(_allDocs[idx]);
+      });
+    });
+    document.querySelectorAll('.doc-repair-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const idx = parseInt(btn.getAttribute('data-doc-idx'), 10);
+        if (isNaN(idx) || idx < 0 || idx >= _allDocs.length) return;
+        await repairDocument(_allDocs[idx]);
+      });
+    });
+    document.querySelectorAll('.doc-delete-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const idx = parseInt(btn.getAttribute('data-doc-idx'), 10);
+        if (isNaN(idx) || idx < 0 || idx >= _allDocs.length) return;
+        await deleteDocument(_allDocs[idx]);
+      });
+    });
+
+    // Initialize selection UI state
+    updateSelectionUI();
+  }
+
+  async function deleteDocument(doc) {
+    const id = doc.document_version_id;
+    if (!id) return;
+    const name = doc.version_title || doc.title || doc.relative_path || id;
+    const ok = await showConfirm({
+      message: t('memory.deleteDocConfirm', { name: truncate(name, 40) }),
+      destructive: true,
+    });
+    if (!ok) return;
+    _deletingDocIds.add(id);
+    updateDocsTable();
+    const pendingToast = showToast(t('memory.deletingDoc', { name: truncate(name, 40) }), 'info', 0);
+    try {
+      await state.api.deleteDocument(id, state.currentGraphId);
+      _deletingDocIds.delete(id);
+      _allDocs = _allDocs.filter(d => d.document_version_id !== id);
+      updateDocsTable();
+      if (pendingToast) pendingToast.remove();
+      showToast(t('memory.docDeleted'), 'success');
+      state.events.dispatchEvent(new CustomEvent('graph-changed', { detail: { graphId: state.currentGraphId } }));
+    } catch (err) {
+      _deletingDocIds.delete(id);
+      if (pendingToast) pendingToast.remove();
+      showToast(t('memory.docDeleteFailed') + ': ' + err.message, 'error');
+      await loadDocs();
+    }
+  }
+
+  async function checkDocumentIntegrity(doc) {
+    const id = doc.document_version_id;
+    if (!id) return;
+    try {
+      const res = await state.api.documentIntegrity(id, state.currentGraphId);
+      doc.integrity = res.data || {};
+      updateDocsTable();
+      const missing = Number(doc.integrity.missing_windows || 0);
+      showToast(missing > 0 ? `发现 ${missing} 个缺失/不完整窗口` : '文档完整性正常', missing > 0 ? 'warning' : 'success');
+    } catch (err) {
+      showToast('完整性检查失败: ' + err.message, 'error');
+    }
+  }
+
+  async function repairDocument(doc) {
+    const id = doc.document_version_id;
+    if (!id) return;
+    try {
+      const res = await state.api.repairDocument(id, state.currentGraphId);
+      showToast(res.data?.message || '已提交修复任务', res.data?.submitted === false ? 'info' : 'success');
+      await Promise.all([loadDocs(), refreshTasks()]);
+    } catch (err) {
+      showToast('文档修复失败: ' + err.message, 'error');
+    }
   }
 
   async function loadDocs() {
     try {
       const res = await state.api.listDocs(state.currentGraphId);
       _allDocs = res.data?.docs || [];
+      _deletingDocIds = new Set([..._deletingDocIds].filter(id => _allDocs.some(d => d.document_version_id === id)));
+      _selectedDocIds = new Set([..._selectedDocIds].filter(id => _allDocs.some(d => d.document_version_id === id)));
       _docsPage = 1;
 
       const el = document.getElementById('docs-list-wrapper');

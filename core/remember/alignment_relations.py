@@ -414,20 +414,17 @@ class _RelationAlignMixin:
 
         # Phase C-2: 记录 Episode → Relation MENTIONS（串行路径）
         if processed_relations:
-            try:
-                rel_abs_ids = list(set(
-                    r.absolute_id for r in processed_relations if r.absolute_id
-                ))
-                if rel_abs_ids:
-                    self.storage.save_episode_mentions(
-                        new_episode.absolute_id, rel_abs_ids,
-                        target_type="relation",
-                    )
-                    if verbose:
-                        wprint_info(f"【步骤10】MENTIONS｜Relation｜{len(rel_abs_ids)}条")
-                # 注意：关系置信度 corroboration 已在 relation.py _process_relations_parallel 中统一处理
-            except Exception as e:
-                wprint_warn(f"【步骤10】MENTIONS｜Relation｜失败｜{e}")
+            rel_abs_ids = list(set(
+                r.absolute_id for r in processed_relations if r.absolute_id
+            ))
+            if rel_abs_ids:
+                self.storage.save_episode_mentions(
+                    new_episode.absolute_id, rel_abs_ids,
+                    target_type="relation",
+                )
+                if verbose:
+                    wprint_info(f"【步骤10】MENTIONS｜Relation｜{len(rel_abs_ids)}条")
+            # 注意：关系置信度 corroboration 已在 relation.py _process_relations_parallel 中统一处理
 
         # 步骤8: 纯代码校验
         self._verify_window_results(

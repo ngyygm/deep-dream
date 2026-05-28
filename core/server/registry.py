@@ -1,11 +1,18 @@
-"""Graph registry for physically isolated SQLite concept graphs."""
+"""Single-library registry for the local Deep-Dream vault.
+
+The historical API called each isolated database a "graph". The current product
+model is one local library/vault. This class keeps the old method names as a
+compatibility layer while mapping every request to the same library storage.
+"""
 from __future__ import annotations
 
 import json
 import logging
+import gc
 import re
 import shutil
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
@@ -20,16 +27,16 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _GRAPH_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
+LIBRARY_ID = "library"
 
 
 class GraphRegistry:
-    """Owns graph-local processors, queues, and metadata.
+    """Owns the single library processor, queue, and metadata.
 
-    Business graph data is physically isolated under:
-        {storage_root}/graphs/{graph_id}/
-
-    The root-level registry.json only stores graph metadata. It never stores
-    concept families, versions, edges, documents, blobs, or vector indexes.
+    Compatibility:
+    - `graph_id` arguments are accepted but normalized to `library`.
+    - Legacy data under `{storage_root}/graphs/{graph_id}` can be migrated into
+      the single-library layout at `{storage_root}`.
     """
 
     def __init__(
@@ -40,7 +47,8 @@ class GraphRegistry:
     ):
         self._base_path = Path(base_storage_path)
         self._graphs_path = self._base_path / "graphs"
-        self._registry_path = self._base_path / "registry.json"
+        self._registry_path = self._base_path / "library.json"
+        self._legacy_registry_path = self._base_path / "registry.json"
         self._config = config
         self._system_monitor = system_monitor
         self._embedding_client: Optional[EmbeddingClient] = None
@@ -49,9 +57,8 @@ class GraphRegistry:
         self._lock = threading.RLock()
 
         self._base_path.mkdir(parents=True, exist_ok=True)
-        self._graphs_path.mkdir(parents=True, exist_ok=True)
         if not self._registry_path.exists():
-            self._write_registry({"graphs": {}})
+            self._write_registry({"library": {"id": LIBRARY_ID}})
 
     # ------------------------------------------------------------------
     # Paths and registry metadata
@@ -59,51 +66,61 @@ class GraphRegistry:
 
     def graph_dir(self, graph_id: str) -> Path:
         self.validate_graph_id(graph_id)
-        return self._graphs_path / graph_id
+        return self._base_path
+
+    @staticmethod
+    def normalize_graph_id(graph_id: str | None = None) -> str:
+        if graph_id:
+            GraphRegistry.validate_graph_id(graph_id)
+        return LIBRARY_ID
 
     def _read_registry(self) -> Dict[str, Any]:
         try:
-            data = json.loads(self._registry_path.read_text(encoding="utf-8"))
+            path = self._registry_path if self._registry_path.exists() else self._legacy_registry_path
+            data = json.loads(path.read_text(encoding="utf-8"))
             if isinstance(data, dict):
-                data.setdefault("graphs", {})
+                if "library" not in data:
+                    graphs = data.get("graphs") or {}
+                    first = next(iter(graphs.values()), {})
+                    data = {"library": {"id": LIBRARY_ID, **dict(first)}}
+                data.setdefault("library", {"id": LIBRARY_ID})
                 return data
         except (OSError, json.JSONDecodeError):
             pass
-        return {"graphs": {}}
+        return {"library": {"id": LIBRARY_ID}}
 
     def _write_registry(self, data: Dict[str, Any]) -> None:
-        data.setdefault("graphs", {})
+        data.setdefault("library", {"id": LIBRARY_ID})
         self._base_path.mkdir(parents=True, exist_ok=True)
         tmp = self._registry_path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp.replace(self._registry_path)
 
     def get_graph_metadata(self, graph_id: str) -> Dict[str, Any]:
-        self.validate_graph_id(graph_id)
+        graph_id = self.normalize_graph_id(graph_id)
         registry = self._read_registry()
-        meta = dict((registry.get("graphs") or {}).get(graph_id) or {})
+        meta = dict(registry.get("library") or {})
+        meta.setdefault("id", LIBRARY_ID)
+        meta.setdefault("graph_id", graph_id)
         return meta
 
     def set_graph_metadata(self, graph_id: str, **kwargs) -> Dict[str, Any]:
-        self.validate_graph_id(graph_id)
+        graph_id = self.normalize_graph_id(graph_id)
         registry = self._read_registry()
-        graphs = registry.setdefault("graphs", {})
-        existing = dict(graphs.get(graph_id) or {})
+        existing = dict(registry.get("library") or {})
+        existing.setdefault("id", LIBRARY_ID)
         existing.setdefault("graph_id", graph_id)
         existing.setdefault("created_at", datetime.now(timezone.utc).isoformat())
         for key, value in kwargs.items():
             if value is not None:
                 existing[key] = value
         existing["updated_at"] = datetime.now(timezone.utc).isoformat()
-        graphs[graph_id] = existing
+        registry["library"] = existing
         self._write_registry(registry)
         return dict(existing)
 
     def _remove_graph_metadata(self, graph_id: str) -> None:
-        registry = self._read_registry()
-        graphs = registry.setdefault("graphs", {})
-        graphs.pop(graph_id, None)
-        self._write_registry(registry)
+        self.set_graph_metadata(LIBRARY_ID, removed_legacy_graph_id=graph_id)
 
     # ------------------------------------------------------------------
     # Shared EmbeddingClient
@@ -118,6 +135,9 @@ class GraphRegistry:
                 model_name=model_name,
                 device=embedding.get("device", "cpu"),
                 use_local=use_local,
+                cache_max_size=int(embedding.get("cache_max_size") or 8192),
+                cache_ttl=float(embedding.get("cache_ttl") or 3600.0),
+                max_concurrency=int(embedding.get("max_concurrency") or 1),
             )
         return self._embedding_client
 
@@ -126,13 +146,14 @@ class GraphRegistry:
     # ------------------------------------------------------------------
 
     def get_processor(self, graph_id: str) -> TemporalMemoryGraphProcessor:
-        self.validate_graph_id(graph_id)
+        graph_id = self.normalize_graph_id(graph_id)
         with self._lock:
             if graph_id not in self._processors:
                 graph_dir = self.graph_dir(graph_id)
                 graph_dir.mkdir(parents=True, exist_ok=True)
                 self.set_graph_metadata(graph_id)
                 self._processors[graph_id] = self._build_processor(str(graph_dir), graph_id)
+                self._prewarm_graph_indexes(graph_id, self._processors[graph_id])
             return self._processors[graph_id]
 
     def get_processor_with_retry(self, graph_id: str, max_retries: int = 2) -> TemporalMemoryGraphProcessor:
@@ -147,10 +168,22 @@ class GraphRegistry:
                 time.sleep(0.5 * (attempt + 1))
 
     def create_task_processor(self, graph_id: str) -> TemporalMemoryGraphProcessor:
-        self.validate_graph_id(graph_id)
+        graph_id = self.normalize_graph_id(graph_id)
         graph_dir = self.graph_dir(graph_id)
         graph_dir.mkdir(parents=True, exist_ok=True)
         return self._build_processor(str(graph_dir), graph_id)
+
+    def _prewarm_graph_indexes(self, graph_id: str, processor: TemporalMemoryGraphProcessor) -> None:
+        def _run() -> None:
+            try:
+                storage = getattr(processor, "storage", None)
+                if storage and hasattr(storage, "prewarm_vector_search"):
+                    warmed = storage.prewarm_vector_search()
+                    logger.info("Prewarmed vector search for graph %s: %s", graph_id, warmed)
+            except Exception as exc:
+                logger.debug("Prewarm vector search failed for graph %s: %s", graph_id, exc)
+
+        threading.Thread(target=_run, name=f"vector-prewarm-{graph_id}", daemon=True).start()
 
     def _build_processor(self, storage_path: str, graph_id: str) -> TemporalMemoryGraphProcessor:
         config = self._config
@@ -222,7 +255,7 @@ class GraphRegistry:
     # ------------------------------------------------------------------
 
     def get_queue(self, graph_id: str):
-        self.validate_graph_id(graph_id)
+        graph_id = self.normalize_graph_id(graph_id)
         with self._lock:
             if graph_id in self._queues:
                 return self._queues[graph_id]
@@ -254,22 +287,13 @@ class GraphRegistry:
     # ------------------------------------------------------------------
 
     def list_graphs(self) -> List[str]:
-        ids: set[str] = set()
-        registry_graphs = self._read_registry().get("graphs") or {}
-        ids.update(registry_graphs.keys())
-        if self._graphs_path.is_dir():
-            for child in self._graphs_path.iterdir():
-                if child.is_dir() and ((child / "graph.db").exists() or child.name in registry_graphs):
-                    ids.add(child.name)
-        with self._lock:
-            ids.update(self._processors.keys())
-        return sorted(ids)
+        return [LIBRARY_ID]
 
     def get_graph_info(self, graph_id: str) -> Optional[Dict[str, Any]]:
-        self.validate_graph_id(graph_id)
+        graph_id = self.normalize_graph_id(graph_id)
         graph_dir = self.graph_dir(graph_id)
         metadata = self.get_graph_metadata(graph_id)
-        if not graph_dir.is_dir() and not metadata and graph_id not in self._processors:
+        if not graph_dir.is_dir() and graph_id not in self._processors:
             return None
         metadata.setdefault("graph_id", graph_id)
         metadata.setdefault("path", str(graph_dir))
@@ -304,7 +328,7 @@ class GraphRegistry:
     # ------------------------------------------------------------------
 
     def clear_graph(self, graph_id: str) -> None:
-        self.validate_graph_id(graph_id)
+        graph_id = self.normalize_graph_id(graph_id)
         processor = self.get_processor(graph_id)
         if hasattr(processor.storage, "clear_graph_data"):
             processor.storage.clear_graph_data()
@@ -312,30 +336,8 @@ class GraphRegistry:
         logger.info("Cleared graph '%s'", graph_id)
 
     def delete_graph(self, graph_id: str) -> None:
-        self.validate_graph_id(graph_id)
-        with self._lock:
-            queue = self._queues.pop(graph_id, None)
-            if queue and hasattr(queue, "shutdown"):
-                try:
-                    queue.shutdown()
-                except Exception as exc:
-                    logger.warning("Failed to shut down graph %s queue: %s", graph_id, exc)
-
-            processor = self._processors.pop(graph_id, None)
-            if processor and hasattr(processor.storage, "close"):
-                try:
-                    processor.storage.close()
-                except Exception as exc:
-                    logger.warning("Failed to close graph %s storage: %s", graph_id, exc)
-
-            graph_dir = self.graph_dir(graph_id)
-            if graph_dir.is_dir():
-                shutil.rmtree(graph_dir)
-
-            self._remove_graph_metadata(graph_id)
-            if self._system_monitor is not None:
-                self._system_monitor.detach_graph(graph_id)
-            logger.info("Deleted graph '%s'", graph_id)
+        graph_id = self.normalize_graph_id(graph_id)
+        raise ValueError("单库模式不支持删除 library；如需清空数据请使用 clear")
 
     # ------------------------------------------------------------------
     # Validation
@@ -344,16 +346,16 @@ class GraphRegistry:
     @staticmethod
     def validate_graph_id(graph_id: str) -> None:
         if not isinstance(graph_id, str) or not graph_id.strip():
-            raise ValueError("graph_id is required")
+            raise ValueError("graph_id 不能为空")
         graph_id = graph_id.strip()
         if graph_id in (".", ".."):
-            raise ValueError(f"invalid graph_id: {graph_id!r}")
+            raise ValueError(f"graph_id 无效: {graph_id!r}")
         if "/" in graph_id or "\\" in graph_id:
-            raise ValueError(f"invalid graph_id: {graph_id!r}")
+            raise ValueError(f"graph_id 无效: {graph_id!r}")
         if "\x00" in graph_id:
-            raise ValueError("graph_id contains illegal characters")
+            raise ValueError("graph_id 包含非法字符")
         if not _GRAPH_ID_RE.match(graph_id):
             raise ValueError(
-                f"invalid graph_id: {graph_id!r} "
-                "(allowed: letters, numbers, underscore, hyphen; length 1-128; starts with letter/number)"
+                f"graph_id 无效: {graph_id!r} "
+                "(允许: 字母、数字、下划线、连字符; 长度 1-128; 以字母或数字开头)"
             )

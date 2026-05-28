@@ -17,6 +17,12 @@ Steps 9 (entity alignment) and 10 (relation alignment) are in alignment.py and o
 import time as _time
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from core.llm.client import (
+    LLM_PRIORITY_STEP2,
+    LLM_PRIORITY_STEP3,
+    LLM_PRIORITY_STEP4,
+    LLM_PRIORITY_STEP5,
+)
 from core.utils import wprint_info
 from .helpers import _core_entity_name
 from ._steps_helpers import (
@@ -83,7 +89,23 @@ class _ExtractionStepsMixin:
             if window_timings_ref is not None:
                 window_timings_ref[key] = elapsed
 
-        extraction_client = self.extraction_client
+        extraction_client = self.extraction_client or self.llm_client
+
+        def _with_llm_priority(client, priority: int, fn):
+            if client is None:
+                raise RuntimeError("LLM client is not configured; set llm.api_key, llm.base_url, and llm.model before running remember")
+            previous = getattr(client._priority_local, "priority", None)
+            client._priority_local.priority = priority
+            try:
+                return fn()
+            finally:
+                if previous is None:
+                    try:
+                        del client._priority_local.priority
+                    except AttributeError:
+                        pass
+                else:
+                    client._priority_local.priority = previous
 
         # Set up LLM cancel checks so pause/delete can interrupt retry loops
         _cancel_check_fn = (lambda: control_check_fn() is not None) if control_check_fn else None
@@ -98,15 +120,12 @@ class _ExtractionStepsMixin:
         # ==============================================================
         _progress(0.03, f"{_win} · 步骤2: 实体提取（强模型）", "开始")
         _t = _time.time()
-        # Adaptive rounds: short text rarely benefits from multiple refinement rounds
-        _input_len = len(input_text)
-        _adaptive_entity_rounds = self.entity_rounds
-        if _input_len < 200:
-            _adaptive_entity_rounds = min(_adaptive_entity_rounds, 0)
-        elif _input_len < 500:
-            _adaptive_entity_rounds = min(_adaptive_entity_rounds, 1)
-        raw_names, ent_refine = extraction_client.extract_entities(
-            input_text, max_refine_rounds=_adaptive_entity_rounds
+        raw_names, ent_refine = _with_llm_priority(
+            extraction_client,
+            LLM_PRIORITY_STEP2,
+            lambda: extraction_client.extract_entities(
+                input_text, max_refine_rounds=self.entity_rounds
+            ),
         )
         _elapsed = _time.time() - _t
         _record_timing("step2_entity_extract", _elapsed)
@@ -163,18 +182,15 @@ class _ExtractionStepsMixin:
         _step6_stats: Dict = {}
         _step6_entity_names = list(entity_names)  # snapshot for thread safety
 
-        # Adaptive relation rounds: scale with input length and entity count
-        _adaptive_rel_rounds = self.relation_rounds
-        if _input_len < 200:
-            _adaptive_rel_rounds = min(_adaptive_rel_rounds, 0)
-        elif _input_len < 500:
-            _adaptive_rel_rounds = min(_adaptive_rel_rounds, 1)
-
         if len(entity_names) >= 2:
             def _run_step6():
                 _t6 = _time.time()
-                _raw, _stats = extraction_client.discover_relations(
-                    _step6_entity_names, input_text, max_refine_rounds=_adaptive_rel_rounds
+                _raw, _stats = _with_llm_priority(
+                    extraction_client,
+                    LLM_PRIORITY_STEP3,
+                    lambda: extraction_client.discover_relations(
+                        _step6_entity_names, input_text, max_refine_rounds=self.relation_rounds
+                    ),
                 )
                 return _raw, _stats, _time.time() - _t6
 
@@ -185,11 +201,22 @@ class _ExtractionStepsMixin:
         if _needs_llm_names:
             _batch_chunk_size = getattr(self, 'remember_entity_content_batch_size', 10)
             _step4_workers = getattr(self, 'llm_threads', 1)
-            batch_results = self.llm_client.batch_write_entity_content(
-                _needs_llm_names, input_text,
-                chunk_size=_batch_chunk_size,
-                max_workers=_step4_workers,
+            if _step6_future is not None and _step4_workers > 1:
+                # Keep one LLM slot available for relation discovery. This preserves
+                # the original prompts and steps while avoiding a full-slot step4
+                # batch blocking the next high-value extraction call.
+                _step4_workers = max(1, _step4_workers - 1)
+            _t4_batch = _time.time()
+            batch_results = _with_llm_priority(
+                self.llm_client,
+                LLM_PRIORITY_STEP4,
+                lambda: self.llm_client.batch_write_entity_content(
+                    _needs_llm_names, input_text,
+                    chunk_size=_batch_chunk_size,
+                    max_workers=_step4_workers,
+                ),
             )
+            _record_timing("step4_entity_content_batch_llm", _time.time() - _t4_batch)
 
             # 4b: Identify entities the batch missed
             _min_content_len = 10
@@ -202,8 +229,13 @@ class _ExtractionStepsMixin:
 
             # 4c: Per-entity fallback for missing entities (parallelized)
             if _missing_names:
+                _t4_fallback_llm = _time.time()
                 def _write_one_entity(name: str) -> Dict[str, str]:
-                    content = self.llm_client.write_entity_content(name, input_text)
+                    content = _with_llm_priority(
+                        self.llm_client,
+                        LLM_PRIORITY_STEP4,
+                        lambda: self.llm_client.write_entity_content(name, input_text),
+                    )
                     if not content or len(content) < _min_content_len:
                         content = _cached_fallback(name)
                     return {"name": name, "content": content}
@@ -217,18 +249,24 @@ class _ExtractionStepsMixin:
                 )
                 for e in _fallback_results:
                     batch_results[e["name"]] = e["content"]
+                _record_timing("step4_entity_content_fallback_llm", _time.time() - _t4_fallback_llm)
 
         # Merge fast-path results
         for name in _fast_path_names:
             batch_results[name] = _fallback_cache[name]
 
         # Assemble final list preserving entity_names order
+        _t4_code_fallback = _time.time()
+        _code_fallback_used = False
         extracted_entities = []
         for name in entity_names:
             content = batch_results.get(name, "")
             if not content or len(content) < _MIN_ENTITY_CONTENT_LEN:
                 content = _cached_fallback(name)
+                _code_fallback_used = True
             extracted_entities.append({"name": name, "content": content})
+        if _code_fallback_used:
+            _record_timing("step4_entity_content_code_fallback", _time.time() - _t4_code_fallback)
 
         _elapsed = _time.time() - _t
         _record_timing("step4_entity_content", _elapsed)
@@ -305,13 +343,16 @@ class _ExtractionStepsMixin:
         if _step6_future is not None:
             # Collect result from parallel step 6
             _progress(0.53, f"{_win} · 步骤6: 关系发现（强模型）", "等待结果")
+            _t6_wait = _time.time()
             try:
                 _step6_raw_pairs, _step6_stats, _step6_wall = _step6_future.result()
             except Exception:
                 _step6_raw_pairs, _step6_stats, _step6_wall = [], {}, 0.0
             _step6_future = None
+            _record_timing("step6_relation_wait", _time.time() - _t6_wait)
 
             # Normalize pairs using the entity name set from step 3
+            _t6_norm = _time.time()
             seen_pairs = set()
             _name_lookup = self._build_name_lookup(set(_step6_entity_names))
             def _add_pairs(raw_list):
@@ -330,6 +371,7 @@ class _ExtractionStepsMixin:
             _initial_count = _add_pairs(_step6_raw_pairs)
             _refine_added = len(relation_pairs) - _initial_count
             _elapsed5 = _step6_wall
+            _record_timing("step6_relation_normalize", _time.time() - _t6_norm)
 
             if verbose or verbose_steps:
                 _ref_tag = f" +精炼{_refine_added}对" if _refine_added else ""
@@ -354,11 +396,17 @@ class _ExtractionStepsMixin:
         if _needs_llm_pairs:
             _rel_batch_size = getattr(self, 'remember_relation_content_batch_size', 20)
             _step7_workers = getattr(self, 'llm_threads', 1)
-            batch_rel_results = self.llm_client.batch_write_relation_content(
-                _needs_llm_pairs, input_text,
-                chunk_size=_rel_batch_size,
-                max_workers=_step7_workers,
+            _t7_batch = _time.time()
+            batch_rel_results = _with_llm_priority(
+                self.llm_client,
+                LLM_PRIORITY_STEP5,
+                lambda: self.llm_client.batch_write_relation_content(
+                    _needs_llm_pairs, input_text,
+                    chunk_size=_rel_batch_size,
+                    max_workers=_step7_workers,
+                ),
             )
+            _record_timing("step7_relation_content_batch_llm", _time.time() - _t7_batch)
 
         # 7c: Per-pair fallback for batch misses
         _pair_keys = {id(p): _pair_key(p[0], p[1]) for p in _needs_llm_pairs}
@@ -369,9 +417,14 @@ class _ExtractionStepsMixin:
         ]
         _fallback_rels: List[Dict[str, str]] = []
         if _missing_pairs:
+            _t7_fallback_llm = _time.time()
             def _write_one_relation(pair: Tuple[str, str]) -> Optional[Dict[str, str]]:
                 a, b = pair
-                content = self.llm_client.write_relation_content(a, b, input_text)
+                content = _with_llm_priority(
+                    self.llm_client,
+                    LLM_PRIORITY_STEP5,
+                    lambda: self.llm_client.write_relation_content(a, b, input_text),
+                )
                 if content:
                     return {"entity1_name": a, "entity2_name": b, "content": content}
                 return None
@@ -380,6 +433,7 @@ class _ExtractionStepsMixin:
                 _missing_pairs, _write_one_relation,
                 n_workers=_step7_workers, thread_prefix="extract-rcontent",
             )
+            _record_timing("step7_relation_content_fallback_llm", _time.time() - _t7_fallback_llm)
 
         # Assemble final list: batch > fast-path > per-pair fallback
         extracted_relations = []

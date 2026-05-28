@@ -1,8 +1,11 @@
 # Deep-Dream
 
-Deep-Dream is a Document-first memory graph for AI agents.
+Deep-Dream is a local, document-first memory vault for humans and AI agents.
 
-The v1 storage model treats Markdown documents as read-only sources of truth, splits them into episodes, and stores extracted entities and relations as unified concept families, concept versions, and concept edges.
+It borrows the file-first vault idea from Markdown knowledge tools, but does
+not depend on Obsidian or any closed-source app. Raw Markdown/text files remain
+the source of truth; episodes, concepts, relations, embeddings, and graph views
+are semantic overlays that help agents search, align, and verify evidence.
 
 ## Current Model
 
@@ -21,44 +24,72 @@ Each episode mention creates a new concept version across episodes. Within the s
 
 ## Storage Layout
 
-Each graph is physically isolated:
+Deep-Dream uses one local library.
 
 ```text
 {storage_root}/
-  graphs/
-    {graph_id}/
-      graph.db
-      blobs/
-      artifacts/
-      indexes/
-      logs/
-  registry.json
+  graph.db
+  documents/
+    managed/
+    external/
+  snapshots/
+  artifacts/
+  indexes/
+  logs/
+  tasks/
+  library.json
 ```
 
-Graphs do not share SQLite databases, blobs, indexes, or logs.
+The default `storage_path` is `./library`. Legacy data in `./graphs/*` can be
+migrated with:
+
+```bash
+python -m core.cli library migrate --config service_config.json
+```
 
 ## API
 
 Base URL: `http://localhost:16200/api/v1`
 
-Core endpoints:
+Document-first endpoints:
 
-- `POST /remember`
 - `POST /vaults/index`
+- `GET /vaults/tree`
 - `GET /documents`
+- `GET /documents/map?path=...`
+- `GET /documents/search?q=...`
+- `GET /documents/<document_version_id>/content`
+- `POST /remember`
 - `GET /concepts`
 - `GET /concepts/<family_id>`
 - `GET /concepts/<family_id>/versions`
 - `GET /concepts/<family_id>/provenance`
 - `POST /concepts/search`
 - `POST /traverse`
-- `GET /graphs`
-- `POST /graphs`
-- `DELETE /graphs/<graph_id>`
 
-All graph-scoped endpoints accept `graph_id`; omitted `graph_id` defaults to `default`.
+Agent workflow:
+
+```text
+1. Search and read raw files first.
+2. Map files to document ids when graph context is needed.
+3. Use episodes for source spans and line evidence.
+4. Use concepts/relations for semantic expansion and alignment.
+5. Verify final claims against raw text or episode source_text.
+```
+
+See `docs/deep-dream-vault-plan.md` for the current architecture direction.
 
 ## Development
+
+Frontend detail UI rules:
+
+- Entity/relation detail, version history, and diff UI must use `core/server/static/js/shared/concept-detail.js`.
+- See `docs/frontend-concept-detail-guidelines.md` before changing graph/search detail interactions.
+
+Remember performance rules:
+
+- See `docs/remember-performance-profiling.md` before changing remember timing or speed paths.
+- Keep the tested 10-step extraction/alignment semantics stable; optimize batching, caching, scheduling, indexing, and transactions first.
 
 Run focused storage tests:
 

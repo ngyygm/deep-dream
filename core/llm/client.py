@@ -85,6 +85,8 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
                  connect_timeout_seconds: Optional[int] = None,
                  prompt_episode_max_chars: Optional[int] = None,
                  max_llm_concurrency: Optional[int] = None,
+                 shared_llm_semaphore: Optional[PrioritySemaphore] = None,
+                 shared_llm_slot_max: Optional[int] = None,
                  alignment_base_url: Optional[str] = None,
                  alignment_api_key: Optional[str] = None,
                  alignment_model: Optional[str] = None,
@@ -99,16 +101,17 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
 
         Args:
             api_key / model_name / base_url / content_snippet_length / relation_content_snippet_length / think_mode / max_tokens / context_window_tokens:
-                步骤 1–5（上游滑窗与抽取）使用的配置；max_llm_concurrency 为步骤 1–5 的 LLM 并发上限。
+                LLM 基础配置；max_llm_concurrency 是当前服务的全局 LLM 请求并发上限。
                 context_window_tokens：请求输入 prompt 的 token 预算上限；本地仅预检输入，不再用它压缩输出 max_tokens。
             timeout_seconds / connect_timeout_seconds:
                 LLM API 请求超时配置（秒）。timeout_seconds 控制总请求超时（默认 300），connect_timeout_seconds 控制连接超时（默认 30）。
             prompt_episode_max_chars:
                 进入抽取类 prompt 的记忆缓存最大字符数；超长时自动截断，避免异常缓存拖爆上下文预算。
             alignment_enabled:
-                False 时忽略所有 alignment_*，步骤 6/7 与上游共用同一模型与（未拆分时）统一并发池。
-            alignment_max_llm_concurrency:
-                仅在 alignment_enabled 时生效：步骤 6/7 独立并发上限；未设时按原逻辑从 max_llm_concurrency 拆分下游槽位。
+                False 时忽略所有 alignment_*，步骤 6/7 与上游共用同一模型配置。
+            shared_llm_semaphore / shared_llm_slot_max:
+                多个 LLMClient 共享同一个全局并发闸门。Deep-Dream 的 remember 流水线用它把
+                主模型、抽取模型、对齐模型统一限制在 llm.max_concurrency 内。
             alignment_*:
                 步骤 6–7 可单独覆盖；未设置的项回退到上游对应项。
         """
@@ -171,7 +174,9 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
         if not self._endpoint_available:
             wprint_info("提示：未提供 API key 或任一 base_url，将使用模拟响应模式")
 
-        # LLM 并发：上游（步骤2–8）与下游（步骤9–10）两池
+        # LLM 并发：一个全局闸门代表当前 LLM 服务的真实容量。
+        # 旧版曾拆成 upstream/downstream 两池；这会让 extraction/alignment 双客户端在同一服务上超发。
+        # 现在统一走同一个 PrioritySemaphore；保留 upstream/downstream 字段只为监控兼容。
         self._max_llm_concurrency: int = max_llm_concurrency or 0
         self._llm_upstream_slot_max: int = 0
         self._llm_downstream_slot_max: int = 0
@@ -179,43 +184,15 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
         self._llm_sem_downstream: Optional[PrioritySemaphore] = None
         self._llm_semaphore: Optional[PrioritySemaphore] = None  # 兼容旧代码/测试：与上游相同或总池
         mc = max_llm_concurrency or 0
-        amc = self._alignment_max_llm_concurrency
-        if self.alignment_enabled and mc >= 1 and amc is not None:
-            # 对齐开启且单独指定下游并发：上游 = 步骤2–8，下游 = 步骤9–10
-            self._llm_upstream_slot_max = int(mc)
-            self._llm_downstream_slot_max = int(amc)
-            self._llm_sem_upstream = PrioritySemaphore(self._llm_upstream_slot_max)
-            self._llm_sem_downstream = PrioritySemaphore(self._llm_downstream_slot_max)
-            self._llm_semaphore = self._llm_sem_upstream
-        elif self.alignment_enabled and mc >= 1:
-            # 对齐开启但未指定 alignment_max_concurrency：从上游总数中拆分下游（与旧版比例一致）
-            if mc == 1:
-                self._llm_upstream_slot_max = 1
-                self._llm_downstream_slot_max = 1
-                self._llm_sem_upstream = PrioritySemaphore(1)
-                self._llm_sem_downstream = PrioritySemaphore(1)
-            else:
-                _r = max(1, min(mc // 4, mc - 1))
-                _up = mc - _r
-                self._llm_upstream_slot_max = _up
-                self._llm_downstream_slot_max = _r
-                self._llm_sem_upstream = PrioritySemaphore(_up)
-                self._llm_sem_downstream = PrioritySemaphore(_r)
-            self._llm_semaphore = self._llm_sem_upstream
+        if shared_llm_semaphore is not None:
+            self._llm_sem_upstream = shared_llm_semaphore
+            self._llm_semaphore = shared_llm_semaphore
+            self._llm_upstream_slot_max = max(1, int(shared_llm_slot_max or shared_llm_semaphore.max_value))
+            self._max_llm_concurrency = self._llm_upstream_slot_max
         elif mc >= 1:
-            # 未启用对齐专用通道：与旧版相同，从 max_llm_concurrency 总数拆分
-            if mc == 1:
-                self._llm_upstream_slot_max = 1
-                self._llm_sem_upstream = PrioritySemaphore(1)
-                self._llm_semaphore = self._llm_sem_upstream
-            else:
-                _r = max(1, min(mc // 4, mc - 1))
-                _up = mc - _r
-                self._llm_upstream_slot_max = _up
-                self._llm_downstream_slot_max = _r
-                self._llm_sem_upstream = PrioritySemaphore(_up)
-                self._llm_sem_downstream = PrioritySemaphore(_r)
-                self._llm_semaphore = self._llm_sem_upstream
+            self._llm_upstream_slot_max = int(mc)
+            self._llm_sem_upstream = PrioritySemaphore(self._llm_upstream_slot_max)
+            self._llm_semaphore = self._llm_sem_upstream
         # 线程局部变量：当前 LLM 调用优先级
         self._priority_local = threading.local()
 
@@ -368,13 +345,7 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
         return is_valid_utf8(text)
 
     def _select_llm_semaphore(self, priority: int) -> Optional[PrioritySemaphore]:
-        """步骤2–8 用上游池，步骤9–10 用下游池；未拆分（单槽）时仅上游。"""
-        if self._llm_sem_upstream is None:
-            return None
-        if self._llm_sem_downstream is None:
-            return self._llm_sem_upstream
-        if priority >= LLM_PRIORITY_STEP6:
-            return self._llm_sem_downstream
+        """所有 LLM 调用共享一个全局并发闸门；priority 只决定等待队列顺序。"""
         return self._llm_sem_upstream
 
     def get_llm_semaphore_active_count(self) -> int:
@@ -549,8 +520,15 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
             # 获取并发信号量（按优先级排队等待；上游/下游分池）
             _sem_held = False
             if _sem is not None:
+                _wait_started = time.monotonic()
                 _sem.acquire(_priority_init)
                 _sem_held = True
+                _wait_elapsed = time.monotonic() - _wait_started
+                if _wait_elapsed >= 1.0:
+                    wprint_info(
+                        f"[llm_wait] priority={_priority_init} model={_eff_model} "
+                        f"wait={_wait_elapsed:.1f}s active={_sem.active_count}/{_sem.max_value}"
+                    )
             try:
                 _scale = max(0.25, float(request_max_tokens_scale or 1.0))
                 _desired_max_tokens = max(1, int(_effective_max_tokens * _scale))

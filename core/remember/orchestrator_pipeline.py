@@ -36,7 +36,8 @@ class _PipelineMixin:
                       main_chunk_done_callback: Optional[Callable] = None,
                       step9_chunk_done_callback: Optional[Callable] = None,
                       chunk_done_callback: Optional[Callable] = None,
-                      source_document: Optional[str] = None) -> Dict:
+                      source_document: Optional[str] = None,
+                      target_window_indices: Optional[list] = None) -> Dict:
         """
         将一段文本作为记忆入库：流水线式并行处理 step9（实体对齐）和 step10（关系对齐）。
 
@@ -88,7 +89,7 @@ class _PipelineMixin:
         if use_load_cache and start_chunk > 0:
             latest_metadata = self.storage.get_latest_episode_metadata(activity_type="文档处理")
             if latest_metadata:
-                self.current_episode = self.storage.load_episode(latest_metadata["absolute_id"])
+                self.current_episode = self.storage.load_episode(latest_metadata["episode_id"])
                 if verbose and self.current_episode:
                     _log_info("Remember",
                         f"已加载缓存记忆: {self.current_episode.absolute_id}，"
@@ -113,14 +114,23 @@ class _PipelineMixin:
         total_chunks = len(chunks)
 
         # 所有窗口已处理完毕（断点续传恢复后无需重跑）
-        if start_chunk >= total_chunks:
+        if start_chunk >= total_chunks and not target_window_indices:
             return {
                 "episode_id": getattr(self.current_episode, 'absolute_id', None),
                 "chunks_processed": total_chunks,
                 "storage_path": str(self.storage.storage_path),
             }
 
-        N = total_chunks - start_chunk  # 待处理窗口数
+        # Targeted mode: only process specific window indices
+        if target_window_indices is not None:
+            _sorted_targets = sorted(target_window_indices)
+            N = len(_sorted_targets)
+            _local_to_abs = lambda i: _sorted_targets[i]
+            start_chunk = 0  # targeting handles absolute index mapping
+        else:
+            _sorted_targets = None
+            _local_to_abs = lambda i: start_chunk + i
+            N = total_chunks - start_chunk  # 待处理窗口数
         last_episode_id = None
         clear_parallel_log_context()
 
@@ -134,10 +144,12 @@ class _PipelineMixin:
         # 启动 step9 / step10 线程
         t9 = threading.Thread(target=self._run_step9_worker, name="tmg-step9-chain", daemon=True,
                               args=(state, start_chunk, total_chunks, doc_name, verbose, verbose_steps,
-                                    event_time, progress_callback, step9_chunk_done_callback))
+                                    event_time, progress_callback, step9_chunk_done_callback,
+                                    control_callback))
         t10 = threading.Thread(target=self._run_step10_worker, name="tmg-step10-chain", daemon=True,
                               args=(state, start_chunk, total_chunks, doc_name, verbose, verbose_steps,
-                                    event_time, progress_callback, chunk_done_callback))
+                                    event_time, progress_callback, chunk_done_callback,
+                                    control_callback))
         t9.start()
         t10.start()
 
@@ -172,7 +184,7 @@ class _PipelineMixin:
                         _slot_acquired = False
                         break
 
-                    _wi = start_chunk + ci
+                    _wi = _local_to_abs(ci)
                     chunk, start, end = chunks[_wi]
                     if _wi == 0 and doc_name and not doc_name.startswith(("auto_", "api:")):
                         chunk = f"[文档元数据] 文档名：{doc_name} [/文档元数据]\n\n{chunk}"
@@ -206,13 +218,16 @@ class _PipelineMixin:
                     # Step1: 更新缓存
                     _t_step1_start = time.time()
                     _chunk_hash = compute_doc_hash(chunk)
+                    _t_cache_lookup = time.time()
                     existing_mc, _saved_extraction = (
                         self.storage.find_cache_and_extraction_by_doc_hash(_chunk_hash, document_path=document_path)
                         if _chunk_hash else (None, None)
                     )
+                    state.window_timings[ci]["step1-cache_lookup"] = time.time() - _t_cache_lookup
                     if existing_mc:
                         new_mc = existing_mc
                         self.current_episode = existing_mc
+                        state.window_timings[ci]["step1-cache_hit"] = 1e-6
                         if _saved_extraction is None:
                             if verbose:
                                 wprint_info("【步骤1】缓存｜命中｜跳过生成")
@@ -231,6 +246,7 @@ class _PipelineMixin:
                                     doc_hash=_chunk_hash,
                                 )
 
+                            _t_cache_write = time.time()
                             new_mc = self._run_with_progress_heartbeat(
                                 _run_step1,
                                 chain_id="main",
@@ -241,6 +257,7 @@ class _PipelineMixin:
                                 pipeline_role="主线程",
                                 progress_callback=progress_callback,
                             )
+                            state.window_timings[ci]["step1-update_cache"] = time.time() - _t_cache_write
                     _step1_elapsed = time.time() - _t_step1_start
                     state.window_timings[ci]["step1"] = _step1_elapsed
                     if verbose or verbose_steps:
@@ -394,7 +411,7 @@ class _PipelineMixin:
 
         # Clean shutdown of prefetch executor with proper timeout
         try:
-            state.prefetch_executor.shutdown(wait=True, timeout=5)
+            state.prefetch_executor.shutdown(wait=True)
         except Exception as e:
             logger.warning("Prefetch executor shutdown failed: %s", e)
             try:
@@ -429,13 +446,29 @@ class _PipelineMixin:
             _log_info("Remember",f"后处理｜跨窗口去重失败: {e}")
 
         # ========== 计时汇总 ==========
-        self._summarize_window_timings(state.window_timings)
+        timing_summary = self._summarize_window_timings(state.window_timings)
 
         storage_path = str(self.storage.storage_path)
         total_entities = sum(state.aligned_entity_counts)
         total_relations = sum(
             len(rl) for rl in state.step10_results if rl is not None
         )
+        _contiguous_done = 0
+        for i in range(N):
+            if state.step10_results[i] is None:
+                break
+            _contiguous_done += 1
+
+        # Per-window absolute index tracking for targeted retry
+        _abs_of = _local_to_abs  # set during main loop (normal or targeted)
+        _successful_window_indices = []
+        _failed_window_indices = []
+        for i in range(N):
+            _aidx = _abs_of(i) if callable(_abs_of) else (start_chunk + i)
+            if state.step10_results[i] is not None:
+                _successful_window_indices.append(_aidx)
+            elif state.window_failures[i] is not None:
+                _failed_window_indices.append(_aidx)
 
         # Collect partial results even when some windows failed.
         _successful_windows = sum(
@@ -444,17 +477,27 @@ class _PipelineMixin:
         )
         _failed_windows = len(state.errors)
         _window_errors_detail = [
-            {"phase": phase, "window_index": idx, "error": str(exc)}
+            {"phase": phase, "window_index": _abs_of(idx) if callable(_abs_of) else start_chunk + idx, "error": str(exc)}
             for phase, idx, exc in state.errors
         ]
 
+        # Resolve document_version_id from the last episode
+        document_version_id = ""
+        if last_episode_id:
+            try:
+                document_version_id = self.storage._document_version_for_episode(last_episode_id)
+            except Exception:
+                pass
+
         result = {
             "episode_id": last_episode_id,
-            "chunks_processed": total_chunks,
+            "document_version_id": document_version_id,
+            "chunks_processed": start_chunk + _contiguous_done,
             "storage_path": storage_path,
             "entities": total_entities,
             "relations": total_relations,
             "window_timings": state.window_timings,
+            "timing_summary": timing_summary or self._build_timing_summary(state.window_timings),
         }
 
         if _failed_windows > 0:
@@ -476,6 +519,9 @@ class _PipelineMixin:
             result["warnings"] = _window_errors_detail
             result["failed_windows"] = _failed_windows
             result["successful_windows"] = _successful_windows
+            result["failed_window_indices"] = sorted(_failed_window_indices)
+            result["successful_window_indices"] = sorted(_successful_window_indices)
+            result["failed_window_errors"] = _window_errors_detail
         elif _dedup_exc:
             result["warnings"] = [{"phase": "cross_window_dedup", "error": str(_dedup_exc)}]
 

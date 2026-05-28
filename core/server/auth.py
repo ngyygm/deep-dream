@@ -393,6 +393,7 @@ PUBLIC_ENDPOINTS = {
 
 # Read-only endpoints that only need read permission
 READ_ONLY_ENDPOINTS = {
+    "/api/v1/agent",
     "/api/v1/find",
     "/api/v1/concepts",
     "/api/v1/documents",

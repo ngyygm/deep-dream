@@ -24,6 +24,8 @@ from .entity_candidates_enrich import _EnrichMixin
 
 logger = logging.getLogger(__name__)
 
+_EMPTY_FROZENSET = frozenset()
+
 
 # ---------------------------------------------------------------------------
 # Candidate table builder
@@ -98,7 +100,7 @@ class EntityCandidateBuilder(_EnrichMixin):
             _snippet_len = self.llm_client.effective_entity_snippet_length()
             _name_texts = [e["name"] for e in extracted_entities]
             _full_texts = [
-                f"# {e['name']}\n{e['content'][:_snippet_len]}"
+                f"# {e['name']}\n{e.get('content', '')[:_snippet_len]}"
                 for e in extracted_entities
             ]
             _all_embs = self.storage.embedding_client.encode(_name_texts + _full_texts)
@@ -108,8 +110,9 @@ class EntityCandidateBuilder(_EnrichMixin):
         _t_encode = time.monotonic()
         wprint_info(f"[candidate_timing] projections + encode: {_t_encode - _t0:.3f}s")
 
-        # Vectorized similarity via embedding top-K queries
-        top_k = max(len(projections), self.max_alignment_candidates or 50, 50)
+        # Vectorized similarity via graph-local embedding matrix. Keep the
+        # retrieval width bounded; exact/core-name matches are added separately.
+        top_k = max(self.max_alignment_candidates or self.max_similar_entities, len(projections), 10)
         name_emb_scores, full_emb_scores = self._search_embedding_top_k(
             extracted_entities, name_embeddings, full_embeddings, top_k,
         )
@@ -263,7 +266,48 @@ class EntityCandidateBuilder(_EnrichMixin):
         name_scores: Dict[int, Dict[str, float]] = {}
         full_scores: Dict[int, Dict[str, float]] = {}
 
-        if not hasattr(self.storage, '_session') and not hasattr(self.storage, 'search_entities_by_similarity'):
+        cache_fn = getattr(self.storage, "_vector_cache_for_role", None)
+        if cache_fn:
+            try:
+                cache = cache_fn("entity")
+                matrix = cache.get("matrix")
+                rows = cache.get("rows") or []
+                if matrix is not None and rows:
+                    fid_by_row = [row.get("family_id") for row in rows]
+
+                    def _score_queries(query_embeddings) -> Dict[int, Dict[str, float]]:
+                        out: Dict[int, Dict[str, float]] = {}
+                        if query_embeddings is None:
+                            return out
+                        qmat = np.asarray(query_embeddings, dtype=np.float32)
+                        if qmat.ndim == 1:
+                            qmat = qmat.reshape(1, -1)
+                        if qmat.size == 0 or qmat.shape[1] != matrix.shape[1]:
+                            return out
+                        norms = np.linalg.norm(qmat, axis=1, keepdims=True)
+                        norms = np.where(norms == 0, 1.0, norms)
+                        qmat = qmat / norms
+                        scores = qmat @ matrix.T
+                        k = min(max(1, int(top_k or 10)), scores.shape[1])
+                        for idx in range(min(len(extracted_entities), scores.shape[0])):
+                            row_scores = scores[idx]
+                            if row_scores.size <= k:
+                                candidate_idx = np.arange(row_scores.size)
+                            else:
+                                candidate_idx = np.argpartition(row_scores, -k)[-k:]
+                            ordered = candidate_idx[np.argsort(row_scores[candidate_idx])[::-1]]
+                            out[idx] = {
+                                fid_by_row[int(j)]: float(row_scores[int(j)])
+                                for j in ordered
+                                if fid_by_row[int(j)]
+                            }
+                        return out
+
+                    return _score_queries(name_embeddings), _score_queries(full_embeddings)
+            except Exception as e:
+                logger.debug("Vector cache search in alignment failed: %s", e)
+
+        if not hasattr(self.storage, 'search_entities_by_similarity'):
             return name_scores, full_scores
 
         for idx in range(len(extracted_entities)):
@@ -277,10 +321,10 @@ class EntityCandidateBuilder(_EnrichMixin):
                     name_scores[idx] = self._backend_vector_search(query_emb.tolist(), top_k)
 
         for idx in range(len(extracted_entities)):
-            if name_embeddings is not None:
+            if full_embeddings is not None:
                 query_emb = np.asarray(
-                    name_embeddings[idx]
-                    if name_embeddings.ndim == 1 or idx < len(name_embeddings)
+                    full_embeddings[idx]
+                    if full_embeddings.ndim == 1 or idx < len(full_embeddings)
                     else None,
                     dtype=np.float32,
                 )
@@ -298,7 +342,9 @@ class EntityCandidateBuilder(_EnrichMixin):
         try:
             if hasattr(self.storage, 'search_entities_by_similarity'):
                 # SQLite or other backends with a native similarity search method
-                hits = self.storage.search_entities_by_similarity(query_vector, limit=top_k)
+                # search_entities_by_similarity expects query_text (str), not a vector.
+                # Skip this backend path when we only have a precomputed vector.
+                hits = []
                 for hit in hits:
                     fid = hit.family_id if hasattr(hit, 'family_id') else hit.get('family_id')
                     score = hit.score if hasattr(hit, 'score') else hit.get('score', 0.0)

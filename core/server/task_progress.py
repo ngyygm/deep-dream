@@ -108,6 +108,164 @@ def completed_chunk_fraction(done_chunks: int, total_chunks: int) -> float:
     return done_chunks / float(total_chunks)
 
 
+def _clamp01(value: Any) -> float:
+    try:
+        return max(0.0, min(1.0, float(value or 0.0)))
+    except Exception:
+        return 0.0
+
+
+def _chain_eta_seconds(
+    *,
+    progress: float,
+    started_at: Optional[float],
+    now: float,
+    status: str,
+) -> Optional[float]:
+    """Estimate remaining seconds for one running chain from its own progress.
+
+    This intentionally uses the chain's own first-progress timestamp when
+    available. The remember pipeline overlaps main extraction, step9 and step10,
+    so task-level ETA is the max remaining chain time, not a sum.
+    """
+    if status in _TERMINAL_STATUSES:
+        return 0.0
+    if status == "queued" or not started_at:
+        return None
+    p = _clamp01(progress)
+    if p >= 0.999:
+        return 0.0
+    elapsed = max(0.0, now - float(started_at))
+    if p < 0.02 or elapsed < 5.0:
+        return None
+    return max(0.0, elapsed * (1.0 - p) / p)
+
+
+def _chain_eta_from_chunks(
+    *,
+    done: int,
+    total: int,
+    run_start_done: int,
+    started_at: Optional[float],
+    now: float,
+    status: str,
+) -> Optional[float]:
+    """Estimate ETA from work completed in the current run.
+
+    A resumed task may already have many completed windows. Using total
+    progress would make a fresh resume look artificially fast, so ETA uses only
+    chunks finished after the current resume/start point.
+    """
+    if status in _TERMINAL_STATUSES:
+        return 0.0
+    if status == "queued" or not started_at:
+        return None
+    remaining_total = max(0, int(total) - max(0, int(run_start_done or 0)))
+    if remaining_total <= 0:
+        return 0.0
+    done_this_run = max(0, min(int(done) - max(0, int(run_start_done or 0)), remaining_total))
+    if done_this_run <= 0:
+        return None
+    elapsed = max(0.0, now - float(started_at))
+    if elapsed < 5.0:
+        return None
+    rate = done_this_run / max(elapsed, 1e-6)
+    if rate <= 0:
+        return None
+    return max(0.0, (remaining_total - done_this_run) / rate)
+
+
+def build_progress_detail(task, now: Optional[float] = None) -> Dict[str, Any]:
+    """Build a frontend-friendly progress/ETA payload for remember tasks."""
+    now = float(now or 0.0) or __import__("time").time()
+    total = max(0, int(getattr(task, "total_chunks", 0) or 0))
+    status = str(getattr(task, "status", "") or "")
+    started_at = getattr(task, "started_at", None) or getattr(task, "created_at", None) or now
+    finished_at = getattr(task, "finished_at", None)
+    if status == "paused":
+        end_at = getattr(task, "last_update", None) or finished_at or now
+    else:
+        end_at = finished_at or now
+    elapsed = max(0.0, float(end_at) - float(started_at or end_at))
+    chain_started = getattr(task, "chain_started_at", None) or {}
+    chain_run_start = getattr(task, "chain_run_start_chunks", None) or {}
+
+    def _chain(chain_id: str, label: str, done_attr: str, progress_attr: str, label_attr: str) -> Dict[str, Any]:
+        done = max(0, int(getattr(task, done_attr, 0) or 0))
+        p = _clamp01(getattr(task, progress_attr, 0.0))
+        if total > 0:
+            p = max(p, completed_chunk_fraction(done, total))
+        if status in _TERMINAL_STATUSES and status != "failed":
+            p = 1.0
+        c_started = chain_started.get(chain_id) or started_at
+        eta = _chain_eta_from_chunks(
+            done=done,
+            total=total,
+            run_start_done=int(chain_run_start.get(chain_id) or 0),
+            started_at=c_started,
+            now=now,
+            status=status,
+        )
+        if eta is None:
+            eta = _chain_eta_seconds(progress=p, started_at=c_started, now=now, status=status)
+        return {
+            "id": chain_id,
+            "label": label,
+            "progress": p,
+            "done_chunks": min(done, total) if total else done,
+            "total_chunks": total,
+            "current_label": str(getattr(task, label_attr, "") or ""),
+            "eta_seconds": eta,
+        }
+
+    chains = [
+        _chain("main", "步骤1-8", "main_done_chunks", "main_progress", "main_label"),
+        _chain("step9", "步骤9 实体对齐", "step9_done_chunks", "step9_progress", "step9_label"),
+        _chain("step10", "步骤10 关系对齐", "step10_done_chunks", "step10_progress", "step10_label"),
+    ]
+
+    if status in _TERMINAL_STATUSES:
+        overall = 1.0 if status == "completed" else _clamp01(getattr(task, "progress", 0.0))
+        eta = 0.0
+        confidence = "final"
+    elif status == "queued":
+        overall = _clamp01(getattr(task, "progress", 0.0))
+        eta = None
+        confidence = "queued"
+    else:
+        chain_progresses = [c["progress"] for c in chains]
+        overall = sum(chain_progresses) / len(chain_progresses) if chain_progresses else _clamp01(getattr(task, "progress", 0.0))
+        chain_etas = [c["eta_seconds"] for c in chains if c["eta_seconds"] is not None]
+        eta = max(chain_etas) if chain_etas else _chain_eta_seconds(
+            progress=overall,
+            started_at=started_at,
+            now=now,
+            status=status,
+        )
+        if overall >= 0.30 and elapsed >= 60:
+            confidence = "high"
+        elif overall >= 0.10 and elapsed >= 20:
+            confidence = "medium"
+        elif eta is not None:
+            confidence = "low"
+        else:
+            confidence = "warming_up"
+
+    return {
+        "overall_progress": _clamp01(overall),
+        "eta_seconds": eta,
+        "elapsed_seconds": elapsed,
+        "confidence": confidence,
+        "phase": str(getattr(task, "phase", "") or ""),
+        "phase_label": str(getattr(task, "phase_label", "") or ""),
+        "phase_current": int(getattr(task, "phase_current", 0) or 0),
+        "phase_total": int(getattr(task, "phase_total", 0) or 0),
+        "processed_chunks": int(getattr(task, "processed_chunks", 0) or 0),
+        "total_chunks": total,
+        "chains": chains,
+    }
+
+
 def main_chain_anchor_rank(phase_label: str, tc: int) -> tuple:
     """主滑窗 1–8 的 UI 锚点优先级：越大越应作为展示锚点（抽取步骤 2–8 / 本窗 1–8 完成 优先于 步骤1 进行中）。
 

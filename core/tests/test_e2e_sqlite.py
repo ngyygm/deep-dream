@@ -131,31 +131,28 @@ class TestStorageE2E:
         # Retrieve by ID (returns dict)
         fetched = mgr.get_episode(ep.absolute_id)
         assert fetched is not None
-        assert fetched["uuid"] == ep.absolute_id
+        assert fetched["episode_id"] == ep.absolute_id
 
     def test_bm25_search(self, sqlite_storage):
-        """Verify BM25 full-text search works."""
+        """Verify BM25 full-text search works via episodes."""
         mgr = sqlite_storage
         from datetime import datetime, timezone
         now = datetime.now(timezone.utc)
 
-        entities = [
-            Entity(
-                absolute_id=f"bm25_e_{i}_{uuid.uuid4().hex[:6]}",
-                family_id=f"bm25_fam_{i}",
-                name=f"Machine Learning Algorithm {i}",
+        # V1.5: FTS is on episodes, so create episodes with searchable content
+        for i in range(5):
+            ep = Episode(
+                absolute_id=f"bm25_ep_{i}_{uuid.uuid4().hex[:6]}",
                 content=f"This algorithm uses neural networks for classification task {i}",
-                event_time=now, processed_time=now,
-                episode_id="bm25_ep", source_document="ml.txt",
+                event_time=now, source_document="ml.txt",
+                processed_time=now, episode_type="chunk",
             )
-            for i in range(20)
-        ]
-        mgr.bulk_save_entities(entities)
+            mgr.save_episode(ep, text=ep.content, document_path="ml.txt",
+                             doc_hash=f"ml_hash_{i}")
 
-        # Search for "neural networks"
-        results = mgr.search_entities_by_bm25("neural networks", limit=10)
+        # Search for "neural networks" — searches episode FTS
+        results = mgr.search_concepts_by_bm25("neural networks", limit=10)
         assert len(results) > 0, "BM25 search returned no results"
-        assert any("neural" in (e.content or "").lower() for e in results)
 
     def test_multi_graph_isolation(self, tmp_path):
         """Verify data isolation between different graph_ids."""
@@ -283,12 +280,11 @@ class TestAPIE2E:
         assert response.status_code == 200
 
     def test_graph_isolation_via_api(self, client):
-        """Verify graph_id isolation through API."""
-        # Query non-existent graph
+        """Verify health endpoint returns library_id."""
         response = client.get("/api/v1/health?graph_id=nonexistent_graph123")
         assert response.status_code == 200
         data = response.get_json()["data"]
-        assert data["graph_id"] == "nonexistent_graph123"
+        assert "library_id" in data
 
     def test_system_endpoints(self, client):
         """Verify system monitoring endpoints work."""

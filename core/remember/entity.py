@@ -47,7 +47,6 @@ from core.remember._shared import _TITLE_SUFFIXES_RE
 
 # Sub-module imports
 from core.remember.entity_construction import (
-    _extract_summary as _extract_summary_fn,
     _construct_entity as _construct_entity_fn,
     _build_new_entity as _build_new_entity_fn,
     _create_new_entity as _create_new_entity_fn,
@@ -143,7 +142,7 @@ class EntityProcessor(_EntityBatchMixin):
         snip = self.llm_client.effective_entity_snippet_length()
         N = len(extracted_entities)
         name_texts = [e["name"] for e in extracted_entities]
-        full_texts = [f"# {e['name']}\n{e['content'][:snip]}" for e in extracted_entities]
+        full_texts = [f"# {e['name']}\n{e.get('content', '')[:snip]}" for e in extracted_entities]
         all_embeddings = self.storage.embedding_client.encode(name_texts + full_texts)
         return all_embeddings[:N], all_embeddings[N:]
 
@@ -160,7 +159,8 @@ class EntityProcessor(_EntityBatchMixin):
                         max_workers: Optional[int] = None,
                         verbose: Optional[bool] = None,
                         entity_embedding_prefetch: Optional[Future] = None,
-                        already_versioned_family_ids: Optional[set] = None) -> Tuple[List[Entity], List[Dict], Dict[str, str]]:
+                        already_versioned_family_ids: Optional[set] = None,
+                        window_timings_ref: Optional[Dict[str, float]] = None) -> Tuple[List[Entity], List[Dict], Dict[str, str]]:
         """
         处理抽取的实体：搜索、对齐、更新/新建。
         当 max_workers > 1 且实体数 > 1 时使用多线程并行；合并冲突时以数据库中已存在的 family_id 为准。
@@ -222,6 +222,7 @@ class EntityProcessor(_EntityBatchMixin):
                     max_workers=max_workers,
                     prefetched_embeddings=prefetched_embeddings,
                     already_versioned_family_ids=already_versioned_family_ids,
+                    window_timings_ref=window_timings_ref,
                 )
             else:
                 result = self._process_entities_sequential(
@@ -239,6 +240,7 @@ class EntityProcessor(_EntityBatchMixin):
                     base_time=base_time,
                     prefetched_embeddings=prefetched_embeddings,
                     already_versioned_family_ids=already_versioned_family_ids,
+                    window_timings_ref=window_timings_ref,
                 )
             return result
         finally:
@@ -257,7 +259,8 @@ class EntityProcessor(_EntityBatchMixin):
                         on_entity_processed: Optional[callable] = None,
                         base_time: Optional[datetime] = None,
                         prefetched_embeddings: Optional[Tuple[Optional[Any], Optional[Any]]] = None,
-                        already_versioned_family_ids: Optional[set] = None) -> Tuple[List[Entity], List[Dict], Dict[str, str]]:
+                        already_versioned_family_ids: Optional[set] = None,
+                        window_timings_ref: Optional[Dict[str, float]] = None) -> Tuple[List[Entity], List[Dict], Dict[str, str]]:
         return _process_entities_sequential_fn(
             storage=self.storage,
             llm_client=self.llm_client,
@@ -279,6 +282,7 @@ class EntityProcessor(_EntityBatchMixin):
             base_time=base_time,
             prefetched_embeddings=prefetched_embeddings,
             already_versioned_family_ids=already_versioned_family_ids,
+            window_timings_ref=window_timings_ref,
         )
 
     def _process_entities_parallel(self, extracted_entities: List[Dict[str, str]],
@@ -293,7 +297,8 @@ class EntityProcessor(_EntityBatchMixin):
                         base_time: Optional[datetime] = None,
                         max_workers: int = 1,
                         prefetched_embeddings: Optional[Tuple[Optional[Any], Optional[Any]]] = None,
-                        already_versioned_family_ids: Optional[set] = None) -> Tuple[List[Entity], List[Dict], Dict[str, str]]:
+                        already_versioned_family_ids: Optional[set] = None,
+                        window_timings_ref: Optional[Dict[str, float]] = None) -> Tuple[List[Entity], List[Dict], Dict[str, str]]:
         return _process_entities_parallel_fn(
             storage=self.storage,
             llm_client=self.llm_client,
@@ -317,6 +322,7 @@ class EntityProcessor(_EntityBatchMixin):
             max_workers=max_workers,
             prefetched_embeddings=prefetched_embeddings,
             already_versioned_family_ids=already_versioned_family_ids,
+            window_timings_ref=window_timings_ref,
         )
 
     # 名称规范化：委托给共享模块
@@ -527,10 +533,6 @@ class EntityProcessor(_EntityBatchMixin):
         )
 
     # ── Thin wrappers delegating to entity_construction sub-module ──
-
-    @staticmethod
-    def _extract_summary(name: str, content: str) -> str:
-        return _extract_summary_fn(name, content)
 
     def _construct_entity(self, name: str, content: str, episode_id: str,
                           family_id: str, source_document: str = "",

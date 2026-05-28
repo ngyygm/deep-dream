@@ -18,20 +18,6 @@ from core.remember._shared import _doc_basename
 logger = logging.getLogger(__name__)
 
 
-def _extract_summary(name: str, content: str) -> str:
-    """从实体名称和内容中提取简短摘要（无需额外LLM调用）。"""
-    # 跳过 markdown 标题行，取第一行非空正文
-    if not content:
-        return name[:100]
-    for line in content.split('\n'):
-        stripped = line.strip()
-        if not stripped or stripped.startswith('#'):
-            continue
-        return stripped[:200] if len(stripped) > 200 else stripped
-    # 回退到名称
-    return name[:100]
-
-
 def _construct_entity(name: str, content: str, episode_id: str,
                       family_id: str, source_document: str = "",
                       base_time: Optional[datetime] = None,
@@ -65,7 +51,6 @@ def _construct_entity(name: str, content: str, episode_id: str,
         episode_id=episode_id,
         source_document=source_document_only,
         content_format="markdown",
-        summary=_extract_summary(name, content),
         confidence=initial_confidence,
     )
 

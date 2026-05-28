@@ -40,6 +40,7 @@ def _process_entities_sequential(
     base_time=None,
     prefetched_embeddings: Optional[Tuple[Optional[Any], Optional[Any]]] = None,
     already_versioned_family_ids: Optional[set] = None,
+    window_timings_ref: Optional[Dict[str, float]] = None,
 ) -> Tuple[List[Entity], List[Dict], Dict[str, str]]:
     """串行处理实体（原逻辑）。"""
     from core.remember.entity import _preprocess_extraction_context
@@ -53,6 +54,7 @@ def _process_entities_sequential(
         extracted_entities, extracted_relations,
     )
 
+    _t_candidate = time.monotonic()
     candidate_table = build_entity_candidate_table_fn(
         extracted_entities,
         similarity_threshold=similarity_threshold,
@@ -61,6 +63,8 @@ def _process_entities_sequential(
         embedding_full_search_threshold=embedding_full_search_threshold,
         prefetched_embeddings=prefetched_embeddings,
     )
+    if window_timings_ref is not None:
+        window_timings_ref["step9-entity_candidate_table"] = time.monotonic() - _t_candidate
 
     total_entities = len(extracted_entities)
     _skipped_orphans = 0
@@ -73,6 +77,7 @@ def _process_entities_sequential(
                 _prefetched_full_embs = _full_embs
         except Exception:
             pass
+    _t_loop = time.monotonic()
     for idx, extracted_entity in enumerate(extracted_entities, 1):
         candidates = candidate_table.get(idx - 1, [])
         _ent_emb = None
@@ -122,14 +127,19 @@ def _process_entities_sequential(
                 _corroborated_fids.append(to_persist.family_id)
         if on_entity_processed and entity:
             on_entity_processed(entity, entity_name_to_id, relations or [])
+    if window_timings_ref is not None:
+        window_timings_ref["step9-entity_align_loop"] = time.monotonic() - _t_loop
 
     # Batch corroboration: 独立来源印证 → 置信度提升
     if _corroborated_fids:
+        _t_corro = time.monotonic()
         _unique_fids = list(set(_corroborated_fids))
         try:
             storage.adjust_confidence_on_corroboration_batch(_unique_fids, source_type="entity")
         except Exception:
             pass
+        if window_timings_ref is not None:
+            window_timings_ref["step9-entity_corroboration"] = time.monotonic() - _t_corro
 
     return processed_entities, pending_relations, entity_name_to_id
 
@@ -157,6 +167,7 @@ def _process_entities_parallel(
     max_workers: int = 1,
     prefetched_embeddings: Optional[Tuple[Optional[Any], Optional[Any]]] = None,
     already_versioned_family_ids: Optional[set] = None,
+    window_timings_ref: Optional[Dict[str, float]] = None,
 ) -> Tuple[List[Entity], List[Dict], Dict[str, str]]:
     """多线程处理实体；合并冲突时以数据库中已存在的 family_id 为准。"""
     from core.remember.entity import _preprocess_extraction_context
@@ -171,6 +182,7 @@ def _process_entities_parallel(
     _orig_indices = list(range(len(extracted_entities)))
     filtered_entities = extracted_entities
 
+    _t_candidate = time.monotonic()
     candidate_table = build_entity_candidate_table_fn(
         extracted_entities,
         similarity_threshold=similarity_threshold,
@@ -179,6 +191,8 @@ def _process_entities_parallel(
         embedding_full_search_threshold=embedding_full_search_threshold,
         prefetched_embeddings=prefetched_embeddings,
     )
+    if window_timings_ref is not None:
+        window_timings_ref["step9-entity_candidate_table"] = time.monotonic() - _t_candidate
     total_entities = len(extracted_entities)
     _distill_step = llm_client._current_distill_step
     _priority = getattr(llm_client._priority_local, 'priority', 5)
@@ -242,10 +256,14 @@ def _process_entities_parallel(
             zip(filtered_entities, _orig_indices), 1
         )
     }
+    _t_workers = time.monotonic()
     for future in as_completed(futures):
         results.append(future.result())
     results.sort(key=lambda r: r[0])
+    if window_timings_ref is not None:
+        window_timings_ref["step9-entity_parallel_resolve"] = time.monotonic() - _t_workers
 
+    _t_merge = time.monotonic()
     name_to_ids: Dict[str, set] = defaultdict(set)
     all_candidate_eids = set()
     for idx, entity, relations, name_mapping, to_persist in results:
@@ -289,7 +307,7 @@ def _process_entities_parallel(
                 redirect_pairs.append((eid, canonical_id))
     if redirect_pairs:
         if hasattr(storage, 'register_entity_redirects_batch'):
-            storage.register_entity_redirects_batch(redirect_pairs)
+            storage.register_entity_redirects_batch(dict(redirect_pairs))
         else:
             for source_id, canonical_id in redirect_pairs:
                 storage.register_entity_redirect(source_id, canonical_id)
@@ -314,6 +332,8 @@ def _process_entities_parallel(
                     canonical_entity = _canonical_ent_map.get(canonical_id)
                     if canonical_entity:
                         results[i] = (idx, canonical_entity, relations, name_mapping, to_persist)
+    if window_timings_ref is not None:
+        window_timings_ref["step9-entity_mapping_merge"] = time.monotonic() - _t_merge
 
     canonical_ids = set(entity_name_to_id.values())
     all_to_persist: List[Entity] = [r[4] for r in results if r[4] is not None]
@@ -334,23 +354,48 @@ def _process_entities_parallel(
         # 批量保存实体（UNWIND 一次写入，减少 Neo4j 连接数）
         _corro_fids = []
         # 预计算所有 embedding（CPU 密集，不需要 Neo4j session）
-        for e in entities_to_persist_final:
+        _t_embed = time.monotonic()
+        batch_embed_fn = getattr(storage, '_compute_entity_embeddings_batch', None)
+        _missing_embedding_entities = [e for e in entities_to_persist_final if not getattr(e, "embedding", None)]
+        if batch_embed_fn and _missing_embedding_entities:
             try:
-                _emb_result = storage._compute_entity_embedding(e)
-                if _emb_result is not None:
-                    e.embedding = _emb_result[0]
+                for e, emb in zip(_missing_embedding_entities, batch_embed_fn(_missing_embedding_entities)):
+                    if emb is not None:
+                        e.embedding = emb[0]
             except Exception:
-                pass
+                for e in _missing_embedding_entities:
+                    try:
+                        _emb_result = storage._compute_entity_embedding(e)
+                        if _emb_result is not None:
+                            e.embedding = _emb_result[0]
+                    except Exception:
+                        pass
+        elif _missing_embedding_entities:
+            for e in _missing_embedding_entities:
+                try:
+                    _emb_result = storage._compute_entity_embedding(e)
+                    if _emb_result is not None:
+                        e.embedding = _emb_result[0]
+                except Exception:
+                    pass
+        if window_timings_ref is not None:
+            window_timings_ref["step9-entity_persist_embedding"] = time.monotonic() - _t_embed
         # 一次 UNWIND 写入所有实体
+        _t_persist = time.monotonic()
         try:
             storage.bulk_save_entities_with_embedding(entities_to_persist_final)
-        except Exception:
+        except Exception as _bulk_err:
             # Fallback: 逐条写入
+            _saved = 0
             for e in entities_to_persist_final:
                 try:
                     storage.save_entity(e)
-                except Exception:
-                    pass
+                    _saved += 1
+                except Exception as _e:
+                    wprint_info(f"[entity_persist] 逐条保存失败: {getattr(e, 'name', '?')} -> {_e}")
+            wprint_info(f"[entity_persist] 批量写入失败({type(_bulk_err).__name__}: {_bulk_err}), 逐条保存成功 {_saved}/{len(entities_to_persist_final)}")
+        if window_timings_ref is not None:
+            window_timings_ref["step9-entity_persist_db"] = time.monotonic() - _t_persist
         # 一次写入所有 patches
         _all_patches = []
         for e in entities_to_persist_final:
@@ -359,16 +404,22 @@ def _process_entities_parallel(
             if e.family_id:
                 _corro_fids.append(e.family_id)
         if _all_patches:
+            _t_patches = time.monotonic()
             try:
                 storage.save_content_patches(_all_patches)
             except Exception:
                 pass
+            if window_timings_ref is not None:
+                window_timings_ref["step9-entity_persist_patches"] = time.monotonic() - _t_patches
         # Batch corroboration
         if _corro_fids:
+            _t_corro = time.monotonic()
             try:
                 storage.adjust_confidence_on_corroboration_batch(list(set(_corro_fids)), source_type="entity")
             except Exception:
                 pass
+            if window_timings_ref is not None:
+                window_timings_ref["step9-entity_corroboration"] = time.monotonic() - _t_corro
 
     processed_entities = [r[1] for r in results if r[1] is not None]
     pending_relations: List[Dict] = []

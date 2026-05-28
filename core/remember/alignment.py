@@ -76,27 +76,27 @@ class _PipelineExtractionMixin(_ContradictionMixin, _ResolutionMixin, _OrphanMix
     def _record_entity_mentions(self, unique_entities, entity_name_to_id,
                                  new_episode, verbose=False):
         """Record Episode → Entity MENTIONS and run corroboration."""
-        try:
-            _seen_fids = set()
-            all_mentioned_entity_ids = []
-            for _e in unique_entities:
-                if _e and _e.absolute_id and _e.family_id:
-                    if _e.family_id not in _seen_fids:
-                        _seen_fids.add(_e.family_id)
-                        all_mentioned_entity_ids.append(_e.absolute_id)
-            # Batch fetch entities not yet seen (replaces N individual calls)
-            _unseen_fids = [_fid for _fid in entity_name_to_id.values()
-                            if _fid and _fid not in _seen_fids]
-            if _unseen_fids:
-                try:
-                    _batch_ents = self.storage.get_entities_by_family_ids(_unseen_fids)
-                    for _fid, _ent in _batch_ents.items():
-                        if _ent and _ent.absolute_id:
-                            all_mentioned_entity_ids.append(_ent.absolute_id)
-                            _seen_fids.add(_fid)
-                except Exception:
-                    pass
-            if all_mentioned_entity_ids:
+        _seen_fids = set()
+        all_mentioned_entity_ids = []
+        for _e in unique_entities:
+            if _e and _e.absolute_id and _e.family_id:
+                if _e.family_id not in _seen_fids:
+                    _seen_fids.add(_e.family_id)
+                    all_mentioned_entity_ids.append(_e.absolute_id)
+        # Batch fetch entities not yet seen (replaces N individual calls)
+        _unseen_fids = [_fid for _fid in entity_name_to_id.values()
+                        if _fid and _fid not in _seen_fids]
+        if _unseen_fids:
+            try:
+                _batch_ents = self.storage.get_entities_by_family_ids(_unseen_fids)
+                for _fid, _ent in _batch_ents.items():
+                    if _ent and _ent.absolute_id:
+                        all_mentioned_entity_ids.append(_ent.absolute_id)
+                        _seen_fids.add(_fid)
+            except Exception:
+                pass
+        if all_mentioned_entity_ids:
+            try:
                 self.storage.save_episode_mentions(
                     new_episode.absolute_id, all_mentioned_entity_ids,
                     target_type="entity",
@@ -107,24 +107,24 @@ class _PipelineExtractionMixin(_ContradictionMixin, _ResolutionMixin, _OrphanMix
                     if _e and _e.family_id:
                         _mention_names.append(f"{_e.name}(fid={_e.family_id})")
                 dbg(f"MENTIONS: ep={new_episode.absolute_id} → {len(all_mentioned_entity_ids)} entities: {', '.join(_mention_names[:10])}")
-            # Batch corroboration adjustment
-            _fids_list = list(_seen_fids)
-            if _fids_list:
-                try:
-                    batch_fn = getattr(self.storage, 'adjust_confidence_on_corroboration_batch', None)
-                    if batch_fn:
-                        batch_fn(_fids_list, source_type="entity")
-                    else:
-                        for _fid in _fids_list:
-                            try:
-                                self.storage.adjust_confidence_on_corroboration(_fid, source_type="entity")
-                            except Exception:
-                                pass
-                except Exception:
-                    pass
-        except Exception as e:
-            if verbose:
-                wprint_info(f"【步骤9】MENTIONS｜Entity｜失败｜{e}")
+            except Exception as _me:
+                if verbose:
+                    wprint_info(f"MENTIONS | Entity | failed: {_me}")
+        # Batch corroboration adjustment is auxiliary; it must not decide window success.
+        _fids_list = list(_seen_fids)
+        if _fids_list:
+            try:
+                batch_fn = getattr(self.storage, 'adjust_confidence_on_corroboration_batch', None)
+                if batch_fn:
+                    batch_fn(_fids_list, source_type="entity")
+                else:
+                    for _fid in _fids_list:
+                        try:
+                            self.storage.adjust_confidence_on_corroboration(_fid, source_type="entity")
+                        except Exception:
+                            pass
+            except Exception:
+                pass
 
     def _build_step10_relation_inputs_from_align_result(
         self, align_result: _AlignResult
@@ -275,8 +275,18 @@ class _PipelineExtractionMixin(_ContradictionMixin, _ResolutionMixin, _OrphanMix
             _cancel_bool_fn = lambda: control_check_fn() is not None
             self.llm_client.set_cancel_check(_cancel_bool_fn)
 
+        # LLM JSON 偶尔会在数组里混入 null/非对象项；这里仅丢弃坏项，不改变 prompt 或流程语义。
+        extracted_entities = [
+            e for e in (extracted_entities or [])
+            if isinstance(e, dict) and str(e.get("name") or "").strip()
+        ]
+        extracted_relations = [
+            r for r in (extracted_relations or [])
+            if isinstance(r, dict)
+        ]
+
         # 记录原始实体名称列表（用于后续建立映射）
-        original_entity_names = [e['name'] for e in extracted_entities]
+        original_entity_names = [str(e.get('name') or '').strip() for e in extracted_entities]
 
         # 用于存储待处理的关系（使用实体名称）
         all_pending_relations_by_name = []
@@ -328,6 +338,7 @@ class _PipelineExtractionMixin(_ContradictionMixin, _ResolutionMixin, _OrphanMix
             verbose=verbose,
             entity_embedding_prefetch=entity_embedding_prefetch,
             already_versioned_family_ids=already_versioned_family_ids,
+            window_timings_ref=window_timings_ref,
         )
         _t_align_elapsed = _time.time() - _t_align_start
         if window_timings_ref is not None:

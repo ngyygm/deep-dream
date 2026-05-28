@@ -11,7 +11,7 @@ from core.exceptions import ConfigError
 DEFAULTS = {
     "host": "0.0.0.0",
     "port": 5001,
-    "storage_path": "./graph",
+    "storage_path": "./library",
     "storage": {
         "backend": "sqlite",
         "vector_dim": 1024,
@@ -35,7 +35,7 @@ DEFAULTS = {
     "runtime": {
         "concurrency": {
             "queue_workers": 1,
-            "window_workers": 1,
+            "window_workers": "auto",
         },
         "retry": {
             "queue_max_retries": 2,
@@ -43,6 +43,9 @@ DEFAULTS = {
         },
         "task": {
             "load_cache_memory": False,
+        },
+        "integrity": {
+            "auto_check_documents": True,
         },
     },
     "pipeline": {
@@ -89,7 +92,7 @@ DEFAULTS = {
             "alignment_policy": "conservative",
         },
         "debug": {
-            "distill_data_dir": "distill_pipeline",
+            "distill_data_dir": None,
         },
     },
 }
@@ -216,14 +219,24 @@ def _normalize_runtime_config(config: Dict[str, Any]) -> Dict[str, Any]:
         pipeline.get("distill_data_dir"),
     )
 
-    # 回填新结构
-    conc["queue_workers"] = int(queue_workers if queue_workers is not None else 1)
-    conc["window_workers"] = int(window_workers if window_workers is not None else 1)
     # 队列/窗口线程不超过 LLM 并发：max_concurrency=1 时整体按串行语义运行
     llm = cfg.get("llm") or {}
     max_llm_conc = llm.get("max_concurrency")
+    cap = int(max_llm_conc) if max_llm_conc is not None else None
+
+    def _resolve_worker_count(value, default: int, *, auto_default: int) -> int:
+        if value is None:
+            return int(default)
+        if isinstance(value, str) and value.strip().lower() in {"auto", "default", ""}:
+            return int(auto_default)
+        return int(value)
+
+    # 回填新结构。用户只需要设置 llm.max_concurrency；window_workers 默认自动跟随，
+    # 用于让多个 episode 形成流水线，但最终 LLM 请求仍由全局闸门限制。
+    _auto_windows = max(1, min(cap or 1, 3))
+    conc["queue_workers"] = _resolve_worker_count(queue_workers, 1, auto_default=1)
+    conc["window_workers"] = _resolve_worker_count(window_workers, _auto_windows, auto_default=_auto_windows)
     if max_llm_conc is not None:
-        cap = int(max_llm_conc)
         if cap >= 1:
             conc["queue_workers"] = min(conc["queue_workers"], cap)
             conc["window_workers"] = min(conc["window_workers"], cap)
@@ -244,7 +257,17 @@ def _normalize_runtime_config(config: Dict[str, Any]) -> Dict[str, Any]:
     for old_name, new_name in _extraction_aliases.items():
         if new_name in extraction and old_name not in extraction:
             extraction[old_name] = extraction[new_name]
-    debug["distill_data_dir"] = distill_data_dir if distill_data_dir is not None else "distill_pipeline"
+    # Resolve distill_data_dir relative to storage_path so files land inside library/, not CWD
+    if distill_data_dir is not None:
+        if not Path(distill_data_dir).is_absolute():
+            storage_path = cfg.get("storage_path", "./library")
+            resolved = Path(storage_path) / distill_data_dir
+            # Skip if already resolved (path parts match storage_path prefix)
+            parts = Path(distill_data_dir).parts
+            sp_parts = Path(storage_path).parts
+            if parts[:len(sp_parts)] != sp_parts:
+                distill_data_dir = str(resolved)
+    debug["distill_data_dir"] = distill_data_dir
     pipeline["search"] = search
     pipeline["alignment"] = alignment
     pipeline["extraction"] = extraction
@@ -279,11 +302,16 @@ def merge_llm_extraction(llm: Dict[str, Any]) -> Dict[str, Any]:
     - llm.extraction.enabled == true：启用抽取专用模型（如 gemma4:26b），
       自动切换到双模型管线（除非 remember_mode 显式指定为 legacy）。
     - enabled == false 或未配置：关闭，抽取步骤与主模型共用。
+    - 并发只看 llm.max_concurrency；不再为 extraction 单独配置并发，避免同一服务被超发。
     """
     if llm.get("extraction_enabled") is False:
         return {}
 
     nested = llm.get("extraction")
+    if nested is True:
+        nested = {"enabled": True}
+    if nested is False:
+        return {}
     if not isinstance(nested, dict):
         return {}
 
@@ -311,10 +339,6 @@ def merge_llm_extraction(llm: Dict[str, Any]) -> Dict[str, Any]:
         if val is not None:
             out["think_mode" if nk == "think" else nk] = val
 
-    mc = pick("max_concurrency", "max_concurrency")
-    if mc is not None:
-        out["max_concurrency"] = int(mc)
-
     cwt = pick("context_window_tokens", "context_window_tokens")
     if cwt is not None:
         out["context_window_tokens"] = int(cwt)
@@ -333,12 +357,16 @@ def merge_llm_alignment(llm: Dict[str, Any]) -> Dict[str, Any]:
     合并步骤 6/7（对齐）专用 LLM 配置。
     - llm.alignment.enabled == false：关闭对齐专用通道，步骤 6/7 与 1–5 共用同一模型与并发策略。
     - enabled == true 或未写 enabled 但存在 base_url/api_key/model 等：启用对齐配置。
-    - llm.alignment.max_concurrency：对齐阶段（步骤 6–7）独立 LLM 并发上限，与 llm.max_concurrency（步骤 1–5）解耦。
+    - 并发只看 llm.max_concurrency；alignment 只覆盖模型/端点，不再单独配置并发。
     """
     if llm.get("alignment_enabled") is False:
         return {}
 
     nested = llm.get("alignment")
+    if nested is True:
+        nested = {"enabled": True}
+    if nested is False:
+        return {}
     if not isinstance(nested, dict):
         nested = {}
 
@@ -367,10 +395,6 @@ def merge_llm_alignment(llm: Dict[str, Any]) -> Dict[str, Any]:
         val = pick(nk, fk)
         if val is not None:
             out["think_mode" if nk == "think" else nk] = val
-
-    mc_align = pick("max_concurrency", "alignment_max_concurrency")
-    if mc_align is not None:
-        out["max_concurrency"] = int(mc_align)
 
     if nested.get("enabled") is True:
         out["enabled"] = True
@@ -457,6 +481,8 @@ def load_config(config_path: str) -> Dict[str, Any]:
     # 先对用户原始配置做一次新旧字段归一，避免默认值掩盖旧字段来源。
     user = _normalize_runtime_config(user)
     merged = _deep_merge(DEFAULTS, user)
+    if not str(merged.get("storage_path") or "").strip():
+        merged["storage_path"] = "./library"
     merged = _normalize_runtime_config(merged)
     _validate_config(merged)
     return merged

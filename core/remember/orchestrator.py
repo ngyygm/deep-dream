@@ -20,6 +20,7 @@ _REMEMBER_DEFAULTS = {
     "missing_concept_rounds": 1,
     "entity_write_batch_size": 20,
     "entity_content_batch_size": 20,
+    "relation_content_batch_size": 20,
     "relation_hint_rounds": 1,
     "relation_candidate_rounds": 1,
     "relation_expand_rounds": 1,
@@ -116,6 +117,9 @@ class TemporalMemoryGraphProcessor(_PipelineMixin, _PipelineExtractionMixin, _Ex
         _entity_write_batch_size = _remember_pick("entity_write_batch_size", "entity_content_batch_size")
         self.remember_entity_write_batch_size = max(1, int(_entity_write_batch_size or 6))
         self.remember_entity_content_batch_size = self.remember_entity_write_batch_size
+        self.remember_relation_content_batch_size = max(
+            1, int(_remember_pick("relation_content_batch_size") or _remember_cfg.get("relation_content_batch_size") or 20)
+        )
         _relation_hint_rounds = _remember_pick("relation_hint_rounds", "relation_candidate_rounds")
         self.remember_relation_hint_rounds = max(1, int(_relation_hint_rounds or 1))
         self.remember_relation_candidate_rounds = self.remember_relation_hint_rounds
@@ -281,7 +285,8 @@ class TemporalMemoryGraphProcessor(_PipelineMixin, _PipelineExtractionMixin, _Ex
             device=embedding_device,
             use_local=embedding_use_local,
             cache_max_size=embedding_cache_max_size or 8192,
-            cache_ttl=embedding_cache_ttl or 300.0
+            cache_ttl=embedding_cache_ttl or 3600.0,
+            max_concurrency=1,
         )
 
         if storage_manager is not None:
@@ -333,6 +338,8 @@ class TemporalMemoryGraphProcessor(_PipelineMixin, _PipelineExtractionMixin, _Ex
             alignment_content_snippet_length=_al.get("content_snippet_length"),
             alignment_relation_content_snippet_length=_al.get("relation_content_snippet_length"),
         )
+        _shared_llm_semaphore = getattr(self.llm_client, "_llm_semaphore", None)
+        _shared_llm_slot_max = self.llm_client.get_llm_semaphore_max() if hasattr(self.llm_client, "get_llm_semaphore_max") else None
         self.entity_processor = EntityProcessor(
             self.storage,
             self.llm_client,
@@ -375,7 +382,9 @@ class TemporalMemoryGraphProcessor(_PipelineMixin, _PipelineExtractionMixin, _Ex
                 think_mode=bool(_el.get("think_mode", False)),
                 max_tokens=_el.get("max_tokens"),
                 context_window_tokens=int(_el.get("context_window_tokens", _ctx_win)),
-                max_llm_concurrency=_el.get("max_concurrency"),
+                max_llm_concurrency=max_llm_concurrency or _el.get("max_concurrency"),
+                shared_llm_semaphore=_shared_llm_semaphore,
+                shared_llm_slot_max=_shared_llm_slot_max,
                 alignment_enabled=False,
             )
             self.extraction_client_enabled = True
@@ -500,25 +509,29 @@ class TemporalMemoryGraphProcessor(_PipelineMixin, _PipelineExtractionMixin, _Ex
 
     def _run_step9_worker(self, state, start_chunk, total_chunks, doc_name,
                           verbose, verbose_steps, event_time, progress_callback,
-                          step9_chunk_done_callback):
+                          step9_chunk_done_callback, control_callback=None):
         return _pw.run_step9_worker(
             self, state, start_chunk, total_chunks, doc_name,
             verbose, verbose_steps, event_time, progress_callback,
-            step9_chunk_done_callback, RememberControlFlow,
+            step9_chunk_done_callback, control_callback, RememberControlFlow,
         )
 
     def _run_step10_worker(self, state, start_chunk, total_chunks, doc_name,
                            verbose, verbose_steps, event_time, progress_callback,
-                           chunk_done_callback):
+                           chunk_done_callback, control_callback=None):
         return _pw.run_step10_worker(
             self, state, start_chunk, total_chunks, doc_name,
             verbose, verbose_steps, event_time, progress_callback,
-            chunk_done_callback, RememberControlFlow,
+            chunk_done_callback, control_callback, RememberControlFlow,
         )
 
     @staticmethod
     def _summarize_window_timings(window_timings):
         return _pw.summarize_window_timings(window_timings)
+
+    @staticmethod
+    def _build_timing_summary(window_timings):
+        return _pw.build_timing_summary(window_timings)
 
     def remember_phase1_overall(self, *args, **kwargs):
         return _pa.remember_phase1_overall(self, *args, **kwargs)

@@ -64,6 +64,10 @@
           <i data-lucide="terminal"></i>
           <span data-i18n="nav.apiTest">API 测试</span>
         </a>
+        <a class="sidebar-link" href="#settings" data-page="settings">
+          <i data-lucide="settings"></i>
+          <span>配置</span>
+        </a>
       </nav>
 
       <!-- Sidebar Footer -->
@@ -90,11 +94,11 @@
           </nav>
         </div>
         <div class="flex items-center gap-3">
-          <!-- Graph Selector -->
-          <div class="flex items-center gap-2">
+          <!-- Graph Selector (hidden — single library) -->
+          <div class="flex items-center gap-2" style="display:none;">
             <label class="text-xs hidden sm:block" style="color:var(--text-muted);" data-i18n="common.graph">图谱:</label>
             <select id="graph-selector" class="input text-xs py-1 px-2 w-36">
-              <option value="default">default</option>
+              <option value="library">library</option>
             </select>
             <button id="graph-clear-btn" class="btn btn-ghost btn-sm p-1" title="清空图谱数据" data-i18n-title="graph.clearGraph">
               <i data-lucide="eraser" style="width:14px;height:14px;color:var(--warning);"></i>
@@ -147,6 +151,7 @@
   <script src="/static/js/app.js"></script>
   <script src="/static/js/components/toast.js"></script>
   <script src="/static/js/components/modal.js"></script>
+  <script src="/static/js/shared/concept-detail.js"></script>
   <script src="/static/js/pages/dashboard.js"></script>
   <script src="/static/js/pages/memory.js"></script>
   <script src="/static/js/graph-utils.js"></script>
@@ -154,5 +159,6 @@
   <script src="/static/js/pages/search.js"></script>
   <script src="/static/js/pages/communities.js"></script>
   <script src="/static/js/pages/api-test.js"></script>
+  <script src="/static/js/pages/settings.js"></script>
 </body>
 </html>

@@ -10,7 +10,9 @@ from typing import Optional
 from flask import Flask, render_template, jsonify, request
 
 # 添加项目根目录到 sys.path
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+_project_root = str(Path(__file__).resolve().parent.parent.parent)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +61,8 @@ class GraphWebServer:
             model_path=embedding_model_path,
             model_name=embedding_model_name,
             device=embedding_device,
-            use_local=embedding_use_local
+            use_local=embedding_use_local,
+            max_concurrency=1,
         )
 
         # 初始化存储

@@ -3,7 +3,7 @@
 import logging
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 import numpy as np
@@ -17,15 +17,23 @@ def _parse_dt(value) -> Optional[datetime]:
     if value is None:
         return None
     if isinstance(value, datetime):
-        return value.replace(tzinfo=None) if value.tzinfo else value
+        if value.tzinfo:
+            return value.astimezone(timezone.utc)
+        return value.replace(tzinfo=timezone.utc)
     if isinstance(value, str):
         try:
-            return datetime.fromisoformat(value)
+            dt = datetime.fromisoformat(value)
+            if dt.tzinfo:
+                return dt.astimezone(timezone.utc)
+            return dt.replace(tzinfo=timezone.utc)
         except Exception:
             pass
     if hasattr(value, "isoformat"):
         try:
-            return datetime.fromisoformat(value.isoformat()).replace(tzinfo=None)
+            dt = datetime.fromisoformat(value.isoformat())
+            if dt.tzinfo:
+                return dt.astimezone(timezone.utc)
+            return dt.replace(tzinfo=timezone.utc)
         except Exception:
             pass
     return None
@@ -49,7 +57,7 @@ def _fmt_dt(value) -> Optional[str]:
 def _row_to_entity(row: dict, _now: Optional[datetime] = None) -> Entity:
     """Convert a SQLite row dict to Entity dataclass."""
     if _now is None:
-        _now = datetime.now()
+        _now = datetime.now(timezone.utc)
     _emb = row.get("embedding")
     if isinstance(_emb, bytes) and len(_emb) > 0:
         pass  # already bytes
@@ -69,7 +77,6 @@ def _row_to_entity(row: dict, _now: Optional[datetime] = None) -> Entity:
         embedding=_emb,
         valid_at=_parse_dt(row.get("valid_at")),
         version_seq=row.get("version_seq", 1) or 1,
-        summary=row.get("summary"),
         attributes=row.get("attributes"),
         confidence=float(row["confidence"]) if row.get("confidence") is not None else None,
         content_format=row.get("content_format", "plain"),
@@ -80,7 +87,7 @@ def _row_to_entity(row: dict, _now: Optional[datetime] = None) -> Entity:
 def _row_to_relation(row: dict, _now: Optional[datetime] = None) -> Relation:
     """Convert a SQLite row dict to Relation dataclass."""
     if _now is None:
-        _now = datetime.now()
+        _now = datetime.now(timezone.utc)
     _emb = row.get("embedding")
     if isinstance(_emb, bytes) and len(_emb) > 0:
         pass
@@ -101,7 +108,6 @@ def _row_to_relation(row: dict, _now: Optional[datetime] = None) -> Relation:
         embedding=_emb,
         valid_at=_parse_dt(row.get("valid_at")),
         version_seq=row.get("version_seq", 1) or 1,
-        summary=row.get("summary"),
         attributes=row.get("attributes"),
         confidence=float(row["confidence"]) if row.get("confidence") is not None else None,
         provenance=row.get("provenance"),
@@ -118,7 +124,7 @@ def _encode_and_normalize(embedding_client, text: str):
         return None
     if isinstance(embedding, np.ndarray) and embedding.size == 0:
         return None
-    emb_array = np.array(embedding[0] if isinstance(embedding, list) else embedding, dtype=np.float32)
+    emb_array = np.array(embedding[0] if isinstance(embedding, list) else embedding, dtype=np.float32).reshape(-1)
     norm = np.linalg.norm(emb_array)
     if norm > 0:
         emb_array = emb_array / norm
@@ -141,7 +147,7 @@ def _get_cached_now() -> datetime:
 
 
 ENTITY_COLUMNS = [
-    "uuid", "family_id", "graph_id", "name", "content", "summary",
+    "uuid", "family_id", "graph_id", "name", "content",
     "attributes", "confidence", "content_format", "community_id",
     "version_seq", "valid_at", "event_time", "processed_time",
     "episode_id", "source_document", "embedding",
@@ -151,7 +157,7 @@ RELATION_COLUMNS = [
     "uuid", "family_id", "graph_id",
     "entity1_absolute_id", "entity2_absolute_id",
     "entity1_family_id", "entity2_family_id",
-    "content", "summary", "attributes", "confidence", "provenance",
+    "content", "attributes", "confidence", "provenance",
     "content_format",
     "version_seq", "valid_at", "event_time", "processed_time",
     "episode_id", "source_document", "embedding",

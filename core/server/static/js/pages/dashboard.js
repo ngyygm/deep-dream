@@ -19,6 +19,9 @@
 
   /** Compute elapsed / estimated time from task timestamps and progress. */
   function elapsedText(task) {
+    if (window.UIUtils && typeof UIUtils.taskTimingText === 'function') {
+      return UIUtils.taskTimingText(task);
+    }
     const toMs = v => { const n = Number(v); return (isNaN(n) || !n) ? 0 : (n < 4102444800000 ? n * 1000 : n); };
     const now = Date.now();
 
@@ -218,7 +221,7 @@
       html += `
       <!-- Episodes (Neo4j only) -->
       <div class="stat-card">
-        <div class="stat-label">Episodes</div>
+        <div class="stat-label" data-i18n="dashboard.episodes">${t('dashboard.episodes')}</div>
         <div class="stat-value" style="color:#14b8a6;">${formatNumber(totalEpisodes)}</div>
       </div>
       <!-- Communities (Neo4j only) -->
@@ -356,6 +359,16 @@
   }
 
   /** Build the active tasks section (card layout). */
+  function formatTaskSize(bytes) {
+    const n = Number(bytes || 0);
+    if (!Number.isFinite(n) || n <= 0) return '0 B';
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+    if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+    return `${(n / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+  }
+
+  /** Build the active tasks section (card layout). */
   function buildTasksSection(tasks) {
     // 分组：running → queued → completed/failed，组内按 created_at 正序（入队时间从早到晚）
     const statusOrder = { running: 0, queued: 1, completed: 2, failed: 2 };
@@ -378,26 +391,9 @@
     const cards = display.map(tk => {
       const pct = tk.progress ?? 0;
       const pctCls = tk.status === 'failed' ? 'error' : tk.status === 'completed' ? 'success' : '';
-      const isRunning = tk.status === 'running';
-      const s9p = Math.min(1, Math.max(0, tk.step9_progress ?? 0));
-      const s10p = Math.min(1, Math.max(0, tk.step10_progress ?? 0));
-      const smp = Math.min(1, Math.max(0, tk.main_progress ?? 0));
-      const overallPct = Math.min(1, Math.max(0, (smp + s9p + s10p) / 3));
-
-      // 进度区域：running 时显示 总进度 + 滑窗(1–8) + 实体链 + 关系链
-      let progressHtml;
-      if (isRunning) {
-        progressHtml = tripleProgressBar({
-          smp, s9p, s10p,
-          mainLabel: tk.main_label || '-',
-          step9Label: tk.step9_label || '-',
-          step10Label: tk.step10_label || '-',
-        });
-      } else {
-        progressHtml = `
-          ${progressBar(pct, pctCls)}
-          <div style="font-size:0.7rem;color:var(--text-muted);margin-top:4px;">${escapeHtml(tk.phase_label || '-')}</div>`;
-      }
+      const overallPct = Math.min(1, Math.max(0, tk.progress_detail?.overall_progress ?? pct));
+      const progressHtml = renderTaskProgress(tk, { progressClass: pctCls });
+      const docSize = formatTaskSize(tk.document_size_bytes ?? tk.text_size_bytes ?? tk.size_bytes ?? 0);
 
       return `
         <div class="dashboard-task-card" data-task-id="${escapeHtml(tk.task_id)}" style="padding:10px 12px;border-bottom:1px solid var(--border-color);cursor:pointer;transition:background 0.1s;"
@@ -405,8 +401,8 @@
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
             <div style="display:flex;align-items:center;gap:8px;min-width:0;flex:1;">
               ${statusBadge(tk.status, tk.phase)}
-              <span class="mono" style="font-size:0.7rem;color:var(--text-muted);flex-shrink:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(tk.task_id)}">${escapeHtml(tk.task_id.slice(0, 10))}</span>
               <span style="font-size:0.8rem;color:var(--text-secondary);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(tk.source_name || '-')}">${escapeHtml(tk.source_name || '-')}</span>
+              <span class="mono" style="font-size:0.75rem;color:var(--text-muted);flex-shrink:0;white-space:nowrap;" title="${escapeHtml(String(tk.document_size_bytes || 0))} bytes">${escapeHtml(docSize)}</span>
               <span style="font-size:0.75rem;color:var(--text-muted);flex-shrink:0;white-space:nowrap;">${t('memory.overallProgress')} ${(overallPct * 100).toFixed(2)}%</span>
             </div>
             <span class="mono" style="font-size:0.75rem;color:var(--text-muted);flex-shrink:0;">${elapsedText(tk)}</span>
@@ -595,15 +591,15 @@
             </div>
             <div class="stat-card">
               <div class="stat-value">${formatNumber(episodeCount)}</div>
-              <div class="stat-label">Episodes</div>
+              <div class="stat-label" data-i18n="dashboard.episodes">${t('dashboard.episodes')}</div>
             </div>
             <div class="stat-card">
               <div class="stat-value">${formatNumber(documentCount)}</div>
-              <div class="stat-label">Documents</div>
+              <div class="stat-label" data-i18n="memory.docs">${t('memory.docs')}</div>
             </div>
             <div class="stat-card">
               <div class="stat-value">${formatNumber(conceptCount)}</div>
-              <div class="stat-label">Concepts</div>
+              <div class="stat-label" data-i18n="stats.concepts">${t('stats.concepts')}</div>
             </div>
             <div class="stat-card">
               <div class="stat-value">${avgRelations.toFixed(2)}</div>

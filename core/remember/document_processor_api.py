@@ -119,7 +119,7 @@ def process_documents(
             latest_metadata = processor.storage.get_latest_episode_metadata(activity_type="文档处理")
 
             if latest_metadata:
-                processor.current_episode = processor.storage.load_episode(latest_metadata['absolute_id'])
+                processor.current_episode = processor.storage.load_episode(latest_metadata['episode_id'])
 
                 if processor.current_episode:
                     if verbose:

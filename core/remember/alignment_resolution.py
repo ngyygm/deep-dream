@@ -43,7 +43,7 @@ class _ResolutionMixin:
                 if duplicate_pairs:
                     batch_fn = getattr(self.storage, 'register_entity_redirects_batch', None)
                     if batch_fn:
-                        batch_fn(duplicate_pairs)
+                        batch_fn(dict(duplicate_pairs))
                     else:
                         for fid, pid in duplicate_pairs:
                             self.storage.register_entity_redirect(fid, pid)

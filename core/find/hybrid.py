@@ -154,11 +154,9 @@ class HybridSearcher:
                 return []
             try:
                 return self.storage.search_entities_by_similarity(
-                    query_name=query_text,
-                    query_content=query_text,
+                    query_text,
                     threshold=semantic_threshold,
                     max_results=semantic_max_results,
-                    query_embedding=query_embedding,
                 )
             except Exception as e:
                 logger.debug("Vector search failed: %s", e)
@@ -215,11 +213,9 @@ class HybridSearcher:
                         return None
                     try:
                         return self.storage.search_entities_by_similarity(
-                            query_name=query_text,
+                            query_text,
                             threshold=semantic_threshold,
                             max_results=semantic_max_results,
-                            text_mode="name_only",
-                            query_embedding=query_embedding,
                         )
                     except Exception as e:
                         logger.debug("Name-only vector search failed: %s", e)
@@ -407,6 +403,274 @@ class HybridSearcher:
 
         results.sort(key=itemgetter(1), reverse=True)
         return results
+
+    def node_degree_rerank_dict(
+        self,
+        items: List[dict],
+        degree_map: Dict[str, int],
+        alpha: float = 0.3,
+    ) -> List[dict]:
+        """Dict-based Node Degree reranker.
+
+        Same logic as node_degree_rerank but operates on List[dict]
+        where each dict has 'family_id' and '_score'.
+        """
+        if not items:
+            return items
+        max_degree = max(degree_map.values()) if degree_map else 1
+        if max_degree == 0:
+            max_degree = 1
+
+        inv_alpha_factor = 1 - alpha
+        results = []
+        for item in items:
+            fid = item.get("family_id", "") or item.get("id", "")
+            score = item.get("_score", 0.0) or 0.0
+            degree = degree_map.get(fid, 0)
+            degree_factor = degree / max_degree
+            adjusted = score * inv_alpha_factor + degree_factor * alpha
+            item = dict(item)  # shallow copy to avoid mutating input
+            item["_score"] = round(adjusted, 6)
+            results.append(item)
+
+        results.sort(key=lambda x: x.get("_score", 0.0), reverse=True)
+        return results
+
+    def mmr_rerank_dict(
+        self,
+        items: List[dict],
+        query_text: str = "",
+        lambda_: float = 0.5,
+        top_k: int = 20,
+    ) -> List[dict]:
+        """MMR (Maximal Marginal Relevance) diversity reranker for dict results.
+
+        MMR = (1 - lambda) * relevance - lambda * max_sim_to_selected
+
+        Greedy selection: pick highest score first, then pick item with best MMR.
+        Similarity uses cosine distance on _embedding if available,
+        otherwise falls back to Jaccard word overlap on name/content.
+        """
+        if not items:
+            return items
+        if len(items) <= 1:
+            return items[:]
+
+        top_k = min(top_k, len(items))
+
+        # Pre-extract text fields for similarity computation
+        def _get_tokens(item: dict) -> set:
+            name = (item.get("name") or "").strip()
+            content = (item.get("content") or "")[:200]
+            text = (name + " " + content).strip()
+            return set(text.split()) if text else set()
+
+        def _get_embedding(item: dict) -> Optional[List[float]]:
+            return item.get("_embedding")
+
+        # Cosine similarity between two vectors
+        def _cosine_sim(a: List[float], b: List[float]) -> float:
+            dot = sum(x * y for x, y in zip(a, b))
+            na = sum(x * x for x in a) ** 0.5
+            nb = sum(x * x for x in b) ** 0.5
+            if na == 0 or nb == 0:
+                return 0.0
+            return dot / (na * nb)
+
+        # Jaccard similarity between two token sets
+        def _jaccard(sa: set, sb: set) -> float:
+            if not sa or not sb:
+                return 0.0
+            return len(sa & sb) / len(sa | sb)
+
+        # Pre-compute tokens for all items
+        item_tokens = {id(item): _get_tokens(item) for item in items}
+        # Pre-compute embeddings for all items
+        item_embeddings = {}
+        has_any_embedding = False
+        for item in items:
+            emb = _get_embedding(item)
+            if emb is not None:
+                item_embeddings[id(item)] = emb
+                has_any_embedding = True
+
+        def _item_similarity(a: dict, b: dict) -> float:
+            if has_any_embedding:
+                ea = item_embeddings.get(id(a))
+                eb = item_embeddings.get(id(b))
+                if ea is not None and eb is not None:
+                    return _cosine_sim(ea, eb)
+            return _jaccard(item_tokens.get(id(a), set()), item_tokens.get(id(b), set()))
+
+        selected: List[dict] = []
+        remaining = list(items)
+
+        # First: pick the item with highest _score
+        remaining.sort(key=lambda x: x.get("_score", 0.0), reverse=True)
+        selected.append(remaining.pop(0))
+
+        # Greedily pick remaining items by MMR
+        while remaining and len(selected) < top_k:
+            best_mmr = -float("inf")
+            best_idx = 0
+            for i, candidate in enumerate(remaining):
+                relevance = candidate.get("_score", 0.0) or 0.0
+                max_sim = 0.0
+                for s in selected:
+                    sim = _item_similarity(candidate, s)
+                    if sim > max_sim:
+                        max_sim = sim
+                mmr = (1 - lambda_) * relevance - lambda_ * max_sim
+                if mmr > best_mmr:
+                    best_mmr = mmr
+                    best_idx = i
+            selected.append(remaining.pop(best_idx))
+
+        # Preserve the selected order but note their original _score was not modified
+        return selected
+
+    # ------------------------------------------------------------------
+    # Phase B2: Result clustering
+    # ------------------------------------------------------------------
+
+    def cluster_results(
+        self,
+        items: List[dict],
+        num_clusters: int = 5,
+        sim_threshold: float = 0.5,
+    ) -> List[dict]:
+        """Cluster search results by semantic similarity.
+
+        Returns a list of cluster dicts: {"label", "count", "items"}.
+        Each item retains its original fields plus a "cluster_label" field.
+
+        Uses greedy agglomerative clustering on cosine similarity of
+        item embeddings. Falls back to bigram Jaccard if embeddings
+        are unavailable.
+        """
+        if not items or len(items) < 3:
+            return []
+
+        n = min(len(items), 100)  # cap for efficiency
+        items = items[:n]
+        num_clusters = max(2, min(num_clusters, n // 2))
+
+        # Build similarity matrix
+        try:
+            import numpy as _np
+
+            # Try to get embeddings from items
+            emb_list: List[Optional[_np.ndarray]] = []
+            has_embeddings = False
+            for item in items:
+                emb = item.get("_embedding")
+                if emb is not None and isinstance(emb, (list, _np.ndarray)):
+                    arr = _np.array(emb, dtype=_np.float32).reshape(-1)
+                    norm = _np.linalg.norm(arr)
+                    if norm > 0:
+                        arr = arr / norm
+                    emb_list.append(arr)
+                    has_embeddings = True
+                else:
+                    emb_list.append(None)
+
+            if has_embeddings and sum(1 for e in emb_list if e is not None) >= n * 0.5:
+                # Build matrix from available embeddings
+                mat = _np.zeros((n, emb_list[0].size), dtype=_np.float32)
+                for i, emb in enumerate(emb_list):
+                    if emb is not None:
+                        mat[i] = emb
+                    else:
+                        # Use zero vector for missing embeddings
+                        pass
+                sim_matrix = mat @ mat.T
+                # Clamp negative similarities to 0
+                sim_matrix = _np.maximum(sim_matrix, 0.0)
+            else:
+                sim_matrix = None
+        except Exception:
+            sim_matrix = None
+
+        # Fallback: Jaccard on bigrams
+        if sim_matrix is None:
+            def _bigrams(s: str):
+                if len(s) < 2:
+                    return frozenset(s) if s else frozenset()
+                return frozenset(s[i:i + 2] for i in range(len(s) - 1))
+
+            item_sets = []
+            for item in items:
+                text = (item.get("name") or "") + " " + (item.get("content") or "")
+                item_sets.append(_bigrams(text))
+
+            sim_matrix = _np.zeros((n, n), dtype=_np.float64)
+            for i in range(n):
+                for j in range(i + 1, n):
+                    u = len(item_sets[i] | item_sets[j])
+                    sim = len(item_sets[i] & item_sets[j]) / u if u else 0.0
+                    sim_matrix[i][j] = sim
+                    sim_matrix[j][i] = sim
+
+        # Greedy agglomerative clustering
+        # Each cluster is a set of indices; start with each item as its own cluster
+        clusters: List[set] = [{i} for i in range(n)]
+
+        while len(clusters) > num_clusters:
+            best_sim = -1.0
+            best_pair = (0, 1)
+            for ci in range(len(clusters)):
+                for cj in range(ci + 1, len(clusters)):
+                    # Average pairwise similarity between clusters
+                    total_sim = 0.0
+                    count = 0
+                    for a in clusters[ci]:
+                        for b in clusters[cj]:
+                            total_sim += sim_matrix[a][b]
+                            count += 1
+                    avg_sim = total_sim / count if count > 0 else 0.0
+                    if avg_sim > best_sim:
+                        best_sim = avg_sim
+                        best_pair = (ci, cj)
+
+            if best_sim < sim_threshold:
+                break  # no more similar pairs to merge
+
+            ci, cj = best_pair
+            clusters[ci] = clusters[ci] | clusters[cj]
+            clusters.pop(cj)
+
+        # Build result: label = shortest name among top-scored items (concept names
+        # are short; dialogue fragments are long). Fall back to highest-scored if all
+        # names are long (>20 chars).
+        result = []
+        for cluster in clusters:
+            if not cluster:
+                continue
+            # Find shortest name among items — concept names are concise
+            min_name_idx = min(cluster, key=lambda i: len(items[i].get("name", "zzz")))
+            min_name_len = len(items[min_name_idx].get("name", ""))
+            # If shortest name is still long (>20 chars), use highest-scored instead
+            if min_name_len <= 20:
+                label = items[min_name_idx].get("name", "Other")
+            else:
+                best_idx = max(cluster, key=lambda i: items[i].get("_score", 0.0) or items[i].get("relevance", 0.0))
+                label = items[best_idx].get("name", "Other")
+            cluster_items = []
+            for idx in cluster:
+                item = dict(items[idx])  # shallow copy
+                item["cluster_label"] = label
+                cluster_items.append(item)
+            result.append({
+                "label": label,
+                "count": len(cluster_items),
+                "items": cluster_items,
+            })
+
+        # Sort clusters by total score (sum of _score in cluster) descending
+        result.sort(key=lambda c: sum(
+            (it.get("_score", 0.0) or it.get("relevance", 0.0) or 0.0) for it in c["items"]
+        ), reverse=True)
+        return result
 
     # ------------------------------------------------------------------
     # Phase C: Confidence-weighted reranking

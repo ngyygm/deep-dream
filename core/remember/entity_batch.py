@@ -158,6 +158,7 @@ class _EntityBatchMixin:
                             old_content=latest.content or "",
                             old_content_format=latest.content_format or "plain",
                         )
+                        entity_version.embedding = latest.embedding
                         self._mark_versioned(latest.family_id, already_versioned_family_ids, _version_lock)
                         if self._entity_tree_log():
                             wprint_info(f"  │  快捷路径：内容相同，直接复用 {latest.family_id}")
@@ -179,6 +180,8 @@ class _EntityBatchMixin:
                         old_content=latest.content or "",
                         old_content_format=latest.content_format or "plain",
                     )
+                    if (merged_content or "").strip() == (latest.content or "").strip():
+                        entity_version.embedding = latest.embedding
                     self._mark_versioned(latest.family_id, already_versioned_family_ids, _version_lock)
                     if self._entity_tree_log():
                         wprint_info(f"  │  快捷路径：增量合并新版本 {latest.family_id}")
@@ -392,6 +395,8 @@ class _EntityBatchMixin:
                         old_content=latest_entity.content or "",
                         old_content_format=latest_entity.content_format or "plain",
                     )
+                    if (merged_content or "").strip() == (latest_entity.content or "").strip():
+                        entity_version.embedding = latest_entity.embedding
                     self._mark_versioned(latest_entity.family_id, already_versioned_family_ids, _version_lock)
                     if self._entity_tree_log():
                         wprint_info(f"  │  批量裁决: 增量合并到已有实体 {latest_entity.family_id} 并生成新版本")
@@ -436,6 +441,14 @@ class _EntityBatchMixin:
                     old_content=latest_entity.content or "",
                     old_content_format=latest_entity.content_format or "plain",
                 )
+                if latest_entity.content and latest_entity.content.strip() == (latest_entity.content or entity_content).strip():
+                    # Content unchanged — reuse existing embedding
+                    entity_version.embedding = latest_entity.embedding
+                elif latest_entity.embedding:
+                    # Content changed but old embedding exists — keep stale embedding
+                    # rather than None; it will be overwritten when a new embedding
+                    # is computed in the embedding step.
+                    entity_version.embedding = latest_entity.embedding
                 self._mark_versioned(latest_entity.family_id, already_versioned_family_ids, _version_lock)
                 if self._entity_tree_log():
                     wprint_info(f"  │  批量裁决: 跨窗口创建新版本 {latest_entity.family_id}")

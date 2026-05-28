@@ -30,6 +30,7 @@ class RememberTask:
     control_action: Optional[str]
     event_time: Optional[datetime]
     original_path: str
+    cache_document_path: Optional[str] = None
     status: str = "queued"          # queued | running | completed | failed
     result: Optional[Dict] = None
     error: Optional[str] = None
@@ -55,6 +56,14 @@ class RememberTask:
     step10_label: str = ""
     main_progress: float = 0.0
     main_label: str = ""
+    chain_started_at: Dict[str, float] = field(default_factory=dict)
+    chain_run_start_chunks: Dict[str, int] = field(default_factory=dict)
+    failed_window_indices: List[int] = field(default_factory=list)
+    failed_window_errors: List[Dict] = field(default_factory=list)
+    repair_window_indices: List[int] = field(default_factory=list)
+    repair_window_statuses: List[Dict] = field(default_factory=list)
+    retry_attempt: int = 0
+    max_retries: int = 3
     last_update: float = field(default_factory=time.time)
     done_event: threading.Event = field(default_factory=threading.Event)
 
@@ -65,6 +74,7 @@ def task_to_dict(task: RememberTask) -> Dict[str, Any]:
         "task_id": task.task_id,
         "source_name": task.source_name,
         "original_path": task.original_path,
+        "cache_document_path": task.cache_document_path,
         "status": task.status,
         "event_time": task.event_time.isoformat() if task.event_time else None,
         "load_cache": task.load_cache,
@@ -93,6 +103,14 @@ def task_to_dict(task: RememberTask) -> Dict[str, Any]:
         "step10_label": task.step10_label,
         "main_progress": task.main_progress,
         "main_label": task.main_label,
+        "chain_started_at": task.chain_started_at,
+        "chain_run_start_chunks": task.chain_run_start_chunks,
+        "failed_window_indices": task.failed_window_indices,
+        "failed_window_errors": task.failed_window_errors,
+        "repair_window_indices": task.repair_window_indices,
+        "repair_window_statuses": task.repair_window_statuses,
+        "retry_attempt": task.retry_attempt,
+        "max_retries": task.max_retries,
         "last_update": task.last_update,
     }
 
@@ -114,6 +132,7 @@ def remember_task_from_record(rec: Dict[str, Any], text: str) -> RememberTask:
         control_action=rec.get("control_action"),
         event_time=event_time,
         original_path=str(rec.get("original_path") or ""),
+        cache_document_path=rec.get("cache_document_path"),
         status=str(rec.get("status") or "queued"),
         result=rec.get("result"),
         error=rec.get("error"),
@@ -139,6 +158,14 @@ def remember_task_from_record(rec: Dict[str, Any], text: str) -> RememberTask:
         step10_label=str(rec.get("step10_label") or ""),
         main_progress=float(rec.get("main_progress") or 0.0),
         main_label=str(rec.get("main_label") or ""),
+        chain_started_at=dict(rec.get("chain_started_at") or {}),
+        chain_run_start_chunks={k: int(v or 0) for k, v in dict(rec.get("chain_run_start_chunks") or {}).items()},
+        failed_window_indices=[int(x) for x in (rec.get("failed_window_indices") or [])],
+        failed_window_errors=list(rec.get("failed_window_errors") or []),
+        repair_window_indices=[int(x) for x in (rec.get("repair_window_indices") or [])],
+        repair_window_statuses=list(rec.get("repair_window_statuses") or []),
+        retry_attempt=int(rec.get("retry_attempt") or 0),
+        max_retries=int(rec.get("max_retries") or 3),
         last_update=float(rec.get("last_update") or time.time()),
     )
 

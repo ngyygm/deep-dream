@@ -518,9 +518,26 @@ class _LLMExtractionMixin:
         """
         if not entity_names:
             return {}
+        parent_priority = getattr(self._priority_local, "priority", None)
+
+        def _single_with_priority(names: List[str]) -> Dict[str, str]:
+            previous = getattr(self._priority_local, "priority", None)
+            if parent_priority is not None:
+                self._priority_local.priority = parent_priority
+            try:
+                return self._batch_write_entity_content_single(names, window_text)
+            finally:
+                if previous is None:
+                    try:
+                        del self._priority_local.priority
+                    except AttributeError:
+                        pass
+                else:
+                    self._priority_local.priority = previous
+
         # Single batch for small lists
         if len(entity_names) <= chunk_size:
-            return self._batch_write_entity_content_single(entity_names, window_text)
+            return _single_with_priority(entity_names)
 
         # Chunked: split into groups and process in parallel
         chunks = [entity_names[i:i + chunk_size] for i in range(0, len(entity_names), chunk_size)]
@@ -528,12 +545,12 @@ class _LLMExtractionMixin:
         if workers <= 1:
             merged: Dict[str, str] = {}
             for chunk in chunks:
-                merged.update(self._batch_write_entity_content_single(chunk, window_text))
+                merged.update(_single_with_priority(chunk))
             return merged
 
         merged: Dict[str, str] = {}
         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="batch-econtent") as pool:
-            futures = {pool.submit(self._batch_write_entity_content_single, c, window_text): c for c in chunks}
+            futures = {pool.submit(_single_with_priority, c): c for c in chunks}
             for fut in as_completed(futures):
                 try:
                     merged.update(fut.result())
@@ -606,20 +623,37 @@ class _LLMExtractionMixin:
         """
         if not pairs:
             return {}
+        parent_priority = getattr(self._priority_local, "priority", None)
+
+        def _single_with_priority(chunk_pairs: List[Tuple[str, str]]) -> Dict[Tuple[str, str], str]:
+            previous = getattr(self._priority_local, "priority", None)
+            if parent_priority is not None:
+                self._priority_local.priority = parent_priority
+            try:
+                return self._batch_write_relation_content_single(chunk_pairs, window_text)
+            finally:
+                if previous is None:
+                    try:
+                        del self._priority_local.priority
+                    except AttributeError:
+                        pass
+                else:
+                    self._priority_local.priority = previous
+
         if len(pairs) <= chunk_size:
-            return self._batch_write_relation_content_single(pairs, window_text)
+            return _single_with_priority(pairs)
 
         chunks = [pairs[i:i + chunk_size] for i in range(0, len(pairs), chunk_size)]
         workers = min(len(chunks), max(1, max_workers))
         if workers <= 1:
             merged: Dict[Tuple[str, str], str] = {}
             for chunk in chunks:
-                merged.update(self._batch_write_relation_content_single(chunk, window_text))
+                merged.update(_single_with_priority(chunk))
             return merged
 
         merged: Dict[Tuple[str, str], str] = {}
         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="batch-rcontent") as pool:
-            futures = {pool.submit(self._batch_write_relation_content_single, c, window_text): c for c in chunks}
+            futures = {pool.submit(_single_with_priority, c): c for c in chunks}
             for fut in as_completed(futures):
                 try:
                     merged.update(fut.result())

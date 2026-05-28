@@ -22,7 +22,7 @@ class TestSystemEndpoints:
         assert response.status_code == 200
         data = response.get_json()
         assert data["success"] is True
-        assert data["data"]["graph_id"] == TEST_GRAPH_ID
+        assert "library_id" in data["data"]
 
     def test_route_index(self, client):
         response = client.get("/api/v1/routes")
@@ -114,6 +114,38 @@ class TestConceptEndpoints:
         assert response.status_code == 400
         assert response.get_json()["success"] is False
 
+    def test_agent_sql_endpoint(self, client):
+        response = client.post(
+            "/api/v1/agent/sql",
+            json={
+                "graph_id": TEST_GRAPH_ID,
+                "sql": "SELECT name FROM sqlite_master WHERE type = 'view' AND name = 'v_latest_concept'",
+                "limit": 5,
+            },
+        )
+        assert response.status_code == 200
+        data = response.get_json()
+        assert data["success"] is True
+        assert data["data"]["columns"] == ["name"]
+
+    def test_agent_sql_rejects_write(self, client):
+        response = client.post(
+            "/api/v1/agent/sql",
+            json={"graph_id": TEST_GRAPH_ID, "sql": "DELETE FROM concept_family"},
+        )
+        assert response.status_code == 400
+        assert response.get_json()["success"] is False
+
+    def test_agent_semantic_search_endpoint(self, client):
+        response = client.post(
+            "/api/v1/agent/semantic-search",
+            json={"graph_id": TEST_GRAPH_ID, "query": "Markdown", "role": "entity", "top_k": 5},
+        )
+        assert response.status_code == 200
+        data = response.get_json()
+        assert data["success"] is True
+        assert "results" in data["data"]
+
     def test_concept_not_found(self, client):
         response = client.get(f"/api/v1/concepts/missing_family?graph_id={TEST_GRAPH_ID}")
         assert response.status_code == 404
@@ -126,27 +158,6 @@ class TestConceptEndpoints:
         response = client.get(f"/api/v1/concepts/missing_family/provenance?graph_id={TEST_GRAPH_ID}")
         assert response.status_code == 404
 
-
-class TestGraphManagement:
-    """Physical graph directory management."""
-
-    def test_list_graphs(self, client):
-        response = client.get("/api/v1/graphs")
-        assert response.status_code == 200
-        data = response.get_json()
-        assert data["success"] is True
-        assert isinstance(data["data"]["graphs"], list)
-
-    def test_create_graph(self, client):
-        graph_id = f"api_graph_{uuid.uuid4().hex[:8]}"
-        response = client.post("/api/v1/graphs", json={"graph_id": graph_id})
-        assert response.status_code == 200
-        data = response.get_json()
-        assert data["success"] is True
-
-    def test_invalid_graph_id(self, client):
-        response = client.post("/api/v1/graphs", json={"graph_id": "invalid graph id"})
-        assert response.status_code == 400
 
 
 class TestRemovedLegacyRoutes:

@@ -60,7 +60,7 @@
     const timeBefore = document.getElementById('search-time-before')?.value || '';
     const expandEl = document.getElementById('search-expand');
     const expand = expandEl ? expandEl.checked : true;
-    const search_mode = document.getElementById('searchMode')?.value || 'semantic';
+    const search_mode = document.getElementById('searchMode')?.value || 'hybrid';
     const reranker = document.getElementById('searchReranker')?.value || 'rrf';
     return { threshold, maxEntities, maxRelations, timeAfter, timeBefore, expand, search_mode, reranker };
   }
@@ -70,9 +70,84 @@
     const map = {};
     if (!Array.isArray(entities)) return map;
     entities.forEach(e => {
-      map[e.absolute_id] = e.name || e.family_id || '';
+      const label = e.name || e.summary || e.content || e.family_id || e.version_id || e.id || '';
+      [e.absolute_id, e.version_id, e.id, e.family_id].forEach(id => {
+        if (id) map[id] = label;
+      });
     });
     return map;
+  }
+
+  function conceptVersionId(concept) {
+    return window.ConceptDetail.versionId(concept);
+  }
+
+  function conceptFamilyId(concept) {
+    return window.ConceptDetail.familyId(concept);
+  }
+
+  function relationEndpointInfo(relation) {
+    return window.ConceptDetail.endpointInfo(relation);
+  }
+
+  function collectVisibleEntities() {
+    const byId = {};
+    const add = (e) => {
+      if (!e) return;
+      [e.absolute_id, e.version_id, e.id, e.family_id].forEach(id => {
+        if (id) byId[id] = e;
+      });
+    };
+    (currentResults?.entities || []).forEach(add);
+    Object.values(batchResults || {}).forEach(res => (res?.entities || []).forEach(add));
+    Object.values(searchEntityMap || {}).forEach(add);
+    return byId;
+  }
+
+  function findVisibleEntity(id) {
+    if (!id) return null;
+    return collectVisibleEntities()[id] || null;
+  }
+
+  function conceptTitle(concept) {
+    return window.ConceptDetail.title(concept);
+  }
+
+  async function resolveConceptLabel(familyId, versionId) {
+    const local = findVisibleEntity(versionId) || findVisibleEntity(familyId);
+    if (local) return conceptTitle(local);
+    if (!familyId) return versionId || '-';
+    try {
+      const res = await state.api.entityByAbsoluteId(familyId, state.currentGraphId);
+      const data = res.data?.concept || res.data || {};
+      return conceptTitle(data);
+    } catch {
+      return familyId || versionId || '-';
+    }
+  }
+
+  function normalizeConceptInput(input, role) {
+    const candidates = role === 'relation'
+      ? Object.values(searchRelationMap || {}).concat(currentResults?.relations || [])
+      : Object.values(searchEntityMap || {}).concat(currentResults?.entities || []);
+    return window.ConceptDetail.normalizeConceptInput(input, role, { candidates });
+  }
+
+  async function openSearchEntityDetail(entityInput) {
+    const entity = normalizeConceptInput(entityInput, 'entity');
+    window.ConceptDetail.openConceptModal(entity, {
+      api: state.api,
+      graphId: state.currentGraphId,
+    });
+  }
+
+  async function openSearchRelationDetail(relationInput) {
+    const relation = normalizeConceptInput(relationInput, 'relation');
+    window.ConceptDetail.openConceptModal(relation, {
+      api: state.api,
+      graphId: state.currentGraphId,
+      resolveConceptLabel,
+    });
   }
 
   // ---- Render unified search card with mode tabs ----
@@ -219,7 +294,7 @@
                 <label class="form-label">${t('search.timeBefore')}</label>
                 <input type="datetime-local" id="search-time-before" class="input">
               </div>
-              <div>
+              <div style="position:relative;">
                 <label class="form-label">${t('search.expandNeighbors')}</label>
                 <label class="toggle" style="margin-top:4px;">
                   <input type="checkbox" id="search-expand" checked>
@@ -229,12 +304,12 @@
               <div>
                 <label class="form-label" data-i18n="search.searchMode">${t('search.searchMode')}</label>
                 <select id="searchMode" class="input" style="height:38px;">
+                  <option value="hybrid" data-i18n="search.modeHybrid">${t('search.modeHybrid')}</option>
                   <option value="semantic" data-i18n="search.modeSemantic">${t('search.modeSemantic')}</option>
                   <option value="bm25" data-i18n="search.modeBM25">${t('search.modeBM25')}</option>
-                  <option value="hybrid" data-i18n="search.modeHybrid">${t('search.modeHybrid')}</option>
                 </select>
               </div>
-              <div>
+              <div style="position:relative;">
                 <label class="form-label">${t('search.reranker')}</label>
                 <select id="searchReranker" class="input" style="height:38px;">
                   <option value="rrf">${t('search.rerankerRRF')}</option>
@@ -336,31 +411,66 @@
         <table class="data-table">
           <thead>
             <tr>
-              <th style="width:8%;">Score</th>
-              <th style="width:18%;">${t('common.name')}</th>
-              <th style="width:34%;">${t('common.content')}</th>
+              <th style="width:6%;">${t('search.rank')}</th>
+              <th style="width:10%;">${t('search.relevance')}</th>
+              <th style="width:14%;">${t('common.name')}</th>
+              <th style="width:30%;">${t('common.content')}</th>
               <th style="width:12%;">${t('search.eventTime')}</th>
               <th style="width:12%;">${t('search.processedTime')}</th>
-              <th style="width:16%;">${t('common.source')}</th>
+              <th style="width:10%;">${t('common.source')}</th>
+              <th style="width:6%;">${t('search.expandedNeighbors')}</th>
             </tr>
           </thead>
           <tbody>
             ${entities.map((e, i) => {
-              const score = e._score || 0;
-              const scorePercent = typeof score === 'number' ? (score * 100).toFixed(0) + '%' : '-';
-              const scoreClass = score >= 0.7 ? 'badge-success' : score >= 0.3 ? 'badge-warning' : 'badge-info';
-              const opacity = typeof score === 'number' ? Math.max(0.4, score).toFixed(2) : '1';
+              const rank = e._rank || (i + 1);
+              const relevance = typeof e.relevance === 'number' ? e.relevance : null;
+              let relevanceDisplay, badgeStyle;
+              if (relevance !== null) {
+                relevanceDisplay = Math.round(relevance) + '%';
+                if (relevance >= 80) badgeStyle = 'background:var(--success);color:#fff;';
+                else if (relevance >= 50) badgeStyle = 'background:var(--info);color:#fff;';
+                else if (relevance >= 30) badgeStyle = 'background:var(--warning);color:#fff;';
+                else badgeStyle = 'background:var(--text-muted);color:#fff;';
+              } else {
+                relevanceDisplay = '-';
+                badgeStyle = '';
+              }
+              const opacity = relevance !== null
+                ? Math.max(0.4, (relevance / 100 * 0.6 + 0.4)).toFixed(2)
+                : entities.length > 1 ? (1 - (i / entities.length) * 0.5).toFixed(2) : '1';
               const nameHighlight = query ? highlightMatch(e.name || '-', query) : escapeHtml(e.name || '-');
               const contentHighlight = query ? highlightMatch(truncate(e.content, 100), query) : escapeHtml(truncate(e.content, 100));
+              const neighbors = Array.isArray(e.expanded_neighbors) ? e.expanded_neighbors : [];
+              const hasNeighbors = neighbors.length > 0;
+              const neighborsBadge = hasNeighbors
+                ? `<span class="badge badge-secondary neighbor-toggle" data-entity-index="${i}" style="cursor:pointer;font-size:0.65rem;user-select:none;" title="${t('search.expandedNeighbors')}">${neighbors.length} ${t('search.neighbors')}</span>`
+                : `<span style="font-size:0.7rem;color:var(--text-muted);">${t('search.noNeighbors')}</span>`;
+              const neighborDetailRow = hasNeighbors ? `
+              <tr class="expanded-detail" data-entity-index="${i}" style="display:none;">
+                <td colspan="8" style="padding:8px 16px 12px;background:var(--bg-secondary);">
+                  <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;">
+                    ${neighbors.map(n => {
+                      const nName = escapeHtml(n.name || '-');
+                      const nRole = n.role ? `<span class="badge badge-primary" style="font-size:0.6rem;margin-left:3px;">${escapeHtml(n.role)}</span>` : '';
+                      const nRel = typeof n.relevance === 'number' ? `<span class="badge" style="font-size:0.6rem;margin-left:3px;${n.relevance >= 50 ? 'background:var(--info);color:#fff;' : 'background:var(--text-muted);color:#fff;'}">${Math.round(n.relevance)}%</span>` : '';
+                      return `<span class="badge badge-secondary" style="font-size:0.75rem;padding:3px 8px;">${nName}${nRole}${nRel}</span>`;
+                    }).join('')}
+                  </div>
+                </td>
+              </tr>` : '';
               return `
               <tr class="entity-row" data-entity-index="${i}" style="cursor:pointer;opacity:${opacity};">
-                <td><span class="badge ${scoreClass}" style="font-size:0.7rem;">${scorePercent}</span></td>
+                <td><span class="mono" style="font-size:0.75rem;color:var(--text-muted);font-weight:600;">#${rank}</span></td>
+                <td><span class="badge" style="font-size:0.7rem;${badgeStyle}">${relevanceDisplay}</span></td>
                 <td><strong>${nameHighlight}</strong>${e.version_count > 1 ? ' <span class="badge badge-primary" style="font-size:0.65rem;">v' + e.version_count + '</span>' : ''}</td>
                 <td class="truncate" title="${escapeHtml(e.content || '')}">${contentHighlight}</td>
                 <td class="mono" style="font-size:0.8rem;">${formatDate(e.event_time)}</td>
                 <td class="mono" style="font-size:0.8rem;">${formatDateMs(e.processed_time)}</td>
                 <td class="truncate" title="${escapeHtml(e.source_document || '')}">${escapeHtml(truncate(e.source_document, 40))}</td>
+                <td style="text-align:center;">${neighborsBadge}</td>
               </tr>
+              ${neighborDetailRow}
             `;}).join('')}
           </tbody>
         </table>
@@ -389,18 +499,21 @@
           </thead>
           <tbody>
             ${relations.map((r, i) => {
+              const ep = relationEndpointInfo(r);
+              const entity1Label = ep.entity1Name || entityLookup[ep.entity1VersionId] || entityLookup[ep.entity1FamilyId] || truncate(ep.entity1FamilyId || ep.entity1VersionId || '-', 22);
+              const entity2Label = ep.entity2Name || entityLookup[ep.entity2VersionId] || entityLookup[ep.entity2FamilyId] || truncate(ep.entity2FamilyId || ep.entity2VersionId || '-', 22);
               const contentHighlight = query ? highlightMatch(truncate(r.content, 100), query) : escapeHtml(truncate(r.content, 100));
               return `
               <tr class="relation-row" data-relation-index="${i}" style="cursor:pointer;">
                 <td>
                   <span class="badge badge-primary" style="font-size:0.75rem;">
-                    ${escapeHtml(entityLookup[r.entity1_absolute_id] || truncate(r.entity1_absolute_id || '-', 20))}
+                    ${escapeHtml(entity1Label)}
                   </span>
                 </td>
                 <td class="truncate" title="${escapeHtml(r.content || '')}">${contentHighlight}</td>
                 <td>
                   <span class="badge badge-info" style="font-size:0.75rem;">
-                    ${escapeHtml(entityLookup[r.entity2_absolute_id] || truncate(r.entity2_absolute_id || '-', 20))}
+                    ${escapeHtml(entity2Label)}
                   </span>
                 </td>
                 <td class="mono" style="font-size:0.8rem;">${formatDate(r.event_time)}</td>
@@ -551,9 +664,9 @@
     searchEntityMap = {};
     searchRelationMap = {};
 
-    // Build rank map: entities are returned sorted by similarity from API
+    // Build rank map from backend _rank field (1-based), fallback to array position
     const rankMap = {};
-    entities.forEach((e, i) => { rankMap[e.absolute_id] = i + 1; });
+    entities.forEach((e, i) => { rankMap[e.absolute_id] = e._rank || (i + 1); });
 
     // Use shared graph builder with rank-based coloring
     const { nodes, entityMap: eMap, nodeIds } = GraphUtils.buildNodes(entities, {
@@ -603,9 +716,9 @@
       const nodeId = params.nodes[0];
       const edgeId = params.edges[0];
       if (nodeId && searchEntityMap[nodeId]) {
-        window.showEntityDetail(searchEntityMap[nodeId]);
+        openSearchEntityDetail(searchEntityMap[nodeId]);
       } else if (edgeId && searchRelationMap[edgeId]) {
-        window.showRelationDetail(searchRelationMap[edgeId]);
+        openSearchRelationDetail(searchRelationMap[edgeId]);
       }
     });
   }
@@ -1060,11 +1173,15 @@
     try {
       const res = await state.api.traverseGraph(seedIds, maxDepth, maxNodes, state.currentGraphId);
       const data = res.data || {};
-      // 后端 traverse 返回纯数组(只有entities)或带entities/relations的对象
+      // 后端 traverse 返回 {concepts: {family_id: concept, ...}, relations: [...], edges: [...]}
       let entities, relations;
       if (Array.isArray(data)) {
         entities = data;
         relations = [];
+      } else if (data.concepts && typeof data.concepts === 'object') {
+        // concepts is a dict keyed by family_id — convert to array
+        entities = Object.values(data.concepts).filter(c => c.role !== 'relation');
+        relations = data.relations || [];
       } else {
         entities = data.entities || [];
         relations = data.relations || [];
@@ -1150,41 +1267,40 @@
       });
     });
 
+    const batchKeys = Object.keys(batchResults);
+    const activeBatchRes = batchKeys.length > 0 ? batchResults[batchKeys[activeBatchTab] || batchKeys[0]] : null;
+
     // Entity row clicks
-    const entities = currentResults?.entities || [];
+    const entities = activeBatchRes?.entities || currentResults?.entities || [];
     container.querySelectorAll('.entity-row').forEach(row => {
       row.addEventListener('click', () => {
         const idx = parseInt(row.dataset.entityIndex);
         if (entities[idx]) {
-          // Check if in batch mode
-          const batchKeys = Object.keys(batchResults);
-          if (batchKeys.length > 0) {
-            const batchRes = batchResults[batchKeys[activeBatchTab] || batchKeys[0]];
-            if (batchRes && batchRes.entities[idx]) {
-              window.showEntityDetail(batchRes.entities[idx]);
-              return;
-            }
-          }
-          window.showEntityDetail(entities[idx]);
+          openSearchEntityDetail(entities[idx]);
+        }
+      });
+    });
+
+    // Expanded neighbors toggle
+    container.querySelectorAll('.neighbor-toggle').forEach(badge => {
+      badge.addEventListener('click', (evt) => {
+        evt.stopPropagation();
+        const idx = badge.dataset.entityIndex;
+        const detailRow = container.querySelector(`.expanded-detail[data-entity-index="${idx}"]`);
+        if (detailRow) {
+          const isVisible = detailRow.style.display !== 'none';
+          detailRow.style.display = isVisible ? 'none' : '';
         }
       });
     });
 
     // Relation row clicks
-    const relations = currentResults?.relations || [];
+    const relations = activeBatchRes?.relations || currentResults?.relations || [];
     container.querySelectorAll('.relation-row').forEach(row => {
       row.addEventListener('click', () => {
         const idx = parseInt(row.dataset.relationIndex);
         if (relations[idx]) {
-          const batchKeys = Object.keys(batchResults);
-          if (batchKeys.length > 0) {
-            const batchRes = batchResults[batchKeys[activeBatchTab] || batchKeys[0]];
-            if (batchRes && batchRes.relations[idx]) {
-              window.showRelationDetail(batchRes.relations[idx]);
-              return;
-            }
-          }
-          window.showRelationDetail(relations[idx]);
+          openSearchRelationDetail(relations[idx]);
         }
       });
     });
@@ -1192,6 +1308,8 @@
 
   // ---- Main render ----
   async function render(container, params) {
+    window.showEntityDetail = openSearchEntityDetail;
+    window.showRelationDetail = openSearchRelationDetail;
     currentResults = null;
     batchResults = {};
     activeTab = 'entities';

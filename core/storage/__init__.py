@@ -4,7 +4,7 @@ from .embedding import EmbeddingClient
 def create_storage_manager(config: dict, embedding_client=None, storage_path=None, **kwargs):
     """创建存储管理器。
 
-    使用 SQLite + hnswlib + FTS5（无需外部服务）。
+    使用 V1.5 LibraryManager（SQLite + FTS5）。
 
     Args:
         config: 服务配置字典
@@ -13,18 +13,16 @@ def create_storage_manager(config: dict, embedding_client=None, storage_path=Non
         **kwargs: 传递给存储管理器的额外参数
 
     Returns:
-        SQLiteGraphStorageManager 实例
+        LibraryManager 实例
     """
     storage_config = config.get("storage") or {}
-    sp = storage_path or config.get("storage_path", "./graph")
+    sp = storage_path or config.get("storage_path", "./library")
 
-    from .sqlite import SQLiteGraphStorageManager
+    from .sqlite.library_manager import LibraryManager
 
-    return SQLiteGraphStorageManager(
-        storage_path=sp,
+    return LibraryManager(
+        library_path=sp,
         embedding_client=embedding_client,
         entity_content_snippet_length=kwargs.get("entity_content_snippet_length", 50),
         relation_content_snippet_length=kwargs.get("relation_content_snippet_length", 50),
-        vector_dim=storage_config.get("vector_dim", 1024),
-        graph_id=kwargs.get("graph_id", "default"),
     )

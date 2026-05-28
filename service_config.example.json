@@ -4,7 +4,7 @@
   "auto_port_fallback": false,
   "log_mode": "detail",
   "monitor_refresh_seconds": 1.0,
-  "storage_path": "./graph",
+  "storage_path": "./library",
   "storage": {
     "backend": "sqlite",
     "vector_dim": 1024

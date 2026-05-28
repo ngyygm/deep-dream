@@ -9,7 +9,7 @@ import re as _re
 import uuid as _uuid
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 from core.models import Entity
@@ -386,7 +386,7 @@ class _CrossWindowDedupMixin:
                     name=primary_name,
                     content=merged_content,
                     event_time=_primary_ent.event_time,
-                    processed_time=datetime.now(),
+                    processed_time=datetime.now(timezone.utc),
                     episode_id="alias_merge",
                     source_document=_primary_ent.source_document or "",
                     confidence=_primary_ent.confidence or 0.5,

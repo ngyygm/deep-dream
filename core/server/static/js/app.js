@@ -18,6 +18,9 @@ var escapeHtml = Format.escapeHtml;
 var escapeAttr = Format.escapeAttr;
 var tripleProgressBar = UIUtils.tripleProgressBar;
 var progressBar = UIUtils.progressBar;
+var renderTaskProgress = UIUtils.renderTaskProgress;
+var renderTaskChainDetails = UIUtils.renderTaskChainDetails;
+var taskTimingText = UIUtils.taskTimingText;
 var spinnerHtml = UIUtils.spinnerHtml;
 var emptyState = UIUtils.emptyState;
 var statusBadge = UIUtils.statusBadge;
@@ -152,18 +155,23 @@ class DeepDreamApi {
   rememberResume(taskId, graphId = 'default') {
     return this.post(`/api/v1/remember/tasks/${taskId}/resume?graph_id=${encodeURIComponent(graphId)}`, {});
   }
+  rememberResumeAll(graphId = 'default') {
+    return this.post(`/api/v1/remember/tasks/resume-all?graph_id=${encodeURIComponent(graphId)}`, {});
+  }
 
   // Find
   find(query, options = {}) {
     const body = {
       query,
       graph_id: options.graphId || 'default',
+      threshold: options.threshold ?? 0.5,
       similarity_threshold: options.threshold ?? 0.5,
       max_entities: options.maxEntities ?? 20,
       max_relations: options.maxRelations ?? 50,
       expand: options.expand ?? true,
+      compact: true,
     };
-    if (options.searchMode) body.search_mode = options.searchMode;
+    if (options.searchMode || options.search_mode) body.search_mode = options.searchMode || options.search_mode;
     if (options.timeBefore) body.time_before = options.timeBefore;
     if (options.timeAfter) body.time_after = options.timeAfter;
     if (options.reranker) body.reranker = options.reranker;
@@ -204,7 +212,7 @@ class DeepDreamApi {
     return Promise.reject(new Error('Version diff is not available in the concept graph UI'));
   }
   entityRelations(familyId, graphId = 'default', options = {}) {
-    let q = `graph_id=${encodeURIComponent(graphId)}&max_depth=1`;
+    let q = `graph_id=${encodeURIComponent(graphId)}&max_depth=1&compact=true`;
     if (options.timePoint) q += `&time_point=${encodeURIComponent(options.timePoint)}`;
     return this.get(`/api/v1/concepts/${encodeURIComponent(familyId)}/neighbors?${q}`);
   }
@@ -215,7 +223,7 @@ class DeepDreamApi {
     return this.entityRelations(absoluteId, graphId);
   }
   entityByAbsoluteId(absoluteId, graphId = 'default') {
-    return this.get(`/api/v1/concepts/${encodeURIComponent(absoluteId)}?graph_id=${encodeURIComponent(graphId)}`);
+    return this.get(`/api/v1/concepts/${encodeURIComponent(absoluteId)}?graph_id=${encodeURIComponent(graphId)}&compact=true`);
   }
 
   entityEmbeddingPreview(absoluteId, numValues = 5, graphId = 'default') {
@@ -223,7 +231,7 @@ class DeepDreamApi {
   }
 
   updateEntity(familyId, data, graphId = 'default') {
-    return Promise.reject(new Error('Concept editing is not available in v1'));
+    return this.request('PATCH', `/api/v1/concepts/${encodeURIComponent(familyId)}?graph_id=${encodeURIComponent(graphId)}`, { json: data });
   }
 
   evolveEntitySummary(familyId, graphId = 'default') {
@@ -264,7 +272,7 @@ class DeepDreamApi {
   }
 
   updateRelation(familyId, data, graphId = 'default') {
-    return Promise.reject(new Error('Concept editing is not available in v1'));
+    return this.request('PATCH', `/api/v1/concepts/${encodeURIComponent(familyId)}?graph_id=${encodeURIComponent(graphId)}`, { json: data });
   }
 
   deleteRelation(familyId, graphId = 'default') {
@@ -321,7 +329,7 @@ class DeepDreamApi {
   }
 
   entityNeighbors(entityUuid, graphId = 'default', depth = 1) {
-    return this.get(`/api/v1/concepts/${encodeURIComponent(entityUuid)}/neighbors?graph_id=${encodeURIComponent(graphId)}&max_depth=${depth}`);
+    return this.get(`/api/v1/concepts/${encodeURIComponent(entityUuid)}/neighbors?graph_id=${encodeURIComponent(graphId)}&max_depth=${depth}&compact=true`);
   }
 
   shortestPathCypher(entityA, entityB, graphId = 'default', maxDepth = 6) {
@@ -429,6 +437,23 @@ class DeepDreamApi {
     const limit = options.limit || 20000;
     return this.get(`/api/v1/documents/${encodeURIComponent(documentVersionId)}/content?graph_id=${encodeURIComponent(graphId)}&offset=${encodeURIComponent(offset)}&limit=${encodeURIComponent(limit)}`);
   }
+  documentFileInfo(documentVersionId, graphId = 'default') {
+    return this.get(`/api/v1/documents/${encodeURIComponent(documentVersionId)}/file?graph_id=${encodeURIComponent(graphId)}`);
+  }
+  documentIntegrity(documentVersionId, graphId = 'default') {
+    return this.get(`/api/v1/documents/${encodeURIComponent(documentVersionId)}/integrity?graph_id=${encodeURIComponent(graphId)}`);
+  }
+  repairDocument(documentVersionId, graphId = 'default') {
+    return this.post(`/api/v1/documents/${encodeURIComponent(documentVersionId)}/repair?graph_id=${encodeURIComponent(graphId)}`, {});
+  }
+  deleteDocument(documentVersionId, graphId = 'default') {
+    return this.delete(`/api/v1/documents/${encodeURIComponent(documentVersionId)}?graph_id=${encodeURIComponent(graphId)}`);
+  }
+  batchDeleteDocuments(documentVersionIds, graphId = 'default') {
+    return this.request('DELETE', `/api/v1/documents/batch`, {
+      json: { document_version_ids: documentVersionIds, graph_id: graphId },
+    });
+  }
   getDocContent(filename, graphId = 'default') {
     return this.get(`/api/v1/documents?graph_id=${encodeURIComponent(graphId)}&source=${encodeURIComponent(filename)}`);
   }
@@ -456,6 +481,8 @@ class DeepDreamApi {
   systemAccessStats(since = 300) {
     return this.get(`/api/v1/system/access-stats?since_seconds=${since}`);
   }
+  systemConfig() { return this.get('/api/v1/system/config'); }
+  updateSystemConfig(configPatch) { return this.request('PATCH', '/api/v1/system/config', { json: { config: configPatch } }); }
   systemDashboard(opts = {}) {
     let q = `task_limit=${opts.taskLimit || 50}&log_limit=${opts.logLimit || 100}`;
     if (opts.logLevel) q += `&log_level=${encodeURIComponent(opts.logLevel)}`;
@@ -706,11 +733,11 @@ async function loadGraphSelector() {
 async function deleteCurrentGraph() {
   const graphId = state.currentGraphId;
   const graphs = Array.from(document.getElementById('graph-selector')?.options || []).map(o => o.value);
-  if (graphs.length <= 1) { showToast('至少保留一个图谱', 'warning'); return; }
-  const confirmed = await showConfirm({ title: '删除图谱', message: `确定要删除图谱 "${graphId}" 吗？此操作将永久删除该图谱的所有实体、关系和文档，不可恢复。`, confirmLabel: '删除', cancelLabel: '取消', destructive: true });
+  if (graphs.length <= 1) { showToast(t('dashboard.deleteGraphFailed') + ': ' + t('common.required'), 'warning'); return; }
+  const confirmed = await showConfirm({ title: t('dashboard.deleteGraph'), message: t('dashboard.deleteGraphConfirm', { name: graphId }), confirmLabel: t('dashboard.deleteGraph'), cancelLabel: t('common.cancel'), destructive: true });
   if (!confirmed) return;
-  try { await state.api.deleteGraph(graphId); showToast(`图谱 "${graphId}" 已删除`, 'success'); setGraphId(graphs.filter(g => g !== graphId)[0] || 'default'); loadGraphSelector(); }
-  catch (e) { showToast(`删除失败: ${e.message || e}`, 'error'); }
+  try { await state.api.deleteGraph(graphId); showToast(t('dashboard.deleteGraphSuccess', { name: graphId }), 'success'); setGraphId(graphs.filter(g => g !== graphId)[0] || 'default'); loadGraphSelector(); }
+  catch (e) { showToast(t('dashboard.deleteGraphFailed') + `: ${e.message || e}`, 'error'); }
 }
 
 async function clearCurrentGraph() {

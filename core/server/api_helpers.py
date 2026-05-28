@@ -95,6 +95,15 @@ def make_validation_error(message: str) -> tuple:
 # Processor builder
 # ----------------------------------------------------------------------
 
+def _optional_int(value: Any) -> Optional[int]:
+    if value in (None, "", "auto"):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def build_processor(config: Dict[str, Any]):
     """Build a TemporalMemoryGraphProcessor from a config dict."""
     from core import TemporalMemoryGraphProcessor
@@ -114,7 +123,7 @@ def build_processor(config: Dict[str, Any]):
     pipeline_extraction = pipeline.get("extraction") or {}
     pipeline_remember = pipeline.get("remember") or {}
     pipeline_debug = pipeline.get("debug") or {}
-    max_concurrency = llm.get("max_concurrency")
+    max_concurrency = _optional_int(llm.get("max_concurrency"))
     model_path, model_name, use_local = resolve_embedding_model(embedding)
     kwargs: Dict[str, Any] = {
         "storage_path": storage_path,
@@ -137,7 +146,9 @@ def build_processor(config: Dict[str, Any]):
         "embedding_cache_max_size": embedding.get("cache_max_size"),
         "embedding_cache_ttl": embedding.get("cache_ttl"),
         "load_cache_memory": runtime_task.get("load_cache_memory", pipeline.get("load_cache_memory")),
-        "max_concurrent_windows": runtime_concurrency.get("window_workers", pipeline.get("max_concurrent_windows")),
+        "max_concurrent_windows": _optional_int(
+            runtime_concurrency.get("window_workers", pipeline.get("max_concurrent_windows"))
+        ),
     }
     for key in (
         "similarity_threshold", "max_similar_entities", "content_snippet_length",

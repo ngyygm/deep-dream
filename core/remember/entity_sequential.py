@@ -62,7 +62,7 @@ def _process_entity_sequential_fallback(
         Tuple[处理后的实体, 待处理的关系列表（使用实体名称）, 实体名称到ID的映射]
     """
     entity_name = extracted_entity['name']
-    entity_content = extracted_entity['content']
+    entity_content = extracted_entity.get('content', '')
 
     # 显示进度信息
     if entity_tree_log:

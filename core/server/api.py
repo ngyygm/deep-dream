@@ -1,12 +1,11 @@
 """
-DeepDream 自然语言记忆图 API（多图谱模式）
+DeepDream 本地文档优先记忆库 API
 
 一个以自然语言为核心的统一记忆图服务。系统只有两个核心职责：
   - Remember：接收自然语言文本或文档，自动构建概念实体/关系图。
   - Find：通过语义检索从总图中唤醒相关的局部记忆区域。
 
-多图谱模式：支持按 graph_id 隔离不同知识图谱，所有 API 请求需带 graph_id 参数。
-系统不负责 select，外部智能体根据 find 结果自行决策。
+单库模式：所有旧 graph_id 输入都会归一为 library。
 
 路由已拆分至 server/routes/ 下的 route 模块，此文件仅作为应用工厂。
 """
@@ -15,7 +14,9 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+_project_root = str(Path(__file__).resolve().parent.parent.parent)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
 
 import argparse
 import atexit
@@ -176,12 +177,13 @@ def create_app(
     # Public endpoints that don't require authentication
     _PUBLIC_ROUTES = {
         "/", "/health", "/api/", "/api/v1/",
-        "/api/v1/graphs", "/api/v1/routes",
+        "/api/v1/routes",
         "/static/", "/favicon.ico",
     }
 
     # Read-only endpoints that can be accessed with read permission
     _READ_ONLY_ROUTES = {
+        "/api/v1/agent",
         "/api/v1/find",
         "/api/v1/concepts",
         "/api/v1/documents",
@@ -273,7 +275,6 @@ def create_app(
     # 不需要 graph_id 的路由（白名单）
     _NO_GRAPH_ID_ROUTES = frozenset([
         "/", "/api/v1/routes", "/api/v1/health",
-        "/api/v1/chat/sessions", "/api/v1/graphs",
     ])
     # 系统 API 前缀（不需要 graph_id）
     _SYSTEM_API_PREFIX = "/api/v1/system/"
@@ -304,7 +305,7 @@ def create_app(
     @app.before_request
     def _resolve_graph_id():
         """在请求进入端点前解析 graph_id 并挂到 request.graph_id 上。
-        不需要 graph_id 的路由跳过。未填时默认使用 'default'。"""
+        单库模式下保留 graph_id 兼容解析，但所有请求最终映射到 library。"""
         path = request.path
         if path in _NO_GRAPH_ID_ROUTES or path.startswith(_SYSTEM_API_PREFIX):
             return
@@ -316,7 +317,7 @@ def create_app(
                 GraphRegistry.validate_graph_id(gid)
             except ValueError as e:
                 return jsonify({"success": False, "error": str(e)}), 400
-            request.graph_id = gid
+            request.graph_id = GraphRegistry.normalize_graph_id(gid)
             return
         # 2. Request body (POST/PUT/DELETE/PATCH)
         if request.method in _MUTATING_METHODS:
@@ -331,12 +332,12 @@ def create_app(
             gid = (request.args.get("graph_id") or "").strip()
         # 5. Default
         if not gid:
-            gid = "default"
+            gid = "library"
         try:
             GraphRegistry.validate_graph_id(gid)
         except ValueError as e:
             return jsonify({"success": False, "error": str(e)}), 400
-        request.graph_id = gid
+        request.graph_id = GraphRegistry.normalize_graph_id(gid)
 
     @app.before_request
     def _rate_limit_check():
@@ -345,7 +346,7 @@ def create_app(
         now = time.time()
         # Rate limit is scoped per (IP, graph_id) to prevent cross-graph interference
         client_ip = request.remote_addr or "unknown"
-        gid = getattr(request, "graph_id", "default")
+        gid = getattr(request, "graph_id", "library")
         rate_key = f"{client_ip}|{gid}"
         with _rate_limit_lock:
             timestamps = _rate_limit_store.get(rate_key)
@@ -383,9 +384,11 @@ def create_app(
     from core.server.routes.system import system_bp
     from core.server.routes.remember import remember_bp
     from core.server.routes.concepts import concepts_bp
+    from core.server.routes.documents import documents_bp
 
     app.register_blueprint(system_bp)
     app.register_blueprint(remember_bp)
+    app.register_blueprint(documents_bp)
     app.register_blueprint(concepts_bp)
 
     # JSON 404 for API routes (HTML 404 for everything else)
@@ -428,6 +431,14 @@ def create_app(
             if isinstance(inner, dict):
                 inner = strip_bulky(inner)
                 inner = compact_lists(inner)
+                # Also compact single-item responses (GET /concepts/<id>)
+                # compact_lists only handles lists, so detect single dicts
+                # that look like concept/relation/version items by their keys.
+                _COMPACT_KEYS = ("family_id", "absolute_id", "name", "role",
+                                  "content", "confidence")
+                if inner.get("family_id") and inner.get("name"):
+                    # This looks like a single concept/relation/version — apply compact
+                    inner = compact_item(inner)
                 if "data" in data:
                     data["data"] = inner
                 else:
@@ -541,7 +552,7 @@ def main() -> int:
     port = args.port if args.port is not None else config.get("port", 5001)
     config["host"] = host
     config["port"] = port
-    storage_path = config.get("storage_path", "./graph")
+    storage_path = config.get("storage_path", "./library")
     storage_root = Path(storage_path)
     Path(storage_path).mkdir(parents=True, exist_ok=True)
     wr_err = _check_storage_writable(storage_root)
@@ -563,7 +574,7 @@ def main() -> int:
             "System",
             "正在检查配置的 LLM 是否可用（单次最多约 60s；失败将按 3/9/27… 秒退避重试，请稍候）…",
         )
-        default_processor = registry.get_processor("default")
+        default_processor = registry.get_processor("library")
         ok_llm, err_msg = _check_llm_available(default_processor)
         if not ok_llm:
             system_monitor.event_log.error("System", f"错误：{err_msg}")
@@ -603,8 +614,8 @@ def main() -> int:
     if port_switched:
         system_monitor.event_log.warn("System", f"注意：端口 {port} 已被占用，已自动改用 {listen_port}。")
 
-    # 启动时触发 default 图谱的 queue 创建（会自动注册到 SystemMonitor）
-    registry.get_queue("default")
+    # 启动时触发单一 library 的 queue 创建（会自动注册到 SystemMonitor）
+    registry.get_queue("library")
 
     if log_mode == LOG_MODE_MONITOR:
         from core.server.dashboard import DeepDreamDashboard
@@ -612,7 +623,7 @@ def main() -> int:
         dashboard = DeepDreamDashboard(system_monitor, refresh_interval=monitor_refresh)
         dashboard.start()
     else:
-        stats = system_monitor.graph_detail("default")
+        stats = system_monitor.graph_detail("library")
         entities = stats["storage"]["entities"] if stats else 0
         relations = stats["storage"]["relations"] if stats else 0
         caches = stats["storage"]["episodes"] if stats else 0
@@ -621,16 +632,15 @@ def main() -> int:
 ║     DeepDream — 自然语言记忆图 API           ║
 ╚══════════════════════════════════════════════════════════╝
 
-  当前大脑记忆库 (default):
+  当前本地记忆库 (library):
     实体: {entities}  关系: {relations}  Episode: {caches}
 
   服务地址: http://{host}:{listen_port}
-  健康检查: GET  http://{host}:{listen_port}/api/v1/health?graph_id=default
-  LLM 健康: GET  http://{host}:{listen_port}/api/v1/health/llm?graph_id=default
-  图谱列表: GET  http://{host}:{listen_port}/api/v1/graphs
-  记忆写入: POST http://{host}:{listen_port}/api/v1/remember （JSON 含 graph_id / text，或 multipart file 上传）
-  任务状态: GET  http://{host}:{listen_port}/api/v1/remember/tasks/<task_id>?graph_id=default
-  监控快照: GET  http://{host}:{listen_port}/api/v1/remember/monitor?graph_id=default
+  健康检查: GET  http://{host}:{listen_port}/api/v1/health
+  LLM 健康: GET  http://{host}:{listen_port}/api/v1/health/llm
+  记忆写入: POST http://{host}:{listen_port}/api/v1/remember （JSON 含 text，或 multipart file 上传）
+  任务状态: GET  http://{host}:{listen_port}/api/v1/remember/tasks/<task_id>
+  监控快照: GET  http://{host}:{listen_port}/api/v1/remember/monitor
   系统总览: GET  http://{host}:{listen_port}/api/v1/system/overview
   系统日志: GET  http://{host}:{listen_port}/api/v1/system/logs
   访问统计: GET  http://{host}:{listen_port}/api/v1/system/access-stats
@@ -638,9 +648,9 @@ def main() -> int:
   接口索引: GET  http://{host}:{listen_port}/api/v1/routes
   概念查询: GET  http://{host}:{listen_port}/api/v1/concepts
 
-  存储基础路径: {storage_path} （各图谱在 {storage_path}/graphs/<graph_id>/ 下）
+  存储基础路径: {storage_path}
   HTTP 多线程: 处理中 Find 与 Remember 可并行（Flask threaded）
-  多图谱模式: 所有 API 请求需带 graph_id 参数
+  单库模式: 旧 graph_id 参数会归一为 library
   日志模式: {log_mode}
 
   按 Ctrl+C 停止服务

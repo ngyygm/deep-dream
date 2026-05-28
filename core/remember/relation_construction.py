@@ -4,7 +4,7 @@ Split from relation.py — contains relation dedupe/merge, single-relation align
 and all relation construction/versioning factory methods.
 """
 from typing import List, Dict, Optional, Any
-from datetime import datetime
+from datetime import datetime, timezone
 import uuid
 
 from core.models import Relation
@@ -154,7 +154,7 @@ class _RelationConstructionMixin:
         from ._shared import _doc_basename
         from .relation import _get_entity_names
 
-        relation_content = extracted_relation['content']
+        relation_content = extracted_relation.get('content', '')
         if not entity1_name or not entity2_name:
             _e1, _e2 = _get_entity_names(extracted_relation)
             entity1_name = entity1_name or _e1
@@ -307,7 +307,7 @@ class _RelationConstructionMixin:
                 wprint_info(f"[关系操作] ⚠️  警告: 无法找到实体: {', '.join(missing_info)}，跳过{skip_label}")
             return None
 
-        _now = datetime.now()
+        _now = datetime.now(timezone.utc)
         ts = base_time if base_time is not None else _now
         processed_time = _now
         relation_record_id = f"relation_{processed_time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
@@ -331,7 +331,6 @@ class _RelationConstructionMixin:
             episode_id=episode_id,
             source_document=source_document_only,
             content_format="markdown",
-            summary=content[:200].strip(),
             confidence=initial_confidence,
         )
 

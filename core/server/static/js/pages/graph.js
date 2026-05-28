@@ -2,6 +2,7 @@
   let docs = [];
   let filteredDocs = [];
   let selectedDocVersions = new Set();
+  let deletingDocVersions = new Set();
   let graphData = null;
   let graphModel = null;
   let network = null;
@@ -15,6 +16,8 @@
   let physicsFreezeTimer = null;
   let naturalFitTimer = null;
   let lastNaturalFitAt = 0;
+  let summaryUpdateTimer = null;
+  let pendingSummaryVisible = null;
   let relationStreamTimer = null;
   let growthController = null;
   let growthControllers = new Map();
@@ -25,8 +28,11 @@
   let growthLoaded = { episodes: 0, concepts: 0, relations: 0, edges: 0 };
   let growthTotals = null;
   let growthOutline = null;
-  let growthRatePerSecond = 60;
-  const GROWTH_RATE_OPTIONS = [60, 100, 40, 20];
+  let growthRatePerSecond = 40;
+  const GROWTH_RATE_OPTIONS = [180, 260, 120, 60];
+  const FRAME_INTERVAL_MS = 50;
+  let dragStartPositions = null;
+  let lastDragPositions = null;
 
   let showRelations = true;
   let showSourceEdges = false;
@@ -49,8 +55,27 @@
     return doc.version_title || doc.title || doc.relative_path || doc.absolute_path || doc.source_id || 'Untitled';
   }
 
+  function docDisplayTitle(doc) {
+    const title = docTitle(doc);
+    return title.replace(/\.(md|markdown|txt|text|pdf|docx?|rtf)$/i, '');
+  }
+
   function docPath(doc) {
     return doc.relative_path || doc.absolute_path || doc.uri || doc.source_id || '';
+  }
+
+  function formatBytes(bytes) {
+    const n = Number(bytes || 0);
+    if (!Number.isFinite(n) || n <= 0) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB'];
+    let value = n;
+    let idx = 0;
+    while (value >= 1024 && idx < units.length - 1) {
+      value /= 1024;
+      idx += 1;
+    }
+    const digits = idx === 0 || value >= 10 ? 0 : 1;
+    return `${value.toFixed(digits)} ${units[idx]}`;
   }
 
   function conceptTitle(concept) {
@@ -89,23 +114,23 @@
       <div class="page-enter graph-viz-shell">
         <aside class="card graph-doc-panel">
           <div class="card-header" style="gap:0.75rem;align-items:flex-start;">
-            <button id="graph-doc-collapse" class="btn btn-secondary btn-sm" title="收起文档栏" style="flex-shrink:0;">
+            <button id="graph-doc-collapse" class="btn btn-secondary btn-sm" title="${t('graph.collapseDocPanel')}" style="flex-shrink:0;">
               <i data-lucide="panel-left-close" style="width:14px;height:14px;"></i>
             </button>
             <div class="graph-doc-head-text" style="min-width:0;">
-              <div class="card-title">Markdown 文档</div>
-              <div class="graph-subtitle">按入库时间排序，选择后渲染子图</div>
+              <div class="card-title">${t('graph.markdownDocs')}</div>
+              <div class="graph-subtitle">${t('graph.docPanelSubtitle')}</div>
             </div>
-            <button id="graph-doc-refresh" class="btn btn-secondary btn-sm graph-doc-refresh" title="刷新文档">
+            <button id="graph-doc-refresh" class="btn btn-secondary btn-sm graph-doc-refresh" title="${t('graph.refreshDocs')}">
               <i data-lucide="refresh-cw" style="width:14px;height:14px;"></i>
             </button>
           </div>
-          <div class="graph-doc-collapsed-label">文档</div>
+          <div class="graph-doc-collapsed-label">${t('graph.docs')}</div>
           <div class="graph-doc-tools">
-            <input id="graph-doc-filter" class="input" placeholder="搜索文档标题或路径..." />
+            <input id="graph-doc-filter" class="input" placeholder="${t('graph.searchDocPlaceholder')}" />
             <div style="display:flex;gap:0.45rem;flex-wrap:wrap;">
-              <button id="graph-select-visible" class="btn btn-secondary btn-sm">全选列表</button>
-              <button id="graph-clear-selection" class="btn btn-secondary btn-sm">清空</button>
+              <button id="graph-select-visible" class="btn btn-secondary btn-sm">${t('graph.selectAllVisible')}</button>
+              <button id="graph-batch-delete" class="btn btn-danger btn-sm" style="display:none;">${t('documents.batchDelete')}</button>
             </div>
             <div id="graph-doc-count" class="graph-subtitle"></div>
           </div>
@@ -115,44 +140,44 @@
         <section class="card graph-canvas-card">
           <div class="card-header graph-toolbar">
             <div style="min-width:0;margin-right:auto;">
-              <div id="graph-main-title" class="card-title">图谱可视化</div>
-              <div id="graph-summary" class="graph-subtitle">选择一个或多个文档</div>
+              <div id="graph-main-title" class="card-title">${t('graph.title')}</div>
+              <div id="graph-summary" class="graph-subtitle">${t('graph.selectDocuments')}</div>
             </div>
-            <label class="graph-toggle"><input id="graph-toggle-relations" type="checkbox" checked> 关系边</label>
-            <label class="graph-toggle"><input id="graph-toggle-source" type="checkbox"> 溯源边</label>
-            <label class="graph-toggle"><input id="graph-toggle-labels" type="checkbox" checked> 标签</label>
-            <button id="graph-exit-focus" class="btn btn-secondary btn-sm" style="display:none;">退出聚焦</button>
-            <button id="graph-fit" class="btn btn-secondary btn-sm">适配视图</button>
+            <label class="graph-toggle"><input id="graph-toggle-relations" type="checkbox" checked> ${t('graph.relationEdges')}</label>
+            <label class="graph-toggle"><input id="graph-toggle-source" type="checkbox"> ${t('graph.provenanceEdges')}</label>
+            <label class="graph-toggle"><input id="graph-toggle-labels" type="checkbox" checked> ${t('graph.labels')}</label>
+            <button id="graph-exit-focus" class="btn btn-secondary btn-sm" style="display:none;">${t('graph.exitFocus')}</button>
+            <button id="graph-fit" class="btn btn-secondary btn-sm">${t('graph.fitView')}</button>
           </div>
           <div id="document-graph-canvas" class="graph-canvas-wrap">
             <div id="graph-empty" class="empty-state graph-empty">
               <i data-lucide="git-fork"></i>
-              <p>选择左侧 Markdown 文档后显示文档、Episode、实体和关系边。</p>
+              <p>${t('graph.emptyHint')}</p>
             </div>
           </div>
           <div id="graph-playback" class="graph-playback" style="display:none;">
             <div class="timeline-live-dot"></div>
-            <button id="graph-step-back" class="timeline-btn" title="后退一步"><i data-lucide="skip-back" style="width:11px;height:11px;"></i></button>
-            <button id="graph-play" class="timeline-btn" title="播放"><i data-lucide="play" style="width:11px;height:11px;"></i></button>
-            <button id="graph-step-forward" class="timeline-btn" title="前进一步"><i data-lucide="skip-forward" style="width:11px;height:11px;"></i></button>
-            <button id="graph-reset-full" class="timeline-btn" title="回到完整图"><i data-lucide="maximize-2" style="width:11px;height:11px;"></i></button>
-            <button id="graph-speed" class="timeline-btn" title="速度">60/s</button>
+            <button id="graph-step-back" class="timeline-btn" title="${t('graph.stepBack')}"><i data-lucide="skip-back" style="width:11px;height:11px;"></i></button>
+            <button id="graph-play" class="timeline-btn" title="${t('graph.play')}"><i data-lucide="play" style="width:11px;height:11px;"></i></button>
+            <button id="graph-step-forward" class="timeline-btn" title="${t('graph.stepForward')}"><i data-lucide="skip-forward" style="width:11px;height:11px;"></i></button>
+            <button id="graph-reset-full" class="timeline-btn" title="${t('graph.resetToFull')}"><i data-lucide="maximize-2" style="width:11px;height:11px;"></i></button>
+            <button id="graph-speed" class="timeline-btn" title="${t('graph.speed')}">90/s</button>
             <div class="graph-play-track" id="graph-play-track">
               <div class="graph-play-fill" id="graph-play-fill"></div>
             </div>
-            <span id="graph-play-label" class="mono graph-play-label">完整图</span>
+            <span id="graph-play-label" class="mono graph-play-label">${t('graph.fullGraph')}</span>
           </div>
         </section>
 
         <aside class="card graph-detail-panel">
           <div class="card-header">
             <div>
-              <div class="card-title">详情</div>
-              <div id="graph-detail-subtitle" class="graph-subtitle">点击节点或关系边查看详情</div>
+              <div class="card-title">${t('graph.detail')}</div>
+              <div id="graph-detail-subtitle" class="graph-subtitle">${t('graph.detailHint')}</div>
             </div>
           </div>
           <div id="graph-detail" class="graph-detail-body">
-            ${emptyState('暂无选中节点')}
+            ${emptyState(t('graph.noSelection'))}
           </div>
         </aside>
       </div>
@@ -215,11 +240,7 @@
       updateDocsList();
       loadSelectedGraph();
     });
-    document.getElementById('graph-clear-selection')?.addEventListener('click', () => {
-      selectedDocVersions.clear();
-      updateDocsList();
-      clearGraphCanvas();
-    });
+    document.getElementById('graph-batch-delete')?.addEventListener('click', batchDeleteDocuments);
     document.getElementById('graph-toggle-relations')?.addEventListener('change', (e) => {
       showRelations = e.target.checked;
       drawGraph(playbackStep);
@@ -269,7 +290,7 @@
 
   async function loadDocs() {
     const list = document.getElementById('graph-doc-list');
-    if (list) list.innerHTML = `<div style="padding:1rem;">${spinnerHtml()} 加载文档...</div>`;
+    if (list) list.innerHTML = `<div style="padding:1rem;">${spinnerHtml()} ${t('graph.loadingDocs')}</div>`;
     try {
       const res = await state.api.listDocs(state.currentGraphId);
       docs = (res.data?.docs || []).slice().sort((a, b) => String(b.processed_time || '').localeCompare(String(a.processed_time || '')));
@@ -277,7 +298,7 @@
       applyFilter();
       updateGraphTitle();
     } catch (err) {
-      if (list) list.innerHTML = emptyState(`加载文档失败: ${escapeHtml(err.message)}`);
+      if (list) list.innerHTML = emptyState(`${t('graph.loadDocsFailed')}: ${escapeHtml(err.message)}`);
     }
   }
 
@@ -291,31 +312,43 @@
 
   function updateDocsList() {
     const countEl = document.getElementById('graph-doc-count');
-    if (countEl) countEl.textContent = `${filteredDocs.length} 个文档，已选 ${selectedDocVersions.size} 个`;
+    if (countEl) countEl.textContent = t('graph.docCountSelected', { filtered: filteredDocs.length, selected: selectedDocVersions.size });
+    const batchBtn = document.getElementById('graph-batch-delete');
+    if (batchBtn) batchBtn.style.display = selectedDocVersions.size > 0 ? '' : 'none';
     const list = document.getElementById('graph-doc-list');
     if (!list) return;
     if (!docs.length) {
-      list.innerHTML = emptyState('暂无 Markdown 文档。先在记忆页上传文件，或调用 vault index。');
+      list.innerHTML = emptyState(t('graph.noMarkdownDocs'));
       return;
     }
     if (!filteredDocs.length) {
-      list.innerHTML = emptyState('没有匹配的文档');
+      list.innerHTML = emptyState(t('graph.noMatchingDocs'));
       return;
     }
     list.innerHTML = filteredDocs.map(d => {
       const id = d.document_version_id;
+      const invalid = !id;
       const selected = selectedDocVersions.has(id);
+      const deleting = deletingDocVersions.has(id);
+      const title = docDisplayTitle(d);
+      const size = formatBytes(d.size);
+      const entityCount = Number(d.entity_count || 0).toLocaleString();
+      const relationCount = Number(d.relation_count || 0).toLocaleString();
       return `
-        <div class="doc-graph-item ${selected ? 'selected' : ''}" data-doc-id="${escapeAttr(id)}">
-          <input class="doc-graph-check" type="checkbox" ${selected ? 'checked' : ''} data-doc-id="${escapeAttr(id)}" style="margin-top:0.2rem;">
+        <div class="doc-graph-item ${selected ? 'selected' : ''}" data-doc-id="${escapeAttr(id || '')}" style="grid-template-columns:auto minmax(0,1fr) auto;${(deleting || invalid) ? 'opacity:0.55;pointer-events:none;' : ''}">
+          <input class="doc-graph-check" type="checkbox" ${selected ? 'checked' : ''} ${(deleting || invalid) ? 'disabled' : ''} data-doc-id="${escapeAttr(id || '')}" style="margin-top:0.2rem;">
           <div style="min-width:0;">
-            <div class="doc-graph-title" title="${escapeAttr(docTitle(d))}">${escapeHtml(docTitle(d))}</div>
-            <div class="doc-graph-meta" title="${escapeAttr(docPath(d))}">${escapeHtml(docPath(d) || d.source_id || '-')}</div>
-            <div class="doc-graph-meta">${formatDateMs(d.processed_time || d.updated_at || d.created_at)}</div>
+            <div class="doc-graph-title" title="${escapeAttr(docTitle(d))}">${escapeHtml(title)}</div>
+            <div class="doc-graph-meta">${size} · ${entityCount} ${t('graph.entities')} · ${relationCount} ${t('graph.relations')}</div>
+            <div class="doc-graph-meta">${invalid ? t('graph.invalidRecord') : deleting ? t('graph.deleting') : formatDateMs(d.processed_time || d.updated_at || d.created_at)}</div>
           </div>
+          <button class="btn btn-ghost btn-sm doc-graph-delete" data-doc-id="${escapeAttr(id || '')}" title="${invalid ? t('graph.cannotDeleteInvalid') : t('graph.deleteDocument')}" style="padding:2px 5px;color:var(--error);align-self:flex-start;" ${(deleting || invalid) ? 'disabled' : ''}>
+            ${deleting ? spinnerHtml('spinner-sm') : '<i data-lucide="trash-2" style="width:14px;height:14px;"></i>'}
+          </button>
         </div>
       `;
     }).join('');
+    if (window.lucide) lucide.createIcons();
     list.querySelectorAll('.doc-graph-check').forEach(cb => {
       cb.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -326,6 +359,14 @@
         loadSelectedGraph();
       });
     });
+    list.querySelectorAll('.doc-graph-delete').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const id = btn.getAttribute('data-doc-id');
+        const doc = docs.find(d => d.document_version_id === id);
+        if (doc) await deleteDocumentFromGraph(doc);
+      });
+    });
     list.querySelectorAll('.doc-graph-item').forEach(item => {
       item.addEventListener('click', () => {
         const id = item.getAttribute('data-doc-id');
@@ -334,6 +375,70 @@
         loadSelectedGraph();
       });
     });
+  }
+
+  async function batchDeleteDocuments() {
+    const ids = Array.from(selectedDocVersions);
+    const count = ids.length;
+    if (!count) return;
+    const confirmed = await showConfirm({ message: t('documents.batchDeleteConfirm').replace('{count}', count), destructive: true });
+    if (!confirmed) return;
+    try {
+      ids.forEach(id => deletingDocVersions.add(id));
+      selectedDocVersions.clear();
+      updateDocsList();
+      const data = await state.api.request('DELETE', `/api/v1/documents/batch?graph_id=${encodeURIComponent(state.currentGraphId)}`, {
+        json: { document_version_ids: ids },
+      });
+      ids.forEach(id => deletingDocVersions.delete(id));
+      if (data.success) {
+        const deleted = data.data?.deleted || 0;
+        const failed = count - deleted;
+        if (failed > 0) {
+          showToast(t('documents.batchPartialFail').replace('{failed}', failed), 'warning');
+        } else {
+          showToast(t('documents.batchDeleted').replace('{count}', deleted), 'success');
+        }
+      } else {
+        showToast(data.error || t('documents.batchDelete') + ' failed', 'error');
+      }
+      await loadDocs();
+      window.dispatchEvent(new CustomEvent('graph-changed', { detail: { graphId: state.currentGraphId } }));
+    } catch (e) {
+      ids.forEach(id => deletingDocVersions.delete(id));
+      showToast(t('documents.batchDelete') + ' failed: ' + e.message, 'error');
+      await loadDocs();
+    }
+  }
+
+  async function deleteDocumentFromGraph(doc) {
+    const id = doc?.document_version_id;
+    if (!id) return;
+    const title = docDisplayTitle(doc);
+    const confirmed = window.confirm(t('graph.deleteDocConfirm', { title }));
+    if (!confirmed) return;
+    deletingDocVersions.add(id);
+    selectedDocVersions.delete(id);
+    removeDocumentGraph(id);
+    updateDocsList();
+    updateGraphTitle();
+    const pendingToast = showToast(t('graph.deletingDoc', { title }), 'info', 0);
+    try {
+      await state.api.deleteDocument(id, state.currentGraphId);
+      docs = docs.filter(d => d.document_version_id !== id);
+      filteredDocs = filteredDocs.filter(d => d.document_version_id !== id);
+      deletingDocVersions.delete(id);
+      updateDocsList();
+      updateGraphTitle();
+      if (pendingToast) pendingToast.remove();
+      showToast(t('graph.docDeleted'), 'success');
+      window.dispatchEvent(new CustomEvent('graph-changed', { detail: { graphId: state.currentGraphId } }));
+    } catch (err) {
+      deletingDocVersions.delete(id);
+      if (pendingToast) pendingToast.remove();
+      await loadDocs();
+      showToast(t('graph.docDeleteFailed') + ': ' + (err.message || err), 'error');
+    }
   }
 
   async function loadSelectedGraph() {
@@ -364,8 +469,7 @@
 
     const removed = [...loadedDocVersions].filter(id => !selectedDocVersions.has(id));
     if (removed.length) {
-      rebuildSelectedGraph();
-      return;
+      removed.forEach(id => removeDocumentGraph(id));
     }
 
     const activeOrLoaded = new Set([...loadedDocVersions, ...growthControllers.keys()]);
@@ -405,6 +509,56 @@
     documentVersionIds.forEach(id => appendDocumentGraph(id));
   }
 
+  function removeDocumentGraph(documentVersionId) {
+    if (!documentVersionId || !graphData) return;
+    const controller = growthControllers.get(documentVersionId);
+    if (controller) controller.cancelled = true;
+    growthControllers.delete(documentVersionId);
+    loadedDocVersions.delete(documentVersionId);
+    growthOutlinesByDoc.delete(documentVersionId);
+
+    const removedEpisodes = new Set((graphData.episodes || [])
+      .filter(ep => ep.document_version_id === documentVersionId)
+      .map(ep => ep.version_id));
+    const nextEdges = (graphData.edges || []).filter(edge =>
+      edge.document_version_id !== documentVersionId
+      && !removedEpisodes.has(edge.episode_version_id)
+    );
+    const remainingMentionFamilies = new Set();
+    nextEdges.forEach(edge => {
+      if (edge.target_family_id) remainingMentionFamilies.add(edge.target_family_id);
+      if (edge.source_family_id) remainingMentionFamilies.add(edge.source_family_id);
+      if (edge.relation_family_id) remainingMentionFamilies.add(edge.relation_family_id);
+    });
+    graphData = normalizeGraphPayload({
+      ...graphData,
+      documents: (graphData.documents || []).filter(doc => doc.document_version_id !== documentVersionId),
+      episodes: (graphData.episodes || []).filter(ep => ep.document_version_id !== documentVersionId),
+      concepts: (graphData.concepts || []).filter(concept => remainingMentionFamilies.has(concept.family_id)),
+      edges: nextEdges,
+      versions: Object.fromEntries(Object.entries(graphData.versions || {}).filter(([fid]) => remainingMentionFamilies.has(fid))),
+    });
+    growthOutline = mergeAllOutlines();
+    growthTotals = summarizeGrowthTotals();
+    graphData.counts = growthTotals || graphData.counts || {};
+    graphModel = buildGraphModel(graphData);
+    refreshPrimaryGrowthController();
+    updateGraphTitle();
+    if (!graphModel.documents.length) {
+      clearGraphCanvas();
+      return;
+    }
+    updateGraphStep(-1, { fitDelay: 80, fitDuration: 260, progressive: true, freezeDelay: 2500 });
+  }
+
+  function mergeAllOutlines() {
+    let merged = null;
+    growthOutlinesByDoc.forEach(outline => {
+      merged = mergeGraphPayload(merged || {}, outline);
+    });
+    return merged;
+  }
+
   async function appendDocumentGraph(documentVersionId) {
     if (!documentVersionId || loadedDocVersions.has(documentVersionId) || growthControllers.has(documentVersionId)) return;
     const loadingController = { key: documentVersionId, cancelled: false, loading: true };
@@ -412,7 +566,7 @@
     refreshPrimaryGrowthController();
     updatePlaybackControls();
     const summary = document.getElementById('graph-summary');
-    if (summary) summary.textContent = '加载文档骨架中...';
+    if (summary) summary.textContent = t('graph.loadingDocSkeleton');
     try {
       const res = await state.api.documentGraphOutline(state.currentGraphId, {
         documentVersionIds: [documentVersionId],
@@ -438,7 +592,7 @@
       startGraphGrowth({
         key: documentVersionId,
         documentVersionIds: [documentVersionId],
-        cursor: outline.next_cursor ?? 0,
+        cursor: 0,
         limit: 1,
       });
     } catch (err) {
@@ -447,7 +601,7 @@
         refreshPrimaryGrowthController();
       }
       const summaryEl = document.getElementById('graph-summary');
-      if (summaryEl) summaryEl.textContent = `加载文档失败: ${err.message}`;
+      if (summaryEl) summaryEl.textContent = `${t('graph.loadDocsFailed')}: ${err.message}`;
     }
   }
 
@@ -479,17 +633,17 @@
     nodeMetaById = new Map();
     const canvas = document.getElementById('document-graph-canvas');
     if (canvas) {
-      canvas.innerHTML = `<div id="graph-empty" class="empty-state graph-empty"><i data-lucide="git-fork"></i><p>${message || '选择左侧 Markdown 文档后显示文档、Episode、实体和关系边。'}</p></div>`;
+      canvas.innerHTML = `<div id="graph-empty" class="empty-state graph-empty"><i data-lucide="git-fork"></i><p>${message || t('graph.emptyHint')}</p></div>`;
     }
     const summary = document.getElementById('graph-summary');
-    if (summary) summary.textContent = selectedDocVersions.size ? '未加载图谱' : '选择一个或多个文档';
+    if (summary) summary.textContent = selectedDocVersions.size ? t('graph.graphNotLoaded') : t('graph.selectDocuments');
     updateGraphTitle();
     const playback = document.getElementById('graph-playback');
     if (playback) playback.style.display = 'none';
     const exitFocus = document.getElementById('graph-exit-focus');
     if (exitFocus) exitFocus.style.display = 'none';
     const detail = document.getElementById('graph-detail');
-    if (detail) detail.innerHTML = emptyState('暂无选中节点');
+    if (detail) detail.innerHTML = emptyState(t('graph.noSelection'));
     if (window.lucide) lucide.createIcons();
   }
 
@@ -509,6 +663,9 @@
     physicsFreezeTimer = null;
     clearTimeout(naturalFitTimer);
     naturalFitTimer = null;
+    clearTimeout(summaryUpdateTimer);
+    summaryUpdateTimer = null;
+    pendingSummaryVisible = null;
     lastNaturalFitAt = 0;
   }
 
@@ -583,6 +740,45 @@
     };
   }
 
+  function graphPerfStats(visible) {
+    const model = visible || (graphModel ? visibleModelForStep(-1) : null);
+    const nodeCount = model ? (model.documents.length + model.episodes.length + model.entities.length) : 0;
+    const edgeCount = model ? ((model.sourceEdges?.length || 0) + (model.relationEdges?.length || 0)) : 0;
+    const growing = hasActiveGrowth();
+    const large = nodeCount > 650 || edgeCount > 1000 || (growing && (nodeCount > 180 || edgeCount > 260));
+    const huge = nodeCount > 1600 || edgeCount > 3000 || (growing && (nodeCount > 650 || edgeCount > 900));
+    return { nodeCount, edgeCount, large, huge, growing };
+  }
+
+  function growthBatchSize(kind) {
+    const total = Math.max(1, Number((growthTotals || {}).concepts || 0) + Number((growthTotals || {}).relations || 0));
+    const loaded = Math.max(0, Number(growthLoaded.concepts || 0) + Number(growthLoaded.relations || 0));
+    const phase = Math.max(0, Math.min(1, loaded / total));
+    const curveRate = growthRatePerSecond * (1 + phase * 2);
+    const base = Math.max(1, Math.round(curveRate / (1000 / FRAME_INTERVAL_MS)));
+    if (kind === 'relation') return Math.max(4, Math.round(base * 1.55));
+    return base;
+  }
+
+  function shouldShowNodeLabel(role, label, degree, versionTotal, stats) {
+    if (!showLabels) return false;
+    if (role === 'document') return true;
+    if (!stats.large && !stats.growing) return true;
+    if (role === 'episode') return !stats.huge && String(label || '').length <= 42;
+    if (versionTotal > 1) return true;
+    if (stats.huge) return degree >= 7;
+    if (stats.large || stats.growing) return degree >= 4;
+    return true;
+  }
+
+  function shouldShowRelationLabel(stats, relationEdge) {
+    if (!showLabels) return false;
+    if (stats.growing) return false;
+    if (stats.huge) return false;
+    if (stats.large) return (relationEdge.parallel_count || 1) > 1;
+    return true;
+  }
+
   function mergeGraphPayload(base, chunk) {
     const current = normalizeGraphPayload(base || {});
     const next = normalizeGraphPayload(chunk || {});
@@ -641,7 +837,7 @@
         const data = chunk.data || {};
         await animateEpisodeChunk(data, controller);
         nextCursor = data.next_cursor;
-        await sleep(120);
+        await sleep(350);
       }
 
       if (growthControllers.get(controllerKey) === controller) {
@@ -656,11 +852,11 @@
       growthControllers.delete(controllerKey);
       refreshPrimaryGrowthController();
       const summary = document.getElementById('graph-summary');
-      if (summary) summary.textContent = `增量加载失败，尝试全量加载: ${err.message}`;
+      if (summary) summary.textContent = `${t('graph.incrementalLoadFailed')}: ${err.message}`;
       try {
         await loadSelectedGraphFullFallback();
       } catch (fallbackErr) {
-        clearGraphCanvas(`加载子图失败: ${escapeHtml(fallbackErr.message)}`);
+        clearGraphCanvas(`${t('graph.loadSubgraphFailed')}: ${escapeHtml(fallbackErr.message)}`);
       }
     }
   }
@@ -684,7 +880,7 @@
     }
 
     const hasEpisodeEdge = (growthOutline?.edges || [])
-      .find(edge => edge.edge_type === 'HAS_EPISODE' && edge.target_version_id === episode.version_id);
+      .find(edge => edge.edge_type === 'HAS_EPISODE' && edge.episode_version_id === episode.version_id);
     if (hasEpisodeEdge && !next.edges.some(edge => (edge.edge_id || edge.id) === (hasEpisodeEdge.edge_id || hasEpisodeEdge.id))) {
       next.edges.push(hasEpisodeEdge);
     }
@@ -702,9 +898,9 @@
     const edgeById = new Map(targetVis.edges.map(edge => [edge.id, edge]));
     const episodeNodeId = `episode:${episode.version_id}`;
     const hasEpisodeEdgeId = hasEpisodeEdge?.edge_id || hasEpisodeEdge?.id;
-    const conceptFamilyIds = next.concepts
+    const conceptFamilyIds = [...new Set(next.concepts
       .filter(concept => concept.role !== 'relation')
-      .map(concept => concept.family_id);
+      .map(concept => concept.family_id))];
     const mentionEdges = next.edges
       .filter(edge => edge.edge_type === 'MENTIONS')
       .map(edge => edge.edge_id || edge.id);
@@ -720,37 +916,61 @@
     await waitGrowth(controller);
     addVisualNode(nodeById.get(episodeNodeId));
     growthLoaded.episodes = Math.max(growthLoaded.episodes, graphData.episodes.length);
-    updateSummary(targetVisible);
+    requestSummaryUpdate(targetVisible);
     network.setOptions({ physics: { enabled: true } });
     if (hasEpisodeEdgeId) addVisualEdge(edgeById.get(hasEpisodeEdgeId));
     await sleep(220);
 
-    for (const familyId of conceptFamilyIds) {
+    for (let i = 0; i < conceptFamilyIds.length; i += growthBatchSize('concept')) {
       await waitGrowth(controller);
-      const nodeId = `concept:${familyId}`;
-      const added = addVisualNode(nodeById.get(nodeId));
-      mentionEdges
-        .map(id => edgeById.get(id))
-        .filter(edge => edge && edge.to === nodeId)
-        .forEach(edge => addVisualEdge(edge));
-      if (added) growthLoaded.concepts += 1;
-      updateSummary(targetVisible);
-      await sleep(1000 / growthRatePerSecond);
+      const familyBatch = conceptFamilyIds.slice(i, i + growthBatchSize('concept'));
+      const nodeBatch = [];
+      const edgeBatch = [];
+      familyBatch.forEach(familyId => {
+        const nodeId = `concept:${familyId}`;
+        const node = nodeById.get(nodeId);
+        if (node) nodeBatch.push(node);
+        mentionEdges
+          .map(id => edgeById.get(id))
+          .filter(edge => edge && edge.to === nodeId)
+          .forEach(edge => edgeBatch.push(edge));
+      });
+      growthLoaded.concepts += addVisualNodes(nodeBatch);
+      addVisualEdges(edgeBatch);
+      requestSummaryUpdate(targetVisible);
+      await nextGrowthFrame('concept');
     }
 
-    for (const edgeId of relationEdges) {
+    for (let i = 0; i < relationEdges.length; i += growthBatchSize('relation')) {
       await waitGrowth(controller);
-      const edge = edgeById.get(edgeId);
-      if (!edge) continue;
-      if (!nodesDataSet.get(edge.from) || !nodesDataSet.get(edge.to)) continue;
-      if (addVisualEdge(edge)) growthLoaded.relations += 1;
-      updateSummary(targetVisible);
-      await sleep(1000 / growthRatePerSecond);
+      const batch = relationEdges
+        .slice(i, i + growthBatchSize('relation'))
+        .map(edgeId => edgeById.get(edgeId))
+        .filter(edge => edge && nodesDataSet.get(edge.from) && nodesDataSet.get(edge.to));
+      growthLoaded.relations += addVisualEdges(batch);
+      requestSummaryUpdate(targetVisible);
+      await nextGrowthFrame('relation');
     }
 
     growthLoaded.edges = edgesDataSet.getIds().length;
     updateSummary(targetVisible);
     scheduleNaturalFit(180);
+  }
+
+  function nextGrowthFrame(kind) {
+    const batch = growthBatchSize(kind);
+    const visualRate = batch / Math.max(1, growthRatePerSecond);
+    return sleep(Math.max(16, Math.round(visualRate * 1000)));
+  }
+
+  function requestSummaryUpdate(visible) {
+    pendingSummaryVisible = visible;
+    if (summaryUpdateTimer) return;
+    summaryUpdateTimer = setTimeout(() => {
+      summaryUpdateTimer = null;
+      updateSummary(pendingSummaryVisible || (graphModel ? visibleModelForStep(-1) : null));
+      pendingSummaryVisible = null;
+    }, hasActiveGrowth() ? 180 : 80);
   }
 
   async function waitGrowth(controller) {
@@ -785,6 +1005,60 @@
     return true;
   }
 
+  function addVisualNodes(nodesWithMeta) {
+    if (!nodesWithMeta?.length || !nodesDataSet) return 0;
+    const toAdd = [];
+    const toUpdate = [];
+    const seen = new Set();
+    let added = 0;
+    nodesWithMeta.forEach(nodeWithMeta => {
+      if (!nodeWithMeta || seen.has(nodeWithMeta.id)) return;
+      seen.add(nodeWithMeta.id);
+      nodeMetaById.set(nodeWithMeta.id, nodeWithMeta._meta);
+      const existing = nodesDataSet.get(nodeWithMeta.id);
+      if (existing) {
+        // Re-appear in a later episode → promote to multi-version gold style
+        toUpdate.push({ ...existing, borderWidth: 3, label: nodeWithMeta.label,
+          color: { background: existing.color?.background, border: '#fbbf24',
+                   highlight: { background: existing.color?.background, border: '#fde68a' },
+                   hover: { background: existing.color?.background, border: '#fde68a' } },
+          shadow: { enabled: true, color: 'rgba(251,191,36,0.45)', size: 12, x: 0, y: 0 } });
+      } else {
+        const { _meta, ...node } = nodeWithMeta;
+        toAdd.push(node);
+        added += 1;
+      }
+    });
+    if (toAdd.length) nodesDataSet.add(toAdd);
+    if (toUpdate.length) nodesDataSet.update(toUpdate);
+    if (toAdd.length || toUpdate.length) {
+      network?.setOptions({ physics: { enabled: true } });
+      scheduleNaturalFit(180);
+    }
+    return added;
+  }
+
+  function addVisualEdges(edgesWithMeta) {
+    if (!edgesWithMeta?.length || !edgesDataSet || !nodesDataSet) return 0;
+    const edges = [];
+    const seen = new Set();
+    let added = 0;
+    edgesWithMeta.forEach(edgeWithMeta => {
+      if (!edgeWithMeta || edgesDataSet.get(edgeWithMeta.id) || seen.has(edgeWithMeta.id)) return;
+      seen.add(edgeWithMeta.id);
+      if (!nodesDataSet.get(edgeWithMeta.from) || !nodesDataSet.get(edgeWithMeta.to)) return;
+      edgeMetaById.set(edgeWithMeta.id, edgeWithMeta._meta);
+      const { _meta, ...edge } = edgeWithMeta;
+      edges.push(edge);
+      added += 1;
+    });
+    if (!edges.length) return 0;
+    edgesDataSet.add(edges);
+    network?.setOptions({ physics: { enabled: true } });
+    scheduleNaturalFit(220);
+    return added;
+  }
+
   function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
@@ -808,6 +1082,7 @@
     };
 
     (data.concepts || []).forEach(c => {
+      if (model.conceptByFamily.has(c.family_id)) return;
       model.conceptByFamily.set(c.family_id, c);
       if (c.role === 'relation') model.relations.push(c);
       else model.entities.push(c);
@@ -886,7 +1161,7 @@
 
   function drawGraph(step, options = {}) {
     if (!graphModel || !graphModel.documents.length) {
-      clearGraphCanvas('所选文档没有可展示的子图');
+      clearGraphCanvas(t('graph.noSubgraphToShow'));
       return;
     }
     const canvas = document.getElementById('document-graph-canvas');
@@ -928,7 +1203,7 @@
 
   function updateGraphStep(step, options = {}) {
     if (!graphModel || !graphModel.documents.length) {
-      clearGraphCanvas('所选文档没有可展示的子图');
+      clearGraphCanvas(t('graph.noSubgraphToShow'));
       return;
     }
     if (!network || !nodesDataSet || !edgesDataSet) {
@@ -967,6 +1242,12 @@
   }
 
   function syncDataSet(dataSet, items, options = {}) {
+    const uniqueItems = [];
+    const seenIds = new Set();
+    items.forEach(item => {
+      if (!seenIds.has(item.id)) { seenIds.add(item.id); uniqueItems.push(item); }
+    });
+    items = uniqueItems;
     const nextIds = new Set(items.map(item => item.id));
     const existingIds = new Set(dataSet.getIds());
     const add = [];
@@ -1166,6 +1447,7 @@
   }
 
   function buildVisData(visible) {
+    const perf = graphPerfStats(visible);
     const relationCount = {};
     visible.relationEdges.forEach(e => {
       relationCount[e.from] = (relationCount[e.from] || 0) + 1;
@@ -1197,6 +1479,8 @@
         fixed: true,
         meta: { type: 'document', item: doc },
         title: docPath(doc),
+        degree: 999,
+        perf,
       }));
     });
 
@@ -1214,13 +1498,15 @@
         nodes.push(makeBubbleNode({
           id: `episode:${ep.version_id}`,
           role: 'episode',
-          label: ep.heading_path || ep.name || `Episode ${idx + 1}`,
+          label: ep.heading_path || `#${ep.chunk_index ?? idx} ${ep.start_offset != null ? `(${ep.start_offset}-${ep.end_offset ?? ''})` : ''}`.trim() || ep.name || `Episode ${idx + 1}`,
           size: 18,
           x: pos.x,
           y: pos.y,
           fixed: true,
           meta: { type: 'episode', item: ep },
           title: normalizeText(ep.content, 180),
+          degree: eps.length > 90 ? 0 : 3,
+          perf,
         }));
       });
     });
@@ -1270,11 +1556,14 @@
         versionTotal,
         meta: { type: 'entity', item: c },
         title: normalizeText(c.content || c.summary, 180),
+        degree: relationCount[id] || 0,
+        perf,
       }));
     });
 
     const edges = [];
     visible.sourceEdges.forEach(e => {
+      if (e.edge_type === 'MENTIONS' && !showSourceEdges && (perf.large || perf.growing)) return;
       const style = sourceEdgeStyle(e.edge_type);
       edges.push({
         id: e.id,
@@ -1284,28 +1573,31 @@
         color: style.color,
         dashes: style.dashes,
         width: style.width,
+        physics: false,
         arrows: { to: { enabled: false } },
-        smooth: { enabled: true, type: 'continuous', roundness: 0.12 },
+        smooth: perf.large ? false : { enabled: true, type: 'continuous', roundness: 0.12 },
         _meta: { type: 'source_edge', item: e },
       });
     });
     visible.relationEdges.forEach(e => {
       const rel = e.relation;
       const title = conceptTitle(rel);
+      const showRelationText = shouldShowRelationLabel(perf, e);
       edges.push({
         id: e.id,
         from: e.from,
         to: e.to,
-        label: showLabels ? truncate(title, 34) : '',
+        label: showRelationText ? truncate(title, 34) : '',
         color: {
           color: ROLE_COLORS.relation.bg,
           highlight: ROLE_COLORS.relation.border,
           hover: ROLE_COLORS.relation.border,
         },
         width: e.parallel_count > 1 ? 1.8 : 2.2,
+        physics: true,
         dashes: false,
         arrows: { to: { enabled: false } },
-        smooth: e.smooth,
+        smooth: (perf.large || perf.growing) ? false : e.smooth,
         font: {
           size: 10,
           color: mutedColor(),
@@ -1314,7 +1606,7 @@
           align: 'middle',
         },
         shadow: {
-          enabled: true,
+          enabled: !perf.large,
           color: ROLE_COLORS.relation.glow,
           size: 6,
           x: 0,
@@ -1326,13 +1618,15 @@
     return { nodes, edges };
   }
 
-  function makeBubbleNode({ id, role, label, size, x, y, fixed, versionTotal, meta, title }) {
+  function makeBubbleNode({ id, role, label, size, x, y, fixed, versionTotal, meta, title, degree, perf }) {
     const colors = ROLE_COLORS[role] || ROLE_COLORS.entity;
     const multi = versionTotal > 1;
     const saved = pinnedPositions[id];
+    const labelVisible = shouldShowNodeLabel(role, label, degree || 0, versionTotal || 1, perf || graphPerfStats());
+    const shadowEnabled = role === 'document' || (multi && !perf?.huge) || (!(perf?.large) && !(perf?.growing));
     return {
       id,
-      label: showLabels ? truncate(label || id, role === 'document' ? 28 : 24) + (multi ? ` [v${versionTotal}]` : '') : '',
+      label: labelVisible ? truncate(label || id, role === 'document' ? 28 : 24) + (multi ? ` [v${versionTotal}]` : '') : '',
       shape: 'dot',
       size,
       x: saved ? saved.x : x,
@@ -1347,7 +1641,7 @@
       borderWidth: multi ? 3 : (role === 'document' ? 2.5 : 1.5),
       borderWidthSelected: 4,
       shadow: {
-        enabled: true,
+        enabled: shadowEnabled,
         color: multi ? 'rgba(251,191,36,0.45)' : colors.glow,
         size: multi ? Math.min(18, 7 + versionTotal) : 8,
         x: 0,
@@ -1391,7 +1685,7 @@
     if (!network) return;
     if (naturalFitTimer) return;
     const now = Date.now();
-    const minGap = hasActiveGrowth() ? 850 : 1300;
+    const minGap = hasActiveGrowth() ? 2200 : 1300;
     const waitForGap = Math.max(0, minGap - (now - lastNaturalFitAt));
     const wait = Math.max(delayMs, waitForGap);
     naturalFitTimer = setTimeout(() => {
@@ -1399,7 +1693,7 @@
       if (!network) return;
       lastNaturalFitAt = Date.now();
       network.setOptions({ physics: { enabled: true } });
-      network.fit({ animation: { duration: hasActiveGrowth() ? 380 : 520, easingFunction: 'easeInOutQuad' } });
+      network.fit({ animation: { duration: hasActiveGrowth() ? 320 : 520, easingFunction: 'easeInOutQuad' } });
     }, wait);
   }
 
@@ -1445,10 +1739,11 @@
     };
     const large = nodeCount > 2500 || options.progressive;
     const huge = nodeCount > 7000;
+    const solver = huge || large ? 'barnesHut' : 'forceAtlas2Based';
     const physics = {
       ...basePhysics,
       enabled: true,
-      solver: 'forceAtlas2Based',
+      solver,
       forceAtlas2Based: {
         ...(basePhysics.forceAtlas2Based || {}),
         gravitationalConstant: huge ? -260 : large ? -210 : -160,
@@ -1456,7 +1751,15 @@
         springLength: huge ? 190 : large ? 175 : 155,
         springConstant: huge ? 0.022 : large ? 0.028 : 0.036,
         damping: 0.68,
-        avoidOverlap: 1,
+        avoidOverlap: large ? 0.15 : 0.65,
+      },
+      barnesHut: {
+        gravitationalConstant: huge ? -2400 : -1800,
+        centralGravity: huge ? 0.012 : 0.018,
+        springLength: huge ? 170 : 150,
+        springConstant: huge ? 0.012 : 0.018,
+        damping: 0.48,
+        avoidOverlap: huge ? 0.05 : 0.12,
       },
       timestep: huge ? 0.38 : 0.48,
       minVelocity: huge ? 0.45 : 0.3,
@@ -1501,6 +1804,8 @@
     network.on('dragStart', params => {
       hideHover();
       if (!params.nodes?.length) return;
+      dragStartPositions = network.getPositions(nodesDataSet.getIds());
+      lastDragPositions = network.getPositions(params.nodes);
       params.nodes.forEach(id => nodesDataSet.update({ id, fixed: false }));
       network.setOptions({ physics: { enabled: true } });
     });
@@ -1512,11 +1817,42 @@
         pinnedPositions[id] = { x: pos[id].x, y: pos[id].y };
         nodesDataSet.update({ id, x: pos[id].x, y: pos[id].y, fixed: { x: true, y: true } });
       });
+      dragStartPositions = null;
+      lastDragPositions = null;
       network.setOptions({ physics: { enabled: true } });
       scheduleNaturalFit(280);
     });
     network.on('zoom', () => updateHoverPosition(canvas));
-    network.on('dragging', () => updateHoverPosition(canvas));
+    network.on('dragging', params => {
+      if (params.nodes?.length && lastDragPositions) {
+        const pos = network.getPositions(params.nodes);
+        params.nodes.forEach(id => {
+          if (!String(id).startsWith('doc:') || !pos[id] || !lastDragPositions[id]) return;
+          const dx = pos[id].x - lastDragPositions[id].x;
+          const dy = pos[id].y - lastDragPositions[id].y;
+          moveDocumentEpisodesWithDoc(id, dx, dy, { fixed: false });
+          lastDragPositions[id] = { x: pos[id].x, y: pos[id].y };
+        });
+      }
+      updateHoverPosition(canvas);
+    });
+  }
+
+  function moveDocumentEpisodesWithDoc(docNodeId, dx, dy, options = {}) {
+    if (!nodesDataSet || !graphModel || (!dx && !dy)) return;
+    const docVersionId = String(docNodeId).slice('doc:'.length);
+    const episodeIds = graphModel.episodes
+      .filter(ep => ep.document_version_id === docVersionId)
+      .map(ep => `episode:${ep.version_id}`);
+    const current = network.getPositions(episodeIds);
+    const updates = [];
+    episodeIds.forEach(id => {
+      const p = current[id];
+      if (!p) return;
+      const fixed = options.fixed === false ? { x: false, y: false } : { x: true, y: true };
+      updates.push({ id, x: p.x + dx, y: p.y + dy, fixed });
+    });
+    if (updates.length) nodesDataSet.update(updates);
   }
 
   function ensureHover(canvas) {
@@ -1629,17 +1965,16 @@
       if (subtitle) subtitle.textContent = `relation:${meta.item.family_id}`;
       detail.innerHTML = renderRelationDetail(meta.item);
       bindDetailActions(detail, meta);
-      loadConceptVersions(meta.item.family_id);
       return;
     }
     if (subtitle) subtitle.textContent = id;
     const edgeEvidence = renderEvidenceList(meta.item?.provenance?.evidence || []);
     detail.innerHTML = `
       <h3 style="font-size:1.05rem;font-weight:700;margin-bottom:0.75rem;">Edge</h3>
-      ${field('类型', escapeHtml(meta.item.edge_type || 'edge'))}
+      ${field(t('graph.edgeType'), escapeHtml(meta.item.edge_type || 'edge'))}
       ${field('From', `<span class="mono">${escapeHtml(meta.item.from || '')}</span>`)}
       ${field('To', `<span class="mono">${escapeHtml(meta.item.to || '')}</span>`)}
-      ${edgeEvidence ? `<div class="graph-detail-section"><div style="font-weight:600;margin-bottom:0.35rem;">原文证据</div>${edgeEvidence}</div>` : ''}
+      ${edgeEvidence ? `<div class="graph-detail-section"><div style="font-weight:600;margin-bottom:0.35rem;">${t('graph.rawEvidence')}</div>${edgeEvidence}</div>` : ''}
     `;
   }
 
@@ -1647,14 +1982,14 @@
     return `
       ${kindBadge('Document', ROLE_COLORS.document)}
       <h3 style="font-size:1.05rem;font-weight:700;margin-bottom:0.75rem;overflow-wrap:anywhere;">${escapeHtml(doc.title || docTitle(doc))}</h3>
-      ${field('版本', `<span class="mono">${escapeHtml(doc.document_version_id || doc.version_id || '')}</span>`)}
+      ${field(t('graph.version'), `<span class="mono">${escapeHtml(doc.document_version_id || doc.version_id || '')}</span>`)}
       ${field('Family', `<span class="mono">${escapeHtml(doc.family_id || '')}</span>`)}
-      ${field('路径', escapeHtml(docPath(doc) || '-'))}
+      ${field(t('graph.path'), escapeHtml(docPath(doc) || '-'))}
       ${field('Hash', `<span class="mono">${escapeHtml(doc.content_hash || '')}</span>`)}
-      ${field('大小', `${Number(doc.size || 0).toLocaleString()} B`)}
-      ${field('入库时间', formatDateMs(doc.processed_time))}
+      ${field(t('graph.size'), `${Number(doc.size || 0).toLocaleString()} B`)}
+      ${field(t('graph.importedAt'), formatDateMs(doc.processed_time))}
       <div class="graph-detail-actions">
-        <button class="btn btn-secondary btn-sm" data-graph-action="more-document">更多详情</button>
+        <button class="btn btn-secondary btn-sm" data-graph-action="more-document">${t('graph.moreDetails')}</button>
       </div>
     `;
   }
@@ -1662,83 +1997,74 @@
   function renderEpisodeDetail(ep) {
     const concepts = (graphData.edges || []).filter(e => e.episode_version_id === ep.version_id && ['MENTIONS', 'ASSERTS'].includes(e.edge_type)).length;
     const original = episodeOriginalText(ep);
+    const thinking = ep.memory_text || '';
     return `
       ${kindBadge('Episode', ROLE_COLORS.episode)}
-      <h3 style="font-size:1.05rem;font-weight:700;margin-bottom:0.75rem;">${escapeHtml(ep.heading_path || ep.name || 'Episode')}</h3>
-      ${field('版本', `<span class="mono">${escapeHtml(ep.version_id || '')}</span>`)}
-      ${field('文档版本', `<span class="mono">${escapeHtml(ep.document_version_id || '')}</span>`)}
+      <h3 style="font-size:1.05rem;font-weight:700;margin-bottom:0.75rem;">${escapeHtml(ep.heading_path || `#${ep.chunk_index ?? '?'} ${ep.start_offset != null ? '(' + ep.start_offset + '-' + (ep.end_offset ?? '') + ')' : ''}`.trim() || ep.name || 'Episode')}</h3>
+      ${field(t('graph.version'), `<span class="mono">${escapeHtml(ep.version_id || '')}</span>`)}
+      ${field(t('graph.docVersion'), `<span class="mono">${escapeHtml(ep.document_version_id || '')}</span>`)}
       ${field('Offset', `${ep.start_offset ?? '-'} - ${ep.end_offset ?? '-'}`)}
-      ${field('概念数', String(concepts))}
+      ${field(t('graph.conceptCount'), String(concepts))}
       <div class="graph-detail-section">
         <div class="graph-tabbar" data-episode-tabs style="display:flex;gap:0.4rem;margin-bottom:0.5rem;">
-          <button class="btn btn-secondary btn-sm active" data-episode-tab="thinking">思考内容</button>
-          <button class="btn btn-secondary btn-sm" data-episode-tab="source">原文切片</button>
+          <button class="btn btn-secondary btn-sm active" data-episode-tab="thinking">${t('graph.thinkingContent')}</button>
+          <button class="btn btn-secondary btn-sm" data-episode-tab="source">${t('graph.sourceSlice')}</button>
         </div>
-        <div class="md-content graph-episode-pane" data-episode-pane="thinking" style="max-height:280px;overflow:auto;background:var(--bg-secondary);padding:0.75rem;border-radius:0.5rem;font-size:0.8rem;line-height:1.55;">${renderMarkdown(ep.content || '')}</div>
+        <div class="md-content graph-episode-pane" data-episode-pane="thinking" style="max-height:280px;overflow:auto;background:var(--bg-secondary);padding:0.75rem;border-radius:0.5rem;font-size:0.8rem;line-height:1.55;">${renderMarkdown(thinking || (ep.content || ''))}</div>
         <div class="md-content graph-episode-pane" data-episode-pane="source" style="display:none;max-height:280px;overflow:auto;background:var(--bg-secondary);padding:0.75rem;border-radius:0.5rem;font-size:0.8rem;line-height:1.55;">${renderMarkdown(original || '')}</div>
       </div>
       <div class="graph-detail-actions">
-        <button class="btn btn-secondary btn-sm" data-graph-action="more-episode">更多详情</button>
+        <button class="btn btn-secondary btn-sm" data-graph-action="more-episode">${t('graph.moreDetails')}</button>
       </div>
     `;
   }
 
   function renderConceptDetail(concept) {
-    const versionInfo = graphModel.versions?.[concept.family_id];
-    const evidenceHtml = renderEvidenceList(mentionEvidenceForConcept(concept.family_id));
+    const options = conceptDetailOptions(concept, {
+      inlineVersionSwitcher: (graphModel.versions?.[concept.family_id]?.total || 0) > 1,
+      moreButton: true,
+      focusButton: true,
+      exitFocusButton: !!focusFamilyId,
+    });
     return `
-      ${kindBadge('Entity', ROLE_COLORS.entity)}
       <h3 style="font-size:1.05rem;font-weight:700;margin-bottom:0.75rem;overflow-wrap:anywhere;">${escapeHtml(conceptTitle(concept) || 'Concept')}</h3>
-      ${versionInfo?.total > 1 ? `<div style="margin-bottom:0.55rem;">${pill(`${versionInfo.total} versions`, '#f59e0b')}</div>` : ''}
-      ${field('Family', `<span class="mono">${escapeHtml(concept.family_id || '')}</span>`)}
-      ${field('版本', `<span class="mono">${escapeHtml(concept.version_id || '')}</span>`)}
-      ${field('置信度', concept.confidence == null ? '-' : String(concept.confidence))}
-      ${field('来源', escapeHtml(concept.source_document || '-'))}
-      ${field('时间', formatDateMs(concept.processed_time))}
-      ${versionInfo?.total > 1 ? `<div class="graph-detail-section" data-version-switcher="${escapeAttr(concept.family_id)}">${spinnerHtml('spinner-sm')} 加载版本切换器...</div>` : ''}
-      <div class="graph-detail-section">
-        <div style="font-weight:600;margin-bottom:0.35rem;">内容</div>
-        <div class="md-content" data-concept-version-content style="max-height:220px;overflow:auto;background:var(--bg-secondary);padding:0.75rem;border-radius:0.5rem;font-size:0.8rem;line-height:1.55;">${renderMarkdown(concept.content || concept.summary || '')}</div>
-      </div>
-      <div class="graph-detail-section" data-concept-version-evidence style="${evidenceHtml ? '' : 'display:none;'}"><div style="font-weight:600;margin-bottom:0.35rem;">原文句子</div>${evidenceHtml}</div>
-      <div class="graph-detail-actions">
-        <button class="btn btn-secondary btn-sm" data-graph-action="more-concept">更多详情</button>
-        <button class="btn btn-primary btn-sm" data-graph-action="versions">版本历史</button>
-        <button class="btn btn-secondary btn-sm" data-graph-action="focus-concept">聚焦模式</button>
-        ${focusFamilyId ? '<button class="btn btn-secondary btn-sm" data-graph-action="exit-focus">退出聚焦</button>' : ''}
-      </div>
+      ${window.ConceptDetail.renderConceptBody(concept, options)}
     `;
   }
 
   function renderRelationDetail(rel) {
-    const endpoints = relationEndpoints(rel, graphData);
-    const endpointNames = endpoints.map(fid => conceptTitle(graphModel.conceptByFamily.get(fid) || { family_id: fid }));
-    const versionInfo = graphModel.versions?.[rel.family_id];
+    const options = conceptDetailOptions(rel, {
+      inlineVersionSwitcher: (graphModel.versions?.[rel.family_id]?.total || 0) > 1,
+      moreButton: true,
+      focusButton: true,
+      exitFocusButton: !!focusFamilyId,
+    });
     return `
-      ${kindBadge('Relation', ROLE_COLORS.relation)}
       <h3 style="font-size:1.05rem;font-weight:700;margin-bottom:0.75rem;overflow-wrap:anywhere;">${escapeHtml(conceptTitle(rel) || 'Relation')}</h3>
-      ${versionInfo?.total > 1 ? `<div style="margin-bottom:0.55rem;">${pill(`${versionInfo.total} versions`, '#f59e0b')}</div>` : ''}
-      ${field('Family', `<span class="mono">${escapeHtml(rel.family_id || '')}</span>`)}
-      ${field('版本', `<span class="mono">${escapeHtml(rel.version_id || '')}</span>`)}
-      ${field('连接', endpointNames.map(x => escapeHtml(x)).join(' ↔ '))}
-      ${field('来源', escapeHtml(rel.source_document || '-'))}
-      ${field('时间', formatDateMs(rel.processed_time))}
-      ${versionInfo?.total > 1 ? `<div class="graph-detail-section" data-version-switcher="${escapeAttr(rel.family_id)}">${spinnerHtml('spinner-sm')} 加载版本切换器...</div>` : ''}
-      <div class="graph-detail-section">
-        <div style="font-weight:600;margin-bottom:0.35rem;">内容</div>
-        <div class="md-content" data-concept-version-content style="max-height:220px;overflow:auto;background:var(--bg-secondary);padding:0.75rem;border-radius:0.5rem;font-size:0.8rem;line-height:1.55;">${renderMarkdown(rel.content || rel.summary || '')}</div>
-      </div>
-      <div class="graph-detail-actions">
-        <button class="btn btn-secondary btn-sm" data-graph-action="more-relation">更多详情</button>
-        <button class="btn btn-primary btn-sm" data-graph-action="versions">版本历史</button>
-        <button class="btn btn-secondary btn-sm" data-graph-action="focus-concept">聚焦模式</button>
-        ${focusFamilyId ? '<button class="btn btn-secondary btn-sm" data-graph-action="exit-focus">退出聚焦</button>' : ''}
-      </div>
-      <div class="graph-detail-section">
-        <div style="font-weight:600;margin-bottom:0.5rem;">版本历史</div>
-        <div id="graph-version-list">${spinnerHtml()} 加载版本...</div>
-      </div>
+      ${window.ConceptDetail.renderConceptBody(rel, options)}
     `;
+  }
+
+  function conceptDetailOptions(concept, extra) {
+    const endpoints = concept.role === 'relation' ? relationEndpoints(concept, graphData) : [];
+    const endpointNames = endpoints.map(fid => conceptTitle(graphModel.conceptByFamily.get(fid) || { family_id: fid }));
+    const provenance = (graphData.edges || []).filter(e =>
+      e.target_family_id === concept.family_id || e.relation_family_id === concept.family_id || e.source_family_id === concept.family_id
+    );
+    return {
+      api: state.api,
+      graphId: state.currentGraphId,
+      versionCount: graphModel.versions?.[concept.family_id]?.total || 1,
+      evidence: concept.role === 'relation' ? [] : mentionEvidenceForConcept(concept.family_id),
+      evidenceForVersion: versionId => mentionEvidenceForConcept(concept.family_id, 6, versionId),
+      endpointLabel1: endpointNames[0],
+      endpointLabel2: endpointNames[1],
+      resolveConceptLabel: async (familyId) => conceptTitle(graphModel.conceptByFamily.get(familyId) || { family_id: familyId }),
+      provenance,
+      onFocus: familyId => focusConcept(familyId),
+      onExitFocus: () => focusConcept(null),
+      ...extra,
+    };
   }
 
   function episodeOriginalText(ep) {
@@ -1769,69 +2095,6 @@
         root.querySelectorAll('[data-episode-pane]').forEach(pane => {
           pane.style.display = pane.getAttribute('data-episode-pane') === target ? '' : 'none';
         });
-      });
-    });
-  }
-
-  function renderVersionSwitcher(versions, currentVersionId) {
-    if (!versions?.length) return '';
-    const sorted = versions.slice().sort(compareVersionTime);
-    const currentIdx = Math.max(0, sorted.findIndex(v => v.version_id === currentVersionId));
-    return `
-      <div style="display:flex;gap:0.4rem;align-items:center;flex-wrap:wrap;">
-        <button class="btn btn-secondary btn-sm" data-version-nav="-1" ${currentIdx <= 0 ? 'disabled' : ''}>上一版</button>
-        <select class="input" data-version-select style="flex:1;min-width:160px;height:34px;">
-          ${sorted.map((v, idx) => `<option value="${escapeAttr(v.version_id)}" ${idx === currentIdx ? 'selected' : ''}>v${v.version_seq || idx + 1} · ${escapeHtml(formatDateMs(v.processed_time))}</option>`).join('')}
-        </select>
-        <button class="btn btn-secondary btn-sm" data-version-nav="1" ${currentIdx >= sorted.length - 1 ? 'disabled' : ''}>下一版</button>
-      </div>
-    `;
-  }
-
-  async function loadInlineVersionSwitcher(detail, concept) {
-    const box = detail.querySelector('[data-version-switcher]');
-    if (!box || !concept?.family_id) return;
-    try {
-      const res = await state.api.entityVersions(concept.family_id, state.currentGraphId);
-      const versions = res.data?.versions || [];
-      box.innerHTML = renderVersionSwitcher(versions, concept.version_id);
-      const select = box.querySelector('[data-version-select]');
-      const applyVersion = (versionId) => {
-        const selected = versions.find(v => v.version_id === versionId) || concept;
-        const content = detail.querySelector('[data-concept-version-content]');
-        if (content) content.innerHTML = renderMarkdown(selected.content || selected.summary || selected.name || '');
-        const evidenceBox = detail.querySelector('[data-concept-version-evidence]');
-        if (evidenceBox) {
-          const evidenceHtml = renderEvidenceList(mentionEvidenceForConcept(concept.family_id, 6, selected.version_id));
-          evidenceBox.style.display = evidenceHtml ? '' : 'none';
-          evidenceBox.innerHTML = `<div style="font-weight:600;margin-bottom:0.35rem;">原文句子</div>${evidenceHtml}`;
-        }
-        box.innerHTML = renderVersionSwitcher(versions, selected.version_id);
-        bindInlineVersionSwitcher(detail, concept, versions, applyVersion);
-      };
-      bindInlineVersionSwitcher(detail, concept, versions, applyVersion);
-    } catch (err) {
-      box.innerHTML = `<span style="color:var(--danger);">版本加载失败: ${escapeHtml(err.message)}</span>`;
-    }
-  }
-
-  function bindInlineVersionSwitcher(detail, concept, versions, applyVersionFn) {
-    const box = detail.querySelector('[data-version-switcher]');
-    if (!box) return;
-    const applyVersion = applyVersionFn || ((versionId) => {
-      const selected = versions.find(v => v.version_id === versionId);
-      if (!selected) return;
-      const content = detail.querySelector('[data-concept-version-content]');
-      if (content) content.innerHTML = renderMarkdown(selected.content || selected.summary || selected.name || '');
-    });
-    const select = box.querySelector('[data-version-select]');
-    if (select) select.addEventListener('change', () => applyVersion(select.value));
-    box.querySelectorAll('[data-version-nav]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const current = box.querySelector('[data-version-select]');
-        const idx = versions.findIndex(v => v.version_id === current?.value);
-        const next = versions[Math.max(0, Math.min(versions.length - 1, idx + Number(btn.getAttribute('data-version-nav') || 0)))];
-        if (next) applyVersion(next.version_id);
       });
     });
   }
@@ -1877,7 +2140,13 @@
   function bindDetailActions(detail, meta) {
     bindEpisodeTabs(detail);
     if (meta.type === 'entity' || meta.type === 'relation') {
-      loadInlineVersionSwitcher(detail, meta.item);
+      window.ConceptDetail.bindPanel(detail, meta.item, conceptDetailOptions(meta.item, {
+        inlineVersionSwitcher: (graphModel.versions?.[meta.item.family_id]?.total || 0) > 1,
+        moreButton: true,
+        focusButton: true,
+        exitFocusButton: !!focusFamilyId,
+      }));
+      return;
     }
     detail.querySelector('[data-graph-action="more-document"]')?.addEventListener('click', () => openDocumentModal(meta.item));
     detail.querySelector('[data-graph-action="more-episode"]')?.addEventListener('click', () => openEpisodeModal(meta.item));
@@ -1903,12 +2172,12 @@
         </div>
         <div class="graph-detail-section">
           <div style="display:flex;align-items:center;justify-content:space-between;gap:0.75rem;margin-bottom:0.5rem;">
-            <div style="font-weight:600;">Markdown 原文</div>
+            <div style="font-weight:600;">${t('graph.markdownSource')}</div>
             <span id="graph-doc-content-status" class="mono" style="font-size:0.72rem;color:var(--text-muted);"></span>
           </div>
-          <div id="graph-doc-content" class="graph-document-source">${spinnerHtml()} 加载文档正文...</div>
+          <div id="graph-doc-content" class="graph-document-source">${spinnerHtml()} ${t('graph.loadingDocContent')}</div>
           <div style="display:flex;justify-content:center;margin-top:0.65rem;">
-            <button id="graph-doc-load-more" class="btn btn-secondary btn-sm" style="display:none;">加载更多</button>
+            <button id="graph-doc-load-more" class="btn btn-secondary btn-sm" style="display:none;">${t('graph.loadMore')}</button>
           </div>
         </div>
       `,
@@ -1921,7 +2190,7 @@
     const status = modal.overlay.querySelector('#graph-doc-content-status');
     const more = modal.overlay.querySelector('#graph-doc-load-more');
     if (!body || !doc.document_version_id) return;
-    if (!append) body.innerHTML = `${spinnerHtml()} 加载文档正文...`;
+    if (!append) body.innerHTML = `${spinnerHtml()} ${t('graph.loadingDocContent')}`;
     if (more) more.style.display = 'none';
     try {
       const res = await state.api.documentContent(doc.document_version_id, state.currentGraphId, {
@@ -1931,7 +2200,7 @@
       const data = res.data || {};
       const chunk = escapeHtml(data.content || '');
       if (append) body.innerHTML += chunk;
-      else body.innerHTML = chunk || '<span style="color:var(--text-muted);">空文档</span>';
+      else body.innerHTML = chunk || `<span style="color:var(--text-muted);">${t('graph.emptyDoc')}</span>`;
       if (status) {
         const shown = Math.min(Number(data.next_offset || data.total_chars || 0), Number(data.total_chars || 0));
         status.textContent = `${shown.toLocaleString()} / ${Number(data.total_chars || 0).toLocaleString()} chars`;
@@ -1941,7 +2210,7 @@
         more.onclick = () => loadDocumentContent(modal, doc, data.next_offset, true);
       }
     } catch (err) {
-      body.innerHTML = `<div style="color:var(--danger);">加载文档正文失败: ${escapeHtml(err.message)}</div>`;
+      body.innerHTML = `<div style="color:var(--danger);">${t('graph.loadDocContentFailed')}: ${escapeHtml(err.message)}</div>`;
     }
   }
 
@@ -1959,8 +2228,8 @@
         </div>
         <div class="graph-detail-section">
           <div class="graph-tabbar" data-episode-tabs style="display:flex;gap:0.4rem;margin-bottom:0.5rem;">
-            <button class="btn btn-secondary btn-sm active" data-episode-tab="thinking">思考内容</button>
-            <button class="btn btn-secondary btn-sm" data-episode-tab="source">原文切片</button>
+            <button class="btn btn-secondary btn-sm active" data-episode-tab="thinking">${t('graph.thinkingContent')}</button>
+            <button class="btn btn-secondary btn-sm" data-episode-tab="source">${t('graph.sourceSlice')}</button>
           </div>
           <div class="graph-episode-pane md-content" data-episode-pane="thinking">${renderMarkdown(ep.content || '')}</div>
           <div class="graph-episode-pane md-content" data-episode-pane="source" style="display:none;">${renderMarkdown(original || '')}</div>
@@ -1971,256 +2240,33 @@
   }
 
   function openConceptModal(concept) {
-    const isRelation = concept.role === 'relation';
-    const provenance = (graphData.edges || []).filter(e =>
-      e.target_family_id === concept.family_id || e.relation_family_id === concept.family_id || e.source_family_id === concept.family_id
-    );
-    const evidenceHtml = !isRelation ? renderEvidenceList(mentionEvidenceForConcept(concept.family_id, 12)) : '';
-    showModal({
-      title: conceptTitle(concept),
-      size: 'lg',
-      content: `
-        <div style="display:flex;gap:0.4rem;flex-wrap:wrap;margin-bottom:0.75rem;">
-          ${kindBadge(isRelation ? 'Relation' : 'Entity', isRelation ? ROLE_COLORS.relation : ROLE_COLORS.entity)}
-          ${pill(`${graphModel.versions?.[concept.family_id]?.total || 1} versions`, '#f59e0b')}
-        </div>
-        <div class="graph-modal-grid">
-          <span>Family</span><strong class="mono">${escapeHtml(concept.family_id || '')}</strong>
-          <span>Version</span><strong class="mono">${escapeHtml(concept.version_id || '')}</strong>
-          <span>Source</span><strong>${escapeHtml(concept.source_document || '-')}</strong>
-          <span>Episode</span><strong class="mono">${escapeHtml(concept.episode_version_id || '')}</strong>
-          <span>Processed</span><strong>${formatDateMs(concept.processed_time)}</strong>
-        </div>
-        <div class="graph-detail-section md-content">${renderMarkdown(concept.content || concept.summary || '')}</div>
-        ${evidenceHtml ? `<div class="graph-detail-section"><div style="font-weight:600;margin-bottom:0.4rem;">原文句子</div>${evidenceHtml}</div>` : ''}
-        <div class="graph-detail-section">
-          <div style="font-weight:600;margin-bottom:0.4rem;">Provenance edges</div>
-          ${provenance.slice(0, 30).map(e => pill(e.edge_type || 'edge')).join('') || emptyState('暂无溯源')}
-        </div>
-      `,
-    });
+    window.ConceptDetail.openConceptModal(concept, conceptDetailOptions(concept, {
+      evidence: concept.role === 'relation' ? [] : mentionEvidenceForConcept(concept.family_id, 12),
+    }));
   }
 
   async function openVersionsModal(concept) {
-    const modal = showModal({
-      title: `版本历史 - ${truncate(conceptTitle(concept), 48)}`,
-      size: 'lg',
-      content: `<div style="padding:1rem;">${spinnerHtml()} 加载版本...</div>`,
-    });
-    try {
-      const res = await state.api.entityVersions(concept.family_id, state.currentGraphId);
-      const versions = res.data?.versions || [];
-      modal.overlay.querySelector('.modal-body').innerHTML = renderVersionsTimeline(versions);
-    } catch (err) {
-      modal.overlay.querySelector('.modal-body').innerHTML = `<div style="color:var(--danger);">加载版本失败: ${escapeHtml(err.message)}</div>`;
-    }
-  }
-
-  function renderVersionsTimeline(versions) {
-    if (!versions.length) return emptyState('暂无版本');
-    const sorted = versions.slice().sort(compareVersionTime);
-    const newestFirst = sorted.slice().reverse();
-    return `
-      <div style="max-height:62vh;overflow:auto;padding:0.25rem;">
-        ${newestFirst.map((v, idx) => {
-          const chronologicalIndex = sorted.findIndex(item => item.version_id === v.version_id);
-          const prev = chronologicalIndex > 0 ? sorted[chronologicalIndex - 1] : null;
-          return `
-          <div style="position:relative;padding-left:1.4rem;padding-bottom:1rem;">
-            ${idx < newestFirst.length - 1 ? '<div style="position:absolute;left:5px;top:13px;bottom:0;width:1px;background:var(--border-color);"></div>' : ''}
-            <div style="position:absolute;left:0;top:4px;width:12px;height:12px;border-radius:50%;background:${v.content_changed ? 'var(--primary)' : 'var(--border-color)'};border:2px solid ${v.content_changed ? 'var(--primary-hover)' : 'var(--border-hover)'};"></div>
-            <div class="graph-version-row">
-              <div style="display:flex;justify-content:space-between;gap:0.5rem;margin-bottom:0.25rem;">
-                <span class="mono" style="font-size:0.72rem;">${escapeHtml(v.version_id || '')}</span>
-                <span class="badge ${v.content_changed ? 'badge-primary' : ''}">${v.content_changed ? 'changed' : 'same'}</span>
-              </div>
-              <div style="font-size:0.75rem;color:var(--text-muted);">${formatDateMs(v.processed_time)} · ${escapeHtml(v.source_document || '')}</div>
-              ${renderVersionDiff(v, prev)}
-              <details class="graph-version-full">
-                <summary>完整内容</summary>
-                <div class="md-content" style="font-size:0.8rem;margin-top:0.45rem;line-height:1.5;">${renderMarkdown(versionText(v))}</div>
-              </details>
-            </div>
-          </div>
-        `;}).join('')}
-      </div>
-    `;
-  }
-
-  function compareVersionTime(a, b) {
-    const ta = a.processed_time ? new Date(a.processed_time).getTime() : 0;
-    const tb = b.processed_time ? new Date(b.processed_time).getTime() : 0;
-    if (ta !== tb) return ta - tb;
-    return String(a.version_id || '').localeCompare(String(b.version_id || ''));
-  }
-
-  function versionText(v) {
-    return String(v.content || v.summary || v.name || '').trim();
-  }
-
-  function tokenizeDiffText(text) {
-    const tokens = String(text || '').match(/[\u3400-\u9fff]|[A-Za-z0-9_]+|[\r\n]+|\s+|[^\sA-Za-z0-9_\u3400-\u9fff]/g);
-    return tokens || [];
-  }
-
-  function renderVersionDiff(current, previous) {
-    const currentText = versionText(current);
-    const previousText = previous ? versionText(previous) : '';
-    if (!previous) {
-      return `
-        <div class="version-diff-container graph-version-diff">
-          <div class="version-diff-header">
-            <span>初始版本</span>
-            <span>+${tokenizeDiffText(currentText).filter(t => t.trim()).length}</span>
-          </div>
-          <div class="version-diff-body version-diff-inline">
-            ${currentText ? `<span class="version-diff-token added">${escapeHtml(currentText)}</span>` : '<span class="version-diff-line unchanged">空内容</span>'}
-          </div>
-        </div>
-      `;
-    }
-
-    if (currentText === previousText) {
-      return `
-        <div class="version-diff-container graph-version-diff">
-          <div class="version-diff-header">
-            <span>相比上一版本</span>
-            <span>无内容变化</span>
-          </div>
-          <div class="version-diff-body">
-            <div class="version-diff-line unchanged">${escapeHtml(truncate(currentText || '空内容', 220))}</div>
-          </div>
-        </div>
-      `;
-    }
-
-    const diff = buildInlineDiff(previousText, currentText);
-    return `
-      <div class="version-diff-container graph-version-diff">
-        <div class="version-diff-header">
-          <span>相比上一版本</span>
-          <span><span class="diff-count added">+${diff.added}</span> <span class="diff-count removed">-${diff.removed}</span></span>
-        </div>
-        <div class="version-diff-body version-diff-inline">${diff.html}</div>
-      </div>
-    `;
-  }
-
-  function buildInlineDiff(oldText, newText) {
-    const oldTokens = tokenizeDiffText(oldText);
-    const newTokens = tokenizeDiffText(newText);
-    if (oldTokens.length * newTokens.length > 120000) {
-      return buildCoarseDiff(oldText, newText);
-    }
-
-    const rows = oldTokens.length + 1;
-    const cols = newTokens.length + 1;
-    const dp = Array.from({ length: rows }, () => new Uint16Array(cols));
-    for (let i = oldTokens.length - 1; i >= 0; i--) {
-      for (let j = newTokens.length - 1; j >= 0; j--) {
-        dp[i][j] = oldTokens[i] === newTokens[j]
-          ? dp[i + 1][j + 1] + 1
-          : Math.max(dp[i + 1][j], dp[i][j + 1]);
-      }
-    }
-
-    const parts = [];
-    let added = 0;
-    let removed = 0;
-    let i = 0;
-    let j = 0;
-    while (i < oldTokens.length && j < newTokens.length) {
-      if (oldTokens[i] === newTokens[j]) {
-        parts.push({ type: 'same', text: oldTokens[i] });
-        i++;
-        j++;
-      } else if (dp[i + 1][j] >= dp[i][j + 1]) {
-        parts.push({ type: 'removed', text: oldTokens[i] });
-        if (oldTokens[i].trim()) removed++;
-        i++;
-      } else {
-        parts.push({ type: 'added', text: newTokens[j] });
-        if (newTokens[j].trim()) added++;
-        j++;
-      }
-    }
-    while (i < oldTokens.length) {
-      parts.push({ type: 'removed', text: oldTokens[i] });
-      if (oldTokens[i].trim()) removed++;
-      i++;
-    }
-    while (j < newTokens.length) {
-      parts.push({ type: 'added', text: newTokens[j] });
-      if (newTokens[j].trim()) added++;
-      j++;
-    }
-
-    const merged = [];
-    parts.forEach(part => {
-      const last = merged[merged.length - 1];
-      if (last && last.type === part.type) last.text += part.text;
-      else merged.push({ ...part });
-    });
-    const html = merged.map(part => {
-      if (!part.text) return '';
-      if (part.type === 'same') return `<span class="version-diff-token unchanged">${escapeHtml(part.text)}</span>`;
-      return `<span class="version-diff-token ${part.type}">${escapeHtml(part.text)}</span>`;
-    }).join('');
-    return { html, added, removed };
-  }
-
-  function buildCoarseDiff(oldText, newText) {
-    const oldLines = String(oldText || '').split(/\n+/).filter(Boolean);
-    const newLines = String(newText || '').split(/\n+/).filter(Boolean);
-    return {
-      added: newLines.length,
-      removed: oldLines.length,
-      html: `
-        ${oldLines.map(line => `<div class="version-diff-line removed">-${escapeHtml(line)}</div>`).join('')}
-        ${newLines.map(line => `<div class="version-diff-line added">+${escapeHtml(line)}</div>`).join('')}
-      `,
-    };
-  }
-
-  async function loadConceptVersions(familyId) {
-    const el = document.getElementById('graph-version-list');
-    if (!el) return;
-    try {
-      const res = await state.api.entityVersions(familyId, state.currentGraphId);
-      const versions = res.data?.versions || [];
-      el.innerHTML = versions.length ? versions.slice().reverse().slice(0, 6).map(v => `
-        <div class="graph-version-row">
-          <div style="display:flex;justify-content:space-between;gap:0.5rem;margin-bottom:0.25rem;">
-            <span class="mono" style="font-size:0.72rem;">${escapeHtml(v.version_id || '')}</span>
-            <span class="badge ${v.content_changed ? 'badge-primary' : ''}">${v.content_changed ? 'changed' : 'same'}</span>
-          </div>
-          <div style="font-size:0.75rem;color:var(--text-muted);">${formatDateMs(v.processed_time)}</div>
-          <div style="font-size:0.8rem;margin-top:0.4rem;line-height:1.45;">${escapeHtml(truncate(v.content || v.summary || v.name || '', 160))}</div>
-        </div>
-      `).join('') : emptyState('暂无版本');
-    } catch (err) {
-      el.innerHTML = `<div style="color:var(--danger);">加载版本失败: ${escapeHtml(err.message)}</div>`;
-    }
+    await window.ConceptDetail.openVersionsModal(concept, conceptDetailOptions(concept));
   }
 
   function updateSummary(visible) {
     const summary = document.getElementById('graph-summary');
     if (!summary) return;
     if (!visible) {
-      summary.textContent = '选择一个或多个文档';
+      summary.textContent = t('graph.selectDocuments');
       return;
     }
     const relCount = visible.relationEdges.length;
     const total = growthTotals || graphData?.counts || {};
     const growing = hasActiveGrowth();
-    const loading = growing ? (growthPauseRequested ? '已暂停 · ' : `并行生长中(${growthControllers.size}) · `) : '';
+    const loading = growing ? (growthPauseRequested ? t('graph.growthPaused') + ' · ' : t('graph.parallelGrowth', { count: growthControllers.size }) + ' · ') : '';
     const shownEpisodes = growing ? growthLoaded.episodes : visible.episodes.length;
     const shownEntities = growing ? growthLoaded.concepts : visible.entities.length;
     const shownRelations = growing ? growthLoaded.relations : relCount;
     const totalHint = total.concepts || total.relations
-      ? ` · 进度 ${formatNumber(shownEntities)}/${formatNumber(total.concepts || visible.entities.length)} 实体，${formatNumber(shownRelations)}/${formatNumber(total.relations || relCount)} 关系`
+      ? ` · ${t('graph.growthProgress', { shownE: formatNumber(shownEntities), totalE: formatNumber(total.concepts || visible.entities.length), shownR: formatNumber(shownRelations), totalR: formatNumber(total.relations || relCount) })}`
       : '';
-    summary.textContent = `${loading}${focusFamilyId ? '聚焦模式 · ' : ''}${visible.documents.length} 文档 / ${shownEpisodes} Episode / ${shownEntities} 实体节点 / ${shownRelations} 关系边${totalHint}`;
+    summary.textContent = `${loading}${focusFamilyId ? t('graph.focusMode') + ' · ' : ''}${t('graph.summaryDetail', { docs: visible.documents.length, episodes: shownEpisodes, entities: shownEntities, relations: shownRelations })}${totalHint}`;
   }
 
   function selectedDocNames() {
@@ -2235,11 +2281,11 @@
     if (!title) return;
     const names = selectedDocNames();
     if (!names.length) {
-      title.textContent = '图谱可视化';
+      title.textContent = t('graph.title');
     } else if (names.length === 1) {
       title.textContent = names[0];
     } else {
-      title.textContent = `${names.length} 个文档：${truncate(names.slice(0, 3).join('、'), 42)}`;
+      title.textContent = t('graph.multiDocTitle', { count: names.length, names: truncate(names.slice(0, 3).join(', '), 42) });
     }
   }
 
@@ -2249,7 +2295,7 @@
     shell?.classList.toggle('docs-collapsed', docsCollapsed);
     const btn = document.getElementById('graph-doc-collapse');
     if (btn) {
-      btn.title = docsCollapsed ? '展开文档栏' : '收起文档栏';
+      btn.title = docsCollapsed ? t('graph.expandDocPanel') : t('graph.collapseDocPanel');
       btn.innerHTML = `<i data-lucide="${docsCollapsed ? 'panel-left-open' : 'panel-left-close'}" style="width:14px;height:14px;"></i>`;
     }
     if (window.lucide) lucide.createIcons({ nodes: [btn || document.body] });
@@ -2268,9 +2314,9 @@
     const pos = playbackStep < 0 ? total : playbackStep;
     if (fill) fill.style.width = `${Math.round((pos / Math.max(1, total)) * 100)}%`;
     if (label) {
-      if (hasActiveGrowth()) label.textContent = growthPauseRequested ? '增量加载已暂停' : `并行增量加载中(${growthControllers.size})`;
-      else if (playbackStep < 0) label.textContent = '完整图';
-      else if (playbackStep === 0) label.textContent = '仅文档';
+      if (hasActiveGrowth()) label.textContent = growthPauseRequested ? t('graph.incrementalPaused') : t('graph.parallelIncremental', { count: growthControllers.size });
+      else if (playbackStep < 0) label.textContent = t('graph.fullGraph');
+      else if (playbackStep === 0) label.textContent = t('graph.docsOnly');
       else {
         const ep = graphModel.episodes[playbackStep - 1];
         label.textContent = `${playbackStep}/${total}: ${truncate(ep.heading_path || ep.name || 'Episode', 22)}`;
@@ -2336,14 +2382,21 @@
     },
     destroy() {
       stopPlayback();
+      cancelGraphGrowth();
       destroyNetwork();
+      growthControllers = new Map();
+      loadedDocVersions = new Set();
+      growthOutlinesByDoc = new Map();
+      edgeMetaById = new Map();
+      nodeMetaById = new Map();
+      pinnedPositions = {};
       window.__documentGraphVisual = null;
     },
     getCommands() {
       return [
-        { label: '刷新文档图谱', icon: 'refresh-cw', action: () => loadDocs() },
-        { label: '播放 Episode 展示', icon: 'play', action: () => startPlayback() },
-        { label: '适配图谱视图', icon: 'maximize', action: () => network?.fit({ animation: true }) },
+        { label: t('graph.refreshDocGraph'), icon: 'refresh-cw', action: () => loadDocs() },
+        { label: t('graph.playEpisodeDemo'), icon: 'play', action: () => startPlayback() },
+        { label: t('graph.fitGraphView'), icon: 'maximize', action: () => network?.fit({ animation: true }) },
       ];
     },
   });

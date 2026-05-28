@@ -1,9 +1,10 @@
 """SQLite-based native graph storage engine for Deep Dream.
 
-Replaces Neo4j with an embedded SQLite database + hnswlib for vector search.
-All graph operations (CRUD, traversal, search) are implemented in pure Python + SQL.
+V1.5 LibraryManager replaces the old SQLiteGraphStorageManager.
 """
+from .library_manager import LibraryManager
 
-from .manager import SQLiteGraphStorageManager
+# Backward compat: old name still importable
+SQLiteGraphStorageManager = LibraryManager
 
-__all__ = ["SQLiteGraphStorageManager"]
+__all__ = ["LibraryManager", "SQLiteGraphStorageManager"]

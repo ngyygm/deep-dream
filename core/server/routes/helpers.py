@@ -234,7 +234,6 @@ def entity_to_dict(e: Entity, max_content_length: int = 2000,
         "episode_id": e.episode_id,
         "source_document": _src_doc,
         "doc_name": _src_doc,
-        "summary": e.summary,
         "attributes": e.attributes,
         "confidence": e.confidence,
         "community_id": e.community_id,
@@ -268,7 +267,6 @@ def relation_to_dict(r: Relation, _score: Optional[float] = None,
         "source_document": _src_doc,
         "doc_name": _src_doc,
         "relation_type": getattr(r, "relation_type", None),
-        "summary": r.summary,
         "attributes": r.attributes,
         "confidence": r.confidence,
         "valid_at": _fd(r.valid_at),
@@ -466,12 +464,9 @@ def _extract_candidate_ids(
     with _perf_timer("_extract_candidate_ids | entity_search"):
         if entity_name:
             entities = storage.search_entities_by_similarity(
-                query_name=entity_name,
-                query_content=body.get("query_text") or entity_name,
+                entity_name,
                 threshold=float(body.get("similarity_threshold", 0.5)),
                 max_results=int(max_entities),
-                text_mode=body.get("text_mode") or "name_and_content",
-                similarity_method=body.get("similarity_method") or "embedding",
             )
         elif time_before_dt:
             entities = storage.get_all_entities_before_time(time_before_dt, limit=max_entities, exclude_embedding=True)

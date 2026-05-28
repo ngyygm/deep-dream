@@ -80,10 +80,6 @@ class TestConceptRoutesSmoke:
         response = client.post("/api/v1/vaults/index", json={"graph_id": TEST_GRAPH_ID})
         assert response.status_code == 400
 
-    def test_graphs_list_responds(self, client):
-        response = client.get("/api/v1/graphs")
-        assert response.status_code == 200
-
 
 class TestRemovedRoutesSmoke:
     def test_legacy_entity_routes_removed(self, client):

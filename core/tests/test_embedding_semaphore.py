@@ -1,8 +1,8 @@
 """
 Tests for EmbeddingClient semaphore configuration.
 
-Tests that the embedding semaphore value is set based on CPU count
-according to the formula: min(cpu_count, 8)
+Tests that the embedding semaphore defaults to one local encode at a time,
+with an explicit override for deployments that can safely run more.
 """
 import os
 import threading
@@ -16,138 +16,102 @@ class TestEmbeddingSemaphore:
     """Tests for embedding semaphore configuration."""
 
     @patch("core.storage.embedding.EmbeddingClient._init_model")
-    def test_semaphore_value_based_on_cpu_count(self, mock_init):
-        """Semaphore value should be min(cpu_count, 8)."""
-        # Test with various CPU counts
-        test_cases = [
-            (2, 2),  # 2 CPUs -> semaphore = 2
-            (4, 4),  # 4 CPUs -> semaphore = 4
-            (8, 8),  # 8 CPUs -> semaphore = 8
-            (16, 8),  # 16 CPUs -> semaphore = 8 (capped)
-            (32, 8),  # 32 CPUs -> semaphore = 8 (capped)
-            (1, 1),  # 1 CPU -> semaphore = 1
-        ]
+    def test_semaphore_exists_with_default_serial_policy(self, mock_init):
+        """Default policy is serial encode for local embedding stability."""
+        client = EmbeddingClient(model_path="test_model", use_local=True)
 
-        for cpu_count, expected_value in test_cases:
-            with patch("os.cpu_count", return_value=cpu_count):
-                client = EmbeddingClient(
-                    model_path="test_model",
-                    use_local=True
-                )
-
-                # Check semaphore value
-                # threading.Semaphore doesn't expose the value directly,
-                # but we can check it was initialized with the correct value
-                # by accessing the internal counter (implementation-specific)
-                # A better approach is to test behavior
-
-                # We can verify the semaphore was created by checking its type
-                assert hasattr(client, "_encode_semaphore")
-                assert isinstance(client._encode_semaphore, threading.Semaphore)
+        assert hasattr(client, "_encode_semaphore")
+        assert isinstance(client._encode_semaphore, threading.Semaphore)
 
     @patch("core.storage.embedding.EmbeddingClient._init_model")
-    def test_semaphore_behavior_with_low_cpu_count(self, mock_init):
-        """With low CPU count (e.g., 2), semaphore should allow 2 concurrent operations."""
-        with patch("os.cpu_count", return_value=2):
-            client = EmbeddingClient(model_path="test", use_local=True)
+    def test_default_semaphore_is_serial(self, mock_init):
+        """Default semaphore should allow one encode operation at a time."""
+        client = EmbeddingClient(model_path="test", use_local=True)
 
-            # Track concurrent operations
-            active_count = 0
-            max_active = 0
-            lock = threading.Lock()
+        active_count = 0
+        max_active = 0
+        lock = threading.Lock()
 
-            def mock_operation():
-                nonlocal active_count, max_active
-                with client._encode_semaphore:
-                    with lock:
-                        active_count += 1
-                        if active_count > max_active:
-                            max_active = active_count
-                    # Simulate work
-                    import time
-                    time.sleep(0.01)
-                    with lock:
-                        active_count -= 1
+        def mock_operation():
+            nonlocal active_count, max_active
+            with client._encode_semaphore:
+                with lock:
+                    active_count += 1
+                    if active_count > max_active:
+                        max_active = active_count
+                import time
+                time.sleep(0.01)
+                with lock:
+                    active_count -= 1
 
-            # Launch 4 threads, but only 2 should be active at a time
-            threads = [threading.Thread(target=mock_operation) for _ in range(4)]
-            for t in threads:
-                t.start()
-            for t in threads:
-                t.join()
+        threads = [threading.Thread(target=mock_operation) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
 
-            # Max concurrent should not exceed CPU count
-            assert max_active <= 2
+        assert max_active <= 1
 
     @patch("core.storage.embedding.EmbeddingClient._init_model")
-    def test_semaphore_behavior_with_high_cpu_count(self, mock_init):
-        """With high CPU count (e.g., 16), semaphore should be capped at 8."""
-        with patch("os.cpu_count", return_value=16):
-            client = EmbeddingClient(model_path="test", use_local=True)
+    def test_explicit_semaphore_concurrency_override(self, mock_init):
+        """Deployments can explicitly allow more parallel embedding encodes."""
+        client = EmbeddingClient(model_path="test", use_local=True, max_concurrency=3)
 
-            # Track concurrent operations
-            active_count = 0
-            max_active = 0
-            lock = threading.Lock()
+        active_count = 0
+        max_active = 0
+        lock = threading.Lock()
 
-            def mock_operation():
-                nonlocal active_count, max_active
-                with client._encode_semaphore:
-                    with lock:
-                        active_count += 1
-                        if active_count > max_active:
-                            max_active = active_count
-                    # Simulate work
-                    import time
-                    time.sleep(0.01)
-                    with lock:
-                        active_count -= 1
+        def mock_operation():
+            nonlocal active_count, max_active
+            with client._encode_semaphore:
+                with lock:
+                    active_count += 1
+                    if active_count > max_active:
+                        max_active = active_count
+                import time
+                time.sleep(0.01)
+                with lock:
+                    active_count -= 1
 
-            # Launch 12 threads, but only 8 should be active at a time (capped)
-            threads = [threading.Thread(target=mock_operation) for _ in range(12)]
-            for t in threads:
-                t.start()
-            for t in threads:
-                t.join()
+        threads = [threading.Thread(target=mock_operation) for _ in range(12)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
 
-            # Max concurrent should not exceed cap (8)
-            assert max_active <= 8
+        assert max_active <= 3
 
     @patch("core.storage.embedding.EmbeddingClient._init_model")
-    def test_semaphore_when_cpu_count_returns_none(self, mock_init):
-        """When os.cpu_count() returns None, should default to 4."""
-        with patch("os.cpu_count", return_value=None):
-            client = EmbeddingClient(model_path="test", use_local=True)
+    def test_invalid_max_concurrency_falls_back_to_one(self, mock_init):
+        """Non-positive max_concurrency values should fall back to one."""
+        client = EmbeddingClient(model_path="test", use_local=True, max_concurrency=0)
 
-            # Should create semaphore with default value of 4
-            assert hasattr(client, "_encode_semaphore")
-            assert isinstance(client._encode_semaphore, threading.Semaphore)
+        assert hasattr(client, "_encode_semaphore")
+        assert isinstance(client._encode_semaphore, threading.Semaphore)
 
-            # Verify default behavior by testing concurrency
-            active_count = 0
-            max_active = 0
-            lock = threading.Lock()
+        active_count = 0
+        max_active = 0
+        lock = threading.Lock()
 
-            def mock_operation():
-                nonlocal active_count, max_active
-                with client._encode_semaphore:
-                    with lock:
-                        active_count += 1
-                        if active_count > max_active:
-                            max_active = active_count
-                    import time
-                    time.sleep(0.01)
-                    with lock:
-                        active_count -= 1
+        def mock_operation():
+            nonlocal active_count, max_active
+            with client._encode_semaphore:
+                with lock:
+                    active_count += 1
+                    if active_count > max_active:
+                        max_active = active_count
+                import time
+                time.sleep(0.01)
+                with lock:
+                    active_count -= 1
 
-            threads = [threading.Thread(target=mock_operation) for _ in range(6)]
-            for t in threads:
-                t.start()
-            for t in threads:
-                t.join()
+        threads = [threading.Thread(target=mock_operation) for _ in range(6)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
 
-            # Should cap at default value (4)
-            assert max_active <= 4
+        assert max_active <= 1
 
     @patch("core.storage.embedding.EmbeddingClient._init_model")
     def test_semaphore_thread_safety(self, mock_init):

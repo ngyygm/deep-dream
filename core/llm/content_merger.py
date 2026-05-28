@@ -194,7 +194,7 @@ class _ContentMergerMixin:
         _MAX_EXISTING_IN_PROMPT = 15
         _rels_to_include = existing_relations[:_MAX_EXISTING_IN_PROMPT]
         existing_str = "\n\n".join([
-            f"family_id: {r['family_id']}\tsource_document: {self._source_doc_label(r.get('source_document', ''))}\tcontent: {r['content']}"
+            f"family_id: {r.get('family_id', '')}\tsource_document: {self._source_doc_label(r.get('source_document', ''))}\tcontent: {r.get('content', '')}"
             for r in _rels_to_include
         ])
         if len(existing_relations) > _MAX_EXISTING_IN_PROMPT:
@@ -207,7 +207,7 @@ class _ContentMergerMixin:
 - entity1: {entity1_name}
 - entity2: {entity2_name}
 - source_document: {self._source_doc_label(new_source_document)}
-- content: {extracted_relation['content']}
+- content: {extracted_relation.get('content', '')}
 </新关系>
 
 <已有关系列表>

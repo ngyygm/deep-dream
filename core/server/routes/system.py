@@ -4,7 +4,10 @@ System routes — Health checks, system monitoring, stats, and route index.
 from __future__ import annotations
 
 import logging
+import json
+import os
 import time
+from pathlib import Path
 from typing import Any, Optional
 
 from flask import Blueprint, current_app, request
@@ -44,17 +47,14 @@ _API_ROUTE_INDEX = {
         {"path": "/api/v1/documents/graph", "methods": ["POST"], "summary": "读取文档到 Episode 和 Concept 的可视化子图"},
     ],
     "concepts": [
+        {"path": "/api/v1/agent/sql", "methods": ["POST"], "summary": "Agent 只读 SQL 查询当前图谱"},
+        {"path": "/api/v1/agent/semantic-search", "methods": ["POST"], "summary": "Agent 语义候选召回"},
         {"path": "/api/v1/concepts", "methods": ["GET"], "summary": "列出概念"},
         {"path": "/api/v1/concepts/search", "methods": ["POST"], "summary": "搜索概念"},
         {"path": "/api/v1/concepts/<family_id>", "methods": ["GET"], "summary": "读取概念"},
         {"path": "/api/v1/concepts/<family_id>/versions", "methods": ["GET"], "summary": "读取概念版本"},
         {"path": "/api/v1/concepts/<family_id>/provenance", "methods": ["GET"], "summary": "读取概念溯源"},
         {"path": "/api/v1/traverse", "methods": ["POST"], "summary": "遍历概念图"},
-    ],
-    "graphs": [
-        {"path": "/api/v1/graphs", "methods": ["GET", "POST"], "summary": "列出或创建物理隔离图谱"},
-        {"path": "/api/v1/graphs/<graph_id>", "methods": ["GET", "DELETE"], "summary": "读取或删除图谱"},
-        {"path": "/api/v1/graphs/<graph_id>/clear", "methods": ["POST"], "summary": "清空图谱"},
     ],
     "system": [
         {"path": "/api/v1/routes", "methods": ["GET"], "summary": "动态路由索引"},
@@ -83,10 +83,10 @@ def route_index():
 def health():
     """健康检查；推荐使用 /api/v1/health。"""
     try:
-        gid = getattr(request, 'graph_id', None) or request.args.get('graph_id', 'default')
+        gid = getattr(request, 'graph_id', None) or request.args.get('graph_id', 'library')
         try:
             from core.server.registry import GraphRegistry
-            GraphRegistry.validate_graph_id(gid)
+            gid = GraphRegistry.normalize_graph_id(gid)
         except ValueError as e:
             return err(str(e), 400)
         processor = current_app.config["registry"].get_processor(gid)
@@ -96,7 +96,7 @@ def health():
         )
         storage_backend = "sqlite"
         return ok({
-            "graph_id": gid,
+            "library_id": gid,
             "storage_backend": storage_backend,
             "embedding_available": embedding_available,
         })
@@ -109,10 +109,12 @@ def health_llm():
     """检查大模型是否可访问。"""
     global _last_llm_health_time
     now = time.time()
-    gid = getattr(request, 'graph_id', None) or request.args.get('graph_id', 'default')
+    gid = getattr(request, 'graph_id', None) or request.args.get('graph_id', 'library')
+    from core.server.registry import GraphRegistry
+    gid = GraphRegistry.normalize_graph_id(gid)
     if now - _last_llm_health_time < _LLM_HEALTH_MIN_INTERVAL:
         return ok({
-            "graph_id": gid,
+            "library_id": gid,
             "llm_available": True,
             "message": "LLM 健康检查冷却中，请稍后重试",
             "cooldown_remaining": round(_LLM_HEALTH_MIN_INTERVAL - (now - _last_llm_health_time), 1),
@@ -129,7 +131,7 @@ def health_llm():
             "请只回复一个词：OK",
             timeout=60,
         )
-        return ok({"graph_id": gid, "llm_available": True, "message": "大模型访问正常", "response_preview": response.strip()[:80]})
+        return ok({"library_id": gid, "llm_available": True, "message": "大模型访问正常", "response_preview": response.strip()[:80]})
     except Exception as e:
         return err(f"大模型不可用: {e}", 503)
 
@@ -137,7 +139,6 @@ def health_llm():
 # ── Stats ───────────────────────────────────────────────────────────────
 
 @system_bp.route("/api/v1/find/stats", methods=["GET"])
-@system_bp.route("/api/v1/graph/stats", methods=["GET"])
 def find_stats():
     try:
         processor = _get_processor()
@@ -159,17 +160,12 @@ def find_stats():
             else:
                 total_episodes = len(list(cache_dir.glob("*.json")))
 
-        total_communities = 0
-        if hasattr(processor.storage, 'count_communities'):
-            total_communities = processor.storage.count_communities()
-
         return ok({
             "total_concepts": processor.storage.count_concepts() if hasattr(processor.storage, "count_concepts") else total_entities + total_relations + total_episodes,
-            "total_documents": processor.storage.count_concepts("document") if hasattr(processor.storage, "count_concepts") else 0,
+            "total_documents": processor.storage.count_documents() if hasattr(processor.storage, "count_documents") else 0,
             "total_entities": total_entities,
             "total_relations": total_relations,
             "total_episodes": total_episodes,
-            "total_communities": total_communities,
         })
     except Exception as e:
         return err(str(e), 500)
@@ -252,6 +248,78 @@ def system_tasks():
             return err("SystemMonitor 未启用", 503)
         limit = request.args.get("limit", 50, type=int)
         return ok(system_monitor.all_tasks(limit=limit))
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@system_bp.route("/api/v1/system/config", methods=["GET", "PATCH"])
+def system_config():
+    """读取/更新服务配置文件。部分运行时配置需重启后完全生效。"""
+    try:
+        cfg = current_app.config.get("config") or {}
+        config_path = cfg.get("_config_path") or "service_config.json"
+        path = Path(config_path)
+        if not path.is_absolute():
+            path = Path.cwd() / path
+        if request.method == "GET":
+            return ok({
+                "config": cfg,
+                "config_path": str(path),
+                "notes": [
+                    "llm.max_concurrency 控制全局 LLM 并发上限",
+                    "remember_workers 控制同时运行的 remember 任务数",
+                    "embedding.max_concurrency 本地 embedding 通常建议为 1",
+                    "已存在的图谱处理器可能需要重启服务后应用模型/embedding 改动",
+                ],
+            })
+
+        body = request.get_json(force=True) or {}
+        patch = body.get("config") if isinstance(body.get("config"), dict) else body
+        if not isinstance(patch, dict):
+            return err("config patch 必须是对象", 400)
+        allowed_top = {
+            "llm", "embedding", "runtime", "pipeline", "chunking",
+            "remember_workers", "remember_max_retries", "remember_retry_delay_seconds",
+            "remember_stall_timeout_seconds", "port", "host", "flask_threaded",
+        }
+        rejected = sorted(k for k in patch if k not in allowed_top)
+        if rejected:
+            return err("不允许修改配置项: " + ", ".join(rejected), 400)
+        next_cfg = dict(cfg)
+
+        def deep_merge(a, b):
+            out = dict(a or {})
+            for k, v in (b or {}).items():
+                if isinstance(v, dict) and isinstance(out.get(k), dict):
+                    out[k] = deep_merge(out[k], v)
+                else:
+                    out[k] = v
+            return out
+
+        next_cfg = deep_merge(next_cfg, patch)
+        next_cfg.pop("_config_path", None)
+        config_json = json.dumps(next_cfg, ensure_ascii=False, indent=2)
+        # Atomic write: write to temp file then rename to prevent corruption
+        import tempfile
+        fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(config_json)
+            # os.replace is atomic on both Windows (if same volume) and POSIX
+            os.replace(tmp_path, str(path))
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+        next_cfg["_config_path"] = str(path)
+        current_app.config["config"] = next_cfg
+        return ok({
+            "config": next_cfg,
+            "config_path": str(path),
+            "message": "配置已保存；模型、embedding、worker 数等对已创建实例可能需要重启服务后完全生效",
+        })
     except Exception as e:
         return err(str(e), 500)
 

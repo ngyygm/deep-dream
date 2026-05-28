@@ -2,7 +2,6 @@
 Embedding客户端：支持自定义embedding模型，内置内容哈希缓存
 """
 import hashlib
-import os
 import threading
 import time
 from collections import OrderedDict
@@ -143,7 +142,8 @@ class EmbeddingClient:
 
     def __init__(self, model_path: Optional[str] = None, model_name: Optional[str] = None,
                  device: str = "cpu", use_local: bool = True,
-                 cache_max_size: int = 8192, cache_ttl: float = 300.0):
+                 cache_max_size: int = 8192, cache_ttl: float = 3600.0,
+                 max_concurrency: int = 1):
         """
         初始化Embedding客户端
 
@@ -153,17 +153,17 @@ class EmbeddingClient:
             device: 计算设备 ("cpu" 或 "cuda")
             use_local: 是否优先使用本地模型
             cache_max_size: 嵌入缓存最大条目数（默认8192）
-            cache_ttl: 缓存条目TTL秒数（默认300秒/5分钟）
+            cache_ttl: 缓存条目TTL秒数（默认3600秒）
+            max_concurrency: 同一 embedding 模型的最大并发 encode 数；本地 GPU 默认 1 更稳定
         """
         self.model_path = model_path
         self.model_name = model_name
         self.device = device
         self.use_local = use_local
         self.model = None
-        # Semaphore allows parallel batch encodes while bounding concurrency.
-        # CPU-aware scaling: min(cpu_count, 8) for optimal throughput without oversubscription.
-        # sentence-transformers is thread-safe for inference.
-        _sem_value = min(os.cpu_count() or 4, 8)
+        # 本地 embedding 模型通常是单 GPU/单进程推理；多个 encode 并发会争抢显存和算力，
+        # 在 Qwen3 embedding 这类模型上经常比串行更慢。需要时可通过配置显式调大。
+        _sem_value = max(1, int(max_concurrency or 1))
         self._encode_semaphore = threading.Semaphore(_sem_value)
 
         # Content-hash embedding cache

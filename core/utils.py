@@ -134,6 +134,9 @@ _window_local = threading.local()
 
 # 并行时日志：单行原子输出，避免多线程 print 交错；可用 DEEPDREAM_LOG_SERIAL=0 关闭（直接 print）
 _log_serial: bool = os.environ.get("DEEPDREAM_LOG_SERIAL", "1").strip().lower() not in ("0", "false", "no")
+
+# When set, pipeline logs go to stderr so stdout remains clean for JSON output.
+_json_mode: bool = os.environ.get("DEEPDREAM_JSON_OUTPUT", "").strip().lower() in ("1", "true", "yes")
 _log_queue: queue.Queue[str] | None = None
 _log_writer_started = False
 _log_writer_lock = threading.Lock()
@@ -155,8 +158,9 @@ def _abbr_role(role: str) -> str:
 def _emit_log_line(line: str) -> None:
     """Emit a formatted log line. Routes through logging if configured, else queue/print."""
     global _log_queue, _log_writer_started
+    _use_stderr = _json_mode or os.environ.get("DEEPDREAM_JSON_OUTPUT", "").strip().lower() in ("1", "true", "yes")
     if not _log_serial:
-        print(line, flush=True)
+        print(line, file=sys.stderr if _use_stderr else sys.stdout, flush=True)
         return
     # Fast path: writer already started — no lock needed
     if _log_writer_started:
@@ -171,12 +175,18 @@ def _emit_log_line(line: str) -> None:
 
             def _writer() -> None:
                 assert _log_queue is not None
+                _use_stderr = _json_mode or os.environ.get("DEEPDREAM_JSON_OUTPUT", "").strip().lower() in ("1", "true", "yes")
+                _out = sys.stderr if _use_stderr else sys.stdout
                 while True:
                     item = _log_queue.get()
                     if item is None:
                         break
-                    sys.stdout.write(item + "\n")
-                    sys.stdout.flush()
+                    try:
+                        _out.write(item + "\n")
+                        _out.flush()
+                    except UnicodeEncodeError:
+                        _out.write(item.encode("utf-8", errors="replace").decode("utf-8", errors="replace") + "\n")
+                        _out.flush()
 
             threading.Thread(target=_writer, name="tmg-log-writer", daemon=True).start()
     _log_queue.put(line)

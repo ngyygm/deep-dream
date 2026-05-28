@@ -6,6 +6,7 @@ from datetime import datetime
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import uuid
+import numpy as np
 
 from core.models import Relation
 from core.llm.client import LLMClient
@@ -14,6 +15,8 @@ from core.content_schema import RELATION_SECTIONS, compute_content_patches
 import time as _time
 
 from core.utils import wprint_info, normalize_entity_pair, cosine_similarity
+import logging as _logging
+_log_fn = _logging.getLogger(__name__).warning
 
 from .helpers import MIN_RELATION_CONTENT_LENGTH
 
@@ -24,6 +27,21 @@ def _get_entity_names(relation: Dict[str, str]) -> Tuple[str, str]:
         relation.get('entity1_name') or relation.get('from_entity_name', ''),
         relation.get('entity2_name') or relation.get('to_entity_name', ''),
     )
+
+
+def _embedding_to_bytes(embedding: Any) -> Optional[bytes]:
+    if embedding is None:
+        return None
+    if isinstance(embedding, bytes):
+        return embedding
+    try:
+        vec = np.asarray(embedding, dtype=np.float32).reshape(-1)
+        norm = np.linalg.norm(vec)
+        if norm > 0:
+            vec = vec / norm
+        return vec.astype(np.float32, copy=False).tobytes()
+    except Exception:
+        return None
 
 # Shared pool for batch relation processing
 _REL_POOL: list = [None]
@@ -244,21 +262,43 @@ class RelationProcessor(_RelationConstructionMixin):
                 if corrob_fids:
                     _all_corrob_fids.update(corrob_fids)
             if _all_to_persist:
-                for _rel in _all_to_persist:
+                _missing_embedding_relations = [
+                    _rel for _rel in _all_to_persist
+                    if not getattr(_rel, "embedding", None)
+                ]
+                batch_embed_fn = getattr(self.storage, '_compute_relation_embeddings_batch', None)
+                if batch_embed_fn and _missing_embedding_relations:
                     try:
-                        _emb_result = self.storage._compute_relation_embedding(_rel)
-                        if _emb_result is not None:
-                            _rel.embedding = _emb_result
+                        for _rel, _emb_result in zip(_missing_embedding_relations, batch_embed_fn(_missing_embedding_relations)):
+                            if _emb_result is not None:
+                                _rel.embedding = _emb_result
                     except Exception:
-                        pass
+                        for _rel in _missing_embedding_relations:
+                            try:
+                                _emb_result = self.storage._compute_relation_embedding(_rel)
+                                if _emb_result is not None:
+                                    _rel.embedding = _emb_result
+                            except Exception:
+                                pass
+                elif _missing_embedding_relations:
+                    for _rel in _missing_embedding_relations:
+                        try:
+                            _emb_result = self.storage._compute_relation_embedding(_rel)
+                            if _emb_result is not None:
+                                _rel.embedding = _emb_result
+                        except Exception:
+                            pass
                 try:
                     self.storage.bulk_save_relations_with_embedding(_all_to_persist)
-                except Exception:
+                except Exception as _bulk_err:
+                    _saved = 0
                     for _rel in _all_to_persist:
                         try:
                             self.storage.save_relation(_rel)
-                        except Exception:
-                            pass
+                            _saved += 1
+                        except Exception as _e:
+                            _log_fn(f"[relation_persist] 逐条保存失败: {getattr(_rel, 'name', '?')} -> {_e}")
+                    _log_fn(f"[relation_persist] 批量写入失败({type(_bulk_err).__name__}: {_bulk_err}), 逐条保存成功 {_saved}/{len(_all_to_persist)}")
                 _incremental_save_count += len(_all_to_persist)
                 _all_patches = []
                 for _rel in _all_to_persist:
@@ -308,21 +348,43 @@ class RelationProcessor(_RelationConstructionMixin):
                 if on_relation_done:
                     on_relation_done(_rel_done, total_pairs)
             if _seq_all_persist:
-                for _rel in _seq_all_persist:
+                _missing_embedding_relations = [
+                    _rel for _rel in _seq_all_persist
+                    if not getattr(_rel, "embedding", None)
+                ]
+                batch_embed_fn = getattr(self.storage, '_compute_relation_embeddings_batch', None)
+                if batch_embed_fn and _missing_embedding_relations:
                     try:
-                        _emb_result = self.storage._compute_relation_embedding(_rel)
-                        if _emb_result is not None:
-                            _rel.embedding = _emb_result
+                        for _rel, _emb_result in zip(_missing_embedding_relations, batch_embed_fn(_missing_embedding_relations)):
+                            if _emb_result is not None:
+                                _rel.embedding = _emb_result
                     except Exception:
-                        pass
+                        for _rel in _missing_embedding_relations:
+                            try:
+                                _emb_result = self.storage._compute_relation_embedding(_rel)
+                                if _emb_result is not None:
+                                    _rel.embedding = _emb_result
+                            except Exception:
+                                pass
+                elif _missing_embedding_relations:
+                    for _rel in _missing_embedding_relations:
+                        try:
+                            _emb_result = self.storage._compute_relation_embedding(_rel)
+                            if _emb_result is not None:
+                                _rel.embedding = _emb_result
+                        except Exception:
+                            pass
                 try:
                     self.storage.bulk_save_relations_with_embedding(_seq_all_persist)
-                except Exception:
+                except Exception as _bulk_err:
+                    _saved = 0
                     for _rel in _seq_all_persist:
                         try:
                             self.storage.save_relation(_rel)
-                        except Exception:
-                            pass
+                            _saved += 1
+                        except Exception as _e:
+                            _log_fn(f"[relation_persist] 逐条保存失败: {getattr(_rel, 'name', '?')} -> {_e}")
+                    _log_fn(f"[relation_persist] 批量写入失败({type(_bulk_err).__name__}: {_bulk_err}), 逐条保存成功 {_saved}/{len(_seq_all_persist)}")
                 _incremental_save_count += len(_seq_all_persist)
                 _seq_all_patches = []
                 for _rel in _seq_all_persist:
@@ -449,6 +511,9 @@ class RelationProcessor(_RelationConstructionMixin):
                 entity_lookup=entity_lookup,
             )
             if new_rel:
+                if embedding_ctx and len(truly_new_contents) == 1:
+                    _emb = embedding_ctx.get('new_embs', {}).get(merged_content)
+                    new_rel.embedding = _embedding_to_bytes(_emb) or new_rel.embedding
                 processed_relations.append(new_rel)
                 relations_to_persist.append(new_rel)
             return processed_relations, relations_to_persist, corroborated_family_ids
@@ -495,6 +560,9 @@ class RelationProcessor(_RelationConstructionMixin):
                     entity_lookup=entity_lookup,
                 )
                 if new_rel:
+                    if len(truly_new_contents) == 1:
+                        _emb = _new_embs.get(merged_content)
+                        new_rel.embedding = _embedding_to_bytes(_emb) or new_rel.embedding
                     processed_relations.append(new_rel)
                     relations_to_persist.append(new_rel)
                 return processed_relations, relations_to_persist, corroborated_family_ids
@@ -565,6 +633,8 @@ class RelationProcessor(_RelationConstructionMixin):
                     old_content_format=latest_relation.content_format or "plain",
                 )
                 if new_relation is not None:
+                    if (merged_content or "").strip() == (latest_relation.content or "").strip():
+                        new_relation.embedding = latest_relation.embedding
                     relations_to_persist.append(new_relation)
                     processed_relations.append(new_relation)
                     corroborated_family_ids.add(matched_family_id)
@@ -588,6 +658,7 @@ class RelationProcessor(_RelationConstructionMixin):
                     old_content_format=latest_relation.content_format or "plain",
                 )
                 if new_relation is not None:
+                    new_relation.embedding = latest_relation.embedding
                     relations_to_persist.append(new_relation)
                     processed_relations.append(new_relation)
                     corroborated_family_ids.add(matched_family_id)
@@ -614,6 +685,9 @@ class RelationProcessor(_RelationConstructionMixin):
                     confidence=confidence,
                 )
                 if new_relation is not None:
+                    if embedding_ctx:
+                        _emb = embedding_ctx.get('new_embs', {}).get(fallback_content)
+                        new_relation.embedding = _embedding_to_bytes(_emb) or new_relation.embedding
                     relations_to_persist.append(new_relation)
                     processed_relations.append(new_relation)
         else:
@@ -638,6 +712,9 @@ class RelationProcessor(_RelationConstructionMixin):
                 confidence=confidence,
             )
             if new_relation is not None:
+                if embedding_ctx:
+                    _emb = embedding_ctx.get('new_embs', {}).get(merged_content)
+                    new_relation.embedding = _embedding_to_bytes(_emb) or new_relation.embedding
                 relations_to_persist.append(new_relation)
                 processed_relations.append(new_relation)
         return processed_relations, relations_to_persist, corroborated_family_ids

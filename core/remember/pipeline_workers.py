@@ -89,31 +89,38 @@ def run_extraction_job(
 
 def run_step9_worker(processor, state, start_chunk, total_chunks, doc_name,
                      verbose, verbose_steps, event_time, progress_callback,
-                     step9_chunk_done_callback,
+                     step9_chunk_done_callback, control_callback,
                      RememberControlFlow):
     """Step-9 worker thread: entity alignment, chained across windows."""
     _emb_available = bool(processor.storage.embedding_client and processor.storage.embedding_client.is_available())
     for i in range(state.N):
-        state.extract_done[i].wait()
-        _action = poll_control(state, None)
+        # As soon as entity content is available (step5), start read-only
+        # preparation for step9. The actual alignment still waits for full
+        # step2-8 extraction so relation inputs are unchanged.
+        state.entity_content_done[i].wait()
+        _action = poll_control(state, control_callback)
         if _action:
             signal_control_stop(state, _action, i, set_extract=False, set_step9=True, set_step10=True)
             break
         set_window_label(f"W{start_chunk + i + 1}/{total_chunks}")
         set_pipeline_role("步骤9")
-        _er = state.extract_results[i]
+        early_entities = state.early_entity_results[i]
         emb_prefetch_future = None
-        if _er is not None:
-            _ents, _ = _er
-            if _ents and _emb_available:
-                emb_prefetch_future = safe_prefetch_submit(
-                    state,
-                    processor.entity_processor.encode_entities_for_candidate_table,
-                    _ents,
-                )
+        vec_prefetch_future = None
+        if early_entities and _emb_available:
+            emb_prefetch_future = safe_prefetch_submit(
+                state,
+                processor.entity_processor.encode_entities_for_candidate_table,
+                early_entities,
+            )
+            prewarm_fn = getattr(processor.storage, "prewarm_vector_search", None)
+            if prewarm_fn:
+                vec_prefetch_future = safe_prefetch_submit(state, prewarm_fn, ["entity"])
+        state.extract_done[i].wait()
+        _er = state.extract_results[i]
         if i > 0:
             state.step9_done_ev[i - 1].wait()
-        _action = poll_control(state, None)
+        _action = poll_control(state, control_callback)
         if _action:
             signal_control_stop(state, _action, i, set_extract=False, set_step9=True, set_step10=True)
             break
@@ -144,6 +151,13 @@ def run_step9_worker(processor, state, start_chunk, total_chunks, doc_name,
             _g_hi = (_wi + 1) / total_chunks
             _span = _g_hi - _g_lo
             _pr_step9 = (_g_lo + _span * (8.0 / 10.0), _g_lo + _span * (9.0 / 10.0))
+            if vec_prefetch_future is not None:
+                _t_prefetch_wait = time.time()
+                try:
+                    vec_prefetch_future.result(timeout=30)
+                except Exception:
+                    pass
+                state.window_timings[i]["step9-vector_prefetch_wait"] = time.time() - _t_prefetch_wait
             ar = processor._align_entities(
                 ents, rels, mc, state.input_texts[i], doc_name,
                 verbose=verbose, verbose_steps=verbose_steps, event_time=event_time,
@@ -153,7 +167,7 @@ def run_step9_worker(processor, state, start_chunk, total_chunks, doc_name,
                 entity_embedding_prefetch=emb_prefetch_future,
                 already_versioned_family_ids=_already_versioned,
                 window_timings_ref=state.window_timings[i],
-                control_check_fn=lambda: poll_control(state, None),
+                control_check_fn=lambda: poll_control(state, control_callback),
             )
             state.align_results[i] = ar
             state.aligned_entity_counts[i] = len(ar.unique_entities)
@@ -186,12 +200,12 @@ def run_step9_worker(processor, state, start_chunk, total_chunks, doc_name,
 
 def run_step10_worker(processor, state, start_chunk, total_chunks, doc_name,
                       verbose, verbose_steps, event_time, progress_callback,
-                      chunk_done_callback,
+                      chunk_done_callback, control_callback,
                       RememberControlFlow):
     """Step-10 worker thread: relation alignment, chained across windows."""
     for i in range(state.N):
         state.step9_done_ev[i].wait()
-        _action = poll_control(state, None)
+        _action = poll_control(state, control_callback)
         if _action:
             signal_control_stop(state, _action, i, set_extract=False, set_step9=False, set_step10=True)
             break
@@ -217,7 +231,7 @@ def run_step10_worker(processor, state, start_chunk, total_chunks, doc_name,
                 rel_prefetch_future = None
         if i > 0:
             state.step10_done_ev[i - 1].wait()
-        _action = poll_control(state, None)
+        _action = poll_control(state, control_callback)
         if _action:
             signal_control_stop(state, _action, i, set_extract=False, set_step9=False, set_step10=True)
             break
@@ -259,7 +273,7 @@ def run_step10_worker(processor, state, start_chunk, total_chunks, doc_name,
                 prepared_relations_by_pair=prepared_relations_by_pair,
                 step10_inputs_cache=step10_inputs_cache,
                 window_timings_ref=state.window_timings[i],
-                control_check_fn=lambda: poll_control(state, None),
+                control_check_fn=lambda: poll_control(state, control_callback),
             )
             state.step10_results[i] = processed_rels
             _success = True
@@ -271,8 +285,8 @@ def run_step10_worker(processor, state, start_chunk, total_chunks, doc_name,
 
             # Phase C-2: Record Episode -> Relation MENTIONS
             if processed_rels:
+                _t_mentions = time.time()
                 try:
-                    _t_mentions = time.time()
                     _rel_abs_ids = list(set(
                         r.absolute_id for r in processed_rels if r.absolute_id
                     ))
@@ -285,7 +299,7 @@ def run_step10_worker(processor, state, start_chunk, total_chunks, doc_name,
                             wprint_info(f"【步骤10】MENTIONS｜Relation｜{len(_rel_abs_ids)}条")
                     state.window_timings[i]["step10-relation_mentions"] = time.time() - _t_mentions
                 except Exception as _me:
-                    logger.warning("Relation MENTIONS 记录失败: %s", _me)
+                    logger.warning("Relation MENTIONS recording failed: %s", _me)
 
             if _window_has_entities:
                 safe_progress(progress_callback,
@@ -333,17 +347,62 @@ def run_step10_worker(processor, state, start_chunk, total_chunks, doc_name,
 
 def summarize_window_timings(window_timings):
     """Log timing summary across all windows."""
+    summary = build_timing_summary(window_timings)
+    _total_elapsed = float(summary.get("total_stage_seconds") or 0.0)
+    if _total_elapsed <= 0:
+        return summary
+    _timing_detail = " | ".join(
+        f"{row['label']}:{row['seconds']:.1f}s"
+        for row in summary.get("major_steps", [])
+        if row.get("seconds", 0) > 0
+    )
+    if _timing_detail:
+        _log_info("Remember", f"计时汇总｜共{_total_elapsed:.1f}s｜{_timing_detail}")
+    _active_subs = [
+        row for row in summary.get("sub_steps", [])
+        if row.get("seconds", 0) > 0.01
+    ]
+    if _active_subs:
+        _sub_detail = " | ".join(
+            f"{row['label']}:{row['seconds']:.1f}s"
+            for row in _active_subs
+        )
+        _log_info("Remember", f"子步骤明细｜{_sub_detail}")
+    return summary
+
+
+def build_timing_summary(window_timings):
+    """Build a structured timing report for API/task results."""
     _all_steps = ["step1", "step2-8", "step9", "step10"]
     _step_labels = {"step1": "1-缓存", "step2-8": "2-8-抽取", "step9": "9-实体对齐", "step10": "10-关系对齐"}
     _sub_step_labels = {
+        "step1-cache_lookup": "1a-缓存查询",
+        "step1-update_cache": "1b-缓存写入",
+        "step1-cache_hit": "1c-缓存命中",
         "step2_entity_extract": "2-实体提取",
         "step3_entity_dedup": "3-实体去重",
         "step4_entity_content": "4-实体内容",
+        "step4_entity_content_batch_llm": "  4a-实体内容批量LLM",
+        "step4_entity_content_fallback_llm": "  4b-实体内容回退LLM",
+        "step4_entity_content_code_fallback": "  4c-实体内容代码回退",
         "step5_entity_quality": "5-实体质量门",
         "step6_relation_discovery": "6-关系发现",
+        "step6_relation_wait": "  6a-等待并行关系发现",
+        "step6_relation_normalize": "  6b-关系端点规范化",
         "step7_relation_content": "7-关系内容",
+        "step7_relation_content_batch_llm": "  7a-关系内容批量LLM",
+        "step7_relation_content_fallback_llm": "  7b-关系内容回退LLM",
         "step8_relation_quality": "8-关系质量门",
         "step9-process_entities": "9a-实体处理",
+        "step9-vector_prefetch_wait": "  9a0-向量预热等待",
+        "step9-entity_candidate_table": "  9a1-实体候选检索",
+        "step9-entity_align_loop": "  9a2-实体串行裁决",
+        "step9-entity_parallel_resolve": "  9a2-实体并行裁决",
+        "step9-entity_mapping_merge": "  9a3-实体映射合并",
+        "step9-entity_persist_embedding": "  9a4-实体embedding",
+        "step9-entity_persist_db": "  9a5-实体批量写库",
+        "step9-entity_persist_patches": "  9a6-实体patch写入",
+        "step9-entity_corroboration": "  9a7-实体置信度更新",
         "step9-dedup_merge": "9b-同名去重",
         "step9-resolve_missing_names": "9c-名称解析",
         "step9-convert_to_ids": "9d-ID转换",
@@ -366,16 +425,73 @@ def summarize_window_timings(window_timings):
         for _sk in _sub_step_labels:
             _sub_totals[_sk] += _wt.get(_sk, 0.0)
     _total_elapsed = sum(_step_totals.values())
-    if _total_elapsed > 0:
-        _timing_detail = " | ".join(
-            f"{_step_labels[s]}:{_step_totals[s]:.1f}s"
-            for s in _all_steps if _step_totals[s] > 0
-        )
-        _log_info("Remember", f"计时汇总｜共{_total_elapsed:.1f}s｜{_timing_detail}")
-        _active_subs = {k: v for k, v in _sub_totals.items() if v > 0.01}
-        if _active_subs:
-            _sub_detail = " | ".join(
-                f"{_sub_step_labels[k]}:{v:.1f}s"
-                for k, v in sorted(_active_subs.items(), key=lambda x: -x[1])
-            )
-            _log_info("Remember", f"子步骤明细｜{_sub_detail}")
+    major_steps = [
+        {
+            "key": key,
+            "label": _step_labels[key],
+            "seconds": round(value, 4),
+            "percent": round((value / _total_elapsed * 100.0), 2) if _total_elapsed else 0.0,
+        }
+        for key, value in ((_s, _step_totals[_s]) for _s in _all_steps)
+        if value > 0
+    ]
+    sub_steps = [
+        {
+            "key": key,
+            "label": _sub_step_labels[key],
+            "seconds": round(value, 4),
+            "percent": round((value / _total_elapsed * 100.0), 2) if _total_elapsed else 0.0,
+            "reason": _timing_reason(key),
+            "required": _timing_required(key),
+            "optimization": _timing_optimization(key),
+        }
+        for key, value in sorted(_sub_totals.items(), key=lambda x: -x[1])
+        if value > 0.0001
+    ]
+    return {
+        "windows": len(window_timings or []),
+        "total_stage_seconds": round(_total_elapsed, 4),
+        "major_steps": major_steps,
+        "sub_steps": sub_steps,
+        "notes": [
+            "total_stage_seconds 是各窗口阶段耗时求和；流水线并行时它会大于真实 wall time。",
+            "LLM 子步骤耗时包含模型排队、网络传输、推理和 JSON 修复重试。",
+            "step9/step10 语义对齐逻辑保持不变；优化优先放在预取、批处理、缓存和 SQLite 事务上。",
+        ],
+    }
+
+
+def _timing_reason(key: str) -> str:
+    if "LLM" in key or key.startswith(("step2", "step6", "step4_entity_content", "step7_relation_content")):
+        return "LLM 调用或等待 LLM 结果，主要受模型推理、队列并发、输出长度影响。"
+    if "embedding" in key or "candidate" in key:
+        return "embedding 编码/向量比较，用于候选召回和相似度快速路径。"
+    if "db" in key or "mentions" in key or "refresh" in key:
+        return "SQLite 读取/写入图谱结构、版本、边或溯源。"
+    if "quality" in key or "dedup" in key or "convert" in key or "normalize" in key:
+        return "纯代码规则处理，用于去重、名称解析和结构校验。"
+    if key.startswith("step1"):
+        return "文档/episode 缓存、blob、artifact 和 Document-first 结构写入。"
+    return "流水线内部处理。"
+
+
+def _timing_required(key: str) -> bool:
+    if key.endswith("_fallback_llm") or key.endswith("_code_fallback") or "orphan_cleanup" in key:
+        return False
+    return True
+
+
+def _timing_optimization(key: str) -> str:
+    if "batch_llm" in key:
+        return "保持 prompt 不变时，可通过更大批量、更高 LLM 并发或更快模型端点降低 wall time。"
+    if "fallback_llm" in key:
+        return "减少批量输出缺失和 JSON 解析失败，可降低回退调用次数。"
+    if "db" in key or "mentions" in key:
+        return "已优先使用批量查询/单事务写入；后续可增加复合索引或更窄查询。"
+    if "embedding" in key:
+        return "可通过预热、缓存、更大 batch、GPU 或向量索引减少耗时。"
+    if "quality" in key or "dedup" in key or "normalize" in key:
+        return "通常不是瓶颈；主要优化方向是减少重复扫描和预编译规则。"
+    if key.startswith("step1"):
+        return "缓存命中可跳过抽取；写入已使用图谱本地 SQLite 和 artifact 文件。"
+    return "根据计时占比决定是否继续拆分。"

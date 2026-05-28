@@ -40,11 +40,35 @@ def compact_entity(item):
     if not isinstance(item, dict):
         return item
     out = {}
-    for k in ("family_id", "name", "summary", "absolute_id", "confidence"):
-        if k in item:
+    if item.get("role") == "document":
+        for k in ("family_id", "name", "absolute_id", "source_document",
+                   "role", "version_seq", "version_id", "confidence", "event_time",
+                   "entity_count", "relation_count", "version_count"):
+            if k in item and item[k] is not None:
+                out[k] = item[k]
+        if "_score" in item:
+            out["_score"] = item["_score"]
+        if "_rank" in item:
+            out["_rank"] = item["_rank"]
+        if "relevance" in item:
+            out["relevance"] = item["relevance"]
+        if "_degree" in item:
+            out["_degree"] = item["_degree"]
+        return out
+    for k in ("family_id", "name", "absolute_id", "confidence", "role", "source_document"):
+        if k in item and item[k] is not None:
             out[k] = item[k]
+    # Preserve graph metadata fields added by storage layer
+    if "_edge_type" in item:
+        out["_edge_type"] = item["_edge_type"]
     if "_score" in item:
         out["_score"] = item["_score"]
+    if "_rank" in item:
+        out["_rank"] = item["_rank"]
+    if "relevance" in item:
+        out["relevance"] = item["relevance"]
+    if "_degree" in item:
+        out["_degree"] = item["_degree"]
     for ck in ("content", "markdown_content"):
         if ck in item and isinstance(item[ck], str):
             out[ck] = truncate_text(item[ck])
@@ -58,6 +82,11 @@ def compact_entity(item):
             out["attributes"] = attrs
         else:
             out["_attr_keys"] = list(attrs.keys())[:8]
+    # Preserve expanded_neighbors from expand=true searches
+    if "expanded_neighbors" in item and isinstance(item["expanded_neighbors"], list):
+        out["expanded_neighbors"] = [
+            compact_item(n) for n in item["expanded_neighbors"]
+        ]
     return out
 
 
@@ -65,12 +94,22 @@ def compact_relation(item):
     if not isinstance(item, dict):
         return item
     out = {}
-    for k in ("family_id", "entity1_family_id", "entity2_family_id",
+    for k in ("family_id", "name", "role", "source_document",
+               "entity1_family_id", "entity2_family_id",
                "entity1_name", "entity2_name", "relation_type", "event_time", "confidence"):
         if k in item:
             out[k] = item[k]
+    # Preserve graph metadata fields added by storage layer
+    if "_edge_type" in item:
+        out["_edge_type"] = item["_edge_type"]
     if "_score" in item:
         out["_score"] = item["_score"]
+    if "_rank" in item:
+        out["_rank"] = item["_rank"]
+    if "relevance" in item:
+        out["relevance"] = item["relevance"]
+    if "_degree" in item:
+        out["_degree"] = item["_degree"]
     if "content" in item and isinstance(item["content"], str):
         out["content"] = truncate_text(item["content"])
     return out
@@ -80,12 +119,35 @@ def compact_version(item):
     if not isinstance(item, dict):
         return item
     out = {}
-    for k in ("absolute_id", "name", "event_time", "processed_time"):
+    for k in ("absolute_id", "id", "family_id", "name", "role", "event_time", "processed_time",
+              "source_document", "episode_version_id", "document_version_id",
+              "version_id", "version_seq", "confidence", "content_changed"):
         if k in item:
             out[k] = item[k]
-    for ck in ("content", "markdown_content", "summary"):
+    for ck in ("content", "markdown_content"):
         if ck in item and isinstance(item[ck], str):
             out[ck] = truncate_text(item[ck])
+    return out
+
+
+def compact_mention(item):
+    """Compact a mention/provenance item, keeping溯源 fields."""
+    if not isinstance(item, dict):
+        return item
+    out = {}
+    # Always keep provenance identification fields
+    for k in ("edge_type", "episode_id", "document_version_id", "source_document", "name"):
+        if k in item:
+            out[k] = item[k]
+    # Truncate content but keep it
+    if "content" in item and isinstance(item["content"], str):
+        out["content"] = truncate_text(item["content"])
+    # Keep source_span heading info for navigation
+    source_span = item.get("source_span")
+    if isinstance(source_span, dict):
+        heading = source_span.get("heading_path", "")
+        if heading:
+            out["heading_path"] = heading
     return out
 
 
@@ -95,8 +157,13 @@ def compact_item(item):
         return item
     if "entity1_id" in item or "entity1_name" in item:
         return compact_relation(item)
-    if "absolute_id" in item and "processed_time" in item and "family_id" not in item:
-        return compact_version(item)
+    # Detect mention/provenance items by their unique combination of keys
+    if "episode_id" in item and ("edge_type" in item or "source_span" in item):
+        return compact_mention(item)
+    # NOTE: version items are handled explicitly by compact_lists for the
+    # "versions" key.  We intentionally do NOT auto-detect versions here
+    # because search results also carry version_seq/version_id/processed_time
+    # and must be compacted as entities (to preserve expanded_neighbors etc.).
     return compact_entity(item)
 
 
@@ -125,7 +192,7 @@ def strip_bulky(obj):
 # ── List compaction with binary-search trimming ───────────────────────────
 
 _LIST_KEYS = ("entities", "relations", "versions", "episodes", "items", "explored", "seeds",
-              "latest_entities", "latest_relations")
+              "latest_entities", "latest_relations", "concepts", "mentions", "provenance", "neighbors")
 
 
 def compact_lists(data, max_chars=_MAX_RESPONSE_CHARS):
@@ -138,14 +205,26 @@ def compact_lists(data, max_chars=_MAX_RESPONSE_CHARS):
         if isinstance(v, dict) and not k.endswith(("_total", "_shown")):
             data[k] = compact_lists(v, max_chars=max_chars)
 
+    # If both 'entities' and 'relations' exist, the 'concepts' key is
+    # a derived concatenation that will be truncated inconsistently.
+    # Remove it to avoid confusion; consumers should use entities+relations.
+    if isinstance(data.get("entities"), list) and isinstance(data.get("relations"), list) and "concepts" in data:
+        del data["concepts"]
+
     for key in _LIST_KEYS:
         items = data.get(key)
         if not isinstance(items, list) or len(items) <= 3:
             if isinstance(items, list):
-                data[key] = [compact_item(i) for i in items]
+                # For the "versions" key, use compact_version directly
+                # to avoid mis-routing when search results also carry
+                # version_seq/version_id/processed_time.
+                if key == "versions":
+                    data[key] = [compact_version(i) if isinstance(i, dict) else i for i in items]
+                else:
+                    data[key] = [compact_item(i) for i in items]
             continue
 
-        items = [compact_item(i) for i in items]
+        items = [compact_version(i) if key == "versions" and isinstance(i, dict) else compact_item(i) for i in items]
         _item_sizes = [len(json.dumps(i, ensure_ascii=False)) for i in items]
 
         full_size = len(json.dumps(data, ensure_ascii=False))
@@ -221,7 +300,7 @@ _HINT_PATTERNS = [
     (lambda m: "conflict" in m,
      "Hint: resource state conflict. The data may have changed since last read — refresh with get_entity or entity_profile."),
     (lambda m: "至少需要提供" in m or "至少需要一个" in m,
-     "Hint: provide at least one of: name, content, summary, or attributes in the request body."),
+     "Hint: provide at least one of: name, content, or attributes in the request body."),
     (lambda m: "需为非空数组" in m or "non-empty array" in m,
      "Hint: the array parameter must contain at least one item."),
     (lambda m: "为必填" in m or "必填" in m or "required" in m.lower() and "parameter" in m.lower(),

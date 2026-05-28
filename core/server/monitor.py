@@ -531,8 +531,9 @@ class SystemMonitor:
                 all_tasks.extend(tasks)
             except Exception as e:
                 logger.debug("列图 %s 任务失败: %s", gid, e)
-        # 按创建时间降序排列
-        all_tasks.sort(key=lambda t: t.get("created_at", 0), reverse=True)
+        all_tasks = [t for t in all_tasks if t.get("status") in ("running", "queued", "paused") or t.get("phase") in ("pausing", "cancelling")]
+        order = {"running": 0, "queued": 1, "paused": 2}
+        all_tasks.sort(key=lambda t: (order.get(t.get("status"), 9), t.get("task_seq") or 10**9, t.get("created_at", 0)))
         return all_tasks[:limit]
 
     def recent_logs(self, limit: int = 50, level: Optional[str] = None, source: Optional[str] = None) -> List[dict]:
@@ -607,14 +608,9 @@ class SystemMonitor:
                     "queue": {"queued_count": 0, "running_count": 0, "backlog": 0},
                     "threads": default_threads,
                 })
-            try:
-                tasks = gm._queue.list_tasks(limit=task_limit)
-                for t in tasks:
-                    t["graph_id"] = gid
-                all_tasks.extend(tasks)
-            except Exception as e:
-                logger.debug("列图 %s 任务失败(2): %s", gid, e)
-        all_tasks.sort(key=lambda t: t.get("created_at", 0), reverse=True)
+        all_tasks = [t for t in all_tasks if t.get("status") in ("running", "queued", "paused") or t.get("phase") in ("pausing", "cancelling")]
+        order = {"running": 0, "queued": 1, "paused": 2}
+        all_tasks.sort(key=lambda t: (order.get(t.get("status"), 9), t.get("task_seq") or 10**9, t.get("created_at", 0)))
 
         # 3. logs
         logs = self.event_log.get_recent(limit=log_limit, level=log_level, source=log_source)

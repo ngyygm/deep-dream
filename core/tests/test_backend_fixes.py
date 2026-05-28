@@ -202,3 +202,109 @@ class TestThreadPoolCleanup:
         assert _shared_pool is not None
         assert _shared_pool._max_workers == 3
 
+
+# ── Remember concurrency configuration ────────────────────────────────────
+
+class TestRememberConcurrencyConfig:
+    """Verify remember uses one simple LLM concurrency knob."""
+
+    def test_window_workers_auto_follows_llm_capacity(self):
+        from core.server.config import _normalize_runtime_config
+
+        cfg = _normalize_runtime_config({
+            "llm": {"max_concurrency": 3},
+            "runtime": {"concurrency": {"queue_workers": 1, "window_workers": "auto"}},
+        })
+
+        assert cfg["runtime"]["concurrency"]["queue_workers"] == 1
+        assert cfg["runtime"]["concurrency"]["window_workers"] == 3
+        assert cfg["pipeline"]["max_concurrent_windows"] == 3
+
+    def test_window_workers_auto_caps_at_three(self):
+        from core.server.config import _normalize_runtime_config
+
+        cfg = _normalize_runtime_config({
+            "llm": {"max_concurrency": 8},
+            "runtime": {"concurrency": {"window_workers": "auto"}},
+        })
+
+        assert cfg["runtime"]["concurrency"]["window_workers"] == 3
+
+    def test_llm_clients_can_share_global_semaphore(self):
+        from core.llm.client import LLMClient
+
+        main = LLMClient(
+            api_key="test",
+            model_name="mock",
+            base_url="http://example.invalid/v1",
+            context_window_tokens=4096,
+            max_llm_concurrency=3,
+        )
+        secondary = LLMClient(
+            api_key="test",
+            model_name="mock",
+            base_url="http://example.invalid/v1",
+            context_window_tokens=4096,
+            max_llm_concurrency=3,
+            shared_llm_semaphore=main._llm_semaphore,
+            shared_llm_slot_max=main.get_llm_semaphore_max(),
+        )
+
+        assert secondary._select_llm_semaphore(0) is main._llm_semaphore
+        assert secondary.get_llm_semaphore_max() == 3
+
+    def test_progress_detail_reports_chain_eta(self):
+        from core.server.task_journal import RememberTask
+        from core.server.task_progress import build_progress_detail
+
+        task = RememberTask(
+            task_id="t1",
+            text="hello",
+            source_name="demo.md",
+            load_cache=False,
+            control_action=None,
+            event_time=None,
+            original_path="",
+        )
+        task.status = "running"
+        task.started_at = 100.0
+        task.total_chunks = 10
+        task.main_done_chunks = 6
+        task.step9_done_chunks = 4
+        task.step10_done_chunks = 2
+        task.main_progress = 0.6
+        task.step9_progress = 0.4
+        task.step10_progress = 0.2
+        task.chain_started_at = {"main": 100.0, "step9": 110.0, "step10": 120.0}
+
+        detail = build_progress_detail(task, now=220.0)
+
+        assert detail["overall_progress"] == pytest.approx((0.6 + 0.4 + 0.2) / 3)
+        assert detail["eta_seconds"] == pytest.approx(400.0)
+        assert [c["id"] for c in detail["chains"]] == ["main", "step9", "step10"]
+        assert detail["chains"][2]["eta_seconds"] == pytest.approx(400.0)
+
+    def test_model_overrides_can_be_boolean_inherit(self):
+        from core.server.config import merge_llm_alignment, merge_llm_extraction
+
+        llm = {
+            "api_key": "test",
+            "base_url": "http://example.invalid/v1",
+            "model": "base-model",
+            "max_tokens": 16000,
+            "context_window_tokens": 32000,
+            "think": False,
+            "extraction": True,
+            "alignment": True,
+        }
+
+        extraction = merge_llm_extraction(llm)
+        alignment = merge_llm_alignment(llm)
+
+        assert extraction["enabled"] is True
+        assert extraction["model"] == "base-model"
+        assert extraction["base_url"] == "http://example.invalid/v1"
+        assert alignment["enabled"] is True
+        assert "model" not in alignment
+        assert "base_url" not in alignment
+

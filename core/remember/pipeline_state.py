@@ -45,7 +45,10 @@ def init_remember_shared_state(N: int) -> types.SimpleNamespace:
     s.window_failures = [None] * N
     s.control_lock = threading.Lock()
     s.control_state = {"action": None}
-    s.prefetch_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tmg-chain-prefetch")
+    # Two read-only prep lanes: one for new-entity embedding encode, one for
+    # graph vector-cache prewarm. Both are outside the LLM semaphore and can
+    # hide step9 setup while relation extraction/content writing is still busy.
+    s.prefetch_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="tmg-chain-prefetch")
     return s
 
 

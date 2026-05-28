@@ -88,7 +88,6 @@ class AgentQueryMixin:
         """
         entity_info = f"""实体名称: {entity.name}
 实体内容: {entity.content[:500]}
-摘要: {getattr(entity, 'summary', '无') or '无'}
 事件时间: {entity.event_time.isoformat() if entity.event_time else '未知'}"""
 
         prompt = f"""<实体信息>
@@ -225,9 +224,8 @@ class AgentQueryMixin:
         context_parts = []
         for e in entity_dicts[:15]:
             name = e.get("name", "")
-            summary = e.get("summary") or ""
             content = e.get("content", "")
-            snippet = summary if summary else (content[:200] if content else "")
+            snippet = content[:200] if content else ""
             context_parts.append(f"- 实体【{name}】: {snippet}")
 
         for r in relation_dicts[:10]:
