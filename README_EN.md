@@ -1,0 +1,295 @@
+<div align="center">
+
+![Deep-Dream](docs/picture/deep-dream-logo.png)
+
+# Deep-Dream
+
+**Document-first concept graph memory server**
+
+[![Python 3.10+](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![MIT License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Version](https://img.shields.io/badge/Version-0.2.0-orange.svg)](pyproject.toml)
+
+Turns local documents into a structured memory system that humans can inspect and AI agents can recall. Raw files stay readable and editable; the system builds traceable documents, episodes, concepts, relations, and graph views on top.
+
+English · [简体中文](README.md)
+
+</div>
+
+---
+
+![Deep-Dream Overview](docs/picture/deep-dream-intro.png)
+
+## Features
+
+- **Document-first** — Markdown / plain text files are always the source of truth; the concept graph is a semantic overlay
+- **Remember Pipeline** — Multi-step extraction: chunking → entity extraction → relation discovery → alignment merging → dedup + write
+- **Hybrid Search** — BM25 full-text + vector embeddings + graph BFS expansion, fused via Reciprocal Rank Fusion (RRF)
+- **CLI Console** — Click 8+ / Rich 13+, 18 commands, human-readable Rich output + `--json` machine mode
+- **Web UI** — Dashboard, memory upload, interactive graph, semantic search, community detection, settings
+- **Concept Versioning** — Each concept maintains a `family_id` (stable identity) and version chain (evolution over episodes)
+- **Vault Indexing** — Obsidian / Markdown vault support with Wikilink extraction and heading parsing
+- **Multilingual UI** — 中文 / English / 日本語, dark / light theme
+- **Local-first** — SQLite + local embedding models, supports Ollama and any OpenAI-compatible endpoint
+- **Async Task Queue** — Pause / resume / retry with disk persistence and crash recovery
+
+## Remember Pipeline
+
+The `remember` flow converts raw text into structured, evidence-backed memory: chunk input → extract entities and relations → quality gates → align with existing concepts → write to local graph, with source evidence preserved throughout.
+
+![Remember Pipeline](docs/picture/remember-pipeline.png)
+
+**Pipeline steps:**
+
+1. **Document Chunking** — Markdown heading-aware smart chunking with overlap windows
+2. **Episode Generation** — Each chunk becomes an Episode (memory event)
+3. **Entity Extraction** — Multi-round: anchor → named entity → concrete → abstract → coverage gap
+4. **Entity Content Writing** — Structured Markdown content per entity (batch supported)
+5. **Relation Discovery** — Multi-round: hint → candidate → expand → write, preserving evidence text and line numbers
+6. **Concept Alignment** — Match and merge new concepts with existing ones (conservative / standard policy)
+7. **Cross-window Dedup** — Deduplicate concepts across episodes within the same document
+8. **Write to Storage** — All data written to SQLite with embeddings updated
+
+## Quick Start
+
+### Install
+
+```bash
+# Clone the repo
+git clone <repo-url>
+cd deep-dream
+
+# Install dependencies
+pip install -e .
+```
+
+### Configure
+
+```bash
+# Create your config from the example
+cp service_config.example.json service_config.json
+```
+
+Edit `service_config.json` with your LLM endpoint:
+
+```json
+{
+  "llm": {
+    "api_key": "your-api-key",
+    "model": "your-model-name",
+    "base_url": "http://127.0.0.1:11434",
+    "max_tokens": 3000,
+    "context_window_tokens": 8000
+  },
+  "embedding": {
+    "model": "Qwen/Qwen3-Embedding-0.6B",
+    "device": "cpu"
+  }
+}
+```
+
+Supports any OpenAI-compatible endpoint (Ollama, LM Studio, GLM, Xinference, etc.).
+
+### Run
+
+```bash
+# Start via CLI
+deep-dream server start --config service_config.json
+
+# Or run directly
+python -m core.server.api --config service_config.json
+
+# Windows one-click
+start.bat
+```
+
+The server runs at `http://localhost:16200` by default.
+
+## CLI
+
+The CLI is the control panel for both humans and agents: task-first command structure, safe defaults, Rich-formatted output, and `--json` automation mode.
+
+![CLI Design](docs/picture/cli-design.png)
+
+**18 commands:**
+
+| Command | Description |
+|---------|-------------|
+| `deep-dream version` | Print version |
+| `deep-dream doctor` | System health check |
+| `deep-dream config` | View / edit configuration |
+| `deep-dream remember` | Write text / files into memory graph |
+| `deep-dream find <query>` | Semantic concept search |
+| `deep-dream explore` | Concept semantic exploration |
+| `deep-dream concept` | Concept CRUD |
+| `deep-dream episode` | Episode inspection |
+| `deep-dream relation` | Relation inspection |
+| `deep-dream docs` | Document management |
+| `deep-dream graph` | Graph management |
+| `deep-dream vault` | Obsidian / Markdown vault indexing |
+| `deep-dream library` | Library management & migration |
+| `deep-dream server` | Start / manage the API server |
+| `deep-dream task` | Task queue management |
+| `deep-dream db` | Database maintenance |
+| `deep-dream sql` | Direct SQL queries |
+| `deep-dream completion` | Shell completion setup |
+
+**Global options:** `--json` · `--no-color` · `-q` / `-v` · `--dry-run` · `--config`
+
+## Web UI
+
+Deep-Dream ships with a full-featured single-page application:
+
+- **Dashboard** — System overview, task progress, live logs, statistics
+- **Memory** — Text / file upload, task monitoring, document browsing
+- **Graph Visualization** — Interactive vis-network graph with growth animation, document subgraphs, timeline playback, role-colored nodes (document=purple, episode=blue, entity=teal, relation=amber)
+- **Semantic Search** — Three modes (normal / multi-query / traverse), path finder, threshold & time filters, search history
+- **Communities** — Louvain community detection, community browsing and visualization
+- **API Test** — Raw API request testing interface
+- **Settings** — Live configuration editor
+
+## Data Model
+
+```text
+Document → Episode → Concept (entity / relation / observation)
+```
+
+- **Document** — Markdown source or remembered text (managed / external / vault modes)
+- **Episode** — A heading-level source span within a document; the basic unit of memory extraction
+- **Entity** — Extracted entity concept with a version chain; each episode mention creates a new version
+- **Relation** — Extracted relation concept connecting two entities, with evidence text and line offsets
+
+**Unified Concept Model:** Entities, relations, and observations are all different roles of a `Concept`, sharing a `family_id` (stable identity) and version chain (evolution history).
+
+**Schema V1.5 (12 tables):**
+
+| Table | Description |
+|-------|-------------|
+| `documents` | Source documents |
+| `document_versions` | Document version snapshots |
+| `episodes` | Source text chunks |
+| `entity_families` | Entity identity (across versions) |
+| `entity_observations` | Per-episode entity observations |
+| `entity_mentions` | Text mentions with offsets |
+| `relation_families` | Relation identity |
+| `relation_assertions` | Per-episode relation assertions |
+| `embeddings` | General-purpose embedding storage |
+| `pipeline_runs` | Pipeline execution tracking |
+| `document_links` | Wikilink / Markdown links |
+| `entity_redirects` | Entity merge redirects |
+
+Plus `episodes_fts` (FTS5 with trigram tokenizer for CJK) and `graph_edges` view.
+
+## API
+
+Base URL: `http://localhost:16200/api/v1`
+
+**Key endpoints:**
+
+| Category | Endpoint | Description |
+|----------|----------|-------------|
+| Memory | `POST /remember` | Submit text / file for memory ingestion |
+| | `GET /remember/tasks` | Task queue list |
+| Search | `POST /concepts/search` | Semantic concept search |
+| | `POST /traverse` | Graph traversal |
+| Concepts | `GET /concepts` | List concepts |
+| | `GET /concepts/<family_id>` | Concept detail |
+| | `GET /concepts/<family_id>/versions` | Version history |
+| | `GET /concepts/<family_id>/provenance` | Provenance trace |
+| Documents | `GET /documents` | Document list |
+| | `GET /documents/<id>/content` | Document content |
+| | `GET /documents/search` | Search raw files |
+| Vault | `POST /vaults/index` | Index Markdown / Obsidian vault |
+| | `GET /vaults/tree` | Vault file tree |
+| System | `GET /health` | Health check |
+| | `GET /stats/counts` | Concept statistics |
+| | `POST /communities/detect` | Community detection |
+
+**Agent workflow:**
+
+```text
+1. Search and read raw files first
+2. Map files to document IDs when graph context is needed
+3. Use episodes for source spans and line-level evidence
+4. Use concepts/relations for semantic expansion and alignment
+5. Verify final claims against raw text or episode source_text
+```
+
+## Storage Layout
+
+```text
+library/                     # Default storage path
+  library.db                 # SQLite main database
+  documents/
+    managed/                 # System-managed documents
+    external/                # Externally referenced documents
+  snapshots/                 # Document snapshots
+  artifacts/                 # Attachments
+  indexes/                   # Indexes
+  logs/                      # Logs
+  tasks/                     # Task persistence
+  library.json               # Library metadata
+```
+
+## Configuration
+
+Configuration lives in `service_config.json`. Key options:
+
+```json
+{
+  "host": "0.0.0.0",
+  "port": 16200,
+  "storage_path": "./library",
+  "storage": { "backend": "sqlite", "vector_dim": 1024 },
+  "llm": {
+    "model": "model_name",
+    "base_url": "http://127.0.0.1:11434",
+    "max_concurrency": 3,
+    "alignment": {
+      "model": "alignment_model_name",
+      "base_url": "http://127.0.0.1:11435"
+    }
+  },
+  "embedding": {
+    "model": "Qwen/Qwen3-Embedding-0.6B",
+    "device": "cpu"
+  },
+  "chunking": { "window_size": 1000, "overlap": 200 },
+  "pipeline": {
+    "remember": { "mode": "multi_step", "alignment_policy": "conservative" }
+  }
+}
+```
+
+**Dual LLM protocol:** Supports both Ollama native (`/api/chat`) and OpenAI-compatible (`/v1/chat/completions`) protocols.
+
+**Embedding:** Defaults to local sentence-transformers models with LRU cache + SHA-256 keys + TTL auto-expiry.
+
+## Development
+
+```bash
+# Install dev dependencies
+pip install -e ".[dev]"
+
+# Run tests
+python -m pytest core/tests/
+
+# Start server (skip LLM check)
+python -m core.server.api --config service_config.json --skip-llm-check
+
+# Lint
+ruff check core/
+```
+
+## Tech Stack
+
+- **Backend:** Python / Flask / SQLite (FTS5)
+- **CLI:** Click 8+ / Rich 13+
+- **LLM:** OpenAI SDK (compatible with Ollama, LM Studio, GLM, etc.)
+- **Embedding:** sentence-transformers (local models)
+- **Frontend:** Vanilla SPA (vis-network, Tailwind CSS, Lucide Icons)
+- **Search:** BM25 + vector retrieval + graph traversal, RRF fusion
+
+## License
+
+[MIT](LICENSE)

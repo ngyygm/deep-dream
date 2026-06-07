@@ -93,7 +93,7 @@ RELATION_DISCOVER_USER = """给定概念列表，从文本中找出有人类可�
 文本：
 {window_text}
 
-只输出一个```json```代码块，内部是概念对数组（每对只需出现一次）：
+只输出一个```json```代码块，内部是关系对数组（每对只需出现一次）：
 ```json
 [["概念A", "概念B"], ["概念C", "概念D"]]
 ```"""
@@ -103,7 +103,7 @@ RELATION_REFINE_USER = """请找出更多遗漏的关系，特别关注：
 2. 文本中是否有隐含的因果、时序、对比、从属等关系？
 3. 同一对概念间是否有多重关系维度？
 
-只输出新增的概念对（不要重复已有的）：
+只输出新增的关系对（不要重复已有的）：
 ```json
 [["概念A", "概念B"]]
 ```
@@ -123,7 +123,7 @@ ORPHAN_RECOVERY_USER = """以下概念在文本中出现，但未与任何其他
 2. 如果某个孤立概念确实与文本中任何其他概念没有关系，不要强行建立
 3. 每对只需出现一次（A→B 和 B→A 视为同一对）
 
-只输出一个```json```代码块，内部是概念对数组：
+只输出一个```json```代码块，内部是关系对数组：
 ```json
 [["概念A", "概念B"]]
 ```
@@ -368,12 +368,16 @@ confidence: 确信匹配0.8-1.0，确信不匹配0.7-0.9，不确定0.3-0.6。
 # 八、LLM 调度常量与工具函数（从 client.py 提取）
 # ============================================================
 
-# 非 TPM 类错误：失败后等待秒数，最多 5 轮（第 6 次失败则放弃）
+# 非 TPM 类错误：失败后等待秒数，最多 3 轮（第 4 次失败则放弃）
 _LLM_BACKOFF_SCHEDULE = [2, 5, 10, 20, 30]  # capped exponential, not 3^n
-_LLM_MAX_FAILURE_ROUNDS = 5
-# Xinference 500 内部错误（如 'choices' KeyError）的快速重试 schedule
-# 这些是临时性故障，快速重试通常就能成功
-_XINFERENCE_500_BACKOFF = [0.5, 1, 2, 4, 8]
+_LLM_MAX_FAILURE_ROUNDS = 3
+# Xinference 500 内部错误（如 'choices' KeyError）的重试 schedule
+# 服务端崩溃需要足够恢复时间，太快重试只会加重负担
+_XINFERENCE_500_BACKOFF = [5, 10, 20, 30, 60]
+_XINFERENCE_500_MAX_RETRIES = 5  # 独立于普通重试上限，500 临时性错误可多给机会
+_XINFERENCE_500_JITTER_MAX = 1.5  # 抖动上限（秒），防止并发重试的惊群效应
+# TPM 退避基数（指数退避 3^round）
+_LLM_BACKOFF_BASE = 3
 # 单次等待上限，避免 TPM 无限重试时指数爆炸占满进程
 _LLM_TPM_SLEEP_CAP_SECONDS = 3601
 _DISTILL_SKIP_STEPS = frozenset(("02_extract_entities", "03_extract_relations"))

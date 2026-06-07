@@ -595,6 +595,26 @@ window.GraphUtils = (function () {
     };
   }
 
+  /** Gentle "swimming" physics — nodes drift slowly, dense clusters spread apart. */
+  function getSwimmingPhysicsOptions(nodeCount) {
+    var scale = nodeCount > 2000 ? 0.6 : nodeCount > 800 ? 0.8 : 1.0;
+    return {
+      enabled: true,
+      solver: 'forceAtlas2Based',
+      forceAtlas2Based: {
+        gravitationalConstant: -50 * scale,
+        centralGravity: 0.001,
+        springLength: 220,
+        springConstant: 0.012,
+        damping: 0.92,
+        avoidOverlap: 1.0,
+      },
+      timestep: 0.25,
+      minVelocity: 0.1,
+      stabilization: { enabled: false },
+    };
+  }
+
   // ---- Interaction options ----
 
   function getInteractionOptions() {
@@ -648,6 +668,7 @@ window.GraphUtils = (function () {
     buildNodes: buildNodes,
     buildEdges: buildEdges,
     getPhysicsOptions: getPhysicsOptions,
+    getSwimmingPhysicsOptions: getSwimmingPhysicsOptions,
     getInteractionOptions: getInteractionOptions,
     computeNodeSize: computeNodeSize,
     getTimeBasedColor: getTimeBasedColor,

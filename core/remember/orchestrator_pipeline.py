@@ -12,6 +12,7 @@ import uuid
 from core.log import info as _log_info
 from core.utils import (
     clear_parallel_log_context,
+    classify_episode_type,
     compute_doc_hash,
     set_pipeline_role,
     set_window_label,
@@ -37,7 +38,8 @@ class _PipelineMixin:
                       step9_chunk_done_callback: Optional[Callable] = None,
                       chunk_done_callback: Optional[Callable] = None,
                       source_document: Optional[str] = None,
-                      target_window_indices: Optional[list] = None) -> Dict:
+                      target_window_indices: Optional[list] = None,
+                      override_doc_id: str = "") -> Dict:
         """
         将一段文本作为记忆入库：流水线式并行处理 step9（实体对齐）和 step10（关系对齐）。
 
@@ -109,9 +111,17 @@ class _PipelineMixin:
 
         if not document_path:
             document_path = f"api://{uuid.uuid4().hex}"
+        # Store override_doc_id for save_episode to use
+        self._pipeline_override_doc_id = override_doc_id
         total_length = len(text)
         chunks = self.document_processor.chunk_text(text)
         total_chunks = len(chunks)
+
+        # Generate a run_id for this pipeline invocation
+        _run_id = uuid.uuid4().hex
+        # Expose run_id on storage so save_entity/save_relation can pick it up
+        # without threading it through 9+ layers of function calls.
+        self.storage._current_run_id = _run_id
 
         # 所有窗口已处理完毕（断点续传恢复后无需重跑）
         if start_chunk >= total_chunks and not target_window_indices:
@@ -132,7 +142,20 @@ class _PipelineMixin:
             _local_to_abs = lambda i: start_chunk + i
             N = total_chunks - start_chunk  # 待处理窗口数
         last_episode_id = None
+        # Pre-compute absolute window indices for workers
+        _window_abs_indices = [_local_to_abs(i) for i in range(N)]
         clear_parallel_log_context()
+
+        # Record pipeline run
+        from core.storage.sqlite.repositories import pipeline as pipeline_repo
+        try:
+            pipeline_repo.insert_pipeline_run(
+                self.storage._conn(), _run_id, "remember", "running",
+                started_at=datetime.now().isoformat(),
+            )
+            self.storage._commit_if_not_batched(self.storage._conn())
+        except Exception:
+            logger.debug("pipeline_runs insert failed (non-critical)", exc_info=True)
 
         # 预分配共享状态
         state = self._init_remember_shared_state(N)
@@ -143,11 +166,11 @@ class _PipelineMixin:
 
         # 启动 step9 / step10 线程
         t9 = threading.Thread(target=self._run_step9_worker, name="tmg-step9-chain", daemon=True,
-                              args=(state, start_chunk, total_chunks, doc_name, verbose, verbose_steps,
+                              args=(state, _window_abs_indices, total_chunks, doc_name, verbose, verbose_steps,
                                     event_time, progress_callback, step9_chunk_done_callback,
                                     control_callback))
         t10 = threading.Thread(target=self._run_step10_worker, name="tmg-step10-chain", daemon=True,
-                              args=(state, start_chunk, total_chunks, doc_name, verbose, verbose_steps,
+                              args=(state, _window_abs_indices, total_chunks, doc_name, verbose, verbose_steps,
                                     event_time, progress_callback, chunk_done_callback,
                                     control_callback))
         t9.start()
@@ -185,11 +208,16 @@ class _PipelineMixin:
                         break
 
                     _wi = _local_to_abs(ci)
-                    chunk, start, end = chunks[_wi]
+                    _chunk_tuple = chunks[_wi]
+                    if len(_chunk_tuple) >= 4:
+                        chunk, start, end, _heading_path = _chunk_tuple[:4]
+                    else:
+                        chunk, start, end = _chunk_tuple[:3]
+                        _heading_path = ""
                     if _wi == 0 and doc_name and not doc_name.startswith(("auto_", "api:")):
                         chunk = f"[文档元数据] 文档名：{doc_name} [/文档元数据]\n\n{chunk}"
 
-                    _wlabel = f"W{start_chunk + ci + 1}/{total_chunks}"
+                    _wlabel = f"W{_wi + 1}/{total_chunks}"
                     if verbose:
                         set_window_label(_wlabel)
                         set_pipeline_role("主线程")
@@ -211,7 +239,7 @@ class _PipelineMixin:
                     if progress_callback:
                         self._safe_progress(progress_callback,
                             _g_lo + _span * 0.02,
-                            f"窗口 {start_chunk + ci + 1}/{total_chunks} · 步骤1/10 进行中",
+                            f"窗口 {_wi + 1}/{total_chunks} · 步骤1/10 进行中",
                             "", "main",
                         )
 
@@ -244,6 +272,9 @@ class _PipelineMixin:
                                     document_path=document_path, event_time=event_time,
                                     window_index=_wi + 1, total_windows=total_chunks,
                                     doc_hash=_chunk_hash,
+                                    heading_path=_heading_path,
+                                    episode_type=classify_episode_type(chunk),
+                                    run_id=_run_id,
                                 )
 
                             _t_cache_write = time.time()
@@ -288,7 +319,7 @@ class _PipelineMixin:
                         state.entity_content_done[ci].set()
                         state.extract_done[ci].set()
                         if main_chunk_done_callback:
-                            main_chunk_done_callback(start_chunk + ci + 1)
+                            main_chunk_done_callback(_wi + 1)
                         self._release_window_slot()
                         _slot_acquired = False
                         if progress_callback:
@@ -311,7 +342,7 @@ class _PipelineMixin:
                         elif verbose_steps:
                             if existing_mc:
                                 wprint_info(
-                                    f"窗口 {start_chunk + ci + 1}/{total_chunks} · 步骤1–8 已缓存跳过 → 步骤9/10"
+                                    f"窗口 {_wi + 1}/{total_chunks} · 步骤1–8 已缓存跳过 → 步骤9/10"
                                 )
                             else:
                                 wprint_info("【步骤2–8】缓存｜跳过｜抽取已存在")
@@ -324,7 +355,8 @@ class _PipelineMixin:
                             )
 
                         def _do_extract(idx=ci, mc=new_mc, chunk_text=chunk, __hash=_chunk_hash):
-                            _wlabel = f"W{start_chunk + idx + 1}/{total_chunks}"
+                            _abs_idx = _local_to_abs(idx)
+                            _wlabel = f"W{_abs_idx + 1}/{total_chunks}"
                             set_window_label(_wlabel)
                             set_pipeline_role("抽取")
                             _success_main = False
@@ -339,8 +371,8 @@ class _PipelineMixin:
                                 state.early_entity_results[idx] = valid_entities
                                 state.entity_content_done[idx].set()
                             try:
-                                _idx_lo = (start_chunk + idx) / total_chunks
-                                _idx_hi = (start_chunk + idx + 1) / total_chunks
+                                _idx_lo = _abs_idx / total_chunks
+                                _idx_hi = (_abs_idx + 1) / total_chunks
                                 _idx_span = _idx_hi - _idx_lo
                                 ents, rels = self._extract_only(
                                     mc, chunk_text, doc_name,
@@ -350,7 +382,7 @@ class _PipelineMixin:
                                         _idx_lo + _idx_span * (1.0 / 10.0),
                                         _idx_lo + _idx_span * (8.0 / 10.0),
                                     ),
-                                    window_index=start_chunk + idx, total_windows=total_chunks,
+                                    window_index=_abs_idx, total_windows=total_chunks,
                                     window_timings_ref=state.window_timings[idx],
                                     control_check_fn=lambda _s=state, _cb=control_callback: self._poll_control(_s, _cb),
                                     early_entity_done_fn=_early_entity_cb,
@@ -365,7 +397,8 @@ class _PipelineMixin:
                             except Exception as e:
                                 if isinstance(e, RememberControlFlow):
                                     self._signal_control_stop(state, e.remember_control_action, idx)
-                                if self._record_window_error(state, "extract", idx, e):
+                                    # pause/cancel 是正常控制流，不记录为错误
+                                elif self._record_window_error(state, "extract", idx, e):
                                     logger.error("extract window %d error: %s", idx, e, exc_info=True)
                             finally:
                                 with self._runtime_lock:
@@ -373,8 +406,10 @@ class _PipelineMixin:
                                 # Ensure entity_content_done is always set to prevent step9 deadlock
                                 state.entity_content_done[idx].set()
                                 state.extract_done[idx].set()
-                                if _success_main and main_chunk_done_callback:
-                                    main_chunk_done_callback(start_chunk + idx + 1)
+                                # 无论 extraction 成功或失败都推进 main 进度：
+                                # 失败时 step9 仍会用 partial data 处理，前端需要看到正确位置
+                                if main_chunk_done_callback:
+                                    main_chunk_done_callback(_abs_idx + 1)
                                 self._release_window_slot()
                                 clear_parallel_log_context()
 
@@ -433,6 +468,17 @@ class _PipelineMixin:
         # If the main pipeline crashed (not just individual window errors),
         # propagate the exception so the worker can retry.
         if _main_pipeline_exc is not None:
+            try:
+                from core.storage.sqlite.repositories import pipeline as pipeline_repo
+                pipeline_repo.update_pipeline_run_status(
+                    self.storage._conn(), _run_id, "failed",
+                    finished_at=datetime.now().isoformat(),
+                    error=str(_main_pipeline_exc),
+                )
+                self.storage._commit_if_not_batched(self.storage._conn())
+            except Exception:
+                pass
+            self.storage._current_run_id = ""
             raise _main_pipeline_exc
 
         # ========== Post-window cross-window dedup (always runs, even for N=1) ==========
@@ -489,10 +535,42 @@ class _PipelineMixin:
             except Exception:
                 pass
 
+        # Update pipeline_run status to 'succeeded'
+        try:
+            from core.storage.sqlite.repositories import pipeline as pipeline_repo
+            pipeline_repo.update_pipeline_run_status(
+                self.storage._conn(), _run_id, "succeeded",
+                finished_at=datetime.now().isoformat(),
+                episode_count=_contiguous_done,
+                entity_count=total_entities,
+                relation_count=total_relations,
+            )
+            self.storage._commit_if_not_batched(self.storage._conn())
+        except Exception:
+            logger.debug("pipeline_runs status update failed (non-critical)", exc_info=True)
+
+        # Update documents.last_indexed_at for the processed document
+        if document_version_id:
+            try:
+                _dv = self.storage._conn().execute(
+                    "SELECT document_id FROM document_versions WHERE document_version_id = ?",
+                    (document_version_id,),
+                ).fetchone()
+                if _dv:
+                    _doc_id = _dv[0]
+                    self.storage._conn().execute(
+                        "UPDATE documents SET last_indexed_at = ?, updated_at = ? WHERE document_id = ?",
+                        (datetime.now().isoformat(), datetime.now().isoformat(), _doc_id),
+                    )
+                    self.storage._commit_if_not_batched(self.storage._conn())
+            except Exception:
+                logger.debug("last_indexed_at update failed (non-critical)", exc_info=True)
+
         result = {
             "episode_id": last_episode_id,
             "document_version_id": document_version_id,
-            "chunks_processed": start_chunk + _contiguous_done,
+            "run_id": _run_id,
+            "chunks_processed": _contiguous_done if _contiguous_done < N else N,
             "storage_path": storage_path,
             "entities": total_entities,
             "relations": total_relations,
@@ -529,6 +607,9 @@ class _PipelineMixin:
         if _failed_windows >= N:
             _phase, _idx, exc = state.errors[0]
             raise exc
+
+        # Clear the run_id from storage now that pipeline is done
+        self.storage._current_run_id = ""
 
         return result
 

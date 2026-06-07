@@ -99,6 +99,9 @@ def search_fts_by_document(conn, document_id: str, query: str,
           ON e.episode_id = episodes_fts.episode_id
          AND e.status = 'active'
          AND e.document_id = ?
+        JOIN documents d
+          ON d.document_id = e.document_id
+         AND d.status = 'active'
         JOIN document_versions dv
           ON dv.document_id = e.document_id
          AND dv.document_version_id = e.document_version_id
@@ -132,26 +135,20 @@ def get_graph_edges(conn, source_id: str = "",
         params + [limit],
     ).fetchall()
 
-    cols = ["edge_type", "source_id", "target_id", "target_family_id"]
+    cols = ["edge_type", "source_id", "target_id", "target_family_id", "source_family_id"]
     return [dict(zip(cols, r)) for r in rows]
 
 
 def get_graph_neighbors(conn, family_id: str, limit: int = 50) -> list:
-    """Get neighbor concepts from graph_edges for a given family.
-
-    Handles both family IDs and observation IDs in source_id by
-    also matching via entity_observations for the source side.
-    """
+    """Get neighbor concepts from graph_edges for a given family."""
     rows = conn.execute("""
-        SELECT ge.edge_type, ge.source_id, ge.target_id, ge.target_family_id,
-               COALESCE(eo.entity_family_id, '') AS source_family_id
+        SELECT ge.edge_type, ge.source_id, ge.target_id,
+               ge.target_family_id, ge.source_family_id
         FROM graph_edges ge
-        LEFT JOIN entity_observations eo ON eo.entity_id = ge.source_id AND eo.status = 'active'
         WHERE ge.target_family_id = ?
-           OR ge.source_id = ?
-           OR eo.entity_family_id = ?
+           OR ge.source_family_id = ?
         LIMIT ?
-    """, (family_id, family_id, family_id, limit)).fetchall()
+    """, (family_id, family_id, limit)).fetchall()
 
     cols = ["edge_type", "source_id", "target_id", "target_family_id", "source_family_id"]
     return [dict(zip(cols, r)) for r in rows]
@@ -160,10 +157,20 @@ def get_graph_neighbors(conn, family_id: str, limit: int = 50) -> list:
 def get_document_graph(conn, document_id: str) -> dict:
     """Get full graph slice for a document."""
     edges = get_graph_edges(conn, source_id=document_id, limit=500)
+
+    # Collect entity family IDs from RELATES edges (source_family_id and
+    # target_family_id) and MENTIONS edges (target_family_id).
     family_ids = set()
     for e in edges:
-        if e["target_family_id"]:
-            family_ids.add(e["target_family_id"])
+        et = e.get("edge_type", "")
+        if et == "RELATES":
+            if e.get("source_family_id"):
+                family_ids.add(e["source_family_id"])
+            if e.get("target_family_id"):
+                family_ids.add(e["target_family_id"])
+        elif et in ("MENTIONS", "ASSERTS"):
+            if e.get("target_family_id"):
+                family_ids.add(e["target_family_id"])
 
     entities = []
     if family_ids:

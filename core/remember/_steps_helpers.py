@@ -8,10 +8,31 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from core.utils import wprint_info
+from core.utils import (
+    wprint_info,
+    capture_log_context as _capture_log_ctx,
+    set_window_label as _set_wl,
+    set_pipeline_role as _set_pr,
+)
 
 from .helpers import _clean_entity_name, _is_valid_entity_name, _core_entity_name
 from ._shared import _get_or_create_pool
+
+
+def _with_parent_log_ctx(fn, ctx):
+    """Wrap fn to restore parent thread's log context in child thread."""
+    def wrapper(*args, **kwargs):
+        label, role = ctx
+        if label is not None:
+            _set_wl(label)
+        if role is not None:
+            _set_pr(role)
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            _set_wl(None)
+            _set_pr(None)
+    return wrapper
 
 # Pre-compiled patterns for _build_entity_fallback_content
 _MD_HEADER_RE = re.compile(r'^#{1,6}\s')
@@ -70,10 +91,13 @@ def _parallel_map(
         return _sequential()
 
     n_workers = min(len(items), n_workers)
+    # 捕获父线程日志上下文，让子线程也能显示窗口/步骤信息
+    _ctx = _capture_log_ctx()
+    _wrapped_fn = _with_parent_log_ctx(process_fn, _ctx) if _ctx[0] or _ctx[1] else process_fn
     pool = None
     try:
         pool = _get_shared_pool(n_workers)
-        futures = {pool.submit(process_fn, item): item for item in items}
+        futures = {pool.submit(_wrapped_fn, item): item for item in items}
     except RuntimeError:
         pool = None
 

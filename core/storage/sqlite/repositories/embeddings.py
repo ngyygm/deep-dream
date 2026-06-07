@@ -59,8 +59,10 @@ def search_episode_embeddings(conn, query_vector: bytes,
     for row in rows:
         results.append({
             "embedding_id": row[0],
+            "owner_id": row[1],
             "episode_id": row[1],
             "text_hash": row[2],
+            "vector": row[3],
             "document_id": row[4],
             "episode_family_id": row[5],
         })
@@ -72,22 +74,52 @@ def search_entity_embeddings(conn, query_vector: bytes,
                              limit: int = 10) -> list:
     """Search entity observation embeddings, filtered to active documents."""
     rows = conn.execute("""
-        SELECT e.embedding_id, e.owner_id, eo.entity_family_id, eo.name
+        SELECT e.embedding_id, e.owner_id, eo.entity_family_id, eo.name, e.vector
         FROM embeddings e
         JOIN entity_observations eo ON eo.entity_id = e.owner_id AND eo.status = 'active'
         JOIN episodes ep ON ep.episode_id = eo.episode_id AND ep.status = 'active'
         JOIN documents d ON d.document_id = ep.document_id AND d.status = 'active'
+        JOIN document_versions dv
+          ON dv.document_id = ep.document_id
+         AND dv.document_version_id = ep.document_version_id
+         AND dv.status = 'active'
         WHERE e.owner_type = 'entity_obs'
           AND e.embedding_model = ?
         LIMIT ?
     """, (embedding_model, limit)).fetchall()
 
-    return [{"embedding_id": r[0], "entity_id": r[1],
-             "entity_family_id": r[2], "name": r[3]} for r in rows]
+    return [{"embedding_id": r[0], "owner_id": r[1], "entity_id": r[1],
+             "entity_family_id": r[2], "name": r[3], "vector": r[4]} for r in rows]
 
 
-def vacuum_orphaned(conn) -> int:
-    """Delete embeddings whose owner does not exist. Returns count."""
+def search_relation_embeddings(conn, query_vector: bytes,
+                               embedding_model: str,
+                               limit: int = 10) -> list:
+    """Search relation assertion embeddings, filtered to active documents."""
+    rows = conn.execute("""
+        SELECT e.embedding_id, e.owner_id, ra.relation_family_id,
+               rf.canonical_content, e.vector
+        FROM embeddings e
+        JOIN relation_assertions ra ON ra.relation_id = e.owner_id AND ra.status = 'active'
+        JOIN relation_families rf ON rf.relation_family_id = ra.relation_family_id
+        JOIN episodes ep ON ep.episode_id = ra.episode_id AND ep.status = 'active'
+        JOIN documents d ON d.document_id = ep.document_id AND d.status = 'active'
+        JOIN document_versions dv
+          ON dv.document_id = ep.document_id
+         AND dv.document_version_id = ep.document_version_id
+         AND dv.status = 'active'
+        WHERE e.owner_type = 'relation_assert'
+          AND e.embedding_model = ?
+        LIMIT ?
+    """, (embedding_model, limit)).fetchall()
+
+    return [{"embedding_id": r[0], "owner_id": r[1], "relation_id": r[1],
+             "relation_family_id": r[2],
+             "canonical_content": r[3], "vector": r[4]} for r in rows]
+
+
+def vacuum_orphaned(conn, dry_run: bool = False) -> int:
+    """Delete (or count) embeddings whose owner does not exist. Returns count."""
     owner_tables = {
         "episode": ("episodes", "episode_id"),
         "entity_obs": ("entity_observations", "entity_id"),
@@ -97,18 +129,27 @@ def vacuum_orphaned(conn) -> int:
     }
     total = 0
     for otype, (table, pk) in owner_tables.items():
-        cur = conn.execute(f"""
-            DELETE FROM embeddings
-            WHERE owner_type = ?
-              AND owner_id NOT IN (SELECT {pk} FROM {table})
-        """, (otype,))
-        total += cur.rowcount
-    conn.commit()
+        if dry_run:
+            count = conn.execute(f"""
+                SELECT COUNT(*) FROM embeddings
+                WHERE owner_type = ?
+                  AND owner_id NOT IN (SELECT {pk} FROM {table})
+            """, (otype,)).fetchone()[0]
+            total += count
+        else:
+            cur = conn.execute(f"""
+                DELETE FROM embeddings
+                WHERE owner_type = ?
+                  AND owner_id NOT IN (SELECT {pk} FROM {table})
+            """, (otype,))
+            total += cur.rowcount
+    if not dry_run:
+        conn.commit()
     return total
 
 
-def vacuum_deleted_documents(conn) -> int:
-    """Delete embeddings linked to deleted documents. Returns count."""
+def vacuum_deleted_documents(conn, dry_run: bool = False) -> int:
+    """Delete (or count) embeddings linked to deleted documents. Returns count."""
     # Episode/observation/assertion embeddings join through to documents
     total = 0
     for otype, join_sql in [
@@ -139,22 +180,58 @@ def vacuum_deleted_documents(conn) -> int:
             WHERE e.owner_type = 'document_version' AND d.status = 'deleted'
         """),
     ]:
-        ids = [r[0] for r in conn.execute(join_sql).fetchall()]
-        if ids:
-            ph = ",".join("?" for _ in ids)
-            cur = conn.execute(f"DELETE FROM embeddings WHERE embedding_id IN ({ph})", ids)
-            total += cur.rowcount
-    conn.commit()
+        if dry_run:
+            count_sql = join_sql.replace(
+                "SELECT e.embedding_id", "SELECT COUNT(*)", 1
+            )
+            count = conn.execute(count_sql).fetchone()[0]
+            total += count
+        else:
+            ids = [r[0] for r in conn.execute(join_sql).fetchall()]
+            if ids:
+                ph = ",".join("?" for _ in ids)
+                cur = conn.execute(f"DELETE FROM embeddings WHERE embedding_id IN ({ph})", ids)
+                total += cur.rowcount
+    if not dry_run:
+        conn.commit()
     return total
 
 
 def vacuum_inactive(conn, dry_run: bool = False) -> int:
-    """Delete embeddings for superseded/stale owners. Returns count."""
+    """Delete embeddings for superseded/stale owners. Returns count.
+
+    Cleans:
+    - Episode embeddings for superseded/stale episodes
+    - entity_obs embeddings whose observation is superseded
+    - entity_family embeddings whose *only* observations are superseded
+    - relation_assert embeddings whose assertion is superseded
+    """
     if dry_run:
         count = conn.execute("""
             SELECT COUNT(*) FROM embeddings e
             JOIN episodes ep ON ep.episode_id = e.owner_id
             WHERE e.owner_type = 'episode' AND ep.status IN ('superseded', 'stale')
+        """).fetchone()[0]
+        # entity_obs embeddings pointing to superseded observations
+        count += conn.execute("""
+            SELECT COUNT(*) FROM embeddings e
+            JOIN entity_observations eo ON eo.entity_id = e.owner_id
+            WHERE e.owner_type = 'entity_obs' AND eo.status = 'superseded'
+        """).fetchone()[0]
+        # entity_family embeddings with no active observations
+        count += conn.execute("""
+            SELECT COUNT(*) FROM embeddings e
+            WHERE e.owner_type = 'entity_family'
+              AND NOT EXISTS (
+                SELECT 1 FROM entity_observations eo
+                WHERE eo.entity_family_id = e.owner_id AND eo.status = 'active'
+              )
+        """).fetchone()[0]
+        # relation_assert embeddings pointing to superseded assertions
+        count += conn.execute("""
+            SELECT COUNT(*) FROM embeddings e
+            JOIN relation_assertions ra ON ra.relation_id = e.owner_id
+            WHERE e.owner_type = 'relation_assert' AND ra.status = 'superseded'
         """).fetchone()[0]
         return count
 
@@ -164,6 +241,24 @@ def vacuum_inactive(conn, dry_run: bool = False) -> int:
             SELECT e.embedding_id FROM embeddings e
             JOIN episodes ep ON ep.episode_id = e.owner_id
             WHERE e.owner_type = 'episode' AND ep.status IN ('superseded', 'stale')
+        """),
+        ("entity_obs (superseded)", """
+            SELECT e.embedding_id FROM embeddings e
+            JOIN entity_observations eo ON eo.entity_id = e.owner_id
+            WHERE e.owner_type = 'entity_obs' AND eo.status = 'superseded'
+        """),
+        ("entity_family (no active obs)", """
+            SELECT e.embedding_id FROM embeddings e
+            WHERE e.owner_type = 'entity_family'
+              AND NOT EXISTS (
+                SELECT 1 FROM entity_observations eo
+                WHERE eo.entity_family_id = e.owner_id AND eo.status = 'active'
+              )
+        """),
+        ("relation_assert (superseded)", """
+            SELECT e.embedding_id FROM embeddings e
+            JOIN relation_assertions ra ON ra.relation_id = e.owner_id
+            WHERE e.owner_type = 'relation_assert' AND ra.status = 'superseded'
         """),
     ]:
         ids = [r[0] for r in conn.execute(join_sql).fetchall()]

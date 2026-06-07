@@ -26,7 +26,7 @@ def _run_cli(config_path, *args):
     import sys
     old_argv = sys.argv
     try:
-        sys.argv = ["deep-dream", "--config", config_path] + list(args)
+        sys.argv = ["deep-dream", "--config", config_path, "--json"] + list(args)
         rc = main()
         return rc
     finally:
@@ -49,7 +49,7 @@ def _run_cli_capture(config_path, *args, capsys):
     import sys
     old_argv = sys.argv
     try:
-        sys.argv = ["deep-dream", "--config", config_path] + list(args)
+        sys.argv = ["deep-dream", "--config", config_path, "--json"] + list(args)
         main()
         captured = capsys.readouterr()
         return _parse_last_json(captured.out)
@@ -61,8 +61,8 @@ def test_db_init_v15(test_library, capsys):
     lib_dir, config_path = test_library
     result = _run_cli_capture(config_path, "db", "init-v15", capsys=capsys)
     assert result["success"] is True
-    assert result["action"] == "init-v15"
-    db_path = os.path.join(lib_dir, "graph.db")
+    assert result["command"] == "db init-v15"
+    db_path = os.path.join(lib_dir, "library.db")
     conn = sqlite3.connect(db_path)
     tables = {r[0] for r in conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
@@ -77,7 +77,7 @@ def test_db_validate_empty_db(test_library, capsys):
     _run_cli(config_path, "db", "init-v15")
     result = _run_cli_capture(config_path, "db", "validate", capsys=capsys)
     assert result["success"] is True
-    assert result["violations"] == 0
+    assert result["data"]["violations"] == 0
 
 
 def test_db_rebuild_fts(test_library, capsys):
@@ -90,7 +90,7 @@ def test_db_rebuild_fts(test_library, capsys):
 def test_db_compact(test_library, capsys):
     lib_dir, config_path = test_library
     _run_cli(config_path, "db", "init-v15")
-    result = _run_cli_capture(config_path, "db", "compact", capsys=capsys)
+    result = _run_cli_capture(config_path, "db", "compact", "--yes", capsys=capsys)
     assert result["success"] is True
 
 
@@ -104,7 +104,7 @@ def test_db_vacuum_embeddings_empty(test_library, capsys):
 def test_db_reset_v15_backup_old(test_library, capsys):
     lib_dir, config_path = test_library
     _run_cli(config_path, "db", "init-v15")
-    db_path = os.path.join(lib_dir, "graph.db")
+    db_path = os.path.join(lib_dir, "library.db")
     conn = sqlite3.connect(db_path)
     conn.execute(
         "INSERT INTO documents (document_id, status, created_at, updated_at) "
@@ -113,11 +113,11 @@ def test_db_reset_v15_backup_old(test_library, capsys):
     conn.commit()
     conn.close()
 
-    result = _run_cli_capture(config_path, "db", "reset-v15", "--backup-old", capsys=capsys)
+    result = _run_cli_capture(config_path, "db", "reset-v15", "--yes", capsys=capsys)
     assert result["success"] is True
-    assert "backup" in result
+    assert "backup" in result["data"]
 
-    backup_file = result["backup"]
+    backup_file = result["data"]["backup"]
     assert os.path.exists(backup_file)
 
     conn = sqlite3.connect(db_path)

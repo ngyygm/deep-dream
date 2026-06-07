@@ -157,10 +157,17 @@ def ok(data: Any) -> tuple:
 
 def err(message: str, status: int = 400, hint: str = None) -> tuple:
     if status >= 500:
-        # Security: Log full error details server-side, but don't expose them to client
-        logger.error("API error (%d): %s", status, message, exc_info=True)
-        # Sanitize error message for client - don't expose internal details
-        message = "Internal server error. Please check the logs for details."
+        # 501 (Not Implemented) and 503 (Service Unavailable) are operational
+        # errors with user-facing messages -- don't sanitize them.
+        # 500 (Internal Server Error) is sanitized to avoid leaking internals.
+        if status == 500:
+            # Security: Log full error details server-side, but don't expose them to client
+            logger.error("API error (%d): %s", status, message, exc_info=True)
+            # Sanitize error message for client - don't expose internal details
+            message = "Internal server error. Please check the logs for details."
+        else:
+            # 501, 503, etc. -- log but preserve the message for the client
+            logger.warning("API error (%d): %s", status, message)
     else:
         # For 4xx errors, log at warning level
         logger.warning("API error (%d): %s", status, message)

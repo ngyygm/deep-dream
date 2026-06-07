@@ -13,8 +13,9 @@ def insert_document(conn, document_id: str, title: str, managed_path: str,
     conn.execute(
         """INSERT INTO documents
            (document_id, title, source_mode, managed_path, absolute_path,
-            vault_root, relative_path, status, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+            vault_root, relative_path, status, created_at, updated_at,
+            last_indexed_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)
            ON CONFLICT(document_id) DO UPDATE SET
              title = excluded.title,
              source_mode = excluded.source_mode,
@@ -22,9 +23,10 @@ def insert_document(conn, document_id: str, title: str, managed_path: str,
              absolute_path = excluded.absolute_path,
              vault_root = COALESCE(excluded.vault_root, documents.vault_root),
              relative_path = excluded.relative_path,
-             updated_at = excluded.updated_at""",
+             updated_at = excluded.updated_at,
+             last_indexed_at = excluded.updated_at""",
         (document_id, title, source_mode, managed_path, absolute_path or None,
-         vault_root or None, relative_path, created_at, updated_at),
+         vault_root or None, relative_path, created_at, updated_at, updated_at),
     )
 
 

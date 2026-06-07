@@ -31,6 +31,7 @@ class RememberTask:
     event_time: Optional[datetime]
     original_path: str
     cache_document_path: Optional[str] = None
+    override_doc_id: str = ""
     status: str = "queued"          # queued | running | completed | failed
     result: Optional[Dict] = None
     error: Optional[str] = None
@@ -75,6 +76,7 @@ def task_to_dict(task: RememberTask) -> Dict[str, Any]:
         "source_name": task.source_name,
         "original_path": task.original_path,
         "cache_document_path": task.cache_document_path,
+        "override_doc_id": task.override_doc_id,
         "status": task.status,
         "event_time": task.event_time.isoformat() if task.event_time else None,
         "load_cache": task.load_cache,
@@ -133,6 +135,7 @@ def remember_task_from_record(rec: Dict[str, Any], text: str) -> RememberTask:
         event_time=event_time,
         original_path=str(rec.get("original_path") or ""),
         cache_document_path=rec.get("cache_document_path"),
+        override_doc_id=str(rec.get("override_doc_id") or ""),
         status=str(rec.get("status") or "queued"),
         result=rec.get("result"),
         error=rec.get("error"),
@@ -143,8 +146,10 @@ def remember_task_from_record(rec: Dict[str, Any], text: str) -> RememberTask:
         phase_label=str(rec.get("phase_label") or "等待处理"),
         phase_current=int(rec.get("phase_current") or 0),
         phase_total=int(rec.get("phase_total") or 0),
-        main_done_chunks=int(rec.get("main_done_chunks") or rec.get("processed_chunks") or 0),
-        step9_done_chunks=int(rec.get("step9_done_chunks") or rec.get("processed_chunks") or 0),
+        # 旧记录缺少 per-chain 计数器时，仅 step10 回退到 processed_chunks；
+        # main/step9 不回退，由 recover_from_disk 的单调性修正处理
+        main_done_chunks=int(rec.get("main_done_chunks") or 0),
+        step9_done_chunks=int(rec.get("step9_done_chunks") or 0),
         step10_done_chunks=int(rec.get("step10_done_chunks") or rec.get("processed_chunks") or 0),
         processed_chunks=int(rec.get("processed_chunks") or 0),
         total_chunks=int(rec.get("total_chunks") or 0),

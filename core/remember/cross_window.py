@@ -387,7 +387,7 @@ class _CrossWindowDedupMixin:
                     content=merged_content,
                     event_time=_primary_ent.event_time,
                     processed_time=datetime.now(timezone.utc),
-                    episode_id="alias_merge",
+                    episode_id=getattr(_primary_ent, 'episode_id', '') or "",
                     source_document=_primary_ent.source_document or "",
                     confidence=_primary_ent.confidence or 0.5,
                 ))

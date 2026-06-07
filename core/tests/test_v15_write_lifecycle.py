@@ -157,10 +157,11 @@ def test_entity_mention_insert_and_read(v15):
 def test_relation_family_upsert(v15):
     ent_repo.upsert_entity_family(v15, "fam1", "Alice", created_at=NOW, updated_at=NOW)
     ent_repo.upsert_entity_family(v15, "fam2", "Bob", created_at=NOW, updated_at=NOW)
-    rel_repo.upsert_relation_family(v15, "rfam1", "fam1", "fam2", "knows",
+    rel_repo.upsert_relation_family(v15, "rfam1", "fam1", "fam2",
+                                    canonical_content="Alice knows Bob",
                                     created_at=NOW, updated_at=NOW)
     fam = rel_repo.get_relation_family(v15, "rfam1")
-    assert fam["predicate"] == "knows"
+    assert fam["canonical_content"] == "Alice knows Bob"
     assert fam["subject_entity_family_id"] == "fam1"
 
 
@@ -174,7 +175,7 @@ def test_relation_assertion_insert(v15):
                                        processed_at=NOW)
     ent_repo.insert_entity_observation(v15, "obs2", "fam2", "ep1", "Bob",
                                        processed_at=NOW)
-    rel_repo.upsert_relation_family(v15, "rfam1", "fam1", "fam2", "knows",
+    rel_repo.upsert_relation_family(v15, "rfam1", "fam1", "fam2",
                                     created_at=NOW, updated_at=NOW)
     rel_repo.insert_relation_assertion(
         v15, "rel1", "rfam1", "ep1", "obs1", "obs2", "fam1", "fam2",
@@ -218,7 +219,7 @@ def test_full_lifecycle(v15):
                                    start_offset=0, end_offset=5, created_at=NOW)
     ent_repo.insert_entity_mention(v15, "m2", "obs2", "fam2", "ep1", "Bob",
                                    start_offset=11, end_offset=14, created_at=NOW)
-    rel_repo.upsert_relation_family(v15, "rfam1", "fam1", "fam2", "knows",
+    rel_repo.upsert_relation_family(v15, "rfam1", "fam1", "fam2",
                                     created_at=NOW, updated_at=NOW)
     rel_repo.insert_relation_assertion(
         v15, "rel1", "rfam1", "ep1", "obs1", "obs2", "fam1", "fam2",

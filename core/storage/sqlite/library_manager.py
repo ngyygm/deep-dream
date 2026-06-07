@@ -42,6 +42,15 @@ def _now_str() -> str:
     return _now().isoformat()
 
 
+def _escape_like(value: str) -> str:
+    """Escape LIKE wildcard characters (%_) so they match literally.
+
+    Uses '!' as the ESCAPE character to avoid backslash quoting issues
+    in Python triple-quoted SQL strings.
+    """
+    return value.replace("!", "!!").replace("%", "!%").replace("_", "!_")
+
+
 class LibraryManager:
     """V1.5 storage facade used by the remember pipeline and server."""
 
@@ -154,12 +163,17 @@ class LibraryManager:
             conn = self._conn()
             depth = int(getattr(self._thread_local, "write_batch_depth", 0) or 0)
             self._thread_local.write_batch_depth = depth + 1
+            _ok = False
             try:
                 yield conn
+                _ok = True
             finally:
                 self._thread_local.write_batch_depth = depth
                 if depth == 0:
-                    conn.commit()
+                    if _ok:
+                        conn.commit()
+                    else:
+                        conn.rollback()
 
     # ------------------------------------------------------------------
     # Cache helpers
@@ -215,10 +229,11 @@ class LibraryManager:
     def count_documents(self, source_document: str = None) -> int:
         conn = self._conn()
         if source_document:
+            esc = _escape_like(source_document)
             row = conn.execute(
                 "SELECT COUNT(*) FROM documents WHERE status = 'active' "
-                "AND (title LIKE ? OR managed_path LIKE ? OR absolute_path LIKE ?)",
-                (f"%{source_document}%", f"%{source_document}%", f"%{source_document}%"),
+                "AND (title LIKE ? ESCAPE '!' OR managed_path LIKE ? ESCAPE '!' OR absolute_path LIKE ? ESCAPE '!')",
+                (f"%{esc}%", f"%{esc}%", f"%{esc}%"),
             ).fetchone()
         else:
             row = conn.execute(
@@ -234,15 +249,34 @@ class LibraryManager:
                 doc["document_version_id"] = doc["current_version_id"]
         return doc
 
+    def _resolve_version(self, conn, identifier: str):
+        """Resolve a document_id or document_version_id to a version row.
+
+        Accepts either a ``document_version_id`` (e.g. ``docver_doc_...``)
+        or a ``document_id`` (e.g. ``doc_...``).  For the latter, looks up
+        ``current_version_id`` in the ``documents`` table first.
+        """
+        ver = conn.execute(
+            "SELECT * FROM document_versions WHERE document_version_id = ?",
+            (identifier,),
+        ).fetchone()
+        if ver:
+            return ver
+        # Maybe it's a document_id — resolve to current version
+        doc = doc_repo.get_document(conn, identifier)
+        if doc and doc.get("current_version_id"):
+            ver = conn.execute(
+                "SELECT * FROM document_versions WHERE document_version_id = ?",
+                (doc["current_version_id"],),
+            ).fetchone()
+        return ver
+
     def get_document_content(self, document_version_id: str, *,
                              offset: int = 0, limit: int = 10_000_000) -> dict:
         conn = self._conn()
-        ver = conn.execute(
-            "SELECT * FROM document_versions WHERE document_version_id = ?",
-            (document_version_id,),
-        ).fetchone()
+        ver = self._resolve_version(conn, document_version_id)
         if not ver:
-            return {"content": "", "read_path": ""}
+            raise KeyError(document_version_id)
         ver = dict(ver)
         doc = doc_repo.get_document(conn, ver["document_id"]) or {}
 
@@ -268,14 +302,12 @@ class LibraryManager:
             "read_path": read_path,
             "source_mode": doc.get("source_mode", ""),
             "title": doc.get("title") or "",
+            "doc_id": ver.get("document_id", ""),
         }
 
     def get_document_file_info(self, document_version_id: str) -> dict:
         conn = self._conn()
-        ver = conn.execute(
-            "SELECT * FROM document_versions WHERE document_version_id = ?",
-            (document_version_id,),
-        ).fetchone()
+        ver = self._resolve_version(conn, document_version_id)
         if not ver:
             return {}
         ver = dict(ver)
@@ -284,12 +316,17 @@ class LibraryManager:
             "document_version_id": document_version_id,
             "document_id": ver.get("document_id"),
             "title": ver.get("title", ""),
+            "source_mode": doc.get("source_mode", "managed"),
             "content_hash": ver.get("content_hash", ""),
             "char_count": ver.get("char_count", 0),
             "line_count": ver.get("line_count", 0),
             "byte_size": ver.get("byte_size", 0),
             "managed_path": doc.get("managed_path", ""),
             "absolute_path": doc.get("absolute_path", ""),
+            "snapshot_path": ver.get("version_content_path", ""),
+            "vault_root": doc.get("vault_root", ""),
+            "relative_path": doc.get("relative_path", ""),
+            "read_path": doc.get("managed_path", "") or ver.get("version_content_path", ""),
         }
 
     def delete_document_version(self, document_version_id: str) -> dict:
@@ -324,12 +361,27 @@ class LibraryManager:
 
             # Delete entity_mentions linked to these episodes
             conn.execute(f"DELETE FROM entity_mentions WHERE episode_id IN ({ph})", ep_ids)
+            # Collect assertion IDs BEFORE deleting (needed for embedding cleanup)
+            rel_assert_ids_to_delete = [r[0] for r in conn.execute(
+                f"SELECT relation_id FROM relation_assertions WHERE episode_id IN ({ph})", ep_ids
+            ).fetchall()]
             # Delete relation_assertions linked to these episodes
             conn.execute(f"DELETE FROM relation_assertions WHERE episode_id IN ({ph})", ep_ids)
+            # Collect observation IDs for embedding cleanup
+            obs_ids_to_delete = [r[0] for r in conn.execute(
+                f"SELECT entity_id FROM entity_observations WHERE episode_id IN ({ph})", ep_ids
+            ).fetchall()]
             # Delete entity_observations linked to these episodes
             conn.execute(f"DELETE FROM entity_observations WHERE episode_id IN ({ph})", ep_ids)
             # Delete embeddings linked to these episodes
             conn.execute(f"DELETE FROM embeddings WHERE owner_type = 'episode' AND owner_id IN ({ph})", ep_ids)
+            # Delete embeddings for the observations and assertions we just removed
+            if obs_ids_to_delete:
+                obs_ph = ",".join("?" for _ in obs_ids_to_delete)
+                conn.execute(f"DELETE FROM embeddings WHERE owner_type = 'entity_obs' AND owner_id IN ({obs_ph})", obs_ids_to_delete)
+            if rel_assert_ids_to_delete:
+                rass_ph = ",".join("?" for _ in rel_assert_ids_to_delete)
+                conn.execute(f"DELETE FROM embeddings WHERE owner_type = 'relation_assert' AND owner_id IN ({rass_ph})", rel_assert_ids_to_delete)
 
             # Delete episodes
             conn.execute(f"DELETE FROM episodes WHERE episode_id IN ({ph})", ep_ids)
@@ -354,11 +406,26 @@ class LibraryManager:
                     # Delete assertions for these relation families first
                     if rel_fams_blocked:
                         rel_blocked_ph = ",".join("?" for _ in rel_fams_blocked)
+                        # Collect assertion IDs before deleting for embedding cleanup
+                        blocked_assert_ids = [r[0] for r in conn.execute(
+                            f"SELECT relation_id FROM relation_assertions WHERE relation_family_id IN ({rel_blocked_ph})",
+                            list(rel_fams_blocked),
+                        ).fetchall()]
                         conn.execute(f"DELETE FROM relation_assertions WHERE relation_family_id IN ({rel_blocked_ph})", list(rel_fams_blocked))
-                        conn.execute(f"DELETE FROM embeddings WHERE owner_type = 'relation_assert' AND owner_id IN ({rel_blocked_ph})", list(rel_fams_blocked))
+                        if blocked_assert_ids:
+                            ba_ph = ",".join("?" for _ in blocked_assert_ids)
+                            conn.execute(f"DELETE FROM embeddings WHERE owner_type = 'relation_assert' AND owner_id IN ({ba_ph})", blocked_assert_ids)
                         conn.execute(f"DELETE FROM relation_families WHERE relation_family_id IN ({rel_blocked_ph})", list(rel_fams_blocked))
+                    # Collect entity observation IDs for these families before deleting
+                    orphan_obs_ids = [r[0] for r in conn.execute(
+                        f"SELECT entity_id FROM entity_observations WHERE entity_family_id IN ({del_ph})",
+                        list(to_delete),
+                    ).fetchall()] if to_delete else []
                     conn.execute(f"DELETE FROM entity_mentions WHERE entity_family_id IN ({del_ph})", list(to_delete))
-                    conn.execute(f"DELETE FROM embeddings WHERE owner_type = 'entity_obs' AND owner_id IN ({del_ph})", list(to_delete))
+                    conn.execute(f"DELETE FROM entity_observations WHERE entity_family_id IN ({del_ph})", list(to_delete))
+                    if orphan_obs_ids:
+                        oobs_ph = ",".join("?" for _ in orphan_obs_ids)
+                        conn.execute(f"DELETE FROM embeddings WHERE owner_type = 'entity_obs' AND owner_id IN ({oobs_ph})", orphan_obs_ids)
                     conn.execute(f"DELETE FROM embeddings WHERE owner_type = 'entity_family' AND owner_id IN ({del_ph})", list(to_delete))
                     conn.execute(f"DELETE FROM entity_families WHERE entity_family_id IN ({del_ph})", list(to_delete))
 
@@ -372,7 +439,15 @@ class LibraryManager:
                 to_delete = orphan_rel_fam_ids - surviving
                 if to_delete:
                     del_ph = ",".join("?" for _ in to_delete)
-                    conn.execute(f"DELETE FROM embeddings WHERE owner_type = 'relation_assert' AND owner_id IN ({del_ph})", list(to_delete))
+                    # Collect assertion IDs before deleting for embedding cleanup
+                    orphan_assert_ids = [r[0] for r in conn.execute(
+                        f"SELECT relation_id FROM relation_assertions WHERE relation_family_id IN ({del_ph})",
+                        list(to_delete),
+                    ).fetchall()]
+                    conn.execute(f"DELETE FROM relation_assertions WHERE relation_family_id IN ({del_ph})", list(to_delete))
+                    if orphan_assert_ids:
+                        oa_ph = ",".join("?" for _ in orphan_assert_ids)
+                        conn.execute(f"DELETE FROM embeddings WHERE owner_type = 'relation_assert' AND owner_id IN ({oa_ph})", orphan_assert_ids)
                     conn.execute(f"DELETE FROM relation_families WHERE relation_family_id IN ({del_ph})", list(to_delete))
 
         # Delete document_links for this document
@@ -697,7 +772,7 @@ class LibraryManager:
         conn = self._conn()
         row = conn.execute(
             "SELECT ra.*, rf.relation_family_id, rf.subject_entity_family_id, "
-            "  rf.object_entity_family_id, rf.predicate, rf.canonical_content "
+            "  rf.object_entity_family_id, rf.canonical_content "
             "FROM relation_assertions ra "
             "JOIN relation_families rf ON rf.relation_family_id = ra.relation_family_id "
             "WHERE ra.relation_id = ?",
@@ -707,7 +782,7 @@ class LibraryManager:
             return None
         row = dict(row)
         fam = {k: row[k] for k in ("relation_family_id", "subject_entity_family_id",
-                                     "object_entity_family_id", "predicate", "canonical_content")}
+                                     "object_entity_family_id", "canonical_content")}
         sub_abs = self._latest_obs_id_for_family(row["subject_entity_family_id"])
         obj_abs = self._latest_obs_id_for_family(row["object_entity_family_id"])
         emb = self._get_embedding_blob("relation_assert", absolute_id)
@@ -877,27 +952,26 @@ class LibraryManager:
                                 source_document: str = None) -> List[dict]:
         raw = search_repo.search_fts(self._conn(), query, limit=limit)
         if raw:
-            if len(raw) == 1:
-                raw[0]["_score"] = 0.5
-            else:
-                scores = [r.get("score", 0) for r in raw]
-                min_s = min(scores)
-                max_s = max(scores)
-                span = max_s - min_s
-                for r in raw:
-                    r["_score"] = (r.get("score", 0) - min_s) / span
+            scores = [r.get("score", 0) for r in raw]
+            min_s, max_s = min(scores), max(scores)
+            span = max_s - min_s
+            for r in raw:
+                # FTS5 bm25() returns negative values; most negative = most relevant.
+                # Invert so most relevant → 1.0.
+                r["_score"] = (max_s - r.get("score", 0)) / span if span else 0.5
         return raw
 
     def search_entities_by_bm25(self, query: str, limit: int = 20,
                                 time_point: str = None) -> List[Entity]:
         results = search_repo.search_fts(self._conn(), query, limit=limit)
         # Normalize BM25 scores (FTS5 returns negative, more negative = more relevant)
+        # Invert so that most relevant → 1.0, least relevant → 0.0
         if results:
             scores = [r.get("score", 0) for r in results]
             min_s, max_s = min(scores), max(scores)
             span = max_s - min_s
             for r in results:
-                r["_score"] = (r.get("score", 0) - min_s) / span if span else 0.5
+                r["_score"] = (max_s - r.get("score", 0)) / span if span else 0.5
         entities = []
         for r in results:
             ep_id = r.get("episode_id")
@@ -925,12 +999,13 @@ class LibraryManager:
                                  time_point: str = None) -> List[Relation]:
         results = search_repo.search_fts(self._conn(), query, limit=limit)
         # Normalize BM25 scores (FTS5 returns negative, more negative = more relevant)
+        # Invert so that most relevant → 1.0, least relevant → 0.0
         if results:
             scores = [r.get("score", 0) for r in results]
             min_s, max_s = min(scores), max(scores)
             span = max_s - min_s
             for r in results:
-                r["_score"] = (r.get("score", 0) - min_s) / span if span else 0.5
+                r["_score"] = (max_s - r.get("score", 0)) / span if span else 0.5
         relations = []
         for r in results:
             ep_id = r.get("episode_id")
@@ -962,7 +1037,9 @@ class LibraryManager:
         query_vec, query_nd = result
         candidates = emb_repo.search_entity_embeddings(
             self._conn(), query_vec,
-            embedding_model=getattr(self.embedding_client, 'model_name', ''),
+            embedding_model=(getattr(self.embedding_client, 'model_name', None)
+                             or getattr(self.embedding_client, 'model_path', None)
+                             or 'unknown'),
             limit=max_results * 3,
         )
         scored = []
@@ -1000,9 +1077,11 @@ class LibraryManager:
         if not result:
             return []
         query_vec, query_nd = result
-        candidates = emb_repo.search_episode_embeddings(
+        candidates = emb_repo.search_relation_embeddings(
             self._conn(), query_vec,
-            embedding_model=getattr(self.embedding_client, 'model_name', ''),
+            embedding_model=(getattr(self.embedding_client, 'model_name', None)
+                             or getattr(self.embedding_client, 'model_path', None)
+                             or 'unknown'),
             limit=max_results * 3,
         )
         scored = []
@@ -1043,9 +1122,16 @@ class LibraryManager:
 
     def suggest_concepts(self, query: str, role: str = "entity", limit: int = 10,
                          source_document: str = None) -> List[dict]:
-        entities = self.search_entities_by_similarity(query, threshold=0.3, max_results=limit)
-        return [{"family_id": e.family_id, "name": e.name, "relevance": e._score, "role": "entity"}
-                for e in entities[:limit]]
+        conn = self._conn()
+        like = _escape_like(query) + "%"
+        rows = conn.execute(
+            "SELECT entity_family_id, canonical_name FROM entity_families "
+            "WHERE canonical_name LIKE ? ESCAPE '!' "
+            "ORDER BY updated_at DESC LIMIT ?",
+            (like, limit),
+        ).fetchall()
+        return [{"family_id": r[0], "name": r[1], "relevance": 1.0, "role": "entity"}
+                for r in rows]
 
     # ------------------------------------------------------------------
     # Concept unified API (server compatibility)
@@ -1066,8 +1152,18 @@ class LibraryManager:
                 result["role"] = "entity"
                 result["family_id"] = result["entity_family_id"]
                 result["name"] = result["canonical_name"]
-                if obs:
+                # Prefer canonical_content (manually updated) over
+                # observation content so that `concept update --content`
+                # is reflected in `concept get`.
+                canon = result.get("canonical_content") or ""
+                if canon:
+                    result["content"] = canon
+                elif obs:
                     result["content"] = dict(obs).get("content", "")
+                # Extract confidence from latest active observation extra_json
+                if obs:
+                    from .dto_mapping import _extract_confidence
+                    result["confidence"] = _extract_confidence(dict(obs).get("extra_json", "{}"))
                 return result
         # Try relation
         fam = rel_repo.get_relation_family(self._conn(), family_id)
@@ -1075,6 +1171,16 @@ class LibraryManager:
             result = dict(fam)
             result["role"] = "relation"
             result["family_id"] = result["relation_family_id"]
+            # Extract confidence from latest active assertion extra_json
+            assert_row = self._conn().execute(
+                "SELECT extra_json FROM relation_assertions "
+                "WHERE relation_family_id = ? AND status = 'active' "
+                "ORDER BY processed_at DESC LIMIT 1",
+                (family_id,),
+            ).fetchone()
+            if assert_row:
+                from .dto_mapping import _extract_confidence
+                result["confidence"] = _extract_confidence(assert_row[0])
             return result
         return None
 
@@ -1098,7 +1204,8 @@ class LibraryManager:
                      for r in rel_repo.list_relation_families(self._conn(), limit=limit, offset=offset)]
         else:
             ents = self.list_concepts(role="entity", limit=limit, offset=offset)
-            rels = self.list_concepts(role="relation", limit=limit, offset=offset)
+            remaining = max(0, limit - len(ents))
+            rels = self.list_concepts(role="relation", limit=remaining, offset=max(0, offset - len(ents))) if remaining > 0 else []
             return ents + rels
 
     def count_concepts(self, role: str = None, time_point: str = None,
@@ -1140,7 +1247,43 @@ class LibraryManager:
                 for r in rows]
 
     def get_concept_mentions(self, family_id: str, time_point: str = None) -> List[dict]:
-        return self.get_concept_provenance(family_id, time_point=time_point)
+        """Return episodes mentioning a concept, with document metadata.
+
+        Returns list of dicts with keys: episode_id, document_id, title,
+        heading_path, line_start, line_end, source_text, surface_text.
+        """
+        conn = self._conn()
+        rows = conn.execute(
+            """
+            SELECT em.episode_id,
+                   em.surface_text,
+                   em.line_start,
+                   em.line_end,
+                   ep.document_id,
+                   ep.heading_path,
+                   ep.source_text,
+                   d.title
+            FROM entity_mentions em
+            JOIN episodes ep ON ep.episode_id = em.episode_id
+            JOIN documents d ON d.document_id = ep.document_id
+            WHERE em.entity_family_id = ?
+            ORDER BY ep.document_id, em.line_start
+            """,
+            (family_id,),
+        ).fetchall()
+        return [
+            {
+                "episode_id": r[0],
+                "surface_text": r[1],
+                "line_start": r[2],
+                "line_end": r[3],
+                "document_id": r[4],
+                "heading_path": r[5],
+                "source_text": r[6],
+                "title": r[7],
+            }
+            for r in rows
+        ]
 
     def get_concept_neighbors(self, family_id: str, max_depth: int = 1,
                               time_point: str = None, edge_types: Optional[List[str]] = None,
@@ -1167,6 +1310,7 @@ class LibraryManager:
                 for m in mentions]
 
     def update_concept_manual(self, family_id: str, updates: dict) -> dict:
+        import json as _json
         conn = self._conn()
         fam = ent_repo.get_entity_family(conn, family_id)
         if not fam:
@@ -1175,11 +1319,57 @@ class LibraryManager:
         content = updates.get("content", fam.get("canonical_content", ""))
         ent_repo.upsert_entity_family(conn, family_id, name, content,
                                        updated_at=_now_str())
+        # Update confidence on latest active observation if provided
+        new_confidence = updates.get("confidence")
+        if new_confidence is not None:
+            obs_row = conn.execute(
+                "SELECT entity_id, extra_json FROM entity_observations "
+                "WHERE entity_family_id = ? AND status = 'active' "
+                "ORDER BY processed_at DESC LIMIT 1",
+                (family_id,),
+            ).fetchone()
+            if obs_row:
+                obs_id, extra_json = obs_row[0], obs_row[1] or "{}"
+                try:
+                    extra = _json.loads(extra_json)
+                except (ValueError, TypeError):
+                    extra = {}
+                extra["confidence"] = float(new_confidence)
+                conn.execute(
+                    "UPDATE entity_observations SET extra_json = ? WHERE entity_id = ?",
+                    (_json.dumps(extra, ensure_ascii=False), obs_id),
+                )
         conn.commit()
         return {"updated": True, "family_id": family_id}
 
     def find_duplicate_entities_fast(self, limit: int = 500) -> List[dict]:
-        return []
+        """Find entity families sharing the same canonical_name."""
+        conn = self._conn()
+        rows = conn.execute(
+            """
+            SELECT ef1.entity_family_id AS family_a_id,
+                   ef1.canonical_name    AS name_a,
+                   ef2.entity_family_id AS family_b_id,
+                   ef2.canonical_name    AS name_b
+            FROM entity_families ef1
+            JOIN entity_families ef2
+              ON ef1.canonical_name = ef2.canonical_name
+             AND ef1.entity_family_id < ef2.entity_family_id
+            ORDER BY ef1.canonical_name
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [
+            {
+                "family_a_id": r[0],
+                "name_a": r[1],
+                "family_b_id": r[2],
+                "name_b": r[3],
+                "similarity": 1.0,  # exact name match
+            }
+            for r in rows
+        ]
 
     # ------------------------------------------------------------------
     # Document graph rendering
@@ -1192,13 +1382,15 @@ class LibraryManager:
                            max_episodes: int = 500,
                            max_concepts: int = 1000) -> dict:
         from .graph_traversal import get_document_graph
-        return get_document_graph(self._conn(), document_version_ids, document_family_ids)
+        return get_document_graph(self._conn(), document_version_ids,
+                                  document_family_ids, max_episodes, max_concepts)
 
     def get_document_graph_outline(self, document_version_ids: List[str] = None,
                                     document_family_ids: List[str] = None,
                                     max_episodes: int = 10000) -> dict:
         from .graph_traversal import get_document_graph_outline
-        return get_document_graph_outline(self._conn(), document_version_ids, document_family_ids)
+        return get_document_graph_outline(self._conn(), document_version_ids,
+                                          document_family_ids, max_episodes)
 
     def get_document_graph_chunk(self, document_version_ids: List[str] = None,
                                   document_family_ids: List[str] = None,
@@ -1208,7 +1400,9 @@ class LibraryManager:
                                   max_concepts: int = 8000) -> dict:
         from .graph_traversal import get_document_graph_chunk
         return get_document_graph_chunk(self._conn(), document_version_ids,
-                                         document_family_ids, cursor, limit)
+                                         document_family_ids, cursor, limit,
+                                         include_relations, include_versions,
+                                         max_concepts)
 
     # ------------------------------------------------------------------
     # Statistics
@@ -1273,14 +1467,18 @@ class LibraryManager:
     def redirect_entity_relations(self, old_family_id: str, new_family_id: str):
         from .merge import redirect_entity_relations
         redirect_entity_relations(self._conn(), old_family_id, new_family_id)
+        self._commit_if_not_batched()
 
     def delete_entity_all_versions(self, family_id: str) -> int:
         from .merge import delete_entity_all_versions
-        return delete_entity_all_versions(self._conn(), family_id)
+        result = delete_entity_all_versions(self._conn(), family_id)
+        self._commit_if_not_batched()
+        return result
 
     def dedup_merge_batch(self, pairs: List[Tuple[str, str]]) -> int:
         from .merge import dedup_merge_batch
-        return dedup_merge_batch(self._conn(), pairs)
+        with self._write_batch():
+            return dedup_merge_batch(self._conn(), pairs)
 
     # ------------------------------------------------------------------
     # Vault indexing (stubs — delegate to vault_indexer.py)
@@ -1327,27 +1525,22 @@ class LibraryManager:
         # embedding client available), try a LIKE-based name lookup.
         if not results and (role is None or role == "entity"):
             conn = self._conn()
-            like = f"%{query}%"
+            like = f"%{_escape_like(query)}%"
             rows = conn.execute(
                 "SELECT ef.entity_family_id, ef.canonical_name, ef.canonical_content "
                 "FROM entity_families ef "
-                "WHERE ef.canonical_name LIKE ? "
+                "WHERE ef.canonical_name LIKE ? ESCAPE '!' "
                 "ORDER BY ef.updated_at DESC LIMIT ?",
                 (like, top_k),
             ).fetchall()
             for row in rows:
-                e = Entity(
-                    absolute_id="",
-                    family_id=row[0],
-                    name=row[1],
-                    content=row[2] or "",
-                    event_time=_now(),
-                    processed_time=_now(),
-                    episode_id="",
-                    source_document="",
-                )
-                e._score = threshold * 0.95
-                results.append(e)
+                results.append({
+                    "family_id": row[0],
+                    "name": row[1],
+                    "content": row[2] or "",
+                    "role": "entity",
+                    "_score": threshold * 0.95,
+                })
         return {"results": results, "total": len(results)}
 
     # ------------------------------------------------------------------
@@ -1355,7 +1548,33 @@ class LibraryManager:
     # ------------------------------------------------------------------
 
     def prewarm_vector_search(self, roles: Optional[List[str]] = None):
-        pass
+        """Pre-load vector caches for the given roles (or ['entity'] by default).
+
+        Called from pipeline_workers.py as a prefetch future and from
+        registry.py in a background thread after server startup.
+        """
+        import numpy as np
+        if roles is None:
+            roles = ["entity"]
+        warmed = {}
+        for role in roles:
+            try:
+                cache = self._vector_cache_for_role(role)
+                matrix = cache.get("matrix")
+                warmed[role] = matrix.shape[0] if matrix is not None else 0
+            except Exception as exc:
+                logger.debug("prewarm_vector_search(%s) failed: %s", role, exc)
+                warmed[role] = -1
+        return {"warmed": warmed}
+
+    def invalidate_vector_cache(self, roles: Optional[List[str]] = None) -> None:
+        """Clear cached vector matrices so they are reloaded on next access."""
+        with self._vector_cache_lock:
+            if roles is None:
+                self._vector_role_cache.clear()
+            else:
+                for role in roles:
+                    self._vector_role_cache.pop(role, None)
 
     def get_entity_by_absolute_id(self, absolute_id: str) -> Optional[Entity]:
         """Get single entity by absolute_id (observation ID)."""
@@ -1455,7 +1674,11 @@ class LibraryManager:
 
     def save_episode(self, cache: Episode, text: str = "",
                      document_path: str = "", doc_hash: str = "",
-                     start_offset: int = 0, end_offset = None) -> str:
+                     start_offset: int = 0, end_offset = None,
+                     override_doc_id: str = "",
+                     heading_path: str = "",
+                     episode_type: str = "",
+                     run_id: str = "") -> str:
         """Persist an Episode DTO and its source document."""
         import hashlib, uuid
         from . import content_fs
@@ -1465,14 +1688,33 @@ class LibraryManager:
         source = cache.source_document or ""
 
         # Determine document identity from source or path
-        source_key = document_path or source or text[:64]
-        doc_id = f"doc_{hashlib.sha256(source_key.encode()).hexdigest()[:16]}"
+        if override_doc_id:
+            doc_id = override_doc_id
+        else:
+            source_key = document_path or source or text[:64]
+            doc_id = f"doc_{hashlib.sha256(source_key.encode()).hexdigest()[:16]}"
 
         # Read full document content if available, otherwise fall back to text
         doc_text = text
         if document_path and Path(document_path).exists():
             doc_text = Path(document_path).read_text(encoding="utf-8")
         content_hash = content_fs.compute_content_hash(doc_text)
+
+        # Cross-document content-hash dedup: prevent duplicate documents when the
+        # same content is submitted multiple times (e.g. re-uploading same file,
+        # or text-submit with a fresh random UUID as source_key).
+        # When override_doc_id is set (repair / targeted retry), skip dedup —
+        # the caller already knows the correct doc_id.
+        if not override_doc_id:
+            _dedup_row = conn.execute(
+                "SELECT dv.document_id FROM document_versions dv "
+                "JOIN documents d ON d.document_id = dv.document_id "
+                "WHERE dv.content_hash = ? AND dv.status = 'active' AND d.status = 'active' "
+                "LIMIT 1",
+                (content_hash,)
+            ).fetchone()
+            if _dedup_row and _dedup_row[0] != doc_id:
+                doc_id = _dedup_row[0]
 
         # Ensure document exists
         doc = doc_repo.get_document(conn, doc_id)
@@ -1486,10 +1728,21 @@ class LibraryManager:
                 source_mode="managed" if source else "external",
                 created_at=_now_str(), updated_at=_now_str(),
             )
+        else:
+            # Document already exists (possibly via content-hash dedup):
+            # use the existing document's title for episode name consistency.
+            title = doc.get("title") or source
 
         # Reuse existing version with same content hash, or create new one
         old_ver = doc_repo.get_active_version(conn, doc_id)
         if old_ver and old_ver.get("content_hash") == content_hash:
+            ver_id = old_ver["document_version_id"]
+        elif override_doc_id and old_ver:
+            # Repair / targeted mode: reuse existing version to avoid
+            # cascading supersede of existing episodes/entities/relations.
+            # The repair text is a window fragment, not the full document,
+            # so content_hash will always differ — but we must not replace
+            # the version.
             ver_id = old_ver["document_version_id"]
         else:
             if old_ver:
@@ -1517,25 +1770,35 @@ class LibraryManager:
             conn, ep_id, ep_fam, doc_id, ver_id,
             source_text=text,
             memory_text=cache.content or "",
+            heading_path=heading_path or getattr(cache, 'heading_path', '') or "",
             start_offset=start_offset,
             end_offset=end_offset if end_offset is not None else len(text),
             chunk_index=existing_chunks,
             chunk_hash=doc_hash or content_hash[:16],
-            name=source,
+            name=title,
             event_time=_fmt_dt(cache.event_time) or _now_str(),
             processed_at=_fmt_dt(cache.processed_time) or _now_str(),
             activity_type=cache.activity_type or "",
-            episode_type=cache.episode_type or "",
+            episode_type=episode_type or getattr(cache, 'episode_type', '') or "",
+            run_id=run_id,
         )
         ep_repo.fts_sync_episode(conn, ep_id, doc_id, ver_id,
-                                  name=source, source_text=text,
+                                  name=title, source_text=text,
                                   memory_text=cache.content or "")
         self._commit_if_not_batched(conn)
         return doc_hash
 
-    def save_entity(self, entity: Entity, _precomputed_embedding=None) -> None:
+    def save_entity(self, entity: Entity, _precomputed_embedding=None,
+                     run_id: str = "", extra_json: str = "") -> None:
         """Persist an Entity DTO as entity_family + entity_observation."""
         import uuid
+        import json as _json
+        # Auto-fill run_id from storage context if not explicitly provided
+        if not run_id:
+            run_id = getattr(self, '_current_run_id', '') or ''
+        # Auto-fill extra_json from entity metadata if not explicitly provided
+        if (not extra_json or extra_json == "{}") and hasattr(entity, 'confidence') and entity.confidence is not None:
+            extra_json = _json.dumps({"confidence": entity.confidence})
         conn = self._conn()
         fid = entity.family_id
         ent_repo.upsert_entity_family(
@@ -1550,23 +1813,39 @@ class LibraryManager:
                 "SELECT 1 FROM episodes WHERE episode_id = ?", (ep_id,)
             ).fetchone()
             if not has_ep:
+                logger.warning("save_entity: episode_id %r not found in episodes table, "
+                               "nullifying for entity %s (family=%s)",
+                               raw_ep_id, entity.absolute_id, fid)
                 ep_id = None
+        # Normalize embedding to bytes: handle both raw bytes and (bytes, ndarray) tuples.
+        _emb_raw = _precomputed_embedding or entity.embedding
+        if isinstance(_emb_raw, (list, tuple)):
+            _emb_raw = _emb_raw[0]  # extract bytes from (bytes, ndarray)
+
         # Check for existing active observation for same episode+family (only when ep exists)
+        obs_id = entity.absolute_id or f"entobs_{uuid.uuid4().hex[:16]}"
         if ep_id is not None:
             existing = ent_repo.get_active_observation(conn, ep_id, fid)
             if existing:
+                # Observation already exists — but we may still need to store the embedding
+                # that was pre-computed during the pipeline batch step.
+                if _emb_raw:
+                    existing_obs_id = existing.get("entity_id", "") if isinstance(existing, dict) else str(existing)
+                    self._store_embedding_if_available(
+                        "entity_obs", existing_obs_id, "content",
+                        entity.name or entity.content, _emb_raw)
                 return
-        obs_id = entity.absolute_id or f"entobs_{uuid.uuid4().hex[:16]}"
         ent_repo.insert_entity_observation(
             conn, obs_id, fid, ep_id,
             name=entity.name, content=entity.content,
+            extra_json=extra_json or "{}",
             processed_at=_fmt_dt(entity.processed_time) or _now_str(),
+            run_id=run_id,
         )
         # Store embedding if available
-        emb = _precomputed_embedding or entity.embedding
-        if emb:
+        if _emb_raw:
             self._store_embedding_if_available("entity_obs", obs_id, "content",
-                                                entity.name or entity.content, emb)
+                                                entity.name or entity.content, _emb_raw)
         self._cache_entity_name(obs_id, entity.name)
         self._commit_if_not_batched(conn)
 
@@ -1578,9 +1857,17 @@ class LibraryManager:
     def bulk_save_entities_with_embedding(self, entities: List[Entity]) -> None:
         self.bulk_save_entities(entities)
 
-    def save_relation(self, relation: Relation) -> None:
+    def save_relation(self, relation: Relation,
+                       run_id: str = "", extra_json: str = "") -> None:
         """Persist a Relation DTO as relation_family + relation_assertion."""
         import uuid
+        import json as _json
+        # Auto-fill run_id from storage context if not explicitly provided
+        if not run_id:
+            run_id = getattr(self, '_current_run_id', '') or ''
+        # Auto-fill extra_json from relation confidence if not explicitly provided
+        if (not extra_json or extra_json == "{}") and hasattr(relation, 'confidence') and relation.confidence is not None:
+            extra_json = _json.dumps({"confidence": relation.confidence})
         conn = self._conn()
 
         sub_fid = relation.entity1_family_id
@@ -1620,6 +1907,9 @@ class LibraryManager:
                 "SELECT 1 FROM episodes WHERE episode_id = ?", (rel_ep_id,)
             ).fetchone()
             if not has_ep:
+                logger.warning("save_relation: episode_id %r not found in episodes table, "
+                               "nullifying for relation %s (family=%s)",
+                               rel_ep_id, relation.absolute_id, rel_fid)
                 rel_ep_id = None
         sub_abs = relation.entity1_absolute_id
         obj_abs = relation.entity2_absolute_id
@@ -1633,7 +1923,14 @@ class LibraryManager:
             conn, ra_id, rel_fid, rel_ep_id,
             sub_abs, obj_abs, sub_fid, obj_fid,
             content=relation.content,
+            evidence_text=relation.evidence_text or "",
+            evidence_start_offset=relation.evidence_start_offset or 0,
+            evidence_end_offset=relation.evidence_end_offset or 0,
+            evidence_line_start=relation.evidence_line_start or 0,
+            evidence_line_end=relation.evidence_line_end or 0,
+            extra_json=extra_json or "{}",
             processed_at=_fmt_dt(relation.processed_time) or _now_str(),
+            run_id=run_id,
         )
         # Store embedding if available
         if relation.embedding:
@@ -1752,16 +2049,43 @@ class LibraryManager:
 
     def assess_remember_window_statuses(self, doc_hashes: List[str],
                                          document_path: str = "") -> List[dict]:
+        conn = self._conn()
         results = []
         for idx, h in enumerate(doc_hashes):
             ep = self.find_cache_by_doc_hash(h, document_path)
             ext = self.load_extraction_result(h, document_path) if ep else None
+
+            ep_exists = ep is not None
+            ext_exists = ext is not None
+
+            # Entity persistence check: if extraction found entities but
+            # none were persisted (step9 crashed after step5), mark incomplete.
+            # This catches the case where episode + extraction cache both exist
+            # but entity alignment (step9) didn't finish.
+            entities_complete = True
+            if ep_exists and ext_exists:
+                ep_id = getattr(ep, 'absolute_id', '')
+                if ep_id:
+                    # Count extracted entities from the extraction result
+                    _ext_ents = 0
+                    if isinstance(ext, (list, tuple)) and len(ext) > 0:
+                        _ext_ents = len(ext[0]) if isinstance(ext[0], list) else 0
+                    # Only verify DB if extraction found entities
+                    if _ext_ents > 0:
+                        _db_count = conn.execute(
+                            "SELECT COUNT(*) FROM entity_observations WHERE episode_id = ?",
+                            (ep_id,)
+                        ).fetchone()[0]
+                        if _db_count == 0:
+                            entities_complete = False
+
             results.append({
                 "doc_hash": h,
                 "window_index": idx,
-                "complete": ep is not None and ext is not None,
-                "episode_exists": ep is not None,
-                "extraction_exists": ext is not None,
+                "complete": ep_exists and ext_exists and entities_complete,
+                "episode_exists": ep_exists,
+                "extraction_exists": ext_exists,
+                "entities_complete": entities_complete,
             })
         return results
 
@@ -1808,7 +2132,99 @@ class LibraryManager:
         return row[0] if row else ""
 
     def _vector_cache_for_role(self, role: str) -> dict:
-        return {"matrix": None, "rows": []}
+        """Return cached vector matrix for a role, loading on first access."""
+        with self._vector_cache_lock:
+            cached = self._vector_role_cache.get(role)
+            if cached is not None:
+                return cached
+            result = self._build_vector_cache_for_role(role)
+            self._vector_role_cache[role] = result
+            return result
+
+    # Role-to-SQL configuration for vector cache loading
+    _VECTOR_ROLE_CONFIG = {
+        "entity": {
+            "owner_type": "entity_obs",
+            "join_fragment": (
+                "JOIN entity_observations eo ON eo.entity_id = e.owner_id AND eo.status = 'active'"
+            ),
+            "family_col": "eo.entity_family_id",
+            "owner_col": "eo.entity_id",
+            "dedup_fragment": (
+                "SELECT 1 FROM entity_observations eo2 "
+                "WHERE eo2.entity_family_id = eo.entity_family_id "
+                "  AND eo2.status = 'active' AND eo2.rowid > eo.rowid"
+            ),
+        },
+        "relation": {
+            "owner_type": "relation_assert",
+            "join_fragment": (
+                "JOIN relation_assertions ra ON ra.relation_id = e.owner_id AND ra.status = 'active'"
+            ),
+            "family_col": "ra.relation_family_id",
+            "owner_col": "ra.relation_id",
+            "dedup_fragment": (
+                "SELECT 1 FROM relation_assertions ra2 "
+                "WHERE ra2.relation_family_id = ra.relation_family_id "
+                "  AND ra2.status = 'active' AND ra2.rowid > ra.rowid"
+            ),
+        },
+    }
+
+    def _build_vector_cache_for_role(self, role: str) -> dict:
+        """Load all embeddings for a role from SQLite into a numpy matrix.
+
+        Returns {"matrix": np.ndarray(N,D), "rows": [{"family_id": str}, ...], "_loaded": True}
+        or {"matrix": None, "rows": [], "_loaded": True} if no data / error.
+        """
+        import numpy as np
+
+        config = self._VECTOR_ROLE_CONFIG.get(role)
+        if config is None:
+            return {"matrix": None, "rows": [], "_loaded": True}
+
+        sql = (
+            f"SELECT e.vector, {config['family_col']}, {config['owner_col']} "
+            f"FROM embeddings e "
+            f"{config['join_fragment']} "
+            f"WHERE e.owner_type = ? "
+            f"  AND NOT EXISTS ({config['dedup_fragment']})"
+        )
+
+        try:
+            conn = self._conn()
+            rows = conn.execute(sql, (config["owner_type"],)).fetchall()
+        except Exception as exc:
+            logger.debug("_build_vector_cache_for_role(%s) SQL failed: %s", role, exc)
+            return {"matrix": None, "rows": [], "_loaded": True}
+
+        if not rows:
+            logger.debug("_build_vector_cache_for_role(%s): no embeddings found", role)
+            return {"matrix": None, "rows": [], "_loaded": True}
+
+        # Build rows metadata and matrix
+        meta_rows = []
+        vectors = []
+        dim = None
+        for row in rows:
+            vec_bytes = row[0]
+            if not vec_bytes or len(vec_bytes) < 4:
+                continue
+            vec = np.frombuffer(vec_bytes, dtype=np.float32)
+            if dim is None:
+                dim = vec.shape[0]
+            elif vec.shape[0] != dim:
+                continue  # skip dimension mismatches
+            meta_rows.append({"family_id": row[1], "owner_id": row[2]})
+            vectors.append(vec)
+
+        if not vectors:
+            return {"matrix": None, "rows": [], "_loaded": True}
+
+        matrix = np.vstack(vectors)
+        logger.info("_build_vector_cache_for_role(%s): loaded %d vectors, dim=%d",
+                     role, matrix.shape[0], matrix.shape[1])
+        return {"matrix": matrix, "rows": meta_rows, "_loaded": True}
 
     def _document_version_for_episode(self, episode_id: str) -> str:
         row = self._conn().execute(
@@ -1821,14 +2237,18 @@ class LibraryManager:
                                        text_kind: str, text: str,
                                        embedding_blob: bytes) -> None:
         if not self.embedding_client or not self.embedding_client.is_available():
+            logger.debug("_store_embedding_if_available: embedding client not available, "
+                         "skipping embedding for %s/%s", owner_type, owner_id)
             return
         import hashlib as _hashlib
         conn = self._conn()
         text_hash = _hashlib.sha256((text or "").encode("utf-8")).hexdigest()
-        model_name = getattr(self.embedding_client, 'model_name', 'unknown')
+        model_name = (getattr(self.embedding_client, 'model_name', None)
+                      or getattr(self.embedding_client, 'model_path', None)
+                      or 'unknown')
         dim = len(embedding_blob) // 4
         emb_repo.insert_embedding(
-            conn, f"emb_{owner_id[:16]}", owner_type, owner_id,
+            conn, f"emb_{owner_id}", owner_type, owner_id,
             text_kind, text_hash, model_name, dim, embedding_blob,
             created_at=_now_str(),
         )

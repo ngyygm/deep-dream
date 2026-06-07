@@ -27,9 +27,9 @@ def insert_pipeline_run(conn, run_id: str, run_type: str, status: str,
 def update_pipeline_run_status(conn, run_id: str, status: str,
                                finished_at: str = "",
                                error: str = "",
-                               episode_count: int = 0,
-                               entity_count: int = 0,
-                               relation_count: int = 0) -> None:
+                               episode_count: Optional[int] = None,
+                               entity_count: Optional[int] = None,
+                               relation_count: Optional[int] = None) -> None:
     sets = ["status = ?"]
     params: list = [status]
     if finished_at:
@@ -38,13 +38,13 @@ def update_pipeline_run_status(conn, run_id: str, status: str,
     if error:
         sets.append("error = ?")
         params.append(error)
-    if episode_count:
+    if episode_count is not None:
         sets.append("episode_count = ?")
         params.append(episode_count)
-    if entity_count:
+    if entity_count is not None:
         sets.append("entity_count = ?")
         params.append(entity_count)
-    if relation_count:
+    if relation_count is not None:
         sets.append("relation_count = ?")
         params.append(relation_count)
     params.append(run_id)

@@ -197,6 +197,31 @@ def set_window_label(label: str | None) -> None:
     _window_local.label = label
 
 
+def capture_log_context() -> tuple:
+    """捕获当前线程的日志上下文（窗口标签 + 流水线角色），供子线程恢复用。"""
+    return (
+        getattr(_window_local, 'label', None),
+        getattr(_window_local, 'pipeline_role', None),
+    )
+
+
+def run_with_log_context(fn, ctx: tuple):
+    """在子线程中恢复日志上下文后执行 fn。配合 capture_log_context() 使用。
+
+    用法: pool.submit(run_with_log_context, my_func, capture_log_context())
+    """
+    label, role = ctx
+    if label is not None:
+        _window_local.label = label
+    if role is not None:
+        _window_local.pipeline_role = role
+    try:
+        return fn()
+    finally:
+        _window_local.label = None
+        _window_local.pipeline_role = None
+
+
 def get_window_label() -> str:
     """获取当前线程的窗口标签，无标签时返回空字符串。"""
     return getattr(_window_local, 'label', None) or ""
@@ -254,6 +279,80 @@ def wprint(msg: str = "") -> None:
     ts = datetime.now().strftime("%H:%M:%S")
     line = f"{ts} {label:>10} {role:4} | {msg}"
     _emit_log_line(line)
+
+
+# ---------------------------------------------------------------------------
+# Episode type classification heuristic
+# ---------------------------------------------------------------------------
+
+# Conversation indicators: dialogue lines, attribution verbs, quotation patterns
+_CONV_QUOTE_LINE_RE = re.compile(r'^\s*["“「『【].+[”“」』】]', re.MULTILINE)
+_CONV_ATTRIBUTION_RE = re.compile(
+    r'(?:said|replied|asked|answered|whispered|shouted|exclaimed|murmured|'
+    r'说道|回答|问|喊|低声|大声|笑道|叫|答|喃喃)',
+    re.IGNORECASE,
+)
+_CONV_FENCE_RE = re.compile(r'["“”「」].+["“”「」]')
+
+# Narrative indicators: third-person past-tense verbs, story connectives
+_NARRATIVE_PAST_RE = re.compile(
+    r'(?:\b(?:he|she|it|they|the \w+)\s+'
+    r'(?:was|had|went|came|took|saw|knew|felt|turned|looked|walked|ran|sat|stood|'
+    r'stood|heard|felt|watched|smiled|nodded|opened|closed|reached|picked)\b)',
+    re.IGNORECASE,
+)
+_NARRATIVE_CONNECTIVE_RE = re.compile(
+    r'(?:\b(?:then|after|before|while|when|as|suddenly|meanwhile|later|finally)\b'
+    r'|然后|接着|之后|突然|这时|终于|不久|过了一会儿)',
+    re.IGNORECASE,
+)
+
+
+def classify_episode_type(text: str) -> str:
+    """Classify episode type from source text using simple heuristics.
+
+    Returns one of: 'conversation', 'narrative', 'fact'.
+
+    - 'conversation': text contains dialogue patterns (quoted speech lines,
+      attribution verbs like "said/replied", or multiple quotation fences).
+    - 'narrative': text shows narrative structure (third-person past-tense
+      verbs, story connectives) without dominant dialogue.
+    - 'fact': default for everything else (factual/informational content).
+    """
+    if not text or not text.strip():
+        return "fact"
+
+    _conv_score = 0
+    _has_attribution = bool(_CONV_ATTRIBUTION_RE.search(text))
+    if _CONV_QUOTE_LINE_RE.search(text):
+        _conv_score += 2
+    if _has_attribution:
+        _conv_score += 1
+    # Quoted speech fragments
+    _fences = _CONV_FENCE_RE.findall(text)
+    if _fences:
+        _conv_score += 1
+    # Strong dialogue: attribution verb + quoted fragments together
+    if _has_attribution and _fences:
+        _conv_score += 1
+    # Many quoted fragments alone strongly suggest dialogue
+    if len(_fences) >= 3:
+        _conv_score += 2
+
+    if _conv_score >= 3:
+        return "conversation"
+
+    _narr_score = 0
+    _past_matches = _NARRATIVE_PAST_RE.findall(text)
+    if len(_past_matches) >= 2:
+        _narr_score += 2
+    if _NARRATIVE_CONNECTIVE_RE.search(text):
+        _narr_score += 2
+
+    if _narr_score >= 3:
+        return "narrative"
+
+    return "fact"
 
 
 def wprint_debug(msg: str = "") -> None:

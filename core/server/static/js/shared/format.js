@@ -34,6 +34,16 @@ window.Format = (function () {
     } catch { return isoStr; }
   }
 
+  function formatDateTime(isoStr) {
+    if (!isoStr) return '-';
+    try {
+      return new Date(isoStr).toLocaleString(getLocale(), {
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', second: '2-digit',
+      });
+    } catch { return isoStr; }
+  }
+
   function formatRelativeTime(seconds) {
     if (seconds == null) return '-';
     seconds = Math.max(0, Math.round(seconds));
@@ -90,6 +100,7 @@ window.Format = (function () {
     getLocale: getLocale,
     formatDate: formatDate,
     formatDateMs: formatDateMs,
+    formatDateTime: formatDateTime,
     formatRelativeTime: formatRelativeTime,
     formatNumber: formatNumber,
     getElapsed: getElapsed,

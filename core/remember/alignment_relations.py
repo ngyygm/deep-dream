@@ -52,8 +52,8 @@ class _RelationAlignMixin:
         all_pending_relations_by_name = []
         if extracted_relations:
             for rel in extracted_relations:
-                entity1_name = rel.get('entity1_name') or rel.get('from_entity_name', '').strip()
-                entity2_name = rel.get('entity2_name') or rel.get('to_entity_name', '').strip()
+                entity1_name = (rel.get('entity1_name') or rel.get('from_entity_name', '')).strip()
+                entity2_name = (rel.get('entity2_name') or rel.get('to_entity_name', '')).strip()
                 content = rel.get('content', '').strip()
                 if entity1_name and entity2_name:
                     all_pending_relations_by_name.append({
@@ -229,6 +229,7 @@ class _RelationAlignMixin:
             verbose_relation=bool(verbose and verbose_steps),
             prepared_relations_by_pair=prepared_relations_by_pair,
             window_timings_ref=window_timings_ref,
+            source_text=input_text,
         )
         _t_rel_elapsed = _time.time() - _t_rel_start
         if window_timings_ref is not None:

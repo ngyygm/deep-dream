@@ -497,12 +497,12 @@ def _handle_sync_wait(remember_queue, task_id: str, timeout: float):
     elif done_task.status == "failed":
         return make_response(jsonify({
             "success": False,
+            "error": done_task.error or "Unknown error",
             "data": {
                 "task_id": task_id,
                 "task_seq": task_dict.get("task_seq"),
                 "status": "failed",
                 "source_name": done_task.source_name,
-                "error": done_task.error,
             },
             "elapsed_ms": elapsed_ms,
         }), 500)

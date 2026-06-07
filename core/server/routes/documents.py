@@ -57,12 +57,41 @@ def read_document_content(document_version_id: str):
         except (TypeError, ValueError):
             return err("offset/limit 必须为整数", 400)
         return ok(_document_service().read_document(document_version_id, offset=offset, limit=limit))
-    except KeyError as exc:
-        return err(str(exc), 404)
+    except KeyError:
+        return err(f"文档版本不存在: {document_version_id}", 404)
     except FileNotFoundError as exc:
         return err(str(exc), 404)
     except ValueError as exc:
         return err(str(exc), 400)
+    except Exception as exc:
+        return err(str(exc), 500)
+
+
+@documents_bp.route("/api/v1/documents/<document_version_id>/file", methods=["GET"])
+def document_file_info(document_version_id: str):
+    """Return file metadata (path, size, hash, verification) for a document version."""
+    try:
+        ds = _document_service()
+        rows = ds.storage.read_sql(
+            """
+            SELECT document_version_id, document_family_id, title, source_mode,
+                   absolute_path, managed_path, snapshot_path, relative_path,
+                   vault_root, read_path, content_hash, byte_size, char_count,
+                   line_count, processed_time
+            FROM v_document_files
+            WHERE document_version_id = :document_version_id
+            LIMIT 1
+            """,
+            params={"document_version_id": document_version_id},
+            limit=1,
+        )["rows"]
+        if not rows:
+            return err(f"文档版本不存在: {document_version_id}", 404)
+        doc = rows[0]
+        payload = ds._document_file_payload(doc)
+        return ok(payload)
+    except KeyError as exc:
+        return err(str(exc), 404)
     except Exception as exc:
         return err(str(exc), 500)
 

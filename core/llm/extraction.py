@@ -12,6 +12,27 @@ import time as _time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional, Tuple
 
+from core.utils import (
+    capture_log_context as _capture_log_context,
+    set_window_label as _set_window_label,
+    set_pipeline_role as _set_pipeline_role,
+)
+
+
+def _restore_log_context(ctx: tuple):
+    """在子线程中恢复父线程的日志上下文。"""
+    label, role = ctx
+    if label is not None:
+        _set_window_label(label)
+    if role is not None:
+        _set_pipeline_role(role)
+
+
+def _clear_log_context():
+    """清除子线程的日志上下文（恢复默认 ---- ----）。"""
+    _set_window_label(None)
+    _set_pipeline_role(None)
+
 # Pre-compiled regex patterns for _extract_text_from_raw
 _JSON_BLOCK_RE = re.compile(r'```(?:json)?\s*\n?(.*?)\n?\s*```', re.DOTALL)
 _CONTENT_VALUE_RE = re.compile(r'"content"\s*:\s*"((?:[^"\\]|\\.)*)"')
@@ -194,7 +215,7 @@ class _LLMExtractionMixin:
         entity_names: List[str],
         window_text: str,
         max_refine_rounds: int = 2,
-    ) -> Tuple[List[Tuple[str, str]], Dict[str, int]]:
+    ) -> Tuple[List[Tuple[str, str, str]], Dict[str, int]]:
         """Discover relation pairs in a single conversation session with two phases.
 
         Phase A — Orphan recovery (untimed): after initial extraction, repeatedly
@@ -205,6 +226,9 @@ class _LLMExtractionMixin:
         find cross-pair, hidden, or implicit relationships across N rounds.
 
         Both phases share the same messages list so the LLM sees the full context.
+
+        Returns:
+            List of (entity1, entity2) tuples and refinement stats.
         """
         from .prompts import ORPHAN_RECOVERY_USER
         entity_list_str = "、".join(entity_names)
@@ -234,8 +258,9 @@ class _LLMExtractionMixin:
             return [], stats
 
         for pair in items:
-            if pair not in seen:
-                seen.add(pair)
+            pair_key = (pair[0], pair[1])
+            if pair_key not in seen:
+                seen.add(pair_key)
                 all_pairs.append(pair)
         stats["initial"] = len(all_pairs)
 
@@ -294,8 +319,9 @@ class _LLMExtractionMixin:
 
             added = 0
             for pair in new_items:
-                if pair not in seen:
-                    seen.add(pair)
+                pair_key = (pair[0], pair[1])
+                if pair_key not in seen:
+                    seen.add(pair_key)
                     all_pairs.append(pair)
                     added += 1
             stats["orphan_rounds"] = orphan_round + 1
@@ -329,14 +355,15 @@ class _LLMExtractionMixin:
                     _trim_messages(messages), parse_fn=self._parse_pair_list, json_parse_retries=2,
                 )
                 from ..utils import wprint_info as _wp2
-                _new_count = len([p for p in round_items if p not in seen])
+                _new_count = len([p for p in round_items if (p[0], p[1]) not in seen])
                 _wp2(f"[extraction_timing] 关系 refine r{round_i+1}: {_time.monotonic()-_tr0:.1f}s ({len(round_items)} pairs, +{_new_count} new)")
             except (json.JSONDecodeError, LLMContextBudgetExceeded):
                 break
             added = 0
             for pair in round_items:
-                if pair not in seen:
-                    seen.add(pair)
+                pair_key = (pair[0], pair[1])
+                if pair_key not in seen:
+                    seen.add(pair_key)
                     all_pairs.append(pair)
                     added += 1
             stats["refine_rounds"] = round_i + 1
@@ -380,27 +407,32 @@ class _LLMExtractionMixin:
     # ------------------------------------------------------------------
 
     def _parse_pair_list(self, response: str) -> List[Tuple[str, str]]:
-        """Parse LLM response into a list of (entity1, entity2) tuples."""
+        """Parse LLM response into a list of (entity1, entity2) tuples.
+
+        Supports array and object formats:
+        - [["conceptA", "conceptB"]]
+        - [{"subject": "conceptA", "object": "conceptB"}]
+        - Also accepts: {"entity1": "A", "entity2": "B"}
+
+        Deduplication is by (entity1, entity2) pair only.
+        """
         data = self._parse_json_response(response)
         pairs = []
         seen: set = set()
         if isinstance(data, list):
             for item in data:
                 if isinstance(item, (list, tuple)) and len(item) >= 2:
-                    a, b = item[0].strip(), item[1].strip()
-                    if a and b and a != b:
-                        pair = (a, b) if a <= b else (b, a)
-                        if pair not in seen:
-                            seen.add(pair)
-                            pairs.append(pair)
+                    a, b = str(item[0]).strip(), str(item[1]).strip()
                 elif isinstance(item, dict):
-                    a = str(item.get("entity1") or item.get("entity1_name") or "").strip()
-                    b = str(item.get("entity2") or item.get("entity2_name") or "").strip()
-                    if a and b and a != b:
-                        pair = (a, b) if a <= b else (b, a)
-                        if pair not in seen:
-                            seen.add(pair)
-                            pairs.append(pair)
+                    a = str(item.get("subject") or item.get("entity1") or item.get("entity1_name") or "").strip()
+                    b = str(item.get("object") or item.get("entity2") or item.get("entity2_name") or "").strip()
+                else:
+                    continue
+                if a and b and a != b:
+                    pair_key = (a, b) if a <= b else (b, a)
+                    if pair_key not in seen:
+                        seen.add(pair_key)
+                        pairs.append(pair_key)
         return pairs
 
     # ------------------------------------------------------------------
@@ -519,14 +551,17 @@ class _LLMExtractionMixin:
         if not entity_names:
             return {}
         parent_priority = getattr(self._priority_local, "priority", None)
+        _parent_log_ctx = _capture_log_context()
 
         def _single_with_priority(names: List[str]) -> Dict[str, str]:
+            _restore_log_context(_parent_log_ctx)
             previous = getattr(self._priority_local, "priority", None)
             if parent_priority is not None:
                 self._priority_local.priority = parent_priority
             try:
                 return self._batch_write_entity_content_single(names, window_text)
             finally:
+                _clear_log_context()
                 if previous is None:
                     try:
                         del self._priority_local.priority
@@ -590,7 +625,9 @@ class _LLMExtractionMixin:
         if isinstance(data, list):
             items = data
         elif isinstance(data, dict):
-            items = data.get("entities") or data.get("data") or []
+            items = data.get("entities")
+            if items is None:
+                items = data.get("data")
             if not isinstance(items, list):
                 items = []
         else:
@@ -624,14 +661,17 @@ class _LLMExtractionMixin:
         if not pairs:
             return {}
         parent_priority = getattr(self._priority_local, "priority", None)
+        _parent_log_ctx = _capture_log_context()
 
         def _single_with_priority(chunk_pairs: List[Tuple[str, str]]) -> Dict[Tuple[str, str], str]:
+            _restore_log_context(_parent_log_ctx)
             previous = getattr(self._priority_local, "priority", None)
             if parent_priority is not None:
                 self._priority_local.priority = parent_priority
             try:
                 return self._batch_write_relation_content_single(chunk_pairs, window_text)
             finally:
+                _clear_log_context()
                 if previous is None:
                     try:
                         del self._priority_local.priority
@@ -665,7 +705,7 @@ class _LLMExtractionMixin:
         self, pairs: List[Tuple[str, str]], window_text: str,
     ) -> Dict[Tuple[str, str], str]:
         """Single batch LLM call for relation content writing."""
-        pair_list_str = "\n".join(f"  - {a} 与 {b}" for a, b in pairs)
+        pair_list_str = "\n".join(f"  - {p[0]} 与 {p[1]}" for p in pairs)
         user_prompt = RELATION_BATCH_CONTENT_WRITE_USER.format(
             pair_list=pair_list_str,
             window_text=window_text,
@@ -695,7 +735,9 @@ class _LLMExtractionMixin:
         if isinstance(data, list):
             items = data
         elif isinstance(data, dict):
-            items = data.get("relations") or data.get("data") or []
+            items = data.get("relations")
+            if items is None:
+                items = data.get("data")
             if not isinstance(items, list):
                 items = []
         else:

@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 import pytest
 
 from core.models import Entity, Relation
-from core.storage.sqlite.manager import SQLiteGraphStorageManager
+from core.storage.sqlite.library_manager import LibraryManager
 
 
 def _make_entity(idx, graph_id="stress"):
@@ -62,7 +62,7 @@ def _get_rss_mb():
 @pytest.fixture(scope="module")
 def stress_storage(tmp_path_factory):
     d = tmp_path_factory.mktemp("stress_graph")
-    mgr = SQLiteGraphStorageManager(
+    mgr = LibraryManager(
         storage_path=str(d / "graph"),
         vector_dim=1024,
         graph_id="stress",
@@ -171,7 +171,7 @@ class TestWALGrowth:
     def test_wal_bounded_after_many_writes(self, stress_storage):
         """Write 5k entities rapidly, verify WAL checkpoint keeps it bounded."""
         # Force a checkpoint first
-        conn = stress_storage._connect()
+        conn = stress_storage._conn()
         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         conn.rollback()
 
@@ -187,7 +187,7 @@ class TestWALGrowth:
             print(f"\n  WAL size after 5k writes: {wal_size_mb:.1f}MB")
 
             # Force checkpoint and verify it works
-            conn = stress_storage._connect()
+            conn = stress_storage._conn()
             result = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
             conn.rollback()
             wal_size_after = os.path.getsize(wal_path) / (1024 * 1024)

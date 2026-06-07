@@ -142,6 +142,6 @@ def test_agent_semantic_search_falls_back_to_name_lookup(tmp_path):
         _seed_agent_graph(store)
         result = store.agent_semantic_search("汪淼", role="entity", top_k=5, threshold=0.0)
         assert result["total"] >= 1
-        assert result["results"][0].family_id == "confam_wang"
+        assert result["results"][0]["family_id"] == "confam_wang"
     finally:
         store.close()

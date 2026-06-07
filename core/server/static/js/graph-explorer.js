@@ -24,6 +24,8 @@ window.GraphExplorer = (function () {
     var _pinnedNodePositions = {};
     var _spiralIdx = 0;
     var _streamingMode = false;  // skip expensive ops during bulk loading
+    var _swimmingMode = true;
+    var _swimmingNudgeInterval = null;
 
     var _focusAbsoluteId = null;
     var _detailBackStack = [];  // stack of {type:'relation'|'entity', id:string} for back navigation
@@ -40,6 +42,70 @@ window.GraphExplorer = (function () {
     var _session = null;
 
     var _opts = options;
+
+    // ---- Swimming mode helpers ----
+
+    function _swimmingNodeCount() {
+      return _nodesDataSet ? _nodesDataSet.getIds().length : 0;
+    }
+
+    function _applySwimmingPhysics() {
+      if (!_network) return;
+      _network.setOptions({ physics: GraphUtils.getSwimmingPhysicsOptions(_swimmingNodeCount()) });
+    }
+
+    function _startSwimmingNudge() {
+      _stopSwimmingNudge();
+      if (!_network || !_nodesDataSet) return;
+      if (_swimmingNodeCount() > 3000) return;
+      _swimmingNudgeInterval = setInterval(function () {
+        if (!_network || !_nodesDataSet) { _stopSwimmingNudge(); return; }
+        _nudgeOverlappingNodes();
+      }, 4000);
+    }
+
+    function _stopSwimmingNudge() {
+      if (_swimmingNudgeInterval) {
+        clearInterval(_swimmingNudgeInterval);
+        _swimmingNudgeInterval = null;
+      }
+    }
+
+    function _nudgeOverlappingNodes() {
+      var nodeIds = _nodesDataSet.getIds();
+      if (nodeIds.length > 3000) return;
+      var positions = _network.getPositions(nodeIds);
+      var gridSize = 40;
+      var grid = {};
+      for (var i = 0; i < nodeIds.length; i++) {
+        var id = nodeIds[i];
+        var pos = positions[id];
+        if (!pos) continue;
+        var node = _nodesDataSet.get(id);
+        if (node && node.fixed && (node.fixed.x || node.fixed.y)) continue;
+        var gx = Math.floor(pos.x / gridSize);
+        var gy = Math.floor(pos.y / gridSize);
+        var key = gx + '|' + gy;
+        if (!grid[key]) grid[key] = [];
+        grid[key].push({ id: id, x: pos.x, y: pos.y });
+      }
+      var keys = Object.keys(grid);
+      for (var k = 0; k < keys.length; k++) {
+        var cell = grid[keys[k]];
+        if (cell.length < 3) continue;
+        var cx = 0, cy = 0;
+        for (var ci = 0; ci < cell.length; ci++) { cx += cell[ci].x; cy += cell[ci].y; }
+        cx /= cell.length; cy /= cell.length;
+        for (var ni = 0; ni < cell.length; ni++) {
+          var entry = cell[ni];
+          var dx = entry.x - cx;
+          var dy = entry.y - cy;
+          var dist = Math.sqrt(dx * dx + dy * dy) || 1;
+          var magnitude = 8 + Math.random() * 7;
+          _network.moveNode(entry.id, entry.x + (dx / dist) * magnitude, entry.y + (dy / dist) * magnitude);
+        }
+      }
+    }
 
     // ---- Helpers ----
 
@@ -266,7 +332,12 @@ window.GraphExplorer = (function () {
         renderVersionBadges(nodes);
       } else {
         _network.once('stabilizationIterationsDone', function () {
-          _network.setOptions({ physics: { enabled: false } });
+          if (_swimmingMode) {
+            _applySwimmingPhysics();
+            _startSwimmingNudge();
+          } else {
+            _network.setOptions({ physics: { enabled: false } });
+          }
           if (highlightAbsId) {
             _network.focus(highlightAbsId, { scale: 1.2, animation: { duration: 500, easingFunction: 'easeInOutQuad' } });
           }
@@ -320,7 +391,7 @@ window.GraphExplorer = (function () {
             fixed: { x: true, y: true },
           });
         });
-        _network.setOptions({ physics: { enabled: false } });
+        if (_swimmingMode) { _applySwimmingPhysics(); } else { _network.setOptions({ physics: { enabled: false } }); }
       });
 
       _network.on('zoom', function () { updateBadgePositions(); updateNodeHoverPosition(); });
@@ -411,7 +482,7 @@ window.GraphExplorer = (function () {
             fixed: { x: true, y: true },
           });
         });
-        _network.setOptions({ physics: { enabled: false } });
+        if (_swimmingMode) { _applySwimmingPhysics(); } else { _network.setOptions({ physics: { enabled: false } }); }
       });
 
       _network.on('zoom', function () { updateBadgePositions(); updateNodeHoverPosition(); });
@@ -1569,6 +1640,18 @@ window.GraphExplorer = (function () {
           _network.setOptions({ physics: { enabled: !!enabled } });
         }
       },
+      setSwimmingMode: function (enabled) {
+        _swimmingMode = !!enabled;
+        if (!_network) return;
+        if (_swimmingMode) {
+          _applySwimmingPhysics();
+          _startSwimmingNudge();
+        } else {
+          _stopSwimmingNudge();
+          _network.setOptions({ physics: { enabled: false } });
+        }
+      },
+      getSwimmingMode: function () { return _swimmingMode; },
       focusOnEntity: focusOnEntity,
       exitFocus: exitFocus,
       showEntityDetail: showEntityDetail,
@@ -1711,6 +1794,8 @@ window.GraphExplorer = (function () {
         return copy;
       },
       destroy: function () {
+        _stopSwimmingNudge();
+        _swimmingMode = false;
         hideNodeHover();
         if (_hoverPanel) {
           _hoverPanel.remove();

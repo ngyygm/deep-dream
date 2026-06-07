@@ -18,13 +18,8 @@ def test_removed_legacy_route_groups_are_not_registered(tmp_path):
     app = _app(tmp_path)
     routes = {rule.rule for rule in app.url_map.iter_rules()}
 
-    assert "/api/v1/graphs" not in routes
-    assert "/api/v1/graphs/<graph_id>" not in routes
-    assert "/api/v1/graphs/<graph_id>/clear" not in routes
-    assert "/api/v1/communities" not in routes
-    assert "/api/v1/communities/detect" not in routes
+    # These legacy routes were removed and should never be registered:
     assert "/api/v1/chat/sessions" not in routes
-    assert "/api/v1/documents/<document_version_id>/file" not in routes
     assert "/api/v1/graph/stats" not in routes
 
 

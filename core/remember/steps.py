@@ -24,6 +24,11 @@ from core.llm.client import (
     LLM_PRIORITY_STEP5,
 )
 from core.utils import wprint_info
+from core.utils import (
+    capture_log_context as _capture_log_ctx,
+    set_window_label as _set_wl,
+    set_pipeline_role as _set_pr,
+)
 from .helpers import _core_entity_name
 from ._steps_helpers import (
     _pair_key, _get_shared_pool, _parallel_map,
@@ -183,16 +188,28 @@ class _ExtractionStepsMixin:
         _step6_entity_names = list(entity_names)  # snapshot for thread safety
 
         if len(entity_names) >= 2:
+            _step6_log_ctx = _capture_log_ctx()
+
             def _run_step6():
-                _t6 = _time.time()
-                _raw, _stats = _with_llm_priority(
-                    extraction_client,
-                    LLM_PRIORITY_STEP3,
-                    lambda: extraction_client.discover_relations(
-                        _step6_entity_names, input_text, max_refine_rounds=self.relation_rounds
-                    ),
-                )
-                return _raw, _stats, _time.time() - _t6
+                # 恢复父线程日志上下文，让 step6 的 LLM 调用也能显示窗口/步骤
+                label, role = _step6_log_ctx
+                if label:
+                    _set_wl(label)
+                if role:
+                    _set_pr(role)
+                try:
+                    _t6 = _time.time()
+                    _raw, _stats = _with_llm_priority(
+                        extraction_client,
+                        LLM_PRIORITY_STEP3,
+                        lambda: extraction_client.discover_relations(
+                            _step6_entity_names, input_text, max_refine_rounds=self.relation_rounds
+                        ),
+                    )
+                    return _raw, _stats, _time.time() - _t6
+                finally:
+                    _set_wl(None)
+                    _set_pr(None)
 
             _step6_future = _get_shared_pool(1).submit(_run_step6)
 
@@ -389,7 +406,10 @@ class _ExtractionStepsMixin:
 
         # 7a: All relation pairs go through LLM for proper descriptions
         _fast_rel_results: Dict[Tuple[str, str], str] = {}
-        _needs_llm_pairs: List[Tuple[str, str]] = list(relation_pairs)
+        _needs_llm_pairs: List[Tuple[str, str]] = []
+        for _tp in relation_pairs:
+            _a, _b = _tp[0], _tp[1]
+            _needs_llm_pairs.append((_a, _b))
 
         # 7b: Batch write for pairs needing LLM content
         batch_rel_results: Dict[Tuple[str, str], str] = {}
@@ -418,15 +438,17 @@ class _ExtractionStepsMixin:
         _fallback_rels: List[Dict[str, str]] = []
         if _missing_pairs:
             _t7_fallback_llm = _time.time()
-            def _write_one_relation(pair: Tuple[str, str]) -> Optional[Dict[str, str]]:
-                a, b = pair
+            def _write_one_relation(pair) -> Optional[Dict[str, str]]:
+                a, b = pair[0], pair[1]
                 content = _with_llm_priority(
                     self.llm_client,
                     LLM_PRIORITY_STEP5,
                     lambda: self.llm_client.write_relation_content(a, b, input_text),
                 )
                 if content:
-                    return {"entity1_name": a, "entity2_name": b, "content": content}
+                    _pk = _pair_key(a, b)
+                    _rel_dict: Dict[str, str] = {"entity1_name": a, "entity2_name": b, "content": content}
+                    return _rel_dict
                 return None
 
             _fallback_rels = _parallel_map(
@@ -444,7 +466,8 @@ class _ExtractionStepsMixin:
             if not content or len(content) < _MIN_RELATION_CONTENT_LEN:
                 content = _fast_rel_results.get(key, "")
             if content and len(content) >= _MIN_RELATION_CONTENT_LEN:
-                extracted_relations.append({"entity1_name": p[0], "entity2_name": p[1], "content": content})
+                _rel_dict = {"entity1_name": p[0], "entity2_name": p[1], "content": content}
+                extracted_relations.append(_rel_dict)
                 covered_keys.add(key)
 
         for r in _fallback_rels:

@@ -1,4 +1,5 @@
 """V1.5 table rows → legacy Entity/Relation/Episode DTO mapping."""
+import json as _json
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -22,6 +23,18 @@ def _now():
     return datetime.now(timezone.utc)
 
 
+def _extract_confidence(extra_json_str: str) -> Optional[float]:
+    """Extract confidence from extra_json string if present."""
+    if not extra_json_str or extra_json_str == "{}":
+        return None
+    try:
+        data = _json.loads(extra_json_str)
+        val = data.get("confidence")
+        return float(val) if val is not None else None
+    except (ValueError, TypeError, KeyError):
+        return None
+
+
 def observation_to_entity(
     family_row: dict,
     obs_row: dict,
@@ -31,6 +44,8 @@ def observation_to_entity(
 ) -> Entity:
     """Map V1.5 entity_families + entity_observations rows → Entity DTO."""
     now = _now()
+    # V1.5 pipeline always creates markdown-formatted content; the schema
+    # has no explicit content_format column, so default to "markdown".
     return Entity(
         absolute_id=obs_row["entity_id"],
         family_id=family_row["entity_family_id"],
@@ -42,6 +57,8 @@ def observation_to_entity(
         source_document="",
         embedding=embedding_blob,
         version_seq=version_seq,
+        content_format="markdown",
+        confidence=_extract_confidence(obs_row.get("extra_json", "{}")),
     )
 
 
@@ -70,6 +87,13 @@ def assertion_to_relation(
         entity2_family_id=assert_row.get("object_entity_family_id", ""),
         embedding=embedding_blob,
         version_seq=version_seq,
+        evidence_text=assert_row.get("evidence_text"),
+        evidence_start_offset=assert_row.get("evidence_start_offset"),
+        evidence_end_offset=assert_row.get("evidence_end_offset"),
+        evidence_line_start=assert_row.get("evidence_line_start"),
+        evidence_line_end=assert_row.get("evidence_line_end"),
+        content_format="markdown",
+        confidence=_extract_confidence(assert_row.get("extra_json", "{}")),
     )
 
 
@@ -84,4 +108,5 @@ def episode_row_to_dto(episode_row: dict) -> Episode:
         processed_time=_parse_dt(episode_row.get("processed_at")) or now,
         activity_type=episode_row.get("activity_type"),
         episode_type=episode_row.get("episode_type"),
+        heading_path=episode_row.get("heading_path"),
     )

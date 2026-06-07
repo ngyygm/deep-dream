@@ -27,8 +27,8 @@ def test_document_processor_and_vault_index_share_chunker():
     processor_chunks = processor.chunk_text(text)
     storage_chunks = SQLiteGraphStorageManager.split_markdown_episodes(text, window_size=90, overlap=15)
 
-    assert [(c, s, e) for c, s, e in processor_chunks] == [
-        (chunk["content"], chunk["start_offset"], chunk["end_offset"])
+    assert [(c, s, e, hp) for c, s, e, hp in processor_chunks] == [
+        (chunk["content"], chunk["start_offset"], chunk["end_offset"], chunk.get("heading_path", ""))
         for chunk in storage_chunks
     ]
 

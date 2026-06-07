@@ -27,6 +27,9 @@ dependencies = [
     "pyvis>=0.3.0",
     "networkx>=3.0.0",
     "matplotlib>=3.5.0",
+    # CLI
+    "click>=8.1",
+    "rich>=13.0",
 ]
 
 [project.optional-dependencies]

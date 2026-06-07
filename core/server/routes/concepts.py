@@ -254,9 +254,19 @@ def agent_read_sql():
             return err("当前存储后端不支持 Agent SQL 查询", 400)
         body = get_json_body()
         sql = (body.get("sql") or "").strip()
+        if not sql:
+            return err("sql 不能为空", 400)
         params = body.get("params")
-        limit = body.get("limit", 200)
-        timeout_seconds = body.get("timeout_seconds", 5.0)
+        try:
+            limit = min(max(int(body.get("limit", 200)), 1), 10000)
+        except (ValueError, TypeError):
+            return err("limit 必须为整数", 400)
+        try:
+            timeout_seconds = float(body.get("timeout_seconds", 5.0))
+        except (ValueError, TypeError):
+            return err("timeout_seconds 必须为数字", 400)
+        if timeout_seconds <= 0 or timeout_seconds > 60:
+            return err("timeout_seconds 必须在 0-60 之间", 400)
         explain = bool(body.get("explain") or body.get("include_query_plan"))
         result = storage.read_sql(
             sql,
@@ -284,11 +294,21 @@ def agent_semantic_search():
             return err("当前存储后端不支持 Agent 语义检索", 400)
         body = get_json_body()
         role = body.get("role") or None
+        try:
+            top_k = min(max(int(body.get("top_k", body.get("limit", 20))), 1), 1000)
+        except (ValueError, TypeError):
+            return err("top_k/limit 必须为整数", 400)
+        try:
+            threshold = float(body.get("threshold", 0.3))
+        except (ValueError, TypeError):
+            return err("threshold 必须为数字", 400)
+        if not (0.0 <= threshold <= 1.0):
+            return err("threshold 必须在 0-1 之间", 400)
         result = storage.agent_semantic_search(
             body.get("query") or "",
             role=role,
-            top_k=body.get("top_k", body.get("limit", 20)),
-            threshold=body.get("threshold", 0.3),
+            top_k=top_k,
+            threshold=threshold,
             source_document=(body.get("source_document") or "").strip() or None,
         )
         result["graph_id"] = _get_graph_id()
@@ -823,6 +843,8 @@ def get_concept(family_id: str):
             if not allowed:
                 return err("至少提供 name/content/confidence/metadata 之一", 400)
             updated = storage.update_concept_manual(family_id, allowed)
+            if isinstance(updated, dict) and not updated.get("updated", True):
+                return err(f"概念不存在: {family_id}", 404)
             return ok({"family_id": family_id, "version": updated, "message": "概念已保存为新版本"})
         if not hasattr(storage, 'get_concept_by_family_id'):
             return err("此功能暂不可用", 400)
@@ -1202,8 +1224,11 @@ def batch_delete_documents():
         results = []
         for doc_id in ids:
             try:
-                storage.delete_document_version(doc_id)
-                results.append({"id": doc_id, "success": True})
+                result = storage.delete_document_version(doc_id)
+                if isinstance(result, dict) and not result.get("deleted", True):
+                    results.append({"id": doc_id, "success": False, "error": result.get("reason", "not found")})
+                else:
+                    results.append({"id": doc_id, "success": True})
             except Exception as e:
                 results.append({"id": doc_id, "success": False, "error": str(e)})
         return ok({"results": results, "deleted": sum(1 for r in results if r["success"])})
@@ -1220,6 +1245,9 @@ def delete_document_version(document_version_id: str):
         if not hasattr(storage, "delete_document_version"):
             return err("此功能暂不可用", 400)
         result = storage.delete_document_version(document_version_id)
+        if isinstance(result, dict) and not result.get("deleted", True):
+            reason = result.get("reason", "not found")
+            return err(f"文档版本不存在: {document_version_id} ({reason})", 404)
         return ok(result)
     except KeyError as e:
         return err(str(e.args[0]) if e.args else str(e), 404)
@@ -1276,7 +1304,7 @@ def find_duplicate_entities():
     try:
         processor = _get_processor()
         try:
-            limit = min(int(request.args.get("limit", 500)), 2000)
+            limit = min(max(int(request.args.get("limit", 500)), 1), 2000)
         except (ValueError, TypeError):
             return err("limit 必须为整数", 400)
 

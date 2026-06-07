@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 import json
 import os
+import threading
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -22,6 +23,7 @@ system_bp = Blueprint("system", __name__)
 
 # Rate limit for LLM health check (prevent credit burn)
 _last_llm_health_time = 0.0
+_last_llm_health_lock = threading.Lock()
 _LLM_HEALTH_MIN_INTERVAL = 30.0  # seconds
 
 
@@ -107,19 +109,19 @@ def health():
 @system_bp.route("/api/v1/health/llm", methods=["GET"])
 def health_llm():
     """检查大模型是否可访问。"""
-    global _last_llm_health_time
     now = time.time()
     gid = getattr(request, 'graph_id', None) or request.args.get('graph_id', 'library')
     from core.server.registry import GraphRegistry
     gid = GraphRegistry.normalize_graph_id(gid)
-    if now - _last_llm_health_time < _LLM_HEALTH_MIN_INTERVAL:
-        return ok({
-            "library_id": gid,
-            "llm_available": True,
-            "message": "LLM 健康检查冷却中，请稍后重试",
-            "cooldown_remaining": round(_LLM_HEALTH_MIN_INTERVAL - (now - _last_llm_health_time), 1),
-        })
-    _last_llm_health_time = now
+    with _last_llm_health_lock:
+        if now - _last_llm_health_time < _LLM_HEALTH_MIN_INTERVAL:
+            return ok({
+                "library_id": gid,
+                "llm_available": True,
+                "message": "LLM 健康检查冷却中，请稍后重试",
+                "cooldown_remaining": round(_LLM_HEALTH_MIN_INTERVAL - (now - _last_llm_health_time), 1),
+            })
+        _last_llm_health_time = now
     try:
         cfg = current_app.config.get("config") or {}
         llm_cfg = cfg.get("llm") or {}
@@ -224,6 +226,69 @@ def system_graphs():
         return err(str(e), 500)
 
 
+# ── Graph CRUD (Frontend-facing /api/v1/graphs) ─────────────────────────
+
+@system_bp.route("/api/v1/graphs", methods=["GET"])
+def list_graphs():
+    """Frontend-facing: list graphs."""
+    try:
+        registry = current_app.config.get("registry")
+        graphs = registry.list_graphs_info() if registry else []
+        return ok({"graphs": graphs})
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@system_bp.route("/api/v1/graphs", methods=["POST"])
+def create_graph():
+    """Frontend-facing: create graph (single-library mode: no-op, returns existing)."""
+    try:
+        body = request.get_json(force=True) or {}
+        graph_id = body.get("graph_id", "library")
+        registry = current_app.config.get("registry")
+        if registry is None:
+            return err("Registry 未初始化", 503)
+        from core.server.registry import GraphRegistry
+        graph_id = GraphRegistry.normalize_graph_id(graph_id)
+        processor = registry.get_processor(graph_id)
+        info = registry.get_graph_info(graph_id)
+        return ok(info or {"graph_id": graph_id, "status": "exists"})
+    except ValueError as e:
+        return err(str(e), 400)
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@system_bp.route("/api/v1/graphs/<graph_id>", methods=["DELETE"])
+def delete_graph(graph_id: str):
+    """Frontend-facing: delete graph (single-library mode: returns error advising clear)."""
+    try:
+        registry = current_app.config.get("registry")
+        if registry is None:
+            return err("Registry 未初始化", 503)
+        registry.delete_graph(graph_id)
+        return ok({"deleted": graph_id})
+    except ValueError as e:
+        return err(str(e), 400)
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@system_bp.route("/api/v1/graphs/<graph_id>/clear", methods=["POST"])
+def clear_graph(graph_id: str):
+    """Frontend-facing: clear graph data."""
+    try:
+        registry = current_app.config.get("registry")
+        if registry is None:
+            return err("Registry 未初始化", 503)
+        registry.clear_graph(graph_id)
+        return ok({"cleared": graph_id})
+    except ValueError as e:
+        return err(str(e), 400)
+    except Exception as e:
+        return err(str(e), 500)
+
+
 @system_bp.route("/api/v1/system/graphs/<graph_id>", methods=["GET"])
 def system_graph_detail(graph_id: str):
     """单图谱详细状态（存储+队列+线程）。"""
@@ -262,8 +327,22 @@ def system_config():
         if not path.is_absolute():
             path = Path.cwd() / path
         if request.method == "GET":
+            # Redact sensitive fields before returning to client
+            _SENSITIVE_KEYS = frozenset({"api_key", "secret_key", "password", "token"})
+            def _redact(d):
+                if not isinstance(d, dict):
+                    return d
+                out = {}
+                for k, v in d.items():
+                    if k in _SENSITIVE_KEYS and isinstance(v, str) and v:
+                        out[k] = v[:4] + "****" if len(v) > 4 else "****"
+                    elif isinstance(v, dict):
+                        out[k] = _redact(v)
+                    else:
+                        out[k] = v
+                return out
             return ok({
-                "config": cfg,
+                "config": _redact(cfg),
                 "config_path": str(path),
                 "notes": [
                     "llm.max_concurrency 控制全局 LLM 并发上限",
@@ -316,7 +395,7 @@ def system_config():
         next_cfg["_config_path"] = str(path)
         current_app.config["config"] = next_cfg
         return ok({
-            "config": next_cfg,
+            "config": _redact(next_cfg),
             "config_path": str(path),
             "message": "配置已保存；模型、embedding、worker 数等对已创建实例可能需要重启服务后完全生效",
         })
@@ -352,3 +431,33 @@ def system_access_stats():
         return err(str(e), 500)
 
 
+# ── Community detection (Neo4j feature stubs) ───────────────────────────
+
+@system_bp.route("/api/v1/communities/detect", methods=["POST"])
+def detect_communities():
+    """社区检测 — 当前 SQLite 后端不支持，需要 Neo4j。"""
+    return err("社区检测功能需要 Neo4j 后端", 501)
+
+
+@system_bp.route("/api/v1/communities", methods=["GET"])
+def list_communities():
+    """列出社区 — 当前 SQLite 后端不支持。"""
+    return err("社区功能需要 Neo4j 后端", 501)
+
+
+@system_bp.route("/api/v1/communities/<cid>", methods=["GET"])
+def get_community(cid: str):
+    """获取社区详情 — 当前 SQLite 后端不支持。"""
+    return err("社区功能需要 Neo4j 后端", 501)
+
+
+@system_bp.route("/api/v1/communities/<cid>/graph", methods=["GET"])
+def get_community_graph(cid: str):
+    """获取社区子图 — 当前 SQLite 后端不支持。"""
+    return err("社区功能需要 Neo4j 后端", 501)
+
+
+@system_bp.route("/api/v1/communities", methods=["DELETE"])
+def clear_communities():
+    """清除社区数据 — 当前 SQLite 后端不支持。"""
+    return err("社区功能需要 Neo4j 后端", 501)
