@@ -1,11 +1,39 @@
 # Deep-Dream
 
+![Deep-Dream logo](docs/picture/deep-dream-logo.png)
+
 Deep-Dream is a local, document-first memory vault for humans and AI agents.
 
 It borrows the file-first vault idea from Markdown knowledge tools, but does
 not depend on Obsidian or any closed-source app. Raw Markdown/text files remain
 the source of truth; episodes, concepts, relations, embeddings, and graph views
 are semantic overlays that help agents search, align, and verify evidence.
+
+## Project Overview
+
+Deep-Dream turns local notes and documents into a memory system that humans can
+inspect and AI agents can recall. The original files stay readable and
+editable, while the system builds traceable episodes, concepts, relations, and
+graph views around them.
+
+![Deep-Dream project intro](docs/picture/deep-dream-intro.png)
+
+## Remember Pipeline
+
+The `remember` flow converts raw text into structured, evidence-backed memory.
+It chunks the input, extracts entities and relations, runs quality gates, aligns
+new knowledge with existing concepts, and writes the result back to the local
+graph with source evidence preserved.
+
+![Deep-Dream remember pipeline](docs/picture/remember-pipeline.png)
+
+## CLI Design
+
+The CLI is designed as the control panel for both people and agents: task-first
+commands, safe defaults, readable Rich output for humans, JSON output for
+automation, and clear `Error + Hint` feedback when something goes wrong.
+
+![Deep-Dream CLI design](docs/picture/cli-design.png)
 
 ## Current Model
 
