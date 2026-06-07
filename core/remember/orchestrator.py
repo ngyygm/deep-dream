@@ -11,7 +11,7 @@ import time
 
 # Static defaults — computed once, not per call
 _REMEMBER_DEFAULTS = {
-    "mode": "multi_step",
+    "mode": "dual_model",
     "anchor_recall_rounds": 1,
     "named_entity_recall_rounds": 1,
     "concrete_recall_rounds": 1,
@@ -171,7 +171,10 @@ class TemporalMemoryGraphProcessor(_PipelineMixin, _PipelineExtractionMixin, _Ex
     def _init_threading(self, max_concurrent_windows, max_llm_concurrency):
         """初始化流水线并行：cache 更新串行锁 + 抽取/处理线程池。"""
         if max_concurrent_windows is not None:
-            _max_concurrent_windows = max_concurrent_windows
+            if isinstance(max_concurrent_windows, str) and max_concurrent_windows.lower() == "auto":
+                _max_concurrent_windows = max(2, min(max_llm_concurrency or 1, 8))
+            else:
+                _max_concurrent_windows = int(max_concurrent_windows)
         else:
             _max_concurrent_windows = max(2, min(max_llm_concurrency or 1, 8))
         _max_concurrent_windows = max(1, min(_max_concurrent_windows, 64))
@@ -507,20 +510,20 @@ class TemporalMemoryGraphProcessor(_PipelineMixin, _PipelineExtractionMixin, _Ex
     def _safe_prefetch_submit(state, fn, *args, **kwargs):
         return _ps.safe_prefetch_submit(state, fn, *args, **kwargs)
 
-    def _run_step9_worker(self, state, start_chunk, total_chunks, doc_name,
+    def _run_step9_worker(self, state, window_abs_indices, total_chunks, doc_name,
                           verbose, verbose_steps, event_time, progress_callback,
                           step9_chunk_done_callback, control_callback=None):
         return _pw.run_step9_worker(
-            self, state, start_chunk, total_chunks, doc_name,
+            self, state, window_abs_indices, total_chunks, doc_name,
             verbose, verbose_steps, event_time, progress_callback,
             step9_chunk_done_callback, control_callback, RememberControlFlow,
         )
 
-    def _run_step10_worker(self, state, start_chunk, total_chunks, doc_name,
+    def _run_step10_worker(self, state, window_abs_indices, total_chunks, doc_name,
                            verbose, verbose_steps, event_time, progress_callback,
                            chunk_done_callback, control_callback=None):
         return _pw.run_step10_worker(
-            self, state, start_chunk, total_chunks, doc_name,
+            self, state, window_abs_indices, total_chunks, doc_name,
             verbose, verbose_steps, event_time, progress_callback,
             chunk_done_callback, control_callback, RememberControlFlow,
         )

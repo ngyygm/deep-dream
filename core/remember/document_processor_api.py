@@ -60,6 +60,10 @@ def process_documents(
         original_values['embedding_full_search_threshold'] = processor.embedding_full_search_threshold
         processor.embedding_full_search_threshold = embedding_full_search_threshold
 
+    # Capture the ORIGINAL entity_processor's verbose before it may be
+    # replaced by a new EntityProcessor instance (need_update_entity_processor).
+    _saved_entity_progress_verbose = processor.entity_processor.entity_progress_verbose
+
     need_update_entity_processor = False
     final_max_similar_entities = processor.max_similar_entities
     final_content_snippet_length = processor.content_snippet_length
@@ -101,7 +105,6 @@ def process_documents(
         original_values['load_cache_memory'] = processor.load_cache_memory
         processor.load_cache_memory = load_cache_memory
 
-    _saved_entity_progress_verbose = processor.entity_processor.entity_progress_verbose
     _epv = entity_progress_verbose if entity_progress_verbose is not None else verbose
     try:
         processor.entity_processor.entity_progress_verbose = _epv
@@ -148,7 +151,7 @@ def process_documents(
             processor.current_episode = None
 
         # Iterate all document windows (supports resume-from-breakpoint)
-        for chunk_idx, (input_text, document_name, is_new_document, text_start_pos, text_end_pos, total_text_length, document_path) in enumerate(
+        for chunk_idx, (input_text, document_name, is_new_document, text_start_pos, text_end_pos, total_text_length, document_path, heading_path) in enumerate(
             processor.document_processor.process_documents(
                 document_paths,
                 resume_document_path=resume_document_path,

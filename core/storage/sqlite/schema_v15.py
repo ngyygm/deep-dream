@@ -124,7 +124,6 @@ TABLES_SQL = [
     relation_family_id TEXT PRIMARY KEY,
     subject_entity_family_id TEXT NOT NULL,
     object_entity_family_id TEXT NOT NULL,
-    predicate TEXT DEFAULT '',
     is_directed INTEGER NOT NULL DEFAULT 1 CHECK(is_directed = 1),
     canonical_content TEXT DEFAULT '',
     created_at TEXT NOT NULL,
@@ -132,7 +131,7 @@ TABLES_SQL = [
     updated_at TEXT NOT NULL,
     FOREIGN KEY(subject_entity_family_id) REFERENCES entity_families(entity_family_id),
     FOREIGN KEY(object_entity_family_id) REFERENCES entity_families(entity_family_id),
-    UNIQUE(subject_entity_family_id, object_entity_family_id, predicate, is_directed)
+    UNIQUE(subject_entity_family_id, object_entity_family_id, is_directed)
 )""",
 
     """CREATE TABLE IF NOT EXISTS relation_assertions (
@@ -320,7 +319,8 @@ GRAPH_EDGES_SQL = """CREATE VIEW IF NOT EXISTS graph_edges AS
 SELECT 'HAS_EPISODE' AS edge_type,
        e.document_id AS source_id,
        e.episode_id AS target_id,
-       e.episode_family_id AS target_family_id
+       e.episode_family_id AS target_family_id,
+       '' AS source_family_id
 FROM episodes e
 JOIN documents d ON d.document_id = e.document_id AND d.status = 'active'
 JOIN document_versions dv
@@ -334,7 +334,8 @@ UNION ALL
 SELECT 'MENTIONS' AS edge_type,
        em.episode_id AS source_id,
        em.entity_id AS target_id,
-       em.entity_family_id AS target_family_id
+       em.entity_family_id AS target_family_id,
+       '' AS source_family_id
 FROM entity_mentions em
 JOIN entity_observations eo ON eo.entity_id = em.entity_id AND eo.status = 'active'
 JOIN episodes e ON e.episode_id = em.episode_id AND e.status = 'active'
@@ -349,7 +350,8 @@ UNION ALL
 SELECT 'ASSERTS' AS edge_type,
        ra.episode_id AS source_id,
        ra.relation_id AS target_id,
-       ra.relation_family_id AS target_family_id
+       ra.relation_family_id AS target_family_id,
+       '' AS source_family_id
 FROM relation_assertions ra
 JOIN episodes e ON e.episode_id = ra.episode_id AND e.status = 'active'
 JOIN documents d ON d.document_id = e.document_id AND d.status = 'active'
@@ -366,7 +368,8 @@ UNION ALL
 SELECT 'RELATES' AS edge_type,
        ra.subject_entity_id AS source_id,
        ra.object_entity_id AS target_id,
-       ra.object_entity_family_id AS target_family_id
+       ra.object_entity_family_id AS target_family_id,
+       ra.subject_entity_family_id AS source_family_id
 FROM relation_assertions ra
 JOIN episodes e ON e.episode_id = ra.episode_id AND e.status = 'active'
 JOIN documents d ON d.document_id = e.document_id AND d.status = 'active'
@@ -383,7 +386,8 @@ UNION ALL
 SELECT 'DOCUMENT_LINK' AS edge_type,
        dl.from_document_id AS source_id,
        dl.to_document_id AS target_id,
-       dl.to_document_id AS target_family_id
+       dl.to_document_id AS target_family_id,
+       '' AS source_family_id
 FROM document_links dl
 JOIN documents d ON d.document_id = dl.from_document_id AND d.status = 'active'
 JOIN document_versions dv
@@ -566,7 +570,7 @@ SELECT
     ra.relation_id AS relation_edge_id,
     rf.relation_family_id,
     ra.relation_id AS relation_version_id,
-    rf.predicate AS relation_name,
+    rf.canonical_content AS relation_name,
     ra.content AS relation_content,
     NULL AS relation_confidence,
     ra.processed_at,
@@ -574,10 +578,10 @@ SELECT
     ep.document_version_id,
     ra.subject_entity_family_id AS entity1_family_id,
     ra.subject_entity_id AS entity1_version_id,
-    '' AS entity1_name,
+    COALESCE(ef1.canonical_name, '') AS entity1_name,
     ra.object_entity_family_id AS entity2_family_id,
     ra.object_entity_id AS entity2_version_id,
-    '' AS entity2_name,
+    COALESCE(ef2.canonical_name, '') AS entity2_name,
     '{}' AS provenance,
     ra.processed_at AS created_at
 FROM relation_assertions ra
@@ -585,11 +589,16 @@ JOIN relation_families rf
   ON rf.relation_family_id = ra.relation_family_id
 LEFT JOIN episodes ep
   ON ep.episode_id = ra.episode_id
+LEFT JOIN entity_families ef1
+  ON ef1.entity_family_id = ra.subject_entity_family_id
+LEFT JOIN entity_families ef2
+  ON ef2.entity_family_id = ra.object_entity_family_id
 WHERE ra.status = 'active';
 """
 
 
 def create_views(conn: sqlite3.Connection) -> None:
+    conn.execute("DROP VIEW IF EXISTS graph_edges")
     conn.execute(GRAPH_EDGES_SQL)
     for stmt in _COMPAT_VIEWS_SQL.split(";"):
         stmt = stmt.strip()

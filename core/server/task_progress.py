@@ -331,9 +331,10 @@ def remember_callback_ui_fields(
                 wf_main = 8.0 / 10.0
                 main_global = min(1.0, (win_cur - 1 + wf_main) / float(tc))
                 merged_p = max(new_o, main_global, pc_f)
-                new_rank = main_chain_anchor_rank(pl, tc)
-                old_rank = main_chain_anchor_rank(task.main_label or "", tc)
-                if task.main_label and new_rank < old_rank:
+                _new_rank = main_chain_anchor_rank(pl, tc)
+                _old_rank = main_chain_anchor_rank(task.main_label or "", tc)
+                _nw, _ow = _new_rank[1], _old_rank[1]
+                if task.main_label and (_nw < _ow or (_nw == _ow and _new_rank < _old_rank)):
                     return {"progress": merged_p}
                 _pc = (win_cur - 1) * 10 + 8
                 _pt = tc * 10
@@ -368,9 +369,10 @@ def remember_callback_ui_fields(
                     estimated_step = max(estimated_step, min(8, estimated_step + int(_sub_done / max(1, _sub_total))))
                 _pc_phase = (win_cur - 1) * 10 + estimated_step
                 _pt_phase = tc * 10
-                new_rank = main_chain_anchor_rank(pl, tc)
-                old_rank = main_chain_anchor_rank(task.main_label or "", tc)
-                if task.main_label and new_rank < old_rank:
+                _new_rank = main_chain_anchor_rank(pl, tc)
+                _old_rank = main_chain_anchor_rank(task.main_label or "", tc)
+                _nw, _ow = _new_rank[1], _old_rank[1]
+                if task.main_label and (_nw < _ow or (_nw == _ow and _new_rank < _old_rank)):
                     return {"progress": max(new_o, main_global)}
                 return {
                     "progress": max(new_o, main_global),
@@ -415,13 +417,14 @@ def remember_callback_ui_fields(
         "phase_total": _pt,
     }
 
-    # 主滑窗（步骤1–8）：chain main 或历史 phase_ab（锚点优先抽取链上位置，而非主线程步骤1）
+    # 主滑窗（步骤1–8）：chain main 或历史 phase_ab（锚点优先按窗口号，同窗内按步骤优先级）
     if chain_id in ("main", "phase_ab"):
         base["progress"] = max(base["progress"], main_global)
-        new_rank = main_chain_anchor_rank(phase_label or "", tc)
-        old_rank = main_chain_anchor_rank(task.main_label or "", tc)
+        _new_rank = main_chain_anchor_rank(phase_label or "", tc)
+        _old_rank = main_chain_anchor_rank(task.main_label or "", tc)
         merged_p = base["progress"]
-        if task.main_label and new_rank < old_rank:
+        _nw, _ow = _new_rank[1], _old_rank[1]
+        if task.main_label and (_nw < _ow or (_nw == _ow and _new_rank < _old_rank)):
             return {"progress": merged_p}
         base.update(
             main_progress=main_global,

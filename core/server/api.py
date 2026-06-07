@@ -549,7 +549,7 @@ def main() -> int:
     system_monitor = SystemMonitor(config=config, mode=log_mode)
 
     host = args.host if args.host is not None else config.get("host", "0.0.0.0")
-    port = args.port if args.port is not None else config.get("port", 5001)
+    port = args.port if args.port is not None else config.get("port", 16200)
     config["host"] = host
     config["port"] = port
     storage_path = config.get("storage_path", "./library")
@@ -617,6 +617,7 @@ def main() -> int:
     # 启动时触发单一 library 的 queue 创建（会自动注册到 SystemMonitor）
     registry.get_queue("library")
 
+    dashboard = None
     if log_mode == LOG_MODE_MONITOR:
         from core.server.dashboard import DeepDreamDashboard
         system_monitor.event_log.info("System", "监控面板已启用；任务细节日志已收敛为总览。")

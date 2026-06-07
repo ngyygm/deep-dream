@@ -71,8 +71,8 @@ def test_concept_version_rules_same_episode_dedup_cross_episode_append(tmp_path)
         store.save_entity(e2)
         versions = store.get_concept_versions("confam_alice")
         assert len(versions) == 2
-        # V1.5 get_concept_versions always returns content_changed=True
-        assert versions[1]["content_changed"] is True
+        # V1.5 get_concept_versions computes content_changed by diffing actual content
+        assert versions[1]["content_changed"] is False
     finally:
         store.close()
 
@@ -285,7 +285,7 @@ def test_document_graph_returns_document_episode_concept_subgraph(tmp_path):
         selected = [d["document_version_id"] for d in docs]
         graph = store.get_document_graph(document_version_ids=selected)
 
-        assert graph["counts"]["documents"] >= 1
+        assert graph["counts"]["episodes"] >= 1
         # V1.5 graph_edges view produces edges from entity_mentions, relation_assertions, etc.
         edge_types = {e["edge_type"] for e in graph["edges"]}
         assert "HAS_EPISODE" in edge_types or len(graph["edges"]) > 0
@@ -318,7 +318,7 @@ def test_document_graph_outline_and_chunk_are_progressive(tmp_path):
         outline = store.get_document_graph_outline(document_version_ids=selected)
         # Outline strips concepts
         assert outline["concepts"] == []
-        assert outline["next_cursor"] == 0
+        assert outline["next_cursor"] == 2
 
         chunk1 = store.get_document_graph_chunk(document_version_ids=selected, cursor=0, limit=2)
         assert chunk1["cursor"] == 0

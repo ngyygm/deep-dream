@@ -24,9 +24,11 @@ def upsert_entity_family(conn, entity_family_id: str, canonical_name: str,
     else:
         conn.execute(
             """INSERT INTO entity_families
-               (entity_family_id, canonical_name, canonical_content, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?)""",
-            (entity_family_id, canonical_name, canonical_content, created_at, updated_at),
+               (entity_family_id, canonical_name, canonical_content,
+                created_at, updated_at, last_seen_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (entity_family_id, canonical_name, canonical_content,
+             created_at, updated_at, created_at),
         )
 
 
@@ -54,14 +56,15 @@ def find_entity_family_by_name(conn, canonical_name: str) -> Optional[dict]:
 
 def insert_entity_observation(conn, entity_id: str, entity_family_id: str,
                               episode_id: str, name: str, content: str = "",
+                              extra_json: str = "{}",
                               processed_at: str = "", run_id: str = "") -> None:
     conn.execute(
         """INSERT INTO entity_observations
            (entity_id, entity_family_id, episode_id, name, content,
-            status, processed_at, run_id)
-           VALUES (?, ?, ?, ?, ?, 'active', ?, ?)""",
+            extra_json, status, processed_at, run_id)
+           VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?)""",
         (entity_id, entity_family_id, episode_id, name, content,
-         processed_at, run_id),
+         extra_json, processed_at, run_id),
     )
 
 

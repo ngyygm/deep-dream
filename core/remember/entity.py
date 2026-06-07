@@ -79,8 +79,8 @@ def _preprocess_extraction_context(extracted_entities, extracted_relations):
     related_entity_names = set()
     if extracted_relations:
         for rel in extracted_relations:
-            entity1_name = rel.get('entity1_name') or rel.get('from_entity_name', '').strip()
-            entity2_name = rel.get('entity2_name') or rel.get('to_entity_name', '').strip()
+            entity1_name = (rel.get('entity1_name') or rel.get('from_entity_name', '')).strip()
+            entity2_name = (rel.get('entity2_name') or rel.get('to_entity_name', '')).strip()
             content = rel.get('content', '')
             content_lower = content.strip().lower()
             if entity1_name and entity2_name:

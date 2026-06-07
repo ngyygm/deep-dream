@@ -108,7 +108,7 @@ def test_relation_repo_accepts_pipeline_fields(v15):
     ent_repo.insert_entity_observation(v15, "obs_b", "fam_bob", "ep1", "Bob",
                                        processed_at=NOW, run_id="run1")
 
-    rel_repo.upsert_relation_family(v15, "rfam1", "fam_alice", "fam_bob", "discussed with",
+    rel_repo.upsert_relation_family(v15, "rfam1", "fam_alice", "fam_bob",
                                     canonical_content="Alice and Bob discussed quantum physics",
                                     created_at=NOW, updated_at=NOW)
     rel_repo.insert_relation_assertion(

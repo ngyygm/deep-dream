@@ -22,21 +22,29 @@ class DocumentProcessor:
         self.window_size = window_size
         self.overlap = overlap
 
-    def chunk_text(self, content: str) -> List[Tuple[str, int, int]]:
-        """Split Markdown by headings, then paragraph/sentence boundaries."""
+    def chunk_text(self, content: str) -> List[Tuple[str, int, int, str]]:
+        """Split Markdown by headings, then paragraph/sentence boundaries.
+
+        Returns a list of 4-tuples: (content, start_offset, end_offset, heading_path).
+        """
         chunks = split_markdown_chunks(
             content or "",
             window_size=self.window_size,
             overlap=self.overlap,
         )
         return [
-            (str(chunk["content"]), int(chunk["start_offset"]), int(chunk["end_offset"]))
+            (
+                str(chunk["content"]),
+                int(chunk["start_offset"]),
+                int(chunk["end_offset"]),
+                str(chunk.get("heading_path") or ""),
+            )
             for chunk in chunks
         ]
     
     def process_documents(self, document_paths: List[str],
                          resume_document_path: Optional[str] = None,
-                         resume_text: Optional[str] = None) -> Iterator[Tuple[str, str, bool, int, int, int, str]]:
+                         resume_text: Optional[str] = None) -> Iterator[Tuple[str, str, bool, int, int, int, str, str]]:
         """
         处理多个文档，返回滑动窗口迭代器
 
@@ -46,7 +54,7 @@ class DocumentProcessor:
             resume_text: 断点续传时的起始文本内容（可选，用于定位位置）
 
         Yields:
-            (text_chunk, document_name, is_new_document, start_pos, end_pos, total_length, document_path)
+            (text_chunk, document_name, is_new_document, start_pos, end_pos, total_length, document_path, heading_path)
             - text_chunk: 当前窗口的文本内容
             - document_name: 文档名称
             - is_new_document: 是否是新的文档（用于添加提示）
@@ -54,6 +62,7 @@ class DocumentProcessor:
             - end_pos: 当前窗口在文档中的结束位置（字符位置）
             - total_length: 文档总长度（字符数）
             - document_path: 文档完整路径
+            - heading_path: 标题路径（如 "Chapter 1 / Section 2"）
         """
         # 重新排序文档列表，支持断点续传（同时缓存已读文件内容）
         ordered_paths, resume_start_pos, content_cache = self._reorder_documents_for_resume(
@@ -92,16 +101,16 @@ class DocumentProcessor:
             
             chunks = self.chunk_text(content)
             if start > 0:
-                chunks = [(chunk, s, e) for chunk, s, e in chunks if e > start]
+                chunks = [(c, s, e, hp) for c, s, e, hp in chunks if e > start]
                 if chunks:
-                    first_chunk, first_start, first_end = chunks[0]
+                    first_chunk, first_start, first_end, first_hp = chunks[0]
                     if first_start < start < first_end:
-                        chunks[0] = (content[start:first_end], start, first_end)
+                        chunks[0] = (content[start:first_end], start, first_end, first_hp)
             is_first_chunk = (start == 0)
             # Pre-compute doc prefix outside the loop (invariant per document)
             _doc_prefix = f"[文档元数据] 文档名：{document_name} [/文档元数据]\n\n"
 
-            for chunk, start_pos, end in chunks:
+            for chunk, start_pos, end, heading_path in chunks:
 
                 # 如果是新文档的第一块，添加提示
                 is_new_doc = is_first_chunk and start_pos == 0
@@ -109,7 +118,7 @@ class DocumentProcessor:
                     chunk = _doc_prefix + chunk
                     is_first_chunk = False
 
-                yield (chunk, document_name, is_new_doc, start_pos, end, total_length, doc_path)
+                yield (chunk, document_name, is_new_doc, start_pos, end, total_length, doc_path, heading_path)
     
     def _reorder_documents_for_resume(self, document_paths: List[str],
                                       resume_document_path: Optional[str],

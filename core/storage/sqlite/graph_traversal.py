@@ -10,26 +10,98 @@ from .repositories import search as search_repo
 logger = logging.getLogger(__name__)
 
 
+def _enrich_names(conn: sqlite3.Connection, results: List[dict]) -> List[dict]:
+    """Batch-resolve entity names for neighbor results."""
+    if not results:
+        return results
+    fids = [r["family_id"] for r in results]
+    # Batch lookup canonical_name from entity_families
+    placeholders = ",".join("?" * len(fids))
+    rows = conn.execute(
+        f"SELECT entity_family_id, canonical_name "
+        f"FROM entity_families WHERE entity_family_id IN ({placeholders})",
+        fids,
+    ).fetchall()
+    name_map = {r[0]: r[1] for r in rows}
+    for r in results:
+        r["name"] = name_map.get(r["family_id"], "")
+    return results
+
+
 def get_concept_neighbors(conn: sqlite3.Connection, family_id: str,
                           max_depth: int = 1, max_results: int = 200,
                           edge_types: Optional[List[str]] = None) -> List[dict]:
-    edges = search_repo.get_graph_neighbors(conn, family_id, limit=max_results)
+    """BFS expansion of concept neighbors, annotating each result with its hop depth.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+    family_id : str
+        Starting concept family ID.
+    max_depth : int
+        Maximum BFS depth (1 = direct neighbors only).
+    max_results : int
+        Cap on total neighbor results returned.
+    edge_types : list[str] or None
+        If given, only these edge types are followed.
+
+    Returns
+    -------
+    list[dict]
+        Each dict has keys: ``edge_type``, ``family_id``, ``depth``.
+        Results are ordered by depth (closest first), with RELATES edges
+        prioritised within the same depth level.
+    """
+    valid_types = {"RELATES", "MENTIONS", "ASSERTS"}
     if edge_types:
-        edges = [e for e in edges if e.get("edge_type") in edge_types]
-    results = []
-    for e in edges:
-        target = e.get("target_family_id") or e.get("target_id", "")
-        source = e.get("source_family_id") or e.get("source_id", "")
-        # Return the OTHER side of the edge
-        neighbor_fid = target if source == family_id else source
-        if not neighbor_fid or neighbor_fid == family_id:
-            neighbor_fid = target
-        results.append({
-            "edge_type": e.get("edge_type", ""),
-            "target_id": e.get("target_id", ""),
-            "family_id": neighbor_fid,
-        })
-    return results[:max_results]
+        valid_types = valid_types.intersection(edge_types)
+
+    visited: set[str] = {family_id}
+    results: list[dict] = []
+    frontier: list[str] = [family_id]
+
+    for current_depth in range(1, max_depth + 1):
+        next_frontier: list[str] = []
+        for fid in frontier:
+            # Fetch more edges than needed because MENTIONS edges (with empty
+            # source_family_id) are filtered out.
+            fetch_limit = max(max_results * 10, 1000)
+            edges = search_repo.get_graph_neighbors(conn, fid, limit=fetch_limit)
+            # Put RELATES edges first — they have both source and target
+            # family_ids and yield real concept-to-concept neighbors.
+            edges.sort(key=lambda e: 0 if e.get("edge_type") == "RELATES" else 1)
+
+            for e in edges:
+                et = e.get("edge_type", "")
+                if et not in valid_types:
+                    continue
+                target_fid = e.get("target_family_id") or ""
+                source_fid = e.get("source_family_id") or ""
+                # Determine the OTHER side of the edge
+                if source_fid == fid:
+                    neighbor_fid = target_fid
+                elif target_fid == fid:
+                    neighbor_fid = source_fid
+                else:
+                    # Edge not connected to current fid — skip
+                    continue
+                if not neighbor_fid or neighbor_fid == family_id or neighbor_fid in visited:
+                    continue
+                visited.add(neighbor_fid)
+                next_frontier.append(neighbor_fid)
+                results.append({
+                    "edge_type": et,
+                    "family_id": neighbor_fid,
+                    "depth": current_depth,
+                })
+                if len(results) >= max_results:
+                    break
+            if len(results) >= max_results:
+                return _enrich_names(conn, results)
+        frontier = next_frontier
+        if not frontier:
+            break
+    return _enrich_names(conn, results)
 
 
 def traverse_concepts(conn: sqlite3.Connection,
@@ -48,10 +120,18 @@ def traverse_concepts(conn: sqlite3.Connection,
                 if edge_types and n.get("edge_type") not in edge_types:
                     continue
                 all_edges.append(n)
-                target = n.get("target_family_id") or n.get("target_id")
-                if target and target not in visited:
-                    visited.add(target)
-                    next_frontier.append(target)
+                # Bidirectional traversal: determine which endpoint is the neighbor
+                source_fid = n.get("source_family_id") or ''
+                target_fid = n.get("target_family_id") or ''
+                if source_fid == fid:
+                    neighbor = target_fid
+                elif target_fid == fid:
+                    neighbor = source_fid
+                else:
+                    neighbor = target_fid
+                if neighbor and neighbor not in visited:
+                    visited.add(neighbor)
+                    next_frontier.append(neighbor)
         frontier = next_frontier
         if not frontier or len(all_edges) >= max_results:
             break
@@ -63,7 +143,45 @@ def batch_bfs_traverse(conn: sqlite3.Connection,
                        seed_ids: List[str], max_depth: int = 2,
                        max_nodes: int = 50) -> Tuple[list, list, dict]:
     result = traverse_concepts(conn, seed_ids, max_depth=max_depth, max_results=max_nodes)
-    return [], [], {"hops": {}}
+    visited_family_ids = list(result.get("visited", []))
+    edges = result.get("edges", [])
+
+    # Build lightweight Entity-like objects from the visited family_ids so
+    # that callers (GraphTraversalSearcher.bfs_expand_with_relations) receive
+    # objects with .family_id and .name attributes instead of raw edge dicts.
+    entities = _build_lightweight_entities(conn, visited_family_ids)
+
+    return entities, edges, visited_family_ids
+
+
+def _build_lightweight_entities(conn: sqlite3.Connection,
+                                family_ids: List[str]) -> list:
+    """Build lightweight Entity-like objects for the given family_ids."""
+    if not family_ids:
+        return []
+    # Batch fetch entity info
+    ph = ",".join("?" for _ in family_ids)
+    rows = conn.execute(
+        f"SELECT ef.entity_family_id, ef.canonical_name, ef.canonical_content "
+        f"FROM entity_families ef "
+        f"WHERE ef.entity_family_id IN ({ph})",
+        family_ids,
+    ).fetchall()
+    entities = []
+    from core.models import Entity
+    from datetime import datetime as _dt
+    for r in rows:
+        entities.append(Entity(
+            absolute_id=r[0],
+            family_id=r[0],
+            name=r[1] or "",
+            content=r[2] or "",
+            event_time=_dt.now(),
+            processed_time=_dt.now(),
+            episode_id="",
+            source_document="",
+        ))
+    return entities
 
 
 def batch_get_entity_degrees(conn: sqlite3.Connection,
@@ -188,7 +306,8 @@ def _build_entity_concepts(conn, episode_ids):
     ph = ",".join("?" for _ in episode_ids)
     rows = conn.execute(
         f"SELECT DISTINCT eo.entity_family_id, eo.name, eo.content, "
-        f"eo.processed_at, eo.entity_id "
+        f"eo.processed_at, eo.entity_id, "
+        f"COALESCE(NULLIF(eo.episode_id, ''), em.episode_id) "
         f"FROM entity_mentions em "
         f"JOIN entity_observations eo ON eo.entity_id = em.entity_id AND eo.status = 'active' "
         f"WHERE em.episode_id IN ({ph}) "
@@ -204,6 +323,7 @@ def _build_entity_concepts(conn, episode_ids):
             "role": "entity",
             "processed_time": r[3],
             "version_id": r[4],
+            "episode_id": r[5],
             "metadata": {},
         })
     return concepts
@@ -276,14 +396,6 @@ def _build_edges(documents, episodes, entities, relations):
 
     # Entity family_ids set for validation
     entity_families = {e["family_id"] for e in entities}
-
-    # MENTIONS: episode -> entity
-    for ep in episodes:
-        ep_id = ep["version_id"]
-        doc_ver = ep.get("document_version_id", "")
-        # We'll add MENTIONS edges after building concepts
-        # by querying entity_mentions for this episode
-        # Actually we need to do this in the main function with DB access
 
     return edges, doc_ver_by_doc_id
 
@@ -381,9 +493,44 @@ def _build_version_counts(conn, entity_families, relation_families):
     return versions
 
 
+def _build_has_episode_edges(episodes: List[dict]) -> List[dict]:
+    edges = []
+    for ep in episodes:
+        doc_ver = ep.get("document_version_id")
+        if doc_ver:
+            edges.append({
+                "edge_id": f"he:{ep['version_id']}",
+                "from": f"doc:{doc_ver}",
+                "to": f"episode:{ep['version_id']}",
+                "edge_type": "HAS_EPISODE",
+                "document_version_id": doc_ver,
+                "episode_version_id": ep["version_id"],
+            })
+    return edges
+
+
+def _document_graph_counts(conn: sqlite3.Connection, episode_ids: List[str]) -> dict:
+    if not episode_ids:
+        return {"episodes": 0, "concepts": 0, "relations": 0}
+    ph = ",".join("?" for _ in episode_ids)
+    entity_count = conn.execute(
+        f"SELECT COUNT(DISTINCT entity_family_id) FROM entity_mentions "
+        f"WHERE episode_id IN ({ph})",
+        episode_ids,
+    ).fetchone()[0] or 0
+    relation_count = conn.execute(
+        f"SELECT COUNT(DISTINCT relation_family_id) FROM relation_assertions "
+        f"WHERE episode_id IN ({ph}) AND status = 'active'",
+        episode_ids,
+    ).fetchone()[0] or 0
+    return {"episodes": len(episode_ids), "concepts": entity_count, "relations": relation_count}
+
+
 def get_document_graph(conn: sqlite3.Connection,
                        document_version_ids: List[str] = None,
-                       document_family_ids: List[str] = None) -> dict:
+                       document_family_ids: List[str] = None,
+                       max_episodes: int = 10000,
+                       max_concepts: int = 50000) -> dict:
     doc_ids, resolved_ver_ids, doc_rows = _resolve_document_ids(
         conn, document_version_ids, document_family_ids)
 
@@ -394,27 +541,22 @@ def get_document_graph(conn: sqlite3.Connection,
     documents = _build_document_nodes(doc_rows)
     ver_ids = [r[5] for r in doc_rows]
     episodes = _build_episode_nodes(conn, ver_ids)
+    if max_episodes and len(episodes) > max_episodes:
+        episodes = episodes[:max_episodes]
 
     episode_ids = [ep["version_id"] for ep in episodes]
 
     entities = _build_entity_concepts(conn, episode_ids)
     relations = _build_relation_concepts(conn, episode_ids)
+    if max_concepts and len(entities) > max_concepts:
+        kept_entity_fams = {c["family_id"] for c in entities[:max_concepts]}
+        entities = entities[:max_concepts]
+        relations = [r for r in relations
+                     if r.get("metadata", {}).get("entity1_family_id") in kept_entity_fams
+                     and r.get("metadata", {}).get("entity2_family_id") in kept_entity_fams]
     concepts = entities + relations
 
-    # Build edges
-    has_ep_edges = []
-    for ep in episodes:
-        doc_ver = ep.get("document_version_id")
-        if doc_ver:
-            has_ep_edges.append({
-                "edge_id": f"he:{ep['version_id']}",
-                "from": f"doc:{doc_ver}",
-                "to": f"episode:{ep['version_id']}",
-                "edge_type": "HAS_EPISODE",
-                "document_version_id": doc_ver,
-                "episode_version_id": ep["version_id"],
-            })
-
+    has_ep_edges = _build_has_episode_edges(episodes)
     mention_edges = _build_mention_edges(conn, episode_ids, documents)
     relation_edges = _build_relation_edges(conn, episode_ids, relations)
     all_edges = has_ep_edges + mention_edges + relation_edges
@@ -441,16 +583,27 @@ def get_document_graph_outline(conn: sqlite3.Connection,
                                 document_version_ids: List[str] = None,
                                 document_family_ids: List[str] = None,
                                 max_episodes: int = 10000) -> dict:
-    graph = get_document_graph(conn, document_version_ids, document_family_ids)
-    episodes = graph["episodes"]
-    graph["next_cursor"] = len(episodes) if episodes else 0
-    # Outline includes edges for skeleton rendering (HAS_EPISODE only)
-    # but keeps concepts empty for progressive loading
-    graph["concepts"] = []
-    # Only keep HAS_EPISODE and DOCUMENT_LINK edges in outline
-    graph["edges"] = [e for e in graph["edges"] if e.get("edge_type") == "HAS_EPISODE"]
-    graph["versions"] = {}
-    return graph
+    doc_ids, resolved_ver_ids, doc_rows = _resolve_document_ids(
+        conn, document_version_ids, document_family_ids)
+    if not doc_ids:
+        return {"documents": [], "episodes": [], "concepts": [], "edges": [],
+                "versions": {}, "counts": {}, "cursor": 0, "next_cursor": None}
+
+    documents = _build_document_nodes(doc_rows)
+    ver_ids = [r[5] for r in doc_rows]
+    all_episodes = _build_episode_nodes(conn, ver_ids)
+    counts = _document_graph_counts(conn, [ep["version_id"] for ep in all_episodes])
+    episodes = all_episodes[:max_episodes] if max_episodes else all_episodes
+    return {
+        "documents": documents,
+        "episodes": episodes,
+        "concepts": [],
+        "edges": _build_has_episode_edges(episodes),
+        "versions": {},
+        "counts": counts,
+        "cursor": 0,
+        "next_cursor": len(episodes) if episodes else None,
+    }
 
 
 def get_document_graph_chunk(conn: sqlite3.Connection,
@@ -460,18 +613,27 @@ def get_document_graph_chunk(conn: sqlite3.Connection,
                               include_relations: bool = True,
                               include_versions: bool = True,
                               max_concepts: int = 8000) -> dict:
-    graph = get_document_graph(conn, document_version_ids, document_family_ids)
-    episodes = graph["episodes"]
+    doc_ids, resolved_ver_ids, doc_rows = _resolve_document_ids(
+        conn, document_version_ids, document_family_ids)
+    if not doc_ids:
+        return {"documents": [], "episodes": [], "concepts": [], "edges": [],
+                "versions": {}, "counts": {}, "cursor": cursor, "next_cursor": None}
+
+    documents = _build_document_nodes(doc_rows)
+    ver_ids = [r[5] for r in doc_rows]
+    all_episodes = _build_episode_nodes(conn, ver_ids)
+    counts = _document_graph_counts(conn, [ep["version_id"] for ep in all_episodes])
+    episodes = all_episodes
 
     # Paginate episodes by cursor (offset into the episode list)
     if cursor >= len(episodes):
         return {
-            "documents": graph["documents"],
+            "documents": documents,
             "episodes": [],
             "concepts": [],
             "edges": [],
             "versions": {},
-            "counts": {"episodes": 0, "concepts": 0, "relations": 0},
+            "counts": counts,
             "cursor": cursor,
             "next_cursor": None,
         }
@@ -483,54 +645,32 @@ def get_document_graph_chunk(conn: sqlite3.Connection,
     else:
         next_cursor = None
 
-    episode_ids = set(ep["version_id"] for ep in episodes)
-
-    # Filter edges to only include those for the current chunk's episodes
-    chunk_edges = [e for e in graph["edges"]
-                   if e.get("episode_version_id") in episode_ids
-                   or e.get("edge_type") == "HAS_EPISODE"]
-    # Re-add HAS_EPISODE for current chunk
-    has_ep_ids = set()
-    for ep in episodes:
-        doc_ver = ep.get("document_version_id")
-        if doc_ver:
-            eid = f"he:{ep['version_id']}"
-            has_ep_ids.add(eid)
-    chunk_edges = [e for e in chunk_edges
-                   if e.get("edge_id") in has_ep_ids or e.get("edge_type") != "HAS_EPISODE"]
-
-    # Filter concepts to those referenced in current chunk
-    entity_fams_in_chunk = set()
-    rel_fams_in_chunk = set()
-    for e in chunk_edges:
-        if e.get("edge_type") == "MENTIONS" and e.get("target_family_id"):
-            entity_fams_in_chunk.add(e["target_family_id"])
-        if e.get("edge_type") == "CONNECTS":
-            if e.get("source_family_id"):
-                entity_fams_in_chunk.add(e["source_family_id"])
-            if e.get("target_family_id"):
-                entity_fams_in_chunk.add(e["target_family_id"])
-            if e.get("relation_family_id"):
-                rel_fams_in_chunk.add(e["relation_family_id"])
-
-    chunk_concepts = [c for c in graph["concepts"]
-                      if (c["role"] == "entity" and c["family_id"] in entity_fams_in_chunk)
-                      or (c["role"] == "relation" and c["family_id"] in rel_fams_in_chunk)]
-
-    chunk_versions = {fid: v for fid, v in graph["versions"].items()
-                      if fid in entity_fams_in_chunk or fid in rel_fams_in_chunk}
+    episode_ids = [ep["version_id"] for ep in episodes]
+    entities = _build_entity_concepts(conn, episode_ids)
+    if max_concepts and len(entities) > max_concepts:
+        entities = entities[:max_concepts]
+    entity_fams = {c["family_id"] for c in entities}
+    relations = _build_relation_concepts(conn, episode_ids) if include_relations else []
+    relations = [r for r in relations
+                 if r.get("metadata", {}).get("entity1_family_id") in entity_fams
+                 and r.get("metadata", {}).get("entity2_family_id") in entity_fams]
+    chunk_concepts = entities + relations
+    chunk_edges = (
+        _build_has_episode_edges(episodes)
+        + [e for e in _build_mention_edges(conn, episode_ids, documents)
+           if e.get("target_family_id") in entity_fams]
+        + (_build_relation_edges(conn, episode_ids, relations) if include_relations else [])
+    )
+    rel_fams = {c["family_id"] for c in relations}
+    chunk_versions = _build_version_counts(conn, entity_fams, rel_fams) if include_versions else {}
 
     return {
-        "documents": graph["documents"],
+        "documents": documents,
         "episodes": episodes,
         "concepts": chunk_concepts,
         "edges": chunk_edges,
         "versions": chunk_versions,
-        "counts": {
-            "episodes": len(episodes),
-            "concepts": len([c for c in chunk_concepts if c["role"] == "entity"]),
-            "relations": len([c for c in chunk_concepts if c["role"] == "relation"]),
-        },
+        "counts": counts,
         "cursor": cursor,
         "next_cursor": next_cursor,
     }

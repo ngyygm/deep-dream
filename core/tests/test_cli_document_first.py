@@ -24,7 +24,7 @@ def _write_config(tmp_path: Path) -> Path:
 
 
 def _run_cli(capsys, *args):
-    code = main(list(args))
+    code = main(["--json", *args])
     captured = capsys.readouterr()
     assert code == 0
     return json.loads(captured.out)
@@ -37,23 +37,23 @@ def test_docs_map_and_search_external_file(tmp_path, capsys):
     note = vault / "note.md"
     note.write_text("# Note\n\nAlpha memory line\n\n## Detail\nBeta concept line\n", encoding="utf-8")
 
-    _run_cli(capsys, "--config", str(config), "graph", "create", "test")
-    _run_cli(capsys, "--config", str(config), "vault", "index", str(vault), "--graph", "test")
+    _run_cli(capsys, "--config", str(config), "graph", "create", "library")
+    _run_cli(capsys, "--config", str(config), "vault", "index", str(vault))
 
-    mapped = _run_cli(capsys, "--config", str(config), "docs", "map", str(note), "--graph", "test")
+    mapped = _run_cli(capsys, "--config", str(config), "docs", "map", str(note))
     assert mapped["success"] is True
     assert mapped["data"]["total"] == 1
     assert mapped["data"]["documents"][0]["source_mode"] == "external"
     assert mapped["data"]["documents"][0]["resolved_path"] == str(note.resolve())
 
-    searched = _run_cli(capsys, "--config", str(config), "docs", "search", "Beta", "--graph", "test")
-    assert searched["used"]["raw_files"] is True
+    searched = _run_cli(capsys, "--config", str(config), "docs", "search", "Beta")
+    assert searched["data"]["used"]["raw_files"] is True
     assert searched["data"]["total"] == 1
     assert searched["data"]["hits"][0]["document"]["line_start"] == 6
     assert searched["data"]["hits"][0]["verification"] == "raw_file"
 
     note.unlink()
-    fallback = _run_cli(capsys, "--config", str(config), "docs", "search", "Beta", "--graph", "test")
+    fallback = _run_cli(capsys, "--config", str(config), "docs", "search", "Beta")
     assert fallback["data"]["total"] == 1
     assert fallback["data"]["hits"][0]["verification"] == "snapshot"
 
@@ -63,8 +63,8 @@ def test_episode_from_file_and_episode_concepts_shape(tmp_path, capsys):
     note = tmp_path / "doc.md"
     note.write_text("# Title\n\nIntro line\n\n## Section\nTarget line\n", encoding="utf-8")
 
-    _run_cli(capsys, "--config", str(config), "graph", "create", "test")
-    _run_cli(capsys, "--config", str(config), "vault", "index", str(note), "--graph", "test")
+    _run_cli(capsys, "--config", str(config), "graph", "create", "library")
+    _run_cli(capsys, "--config", str(config), "vault", "index", str(note))
 
     episodes = _run_cli(
         capsys,
@@ -75,14 +75,12 @@ def test_episode_from_file_and_episode_concepts_shape(tmp_path, capsys):
         str(note),
         "--line",
         "6",
-        "--graph",
-        "test",
     )
     assert episodes["success"] is True
     assert episodes["data"]["total"] >= 1
     episode_id = episodes["data"]["episodes"][0]["episode_version_id"]
 
-    concepts = _run_cli(capsys, "--config", str(config), "episode", "concepts", episode_id, "--graph", "test")
+    concepts = _run_cli(capsys, "--config", str(config), "episode", "concepts", episode_id)
     assert concepts["success"] is True
     assert concepts["data"]["episode_id"] == episode_id
     assert isinstance(concepts["data"]["concepts"], list)
@@ -90,10 +88,10 @@ def test_episode_from_file_and_episode_concepts_shape(tmp_path, capsys):
 
 def test_sql_is_read_only(tmp_path, capsys):
     config = _write_config(tmp_path)
-    _run_cli(capsys, "--config", str(config), "graph", "create", "test")
+    _run_cli(capsys, "--config", str(config), "graph", "create", "library")
 
-    rc = main(["--config", str(config), "sql", "--query", "DELETE FROM concept_family", "--graph", "test"])
-    assert rc == 1
+    rc = main(["--json", "--config", str(config), "sql", "--query", "DELETE FROM concept_family"])
+    assert rc != 0  # rejected as non-SELECT (exit code is ARGS=2)
 
 
 def test_explore_uses_agent_provided_terms_and_returns_evidence_cards(tmp_path, capsys):
@@ -106,8 +104,8 @@ def test_explore_uses_agent_provided_terms_and_returns_evidence_cards(tmp_path, 
         encoding="utf-8",
     )
 
-    _run_cli(capsys, "--config", str(config), "graph", "create", "test")
-    _run_cli(capsys, "--config", str(config), "vault", "index", str(note), "--graph", "test")
+    _run_cli(capsys, "--config", str(config), "graph", "create", "library")
+    _run_cli(capsys, "--config", str(config), "vault", "index", str(note))
 
     result = _run_cli(
         capsys,
@@ -115,8 +113,6 @@ def test_explore_uses_agent_provided_terms_and_returns_evidence_cards(tmp_path, 
         str(config),
         "explore",
         "逻辑自洽",
-        "--graph",
-        "test",
         "--terms",
         "保持一致,前后矛盾",
         "--limit",

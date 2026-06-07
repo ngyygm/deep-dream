@@ -225,7 +225,8 @@ def dedupe_extracted_relations(relations: Optional[List[Dict[str, Any]]]) -> Lis
         if key in seen:
             continue
         seen.add(key)
-        out.append({"entity1_name": n1, "entity2_name": n2, "content": content})
+        _deduped = {"entity1_name": n1, "entity2_name": n2, "content": content}
+        out.append(_deduped)
     return out
 
 

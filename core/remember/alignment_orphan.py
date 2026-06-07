@@ -272,7 +272,8 @@ class _OrphanMixin:
         # Phase 1: Resolve names + parallel LLM content writing
         _name_lookup = _EPM._build_name_lookup(entity_name_set)
         resolved_pairs = []
-        for a, b in raw_pairs:
+        for pair in raw_pairs:
+            a, b = pair[0], pair[1]
             resolved_a = _EPM._resolve_entity_name(a, entity_name_set, _lookup=_name_lookup)
             resolved_b = _EPM._resolve_entity_name(b, entity_name_set, _lookup=_name_lookup)
             if not resolved_a or not resolved_b or resolved_a == resolved_b:

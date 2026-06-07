@@ -8,6 +8,12 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import uuid
 import numpy as np
 
+from core.utils import (
+    capture_log_context as _capture_log_ctx,
+    set_window_label as _set_wl,
+    set_pipeline_role as _set_pr,
+)
+
 from core.models import Relation
 from core.llm.client import LLMClient
 from core.debug_log import log as dbg, log_section as dbg_section, _ENABLED as _dbg_enabled
@@ -107,6 +113,7 @@ class RelationProcessor(_RelationConstructionMixin):
                                 verbose_relation: bool = True,
                                 prepared_relations_by_pair: Optional[Dict[Tuple[str, str], List[Dict[str, str]]]] = None,
                                 window_timings_ref: Optional[Dict[str, float]] = None,
+                                source_text: str = "",
                                 ) -> List[Relation]:
         """按实体对批量 upsert 关系，低置信度时回退单条逻辑。max_workers>1 且实体对数量>1 时并行处理。"""
         dbg(f"process_relations_batch: 输入 {len(extracted_relations)} 个关系, entity_name_to_id 有 {len(entity_name_to_id)} 个映射")
@@ -236,11 +243,27 @@ class RelationProcessor(_RelationConstructionMixin):
                     verbose_relation=verbose_relation,
                     entity_lookup=entity_lookup,
                     embedding_ctx=embedding_ctx,
+                    source_text=source_text,
                 )
 
             executor = _get_rel_pool(max_workers)
+            _rel_ctx = _capture_log_ctx()
+
+            def _task_with_ctx(i, pk, pr):
+                label, role = _rel_ctx
+                if label:
+                    _set_wl(label)
+                if role:
+                    _set_pr(role)
+                try:
+                    return task(i, pk, pr)
+                finally:
+                    _set_wl(None)
+                    _set_pr(None)
+
+            _submit_fn = _task_with_ctx if (_rel_ctx[0] or _rel_ctx[1]) else task
             futures = {
-                executor.submit(task, idx, pair_key, pair_relations): idx
+                executor.submit(_submit_fn, idx, pair_key, pair_relations): idx
                 for idx, (pair_key, pair_relations) in enumerate(pair_items)
             }
             for future in as_completed(futures):
@@ -271,13 +294,13 @@ class RelationProcessor(_RelationConstructionMixin):
                     try:
                         for _rel, _emb_result in zip(_missing_embedding_relations, batch_embed_fn(_missing_embedding_relations)):
                             if _emb_result is not None:
-                                _rel.embedding = _emb_result
+                                _rel.embedding = _emb_result[0] if isinstance(_emb_result, tuple) else _emb_result
                     except Exception:
                         for _rel in _missing_embedding_relations:
                             try:
                                 _emb_result = self.storage._compute_relation_embedding(_rel)
                                 if _emb_result is not None:
-                                    _rel.embedding = _emb_result
+                                    _rel.embedding = _emb_result[0] if isinstance(_emb_result, tuple) else _emb_result
                             except Exception:
                                 pass
                 elif _missing_embedding_relations:
@@ -285,7 +308,7 @@ class RelationProcessor(_RelationConstructionMixin):
                         try:
                             _emb_result = self.storage._compute_relation_embedding(_rel)
                             if _emb_result is not None:
-                                _rel.embedding = _emb_result
+                                _rel.embedding = _emb_result[0] if isinstance(_emb_result, tuple) else _emb_result
                         except Exception:
                             pass
                 try:
@@ -297,7 +320,7 @@ class RelationProcessor(_RelationConstructionMixin):
                             self.storage.save_relation(_rel)
                             _saved += 1
                         except Exception as _e:
-                            _log_fn(f"[relation_persist] 逐条保存失败: {getattr(_rel, 'name', '?')} -> {_e}")
+                            _log_fn(f"[relation_persist] 逐条保存失败: {getattr(_rel, 'family_id', '?')} -> {_e}")
                     _log_fn(f"[relation_persist] 批量写入失败({type(_bulk_err).__name__}: {_bulk_err}), 逐条保存成功 {_saved}/{len(_all_to_persist)}")
                 _incremental_save_count += len(_all_to_persist)
                 _all_patches = []
@@ -331,6 +354,7 @@ class RelationProcessor(_RelationConstructionMixin):
                     verbose_relation=verbose_relation,
                     entity_lookup=entity_lookup,
                     embedding_ctx=embedding_ctx,
+                    source_text=source_text,
                 )
                 _pair_elapsed = _time.monotonic() - _t_pair
                 _sum_pair_time += _pair_elapsed
@@ -357,13 +381,13 @@ class RelationProcessor(_RelationConstructionMixin):
                     try:
                         for _rel, _emb_result in zip(_missing_embedding_relations, batch_embed_fn(_missing_embedding_relations)):
                             if _emb_result is not None:
-                                _rel.embedding = _emb_result
+                                _rel.embedding = _emb_result[0] if isinstance(_emb_result, tuple) else _emb_result
                     except Exception:
                         for _rel in _missing_embedding_relations:
                             try:
                                 _emb_result = self.storage._compute_relation_embedding(_rel)
                                 if _emb_result is not None:
-                                    _rel.embedding = _emb_result
+                                    _rel.embedding = _emb_result[0] if isinstance(_emb_result, tuple) else _emb_result
                             except Exception:
                                 pass
                 elif _missing_embedding_relations:
@@ -371,7 +395,7 @@ class RelationProcessor(_RelationConstructionMixin):
                         try:
                             _emb_result = self.storage._compute_relation_embedding(_rel)
                             if _emb_result is not None:
-                                _rel.embedding = _emb_result
+                                _rel.embedding = _emb_result[0] if isinstance(_emb_result, tuple) else _emb_result
                         except Exception:
                             pass
                 try:
@@ -383,7 +407,7 @@ class RelationProcessor(_RelationConstructionMixin):
                             self.storage.save_relation(_rel)
                             _saved += 1
                         except Exception as _e:
-                            _log_fn(f"[relation_persist] 逐条保存失败: {getattr(_rel, 'name', '?')} -> {_e}")
+                            _log_fn(f"[relation_persist] 逐条保存失败: {getattr(_rel, 'family_id', '?')} -> {_e}")
                     _log_fn(f"[relation_persist] 批量写入失败({type(_bulk_err).__name__}: {_bulk_err}), 逐条保存成功 {_saved}/{len(_seq_all_persist)}")
                 _incremental_save_count += len(_seq_all_persist)
                 _seq_all_patches = []
@@ -446,6 +470,7 @@ class RelationProcessor(_RelationConstructionMixin):
                                    verbose_relation: bool = True,
                                    entity_lookup: Optional[Dict[str, Any]] = None,
                                    embedding_ctx: Optional[Dict[str, Any]] = None,
+                                   source_text: str = "",
                                    ) -> Tuple[List[Relation], List[Relation], set]:
         """处理单个实体对的关系，返回 (processed_relations, relations_to_persist, corroborated_family_ids)。"""
         dbg(f"ENTER {entity1_name}-{entity2_name}: ctx={embedding_ctx is not None} exist={len(existing_relations)}")
@@ -454,6 +479,41 @@ class RelationProcessor(_RelationConstructionMixin):
         relations_to_persist: List[Relation] = []
         corroborated_family_ids: set = set()
         new_contents = [c for rel in pair_relations if (c := rel.get("content", ""))]
+        # Compute evidence_text from source_text for this entity pair
+        _ev_text = None
+        _ev_start = None
+        _ev_end = None
+        _ev_line_start = None
+        _ev_line_end = None
+        if source_text and entity1_name and entity2_name:
+            try:
+                from core.text_chunking import find_text_evidence
+                # Search for sentences where both entity names appear
+                _hits_a = find_text_evidence(source_text, [entity1_name], limit=3)
+                _hits_b = find_text_evidence(source_text, [entity2_name], limit=3)
+                if _hits_a and _hits_b:
+                    # Find overlapping sentence spans
+                    _sents_a = {(h["sentence_start"], h["sentence_end"]) for h in _hits_a}
+                    _sents_b = {(h["sentence_start"], h["sentence_end"]) for h in _hits_b}
+                    _overlap = _sents_a & _sents_b
+                    if _overlap:
+                        _best = min(_overlap)
+                        _ev_start = _best[0]
+                        _ev_end = _best[1]
+                        _ev_text = source_text[_ev_start:_ev_end]
+                    else:
+                        # No overlap — use first hit for entity1 as evidence
+                        _h = _hits_a[0]
+                        _ev_text = _h.get("sentence") or _h.get("quote")
+                        _ev_start = _h.get("start_offset")
+                        _ev_end = _h.get("end_offset")
+                # Compute line numbers from offsets
+                if _ev_start is not None:
+                    _ev_line_start = source_text[:_ev_start].count('\n') + 1
+                if _ev_end is not None:
+                    _ev_line_end = source_text[:_ev_end].count('\n') + 1
+            except Exception:
+                pass
 
         # 快速检查：如果所有新内容都已在已有关系中完全存在，跳过 LLM 但创建版本
         # Pre-build indexes for O(1) lookups (avoid repeated linear scans)
@@ -492,6 +552,11 @@ class RelationProcessor(_RelationConstructionMixin):
                     source_document=source_document,
                     base_time=base_time,
                     pre_fetched_relations=existing_relations,
+                    evidence_text=_ev_text,
+                    evidence_start_offset=_ev_start,
+                    evidence_end_offset=_ev_end,
+                    evidence_line_start=_ev_line_start,
+                    evidence_line_end=_ev_line_end,
                 )
                 if relation:
                     processed_relations.append(relation)
@@ -509,6 +574,11 @@ class RelationProcessor(_RelationConstructionMixin):
                 entity1_name=entity1_name, entity2_name=entity2_name,
                 source_document=source_document, base_time=base_time,
                 entity_lookup=entity_lookup,
+                evidence_text=_ev_text,
+                evidence_start_offset=_ev_start,
+                evidence_end_offset=_ev_end,
+                evidence_line_start=_ev_line_start,
+                evidence_line_end=_ev_line_end,
             )
             if new_rel:
                 if embedding_ctx and len(truly_new_contents) == 1:
@@ -558,6 +628,11 @@ class RelationProcessor(_RelationConstructionMixin):
                     entity1_name=entity1_name, entity2_name=entity2_name,
                     source_document=source_document, base_time=base_time,
                     entity_lookup=entity_lookup,
+                    evidence_text=_ev_text,
+                evidence_start_offset=_ev_start,
+                evidence_end_offset=_ev_end,
+                evidence_line_start=_ev_line_start,
+                evidence_line_end=_ev_line_end,
                 )
                 if new_rel:
                     if len(truly_new_contents) == 1:
@@ -601,6 +676,11 @@ class RelationProcessor(_RelationConstructionMixin):
                     base_time=base_time,
                     pre_fetched_relations=existing_relations,
                     _pre_built_relations_info=existing_relations_info,
+                    evidence_text=_ev_text,
+                    evidence_start_offset=_ev_start,
+                    evidence_end_offset=_ev_end,
+                    evidence_line_start=_ev_line_start,
+                    evidence_line_end=_ev_line_end,
                 )
                 if relation:
                     processed_relations.append(relation)
@@ -631,6 +711,11 @@ class RelationProcessor(_RelationConstructionMixin):
                     entity_lookup=entity_lookup,
                     old_content=latest_relation.content or "",
                     old_content_format=latest_relation.content_format or "plain",
+                    evidence_text=_ev_text,
+                evidence_start_offset=_ev_start,
+                evidence_end_offset=_ev_end,
+                evidence_line_start=_ev_line_start,
+                evidence_line_end=_ev_line_end,
                 )
                 if new_relation is not None:
                     if (merged_content or "").strip() == (latest_relation.content or "").strip():
@@ -656,6 +741,11 @@ class RelationProcessor(_RelationConstructionMixin):
                     entity_lookup=entity_lookup,
                     old_content=latest_relation.content or "",
                     old_content_format=latest_relation.content_format or "plain",
+                    evidence_text=_ev_text,
+                evidence_start_offset=_ev_start,
+                evidence_end_offset=_ev_end,
+                evidence_line_start=_ev_line_start,
+                evidence_line_end=_ev_line_end,
                 )
                 if new_relation is not None:
                     new_relation.embedding = latest_relation.embedding
@@ -683,6 +773,11 @@ class RelationProcessor(_RelationConstructionMixin):
                     base_time=base_time,
                     entity_lookup=entity_lookup,
                     confidence=confidence,
+                    evidence_text=_ev_text,
+                evidence_start_offset=_ev_start,
+                evidence_end_offset=_ev_end,
+                evidence_line_start=_ev_line_start,
+                evidence_line_end=_ev_line_end,
                 )
                 if new_relation is not None:
                     if embedding_ctx:
@@ -710,6 +805,11 @@ class RelationProcessor(_RelationConstructionMixin):
                 base_time=base_time,
                 entity_lookup=entity_lookup,
                 confidence=confidence,
+                evidence_text=_ev_text,
+                evidence_start_offset=_ev_start,
+                evidence_end_offset=_ev_end,
+                evidence_line_start=_ev_line_start,
+                evidence_line_end=_ev_line_end,
             )
             if new_relation is not None:
                 if embedding_ctx:

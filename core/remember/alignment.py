@@ -185,8 +185,27 @@ class _PipelineExtractionMixin(_ContradictionMixin, _ResolutionMixin, _OrphanMix
                 if refreshed_id:
                     entity_name_to_id[name] = refreshed_id
 
+        # Extra resolution pass: catch entity names that step 9 missed.
+        # Relations may reference entity names not present in the entity list
+        # (e.g. mentioned in relation text but not extracted as entities).
+        _missing_in_rels = set()
+        for _pr in pending_relations_from_entities:
+            for _k in ("entity1_name", "entity2_name"):
+                _n = _pr.get(_k, "")
+                if _n and _n not in entity_name_to_id:
+                    _missing_in_rels.add(_n)
+        if _missing_in_rels:
+            entity_name_to_id, _xdb, _xfz = self._resolve_missing_relation_entity_names(
+                pending_relations_from_entities, entity_name_to_id,
+                align_result.ambiguous_duplicate_names or set(),
+            )
+            dbg(f"step10-input: 额外名称解析 | 缺失{len(_missing_in_rels)} DB+{_xdb} 模糊+{_xfz}")
+
         all_pending_relations = updated_pending_relations.copy()
 
+        _extra_matched = 0
+        _extra_self = 0
+        _extra_missing = 0
         for rel_info in pending_relations_from_entities:
             entity1_name = rel_info.get("entity1_name", "")
             entity2_name = rel_info.get("entity2_name", "")
@@ -198,15 +217,22 @@ class _PipelineExtractionMixin(_ContradictionMixin, _ResolutionMixin, _OrphanMix
 
             if entity1_id and entity2_id:
                 if entity1_id == entity2_id:
+                    _extra_self += 1
                     continue
-                all_pending_relations.append({
+                new_rel = {
                     "entity1_id": entity1_id,
                     "entity2_id": entity2_id,
                     "entity1_name": entity1_name,
                     "entity2_name": entity2_name,
                     "content": content,
-                    "relation_type": relation_type
-                })
+                    "relation_type": relation_type,
+                }
+                all_pending_relations.append(new_rel)
+                _extra_matched += 1
+            else:
+                _extra_missing += 1
+        if _extra_missing > 0 or _extra_self > 0:
+            dbg(f"step10-input: 原始关系追加 | 总{len(pending_relations_from_entities)} 匹配{_extra_matched} 自关系{_extra_self} 缺失{_extra_missing}")
 
         seen_relations = set()
         unique_pending_relations = []
@@ -222,14 +248,14 @@ class _PipelineExtractionMixin(_ContradictionMixin, _ResolutionMixin, _OrphanMix
                     seen_relations.add(relation_key)
                     unique_pending_relations.append(rel)
 
-        relation_inputs = [
-            {
+        relation_inputs = []
+        for rel_info in unique_pending_relations:
+            _ri = {
                 "entity1_name": rel_info.get("entity1_name", ""),
                 "entity2_name": rel_info.get("entity2_name", ""),
                 "content": rel_info.get("content", ""),
             }
-            for rel_info in unique_pending_relations
-        ]
+            relation_inputs.append(_ri)
 
         return relation_inputs, entity_name_to_id, unique_pending_relations, all_pending_relations
 
@@ -292,16 +318,17 @@ class _PipelineExtractionMixin(_ContradictionMixin, _ResolutionMixin, _OrphanMix
         all_pending_relations_by_name = []
         if extracted_relations:
             for rel in extracted_relations:
-                entity1_name = rel.get('entity1_name') or rel.get('from_entity_name', '').strip()
-                entity2_name = rel.get('entity2_name') or rel.get('to_entity_name', '').strip()
+                entity1_name = (rel.get('entity1_name') or rel.get('from_entity_name', '')).strip()
+                entity2_name = (rel.get('entity2_name') or rel.get('to_entity_name', '')).strip()
                 content = rel.get('content', '').strip()
                 if entity1_name and entity2_name:
-                    all_pending_relations_by_name.append({
+                    _rel = {
                         "entity1_name": entity1_name,
                         "entity2_name": entity2_name,
                         "content": content,
-                        "relation_type": "normal"
-                    })
+                        "relation_type": "normal",
+                    }
+                    all_pending_relations_by_name.append(_rel)
 
         entity_name_to_id_from_entities = {}
         _entity_total = len(extracted_entities)
@@ -374,6 +401,7 @@ class _PipelineExtractionMixin(_ContradictionMixin, _ResolutionMixin, _OrphanMix
                 _name_to_fids[original_name].add(entity.family_id)
 
         entity_name_to_ids = {name: list(fids) for name, fids in _name_to_fids.items()}
+        dbg(f"step9: _name_to_fids | 名称变体{len(_name_to_fids)} 原始名{len(original_entity_names)} 处理后{len(processed_entities)} 唯一{len(unique_entities)}")
 
         # 检测和处理同名实体冲突
         if progress_callback:
@@ -395,6 +423,10 @@ class _PipelineExtractionMixin(_ContradictionMixin, _ResolutionMixin, _OrphanMix
                 original_name = original_entity_names[i]
                 if original_name != entity.name:
                     merged_mappings.append((original_name, entity.name, entity.family_id))
+        # Note: positional mapping above may be incorrect if process_entities reorders
+        # results during parallel processing. The entity_name_to_id_from_entities mapping
+        # (line 368-369) is the authoritative source — positional is only a fallback.
+        dbg(f"step9: 合并映射 | {len(merged_mappings)} 个名称变更")
 
         if verbose:
             if not unique_entities:

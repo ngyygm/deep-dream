@@ -128,13 +128,44 @@ class RememberTaskQueue:
                             task.done_event.set()
                             self._persist(task)
                             self._tasks.pop(task.task_id, None)
+                            self._active_processors.pop(task.task_id, None)
                 for tid in stalled_ids:
                     self._log_warn(
                         f"[Remember] 看门狗: 标记停滞任务失败: "
                         f"task_id={_short_task_id(tid)}"
                     )
+                # Detect and restart dead workers so queued tasks get processed
+                self._restart_dead_workers()
             except Exception as e:
                 logger.error("watchdog error: %s", e)
+
+    def _restart_dead_workers(self) -> None:
+        """Detect dead worker threads and restart them so the queue stays alive."""
+        restarted = 0
+        for i, w in enumerate(self._workers):
+            if not w.is_alive():
+                logger.warning(
+                    "[Remember] Worker thread '%s' is dead, restarting",
+                    w.name,
+                )
+                self._log_warn(
+                    "[Remember] Worker 线程 '%s' 已死亡，正在重启"
+                    % w.name
+                )
+                t = threading.Thread(
+                    target=_worker_loop,
+                    args=(self,),
+                    name=f"remember-worker-rst-{int(time.time())}-{i}",
+                    daemon=True,
+                )
+                t.start()
+                self._workers[i] = t
+                restarted += 1
+        if restarted:
+            self._log_info(
+                "[Remember] 已重启 %d 个 worker 线程" % restarted
+            )
+
 
     def _task_uses_external_cache(self, task: RememberTask) -> bool:
         """None 表示沿用 processor 默认配置；False 时仅禁用外部链接续，不影响任务内部滑窗 cache 链。"""
@@ -178,6 +209,52 @@ class RememberTaskQueue:
             hashes.append(compute_doc_hash(chunk))
         return hashes
 
+    def _resolve_doc_id_for_task(self, task: RememberTask) -> str:
+        """Resolve the existing doc_id for a task so retries reuse the same document.
+
+        Strategy:
+        1. Compute content hash of the task's full text and look up document_versions.
+        2. Fallback: look up by source name (document title).
+        Returns "" if no existing document is found.
+        """
+        storage = getattr(self._processor, "storage", None)
+        if not storage:
+            return ""
+        try:
+            conn = storage._conn()
+        except Exception:
+            return ""
+        # Strategy 1: content hash of full text
+        if task.text:
+            try:
+                from core.storage.sqlite import content_fs as _cfs
+                _chash = _cfs.compute_content_hash(task.text)
+                _row = conn.execute(
+                    "SELECT dv.document_id FROM document_versions dv "
+                    "JOIN documents d ON d.document_id = dv.document_id "
+                    "WHERE dv.content_hash = ? AND dv.status = 'active' AND d.status = 'active' "
+                    "LIMIT 1",
+                    (_chash,)
+                ).fetchone()
+                if _row:
+                    return _row[0]
+            except Exception:
+                pass
+        # Strategy 2: source name (document title)
+        if task.source_name:
+            try:
+                _row = conn.execute(
+                    "SELECT document_id FROM documents "
+                    "WHERE title = ? AND status = 'active' "
+                    "ORDER BY updated_at DESC LIMIT 1",
+                    (task.source_name,)
+                ).fetchone()
+                if _row:
+                    return _row[0]
+            except Exception:
+                pass
+        return ""
+
     def detect_repair_windows(self, task: RememberTask) -> List[int]:
         """Detect windows that need repair without replaying completed windows."""
         storage = getattr(self._processor, "storage", None)
@@ -188,6 +265,17 @@ class RememberTaskQueue:
         if not hashes:
             return []
         statuses = assess(hashes, document_path=task.original_path)
+        # Annotate missing phase for each incomplete window
+        for s in statuses:
+            if not s.get("complete"):
+                if not s.get("episode_exists"):
+                    s["missing_phase"] = "step1"
+                elif not s.get("extraction_exists"):
+                    s["missing_phase"] = "step2-8"
+                elif not s.get("entities_complete"):
+                    s["missing_phase"] = "step9"
+                else:
+                    s["missing_phase"] = "unknown"
         missing = [int(s["window_index"]) for s in statuses if not s.get("complete")]
         with self._lock:
             task.repair_window_indices = missing
@@ -223,8 +311,10 @@ class RememberTaskQueue:
         result: Optional[Dict[str, Any]] = None,
     ) -> None:
         with self._lock:
-            # Prevent overwriting cancelled state with completed/running
-            if task.control_action == "cancel" or task.status == "cancelled":
+            # Prevent overwriting terminal states with completed/running
+            # (e.g. watchdog marks stalled task "failed"; worker must not
+            # overwrite it with "completed" after the fact)
+            if task.status in _TERMINAL_STATUSES:
                 if status in ("completed", "running"):
                     return
             if status is not None:
@@ -316,13 +406,19 @@ class RememberTaskQueue:
             if result is not None:
                 task.result = result
             task.last_update = time.time()
-            # Signal synchronous waiters when task reaches terminal state
-            if status in _DONE_STATUSES:
+            # Signal synchronous waiters when task reaches any terminal state
+            if status in _TERMINAL_STATUSES:
                 task.done_event.set()
 
     def _task_to_dict(self, t: RememberTask) -> Dict[str, Any]:
         now = time.time()
-        anchor = t.started_at or t.created_at or now
+        # 对于 queued/paused 但 started_at 为 None 的任务，用 last_update 避免虚高耗时
+        if t.started_at:
+            anchor = t.started_at
+        elif t.status in ("queued", "paused"):
+            anchor = t.last_update or t.created_at or now
+        else:
+            anchor = t.created_at or now
         end_at = t.finished_at or (t.last_update if t.status == "paused" else now)
         progress_detail = _build_progress_detail(t, now)
         try:
@@ -478,6 +574,24 @@ class RememberTaskQueue:
         originals_dir.mkdir(parents=True, exist_ok=True)
         original_path = originals_dir / ("%s.txt" % task_id)
         original_path.write_text(doc.get("content") or "", encoding="utf-8")
+        # Resolve the existing doc_id so repair writes to the same document
+        _existing_doc_id = doc.get("doc_id") or ""
+        if not _existing_doc_id:
+            # Fallback: look up from document_version_id
+            try:
+                _ver = storage._conn().execute(
+                    "SELECT document_id FROM document_versions WHERE document_version_id = ?",
+                    (document_version_id,),
+                ).fetchone()
+                if _ver:
+                    _existing_doc_id = _ver[0]
+            except Exception:
+                pass
+        if not _existing_doc_id:
+            raise ValueError(
+                f"Cannot determine doc_id for document_version_id={document_version_id}. "
+                "Repair aborted to prevent duplicate document creation."
+            )
         task = RememberTask(
             task_id=task_id,
             text=doc.get("content") or "",
@@ -486,7 +600,8 @@ class RememberTaskQueue:
             control_action=None,
             event_time=None,
             original_path=str(original_path),
-            cache_document_path=None,
+            cache_document_path="",
+            override_doc_id=_existing_doc_id,
         )
         task.total_chunks = max(1, int(integrity.get("total_windows") or len(missing)))
         task.failed_window_indices = missing
@@ -504,7 +619,7 @@ class RememberTaskQueue:
         return {"submitted": True, "task_id": task_id, "message": f"已提交修复任务，只补跑 {len(missing)} 个窗口", "integrity": integrity}
 
     def wait_for_task(self, task_id: str, timeout: float = 300) -> Optional[RememberTask]:
-        """Block until a task reaches completed/failed state, or timeout expires.
+        """Block until a task reaches any terminal state, or timeout expires.
 
         Returns the RememberTask (final or current state), or None if task_id not found.
         """
@@ -513,7 +628,7 @@ class RememberTaskQueue:
         if task is None:
             return None
         # Already done?
-        if task.status in _DONE_STATUSES:
+        if task.status in _TERMINAL_STATUSES:
             return task
         task.done_event.wait(timeout=timeout)
         return task

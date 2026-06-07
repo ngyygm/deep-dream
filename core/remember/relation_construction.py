@@ -145,7 +145,13 @@ class _RelationConstructionMixin:
                                  source_document: str = "",
                                  base_time: Optional[datetime] = None,
                                  pre_fetched_relations: Optional[List[Relation]] = None,
-                                 _pre_built_relations_info: Optional[List[Dict]] = None) -> Optional[Relation]:
+                                 _pre_built_relations_info: Optional[List[Dict]] = None,
+                                 evidence_text: Optional[str] = None,
+                                 evidence_start_offset: Optional[int] = None,
+                                 evidence_end_offset: Optional[int] = None,
+                                 evidence_line_start: Optional[int] = None,
+                                 evidence_line_end: Optional[int] = None,
+                                 ) -> Optional[Relation]:
         """处理单个关系
 
         注意：参数 entity1_id 和 entity2_id 是实体的 family_id（不是绝对ID）
@@ -178,6 +184,11 @@ class _RelationConstructionMixin:
                 verbose_relation,
                 source_document,
                 base_time=base_time,
+                evidence_text=evidence_text,
+                evidence_start_offset=evidence_start_offset,
+                evidence_end_offset=evidence_end_offset,
+                evidence_line_start=evidence_line_start,
+                evidence_line_end=evidence_line_end,
             )
 
         existing_relations_info = _pre_built_relations_info or [
@@ -216,6 +227,11 @@ class _RelationConstructionMixin:
                     verbose_relation,
                     source_document,
                     base_time=base_time,
+                    evidence_text=evidence_text,
+                    evidence_start_offset=evidence_start_offset,
+                    evidence_end_offset=evidence_end_offset,
+                    evidence_line_start=evidence_line_start,
+                    evidence_line_end=evidence_line_end,
                 )
 
             _old_content = (latest_relation.content or "").strip()
@@ -232,6 +248,11 @@ class _RelationConstructionMixin:
                     entity1_name,
                     entity2_name,
                     base_time=base_time,
+                    evidence_text=evidence_text,
+                    evidence_start_offset=evidence_start_offset,
+                    evidence_end_offset=evidence_end_offset,
+                    evidence_line_start=evidence_line_start,
+                    evidence_line_end=evidence_line_end,
                 )
                 return new_relation
             else:
@@ -266,6 +287,11 @@ class _RelationConstructionMixin:
                     entity1_name,
                     entity2_name,
                     base_time=base_time,
+                    evidence_text=evidence_text,
+                    evidence_start_offset=evidence_start_offset,
+                    evidence_end_offset=evidence_end_offset,
+                    evidence_line_start=evidence_line_start,
+                    evidence_line_end=evidence_line_end,
                 )
 
                 return new_relation
@@ -280,6 +306,11 @@ class _RelationConstructionMixin:
                 verbose_relation,
                 source_document,
                 base_time=base_time,
+                evidence_text=evidence_text,
+                evidence_start_offset=evidence_start_offset,
+                evidence_end_offset=evidence_end_offset,
+                evidence_line_start=evidence_line_start,
+                evidence_line_end=evidence_line_end,
             )
 
     def _construct_relation(self, entity1_id: str, entity2_id: str,
@@ -290,7 +321,13 @@ class _RelationConstructionMixin:
                             base_time: Optional[datetime] = None,
                             entity_lookup: Optional[Dict[str, Any]] = None,
                             skip_label: str = "关系创建",
-                            confidence: Optional[float] = None) -> Optional[Relation]:
+                            confidence: Optional[float] = None,
+                            evidence_text: Optional[str] = None,
+                            evidence_start_offset: Optional[int] = None,
+                            evidence_end_offset: Optional[int] = None,
+                            evidence_line_start: Optional[int] = None,
+                            evidence_line_end: Optional[int] = None,
+                            ) -> Optional[Relation]:
         """Shared helper: resolve entities, validate, and construct a Relation object."""
         from ._shared import _doc_basename
 
@@ -332,6 +369,11 @@ class _RelationConstructionMixin:
             source_document=source_document_only,
             content_format="markdown",
             confidence=initial_confidence,
+            evidence_text=evidence_text,
+            evidence_start_offset=evidence_start_offset,
+            evidence_end_offset=evidence_end_offset,
+            evidence_line_start=evidence_line_start,
+            evidence_line_end=evidence_line_end,
         )
 
     def _build_new_relation(self, entity1_id: str, entity2_id: str,
@@ -340,7 +382,13 @@ class _RelationConstructionMixin:
                             verbose_relation: bool = True, source_document: str = "",
                             base_time: Optional[datetime] = None,
                             entity_lookup: Optional[Dict[str, Any]] = None,
-                            confidence: Optional[float] = None) -> Optional[Relation]:
+                            confidence: Optional[float] = None,
+                            evidence_text: Optional[str] = None,
+                            evidence_start_offset: Optional[int] = None,
+                            evidence_end_offset: Optional[int] = None,
+                            evidence_line_start: Optional[int] = None,
+                            evidence_line_end: Optional[int] = None,
+                            ) -> Optional[Relation]:
         """构建新关系对象，但不立即写库。"""
         _cs = content.strip() if content else ""
         if len(_cs) < MIN_RELATION_CONTENT_LENGTH:
@@ -356,6 +404,11 @@ class _RelationConstructionMixin:
             base_time=base_time, entity_lookup=entity_lookup,
             skip_label="关系创建",
             confidence=confidence,
+            evidence_text=evidence_text,
+            evidence_start_offset=evidence_start_offset,
+            evidence_end_offset=evidence_end_offset,
+            evidence_line_start=evidence_line_start,
+            evidence_line_end=evidence_line_end,
         )
 
     def _create_new_relation(self, entity1_id: str, entity2_id: str,
@@ -363,13 +416,24 @@ class _RelationConstructionMixin:
                             entity1_name: str = "", entity2_name: str = "",
                             verbose_relation: bool = True, source_document: str = "",
                             base_time: Optional[datetime] = None,
-                            confidence: Optional[float] = None) -> Optional[Relation]:
+                            confidence: Optional[float] = None,
+                            evidence_text: Optional[str] = None,
+                            evidence_start_offset: Optional[int] = None,
+                            evidence_end_offset: Optional[int] = None,
+                            evidence_line_start: Optional[int] = None,
+                            evidence_line_end: Optional[int] = None,
+                            ) -> Optional[Relation]:
         """创建新关系"""
         relation = self._build_new_relation(
             entity1_id, entity2_id, content, episode_id,
             entity1_name=entity1_name, entity2_name=entity2_name,
             verbose_relation=verbose_relation, source_document=source_document, base_time=base_time,
             confidence=confidence,
+            evidence_text=evidence_text,
+            evidence_start_offset=evidence_start_offset,
+            evidence_end_offset=evidence_end_offset,
+            evidence_line_start=evidence_line_start,
+            evidence_line_end=evidence_line_end,
         )
         if relation:
             self.storage.save_relation(relation)
@@ -388,7 +452,13 @@ class _RelationConstructionMixin:
                                  entity_lookup: Optional[Dict[str, Any]] = None,
                                  _existing_relation: Optional[Relation] = None,
                                  old_content: str = "",
-                                 old_content_format: str = "plain") -> Optional[Relation]:
+                                 old_content_format: str = "plain",
+                                 evidence_text: Optional[str] = None,
+                                 evidence_start_offset: Optional[int] = None,
+                                 evidence_end_offset: Optional[int] = None,
+                                 evidence_line_start: Optional[int] = None,
+                                 evidence_line_end: Optional[int] = None,
+                                 ) -> Optional[Relation]:
         """构建关系新版本对象，但不立即写库。附带 section patch 计算。"""
         _cs = content.strip() if content else ""
         if len(_cs) < MIN_RELATION_CONTENT_LENGTH:
@@ -416,6 +486,11 @@ class _RelationConstructionMixin:
             verbose_relation=verbose_relation, source_document=source_document,
             base_time=base_time, entity_lookup=entity_lookup,
             skip_label="关系版本创建",
+            evidence_text=evidence_text,
+            evidence_start_offset=evidence_start_offset,
+            evidence_end_offset=evidence_end_offset,
+            evidence_line_start=evidence_line_start,
+            evidence_line_end=evidence_line_end,
         )
         if relation and old_content:
             patches = compute_content_patches(
@@ -441,7 +516,13 @@ class _RelationConstructionMixin:
                                  entity1_name: str = "",
                                  entity2_name: str = "",
                                  base_time: Optional[datetime] = None,
-                                 entity_lookup: Optional[Dict[str, Any]] = None) -> Optional[Relation]:
+                                 entity_lookup: Optional[Dict[str, Any]] = None,
+                                 evidence_text: Optional[str] = None,
+                                 evidence_start_offset: Optional[int] = None,
+                                 evidence_end_offset: Optional[int] = None,
+                                 evidence_line_start: Optional[int] = None,
+                                 evidence_line_end: Optional[int] = None,
+                                 ) -> Optional[Relation]:
         """创建关系的新版本（始终创建，不跳过）。"""
         relation = self._build_relation_version(
             family_id, entity1_id, entity2_id, content, episode_id,
@@ -449,6 +530,11 @@ class _RelationConstructionMixin:
             entity1_name=entity1_name, entity2_name=entity2_name, base_time=base_time,
             entity_lookup=entity_lookup,
             _existing_relation=None,
+            evidence_text=evidence_text,
+            evidence_start_offset=evidence_start_offset,
+            evidence_end_offset=evidence_end_offset,
+            evidence_line_start=evidence_line_start,
+            evidence_line_end=evidence_line_end,
         )
         if relation:
             self.storage.save_relation(relation)

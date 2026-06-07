@@ -23,6 +23,8 @@
   let growthControllers = new Map();
   let loadedDocVersions = new Set();
   let growthOutlinesByDoc = new Map();
+  let swimmingMode = true;
+  let swimmingNudgeInterval = null;
   let growthRunId = 0;
   let growthPauseRequested = false;
   let growthLoaded = { episodes: 0, concepts: 0, relations: 0, edges: 0 };
@@ -146,6 +148,7 @@
             <label class="graph-toggle"><input id="graph-toggle-relations" type="checkbox" checked> ${t('graph.relationEdges')}</label>
             <label class="graph-toggle"><input id="graph-toggle-source" type="checkbox"> ${t('graph.provenanceEdges')}</label>
             <label class="graph-toggle"><input id="graph-toggle-labels" type="checkbox" checked> ${t('graph.labels')}</label>
+            <label class="graph-toggle"><input id="graph-toggle-swimming" type="checkbox" checked> ${t('graph.swimmingMode')}</label>
             <button id="graph-exit-focus" class="btn btn-secondary btn-sm" style="display:none;">${t('graph.exitFocus')}</button>
             <button id="graph-fit" class="btn btn-secondary btn-sm">${t('graph.fitView')}</button>
           </div>
@@ -170,11 +173,11 @@
         </section>
 
         <aside class="card graph-detail-panel">
-          <div class="card-header">
-            <div>
+          <div class="card-header" style="display:flex;align-items:center;gap:.5rem;">
+            <div style="min-width:0;">
               <div class="card-title">${t('graph.detail')}</div>
-              <div id="graph-detail-subtitle" class="graph-subtitle">${t('graph.detailHint')}</div>
             </div>
+            <div id="graph-detail-actions-top" style="display:flex;gap:.3rem;margin-left:auto;flex-shrink:0;"></div>
           </div>
           <div id="graph-detail" class="graph-detail-body">
             ${emptyState(t('graph.noSelection'))}
@@ -252,6 +255,17 @@
     document.getElementById('graph-toggle-labels')?.addEventListener('change', (e) => {
       showLabels = e.target.checked;
       drawGraph(playbackStep);
+    });
+    document.getElementById('graph-toggle-swimming')?.addEventListener('change', (e) => {
+      swimmingMode = e.target.checked;
+      if (!network) return;
+      if (swimmingMode) {
+        network.setOptions({ physics: GraphUtils.getSwimmingPhysicsOptions(nodesDataSet ? nodesDataSet.getIds().length : 0) });
+        startSwimmingNudge();
+      } else {
+        stopSwimmingNudge();
+        network.setOptions({ physics: { enabled: false } });
+      }
     });
     document.getElementById('graph-exit-focus')?.addEventListener('click', () => focusConcept(null));
     document.getElementById('graph-fit')?.addEventListener('click', () => network?.fit({ animation: { duration: 420, easingFunction: 'easeInOutQuad' } }));
@@ -334,13 +348,15 @@
       const size = formatBytes(d.size);
       const entityCount = Number(d.entity_count || 0).toLocaleString();
       const relationCount = Number(d.relation_count || 0).toLocaleString();
+      const episodeCount = Number(d.integrity?.total_windows || d.integrity?.complete_windows || 0).toLocaleString();
+      const timeStr = (invalid || deleting) ? '' : (formatDateMs(d.processed_time || d.updated_at || d.created_at) || '').replace(/\.\d{3}$/, '');
       return `
         <div class="doc-graph-item ${selected ? 'selected' : ''}" data-doc-id="${escapeAttr(id || '')}" style="grid-template-columns:auto minmax(0,1fr) auto;${(deleting || invalid) ? 'opacity:0.55;pointer-events:none;' : ''}">
           <input class="doc-graph-check" type="checkbox" ${selected ? 'checked' : ''} ${(deleting || invalid) ? 'disabled' : ''} data-doc-id="${escapeAttr(id || '')}" style="margin-top:0.2rem;">
           <div style="min-width:0;">
             <div class="doc-graph-title" title="${escapeAttr(docTitle(d))}">${escapeHtml(title)}</div>
-            <div class="doc-graph-meta">${size} · ${entityCount} ${t('graph.entities')} · ${relationCount} ${t('graph.relations')}</div>
-            <div class="doc-graph-meta">${invalid ? t('graph.invalidRecord') : deleting ? t('graph.deleting') : formatDateMs(d.processed_time || d.updated_at || d.created_at)}</div>
+            <div class="doc-graph-meta">${t('graph.docMetaLine', { episodes: episodeCount, entities: entityCount, relations: relationCount })}</div>
+            <div class="doc-graph-meta">${invalid ? t('graph.invalidRecord') : deleting ? t('graph.deleting') : size + ' · ' + timeStr}</div>
           </div>
           <button class="btn btn-ghost btn-sm doc-graph-delete" data-doc-id="${escapeAttr(id || '')}" title="${invalid ? t('graph.cannotDeleteInvalid') : t('graph.deleteDocument')}" style="padding:2px 5px;color:var(--error);align-self:flex-start;" ${(deleting || invalid) ? 'disabled' : ''}>
             ${deleting ? spinnerHtml('spinner-sm') : '<i data-lucide="trash-2" style="width:14px;height:14px;"></i>'}
@@ -648,6 +664,7 @@
   }
 
   function destroyNetwork() {
+    stopSwimmingNudge();
     clearTimeout(relationStreamTimer);
     relationStreamTimer = null;
     if (network) {
@@ -1502,7 +1519,7 @@
           size: 18,
           x: pos.x,
           y: pos.y,
-          fixed: true,
+          fixed: false,
           meta: { type: 'episode', item: ep },
           title: normalizeText(ep.content, 180),
           degree: eps.length > 90 ? 0 : 3,
@@ -1573,7 +1590,7 @@
         color: style.color,
         dashes: style.dashes,
         width: style.width,
-        physics: false,
+        physics: e.edge_type === 'HAS_EPISODE',
         arrows: { to: { enabled: false } },
         smooth: perf.large ? false : { enabled: true, type: 'continuous', roundness: 0.12 },
         _meta: { type: 'source_edge', item: e },
@@ -1676,9 +1693,64 @@
     clearTimeout(physicsFreezeTimer);
     physicsFreezeTimer = setTimeout(() => {
       if (!network) return;
-      network.setOptions({ physics: { enabled: true } });
+      if (swimmingMode) {
+        network.setOptions({ physics: GraphUtils.getSwimmingPhysicsOptions(nodesDataSet ? nodesDataSet.getIds().length : 0) });
+        startSwimmingNudge();
+      } else {
+        network.setOptions({ physics: { enabled: false } });
+      }
       network.fit({ animation: { duration: 520, easingFunction: 'easeInOutQuad' } });
     }, delayMs);
+  }
+
+  function startSwimmingNudge() {
+    stopSwimmingNudge();
+    if (!network || !nodesDataSet) return;
+    if (nodesDataSet.getIds().length > 3000) return;
+    swimmingNudgeInterval = setInterval(() => {
+      if (!network || !nodesDataSet) { stopSwimmingNudge(); return; }
+      nudgeOverlappingNodes();
+    }, 4000);
+  }
+
+  function stopSwimmingNudge() {
+    if (swimmingNudgeInterval) {
+      clearInterval(swimmingNudgeInterval);
+      swimmingNudgeInterval = null;
+    }
+  }
+
+  function nudgeOverlappingNodes() {
+    const nodeIds = nodesDataSet.getIds();
+    if (nodeIds.length > 3000) return;
+    const positions = network.getPositions(nodeIds);
+    const gridSize = 40;
+    const grid = {};
+    for (const id of nodeIds) {
+      const pos = positions[id];
+      if (!pos) continue;
+      const node = nodesDataSet.get(id);
+      if (node && node.fixed && (node.fixed.x || node.fixed.y)) continue;
+      const gx = Math.floor(pos.x / gridSize);
+      const gy = Math.floor(pos.y / gridSize);
+      const key = gx + '|' + gy;
+      if (!grid[key]) grid[key] = [];
+      grid[key].push({ id, x: pos.x, y: pos.y });
+    }
+    for (const key of Object.keys(grid)) {
+      const cell = grid[key];
+      if (cell.length < 3) continue;
+      let cx = 0, cy = 0;
+      for (const entry of cell) { cx += entry.x; cy += entry.y; }
+      cx /= cell.length; cy /= cell.length;
+      for (const entry of cell) {
+        const dx = entry.x - cx;
+        const dy = entry.y - cy;
+        const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+        const magnitude = 8 + Math.random() * 7;
+        network.moveNode(entry.id, entry.x + (dx / dist) * magnitude, entry.y + (dy / dist) * magnitude);
+      }
+    }
   }
 
   function scheduleNaturalFit(delayMs = 120) {
@@ -1819,8 +1891,12 @@
       });
       dragStartPositions = null;
       lastDragPositions = null;
-      network.setOptions({ physics: { enabled: true } });
-      scheduleNaturalFit(280);
+      if (swimmingMode) {
+        network.setOptions({ physics: GraphUtils.getSwimmingPhysicsOptions(nodesDataSet ? nodesDataSet.getIds().length : 0) });
+      } else {
+        network.setOptions({ physics: { enabled: true } });
+        scheduleNaturalFit(280);
+      }
     });
     network.on('zoom', () => updateHoverPosition(canvas));
     network.on('dragging', params => {
@@ -1942,13 +2018,43 @@
     if (hoverPanel) hoverPanel.style.opacity = '0';
   }
 
+  function updateDetailTopActions(meta) {
+    const bar = document.getElementById('graph-detail-actions-top');
+    if (!bar) return;
+    if (!meta || meta.type === 'document' || meta.type === 'episode') { bar.innerHTML = ''; return; }
+    const item = meta.item;
+    const isRelation = meta.type === 'relation' || item?.role === 'relation';
+    const opts = conceptDetailOptions(item, {
+      moreButton: true,
+      focusButton: true,
+      exitFocusButton: !!focusFamilyId,
+    });
+    bar.innerHTML = `
+      ${opts.focusButton ? `<button class="btn btn-secondary btn-sm" data-top-action="focus" title="${t('graph.focusMode')}"><i data-lucide="focus" style="width:14px;height:14px;"></i></button>` : ''}
+      ${opts.exitFocusButton ? `<button class="btn btn-secondary btn-sm" data-top-action="exit-focus" title="${t('graph.exitFocus')}"><i data-lucide="x" style="width:14px;height:14px;"></i></button>` : ''}
+      ${opts.moreButton ? `<button class="btn btn-secondary btn-sm" data-top-action="more" title="${t('common.detail')}"><i data-lucide="info" style="width:14px;height:14px;"></i></button>` : ''}
+      <button class="btn btn-secondary btn-sm" data-top-action="edit" title="${t('graph.editTitle', 'Edit')}"><i data-lucide="pencil" style="width:14px;height:14px;"></i></button>
+      <button class="btn btn-primary btn-sm" data-top-action="versions" title="${t('common.versions')}"><i data-lucide="history" style="width:14px;height:14px;"></i></button>
+    `;
+    if (window.lucide) lucide.createIcons({ nameAttr: 'data-lucide' });
+    bar.querySelectorAll('[data-top-action]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const action = btn.getAttribute('data-top-action');
+        if (action === 'focus') focusConcept(item.family_id);
+        else if (action === 'exit-focus') focusConcept(null);
+        else if (action === 'more') window.ConceptDetail.openConceptModal(item, conceptDetailOptions(item));
+        else if (action === 'edit') window.ConceptDetail.openEditModal(item, conceptDetailOptions(item));
+        else if (action === 'versions') window.ConceptDetail.openVersionsModal(item, conceptDetailOptions(item));
+      });
+    });
+  }
+
   function showNodeDetail(id) {
     const meta = nodeMetaById.get(id);
     if (!meta) return;
     const detail = document.getElementById('graph-detail');
-    const subtitle = document.getElementById('graph-detail-subtitle');
     if (!detail) return;
-    if (subtitle) subtitle.textContent = id;
+    updateDetailTopActions(meta);
     if (meta.type === 'document') detail.innerHTML = renderDocumentDetail(meta.item);
     else if (meta.type === 'episode') detail.innerHTML = renderEpisodeDetail(meta.item);
     else detail.innerHTML = renderConceptDetail(meta.item);
@@ -1959,15 +2065,14 @@
     const meta = edgeMetaById.get(id);
     if (!meta) return;
     const detail = document.getElementById('graph-detail');
-    const subtitle = document.getElementById('graph-detail-subtitle');
     if (!detail) return;
     if (meta.type === 'relation') {
-      if (subtitle) subtitle.textContent = `relation:${meta.item.family_id}`;
+      updateDetailTopActions(meta);
       detail.innerHTML = renderRelationDetail(meta.item);
       bindDetailActions(detail, meta);
       return;
     }
-    if (subtitle) subtitle.textContent = id;
+    updateDetailTopActions(meta);
     const edgeEvidence = renderEvidenceList(meta.item?.provenance?.evidence || []);
     detail.innerHTML = `
       <h3 style="font-size:1.05rem;font-weight:700;margin-bottom:0.75rem;">Edge</h3>
@@ -2063,6 +2168,19 @@
       provenance,
       onFocus: familyId => focusConcept(familyId),
       onExitFocus: () => focusConcept(null),
+      onEpisodeClick: (episodeId) => window.showEpisodeDetailModal(episodeId),
+      loadNeighbors: concept.role !== 'relation' ? async (famId) => {
+        const res = await state.api.entityRelations(famId, state.currentGraphId);
+        const neighbors = res.data?.neighbors || [];
+        return neighbors.map(n => {
+          const c = graphModel.conceptByFamily.get(n.family_id) || {};
+          return { family_id: n.family_id, name: c.name || c.summary || n.family_id, role: c.role || 'entity', edge_type: n.edge_type };
+        });
+      } : undefined,
+      onNeighborClick: (familyId) => {
+        const c = graphModel.conceptByFamily.get(familyId);
+        if (c) window.ConceptDetail.openConceptModal(c, conceptDetailOptions(c));
+      },
       ...extra,
     };
   }
@@ -2259,14 +2377,37 @@
     const relCount = visible.relationEdges.length;
     const total = growthTotals || graphData?.counts || {};
     const growing = hasActiveGrowth();
-    const loading = growing ? (growthPauseRequested ? t('graph.growthPaused') + ' · ' : t('graph.parallelGrowth', { count: growthControllers.size }) + ' · ') : '';
     const shownEpisodes = growing ? growthLoaded.episodes : visible.episodes.length;
     const shownEntities = growing ? growthLoaded.concepts : visible.entities.length;
     const shownRelations = growing ? growthLoaded.relations : relCount;
-    const totalHint = total.concepts || total.relations
-      ? ` · ${t('graph.growthProgress', { shownE: formatNumber(shownEntities), totalE: formatNumber(total.concepts || visible.entities.length), shownR: formatNumber(shownRelations), totalR: formatNumber(total.relations || relCount) })}`
-      : '';
-    summary.textContent = `${loading}${focusFamilyId ? t('graph.focusMode') + ' · ' : ''}${t('graph.summaryDetail', { docs: visible.documents.length, episodes: shownEpisodes, entities: shownEntities, relations: shownRelations })}${totalHint}`;
+    const hasTotal = total.concepts || total.relations;
+
+    if (growing) {
+      // Growth phase: show progress as single concise line
+      const status = growthPauseRequested ? t('graph.growthPaused') : t('graph.parallelGrowth', { count: growthControllers.size });
+      const totalEp = formatNumber(total.episodes || visible.episodes.length);
+      const totalE = formatNumber(total.concepts || visible.entities.length);
+      const totalR = formatNumber(total.relations || relCount);
+      if (hasTotal) {
+        summary.textContent = t('graph.summaryGrowthTotal', {
+          status, shownEpisodes: formatNumber(shownEpisodes), totalEpisodes: totalEp,
+          shownEntities: formatNumber(shownEntities), totalEntities: totalE,
+          shownRelations: formatNumber(shownRelations), totalRelations: totalR,
+        });
+      } else {
+        summary.textContent = t('graph.summaryGrowthNoTotal', {
+          status, shownEpisodes: formatNumber(shownEpisodes),
+          shownEntities: formatNumber(shownEntities), shownRelations: formatNumber(shownRelations),
+        });
+      }
+    } else {
+      // Stable phase: concise summary
+      const prefix = focusFamilyId ? t('graph.focusMode') + ' · ' : '';
+      summary.textContent = t('graph.summaryStable', {
+        prefix, documents: visible.documents.length, episodes: shownEpisodes,
+        entities: formatNumber(shownEntities), relations: formatNumber(shownRelations),
+      });
+    }
   }
 
   function selectedDocNames() {

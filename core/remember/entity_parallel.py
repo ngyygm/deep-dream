@@ -12,7 +12,12 @@ import logging
 from core.models import Entity
 from core.storage.sqlite.manager import SQLiteGraphStorageManager as Neo4jStorageManager
 from core.llm.client import LLMClient
-from core.utils import wprint_info
+from core.utils import (
+    wprint_info,
+    capture_log_context as _capture_log_ctx,
+    set_window_label as _set_wl,
+    set_pipeline_role as _set_pr,
+)
 from core.debug_log import log_struct as _dbg_struct
 from core.remember._shared import _doc_basename
 
@@ -250,8 +255,24 @@ def _process_entities_parallel(
     results: List[Tuple[int, Optional[Entity], List[Dict], Dict[str, str], Optional[Entity]]] = []
     executor = get_entity_pool_fn(max_workers)
     from concurrent.futures import as_completed
+    # 捕获父线程日志上下文，让实体对齐子线程也能显示窗口/步骤
+    _parent_ctx = _capture_log_ctx()
+
+    def _task_with_ctx(i, ent, oi):
+        label, role = _parent_ctx
+        if label:
+            _set_wl(label)
+        if role:
+            _set_pr(role)
+        try:
+            return task(i, ent, oi)
+        finally:
+            _set_wl(None)
+            _set_pr(None)
+
+    _submit_fn = _task_with_ctx if (_parent_ctx[0] or _parent_ctx[1]) else task
     futures = {
-        executor.submit(task, idx, extracted_entity, orig_idx): idx
+        executor.submit(_submit_fn, idx, extracted_entity, orig_idx): idx
         for idx, (extracted_entity, orig_idx) in enumerate(
             zip(filtered_entities, _orig_indices), 1
         )

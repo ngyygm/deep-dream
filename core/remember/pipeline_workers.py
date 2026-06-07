@@ -87,7 +87,7 @@ def run_extraction_job(
 # Step-9 worker
 # ------------------------------------------------------------------
 
-def run_step9_worker(processor, state, start_chunk, total_chunks, doc_name,
+def run_step9_worker(processor, state, window_abs_indices, total_chunks, doc_name,
                      verbose, verbose_steps, event_time, progress_callback,
                      step9_chunk_done_callback, control_callback,
                      RememberControlFlow):
@@ -102,7 +102,8 @@ def run_step9_worker(processor, state, start_chunk, total_chunks, doc_name,
         if _action:
             signal_control_stop(state, _action, i, set_extract=False, set_step9=True, set_step10=True)
             break
-        set_window_label(f"W{start_chunk + i + 1}/{total_chunks}")
+        _wi = window_abs_indices[i]
+        set_window_label(f"W{_wi + 1}/{total_chunks}")
         set_pipeline_role("步骤9")
         early_entities = state.early_entity_results[i]
         emb_prefetch_future = None
@@ -139,14 +140,13 @@ def run_step9_worker(processor, state, start_chunk, total_chunks, doc_name,
                         wprint_info(f"【步骤9】跳过｜上游｜{_stage} {_exc}")
                     continue
                 raise RuntimeError(
-                    f"step9 skipped for window {start_chunk + i}: extract result is None (extraction failed)"
+                    f"step9 skipped for window {_wi}: extract result is None (extraction failed)"
                 )
             ents, rels = _er
             if verbose:
                 wprint_info("【步骤9】实体｜就绪｜本窗1–5完成或缓存")
             elif verbose_steps:
                 wprint_info("【步骤9】实体｜开始｜前置1–5已就绪")
-            _wi = start_chunk + i
             _g_lo = _wi / total_chunks
             _g_hi = (_wi + 1) / total_chunks
             _span = _g_hi - _g_lo
@@ -163,7 +163,7 @@ def run_step9_worker(processor, state, start_chunk, total_chunks, doc_name,
                 verbose=verbose, verbose_steps=verbose_steps, event_time=event_time,
                 progress_callback=lambda p, l, m: safe_progress(progress_callback, p, l, m, "step9"),
                 progress_range=_pr_step9,
-                window_index=start_chunk + i, total_windows=total_chunks,
+                window_index=_wi, total_windows=total_chunks,
                 entity_embedding_prefetch=emb_prefetch_future,
                 already_versioned_family_ids=_already_versioned,
                 window_timings_ref=state.window_timings[i],
@@ -179,7 +179,12 @@ def run_step9_worker(processor, state, start_chunk, total_chunks, doc_name,
         except Exception as e:
             if isinstance(e, RememberControlFlow):
                 signal_control_stop(state, e.remember_control_action, i, set_extract=False, set_step9=True, set_step10=True)
-            if record_window_error(state, "step9", i, e):
+                # pause/cancel 是正常控制流，不记录为错误
+            elif record_window_error(state, "step9", i, e):
+                import traceback as _tb
+                _tb.print_exc()
+                with open('step9_traceback.log', 'w') as _f:
+                    _tb.print_exc(file=_f)
                 logger.error("step9 window %d error: %s", i, e, exc_info=True)
         finally:
             with processor._runtime_lock:
@@ -190,7 +195,7 @@ def run_step9_worker(processor, state, start_chunk, total_chunks, doc_name,
             if _success:
                 state.extract_results[i] = None
             if _success and step9_chunk_done_callback:
-                step9_chunk_done_callback(start_chunk + i + 1)
+                step9_chunk_done_callback(_wi + 1)
             clear_parallel_log_context()
 
 
@@ -198,7 +203,7 @@ def run_step9_worker(processor, state, start_chunk, total_chunks, doc_name,
 # Step-10 worker
 # ------------------------------------------------------------------
 
-def run_step10_worker(processor, state, start_chunk, total_chunks, doc_name,
+def run_step10_worker(processor, state, window_abs_indices, total_chunks, doc_name,
                       verbose, verbose_steps, event_time, progress_callback,
                       chunk_done_callback, control_callback,
                       RememberControlFlow):
@@ -209,7 +214,8 @@ def run_step10_worker(processor, state, start_chunk, total_chunks, doc_name,
         if _action:
             signal_control_stop(state, _action, i, set_extract=False, set_step9=False, set_step10=True)
             break
-        set_window_label(f"W{start_chunk + i + 1}/{total_chunks}")
+        _wi = window_abs_indices[i]
+        set_window_label(f"W{_wi + 1}/{total_chunks}")
         set_pipeline_role("步骤10")
         ar = state.align_results[i]
         step10_inputs_cache = None
@@ -256,10 +262,9 @@ def run_step10_worker(processor, state, start_chunk, total_chunks, doc_name,
                         wprint_info(f"【步骤10】跳过｜上游｜{_stage} {_exc}")
                     continue
                 raise RuntimeError(
-                    f"step9 result for window {start_chunk + i} is None"
+                    f"step9 result for window {_wi} is None"
                 )
             mc = state.episodes[i]
-            _wi = start_chunk + i
             _g_lo = _wi / total_chunks
             _g_hi = (_wi + 1) / total_chunks
             _span = _g_hi - _g_lo
@@ -269,7 +274,7 @@ def run_step10_worker(processor, state, start_chunk, total_chunks, doc_name,
                 verbose=verbose, verbose_steps=verbose_steps, event_time=event_time,
                 progress_callback=lambda p, l, m: safe_progress(progress_callback, p, l, m, "step10"),
                 progress_range=_pr_step10,
-                window_index=start_chunk + i, total_windows=total_chunks,
+                window_index=_wi, total_windows=total_chunks,
                 prepared_relations_by_pair=prepared_relations_by_pair,
                 step10_inputs_cache=step10_inputs_cache,
                 window_timings_ref=state.window_timings[i],
@@ -304,7 +309,7 @@ def run_step10_worker(processor, state, start_chunk, total_chunks, doc_name,
             if _window_has_entities:
                 safe_progress(progress_callback,
                     _g_lo + _span * (9.0 / 10.0 + 0.9 / 10.0),
-                    f"窗口 {start_chunk + i + 1}/{total_chunks} · 步骤10/10: 孤立实体处理", "", "step10")
+                    f"窗口 {_wi + 1}/{total_chunks} · 步骤10/10: 孤立实体处理", "", "step10")
                 try:
                     _t_orphan = time.time()
                     _orphan_count = processor._cleanup_orphaned_entities(
@@ -312,7 +317,7 @@ def run_step10_worker(processor, state, start_chunk, total_chunks, doc_name,
                         verbose=verbose or verbose_steps,
                         window_text=state.input_texts[i],
                         all_entity_names=[e.name for e in ar.unique_entities] if ar.unique_entities else [],
-                        episode_id=getattr(mc, 'cache_id', ''),
+                        episode_id=getattr(mc, 'absolute_id', ''),
                         source_document=doc_name,
                     )
                     state.window_timings[i]["step10-orphan_cleanup"] = time.time() - _t_orphan
@@ -323,19 +328,22 @@ def run_step10_worker(processor, state, start_chunk, total_chunks, doc_name,
         except Exception as e:
             if isinstance(e, RememberControlFlow):
                 signal_control_stop(state, e.remember_control_action, i, set_extract=False, set_step9=False, set_step10=True)
-            if record_window_error(state, "step10", i, e):
+                # pause/cancel 是正常控制流，不记录为错误
+            elif record_window_error(state, "step10", i, e):
                 logger.error("step10 window %d error: %s", i, e, exc_info=True)
         finally:
             with processor._runtime_lock:
                 processor._active_step10 = max(0, processor._active_step10 - 1)
             state.step10_done_ev[i].set()
-            # Free alignment data now that step10 has consumed it
+            # Free alignment data now that step10 has consumed it.
+            # NOTE: align_results are NOT cleared here — they are needed by
+            # cross_window_dedup which runs after all windows complete.
+            # They will be freed when the pipeline state is garbage collected.
             if _success:
-                state.align_results[i] = None
                 state.input_texts[i] = None
                 state.episodes[i] = None
             if _success and chunk_done_callback:
-                chunk_done_callback(start_chunk + i + 1)
+                chunk_done_callback(_wi + 1)
             if _success and not _window_has_entities:
                 wprint_info("提示: step10 完成但本窗无实体，仍已计入进度（避免断点卡死）")
             clear_parallel_log_context()

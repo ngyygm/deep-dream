@@ -22,7 +22,10 @@ class _CacheMixin:
                       document_path: str = "",
                       event_time: Optional[datetime] = None,
                       window_index: int = 0, total_windows: int = 0,
-                      doc_hash: str = "") -> Episode:
+                      doc_hash: str = "",
+                      heading_path: str = "",
+                      episode_type: str = "",
+                      run_id: str = "") -> Episode:
         """步骤1：更新记忆缓存。必须在 _cache_lock 下调用，保证 cache 链串行。"""
         self.llm_client._priority_local.priority = LLM_PRIORITY_STEP1
         if verbose:
@@ -50,7 +53,14 @@ class _CacheMixin:
 
         self.llm_client._current_distill_step = None
 
+        # Thread new fields onto the Episode DTO before persisting
+        if heading_path:
+            new_episode.heading_path = heading_path
+        if episode_type:
+            new_episode.episode_type = episode_type
+
         doc_hash = doc_hash or (compute_doc_hash(input_text) if input_text else "")
+        _override = getattr(self, '_pipeline_override_doc_id', '') or ''
         self.storage.save_episode(
             new_episode,
             text=input_text,
@@ -58,6 +68,10 @@ class _CacheMixin:
             doc_hash=doc_hash,
             start_offset=text_start_pos,
             end_offset=text_end_pos,
+            override_doc_id=_override,
+            heading_path=heading_path,
+            episode_type=episode_type,
+            run_id=run_id,
         )
         self.current_episode = new_episode
 

@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Optional
 
 from ..models import Episode
-from ..utils import clean_markdown_code_blocks
+from ..utils import clean_markdown_code_blocks, classify_episode_type
 from .prompts import (
     UPDATE_MEMORY_CACHE_SYSTEM_PROMPT,
     CREATE_DOCUMENT_OVERALL_MEMORY_SYSTEM_PROMPT,
@@ -130,7 +130,8 @@ class _MemoryOpsMixin:
             event_time=base_time,
             processed_time=_now,
             source_document=source_document_only,
-            activity_type="文档处理"
+            activity_type="文档处理",
+            episode_type=classify_episode_type(input_text),
         )
 
     def create_document_overall_memory(self, text_preview: str, document_name: str = "",
@@ -186,4 +187,5 @@ class _MemoryOpsMixin:
             processed_time=_now,
             source_document=source_document_only,
             activity_type="文档整体",
+            episode_type=classify_episode_type(text_preview),
         )

@@ -23,6 +23,7 @@ class Episode:
     processed_time: Optional[datetime] = None  # 系统处理时间
     activity_type: Optional[str] = None  # 可选的活动类型，如"阅读小说"、"处理文档"等
     episode_type: Optional[str] = None  # Episode 类型: "narrative" | "fact" | "conversation"
+    heading_path: Optional[str] = None  # full heading breadcrumb (e.g. "Chapter 1 > Section 2")
 
 
 @dataclass(slots=True)
@@ -75,6 +76,11 @@ class Relation:
     confidence: Optional[float] = None  # 置信度评分 (0.0-1.0)
     provenance: Optional[str] = None  # JSON: [{"episode_id": "...", "confidence": 0.9}, ...]
     content_format: str = "plain"  # "plain" (旧) | "markdown" (新)
+    evidence_text: Optional[str] = None  # the source text evidence for this relation
+    evidence_start_offset: Optional[int] = None
+    evidence_end_offset: Optional[int] = None
+    evidence_line_start: Optional[int] = None
+    evidence_line_end: Optional[int] = None
     _pending_patches: list = None  # 内部用：ContentPatch 缓冲，flush 后清空
     _score: float = 0.0  # search relevance score (BM25/embedding)
 

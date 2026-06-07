@@ -9,6 +9,7 @@ That's it. No Jaccard matrix, BM25, content-mention, neighbor expansion, etc.
 """
 import logging
 import time
+from collections import defaultdict
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -23,8 +24,6 @@ from ._shared import (
 from .entity_candidates_enrich import _EnrichMixin
 
 logger = logging.getLogger(__name__)
-
-_EMPTY_FROZENSET = frozenset()
 
 
 # ---------------------------------------------------------------------------
@@ -125,21 +124,22 @@ class EntityCandidateBuilder(_EnrichMixin):
             p["_core_name"] = normalize_entity_name_for_matching(p["name"])
 
         # Pre-compute core names + bigram sets for all extracted entities (avoids E × P recomputation)
+        _empty_fs = frozenset()
         ext_bigrams = []
         ext_core_bigrams = []
         ext_core_names: List[str] = []
         for ee in extracted_entities:
             _n = ee["name"]
-            ext_bigrams.append(_bigrams(_n.lower().strip()) if _n else _EMPTY_FROZENSET)
+            ext_bigrams.append(_bigrams(_n.lower().strip()) if _n else _empty_fs)
             _c = normalize_entity_name_for_matching(_n)
             ext_core_names.append(_c)
-            ext_core_bigrams.append(_bigrams(_c.lower().strip()) if _c else _EMPTY_FROZENSET)
+            ext_core_bigrams.append(_bigrams(_c.lower().strip()) if _c else _empty_fs)
         proj_bigrams = []
         proj_core_bigrams = []
         for p in projections:
             _n = p["name"]
-            proj_bigrams.append(_bigrams(_n.lower().strip()) if _n else _EMPTY_FROZENSET)
-            proj_core_bigrams.append(_bigrams(p["_core_name"].lower().strip()) if p["_core_name"] else _EMPTY_FROZENSET)
+            proj_bigrams.append(_bigrams(_n.lower().strip()) if _n else _empty_fs)
+            proj_core_bigrams.append(_bigrams(p["_core_name"].lower().strip()) if p["_core_name"] else _empty_fs)
 
         # Build initial candidate rows
         _t_matrix = time.monotonic()

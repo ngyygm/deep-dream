@@ -360,7 +360,7 @@
         const progressCell = renderTaskProgress(task, { progressClass: pCls });
         const repairCount = Number(task.repair_window_count || task.repair_window_indices?.length || task.failed_window_indices?.length || 0);
         const repairHint = repairCount > 0
-          ? `<div style="font-size:0.7rem;color:var(--warning);margin-top:0.2rem;">只补跑 ${escapeHtml(String(repairCount))} 个缺失/失败窗口</div>`
+          ? `<div style="font-size:0.7rem;color:var(--warning);margin-top:0.2rem;">${t('memory.repairOnlyWindows', { count: escapeHtml(String(repairCount)) })}</div>`
           : '';
         return `
           <tr data-task-id="${escapeHtml(task.task_id)}" title="${t('memory.taskDetail')}">
@@ -610,8 +610,8 @@
             <span style="color:var(--text-muted);">${t('memory.taskStarted')}</span>
             <span>${formatDate(task.started_at)}</span>
             ${repairCount > 0 ? `
-              <span style="color:var(--text-muted);">补跑窗口</span>
-              <span style="color:var(--warning);">只处理 ${escapeHtml(String(repairCount))} 个缺失/失败窗口：${escapeHtml((task.repair_window_indices || task.failed_window_indices || []).slice(0, 20).join(', '))}${repairCount > 20 ? ' ...' : ''}</span>
+              <span style="color:var(--text-muted);">${t('memory.repairWindows')}</span>
+              <span style="color:var(--warning);">${t('memory.repairOnlyProcess', { count: escapeHtml(String(repairCount)), indices: escapeHtml((task.repair_window_indices || task.failed_window_indices || []).slice(0, 20).join(', ')) })}${repairCount > 20 ? ' ...' : ''}</span>
             ` : ''}
           </div>
         </div>
@@ -852,9 +852,9 @@
       const integrity = d.integrity || {};
       const missingWindows = Number(integrity.missing_windows || 0);
       const integrityHtml = integrity.complete === false
-        ? `<div style="font-size:0.7rem;color:var(--warning);margin-top:0.2rem;">缺失 ${escapeHtml(String(missingWindows))} 个窗口</div>`
+        ? `<div style="font-size:0.7rem;color:var(--warning);margin-top:0.2rem;">${t('memory.missingWindows', { count: escapeHtml(String(missingWindows)) })}</div>`
         : integrity.complete === true
-          ? `<div style="font-size:0.7rem;color:var(--success);margin-top:0.2rem;">完整</div>`
+          ? `<div style="font-size:0.7rem;color:var(--success);margin-top:0.2rem;">${t('memory.complete')}</div>`
           : '';
       return `
         <tr style="${(deleting || invalid) ? 'opacity:0.55;' : ''}${selected && !deleting && !invalid ? 'background:rgba(59,130,246,0.08);' : ''}">
@@ -868,8 +868,8 @@
           <td>${invalid ? t('memory.invalidRecord') : deleting ? t('memory.deleting') : formatDateMs(processed)}</td>
           <td style="display:flex;gap:0.35rem;flex-wrap:wrap;">
             <button class="btn btn-secondary btn-sm doc-detail-btn" data-doc-idx="${idx}" ${(deleting || invalid) ? 'disabled' : ''}>${t('common.detail')}</button>
-            <button class="btn btn-secondary btn-sm doc-integrity-btn" data-doc-idx="${idx}" ${(deleting || invalid) ? 'disabled' : ''}>检查</button>
-            ${missingWindows > 0 ? `<button class="btn btn-secondary btn-sm doc-repair-btn" data-doc-idx="${idx}" ${(deleting || invalid) ? 'disabled' : ''}>修复</button>` : ''}
+            <button class="btn btn-secondary btn-sm doc-integrity-btn" data-doc-idx="${idx}" ${(deleting || invalid) ? 'disabled' : ''}>${t('memory.checkBtn')}</button>
+            ${missingWindows > 0 ? `<button class="btn btn-secondary btn-sm doc-repair-btn" data-doc-idx="${idx}" ${(deleting || invalid) ? 'disabled' : ''}>${t('memory.repairBtn')}</button>` : ''}
             <button class="btn btn-secondary btn-sm doc-delete-btn" data-doc-idx="${idx}" style="color:var(--error);" ${(deleting || invalid) ? 'disabled' : ''}>
               ${deleting ? spinnerHtml('spinner-sm') : '<i data-lucide="trash-2" style="width:14px;height:14px;"></i>'}
             </button>
@@ -1001,23 +1001,23 @@
     const integrity = doc.integrity || {};
     const missingWindows = Number(integrity.missing_windows || 0);
     const integrityText = integrity.complete === false
-      ? `缺失 ${missingWindows} / ${Number(integrity.total_windows || 0)} 个窗口`
+      ? t('memory.integrityMissing', { missing: missingWindows, total: Number(integrity.total_windows || 0) })
       : integrity.complete === true
-        ? `完整 ${Number(integrity.complete_windows || 0)} / ${Number(integrity.total_windows || 0)}`
-        : '未检查';
+        ? t('memory.integrityComplete', { complete: Number(integrity.complete_windows || 0), total: Number(integrity.total_windows || 0) })
+        : t('memory.integrityNotChecked');
 
     const rows = [
       [t('memory.taskSource'), escapeHtml(truncate(name, 60))],
       [t('memory.documentSize'), `<span class="mono">${escapeHtml(size)}</span>`],
-      ['来源模式', escapeHtml(doc.source_mode || '-')],
-      ['可读路径', formatPathValue(readPath)],
+      [t('memory.sourceMode'), escapeHtml(doc.source_mode || '-')],
+      [t('memory.readablePath'), formatPathValue(readPath)],
       ['Managed', formatPathValue(doc.managed_path || '')],
       ['External', formatPathValue(doc.absolute_path || '')],
       ['Snapshot', formatPathValue(doc.snapshot_path || doc.blob_path || '')],
-      ['字符 / 行数', `<span class="mono">${escapeHtml(charCount)} / ${escapeHtml(lineCount)}</span>`],
+      [t('memory.charLineCount'), `<span class="mono">${escapeHtml(charCount)} / ${escapeHtml(lineCount)}</span>`],
       [t('memory.entityRelation'), `${entityCount} / ${relationCount}`],
       [t('memory.docHash'), `<span class="mono">${escapeHtml(hash)}</span>`],
-      ['完整性', escapeHtml(integrityText)],
+      [t('memory.completeness'), escapeHtml(integrityText)],
       [t('memory.docTime'), eventTime],
       [t('memory.processedTime'), procTime],
     ];
@@ -1031,10 +1031,10 @@
       content: `
         <div style="display:grid;grid-template-columns:auto 1fr;gap:0.4rem 0.75rem;font-size:0.85rem;">${grid}</div>
         <div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:1rem;">
-          <button class="btn btn-secondary btn-sm doc-copy-path-btn" ${readPath ? '' : 'disabled'}>复制路径</button>
-          <button class="btn btn-secondary btn-sm doc-fulltext-btn" ${doc.document_version_id ? '' : 'disabled'}>查看全文</button>
-          <button class="btn btn-secondary btn-sm modal-integrity-btn" ${doc.document_version_id ? '' : 'disabled'}>检查完整性</button>
-          ${missingWindows > 0 ? `<button class="btn btn-secondary btn-sm modal-repair-btn">修复文档</button>` : ''}
+          <button class="btn btn-secondary btn-sm doc-copy-path-btn" ${readPath ? '' : 'disabled'}>${t('memory.copyPathBtn')}</button>
+          <button class="btn btn-secondary btn-sm doc-fulltext-btn" ${doc.document_version_id ? '' : 'disabled'}>${t('memory.viewFullText')}</button>
+          <button class="btn btn-secondary btn-sm modal-integrity-btn" ${doc.document_version_id ? '' : 'disabled'}>${t('memory.checkIntegrityBtn')}</button>
+          ${missingWindows > 0 ? `<button class="btn btn-secondary btn-sm modal-repair-btn">${t('memory.repairDocBtn')}</button>` : ''}
         </div>
         <pre class="doc-fulltext-box" style="display:none;margin-top:0.75rem;max-height:50vh;overflow:auto;padding:0.75rem;border:1px solid var(--border);border-radius:8px;background:var(--bg-secondary);white-space:pre-wrap;word-break:break-word;font-size:0.8rem;"></pre>
       `,
@@ -1043,7 +1043,7 @@
     if (copyBtn) {
       copyBtn.addEventListener('click', async () => {
         const ok = await copyTextToClipboard(readPath);
-        showToast(ok ? '已复制路径' : '复制失败', ok ? 'success' : 'error');
+        showToast(ok ? t('memory.pathCopied') : t('memory.copyFailed'), ok ? 'success' : 'error');
       });
     }
     const fullBtn = modal.overlay.querySelector('.doc-fulltext-btn');
@@ -1051,17 +1051,17 @@
     if (fullBtn && fullBox) {
       fullBtn.addEventListener('click', async () => {
         fullBtn.disabled = true;
-        fullBtn.innerHTML = `${spinnerHtml('spinner-sm')} 加载中`;
+        fullBtn.innerHTML = `${spinnerHtml('spinner-sm')} ${t('memory.loadingText')}`;
         try {
           const res = await state.api.documentContent(doc.document_version_id, state.currentGraphId, { offset: 0, limit: 200000 });
           const data = res.data || {};
           fullBox.style.display = '';
-          fullBox.textContent = (data.content || '') + (data.truncated ? '\n\n[内容较大，已显示前 200000 字符]' : '');
-          fullBtn.innerHTML = '已加载全文';
+          fullBox.textContent = (data.content || '') + (data.truncated ? t('memory.fullTextTruncated') : '');
+          fullBtn.innerHTML = t('memory.fullTextLoaded');
         } catch (err) {
           fullBtn.disabled = false;
-          fullBtn.textContent = '查看全文';
-          showToast('加载全文失败: ' + err.message, 'error');
+          fullBtn.textContent = t('memory.viewFullText');
+          showToast(t('memory.loadFullTextFailed', { error: err.message }), 'error');
         }
       });
     }
@@ -1076,7 +1076,7 @@
           await loadDocs();
         } catch (err) {
           integrityBtn.disabled = false;
-          integrityBtn.textContent = '检查完整性';
+          integrityBtn.textContent = t('memory.checkIntegrityBtn');
         }
       });
     }
@@ -1091,7 +1091,7 @@
           await Promise.all([loadDocs(), refreshTasks()]);
         } catch (err) {
           repairBtn.disabled = false;
-          repairBtn.textContent = '修复文档';
+          repairBtn.textContent = t('memory.repairDocBtn');
         }
       });
     }
@@ -1194,9 +1194,9 @@
       doc.integrity = res.data || {};
       updateDocsTable();
       const missing = Number(doc.integrity.missing_windows || 0);
-      showToast(missing > 0 ? `发现 ${missing} 个缺失/不完整窗口` : '文档完整性正常', missing > 0 ? 'warning' : 'success');
+      showToast(missing > 0 ? t('memory.foundMissingWindows', { count: missing }) : t('memory.docIntegrityOk'), missing > 0 ? 'warning' : 'success');
     } catch (err) {
-      showToast('完整性检查失败: ' + err.message, 'error');
+      showToast(t('memory.checkIntegrityFailed', { error: err.message }), 'error');
     }
   }
 
@@ -1205,10 +1205,10 @@
     if (!id) return;
     try {
       const res = await state.api.repairDocument(id, state.currentGraphId);
-      showToast(res.data?.message || '已提交修复任务', res.data?.submitted === false ? 'info' : 'success');
+      showToast(res.data?.message || t('memory.repairSubmitted'), res.data?.submitted === false ? 'info' : 'success');
       await Promise.all([loadDocs(), refreshTasks()]);
     } catch (err) {
-      showToast('文档修复失败: ' + err.message, 'error');
+      showToast(t('memory.repairDocFailed', { error: err.message }), 'error');
     }
   }
 

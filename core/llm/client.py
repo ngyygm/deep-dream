@@ -11,6 +11,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from concurrent.futures import CancelledError
 import json
 import os
+import random
 import re
 import threading
 import time
@@ -40,6 +41,8 @@ from .prompts import (
     _LLM_BACKOFF_SCHEDULE,
     _LLM_MAX_FAILURE_ROUNDS,
     _XINFERENCE_500_BACKOFF,
+    _XINFERENCE_500_MAX_RETRIES,
+    _XINFERENCE_500_JITTER_MAX,
     _LLM_TPM_SLEEP_CAP_SECONDS,
     _DISTILL_SKIP_STEPS,
     _CONNECTION_ERROR_KEYWORDS,
@@ -390,7 +393,7 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
         messages: List[Dict[str, str]],
         *,
         parse_fn: Callable[[str], Any],
-        json_parse_retries: int = 2,
+        json_parse_retries: int = 1,
         timeout: int = 300,
         allow_mock_fallback: bool = True,
         json_retry_user_message: Optional[str] = None,
@@ -503,6 +506,7 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
         last_error = None
         _utf8_round = 0
         _normal_failures = 0
+        _500_failures = 0
         _conn_failures = 0
         _tpm_round = 0
         _detailed_error_logged = False
@@ -564,6 +568,7 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
                     )
                 # 已成功完成一次上游 HTTP 调用：清零各类失败计数（UTF-8 轮次单独计）
                 _normal_failures = 0
+                _500_failures = 0
                 _conn_failures = 0
                 _tpm_round = 0
 
@@ -641,30 +646,43 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
 
                 # Xinference 500 内部错误（如 'choices' KeyError）：快速重试
                 # 这类错误是 Xinference/llama.cpp 的临时性 bug，快速重试通常即可恢复
+                # 使用独立计数器（_500_failures），不受普通错误上限影响
                 _sc = getattr(e, "status_code", None)
                 if _sc == 500:
-                    _normal_failures += 1
-                    if _normal_failures <= _LLM_MAX_FAILURE_ROUNDS:
-                        _idx = min(_normal_failures - 1, len(_XINFERENCE_500_BACKOFF) - 1)
+                    _500_failures += 1
+                    # 构建调用上下文标签，方便定位是哪步出错
+                    _caller_ctx = f"model={_eff_model}"
+                    if _sem is not None:
+                        _caller_ctx += f" active={_sem.active_count}/{_sem.max_value}"
+                    _caller_ctx += f" msgs={len(messages)}"
+                    if _500_failures <= _XINFERENCE_500_MAX_RETRIES:
+                        _idx = min(_500_failures - 1, len(_XINFERENCE_500_BACKOFF) - 1)
                         wait_seconds = _XINFERENCE_500_BACKOFF[_idx]
+                        # 添加随机抖动防止并发重试的惊群效应
+                        jitter = random.uniform(0, _XINFERENCE_500_JITTER_MAX)
+                        wait_seconds = round(wait_seconds + jitter, 1)
                         wprint_info(
-                            f"LLM 服务端 500 错误（第 {_normal_failures}/{_LLM_MAX_FAILURE_ROUNDS} 次）: {e}"
+                            f"LLM 服务端 500 错误（第 {_500_failures}/{_XINFERENCE_500_MAX_RETRIES} 次）"
+                            f" [{_caller_ctx}]: {e}"
                         )
-                        wprint_info(f"{wait_seconds}s 后快速重试...")
-                        if _sem is not None:
-                            _sem.release()
-                        _sem_held = False
+                        wprint_info(f"{wait_seconds}s 后快速重试（保持信号量槽位）...")
+                        # 500 期间保持信号量：服务端正在恢复，释放槽位会让排队的请求
+                        # 立即冲击尚未恢复的服务端，形成级联 500
                         if _cancel_fn and _cancel_fn():
+                            if _sem is not None:
+                                _sem.release()
+                            _sem_held = False
                             raise CancelledError("LLM call cancelled by pipeline control")
                         time.sleep(wait_seconds)
                         continue
-                    wprint_info(f"LLM 服务端 500 错误已达 {_LLM_MAX_FAILURE_ROUNDS} 轮: {e}")
+                    wprint_info(
+                        f"LLM 服务端 500 错误已达 {_XINFERENCE_500_MAX_RETRIES} 轮"
+                        f" [{_caller_ctx}]: {e}"
+                    )
                     if _sem is not None:
                         _sem.release()
                     _sem_held = False
-                    if allow_mock_fallback:
-                        return self._mock_llm_response(prompt)
-                    return ""
+                    raise
 
                 # max_tokens 超限：自动降低重试（不计入退避轮次）
                 if "max_tokens" in error_str or "max_completion_tokens" in error_str or "too large" in error_str:
@@ -741,9 +759,7 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
                 if _sem is not None:
                     _sem.release()
                 _sem_held = False
-                if allow_mock_fallback:
-                    return mock_llm_response(prompt)
-                return ""
+                raise
             finally:
                 if _sem is not None and _sem_held:
                     _sem.release()

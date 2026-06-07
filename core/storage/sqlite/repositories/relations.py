@@ -9,11 +9,9 @@ logger = logging.getLogger(__name__)
 def upsert_relation_family(conn, relation_family_id: str,
                            subject_entity_family_id: str,
                            object_entity_family_id: str,
-                           predicate: str = "",
                            canonical_content: str = "",
                            created_at: str = "",
                            updated_at: str = "") -> None:
-    predicate = predicate.strip().lower()
     existing = conn.execute(
         "SELECT relation_family_id FROM relation_families WHERE relation_family_id = ?",
         (relation_family_id,),
@@ -21,19 +19,19 @@ def upsert_relation_family(conn, relation_family_id: str,
     if existing:
         conn.execute(
             """UPDATE relation_families
-               SET predicate = ?, canonical_content = ?,
+               SET canonical_content = ?,
                    last_seen_at = ?, updated_at = ?
                WHERE relation_family_id = ?""",
-            (predicate, canonical_content, updated_at, updated_at, relation_family_id),
+            (canonical_content, updated_at, updated_at, relation_family_id),
         )
     else:
         conn.execute(
             """INSERT INTO relation_families
                (relation_family_id, subject_entity_family_id, object_entity_family_id,
-                predicate, canonical_content, created_at, updated_at)
+                canonical_content, created_at, updated_at, last_seen_at)
                VALUES (?, ?, ?, ?, ?, ?, ?)""",
             (relation_family_id, subject_entity_family_id, object_entity_family_id,
-             predicate, canonical_content, created_at, updated_at),
+             canonical_content, created_at, updated_at, created_at),
         )
 
 
@@ -49,15 +47,12 @@ def get_relation_family(conn, relation_family_id: str) -> Optional[dict]:
 
 
 def find_relation_family(conn, subject_family_id: str,
-                         object_family_id: str,
-                         predicate: str = "") -> Optional[dict]:
-    predicate = predicate.strip().lower()
+                         object_family_id: str) -> Optional[dict]:
     row = conn.execute(
         """SELECT * FROM relation_families
            WHERE subject_entity_family_id = ?
-             AND object_entity_family_id = ?
-             AND predicate = ?""",
-        (subject_family_id, object_family_id, predicate),
+             AND object_entity_family_id = ?""",
+        (subject_family_id, object_family_id),
     ).fetchone()
     if row is None:
         return None
@@ -72,25 +67,26 @@ def insert_relation_assertion(
     content: str = "", evidence_text: str = "",
     evidence_start_offset: int = 0, evidence_end_offset: int = 0,
     evidence_line_start: int = 0, evidence_line_end: int = 0,
+    extra_json: str = "{}",
     processed_at: str = "", run_id: str = ""
 ) -> None:
     conn.execute(
-        """INSERT INTO relation_assertions
+        """INSERT OR IGNORE INTO relation_assertions
            (relation_id, relation_family_id, episode_id,
             subject_entity_id, object_entity_id,
             subject_entity_family_id, object_entity_family_id,
             content, evidence_text,
             evidence_start_offset, evidence_end_offset,
             evidence_line_start, evidence_line_end,
-            status, processed_at, run_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)""",
+            extra_json, status, processed_at, run_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)""",
         (relation_id, relation_family_id, episode_id,
          subject_entity_id, object_entity_id,
          subject_entity_family_id, object_entity_family_id,
          content, evidence_text,
          evidence_start_offset, evidence_end_offset,
          evidence_line_start, evidence_line_end,
-         processed_at, run_id),
+         extra_json, processed_at, run_id),
     )
 
 

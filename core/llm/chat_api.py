@@ -240,7 +240,17 @@ def openai_compatible_chat(
     if choices:
         c0 = choices[0] if isinstance(choices[0], dict) else _as_dict(choices[0])
         msg = c0.get("message") or {}
-        content = msg.get("content") or ""
+        _raw_content = msg.get("content")
+        if isinstance(_raw_content, list):
+            # Multi-part content (e.g. text + tool_use): concatenate text parts
+            content = "".join(
+                part.get("text", "") if isinstance(part, dict) else str(part)
+                for part in _raw_content
+            )
+        elif isinstance(_raw_content, str):
+            content = _raw_content
+        else:
+            content = ""
         finish_reason = c0.get("finish_reason")
     usage = data.get("usage") or {}
     return OllamaChatResponse(

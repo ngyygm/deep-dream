@@ -215,6 +215,8 @@ class GraphRegistry:
             "llm_think_mode": bool(llm.get("think", llm.get("think_mode", False))),
             "embedding_client": self._get_embedding_client(),
             "llm_max_tokens": llm.get("max_tokens"),
+            "llm_timeout_seconds": llm.get("timeout_seconds"),
+            "llm_connect_timeout_seconds": llm.get("connect_timeout_seconds"),
             "llm_context_window_tokens": llm.get("context_window_tokens"),
             "max_llm_concurrency": llm.get("max_concurrency"),
             "load_cache_memory": runtime_task.get("load_cache_memory", pipeline.get("load_cache_memory")),
@@ -303,7 +305,7 @@ class GraphRegistry:
         try:
             if processor and hasattr(processor, "storage"):
                 stats = processor.storage.get_stats()
-            elif (graph_dir / "graph.db").exists():
+            elif (graph_dir / "graph.db").exists() or (graph_dir / "library.db").exists():
                 from core.storage import create_storage_manager
 
                 storage = create_storage_manager(self._config, embedding_client=None, storage_path=str(graph_dir), graph_id=graph_id)
