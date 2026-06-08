@@ -1182,6 +1182,21 @@ class LibraryManager:
                 from .dto_mapping import _extract_confidence
                 result["confidence"] = _extract_confidence(assert_row[0])
             return result
+        # Try episode (by episode_id / absolute_id)
+        ep_row = ep_repo.get_episode(self._conn(), family_id)
+        if ep_row:
+            result = dict(ep_row)
+            result["role"] = "episode"
+            result["family_id"] = result.get("episode_family_id", family_id)
+            result["absolute_id"] = result["episode_id"]
+            result["uuid"] = result["episode_id"]
+            result["name"] = result.get("heading_path", "") or result.get("name", "")
+            result["content"] = result.get("memory_text", "")
+            result["source_text"] = result.get("source_text", "")
+            result["source_document"] = result.get("document_id", "")
+            result["event_time"] = result.get("event_time")
+            result["processed_time"] = result.get("processed_at")
+            return result
         return None
 
     def get_concepts_by_family_ids(self, family_ids: Iterable[str],
@@ -1219,6 +1234,20 @@ class LibraryManager:
         return self.count_unique_entities() + self.count_unique_relations()
 
     def get_concept_versions(self, family_id: str) -> List[dict]:
+        # Episode: episodes don't have version chains, return single version
+        ep = ep_repo.get_episode(self._conn(), family_id)
+        if ep:
+            return [{
+                "absolute_id": ep["episode_id"],
+                "family_id": ep.get("episode_family_id", family_id),
+                "name": ep.get("heading_path", "") or ep.get("name", ""),
+                "content": ep.get("memory_text", ""),
+                "processed_time": ep.get("processed_at"),
+                "source_document": ep.get("document_id", ""),
+                "episode_id": ep["episode_id"],
+                "content_changed": True,
+            }]
+        # Entity version chain
         entities = self.get_entity_versions(family_id)
         versions = []
         for i, e in enumerate(entities):
@@ -1288,9 +1317,50 @@ class LibraryManager:
     def get_concept_neighbors(self, family_id: str, max_depth: int = 1,
                               time_point: str = None, edge_types: Optional[List[str]] = None,
                               max_results: int = 200) -> List[dict]:
+        # Episode absolute_id: return entity mentions + relation assertions
+        ep_row = ep_repo.get_episode(self._conn(), family_id)
+        if ep_row:
+            return self._get_episode_neighbors(family_id)
+        # Standard concept BFS
         from .graph_traversal import get_concept_neighbors
         return get_concept_neighbors(self._conn(), family_id, max_depth=max_depth,
                                      max_results=max_results, edge_types=edge_types)
+
+    def _get_episode_neighbors(self, episode_id: str) -> List[dict]:
+        """Return entity mentions and relation assertions for an episode."""
+        neighbors = []
+        # Entity mentions
+        mentions = ent_repo.get_mentions_by_episode(self._conn(), episode_id)
+        for m in mentions:
+            neighbors.append({
+                "family_id": m.get("entity_family_id", ""),
+                "role": "entity",
+                "absolute_id": m.get("entity_id", ""),
+                "name": m.get("surface_text", ""),
+                "target_type": "entity",
+                "edge_type": "MENTIONS",
+                "depth": 1,
+            })
+        # Relation assertions
+        rows = self._conn().execute(
+            "SELECT relation_id, relation_family_id, subject_entity_family_id, "
+            "object_entity_family_id, content FROM relation_assertions "
+            "WHERE episode_id = ? AND status = 'active'",
+            (episode_id,)
+        ).fetchall()
+        for r in rows:
+            neighbors.append({
+                "family_id": r[1],
+                "role": "relation",
+                "absolute_id": r[0],
+                "entity1_absolute_id": r[2],
+                "entity2_absolute_id": r[3],
+                "content": r[4],
+                "target_type": "relation",
+                "edge_type": "ASSERTS",
+                "depth": 1,
+            })
+        return neighbors
 
     def traverse_concepts(self, start_family_ids: List[str], max_depth: int = 2,
                           time_point: str = None, edge_types: Optional[List[str]] = None,
