@@ -34,6 +34,10 @@ def completion(ctx: click.Context, shell: str) -> int:
     output in your shell's init file to enable tab-completion for
     ``deep-dream`` commands, options, and arguments.
 
+    Completion targets the installed ``deep-dream`` command. If the
+    ``deep-dream`` entry point is not on your PATH yet, install it first
+    with ``pip install -e .`` so the generated script can resolve it.
+
     \b
     Examples:
       # Bash

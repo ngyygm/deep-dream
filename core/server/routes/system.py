@@ -239,41 +239,6 @@ def list_graphs():
         return err(str(e), 500)
 
 
-@system_bp.route("/api/v1/graphs", methods=["POST"])
-def create_graph():
-    """Frontend-facing: create graph (single-library mode: no-op, returns existing)."""
-    try:
-        body = request.get_json(force=True) or {}
-        graph_id = body.get("graph_id", "library")
-        registry = current_app.config.get("registry")
-        if registry is None:
-            return err("Registry 未初始化", 503)
-        from core.server.registry import GraphRegistry
-        graph_id = GraphRegistry.normalize_graph_id(graph_id)
-        processor = registry.get_processor(graph_id)
-        info = registry.get_graph_info(graph_id)
-        return ok(info or {"graph_id": graph_id, "status": "exists"})
-    except ValueError as e:
-        return err(str(e), 400)
-    except Exception as e:
-        return err(str(e), 500)
-
-
-@system_bp.route("/api/v1/graphs/<graph_id>", methods=["DELETE"])
-def delete_graph(graph_id: str):
-    """Frontend-facing: delete graph (single-library mode: returns error advising clear)."""
-    try:
-        registry = current_app.config.get("registry")
-        if registry is None:
-            return err("Registry 未初始化", 503)
-        registry.delete_graph(graph_id)
-        return ok({"deleted": graph_id})
-    except ValueError as e:
-        return err(str(e), 400)
-    except Exception as e:
-        return err(str(e), 500)
-
-
 @system_bp.route("/api/v1/graphs/<graph_id>/clear", methods=["POST"])
 def clear_graph(graph_id: str):
     """Frontend-facing: clear graph data."""

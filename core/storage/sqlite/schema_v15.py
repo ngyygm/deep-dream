@@ -461,6 +461,7 @@ def create_fts(conn: sqlite3.Connection, use_trigram: bool = True) -> None:
 # work without rewriting all their SQL.
 
 _COMPAT_VIEWS_SQL = """
+DROP VIEW IF EXISTS v_document_files;
 CREATE VIEW IF NOT EXISTS v_document_files AS
 SELECT
     d.document_id AS document_family_id,
@@ -493,6 +494,7 @@ JOIN document_versions dv
   ON dv.document_id = d.document_id AND dv.status = 'active'
 WHERE d.status = 'active';
 
+DROP VIEW IF EXISTS v_episodes;
 CREATE VIEW IF NOT EXISTS v_episodes AS
 SELECT
     ep.episode_id AS version_id,
@@ -521,7 +523,12 @@ SELECT
 FROM episodes ep
 WHERE ep.status = 'active';
 
+DROP VIEW IF EXISTS v_latest_concept;
 CREATE VIEW IF NOT EXISTS v_latest_concept AS
+-- 统一概念视图：所有角色（entity/relation/episode/document）汇聚为同一形状，
+-- 让 "一个可查询的 Concept 原语" 真正成立（参见 SKILL.md 的 lc.role 过滤配方）。
+-- 每一支都贡献 family_id/id/name/content/role/version_seq 等一致列。
+-- 实体：每个 family 的最新 active observation（按 processed_at 降序）
 SELECT
     eo.entity_id AS version_id,
     eo.entity_family_id AS family_id,
@@ -529,7 +536,7 @@ SELECT
     eo.name,
     eo.content,
     '' AS source_text,
-    NULL AS attributes,
+    eo.extra_json AS attributes,
     NULL AS confidence,
     'markdown' AS content_format,
     1 AS content_changed,
@@ -542,8 +549,101 @@ SELECT
     '' AS source_document,
     eo.extra_json AS metadata
 FROM entity_observations eo
-WHERE eo.status = 'active';
+WHERE eo.status = 'active'
+  AND eo.processed_at = (
+      SELECT MAX(eo2.processed_at)
+      FROM entity_observations eo2
+      WHERE eo2.entity_family_id = eo.entity_family_id AND eo2.status = 'active'
+  )
 
+UNION ALL
+
+-- 关系：每个 family 的最新 active assertion
+SELECT
+    ra.relation_id AS version_id,
+    ra.relation_family_id AS family_id,
+    'relation' AS role,
+    '' AS name,
+    ra.content,
+    ra.evidence_text AS source_text,
+    ra.extra_json AS attributes,
+    NULL AS confidence,
+    'markdown' AS content_format,
+    1 AS content_changed,
+    1 AS version_seq,
+    NULL AS valid_at,
+    ra.processed_at AS event_time,
+    ra.processed_at AS processed_time,
+    ra.episode_id AS episode_version_id,
+    '' AS document_version_id,
+    '' AS source_document,
+    ra.extra_json AS metadata
+FROM relation_assertions ra
+WHERE ra.status = 'active'
+  AND ra.processed_at = (
+      SELECT MAX(ra2.processed_at)
+      FROM relation_assertions ra2
+      WHERE ra2.relation_family_id = ra.relation_family_id AND ra2.status = 'active'
+  )
+
+UNION ALL
+
+-- Episode：以 episode_family_id 为 family，最新 active 版本
+SELECT
+    ep.episode_id AS version_id,
+    ep.episode_family_id AS family_id,
+    'episode' AS role,
+    ep.name,
+    ep.memory_text AS content,
+    ep.source_text AS source_text,
+    ep.extra_json AS attributes,
+    NULL AS confidence,
+    'markdown' AS content_format,
+    1 AS content_changed,
+    1 AS version_seq,
+    ep.event_time AS valid_at,
+    ep.event_time AS event_time,
+    ep.processed_at AS processed_time,
+    ep.episode_id AS episode_version_id,
+    ep.document_version_id AS document_version_id,
+    '' AS source_document,
+    ep.extra_json AS metadata
+FROM episodes ep
+WHERE ep.status = 'active'
+  AND ep.processed_at = (
+      SELECT MAX(ep2.processed_at)
+      FROM episodes ep2
+      WHERE ep2.episode_family_id = ep.episode_family_id AND ep2.status = 'active'
+  )
+
+UNION ALL
+
+-- Document：以 document_id 为 family，最新 active version
+SELECT
+    dv.document_version_id AS version_id,
+    d.document_id AS family_id,
+    'document' AS role,
+    COALESCE(NULLIF(dv.title, ''), d.title, '') AS name,
+    '' AS content,
+    '' AS source_text,
+    dv.extra_json AS attributes,
+    NULL AS confidence,
+    'markdown' AS content_format,
+    1 AS content_changed,
+    1 AS version_seq,
+    dv.mtime AS valid_at,
+    d.created_at AS event_time,
+    dv.processed_at AS processed_time,
+    '' AS episode_version_id,
+    dv.document_version_id AS document_version_id,
+    COALESCE(d.managed_path, d.relative_path, d.absolute_path, '') AS source_document,
+    dv.extra_json AS metadata
+FROM documents d
+JOIN document_versions dv
+  ON dv.document_id = d.document_id AND dv.status = 'active'
+WHERE d.status = 'active';
+
+DROP VIEW IF EXISTS v_mentions;
 CREATE VIEW IF NOT EXISTS v_mentions AS
 SELECT
     em.mention_id AS edge_id,
@@ -565,6 +665,7 @@ JOIN entity_observations eo
   ON eo.entity_id = em.entity_id AND eo.status = 'active'
 WHERE em.episode_id != '';
 
+DROP VIEW IF EXISTS v_relation_edges;
 CREATE VIEW IF NOT EXISTS v_relation_edges AS
 SELECT
     ra.relation_id AS relation_edge_id,

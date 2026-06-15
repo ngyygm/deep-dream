@@ -670,11 +670,18 @@ class RememberTaskQueue:
                 logger.debug("读取任务原文失败 %s: %s", op, e)
         return _remember_task_from_record(rec, text=text)
 
-    def list_tasks(self, limit: int = 50) -> List[Dict]:
+    def list_tasks(self, limit: int = 50, status: Optional[str] = None) -> List[Dict]:
         with self._lock:
             order = {"running": 0, "pausing": 0, "cancelling": 0, "queued": 1, "paused": 2, "failed": 3, "completed": 4, "cancelled": 5}
+            # Apply status filter BEFORE the priority-sort + limit slice, so that
+            # filtering for completed/cancelled tasks does not silently return empty
+            # (the slice is taken on a pre-sorted, status-truncated list otherwise).
+            candidates = self._tasks.values()
+            if status:
+                status_norm = status.strip().lower()
+                candidates = [t for t in candidates if t.status == status_norm]
             items = sorted(
-                self._tasks.values(),
+                candidates,
                 key=lambda t: (
                     order.get(t.status, 9),
                     t.task_seq or 10**9,

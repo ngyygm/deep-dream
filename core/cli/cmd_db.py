@@ -2,13 +2,13 @@
 
 Subcommands
 -----------
-init-v15          Initialize V1.5 schema on the current graph.db.
-reset-v15         Backup old graph.db and create a fresh V1.5 database.
+init-v15          Initialize V1.5 schema on the current library.db.
+reset-v15         Backup old library.db and create a fresh V1.5 database.
 rebuild-fts       Full rebuild of the episodes_fts full-text search index.
 validate          Run integrity validation; optionally auto-repair.
 rebuild-current   Rebuild content/current/ files from database.
 vacuum-embeddings Clean orphaned and inactive embeddings.
-compact           VACUUM the graph.db to reclaim disk space.
+compact           VACUUM the library.db to reclaim disk space.
 quality           Data quality report with coverage and health metrics.
 integrity         Per-document integrity check (and optional repair).
 
@@ -98,7 +98,7 @@ def db() -> None:
 )
 @click.pass_context
 def init_v15(ctx: click.Context, smoke_test: bool) -> None:
-    """Initialize V1.5 schema on the current graph.db.
+    """Initialize V1.5 schema on the current library.db.
 
     Creates all tables, indexes, the FTS virtual table, and the
     ``graph_edges`` view.  Safe to run on an already-initialized
@@ -115,44 +115,52 @@ def init_v15(ctx: click.Context, smoke_test: bool) -> None:
     try:
         result = init_schema_v15(conn)
 
-        if out.is_json:
-            payload = {
-                "success": True,
-                "command": "db init-v15",
-                "data": result,
-            }
-            if smoke_test:
-                from core.storage.sqlite.integrity import validate_all  # deferred
-                violations = validate_all(
-                    conn, library_path=storage_path, include_file_checks=False,
-                )
-                payload["smoke_test"] = len(violations) == 0
-                payload["violations"] = len(violations)
-            click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
-            return
-
-        out.success(f"V1.5 schema initialized at {db_path}")
+        smoke_ok: Optional[bool] = None
+        smoke_violations: int = 0
         if smoke_test:
             from core.storage.sqlite.integrity import validate_all  # deferred
             violations = validate_all(
                 conn, library_path=storage_path, include_file_checks=False,
             )
-            if violations:
+            smoke_violations = len(violations)
+            smoke_ok = smoke_violations == 0
+
+        data = dict(result)
+        if smoke_test:
+            data["smoke_test"] = bool(smoke_ok)
+            data["violations"] = smoke_violations
+
+        # When a smoke test is requested, any violations are a failure:
+        # report success:false and exit non-zero in both output modes.
+        if smoke_test and not smoke_ok:
+            out.error(
+                f"Smoke test failed: {smoke_violations} violation(s)",
+                hint="Run `deep-dream db validate` for details.",
+                code=ERROR,
+            )
+
+        if out.is_json:
+            click.echo(json.dumps({
+                "success": True,
+                "command": "db init-v15",
+                "data": data,
+            }, ensure_ascii=False, indent=2))
+            return
+
+        out.success(f"V1.5 schema initialized at {db_path}")
+        if smoke_test:
+            if not smoke_ok:
                 out.console.print(
-                    f"  {_check_icon(False)} Smoke test: {len(violations)} violation(s)"
+                    f"  {_check_icon(False)} Smoke test: {smoke_violations} violation(s)"
                 )
             else:
                 out.console.print(
                     f"  {_check_icon(True)} Smoke test: all checks passed"
                 )
+    except SystemExit:
+        raise
     except Exception as exc:
-        if out.is_json:
-            click.echo(json.dumps({
-                "success": False,
-                "error": str(exc),
-            }, ensure_ascii=False, indent=2))
-        else:
-            out.error(str(exc), code=ERROR)
+        out.error(str(exc), code=ERROR)
     finally:
         conn.close()
 
@@ -170,10 +178,10 @@ def init_v15(ctx: click.Context, smoke_test: bool) -> None:
 )
 @click.pass_context
 def reset_v15(ctx: click.Context, yes: bool) -> None:
-    """Backup the existing graph.db and create a fresh V1.5 database.
+    """Backup the existing library.db and create a fresh V1.5 database.
 
     \b
-    DANGER: This destroys all data in the current graph.db.
+    DANGER: This destroys all data in the current library.db.
     A timestamped backup is created automatically before the reset.
     Requires ``--yes`` to proceed.
     """
@@ -184,32 +192,22 @@ def reset_v15(ctx: click.Context, yes: bool) -> None:
     db_path = _resolve_db_path(storage_path)
 
     if not yes:
-        if out.is_json:
-            click.echo(json.dumps({
-                "success": False,
-                "error": "Destructive operation requires --yes flag.",
-            }, ensure_ascii=False, indent=2))
-        else:
-            out.error(
-                "This is a destructive operation. Pass --yes to confirm.",
-                hint="A timestamped backup will be created automatically.",
-                code=ARGS,
-            )
-        return
+        out.error(
+            "This is a destructive operation. Pass --yes to confirm.",
+            hint="A timestamped backup will be created automatically.",
+            code=ARGS,
+        )
 
     if not os.path.exists(db_path):
-        if out.is_json:
-            click.echo(json.dumps({
-                "success": False,
-                "error": "No existing graph.db found.",
-            }, ensure_ascii=False, indent=2))
-        else:
-            out.error("No existing graph.db found.", code=NOT_FOUND)
-        return
+        out.error(
+            "No existing library.db found.",
+            hint="Run `deep-dream db init-v15` to create a fresh database.",
+            code=NOT_FOUND,
+        )
 
     # -- create timestamped backup ------------------------------------------
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    backup_path = os.path.join(storage_path, f"graph.legacy.{ts}.db")
+    backup_path = os.path.join(storage_path, f"library.legacy.{ts}.db")
 
     src_conn = sqlite3.connect(db_path)
     try:
@@ -221,14 +219,11 @@ def reset_v15(ctx: click.Context, yes: bool) -> None:
         src_conn.close()
 
     if not os.path.exists(backup_path):
-        if out.is_json:
-            click.echo(json.dumps({
-                "success": False,
-                "error": "Backup failed.",
-            }, ensure_ascii=False, indent=2))
-        else:
-            out.error("Backup failed.", code=ERROR)
-        return
+        out.error(
+            "Backup failed.",
+            hint=f"Inspect {storage_path} and retry once the cause is resolved.",
+            code=ERROR,
+        )
 
     # -- remove old DB and create fresh one ---------------------------------
     os.remove(db_path)
@@ -264,15 +259,14 @@ def reset_v15(ctx: click.Context, yes: bool) -> None:
                 f"  {_check_icon(len(violations) == 0)} "
                 f"Validation: {len(violations)} violation(s)"
             )
+    except SystemExit:
+        raise
     except Exception as exc:
-        if out.is_json:
-            click.echo(json.dumps({
-                "success": False,
-                "error": str(exc),
-                "backup": backup_path,
-            }, ensure_ascii=False, indent=2))
-        else:
-            out.error(f"Reset failed: {exc}", hint=f"Backup preserved at {backup_path}")
+        out.error(
+            f"Reset failed: {exc}",
+            hint=f"Backup preserved at {backup_path}",
+            code=ERROR,
+        )
     finally:
         conn.close()
 
@@ -325,14 +319,10 @@ def rebuild_fts(ctx: click.Context) -> None:
             }, ensure_ascii=False, indent=2))
         else:
             out.success(f"FTS index rebuilt: {count} episode(s) indexed")
+    except SystemExit:
+        raise
     except Exception as exc:
-        if out.is_json:
-            click.echo(json.dumps({
-                "success": False,
-                "error": str(exc),
-            }, ensure_ascii=False, indent=2))
-        else:
-            out.error(str(exc), code=ERROR)
+        out.error(str(exc), code=ERROR)
     finally:
         conn.close()
 
@@ -380,6 +370,16 @@ def validate(ctx: click.Context, repair: bool) -> None:
             from core.storage.sqlite.content_fs import rebuild_current_files  # deferred
             files_rebuilt = rebuild_current_files(conn, storage_path)
 
+        # Violations (without --repair) are an error state: exit non-zero in
+        # both output modes so CI and scripting can detect the bad state.
+        # Route through out.error so exactly one canonical envelope is emitted.
+        if not ok and not repair:
+            out.error(
+                f"Validation found {len(violations)} violation(s).",
+                hint="Re-run with `deep-dream db validate --repair` to attempt fixes.",
+                code=ERROR,
+            )
+
         if out.is_json:
             data: Dict[str, Any] = {
                 "violations": len(violations),
@@ -395,29 +395,26 @@ def validate(ctx: click.Context, repair: bool) -> None:
         else:
             icon = _check_icon(ok)
             label = "validate --repair" if repair else "validate"
-            out.console.print(f"  {icon} {label}: {len(violations)} violation(s)")
-            if repair and files_rebuilt is not None:
-                out.console.print(
-                    f"  {_check_icon(True)} Rebuilt {files_rebuilt} current file(s)"
-                )
-            for v in violations[:10]:
-                tbl = v.get("table", "")
-                vid = v.get("id", "")
-                issue = v.get("issue", "")
-                detail = v.get("detail", "")
-                parts = [p for p in [tbl, vid, issue, detail] if p]
-                from rich.markup import escape as _rich_esc
-                out.console.print(f"    - {' | '.join(_rich_esc(p) for p in parts)}")
-            if len(violations) > 10:
-                out.console.print(f"    ... and {len(violations) - 10} more")
+            if not out.is_quiet:
+                out.console.print(f"  {icon} {label}: {len(violations)} violation(s)")
+                if repair and files_rebuilt is not None:
+                    out.console.print(
+                        f"  {_check_icon(True)} Rebuilt {files_rebuilt} current file(s)"
+                    )
+                for v in violations[:10]:
+                    tbl = v.get("table", "")
+                    vid = v.get("id", "")
+                    issue = v.get("issue", "")
+                    detail = v.get("detail", "")
+                    parts = [p for p in [tbl, vid, issue, detail] if p]
+                    from rich.markup import escape as _rich_esc
+                    out.console.print(f"    - {' | '.join(_rich_esc(p) for p in parts)}")
+                if len(violations) > 10:
+                    out.console.print(f"    ... and {len(violations) - 10} more")
+    except SystemExit:
+        raise
     except Exception as exc:
-        if out.is_json:
-            click.echo(json.dumps({
-                "success": False,
-                "error": str(exc),
-            }, ensure_ascii=False, indent=2))
-        else:
-            out.error(str(exc), code=ERROR)
+        out.error(str(exc), code=ERROR)
     finally:
         conn.close()
 
@@ -457,14 +454,10 @@ def rebuild_current(ctx: click.Context) -> None:
             }, ensure_ascii=False, indent=2))
         else:
             out.success(f"Rebuilt {count} current file(s)")
+    except SystemExit:
+        raise
     except Exception as exc:
-        if out.is_json:
-            click.echo(json.dumps({
-                "success": False,
-                "error": str(exc),
-            }, ensure_ascii=False, indent=2))
-        else:
-            out.error(str(exc), code=ERROR)
+        out.error(str(exc), code=ERROR)
     finally:
         conn.close()
 
@@ -549,19 +542,18 @@ def vacuum_embeddings(ctx: click.Context, inactive: bool, dry_run: bool) -> None
             total = orphaned + deleted_doc + inactive_count
             label_suffix = " (dry-run)" if dry_run else ""
             out.success(f"{'Would clean' if dry_run else 'Cleaned'} {total} embedding(s){label_suffix}")
-            out.console.print(f"  Orphaned          : {orphaned}")
-            out.console.print(f"  Deleted documents  : {deleted_doc}")
-            if inactive:
-                label = "reported (dry-run)" if dry_run else "removed"
-                out.console.print(f"  Inactive ({label}): {inactive_count}")
+            if not out.is_quiet:
+                out.console.print(f"  Orphaned              : {orphaned}")
+                out.console.print(f"  Deleted-document rows : {deleted_doc}")
+                if inactive:
+                    if dry_run:
+                        out.console.print(f"  Inactive              : {inactive_count} (reported)")
+                    else:
+                        out.console.print(f"  Inactive              : {inactive_count} (removed)")
+    except SystemExit:
+        raise
     except Exception as exc:
-        if out.is_json:
-            click.echo(json.dumps({
-                "success": False,
-                "error": str(exc),
-            }, ensure_ascii=False, indent=2))
-        else:
-            out.error(str(exc), code=ERROR)
+        out.error(str(exc), code=ERROR)
     finally:
         conn.close()
 
@@ -579,7 +571,7 @@ def vacuum_embeddings(ctx: click.Context, inactive: bool, dry_run: bool) -> None
 )
 @click.pass_context
 def compact(ctx: click.Context, yes: bool) -> None:
-    """VACUUM the graph.db to reclaim disk space.
+    """VACUUM the library.db to reclaim disk space.
 
     Runs SQLite ``VACUUM`` which rebuilds the database file, removing
     free pages and defragmenting the data.  Requires ``--yes``.
@@ -589,18 +581,11 @@ def compact(ctx: click.Context, yes: bool) -> None:
     config = obj.config
 
     if not yes:
-        if out.is_json:
-            click.echo(json.dumps({
-                "success": False,
-                "error": "VACUUM requires --yes flag to confirm.",
-            }, ensure_ascii=False, indent=2))
-        else:
-            out.error(
-                "Pass --yes to confirm the VACUUM operation.",
-                hint="VACUUM rewrites the database file and may take a moment.",
-                code=ARGS,
-            )
-        return
+        out.error(
+            "Pass --yes to confirm the VACUUM operation.",
+            hint="VACUUM rewrites the database file and may take a moment.",
+            code=ARGS,
+        )
 
     try:
         conn = _open_db_conn(config)
@@ -619,14 +604,10 @@ def compact(ctx: click.Context, yes: bool) -> None:
             }, ensure_ascii=False, indent=2))
         else:
             out.success("Database compacted (VACUUM complete)")
+    except SystemExit:
+        raise
     except Exception as exc:
-        if out.is_json:
-            click.echo(json.dumps({
-                "success": False,
-                "error": str(exc),
-            }, ensure_ascii=False, indent=2))
-        else:
-            out.error(str(exc), code=ERROR)
+        out.error(str(exc), code=ERROR)
     finally:
         conn.close()
 
@@ -704,11 +685,18 @@ def quality(ctx: click.Context) -> None:
         duplicate_suspects: int = row["cnt"] if row else 0
 
         # -- Confidence ------------------------------------------------------
-        # entity_families does not have a confidence column; check
-        # entity_observations.extra_json for confidence if available,
-        # but also check if entity_observations has a confidence-like field.
-        # We try to compute from observations' extra_json as a best effort.
+        # entity_families has no confidence column; we compute from
+        # entity_observations.extra_json as a best effort, and also track
+        # coverage = how many active observations carry a confidence value.
         try:
+            row = cur.execute(
+                """
+                SELECT COUNT(*) AS cnt FROM entity_observations
+                WHERE status = 'active'
+                """
+            ).fetchone()
+            total_active_obs: int = row["cnt"] if row and row["cnt"] else 0
+
             row = cur.execute(
                 """
                 SELECT
@@ -726,9 +714,27 @@ def quality(ctx: click.Context) -> None:
                 round(row["avg_conf"], 3) if row and row["avg_conf"] is not None else None
             )
             low_confidence_count: int = row["low_count"] if row and row["low_count"] else 0
+            # coverage denominator is active observations with a confidence value.
+            row = cur.execute(
+                """
+                SELECT COUNT(*) AS cnt FROM entity_observations
+                WHERE status = 'active'
+                  AND json_extract(extra_json, '$.confidence') IS NOT NULL
+                """
+            ).fetchone()
+            obs_with_confidence: int = row["cnt"] if row and row["cnt"] else 0
         except Exception:
             avg_confidence = None
             low_confidence_count = 0
+            total_active_obs = 0
+            obs_with_confidence = 0
+
+        confidence_coverage_pct: float = (
+            round(obs_with_confidence / total_active_obs * 100, 1)
+            if total_active_obs else 0.0
+        )
+        # Below this coverage the average is too thin to be trustworthy.
+        confidence_threshold: float = 50.0
 
         # -- Relations -------------------------------------------------------
         row = cur.execute(
@@ -801,6 +807,9 @@ def quality(ctx: click.Context) -> None:
             "duplicate_suspect_names": duplicate_suspects,
             "avg_confidence": avg_confidence,
             "low_confidence_count": low_confidence_count,
+            "confidence_coverage_n": obs_with_confidence,
+            "confidence_coverage_total": total_active_obs,
+            "confidence_coverage_pct": confidence_coverage_pct,
             "total_relations": total_relations,
             "relations_with_evidence": relations_with_evidence,
             "total_documents": total_docs,
@@ -843,8 +852,15 @@ def quality(ctx: click.Context) -> None:
                 (
                     f"{avg_confidence:.1%}" if avg_confidence is not None else "N/A"
                 ),
-                f"{low_confidence_count} low (<50%)",
-                _plain_icon(low_confidence_count == 0),
+                (
+                    f"{low_confidence_count} low (<50%) "
+                    f"| coverage n={obs_with_confidence}/{total_active_obs} "
+                    f"({confidence_coverage_pct}%)"
+                ),
+                _plain_icon(
+                    confidence_coverage_pct >= confidence_threshold
+                    and low_confidence_count == 0
+                ),
             ),
             (
                 "Relations",
@@ -877,14 +893,10 @@ def quality(ctx: click.Context) -> None:
             columns=("Metric", "Value", "Detail", "Status"),
             rows=rows,
         )
+    except SystemExit:
+        raise
     except Exception as exc:
-        if out.is_json:
-            click.echo(json.dumps({
-                "success": False,
-                "error": str(exc),
-            }, ensure_ascii=False, indent=2))
-        else:
-            out.error(str(exc), code=ERROR)
+        out.error(str(exc), code=ERROR)
     finally:
         conn.close()
 
@@ -932,33 +944,17 @@ def integrity(ctx: click.Context, doc_id: str, repair: bool) -> None:
             detail = exc.read().decode("utf-8", errors="replace")
         except Exception:
             pass
-        if out.is_json:
-            click.echo(json.dumps({
-                "success": False,
-                "error": f"HTTP {exc.code}: {detail}",
-                "command": "db integrity",
-            }, ensure_ascii=False, indent=2))
-        else:
-            out.error(
-                f"Server returned HTTP {exc.code}",
-                hint="Ensure the Deep-Dream server is running.",
-                code=ERROR,
-            )
-        return
+        out.error(
+            f"Server returned HTTP {exc.code}: {detail}",
+            hint="Ensure the Deep-Dream server is running.",
+            code=ERROR,
+        )
     except urllib.error.URLError as exc:
-        if out.is_json:
-            click.echo(json.dumps({
-                "success": False,
-                "error": f"Connection failed: {exc.reason}",
-                "command": "db integrity",
-            }, ensure_ascii=False, indent=2))
-        else:
-            out.error(
-                f"Cannot reach server at {base_url}",
-                hint="Start the server with `deep-dream server` first.",
-                code=ERROR,
-            )
-        return
+        out.error(
+            f"Cannot reach server at {base_url}: {exc.reason}",
+            hint="Start the server with `deep-dream server` first.",
+            code=ERROR,
+        )
 
     # Unwrap the API envelope
     result = body.get("data", body) if isinstance(body, dict) else body

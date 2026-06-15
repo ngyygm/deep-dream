@@ -27,17 +27,6 @@ from ._output import OutputManager, format_timestamp
 
 
 # ------------------------------------------------------------------
-# Shared option: --graph
-# ------------------------------------------------------------------
-
-_graph_option = click.option(
-    "--graph",
-    default=None,
-    help="Graph ID (defaults to the active library).",
-)
-
-
-# ------------------------------------------------------------------
 # Click group
 # ------------------------------------------------------------------
 
@@ -60,10 +49,10 @@ def _resolve_config_path(ctx: click.Context) -> str:
     return params.get("config", "service_config.json")
 
 
-def _get_graph_id(ctx: click.Context, explicit: Optional[str] = None) -> str:
+def _get_graph_id(ctx: click.Context) -> str:
     """Return the active graph ID (always LIBRARY_ID in single-library mode)."""
     obj: CliContext = ctx.obj
-    return obj.get_active_graph(explicit)
+    return obj.get_active_graph()
 
 
 # ------------------------------------------------------------------
@@ -124,20 +113,45 @@ def list_graphs(ctx: click.Context) -> None:
 def create(ctx: click.Context, graph_id: str) -> None:
     """Create a new graph.
 
-    GRAPH_ID is the identifier for the new graph.  The graph directory
-    and metadata are created if they do not already exist.
+    NOTE: Deep-Dream runs in single-library mode — only the ``library``
+    graph exists.  Passing ``library`` reports the existing graph's real
+    state; any other id is rejected rather than fabricated.
     """
     obj: CliContext = ctx.obj
     out = OutputManager(ctx)
     config_path = _resolve_config_path(ctx)
     obj.load_config(config_path)
 
-    with obj.get_storage(graph_id, ensure=True) as storage:
-        stats = storage.get_stats()
+    from core.server.registry import LIBRARY_ID
+
+    registry = obj.get_registry()
+    known = set(registry.list_graphs())  # always {'library'} in single-library mode
+
+    if graph_id not in known:
+        out.error(
+            f"Cannot create graph {graph_id!r}: single-library mode.",
+            hint=(
+                "Deep-Dream supports only the 'library' graph. "
+                "Add content with 'deep-dream remember' or 'deep-dream vault index'."
+            ),
+            code=ERROR,
+        )
+        return  # unreachable; error raises SystemExit
+
+    # graph_id == 'library' — it already exists; report its real stats
+    # from get_graph_info (verified v1.5 keys) instead of inventing counts.
+    info = registry.get_graph_info(graph_id) or {}
+    stats = {
+        "documents": info.get("document_count", 0),
+        "entities": info.get("entity_count", 0),
+        "relations": info.get("relation_count", 0),
+        "episodes": info.get("episode_count", 0),
+    }
 
     data = {
         "graph_id": graph_id,
-        "created": True,
+        "created": False,
+        "already_exists": True,
         "stats": stats,
     }
 
@@ -150,13 +164,12 @@ def create(ctx: click.Context, graph_id: str) -> None:
     if out.is_quiet:
         return
 
-    out.success(f"Created graph {graph_id}")
-    if stats:
-        out.console.print(
-            f"  [dim]Documents: {stats.get('document_count', 0)}, "
-            f"Families: {stats.get('concept_family_count', 0)}, "
-            f"Edges: {stats.get('concept_edge_count', 0)}[/dim]"
-        )
+    out.success(f"Graph {graph_id} already exists")
+    out.console.print(
+        f"  [dim]Documents: {stats['documents']}, "
+        f"Entities: {stats['entities']}, "
+        f"Relations: {stats['relations']}[/dim]"
+    )
 
 
 # ------------------------------------------------------------------
@@ -169,7 +182,7 @@ def create(ctx: click.Context, graph_id: str) -> None:
 def use(ctx: click.Context, graph_id: str) -> None:
     """Set the active graph.
 
-    GRAPH_ID is the identifier of the graph to activate.
+    NOTE: single-library mode — only ``library`` is a valid target.
     """
     obj: CliContext = ctx.obj
     out = OutputManager(ctx)
@@ -177,6 +190,21 @@ def use(ctx: click.Context, graph_id: str) -> None:
     obj.load_config(config_path)
 
     registry = obj.get_registry()
+    known = set(registry.list_graphs())  # {'library'} in single-library mode
+
+    # Validate the requested id against known graphs.  Previously this
+    # silently coerced ANY id to 'library' and then reported the bogus id
+    # as active — misleading.  Reject unknown ids honestly.
+    if graph_id not in known:
+        out.error(
+            f"Unknown graph: {graph_id}",
+            hint=(
+                "Deep-Dream runs in single-library mode; the only graph is 'library'."
+            ),
+            code=NOT_FOUND,
+        )
+        return  # unreachable; error raises SystemExit
+
     registry.set_graph_metadata(graph_id)
 
     # Write the active graph to library.json so it persists.
@@ -220,15 +248,14 @@ def use(ctx: click.Context, graph_id: str) -> None:
 # ------------------------------------------------------------------
 
 @graph.command()
-@_graph_option
 @click.pass_context
-def stats(ctx: click.Context, graph: Optional[str]) -> None:
+def stats(ctx: click.Context) -> None:
     """Show statistics for a graph."""
     obj: CliContext = ctx.obj
     out = OutputManager(ctx)
     config_path = _resolve_config_path(ctx)
     obj.load_config(config_path)
-    graph_id = _get_graph_id(ctx, graph)
+    graph_id = _get_graph_id(ctx)
 
     registry = obj.get_registry()
     info = registry.get_graph_info(graph_id)
@@ -275,7 +302,6 @@ def stats(ctx: click.Context, graph: Optional[str]) -> None:
 # ------------------------------------------------------------------
 
 @graph.command()
-@_graph_option
 @click.option(
     "--yes",
     is_flag=True,
@@ -289,7 +315,7 @@ def stats(ctx: click.Context, graph: Optional[str]) -> None:
     help="Show what would be affected without clearing data.",
 )
 @click.pass_context
-def rebuild(ctx: click.Context, graph: Optional[str], yes: bool, dry_run: bool) -> None:
+def rebuild(ctx: click.Context, yes: bool, dry_run: bool) -> None:
     """DANGEROUS: Clear graph data for rebuild.
 
     Clears all concept families, versions, edges, and episode data
@@ -303,15 +329,19 @@ def rebuild(ctx: click.Context, graph: Optional[str], yes: bool, dry_run: bool) 
     out = OutputManager(ctx)
     config_path = _resolve_config_path(ctx)
     obj.load_config(config_path)
-    graph_id = _get_graph_id(ctx, graph)
+    graph_id = _get_graph_id(ctx)
 
-    # Gather stats before any action.
+    # Gather stats before any action.  Use the REAL v1.5 keys returned by
+    # get_graph_info (entity_count / relation_count / episode_count /
+    # document_count) — the old graph-era keys (concept_family_count,
+    # concept_version_count, concept_edge_count) no longer exist in the
+    # schema and silently read as 0, which made --dry-run under-report.
     registry = obj.get_registry()
     before = registry.get_graph_info(graph_id) or {}
     previous_stats = {
-        "families": before.get("concept_family_count", 0),
-        "versions": before.get("concept_version_count", 0),
-        "edges": before.get("concept_edge_count", 0),
+        "entities": before.get("entity_count", 0),
+        "relations": before.get("relation_count", 0),
+        "episodes": before.get("episode_count", 0),
         "documents": before.get("document_count", 0),
     }
 
@@ -333,11 +363,11 @@ def rebuild(ctx: click.Context, graph: Optional[str], yes: bool, dry_run: bool) 
         lines = [
             "[bold yellow]DRY RUN — no data will be modified.[/bold yellow]",
             "",
-            f"[bold]Graph:[/bold]    {_rich_escape(graph_id)}",
-            f"[bold]Families:[/bold] {previous_stats['families']} (would be cleared)",
-            f"[bold]Versions:[/bold] {previous_stats['versions']} (would be cleared)",
-            f"[bold]Edges:[/bold]    {previous_stats['edges']} (would be cleared)",
-            f"[bold]Documents:[/bold] {previous_stats['documents']} (preserved)",
+            f"[bold]Graph:[/bold]      {_rich_escape(graph_id)}",
+            f"[bold]Entities:[/bold]   {previous_stats['entities']} (would be cleared)",
+            f"[bold]Relations:[/bold]  {previous_stats['relations']} (would be cleared)",
+            f"[bold]Episodes:[/bold]   {previous_stats['episodes']} (would be cleared)",
+            f"[bold]Documents:[/bold]  {previous_stats['documents']} (preserved)",
             "",
             "Use --yes (without --dry-run) to proceed.",
         ]
@@ -381,9 +411,9 @@ def rebuild(ctx: click.Context, graph: Optional[str], yes: bool, dry_run: bool) 
 
     out.success(f"Graph data cleared for {graph_id}")
     out.console.print(
-        f"  [dim]Previous — families: {previous_stats['families']}, "
-        f"versions: {previous_stats['versions']}, "
-        f"edges: {previous_stats['edges']}, "
+        f"  [dim]Previous — entities: {previous_stats['entities']}, "
+        f"relations: {previous_stats['relations']}, "
+        f"episodes: {previous_stats['episodes']}, "
         f"documents: {previous_stats['documents']}[/dim]"
     )
     out.console.print(

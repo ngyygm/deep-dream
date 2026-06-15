@@ -24,6 +24,7 @@ from rich.panel import Panel as _Panel
 from ._ctx import CliContext
 from ._exit_codes import NOT_FOUND
 from ._helpers import (
+    compact_text,
     document_file_payload,
     map_path_to_documents,
     read_sql,
@@ -31,15 +32,21 @@ from ._helpers import (
 from ._output import OutputManager, format_timestamp
 
 
-# ------------------------------------------------------------------
-# Shared option: --graph
-# ------------------------------------------------------------------
+def _format_lines(line_start: Any, line_end: Any) -> str:
+    """Render a line range as ``"start-end"``.
 
-_graph_option = click.option(
-    "--graph",
-    default=None,
-    help="Graph ID (defaults to the active library).",
-)
+    ``line_start`` / ``line_end`` are unpopulated for the vast majority of
+    episodes (both 0); render ``"-"`` there instead of the misleading
+    ``"0-0"`` so users do not read it as "spans lines zero to zero".
+    """
+    try:
+        ls = int(line_start) if line_start is not None else 0
+        le = int(line_end) if line_end is not None else 0
+    except (TypeError, ValueError):
+        return "-"
+    if ls == 0 and le == 0:
+        return "-"
+    return f"{ls}-{le}"
 
 
 # ------------------------------------------------------------------
@@ -60,13 +67,12 @@ def episode() -> None:
 @click.argument("path", type=click.Path(exists=False))
 @click.option("--line", type=int, default=None, help="Filter to episodes overlapping this line number.")
 @click.option("--limit", type=int, default=50, show_default=True, help="Maximum episodes to return.")
-@_graph_option
 @click.pass_context
-def from_file(ctx: click.Context, path: str, line: Optional[int], limit: int, graph: Optional[str]) -> None:
+def from_file(ctx: click.Context, path: str, line: Optional[int], limit: int) -> None:
     """Map a file path (and optional line) to episodes."""
     obj: CliContext = ctx.obj
     out = OutputManager(ctx)
-    graph_id = obj.get_active_graph(graph)
+    graph_id = obj.get_active_graph()
 
     with obj.get_storage(graph_id) as storage:
         docs_data = [document_file_payload(storage, d) for d in map_path_to_documents(storage, path, limit=5)]
@@ -134,10 +140,23 @@ def from_file(ctx: click.Context, path: str, line: Optional[int], limit: int, gr
         table_rows.append((
             ep.get("episode_version_id", ""),
             ep.get("heading_path", ""),
-            f"{ep.get('line_start', '?')}-{ep.get('line_end', '?')}",
+            _format_lines(ep.get("line_start"), ep.get("line_end")),
             f"{ep.get('start_offset', '')}-{ep.get('end_offset', '')}",
         ))
     out.table(f"Episodes from {path} ({len(episodes_list)})", columns, table_rows)
+
+    # --line fallback hint: when the filter could not resolve the source
+    # file (offset stayed -1 for every document) the filter falls back to
+    # stored line ranges only, which are unpopulated for ~99.8% of
+    # episodes — so the result may be empty for reasons unrelated to the
+    # query. Surface a one-line hint instead of silently returning empty.
+    if line is not None and docs_data and all(
+        not Path(d.get("resolved_path") or "").is_file() for d in docs_data
+    ):
+        out.console.print(
+            "[dim]  Note: source file unreadable; --line filter used stored "
+            "line ranges only and may be unreliable.[/dim]"
+        )
 
 
 # ------------------------------------------------------------------
@@ -147,15 +166,26 @@ def from_file(ctx: click.Context, path: str, line: Optional[int], limit: int, gr
 @episode.command()
 @click.argument("episode_id")
 @click.option("--limit", type=int, default=100, show_default=True, help="Maximum concepts to return.")
-@_graph_option
 @click.pass_context
-def concepts(ctx: click.Context, episode_id: str, limit: int, graph: Optional[str]) -> None:
+def concepts(ctx: click.Context, episode_id: str, limit: int) -> None:
     """List concepts mentioned by an episode."""
     obj: CliContext = ctx.obj
     out = OutputManager(ctx)
-    graph_id = obj.get_active_graph(graph)
+    graph_id = obj.get_active_graph()
 
     with obj.get_storage(graph_id) as storage:
+        # Validate episode existence so a bad/partial id yields NOT_FOUND
+        # (matching ``episode get`` / ``episode content``) instead of a
+        # silently-empty table with exit 0.
+        exists = read_sql(
+            storage,
+            "SELECT 1 AS hit FROM v_episodes WHERE version_id = :eid LIMIT 1",
+            {"eid": episode_id},
+            limit=1,
+        )
+        if not exists:
+            out.error(f"Episode not found: {episode_id}", code=NOT_FOUND)
+
         concept_rows = read_sql(
             storage,
             """
@@ -187,14 +217,18 @@ def concepts(ctx: click.Context, episode_id: str, limit: int, graph: Optional[st
     if out.is_quiet:
         return
 
-    columns = ("Family ID", "Name", "Role", "Confidence")
+    # Confidence is NULL for ~100% of rows today; keep it in --json for
+    # forward-compat but drop it from the Rich table to avoid an empty
+    # column. Add a compact Content column (the NL description the query
+    # already fetches) so the table is actually informative.
+    columns = ("Family ID", "Name", "Role", "Content")
     table_rows: list[list[str]] = []
     for c in concept_rows:
         table_rows.append((
             c.get("family_id", ""),
             c.get("name", ""),
             c.get("role", ""),
-            f"{float(c.get('confidence', 0)) * 100:.1f}%" if c.get("confidence") is not None else "",
+            compact_text(c.get("content", ""), max_chars=60),
         ))
     out.table(f"Concepts in Episode {episode_id[:20]} ({len(concept_rows)})", columns, table_rows)
 
@@ -205,13 +239,12 @@ def concepts(ctx: click.Context, episode_id: str, limit: int, graph: Optional[st
 
 @episode.command()
 @click.argument("episode_id")
-@_graph_option
 @click.pass_context
-def get(ctx: click.Context, episode_id: str, graph: Optional[str]) -> None:
+def get(ctx: click.Context, episode_id: str) -> None:
     """Get episode details."""
     obj: CliContext = ctx.obj
     out = OutputManager(ctx)
-    graph_id = obj.get_active_graph(graph)
+    graph_id = obj.get_active_graph()
 
     with obj.get_storage(graph_id) as storage:
         rows = read_sql(
@@ -258,7 +291,7 @@ def get(ctx: click.Context, episode_id: str, graph: Optional[str]) -> None:
         f"Version ID:   {_rich_escape(ep.get('episode_version_id', ''))}",
         f"Document:     {_rich_escape(ep.get('document_version_id', ''))}",
         f"Heading:      {_rich_escape(ep.get('heading_path', ''))}",
-        f"Lines:        {ep.get('line_start', '')} - {ep.get('line_end', '')}",
+        f"Lines:        {_format_lines(ep.get('line_start'), ep.get('line_end'))}",
         f"Offset:       {ep.get('start_offset', '')} - {ep.get('end_offset', '')}",
         f"Chunk Index:  {ep.get('chunk_index', '')}",
         f"Event Time:   {format_timestamp(ep.get('event_time'))}",
@@ -276,13 +309,12 @@ def get(ctx: click.Context, episode_id: str, graph: Optional[str]) -> None:
 
 @episode.command()
 @click.argument("episode_id")
-@_graph_option
 @click.pass_context
-def content(ctx: click.Context, episode_id: str, graph: Optional[str]) -> None:
+def content(ctx: click.Context, episode_id: str) -> None:
     """Read episode source content."""
     obj: CliContext = ctx.obj
     out = OutputManager(ctx)
-    graph_id = obj.get_active_graph(graph)
+    graph_id = obj.get_active_graph()
 
     with obj.get_storage(graph_id) as storage:
         rows = read_sql(
@@ -334,7 +366,7 @@ def content(ctx: click.Context, episode_id: str, graph: Optional[str]) -> None:
         f"Name:     {_rich_escape(ep.get('name', ''))}",
         f"Heading:  {_rich_escape(ep.get('heading_path', ''))}",
         f"Document: {_rich_escape(ep.get('document_version_id', ''))}",
-        f"Lines:    {ep.get('line_start', '')} - {ep.get('line_end', '')}",
+        f"Lines:    {_format_lines(ep.get('line_start'), ep.get('line_end'))}",
         f"Length:   {len(source_text)} chars",
     ]
     header = "\n".join(header_lines)

@@ -77,11 +77,28 @@ def sentence_spans(text: str, *, base_offset: int = 0) -> List[Dict[str, object]
     return spans or [{"text": body, "start_offset": base_offset, "end_offset": base_offset + len(body)}]
 
 
-def find_text_evidence(text: str, candidates: Iterable[str], *, base_offset: int = 0, limit: int = 3) -> List[Dict[str, object]]:
-    """Find deterministic mention evidence for candidate names in sentence spans."""
+def find_text_evidence(text: str, candidates: Iterable[str], *,
+                       base_offset: int = 0, base_line: int = 1,
+                       limit: int = 3) -> List[Dict[str, object]]:
+    """Find deterministic mention evidence for candidate names in sentence spans.
+
+    Each returned dict carries document-absolute ``start_offset``/``end_offset``
+    (lifted by ``base_offset``) and the matching ``line_start``/``line_end``
+    (1-based). Line numbers count ``\\n`` in the chunk-local prefix and lift to
+    document-absolute via ``base_line`` (the document line where the chunk
+    begins). When the caller has the chunk's ``base_offset``, it should also
+    pass the corresponding ``base_line`` so stored line numbers are
+    document-absolute; otherwise line numbers are relative to ``base_line``
+    (default 1).
+    """
     body = text or ""
     if not body:
         return []
+
+    def _line_for_local_offset(local_off: int) -> int:
+        # 1-based line within the chunk, lifted to document-absolute by base_line.
+        return base_line + body.count("\n", 0, max(0, local_off))
+
     sentences = sentence_spans(body, base_offset=base_offset)
     normalized_body, offset_map = _normalized_with_offsets(body)
     found: List[Dict[str, object]] = []
@@ -100,6 +117,8 @@ def find_text_evidence(text: str, candidates: Iterable[str], *, base_offset: int
             found.append({
                 "start_offset": base_offset + start,
                 "end_offset": base_offset + end,
+                "line_start": _line_for_local_offset(start),
+                "line_end": _line_for_local_offset(end),
                 "sentence_start": sentence["start_offset"],
                 "sentence_end": sentence["end_offset"],
                 "quote": body[start:end],
@@ -119,6 +138,8 @@ def find_text_evidence(text: str, candidates: Iterable[str], *, base_offset: int
             found.append({
                 "start_offset": base_offset + start,
                 "end_offset": base_offset + end,
+                "line_start": _line_for_local_offset(start),
+                "line_end": _line_for_local_offset(end),
                 "sentence_start": sentence["start_offset"],
                 "sentence_end": sentence["end_offset"],
                 "quote": body[start:end],

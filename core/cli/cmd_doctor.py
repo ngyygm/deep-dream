@@ -138,11 +138,21 @@ def _check_embedding(config: Dict[str, Any]) -> Dict[str, Any]:
     available = False
     error: Optional[str] = None
     try:
+        import contextlib
+        import sys
+
         from core.storage.embedding import EmbeddingClient  # deferred
-        # Attempt to create the client (may download model on first run).
-        client = EmbeddingClient(model_name=model, device=device)
-        # A quick smoke test: encode a short string.
-        vec = client.encode("health check")
+        # The EmbeddingClient constructor prints a model-load banner
+        # ("加载HuggingFace embedding模型…") via the pipeline logger, which
+        # routes to stdout in non-JSON mode. That would corrupt the JSON
+        # envelope on stdout, so redirect stdout -> stderr for the duration
+        # of construction + the smoke-test encode. The banner is still
+        # visible to humans (on stderr) but never hits stdout.
+        with contextlib.redirect_stdout(sys.stderr):
+            # Attempt to create the client (may download model on first run).
+            client = EmbeddingClient(model_name=model, device=device)
+            # A quick smoke test: encode a short string.
+            vec = client.encode("health check")
         available = vec is not None and len(vec) > 0
     except Exception as exc:
         error = str(exc)
@@ -221,6 +231,16 @@ def doctor(ctx: click.Context, api_base: str) -> None:
     api = _check_api(api_base)
     graphs = _check_graphs(config)
 
+    # ---- Overall verdict (computed before output) ----
+    cfg_ok = config_status["exists"] and config_status["loadable"]
+    all_ok = (
+        storage["exists"]
+        and cfg_ok
+        and llm["configured"]
+        and embedding["available"]
+        and api["available"]
+    )
+
     data = {
         "storage": storage,
         "config": config_status,
@@ -229,17 +249,24 @@ def doctor(ctx: click.Context, api_base: str) -> None:
         "api": api,
         "graphs": graphs,
         "graph_count": len([g for g in graphs if "error" not in g]),
+        "overall_ok": all_ok,
     }
 
     # ---- Output ----
     if out.is_json:
-        from ._output import json_result
-        payload = json_result("doctor", data)
+        payload = {
+            "success": all_ok,
+            "command": out.command or "doctor",
+            "data": data,
+        }
         click.echo(_json.dumps(payload, ensure_ascii=False, indent=2))
-        return
+    else:
+        # Rich human-readable output
+        _render_human(out, data)
 
-    # Rich human-readable output
-    _render_human(out, data)
+    # Exit non-zero when any check failed so callers/scripts can detect it.
+    if not all_ok:
+        raise SystemExit(ERROR)
 
 
 # ------------------------------------------------------------------

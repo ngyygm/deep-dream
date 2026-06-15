@@ -751,11 +751,19 @@ def remember_retry(task_id: str):
 
 @remember_bp.route("/api/v1/remember/tasks", methods=["GET"])
 def remember_queue_list():
-    """查看记忆写入任务队列；推荐使用 /api/v1/remember/tasks。"""
+    """查看记忆写入任务队列；推荐使用 /api/v1/remember/tasks。
+
+    查询参数：
+      - limit（可选）：最多返回的任务数（默认 50，上限 200）
+      - status（可选）：按状态服务端过滤，在排序与截断之前应用。
+        合法值：queued / running / pausing / paused / completed / failed /
+        cancelled / cancelling
+    """
     try:
         remember_queue = _get_queue()
         limit = min(request.args.get("limit", 50, type=int), 200)
-        tasks = remember_queue.list_tasks(limit=limit)
+        status = (request.args.get("status") or "").strip().lower() or None
+        tasks = remember_queue.list_tasks(limit=limit, status=status)
         return ok({"tasks": tasks, "count": len(tasks)})
     except Exception as e:
         return err(str(e), 500)

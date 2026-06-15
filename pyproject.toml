@@ -44,8 +44,13 @@ include = ["core*"]
 
 [tool.pytest.ini_options]
 testpaths = ["core/tests"]
+# Benchmark latency tests are env-sensitive; exclude them from the default
+# correctness run so the suite is deterministic. Run them explicitly with
+# `pytest -m benchmark` (or `pytest -o addopts= -m benchmark`).
+addopts = ["-m", "not benchmark"]
 markers = [
     "real_llm: test requires USE_REAL_LLM=1",
     "slow: test takes > 5 seconds",
     "e2e: test requires a running Deep-Dream server",
+    "benchmark: wall-clock latency micro-benchmark (env-sensitive; opt-in via -m benchmark)",
 ]

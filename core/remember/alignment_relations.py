@@ -138,9 +138,46 @@ class _RelationAlignMixin:
                          step10_inputs_cache=None,
                          window_timings_ref: Optional[Dict[str, float]] = None,
                          control_check_fn=None,
+                         base_offset: Optional[int] = None,
+                         base_line: Optional[int] = None,
                          ):
+        """步骤10: 关系对齐（写存储，串行跨窗口）。
+
+        ``base_offset``/``base_line`` 让关系证据行号/偏移成为文档绝对值
+        （与 ``find_text_evidence`` 的 lifting 语义一致）。当 caller 未显式传入
+        时，从已存储的 episode 行 best-effort 解析（``start_offset`` 可靠；
+        ``line_start`` 仅在存储层已写入时可用）。
+        """
 
         p_lo, p_hi = progress_range
+
+        # Resolve document-absolute base for relation evidence provenance.
+        # Callers that own the chunk's document position (orchestrator /
+        # pipeline workers) may pass explicit base_offset/base_line; otherwise
+        # recover the chunk's start_offset from the stored episode row so
+        # evidence offsets are still document-absolute rather than chunk-local.
+        _eff_base_offset = base_offset if base_offset is not None else 0
+        _eff_base_line = base_line if base_line is not None else 1
+        if base_offset is None or base_line is None:
+            try:
+                _ep_row = None
+                _get_ep = getattr(self.storage, 'get_episode', None)
+                if _get_ep:
+                    _ep_row = _get_ep(new_episode.absolute_id)
+                if isinstance(_ep_row, dict):
+                    if base_offset is None:
+                        _so = _ep_row.get('start_offset') or 0
+                        if _so:
+                            _eff_base_offset = int(_so)
+                    if base_line is None:
+                        _ls = _ep_row.get('line_start') or 0
+                        if _ls:
+                            _eff_base_line = int(_ls)
+                        elif _eff_base_offset == 0:
+                            # First chunk: document line 1.
+                            _eff_base_line = 1
+            except Exception:
+                pass
         _win_label = f"窗口 {window_index + 1}/{total_windows}"
         _step_size = p_hi - p_lo
 
@@ -230,6 +267,11 @@ class _RelationAlignMixin:
             prepared_relations_by_pair=prepared_relations_by_pair,
             window_timings_ref=window_timings_ref,
             source_text=input_text,
+            # Thread the chunk's document-absolute base so relation evidence
+            # line numbers / offsets become document-absolute (P3 provenance),
+            # consistent with the find_text_evidence lifting contract.
+            base_offset=_eff_base_offset,
+            base_line=_eff_base_line,
         )
         _t_rel_elapsed = _time.time() - _t_rel_start
         if window_timings_ref is not None:
@@ -376,7 +418,9 @@ class _RelationAlignMixin:
                             progress_range: tuple = (0.1, 1.0),
                             window_index: int = 0,
                             total_windows: int = 1,
-                            control_check_fn=None):
+                            control_check_fn=None,
+                            base_offset: Optional[int] = None,
+                            base_line: Optional[int] = None):
         """兼容入口：串行执行步骤2-7（_process_window 等旧路径使用）。"""
 
         # 步骤2-5 占 progress_range 的 5/7，步骤9 占 1/7，步骤10 占 1/7
@@ -411,6 +455,8 @@ class _RelationAlignMixin:
             progress_range=(p2_end, progress_range[1]),
             window_index=window_index, total_windows=total_windows,
             control_check_fn=control_check_fn,
+            base_offset=base_offset,
+            base_line=base_line,
         )
 
         # Phase C-2: 记录 Episode → Relation MENTIONS（串行路径）
@@ -461,4 +507,8 @@ class _RelationAlignMixin:
             )
         self._process_extraction(new_mc, input_text, document_name,
                                  verbose=verbose, verbose_steps=verbose_steps, event_time=event_time,
-                                 window_index=window_index, total_windows=total_windows)
+                                 window_index=window_index, total_windows=total_windows,
+                                 # text_start_pos is the chunk's document-absolute char
+                                 # offset; thread it as base_offset so relation evidence
+                                 # offsets/lines become document-absolute (P3 provenance).
+                                 base_offset=text_start_pos or None)

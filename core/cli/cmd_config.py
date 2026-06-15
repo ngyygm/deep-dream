@@ -71,9 +71,16 @@ _FLOAT_PATHS = frozenset({
 })
 
 # Paths that expect boolean values.
+# NOTE: the per-stage enable flag lives under a nested ``enabled`` key, not a
+# flat underscore alias — e.g. ``llm.extraction.enabled`` (NOT
+# ``llm.extraction_enabled``).  Verified against the real resolved config
+# produced by ``config show`` / ``load_config``.
 _BOOL_PATHS = frozenset({
     "llm.think",
-    "llm.extraction_enabled",
+    "llm.extraction.enabled",
+    "llm.extraction.think",
+    "llm.alignment.enabled",
+    "llm.alignment.think",
     "runtime.task.load_cache_memory",
     "runtime.integrity.auto_check_documents",
     "pipeline.extraction.entity_post_enhancement",
@@ -300,6 +307,14 @@ def get(ctx: click.Context, key: str) -> None:
                 code=NOT_FOUND,
             )
             return  # unreachable; error raises SystemExit
+
+    # Redact secrets nested inside dict values (e.g. ``config get llm.extraction``
+    # returns a dict that contains ``api_key``).  ``config show`` already masks
+    # via _redact_config; this extends the same protection to the get path so a
+    # dict node never leaks a plaintext API key.  Scalar secret leaves are still
+    # handled by the _redact_key branch below.
+    if isinstance(value, dict):
+        value = _redact_config(value)
 
     if out.is_json:
         payload = {

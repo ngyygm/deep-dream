@@ -20,19 +20,17 @@ def version(ctx: click.Context) -> None:
     out = OutputManager(ctx)
 
     # --- Deep-Dream version ---------------------------------------------------
+    # The canonical version lives in pyproject.toml and is read via
+    # importlib.metadata at call time. The single shared fallback constant
+    # lives in _main.py; get_version() resolves both paths.
     import importlib.metadata
 
     try:
-        dd_version = importlib.metadata.version("deep-dream")
-    except Exception:
-        # Package not installed via pip / metadata missing — fall back to
-        # the constant defined in _main.py so we stay in sync.
-        try:
-            from core.cli._main import _VERSION
+        from core.cli._main import get_version
 
-            dd_version = _VERSION
-        except Exception:
-            dd_version = "unknown"
+        dd_version = get_version()
+    except Exception:
+        dd_version = "unknown"
 
     # --- Python version -------------------------------------------------------
     py_version = (
@@ -44,31 +42,34 @@ def version(ctx: click.Context) -> None:
     # --- Storage path ---------------------------------------------------------
     storage_path = str(ctx.obj.storage_root.resolve())
 
-    # --- Assemble payload -----------------------------------------------------
+    # --- Dependency versions --------------------------------------------------
+    # Gathered before the JSON branch so that ``--json`` exposes the same
+    # fields as the human-readable output (sqlite / click / rich versions).
+    import sqlite3
+
     data = {
         "deep-dream": dd_version,
         "python": py_version,
         "storage_path": storage_path,
+        "sqlite": sqlite3.sqlite_version,
     }
+
+    for pkg in ("click", "rich"):
+        try:
+            data[pkg] = importlib.metadata.version(pkg)
+        except Exception:
+            pass
 
     if out.is_json:
         out.result(data)
         return
 
-    # Rich / plain-text output — import the heaviest deps only here.
-    import sqlite3
-
-    data["sqlite"] = sqlite3.sqlite_version
-
+    # Rich / plain-text output.
     click.echo(f"Deep-Dream v{data['deep-dream']}")
     click.echo(f"  Python:   {data['python']}")
     click.echo(f"  Storage:  {data['storage_path']}")
     click.echo(f"  SQLite:   {data['sqlite']}")
 
-    # Optional dependency versions — displayed only in human-readable mode.
     for pkg in ("click", "rich"):
-        try:
-            data[pkg] = importlib.metadata.version(pkg)
+        if pkg in data:
             click.echo(f"  {pkg.capitalize():10s}{data[pkg]}")
-        except Exception:
-            pass

@@ -17,6 +17,8 @@ flags handled by :class:`OutputManager`.
 from __future__ import annotations
 
 import json
+import os
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -38,17 +40,6 @@ from ._output import OutputManager, format_timestamp
 
 
 # ------------------------------------------------------------------
-# Shared option: --graph
-# ------------------------------------------------------------------
-
-_graph_option = click.option(
-    "--graph",
-    default=None,
-    help="Graph ID (defaults to the active library).",
-)
-
-
-# ------------------------------------------------------------------
 # Click group
 # ------------------------------------------------------------------
 
@@ -63,13 +54,12 @@ def docs() -> None:
 # ------------------------------------------------------------------
 
 @docs.command()
-@_graph_option
 @click.pass_context
-def roots(ctx: click.Context, graph: Optional[str]) -> None:
+def roots(ctx: click.Context) -> None:
     """List searchable document root directories."""
     obj: CliContext = ctx.obj
     out = OutputManager(ctx)
-    graph_id = obj.get_active_graph(graph)
+    graph_id = obj.get_active_graph()
 
     with obj.get_storage(graph_id) as storage:
         rows = document_rows(storage, limit=5000)
@@ -106,13 +96,12 @@ def roots(ctx: click.Context, graph: Optional[str]) -> None:
 
 @docs.command("list")
 @click.option("--limit", type=int, default=100, show_default=True, help="Maximum documents to list.")
-@_graph_option
 @click.pass_context
-def list_docs(ctx: click.Context, limit: int, graph: Optional[str]) -> None:
+def list_docs(ctx: click.Context, limit: int) -> None:
     """List indexed documents."""
     obj: CliContext = ctx.obj
     out = OutputManager(ctx)
-    graph_id = obj.get_active_graph(graph)
+    graph_id = obj.get_active_graph()
 
     with obj.get_storage(graph_id) as storage:
         rows = document_rows(storage, limit=limit)
@@ -147,13 +136,12 @@ def list_docs(ctx: click.Context, limit: int, graph: Optional[str]) -> None:
 
 @docs.command()
 @click.argument("document_id")
-@_graph_option
 @click.pass_context
-def path(ctx: click.Context, document_id: str, graph: Optional[str]) -> None:
+def path(ctx: click.Context, document_id: str) -> None:
     """Resolve a document ID to a readable file path."""
     obj: CliContext = ctx.obj
     out = OutputManager(ctx)
-    graph_id = obj.get_active_graph(graph)
+    graph_id = obj.get_active_graph()
 
     with obj.get_storage(graph_id) as storage:
         info = storage.get_document_file_info(document_id)
@@ -194,13 +182,12 @@ def path(ctx: click.Context, document_id: str, graph: Optional[str]) -> None:
 @docs.command()
 @click.argument("pattern")
 @click.option("--limit", type=int, default=50, show_default=True, help="Maximum hits.")
-@_graph_option
 @click.pass_context
-def search(ctx: click.Context, pattern: str, limit: int, graph: Optional[str]) -> None:
+def search(ctx: click.Context, pattern: str, limit: int) -> None:
     """Literal text search over readable document files."""
     obj: CliContext = ctx.obj
     out = OutputManager(ctx)
-    graph_id = obj.get_active_graph(graph)
+    graph_id = obj.get_active_graph()
 
     with obj.get_storage(graph_id) as storage:
         try:
@@ -250,13 +237,12 @@ def search(ctx: click.Context, pattern: str, limit: int, graph: Optional[str]) -
 @docs.command()
 @click.argument("pattern")
 @click.option("--limit", type=int, default=50, show_default=True, help="Maximum hits.")
-@_graph_option
 @click.pass_context
-def grep(ctx: click.Context, pattern: str, limit: int, graph: Optional[str]) -> None:
+def grep(ctx: click.Context, pattern: str, limit: int) -> None:
     """Regex text search over readable document files."""
     obj: CliContext = ctx.obj
     out = OutputManager(ctx)
-    graph_id = obj.get_active_graph(graph)
+    graph_id = obj.get_active_graph()
 
     with obj.get_storage(graph_id) as storage:
         try:
@@ -307,15 +293,14 @@ def grep(ctx: click.Context, pattern: str, limit: int, graph: Optional[str]) -> 
 # docs map
 # ------------------------------------------------------------------
 
-@docs.command()
+@docs.command("map")
 @click.argument("path", type=click.Path(exists=False))
-@_graph_option
 @click.pass_context
-def map_cmd(ctx: click.Context, path: str, graph: Optional[str]) -> None:
+def map_cmd(ctx: click.Context, path: str) -> None:
     """Map a file-system path to Deep-Dream document records."""
     obj: CliContext = ctx.obj
     out = OutputManager(ctx)
-    graph_id = obj.get_active_graph(graph)
+    graph_id = obj.get_active_graph()
 
     with obj.get_storage(graph_id) as storage:
         docs_data = [document_file_payload(storage, d) for d in map_path_to_documents(storage, path)]
@@ -360,9 +345,8 @@ def map_cmd(ctx: click.Context, path: str, graph: Optional[str]) -> None:
     default=None,
     help="Line range to display, e.g. '10-30'.",
 )
-@_graph_option
 @click.pass_context
-def content(ctx: click.Context, document_id: str, full: bool, lines: Optional[str], graph: Optional[str]) -> None:
+def content(ctx: click.Context, document_id: str, full: bool, lines: Optional[str]) -> None:
     """Read document content.
 
     By default shows the first 200 lines.  Use --full to show everything,
@@ -370,7 +354,7 @@ def content(ctx: click.Context, document_id: str, full: bool, lines: Optional[st
     """
     obj: CliContext = ctx.obj
     out = OutputManager(ctx)
-    graph_id = obj.get_active_graph(graph)
+    graph_id = obj.get_active_graph()
 
     # Parse --lines range if given
     line_start: Optional[int] = None
@@ -474,9 +458,8 @@ def content(ctx: click.Context, document_id: str, full: bool, lines: Optional[st
     default=False,
     help="Confirm deletion. This is DANGEROUS and irreversible.",
 )
-@_graph_option
 @click.pass_context
-def delete(ctx: click.Context, document_id: str, yes: bool, graph: Optional[str]) -> None:
+def delete(ctx: click.Context, document_id: str, yes: bool) -> None:
     """Delete a document version and its associated graph data.
 
     \b
@@ -491,7 +474,7 @@ def delete(ctx: click.Context, document_id: str, yes: bool, graph: Optional[str]
     """
     obj: CliContext = ctx.obj
     out = OutputManager(ctx)
-    graph_id = obj.get_active_graph(graph)
+    graph_id = obj.get_active_graph()
 
     with obj.get_storage(graph_id) as storage:
         # Pre-flight: confirm the document exists

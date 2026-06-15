@@ -114,6 +114,8 @@ class RelationProcessor(_RelationConstructionMixin):
                                 prepared_relations_by_pair: Optional[Dict[Tuple[str, str], List[Dict[str, str]]]] = None,
                                 window_timings_ref: Optional[Dict[str, float]] = None,
                                 source_text: str = "",
+                                base_offset: int = 0,
+                                base_line: int = 1,
                                 ) -> List[Relation]:
         """按实体对批量 upsert 关系，低置信度时回退单条逻辑。max_workers>1 且实体对数量>1 时并行处理。"""
         dbg(f"process_relations_batch: 输入 {len(extracted_relations)} 个关系, entity_name_to_id 有 {len(entity_name_to_id)} 个映射")
@@ -244,6 +246,8 @@ class RelationProcessor(_RelationConstructionMixin):
                     entity_lookup=entity_lookup,
                     embedding_ctx=embedding_ctx,
                     source_text=source_text,
+                    base_offset=base_offset,
+                    base_line=base_line,
                 )
 
             executor = _get_rel_pool(max_workers)
@@ -355,6 +359,8 @@ class RelationProcessor(_RelationConstructionMixin):
                     entity_lookup=entity_lookup,
                     embedding_ctx=embedding_ctx,
                     source_text=source_text,
+                    base_offset=base_offset,
+                    base_line=base_line,
                 )
                 _pair_elapsed = _time.monotonic() - _t_pair
                 _sum_pair_time += _pair_elapsed
@@ -471,6 +477,8 @@ class RelationProcessor(_RelationConstructionMixin):
                                    entity_lookup: Optional[Dict[str, Any]] = None,
                                    embedding_ctx: Optional[Dict[str, Any]] = None,
                                    source_text: str = "",
+                                   base_offset: int = 0,
+                                   base_line: int = 1,
                                    ) -> Tuple[List[Relation], List[Relation], set]:
         """处理单个实体对的关系，返回 (processed_relations, relations_to_persist, corroborated_family_ids)。"""
         dbg(f"ENTER {entity1_name}-{entity2_name}: ctx={embedding_ctx is not None} exist={len(existing_relations)}")
@@ -488,9 +496,13 @@ class RelationProcessor(_RelationConstructionMixin):
         if source_text and entity1_name and entity2_name:
             try:
                 from core.text_chunking import find_text_evidence
-                # Search for sentences where both entity names appear
-                _hits_a = find_text_evidence(source_text, [entity1_name], limit=3)
-                _hits_b = find_text_evidence(source_text, [entity2_name], limit=3)
+                # Search for sentences where both entity names appear.
+                # find_text_evidence lifts chunk-relative offsets/lines to
+                # document-absolute via base_offset/base_line.
+                _hits_a = find_text_evidence(source_text, [entity1_name],
+                                             base_offset=base_offset, base_line=base_line, limit=3)
+                _hits_b = find_text_evidence(source_text, [entity2_name],
+                                             base_offset=base_offset, base_line=base_line, limit=3)
                 if _hits_a and _hits_b:
                     # Find overlapping sentence spans
                     _sents_a = {(h["sentence_start"], h["sentence_end"]) for h in _hits_a}
@@ -500,18 +512,25 @@ class RelationProcessor(_RelationConstructionMixin):
                         _best = min(_overlap)
                         _ev_start = _best[0]
                         _ev_end = _best[1]
-                        _ev_text = source_text[_ev_start:_ev_end]
+                        # Offsets are document-absolute; map back to the chunk
+                        # substring for the evidence text.
+                        _ev_text = source_text[_ev_start - base_offset:_ev_end - base_offset]
                     else:
                         # No overlap — use first hit for entity1 as evidence
                         _h = _hits_a[0]
                         _ev_text = _h.get("sentence") or _h.get("quote")
                         _ev_start = _h.get("start_offset")
                         _ev_end = _h.get("end_offset")
-                # Compute line numbers from offsets
-                if _ev_start is not None:
-                    _ev_line_start = source_text[:_ev_start].count('\n') + 1
-                if _ev_end is not None:
-                    _ev_line_end = source_text[:_ev_end].count('\n') + 1
+                    # Line numbers come back document-absolute from find_text_evidence.
+                    _ev_line_start = _hits_a[0].get("line_start")
+                    _ev_line_end = _hits_a[0].get("line_end")
+                    if _overlap:
+                        # prefer the line range of the chosen overlapping sentence
+                        for _h in _hits_a + _hits_b:
+                            if _h.get("sentence_start") == _best[0] and _h.get("sentence_end") == _best[1]:
+                                _ev_line_start = _h.get("line_start")
+                                _ev_line_end = _h.get("line_end")
+                                break
             except Exception:
                 pass
 

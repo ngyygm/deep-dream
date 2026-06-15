@@ -113,12 +113,14 @@ deep-dream = "core.cli:main"
 | `--json` | | `DEEPDREAM_JSON` | off | 机器可读 JSON 输出 |
 | `--no-color` | | `NO_COLOR` / `DEEPDREAM_NO_COLOR` | off | 禁用彩色输出 |
 | `--quiet` | `-q` | `DEEPDREAM_QUIET` | off | 静默模式 |
-| `--verbose` | `-v` | `DEEPDREAM_VERBOSE` | off | 诊断输出 |
-| `--dry-run` | | | off | 预览不执行 |
 | `--version` | | | | 显示版本 |
 | `--help` | `-h` | | | 显示帮助 |
 
 Click `auto_envvar_prefix="DEEPDREAM"` 自动为所有选项创建环境变量覆盖。
+
+> 注：`--verbose` / `--dry-run` **不是** root group 选项。需要它们的命令
+> 各自声明（例如 `remember`、`server`、`graph`、`db`），避免无意义的
+> 继承噪声。
 
 ---
 
@@ -286,6 +288,7 @@ deep-dream
 │   ├── duplicates             检测重复实体
 │   └── merge <source> <target> ⚠️ 合并实体
 ├── episode                    Episode 操作
+│   ├── from-file <path>       将文件路径/行映射到 episodes
 │   ├── get <id>               获取 episode 详情
 │   ├── concepts <id>          Episode 关联概念
 │   └── content <id>           读取 episode 内容
@@ -324,7 +327,7 @@ Examples:
 
 **人类输出：**
 ```
-Deep-Dream v2.0.0
+Deep-Dream v0.2.0
   Python:     3.11.5
   Storage:    /home/user/deep-dream/library
   Database:   SQLite 3.42.0
@@ -337,15 +340,19 @@ Deep-Dream v2.0.0
   "success": true,
   "command": "version",
   "data": {
-    "version": "2.0.0",
+    "deep-dream": "0.2.0",
     "python": "3.11.5",
-    "storage_path": "/home/user/deep-dream/library",
-    "sqlite_version": "3.42.0",
-    "click_version": "8.1",
-    "rich_version": "13.7"
+    "storage_path": "/home/user/deep-dream/library"
+  },
+  "meta": {
+    "graph_id": "library"
   }
 }
 ```
+
+版本号以 `pyproject.toml` 为单一来源，`deep-dream --version` 与
+`deep-dream version` 在运行时通过 `importlib.metadata.version("deep-dream")`
+读取同一字符串。
 
 ---
 
@@ -1029,14 +1036,89 @@ Usage: deep-dream episode [COMMAND]...
 Episode inspection and content access.
 
 Examples:
+  deep-dream episode from-file notes/ml-paper.md --line 12
   deep-dream episode get ep-abc-123
   deep-dream episode concepts ep-abc-123
   deep-dream episode content ep-abc-123
 
 Commands:
+  from-file <path>  Map a file path (and optional line) to episodes
   get <id>          Get episode details
   concepts <id>     List concepts mentioned in an episode
   content <id>      Read episode source content
+```
+
+**`episode from-file`：**
+
+将一个文件路径（及可选行号）解析到它所覆盖的 episodes。
+按原始文件位置（`line_start`/`line_end` 与字符 offset）匹配，因此对
+外部文件（`source_mode: external`，未快照进库）同样有效——这是 skill
+用于「定位到 episode」的核心入口。
+
+```
+Usage: deep-dream episode from-file [OPTIONS] PATH
+
+Map a file path (and optional line) to episodes.
+
+Examples:
+  deep-dream episode from-file notes/ml-paper.md
+  deep-dream episode from-file notes/ml-paper.md --line 12
+  deep-dream episode from-file vault/daily/2026-05-30.md --limit 20
+
+Options:
+  --line INT     Filter to episodes overlapping this line number.
+  --limit INT    Maximum episodes to return  [default: 50]
+  --graph TEXT   Graph ID  [default: library]
+```
+
+**`episode from-file notes/ml-paper.md --line 12` 人类输出：**
+```
+  Episodes from notes/ml-paper.md (2)
+
+┌──────────────┬──────────────────────┬──────────┬──────────────────┐
+│ Episode ID   │ Heading              │ Lines    │ Offset           │
+├──────────────┼──────────────────────┼──────────┼──────────────────┤
+│ ep-abc-123   │ ## Attention          │ 8-15     │ 412-824          │
+│ ep-def-456   │ ### Scaled Dot-Product│ 12-18    │ 640-1024         │
+└──────────────┴──────────────────────┴──────────┴──────────────────┘
+```
+
+**`episode from-file` JSON 输出：**
+```json
+{
+  "success": true,
+  "command": "episode from-file",
+  "data": {
+    "documents": [
+      {
+        "document_version_id": "doc-a1b2",
+        "source_path": "notes/ml-paper.md",
+        "source_mode": "external",
+        "resolved_path": "/abs/notes/ml-paper.md",
+        "line_start": 1,
+        "line_end": 80
+      }
+    ],
+    "episodes": [
+      {
+        "episode_version_id": "ep-abc-123",
+        "document_version_id": "doc-a1b2",
+        "heading_path": "## Attention",
+        "start_offset": 412,
+        "end_offset": 824,
+        "line_start": 8,
+        "line_end": 15,
+        "source_path": "notes/ml-paper.md",
+        "source_text": "..."
+      }
+    ],
+    "total": 1
+  },
+  "meta": {
+    "graph_id": "library",
+    "count": 1
+  }
+}
 ```
 
 **`episode get ep-abc-123` 人类输出：**
@@ -1577,17 +1659,22 @@ Error: Invalid value for "server.port": "abc" is not a valid integer.
 
 ### 14.2 JSON 输出兼容
 
-`--json` 输出保持相同的顶层结构，确保脚本不受影响：
+`--json` 输出保持相同的顶层结构（详见 5.3），确保脚本不受影响：
 ```json
 {
   "success": true,
   "command": "<command>",
-  "graph_id": "library",
-  "data": { ... }
+  "data": { ... },
+  "meta": {
+    "graph_id": "library",
+    "count": 5
+  }
 }
 ```
 
-新增字段仅添加到 `data` 内部，不修改顶层结构。
+`graph_id`、`count` 等元数据统一收纳在 `meta` 内，顶层仅保留
+`success` / `command` / `data`（成功）或 `error`（失败）四个键。
+新增字段仅添加到 `data` 或 `meta` 内部，不修改顶层键集合。
 
 ### 14.3 Deprecation 处理
 

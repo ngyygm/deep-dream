@@ -622,9 +622,18 @@ def search_concepts():
 
 def _hybrid_concept_search(storage, query: str, role, limit: int,
                            threshold: float, time_point: str = None, source_document: str = None, reranker: str = "rrf"):
-    """Hybrid concept search: BM25 + semantic embedding, fused via RRF.
+    """Hybrid concept search: BM25 + semantic embedding + graph-BFS, fused via RRF.
 
     Returns (results, meta) where meta indicates which search modes contributed.
+
+    三路融合（Reciprocal Rank Fusion）：
+      - BM25 全文检索（权重 0.3）
+      - 语义向量检索（权重 0.4）
+      - 图上下文扩展（权重 0.3）：取 BM25+语义 top-k 种子 family_id，
+        经 storage.get_concept_neighbors 做 1 跳 BFS 扩展，召回结构关联概念。
+
+    权重选择（bm25 0.3 / semantic 0.4 / graph 0.3）：语义作为最强召回通道，
+    BM25 补足精确词命中，graph 提供结构邻域——三路并重但语义略占先。
 
     For CJK queries, BM25 uses LIKE-based n-gram matching (not FTS5) and
     semantic threshold is lowered to 0.3 for better recall on short queries.
@@ -682,31 +691,77 @@ def _hybrid_concept_search(storage, query: str, role, limit: int,
     meta = {
         "bm25_results": len(bm25_results),
         "semantic_results": len(semantic_results),
+        "graph_results": 0,
         "effective_mode": "hybrid",
     }
     if has_cjk:
         meta["effective_mode"] = "hybrid_cjk"
         meta["reason"] = "CJK query — BM25 uses LIKE n-gram fallback, semantic threshold lowered"
-    if not bm25_results and not semantic_results:
+
+    # ── 第三路：图上下文 BFS 扩展 ──────────────────────────────────
+    # 从 BM25+语义结果中取 top-k 种子 family_id，1 跳 BFS 扩展其图邻居，
+    # 召回结构关联概念（共同出现在关系/提及中的概念）。
+    graph_results: list = []
+    seed_pool = list(bm25_results) + list(semantic_results)
+    seed_fids: list = []
+    _seen_seeds: set = set()
+    # 收集种子 family_id：优先取真实概念 family_id（实体/关系）；
+    # BM25 结果多为 episode，其 family_id 是 episode family，无法直接 BFS，
+    # 因此对 episode 种子额外解析其提及的实体 family_id 作为图通道种子。
+    for item in seed_pool:
+        fid = item.get("family_id", "") or item.get("id", "")
+        if fid and fid not in _seen_seeds:
+            _seen_seeds.add(fid)
+            seed_fids.append(fid)
+        # 若该项是 episode，解析其提及的实体作为额外种子
+        ep_id = item.get("episode_id", "")
+        if ep_id and hasattr(storage, 'get_episode_concepts'):
+            try:
+                ep_concepts = storage.get_episode_concepts(ep_id)
+            except Exception:
+                ep_concepts = []
+            for ec in ep_concepts:
+                efid = ec.get("family_id", "") or ""
+                if efid and efid not in _seen_seeds:
+                    _seen_seeds.add(efid)
+                    seed_fids.append(efid)
+        if len(seed_fids) >= _GRAPH_SEED_TOPK * 2:
+            break
+
+    if seed_fids and hasattr(storage, 'get_concept_neighbors'):
+        try:
+            graph_results = _graph_bfs_channel(storage, seed_fids, role=role, time_point=time_point)
+        except Exception as exc:
+            logger.debug("Graph BFS channel failed for query=%r: %s", query, exc)
+            graph_results = []
+    meta["graph_results"] = len(graph_results)
+
+    if not bm25_results and not semantic_results and not graph_results:
         return [], meta
-    _base_mode = ""
-    if not bm25_results:
-        _base_mode = "semantic_only"
-    elif not semantic_results:
-        _base_mode = "bm25_only"
-    if _base_mode:
+
+    # 判定实际生效的通道，用于 meta["effective_mode"]
+    active = []
+    if bm25_results:
+        active.append("bm25")
+    if semantic_results:
+        active.append("semantic")
+    if graph_results:
+        active.append("graph")
+    if len(active) == 1:
+        _base_mode = active[0] + "_only"
         meta["effective_mode"] = (_base_mode + "_cjk") if has_cjk else _base_mode
 
-    if not bm25_results and not semantic_results:
+    if not bm25_results and not semantic_results and not graph_results:
         return [], meta
 
-    # RRF fusion on dict results (keyed by family_id)
+    # RRF fusion on dict results (keyed by family_id) — 三路权重
     k = 60
     scores: Dict[str, float] = {}
     items: Dict[str, dict] = {}
     best_contrib: Dict[str, float] = {}
     bm25_weight = 0.3
-    sem_weight = 0.7
+    sem_weight = 0.4
+    graph_weight = 0.3
 
     for rank, item in enumerate(bm25_results):
         fid = item.get("family_id", "") or item.get("id", "")
@@ -720,6 +775,17 @@ def _hybrid_concept_search(storage, query: str, role, limit: int,
         fid = item.get("family_id", "") or item.get("id", "")
         rrf = sem_weight / (k + rank + 1)
         scores[fid] = scores.get(fid, 0.0) + rrf
+        if fid not in items or rrf > best_contrib.get(fid, 0.0):
+            items[fid] = item
+            best_contrib[fid] = rrf
+
+    for rank, item in enumerate(graph_results):
+        fid = item.get("family_id", "") or item.get("id", "")
+        if not fid:
+            continue
+        rrf = graph_weight / (k + rank + 1)
+        scores[fid] = scores.get(fid, 0.0) + rrf
+        # 图通道召回的概念若无更早记录则保留；已有记录时仅当贡献更高才覆盖
         if fid not in items or rrf > best_contrib.get(fid, 0.0):
             items[fid] = item
             best_contrib[fid] = rrf
@@ -759,6 +825,64 @@ def _hybrid_concept_search(storage, query: str, role, limit: int,
             logger.debug("mmr reranker failed: %s", exc)
 
     return fused, meta
+
+
+# 图通道参数
+_GRAPH_SEED_TOPK = 5  # 取 BM25+语义结果的前 5 个 family_id 作为 BFS 种子
+_GRAPH_MAX_SEEDS = 5  # 最多扩展 5 个种子（避免路径爆炸）
+_GRAPH_NEIGHBORS_PER_SEED = 20  # 每个种子最多召回 20 个邻居
+
+
+def _graph_bfs_channel(storage, seed_family_ids, role=None, time_point=None):
+    """图上下文扩展通道：对种子 family_id 做 1 跳 BFS，召回结构关联概念。
+
+    返回 dict 列表（含 family_id/role/name/content），供 RRF 融合。
+    只取 1 跳（max_depth=1），限制种子数与每种子邻居数，避免性能退化。
+    """
+    if not seed_family_ids:
+        return []
+    results: list = []
+    seen: set = set()
+    for fid in seed_family_ids[:_GRAPH_MAX_SEEDS]:
+        if not fid:
+            continue
+        try:
+            neighbors = storage.get_concept_neighbors(
+                fid, max_depth=1, time_point=time_point, max_results=_GRAPH_NEIGHBORS_PER_SEED,
+            )
+        except Exception as exc:
+            logger.debug("get_concept_neighbors failed for seed=%s: %s", fid, exc)
+            continue
+        if not neighbors:
+            continue
+        for n in neighbors:
+            nfid = n.get("family_id", "") or n.get("target_family_id", "") or ""
+            if not nfid or nfid in seen:
+                continue
+            # 邻居通过 MENTIONS/ASSERTS/RELATES 边关联，角色优先取邻居自身标注，
+            # 否则根据 edge_type 推断（MENTIONS→entity, ASSERTS→relation）。
+            n_role = n.get("role") or ""
+            if not n_role:
+                et = n.get("edge_type", "")
+                if et == "ASSERTS":
+                    n_role = "relation"
+                elif et == "MENTIONS":
+                    n_role = "entity"
+            # role 过滤：若用户指定了角色，只保留匹配的邻居
+            if role is not None and n_role and n_role != role:
+                continue
+            seen.add(nfid)
+            results.append({
+                "family_id": nfid,
+                "id": n.get("absolute_id", nfid),
+                "name": n.get("name", "") or "",
+                "content": n.get("content", "") or "",
+                "role": n_role,
+                "_score": 0.0,
+            })
+            if len(results) >= _GRAPH_NEIGHBORS_PER_SEED * _GRAPH_MAX_SEEDS:
+                return results
+    return results
 
 
 @concepts_bp.route("/api/v1/concepts/suggest", methods=["GET", "POST"])
@@ -852,7 +976,38 @@ def get_concept(family_id: str):
         concept = storage.get_concept_by_family_id(family_id, time_point=time_point)
         if concept is None:
             return err(f"概念不存在: {family_id} (graph={_get_graph_id()})", 404)
-        return ok(concept)
+        # Speak the unified Concept primitive: prefer the role-parameterized
+        # DAL DTO (storage.get_concept -> Concept.to_dict()) and lift its
+        # role/name/content/relation-endpoints into the response. We still
+        # fall back to the legacy dict (which already carries relation
+        # endpoint names) so the response stays backward-compatible for
+        # callers that depend on the existing shape.
+        payload = concept
+        if hasattr(storage, "get_concept"):
+            try:
+                dto = storage.get_concept(family_id)
+            except Exception as exc:
+                logger.debug("get_concept DTO lookup failed for %s: %s", family_id, exc)
+                dto = None
+            if dto is not None:
+                dto_dict = dto.to_dict() if hasattr(dto, "to_dict") else dict(dto)
+                # Strong-typed Concept fields win; legacy dict fills in any
+                # relation endpoint keys the DTO may not surface (entity1_name...).
+                merged = dict(payload)
+                merged.update({k: v for k, v in dto_dict.items()
+                               if k in ("role", "name", "content", "family_id",
+                                        "subject_family_id", "object_family_id",
+                                        "version_id", "status", "confidence",
+                                        "episode_id")})
+                # Surface relation endpoints under the legacy key names too,
+                # so existing clients/tests keep working.
+                if merged.get("role") == "relation":
+                    subj = merged.get("subject_family_id") or merged.get("entity1_family_id")
+                    obj = merged.get("object_family_id") or merged.get("entity2_family_id")
+                    merged.setdefault("entity1_family_id", subj)
+                    merged.setdefault("entity2_family_id", obj)
+                payload = merged
+        return ok(payload)
     except KeyError as e:
         return err(str(e.args[0]) if e.args else str(e), 404)
     except Exception as e:

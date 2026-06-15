@@ -42,11 +42,6 @@ from ._output import OutputManager
     default=False,
     help="Include EXPLAIN QUERY PLAN output.",
 )
-@click.option(
-    "--graph",
-    default=None,
-    help="Graph ID (defaults to the active library).",
-)
 @click.pass_context
 def sql(
     ctx: click.Context,
@@ -54,7 +49,6 @@ def sql(
     query_opt: Optional[str],
     limit: int,
     explain: bool,
-    graph: Optional[str],
 ) -> None:
     """Run read-only SQL against the graph database.
 
@@ -88,7 +82,7 @@ def sql(
             code=ARGS,
         )
 
-    graph_id = obj.get_active_graph(graph)
+    graph_id = obj.get_active_graph()
 
     with obj.get_storage(graph_id) as storage:
         result = storage.read_sql(

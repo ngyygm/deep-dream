@@ -253,9 +253,6 @@
           <button class="btn btn-ghost btn-sm btn-graph-clear" data-graph-id="${gid}" title="${t('dashboard.clearGraph')}" style="padding:2px 4px;">
             <i data-lucide="eraser" style="width:13px;height:13px;"></i>
           </button>
-          <button class="btn btn-ghost btn-sm btn-graph-delete" data-graph-id="${gid}" title="${t('dashboard.deleteGraph')}" style="padding:2px 4px;color:var(--error);">
-            <i data-lucide="trash-2" style="width:13px;height:13px;"></i>
-          </button>
         </div>
         <div style="display:flex;gap:0.75rem;margin-top:0.2rem;padding-left:22px;color:var(--text-muted);font-size:0.75rem;">
           <span>E:${formatNumber(s.entities)} R:${formatNumber(s.relations)} Ep:${formatNumber(s.episodes)}</span>
@@ -265,37 +262,6 @@
     }).join('');
 
     return rows;
-  }
-
-  async function dashboardDeleteGraph(graphId) {
-    if (!graphId) return;
-    const graphs = _graphs.map(g => g.graph_id);
-    if (graphs.length <= 1) {
-      showToast(t('dashboard.deleteGraphFailed') + ': at least one graph required', 'warning');
-      return;
-    }
-    const confirmed = await showConfirm({
-      title: t('dashboard.deleteGraph'),
-      message: t('dashboard.deleteGraphConfirm', { name: graphId }),
-      confirmLabel: t('dashboard.deleteGraph'),
-      cancelLabel: t('common.cancel'),
-      destructive: true,
-    });
-    if (!confirmed) return;
-    try {
-      await state.api.deleteGraph(graphId);
-      showToast(t('dashboard.deleteGraphSuccess', { name: graphId }), 'success');
-      _graphs = _graphs.filter(g => g.graph_id !== graphId);
-      updateGraphList();
-      if (typeof setGraphId === 'function' && state.currentGraphId === graphId) {
-        const remaining = _graphs.map(g => g.graph_id);
-        setGraphId(remaining[0] || 'default');
-      }
-      if (typeof loadGraphSelector === 'function') loadGraphSelector();
-      else syncGraphSelector();
-    } catch (e) {
-      showToast(t('dashboard.deleteGraphFailed') + `: ${e.message || e}`, 'error');
-    }
   }
 
   async function dashboardClearGraph(graphId) {
@@ -519,8 +485,6 @@
     if (!ids.includes(currentVal)) {
       sel.innerHTML = `<option value="${escapeHtml(currentVal)}" selected>${escapeHtml(currentVal)}</option>` + sel.innerHTML;
     }
-    const delBtn = document.getElementById('graph-delete-btn');
-    if (delBtn) delBtn.style.display = ids.length > 1 ? '' : 'none';
   }
 
   async function fetchTasks() {
@@ -633,12 +597,6 @@
     if (countEl) countEl.textContent = t('dashboard.graphCount', { count: _graphs.length });
     if (window.lucide) lucide.createIcons({ nodes: [listEl] });
     if (listEl) {
-      listEl.querySelectorAll('.btn-graph-delete').forEach(btn => {
-        btn.addEventListener('click', async (e) => {
-          e.stopPropagation();
-          await dashboardDeleteGraph(btn.getAttribute('data-graph-id'));
-        });
-      });
       listEl.querySelectorAll('.btn-graph-clear').forEach(btn => {
         btn.addEventListener('click', async (e) => {
           e.stopPropagation();
@@ -756,9 +714,6 @@
               </div>
               <div style="display:flex;align-items:center;gap:0.5rem;">
                 <span style="font-size:0.75rem;color:var(--text-muted);" id="dashboard-graph-count">-</span>
-                <button class="btn btn-primary" style="padding:0.25rem 0.75rem;font-size:0.75rem;" onclick="showCreateGraphModal()">
-                  <i data-lucide="plus" style="width:14px;height:14px;margin-right:0.25rem;"></i>${t('dashboard.createGraph')}
-                </button>
               </div>
             </div>
             <div id="dashboard-graph-list">${spinnerHtml()}</div>
@@ -813,57 +768,6 @@
       }
     }, 3000);
   }
-
-  // ---------------------------------------------------------------------------
-  // Create Graph
-  // ---------------------------------------------------------------------------
-
-  window.showCreateGraphModal = function() {
-    if (document.getElementById('create-graph-overlay')) return;
-    const overlay = document.createElement('div');
-    overlay.id = 'create-graph-overlay';
-    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:1000;';
-    overlay.innerHTML = `
-      <div class="card" style="width:380px;max-width:90vw;">
-        <div class="card-header">
-          <span class="card-title">${t('dashboard.createGraph')}</span>
-          <button onclick="document.getElementById('create-graph-overlay').remove()" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:1.2rem;">&times;</button>
-        </div>
-        <div style="padding:1rem;">
-          <label style="font-size:0.8rem;color:var(--text-muted);display:block;margin-bottom:0.35rem;">${t('dashboard.graphId')}</label>
-          <input id="create-graph-input" type="text" placeholder="${t('dashboard.graphIdPlaceholder')}"
-            style="width:100%;padding:0.5rem;border:1px solid var(--border);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-size:0.85rem;outline:none;"
-            onkeydown="if(event.key==='Enter')doCreateGraph()" />
-          <div id="create-graph-error" style="margin-top:0.35rem;font-size:0.75rem;color:var(--danger);min-height:1rem;"></div>
-          <div style="display:flex;gap:0.5rem;margin-top:1rem;justify-content:flex-end;">
-            <button class="btn btn-secondary" onclick="document.getElementById('create-graph-overlay').remove()" style="padding:0.4rem 1rem;font-size:0.8rem;">${t('common.cancel')}</button>
-            <button class="btn btn-primary" onclick="doCreateGraph()" style="padding:0.4rem 1rem;font-size:0.8rem;">${t('common.confirm')}</button>
-          </div>
-        </div>
-      </div>`;
-    document.body.appendChild(overlay);
-    overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
-    setTimeout(() => document.getElementById('create-graph-input').focus(), 50);
-  };
-
-  window.doCreateGraph = async function() {
-    const input = document.getElementById('create-graph-input');
-    const errEl = document.getElementById('create-graph-error');
-    const graphId = (input.value || '').trim();
-    if (!graphId) { errEl.textContent = t('dashboard.graphIdRequired'); return; }
-    errEl.textContent = '';
-    try {
-      const data = await state.api.createGraph(graphId);
-      if (data.error) { errEl.textContent = data.error; return; }
-      document.getElementById('create-graph-overlay').remove();
-      setGraphId(graphId);
-      // 刷新 dashboard 图谱列表
-      await Promise.all([fetchOverview(), fetchGraphs()]);
-      showToast(t('dashboard.graphCreated', { id: graphId }), 'success');
-    } catch (e) {
-      errEl.textContent = e.message;
-    }
-  };
 
   // ---------------------------------------------------------------------------
   // Cleanup

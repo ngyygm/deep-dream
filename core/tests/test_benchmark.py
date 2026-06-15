@@ -3,6 +3,15 @@ Benchmark suite for SQLite graph storage operations.
 
 Reports mean/p95/p99 latencies for critical operations.
 Run with: pytest core/tests/test_benchmark.py -v -s --tb=short
+
+These are wall-clock micro-benchmarks: their absolute thresholds are
+environment-sensitive and trip under concurrent CPU load, so the module is
+marked ``benchmark`` and excluded from the default correctness run
+(``addopts = ["-m", "not benchmark"]``). Opt in explicitly when you want the
+latency numbers::
+
+    pytest -m benchmark -v -s          # run only benchmarks
+    pytest -o addopts= -m benchmark    # override addopts if needed
 """
 import time
 import uuid
@@ -10,6 +19,9 @@ import statistics
 from datetime import datetime, timezone
 
 import pytest
+
+# Env-sensitive latency gates — opt-in, never gate the correctness suite.
+pytestmark = pytest.mark.benchmark
 
 from core.models import Entity, Relation, Episode
 from core.storage.sqlite.manager import SQLiteGraphStorageManager

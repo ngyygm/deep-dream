@@ -39,21 +39,6 @@ def _api_url(path: str, params: Optional[Dict[str, str]] = None) -> str:
     return url
 
 
-def _check_server() -> None:
-    """Probe /health to verify the server is reachable.
-
-    Raises SystemExit via OutputManager.error if the server is down.
-    """
-    try:
-        req = urllib.request.Request(f"{_API_BASE}/../health", method="GET")
-        with urllib.request.urlopen(req, timeout=3) as resp:
-            if resp.status >= 400:
-                raise OSError(f"HTTP {resp.status}")
-    except (OSError, urllib.error.URLError, TimeoutError) as exc:
-        # Build a minimal Click context for OutputManager
-        raise SystemExit(1)
-
-
 def _request(
     method: str,
     path: str,
@@ -248,8 +233,12 @@ def task(ctx: click.Context) -> None:
 @click.option(
     "--status",
     "status_filter",
+    type=click.Choice(
+        ["queued", "running", "pausing", "paused", "completed", "failed", "cancelled", "cancelling"],
+        case_sensitive=False,
+    ),
     default=None,
-    help="Filter by status (queued, running, paused, completed, failed, cancelled).",
+    help="Filter by status (queued, running, pausing, paused, completed, failed, cancelled, cancelling).",
 )
 @click.option(
     "--limit",
@@ -262,12 +251,17 @@ def task(ctx: click.Context) -> None:
 def task_list(ctx: click.Context, status_filter: Optional[str], limit: int) -> None:
     """List tasks in the queue.
 
-    Shows a table with ID, Source, Status, Progress, and Created time.
+    Shows a table with Seq, ID, Source, Status, Progress, Phase, Size, and Created.
     """
     out = OutputManager(ctx)
     _ensure_connected(out)
 
+    # Pass the status filter to the server so it is applied BEFORE the
+    # priority-sort + limit slice; filtering client-side on a truncated list
+    # silently returned empty results for completed/cancelled tasks.
     params: Dict[str, str] = {"limit": str(limit)}
+    if status_filter:
+        params["status"] = status_filter
     resp = _request("GET", "/remember/tasks", params=params)
 
     if _is_error(resp):
@@ -282,10 +276,6 @@ def task_list(ctx: click.Context, status_filter: Optional[str], limit: int) -> N
     data = resp.get("data", resp)
     tasks: List[Dict[str, Any]] = data.get("tasks", []) if isinstance(data, dict) else []
 
-    # Apply client-side status filter
-    if status_filter:
-        tasks = [t for t in tasks if t.get("status") == status_filter]
-
     if out.is_json:
         from ._output import json_result
         payload = json_result("task-list", {"tasks": tasks, "count": len(tasks)})
@@ -297,6 +287,7 @@ def task_list(ctx: click.Context, status_filter: Optional[str], limit: int) -> N
 
     # Rich table
     from rich.table import Table
+    from rich.markup import escape as _rich_escape
 
     table = Table(
         title=f"Task Queue ({len(tasks)} tasks)",
@@ -318,11 +309,15 @@ def task_list(ctx: click.Context, status_filter: Optional[str], limit: int) -> N
         source = t.get("source_name", "") or ""
         if len(source) > 50:
             source = source[:47] + "..."
+        # Source / phase_label come from user content and may contain
+        # [brackets] that Rich would interpret as markup — escape them.
+        source = _rich_escape(source)
         status = _format_status(t.get("status", ""))
         progress = _format_progress(t)
         phase_label = t.get("phase_label", "") or t.get("phase", "")
         if len(phase_label) > 30:
             phase_label = phase_label[:27] + "..."
+        phase_label = _rich_escape(phase_label)
         size = _format_size(t.get("document_size_bytes"))
         created = _format_timestamp_epoch(t.get("created_at"))
         table.add_row(task_seq, tid, source, status, progress, phase_label, size, created)

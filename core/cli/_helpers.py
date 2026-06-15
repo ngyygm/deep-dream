@@ -18,30 +18,27 @@ from typing import Any, Iterable, List, Optional
 # Concept helpers
 # ------------------------------------------------------------------
 
-def resolve_concept_id(storage: Any, value: str) -> Optional[str]:
-    """Resolve a concept name or family_id to a canonical family_id.
+_FAMILY_ID_PREFIXES = ("ent_", "rel_", "epfam_", "doc_", "docver_")
 
-    Lookup order:
-      1. Exact family_id match
-      2. BM25 search (episode FTS)
-      3. SQL LIKE on entity canonical_name
+
+def _looks_like_family_id(value: str) -> bool:
+    """Return True if *value* is shaped like a canonical Deep-Dream family_id."""
+    return bool(value) and value.startswith(_FAMILY_ID_PREFIXES)
+
+
+def _entity_family_id_by_name(storage: Any, value: str) -> Optional[str]:
+    """Resolve a name to an ``ent_`` family_id via exact-then-LIKE lookup.
+
+    Entity resolution is preferred because callers (concept neighbors/versions,
+    relation evidence) need an entity/relation endpoint — an episode family id
+    (``epfam_…``) is never a valid graph edge endpoint. Returns ``None`` when
+    no entity family matches.
     """
-    # 1. Exact family_id
-    concept = storage.get_concept_by_family_id(value)
-    if concept:
-        return concept["family_id"]
-    # 2. BM25 search
-    try:
-        matches = storage.search_concepts_by_bm25(value, limit=1)
-        if matches:
-            fid = matches[0].get("family_id") or matches[0].get("entity_family_id")
-            if fid:
-                return fid
-    except (ZeroDivisionError, ValueError):
-        pass
-    # 3. SQL LIKE on entity name (works without embeddings or FTS)
     try:
         conn = storage._conn()
+    except Exception:
+        return None
+    try:
         row = conn.execute(
             "SELECT entity_family_id FROM entity_families WHERE canonical_name = ? LIMIT 1",
             (value,),
@@ -55,8 +52,71 @@ def resolve_concept_id(storage: Any, value: str) -> Optional[str]:
         if row:
             return row[0]
     except Exception:
-        pass
+        return None
     return None
+
+
+def _bm25_entity_or_relation_id(storage: Any, value: str) -> Optional[str]:
+    """Fall back to BM25 search, preferring entity then relation rows.
+
+    Episode rows (``epfam_…``) are deliberately rejected: callers using
+    ``resolve_concept_id`` for graph traversal / relation evidence need an
+    edge endpoint, and an episode family id is never valid there.
+    """
+    # Prefer entity matches first.
+    for role in ("entity", "relation"):
+        try:
+            matches = storage.search_concepts_by_bm25(value, role=role, limit=5)
+        except (ZeroDivisionError, ValueError):
+            # search_fts can raise ZeroDivisionError on degenerate BM25
+            # scoring or ValueError on a malformed FTS query (brackets/dots
+            # in user content leak straight into MATCH). Treat as no match.
+            continue
+        except Exception:
+            continue
+        for m in matches:
+            fid = m.get("family_id") or m.get("entity_family_id")
+            if fid and (fid.startswith("ent_") or fid.startswith("rel_")):
+                return fid
+    return None
+
+
+def resolve_concept_id(storage: Any, value: str) -> Optional[str]:
+    """Resolve a concept name or family_id to a canonical family_id.
+
+    Lookup order (entity-preferred so graph traversal / relation evidence get
+    a real edge endpoint instead of an episode family id):
+
+      1. Exact family_id (known prefix or found via ``get_concept_by_family_id``)
+      2. ``entity_families.canonical_name`` exact-then-LIKE → ``ent_`` match
+      3. BM25 search restricted to ``role`` in (entity, relation); episode
+         rows are rejected so callers never receive an ``epfam_`` id.
+    """
+    if not value:
+        return None
+
+    # 1. Exact family_id (fast path for already-canonical ids, and the only
+    #    branch that may legitimately return an episode/document id).
+    if _looks_like_family_id(value):
+        concept = storage.get_concept_by_family_id(value)
+        if concept:
+            return concept["family_id"]
+        # Shaped like an id but not found — do not fall through to name
+        # search, the caller passed something id-like that doesn't exist.
+        return None
+
+    # Also accept a non-prefixed exact id (legacy ids) by attempting lookup.
+    concept = storage.get_concept_by_family_id(value)
+    if concept:
+        return concept["family_id"]
+
+    # 2. Entity canonical_name exact-then-LIKE (works without FTS/embeddings).
+    ent_fid = _entity_family_id_by_name(storage, value)
+    if ent_fid:
+        return ent_fid
+
+    # 3. BM25 fallback, entity/relation only — never an episode id.
+    return _bm25_entity_or_relation_id(storage, value)
 
 
 def concept_source_evidence(

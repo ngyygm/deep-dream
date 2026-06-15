@@ -16,7 +16,7 @@ import click
 
 from ._ctx import CliContext
 from ._exit_codes import NOT_FOUND, OK
-from ._helpers import relation_evidence
+from ._helpers import compact_text, relation_evidence, resolve_concept_id
 from ._output import OutputManager
 
 
@@ -43,16 +43,19 @@ def _render_evidence_rich(out: OutputManager, data: dict[str, Any]) -> None:
 
         line_start = row.get("line_start")
         line_end = row.get("line_end")
-        if line_start is not None and line_end is not None:
+        # A 0-0 sentinel is not a real range — render it as empty.
+        if line_start == 0 and line_end == 0:
+            lines = ""
+        elif line_start is not None and line_end is not None:
             lines = f"{line_start}-{line_end}"
         elif line_start is not None:
             lines = str(line_start)
         else:
             lines = ""
 
-        source_text = row.get("source_text") or ""
-        if len(source_text) > 120:
-            source_text = source_text[:117] + "..."
+        # Collapse whitespace/newlines before truncating so multi-line
+        # source_text does not blow up the table row height.
+        source_text = compact_text(row.get("source_text") or "", max_chars=120)
 
         rows.append([source, relation_name, entities, lines, source_text])
 
@@ -83,16 +86,11 @@ def relation() -> None:
     "--limit",
     default=50,
     show_default=True,
-    type=int,
-    help="Maximum number of evidence rows to return.",
-)
-@click.option(
-    "--graph",
-    default=None,
-    help="Graph ID (defaults to the active library).",
+    type=click.IntRange(min=1),
+    help="Maximum number of evidence rows to return (minimum 1).",
 )
 @click.pass_context
-def evidence(ctx: click.Context, concept_a: str, concept_b: str, limit: int, graph: str | None) -> None:
+def evidence(ctx: click.Context, concept_a: str, concept_b: str, limit: int) -> None:
     """Find evidence linking two concepts via relation edges.
 
     Resolves CONCEPT_A and CONCEPT_B by name or family ID, then queries
@@ -108,10 +106,27 @@ def evidence(ctx: click.Context, concept_a: str, concept_b: str, limit: int, gra
     root_params = ctx.parent.params if ctx.parent else {}
     config_path = root_params.get("config", "service_config.json")
     config = obj.load_config(config_path)
-    graph_id = obj.get_active_graph(graph)
+    graph_id = obj.get_active_graph()
 
-    # Acquire storage and run the query.
+    # Acquire storage and resolve both concepts by name / family ID.
     with obj.get_storage(graph_id) as storage:
+        a_id = resolve_concept_id(storage, concept_a)
+        if a_id is None:
+            out.error(
+                f"Concept not found: {concept_a}",
+                hint="Use 'deep-dream concept search <query>' to find concepts.",
+                code=NOT_FOUND,
+            )
+            return  # unreachable
+        b_id = resolve_concept_id(storage, concept_b)
+        if b_id is None:
+            out.error(
+                f"Concept not found: {concept_b}",
+                hint="Use 'deep-dream concept search <query>' to find concepts.",
+                code=NOT_FOUND,
+            )
+            return  # unreachable
+
         rows = relation_evidence(storage, concept_a, concept_b, limit=limit)
 
     data = {

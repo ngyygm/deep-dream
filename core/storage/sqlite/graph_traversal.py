@@ -11,7 +11,17 @@ logger = logging.getLogger(__name__)
 
 
 def _enrich_names(conn: sqlite3.Connection, results: List[dict]) -> List[dict]:
-    """Batch-resolve entity names for neighbor results."""
+    """Batch-resolve entity names and RELATES relation content for neighbors.
+
+    For ``RELATES`` edges we additionally look up the canonical NL predicate
+    that connects the starting concept to this neighbor, by joining
+    ``relation_families`` on the (source, neighbor) endpoint pair (in either
+    direction). When several relation families connect the same pair we pick
+    the most recently seen one deterministically. ``relation_content`` carries
+    the predicate text; ``relation_name`` mirrors it for display. Each neighbor
+    is also tagged with ``relation_subject_is_self`` (True when the starting
+    concept is the relation's subject).
+    """
     if not results:
         return results
     fids = [r["family_id"] for r in results]
@@ -25,6 +35,36 @@ def _enrich_names(conn: sqlite3.Connection, results: List[dict]) -> List[dict]:
     name_map = {r[0]: r[1] for r in rows}
     for r in results:
         r["name"] = name_map.get(r["family_id"], "")
+
+    # Enrich RELATES edges with the NL predicate that links source <-> neighbor.
+    relates = [r for r in results
+               if r.get("edge_type") == "RELATES" and r.get("source_family_id")]
+    if relates:
+        for r in relates:
+            source_fid = r["source_family_id"]
+            neighbor_fid = r["family_id"]
+            # Pick the most recently seen relation family linking the pair
+            # (either direction). last_seen_at is nullable, so fall back to
+            # created_at, then relation_family_id for a stable tiebreak.
+            row = conn.execute(
+                """
+                SELECT rf.canonical_content,
+                       rf.subject_entity_family_id,
+                       rf.object_entity_family_id
+                FROM relation_families rf
+                WHERE (rf.subject_entity_family_id = :a AND rf.object_entity_family_id = :b)
+                   OR (rf.subject_entity_family_id = :b AND rf.object_entity_family_id = :a)
+                ORDER BY COALESCE(rf.last_seen_at, rf.created_at) DESC,
+                         rf.relation_family_id
+                LIMIT 1
+                """,
+                {"a": source_fid, "b": neighbor_fid},
+            ).fetchone()
+            if row is not None:
+                content = row[0] or ""
+                r["relation_content"] = content
+                r["relation_name"] = content
+                r["relation_subject_is_self"] = (row[1] == source_fid)
     return results
 
 
@@ -89,11 +129,16 @@ def get_concept_neighbors(conn: sqlite3.Connection, family_id: str,
                     continue
                 visited.add(neighbor_fid)
                 next_frontier.append(neighbor_fid)
-                results.append({
+                result_entry = {
                     "edge_type": et,
                     "family_id": neighbor_fid,
                     "depth": current_depth,
-                })
+                }
+                # Carry the originating concept family_id so RELATES edges can
+                # later be enriched with their NL predicate.
+                if et == "RELATES":
+                    result_entry["source_family_id"] = family_id
+                results.append(result_entry)
                 if len(results) >= max_results:
                     break
             if len(results) >= max_results:

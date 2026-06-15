@@ -15,7 +15,7 @@ from typing import Any, Dict
 import click
 
 from ._ctx import CliContext
-from ._exit_codes import ARGS
+from ._exit_codes import ARGS, ERROR
 from ._output import OutputManager
 
 
@@ -103,15 +103,11 @@ def _extract_summary(result: Dict[str, Any]) -> Dict[str, Any]:
     help="File encoding.",
 )
 @click.option(
-    "--graph",
-    default=None,
-    help="Graph ID [default: library].",
-)
-@click.option(
     "-v",
     "--verbose",
     is_flag=True,
-    help="Show processing details.",
+    help="Show step-by-step processing reports and detailed logs "
+    "(suppresses the default step reports when omitted).",
 )
 @click.pass_context
 def remember(
@@ -120,7 +116,6 @@ def remember(
     text: str | None,
     source: str | None,
     encoding: str,
-    graph: str | None,
     verbose: bool,
 ) -> None:
     """Ingest text or a file into the concept graph.
@@ -147,10 +142,18 @@ def remember(
         )
         return  # unreachable; error raises SystemExit
 
+    if file_path and text is not None:
+        out.error(
+            "Provide exactly one of --file or --text, not both.",
+            hint="Example: deep-dream remember --file notes.md",
+            code=ARGS,
+        )
+        return  # unreachable; error raises SystemExit
+
     # ------------------------------------------------------------------
     # Resolve graph
     # ------------------------------------------------------------------
-    graph_id = cli_ctx.get_active_graph(graph)
+    graph_id = cli_ctx.get_active_graph()
 
     # ------------------------------------------------------------------
     # Load text
@@ -160,9 +163,29 @@ def remember(
         source_document = source_label
     else:
         fp = Path(file_path)
-        text = fp.read_text(encoding=encoding)
+        try:
+            text = fp.read_text(encoding=encoding)
+        except (UnicodeDecodeError, LookupError) as exc:
+            out.error(
+                f"Could not decode {fp.name} with {encoding}: {exc}",
+                hint="Try --encoding gbk or --encoding latin-1.",
+                code=ARGS,
+            )
+            return  # unreachable; error raises SystemExit
         source_label = source or fp.name
         source_document = str(fp.resolve())
+
+    # ------------------------------------------------------------------
+    # Pre-flight: reject empty / whitespace-only text before loading the
+    # embedding model (keeps this sub-second).
+    # ------------------------------------------------------------------
+    if text is not None and not text.strip():
+        out.error(
+            "Text is empty or whitespace-only.",
+            hint="Provide non-empty content via --text or a non-empty file.",
+            code=ARGS,
+        )
+        return  # unreachable; error raises SystemExit
 
     # ------------------------------------------------------------------
     # Run pipeline
@@ -170,13 +193,26 @@ def remember(
     registry = cli_ctx.get_registry()
     processor = registry.get_processor(graph_id)
 
+    def _run() -> Dict[str, Any]:
+        """Invoke the ingestion pipeline, surfacing failures cleanly."""
+        try:
+            return processor.remember_text(
+                text,
+                doc_name=source_label,
+                verbose=verbose,
+                verbose_steps=verbose,
+                source_document=source_document,
+            )
+        except Exception as exc:  # noqa: BLE001 - surface one-line message
+            out.error(
+                f"Ingestion failed: {type(exc).__name__}: {exc}",
+                hint="Check the server log for details; verify API key and endpoint.",
+                code=ERROR,
+            )
+            raise SystemExit(ERROR)  # unreachable; out.error already raised
+
     if out.is_json:
-        result = processor.remember_text(
-            text,
-            doc_name=source_label,
-            verbose=verbose,
-            source_document=source_document,
-        )
+        result = _run()
         out.result(
             {"result": result},
             meta={"graph_id": graph_id},
@@ -185,12 +221,7 @@ def remember(
 
     # Rich / plain-text mode
     with out.spinner(f"Remembering {source_label}..."):
-        result = processor.remember_text(
-            text,
-            doc_name=source_label,
-            verbose=verbose,
-            source_document=source_document,
-        )
+        result = _run()
 
     # ------------------------------------------------------------------
     # Display summary

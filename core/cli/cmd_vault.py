@@ -34,17 +34,6 @@ from ._output import OutputManager
 
 
 # ------------------------------------------------------------------
-# Shared option: --graph
-# ------------------------------------------------------------------
-
-_graph_option = click.option(
-    "--graph",
-    default=None,
-    help="Graph ID (defaults to the active library).",
-)
-
-
-# ------------------------------------------------------------------
 # Click group
 # ------------------------------------------------------------------
 
@@ -69,13 +58,11 @@ def vault() -> None:
     default=False,
     help="Re-index files even if content hash is unchanged.",
 )
-@_graph_option
 @click.pass_context
 def index(
     ctx: click.Context,
     path: str,
     force: bool,
-    graph: Optional[str],
 ) -> None:
     """Index a Markdown/Obsidian vault directory or single file.
 
@@ -91,7 +78,7 @@ def index(
     """
     obj: CliContext = ctx.obj
     out = OutputManager(ctx)
-    graph_id = obj.get_active_graph(graph)
+    graph_id = obj.get_active_graph()
 
     resolved = str(Path(path).resolve())
 
@@ -115,15 +102,18 @@ def index(
 
     files_scanned = result.get("files", 0)
     files_indexed = result.get("indexed", 0)
+    # Older indexers fold "unchanged" into "indexed"; tolerate a missing key.
+    files_unchanged = result.get("unchanged", 0)
     errors = result.get("errors", 0)
-    episodes_created = result.get("episodes", 0)
+    error_details = result.get("error_details", []) or []
 
     data = {
         "path": resolved,
         "files_scanned": files_scanned,
         "files_indexed": files_indexed,
-        "episodes_created": episodes_created,
+        "files_unchanged": files_unchanged,
         "errors": errors,
+        "error_details": error_details,
     }
 
     # ----------------------------------------------------------
@@ -146,9 +136,8 @@ def index(
     summary_lines = [
         f"Files scanned:   {files_scanned}",
         f"Files indexed:   {files_indexed}",
+        f"Unchanged:       {files_unchanged}",
     ]
-    if episodes_created:
-        summary_lines.append(f"Episodes created: {episodes_created}")
     if errors:
         summary_lines.append(f"Errors:           {errors}")
 
@@ -161,8 +150,17 @@ def index(
         out.console.print(
             f"[bold yellow]![/bold yellow] {errors} file(s) could not be indexed."
         )
+        for entry in error_details:
+            file_name = _rich_escape(str(entry.get("file", "")))
+            reason = _rich_escape(str(entry.get("reason", "")))
+            out.console.print(
+                f"  [dim]{file_name}[/dim] — [red]{reason}[/red]"
+            )
 
-    out.success(f"Indexed {files_indexed}/{files_scanned} files from {path}")
+    out.success(
+        f"Indexed {files_indexed}, unchanged {files_unchanged}, "
+        f"of {files_scanned} files from {path}"
+    )
 
 
 # ------------------------------------------------------------------
@@ -170,9 +168,8 @@ def index(
 # ------------------------------------------------------------------
 
 @vault.command()
-@_graph_option
 @click.pass_context
-def tree(ctx: click.Context, graph: Optional[str]) -> None:
+def tree(ctx: click.Context) -> None:
     """Show indexed vault files as a directory tree.
 
     Queries all indexed documents grouped by ``vault_root`` and renders
@@ -181,11 +178,11 @@ def tree(ctx: click.Context, graph: Optional[str]) -> None:
     \b
     Examples:
       deep-dream vault tree
-      deep-dream vault tree --json
+      deep-dream --json vault tree
     """
     obj: CliContext = ctx.obj
     out = OutputManager(ctx)
-    graph_id = obj.get_active_graph(graph)
+    graph_id = obj.get_active_graph()
 
     with obj.get_storage(graph_id) as storage:
         rows = read_sql(
@@ -287,9 +284,9 @@ def tree(ctx: click.Context, graph: Optional[str]) -> None:
     )
 
     for vault_root, docs in sorted(vaults.items()):
-        vault_label = Path(vault_root).name or vault_root
+        vault_label = _vault_root_label(vault_root)
         vault_branch = root_tree.add(
-            f"[bold cyan]{vault_label}[/bold cyan] "
+            f"[bold cyan]{_rich_escape(vault_label)}[/bold cyan] "
             f"[dim]({len(docs)} docs)[/dim]"
         )
 
@@ -327,6 +324,27 @@ def tree(ctx: click.Context, graph: Optional[str]) -> None:
 # Tree rendering helper
 # ------------------------------------------------------------------
 
+def _vault_root_label(vault_root: str) -> str:
+    """Extract a display label from a vault_root path string.
+
+    Uses separator-aware stripping so a Windows-style path string stored on a
+    POSIX host (``C:\\Users\\me\\vault``) yields ``vault`` rather than the whole
+    raw string that ``pathlib.Path(...).name`` would return.
+    """
+    if not vault_root:
+        return vault_root
+    # Strip trailing separators (both POSIX and Windows) then split on the last
+    # separator of either kind.
+    stripped = vault_root.rstrip("/\\")
+    if not stripped:
+        return vault_root
+    for sep in ("\\", "/"):
+        idx = stripped.rfind(sep)
+        if idx != -1:
+            return stripped[idx + 1:]
+    return stripped
+
+
 def _render_nested_tree(parent: Any, node: Any) -> None:
     """Recursively render a nested dict into a Rich Tree.
 
@@ -346,15 +364,15 @@ def _render_nested_tree(parent: Any, node: Any) -> None:
 
     # Directories first, sorted alphabetically
     for name, subtree in sorted(dirs, key=lambda x: x[0].lower()):
-        dir_branch = parent.add(f"[bold]{name}/[/bold]")
+        dir_branch = parent.add(f"[bold]{_rich_escape(name)}/[/bold]")
         _render_nested_tree(dir_branch, subtree)
 
     # Files next, sorted alphabetically
     for name, doc_row in sorted(files, key=lambda x: x[0].lower()):
         title = ""
         if isinstance(doc_row, dict):
-            title = doc_row.get("title", "")
-        label = name
+            title = doc_row.get("title", "") or ""
+        label = _rich_escape(name)
         if title and title != Path(name).stem:
-            label = f"{name} [dim]- {title}[/dim]"
+            label = f"{_rich_escape(name)} [dim]- {_rich_escape(title)}[/dim]"
         parent.add(label)

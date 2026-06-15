@@ -114,3 +114,20 @@ Gemma4-*
 
 # Migration test data
 graph_migrated*/
+
+# 临时脚本/测试目录（stray backfill / e2e scratch），不提交
+tmp/
+# 根目录散落的 backfill 脚本（规范位置应为 core/scripts/）
+/backfill_embeddings.py
+
+# 库数据库文件（本地测试数据）—— library/ 已整体忽略，此处显式兜底
+library/*.db
+library/*.db-journal
+library/*.db-shm
+library/*.db-wal
+
+# 设计审计报告与临时分析产物（artifacts，非源码）
+docs/audit/
+docs/audit_*/
+docs/report/
+docs/reports/

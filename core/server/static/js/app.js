@@ -109,8 +109,6 @@ class DeepDreamApi {
 
   // Graphs
   listGraphs() { return this.get('/api/v1/graphs'); }
-  createGraph(graphId) { return this.post('/api/v1/graphs', { graph_id: graphId }); }
-  deleteGraph(graphId) { return this.delete(`/api/v1/graphs/${encodeURIComponent(graphId)}`); }
   clearGraph(graphId) { return this.post(`/api/v1/graphs/${encodeURIComponent(graphId)}/clear`, {}); }
   findStats(graphId = 'default') {
     return this.get(`/api/v1/find/stats?graph_id=${encodeURIComponent(graphId)}`);
@@ -725,19 +723,7 @@ async function loadGraphSelector() {
     if (!sel) return;
     sel.innerHTML = graphs.map(g => `<option value="${escapeHtml(g)}" ${g === state.currentGraphId ? 'selected' : ''}>${escapeHtml(g)}</option>`).join('');
     if (!graphs.includes(state.currentGraphId)) sel.innerHTML = `<option value="${escapeHtml(state.currentGraphId)}" selected>${escapeHtml(state.currentGraphId)}</option>` + sel.innerHTML;
-    const delBtn = document.getElementById('graph-delete-btn');
-    if (delBtn) { delBtn.style.display = graphs.length > 1 ? '' : 'none'; if (window.lucide) lucide.createIcons(); }
   } catch {}
-}
-
-async function deleteCurrentGraph() {
-  const graphId = state.currentGraphId;
-  const graphs = Array.from(document.getElementById('graph-selector')?.options || []).map(o => o.value);
-  if (graphs.length <= 1) { showToast(t('dashboard.deleteGraphFailed') + ': ' + t('common.required'), 'warning'); return; }
-  const confirmed = await showConfirm({ title: t('dashboard.deleteGraph'), message: t('dashboard.deleteGraphConfirm', { name: graphId }), confirmLabel: t('dashboard.deleteGraph'), cancelLabel: t('common.cancel'), destructive: true });
-  if (!confirmed) return;
-  try { await state.api.deleteGraph(graphId); showToast(t('dashboard.deleteGraphSuccess', { name: graphId }), 'success'); setGraphId(graphs.filter(g => g !== graphId)[0] || 'default'); loadGraphSelector(); }
-  catch (e) { showToast(t('dashboard.deleteGraphFailed') + `: ${e.message || e}`, 'error'); }
 }
 
 async function clearCurrentGraph() {
@@ -759,8 +745,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (themeBtn) themeBtn.addEventListener('click', toggleTheme);
   const sel = document.getElementById('graph-selector');
   if (sel) { sel.value = state.currentGraphId; sel.addEventListener('change', () => setGraphId(sel.value)); }
-  const graphDelBtn = document.getElementById('graph-delete-btn');
-  if (graphDelBtn) graphDelBtn.addEventListener('click', deleteCurrentGraph);
   const graphClearBtn = document.getElementById('graph-clear-btn');
   if (graphClearBtn) graphClearBtn.addEventListener('click', clearCurrentGraph);
   window.addEventListener('hashchange', handleRoute);

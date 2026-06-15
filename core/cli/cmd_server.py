@@ -244,7 +244,7 @@ def server() -> None:
     "--verbose",
     is_flag=True,
     default=False,
-    help="Enable verbose server logging.",
+    help="Enable Flask debug mode (interactive debugger + auto-reload).",
 )
 @click.pass_context
 def start(ctx: click.Context, host: Optional[str], port: Optional[int], detach: bool, verbose: bool) -> None:
@@ -417,11 +417,17 @@ def stop(ctx: click.Context, yes: bool) -> None:
     pid = _read_pid(pid_path)
 
     if pid is None:
-        out.error(
-            "No running server found (PID file missing).",
-            hint=f"Expected PID file at: {pid_path}",
-            code=ERROR,
-        )
+        # Idempotent: nothing to stop, exit 0 (consistent with `status`).
+        if out.is_json:
+            from core.cli._output import json_result
+
+            payload = json_result(
+                "server stop",
+                {"pid": None, "killed": False, "running": False},
+            )
+            click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        else:
+            out.success("No running server.")
         return
 
     meta = _read_pid_metadata(pid_path)
@@ -429,13 +435,19 @@ def stop(ctx: click.Context, yes: bool) -> None:
     display_port = meta.get("port", "unknown")
 
     if not _is_process_running(pid):
-        # Stale PID file -- clean it up.
+        # Stale PID file -- clean it up. Idempotent exit 0 (consistent
+        # with `status`, which treats a dead process as not-running).
         _remove_pid_file(pid_path)
-        out.error(
-            f"Server process (PID {pid}) is not running.",
-            hint="Stale PID file removed.",
-            code=ERROR,
-        )
+        if out.is_json:
+            from core.cli._output import json_result
+
+            payload = json_result(
+                "server stop",
+                {"pid": pid, "killed": False, "running": False, "stale_pid_removed": True},
+            )
+            click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        else:
+            out.success(f"No running server (stale PID {pid} file removed).")
         return
 
     # Confirmation.
@@ -515,7 +527,10 @@ def status(ctx: click.Context) -> None:
             "log_file": log_file,
         }
         if out.is_json:
-            click.echo(json.dumps(data, ensure_ascii=False, indent=2))
+            from core.cli._output import json_result
+
+            payload = json_result("server status", data)
+            click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
         else:
             click.echo("Server is not running.", err=True)
             click.echo(f"  PID file: {pid_path} (not found)", err=True)
@@ -567,8 +582,8 @@ def status(ctx: click.Context) -> None:
     "-n",
     default=50,
     show_default=True,
-    type=int,
-    help="Number of recent lines to show.",
+    type=click.IntRange(min=1),
+    help="Number of recent lines to show (must be >= 1).",
 )
 @click.pass_context
 def logs(ctx: click.Context, lines: int) -> None:
@@ -581,7 +596,18 @@ def logs(ctx: click.Context, lines: int) -> None:
 
     if not log_path.is_file():
         if out.is_json:
-            click.echo(json.dumps({"success": True, "lines": [], "log_file": str(log_path)}))
+            from core.cli._output import json_result
+
+            payload = json_result(
+                "server logs",
+                {
+                    "log_file": str(log_path),
+                    "total_lines": 0,
+                    "showing": 0,
+                    "lines": [],
+                },
+            )
+            click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
         else:
             click.echo(f"No log file found at: {log_path}", err=True)
             click.echo("The server may not have been started with --detach.", err=True)
@@ -596,13 +622,18 @@ def logs(ctx: click.Context, lines: int) -> None:
     tail = all_lines[-lines:] if lines < len(all_lines) else all_lines
 
     if out.is_json:
-        click.echo(json.dumps({
-            "success": True,
-            "log_file": str(log_path),
-            "total_lines": len(all_lines),
-            "showing": len(tail),
-            "lines": tail,
-        }, ensure_ascii=False))
+        from core.cli._output import json_result
+
+        payload = json_result(
+            "server logs",
+            {
+                "log_file": str(log_path),
+                "total_lines": len(all_lines),
+                "showing": len(tail),
+                "lines": tail,
+            },
+        )
+        click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
     else:
         if not tail:
             click.echo("Log file is empty.", err=True)

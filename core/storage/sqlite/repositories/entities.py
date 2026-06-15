@@ -1,7 +1,7 @@
 """Entity families, observations, and mentions repository."""
 
 import logging
-from typing import Optional
+from typing import Dict, Iterable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -146,3 +146,25 @@ def list_entity_families(conn, limit: int = 100, offset: int = 0) -> list:
         (limit, offset),
     ).fetchall()
     return [dict(zip(cols, r)) for r in rows]
+
+
+def get_entity_family_names(conn, family_ids: Iterable[str]) -> Dict[str, str]:
+    """Batch-resolve entity family ids to canonical_name.
+
+    Mirrors the manager's ``_entity_names_by_family_ids`` but as a pure repo
+    function (no manager state). Returns ``{fid: name_or_""}`` and ``{}`` for
+    empty input. Unknown ids are simply absent from the result.
+    """
+    out: Dict[str, str] = {}
+    ids = [fid for fid in (family_ids or []) if fid]
+    if not ids:
+        return out
+    placeholders = ",".join("?" for _ in ids)
+    rows = conn.execute(
+        f"SELECT entity_family_id, canonical_name FROM entity_families "
+        f"WHERE entity_family_id IN ({placeholders})",
+        ids,
+    ).fetchall()
+    for fid, name in rows:
+        out[fid] = name or ""
+    return out

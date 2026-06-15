@@ -32,7 +32,7 @@ Minimum required workflow:
 
 1. Run `deep-dream doctor` or `python -m core.cli doctor` from the likely
    Deep-Dream project/install directory.
-2. If the CLI is not available, try the local API health/graphs endpoints.
+2. If the CLI is not available, try the local API `/health` endpoint.
 3. For content questions, run `deep-dream docs search "<query>"` for direct
    document evidence. For abstract/fuzzy questions, think of 3-8 likely
    related terms from the user's wording and domain context, then pass them to
@@ -44,8 +44,8 @@ Minimum required workflow:
    episodes, concepts, semantic search, relations, SQL, API, or fallback.
 
 Never silently skip Deep-Dream after this skill is invoked. If discovery fails,
-report the failure and ask for a config path, storage root, graph id, or document
-root.
+report the failure and ask for a config path, storage root, or document root.
+The graph id is always `library`.
 
 ## Operating Rules
 
@@ -56,7 +56,7 @@ root.
 - Prefer document paths and line/span evidence in final answers. Do not cite a concept summary as final evidence when raw text is available.
 - Do not infer an event from co-occurrence alone. Two concepts in one episode may indicate mention, narration, contrast, or indirect context.
 - Prefer the `deep-dream` CLI for agent work. Use read-only SQL for inspection. Use CLI/API service paths for writes, indexing, deletion, repair, and task control.
-- Never assume the graph id is `default`. Discover graphs first unless the user specified one.
+- The system runs a single library graph (`library`). There is no multi-tenancy: `GraphRegistry.normalize_graph_id` always returns `library`, so any `--graph` flag or `graph_id` value is accepted but is a no-op.
 
 ## Mental Model
 
@@ -68,7 +68,7 @@ Concepts are cross-episode semantic objects: entities, relations, document nodes
 
 ## Quick Workflow
 
-1. Identify the likely graph and document set.
+1. Identify the likely document set (the graph is always `library`).
 2. Run `deep-dream doctor` when system state is unknown.
 3. Search files directly with `deep-dream docs search`, `deep-dream docs grep`, `rg`, or read known paths.
 4. If raw text answers the task, answer from raw text.
@@ -87,18 +87,18 @@ Use the CLI first when available:
 deep-dream doctor
 deep-dream graph list
 deep-dream docs roots
-deep-dream docs list --graph TARGET_GRAPH
-deep-dream docs search "keyword" --graph TARGET_GRAPH
-deep-dream docs grep "regex" --graph TARGET_GRAPH
-deep-dream docs map "C:\path\to\file.md" --graph TARGET_GRAPH
-deep-dream episode from-file "C:\path\to\file.md" --line 120 --graph TARGET_GRAPH
-deep-dream episode concepts EPISODE_VERSION_ID --graph TARGET_GRAPH
-deep-dream concept search "query" --semantic --graph TARGET_GRAPH
-deep-dream concept trace FAMILY_ID --graph TARGET_GRAPH
-deep-dream concept neighbors FAMILY_ID --depth 2 --graph TARGET_GRAPH
-deep-dream relation evidence CONCEPT_A CONCEPT_B --graph TARGET_GRAPH
-deep-dream explore "abstract question or theme" --terms "agent-generated,related,terms" --graph TARGET_GRAPH
-deep-dream sql --query "SELECT * FROM v_document_files LIMIT 20" --graph TARGET_GRAPH
+deep-dream docs list
+deep-dream docs search "keyword"
+deep-dream docs grep "regex"
+deep-dream docs map "C:\path\to\file.md"
+deep-dream episode from-file "C:\path\to\file.md" --line 120
+deep-dream episode concepts EPISODE_VERSION_ID
+deep-dream concept search "query" --semantic
+deep-dream concept trace FAMILY_ID
+deep-dream concept neighbors FAMILY_ID --depth 2
+deep-dream relation evidence CONCEPT_A CONCEPT_B
+deep-dream explore "abstract question or theme" --terms "agent-generated,related,terms"
+deep-dream sql --query "SELECT * FROM v_document_files LIMIT 20"
 ```
 
 If the command is not installed, try `python -m core.cli ...` from the
@@ -125,23 +125,13 @@ def api(method, path, body=None):
     return json.loads(urllib.request.urlopen(req).read().decode("utf-8"))
 ```
 
-Discover graphs:
-
-```python
-for graph in api("GET", "/graphs")["data"]["graphs_info"]:
-    print(
-        graph["graph_id"],
-        graph.get("name", ""),
-        graph.get("document_count"),
-        graph.get("entity_count"),
-    )
-```
+The system runs a single library graph; the graph id is always `library`.
 
 Run read-only SQL:
 
 ```python
 rows = api("POST", "/agent/sql", {
-    "graph_id": "TARGET_GRAPH",
+    "graph_id": "library",
     "sql": "SELECT * FROM v_document_files ORDER BY processed_time DESC LIMIT 20",
     "params": {},
     "limit": 200,
@@ -321,15 +311,15 @@ If `missing_windows > 0`, graph extraction may be incomplete. Prefer raw files a
 Use semantic search as candidate recall, then verify:
 
 ```powershell
-deep-dream explore "abstract theme, scene, or fuzzy description" --graph TARGET_GRAPH
-deep-dream concept search "abstract theme" --semantic --graph TARGET_GRAPH
+deep-dream explore "abstract theme, scene, or fuzzy description"
+deep-dream concept search "abstract theme" --semantic
 ```
 
 API fallback:
 
 ```python
 hits = api("POST", "/agent/semantic-search", {
-    "graph_id": "TARGET_GRAPH",
+    "graph_id": "library",
     "query": "abstract theme, scene, or fuzzy description",
     "role": "entity",
     "top_k": 30,
@@ -363,7 +353,7 @@ Use CLI/API service paths, not direct DB writes:
 - `GET /api/v1/remember/tasks`: inspect ingestion tasks.
 - `GET /api/v1/documents`: list indexed documents.
 - `GET /api/v1/documents/<id>/content`: read indexed Markdown content.
-- `POST /api/v1/documents/<id>/repair?graph_id=<graph_id>`: repair incomplete extraction.
+- `POST /api/v1/documents/<id>/repair?graph_id=library`: repair incomplete extraction (`graph_id` is accepted but ignored; the system always uses `library`).
 - `DELETE /api/v1/documents/<id>`: delete a document version.
 
 When indexing external Markdown/vault files, preserve their local paths. Deep-Dream should map to the files rather than forcing all notes into one managed folder.

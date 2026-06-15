@@ -28,7 +28,7 @@ from rich.panel import Panel as _Panel
 
 from ._ctx import CliContext
 from ._exit_codes import ERROR, NOT_FOUND, OK
-from ._helpers import resolve_concept_id
+from ._helpers import compact_text, resolve_concept_id
 from ._output import OutputManager, format_confidence, format_timestamp
 
 
@@ -53,6 +53,18 @@ def _format_line_range(line_start: Any, line_end: Any) -> str:
     if s == e:
         return str(s)
     return f"{s}-{e}"
+
+
+def _compact_predicate(text: Any, max_chars: int = 50) -> str:
+    """Collapse a relation predicate to a single compact line for table cells.
+
+    ``out.table`` already escapes Rich markup per cell, so the value returned
+    here must be the *raw* (un-escaped) string.
+    """
+    if not text:
+        return ""
+    # compact_text collapses whitespace and truncates with ellipsis.
+    return compact_text(str(text), max_chars=max_chars)
 
 
 # ------------------------------------------------------------------
@@ -136,6 +148,14 @@ def search(
     with obj.get_storage(graph_id) as storage:
         if mode == "name":
             # Direct SQL LIKE search on entity canonical_name — works without embeddings or FTS.
+            # Name mode only matches entities; surface a note when the user
+            # asked for a different role so the ignored --role is not silent.
+            if role and role != "entity":
+                if not out.is_quiet and not out.is_json:
+                    out.console.print(
+                        f"[dim]Note: name mode only searches entities; "
+                        f"--role '{role}' has no effect here.[/dim]"
+                    )
             conn = storage._conn()
             like_pattern = f"%{_escape_like(query)}%"
             rows = conn.execute(
@@ -319,7 +339,15 @@ def get(ctx: click.Context, family_id: str) -> None:
     graph_id = _get_graph_id(ctx)
 
     with obj.get_storage(graph_id) as storage:
-        concept_data = storage.get_concept_by_family_id(family_id)
+        fid = resolve_concept_id(storage, family_id)
+        if fid is None:
+            out.error(
+                f"Concept not found: {family_id}",
+                hint="Use 'deep-dream concept search <query>' to find concepts.",
+                code=NOT_FOUND,
+            )
+            return  # unreachable
+        concept_data = storage.get_concept_by_family_id(fid)
         if concept_data is None:
             out.error(
                 f"Concept not found: {family_id}",
@@ -379,7 +407,27 @@ def get(ctx: click.Context, family_id: str) -> None:
     panel_lines.append(f"[bold]Family ID:[/bold] {_rich_escape(concept_data.get('family_id', ''))}")
     panel_lines.append(f"[bold]Name:[/bold]      {_rich_escape(name_val)}")
     panel_lines.append(f"[bold]Role:[/bold]      {_rich_escape(concept_data.get('role', ''))}")
-    panel_lines.append(f"[bold]Confidence:[/bold] {format_confidence(concept_data.get('confidence'))}")
+    confidence = concept_data.get("confidence")
+    if confidence is not None:
+        panel_lines.append(
+            f"[bold]Confidence:[/bold] {format_confidence(confidence)}"
+        )
+
+    # Surface relation endpoints (the unified Concept DTO carries them as
+    # subject_family_id/object_family_id; the legacy dict carries the
+    # resolved endpoint names entity1_name/entity2_name). Show both when present.
+    role = concept_data.get("role", "")
+    if role == "relation":
+        e1_name = concept_data.get("entity1_name", "")
+        e2_name = concept_data.get("entity2_name", "")
+        e1_fid = (concept_data.get("entity1_family_id")
+                  or concept_data.get("subject_family_id") or "")
+        e2_fid = (concept_data.get("entity2_family_id")
+                  or concept_data.get("object_family_id") or "")
+        panel_lines.append(
+            f"[bold]Endpoints:[/bold] {_rich_escape(e1_name or e1_fid)} "
+            f"↔ {_rich_escape(e2_name or e2_fid)}"
+        )
 
     content = concept_data.get("content", "")
     if content:
@@ -403,8 +451,13 @@ def get(ctx: click.Context, family_id: str) -> None:
         rows = []
         for r in relations:
             target_name = r.get("name") or r.get("target_name") or r.get("family_id", "")
+            # Prefer the actual NL predicate for RELATES edges; fall back to
+            # the raw edge_type (RELATES/MENTIONS/ASSERTS) otherwise.
+            predicate = _compact_predicate(
+                r.get("relation_content") or r.get("relation_name")
+            ) or r.get("edge_type", "")
             rows.append([
-                r.get("relation_name", r.get("edge_type", "")),
+                predicate,
                 target_name,
                 str(r.get("depth", "")),
             ])
@@ -430,13 +483,8 @@ def get(ctx: click.Context, family_id: str) -> None:
 
 @concept.command()
 @click.argument("family_id")
-@click.option(
-    "--time-point",
-    default=None,
-    help="ISO timestamp to trace at a specific point in time.",
-)
 @click.pass_context
-def trace(ctx: click.Context, family_id: str, time_point: Optional[str]) -> None:
+def trace(ctx: click.Context, family_id: str) -> None:
     """Trace concept provenance back to source episodes."""
     obj: CliContext = ctx.obj
     out = OutputManager(ctx)
@@ -445,21 +493,19 @@ def trace(ctx: click.Context, family_id: str, time_point: Optional[str]) -> None
     graph_id = _get_graph_id(ctx)
 
     with obj.get_storage(graph_id) as storage:
-        # Validate concept exists
-        concept_data = storage.get_concept_by_family_id(family_id)
-        if concept_data is None:
+        # Resolve the concept (entity-preferred) before querying provenance.
+        fid = resolve_concept_id(storage, family_id)
+        if fid is None:
             out.error(
                 f"Concept not found: {family_id}",
                 hint="Use 'deep-dream concept search <query>' to find concepts.",
                 code=NOT_FOUND,
             )
             return  # unreachable
-        provenance = storage.get_concept_provenance(
-            family_id, time_point=time_point,
-        )
+        provenance = storage.get_concept_provenance(fid)
 
     data = {
-        "family_id": family_id,
+        "family_id": fid,
         "provenance": provenance,
     }
 
@@ -473,7 +519,7 @@ def trace(ctx: click.Context, family_id: str, time_point: Optional[str]) -> None
         return
 
     if not provenance:
-        out.console.print(f"[dim]No provenance found for {family_id}.[/dim]")
+        out.console.print(f"[dim]No provenance found for {fid}.[/dim]")
         return
 
     # Show provenance details.
@@ -486,7 +532,7 @@ def trace(ctx: click.Context, family_id: str, time_point: Optional[str]) -> None
                 lines.append(f"[bold]{_rich_escape(str(key))}:[/bold] {_rich_escape(str(value))}")
         out.console.print(_Panel(
             "\n".join(lines),
-            title=f"Provenance: {_rich_escape(family_id)}",
+            title=f"Provenance: {_rich_escape(fid)}",
         ))
 
         # If provenance has episodes, show as table.
@@ -522,7 +568,7 @@ def trace(ctx: click.Context, family_id: str, time_point: Optional[str]) -> None
                 offset,
             ])
         out.table(
-            f"Provenance: {_rich_escape(family_id)} ({len(provenance)} mention(s))",
+            f"Provenance: {_rich_escape(fid)} ({len(provenance)} mention(s))",
             columns,
             rows,
         )
@@ -618,10 +664,15 @@ def neighbors(
     columns = ("Family ID", "Name", "Relation", "Depth")
     rows = []
     for n in results:
+        # Prefer the actual NL predicate for RELATES edges; fall back to the
+        # raw edge_type (RELATES/MENTIONS/ASSERTS) otherwise.
+        predicate = _compact_predicate(
+            n.get("relation_content") or n.get("relation_name")
+        ) or n.get("edge_type", "")
         rows.append([
             n.get("family_id", ""),
             n.get("name", ""),
-            n.get("relation_name", n.get("edge_type", "")),
+            predicate,
             str(n.get("depth", "")),
         ])
     out.table(f"Neighbors of {fid} (depth={depth})", columns, rows)
@@ -684,13 +735,16 @@ def versions(ctx: click.Context, family_id: str) -> None:
         out.console.print(f"[dim]No versions found for {family_id}.[/dim]")
         return
 
-    columns = ("Version ID", "Name", "Episode", "Created")
+    columns = ("Version ID", "Name", "Content", "Changed", "Created")
     rows = []
     for v in version_list:
+        content_preview = _compact_predicate(v.get("content", ""), max_chars=60)
+        changed = "yes" if v.get("content_changed") else ""
         rows.append([
             v.get("absolute_id", v.get("version_id", "")),
             v.get("name", ""),
-            v.get("episode_id", ""),
+            content_preview,
+            changed,
             format_timestamp(v.get("processed_time")),
         ])
     out.table(f"Version History: {family_id}", columns, rows)
@@ -724,9 +778,9 @@ def mentions(
 
     with obj.get_storage(graph_id) as storage:
         mention_list: List[Dict[str, Any]] = []
-        # Validate concept exists
-        concept_data = storage.get_concept_by_family_id(family_id)
-        if concept_data is None:
+        # Resolve the concept (entity-preferred) before querying.
+        fid = resolve_concept_id(storage, family_id)
+        if fid is None:
             out.error(
                 f"Concept not found: {family_id}",
                 hint="Use 'deep-dream concept search <query>' to find concepts.",
@@ -734,18 +788,16 @@ def mentions(
             )
             return  # unreachable
         if hasattr(storage, "get_concept_mentions"):
-            mention_list = storage.get_concept_mentions(family_id)
+            mention_list = storage.get_concept_mentions(fid)
         if not mention_list:
             # Fallback: use SQL helper.
-            fid = resolve_concept_id(storage, family_id)
-            if fid:
-                from ._helpers import concept_source_evidence
-                mention_list = concept_source_evidence(
-                    storage, [fid], limit=limit,
-                )
+            from ._helpers import concept_source_evidence
+            mention_list = concept_source_evidence(
+                storage, [fid], limit=limit,
+            )
 
     data = {
-        "family_id": family_id,
+        "family_id": fid,
         "mentions": mention_list,
         "total": len(mention_list),
     }
@@ -760,13 +812,17 @@ def mentions(
         return
 
     if not mention_list:
-        out.console.print(f"[dim]No mentions found for {family_id}.[/dim]")
+        out.console.print(f"[dim]No mentions found for {fid}.[/dim]")
         return
 
     columns = ("Episode ID", "Document", "Heading", "Lines", "Excerpt")
     rows = []
     for m in mention_list:
-        excerpt = (m.get("source_text") or m.get("surface_text") or "")[:60]
+        # Collapse newlines/whitespace before truncating so the Excerpt cell
+        # stays on a single line in the table.
+        excerpt = _compact_predicate(
+            m.get("source_text") or m.get("surface_text") or "", max_chars=60,
+        )
         rows.append([
             m.get("episode_id", m.get("episode_version_id", m.get("version_id", ""))),
             m.get("title", ""),
@@ -774,7 +830,7 @@ def mentions(
             _format_line_range(m.get("line_start"), m.get("line_end")),
             excerpt,
         ])
-    out.table(f"Mentions of {family_id}", columns, rows)
+    out.table(f"Mentions of {fid}", columns, rows)
 
 
 # ------------------------------------------------------------------

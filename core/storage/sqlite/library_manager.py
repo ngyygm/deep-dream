@@ -16,13 +16,14 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 
-from ...models import Entity, Episode, Relation
+from ...models import Concept, Entity, Episode, Relation
 from ..cache import QueryCache
 from .dto_mapping import assertion_to_relation, episode_row_to_dto, observation_to_entity
 from .helpers import _encode_and_normalize, _fmt_dt, _parse_dt
 from .schema_v15 import init_schema_v15
 
 from .repositories import (
+    concepts as concept_dal,
     documents as doc_repo,
     embeddings as emb_repo,
     episodes as ep_repo,
@@ -331,14 +332,16 @@ class LibraryManager:
 
     def delete_document_version(self, document_version_id: str) -> dict:
         conn = self._conn()
-        # Get document_id
-        ver = conn.execute(
-            "SELECT document_id FROM document_versions WHERE document_version_id = ?",
-            (document_version_id,),
-        ).fetchone()
+        # Resolve to the version row accepting EITHER a document_version_id
+        # (``docver_...``) OR a document_id (``doc_...``), consistent with
+        # get_document_file_info / get_document_content.  Previously this did
+        # a strict document_version_id lookup, so deleting by document_id
+        # silently returned {"deleted": False, "reason": "not found"} even
+        # though the pre-flight (get_document_file_info) found the document.
+        ver = self._resolve_version(conn, document_version_id)
         if not ver:
             return {"deleted": False, "reason": "not found"}
-        doc_id = ver[0]
+        doc_id = ver["document_id"]
         now = _now_str()
 
         # 1. Cascade-delete episodes belonging to this document
@@ -453,10 +456,14 @@ class LibraryManager:
         # Delete document_links for this document
         conn.execute("DELETE FROM document_links WHERE from_document_id = ?", (doc_id,))
 
-        # Soft-delete document_version and document
+        # Soft-delete document_version and document.  Use the RESOLVED version's
+        # document_version_id (ver["document_version_id"]) — the input may be a
+        # document_id (``doc_...``), in which case updating WHERE document_version_id
+        # = <input> would match nothing and leave the version row 'active' while
+        # the document row was already soft-deleted (an inconsistent state).
         conn.execute(
             "UPDATE document_versions SET status = 'deleted', processed_at = ? WHERE document_version_id = ?",
-            (now, document_version_id),
+            (now, ver["document_version_id"]),
         )
         doc_repo.soft_delete_document(conn, doc_id, updated_at=now)
         conn.commit()
@@ -947,53 +954,238 @@ class LibraryManager:
     # Search
     # ------------------------------------------------------------------
 
+    def _normalize_bm25_scores(self, results: List[dict]) -> None:
+        """Invert FTS5 bm25() (negative, more-negative=more-relevant) to [0,1]."""
+        if not results:
+            return
+        scores = [r.get("score", 0) for r in results]
+        min_s, max_s = min(scores), max(scores)
+        span = max_s - min_s
+        for r in results:
+            r["_score"] = (max_s - r.get("score", 0)) / span if span else 0.5
+
     def search_concepts_by_bm25(self, query: str, role: str = None,
                                 limit: int = 20, time_point: str = None,
                                 source_document: str = None) -> List[dict]:
-        raw = search_repo.search_fts(self._conn(), query, limit=limit)
-        if raw:
-            scores = [r.get("score", 0) for r in raw]
-            min_s, max_s = min(scores), max(scores)
-            span = max_s - min_s
-            for r in raw:
-                # FTS5 bm25() returns negative values; most negative = most relevant.
-                # Invert so most relevant → 1.0.
-                r["_score"] = (max_s - r.get("score", 0)) / span if span else 0.5
-        return raw
+        """Unified concept BM25 search over episodes.
+
+        ``role``/``time_point``/``source_document`` are post-filters applied
+        after the FTS episode search (previously dropped silently). Each result
+        is lifted to a concept-shaped dict with a ``role`` so the unified model
+        (entity/relation/episode/document) behaves consistently.
+        """
+        # Fetch a wider candidate pool so post-filtering does not starve the
+        # final result set.
+        pool_limit = max(limit * 5, limit + 20)
+        conn = self._conn()
+        raw = search_repo.search_fts(conn, query, limit=pool_limit)
+        self._normalize_bm25_scores(raw)
+
+        ts = _fmt_dt(time_point) if time_point else None
+        # search_fts does not surface processed_at; resolve it once for the
+        # matched episodes so the time_point filter actually applies.
+        proc_at: Dict[str, str] = {}
+        if ts:
+            ep_ids = [r.get("episode_id") for r in raw if r.get("episode_id")]
+            if ep_ids:
+                placeholders = ",".join("?" for _ in ep_ids)
+                for eid, pa in conn.execute(
+                    f"SELECT episode_id, processed_at FROM episodes "
+                    f"WHERE episode_id IN ({placeholders})",
+                    ep_ids,
+                ).fetchall():
+                    proc_at[eid] = pa or ""
+        filtered: List[dict] = []
+        for r in raw:
+            if source_document and r.get("document_id") != source_document:
+                continue
+            if ts and proc_at.get(r.get("episode_id", ""), "") > ts:
+                continue
+            filtered.append(r)
+
+        if role in (None, "episode"):
+            out: List[dict] = []
+            for r in filtered:
+                out.append({
+                    "role": "episode",
+                    "family_id": r.get("episode_family_id") or r.get("episode_id"),
+                    "id": r.get("episode_id"),
+                    "episode_id": r.get("episode_id"),
+                    "name": r.get("name") or r.get("heading_path") or "",
+                    "heading_path": r.get("heading_path", ""),
+                    "content": r.get("source_text", "") or r.get("memory_text", ""),
+                    "source_text": r.get("source_text", ""),
+                    "document_id": r.get("document_id", ""),
+                    "_score": r.get("_score", 0.0),
+                })
+                if len(out) >= limit:
+                    break
+            return out
+
+        # role == entity / relation / document: expand each matched episode
+        # into its concepts and keep the best-scoring concept per family.
+        if role == "entity":
+            return self._expand_entities_from_episodes(filtered, limit=limit, ts=ts)
+        if role == "relation":
+            return self._expand_relations_from_episodes(filtered, limit=limit, ts=ts)
+        if role == "document":
+            seen = set()
+            out = []
+            for r in filtered:
+                did = r.get("document_id")
+                if not did or did in seen:
+                    continue
+                seen.add(did)
+                out.append({
+                    "role": "document",
+                    "family_id": did, "id": did,
+                    "document_id": did, "_score": r.get("_score", 0.0),
+                })
+                if len(out) >= limit:
+                    break
+            return out
+        # Unknown role: return raw normalized results.
+        return filtered[:limit]
+
+    def _expand_entities_from_episodes(self, episodes: List[dict],
+                                       limit: int = 20,
+                                       ts: Optional[str] = None) -> List[dict]:
+        """Return ALL active entities mentioned in each episode, dedup by family.
+
+        Previously this attached one episode's score to ONE arbitrary entity;
+        now every active entity mentioned in a matched episode is returned,
+        each carrying the episode's (normalized) BM25 score. Results are
+        deduplicated by ``entity_family_id`` keeping the best score.
+        """
+        conn = self._conn()
+        best_by_fid: Dict[str, dict] = {}
+        order: List[str] = []
+        for r in episodes:
+            ep_id = r.get("episode_id")
+            if not ep_id:
+                continue
+            score = r.get("_score", 0.0)
+            rows = conn.execute(
+                "SELECT eo.entity_id, eo.entity_family_id, eo.name, eo.content, "
+                "       ef.canonical_name, ef.canonical_content "
+                "FROM entity_observations eo "
+                "JOIN entity_families ef ON ef.entity_family_id = eo.entity_family_id "
+                "WHERE eo.episode_id = ? AND eo.status = 'active'",
+                (ep_id,),
+            ).fetchall()
+            for eo_id, fid, name, content, canon_name, canon_content in rows:
+                if ts:
+                    pass  # episode already filtered by time_point
+                existing = best_by_fid.get(fid)
+                if existing is None or score > existing.get("_score", 0.0):
+                    entry = {
+                        "role": "entity",
+                        "family_id": fid,
+                        "id": eo_id,
+                        "entity_id": eo_id,
+                        "name": canon_name or name,
+                        "content": canon_content or content,
+                        "_score": score,
+                    }
+                    best_by_fid[fid] = entry
+                    if fid not in order:
+                        order.append(fid)
+        # Preserve discovery order, best score first is already ensured by dedup.
+        out = [best_by_fid[fid] for fid in order if fid in best_by_fid]
+        out.sort(key=lambda x: -x.get("_score", 0.0))
+        return out[:limit]
+
+    def _expand_relations_from_episodes(self, episodes: List[dict],
+                                        limit: int = 20,
+                                        ts: Optional[str] = None) -> List[dict]:
+        """Return active relations asserted in each matched episode, dedup by family."""
+        conn = self._conn()
+        best_by_fid: Dict[str, dict] = {}
+        order: List[str] = []
+        for r in episodes:
+            ep_id = r.get("episode_id")
+            if not ep_id:
+                continue
+            score = r.get("_score", 0.0)
+            rows = conn.execute(
+                "SELECT ra.relation_id, ra.relation_family_id, ra.content, "
+                "       rf.subject_entity_family_id, rf.object_entity_family_id, "
+                "       rf.canonical_content "
+                "FROM relation_assertions ra "
+                "JOIN relation_families rf ON rf.relation_family_id = ra.relation_family_id "
+                "WHERE ra.episode_id = ? AND ra.status = 'active'",
+                (ep_id,),
+            ).fetchall()
+            for rid, fid, content, subj, obj, canon in rows:
+                existing = best_by_fid.get(fid)
+                if existing is None or score > existing.get("_score", 0.0):
+                    disp = self._relation_display_name(subj or "", obj or "",
+                                                       content=canon or content)
+                    entry = {
+                        "role": "relation",
+                        "family_id": fid, "id": rid, "relation_id": rid,
+                        "name": disp["name"],
+                        "entity1_name": disp["entity1_name"],
+                        "entity2_name": disp["entity2_name"],
+                        "entity1_family_id": subj or "",
+                        "entity2_family_id": obj or "",
+                        "content": canon or content,
+                        "_score": score,
+                    }
+                    best_by_fid[fid] = entry
+                    if fid not in order:
+                        order.append(fid)
+        out = [best_by_fid[fid] for fid in order if fid in best_by_fid]
+        out.sort(key=lambda x: -x.get("_score", 0.0))
+        return out[:limit]
 
     def search_entities_by_bm25(self, query: str, limit: int = 20,
                                 time_point: str = None) -> List[Entity]:
-        results = search_repo.search_fts(self._conn(), query, limit=limit)
-        # Normalize BM25 scores (FTS5 returns negative, more negative = more relevant)
-        # Invert so that most relevant → 1.0, least relevant → 0.0
-        if results:
-            scores = [r.get("score", 0) for r in results]
-            min_s, max_s = min(scores), max(scores)
-            span = max_s - min_s
-            for r in results:
-                r["_score"] = (max_s - r.get("score", 0)) / span if span else 0.5
-        entities = []
+        """Return ALL active entities mentioned in matched episodes (dedup by family)."""
+        pool_limit = max(limit * 5, limit + 20)
+        results = search_repo.search_fts(self._conn(), query, limit=pool_limit)
+        self._normalize_bm25_scores(results)
+
+        ts = _fmt_dt(time_point) if time_point else None
+        conn = self._conn()
+        entities: List[Entity] = []
+        seen_fids: Dict[str, float] = {}
         for r in results:
             ep_id = r.get("episode_id")
             if not ep_id:
                 continue
-            conn = self._conn()
-            obs = conn.execute(
+            score = r.get("_score", 0.0)
+            rows = conn.execute(
                 "SELECT eo.*, ef.canonical_name, ef.canonical_content "
                 "FROM entity_observations eo "
                 "JOIN entity_families ef ON ef.entity_family_id = eo.entity_family_id "
                 "WHERE eo.episode_id = ? AND eo.status = 'active'",
                 (ep_id,),
-            ).fetchone()
-            if obs:
-                obs = dict(obs)
-                fam = {"entity_family_id": obs["entity_family_id"],
+            ).fetchall()
+            for row in rows:
+                obs = dict(row)
+                fid = obs["entity_family_id"]
+                prev = seen_fids.get(fid)
+                if prev is not None and prev >= score:
+                    continue
+                seen_fids[fid] = score
+                fam = {"entity_family_id": fid,
                        "canonical_name": obs["canonical_name"],
                        "canonical_content": obs["canonical_content"]}
                 e = observation_to_entity(fam, obs)
-                e._score = r.get("_score", 0.0)
+                e._score = score
                 entities.append(e)
-        return entities
+        # Dedup keeping the best-scoring Entity per family.
+        best: Dict[str, Entity] = {}
+        for e in entities:
+            fid = getattr(e, "family_id", "")
+            cur = best.get(fid)
+            if cur is None or getattr(e, "_score", 0.0) > getattr(cur, "_score", 0.0):
+                best[fid] = e
+        out = list(best.values())
+        out.sort(key=lambda x: -getattr(x, "_score", 0.0))
+        return out[:limit]
+
 
     def search_relations_by_bm25(self, query: str, limit: int = 20,
                                  time_point: str = None) -> List[Relation]:
@@ -1099,6 +1291,47 @@ class LibraryManager:
                 relations.append(rel)
         return relations
 
+    def _entity_names_by_family_ids(self, family_ids: List[str]) -> Dict[str, str]:
+        """Resolve a batch of entity family ids to canonical_name (latest)."""
+        out: Dict[str, str] = {}
+        if not family_ids:
+            return out
+        conn = self._conn()
+        placeholders = ",".join("?" for _ in family_ids)
+        try:
+            rows = conn.execute(
+                f"SELECT entity_family_id, canonical_name FROM entity_families "
+                f"WHERE entity_family_id IN ({placeholders})",
+                family_ids,
+            ).fetchall()
+            for fid, name in rows:
+                out[fid] = name or ""
+        except Exception:
+            pass
+        return out
+
+    def _relation_display_name(self, subject_fid: str, object_fid: str,
+                               content: str = "",
+                               names: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+        """Build a human-readable relation name + endpoint names.
+
+        Returns {"name", "entity1_name", "entity2_name"} suitable for the
+        unified concept API so an agent can tell what a relation connects.
+        """
+        if names is None:
+            names = self._entity_names_by_family_ids(
+                [fid for fid in (subject_fid, object_fid) if fid]
+            )
+        e1 = names.get(subject_fid, "")
+        e2 = names.get(object_fid, "")
+        # Prefer an explicit content when it reads like a predicate; otherwise
+        # synthesize a compact "subject → object" label.
+        if content and len(content) <= 80:
+            label = f"{e1} {content} {e2}".strip()
+        else:
+            label = f"{e1} → {e2}".strip(" →") if (e1 or e2) else (content or "")
+        return {"name": label, "entity1_name": e1, "entity2_name": e2}
+
     def search_concepts_by_similarity(self, query_text: str, role: str = None,
                                       threshold: float = 0.3, max_results: int = 20,
                                       **kwargs) -> List[dict]:
@@ -1111,11 +1344,29 @@ class LibraryManager:
                     "role": "entity", "_score": getattr(e, "_score", 0.0),
                 })
         if role is None or role == "relation":
-            for r in self.search_relations_by_similarity(query_text, threshold, max_results):
+            rels = self.search_relations_by_similarity(query_text, threshold, max_results)
+            # Batch-resolve endpoint entity names so an agent can tell what each
+            # relation connects (previously these were all empty strings).
+            endpoint_fids = []
+            for r in rels:
+                for fid in (getattr(r, "entity1_family_id", ""),
+                            getattr(r, "entity2_family_id", "")):
+                    if fid and fid not in endpoint_fids:
+                        endpoint_fids.append(fid)
+            name_map = self._entity_names_by_family_ids(endpoint_fids)
+            for r in rels:
+                disp = self._relation_display_name(
+                    getattr(r, "entity1_family_id", ""),
+                    getattr(r, "entity2_family_id", ""),
+                    content=r.content, names=name_map,
+                )
                 results.append({
                     "family_id": r.family_id, "id": r.absolute_id,
-                    "name": "", "content": r.content,
-                    "entity1_name": "", "entity2_name": "",
+                    "name": disp["name"], "content": r.content,
+                    "entity1_name": disp["entity1_name"],
+                    "entity2_name": disp["entity2_name"],
+                    "entity1_family_id": getattr(r, "entity1_family_id", ""),
+                    "entity2_family_id": getattr(r, "entity2_family_id", ""),
                     "role": "relation", "_score": getattr(r, "_score", 0.0),
                 })
         return results
@@ -1171,6 +1422,18 @@ class LibraryManager:
             result = dict(fam)
             result["role"] = "relation"
             result["family_id"] = result["relation_family_id"]
+            # Resolve endpoint entity names so an agent can tell what this
+            # relation connects (previously name/entity1_name/entity2_name were
+            # all empty strings).
+            subject_fid = result.get("subject_entity_family_id", "")
+            object_fid = result.get("object_entity_family_id", "")
+            disp = self._relation_display_name(subject_fid, object_fid,
+                                               content=result.get("canonical_content", ""))
+            result["entity1_name"] = disp["entity1_name"]
+            result["entity2_name"] = disp["entity2_name"]
+            result["entity1_family_id"] = subject_fid
+            result["entity2_family_id"] = object_fid
+            result["name"] = disp["name"]
             # Extract confidence from latest active assertion extra_json
             assert_row = self._conn().execute(
                 "SELECT extra_json FROM relation_assertions "
@@ -1198,6 +1461,72 @@ class LibraryManager:
             result["processed_time"] = result.get("processed_at")
             return result
         return None
+
+    def get_concept(self, family_id: str, role: Optional[str] = None) -> Optional[Concept]:
+        """统一的 Concept 取数入口（Option B / ACL thesis）。
+
+        按 ``family_id`` 取一个统一 Concept DTO。``role`` 决定解读方式：
+
+          - role 显式给定（``entity``/``relation``）：
+            直接委托给概念 DAL ``concepts.get_concept_family``（仍走双轨物理表）。
+          - role 为 None：先通过 ``v_latest_concept`` UNION 视图自动探测角色，
+            再按探测到的 role 分派。探测不到（不存在）则返回 None。
+
+        与 ``get_concept_by_family_id`` 的区别：后者返回向后兼容的扁平 dict
+        （含 role/name/content 及 relation 端点键），本方法返回规范化的
+        ``Concept`` DTO（``concept.to_dict()`` 即可得到同样扁平的形状）。
+        两者并行保留，互不影响。
+        """
+        conn = self._conn()
+        if role is not None:
+            # entity / relation 由 DAL 按 role 分派到对应物理表
+            if role in concept_dal.DISPATCHABLE_ROLES:
+                return concept_dal.get_concept_family(conn, role, family_id)
+            # 容器角色（episode/document）当前不参与 DAL 家族分发；回退到
+            # legacy 取数路径，再把 dict 包成 Concept DTO，保持统一返回类型。
+            legacy = self.get_concept_by_family_id(family_id)
+            if legacy is None:
+                return None
+            return Concept.from_row(role, legacy)
+
+        # role 未给：用 v_latest_concept 视图自动探测
+        try:
+            row = conn.execute(
+                "SELECT role FROM v_latest_concept WHERE family_id = ?",
+                (family_id,),
+            ).fetchone()
+        except sqlite3.Error as exc:
+            logger.debug("v_latest_concept role lookup failed for %s: %s", family_id, exc)
+            row = None
+        if row is None:
+            # 视图未命中（可能是 episode/document 等容器角色，或确实不存在）。
+            # 回退到 legacy 多角色探测，再用探测出的 role 包装成 Concept。
+            legacy = self.get_concept_by_family_id(family_id)
+            if legacy is None:
+                return None
+            detected_role = legacy.get("role") or "entity"
+            return Concept.from_row(detected_role, legacy)
+        detected_role = row[0]
+        if detected_role in concept_dal.DISPATCHABLE_ROLES:
+            return concept_dal.get_concept_family(conn, detected_role, family_id)
+        # 容器角色走 legacy 包装
+        legacy = self.get_concept_by_family_id(family_id)
+        if legacy is None:
+            return None
+        return Concept.from_row(detected_role, legacy)
+
+    def search_concept_embeddings(self, role: str, query_vector: bytes,
+                                  embedding_model: str, limit: int = 10) -> list:
+        """统一 Concept 级向量检索入口（manager 层薄封装）。
+
+        直接委托给 ``emb_repo.search_concept_embeddings``，对外暴露一个
+        以 ``role`` 为参数的单点语义检索 API，使代码面与论文宣称的
+        "unified NL Concept primitive" 一致。返回 raw 候选 dict 列表
+        （与逐角色 search_*_embeddings 同形状），不做重排。
+        """
+        return emb_repo.search_concept_embeddings(
+            self._conn(), role, query_vector, embedding_model, limit=limit,
+        )
 
     def get_concepts_by_family_ids(self, family_ids: Iterable[str],
                                    time_point: str = None) -> Dict[str, dict]:
@@ -2029,6 +2358,9 @@ class LibraryManager:
             return
         source_text = ep.get("source_text", "")
         start_offset = ep.get("start_offset", 0)
+        # Episode stores the chunk's document line range; lift chunk-relative
+        # evidence line numbers to document-absolute via base_line.
+        base_line = ep.get("line_start") or 1
 
         # Build candidate list for text evidence
         candidates = []
@@ -2048,7 +2380,7 @@ class LibraryManager:
         evidence_map = {}
         if source_text:
             for name, info in cand_info.items():
-                hits = find_text_evidence(source_text, [name], base_offset=start_offset, limit=1)
+                hits = find_text_evidence(source_text, [name], base_offset=start_offset, base_line=base_line, limit=1)
                 if hits:
                     evidence_map[info["absolute_id"]] = hits[0]
 

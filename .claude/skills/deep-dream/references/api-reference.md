@@ -2,7 +2,7 @@
 
 Base URL: `http://localhost:16200/api/v1`
 
-All graph-scoped endpoints use `graph_id` from query string, JSON body, form data, or `X-Graph-Id`. Missing `graph_id` defaults to `default`.
+All graph-scoped endpoints use `graph_id` from query string, JSON body, form data, or `X-Graph-Id`. Deep-Dream runs a single library graph, so `graph_id` is accepted everywhere but is effectively a no-op — it normalizes to `library`. Missing `graph_id` defaults to `library`.
 
 Response format: `{success: bool, data: any, error: string|null, elapsed_ms: float}`
 
@@ -62,13 +62,13 @@ Response format: `{success: bool, data: any, error: string|null, elapsed_ms: flo
 
 ## Graphs
 
+Deep-Dream is a single-library system: there is always exactly one graph (`library`). The endpoints below exist for compatibility, but create/delete operations do not produce or remove distinct graphs — they operate on the single `library`.
+
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/graphs` | List all graphs |
-| POST | `/graphs` | Create graph. Body: `{graph_id, name?, description?}` |
+| GET | `/graphs` | List graphs (always the single `library`) |
 | GET | `/graphs/<graph_id>` | Graph details |
-| DELETE | `/graphs/<graph_id>` | Delete graph (data + metadata) |
-| POST | `/graphs/<graph_id>/clear` | Clear all data, keep graph |
+| POST | `/graphs/<graph_id>/clear` | Clear all data in the graph |
 
 ## System
 
@@ -103,7 +103,7 @@ Response format: `{success: bool, data: any, error: string|null, elapsed_ms: flo
 
 | Param | Description |
 |-------|-------------|
-| `graph_id` | Target graph (default: "default") |
+| `graph_id` | Target graph (single-library system; always normalizes to `library`) |
 | `limit` / `offset` | Pagination |
 | `max_results` | Cap BFS traversal results (default 500, max 2000) |
 | `role` | Filter: `document`, `episode`, `entity`, `relation` |

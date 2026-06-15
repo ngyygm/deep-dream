@@ -37,17 +37,139 @@ def _to_dict(item: Any) -> dict:
     return {}
 
 
+def _like_pattern(term: str) -> str:
+    """Escape a term for use in a SQL LIKE pattern wrapped in wildcards."""
+    escaped = term.replace("!", "!!").replace("%", "!%").replace("_", "!_")
+    return f"%{escaped}%"
+
+
+def _semantic_search_for_role(
+    storage: Any,
+    term: str,
+    *,
+    role: str | None,
+    top_k: int,
+    threshold: float,
+) -> dict:
+    """Run a semantic search for the given role.
+
+    The storage ``agent_semantic_search`` only supports ``entity``/``relation``
+    (and a LIKE fallback for ``entity``).  ``document`` and ``episode`` have no
+    embedding branch there, so we run a name/content LIKE lookup for those
+    roles here so every role returns *something*.
+
+    Returns ``{"results": [...], "fallback": bool}`` where ``fallback`` is
+    ``True`` whenever the result is a name/content match rather than a real
+    cosine similarity (i.e. embeddings were unavailable).
+    """
+    if role in (None, "entity", "relation"):
+        result = storage.agent_semantic_search(
+            term, role=role, top_k=top_k, threshold=threshold,
+        )
+        results = result.get("results", [])
+        # Detect the LIKE-fallback signature: storage assigns every LIKE row
+        # a uniform pseudo-score of ``threshold * 0.95``.  When the embedding
+        # client is unavailable, the similarity search returns nothing and the
+        # fallback fills results, so flag it honestly.
+        fallback = _is_fallback(storage, results, threshold)
+        return {"results": results, "fallback": fallback}
+
+    # Container roles: no embedding path exists; do a content/name LIKE.
+    results = _like_search_container(storage, term, role=role, limit=top_k)
+    return {"results": results, "fallback": True}
+
+
+def _is_fallback(storage: Any, results: list, threshold: float) -> bool:
+    """Return True if *results* came from the LIKE name-match fallback.
+
+    The fallback fires when embeddings are unavailable (the CLI storage never
+    wires an embedding client), so check that first.  As a secondary signal we
+    also recognise the uniform ``threshold * 0.95`` pseudo-score that storage
+    stamps onto every LIKE row.
+    """
+    emb_client = getattr(storage, "embedding_client", None)
+    if emb_client is None or not getattr(emb_client, "is_available", lambda: False)():
+        return True
+    if not results:
+        return False
+    pseudo = threshold * 0.95
+    return all(
+        abs(float(_to_dict(r).get("_score") or 0.0) - pseudo) < 1e-9
+        for r in results
+    )
+
+
+def _like_search_container(
+    storage: Any, term: str, *, role: str, limit: int,
+) -> list[dict]:
+    """LIKE-based name/content search for the document/episode container roles.
+
+    These roles have no embedding branch in storage, so we match on title /
+    heading / content so every role returns something useful instead of 0.
+    """
+    like = _like_pattern(term)
+    conn = storage._conn()
+    rows: list[dict] = []
+    if role == "document":
+        try:
+            cur = conn.execute(
+                "SELECT document_version_id, document_family_id, title, "
+                "source_mode, read_path "
+                "FROM v_document_files "
+                "WHERE title LIKE ? ESCAPE '!' "
+                "ORDER BY processed_time DESC LIMIT ?",
+                (like, limit),
+            ).fetchall()
+        except Exception:
+            cur = []
+        for r in cur:
+            rows.append({
+                "family_id": r[1] or r[0],
+                "name": r[2] or "",
+                "content": "",
+                "role": "document",
+                "document_version_id": r[0],
+                "read_path": r[4] or "",
+            })
+        return rows
+
+    if role == "episode":
+        try:
+            cur = conn.execute(
+                "SELECT version_id, family_id, heading_path, "
+                "memory_content, source_text "
+                "FROM v_episodes "
+                "WHERE (heading_path LIKE ? ESCAPE '!' "
+                "       OR COALESCE(memory_content, '') LIKE ? ESCAPE '!' "
+                "       OR COALESCE(source_text, '') LIKE ? ESCAPE '!') "
+                "ORDER BY start_offset LIMIT ?",
+                (like, like, like, limit),
+            ).fetchall()
+        except Exception:
+            cur = []
+        for r in cur:
+            heading = r[2] or ""
+            content = (r[3] or r[4] or "")
+            # Fall back to a short content snippet when there's no heading.
+            name = heading or (content[:40] + ("..." if len(content) > 40 else ""))
+            rows.append({
+                "family_id": r[1] or r[0],
+                "name": name,
+                "content": content,
+                "role": "episode",
+                "episode_version_id": r[0],
+            })
+        return rows
+
+    return rows
+
+
 # ------------------------------------------------------------------
 # Click command
 # ------------------------------------------------------------------
 
 @click.command()
 @click.argument("question")
-@click.option(
-    "--graph",
-    default=None,
-    help="Graph ID to query (defaults to the active graph).",
-)
 @click.option(
     "--role",
     type=click.Choice(["document", "episode", "entity", "relation"]),
@@ -86,7 +208,9 @@ def _to_dict(item: Any) -> dict:
     "--expand-query/--no-expand-query",
     default=True,
     show_default=True,
-    help="Use all expanded query terms (not just the first).",
+    help="Use all query terms (question + explicit --terms) for semantic "
+         "search. --no-expand-query narrows semantic fan-out to the question "
+         "term only; explicit --terms are still used for document search.",
 )
 @click.option(
     "--terms",
@@ -126,14 +250,17 @@ def _to_dict(item: Any) -> dict:
     type=int,
     default=50,
     show_default=True,
-    help="Maximum number of neighbour results.",
+    help="Maximum number of neighbour results (applied AFTER fetch, so it "
+         "does not starve deeper traversals).",
 )
 @click.option(
     "--depth",
     type=int,
     default=1,
     show_default=True,
-    help="Graph traversal depth for neighbour expansion.",
+    help="Graph traversal depth for neighbour expansion. Higher depth fetches "
+         "more candidates internally (scaled by depth) and then trims to "
+         "--neighbor-limit, so results from deeper hops are not saturated out.",
 )
 @click.option(
     "--relation-seed-count",
@@ -160,7 +287,6 @@ def _to_dict(item: Any) -> dict:
 def explore(
     ctx: click.Context,
     question: str,
-    graph: str | None,
     role: str | None,
     limit: int,
     threshold: float,
@@ -196,15 +322,18 @@ def explore(
     out = OutputManager(ctx)
     cli_ctx: CliContext = ctx.obj
 
-    graph_id = cli_ctx.get_active_graph(explicit=graph)
+    graph_id = cli_ctx.get_active_graph()
 
     with cli_ctx.get_storage(graph_id) as storage:
         # ------------------------------------------------------------------
         # 1. Query expansion
         # ------------------------------------------------------------------
+        # ``expand_query_terms`` never auto-generates terms — every non-original
+        # term is an explicit ``--terms`` entry the caller supplied.  The old
+        # ``query_terms[:1]`` chop under ``--no-expand-query`` silently dropped
+        # those explicit terms.  We now keep ALL terms for document search;
+        # ``--no-expand-query`` only narrows the *semantic* fan-out below.
         query_terms = expand_query_terms(question, terms)
-        if not expand_query:
-            query_terms = query_terms[:1]
 
         # ------------------------------------------------------------------
         # 2. Document file search
@@ -222,20 +351,37 @@ def explore(
         # ------------------------------------------------------------------
         semantic_results: list[dict] = []
         semantic_seen: set[str] = set()
+        # When embeddings are unavailable, storage falls back to a LIKE name
+        # lookup that assigns every row a uniform pseudo-score. Track that so
+        # we can present results honestly instead of as fake cosine scores.
+        semantic_fallback_used = False
+        # Fan out across the surviving query terms (capped by --semantic-queries).
+        # Under ``--no-expand-query`` only the original question term is used for
+        # semantic lookups, but explicit ``--terms`` are never dropped.
         semantic_query_terms = query_terms if expand_query else query_terms[:1]
 
         with out.spinner("Running semantic search..."):
             for term_info in semantic_query_terms[:semantic_queries]:
-                semantic = storage.agent_semantic_search(
+                semantic = _semantic_search_for_role(
+                    storage,
                     term_info["term"],
                     role=role,
                     top_k=limit,
                     threshold=threshold,
                 )
-                for raw_item in semantic.get("results", []):
+                results = semantic.get("results", [])
+                if semantic.get("fallback"):
+                    semantic_fallback_used = True
+                for raw_item in results:
                     item = _to_dict(raw_item)
                     score = item.get("score")
-                    if score is not None and float(score or 0.0) < min_semantic_score:
+                    if score is None:
+                        score = item.get("_score")
+                    if (
+                        score is not None
+                        and not semantic.get("fallback")
+                        and float(score or 0.0) < min_semantic_score
+                    ):
                         continue
                     fid = item.get("family_id", "")
                     if not fid or fid in semantic_seen:
@@ -243,6 +389,11 @@ def explore(
                     semantic_seen.add(fid)
                     item["matched_query"] = term_info["term"]
                     item["query_source"] = term_info.get("source", "expanded")
+                    item["match_mode"] = (
+                        "name-like fallback"
+                        if semantic.get("fallback")
+                        else "embedding"
+                    )
                     semantic_results.append(item)
                     if len(semantic_results) >= limit:
                         break
@@ -250,18 +401,14 @@ def explore(
                     break
 
         semantic_results.sort(
-            key=lambda x: float(x.get("score") or 0.0), reverse=True
+            key=lambda x: float(x.get("score") or x.get("_score") or 0.0),
+            reverse=True,
         )
 
         concept_ids = [
             r.get("family_id", "")
             for r in semantic_results
             if r.get("family_id")
-        ]
-        episode_ids = [
-            r.get("episode_version_id", "")
-            for r in semantic_results
-            if r.get("episode_version_id")
         ]
 
         # ------------------------------------------------------------------
@@ -275,12 +422,17 @@ def explore(
         # ------------------------------------------------------------------
         # 5. Graph neighbour expansion
         # ------------------------------------------------------------------
+        # Fetch more internally than the user-facing neighbour limit so that
+        # deeper traversals (``--depth`` > 1) are not saturated out by the
+        # first seed's depth-1 fan-out. The list is trimmed to the requested
+        # limit below.
         neighbors: list[dict] = []
+        per_seed_fetch = max(neighbor_limit, neighbor_limit * max(1, depth))
         with out.spinner("Expanding graph neighbours..."):
             for fid in concept_ids[:neighbor_seeds]:
                 try:
                     for nb in storage.get_concept_neighbors(
-                        fid, max_depth=depth, max_results=neighbor_limit
+                        fid, max_depth=depth, max_results=per_seed_fetch
                     ):
                         neighbors.append(_to_dict(nb))
                 except Exception:
@@ -327,7 +479,7 @@ def explore(
             "file_hits": file_hits,
             "semantic_hits": semantic_results,
             "semantic_total": len(semantic_results),
-            "episode_ids": episode_ids,
+            "semantic_fallback": semantic_fallback_used,
             "source_evidence": source_evidence,
             "evidence_cards": cards,
             "neighbors": trimmed_neighbors,
@@ -342,6 +494,9 @@ def explore(
                 "relation_evidence": len(relation_samples),
                 "relation_pairs_checked": min(
                     len(relation_pairs), relation_pair_limit
+                ),
+                "semantic_mode": (
+                    "name-like fallback" if semantic_fallback_used else "embedding"
                 ),
             },
         }
@@ -383,11 +538,22 @@ def _render_human(
     from rich.panel import Panel
     from rich.markup import escape as _esc
     from rich.table import Table
-    from rich.text import Text
-
-    from ._helpers import compact_text
 
     coverage = data["coverage"]
+    fallback = bool(data.get("semantic_fallback"))
+
+    # -- Quiet mode: collapse to a single one-liner of coverage -----------
+    if out.is_quiet:
+        out.console.print(
+            f"{_esc(data['question'])} | "
+            f"files={coverage['file_hits']} "
+            f"semantic={coverage['semantic_hits']} "
+            f"evidence={coverage['evidence_cards']} "
+            f"neighbors={coverage['neighbors']} "
+            f"relations={coverage['relation_evidence']}"
+            + (" (semantic: name-match fallback)" if fallback else "")
+        )
+        return
 
     # -- Header panel ---------------------------------------------------
     header_lines = [
@@ -404,6 +570,13 @@ def _render_human(
         title="Explore",
         border_style="cyan",
     ))
+
+    # -- Honest note when semantic search fell back to name matches ------
+    if fallback:
+        out.console.print(
+            "[yellow]semantic embeddings unavailable — showing name "
+            "matches (no real similarity scores).[/yellow]"
+        )
 
     # -- Coverage summary table -----------------------------------------
     cov_table = Table(
@@ -423,7 +596,7 @@ def _render_human(
     cov_table.add_row(
         "Semantic concept search",
         str(coverage["semantic_hits"]),
-        f"threshold filtered",
+        "name-match fallback" if fallback else "threshold filtered",
     )
     cov_table.add_row(
         "Source evidence",
@@ -487,6 +660,7 @@ def _render_human(
 
 def _render_file_hits(out: OutputManager, hits: List[dict]) -> None:
     """Render document file hits as a Rich table."""
+    from rich.markup import escape as _esc
     from rich.table import Table
 
     table = Table(
@@ -509,12 +683,15 @@ def _render_file_hits(out: OutputManager, hits: List[dict]) -> None:
         excerpt = hit.get("text", "")
         if len(excerpt) > 80:
             excerpt = excerpt[:77] + "..."
-        table.add_row(str(idx), term, title, line, excerpt)
+        table.add_row(
+            str(idx), _esc(term), _esc(title), _esc(line), _esc(excerpt),
+        )
     out.console.print(table)
 
 
 def _render_semantic_hits(out: OutputManager, hits: List[dict]) -> None:
     """Render semantic concept hits as a Rich table."""
+    from rich.markup import escape as _esc
     from rich.table import Table
 
     table = Table(
@@ -530,16 +707,26 @@ def _render_semantic_hits(out: OutputManager, hits: List[dict]) -> None:
     table.add_column("Query", style="dim", min_width=10)
 
     for idx, item in enumerate(hits, 1):
-        score = f"{float(item.get('score') or item.get('_score') or 0.0):.3f}"
+        # Honest score rendering: LIKE-fallback matches have no real cosine
+        # similarity, so show "—" instead of a fabricated number.
+        mode = item.get("match_mode")
+        if mode == "name-like fallback":
+            score = "[dim]name-match[/dim]"
+        else:
+            raw = item.get("score")
+            if raw is None:
+                raw = item.get("_score")
+            score = f"{float(raw or 0.0):.3f}" if raw is not None else "[dim]—[/dim]"
         fid = item.get("family_id", "")
         name = item.get("name") or item.get("target_name") or ""
         query = item.get("matched_query", "")
-        table.add_row(str(idx), score, fid, name, query)
+        table.add_row(str(idx), score, _esc(fid), _esc(name), _esc(query))
     out.console.print(table)
 
 
 def _render_neighbors(out: OutputManager, neighbors: List[dict]) -> None:
     """Render graph neighbour expansion results as a Rich table."""
+    from rich.markup import escape as _esc
     from rich.table import Table
 
     table = Table(
@@ -557,12 +744,13 @@ def _render_neighbors(out: OutputManager, neighbors: List[dict]) -> None:
         fid = nb.get("family_id", "")
         name = nb.get("name") or ""
         d = str(nb.get("depth", ""))
-        table.add_row(str(idx), fid, name, d)
+        table.add_row(str(idx), _esc(fid), _esc(name), _esc(d))
     out.console.print(table)
 
 
 def _render_relation_evidence(out: OutputManager, evidence: List[dict]) -> None:
     """Render relation evidence rows as a Rich table."""
+    from rich.markup import escape as _esc
     from rich.table import Table
 
     from ._helpers import compact_text
@@ -586,7 +774,13 @@ def _render_relation_evidence(out: OutputManager, evidence: List[dict]) -> None:
         entities = f"{e1} -- {e2}" if e1 and e2 else e1 or e2 or "?"
         source = ev.get("title") or ev.get("read_path") or ""
         excerpt = compact_text(ev.get("source_text", ""))
-        table.add_row(str(idx), rel_name, entities, source, excerpt)
+        table.add_row(
+            str(idx),
+            _esc(rel_name),
+            _esc(entities),
+            _esc(source),
+            _esc(excerpt),
+        )
     out.console.print(table)
 
 

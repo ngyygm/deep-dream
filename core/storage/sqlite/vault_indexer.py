@@ -310,17 +310,34 @@ def index_vault(conn: sqlite3.Connection, library_path: Path,
         vault_root = ""
 
     indexed = 0
+    unchanged = 0
     errors = 0
+    error_details: list[dict] = []
     for f in files:
+        f_str = str(f)
         try:
-            result = index_markdown_file(conn, library_path, str(f),
+            result = index_markdown_file(conn, library_path, f_str,
                                           vault_root=vault_root, force=force)
-            if "error" not in result:
+            status = result.get("status") if isinstance(result, dict) else None
+            if status == "unchanged":
+                unchanged += 1
+            elif isinstance(result, dict) and "error" not in result:
                 indexed += 1
             else:
                 errors += 1
+                reason = (
+                    result.get("error") if isinstance(result, dict) else "unknown error"
+                ) or "unknown error"
+                error_details.append({"file": f_str, "reason": reason})
         except Exception as e:
             logger.warning("Failed to index %s: %s", f, e)
             errors += 1
+            error_details.append({"file": f_str, "reason": str(e)})
 
-    return {"files": len(files), "indexed": indexed, "errors": errors}
+    return {
+        "files": len(files),
+        "indexed": indexed,
+        "unchanged": unchanged,
+        "errors": errors,
+        "error_details": error_details,
+    }

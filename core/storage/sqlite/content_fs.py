@@ -26,9 +26,18 @@ def compute_file_hash(file_path: str) -> str:
 
 
 def _safe_title(title: str) -> str:
-    """Convert title to filesystem-safe name."""
+    """Convert title to a filesystem-safe name.
+
+    Strips a trailing ``.md``/``.markdown`` extension so callers that append
+    their own ``.md`` (e.g. ``write_current_file``) do not produce
+    ``X.md.md``.  This keeps rebuilds idempotent: a second rebuild of the
+    same document writes to the same path as the first.
+    """
     name = re.sub(r'[<>:"/\\|?*]', '_', title)
     name = name.strip(". \t\n")
+    # Strip a single trailing markdown extension so it is not doubled when
+    # the caller appends its own ``.md``.
+    name = re.sub(r'(?i)\.(markdown|md)$', '', name)
     return name or "untitled"
 
 
@@ -93,12 +102,17 @@ def write_current_file(library_path: str, title: str, content: str,
 
 
 def rebuild_current_files(conn, library_path: str) -> int:
-    """Rebuild all content/ files from DB current_version_id.
+    """Rebuild all content/current/ files from DB current_version_id.
 
-    Returns count of files written.
+    Writes one file per active document version under
+    ``content/current/{safe_title}.md`` (the same layout used by
+    :func:`write_current_file`).  Files whose content hash already matches
+    are skipped, so repeated rebuilds converge to zero rewrites.
+
+    Returns the count of files actually written.
     """
-    content_dir = os.path.join(library_path, "content")
-    os.makedirs(content_dir, exist_ok=True)
+    current_dir = os.path.join(library_path, "content", "current")
+    os.makedirs(current_dir, exist_ok=True)
 
     rows = conn.execute("""
         SELECT d.document_id, d.title, d.managed_path,
@@ -129,7 +143,7 @@ def rebuild_current_files(conn, library_path: str) -> int:
         with open(src, "r", encoding="utf-8") as f:
             content = f.read()
         safe = _safe_title(title or doc_id)
-        dest = os.path.join(content_dir, f"{safe}.md")
+        dest = os.path.join(current_dir, f"{safe}.md")
         if os.path.exists(dest) and compute_file_hash(dest) == compute_content_hash(content):
             continue
         _atomic_write(dest, content)
@@ -231,7 +245,7 @@ def migrate_legacy_markdown(library_path: str) -> dict:
                 continue
             safe = _safe_title(os.path.splitext(fname)[0])
             disambig = compute_file_hash(src_path)[:8]
-            dest = os.path.join(current_dir, f"{safe}_{disambig}.md")
+            dest = os.path.join(content_dir, f"{safe}_{disambig}.md")
             result["conflicts"].append((src_path, dest))
 
         with open(src_path, "r", encoding="utf-8") as f:

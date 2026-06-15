@@ -23,14 +23,71 @@ from ._exit_codes import ARGS, OK
 # Version — no core.* imports needed
 # ------------------------------------------------------------------
 
-_VERSION = "2.0.0"
+# Fallback only when the package is not installed (no metadata available).
+# The canonical version lives in pyproject.toml and is read at call time
+# via importlib.metadata.version('deep-dream').
+_VERSION_FALLBACK = "0.2.0"
+
+
+def _version_from_pyproject() -> str | None:
+    """Read the ``[project] version`` field from pyproject.toml.
+
+    Second-tier source used when the package is not installed (no metadata).
+    Returns ``None`` if pyproject.toml cannot be found, parsed, or lacks the
+    version key, so the caller can fall back to the hard-coded constant.
+    """
+    try:
+        import tomllib
+        from pathlib import Path
+
+        # Walk up from this file to locate the project root pyproject.toml.
+        here = Path(__file__).resolve()
+        for candidate in [here.parent.parent.parent, *here.parent.parent.parent.parents]:
+            pp = candidate / "pyproject.toml"
+            if pp.is_file():
+                with pp.open("rb") as fh:
+                    data = tomllib.load(fh)
+                ver = data.get("project", {}).get("version")
+                if isinstance(ver, str) and ver.strip():
+                    return ver.strip()
+                return None
+    except Exception:
+        return None
+    return None
+
+
+def get_version() -> str:
+    """Resolve the installed package version, falling back honestly.
+
+    Resolution order (so ``pyproject.toml`` remains the single source of truth):
+
+    1. ``importlib.metadata.version('deep-dream')`` — the installed metadata.
+    2. Parse ``[project] version`` from ``pyproject.toml`` when the package
+       is not installed (e.g. running from a checkout).
+    3. The hard-coded ``_VERSION_FALLBACK`` constant, qualified with
+       ``(uninstalled; from fallback)`` so the provenance is honest.
+    """
+    try:
+        from importlib.metadata import version as _pkg_version
+
+        return _pkg_version("deep-dream")
+    except Exception:  # pragma: no cover - metadata missing in dev checkouts
+        pyproject_ver = _version_from_pyproject()
+        if pyproject_ver:
+            return pyproject_ver
+        return f"{_VERSION_FALLBACK} (uninstalled; from fallback)"
+
+
+# Backwards-compatible alias. Older code imports ``_VERSION`` as a constant;
+# keep it as the resolved value so both name usages stay in sync.
+_VERSION = get_version()
 
 
 def _print_version(ctx: click.Context, param: click.Parameter, value: Any) -> None:
     """Print version and exit immediately (no heavy imports)."""
     if not value or ctx.resilient_parsing:
         return
-    click.echo(f"deep-dream {_VERSION}")
+    click.echo(f"deep-dream {get_version()}")
     ctx.exit()
 
 
@@ -145,18 +202,6 @@ Use 'deep-dream <command> --help' for command-specific options.
     help="Suppress non-essential output.",
 )
 @click.option(
-    "-v", "--verbose",
-    is_flag=True,
-    default=False,
-    help="Enable verbose logging.",
-)
-@click.option(
-    "--dry-run",
-    is_flag=True,
-    default=False,
-    help="Show what would be done without executing.",
-)
-@click.option(
     "--version",
     is_flag=True,
     callback=_print_version,
@@ -174,6 +219,61 @@ def cli(ctx: click.Context, **kwargs: Any) -> None:
     # Store raw Click params so OutputManager can read --json/--quiet/--no-color
     ctx.obj._click_params = kwargs  # type: ignore[attr-defined]
 
+    # If the user asked for JSON or quiet output, switch the process-wide
+    # logging mode BEFORE any command runs, so that pipeline/embedding log
+    # banners (core.utils._emit_log_line) are routed to stderr instead of
+    # polluting stdout. core.utils._json_mode gates this routing.
+    json_flag = kwargs.get("json_output") or kwargs.get("json")
+    quiet_flag = kwargs.get("quiet")
+    if json_flag or quiet_flag:
+        import os
+
+        os.environ["DEEPDREAM_JSON_OUTPUT"] = "1"
+        try:
+            import core.utils as _utils
+
+            _utils._json_mode = True
+        except Exception:
+            # core.utils is optional here — the env var above already
+            # makes _emit_log_line fall back to stderr routing.
+            pass
+
+
+def _emit_uncaught_error(exc: BaseException, *, json_mode: bool) -> int:
+    """Render an uncaught exception through OutputManager and return its exit code.
+
+    Used by ``main()`` so that catastrophic failures (e.g. ``sqlite3.Error``
+    from a corrupt library) present a clean one-line error instead of a raw
+    traceback. In JSON mode the canonical error envelope is emitted on stdout.
+    """
+    from ._exit_codes import ERROR
+    from ._output import OutputManager, OutputMode
+
+    code: int = ERROR
+    try:
+        import sqlite3
+
+        if isinstance(exc, sqlite3.Error):
+            message = f"Database error: {exc}"
+        else:
+            message = f"{type(exc).__name__}: {exc}"
+    except Exception:
+        message = f"{type(exc).__name__}: {exc}"
+
+    try:
+        out = OutputManager(ctx=None)
+        out._mode = OutputMode.JSON if json_mode else OutputMode.RICH
+        out.error(message, code=code)
+    except SystemExit as sexit:
+        return int(sexit.code) if sexit.code is not None else code
+    except Exception:
+        # Last-resort fallback: never let the error handler itself crash.
+        import sys as _sys
+
+        _sys.stderr.write(f"Error: {message}\n")
+        return code
+    return code
+
 
 # ------------------------------------------------------------------
 # Entry point
@@ -181,6 +281,13 @@ def cli(ctx: click.Context, **kwargs: Any) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     """Programmatic entry point used by ``python -m core.cli``."""
+    import sqlite3
+
+    # Determine JSON mode from argv so the error envelope matches the
+    # requested output mode even when the failure happens before/around
+    # command parsing.
+    json_mode = bool(argv and ("--json" in argv))
+
     try:
         cli(standalone_mode=False, args=argv)
     except SystemExit as exc:
@@ -188,4 +295,8 @@ def main(argv: list[str] | None = None) -> int:
     except click.UsageError as exc:
         click.echo(f"Error: {exc.format_message()}", err=True)
         return ARGS
+    except sqlite3.Error as exc:
+        return _emit_uncaught_error(exc, json_mode=json_mode)
+    except Exception as exc:  # noqa: BLE001 — top-level safety net
+        return _emit_uncaught_error(exc, json_mode=json_mode)
     return OK
