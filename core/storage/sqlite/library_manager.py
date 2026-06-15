@@ -1445,8 +1445,11 @@ class LibraryManager:
                 from .dto_mapping import _extract_confidence
                 result["confidence"] = _extract_confidence(assert_row[0])
             return result
-        # Try episode (by episode_id / absolute_id)
+        # Try episode：先用绝对 id (cache_...)，命中失败再按 family id (epfam_...) 取。
+        # cmd_concept 会把所有 id 归一成 family 形式，所以两条路径都必须能解析。
         ep_row = ep_repo.get_episode(self._conn(), family_id)
+        if ep_row is None:
+            ep_row = ep_repo.get_episode_by_family(self._conn(), family_id)
         if ep_row:
             result = dict(ep_row)
             result["role"] = "episode"
@@ -1459,6 +1462,38 @@ class LibraryManager:
             result["source_document"] = result.get("document_id", "")
             result["event_time"] = result.get("event_time")
             result["processed_time"] = result.get("processed_at")
+            return result
+        # Try document (doc_...)：documents 没有单一 content 字符串，
+        # 与 v_latest_concept 对齐，这里 content 留空。
+        doc_row = self._conn().execute(
+            """SELECT d.document_id, d.title, d.current_version_id, d.status,
+                      dv.document_version_id ver_id, dv.version_content_path,
+                      dv.title ver_title
+               FROM documents d
+               LEFT JOIN document_versions dv
+                 ON dv.document_version_id = d.current_version_id
+                AND dv.status = 'active'
+               WHERE d.document_id = ? AND d.status = 'active'""",
+            (family_id,),
+        ).fetchone()
+        if doc_row:
+            # 列顺序与上面 SELECT 子句一一对应（document_id, title,
+            # current_version_id, status, ver_id, version_content_path, ver_title）
+            row_map = dict(zip(
+                ["document_id", "title", "current_version_id", "status",
+                 "ver_id", "version_content_path", "ver_title"],
+                doc_row,
+            ))
+            result = {
+                "role": "document",
+                "family_id": row_map["document_id"],
+                "name": row_map["title"] or row_map.get("ver_title") or "",
+                "content": "",
+                "source_document": row_map["document_id"],
+                "current_version_id": row_map["current_version_id"],
+                "version_id": row_map["ver_id"],
+                "status": row_map["status"],
+            }
             return result
         return None
 

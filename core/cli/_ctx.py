@@ -89,7 +89,8 @@ class CliContext:
     # ------------------------------------------------------------------
 
     @contextmanager
-    def get_storage(self, graph_id: str, *, ensure: bool = False):
+    def get_storage(self, graph_id: str, *, ensure: bool = False,
+                    with_embeddings: bool = False):
         """Context manager yielding a :class:`SQLiteGraphStorageManager`.
 
         Parameters
@@ -98,6 +99,17 @@ class CliContext:
             Graph identifier (normalised to LIBRARY_ID in single-library mode).
         ensure:
             If *True*, create the graph directory and metadata when missing.
+        with_embeddings:
+            If *True*, eagerly build an :class:`EmbeddingClient` and wire it
+            into the storage manager so semantic search
+            (``search_entities_by_similarity`` / ``agent_semantic_search``)
+            produces real cosine scores instead of the LIKE name-match
+            fallback.  This eagerly loads the SentenceTransformer model
+            (~11s on cuda:0), so it is **opt-in**: non-semantic commands
+            (``find``, ``concept get``, ``docs``, …) must keep passing the
+            default ``False`` to stay fast.  Construction is wrapped in
+            try/except so a model-load failure degrades gracefully (the
+            command runs on with the LIKE fallback) rather than crashing.
         """
         from core.server.registry import GraphRegistry
         from core.storage.sqlite import SQLiteGraphStorageManager
@@ -111,10 +123,33 @@ class CliContext:
         elif not graph_dir.is_dir():
             raise FileNotFoundError(f"Graph does not exist: {graph_id}")
         vector_dim = (self.config.get("storage") or {}).get("vector_dim", 1024)
+
+        embedding_client = None
+        if with_embeddings:
+            try:
+                from core.server.config import resolve_embedding_model
+                from core.storage.embedding import EmbeddingClient
+                emb_cfg = self.config.get("embedding") or {}
+                model_path, model_name, use_local = resolve_embedding_model(emb_cfg)
+                embedding_client = EmbeddingClient(
+                    model_path=model_path,
+                    model_name=model_name,
+                    device=emb_cfg.get("device", "cpu"),
+                    use_local=use_local,
+                    cache_max_size=int(emb_cfg.get("cache_max_size") or 8192),
+                    cache_ttl=float(emb_cfg.get("cache_ttl") or 3600.0),
+                    max_concurrency=int(emb_cfg.get("max_concurrency") or 1),
+                )
+            except Exception:
+                # 模型加载失败时优雅降级：保留 client=None，命令仍可走 LIKE 回退，
+                # 而不是让整个语义命令崩溃。
+                embedding_client = None
+
         storage = SQLiteGraphStorageManager(
             storage_path=str(graph_dir),
             graph_id=graph_id,
             vector_dim=vector_dim,
+            embedding_client=embedding_client,
         )
         try:
             yield storage

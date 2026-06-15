@@ -55,22 +55,30 @@ def search_fts(conn, query: str, limit: int = 20,
 
     if use_like and len(results) < limit:
         existing_ids = {r["episode_id"] for r in results}
-        like_pattern = f"%{query}%"
-        like_rows = conn.execute("""
-            SELECT ep.episode_id, ep.name, ep.heading_path,
-                   ep.source_text, ep.memory_text,
-                   ep.document_id, ep.document_version_id,
-                   ep.episode_family_id, 0.16 AS score
-            FROM episodes ep
-            JOIN documents d ON d.document_id = ep.document_id AND d.status = 'active'
-            JOIN document_versions dv
-              ON dv.document_id = ep.document_id
-             AND dv.document_version_id = ep.document_version_id
-             AND dv.status = 'active'
-            WHERE ep.status = 'active'
-              AND (ep.source_text LIKE ? OR ep.memory_text LIKE ? OR ep.name LIKE ?)
-            LIMIT ?
-        """, (like_pattern, like_pattern, like_pattern, limit)).fetchall()
+        # LIKE matches raw document text, so strip the FTS5 phrase quotes a
+        # caller may have added via _sanitize_fts_query — otherwise a sanitized
+        # '"三体"' becomes the literal %\"三体\"% and matches zero rows even
+        # though 三体 occurs in ~1000 episodes. find and concept search both
+        # route through here, so this fixes the LIKE path for both callers.
+        like_query = query.replace('"', '').replace('*', '').strip()
+        like_rows = []
+        if like_query:
+            like_pattern = f"%{like_query}%"
+            like_rows = conn.execute("""
+                SELECT ep.episode_id, ep.name, ep.heading_path,
+                       ep.source_text, ep.memory_text,
+                       ep.document_id, ep.document_version_id,
+                       ep.episode_family_id, 0.16 AS score
+                FROM episodes ep
+                JOIN documents d ON d.document_id = ep.document_id AND d.status = 'active'
+                JOIN document_versions dv
+                  ON dv.document_id = ep.document_id
+                 AND dv.document_version_id = ep.document_version_id
+                 AND dv.status = 'active'
+                WHERE ep.status = 'active'
+                  AND (ep.source_text LIKE ? OR ep.memory_text LIKE ? OR ep.name LIKE ?)
+                LIMIT ?
+            """, (like_pattern, like_pattern, like_pattern, limit)).fetchall()
 
         cols = ["episode_id", "name", "heading_path", "source_text",
                 "memory_text", "document_id", "document_version_id",

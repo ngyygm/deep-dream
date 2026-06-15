@@ -8,12 +8,12 @@ For semantic search, use ``deep-dream concept search --semantic`` instead.
 """
 from __future__ import annotations
 
-import re
 from typing import Any, Dict, List, Optional
 
 import click
 
 from ._exit_codes import ARGS, OK
+from ._helpers import _sanitize_fts_query
 
 
 def _escape_like(value: str) -> str:
@@ -25,47 +25,33 @@ def _escape_like(value: str) -> str:
     return value.replace("!", "!!").replace("%", "!%").replace("_", "!_")
 
 
-# Characters that FTS5 treats as query syntax / operators. A raw query
-# containing these (e.g. ``[水滴]``, ``a AND b``, ``foo*``) raises
-# ``fts5: syntax error`` from SQLite. We strip the operators down to a
-# safe bareword so MATCH never leaks a syntax-error traceback to the user.
-_FTS5_SPECIAL = re.compile(r'[\[\]()":*^+\-{}\s]+')
-
-
-def _sanitize_fts_query(query: str) -> str:
-    """Reduce a user query to an FTS5-safe bareword list.
-
-    FTS5 MATCH chokes on bracketed terms (``[水滴]``) and on operator
-    characters (``*``, ``"``, ``-``...). Rather than risk a syntax error,
-    we split on those special chars and emit each non-empty token quoted
-    with double quotes (FTS5 phrase form), joined by implicit AND. A query
-    that reduces to nothing (e.g. only punctuation) returns "" so callers
-    can fall back to a LIKE search or report 'no concepts found'.
-    """
-    tokens = [t for t in _FTS5_SPECIAL.split(query) if t]
-    if not tokens:
-        return ""
-    # Quote each token as a phrase; FTS5 treats adjacent phrases as AND.
-    # A literal double-quote inside a token is impossible here because
-    # double-quote is in the split class.
-    return " ".join(f'"{t}"' for t in tokens)
-
-
 # ------------------------------------------------------------------
 # Row formatting
 # ------------------------------------------------------------------
 
 
-def _concept_row(c: Dict[str, Any]) -> List[str]:
-    """Format a single concept dict into a table row."""
+def _concept_row(c: Dict[str, Any], has_score: bool = False) -> List[str]:
+    """Format a single concept dict into a table row.
+
+    When ``has_score`` is False, no confidence/score cell is emitted so the
+    row length matches a column list that omits 'Conf.' (e.g. the entity
+    name-match path, whose dicts carry no numeric score).
+    """
     fid = c.get("family_id") or ""
     name = c.get("name") or c.get("canonical_name") or fid or ""
     role = c.get("role") or ""
+    summary = (c.get("content") or c.get("canonical_content") or name)[:50]
+    if not has_score:
+        return [
+            fid,
+            name[:30],
+            role,
+            summary,
+        ]
     confidence = c.get("confidence") or c.get("_score")
     conf_str = ""
     if isinstance(confidence, (int, float)):
         conf_str = f"{confidence:.2f}"
-    summary = (c.get("content") or c.get("canonical_content") or name)[:50]
     return [
         fid,
         name[:30],
@@ -437,8 +423,19 @@ def find(
         click.echo("No concepts found.", err=True)
         return
 
-    columns = ["Family ID", "Concept", "Role", "Conf.", "Summary"]
-    rows = [_concept_row(c) for c in concepts]
+    # The 'Conf.' column only makes sense when at least one result row
+    # actually carries a numeric score. The entity name-match path (and
+    # other LIKE-only paths) never set confidence/_score, so we omit the
+    # column entirely there rather than show a column of blanks.
+    has_score = any(
+        isinstance((c.get("confidence") or c.get("_score")), (int, float))
+        for c in concepts
+    )
+    if has_score:
+        columns = ["Family ID", "Concept", "Role", "Conf.", "Summary"]
+    else:
+        columns = ["Family ID", "Concept", "Role", "Summary"]
+    rows = [_concept_row(c, has_score=has_score) for c in concepts]
 
     out.table(
         f'Results for "{query}" ({len(concepts)} found)',

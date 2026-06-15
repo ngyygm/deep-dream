@@ -26,6 +26,32 @@ def _looks_like_family_id(value: str) -> bool:
     return bool(value) and value.startswith(_FAMILY_ID_PREFIXES)
 
 
+# Characters that FTS5 treats as query syntax / operators. A raw query
+# containing these (e.g. ``[水滴]``, ``a AND b``, ``foo*``) raises
+# ``fts5: syntax error`` from SQLite. We strip the operators down to a
+# safe bareword so MATCH never leaks a syntax-error traceback to the user.
+_FTS5_SPECIAL = re.compile(r'[\[\]()":*^+\-{}\s]+')
+
+
+def _sanitize_fts_query(query: str) -> str:
+    """Reduce a user query to an FTS5-safe bareword list.
+
+    FTS5 MATCH chokes on bracketed terms (``[水滴]``) and on operator
+    characters (``*``, ``"``, ``-``...). Rather than risk a syntax error,
+    we split on those special chars and emit each non-empty token quoted
+    with double quotes (FTS5 phrase form), joined by implicit AND. A query
+    that reduces to nothing (e.g. only punctuation) returns "" so callers
+    can fall back to a LIKE search or report 'no concepts found'.
+    """
+    tokens = [t for t in _FTS5_SPECIAL.split(query or "") if t]
+    if not tokens:
+        return ""
+    # Quote each token as a phrase; FTS5 treats adjacent phrases as AND.
+    # A literal double-quote inside a token is impossible here because
+    # double-quote is in the split class.
+    return " ".join(f'"{t}"' for t in tokens)
+
+
 def _entity_family_id_by_name(storage: Any, value: str) -> Optional[str]:
     """Resolve a name to an ``ent_`` family_id via exact-then-LIKE lookup.
 

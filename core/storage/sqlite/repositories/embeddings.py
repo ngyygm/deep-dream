@@ -108,6 +108,9 @@ def search_episode_embeddings(conn, query_vector: bytes,
     # SQLite doesn't have native vector search; this returns candidate rows
     # for Python-side cosine similarity. A proper vector index (e.g. sqlite-vec)
     # would be used in production.
+    # basename 匹配：迁移自 Windows 的 DB 里 embedding_model 存的是旧挂载路径，
+    # 与当前 Linux 查询路径不同但 basename 相同，按 basename 前缀匹配使两者都命中。
+    basename = embedding_model.replace('\\', '/').rstrip('/').split('/')[-1]
     rows = conn.execute("""
         SELECT e.embedding_id, e.owner_id, e.text_hash, e.vector,
                ep.document_id, ep.episode_family_id
@@ -119,10 +122,10 @@ def search_episode_embeddings(conn, query_vector: bytes,
          AND dv.document_version_id = ep.document_version_id
          AND dv.status = 'active'
         WHERE e.owner_type = 'episode'
-          AND e.embedding_model = ?
+          AND e.embedding_model LIKE '%' || ?
         ORDER BY e.created_at DESC
         LIMIT ?
-    """, (embedding_model, limit * 3)).fetchall()
+    """, (basename, limit * 3)).fetchall()
 
     results = []
     for row in rows:
@@ -153,6 +156,9 @@ def search_entity_embeddings(conn, query_vector: bytes,
     index (sqlite-vec) or a cached full-matrix cache; the current corpus
     (~62k) materialises in well under a second.
     """
+    # basename 匹配：迁移自 Windows 的 DB 里 embedding_model 存的是旧挂载路径，
+    # 与当前 Linux 查询路径不同但 basename 相同，按 basename 前缀匹配使两者都命中。
+    basename = embedding_model.replace('\\', '/').rstrip('/').split('/')[-1]
     rows = conn.execute("""
         SELECT e.embedding_id, e.owner_id, eo.entity_family_id, eo.name, e.vector
         FROM embeddings e
@@ -164,8 +170,8 @@ def search_entity_embeddings(conn, query_vector: bytes,
          AND dv.document_version_id = ep.document_version_id
          AND dv.status = 'active'
         WHERE e.owner_type = 'entity_obs'
-          AND e.embedding_model = ?
-    """, (embedding_model,)).fetchall()
+          AND e.embedding_model LIKE '%' || ?
+    """, (basename,)).fetchall()
 
     candidates = [{"embedding_id": r[0], "owner_id": r[1], "entity_id": r[1],
                    "entity_family_id": r[2], "name": r[3], "vector": r[4]} for r in rows]
@@ -182,6 +188,9 @@ def search_relation_embeddings(conn, query_vector: bytes,
     the full active corpus for this role — see ``search_entity_embeddings`` for
     the scaling rationale.
     """
+    # basename 匹配：迁移自 Windows 的 DB 里 embedding_model 存的是旧挂载路径，
+    # 与当前 Linux 查询路径不同但 basename 相同，按 basename 前缀匹配使两者都命中。
+    basename = embedding_model.replace('\\', '/').rstrip('/').split('/')[-1]
     rows = conn.execute("""
         SELECT e.embedding_id, e.owner_id, ra.relation_family_id,
                rf.canonical_content, e.vector
@@ -195,8 +204,8 @@ def search_relation_embeddings(conn, query_vector: bytes,
          AND dv.document_version_id = ep.document_version_id
          AND dv.status = 'active'
         WHERE e.owner_type = 'relation_assert'
-          AND e.embedding_model = ?
-    """, (embedding_model,)).fetchall()
+          AND e.embedding_model LIKE '%' || ?
+    """, (basename,)).fetchall()
 
     candidates = [{"embedding_id": r[0], "owner_id": r[1], "relation_id": r[1],
                    "relation_family_id": r[2],
@@ -215,6 +224,9 @@ def search_document_embeddings(conn, query_vector: bytes,
     over the full active corpus for this role — see
     ``search_entity_embeddings`` for the scaling rationale.
     """
+    # basename 匹配：迁移自 Windows 的 DB 里 embedding_model 存的是旧挂载路径，
+    # 与当前 Linux 查询路径不同但 basename 相同，按 basename 前缀匹配使两者都命中。
+    basename = embedding_model.replace('\\', '/').rstrip('/').split('/')[-1]
     rows = conn.execute("""
         SELECT e.embedding_id, e.owner_id, dv.document_id, dv.title, e.vector
         FROM embeddings e
@@ -223,8 +235,8 @@ def search_document_embeddings(conn, query_vector: bytes,
         JOIN documents d
           ON d.document_id = dv.document_id AND d.status = 'active'
         WHERE e.owner_type = 'document_version'
-          AND e.embedding_model = ?
-    """, (embedding_model,)).fetchall()
+          AND e.embedding_model LIKE '%' || ?
+    """, (basename,)).fetchall()
 
     candidates = [{"embedding_id": r[0], "owner_id": r[1],
                    "document_version_id": r[1], "document_id": r[2],

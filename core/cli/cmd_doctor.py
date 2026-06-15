@@ -6,6 +6,8 @@ Runs a series of diagnostic checks and reports results as a Rich table
 from __future__ import annotations
 
 import json as _json
+import os
+import sqlite3
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -197,6 +199,72 @@ def _check_graphs(config: Dict[str, Any]) -> List[Dict[str, Any]]:
         return [{"error": str(exc)}]
 
 
+def _check_integrity(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Run V1.5 integrity validation on the library DB (no file checks).
+
+    Mirrors how ``cmd_db`` resolves the DB path (``library.db`` first, then
+    legacy ``graph.db``) and wires the validator. Degrades to ``'unknown'``
+    when the DB or validator cannot be reached, so a corrupt DB never silently
+    passes *and* a validator bug never crashes doctor.
+    """
+    storage_path = config.get("storage_path", "./library")
+    result: Dict[str, Any] = {
+        "db_path": None,
+        "total_violations": None,
+        "by_issue": {},
+        "ok": None,
+        "error": None,
+    }
+
+    # Resolve the DB file the same way cmd_db does.
+    db_path: Optional[str] = None
+    for name in ("library.db", "graph.db"):
+        candidate = os.path.join(storage_path, name)
+        if os.path.exists(candidate):
+            db_path = candidate
+            break
+    if db_path is None:
+        db_path = os.path.join(storage_path, "library.db")
+    result["db_path"] = db_path
+
+    if not os.path.exists(db_path):
+        result["error"] = f"Database not found: {db_path}"
+        return result
+
+    try:
+        from core.storage.sqlite.integrity import validate_all  # deferred
+        conn = sqlite3.connect(db_path)
+        try:
+            violations = validate_all(
+                conn,
+                library_path=storage_path,
+                include_file_checks=False,
+            )
+        finally:
+            conn.close()
+
+        total = len(violations)
+        # Aggregate top categories by issue type.
+        by_issue: Dict[str, int] = {}
+        for v in violations:
+            issue = v.get("issue") or "unknown"
+            by_issue[issue] = by_issue.get(issue, 0) + 1
+        # Keep the noisiest categories for the summary detail.
+        top = dict(
+            sorted(by_issue.items(), key=lambda kv: kv[1], reverse=True)[:5]
+        )
+        result["total_violations"] = total
+        result["by_issue"] = top
+        result["ok"] = total == 0
+    except Exception as exc:
+        # Validator failure degrades to 'unknown' rather than crashing doctor.
+        result["error"] = str(exc)
+    return result
+
+
+
+
+
 # ------------------------------------------------------------------
 # Click command
 # ------------------------------------------------------------------
@@ -230,15 +298,21 @@ def doctor(ctx: click.Context, api_base: str) -> None:
     embedding = _check_embedding(config)
     api = _check_api(api_base)
     graphs = _check_graphs(config)
+    integrity = _check_integrity(config)
 
     # ---- Overall verdict (computed before output) ----
     cfg_ok = config_status["exists"] and config_status["loadable"]
+    # Integrity ok is None when the validator could not run (degraded to
+    # 'unknown'); only a definitive False (violations found) should fail
+    # the overall verdict so a corrupt DB can no longer report all-green.
+    integrity_ok = integrity.get("ok")
     all_ok = (
         storage["exists"]
         and cfg_ok
         and llm["configured"]
         and embedding["available"]
         and api["available"]
+        and integrity_ok is not False
     )
 
     data = {
@@ -248,6 +322,7 @@ def doctor(ctx: click.Context, api_base: str) -> None:
         "embedding": embedding,
         "api": api,
         "graphs": graphs,
+        "integrity": integrity,
         "graph_count": len([g for g in graphs if "error" not in g]),
         "overall_ok": all_ok,
     }
@@ -344,6 +419,31 @@ def _render_human(out: "OutputManager", data: Dict[str, Any]) -> None:  # noqa: 
         api["url"] + ("" if api["available"] else f"  ({api['error']})"),
     )
 
+    # Integrity
+    integ = data["integrity"]
+    integ_ok = integ.get("ok")
+    if integ_ok is True:
+        integ_icon = _check_icon(True)
+    elif integ_ok is False:
+        integ_icon = _check_icon(False)
+    else:
+        # 'unknown' — neutral icon rather than a hard fail.
+        integ_icon = "[bold yellow]?[/bold yellow]"
+    integ_parts: list[str] = []
+    if integ.get("db_path"):
+        integ_parts.append(f"db={integ['db_path']}")
+    if integ.get("total_violations") is not None:
+        integ_parts.append(f"violations={integ['total_violations']}")
+        for issue, count in integ.get("by_issue", {}).items():
+            integ_parts.append(f"{_rich_esc(str(issue))}={count}")
+    if integ.get("error"):
+        integ_parts.append(f"error: {_rich_esc(str(integ['error']))}")
+    table.add_row(
+        "Integrity",
+        integ_icon,
+        "  ".join(integ_parts) if integ_parts else "unknown",
+    )
+
     out.console.print(table)
 
     # -- Graph list ---------------------------------------------------
@@ -370,12 +470,14 @@ def _render_human(out: "OutputManager", data: Dict[str, Any]) -> None:  # noqa: 
         out.console.print("[dim]No graphs found.[/dim]")
 
     # -- Overall verdict ---------------------------------------------
+    integ_ok = data["integrity"].get("ok")
     all_ok = (
         s["exists"]
         and cfg_ok
         and llm_ok
         and emb_ok
         and api["available"]
+        and integ_ok is not False
     )
     if all_ok:
         out.console.print("\n[bold green]All checks passed.[/bold green]")

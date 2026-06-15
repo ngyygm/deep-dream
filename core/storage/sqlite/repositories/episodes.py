@@ -42,6 +42,19 @@ def get_episode(conn, episode_id: str) -> Optional[dict]:
     return dict(zip(cols, row))
 
 
+def get_episode_by_family(conn, family_id: str) -> Optional[dict]:
+    """按 family id (epfam_...) 取最新 active episode（取数走的是 family id，不是绝对 cache id）。"""
+    row = conn.execute(
+        "SELECT * FROM episodes WHERE episode_family_id = ? AND status = 'active' "
+        "ORDER BY processed_at DESC LIMIT 1",
+        (family_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    cols = [d[0] for d in conn.execute("SELECT * FROM episodes LIMIT 0").description]
+    return dict(zip(cols, row))
+
+
 def get_active_episodes_by_version(conn, document_version_id: str) -> list:
     cols = [d[0] for d in conn.execute("SELECT * FROM episodes LIMIT 0").description]
     rows = conn.execute(

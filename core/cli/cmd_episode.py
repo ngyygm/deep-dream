@@ -12,7 +12,6 @@ flags handled by :class:`OutputManager`.
 """
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -127,8 +126,7 @@ def from_file(ctx: click.Context, path: str, line: Optional[int], limit: int) ->
     }
 
     if out.is_json:
-        payload = {"success": True, "command": "episode from-file", "graph_id": graph_id, "data": data}
-        click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        out.result(data, meta={"graph_id": graph_id})
         return
 
     if out.is_quiet:
@@ -210,8 +208,7 @@ def concepts(ctx: click.Context, episode_id: str, limit: int) -> None:
     }
 
     if out.is_json:
-        payload = {"success": True, "command": "episode concepts", "graph_id": graph_id, "data": data}
-        click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        out.result(data, meta={"graph_id": graph_id})
         return
 
     if out.is_quiet:
@@ -277,8 +274,7 @@ def get(ctx: click.Context, episode_id: str) -> None:
     ep = rows[0]
 
     if out.is_json:
-        payload = {"success": True, "command": "episode get", "graph_id": graph_id, "data": ep}
-        click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        out.result(ep, meta={"graph_id": graph_id})
         return
 
     if out.is_quiet:
@@ -353,8 +349,7 @@ def content(ctx: click.Context, episode_id: str) -> None:
     }
 
     if out.is_json:
-        payload = {"success": True, "command": "episode content", "graph_id": graph_id, "data": data}
-        click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        out.result(data, meta={"graph_id": graph_id})
         return
 
     if out.is_quiet:

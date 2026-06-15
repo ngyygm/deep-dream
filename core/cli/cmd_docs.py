@@ -78,8 +78,7 @@ def roots(ctx: click.Context) -> None:
         }
 
     if out.is_json:
-        payload = {"success": True, "command": "docs roots", "graph_id": graph_id, "data": data}
-        click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        out.result(data, meta={"graph_id": graph_id})
         return
 
     if out.is_quiet:
@@ -110,8 +109,7 @@ def list_docs(ctx: click.Context, limit: int) -> None:
     data = {"documents": docs_data, "total": len(docs_data)}
 
     if out.is_json:
-        payload = {"success": True, "command": "docs list", "graph_id": graph_id, "data": data}
-        click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        out.result(data, meta={"graph_id": graph_id})
         return
 
     if out.is_quiet:
@@ -150,8 +148,7 @@ def path(ctx: click.Context, document_id: str) -> None:
         payload = document_file_payload(storage, info)
 
     if out.is_json:
-        result = {"success": True, "command": "docs path", "graph_id": graph_id, "data": payload}
-        click.echo(json.dumps(result, ensure_ascii=False, indent=2))
+        out.result(payload, meta={"graph_id": graph_id})
         return
 
     if out.is_quiet:
@@ -208,8 +205,7 @@ def search(ctx: click.Context, pattern: str, limit: int) -> None:
     }
 
     if out.is_json:
-        payload = {"success": True, "command": "docs search", "graph_id": graph_id, "data": data}
-        click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        out.result(data, meta={"graph_id": graph_id})
         return
 
     if out.is_quiet:
@@ -267,8 +263,7 @@ def grep(ctx: click.Context, pattern: str, limit: int) -> None:
     }
 
     if out.is_json:
-        payload = {"success": True, "command": "docs grep", "graph_id": graph_id, "data": data}
-        click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        out.result(data, meta={"graph_id": graph_id})
         return
 
     if out.is_quiet:
@@ -308,8 +303,7 @@ def map_cmd(ctx: click.Context, path: str) -> None:
     data = {"path": path, "documents": docs_data, "total": len(docs_data)}
 
     if out.is_json:
-        payload = {"success": True, "command": "docs map", "graph_id": graph_id, "data": data}
-        click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        out.result(data, meta={"graph_id": graph_id})
         return
 
     if out.is_quiet:
@@ -421,8 +415,7 @@ def content(ctx: click.Context, document_id: str, full: bool, lines: Optional[st
     }
 
     if out.is_json:
-        payload = {"success": True, "command": "docs content", "graph_id": graph_id, "data": data}
-        click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        out.result(data, meta={"graph_id": graph_id})
         return
 
     if out.is_quiet:
@@ -512,8 +505,7 @@ def delete(ctx: click.Context, document_id: str, yes: bool) -> None:
     }
 
     if out.is_json:
-        payload = {"success": True, "command": "docs delete", "graph_id": graph_id, "data": data}
-        click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        out.result(data, meta={"graph_id": graph_id})
         return
 
     if out.is_quiet:

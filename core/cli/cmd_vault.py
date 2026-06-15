@@ -10,7 +10,6 @@ flags handled by :class:`OutputManager`.
 """
 from __future__ import annotations
 
-import json
 from collections import defaultdict
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Optional
@@ -120,13 +119,7 @@ def index(
     # Output
     # ----------------------------------------------------------
     if out.is_json:
-        payload = {
-            "success": True,
-            "command": "vault index",
-            "graph_id": graph_id,
-            "data": data,
-        }
-        click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        out.result(data, meta={"graph_id": graph_id})
         return
 
     if out.is_quiet:
@@ -205,13 +198,10 @@ def tree(ctx: click.Context) -> None:
 
     if not rows:
         if out.is_json:
-            payload = {
-                "success": True,
-                "command": "vault tree",
-                "graph_id": graph_id,
-                "data": {"vaults": [], "document_count": 0},
-            }
-            click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+            out.result(
+                {"vaults": [], "document_count": 0},
+                meta={"graph_id": graph_id},
+            )
             return
 
         if out.is_quiet:
@@ -253,13 +243,7 @@ def tree(ctx: click.Context) -> None:
     }
 
     if out.is_json:
-        payload = {
-            "success": True,
-            "command": "vault tree",
-            "graph_id": graph_id,
-            "data": data,
-        }
-        click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        out.result(data, meta={"graph_id": graph_id})
         return
 
     if out.is_quiet:

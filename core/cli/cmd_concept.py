@@ -28,7 +28,7 @@ from rich.panel import Panel as _Panel
 
 from ._ctx import CliContext
 from ._exit_codes import ERROR, NOT_FOUND, OK
-from ._helpers import compact_text, resolve_concept_id
+from ._helpers import compact_text, resolve_concept_id, _sanitize_fts_query
 from ._output import OutputManager, format_confidence, format_timestamp
 
 
@@ -145,7 +145,12 @@ def search(
     obj.load_config(config_path)
     graph_id = _get_graph_id(ctx)
 
-    with obj.get_storage(graph_id) as storage:
+    # Modes 'semantic' and 'hybrid' issue an embedding search, so the storage
+    # must be opened with an embedding client. 'name' and 'bm25' are FTS/SQL
+    # only and use the fast (embedding-less) path.
+    needs_embeddings = mode in ("semantic", "hybrid")
+    concepts: List[Dict[str, Any]] = []
+    with obj.get_storage(graph_id, with_embeddings=needs_embeddings) as storage:
         if mode == "name":
             # Direct SQL LIKE search on entity canonical_name — works without embeddings or FTS.
             # Name mode only matches entities; surface a note when the user
@@ -184,32 +189,38 @@ def search(
             )
             concepts = result.get("results", [])
         elif mode == "hybrid":
-            if hasattr(storage, "search_entities_by_bm25"):
-                raw_entities = storage.search_entities_by_bm25(query, limit=limit)
-                bm25_results = []
-                seen_fids: set[str] = set()
-                for ent in raw_entities:
-                    if isinstance(ent, dict):
-                        fid = ent.get("entity_family_id") or ent.get("family_id", "")
-                        name = ent.get("canonical_name") or ent.get("name", "")
-                        score = ent.get("_score", "")
-                    else:
-                        fid = getattr(ent, "family_id", "")
-                        name = getattr(ent, "name", "")
-                        score = getattr(ent, "_score", "")
-                    if fid and fid not in seen_fids:
-                        seen_fids.add(fid)
-                        bm25_results.append({
-                            "family_id": fid,
-                            "name": name,
-                            "role": "entity",
-                            "observation_count": "",
-                            "score": score,
-                        })
-            else:
-                bm25_results = storage.search_concepts_by_bm25(
-                    query, role=role, limit=limit,
-                )
+            # Sanitize the raw query before it reaches the FTS5 MATCH used by
+            # the BM25 half (mirrors `find`): bracketed terms and operator
+            # chars (``*``, ``"``, ``-``, ``a OR b``...) would otherwise leak
+            # an fts5 syntax error or be silently treated as a query operator.
+            sanitized = _sanitize_fts_query(query)
+            bm25_results: List[Dict[str, Any]] = []
+            if sanitized:
+                if hasattr(storage, "search_entities_by_bm25"):
+                    raw_entities = storage.search_entities_by_bm25(sanitized, limit=limit)
+                    seen_fids: set[str] = set()
+                    for ent in raw_entities:
+                        if isinstance(ent, dict):
+                            fid = ent.get("entity_family_id") or ent.get("family_id", "")
+                            name = ent.get("canonical_name") or ent.get("name", "")
+                            score = ent.get("_score", "")
+                        else:
+                            fid = getattr(ent, "family_id", "")
+                            name = getattr(ent, "name", "")
+                            score = getattr(ent, "_score", "")
+                        if fid and fid not in seen_fids:
+                            seen_fids.add(fid)
+                            bm25_results.append({
+                                "family_id": fid,
+                                "name": name,
+                                "role": "entity",
+                                "observation_count": "",
+                                "score": score,
+                            })
+                else:
+                    bm25_results = storage.search_concepts_by_bm25(
+                        sanitized, role=role, limit=limit,
+                    )
             sem_result = storage.agent_semantic_search(
                 query, role=role, top_k=limit, threshold=threshold,
             )
@@ -223,11 +234,20 @@ def search(
                     seen_ids.add(fid)
             concepts = bm25_results
         else:  # bm25
-            # search_concepts_by_bm25 returns raw episode-level hits
-            # without family_id/role.  Use search_entities_by_bm25 instead
-            # to get actual entity results with proper family resolution.
-            if hasattr(storage, "search_entities_by_bm25"):
-                raw_entities = storage.search_entities_by_bm25(query, limit=limit)
+            # Sanitize the raw query before it reaches the FTS5 MATCH used by
+            # the BM25 search (mirrors `find`): bracketed terms and operator
+            # chars would otherwise leak an fts5 syntax error or be silently
+            # treated as a query operator (e.g. ``a OR b`` → 0 results).
+            sanitized = _sanitize_fts_query(query)
+            if not sanitized:
+                # Nothing FTS-safe remains (query was only punctuation/ops);
+                # skip the MATCH call entirely and report no results.
+                concepts = []
+            elif hasattr(storage, "search_entities_by_bm25"):
+                # search_concepts_by_bm25 returns raw episode-level hits
+                # without family_id/role.  Use search_entities_by_bm25 instead
+                # to get actual entity results with proper family resolution.
+                raw_entities = storage.search_entities_by_bm25(sanitized, limit=limit)
                 concepts = []
                 seen_fids: set[str] = set()
                 for ent in raw_entities:
@@ -250,7 +270,7 @@ def search(
                         })
             else:
                 concepts = storage.search_concepts_by_bm25(
-                    query, role=role, limit=limit,
+                    sanitized, role=role, limit=limit,
                 )
 
     data = {
@@ -339,15 +359,17 @@ def get(ctx: click.Context, family_id: str) -> None:
     graph_id = _get_graph_id(ctx)
 
     with obj.get_storage(graph_id) as storage:
-        fid = resolve_concept_id(storage, family_id)
-        if fid is None:
-            out.error(
-                f"Concept not found: {family_id}",
-                hint="Use 'deep-dream concept search <query>' to find concepts.",
-                code=NOT_FOUND,
-            )
-            return  # unreachable
-        concept_data = storage.get_concept_by_family_id(fid)
+        # Resolve to a concept row. Go straight to storage for id-shaped inputs
+        # (ent_/rel_/epfam_/doc_/docver_ and the absolute cache_ episode id),
+        # which `get_concept_by_family_id` resolves per-role. Only fall back to
+        # `resolve_concept_id` for non-id inputs (names, BM25 fallback). This
+        # avoids a redundant double-resolution that broke the absolute cache_
+        # form (resolve would map cache_→epfam_ then re-resolve epfam_).
+        concept_data = storage.get_concept_by_family_id(family_id)
+        if concept_data is None:
+            fid = resolve_concept_id(storage, family_id)
+            if fid is not None:
+                concept_data = storage.get_concept_by_family_id(fid)
         if concept_data is None:
             out.error(
                 f"Concept not found: {family_id}",

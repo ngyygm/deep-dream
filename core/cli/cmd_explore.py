@@ -324,7 +324,10 @@ def explore(
 
     graph_id = cli_ctx.get_active_graph()
 
-    with cli_ctx.get_storage(graph_id) as storage:
+    # explore is inherently semantic, so eagerly wire the embedding client
+    # (only this command pays the ~11s SentenceTransformer load; the
+    # _is_fallback logic below still degrades honestly if the model fails).
+    with cli_ctx.get_storage(graph_id, with_embeddings=True) as storage:
         # ------------------------------------------------------------------
         # 1. Query expansion
         # ------------------------------------------------------------------
