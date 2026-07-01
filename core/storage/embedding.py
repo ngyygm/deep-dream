@@ -240,9 +240,11 @@ class EmbeddingClient:
         # --- Encode only the misses ---
         miss_embeddings = self._encode_uncached(miss_texts, batch_size)
         if miss_embeddings is None:
-            # Encode failed -- return whatever we have from cache, or None
-            hit_results = [r for r in cached_results if r is not None]
-            return np.stack(hit_results) if hit_results else None
+            # Encode failed. Fail closed: a partial array (only cache hits) would be
+            # shorter than the input and misaligned by index — callers slice by
+            # position (all_embeddings[:N]) or pair embeddings to texts by index,
+            # so returning fewer rows silently corrupts those mappings.
+            return None
 
         # --- Store misses in cache ---
         self._cache.set_batch(miss_texts, miss_embeddings)

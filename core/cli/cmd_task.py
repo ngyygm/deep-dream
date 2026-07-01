@@ -297,6 +297,7 @@ def task_list(ctx: click.Context, status_filter: Optional[str], limit: int) -> N
 
     # Rich table
     from rich.table import Table
+    from rich.markup import escape as _rich_esc
 
     table = Table(
         title=f"Task Queue ({len(tasks)} tasks)",
@@ -325,7 +326,9 @@ def task_list(ctx: click.Context, status_filter: Optional[str], limit: int) -> N
             phase_label = phase_label[:27] + "..."
         size = _format_size(t.get("document_size_bytes"))
         created = _format_timestamp_epoch(t.get("created_at"))
-        table.add_row(task_seq, tid, source, status, progress, phase_label, size, created)
+        # source / phase_label 来自用户文档，可能含 [方括号]，须转义避免被 Rich 当 markup
+        table.add_row(task_seq, tid, _rich_esc(source), status, progress,
+                      _rich_esc(phase_label), size, created)
 
     out.console.print(table)
 
@@ -385,7 +388,7 @@ def _render_task_detail(out: OutputManager, data: Dict[str, Any]) -> None:
 
     lines.append(f"[bold]Task ID:[/bold]       {data.get('task_id', '?')}")
     lines.append(f"[bold]Sequence:[/bold]      {data.get('task_seq', '?')}")
-    lines.append(f"[bold]Source:[/bold]        {data.get('source_name', '?')}")
+    lines.append(f"[bold]Source:[/bold]        {_rich_esc(str(data.get('source_name', '?')))}")
     lines.append(f"[bold]Status:[/bold]        {_format_status(status)}")
     lines.append(f"[bold]Phase:[/bold]         {_rich_esc(data.get('phase_label', '') or data.get('phase', ''))}")
     if data.get("message"):

@@ -116,6 +116,9 @@ class RememberTaskQueue:
                             continue
                         if now - task.last_update > self._stall_timeout:
                             stalled_ids.append(task.task_id)
+                            # 请求管线在最近的取消检查点停止，避免被摘除后
+                            # 仍在后台空跑（worker 线程与 _tasks 解绑，无法再观测/取消）
+                            task.control_action = "cancel"
                             task.status = "failed"
                             task.phase = "failed"
                             task.phase_label = "超时失败（看门狗）"

@@ -520,10 +520,12 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
         _eff_model = self._effective_model(_priority_init)
         _eff_think = self._effective_think_mode(_priority_init)
         _sem = self._select_llm_semaphore(_priority_init)
+        _sem_held = False
         while True:
             # 获取并发信号量（按优先级排队等待；上游/下游分池）
-            _sem_held = False
-            if _sem is not None:
+            # 500 退避期间会保持槽位不释放（见下方 _hold_across_retry），
+            # 此时 _sem_held 仍为 True，跳过重新获取以真正占住槽位。
+            if _sem is not None and not _sem_held:
                 _wait_started = time.monotonic()
                 _sem.acquire(_priority_init)
                 _sem_held = True
@@ -533,6 +535,8 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
                         f"[llm_wait] priority={_priority_init} model={_eff_model} "
                         f"wait={_wait_elapsed:.1f}s active={_sem.active_count}/{_sem.max_value}"
                     )
+            # 本轮结束时是否保持信号量（仅 500 退避 sleep 期间为 True）
+            _hold_across_retry = False
             try:
                 _scale = max(0.25, float(request_max_tokens_scale or 1.0))
                 _desired_max_tokens = max(1, int(_effective_max_tokens * _scale))
@@ -673,6 +677,8 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
                                 _sem.release()
                             _sem_held = False
                             raise CancelledError("LLM call cancelled by pipeline control")
+                        # 保持信号量跨过本次 sleep：不在 finally 释放，也不在下轮重新获取
+                        _hold_across_retry = True
                         time.sleep(wait_seconds)
                         continue
                     wprint_info(
@@ -761,8 +767,9 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
                 _sem_held = False
                 raise
             finally:
-                if _sem is not None and _sem_held:
+                if _sem is not None and _sem_held and not _hold_across_retry:
                     _sem.release()
+                    _sem_held = False
 
         # 理论上不会到达这里，但为了稳妥保留兜底
         if last_error:

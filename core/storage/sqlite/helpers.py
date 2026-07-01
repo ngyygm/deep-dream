@@ -54,6 +54,14 @@ def _fmt_dt(value) -> Optional[str]:
     return str(value)
 
 
+def escape_like(value: str) -> str:
+    """Escape LIKE wildcard characters (% and _) so they match literally.
+
+    Uses '!' as the ESCAPE character; pair with ``LIKE ? ESCAPE '!'`` in SQL.
+    """
+    return value.replace("!", "!!").replace("%", "!%").replace("_", "!_")
+
+
 def _row_to_entity(row: dict, _now: Optional[datetime] = None) -> Entity:
     """Convert a SQLite row dict to Entity dataclass."""
     if _now is None:

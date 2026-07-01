@@ -565,10 +565,13 @@ class RelationProcessor(_RelationConstructionMixin):
         # No existing relations → create directly, skip LLM
         if not existing_relations:
             dbg(f"[step10_path] NO_EXISTING: {entity1_name}-{entity2_name} ({len(truly_new_contents)} new)")
-            if len(truly_new_contents) == 1:
-                merged_content = truly_new_contents[0]
+            # truly_new_contents 是小写去重键；存储/嵌入均以原始大小写为准，
+            # 必须经 _lower_to_orig 还原，否则关系内容丢失大小写且嵌入查找必然 miss。
+            _orig_new = [_lower_to_orig.get(k, k) for k in truly_new_contents]
+            if len(_orig_new) == 1:
+                merged_content = _orig_new[0]
             else:
-                merged_content = "；".join(truly_new_contents[:3])
+                merged_content = "；".join(_orig_new[:3])
             new_rel = self._build_new_relation(
                 entity1_id, entity2_id, merged_content, episode_id,
                 entity1_name=entity1_name, entity2_name=entity2_name,
@@ -622,7 +625,9 @@ class RelationProcessor(_RelationConstructionMixin):
                 if len(truly_new_contents) == 1:
                     merged_content = _lower_to_orig.get(truly_new_contents[0], truly_new_contents[0])
                 else:
-                    merged_content = "；".join(truly_new_contents[:3])
+                    merged_content = "；".join(
+                        _lower_to_orig.get(k, k) for k in truly_new_contents[:3]
+                    )
                 new_rel = self._build_new_relation(
                     entity1_id, entity2_id, merged_content, episode_id,
                     entity1_name=entity1_name, entity2_name=entity2_name,

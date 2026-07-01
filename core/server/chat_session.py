@@ -20,6 +20,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -82,7 +83,12 @@ class ChatSession:
     title: str
     process: Optional[subprocess.Popen] = None
     stdin_lock: threading.Lock = field(default_factory=threading.Lock)
-    event_queue: queue.Queue = field(default_factory=queue.Queue)
+    # FIFO of per-turn response queues. Each send_message appends one queue while
+    # holding stdin_lock (which serializes stdin writes → turn order). The stdout
+    # reader routes events to the front queue and pops it when the turn ends
+    # (result event or EOF). A single shared queue would misroute events when two
+    # requests overlap, hanging one caller and truncating the other.
+    turn_queues: "deque[queue.Queue]" = field(default_factory=deque)
     stdout_thread: Optional[threading.Thread] = None
     created_at: str = ""
     last_active: float = field(default_factory=time.time)
@@ -291,7 +297,6 @@ class SessionManager:
 
         # Create response queue for this request
         resp_queue: queue.Queue = queue.Queue()
-        session.event_queue = resp_queue  # redirect events to this requestor
 
         # Send via stdin (NDJSON)
         user_msg = {
@@ -305,10 +310,19 @@ class SessionManager:
         }
 
         with session.stdin_lock:
+            # Register this turn's queue and write stdin under the same lock so the
+            # FIFO order matches the order the claude process will answer in.
+            session.turn_queues.append(resp_queue)
             try:
                 session.process.stdin.write(json.dumps(user_msg).encode() + b"\n")
                 session.process.stdin.flush()
             except (BrokenPipeError, OSError):
+                # Writing failed: this turn produces no output, so drop its queue
+                # from the FIFO and signal completion to the caller directly.
+                try:
+                    session.turn_queues.remove(resp_queue)
+                except ValueError:
+                    pass
                 resp_queue.put(_STREAM_SENTINEL)
                 return resp_queue
 
@@ -408,6 +422,20 @@ class SessionManager:
         if not proc or not proc.stdout:
             return
 
+        def _current_q() -> Optional[queue.Queue]:
+            # Front of the FIFO is the turn currently being answered.
+            with session.stdin_lock:
+                return session.turn_queues[0] if session.turn_queues else None
+
+        def _finish_turn(q: Optional[queue.Queue]) -> None:
+            # Send the sentinel to the turn's own queue and pop it, so the next
+            # queued turn (if any) becomes the front for subsequent events.
+            with session.stdin_lock:
+                if session.turn_queues and session.turn_queues[0] is q:
+                    session.turn_queues.popleft()
+            if q is not None:
+                q.put(_STREAM_SENTINEL)
+
         try:
             for line in proc.stdout:
                 if not line:
@@ -428,15 +456,23 @@ class SessionManager:
                 # Convert to SSE event string
                 sse = self._event_to_sse(event)
                 if sse is _STREAM_SENTINEL:
-                    session.event_queue.put(_STREAM_SENTINEL)
+                    _finish_turn(_current_q())
                     continue
                 if sse:
-                    session.event_queue.put(sse)
+                    q = _current_q()
+                    if q is not None:
+                        q.put(sse)
 
         except (ValueError, OSError):
             pass
         finally:
-            session.event_queue.put(_STREAM_SENTINEL)
+            # Process ended: flush the sentinel to every outstanding turn so no
+            # caller hangs waiting for output that will never come.
+            with session.stdin_lock:
+                pending = list(session.turn_queues)
+                session.turn_queues.clear()
+            for q in pending:
+                q.put(_STREAM_SENTINEL)
 
     def _read_stderr(self, session: ChatSession):
         """Read stderr from claude for logging."""

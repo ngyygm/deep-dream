@@ -126,6 +126,9 @@ def clean_json_string(json_str: str) -> str:
     json_str = _BARE_IDENTIFIER_RE.sub(',', json_str)
     # 修复连续逗号（前一步可能产生 ,,）
     json_str = re.sub(r',{2,}', ',', json_str)
+    # 清理占位符移除后残留的前导/尾随逗号（如 "[gap, x]" → "[, x]" → "[ x]"）
+    json_str = re.sub(r'([\[{])\s*,', r'\1', json_str)
+    json_str = re.sub(r',\s*([\]}])', r'\1', json_str)
     return json_str
 
 

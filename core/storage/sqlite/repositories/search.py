@@ -4,6 +4,8 @@ import re
 import logging
 from typing import Optional
 
+from ..helpers import escape_like
+
 logger = logging.getLogger(__name__)
 
 
@@ -55,7 +57,7 @@ def search_fts(conn, query: str, limit: int = 20,
 
     if use_like and len(results) < limit:
         existing_ids = {r["episode_id"] for r in results}
-        like_pattern = f"%{query}%"
+        like_pattern = f"%{escape_like(query)}%"
         like_rows = conn.execute("""
             SELECT ep.episode_id, ep.name, ep.heading_path,
                    ep.source_text, ep.memory_text,
@@ -68,7 +70,7 @@ def search_fts(conn, query: str, limit: int = 20,
              AND dv.document_version_id = ep.document_version_id
              AND dv.status = 'active'
             WHERE ep.status = 'active'
-              AND (ep.source_text LIKE ? OR ep.memory_text LIKE ? OR ep.name LIKE ?)
+              AND (ep.source_text LIKE ? ESCAPE '!' OR ep.memory_text LIKE ? ESCAPE '!' OR ep.name LIKE ? ESCAPE '!')
             LIMIT ?
         """, (like_pattern, like_pattern, like_pattern, limit)).fetchall()
 

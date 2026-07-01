@@ -488,6 +488,7 @@ def _render_human(
 def _render_file_hits(out: OutputManager, hits: List[dict]) -> None:
     """Render document file hits as a Rich table."""
     from rich.table import Table
+    from rich.markup import escape as _esc
 
     table = Table(
         title="Document File Hits",
@@ -509,13 +510,14 @@ def _render_file_hits(out: OutputManager, hits: List[dict]) -> None:
         excerpt = hit.get("text", "")
         if len(excerpt) > 80:
             excerpt = excerpt[:77] + "..."
-        table.add_row(str(idx), term, title, line, excerpt)
+        table.add_row(str(idx), _esc(str(term)), _esc(str(title)), line, _esc(str(excerpt)))
     out.console.print(table)
 
 
 def _render_semantic_hits(out: OutputManager, hits: List[dict]) -> None:
     """Render semantic concept hits as a Rich table."""
     from rich.table import Table
+    from rich.markup import escape as _esc
 
     table = Table(
         title="Semantic Concept Hits",
@@ -534,13 +536,14 @@ def _render_semantic_hits(out: OutputManager, hits: List[dict]) -> None:
         fid = item.get("family_id", "")
         name = item.get("name") or item.get("target_name") or ""
         query = item.get("matched_query", "")
-        table.add_row(str(idx), score, fid, name, query)
+        table.add_row(str(idx), score, _esc(str(fid)), _esc(str(name)), _esc(str(query)))
     out.console.print(table)
 
 
 def _render_neighbors(out: OutputManager, neighbors: List[dict]) -> None:
     """Render graph neighbour expansion results as a Rich table."""
     from rich.table import Table
+    from rich.markup import escape as _esc
 
     table = Table(
         title="Graph Neighbours",
@@ -557,13 +560,14 @@ def _render_neighbors(out: OutputManager, neighbors: List[dict]) -> None:
         fid = nb.get("family_id", "")
         name = nb.get("name") or ""
         d = str(nb.get("depth", ""))
-        table.add_row(str(idx), fid, name, d)
+        table.add_row(str(idx), _esc(str(fid)), _esc(str(name)), d)
     out.console.print(table)
 
 
 def _render_relation_evidence(out: OutputManager, evidence: List[dict]) -> None:
     """Render relation evidence rows as a Rich table."""
     from rich.table import Table
+    from rich.markup import escape as _esc
 
     from ._helpers import compact_text
 
@@ -586,7 +590,8 @@ def _render_relation_evidence(out: OutputManager, evidence: List[dict]) -> None:
         entities = f"{e1} -- {e2}" if e1 and e2 else e1 or e2 or "?"
         source = ev.get("title") or ev.get("read_path") or ""
         excerpt = compact_text(ev.get("source_text", ""))
-        table.add_row(str(idx), rel_name, entities, source, excerpt)
+        table.add_row(str(idx), _esc(str(rel_name)), _esc(str(entities)),
+                      _esc(str(source)), _esc(str(excerpt)))
     out.console.print(table)
 
 

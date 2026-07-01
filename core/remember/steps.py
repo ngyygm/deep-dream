@@ -518,12 +518,14 @@ class _ExtractionStepsMixin:
         _progress(0.90, f"{_win} · 步骤8: 关系质量门完成", f"{len(valid_relations)} 条有效关系")
 
         _progress(0.95, f"{_win} · 完成",
-                   f"{len(extracted_entities)} 实体, {len(valid_relations)} 关系")
+                   f"{len(valid_entities)} 实体, {len(valid_relations)} 关系")
 
         self.llm_client.clear_cancel_check()
         if self.extraction_client_enabled:
             extraction_client.clear_cancel_check()
-        return extracted_entities, valid_relations
+        # 返回质量门过滤后的 valid_entities（而非未过滤的 extracted_entities），
+        # 与 early_entity_done_fn 保持一致；否则被拒绝的低质实体会流入步骤9对齐写入图谱。
+        return valid_entities, valid_relations
 
     # ------------------------------------------------------------------
     # Helper: resolve LLM-returned entity name to known entity name

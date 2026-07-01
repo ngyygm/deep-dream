@@ -1384,6 +1384,15 @@ class LibraryManager:
         conn = self._conn()
         fam = ent_repo.get_entity_family(conn, family_id)
         if not fam:
+            # 不是 entity：按 get_concept_by_family_id 的同一级联尝试
+            # relation / episode，否则任意非 entity 概念的 PATCH 都会 404
+            # （与 GET 行为不一致）。
+            rel_fam = rel_repo.get_relation_family(conn, family_id)
+            if rel_fam:
+                return self._update_relation_concept(conn, family_id, updates, rel_fam)
+            ep_row = ep_repo.get_episode(conn, family_id)
+            if ep_row:
+                return self._update_episode_concept(conn, family_id, updates, ep_row)
             return {"updated": False, "reason": "not found"}
         name = updates.get("name", fam["canonical_name"])
         content = updates.get("content", fam.get("canonical_content", ""))
@@ -1410,7 +1419,67 @@ class LibraryManager:
                     (_json.dumps(extra, ensure_ascii=False), obs_id),
                 )
         conn.commit()
-        return {"updated": True, "family_id": family_id}
+        return {"updated": True, "family_id": family_id, "role": "entity"}
+
+    def _update_relation_concept(self, conn, family_id: str, updates: dict,
+                                 rel_fam: dict) -> dict:
+        """PATCH a relation concept: content → canonical_content, confidence → assertion."""
+        import json as _json
+        content = updates.get("content", rel_fam.get("canonical_content", ""))
+        rel_repo.upsert_relation_family(
+            conn, family_id,
+            rel_fam.get("subject_entity_family_id", ""),
+            rel_fam.get("object_entity_family_id", ""),
+            canonical_content=content,
+            created_at=rel_fam.get("created_at", "") or _now_str(),
+            updated_at=_now_str(),
+        )
+        new_confidence = updates.get("confidence")
+        if new_confidence is not None:
+            assert_row = conn.execute(
+                "SELECT relation_id, extra_json FROM relation_assertions "
+                "WHERE relation_family_id = ? AND status = 'active' "
+                "ORDER BY processed_at DESC LIMIT 1",
+                (family_id,),
+            ).fetchone()
+            if assert_row:
+                aid, extra_json = assert_row[0], assert_row[1] or "{}"
+                try:
+                    extra = _json.loads(extra_json)
+                except (ValueError, TypeError):
+                    extra = {}
+                extra["confidence"] = float(new_confidence)
+                conn.execute(
+                    "UPDATE relation_assertions SET extra_json = ? WHERE relation_id = ?",
+                    (_json.dumps(extra, ensure_ascii=False), aid),
+                )
+        conn.commit()
+        return {"updated": True, "family_id": family_id, "role": "relation"}
+
+    def _update_episode_concept(self, conn, family_id: str, updates: dict,
+                                ep_row: dict) -> dict:
+        """PATCH an episode concept: name → heading_path/name, content → memory_text.
+
+        Keeps the FTS index in sync so edits are searchable.
+        """
+        episode_id = ep_row["episode_id"]
+        heading = updates.get("name", ep_row.get("heading_path", ""))
+        memory_text = updates.get("content", ep_row.get("memory_text", ""))
+        conn.execute(
+            "UPDATE episodes SET heading_path = ?, memory_text = ? WHERE episode_id = ?",
+            (heading, memory_text, episode_id),
+        )
+        ep_repo.fts_sync_episode(
+            conn, episode_id,
+            ep_row.get("document_id", ""),
+            ep_row.get("document_version_id", ""),
+            name=ep_row.get("name", ""),
+            heading_path=heading,
+            source_text=ep_row.get("source_text", ""),
+            memory_text=memory_text,
+        )
+        conn.commit()
+        return {"updated": True, "family_id": family_id, "role": "episode"}
 
     def find_duplicate_entities_fast(self, limit: int = 500) -> List[dict]:
         """Find entity families sharing the same canonical_name."""
