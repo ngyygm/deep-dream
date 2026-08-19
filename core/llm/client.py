@@ -25,7 +25,6 @@ from .content_merger import _ContentMergerMixin
 from .consolidation import _ConsolidationMixin
 from .summary_evolution import SummaryEvolutionMixin
 from .contradiction import ContradictionDetectionMixin
-from .agent_query import AgentQueryMixin
 from .extraction import _LLMExtractionMixin
 from .json_repair import (
     clean_json_string,
@@ -63,7 +62,7 @@ from .prompts import (
 
 
 class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
-                 SummaryEvolutionMixin, ContradictionDetectionMixin, AgentQueryMixin,
+                 SummaryEvolutionMixin, ContradictionDetectionMixin,
                  _LLMExtractionMixin):
 
     @staticmethod

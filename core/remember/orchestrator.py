@@ -57,8 +57,6 @@ from .orchestrator_pipeline import _PipelineMixin
 # Sub-modules (no circular import — they do NOT import from orchestrator.py)
 from . import pipeline_state as _ps
 from . import pipeline_workers as _pw
-from . import phase_api as _pa
-from . import document_processor_api as _dpa
 
 logger = logging.getLogger(__name__)
 
@@ -480,9 +478,6 @@ class TemporalMemoryGraphProcessor(_PipelineMixin, _PipelineExtractionMixin, _Ex
     def _run_extraction_job(self, *args, **kwargs):
         return _pw.run_extraction_job(self, *args, **kwargs)
 
-    def process_documents(self, *args, **kwargs):
-        return _dpa.process_documents(self, *args, **kwargs)
-
     # Pipeline state helpers (delegated to pipeline_state module)
     def _init_remember_shared_state(self, N):
         return _ps.init_remember_shared_state(N)
@@ -536,9 +531,4 @@ class TemporalMemoryGraphProcessor(_PipelineMixin, _PipelineExtractionMixin, _Ex
     def _build_timing_summary(window_timings):
         return _pw.build_timing_summary(window_timings)
 
-    def remember_phase1_overall(self, *args, **kwargs):
-        return _pa.remember_phase1_overall(self, *args, **kwargs)
-
-    def remember_phase2_windows(self, *args, **kwargs):
-        return _pa.remember_phase2_windows(self, *args, **kwargs)
 
