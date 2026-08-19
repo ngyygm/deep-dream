@@ -5,7 +5,7 @@ import random
 import time
 from typing import Optional
 
-from core.llm.client import LLM_PRIORITY_STEP6
+from core.llm.client import LLM_PRIORITY_ALIGN
 from core.log import warn as _log_warn
 
 logger = logging.getLogger(__name__)
@@ -58,12 +58,11 @@ def call_llm_with_backoff(
     raise RuntimeError(f"重试 {max_attempts} 次仍失败: {last_error or '未知错误'}")
 
 
-def check_llm_available(processor, *, priority_steps=None) -> tuple[bool, Optional[str]]:
-    """启动前握手：检查上游 LLM；若启用 alignment 专用通道，再按步骤优先级检查对齐端点。
+def check_llm_available(processor) -> tuple[bool, Optional[str]]:
+    """启动前握手：检查上游 LLM；若启用 alignment 专用通道，再检查对齐端点。
 
     Args:
         processor: 处理器实例
-        priority_steps: 可选的 LLM 优先级步骤列表（如 [6]），依次检查对应通道
 
     Returns:
         (成功与否, 错误信息或 None)
@@ -75,9 +74,10 @@ def check_llm_available(processor, *, priority_steps=None) -> tuple[bool, Option
             timeout=60,
         )
         lc = processor.llm_client
-        if getattr(lc, "alignment_enabled", False) and priority_steps:
+        if getattr(lc, "alignment_enabled", False):
+            # 临时切到对齐路由标签，让握手请求走对齐专用端点
             _old_pri = getattr(lc._priority_local, "priority", None)
-            lc._priority_local.priority = LLM_PRIORITY_STEP6
+            lc._priority_local.priority = LLM_PRIORITY_ALIGN
             try:
                 _ = call_llm_with_backoff(
                     processor,

@@ -297,14 +297,11 @@ _CONTEXT_OVERFLOW_NEEDLES = (
     "上下文超限", "tokens 超", "token 超", "invalid prompt", "context_limit",
 )
 
-# 优先级常量（越小优先级越高）
-LLM_PRIORITY_STEP1 = 0   # 更新缓存
-LLM_PRIORITY_STEP2 = 1   # 抽取实体
-LLM_PRIORITY_STEP3 = 2   # 抽取关系
-LLM_PRIORITY_STEP4 = 3   # 补全实体内容
-LLM_PRIORITY_STEP5 = 4   # 补全关系内容
-LLM_PRIORITY_STEP6 = 5   # 实体对齐
-LLM_PRIORITY_STEP7 = 6   # 关系对齐
+# 优先级常量：纯路由标签，不参与调度排队（信号量按 FIFO）。
+# EXTRACT=0 抽取类调用（主端点）；ALIGN=1 对齐类调用
+# （alignment_enabled 时走对齐专用端点，数值 >= ALIGN 即视为对齐相位）
+LLM_PRIORITY_EXTRACT = 0
+LLM_PRIORITY_ALIGN = 1
 
 
 def estimate_text_token_count(text) -> int:

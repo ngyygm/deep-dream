@@ -11,7 +11,7 @@ import logging
 
 from core.models import Entity
 from core.storage.sqlite.manager import SQLiteGraphStorageManager
-from core.llm.client import LLMClient
+from core.llm.client import LLMClient, LLM_PRIORITY_ALIGN
 from core.utils import (
     wprint_info,
     capture_log_context as _capture_log_ctx,
@@ -251,7 +251,7 @@ def _process_entities_parallel(
             llm_client, extracted_entities, candidate_table, context_text)
 
     _distill_step = llm_client._current_distill_step
-    _priority = getattr(llm_client._priority_local, 'priority', 5)
+    _priority = getattr(llm_client._priority_local, 'priority', LLM_PRIORITY_ALIGN)
     _version_lock = threading.RLock()
     # Extract per-entity full-text embeddings from prefetch
     _prefetched_full_embs = None

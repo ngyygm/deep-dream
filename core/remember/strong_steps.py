@@ -15,7 +15,7 @@ import time as _time
 from typing import Dict, List, Optional, Tuple
 
 from core.utils import wprint_info
-from core.llm.client import LLM_PRIORITY_STEP2
+from core.llm.client import LLM_PRIORITY_EXTRACT
 
 from ._steps_helpers import (
     _pair_key,
@@ -73,7 +73,7 @@ def strong_extract_only(
         _progress(0.10, f"{_win} · S2s: 单遍结构化抽取", "开始")
         _t = _time.time()
         previous_priority = getattr(self.llm_client._priority_local, "priority", None)
-        self.llm_client._priority_local.priority = LLM_PRIORITY_STEP2
+        self.llm_client._priority_local.priority = LLM_PRIORITY_EXTRACT
         try:
             structured = self.llm_client.extract_window_structured(
                 input_text,

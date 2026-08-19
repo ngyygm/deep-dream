@@ -28,7 +28,7 @@ _LLM_HEALTH_MIN_INTERVAL = 30.0  # seconds
 
 # LLM helpers - delegate to shared modules
 _call_llm_with_backoff = call_llm_with_backoff
-_check_llm_available = lambda processor: check_llm_available(processor, priority_steps=[6])
+_check_llm_available = check_llm_available
 
 
 # ── Route Index ─────────────────────────────────────────────────────────

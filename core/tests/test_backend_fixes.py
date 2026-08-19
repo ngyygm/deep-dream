@@ -249,7 +249,7 @@ class TestRememberConcurrencyConfig:
             shared_llm_slot_max=main.get_llm_semaphore_max(),
         )
 
-        assert secondary._select_llm_semaphore(0) is main._llm_semaphore
+        assert secondary._select_llm_semaphore() is main._llm_semaphore
         assert secondary.get_llm_semaphore_max() == 3
 
     def test_relation_match_prompt_caps_each_relation_content(self, monkeypatch):

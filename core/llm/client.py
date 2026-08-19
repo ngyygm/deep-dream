@@ -34,7 +34,6 @@ from .json_repair import (
     _JSON_RETRY_TRUNCATION_SUFFIX,
 )
 from .mock_response import _mock_json_fence, mock_llm_response
-from .priority_semaphore import PrioritySemaphore, _is_rate_limit_tpm_error
 from .prompts import (
     _LLM_BACKOFF_SCHEDULE,
     _LLM_MAX_FAILURE_ROUNDS,
@@ -44,19 +43,71 @@ from .prompts import (
     _LLM_TPM_SLEEP_CAP_SECONDS,
     _CONNECTION_ERROR_KEYWORDS,
     _CONTEXT_OVERFLOW_NEEDLES,
-    LLM_PRIORITY_STEP1,
-    LLM_PRIORITY_STEP2,
-    LLM_PRIORITY_STEP3,
-    LLM_PRIORITY_STEP4,
-    LLM_PRIORITY_STEP5,
-    LLM_PRIORITY_STEP6,
-    LLM_PRIORITY_STEP7,
+    LLM_PRIORITY_ALIGN,
+    LLM_PRIORITY_EXTRACT,
     estimate_text_token_count,
     estimate_messages_token_count,
     error_suggests_context_overflow,
     ollama_root_from,
     is_valid_utf8,
 )
+
+try:
+    from openai import RateLimitError
+except ImportError:  # pragma: no cover
+    RateLimitError = None  # type: ignore[misc,assignment]
+
+# Static error keywords — computed once at import time, not per-call
+_RATE_LIMIT_KEYWORDS = ("rate_limit", "rate limit", "tpm", "throttl", "capacity", "overloaded")
+
+
+def _is_rate_limit_tpm_error(exc: BaseException, _pre_lowered: str = None) -> bool:
+    """429 / TPM / 速率限制：应长时间退避直至恢复，不计入普通重试上限。"""
+    if RateLimitError is not None and isinstance(exc, RateLimitError):
+        return True
+    code = getattr(exc, "status_code", None)
+    if code == 429:
+        return True
+    s = _pre_lowered if _pre_lowered is not None else str(exc).lower()
+    # 检查 429 状态码相关字符串
+    if "429" in s and ("error code" in s or "status code" in s):
+        return True
+    # 检查速率限制关键词（不依赖 429 状态码）
+    return any(k in s for k in _RATE_LIMIT_KEYWORDS)
+
+
+class SharedLLMSemaphore:
+    """FIFO LLM 并发闸门 + active/max 监控计数。
+
+    优先级已降级为纯路由标签（LLM_PRIORITY_*），只决定请求走哪个端点，
+    不再参与排队顺序；acquire 的 priority 参数仅为调用点兼容而保留（忽略）。
+    """
+
+    def __init__(self, value: int):
+        v = max(1, int(value))
+        self._sem = threading.Semaphore(v)
+        self._max_value = v
+        self._active_lock = threading.Lock()
+        self._active = 0
+
+    @property
+    def active_count(self) -> int:
+        with self._active_lock:
+            return self._active
+
+    @property
+    def max_value(self) -> int:
+        return self._max_value
+
+    def acquire(self, priority: int = 0):
+        self._sem.acquire()
+        with self._active_lock:
+            self._active += 1
+
+    def release(self):
+        with self._active_lock:
+            self._active = max(0, self._active - 1)
+        self._sem.release()
 
 
 class LLMCallStats:
@@ -135,7 +186,7 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
                  connect_timeout_seconds: Optional[int] = None,
                  prompt_episode_max_chars: Optional[int] = None,
                  max_llm_concurrency: Optional[int] = None,
-                 shared_llm_semaphore: Optional[PrioritySemaphore] = None,
+                 shared_llm_semaphore: Optional[SharedLLMSemaphore] = None,
                  shared_llm_slot_max: Optional[int] = None,
                  openai_extra_body: Optional[Dict[str, Any]] = None,
                  alignment_base_url: Optional[str] = None,
@@ -233,11 +284,11 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
 
         # LLM 并发：一个全局闸门代表当前 LLM 服务的真实容量。
         # 旧版曾拆成 upstream/downstream 两池；这会让 extraction/alignment 双客户端在同一服务上超发。
-        # 现在统一走同一个 PrioritySemaphore；保留 upstream/downstream 字段只为监控兼容。
+        # 全局单一 FIFO 闸门（SharedLLMSemaphore）；upstream 命名仅为监控兼容。
         self._max_llm_concurrency: int = max_llm_concurrency or 0
         self._llm_upstream_slot_max: int = 0
-        self._llm_sem_upstream: Optional[PrioritySemaphore] = None
-        self._llm_semaphore: Optional[PrioritySemaphore] = None  # 兼容旧代码/测试：与上游相同或总池
+        self._llm_sem_upstream: Optional[SharedLLMSemaphore] = None
+        self._llm_semaphore: Optional[SharedLLMSemaphore] = None  # 兼容旧代码/测试：与上游相同或总池
         mc = max_llm_concurrency or 0
         if shared_llm_semaphore is not None:
             self._llm_sem_upstream = shared_llm_semaphore
@@ -246,7 +297,7 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
             self._max_llm_concurrency = self._llm_upstream_slot_max
         elif mc >= 1:
             self._llm_upstream_slot_max = int(mc)
-            self._llm_sem_upstream = PrioritySemaphore(self._llm_upstream_slot_max)
+            self._llm_sem_upstream = SharedLLMSemaphore(self._llm_upstream_slot_max)
             self._llm_semaphore = self._llm_sem_upstream
         # 线程局部变量：当前 LLM 调用优先级
         self._priority_local = threading.local()
@@ -282,7 +333,7 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
         self._cancel_check_fn = None
 
     def _in_alignment_phase(self, priority: int) -> bool:
-        return priority >= LLM_PRIORITY_STEP6
+        return priority >= LLM_PRIORITY_ALIGN
 
     def _use_alignment_llm_endpoint(self, priority: int) -> bool:
         """是否对本次请求使用对齐专用 LLM 配置（需显式开启 alignment_enabled）。"""
@@ -354,14 +405,14 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
 
     def effective_entity_snippet_length(self) -> int:
         """按当前线程优先级返回实体 content 截断长度（步骤9–10 可走 alignment 配置）。"""
-        p = getattr(self._priority_local, "priority", LLM_PRIORITY_STEP1)
+        p = getattr(self._priority_local, "priority", LLM_PRIORITY_EXTRACT)
         if self._use_alignment_llm_endpoint(p) and self.alignment_content_snippet_length is not None:
             return int(self.alignment_content_snippet_length)
         return int(self.content_snippet_length or 50)
 
     def effective_relation_snippet_length(self) -> int:
         """按当前线程优先级返回关系 content 截断长度，防止关系匹配 prompt 随库增长。"""
-        p = getattr(self._priority_local, "priority", LLM_PRIORITY_STEP1)
+        p = getattr(self._priority_local, "priority", LLM_PRIORITY_EXTRACT)
         if (
             self._use_alignment_llm_endpoint(p)
             and self.alignment_relation_content_snippet_length is not None
@@ -393,8 +444,8 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
     def _is_valid_utf8(self, text: str) -> bool:
         return is_valid_utf8(text)
 
-    def _select_llm_semaphore(self, priority: int) -> Optional[PrioritySemaphore]:
-        """所有 LLM 调用共享一个全局并发闸门；priority 只决定等待队列顺序。"""
+    def _select_llm_semaphore(self) -> Optional[SharedLLMSemaphore]:
+        """所有 LLM 调用共享一个全局 FIFO 闸门；priority 只是路由标签，不影响排队。"""
         return self._llm_sem_upstream
 
     def get_llm_semaphore_active_count(self) -> int:
@@ -580,7 +631,7 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
         _conn_failures = 0
         _tpm_round = 0
         _detailed_error_logged = False
-        _priority_init = getattr(self._priority_local, "priority", LLM_PRIORITY_STEP7)
+        _priority_init = getattr(self._priority_local, "priority", LLM_PRIORITY_ALIGN)
         _mt0 = self._effective_max_tokens_base(_priority_init)
         _effective_max_tokens = _mt0 if _mt0 is not None else 4096
         _cancel_fn = self._cancel_check_fn
@@ -589,7 +640,7 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
         _eff_key = self._effective_api_key(_priority_init)
         _eff_model = self._effective_model(_priority_init)
         _eff_think = self._effective_think_mode(_priority_init)
-        _sem = self._select_llm_semaphore(_priority_init)
+        _sem = self._select_llm_semaphore()
         while True:
             # 获取并发信号量（按优先级排队等待；上游/下游分池）
             _sem_held = False

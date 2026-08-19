@@ -14,7 +14,7 @@ from collections import defaultdict
 from core.models import Episode
 from core.debug_log import log as dbg, log_section as dbg_section, _ENABLED as _dbg_enabled
 from core.utils import wprint_info, wprint_warn
-from core.llm.client import LLM_PRIORITY_STEP6
+from core.llm.client import LLM_PRIORITY_ALIGN
 from .helpers import _AlignResult
 from .alignment_resolution import _ResolutionMixin
 from .alignment_orphan import _OrphanMixin
@@ -273,7 +273,7 @@ class _PipelineExtractionMixin(_ResolutionMixin, _OrphanMixin, _CacheMixin, _Rel
         p_lo, p_hi = progress_range
         _win_label = f"窗口 {window_index + 1}/{total_windows}"
 
-        self.llm_client._priority_local.priority = LLM_PRIORITY_STEP6
+        self.llm_client._priority_local.priority = LLM_PRIORITY_ALIGN
         if verbose:
             wprint_info("【步骤9】实体｜开始｜对齐写入")
         elif verbose_steps:

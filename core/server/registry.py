@@ -150,10 +150,10 @@ class GraphRegistry:
         多任务 worker 的总在途请求被限制在 llm.max_concurrency 内。
         """
         if self._shared_llm_semaphore is None:
-            from core.llm.client import PrioritySemaphore
+            from core.llm.client import SharedLLMSemaphore
             llm = self._config.get("llm") or {}
             slots = max(1, int(llm.get("max_concurrency") or 1))
-            self._shared_llm_semaphore = PrioritySemaphore(slots)
+            self._shared_llm_semaphore = SharedLLMSemaphore(slots)
         return self._shared_llm_semaphore
 
     def _get_judge_service(self):

@@ -15,7 +15,7 @@ from core.utils import (
 )
 
 from core.models import Relation
-from core.llm.client import LLMClient
+from core.llm.client import LLMClient, LLM_PRIORITY_ALIGN
 from core.debug_log import log as dbg, log_section as dbg_section, _ENABLED as _dbg_enabled
 from core.content_schema import RELATION_SECTIONS, compute_content_patches
 import time as _time
@@ -255,7 +255,7 @@ class RelationProcessor(_RelationConstructionMixin):
             pair_items = list(relations_by_pair.items())
             results: List[Optional[Tuple[List[Relation], List[Relation]]]] = [None] * len(pair_items)
             _distill_step = self.llm_client._current_distill_step
-            _priority = getattr(self.llm_client._priority_local, 'priority', 6)
+            _priority = getattr(self.llm_client._priority_local, 'priority', LLM_PRIORITY_ALIGN)
 
             def task(idx: int, pair_key: Tuple[str, str], pair_relations: List[Dict[str, str]]):
                 # 将主线程的 distill step 和优先级传播到工作线程（threading.local）

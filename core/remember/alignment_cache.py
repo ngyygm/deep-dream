@@ -8,7 +8,7 @@ from datetime import datetime
 
 from core.models import Episode
 from core.utils import compute_doc_hash, wprint_info
-from core.llm.client import LLM_PRIORITY_STEP1
+from core.llm.client import LLM_PRIORITY_EXTRACT
 
 
 class _CacheMixin:
@@ -26,7 +26,7 @@ class _CacheMixin:
                       episode_type: str = "",
                       run_id: str = "") -> Episode:
         """步骤1：更新记忆缓存。必须在 _cache_lock 下调用，保证 cache 链串行。"""
-        self.llm_client._priority_local.priority = LLM_PRIORITY_STEP1
+        self.llm_client._priority_local.priority = LLM_PRIORITY_EXTRACT
         if verbose:
             wprint_info("【步骤1】缓存｜开始｜")
         elif verbose_steps:

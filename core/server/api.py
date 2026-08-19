@@ -487,7 +487,7 @@ def create_app(
 
 def _check_llm_available(processor) -> tuple[bool, str | None]:
     """启动前握手：检查上游 LLM；若启用 alignment 专用通道，再按步骤 6/7 优先级检查对齐端点。"""
-    return check_llm_available(processor, priority_steps=[6])
+    return check_llm_available(processor)
 
 
 def _call_llm_with_backoff(processor, prompt, timeout=60, max_waits=5, backoff_base_seconds=3):

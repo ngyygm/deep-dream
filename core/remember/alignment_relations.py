@@ -11,7 +11,7 @@ from typing import Dict, Optional
 from core.models import Episode
 from core.debug_log import log as dbg, _ENABLED as _dbg_enabled
 from core.utils import wprint_info
-from core.llm.client import LLM_PRIORITY_STEP7
+from core.llm.client import LLM_PRIORITY_ALIGN
 from .helpers import _AlignResult
 
 
@@ -46,7 +46,7 @@ class _RelationAlignMixin:
         _win_label = f"窗口 {window_index + 1}/{total_windows}"
         _step_size = p_hi - p_lo
 
-        self.llm_client._priority_local.priority = LLM_PRIORITY_STEP7
+        self.llm_client._priority_local.priority = LLM_PRIORITY_ALIGN
         if verbose:
             wprint_info("【步骤10】关系｜开始｜对齐写入")
         elif verbose_steps:
