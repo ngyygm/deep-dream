@@ -10,7 +10,7 @@ import numpy as np
 import logging
 
 from core.models import Entity
-from core.storage.sqlite.manager import SQLiteGraphStorageManager as Neo4jStorageManager
+from core.storage.sqlite.manager import SQLiteGraphStorageManager
 from core.llm.client import LLMClient
 from core.utils import (
     wprint_info,
@@ -20,12 +20,44 @@ from core.utils import (
 )
 from core.debug_log import log_struct as _dbg_struct
 from core.remember._shared import _doc_basename
+from core.remember.entity_batch import entity_needs_batch_llm
 
 logger = logging.getLogger(__name__)
 
 
+def _build_window_batch_verdicts(
+    llm_client: LLMClient,
+    extracted_entities: List[Dict[str, str]],
+    candidate_table: Dict[int, List[Dict[str, Any]]],
+    context_text: Optional[str],
+) -> Dict[str, Dict[str, Any]]:
+    """窗口级实体批量预裁决：一次 LLM 调用覆盖所有需要裁决的实体。
+
+    返回 {entity_name: verdict}；失败/无待裁决实体时返回空 dict（逐实体回退）。
+    """
+    if llm_client is None:
+        return {}
+    needs = []
+    cands_by_name: Dict[str, List[Dict[str, Any]]] = {}
+    for idx, ent in enumerate(extracted_entities):
+        name = str(ent.get("name", ""))
+        cands = candidate_table.get(idx, []) or []
+        if name and entity_needs_batch_llm(name, cands):
+            if name not in cands_by_name:
+                needs.append({"name": name, "content": ent.get("content", "")})
+                cands_by_name[name] = cands
+    if not needs:
+        return {}
+    try:
+        return llm_client.resolve_entities_window_batch(
+            needs, cands_by_name, context_text=context_text) or {}
+    except Exception as exc:
+        wprint_info(f"[window_batch] 实体窗口批量裁决异常，回退逐实体: {exc}")
+        return {}
+
+
 def _process_entities_sequential(
-    storage: Neo4jStorageManager,
+    storage: SQLiteGraphStorageManager,
     llm_client: LLMClient,
     candidate_builder,  # EntityCandidateBuilder
     entity_tree_log: bool,
@@ -46,6 +78,7 @@ def _process_entities_sequential(
     prefetched_embeddings: Optional[Tuple[Optional[Any], Optional[Any]]] = None,
     already_versioned_family_ids: Optional[set] = None,
     window_timings_ref: Optional[Dict[str, float]] = None,
+    window_batch_alignment: bool = False,
 ) -> Tuple[List[Entity], List[Dict], Dict[str, str]]:
     """串行处理实体（原逻辑）。"""
     from core.remember.entity import _preprocess_extraction_context
@@ -70,6 +103,15 @@ def _process_entities_sequential(
     )
     if window_timings_ref is not None:
         window_timings_ref["step9-entity_candidate_table"] = time.monotonic() - _t_candidate
+
+    # strong-v1 窗口级批量预裁决：一次调用覆盖全部待裁决实体
+    _window_verdicts: Dict[str, Dict[str, Any]] = {}
+    if window_batch_alignment:
+        _t_wb = time.monotonic()
+        _window_verdicts = _build_window_batch_verdicts(
+            llm_client, extracted_entities, candidate_table, context_text)
+        if window_timings_ref is not None:
+            window_timings_ref["step9-window_batch_alignment"] = time.monotonic() - _t_wb
 
     total_entities = len(extracted_entities)
     _skipped_orphans = 0
@@ -110,6 +152,7 @@ def _process_entities_sequential(
             already_versioned_family_ids=already_versioned_family_ids,
             entity_name_to_id=entity_name_to_id,
             prefetched_embedding=_ent_emb,
+            precomputed_verdict=_window_verdicts.get(extracted_entity.get("name", "")) or None,
         )
 
         if entity:
@@ -150,7 +193,7 @@ def _process_entities_sequential(
 
 
 def _process_entities_parallel(
-    storage: Neo4jStorageManager,
+    storage: SQLiteGraphStorageManager,
     llm_client: LLMClient,
     candidate_builder,
     entity_tree_log: bool,
@@ -173,6 +216,7 @@ def _process_entities_parallel(
     prefetched_embeddings: Optional[Tuple[Optional[Any], Optional[Any]]] = None,
     already_versioned_family_ids: Optional[set] = None,
     window_timings_ref: Optional[Dict[str, float]] = None,
+    window_batch_alignment: bool = False,
 ) -> Tuple[List[Entity], List[Dict], Dict[str, str]]:
     """多线程处理实体；合并冲突时以数据库中已存在的 family_id 为准。"""
     from core.remember.entity import _preprocess_extraction_context
@@ -199,6 +243,13 @@ def _process_entities_parallel(
     if window_timings_ref is not None:
         window_timings_ref["step9-entity_candidate_table"] = time.monotonic() - _t_candidate
     total_entities = len(extracted_entities)
+
+    # strong-v1 窗口级批量预裁决：一次调用覆盖全部待裁决实体（线程启动前完成）
+    _window_verdicts: Dict[str, Dict[str, Any]] = {}
+    if window_batch_alignment:
+        _window_verdicts = _build_window_batch_verdicts(
+            llm_client, extracted_entities, candidate_table, context_text)
+
     _distill_step = llm_client._current_distill_step
     _priority = getattr(llm_client._priority_local, 'priority', 5)
     _version_lock = threading.RLock()
@@ -249,6 +300,7 @@ def _process_entities_parallel(
             already_versioned_family_ids=already_versioned_family_ids,
             _version_lock=_version_lock,
             prefetched_embedding=_ent_emb,
+            precomputed_verdict=_window_verdicts.get(extracted_entity.get("name", "")) or None,
         )
         return (idx, entity, relations, name_mapping, to_persist)
 

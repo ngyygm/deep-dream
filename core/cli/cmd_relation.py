@@ -15,7 +15,6 @@ from typing import Any
 import click
 
 from ._ctx import CliContext
-from ._exit_codes import NOT_FOUND, OK
 from ._helpers import relation_evidence
 from ._output import OutputManager
 
@@ -105,9 +104,9 @@ def evidence(ctx: click.Context, concept_a: str, concept_b: str, limit: int, gra
     out = OutputManager(ctx)
 
     # Resolve the active graph ID from the root context params.
-    root_params = ctx.parent.params if ctx.parent else {}
+    root_params = ctx.find_root().params
     config_path = root_params.get("config", "service_config.json")
-    config = obj.load_config(config_path)
+    obj.load_config(config_path)
     graph_id = obj.get_active_graph(graph)
 
     # Acquire storage and run the query.

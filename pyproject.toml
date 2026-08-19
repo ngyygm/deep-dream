@@ -14,19 +14,11 @@ dependencies = [
     # Core
     "openai>=1.0.0",
     "flask>=3.0",
+    "PyJWT>=2.0",
     "httpx>=0.24",
-    "python-dateutil>=2.8.0",
     "numpy>=1.21.0",
-    # Storage
-    "hnswlib>=0.7.0",
-    # Embedding / ML
+    # Embedding / ML（sentence-transformers 自带 torch/transformers 依赖）
     "sentence-transformers>=2.2.0",
-    "transformers>=4.51.0,<5.0.0",
-    "pillow>=9.1.0",
-    # Visualization
-    "pyvis>=0.3.0",
-    "networkx>=3.0.0",
-    "matplotlib>=3.5.0",
     # CLI
     "click>=8.1",
     "rich>=13.0",
@@ -34,6 +26,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0", "pytest-cov", "ruff"]
+benchmark = ["nltk>=3.8", "regex>=2023.0", "tqdm>=4.66"]
+benchmark-agent = ["fastmcp==3.2.4"]
 
 [project.scripts]
 deep-dream = "core.cli:main"
@@ -41,6 +35,9 @@ deep-dream = "core.cli:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["core*"]
+
+[tool.setuptools.package-data]
+"core.agent" = ["policies/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["core/tests"]

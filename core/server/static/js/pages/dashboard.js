@@ -157,7 +157,6 @@
   function buildStatCards(overview, graphs, accessStats) {
     const totalEntities = sumAcrossGraphs(graphs, 'entities');
     const totalRelations = sumAcrossGraphs(graphs, 'relations');
-    const totalEpisodes = sumAcrossGraphs(graphs, 'episodes');
     const successRate = accessStats.success_rate ?? 0;
     const avgLatency = accessStats.avg_duration_ms ?? 0;
 
@@ -170,8 +169,7 @@
     const entityTrend = updateHistoryAndGetTrend(_entityCountHistory, totalEntities);
     const relationTrend = updateHistoryAndGetTrend(_relationCountHistory, totalRelations);
 
-    const isNeo4jBackend = isNeo4j();
-    const gridCols = isNeo4jBackend ? 'lg:grid-cols-8' : 'lg:grid-cols-6';
+    const gridCols = 'lg:grid-cols-6';
 
     let html = `<div class="grid grid-cols-2 md:grid-cols-3 ${gridCols} gap-4 mb-6">
       <!-- Uptime -->
@@ -216,20 +214,6 @@
         <div class="stat-value">${avgLatency.toFixed(1)}<span style="font-size:0.875rem;color:var(--text-muted);"> ${t('dashboard.ms')}</span></div>
         <div style="font-size:0.75rem;color:var(--text-muted);margin-top:0.25rem;">${t('dashboard.peakMs', { count: formatNumber(accessStats.max_duration_ms) })}</div>
       </div>`;
-
-    if (isNeo4jBackend) {
-      html += `
-      <!-- Episodes (Neo4j only) -->
-      <div class="stat-card">
-        <div class="stat-label" data-i18n="dashboard.episodes">${t('dashboard.episodes')}</div>
-        <div class="stat-value" style="color:#14b8a6;">${formatNumber(totalEpisodes)}</div>
-      </div>
-      <!-- Communities (Neo4j only) -->
-      <div class="stat-card" style="cursor:pointer;" onclick="navigate('#communities')">
-        <div class="stat-label">${t('nav.communities')}</div>
-        <div class="stat-value" style="color:#8b5cf6;">${formatNumber(_communityCount)}</div>
-      </div>`;
-    }
 
     html += '</div>';
     return html;
@@ -479,8 +463,6 @@
   let _tasks = [];
   let _logs = [];
   let _accessStats = {};
-  let _episodeCount = 0;
-  let _communityCount = 0;
 
   // History buffers for trend indicators and sparklines (last 20 data points)
   let _entityCountHistory = [];
@@ -546,16 +528,6 @@
       updateApiStats();
       updateStatCards(); // stat cards also depend on access stats
     } catch (err) { console.warn('fetchAccessStats failed:', err); }
-  }
-
-  async function fetchEpisodeCount() {
-    if (!isNeo4j()) return;
-    try {
-      const res = await state.api.findStats(state.currentGraphId);
-      _episodeCount = res.data?.total_episodes || 0;
-      _communityCount = res.data?.total_communities || 0;
-      updateStatCards();
-    } catch (err) { console.warn('fetchEpisodeCount failed:', err); }
   }
 
   async function fetchGraphStats() {
@@ -784,7 +756,6 @@
       fetchTasks(),
       fetchLogs(),
       fetchAccessStats(),
-      fetchEpisodeCount(),
       fetchGraphStats(),
     ]);
 
@@ -877,7 +848,6 @@
     _tasks = [];
     _logs = [];
     _accessStats = {};
-    _communityCount = 0;
   }
 
   // ---------------------------------------------------------------------------

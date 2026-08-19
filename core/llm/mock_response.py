@@ -75,6 +75,29 @@ def mock_llm_response(prompt: str) -> str:
             })
         return pairs
 
+    def _names_from_current_text() -> list[str]:
+        text = prompt.split("文本：", 1)[1] if "文本：" in prompt else prompt
+        text = text.split("只输出", 1)[0]
+        names = []
+        for name in re.findall(r"\b[A-Z][A-Za-z]*(?:\s+[A-Z][A-Za-z]*)?\b", text):
+            if name not in {"JSON", "Markdown"} and name not in names:
+                names.append(name)
+        return names[:8] or ["示例实体1", "示例实体2"]
+
+    def _names_from_concept_list() -> list[str]:
+        if "概念列表：" not in prompt:
+            return []
+        block = prompt.split("概念列表：", 1)[1].split("\n", 1)[0]
+        if "、" in block:
+            return [name.strip(" \"'[]") for name in block.split("、") if name.strip(" \"'[]")]
+        try:
+            value = json.loads(block)
+            if isinstance(value, list):
+                return [str(item) for item in value]
+        except (TypeError, json.JSONDecodeError):
+            pass
+        return [name.strip() for name in block.split(",") if name.strip()]
+
     if ("更新记忆缓存" in prompt or "memory_cache" in prompt_lower
             or "创建初始记忆缓存" in prompt or "创建初始的记忆缓存" in prompt):
         return """当前摘要：正在处理文档内容。当前阅读的是文档的开头部分，介绍了故事的基本背景和主要人物。重要细节包括主要人物的基本信息和故事的初始情境。
@@ -87,6 +110,89 @@ def mock_llm_response(prompt: str) -> str:
 系统状态：
 - 已处理文本范围：处理到"文档开始"结束
 - 当前文档名：示例文档.txt"""
+    elif "<窗口文本>" in prompt and "请一次性抽取" in prompt:
+        window_block = _extract_tag_block("窗口文本")
+        names = []
+        for name in re.findall(r"\b[A-Z][A-Za-z]*(?:\s+[A-Z][A-Za-z]*)?\b", window_block):
+            if name not in {"JSON", "Markdown"} and name not in names:
+                names.append(name)
+        names = names[:6] or ["示例实体1", "示例实体2"]
+        return _mock_json_fence({
+            "entities": [
+                {"name": name, "content": f"{name}是当前文本中具有明确事实信息的核心概念。"}
+                for name in names
+            ],
+            "relations": [
+                {
+                    "entity1_name": left,
+                    "entity2_name": right,
+                    "content": f"{left}与{right}在当前事件中直接相关。",
+                }
+                for left, right in zip(names, names[1:])
+            ],
+        })
+    elif "<待对齐实体列表>" in prompt and "逐实体判断" in prompt:
+        results = []
+        for block in re.findall(r'<待对齐实体 name="([^"]+)">(.*?)</待对齐实体>', prompt, re.DOTALL):
+            name, body = block
+            match_id = ""
+            for fid, cand_name in re.findall(
+                    r"候选\d+: family_id=(\S*) \| name=([^|（]+)", body):
+                if cand_name.strip() == name:
+                    match_id = fid.strip()
+                    break
+            results.append({
+                "name": name,
+                "match_existing_id": match_id,
+                "update_mode": "reuse_existing" if match_id else "create_new",
+                "merged_name": "",
+                "relations_to_create": [],
+                "confidence": 0.9 if match_id else 0.6,
+            })
+        return _mock_json_fence({"results": results})
+    elif "<待裁决关系对列表>" in prompt and "逐对判断" in prompt:
+        results = []
+        for e1, e2, body in re.findall(
+                r'<待裁决关系对 entity1="([^"]+)" entity2="([^"]+)">(.*?)</待裁决关系对>',
+                prompt, re.DOTALL):
+            results.append({
+                "entity1_name": e1,
+                "entity2_name": e2,
+                "action": "create_new",
+                "matched_relation_id": "",
+                "need_update": True,
+                "confidence": 0.8,
+            })
+        return _mock_json_fence({"results": results})
+    elif "概念锚点" in prompt and "内部是字符串数组" in prompt:
+        return _mock_json_fence(_names_from_current_text())
+    elif "你找的概念还不够齐全" in prompt:
+        return _mock_json_fence([])
+    elif "关系对数组" in prompt or ("给定概念列表" in prompt and "概念对" in prompt):
+        names = _names_from_concept_list()
+        return _mock_json_fence([[left, right] for left, right in zip(names, names[1:])][:3])
+    elif "为每个概念撰写描述" in prompt and "每个元素含 name 和 content" in prompt:
+        return _mock_json_fence([
+            {"name": name, "content": f"{name}是当前文本中具有明确事实信息的核心概念。"}
+            for name in _names_from_concept_list()
+        ])
+    elif "描述概念\"" in prompt and '"content"' in prompt:
+        match = re.search(r'描述概念"([^"]+)"', prompt)
+        name = match.group(1) if match else "示例实体"
+        return _mock_json_fence({"content": f"{name}是当前文本中具有明确事实信息的核心概念。"})
+    elif "根据文本描述每对概念的关系" in prompt:
+        quoted = re.findall(r"['\"]([^'\"]+)['\"]", prompt.split("文本：", 1)[0])
+        pairs = list(zip(quoted[::2], quoted[1::2]))
+        return _mock_json_fence([
+            {"entity1": left, "entity2": right, "content": f"{left}与{right}在当前事件中直接相关。"}
+            for left, right in pairs[:6]
+        ])
+    elif "之间的关系" in prompt and "关系描述" in prompt and '"content"' in prompt:
+        names = re.findall(r'描述"([^"]+)"和"([^"]+)"', prompt)
+        left, right = names[0] if names else ("示例实体1", "示例实体2")
+        return _mock_json_fence({"content": f"{left}与{right}在当前事件中直接相关。"})
+    elif '"verdict": "same|different|uncertain"' in prompt:
+        return _mock_json_fence({"verdict": "different", "confidence": 0.9})
     elif "候选实体列表" in prompt and "match_existing_id" in prompt:
         _candidate_block = prompt.split("</当前实体>")[1] if "</当前实体>" in prompt else ""
         _current_name_match = _CURRENT_ENTITY_NAME_RE.search(prompt)

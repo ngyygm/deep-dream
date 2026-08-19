@@ -54,6 +54,9 @@ distill_pipeline/
 bench_*.json
 benchmark_*.json
 bench_results/
+.benchmark_data/
+.benchmark_runs/
+.benchmark_runtime/
 
 # 实验结果产物（代码保留）
 experiments/*/results/
@@ -114,3 +117,12 @@ Gemma4-*
 
 # Migration test data
 graph_migrated*/
+
+# 本地基准/工具状态目录（含内嵌 git 仓库，勿提交）
+.aris/
+.benchmark_refs/
+.etc-*/
+
+# 机器本地基准配置（含内部端点 URL，勿提交；example 已脱敏）
+service_config.kimi.json
+service_config.kimi-judge.json

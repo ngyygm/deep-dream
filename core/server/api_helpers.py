@@ -145,9 +145,9 @@ def build_processor(config: Dict[str, Any]):
         "embedding_use_local": use_local,
         "embedding_cache_max_size": embedding.get("cache_max_size"),
         "embedding_cache_ttl": embedding.get("cache_ttl"),
-        "load_cache_memory": runtime_task.get("load_cache_memory", pipeline.get("load_cache_memory")),
+        "load_cache_memory": runtime_task.get("load_cache_memory"),
         "max_concurrent_windows": _optional_int(
-            runtime_concurrency.get("window_workers", pipeline.get("max_concurrent_windows"))
+            runtime_concurrency.get("window_workers")
         ),
     }
     for key in (

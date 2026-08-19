@@ -223,6 +223,14 @@ ENTITY_ALIGNMENT_JUDGE_USER = """概念A（新抽取）: "{name_a}"
 # 四、记忆缓存相关（Memory Cache）
 # ============================================================
 
+STRUCTURED_WINDOW_EXTRACTION_SYSTEM_PROMPT = """你是知识图谱抽取引擎。从窗口文本中一次性抽取概念实体与实体间关系，每项都附带完整的内容描述。
+
+要求：
+1. 实体：窗口文本中值得长期记忆的概念对象（人物/组织/项目/物品/地点/时间事件/抽象概念等）。名称用文本中最规范的简短称谓；content 用完整句子描述该实体在文本中的身份、属性与作用，30-120字。
+2. 关系：只连接你已抽取的实体，关系名使用与实体列表完全一致的名称；content 描述两个实体之间的具体关系内容（谁对谁做了什么/属于什么/状态如何），20-100字。
+3. 不要为了凑数硬造实体或关系；宁缺毋滥。代词（他/她/它）不能作为实体名。
+4. 只输出一个 ```json``` 代码块，不要任何其他文字。"""
+
 UPDATE_MEMORY_CACHE_SYSTEM_PROMPT = """你是记忆管理器。根据<记忆缓存>和<输入文本>，更新记忆缓存。
 
 **只输出以下两个 Markdown section，不要输出其他 section。**
@@ -286,16 +294,6 @@ MERGE_MULTIPLE_RELATION_CONTENTS_SYSTEM_PROMPT = _make_merge_contents_prompt("�
 # ============================================================
 # 六、知识图谱整理 - 批量与初步筛选（Knowledge Graph Organization）
 # ============================================================
-
-ANALYZE_ENTITY_CANDIDATES_PRELIMINARY_SYSTEM_PROMPT = """初步筛选候选概念。只选出与当前概念高度可能同一概念的候选（名称相似/别名/content描述同一对象）。
-
-排除标准：类型明显不同的候选直接排除。
-不确定的不要选。后续会详细判断。
-
-输出 ```json``` 代码块：
-```json
-{"candidates": ["family_id列表"]}
-```"""
 
 RESOLVE_ENTITY_CANDIDATES_BATCH_SYSTEM_PROMPT = """你是知识图谱概念对齐系统。判断"当前概念"是否与某个候选是同一对象。
 

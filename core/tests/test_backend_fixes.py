@@ -218,7 +218,6 @@ class TestRememberConcurrencyConfig:
 
         assert cfg["runtime"]["concurrency"]["queue_workers"] == 1
         assert cfg["runtime"]["concurrency"]["window_workers"] == 3
-        assert cfg["pipeline"]["max_concurrent_windows"] == 3
 
     def test_window_workers_auto_caps_at_three(self):
         from core.server.config import _normalize_runtime_config
@@ -252,6 +251,36 @@ class TestRememberConcurrencyConfig:
 
         assert secondary._select_llm_semaphore(0) is main._llm_semaphore
         assert secondary.get_llm_semaphore_max() == 3
+
+    def test_relation_match_prompt_caps_each_relation_content(self, monkeypatch):
+        from core.llm.client import LLMClient
+
+        client = LLMClient(
+            context_window_tokens=4096,
+            relation_content_snippet_length=20,
+        )
+        captured = {}
+
+        def fake_call(prompt, system_prompt):
+            captured["prompt"] = prompt
+            captured["system_prompt"] = system_prompt
+            return "null"
+
+        monkeypatch.setattr(client, "_call_llm", fake_call)
+        result = client.judge_relation_match(
+            {"entity1": "A", "entity2": "B", "content": "N" * 5000},
+            [{
+                "family_id": f"rel-{index}",
+                "source_document": "session.md",
+                "content": "E" * 5000,
+            } for index in range(30)],
+        )
+
+        assert result is None
+        assert "N" * 21 not in captured["prompt"]
+        assert "E" * 21 not in captured["prompt"]
+        assert "共 30 条，已省略 15 条" in captured["prompt"]
+        assert len(captured["prompt"]) < 3000
 
     def test_progress_detail_reports_chain_eta(self):
         from core.server.task_journal import RememberTask
@@ -308,3 +337,16 @@ class TestRememberConcurrencyConfig:
         assert "model" not in alignment
         assert "base_url" not in alignment
 
+    def test_main_extra_body_does_not_enable_alignment_override(self):
+        from core.server.config import merge_llm_alignment, merge_llm_extraction
+
+        extra = {"chat_template_kwargs": {"enable_thinking": False}}
+        llm = {"extra_body": extra}
+        assert merge_llm_alignment(llm) == {}
+        assert merge_llm_extraction(llm) == {}
+
+        llm["extraction"] = True
+        assert merge_llm_extraction(llm)["extra_body"] == extra
+
+        llm["alignment"] = {"enabled": True, "extra_body": extra}
+        assert merge_llm_alignment(llm)["extra_body"] == extra

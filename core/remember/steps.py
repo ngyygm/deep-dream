@@ -144,6 +144,12 @@ class _ExtractionStepsMixin:
         # ==============================================================
         _t = _time.time()
         entity_names = _normalize_and_dedup_entity_names(raw_names)
+        if getattr(self, "remember_profile", "current") == "quality-v1":
+            from .quality import filter_entity_names
+            entity_names = filter_entity_names(
+                entity_names, input_text,
+                limit=getattr(self, "remember_max_entities_per_window", 16),
+            )
         _elapsed = _time.time() - _t
         _record_timing("step3_entity_dedup", _elapsed)
         if verbose or verbose_steps:
@@ -395,6 +401,12 @@ class _ExtractionStepsMixin:
                 wprint_info(f"【步骤6】关系对发现（并行）｜{_initial_count}对初始{_ref_tag} → 总{len(relation_pairs)}对｜{_elapsed5:.1f}s (wall)")
         else:
             _elapsed5 = 0.0
+        if getattr(self, "remember_profile", "current") == "quality-v1":
+            from .quality import cap_relation_pairs
+            relation_pairs = cap_relation_pairs(
+                relation_pairs,
+                limit=getattr(self, "remember_max_relations_per_window", 24),
+            )
         _record_timing("step6_relation_discovery", _elapsed5)
 
         _progress(0.60, f"{_win} · 步骤6: 关系发现完成", f"{len(relation_pairs)} 对")

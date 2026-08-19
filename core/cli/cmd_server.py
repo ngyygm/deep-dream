@@ -22,7 +22,7 @@ from typing import Any, Dict, Optional
 
 import click
 
-from ._exit_codes import ERROR, OK
+from ._exit_codes import ERROR
 
 
 # ------------------------------------------------------------------
@@ -60,7 +60,7 @@ def _log_file_path(ctx: click.Context) -> Path:
 
 def _resolve_config_path(ctx: click.Context) -> str:
     """Return the config file path stored on the root Click context."""
-    root_params = ctx.parent.params if ctx.parent else {}
+    root_params = ctx.find_root().params
     return root_params.get("config", "service_config.json")
 
 
@@ -553,7 +553,7 @@ def status(ctx: click.Context) -> None:
     else:
         click.echo(f"Server is NOT running (stale PID file, PID {pid}).", err=True)
         click.echo(f"  PID file: {pid_path}", err=True)
-        click.echo(f"  Hint: Run 'deep-dream server start' to launch.", err=True)
+        click.echo("  Hint: Run 'deep-dream server start' to launch.", err=True)
 
 
 # ------------------------------------------------------------------

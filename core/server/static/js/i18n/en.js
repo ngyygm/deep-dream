@@ -64,7 +64,6 @@ window.I18N_LANG_EN = {
   'nav.relations': 'Relations',
   'nav.apiTest': 'API Test',
   'nav.episodes': 'Episodes',
-  'nav.communities': 'Communities',
 
   // Theme
   'theme.dark': 'Dark mode',
@@ -205,7 +204,6 @@ window.I18N_LANG_EN = {
   'graph.sc_amberGlow': 'Amber glow = multi-version entity',
   'graph.sc_versionBadge': '[v2] = version count',
   'graph.displayOptions': 'Display Options',
-  'graph.communityColoring': 'Color by Community',
   'graph.relationStrength': 'Relation Strength (edge width)',
   'graph.relationScope': 'Relation Scope',
   'graph.scopeAccumulated': 'Inherited to Current',
@@ -569,32 +567,6 @@ window.I18N_LANG_EN = {
   'episodes.showing': 'Showing',
   'episodes.next': 'Next',
 
-  // Communities
-  'communities.title': 'Community Detection',
-  'communities.detect': 'Detect Communities',
-  'communities.detecting': 'Detecting...',
-  'communities.detectSuccess': 'Detection complete: {count} communities found ({time}s)',
-  'communities.clear': 'Clear Communities',
-  'communities.clearConfirm': 'Clear all community labels?',
-  'communities.clearSuccess': 'Community labels cleared',
-  'communities.algorithm': 'Algorithm',
-  'communities.resolution': 'Resolution',
-  'communities.minSize': 'Min Size',
-  'communities.stats': 'Results',
-  'communities.communitiesCount': 'communities',
-  'communities.largest': 'Largest',
-  'communities.avgSize': 'Avg Size',
-  'communities.elapsed': 'Elapsed',
-  'communities.community': 'Community',
-  'communities.members': 'Members',
-  'communities.internalRelations': 'Internal Relations',
-  'communities.subgraph': 'Subgraph Visualization',
-  'communities.noCommunities': 'No communities detected yet. Click the button above to run community detection.',
-  'communities.neighborGraph': 'View Neighbor Graph',
-  'communities.communityBadge': 'Community',
-  'communities.loadedCount': 'Loaded {loaded} / {total}',
-
-
   // Entity features
   'entities.summary': 'Summary',
   'entities.attributes': 'Attributes',
@@ -753,7 +725,6 @@ window.I18N_LANG_EN = {
   'slogan.entities': 'Browse and manage all entities',
   'slogan.relations': 'Browse and manage relations',
   'slogan.episodes': 'View processing records and episodes',
-  'slogan.communities': 'Discover community structures in your graph',
   'slogan.apiTest': 'Test API endpoints directly',
 
   // Settings

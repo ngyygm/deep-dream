@@ -8,7 +8,7 @@ import uuid
 import logging
 
 from core.models import Entity
-from core.storage.sqlite.manager import SQLiteGraphStorageManager as Neo4jStorageManager
+from core.storage.sqlite.manager import SQLiteGraphStorageManager
 from core.content_schema import (
     ENTITY_SECTIONS,
     compute_content_patches,
@@ -67,7 +67,7 @@ def _build_new_entity(name: str, content: str, episode_id: str,
     )
 
 
-def _create_new_entity(storage: Neo4jStorageManager,
+def _create_new_entity(storage: SQLiteGraphStorageManager,
                        name: str, content: str, episode_id: str,
                        source_document: str = "", base_time: Optional[datetime] = None,
                        confidence: Optional[float] = None) -> Entity:
@@ -126,7 +126,7 @@ def _build_entity_version(family_id: str, name: str, content: str,
     return entity
 
 
-def _create_entity_version(storage: Neo4jStorageManager,
+def _create_entity_version(storage: SQLiteGraphStorageManager,
                            family_id: str, name: str, content: str,
                            episode_id: str, source_document: str = "",
                            base_time: Optional[datetime] = None,

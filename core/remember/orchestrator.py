@@ -34,7 +34,7 @@ _REMEMBER_DEFAULTS = {
 import uuid
 
 from .document import DocumentProcessor
-from core.llm.client import LLMClient
+from core.llm.client import LLMClient, LLMCallStats
 from core.storage.embedding import EmbeddingClient
 from core.storage import create_storage_manager
 from .entity import EntityProcessor
@@ -102,7 +102,7 @@ class TemporalMemoryGraphProcessor(_PipelineMixin, _PipelineExtractionMixin, _Ex
             return _remember_cfg.get(primary_key)
 
         self.remember_mode = str(_remember_cfg.get("mode") or "dual_model").strip() or "dual_model"
-        if self.remember_mode not in {"standard", "dual_model"}:
+        if self.remember_mode not in {"standard", "dual_model", "strong_one_pass"}:
             self.remember_mode = "dual_model"
         self.remember_anchor_recall_rounds = max(1, int(_remember_pick("anchor_recall_rounds") or 1))
         _named_rounds = _remember_pick("named_entity_recall_rounds", "concrete_recall_rounds")
@@ -134,6 +134,13 @@ class TemporalMemoryGraphProcessor(_PipelineMixin, _PipelineExtractionMixin, _Ex
         )
         self.remember_alignment_policy = str(_remember_cfg.get("alignment_policy") or "conservative").strip() or "conservative"
         self.remember_alignment_conservative = self.remember_alignment_policy == "conservative"
+        self.remember_profile = str(_remember_cfg.get("profile") or "current")
+        # strong-v1：窗口级批量对齐裁决（step9 实体一次批量、step10 有已有关系的实体对一次批量）
+        self.window_batch_alignment_enabled = bool(
+            _remember_cfg.get("window_batch_alignment", self.remember_profile == "strong-v1"))
+        self.remember_preserve_source_language = bool(_remember_cfg.get("preserve_source_language", False))
+        self.remember_max_entities_per_window = max(1, int(_remember_cfg.get("max_entities_per_window") or 16))
+        self.remember_max_relations_per_window = max(1, int(_remember_cfg.get("max_relations_per_window") or 24))
         _relation_content_snippet_length = relation_content_snippet_length if relation_content_snippet_length is not None else 200
         _relation_endpoint_jaccard_threshold = (
             float(relation_endpoint_jaccard_threshold)
@@ -233,7 +240,10 @@ class TemporalMemoryGraphProcessor(_PipelineMixin, _PipelineExtractionMixin, _Ex
                  extraction_llm: Optional[Dict[str, Any]] = None,
                  graph_id: Optional[str] = None,
                  embedding_cache_max_size: Optional[int] = None,
-                 embedding_cache_ttl: Optional[float] = None):
+                 embedding_cache_ttl: Optional[float] = None,
+                 shared_llm_semaphore=None,
+                 judge_service=None,
+                 family_write_gate=None):
         """
         初始化处理器
 
@@ -311,7 +321,16 @@ class TemporalMemoryGraphProcessor(_PipelineMixin, _PipelineExtractionMixin, _Ex
                 graph_id=graph_id,
             )
         self.document_processor = DocumentProcessor(window_size, overlap)
+        # strong-v1 单遍抽取：remember 配置可覆盖窗口尺寸（默认 6000/300 大窗口）
+        if self.remember_mode == "strong_one_pass":
+            _strong_ws = int(self.remember_config.get("window_size_chars") or 0)
+            if _strong_ws >= 500:
+                _strong_ov = int(self.remember_config.get("overlap_chars") or 0) or 300
+                self.document_processor = DocumentProcessor(_strong_ws, _strong_ov)
         _al = alignment_llm or {}
+        _main_openai_extra_body = ((config or {}).get("llm") or {}).get("extra_body") or {}
+        # 主 client 与抽取 client 共享同一份调用计数，processor 层汇总输出
+        self.llm_call_stats = LLMCallStats()
         self.llm_client = LLMClient(
             llm_api_key,
             llm_model,
@@ -328,6 +347,7 @@ class TemporalMemoryGraphProcessor(_PipelineMixin, _PipelineExtractionMixin, _Ex
             connect_timeout_seconds=llm_connect_timeout_seconds,
             prompt_episode_max_chars=prompt_episode_max_chars,
             max_llm_concurrency=max_llm_concurrency,
+            openai_extra_body=_main_openai_extra_body,
             distill_data_dir=distill_data_dir,
             alignment_enabled=bool(_al.get("enabled", False)),
             alignment_max_llm_concurrency=_al.get("max_concurrency"),
@@ -338,8 +358,15 @@ class TemporalMemoryGraphProcessor(_PipelineMixin, _PipelineExtractionMixin, _Ex
             alignment_think_mode=_al.get("think_mode"),
             alignment_content_snippet_length=_al.get("content_snippet_length"),
             alignment_relation_content_snippet_length=_al.get("relation_content_snippet_length"),
+            alignment_openai_extra_body=_al.get("extra_body", _main_openai_extra_body),
+            call_stats=self.llm_call_stats,
+            shared_llm_semaphore=shared_llm_semaphore,
+            judge_service=judge_service,
         )
-        _shared_llm_semaphore = getattr(self.llm_client, "_llm_semaphore", None)
+        self.llm_client.preserve_source_language = self.remember_preserve_source_language
+        # 库级共享信号量：registry 传入时所有 processor 共用一个闸门（真实端点容量）；
+        # 未传时退回旧行为——主 client 自建，抽取 client 复用主 client 的
+        _shared_llm_semaphore = shared_llm_semaphore or getattr(self.llm_client, "_llm_semaphore", None)
         _shared_llm_slot_max = self.llm_client.get_llm_semaphore_max() if hasattr(self.llm_client, "get_llm_semaphore_max") else None
         self.entity_processor = EntityProcessor(
             self.storage,
@@ -348,6 +375,12 @@ class TemporalMemoryGraphProcessor(_PipelineMixin, _PipelineExtractionMixin, _Ex
             content_snippet_length=_content_snippet_length
         )
         self.relation_processor = RelationProcessor(self.storage, self.llm_client)
+        # strong-v1 窗口级批量对齐开关传递给步骤9/10处理器
+        self.entity_processor.window_batch_alignment_enabled = self.window_batch_alignment_enabled
+        self.relation_processor.window_batch_alignment_enabled = self.window_batch_alignment_enabled
+        # FamilyWriteGate：并发创建同名 family 的竞态兜底（库级共享，registry 注入）
+        self.family_write_gate = family_write_gate
+        self.entity_processor.family_write_gate = family_write_gate
         if self.remember_alignment_conservative:
             self.entity_processor.batch_resolution_confidence_threshold = 0.9
             self.entity_processor.merge_safe_embedding_threshold = max(self.entity_processor.merge_safe_embedding_threshold, 0.7)
@@ -384,12 +417,16 @@ class TemporalMemoryGraphProcessor(_PipelineMixin, _PipelineExtractionMixin, _Ex
                 max_tokens=_el.get("max_tokens"),
                 context_window_tokens=int(_el.get("context_window_tokens", _ctx_win)),
                 max_llm_concurrency=max_llm_concurrency or _el.get("max_concurrency"),
+                openai_extra_body=_el.get("extra_body", _main_openai_extra_body),
                 shared_llm_semaphore=_shared_llm_semaphore,
                 shared_llm_slot_max=_shared_llm_slot_max,
                 alignment_enabled=False,
+                call_stats=self.llm_call_stats,
+                judge_service=judge_service,
             )
             self.extraction_client_enabled = True
-            if self.remember_mode not in ("standard", "legacy"):
+            self.extraction_client.preserve_source_language = self.remember_preserve_source_language
+            if self.remember_mode not in ("standard", "legacy", "strong_one_pass"):
                 self.remember_mode = "dual_model"
 
         self.llm_threads = max(1, max_llm_concurrency) if max_llm_concurrency else 3
@@ -403,6 +440,14 @@ class TemporalMemoryGraphProcessor(_PipelineMixin, _PipelineExtractionMixin, _Ex
         # --- Phase 3: Threading ---
         self.current_episode: Optional[Episode] = None
         self._init_threading(max_concurrent_windows, max_llm_concurrency)
+
+    def reset_llm_call_stats(self) -> None:
+        """清零本 processor 的 LLM 调用计数（主 client + 抽取 client 一并清零）。"""
+        self.llm_call_stats.reset()
+
+    def get_llm_call_stats(self) -> Dict[str, Any]:
+        """返回本 processor 的 LLM 调用计数快照（含 by_step/by_model 分桶）。"""
+        return self.llm_call_stats.snapshot()
 
     def get_runtime_stats(self) -> Dict[str, int]:
         with self._runtime_lock:
@@ -530,5 +575,4 @@ class TemporalMemoryGraphProcessor(_PipelineMixin, _PipelineExtractionMixin, _Ex
     @staticmethod
     def _build_timing_summary(window_timings):
         return _pw.build_timing_summary(window_timings)
-
 

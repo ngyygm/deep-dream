@@ -187,6 +187,30 @@ class LibraryManager:
     # Document operations
     # ------------------------------------------------------------------
 
+    def set_document_ingestion_state(
+        self, document_id: str, state: str, *, total_windows: int = 0,
+        complete_windows: int = 0, missing_windows=None,
+    ) -> None:
+        """Atomically gate document visibility during remember publication."""
+        import json as _json
+        if state not in {"processing", "active", "failed", "incomplete"}:
+            raise ValueError(f"Invalid ingestion state: {state}")
+        conn = self._conn()
+        conn.execute(
+            """INSERT INTO document_ingestion_state
+               (document_id,state,total_windows,complete_windows,missing_windows,updated_at)
+               VALUES (?,?,?,?,?,?)
+               ON CONFLICT(document_id) DO UPDATE SET
+                 state=excluded.state,total_windows=excluded.total_windows,
+                 complete_windows=excluded.complete_windows,missing_windows=excluded.missing_windows,
+                 updated_at=excluded.updated_at""",
+            (
+                document_id, state, int(total_windows), int(complete_windows),
+                _json.dumps(sorted(set(missing_windows or []))), _now_str(),
+            ),
+        )
+        self._commit_if_not_batched(conn)
+
     def list_documents(self, limit: int = 50, offset: int = 0,
                        source_document: str = None) -> List[dict]:
         conn = self._conn()
@@ -648,22 +672,6 @@ class LibraryManager:
         ).fetchall()
         return {row[0]: row[1] for row in rows}
 
-    def get_latest_absolute_ids_by_family_ids(self, family_ids: List[str]) -> Dict[str, str]:
-        if not family_ids:
-            return {}
-        conn = self._conn()
-        result = {}
-        for fid in family_ids:
-            row = conn.execute(
-                "SELECT entity_id FROM entity_observations "
-                "WHERE entity_family_id = ? AND status = 'active' "
-                "ORDER BY processed_at DESC LIMIT 1",
-                (fid,),
-            ).fetchone()
-            if row:
-                result[fid] = row[0]
-        return result
-
     def get_latest_entities_projection(self, content_snippet_length: int = None) -> List[dict]:
         snippet_len = content_snippet_length or self.entity_content_snippet_length
         conn = self._conn()
@@ -851,23 +859,31 @@ class LibraryManager:
     def get_relations_by_entities(self, from_family_id: str, to_family_id: str,
                                   include_candidates: bool = False) -> List[Relation]:
         conn = self._conn()
+        # 双向查询：管线的 pair key 是排序规范化的，存库时的 subject/object 方向
+        # 可能与查询方向相反——只查单方向会让已有关系不可见，导致同一实体对
+        # 重复建 relation family（正反两条）。
+        fams = []
         fam = rel_repo.find_relation_family(conn, from_family_id, to_family_id)
-        if not fam:
-            return []
-        rows = conn.execute(
-            "SELECT * FROM relation_assertions "
-            "WHERE relation_family_id = ? AND status = 'active' "
-            "ORDER BY processed_at DESC",
-            (fam["relation_family_id"],),
-        ).fetchall()
+        if fam:
+            fams.append(fam)
+        fam_rev = rel_repo.find_relation_family(conn, to_family_id, from_family_id)
+        if fam_rev and (not fam or fam_rev["relation_family_id"] != fam["relation_family_id"]):
+            fams.append(fam_rev)
         relations = []
-        for row in rows:
-            row = dict(row)
-            sub_abs = self._latest_obs_id_for_family(row["subject_entity_family_id"])
-            obj_abs = self._latest_obs_id_for_family(row["object_entity_family_id"])
-            emb = self._get_embedding_blob("relation_assert", row["relation_id"])
-            relations.append(assertion_to_relation(fam, row, subject_entity_id=sub_abs,
-                                                    object_entity_id=obj_abs, embedding_blob=emb))
+        for fam in fams:
+            rows = conn.execute(
+                "SELECT * FROM relation_assertions "
+                "WHERE relation_family_id = ? AND status = 'active' "
+                "ORDER BY processed_at DESC",
+                (fam["relation_family_id"],),
+            ).fetchall()
+            for row in rows:
+                row = dict(row)
+                sub_abs = self._latest_obs_id_for_family(row["subject_entity_family_id"])
+                obj_abs = self._latest_obs_id_for_family(row["object_entity_family_id"])
+                emb = self._get_embedding_blob("relation_assert", row["relation_id"])
+                relations.append(assertion_to_relation(fam, row, subject_entity_id=sub_abs,
+                                                       object_entity_id=obj_abs, embedding_blob=emb))
         return relations
 
     def get_relations_by_entity_pairs(self, entity_pairs: List[Tuple[str, str]]) -> Dict[Tuple[str, str], List[Relation]]:
@@ -1199,15 +1215,6 @@ class LibraryManager:
             return result
         return None
 
-    def get_concepts_by_family_ids(self, family_ids: Iterable[str],
-                                   time_point: str = None) -> Dict[str, dict]:
-        result = {}
-        for fid in family_ids:
-            c = self.get_concept_by_family_id(fid, time_point=time_point)
-            if c:
-                result[fid] = c
-        return result
-
     def list_concepts(self, role: str = None, limit: int = 50, offset: int = 0,
                       time_point: str = None, name: str = None) -> List[dict]:
         if role == "entity":
@@ -1373,12 +1380,6 @@ class LibraryManager:
     def batch_get_entity_degrees(self, family_ids: List[str]) -> Dict[str, int]:
         return self.count_entity_relations_by_family_ids(family_ids)
 
-    def get_episode_concepts(self, episode_id: str) -> List[dict]:
-        mentions = ent_repo.get_mentions_by_episode(self._conn(), episode_id)
-        return [{"family_id": m["entity_family_id"], "role": "entity",
-                 "name": m.get("surface_text", "")}
-                for m in mentions]
-
     def update_concept_manual(self, family_id: str, updates: dict) -> dict:
         import json as _json
         conn = self._conn()
@@ -1487,9 +1488,6 @@ class LibraryManager:
             "concepts": self.count_unique_entities() + self.count_unique_relations(),
         }
 
-    def get_graph_statistics(self) -> dict:
-        return self.get_stats()
-
     def count_unique_entities(self) -> int:
         return self._conn().execute(
             "SELECT COUNT(*) FROM entity_families"
@@ -1498,14 +1496,6 @@ class LibraryManager:
     def count_unique_relations(self) -> int:
         return self._conn().execute(
             "SELECT COUNT(*) FROM relation_families"
-        ).fetchone()[0]
-
-    def count_isolated_entities(self) -> int:
-        conn = self._conn()
-        return conn.execute(
-            "SELECT COUNT(*) FROM entity_families ef "
-            "WHERE NOT EXISTS (SELECT 1 FROM entity_mentions em WHERE em.entity_family_id = ef.entity_family_id) "
-            "AND NOT EXISTS (SELECT 1 FROM relation_families rf WHERE rf.subject_entity_family_id = ef.entity_family_id OR rf.object_entity_family_id = ef.entity_family_id)"
         ).fetchone()[0]
 
     # ------------------------------------------------------------------
@@ -1569,12 +1559,6 @@ class LibraryManager:
         from .vault_indexer import parse_markdown
         return parse_markdown(text)
 
-    @staticmethod
-    def split_markdown_episodes(text: str, window_size: int = 4000,
-                                overlap: int = 200) -> list:
-        from ...text_chunking import split_markdown_chunks
-        return split_markdown_chunks(text, window_size=window_size, overlap=overlap)
-
     # ------------------------------------------------------------------
     # Agent query (stub — delegate to agent_query.py)
     # ------------------------------------------------------------------
@@ -1637,52 +1621,12 @@ class LibraryManager:
                 warmed[role] = -1
         return {"warmed": warmed}
 
-    def invalidate_vector_cache(self, roles: Optional[List[str]] = None) -> None:
-        """Clear cached vector matrices so they are reloaded on next access."""
-        with self._vector_cache_lock:
-            if roles is None:
-                self._vector_role_cache.clear()
-            else:
-                for role in roles:
-                    self._vector_role_cache.pop(role, None)
-
-    def get_entity_by_absolute_id(self, absolute_id: str) -> Optional[Entity]:
-        """Get single entity by absolute_id (observation ID)."""
-        conn = self._conn()
-        obs = conn.execute(
-            "SELECT eo.*, ef.entity_family_id, ef.canonical_name, ef.canonical_content "
-            "FROM entity_observations eo "
-            "JOIN entity_families ef ON ef.entity_family_id = eo.entity_family_id "
-            "WHERE eo.entity_id = ? AND eo.status = 'active'",
-            (absolute_id,),
-        ).fetchone()
-        if not obs:
-            return None
-        obs = dict(obs)
-        fam = {"entity_family_id": obs["entity_family_id"],
-               "canonical_name": obs["canonical_name"],
-               "canonical_content": obs["canonical_content"]}
-        emb = self._get_embedding_blob("entity_obs", absolute_id)
-        return observation_to_entity(fam, obs, embedding_blob=emb)
-
     def get_relations_by_entity_absolute_ids(self, absolute_ids: List[str],
                                               limit: int = 100) -> List[Relation]:
         """Get relations involving entities with the given absolute IDs."""
         fam_map = self.get_family_ids_by_absolute_ids(absolute_ids)
         family_ids = list(set(fam_map.values()))
         return self.get_relations_by_family_ids(family_ids, limit=limit)
-
-    def get_entity_absolute_ids_up_to_version(self, family_id: str,
-                                               max_version_seq: int) -> List[str]:
-        """Get entity observation IDs up to a given version sequence."""
-        conn = self._conn()
-        rows = conn.execute(
-            "SELECT entity_id FROM entity_observations "
-            "WHERE entity_family_id = ? AND status = 'active' "
-            "ORDER BY processed_at ASC LIMIT ?",
-            (family_id, max_version_seq),
-        ).fetchall()
-        return [row[0] for row in rows]
 
     # ------------------------------------------------------------------
     # No-op stubs (same as old manager)
@@ -1704,9 +1648,6 @@ class LibraryManager:
 
     def refresh_relates_to_edges(self, family_ids: List[str] = None):
         pass
-
-    def get_data_quality_report(self) -> dict:
-        return {"issues": [], "warnings": [], "stats": self.get_stats()}
 
     def batch_get_source_text_snippets(self, episode_ids: List[str],
                                         snippet_length: int = 200) -> Dict[str, str]:
@@ -1734,9 +1675,6 @@ class LibraryManager:
             conn.execute(f"DELETE FROM {table}")
         conn.execute("INSERT INTO episodes_fts(episodes_fts) VALUES('rebuild')")
         conn.commit()
-
-    def delete_graph_data(self):
-        self.clear_graph_data()
 
     # ------------------------------------------------------------------
     # Write methods (pipeline-facing)
@@ -1790,8 +1728,9 @@ class LibraryManager:
         doc = doc_repo.get_document(conn, doc_id)
         if not doc:
             title = source or Path(document_path).stem if document_path else ""
-            safe_name = content_fs._safe_title(source) if source else ""
-            content_md = f"content/{safe_name}.md" if safe_name else ""
+            content_md = content_fs.write_current_file(
+                str(self.library_path), title or doc_id, doc_text, doc_id=doc_id,
+            )
             doc_repo.insert_document(
                 conn, doc_id, title,
                 managed_path=content_md,
@@ -1802,6 +1741,13 @@ class LibraryManager:
             # Document already exists (possibly via content-hash dedup):
             # use the existing document's title for episode name consistency.
             title = doc.get("title") or source
+            content_md = content_fs.write_current_file(
+                str(self.library_path), title or doc_id, doc_text, doc_id=doc_id,
+            )
+            conn.execute(
+                "UPDATE documents SET managed_path = ?, status = 'active', updated_at = ? WHERE document_id = ?",
+                (content_md, _now_str(), doc_id),
+            )
 
         # Reuse existing version with same content hash, or create new one
         old_ver = doc_repo.get_active_version(conn, doc_id)

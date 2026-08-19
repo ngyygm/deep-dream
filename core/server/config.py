@@ -11,6 +11,10 @@ from core.exceptions import ConfigError
 DEFAULTS = {
     "host": "0.0.0.0",
     "port": 5001,
+    "flask_threaded": True,
+    "monitor_refresh_seconds": 1.0,
+    "auto_port_fallback": False,
+    "log_mode": "detail",
     "storage_path": "./library",
     "storage": {
         "backend": "sqlite",
@@ -21,8 +25,18 @@ DEFAULTS = {
         "model": "gpt-4",
         "base_url": None,
         "think": False,
+        # 离线测试用：mock=true 时 LLMClient 走模拟响应
+        "mock": False,
         # 请求输入 prompt 的本地预检上限；与 service_config.json 中 llm.context_window_tokens 对应
         "context_window_tokens": 8000,
+        "max_concurrency": 1,
+        "max_tokens": None,
+        "timeout_seconds": 300,
+        "connect_timeout_seconds": 30,
+        # 透传 OpenAI 兼容端点的额外 body（如 chat_template_kwargs.enable_thinking）
+        "extra_body": {},
+        # 对齐阶段专用模型（双模型管线）；enabled=false 时与主模型共用
+        "alignment": {},
     },
     "embedding": {
         "model": None,
@@ -43,6 +57,7 @@ DEFAULTS = {
         },
         "task": {
             "load_cache_memory": False,
+            "stall_timeout_seconds": 600,
         },
         "integrity": {
             "auto_check_documents": True,
@@ -90,6 +105,19 @@ DEFAULTS = {
             "min_relation_candidates_per_window": 0,
             "min_entities_per_100_chars_soft_target": 0.0,
             "alignment_policy": "conservative",
+            "profile": "current",
+            "preserve_source_language": False,
+            "max_entities_per_window": 16,
+            "max_relations_per_window": 24,
+            "filter_before_content_generation": False,
+            "judge": {
+                "enabled": False,
+                "batch_min": 4,
+                "batch_delay_ms": 200,
+                "batch_max": 32,
+                "memo_ttl_seconds": 604800,
+            },
+            "family_write_gate_enabled": True,
         },
         "debug": {
             "distill_data_dir": None,
@@ -130,9 +158,12 @@ def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any
 
 def _normalize_runtime_config(config: Dict[str, Any]) -> Dict[str, Any]:
     """
-    统一新旧配置结构，最终同时产出：
-    1) 新结构：runtime.concurrency / runtime.retry / runtime.task / pipeline.search / ...
-    2) 旧兼容字段：remember_workers / remember_max_retries / pipeline.* 扁平字段
+    归一新格式配置：runtime.concurrency / runtime.retry / runtime.task /
+    pipeline.{search,alignment,extraction,remember,debug}。
+
+    只认新格式（v0.2+）：旧平铺字段（remember_workers、pipeline.max_concurrent_windows、
+    pipeline.similarity_threshold、prompt_memory_cache_max_chars 等）不再回读，
+    也不再回填。worker 数受 llm.max_concurrency 钳制。
     """
     cfg = dict(config)
     runtime = dict(cfg.get("runtime") or {})
@@ -140,84 +171,7 @@ def _normalize_runtime_config(config: Dict[str, Any]) -> Dict[str, Any]:
     retry = dict(runtime.get("retry") or {})
     task = dict(runtime.get("task") or {})
     pipeline = dict(cfg.get("pipeline") or {})
-    search = dict(pipeline.get("search") or {})
-    alignment = dict(pipeline.get("alignment") or {})
-    extraction = dict(pipeline.get("extraction") or {})
     debug = dict(pipeline.get("debug") or {})
-
-    def _pick(*values):
-        for v in values:
-            if v is not None:
-                return v
-        return None
-
-    queue_workers = _pick(
-        conc.get("queue_workers"),
-        cfg.get("remember_workers"),
-    )
-    window_workers = _pick(
-        conc.get("window_workers"),
-        pipeline.get("max_concurrent_windows"),
-        cfg.get("max_concurrent_windows"),
-    )
-    queue_max_retries = _pick(
-        retry.get("queue_max_retries"),
-        cfg.get("remember_max_retries"),
-    )
-    queue_retry_delay_seconds = _pick(
-        retry.get("queue_retry_delay_seconds"),
-        cfg.get("remember_retry_delay_seconds"),
-    )
-    load_cache_memory = _pick(
-        task.get("load_cache_memory"),
-        pipeline.get("load_cache_memory"),
-    )
-
-    search_keys = (
-        "similarity_threshold",
-        "max_similar_entities",
-        "content_snippet_length",
-        "relation_content_snippet_length",
-        "relation_endpoint_jaccard_threshold",
-        "relation_endpoint_embedding_threshold",
-        "jaccard_search_threshold",
-        "embedding_name_search_threshold",
-        "embedding_full_search_threshold",
-    )
-    normalized_search = {
-        key: _pick(search.get(key), pipeline.get(key))
-        for key in search_keys
-    }
-    max_alignment_candidates = _pick(
-        alignment.get("max_alignment_candidates"),
-        pipeline.get("max_alignment_candidates"),
-    )
-    # Legacy field aliases: old name → canonical name
-    _extraction_aliases = {
-        "prompt_memory_cache_max_chars": "prompt_episode_max_chars",
-    }
-    extraction_keys = (
-        "extraction_rounds",
-        "entity_extraction_rounds",
-        "relation_extraction_rounds",
-        "entity_post_enhancement",
-        "prompt_episode_max_chars",
-        "compress_multi_round_extraction",
-    )
-    normalized_extraction = {}
-    for key in extraction_keys:
-        val = _pick(extraction.get(key), pipeline.get(key))
-        if val is None:
-            # Check legacy alias
-            for old_name, new_name in _extraction_aliases.items():
-                if new_name == key:
-                    val = _pick(extraction.get(old_name), pipeline.get(old_name))
-                    break
-        normalized_extraction[key] = val
-    distill_data_dir = _pick(
-        debug.get("distill_data_dir"),
-        pipeline.get("distill_data_dir"),
-    )
 
     # 队列/窗口线程不超过 LLM 并发：max_concurrency=1 时整体按串行语义运行
     llm = cfg.get("llm") or {}
@@ -234,30 +188,27 @@ def _normalize_runtime_config(config: Dict[str, Any]) -> Dict[str, Any]:
     # 回填新结构。用户只需要设置 llm.max_concurrency；window_workers 默认自动跟随，
     # 用于让多个 episode 形成流水线，但最终 LLM 请求仍由全局闸门限制。
     _auto_windows = max(1, min(cap or 1, 3))
-    conc["queue_workers"] = _resolve_worker_count(queue_workers, 1, auto_default=1)
-    conc["window_workers"] = _resolve_worker_count(window_workers, _auto_windows, auto_default=_auto_windows)
+    conc["queue_workers"] = _resolve_worker_count(conc.get("queue_workers"), 1, auto_default=1)
+    conc["window_workers"] = _resolve_worker_count(
+        conc.get("window_workers"), _auto_windows, auto_default=_auto_windows)
     if max_llm_conc is not None:
         if cap >= 1:
             conc["queue_workers"] = min(conc["queue_workers"], cap)
             conc["window_workers"] = min(conc["window_workers"], cap)
-    retry["queue_max_retries"] = int(queue_max_retries if queue_max_retries is not None else 2)
+    retry["queue_max_retries"] = int(
+        retry.get("queue_max_retries") if retry.get("queue_max_retries") is not None else 2)
     retry["queue_retry_delay_seconds"] = float(
-        queue_retry_delay_seconds if queue_retry_delay_seconds is not None else 2
+        retry.get("queue_retry_delay_seconds")
+        if retry.get("queue_retry_delay_seconds") is not None else 2
     )
-    task["load_cache_memory"] = bool(load_cache_memory) if load_cache_memory is not None else False
+    task["load_cache_memory"] = bool(task.get("load_cache_memory", False))
     runtime["concurrency"] = conc
     runtime["retry"] = retry
     runtime["task"] = task
     cfg["runtime"] = runtime
 
-    search.update({k: v for k, v in normalized_search.items() if v is not None})
-    alignment["max_alignment_candidates"] = max_alignment_candidates
-    extraction.update({k: v for k, v in normalized_extraction.items() if v is not None})
-    # Backfill legacy aliases in extraction dict for backward compat
-    for old_name, new_name in _extraction_aliases.items():
-        if new_name in extraction and old_name not in extraction:
-            extraction[old_name] = extraction[new_name]
     # Resolve distill_data_dir relative to storage_path so files land inside library/, not CWD
+    distill_data_dir = debug.get("distill_data_dir")
     if distill_data_dir is not None:
         if not Path(distill_data_dir).is_absolute():
             storage_path = cfg.get("storage_path", "./library")
@@ -267,29 +218,8 @@ def _normalize_runtime_config(config: Dict[str, Any]) -> Dict[str, Any]:
             sp_parts = Path(storage_path).parts
             if parts[:len(sp_parts)] != sp_parts:
                 distill_data_dir = str(resolved)
-    debug["distill_data_dir"] = distill_data_dir
-    pipeline["search"] = search
-    pipeline["alignment"] = alignment
-    pipeline["extraction"] = extraction
+        debug["distill_data_dir"] = distill_data_dir
     pipeline["debug"] = debug
-
-    # 回填旧命名（供现有代码无缝使用）
-    cfg["remember_workers"] = conc["queue_workers"]
-    cfg["remember_max_retries"] = retry["queue_max_retries"]
-    cfg["remember_retry_delay_seconds"] = retry["queue_retry_delay_seconds"]
-
-    pipeline["max_concurrent_windows"] = conc["window_workers"]
-    pipeline["load_cache_memory"] = task["load_cache_memory"]
-    for key, value in normalized_search.items():
-        pipeline[key] = value
-    pipeline["max_alignment_candidates"] = max_alignment_candidates
-    for key, value in normalized_extraction.items():
-        pipeline[key] = value
-    # Backfill legacy aliases in flat pipeline dict
-    for old_name, new_name in _extraction_aliases.items():
-        if new_name in pipeline and old_name not in pipeline:
-            pipeline[old_name] = pipeline[new_name]
-    pipeline["distill_data_dir"] = debug["distill_data_dir"]
     cfg["pipeline"] = pipeline
 
     return cfg
@@ -333,6 +263,7 @@ def merge_llm_extraction(llm: Dict[str, Any]) -> Dict[str, Any]:
         ("model", "model"),
         ("max_tokens", "max_tokens"),
         ("think", "think"),
+        ("extra_body", "extra_body"),
     )
     for nk, fk in mapping:
         val = pick(nk, fk)
@@ -390,6 +321,7 @@ def merge_llm_alignment(llm: Dict[str, Any]) -> Dict[str, Any]:
         ("think", "alignment_think"),
         ("content_snippet_length", "alignment_content_snippet_length"),
         ("relation_content_snippet_length", "alignment_relation_content_snippet_length"),
+        ("extra_body", "alignment_extra_body"),
     )
     for nk, fk in mapping:
         val = pick(nk, fk)
@@ -414,8 +346,8 @@ def _validate_config(config: Dict[str, Any]) -> None:
         errors.append(f"port 应在 1-65535 之间，当前值: {port}")
 
     llm = config.get("llm") or {}
-    if not llm.get("api_key") and not llm.get("base_url"):
-        errors.append("llm.api_key 或 llm.base_url 至少需要配置一个")
+    if not llm.get("api_key") and not llm.get("base_url") and llm.get("mock") is not True:
+        errors.append("llm.api_key 或 llm.base_url 至少需要配置一个（离线测试可显式设置 llm.mock=true）")
     _cwt = llm.get("context_window_tokens")
     if _cwt is not None:
         try:
@@ -424,6 +356,8 @@ def _validate_config(config: Dict[str, Any]) -> None:
                 errors.append(f"llm.context_window_tokens 应 >= 256，当前值: {_cwt}")
         except (TypeError, ValueError):
             errors.append(f"llm.context_window_tokens 应为整数，当前值: {_cwt}")
+    if llm.get("extra_body") is not None and not isinstance(llm.get("extra_body"), dict):
+        errors.append("llm.extra_body 必须是 JSON object")
 
     chunking = config.get("chunking") or {}
     ws = chunking.get("window_size", 1000)
@@ -461,6 +395,23 @@ def _validate_config(config: Dict[str, Any]) -> None:
         raise ConfigError("配置校验失败:\n  " + "\n  ".join(errors))
 
 
+def _warn_unknown_keys(user: Dict[str, Any]) -> None:
+    """用户配置里出现 DEFAULTS 未覆盖的键时告警（P5：配置面收敛，防拼写错误静默失效）。"""
+    import logging
+    logger = logging.getLogger(__name__)
+    for key in user:
+        if key not in DEFAULTS:
+            logger.warning("配置键未知（已忽略）: %r — 请对照 service_config.example.json", key)
+    for section, defaults in DEFAULTS.items():
+        user_section = user.get(section)
+        if not isinstance(user_section, dict) or not isinstance(defaults, dict):
+            continue
+        for key in user_section:
+            if key not in defaults:
+                logger.warning(
+                    "配置键未知（已忽略）: %s.%s — 请对照 service_config.example.json", section, key)
+
+
 def load_config(config_path: str) -> Dict[str, Any]:
     """
     从 JSON 文件加载配置，与默认值合并。
@@ -478,7 +429,8 @@ def load_config(config_path: str) -> Dict[str, Any]:
     with open(path, "r", encoding="utf-8") as f:
         user = json.load(f)
 
-    # 先对用户原始配置做一次新旧字段归一，避免默认值掩盖旧字段来源。
+    _warn_unknown_keys(user)
+    # 先对用户原始配置做一次字段归一，避免默认值掩盖来源。
     user = _normalize_runtime_config(user)
     merged = _deep_merge(DEFAULTS, user)
     if not str(merged.get("storage_path") or "").strip():

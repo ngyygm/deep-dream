@@ -65,6 +65,16 @@ from .prompts import (
 class _LLMExtractionMixin:
     """Extraction methods for LLMClient — comprehensive prompts for strong models."""
 
+    def _source_language_system(self, system_prompt: str, source_text: str) -> str:
+        """Keep quality-v1 concept text aligned with the source/embedding language."""
+        if not getattr(self, "preserve_source_language", False):
+            return system_prompt
+        return (
+            system_prompt
+            + "\n\nLanguage rule: preserve the dominant language of the source text in every "
+              "entity name and description. If the source is English, output English; do not translate it."
+        )
+
     # ------------------------------------------------------------------
     # Generic extraction with conversational refinement
     # ------------------------------------------------------------------
@@ -197,7 +207,7 @@ class _LLMExtractionMixin:
     ) -> Tuple[List[str], Dict[str, int]]:
         """Extract all entities using comprehensive prompt + conversational refinement."""
         return self._extract_with_refinement(
-            system_prompt=ENTITY_EXTRACT_SYSTEM,
+            system_prompt=self._source_language_system(ENTITY_EXTRACT_SYSTEM, window_text),
             user_prompt=ENTITY_EXTRACT_USER.format(window_text=window_text),
             refine_prompt=ENTITY_REFINE_USER,
             parse_fn=self._parse_name_list,
@@ -239,7 +249,7 @@ class _LLMExtractionMixin:
         seen: set = set()
         all_pairs: list = []
         messages = [
-            {"role": "system", "content": RELATION_DISCOVER_SYSTEM},
+            {"role": "system", "content": self._source_language_system(RELATION_DISCOVER_SYSTEM, window_text)},
             {"role": "user", "content": RELATION_DISCOVER_USER.format(
                 entity_names=entity_list_str,
                 window_text=window_text,
@@ -463,7 +473,7 @@ class _LLMExtractionMixin:
             window_text=window_text,
         )
         messages = [
-            {"role": "system", "content": ENTITY_CONTENT_WRITE_SYSTEM},
+            {"role": "system", "content": self._source_language_system(ENTITY_CONTENT_WRITE_SYSTEM, window_text)},
             {"role": "user", "content": user_prompt},
         ]
 
@@ -603,7 +613,7 @@ class _LLMExtractionMixin:
             window_text=window_text,
         )
         messages = [
-            {"role": "system", "content": ENTITY_BATCH_CONTENT_WRITE_SYSTEM},
+            {"role": "system", "content": self._source_language_system(ENTITY_BATCH_CONTENT_WRITE_SYSTEM, window_text)},
             {"role": "user", "content": user_prompt},
         ]
 
@@ -711,7 +721,7 @@ class _LLMExtractionMixin:
             window_text=window_text,
         )
         messages = [
-            {"role": "system", "content": RELATION_BATCH_CONTENT_WRITE_SYSTEM},
+            {"role": "system", "content": self._source_language_system(RELATION_BATCH_CONTENT_WRITE_SYSTEM, window_text)},
             {"role": "user", "content": user_prompt},
         ]
 
@@ -768,7 +778,7 @@ class _LLMExtractionMixin:
             entity_a=entity_a, entity_b=entity_b, window_text=window_text,
         )
         messages = [
-            {"role": "system", "content": RELATION_CONTENT_WRITE_SYSTEM},
+            {"role": "system", "content": self._source_language_system(RELATION_CONTENT_WRITE_SYSTEM, window_text)},
             {"role": "user", "content": user_prompt},
         ]
 
@@ -776,9 +786,14 @@ class _LLMExtractionMixin:
             result, _ = self.call_llm_until_json_parses(
                 messages, parse_fn=self._parse_content_field, json_parse_retries=2,
             )
-            return result if result else f"{entity_a}与{entity_b}存在关联"
+            fallback = f"{entity_a} is related to {entity_b}." if getattr(
+                self, "preserve_source_language", False
+            ) else f"{entity_a}与{entity_b}存在关联"
+            return result if result else fallback
         except Exception:
-            return f"{entity_a}与{entity_b}存在关联"
+            return (f"{entity_a} is related to {entity_b}." if getattr(
+                self, "preserve_source_language", False
+            ) else f"{entity_a}与{entity_b}存在关联")
 
     # ------------------------------------------------------------------
     # Entity Alignment Judgment — three-way
@@ -790,16 +805,31 @@ class _LLMExtractionMixin:
     ) -> Dict[str, Any]:
         """Judge whether two entities describe the same object.
 
-        Args:
-            name_match_type: How the names matched in candidate search.
-                "exact" = core names identical, "substring" = one is substring of the other,
-                "none" = no special name relationship.
+        委托优先：若挂载了库级 judge_service（memo/single-flight/攒批），
+        先走服务；未启用时直调 _judge_entity_alignment_llm。
 
         Returns:
             {"verdict": "same"|"different"|"uncertain",
              "confidence": 0.0-1.0,
              "reason": "..."}
         """
+        _svc = getattr(self, "judge_service", None)
+        if _svc is not None:
+            return _svc.judge_entity_alignment(
+                self, name_a, content_a, name_b, content_b,
+                name_match_type=name_match_type,
+            )
+        return self._judge_entity_alignment_llm(
+            name_a, content_a, name_b, content_b,
+            name_match_type=name_match_type,
+        )
+
+    def _judge_entity_alignment_llm(
+        self, name_a: str, content_a: str, name_b: str, content_b: str,
+        *, name_match_type: str = "none",
+    ) -> Dict[str, Any]:
+        """judge_entity_alignment 的原始直调实现（真实 LLM 请求）。"""
+
         snippet_a = content_a[:500] if len(content_a) > 500 else content_a
         snippet_b = content_b[:500] if len(content_b) > 500 else content_b
 

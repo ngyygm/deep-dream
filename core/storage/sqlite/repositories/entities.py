@@ -9,27 +9,21 @@ logger = logging.getLogger(__name__)
 def upsert_entity_family(conn, entity_family_id: str, canonical_name: str,
                          canonical_content: str = "", created_at: str = "",
                          updated_at: str = "") -> None:
-    existing = conn.execute(
-        "SELECT entity_family_id FROM entity_families WHERE entity_family_id = ?",
-        (entity_family_id,),
-    ).fetchone()
-    if existing:
-        conn.execute(
-            """UPDATE entity_families
-               SET canonical_name = ?, canonical_content = ?,
-                   last_seen_at = ?, updated_at = ?
-               WHERE entity_family_id = ?""",
-            (canonical_name, canonical_content, updated_at, updated_at, entity_family_id),
-        )
-    else:
-        conn.execute(
-            """INSERT INTO entity_families
-               (entity_family_id, canonical_name, canonical_content,
-                created_at, updated_at, last_seen_at)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (entity_family_id, canonical_name, canonical_content,
-             created_at, updated_at, created_at),
-        )
+    # 原子 UPSERT：并发 worker 可能同时持有同一 pending family_id
+    # （FamilyWriteGate 缓存命中的未提交 fid），SELECT-then-INSERT 会撞 UNIQUE
+    conn.execute(
+        """INSERT INTO entity_families
+           (entity_family_id, canonical_name, canonical_content,
+            created_at, updated_at, last_seen_at)
+           VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT(entity_family_id) DO UPDATE SET
+             canonical_name = excluded.canonical_name,
+             canonical_content = excluded.canonical_content,
+             last_seen_at = excluded.updated_at,
+             updated_at = excluded.updated_at""",
+        (entity_family_id, canonical_name, canonical_content,
+         created_at, updated_at, created_at),
+    )
 
 
 def get_entity_family(conn, entity_family_id: str) -> Optional[dict]:

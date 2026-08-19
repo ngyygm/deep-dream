@@ -17,7 +17,6 @@ def _content_snippet(entity: Dict[str, Any], limit: int = 200) -> str:
 
 
 from .prompts import (
-    ANALYZE_ENTITY_CANDIDATES_PRELIMINARY_SYSTEM_PROMPT,
     RESOLVE_ENTITY_CANDIDATES_BATCH_SYSTEM_PROMPT,
     ENTITY_PAIR_JUDGMENT_RULES,
     analyze_entity_pair_detailed_system_prompt,
@@ -27,95 +26,6 @@ from .prompts import (
 
 class _ConsolidationMixin:
     """知识图谱整理相关的 LLM 操作（mixin，通过 LLMClient 多继承使用）。"""
-
-    def analyze_entity_candidates_preliminary(self, entities_group: List[Dict[str, Any]],
-                                              context_text: Optional[str] = None) -> Dict[str, Any]:
-        """
-        初步筛选：分析一组候选实体，返回可能需要合并或存在关系的候选列表
-
-        这是两步判断流程的第一步，使用完整content进行快速筛选。
-
-        Args:
-            entities_group: 候选实体组，每个实体包含:
-                - family_id: 实体ID
-                - name: 实体名称
-                - content: 实体内容描述
-                - version_count: 该实体的版本数量
-            context_text: 可选的上下文文本（当前处理的文本片段或记忆缓存内容），
-                          用于帮助理解实体出现的场景
-
-        Returns:
-            初步筛选结果，包含:
-            - possible_merges: 可能需要合并的实体对列表
-            - possible_relations: 可能存在关系的实体对列表
-            - no_action: 不需要处理的实体ID列表
-        """
-        if not entities_group or len(entities_group) < 2:
-            return {"possible_merges": [], "possible_relations": [], "no_action": []}
-
-        system_prompt = ANALYZE_ENTITY_CANDIDATES_PRELIMINARY_SYSTEM_PROMPT
-
-        # 构建实体信息字符串
-        current_entity = entities_group[0]
-        _ce_fid = current_entity.get('family_id', '')
-        _ce_name = current_entity.get('name', '')
-        _ce_snip = _content_snippet(current_entity)
-        _parts = [f"""
-【当前实体】
-- family_id: {_ce_fid}
-- name: {_ce_name}
-- content: {_ce_snip}
-"""]
-
-        for i, entity in enumerate(entities_group[1:], 2):
-            _fid = entity.get('family_id', '')
-            _nm = entity.get('name', '')
-            _snip = _content_snippet(entity)
-            _parts.append(f"""
-【候选{i}】
-- family_id: {_fid}
-- name: {_nm}
-- content: {_snip}
-""")
-        entities_str = "".join(_parts)
-
-        # 构建上下文信息
-        context_note = ""
-        if context_text:
-            context_snippet = _truncate(context_text, 300)
-            context_note = f"""
-<原文片段>
-{context_snippet}
-</原文片段>
-"""
-
-        prompt = f"""判断以下候选实体中，哪些可能与当前实体是同一个概念（名称相似、别名、或描述高度重合）：
-{context_note}
-<候选实体列表>
-{entities_str}
-</候选实体列表>
-
-只输出一个 ```json ... ``` 代码块，不要包含任何其他文字。"""
-
-        # 调用LLM
-        try:
-            response = self._call_llm(prompt, system_prompt)
-
-            # 解析JSON响应
-            result = self._parse_json_response(response)
-
-            if not isinstance(result, dict):
-                raise ValueError("响应格式不正确")
-
-            result.setdefault("candidates", [])
-            return result
-
-        except Exception as e:
-            wprint_info(f"  初步筛选出错: {e}")
-            return {
-                "candidates": [],
-                "error": str(e)
-            }
 
     def analyze_entity_pair_detailed(self,
                                      current_entity: Dict[str, Any],
@@ -208,7 +118,23 @@ class _ConsolidationMixin:
                                         current_entity: Dict[str, Any],
                                         candidates: List[Dict[str, Any]],
                                         context_text: Optional[str] = None) -> Dict[str, Any]:
-        """一次性判断当前实体与多个候选的关系，减少逐候选 detailed 调用。"""
+        """一次性判断当前实体与多个候选的关系，减少逐候选 detailed 调用。
+
+        委托优先：挂载了 judge_service 时先走服务（memo/single-flight/攒批）。
+        """
+        _svc = getattr(self, "judge_service", None)
+        if _svc is not None:
+            return _svc.resolve_entity_candidates(
+                self, current_entity, candidates, context_text=context_text)
+        return self._resolve_entity_candidates_llm(
+            current_entity, candidates, context_text=context_text)
+
+    def _resolve_entity_candidates_llm(self,
+                                       current_entity: Dict[str, Any],
+                                       candidates: List[Dict[str, Any]],
+                                       context_text: Optional[str] = None) -> Dict[str, Any]:
+        """resolve_entity_candidates_batch 的原始直调实现。"""
+
         if not candidates:
             return {
                 "match_existing_id": "",
@@ -298,7 +224,27 @@ class _ConsolidationMixin:
                                     new_relation_contents: List[str],
                                     existing_relations: List[Dict[str, Any]],
                                     new_source_document: str = "") -> Dict[str, Any]:
-        """对同一实体对的一批候选关系做一次性 match/update/create 判定。"""
+        """对同一实体对的一批候选关系做一次性 match/update/create 判定。
+
+        委托优先：挂载了 judge_service 时先走服务（memo/single-flight/攒批）。
+        """
+        _svc = getattr(self, "judge_service", None)
+        if _svc is not None:
+            return _svc.resolve_relation_pair(
+                self, entity1_name, entity2_name, new_relation_contents,
+                existing_relations, new_source_document=new_source_document)
+        return self._resolve_relation_pair_llm(
+            entity1_name, entity2_name, new_relation_contents,
+            existing_relations, new_source_document=new_source_document)
+
+    def _resolve_relation_pair_llm(self,
+                                   entity1_name: str,
+                                   entity2_name: str,
+                                   new_relation_contents: List[str],
+                                   existing_relations: List[Dict[str, Any]],
+                                   new_source_document: str = "") -> Dict[str, Any]:
+        """resolve_relation_pair_batch 的原始直调实现。"""
+
         if not new_relation_contents:
             return {"action": "skip", "confidence": 1.0}
 
@@ -360,4 +306,224 @@ class _ConsolidationMixin:
                 "confidence": 0.0,
                 "error": str(e),
             }
+
+    # ------------------------------------------------------------------
+    # 窗口级批量裁决（strong-v1）：一次调用裁决窗口内多个实体/多个关系对
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _pair_batch_key(entity1_name: str, entity2_name: str) -> str:
+        return f"{entity1_name}\x1f{entity2_name}"
+
+    def resolve_entities_window_batch(
+        self,
+        entities: List[Dict[str, Any]],
+        candidates_by_name: Dict[str, List[Dict[str, Any]]],
+        context_text: Optional[str] = None,
+        source_document: str = "",
+        max_entities_per_call: int = 8,
+    ) -> Dict[str, Dict[str, Any]]:
+        """窗口级实体对齐：把多个待裁决实体合并进一次 LLM 调用。
+
+        Args:
+            entities: [{"name","content"}] 待裁决实体（调用方已预筛掉免 LLM 快路径）
+            candidates_by_name: 每个实体的候选列表（与单实体 resolve 相同结构）
+            max_entities_per_call: 单次调用实体数上限，超出自动拆批
+
+        Returns:
+            {entity_name: verdict}，verdict schema 与 resolve_entity_candidates_batch 一致；
+            出错时对应实体缺省（调用方回退到逐实体调用）。
+        """
+        verdicts: Dict[str, Dict[str, Any]] = {}
+        if not entities:
+            return verdicts
+        max_entities_per_call = max(1, int(max_entities_per_call))
+
+        _prev_step = getattr(self, "_current_distill_step", None)
+        self._current_distill_step = "09s_window_batch_entities"
+        try:
+            return self._resolve_entities_window_batch_inner(
+                entities, candidates_by_name, context_text, source_document,
+                max_entities_per_call)
+        finally:
+            self._current_distill_step = _prev_step
+
+    def _resolve_entities_window_batch_inner(
+        self,
+        entities: List[Dict[str, Any]],
+        candidates_by_name: Dict[str, List[Dict[str, Any]]],
+        context_text: Optional[str],
+        source_document: str,
+        max_entities_per_call: int,
+    ) -> Dict[str, Dict[str, Any]]:
+        verdicts: Dict[str, Dict[str, Any]] = {}
+
+        context_note = ""
+        if context_text:
+            context_note = (f"\n<原文上下文>\n{_truncate(context_text, 800)}\n</原文上下文>")
+
+        for start in range(0, len(entities), max_entities_per_call):
+            chunk = entities[start:start + max_entities_per_call]
+            blocks = []
+            for ent in chunk:
+                name = str(ent.get("name", ""))
+                cands = candidates_by_name.get(name) or []
+                cand_lines = []
+                for idx, cand in enumerate(cands[:6], 1):
+                    _mt = cand.get('name_match_type', 'none')
+                    mt_note = ""
+                    if _mt == "substring":
+                        mt_note = "（名称子串，可能是简称/别名）"
+                    elif _mt == "exact":
+                        mt_note = "（核心名称完全相同）"
+                    cand_lines.append(
+                        f"  候选{idx}: family_id={cand.get('family_id', '')} | "
+                        f"name={cand.get('name', '')}{mt_note} | content={_content_snippet(cand, 120)}"
+                    )
+                blocks.append(
+                    f"<待对齐实体 name=\"{name}\">\n"
+                    f"- content: {_content_snippet(ent, 160)}\n"
+                    + ("\n".join(cand_lines) if cand_lines else "  （无候选）")
+                    + "\n</待对齐实体>"
+                )
+            prompt = f"""以下是对同一窗口内多个待入库实体的对齐裁决任务。{context_note}
+
+<待对齐实体列表>
+{chr(10).join(blocks)}
+</待对齐实体列表>
+
+请逐实体判断：该实体与哪个候选在文本中扮演相同角色（角色指纹对比）。各实体独立判断，互不影响。
+
+输出一个 ```json``` 代码块：
+{{"results": [{{"name": "实体名", "match_existing_id": "", "update_mode": "reuse_existing|merge_into_latest|create_new", "merged_name": "", "relations_to_create": [{{"family_id": "", "relation_content": ""}}], "confidence": 0.0}}]}}"""
+
+            try:
+                result, _ = self.call_llm_until_json_parses(
+                    [{"role": "user", "content": prompt}],
+                    parse_fn=self._parse_json_response,
+                    json_parse_retries=1,
+                )
+                rows = result.get("results") if isinstance(result, dict) else None
+                if not isinstance(rows, list):
+                    continue
+                by_name = {}
+                for ent in chunk:
+                    by_name[str(ent.get("name", ""))] = ent
+                for row in rows:
+                    if not isinstance(row, dict):
+                        continue
+                    name = str(row.get("name", "") or "")
+                    if name not in by_name:
+                        continue
+                    row.setdefault("match_existing_id", "")
+                    row.setdefault("update_mode", "create_new")
+                    row.setdefault("merged_name", "")
+                    row.setdefault("relations_to_create", [])
+                    row.setdefault("confidence", 0.0)
+                    verdicts[name] = row
+            except Exception as e:
+                wprint_info(f"[window_batch] 实体窗口批量裁决失败（{start // max_entities_per_call + 1} 批）: {e}")
+                continue
+        return verdicts
+
+    def resolve_relation_pairs_window_batch(
+        self,
+        pairs: List[Dict[str, Any]],
+        context_text: Optional[str] = None,
+        source_document: str = "",
+        max_pairs_per_call: int = 8,
+    ) -> Dict[str, Dict[str, Any]]:
+        """窗口级关系对齐：把多个待裁决实体对合并进一次 LLM 调用。
+
+        Args:
+            pairs: [{"entity1_name","entity2_name","new_relation_contents":[...],
+                     "existing_relations":[{family_id,content,source_document}]}]
+            max_pairs_per_call: 单次调用实体对数上限，超出自动拆批
+
+        Returns:
+            {"{entity1_name}\\x1f{entity2_name}": verdict}，verdict schema 与
+            resolve_relation_pair_batch 一致；出错时对应 pair 缺省（回退逐对调用）。
+        """
+        verdicts: Dict[str, Dict[str, Any]] = {}
+        if not pairs:
+            return verdicts
+        max_pairs_per_call = max(1, int(max_pairs_per_call))
+
+        _prev_step = getattr(self, "_current_distill_step", None)
+        self._current_distill_step = "10s_window_batch_relations"
+        try:
+            return self._resolve_relation_pairs_window_batch_inner(
+                pairs, context_text, source_document, max_pairs_per_call)
+        finally:
+            self._current_distill_step = _prev_step
+
+    def _resolve_relation_pairs_window_batch_inner(
+        self,
+        pairs: List[Dict[str, Any]],
+        context_text: Optional[str],
+        source_document: str,
+        max_pairs_per_call: int,
+    ) -> Dict[str, Dict[str, Any]]:
+        verdicts: Dict[str, Dict[str, Any]] = {}
+
+        for start in range(0, len(pairs), max_pairs_per_call):
+            chunk = pairs[start:start + max_pairs_per_call]
+            blocks = []
+            for pair in chunk:
+                e1 = str(pair.get("entity1_name", ""))
+                e2 = str(pair.get("entity2_name", ""))
+                new_lines = "\n".join(
+                    f"  - {c}" for c in (pair.get("new_relation_contents") or [])[:4]
+                )
+                exist_lines = "\n".join(
+                    f"  - family_id={r.get('family_id', '')} | {r.get('content', '')[:100]}"
+                    for r in (pair.get("existing_relations") or [])[:6]
+                )
+                blocks.append(
+                    f"<待裁决关系对 entity1=\"{e1}\" entity2=\"{e2}\">\n"
+                    f"新关系描述:\n{new_lines or '  （无）'}\n"
+                    f"已有关系:\n{exist_lines or '  （无）'}\n"
+                    f"</待裁决关系对>"
+                )
+            prompt = f"""以下是对同一窗口内多个新关系的 match/create 裁决任务。
+
+<待裁决关系对列表>
+{chr(10).join(blocks)}
+</待裁决关系对列表>
+
+请逐对判断：新关系是否与该对某个已有关系描述同一性质的关系。参考 source_document={source_document or '(当前文档)'}，跨文档时只有明确同一语义关系才可匹配。各对独立判断，互不影响。
+
+输出一个 ```json``` 代码块：
+{{"results": [{{"entity1_name": "", "entity2_name": "", "action": "match_existing|create_new", "matched_relation_id": "", "need_update": false, "confidence": 0.0}}]}}"""
+
+            try:
+                result, _ = self.call_llm_until_json_parses(
+                    [{"role": "user", "content": prompt}],
+                    parse_fn=self._parse_json_response,
+                    json_parse_retries=1,
+                )
+                rows = result.get("results") if isinstance(result, dict) else None
+                if not isinstance(rows, list):
+                    continue
+                key_map = {}
+                for pair in chunk:
+                    key_map[self._pair_batch_key(
+                        str(pair.get("entity1_name", "")), str(pair.get("entity2_name", "")))] = pair
+                for row in rows:
+                    if not isinstance(row, dict):
+                        continue
+                    key = self._pair_batch_key(
+                        str(row.get("entity1_name", "") or ""),
+                        str(row.get("entity2_name", "") or ""))
+                    if key not in key_map:
+                        continue
+                    row.setdefault("action", "create_new")
+                    row.setdefault("matched_relation_id", row.pop("matched_family_id", ""))
+                    row.setdefault("need_update", row.get("action") == "create_new")
+                    row.setdefault("confidence", 0.0)
+                    verdicts[key] = row
+            except Exception as e:
+                wprint_info(f"[window_batch] 关系窗口批量裁决失败（{start // max_pairs_per_call + 1} 批）: {e}")
+                continue
+        return verdicts
 

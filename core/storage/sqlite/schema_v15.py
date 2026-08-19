@@ -28,6 +28,16 @@ TABLES_SQL = [
     created_at TEXT NOT NULL,
     last_indexed_at TEXT DEFAULT NULL,
     updated_at TEXT NOT NULL
+    )""",
+
+    """CREATE TABLE IF NOT EXISTS document_ingestion_state (
+    document_id TEXT PRIMARY KEY,
+    state TEXT NOT NULL DEFAULT 'active'
+        CHECK(state IN ('processing', 'active', 'failed', 'incomplete')),
+    total_windows INTEGER NOT NULL DEFAULT 0,
+    complete_windows INTEGER NOT NULL DEFAULT 0,
+    missing_windows TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(missing_windows)),
+    updated_at TEXT NOT NULL
 )""",
 
     """CREATE TABLE IF NOT EXISTS document_versions (
@@ -484,14 +494,15 @@ SELECT
     dv.char_count,
     dv.line_count,
     dv.processed_at AS processed_time,
-    0 AS complete_windows,
-    0 AS total_windows,
-    0 AS missing_windows,
+    COALESCE(dis.complete_windows, 0) AS complete_windows,
+    COALESCE(dis.total_windows, 0) AS total_windows,
+    COALESCE(dis.missing_windows, '[]') AS missing_windows,
     dv.extra_json AS metadata
 FROM documents d
 JOIN document_versions dv
   ON dv.document_id = d.document_id AND dv.status = 'active'
-WHERE d.status = 'active';
+LEFT JOIN document_ingestion_state dis ON dis.document_id = d.document_id
+WHERE d.status = 'active' AND COALESCE(dis.state, 'active') = 'active';
 
 CREATE VIEW IF NOT EXISTS v_episodes AS
 SELECT
@@ -600,6 +611,8 @@ WHERE ra.status = 'active';
 def create_views(conn: sqlite3.Connection) -> None:
     conn.execute("DROP VIEW IF EXISTS graph_edges")
     conn.execute(GRAPH_EDGES_SQL)
+    for name in ("v_document_files", "v_episodes", "v_latest_concept", "v_mentions", "v_relation_edges"):
+        conn.execute(f"DROP VIEW IF EXISTS {name}")
     for stmt in _COMPAT_VIEWS_SQL.split(";"):
         stmt = stmt.strip()
         if stmt:

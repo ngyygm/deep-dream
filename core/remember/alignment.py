@@ -51,6 +51,19 @@ class _PipelineExtractionMixin(_ContradictionMixin, _ResolutionMixin, _OrphanMix
             (extracted_entities, extracted_relations) — dict lists, no family_id.
         """
         mode = getattr(self, "remember_mode", "dual_model")
+        if mode == "strong_one_pass":
+            # strong-v1：单遍结构化抽取（1 次 LLM 调用 + 规则后处理）
+            from .strong_steps import strong_extract_only
+            return strong_extract_only(
+                self, new_episode, input_text, document_name,
+                verbose=verbose, verbose_steps=verbose_steps,
+                event_time=event_time, progress_callback=progress_callback,
+                progress_range=progress_range,
+                window_index=window_index, total_windows=total_windows,
+                window_timings_ref=window_timings_ref,
+                control_check_fn=control_check_fn,
+                early_entity_done_fn=early_entity_done_fn,
+            )
         if mode in ("dual_model", "standard"):
             return super()._extract_only(
                 new_episode, input_text, document_name,

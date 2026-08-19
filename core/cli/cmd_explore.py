@@ -185,13 +185,7 @@ def explore(
     neighbours, and collects relation evidence -- returning everything in
     a single unified result set.
     """
-    from ._helpers import (
-        concept_source_evidence,
-        evidence_cards,
-        expand_query_terms,
-        relation_evidence,
-        search_document_terms,
-    )
+    from core.explore import ExploreOptions, explore_memory
 
     out = OutputManager(ctx)
     cli_ctx: CliContext = ctx.obj
@@ -199,157 +193,35 @@ def explore(
     graph_id = cli_ctx.get_active_graph(explicit=graph)
 
     with cli_ctx.get_storage(graph_id) as storage:
-        # ------------------------------------------------------------------
-        # 1. Query expansion
-        # ------------------------------------------------------------------
-        query_terms = expand_query_terms(question, terms)
-        if not expand_query:
-            query_terms = query_terms[:1]
-
-        # ------------------------------------------------------------------
-        # 2. Document file search
-        # ------------------------------------------------------------------
-        with out.spinner("Searching document files..."):
-            file_hits = search_document_terms(
+        with out.spinner("Exploring documents, episodes, concepts, and relations..."):
+            data = explore_memory(
                 storage,
-                query_terms,
-                per_term_limit=per_term_file_limit,
-                total_limit=file_limit,
-            )
-
-        # ------------------------------------------------------------------
-        # 3. Semantic concept search
-        # ------------------------------------------------------------------
-        semantic_results: list[dict] = []
-        semantic_seen: set[str] = set()
-        semantic_query_terms = query_terms if expand_query else query_terms[:1]
-
-        with out.spinner("Running semantic search..."):
-            for term_info in semantic_query_terms[:semantic_queries]:
-                semantic = storage.agent_semantic_search(
-                    term_info["term"],
+                question,
+                explicit_terms=terms,
+                expand_query=expand_query,
+                options=ExploreOptions(
                     role=role,
-                    top_k=limit,
+                    limit=limit,
                     threshold=threshold,
-                )
-                for raw_item in semantic.get("results", []):
-                    item = _to_dict(raw_item)
-                    score = item.get("score")
-                    if score is not None and float(score or 0.0) < min_semantic_score:
-                        continue
-                    fid = item.get("family_id", "")
-                    if not fid or fid in semantic_seen:
-                        continue
-                    semantic_seen.add(fid)
-                    item["matched_query"] = term_info["term"]
-                    item["query_source"] = term_info.get("source", "expanded")
-                    semantic_results.append(item)
-                    if len(semantic_results) >= limit:
-                        break
-                if len(semantic_results) >= limit:
-                    break
-
-        semantic_results.sort(
-            key=lambda x: float(x.get("score") or 0.0), reverse=True
-        )
-
-        concept_ids = [
-            r.get("family_id", "")
-            for r in semantic_results
-            if r.get("family_id")
-        ]
-        episode_ids = [
-            r.get("episode_version_id", "")
-            for r in semantic_results
-            if r.get("episode_version_id")
-        ]
-
-        # ------------------------------------------------------------------
-        # 4. Source evidence
-        # ------------------------------------------------------------------
-        with out.spinner("Collecting source evidence..."):
-            source_evidence = concept_source_evidence(
-                storage, concept_ids, limit=limit
-            )
-
-        # ------------------------------------------------------------------
-        # 5. Graph neighbour expansion
-        # ------------------------------------------------------------------
-        neighbors: list[dict] = []
-        with out.spinner("Expanding graph neighbours..."):
-            for fid in concept_ids[:neighbor_seeds]:
-                try:
-                    for nb in storage.get_concept_neighbors(
-                        fid, max_depth=depth, max_results=neighbor_limit
-                    ):
-                        neighbors.append(_to_dict(nb))
-                except Exception:
-                    continue
-
-        # ------------------------------------------------------------------
-        # 6. Relation evidence
-        # ------------------------------------------------------------------
-        relation_samples: list[dict] = []
-        relation_pairs: list[tuple[str, str]] = []
-        with out.spinner("Collecting relation evidence..."):
-            for i, left in enumerate(concept_ids[:relation_seed_count]):
-                for right in concept_ids[i + 1 : relation_seed_count]:
-                    if left != right:
-                        relation_pairs.append((left, right))
-            for left, right in relation_pairs[:relation_pair_limit]:
-                evidence = relation_evidence(
-                    storage, left, right, limit=relation_evidence_limit
-                )
-                for raw_item in evidence:
-                    item = _to_dict(raw_item)
-                    item["query_pair"] = [left, right]
-                    relation_samples.append(item)
-                if len(relation_samples) >= relation_evidence_limit:
-                    relation_samples = relation_samples[:relation_evidence_limit]
-                    break
-
-        # ------------------------------------------------------------------
-        # 7. Evidence cards
-        # ------------------------------------------------------------------
-        cards = evidence_cards(
-            file_hits, source_evidence, query_terms, limit=evidence_limit
-        )
-
-        # Trim neighbors to the requested limit
-        trimmed_neighbors = neighbors[:neighbor_limit]
-
-        # ------------------------------------------------------------------
-        # Build result payload
-        # ------------------------------------------------------------------
-        data = {
-            "question": question,
-            "query_terms": query_terms,
-            "file_hits": file_hits,
-            "semantic_hits": semantic_results,
-            "semantic_total": len(semantic_results),
-            "episode_ids": episode_ids,
-            "source_evidence": source_evidence,
-            "evidence_cards": cards,
-            "neighbors": trimmed_neighbors,
-            "relation_evidence": relation_samples,
-            "depth": depth,
-            "coverage": {
-                "file_hits": len(file_hits),
-                "semantic_hits": len(semantic_results),
-                "source_evidence": len(source_evidence),
-                "evidence_cards": len(cards),
-                "neighbors": len(trimmed_neighbors),
-                "relation_evidence": len(relation_samples),
-                "relation_pairs_checked": min(
-                    len(relation_pairs), relation_pair_limit
+                    file_limit=file_limit,
+                    per_term_file_limit=per_term_file_limit,
+                    semantic_queries=semantic_queries,
+                    min_semantic_score=min_semantic_score,
+                    evidence_limit=evidence_limit,
+                    neighbor_seeds=neighbor_seeds,
+                    neighbor_limit=neighbor_limit,
+                    depth=depth,
+                    relation_seed_count=relation_seed_count,
+                    relation_pair_limit=relation_pair_limit,
+                    relation_evidence_limit=relation_evidence_limit,
                 ),
-            },
-        }
+            )
 
         meta = {
             "graph_id": graph_id,
             "used": {
                 "raw_files": True,
+                "episodes": True,
                 "sqlite": True,
                 "semantic": True,
                 "graph_traversal": True,

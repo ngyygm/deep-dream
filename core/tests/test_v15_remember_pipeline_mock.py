@@ -150,6 +150,30 @@ def test_search_fts_returns_pipeline_episodes(v15):
     assert results[0]["document_id"] == "doc1"
 
 
+def test_search_fts_falls_back_from_literal_and_to_or(v15):
+    _setup_doc_episode(v15)
+    results = search_repo.search_fts(v15, "quantum word-that-is-absent", limit=5)
+    assert results
+    assert results[0]["episode_id"] == "ep1"
+    assert results[0]["match_mode"] == "or"
+
+
+def test_processing_document_is_not_search_visible(v15):
+    _setup_doc_episode(v15)
+    v15.execute(
+        """INSERT INTO document_ingestion_state
+           (document_id,state,total_windows,complete_windows,missing_windows,updated_at)
+           VALUES ('doc1','processing',1,0,'[0]',?)""",
+        (NOW,),
+    )
+    assert search_repo.search_fts(v15, "quantum physics", limit=5) == []
+    v15.execute(
+        "UPDATE document_ingestion_state SET state='active',complete_windows=1,missing_windows='[]' "
+        "WHERE document_id='doc1'"
+    )
+    assert search_repo.search_fts(v15, "quantum physics", limit=5)
+
+
 def test_search_fts_chinese(v15):
     _setup_doc_episode(v15)
     # Insert Chinese content

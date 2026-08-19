@@ -218,6 +218,39 @@ class RelationProcessor(_RelationConstructionMixin):
         total_pairs = len(relations_by_pair)
         _rel_done = 0
 
+        # strong-v1 窗口级批量预裁决：有已有关系的实体对一次调用全部判完
+        _window_rel_verdicts: Dict[str, Dict[str, Any]] = {}
+        if getattr(self, "window_batch_alignment_enabled", False):
+            _t_wb = _time.monotonic()
+            _pairs_to_judge = []
+            for pair_key, pair_rels in relations_by_pair.items():
+                _existing = existing_relations_by_pair.get(pair_key, [])
+                if not _existing:
+                    continue  # 无已有关系 → 免 LLM 直建快路径
+                e1_name, e2_name = _get_entity_names(pair_rels[0])
+                _pairs_to_judge.append({
+                    "entity1_name": e1_name,
+                    "entity2_name": e2_name,
+                    "new_relation_contents": [c for rel in pair_rels if (c := rel.get("content", ""))],
+                    "existing_relations": [
+                        {"family_id": r.family_id, "content": r.content,
+                         "source_document": r.source_document}
+                        for r in _existing
+                    ],
+                })
+            if _pairs_to_judge:
+                try:
+                    _window_rel_verdicts = self.llm_client.resolve_relation_pairs_window_batch(
+                        _pairs_to_judge,
+                        source_document=_doc_basename(source_document),
+                    ) or {}
+                except Exception as exc:
+                    wprint_info(f"[window_batch] 关系窗口批量裁决异常，回退逐对: {exc}")
+                    _window_rel_verdicts = {}
+            dbg(f"[window_batch] relation pairs judged: {len(_pairs_to_judge)} → {len(_window_rel_verdicts)} verdicts ({_time.monotonic() - _t_wb:.2f}s)")
+            if window_timings_ref is not None:
+                window_timings_ref["step10-window_batch_alignment"] = _time.monotonic() - _t_wb
+
         if use_parallel:
             pair_items = list(relations_by_pair.items())
             results: List[Optional[Tuple[List[Relation], List[Relation]]]] = [None] * len(pair_items)
@@ -244,6 +277,8 @@ class RelationProcessor(_RelationConstructionMixin):
                     entity_lookup=entity_lookup,
                     embedding_ctx=embedding_ctx,
                     source_text=source_text,
+                    precomputed_verdict=_window_rel_verdicts.get(
+                        self.llm_client._pair_batch_key(entity1_name, entity2_name)) or None,
                 )
 
             executor = _get_rel_pool(max_workers)
@@ -355,6 +390,8 @@ class RelationProcessor(_RelationConstructionMixin):
                     entity_lookup=entity_lookup,
                     embedding_ctx=embedding_ctx,
                     source_text=source_text,
+                    precomputed_verdict=_window_rel_verdicts.get(
+                        self.llm_client._pair_batch_key(entity1_name, entity2_name)) or None,
                 )
                 _pair_elapsed = _time.monotonic() - _t_pair
                 _sum_pair_time += _pair_elapsed
@@ -471,6 +508,7 @@ class RelationProcessor(_RelationConstructionMixin):
                                    entity_lookup: Optional[Dict[str, Any]] = None,
                                    embedding_ctx: Optional[Dict[str, Any]] = None,
                                    source_text: str = "",
+                                   precomputed_verdict: Optional[Dict[str, Any]] = None,
                                    ) -> Tuple[List[Relation], List[Relation], set]:
         """处理单个实体对的关系，返回 (processed_relations, relations_to_persist, corroborated_family_ids)。"""
         dbg(f"ENTER {entity1_name}-{entity2_name}: ctx={embedding_ctx is not None} exist={len(existing_relations)}")
@@ -652,7 +690,7 @@ class RelationProcessor(_RelationConstructionMixin):
             for relation in existing_relations
         ]
 
-        batch_result = self.llm_client.resolve_relation_pair_batch(
+        batch_result = precomputed_verdict or self.llm_client.resolve_relation_pair_batch(
             entity1_name=entity1_name,
             entity2_name=entity2_name,
             new_relation_contents=new_contents,

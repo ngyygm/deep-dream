@@ -3,7 +3,7 @@ Pipeline mixin: remember_text entry point, lifecycle helpers, and standalone mai
 """
 from typing import Any, Callable, Dict, Optional
 from datetime import datetime
-import sys
+import hashlib
 import logging
 import threading
 import time
@@ -74,6 +74,9 @@ class _PipelineMixin:
 
         doc_name = source_document or doc_name
 
+        # 每次入库独立计数：入口清零，结束随 result 返回（processor 共享计数器）
+        self.reset_llm_call_stats()
+
         # Input validation: reject empty or whitespace-only text early.
         if not text or not text.strip():
             return {
@@ -130,6 +133,20 @@ class _PipelineMixin:
                 "chunks_processed": total_chunks,
                 "storage_path": str(self.storage.storage_path),
             }
+
+        # Publish atomically: save_episode may write intermediate rows, but all
+        # search views keep this document invisible until every window finishes.
+        _atomic_document_id = override_doc_id or (
+            "doc_" + hashlib.sha256(
+                (document_path or doc_name or text[:64]).encode()
+            ).hexdigest()[:16]
+        )
+        _set_publish_state = getattr(self.storage, "set_document_ingestion_state", None)
+        if _set_publish_state:
+            _set_publish_state(
+                _atomic_document_id, "processing", total_windows=total_chunks,
+                complete_windows=0, missing_windows=range(total_chunks),
+            )
 
         # Targeted mode: only process specific window indices
         if target_window_indices is not None:
@@ -479,6 +496,11 @@ class _PipelineMixin:
             except Exception:
                 pass
             self.storage._current_run_id = ""
+            if _set_publish_state:
+                _set_publish_state(
+                    _atomic_document_id, "failed", total_windows=total_chunks,
+                    complete_windows=0, missing_windows=range(total_chunks),
+                )
             raise _main_pipeline_exc
 
         # ========== Post-window cross-window dedup (always runs, even for N=1) ==========
@@ -526,6 +548,14 @@ class _PipelineMixin:
             {"phase": phase, "window_index": _abs_of(idx) if callable(_abs_of) else start_chunk + idx, "error": str(exc)}
             for phase, idx, exc in state.errors
         ]
+
+        if _set_publish_state:
+            _publish_state = "active" if not _failed_window_indices else "incomplete"
+            _set_publish_state(
+                _atomic_document_id, _publish_state, total_windows=total_chunks,
+                complete_windows=len(_successful_window_indices),
+                missing_windows=_failed_window_indices,
+            )
 
         # Resolve document_version_id from the last episode
         document_version_id = ""
@@ -576,6 +606,7 @@ class _PipelineMixin:
             "relations": total_relations,
             "window_timings": state.window_timings,
             "timing_summary": timing_summary or self._build_timing_summary(state.window_timings),
+            "llm_call_stats": self.get_llm_call_stats(),
         }
 
         if _failed_windows > 0:
@@ -606,6 +637,11 @@ class _PipelineMixin:
         # Only raise if ALL windows failed -- partial results are still valuable.
         if _failed_windows >= N:
             _phase, _idx, exc = state.errors[0]
+            if _set_publish_state:
+                _set_publish_state(
+                    _atomic_document_id, "failed", total_windows=total_chunks,
+                    complete_windows=0, missing_windows=range(total_chunks),
+                )
             raise exc
 
         # Clear the run_id from storage now that pipeline is done
@@ -644,38 +680,3 @@ class _PipelineMixin:
             self.close()
         except Exception:
             pass
-
-
-def main():
-    """示例使用"""
-    # Late import to avoid circular dependency at module load time
-    from .orchestrator import TemporalMemoryGraphProcessor
-
-    # 配置
-    storage_path = "./tmg_storage"
-    document_paths = sys.argv[1:] if len(sys.argv) > 1 else []
-
-    if not document_paths:
-        wprint_info("用法: python -m Temporal_Memory_Graph.processor <文档路径1> [文档路径2] ...")
-        wprint_info("示例: python -m Temporal_Memory_Graph.processor doc1.txt doc2.txt")
-        return
-
-    # 创建处理器
-    processor = TemporalMemoryGraphProcessor(
-        storage_path=storage_path,
-        window_size=1000,
-        overlap=200,
-        # llm_api_key="your-api-key",  # 如果需要，取消注释并填入
-        # llm_model="gpt-4",
-        # llm_base_url="https://api.openai.com/v1",  # 可自定义LLM API URL
-        # embedding_model_path="/path/to/local/model",  # 本地embedding模型路径
-        # embedding_model_name="sentence-transformers/all-MiniLM-L6-v2",  # 或使用HuggingFace模型
-    )
-
-    # 处理文档
-    processor.process_documents(document_paths, verbose=True)
-
-    # 输出统计信息
-    stats = processor.get_statistics()
-    wprint_info("\n处理完成！")
-    wprint_info(f"统计信息: {stats}")

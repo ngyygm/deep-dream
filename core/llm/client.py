@@ -26,6 +26,7 @@ from .consolidation import _ConsolidationMixin
 from .summary_evolution import SummaryEvolutionMixin
 from .contradiction import ContradictionDetectionMixin
 from .extraction import _LLMExtractionMixin
+from .extraction_strong import _StrongExtractionMixin
 from .json_repair import (
     clean_json_string,
     fix_json_errors,
@@ -61,9 +62,60 @@ from .prompts import (
 )
 
 
+class LLMCallStats:
+    """线程安全的 LLM 调用/token 计数器；可被同一 processor 的多个 LLMClient 共享。
+
+    优先记录上游 usage（prompt_eval_count/eval_count）；缺失时回退为本地估算并计 estimated。
+    按调用发生时的 distill step 标签分桶（未打标的归 "unlabeled"），供管线各阶段对比。
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._counters = {
+            "calls": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "estimated_calls": 0,
+        }
+        self._by_step: Dict[str, Dict[str, int]] = {}
+        self._by_model: Dict[str, int] = {}
+
+    def record(self, *, model: str, step: str, prompt_tokens: int, completion_tokens: int,
+               estimated: bool) -> None:
+        with self._lock:
+            self._counters["calls"] += 1
+            self._counters["prompt_tokens"] += max(0, int(prompt_tokens))
+            self._counters["completion_tokens"] += max(0, int(completion_tokens))
+            if estimated:
+                self._counters["estimated_calls"] += 1
+            bucket = self._by_step.setdefault(
+                step, {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0}
+            )
+            bucket["calls"] += 1
+            bucket["prompt_tokens"] += max(0, int(prompt_tokens))
+            bucket["completion_tokens"] += max(0, int(completion_tokens))
+            self._by_model[str(model or "?")] = self._by_model.get(str(model or "?"), 0) + 1
+
+    def snapshot(self) -> Dict[str, Any]:
+        with self._lock:
+            out = dict(self._counters)
+            out["by_step"] = {
+                k: dict(v) for k, v in sorted(self._by_step.items())
+            }
+            out["by_model"] = dict(self._by_model)
+            return out
+
+    def reset(self) -> None:
+        with self._lock:
+            for k in self._counters:
+                self._counters[k] = 0
+            self._by_step.clear()
+            self._by_model.clear()
+
+
 class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
                  SummaryEvolutionMixin, ContradictionDetectionMixin,
-                 _LLMExtractionMixin):
+                 _StrongExtractionMixin, _LLMExtractionMixin):
 
     @staticmethod
     def _strip_opt_str(v: Optional[str]) -> Optional[str]:
@@ -89,6 +141,7 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
                  max_llm_concurrency: Optional[int] = None,
                  shared_llm_semaphore: Optional[PrioritySemaphore] = None,
                  shared_llm_slot_max: Optional[int] = None,
+                 openai_extra_body: Optional[Dict[str, Any]] = None,
                  alignment_base_url: Optional[str] = None,
                  alignment_api_key: Optional[str] = None,
                  alignment_model: Optional[str] = None,
@@ -97,7 +150,10 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
                  alignment_content_snippet_length: Optional[int] = None,
                  alignment_relation_content_snippet_length: Optional[int] = None,
                  alignment_enabled: bool = False,
-                 alignment_max_llm_concurrency: Optional[int] = None):
+                 alignment_max_llm_concurrency: Optional[int] = None,
+                 alignment_openai_extra_body: Optional[Dict[str, Any]] = None,
+                 call_stats: Optional[LLMCallStats] = None,
+                 judge_service: Optional[Any] = None):
         """
         初始化LLM客户端
 
@@ -116,7 +172,12 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
                 主模型、抽取模型、对齐模型统一限制在 llm.max_concurrency 内。
             alignment_*:
                 步骤 6–7 可单独覆盖；未设置的项回退到上游对应项。
+            call_stats:
+                共享的调用计数器；同一 processor 的多个 LLMClient 传同一实例即可汇总。
         """
+        self._call_stats = call_stats if call_stats is not None else LLMCallStats()
+        # 库级对齐判断服务（memo/single-flight/攒批）；None 时判断方法走原始直调路径
+        self.judge_service = judge_service
         self.api_key = api_key
         self.model_name = model_name
         self.base_url = base_url
@@ -133,6 +194,7 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
             )
         self.think_mode = think_mode
         self.max_tokens = max_tokens
+        self.openai_extra_body = dict(openai_extra_body or {})
         if context_window_tokens is None:
             raise ValueError(
                 "context_window_tokens 未设置。请在 service_config.json 的 llm 中配置 context_window_tokens，"
@@ -165,6 +227,7 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
             if alignment_relation_content_snippet_length is not None else None
         )
         self.alignment_enabled = bool(alignment_enabled)
+        self.alignment_openai_extra_body = dict(alignment_openai_extra_body or {})
         self._alignment_max_llm_concurrency: Optional[int] = None
         if alignment_max_llm_concurrency is not None:
             self._alignment_max_llm_concurrency = max(1, int(alignment_max_llm_concurrency))
@@ -255,6 +318,11 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
             return bool(self.alignment_think_mode)
         return bool(self.think_mode)
 
+    def _effective_openai_extra_body(self, priority: int) -> Dict[str, Any]:
+        if self._use_alignment_llm_endpoint(priority) and self.alignment_openai_extra_body:
+            return self.alignment_openai_extra_body
+        return self.openai_extra_body
+
     def _effective_max_tokens_base(self, priority: int) -> Optional[int]:
         if self._use_alignment_llm_endpoint(priority) and self.alignment_max_tokens is not None:
             return int(self.alignment_max_tokens)
@@ -322,6 +390,16 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
             return int(self.alignment_content_snippet_length)
         return int(self.content_snippet_length or 50)
 
+    def effective_relation_snippet_length(self) -> int:
+        """按当前线程优先级返回关系 content 截断长度，防止关系匹配 prompt 随库增长。"""
+        p = getattr(self._priority_local, "priority", LLM_PRIORITY_STEP1)
+        if (
+            self._use_alignment_llm_endpoint(p)
+            and self.alignment_relation_content_snippet_length is not None
+        ):
+            return max(1, int(self.alignment_relation_content_snippet_length))
+        return max(1, int(self.relation_content_snippet_length or 50))
+
     def _use_openai_compatible_url(self, url: Optional[str], api_key: Optional[str]) -> bool:
         """是否为 OpenAI 兼容接口；url / api_key 为本次请求实际使用的值。"""
         key = api_key
@@ -371,6 +449,31 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
             "upstream_active": u_active, "upstream_max": u_max,
             "downstream_active": d_active, "downstream_max": d_max,
         }
+
+    def _record_call_stats(self, *, model: str, messages: List[Dict[str, Any]],
+                           response_text: str, prompt_tokens: Optional[int],
+                           completion_tokens: Optional[int]) -> None:
+        """记录一次成功的上游调用；usage 缺失时回退本地估算并标记 estimated。"""
+        estimated = prompt_tokens is None or completion_tokens is None
+        if prompt_tokens is None:
+            prompt_tokens = self._estimate_messages_token_count(messages)
+        if completion_tokens is None:
+            completion_tokens = self._estimate_text_token_count(response_text)
+        self._call_stats.record(
+            model=model,
+            step=self._current_distill_step or "unlabeled",
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            estimated=estimated,
+        )
+
+    def reset_call_stats(self) -> None:
+        """清零本客户端的调用计数（共享实例则影响所有共享方）。"""
+        self._call_stats.reset()
+
+    def get_call_stats(self) -> Dict[str, Any]:
+        """返回调用计数快照：calls/prompt_tokens/completion_tokens/by_step/by_model。"""
+        return self._call_stats.snapshot()
 
     def _save_distill_conversation(self, messages: List[Dict[str, str]]):
         """保存一次 LLM 对话到 JSONL 文件（OpenAI fine-tuning 格式）。"""
@@ -493,6 +596,13 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
         if not self._endpoint_available:
             if allow_mock_fallback:
                 mock_prompt = (messages[-1]["content"] if messages else prompt) if messages else prompt
+                self._record_call_stats(
+                    model="mock",
+                    messages=messages or [],
+                    response_text="",
+                    prompt_tokens=None,
+                    completion_tokens=None,
+                )
                 return mock_llm_response(mock_prompt)
             return ""
 
@@ -546,6 +656,7 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
                         api_key=_eff_key,
                         timeout=timeout,
                         max_tokens=_api_max_tokens,
+                        extra_body=self._effective_openai_extra_body(_priority_init),
                     )
                 else:
                     resp = ollama_chat(
@@ -560,6 +671,13 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
                 response_text = resp.content or ""
                 _pe = getattr(resp, "prompt_eval_count", None)
                 _ev = getattr(resp, "eval_count", None)
+                self._record_call_stats(
+                    model=_eff_model,
+                    messages=messages,
+                    response_text=response_text,
+                    prompt_tokens=_pe,
+                    completion_tokens=_ev,
+                )
                 if _pe is not None or _ev is not None:
                     wprint_info(
                         f"[llm_tokens] in={_pe or '?'} out={_ev or '?'} "

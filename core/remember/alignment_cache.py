@@ -5,7 +5,6 @@ import time as _time
 import uuid
 from typing import Optional
 from datetime import datetime
-from pathlib import Path
 
 from core.models import Episode
 from core.utils import compute_doc_hash, wprint_info
@@ -81,10 +80,3 @@ class _CacheMixin:
             wprint_info("【步骤1】缓存｜完成｜已更新")
 
         return new_episode
-
-    def _remember_debug_base_dir(self, document_name: str) -> Optional[Path]:
-        root = getattr(self.llm_client, "_distill_data_dir", None)
-        if not root:
-            return None
-        task_id = getattr(self.llm_client, "_distill_task_id", None) or f"adhoc_{document_name}"
-        return Path(root) / "remember_debug" / task_id

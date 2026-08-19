@@ -9,7 +9,7 @@ import logging
 import numpy as np
 
 from core.models import Entity
-from core.storage.sqlite.manager import SQLiteGraphStorageManager as Neo4jStorageManager
+from core.storage.sqlite.manager import SQLiteGraphStorageManager
 from core.llm.client import LLMClient
 from core.utils import wprint_info, calculate_jaccard_similarity, cosine_similarity
 from core.debug_log import log_struct as _dbg_struct
@@ -71,7 +71,7 @@ def _alignment_guard(
 
 
 def _search_entity_candidates(
-    storage: Neo4jStorageManager,
+    storage: SQLiteGraphStorageManager,
     llm_client: LLMClient,
     max_similar_entities: int,
     entity_tree_log: bool,
@@ -210,7 +210,7 @@ def _filter_candidates_by_existing_relations(
 
 
 def _try_context_alias_merge(
-    storage: Neo4jStorageManager,
+    storage: SQLiteGraphStorageManager,
     llm_client: LLMClient,
     alignment_guard_cache: OrderedDict,
     merge_two_contents_fn,  # callable: (old_entity, entity_name, entity_content, source_document, episode_id, base_time) -> str

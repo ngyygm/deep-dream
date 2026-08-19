@@ -154,6 +154,24 @@ class TestStorageE2E:
         results = mgr.search_concepts_by_bm25("neural networks", limit=10)
         assert len(results) > 0, "BM25 search returned no results"
 
+    def test_bm25_search_treats_punctuation_as_literal_text(self, sqlite_storage):
+        """Natural-language punctuation must not be parsed as FTS5 syntax."""
+        mgr = sqlite_storage
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        ep = Episode(
+            absolute_id=f"bm25_punctuation_{uuid.uuid4().hex[:6]}",
+            content="Caroline reads classic Dr. Seuss books as part of her self-care routine.",
+            event_time=now, source_document="punctuation.txt",
+            processed_time=now, episode_type="chunk",
+        )
+        mgr.save_episode(ep, text=ep.content, document_path="punctuation.txt",
+                         doc_hash=f"punctuation_{uuid.uuid4().hex}")
+
+        assert mgr.search_concepts_by_bm25("self-care", limit=10)
+        assert mgr.search_concepts_by_bm25("Caroline Dr. Seuss books", limit=10)
+        assert mgr.search_concepts_by_bm25('books: (Dr. Seuss) - classic', limit=10)
+
     def test_multi_graph_isolation(self, tmp_path):
         """Verify data isolation between different graph_ids."""
         from datetime import datetime, timezone

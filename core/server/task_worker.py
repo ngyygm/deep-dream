@@ -694,11 +694,10 @@ def worker_loop(q: "RememberTaskQueue") -> None:  # noqa: C901 — legacy comple
                     last_exc = None
                     break
                 except Exception as exc:
-                    import traceback as _tb_inner
-                    with open('C:/Users/Administrator/Documents/ClaudeProject/deep-dream/task_inner_traceback.log', 'a') as _f:
-                        _f.write(f"=== INNER task_id={task.task_id} attempt={attempt} ===\n")
-                        _tb_inner.print_exc(file=_f)
-                        _f.write("\n")
+                    logger.exception(
+                        "[Remember] inner failure: task_id=%s attempt=%s",
+                        task.task_id, attempt,
+                    )
                     _control_action = getattr(exc, "remember_control_action", None)
                     if _control_action == "pause":
                         q._update_task_progress(
@@ -773,29 +772,20 @@ def worker_loop(q: "RememberTaskQueue") -> None:  # noqa: C901 — legacy comple
                         q._log_error(
                             "[Remember] 失败: task_id=%s, error=%r" % (short_task_id(task.task_id), exc)
                         )
-                        import traceback as _tb
-                        _tb.print_exc()
-                        with open('task_worker_traceback.log', 'a') as _f:
-                            _f.write(f"=== task_id={task.task_id} ===\n")
-                            _tb.print_exc(file=_f)
-                            _f.write("\n")
+                        logger.exception(
+                            "[Remember] task failure traceback: task_id=%s",
+                            task.task_id,
+                        )
         except Exception as exc:
             # Wrapped in try/except to prevent the worker thread from dying.
             # If this handler raises, the exception would propagate past the
             # finally block and kill the while-True loop — leaving queued
             # tasks unprocessed forever.
             try:
-                import traceback as _tb_outer
-                try:
-                    with open('task_worker_outer_traceback.log', 'a') as _f:
-                        _f.write(f"=== OUTER task_id={task.task_id} ===\n")
-                        _tb_outer.print_exc(file=_f)
-                        _f.write("\n")
-                except Exception:
-                    logger.exception(
-                        "Failed to write outer traceback log for task %s",
-                        task.task_id,
-                    )
+                logger.exception(
+                    "[Remember] outer worker-loop failure: task_id=%s",
+                    task.task_id,
+                )
                 q._update_task_progress(
                     task,
                     status="failed",

@@ -8,7 +8,7 @@ import logging
 import numpy as np
 
 from core.models import Entity, Episode
-from core.storage.sqlite.manager import SQLiteGraphStorageManager as Neo4jStorageManager
+from core.storage.sqlite.manager import SQLiteGraphStorageManager
 from core.llm.client import LLMClient
 from core.utils import wprint_info
 from core.debug_log import log_struct as _dbg_struct
@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 def _process_entity_sequential_fallback(
-    storage: Neo4jStorageManager,
+    storage: SQLiteGraphStorageManager,
     llm_client: LLMClient,
     entity_tree_log: bool,
     search_entity_candidates_fn,  # callable for _search_entity_candidates

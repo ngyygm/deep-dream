@@ -2,7 +2,6 @@
 
 import re
 import logging
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -13,14 +12,37 @@ def _is_short_cjk(query: str) -> bool:
     return 0 < cjk_chars < 3
 
 
+def _fts5_query(query: str) -> str:
+    """Convert untrusted natural language into a literal FTS5 AND query.
+
+    FTS5 treats punctuation such as ``-``, ``.``, ``:`` and parentheses as
+    query-language operators.  Benchmark questions and agent reformulations
+    routinely contain those characters (for example ``self-care`` and
+    ``Dr. Seuss``), so passing the raw text to ``MATCH`` can raise an
+    OperationalError.  Quoting each tokenizer-sized term preserves the
+    existing all-terms semantics without exposing FTS syntax.
+    """
+    terms = re.findall(r"\w+", query, flags=re.UNICODE)
+    return " ".join(f'"{term.replace(chr(34), chr(34) * 2)}"' for term in terms)
+
+
+def _fts5_or_query(query: str) -> str:
+    """Literal FTS5 OR query used only when strict all-term search is empty."""
+    terms = re.findall(r"\w+", query, flags=re.UNICODE)
+    return " OR ".join(f'"{term.replace(chr(34), chr(34) * 2)}"' for term in terms)
+
+
 def search_fts(conn, query: str, limit: int = 20,
                like_fallback: bool = False) -> list:
     """Search episodes_fts, joining to active documents/versions."""
     use_like = like_fallback or _is_short_cjk(query)
+    match_query = _fts5_query(query)
+    if not match_query:
+        return []
 
     results = []
     try:
-        rows = conn.execute("""
+        sql = """
             SELECT episodes_fts.episode_id,
                    episodes_fts.name,
                    episodes_fts.heading_path,
@@ -37,19 +59,35 @@ def search_fts(conn, query: str, limit: int = 20,
             JOIN documents d
               ON d.document_id = e.document_id
              AND d.status = 'active'
+            LEFT JOIN document_ingestion_state dis
+              ON dis.document_id = d.document_id
             JOIN document_versions dv
               ON dv.document_id = e.document_id
              AND dv.document_version_id = e.document_version_id
              AND dv.status = 'active'
             WHERE episodes_fts MATCH ?
+              AND COALESCE(dis.state, 'active') = 'active'
             ORDER BY score
             LIMIT ?
-        """, (query, limit)).fetchall()
+        """
+        rows = conn.execute(sql, (match_query, limit)).fetchall()
+
+        # Natural-language questions often contain one harmless term absent
+        # from the corpus. Preserve precise AND semantics first, then degrade
+        # to literal any-term/min-match retrieval instead of returning nothing.
+        match_mode = "and"
+        if not rows:
+            or_query = _fts5_or_query(query)
+            if or_query and or_query != match_query:
+                rows = conn.execute(sql, (or_query, limit)).fetchall()
+                match_mode = "or"
 
         cols = ["episode_id", "name", "heading_path", "source_text",
                 "memory_text", "document_id", "document_version_id",
                 "episode_family_id", "score"]
         results = [dict(zip(cols, r)) for r in rows]
+        for row in results:
+            row["match_mode"] = match_mode
     except Exception as exc:
         logger.warning("FTS MATCH failed for query=%r: %s", query, exc)
 
@@ -63,11 +101,13 @@ def search_fts(conn, query: str, limit: int = 20,
                    ep.episode_family_id, 0.16 AS score
             FROM episodes ep
             JOIN documents d ON d.document_id = ep.document_id AND d.status = 'active'
+            LEFT JOIN document_ingestion_state dis ON dis.document_id = d.document_id
             JOIN document_versions dv
               ON dv.document_id = ep.document_id
              AND dv.document_version_id = ep.document_version_id
              AND dv.status = 'active'
             WHERE ep.status = 'active'
+              AND COALESCE(dis.state, 'active') = 'active'
               AND (ep.source_text LIKE ? OR ep.memory_text LIKE ? OR ep.name LIKE ?)
             LIMIT ?
         """, (like_pattern, like_pattern, like_pattern, limit)).fetchall()
@@ -86,7 +126,10 @@ def search_fts(conn, query: str, limit: int = 20,
 
 def search_fts_by_document(conn, document_id: str, query: str,
                            limit: int = 20) -> list:
-    rows = conn.execute("""
+    match_query = _fts5_query(query)
+    if not match_query:
+        return []
+    sql = """
         SELECT episodes_fts.episode_id,
                episodes_fts.name,
                episodes_fts.heading_path,
@@ -102,18 +145,31 @@ def search_fts_by_document(conn, document_id: str, query: str,
         JOIN documents d
           ON d.document_id = e.document_id
          AND d.status = 'active'
+        LEFT JOIN document_ingestion_state dis
+          ON dis.document_id = d.document_id
         JOIN document_versions dv
           ON dv.document_id = e.document_id
          AND dv.document_version_id = e.document_version_id
          AND dv.status = 'active'
         WHERE episodes_fts MATCH ?
+          AND COALESCE(dis.state, 'active') = 'active'
         ORDER BY score
         LIMIT ?
-    """, (document_id, query, limit)).fetchall()
+    """
+    rows = conn.execute(sql, (document_id, match_query, limit)).fetchall()
+    match_mode = "and"
+    if not rows:
+        or_query = _fts5_or_query(query)
+        if or_query and or_query != match_query:
+            rows = conn.execute(sql, (document_id, or_query, limit)).fetchall()
+            match_mode = "or"
 
     cols = ["episode_id", "name", "heading_path", "source_text",
             "memory_text", "episode_family_id", "score"]
-    return [dict(zip(cols, r)) for r in rows]
+    results = [dict(zip(cols, r)) for r in rows]
+    for row in results:
+        row["match_mode"] = match_mode
+    return results
 
 
 def get_graph_edges(conn, source_id: str = "",

@@ -1,6 +1,6 @@
 /* ==========================================
    Graph Utilities — Shared vis-network helpers
-   Used by graph.js, search.js, communities.js
+   Used by graph.js, search.js
    ========================================== */
 
 window.GraphUtils = (function () {
@@ -111,30 +111,6 @@ window.GraphUtils = (function () {
     { color: '#34d399', highlight: '#6ee7b7', hover: '#10b981' },  // green
   ];
 
-  // Community color palette (20 distinct colors)
-  var COMMUNITY_PALETTE = [
-    { bg: '#ef4444', border: '#f87171' }, // red
-    { bg: '#f59e0b', border: '#fbbf24' }, // amber
-    { bg: '#10b981', border: '#34d399' }, // emerald
-    { bg: '#3b82f6', border: '#60a5fa' }, // blue
-    { bg: '#8b5cf6', border: '#a78bfa' }, // violet
-    { bg: '#ec4899', border: '#f472b6' }, // pink
-    { bg: '#14b8a6', border: '#2dd4bf' }, // teal
-    { bg: '#f97316', border: '#fb923c' }, // orange
-    { bg: '#06b6d4', border: '#22d3ee' }, // cyan
-    { bg: '#84cc16', border: '#a3e635' }, // lime
-    { bg: '#ec4899', border: '#f472b6' }, // pink (was indigo)
-    { bg: '#d946ef', border: '#e879f9' }, // fuchsia
-    { bg: '#0ea5e9', border: '#38bdf8' }, // sky
-    { bg: '#a855f7', border: '#c084fc' }, // purple
-    { bg: '#e11d48', border: '#fb7185' }, // rose
-    { bg: '#65a30d', border: '#84cc16' }, // green
-    { bg: '#7c3aed', border: '#8b5cf6' }, // violet-dark
-    { bg: '#0891b2', border: '#06b6d4' }, // teal-dark
-    { bg: '#c2410c', border: '#ea580c' }, // orange-dark
-    { bg: '#db2777', border: '#ec4899' }, // pink-dark
-  ];
-
   function getRankColor(rank) {
     if (rank === 1) return TIER_1;
     if (rank <= 5) return TIER_2;
@@ -192,12 +168,11 @@ window.GraphUtils = (function () {
   // ---- Build nodes ----
   //   entities: array of entity objects
   //   options:
-  //     colorMode: 'hop' | 'search' | 'community' | 'default' | 'time'
+  //     colorMode: 'hop' | 'search' | 'default' | 'time'
   //     versionCounts: { family_id: count }
   //     hopMap: { absoluteId: hopLevel }          (for focus/search modes)
   //     highlightAbsId: string                    (focused entity id)
   //     rankMap: { absoluteId: 1-based-rank }     (for 'search' mode)
-  //     communityMap: { absoluteId: communityId }  (for 'community' mode)
   //     versionLabel: { idx: number, total: number }
   //     unnamedLabel: string
   //     inheritedEntityIds: Set<absoluteId>        (focus mode: inherited entities)
@@ -216,7 +191,6 @@ window.GraphUtils = (function () {
     var hopMap = options.hopMap || null;
     var highlightAbsId = options.highlightAbsId || null;
     var rankMap = options.rankMap || null;
-    var communityMap = options.communityMap || null;
     var versionLabel = options.versionLabel || null;
     var unnamedLabel = options.unnamedLabel || 'unnamed';
     var inheritedEntityIds = options.inheritedEntityIds || null;
@@ -306,17 +280,6 @@ window.GraphUtils = (function () {
             var expandedScheme = light ? SEARCH_EXPANDED_LIGHT : SEARCH_EXPANDED_DARK;
             bgColor = expandedScheme.bg;
             borderColor = expandedScheme.border;
-          }
-        } else if (options.colorMode === 'community' && communityMap) {
-          var cid = communityMap[e.absolute_id];
-          if (cid !== undefined && cid !== null) {
-            var commColor = COMMUNITY_PALETTE[cid % COMMUNITY_PALETTE.length];
-            bgColor = commColor.bg;
-            borderColor = commColor.border;
-          } else {
-            var defaultColor = light ? DEFAULT_LIGHT : DEFAULT_DARK;
-            bgColor = defaultColor.bg;
-            borderColor = defaultColor.border;
           }
         } else if (options.colorMode === 'hub' && options.hubMap) {
           var hubIdx = options.hubMap[e.absolute_id];
@@ -657,7 +620,6 @@ window.GraphUtils = (function () {
     RANK_OTHER: RANK_OTHER,
     SEARCH_EXPANDED_LIGHT: SEARCH_EXPANDED_LIGHT,
     SEARCH_EXPANDED_DARK: SEARCH_EXPANDED_DARK,
-    COMMUNITY_PALETTE: COMMUNITY_PALETTE,
     HUB_PALETTE: HUB_PALETTE,
     HUB_NEIGHBOR_PALETTE: HUB_NEIGHBOR_PALETTE,
     HUB_EDGE_PALETTE: HUB_EDGE_PALETTE,

@@ -112,9 +112,6 @@ class DeepDreamApi {
   createGraph(graphId) { return this.post('/api/v1/graphs', { graph_id: graphId }); }
   deleteGraph(graphId) { return this.delete(`/api/v1/graphs/${encodeURIComponent(graphId)}`); }
   clearGraph(graphId) { return this.post(`/api/v1/graphs/${encodeURIComponent(graphId)}/clear`, {}); }
-  findStats(graphId = 'default') {
-    return this.get(`/api/v1/find/stats?graph_id=${encodeURIComponent(graphId)}`);
-  }
 
   // Remember
   rememberText(graphId, text, options = {}) {
@@ -332,10 +329,6 @@ class DeepDreamApi {
     return this.get(`/api/v1/concepts/${encodeURIComponent(entityUuid)}/neighbors?graph_id=${encodeURIComponent(graphId)}&max_depth=${depth}&compact=true`);
   }
 
-  shortestPathCypher(entityA, entityB, graphId = 'default', maxDepth = 6) {
-    return this.traverseGraph([entityA, entityB], maxDepth, 200, graphId);
-  }
-
   listEpisodes(graphId = 'default', limit = 20, offset = 0) {
     return this.get(`/api/v1/concepts?graph_id=${encodeURIComponent(graphId)}&role=episode&limit=${limit}&offset=${offset}`).then(res => ({
       ...res,
@@ -353,22 +346,6 @@ class DeepDreamApi {
   }
   deleteEpisode(uuid, graphId = 'default') {
     return Promise.reject(new Error('Episode deletion is not available in v1'));
-  }
-
-  detectCommunities(graphId = 'default', algorithm = 'louvain', resolution = 1.0) {
-    return this.post('/api/v1/communities/detect', { algorithm, resolution, graph_id: graphId });
-  }
-  listCommunities(graphId = 'default', minSize = 3, limit = 50, offset = 0) {
-    return this.get(`/api/v1/communities?graph_id=${encodeURIComponent(graphId)}&min_size=${minSize}&limit=${limit}&offset=${offset}`);
-  }
-  getCommunity(cid, graphId = 'default') {
-    return this.get(`/api/v1/communities/${encodeURIComponent(cid)}?graph_id=${encodeURIComponent(graphId)}`);
-  }
-  getCommunityGraph(cid, graphId = 'default') {
-    return this.get(`/api/v1/communities/${encodeURIComponent(cid)}/graph?graph_id=${encodeURIComponent(graphId)}`);
-  }
-  clearCommunities(graphId = 'default') {
-    return this.delete(`/api/v1/communities?graph_id=${encodeURIComponent(graphId)}`);
   }
 
   getSnapshot(time, graphId = 'default') {
@@ -595,13 +572,8 @@ const state = {
   currentGraphId: getUrlGraphId() || localStorage.getItem('deepdream_graph_id') || localStorage.getItem('tmg_graph_id') || 'default',
   refreshTimers: {},
   currentPage: null,
-  backendType: 'sqlite',
   events: new EventTarget(),
 };
-
-function isNeo4j() {
-  return state.backendType === 'neo4j';
-}
 
 function setGraphId(id) {
   state.currentGraphId = id;
@@ -613,9 +585,6 @@ function setGraphId(id) {
   } catch {}
   const sel = document.getElementById('graph-selector');
   if (sel) sel.value = id;
-  state.api.health(id).then(h => {
-    if (h.data?.storage_backend) state.backendType = h.data.storage_backend;
-  }).catch(() => {});
   handleRoute();
 }
 
@@ -644,13 +613,13 @@ function renderMarkdown(text) {
 const pages = {};
 const _pageTitleKeys = {
   dashboard: 'nav.dashboard',
-  memory: 'nav.memory', graph: 'nav.graph', search: 'nav.search', communities: 'nav.communities',
+  memory: 'nav.memory', graph: 'nav.graph', search: 'nav.search',
   'api-test': 'nav.apiTest',
 };
 
 const _pageSloganKeys = {
   dashboard: 'slogan.dashboard',
-  memory: 'slogan.memory', graph: 'slogan.graph', search: 'slogan.search', communities: 'slogan.communities',
+  memory: 'slogan.memory', graph: 'slogan.graph', search: 'slogan.search',
   'api-test': 'slogan.apiTest',
 };
 
@@ -764,10 +733,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   const graphClearBtn = document.getElementById('graph-clear-btn');
   if (graphClearBtn) graphClearBtn.addEventListener('click', clearCurrentGraph);
   window.addEventListener('hashchange', handleRoute);
-  try { const h = await state.api.health(state.currentGraphId); if (h.data?.storage_backend) state.backendType = h.data.storage_backend; } catch {}
   handleRoute();
   loadGraphSelector();
-  ['nav-communities'].forEach(id => { const el = document.getElementById(id); if (el) el.style.display = isNeo4j() ? '' : 'none'; });
   const toggle = document.getElementById('sidebar-toggle');
   const sidebar = document.getElementById('sidebar');
   if (toggle && sidebar) {

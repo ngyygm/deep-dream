@@ -126,6 +126,12 @@ class _CrossWindowDedupMixin:
 
         # Phase 2: Batch execute all merges in a single session (if supported)
         if _merge_pairs:
+            # family 消失（redirect+delete）后，judge memo 中涉及这些 fid 的
+            # 裁决结果已失真——统一失效（未启用 judge 服务时为空操作）
+            _judge_svc = getattr(getattr(self, "llm_client", None), "judge_service", None)
+            if _judge_svc is not None:
+                for _pair in _merge_pairs:
+                    _judge_svc.invalidate_for_family(_pair[0])
             _batch_fn = getattr(self.storage, 'dedup_merge_batch', None)
             if _batch_fn:
                 # Single batch call — all redirect+delete+register in one session

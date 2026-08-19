@@ -64,7 +64,6 @@ window.I18N_LANG_ZH = {
   'nav.relations': '关系',
   'nav.apiTest': 'API 测试',
   'nav.episodes': '处理记录',
-  'nav.communities': '社区',
 
   // Theme
   'theme.dark': '深色模式',
@@ -204,7 +203,6 @@ window.I18N_LANG_ZH = {
   'graph.sc_amberGlow': '琥珀色光晕 = 多版本实体',
   'graph.sc_versionBadge': '[v2] = 版本数',
   'graph.displayOptions': '显示选项',
-  'graph.communityColoring': '按社区着色',
   'graph.relationStrength': '关系强度（边宽）',
   'graph.relationScope': '关系范围',
   'graph.scopeAccumulated': '历史继承到当前',
@@ -614,31 +612,6 @@ window.I18N_LANG_ZH = {
   'episodes.importFailed': '导入失败',
   'episodes.searchFailed': '搜索失败',
 
-  // Communities
-  'communities.title': '社区检测',
-  'communities.detect': '检测社区',
-  'communities.detecting': '检测中...',
-  'communities.detectSuccess': '检测完成，发现 {count} 个社区（耗时 {time}s）',
-  'communities.clear': '清除社区',
-  'communities.clearConfirm': '确定清除所有社区标记？',
-  'communities.clearSuccess': '社区标记已清除',
-  'communities.algorithm': '算法',
-  'communities.resolution': 'Resolution',
-  'communities.minSize': '最小社区',
-  'communities.stats': '检测结果',
-  'communities.communitiesCount': '个社区',
-  'communities.largest': '最大社区',
-  'communities.avgSize': '平均大小',
-  'communities.elapsed': '耗时',
-  'communities.community': '社区',
-  'communities.members': '成员实体',
-  'communities.internalRelations': '社区内关系',
-  'communities.subgraph': '子图可视化',
-  'communities.noCommunities': '尚未检测社区。点击上方按钮运行社区检测。',
-  'communities.neighborGraph': '查看邻居图',
-  'communities.communityBadge': '社区',
-  'communities.loadedCount': '已加载 {loaded} / {total}',
-
   // Entity Intelligence (Phase A)
   'entityIntelligence.evolveSummary': '演化摘要',
   'entityIntelligence.evolveSummaryDesc': '基于最新信息自动更新实体摘要与属性',
@@ -747,7 +720,6 @@ window.I18N_LANG_ZH = {
   'slogan.entities': '浏览和管理所有实体',
   'slogan.relations': '浏览和管理实体间关系',
   'slogan.episodes': '查看处理记录与片段',
-  'slogan.communities': '发现图谱中的社区结构',
   'slogan.apiTest': '直接测试 API 端点',
 
   // Settings

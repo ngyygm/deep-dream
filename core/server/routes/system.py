@@ -346,7 +346,7 @@ def system_config():
                 "config_path": str(path),
                 "notes": [
                     "llm.max_concurrency 控制全局 LLM 并发上限",
-                    "remember_workers 控制同时运行的 remember 任务数",
+                    "runtime.concurrency.queue_workers 控制同时运行的 remember 任务数",
                     "embedding.max_concurrency 本地 embedding 通常建议为 1",
                     "已存在的图谱处理器可能需要重启服务后应用模型/embedding 改动",
                 ],
@@ -358,8 +358,7 @@ def system_config():
             return err("config patch 必须是对象", 400)
         allowed_top = {
             "llm", "embedding", "runtime", "pipeline", "chunking",
-            "remember_workers", "remember_max_retries", "remember_retry_delay_seconds",
-            "remember_stall_timeout_seconds", "port", "host", "flask_threaded",
+            "port", "host", "flask_threaded",
         }
         rejected = sorted(k for k in patch if k not in allowed_top)
         if rejected:
@@ -429,35 +428,3 @@ def system_access_stats():
         return ok(system_monitor.access_stats(since_seconds=since))
     except Exception as e:
         return err(str(e), 500)
-
-
-# ── Community detection (Neo4j feature stubs) ───────────────────────────
-
-@system_bp.route("/api/v1/communities/detect", methods=["POST"])
-def detect_communities():
-    """社区检测 — 当前 SQLite 后端不支持，需要 Neo4j。"""
-    return err("社区检测功能需要 Neo4j 后端", 501)
-
-
-@system_bp.route("/api/v1/communities", methods=["GET"])
-def list_communities():
-    """列出社区 — 当前 SQLite 后端不支持。"""
-    return err("社区功能需要 Neo4j 后端", 501)
-
-
-@system_bp.route("/api/v1/communities/<cid>", methods=["GET"])
-def get_community(cid: str):
-    """获取社区详情 — 当前 SQLite 后端不支持。"""
-    return err("社区功能需要 Neo4j 后端", 501)
-
-
-@system_bp.route("/api/v1/communities/<cid>/graph", methods=["GET"])
-def get_community_graph(cid: str):
-    """获取社区子图 — 当前 SQLite 后端不支持。"""
-    return err("社区功能需要 Neo4j 后端", 501)
-
-
-@system_bp.route("/api/v1/communities", methods=["DELETE"])
-def clear_communities():
-    """清除社区数据 — 当前 SQLite 后端不支持。"""
-    return err("社区功能需要 Neo4j 后端", 501)

@@ -25,7 +25,7 @@ English · [简体中文](README.md)
 - **Document-first** — Markdown / plain text files are always the source of truth; the concept graph is a semantic overlay
 - **Remember Pipeline** — Multi-step extraction: chunking → entity extraction → relation discovery → alignment merging → dedup + write
 - **Hybrid Search** — BM25 full-text + vector embeddings + graph BFS expansion, fused via Reciprocal Rank Fusion (RRF)
-- **CLI Console** — Click 8+ / Rich 13+, 18 commands, human-readable Rich output + `--json` machine mode
+- **CLI Console** — Click 8+ / Rich 13+, 19 commands, human-readable Rich output + `--json` machine mode
 - **Web UI** — Dashboard, memory upload, interactive graph, semantic search, community detection, settings
 - **Concept Versioning** — Each concept maintains a `family_id` (stable identity) and version chain (evolution over episodes)
 - **Vault Indexing** — Obsidian / Markdown vault support with Wikilink extraction and heading parsing
@@ -111,7 +111,7 @@ The CLI is the control panel for both humans and agents: task-first command stru
 
 ![CLI Design](docs/picture/cli-design.png)
 
-**18 commands:**
+**19 commands:**
 
 | Command | Description |
 |---------|-------------|
@@ -133,8 +133,34 @@ The CLI is the control panel for both humans and agents: task-first command stru
 | `deep-dream db` | Database maintenance |
 | `deep-dream sql` | Direct SQL queries |
 | `deep-dream completion` | Shell completion setup |
+| `deep-dream benchmark` | LongMemEval-S / LoCoMo evaluation |
 
 **Global options:** `--json` · `--no-color` · `-q` / `-v` · `--dry-run` · `--config`
+
+### Long-term memory benchmarks
+
+```bash
+pip install -e '.[benchmark]'
+deep-dream benchmark prepare --dataset locomo
+deep-dream benchmark ingest --dataset locomo --run-dir .benchmark_runs/locomo-conv26 \
+  --config service_config.local.json --scope-id conv-26 --session-limit 6
+deep-dream benchmark evaluate .benchmark_runs/locomo-conv26 \
+  --config service_config.local.json --track baseline --track skill-agent \
+  --eligible-evidence-only --max-agent-steps 8
+# Retrieval is cached in retrieval.<track>.jsonl; replay only answers after prompt changes.
+deep-dream benchmark answer .benchmark_runs/locomo-conv26 \
+  --config service_config.local.json --source-track skill-agent \
+  --result-tag answer-v2
+deep-dream benchmark score .benchmark_runs/locomo-conv26
+deep-dream benchmark report .benchmark_runs/locomo-conv26
+```
+
+`baseline` performs one fixed pass through the shared Deep-Dream retriever. `skill-agent` loads the packaged runtime policy, navigates raw documents, episodes, concept provenance, graph neighbors, and relation evidence, and submits evidence only. Both tracks use the same independent answerer. Tool arguments, observations, evidence IDs, tokens, latency, and stop reasons are persisted; hidden chain-of-thought is not. LoCoMo uses one isolated library per conversation. The first evaluation phase targets LoCoMo only; LongMemEval is deferred. Use a fresh run directory with `--remember-profile quality-v1` for the source-language/low-noise remember A/B.
+
+`run` remains an ingest + evaluate shortcut. `diagnose` writes failure attribution and isolation audits; `compare RUN_A RUN_B` compares matching tracks in remember A/B runs. Schema v3 writes `results.baseline.jsonl`, `results.skill-agent.jsonl`, per-track summaries/reports, and `comparison.md`.
+
+For vLLM/Qwen services that enable reasoning by default, set `llm.extra_body` to `{"chat_template_kwargs": {"enable_thinking": false}}`. Deep-Dream forwards it to OpenAI-compatible requests so reasoning does not consume the Agent's JSON-action token budget.
+For evaluation, `evaluate --agent-thinking` / `--no-agent-thinking` toggles reasoning only for the retrieval Agent. The independent normalized answerer always has reasoning disabled, keeping the two retrieval trajectories comparable.
 
 ## Web UI
 

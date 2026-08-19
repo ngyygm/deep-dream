@@ -1,6 +1,6 @@
 /* ==========================================
    GraphExplorer — Shared graph visualization
-   Used by graph.js, communities.js
+   Used by graph.js
    Factory pattern: GraphExplorer.create(options)
 
    Sub-modules (loaded before this file):
@@ -211,11 +211,7 @@ window.GraphExplorer = (function () {
 
       // Determine color mode
       var colorMode = hopMap ? 'hop' : 'default';
-      var communityColoringEnabled = _opts.communityColoringEnabled;
-      var communityMap = _opts.communityMap;
-      if (communityColoringEnabled && communityMap && !hopMap) {
-        colorMode = 'community';
-      } else if (hubLayout && hubLayout.hubMap && !hopMap) {
+      if (hubLayout && hubLayout.hubMap && !hopMap) {
         colorMode = 'hub';
       }
 
@@ -229,7 +225,6 @@ window.GraphExplorer = (function () {
         inheritedEntityIds: inheritedEntityIds,
         futureEntityIds: futureEntityIds,
       };
-      if (communityMap) buildNodesOpts.communityMap = communityMap;
       if (hubLayout) {
         buildNodesOpts.hubMap = hubLayout.hubMap;
         buildNodesOpts.hubNeighborIds = hubLayout.hubNeighborIds;
@@ -1747,8 +1742,6 @@ window.GraphExplorer = (function () {
       setVersionCounts: function (vc) { _versionCounts = vc; },
       setState: function (key, val) {
         if (key === 'relationScope') _relationScope = val;
-        if (key === 'communityColoringEnabled') _opts.communityColoringEnabled = val;
-        if (key === 'communityMap') _opts.communityMap = val;
         if (key === 'relationStrengthEnabled') _opts.relationStrengthEnabled = val;
         if (key === 'defaultHopLevel') _opts.defaultHopLevel = val;
       },

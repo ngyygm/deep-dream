@@ -63,6 +63,7 @@ _LAZY_COMMANDS: dict[str, str] = {
     # maintenance
     "db":         "core.cli.cmd_db:db",
     "sql":        "core.cli.cmd_sql:sql",
+    "benchmark":  "core.cli.cmd_benchmark:benchmark",
 }
 
 

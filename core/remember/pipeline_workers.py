@@ -181,11 +181,7 @@ def run_step9_worker(processor, state, window_abs_indices, total_chunks, doc_nam
                 signal_control_stop(state, e.remember_control_action, i, set_extract=False, set_step9=True, set_step10=True)
                 # pause/cancel 是正常控制流，不记录为错误
             elif record_window_error(state, "step9", i, e):
-                import traceback as _tb
-                _tb.print_exc()
-                with open('step9_traceback.log', 'w') as _f:
-                    _tb.print_exc(file=_f)
-                logger.error("step9 window %d error: %s", i, e, exc_info=True)
+                logger.exception("step9 window %d error: %s", i, e)
         finally:
             with processor._runtime_lock:
                 processor._active_step9 = max(0, processor._active_step9 - 1)

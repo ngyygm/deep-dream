@@ -223,6 +223,7 @@ class EntityProcessor(_EntityBatchMixin):
                     prefetched_embeddings=prefetched_embeddings,
                     already_versioned_family_ids=already_versioned_family_ids,
                     window_timings_ref=window_timings_ref,
+                    window_batch_alignment=getattr(self, "window_batch_alignment_enabled", False),
                 )
             else:
                 result = self._process_entities_sequential(
@@ -241,6 +242,7 @@ class EntityProcessor(_EntityBatchMixin):
                     prefetched_embeddings=prefetched_embeddings,
                     already_versioned_family_ids=already_versioned_family_ids,
                     window_timings_ref=window_timings_ref,
+                    window_batch_alignment=getattr(self, "window_batch_alignment_enabled", False),
                 )
             return result
         finally:
@@ -260,7 +262,8 @@ class EntityProcessor(_EntityBatchMixin):
                         base_time: Optional[datetime] = None,
                         prefetched_embeddings: Optional[Tuple[Optional[Any], Optional[Any]]] = None,
                         already_versioned_family_ids: Optional[set] = None,
-                        window_timings_ref: Optional[Dict[str, float]] = None) -> Tuple[List[Entity], List[Dict], Dict[str, str]]:
+                        window_timings_ref: Optional[Dict[str, float]] = None,
+                        window_batch_alignment: bool = False) -> Tuple[List[Entity], List[Dict], Dict[str, str]]:
         return _process_entities_sequential_fn(
             storage=self.storage,
             llm_client=self.llm_client,
@@ -283,6 +286,7 @@ class EntityProcessor(_EntityBatchMixin):
             prefetched_embeddings=prefetched_embeddings,
             already_versioned_family_ids=already_versioned_family_ids,
             window_timings_ref=window_timings_ref,
+            window_batch_alignment=window_batch_alignment,
         )
 
     def _process_entities_parallel(self, extracted_entities: List[Dict[str, str]],
@@ -298,7 +302,8 @@ class EntityProcessor(_EntityBatchMixin):
                         max_workers: int = 1,
                         prefetched_embeddings: Optional[Tuple[Optional[Any], Optional[Any]]] = None,
                         already_versioned_family_ids: Optional[set] = None,
-                        window_timings_ref: Optional[Dict[str, float]] = None) -> Tuple[List[Entity], List[Dict], Dict[str, str]]:
+                        window_timings_ref: Optional[Dict[str, float]] = None,
+                        window_batch_alignment: bool = False) -> Tuple[List[Entity], List[Dict], Dict[str, str]]:
         return _process_entities_parallel_fn(
             storage=self.storage,
             llm_client=self.llm_client,
@@ -323,6 +328,7 @@ class EntityProcessor(_EntityBatchMixin):
             prefetched_embeddings=prefetched_embeddings,
             already_versioned_family_ids=already_versioned_family_ids,
             window_timings_ref=window_timings_ref,
+            window_batch_alignment=window_batch_alignment,
         )
 
     # 名称规范化：委托给共享模块
@@ -547,6 +553,53 @@ class EntityProcessor(_EntityBatchMixin):
                           confidence: Optional[float] = None) -> Entity:
         return _build_new_entity_fn(name, content, episode_id, source_document,
                                     base_time=base_time, confidence=confidence)
+
+    def _gate_create_entity(self, name: str, content: str, episode_id: str,
+                            source_document: str = "", base_time: Optional[datetime] = None,
+                            confidence: Optional[float] = None,
+                            judged_candidate_names=None) -> Entity:
+        """创建新 family；FamilyWriteGate 并发竞态兜底（P4）。
+
+        在写临界区内重验名称：若其他 worker 在本次候选检索之后新建了同名
+        family，则改在该 family 下创建新版本（等价于"检索时看到它并复用"）。
+        judged_candidate_names 是本次已检索/已裁决过的候选名——名字命中该集合
+        时跳过 gate（候选已在场却被判 create_new，说明是"同名不同概念"，
+        gate 不得覆盖该裁决）。
+        """
+        gate = getattr(self, "family_write_gate", None)
+        if gate is None:
+            return self._build_new_entity(name, content, episode_id, source_document,
+                                          base_time=base_time, confidence=confidence)
+        from core.judge.models import norm_name
+        _norm = norm_name(name)
+        _judged = {norm_name(n) for n in (judged_candidate_names or ()) if n}
+        with gate.write_txn():
+            existing_fid = None
+            if _norm and _norm not in _judged:
+                existing_fid = gate.resolve_name(name)
+            if existing_fid:
+                latest = None
+                try:
+                    latest = self.storage.get_entity_by_family_id(existing_fid)
+                except Exception:
+                    latest = None
+                if latest is not None:
+                    gate.register(latest.name, latest.family_id)
+                    return self._build_entity_version(
+                        latest.family_id, latest.name, latest.content or content,
+                        episode_id, source_document, base_time=base_time,
+                        old_content=latest.content or "",
+                        old_content_format=latest.content_format or "plain")
+                # 缓存命中的 fid 尚未提交（并发 worker 刚 register，save 还在门外）：
+                # 不得落穿另建新 family——直接在该 fid 下建版本，两 worker 收敛同一家族
+                return self._build_entity_version(
+                    existing_fid, name, content, episode_id, source_document,
+                    base_time=base_time, old_content="", old_content_format="plain")
+            entity = self._build_new_entity(name, content, episode_id, source_document,
+                                            base_time=base_time, confidence=confidence)
+            gate.register(name, entity.family_id)
+            return entity
+
 
     def _create_new_entity(self, name: str, content: str, episode_id: str,
                            source_document: str = "", base_time: Optional[datetime] = None,

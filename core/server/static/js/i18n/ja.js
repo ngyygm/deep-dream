@@ -64,7 +64,6 @@ window.I18N_LANG_JA = {
   'nav.relations': 'リレーション',
   'nav.apiTest': 'API テスト',
   'nav.episodes': 'Episodes',
-  'nav.communities': 'コミュニティ',
 
   // Theme
   'theme.dark': 'ダークモード',
@@ -205,7 +204,6 @@ window.I18N_LANG_JA = {
   'graph.sc_amberGlow': '琥珀の光彩 = 複数バージョン',
   'graph.sc_versionBadge': '[v2] = バージョン数',
   'graph.displayOptions': '表示オプション',
-  'graph.communityColoring': 'コミュニティ別着色',
   'graph.relationStrength': 'リレーション強度（エッジ幅）',
   'graph.relationScope': 'リレーション範囲',
   'graph.scopeAccumulated': '過去から現在まで継承',
@@ -569,32 +567,6 @@ window.I18N_LANG_JA = {
   'episodes.showing': '表示中',
   'episodes.next': '次ページ',
 
-  // Communities
-  'communities.title': 'コミュニティ検出',
-  'communities.detect': 'コミュニティ検出',
-  'communities.detecting': '検出中...',
-  'communities.detectSuccess': '検出完了: {count} コミュニティ ({time}秒)',
-  'communities.clear': 'コミュニティクリア',
-  'communities.clearConfirm': 'すべてのコミュニティラベルをクリアしますか？',
-  'communities.clearSuccess': 'コミュニティラベルをクリアしました',
-  'communities.algorithm': 'アルゴリズム',
-  'communities.resolution': 'Resolution',
-  'communities.minSize': '最小サイズ',
-  'communities.stats': '検出結果',
-  'communities.communitiesCount': 'コミュニティ',
-  'communities.largest': '最大',
-  'communities.avgSize': '平均サイズ',
-  'communities.elapsed': '経過時間',
-  'communities.community': 'コミュニティ',
-  'communities.members': 'メンバー',
-  'communities.internalRelations': '内部リレーション',
-  'communities.subgraph': 'サブグラフ可視化',
-  'communities.noCommunities': 'コミュニティが検出されていません。上のボタンをクリックしてコミュニティ検出を実行してください。',
-  'communities.neighborGraph': '近傍グラフを表示',
-  'communities.communityBadge': 'コミュニティ',
-  'communities.loadedCount': '読み込み済み {loaded} / {total}',
-
-
   // Entity features
   'entities.summary': 'サマリー',
   'entities.attributes': '属性',
@@ -753,7 +725,6 @@ window.I18N_LANG_JA = {
   'slogan.entities': 'すべてのエンティティを閲覧・管理',
   'slogan.relations': 'エンティティ間のリレーションを管理',
   'slogan.episodes': '処理記録とエピソードを表示',
-  'slogan.communities': 'グラフ内のコミュニティ構造を発見',
   'slogan.apiTest': 'APIエンドポイントを直接テスト',
 
   // Settings

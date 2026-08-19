@@ -18,6 +18,26 @@ from core.utils import wprint_info
 from ._shared import _doc_basename
 
 
+def entity_needs_batch_llm(entity_name: str, candidates: List[Dict[str, Any]]) -> bool:
+    """预筛：该实体是否会走到批量裁决 LLM 调用（用于窗口级批量预裁决）。
+
+    与 _process_entity_with_batch_candidates 内的免 LLM 快路径保持一致：
+    - 无候选 → 直建，不需要 LLM
+    - 首候选精确同名 + score≥0.85 + merge_safe → 快路径，不需要 LLM
+    - 首候选 score<0.25 → 直建，不需要 LLM
+    其余（含 alias merge 可达路径）保守视为需要 LLM；alias merge 命中时预裁决自然作废。
+    """
+    if not candidates:
+        return False
+    top = candidates[0]
+    if top.get("name") == entity_name and top.get("combined_score", 0) >= 0.85 \
+            and top.get("merge_safe", True):
+        return False
+    if top.get("combined_score", 0) < 0.25:
+        return False
+    return True
+
+
 class _EntityBatchMixin:
     """Mixin providing the batch-candidate processing method.
 
@@ -54,12 +74,15 @@ class _EntityBatchMixin:
                                      already_versioned_family_ids: Optional[set] = None,
                                      _version_lock: Optional[Any] = None,
                                      entity_name_to_id: Optional[Dict[str, str]] = None,
-                                     prefetched_embedding: Optional[Any] = None) -> Tuple:
+                                     prefetched_embedding: Optional[Any] = None,
+                                     precomputed_verdict: Optional[Dict[str, Any]] = None) -> Tuple:
         """批量候选 + 批量裁决主路径，低置信度时回退旧逻辑。
 
         Args:
             already_versioned_family_ids: 已创建版本的 family_id 集合，防止同窗口重复版本化。
             _version_lock: 可选线程锁，保护 already_versioned_family_ids 的并发访问。
+            precomputed_verdict: 窗口级批量预裁决结果（strong-v1）；schema 与
+                resolve_entity_candidates_batch 返回一致，非空时跳过单体 LLM 调用。
         """
         entity_name = extracted_entity["name"]
         entity_content = extracted_entity["content"]
@@ -76,7 +99,7 @@ class _EntityBatchMixin:
                     already_versioned_count=len(already_versioned_family_ids) if already_versioned_family_ids else 0)
 
         if not candidates:
-            new_entity = self._build_new_entity(entity_name, entity_content, episode_id, source_document, base_time=base_time)
+            new_entity = self._gate_create_entity(entity_name, entity_content, episode_id, source_document, base_time=base_time)
             if self._entity_tree_log():
                 wprint_info(f"  │  未找到候选实体，批量路径创建新实体: {new_entity.family_id}")
             _dbg_struct("decision_no_candidates",
@@ -132,7 +155,11 @@ class _EntityBatchMixin:
                                     matched_fid=top.get("family_id","?"),
                                     verdict=_align_verdict, guard_conf=f"{_align_confidence:.2f}",
                                     action="create_new")
-                        new_entity = self._build_new_entity(entity_name, entity_content, episode_id, source_document, base_time=base_time)
+                        # 同名候选已被守卫判为"不同实体"——gate 不得覆盖该裁决
+                        new_entity = self._gate_create_entity(
+                            entity_name, entity_content, episode_id, source_document,
+                            base_time=base_time,
+                            judged_candidate_names=[c.get("name", "") for c in candidates])
                         self._mark_versioned(new_entity.family_id, already_versioned_family_ids, _version_lock)
                         return new_entity, [], {entity_name: new_entity.family_id, new_entity.name: new_entity.family_id}, new_entity
                         # verdict == "same" → proceed with fast path merge
@@ -207,7 +234,10 @@ class _EntityBatchMixin:
             _dbg_struct("decision_low_similarity",
                         name=entity_name, best_score=f"{candidates[0].get('combined_score', 0):.3f}",
                         best_name=candidates[0].get('name', '?'), action="create_new")
-            new_entity = self._build_new_entity(entity_name, entity_content, episode_id, source_document, base_time=base_time)
+            new_entity = self._gate_create_entity(
+                entity_name, entity_content, episode_id, source_document,
+                base_time=base_time,
+                judged_candidate_names=[c.get("name", "") for c in candidates])
             if new_entity:
                 self._mark_versioned(new_entity.family_id, already_versioned_family_ids, _version_lock)
             if new_entity:
@@ -235,7 +265,7 @@ class _EntityBatchMixin:
                         action="alias_merge_guard_verified")
             wprint_info(f"[entity_timing] '{entity_name}' alias_merge → {time.monotonic() - _t_entity_start:.1f}s")
             return alias_merged
-        batch_result = self.llm_client.resolve_entity_candidates_batch(
+        batch_result = precomputed_verdict or self.llm_client.resolve_entity_candidates_batch(
             {
                 "family_id": "NEW_ENTITY",
                 "name": entity_name,
@@ -352,7 +382,10 @@ class _EntityBatchMixin:
                 # expensive fallback. Register redirect so future lookups find the new entity.
                 if self._entity_tree_log():
                     wprint_info(f"  │  批量裁决命中的实体不存在: {match_existing_id}，直接新建")
-                new_entity = self._build_new_entity(entity_name, entity_content, episode_id, source_document, base_time=base_time, confidence=confidence)
+                new_entity = self._gate_create_entity(
+                    entity_name, entity_content, episode_id, source_document,
+                    base_time=base_time, confidence=confidence,
+                    judged_candidate_names=[c.get("name", "") for c in candidates])
                 self._mark_versioned(new_entity.family_id, already_versioned_family_ids, _version_lock)
                 try:
                     self.storage.register_entity_redirect(match_existing_id, new_entity.family_id)
@@ -472,7 +505,10 @@ class _EntityBatchMixin:
                 return _r
 
         merged_name = (batch_result.get("merged_name") or entity_name).strip() or entity_name
-        new_entity = self._build_new_entity(merged_name, entity_content, episode_id, source_document, base_time=base_time, confidence=confidence)
+        new_entity = self._gate_create_entity(
+            merged_name, entity_content, episode_id, source_document,
+            base_time=base_time, confidence=confidence,
+            judged_candidate_names=[c.get("name", "") for c in candidates])
         # 标记新实体的 family_id 已创建版本
         self._mark_versioned(new_entity.family_id, already_versioned_family_ids, _version_lock)
         if self._entity_tree_log():

@@ -10,6 +10,11 @@ description: >
 
 # Deep-Dream Document-First Steward
 
+> Agent runtime note: autonomous query behavior is defined canonically in
+> `core/agent/policies/deep_dream_runtime.md`. Benchmark agents and other
+> packaged agents must load that policy through `core.agent.policy` so the
+> interactive skill and evaluation runtime cannot silently diverge.
+
 Deep-Dream is a local memory system with three evidence levels:
 
 ```text

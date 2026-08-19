@@ -52,6 +52,9 @@ class GraphRegistry:
         self._config = config
         self._system_monitor = system_monitor
         self._embedding_client: Optional[EmbeddingClient] = None
+        self._shared_llm_semaphore = None
+        self._judge_service = None
+        self._family_write_gate = None
         self._processors: Dict[str, TemporalMemoryGraphProcessor] = {}
         self._queues: Dict[str, object] = {}
         self._lock = threading.RLock()
@@ -142,6 +145,79 @@ class GraphRegistry:
         return self._embedding_client
 
     # ------------------------------------------------------------------
+    # 库级共享对象：LLM 并发闸门 + 对齐判断服务
+    # ------------------------------------------------------------------
+
+    def _get_shared_llm_semaphore(self):
+        """所有 processor 共用一个 LLM 并发闸门（真实端点容量）。
+
+        未启用时每个 processor 各建各的（旧行为）；启用后多 processor /
+        多任务 worker 的总在途请求被限制在 llm.max_concurrency 内。
+        """
+        if self._shared_llm_semaphore is None:
+            from core.llm.client import PrioritySemaphore
+            llm = self._config.get("llm") or {}
+            slots = max(1, int(llm.get("max_concurrency") or 1))
+            self._shared_llm_semaphore = PrioritySemaphore(slots)
+        return self._shared_llm_semaphore
+
+    def _get_judge_service(self):
+        """对齐判断服务（memo/single-flight/攒批），pipeline.remember.judge.enabled 控制。
+
+        memo 落在库目录下独立的 judge_verdicts.db，避免与 library.db 写热点混在一起。
+        """
+        if self._judge_service is None:
+            remember = (self._config.get("pipeline") or {}).get("remember") or {}
+            judge_cfg = remember.get("judge") or {}
+            if not judge_cfg.get("enabled", False):
+                return None
+            from core.judge import AlignmentJudgeService, VerdictMemo
+            memo = VerdictMemo(
+                str(self._base_path / "judge_verdicts.db"),
+                ttl_seconds=int(judge_cfg.get("memo_ttl_seconds") or 7 * 24 * 3600),
+            )
+            self._judge_service = AlignmentJudgeService(
+                memo,
+                batch_delay_ms=int(judge_cfg.get("batch_delay_ms") or 200),
+                batch_max=int(judge_cfg.get("batch_max") or 32),
+            )
+        return self._judge_service
+
+    def _get_family_write_gate(self):
+        """FamilyWriteGate：并发 ingest 下同名 family 创建竞态的兜底。
+
+        名称→fid 解析走 library.db 短只读连接（线程安全，不占用 processor 连接）；
+        pipeline.remember.family_write_gate_enabled=false 可关闭。
+        """
+        if self._family_write_gate is None:
+            remember = (self._config.get("pipeline") or {}).get("remember") or {}
+            if not remember.get("family_write_gate_enabled", True):
+                return None
+            import sqlite3
+            from core.judge import FamilyWriteGate, norm_name
+            db_path = str(self._base_path / "library.db")
+
+            def _resolve(norm: str):
+                try:
+                    conn = sqlite3.connect(db_path, timeout=5)
+                    try:
+                        rows = conn.execute(
+                            "SELECT entity_family_id, canonical_name FROM entity_families "
+                            "WHERE canonical_name = ? COLLATE NOCASE "
+                            "ORDER BY updated_at DESC LIMIT 4", (norm,)).fetchall()
+                    finally:
+                        conn.close()
+                    for fid, name in rows:
+                        if norm_name(name) == norm:
+                            return fid
+                except Exception:
+                    return None
+                return None
+
+            self._family_write_gate = FamilyWriteGate(resolve_from_storage=_resolve)
+        return self._family_write_gate
+
+    # ------------------------------------------------------------------
     # Processor lifecycle
     # ------------------------------------------------------------------
 
@@ -219,8 +295,12 @@ class GraphRegistry:
             "llm_connect_timeout_seconds": llm.get("connect_timeout_seconds"),
             "llm_context_window_tokens": llm.get("context_window_tokens"),
             "max_llm_concurrency": llm.get("max_concurrency"),
-            "load_cache_memory": runtime_task.get("load_cache_memory", pipeline.get("load_cache_memory")),
-            "max_concurrent_windows": runtime_concurrency.get("window_workers", pipeline.get("max_concurrent_windows")),
+            "load_cache_memory": runtime_task.get("load_cache_memory"),
+            "max_concurrent_windows": runtime_concurrency.get("window_workers"),
+            # 库级共享：LLM 闸门 + 判断服务（judge.enabled=false 时为 None，行为与旧版一致）
+            "shared_llm_semaphore": self._get_shared_llm_semaphore(),
+            "judge_service": self._get_judge_service(),
+            "family_write_gate": self._get_family_write_gate(),
         }
         for key in (
             "similarity_threshold",
@@ -266,15 +346,16 @@ class GraphRegistry:
 
         processor = self.get_processor(graph_id)
         event_log = self._system_monitor.event_log if self._system_monitor is not None else None
+        _runtime = self._config.get("runtime") or {}
         queue = RememberTaskQueue(
             processor,
             Path(processor.storage.storage_path),
             processor_factory=lambda gid=graph_id: self.create_task_processor(gid),
-            max_workers=self._config.get("remember_workers", 1),
-            max_retries=self._config.get("remember_max_retries", 2),
-            retry_delay_seconds=self._config.get("remember_retry_delay_seconds", 2),
+            max_workers=((_runtime.get("concurrency") or {}).get("queue_workers") or 1),
+            max_retries=((_runtime.get("retry") or {}).get("queue_max_retries") or 2),
+            retry_delay_seconds=((_runtime.get("retry") or {}).get("queue_retry_delay_seconds") or 2),
             event_log=event_log,
-            stall_timeout_seconds=self._config.get("remember_stall_timeout_seconds", 600),
+            stall_timeout_seconds=((_runtime.get("task") or {}).get("stall_timeout_seconds") or 600),
         )
 
         with self._lock:
