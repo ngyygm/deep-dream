@@ -126,3 +126,4 @@ graph_migrated*/
 # 机器本地基准配置（含内部端点 URL，勿提交；example 已脱敏）
 service_config.kimi.json
 service_config.kimi-judge.json
+service_config.kimi-a4096.json
