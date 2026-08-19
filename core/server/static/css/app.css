@@ -857,63 +857,38 @@ input[type="range"]::-webkit-slider-thumb {
 .json-bool { color: #f472b6; }
 .json-null { color: #94a3b8; font-style: italic; }
 .json-url { color: #38bdf8; text-decoration: underline; }
-.doc-link { color: var(--primary); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; transition: color 0.15s; }
-.doc-link:hover { color: var(--primary-hover); }
-.entity-link { color: var(--primary); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; transition: color 0.15s; }
-.entity-link:hover { color: var(--primary-hover); }
 
 /* ==========================================
    Prose / Markdown rendered content
-   Shared base styles for .prose, .md-content,
-   .chat-msg-bubble, and .chat-summary.
+   Base styles for rendered markdown (.md-content).
    ========================================== */
 
-.prose,
 .md-content {
   line-height: 1.7;
   font-size: 0.875rem;
 }
 
-.prose h1, .prose h2, .prose h3, .prose h4,
 .md-content h1, .md-content h2, .md-content h3, .md-content h4 {
   font-weight: 600;
   margin: 0.75em 0 0.375em;
   color: var(--text-primary);
 }
 
-.prose h1,
 .md-content h1 { font-size: 1.25rem; }
 
-.prose h2,
 .md-content h2 { font-size: 1.125rem; }
 
-.prose h3,
 .md-content h3 { font-size: 1rem; }
 
-.prose h4,
 .md-content h4 { font-size: 0.9375rem; }
 
-.prose p,
-.md-content p,
-.chat-summary p { margin: 0.375em 0; }
+.md-content p { margin: 0.375em 0; }
 
-.prose p:first-child,
-.chat-message-assistant .chat-msg-bubble p:first-child { margin-top: 0; }
+.md-content ul, .md-content ol { padding-left: 1.5em; margin: 0.375em 0; }
 
-.prose p:last-child,
-.chat-message-assistant .chat-msg-bubble p:last-child { margin-bottom: 0; }
-
-.prose ul, .prose ol,
-.md-content ul, .md-content ol,
-.chat-summary ul, .chat-summary ol { padding-left: 1.5em; margin: 0.375em 0; }
-
-.prose li,
 .md-content li { margin: 0.125em 0; }
 
-.prose code,
-.md-content code,
-.chat-msg-bubble code,
-.chat-summary code {
+.md-content code {
   background: var(--bg-input);
   padding: 0.125em 0.375em;
   border-radius: 0.25rem;
@@ -921,10 +896,7 @@ input[type="range"]::-webkit-slider-thumb {
   font-family: var(--font-mono);
 }
 
-.prose pre,
-.md-content pre,
-.chat-msg-bubble pre,
-.chat-summary pre {
+.md-content pre {
   background: var(--bg-input);
   border: 1px solid var(--border-color);
   border-radius: 0.375rem;
@@ -933,15 +905,12 @@ input[type="range"]::-webkit-slider-thumb {
   margin: 0.5em 0;
 }
 
-.prose pre code,
-.md-content pre code,
-.chat-msg-bubble pre code {
+.md-content pre code {
   background: none;
   padding: 0;
   font-size: 0.8125rem;
 }
 
-.prose blockquote,
 .md-content blockquote {
   border-left: 3px solid var(--primary-dim);
   padding-left: 0.75rem;
@@ -949,26 +918,20 @@ input[type="range"]::-webkit-slider-thumb {
   color: var(--text-secondary);
 }
 
-.prose hr,
 .md-content hr { border: none; border-top: 1px solid var(--border-color); margin: 0.75em 0; }
 
-.prose a,
 .md-content a {
   color: var(--primary);
   text-decoration: underline;
   text-underline-offset: 2px;
 }
 
-.prose a:hover,
 .md-content a:hover { color: var(--primary-hover); }
 
-.prose strong,
 .md-content strong { font-weight: 600; color: var(--text-primary); }
 
-.prose em,
 .md-content em { font-style: italic; }
 
-.prose table,
 .md-content table {
   border-collapse: collapse;
   width: 100%;
@@ -976,14 +939,12 @@ input[type="range"]::-webkit-slider-thumb {
   font-size: 0.8125rem;
 }
 
-.prose th, .prose td,
 .md-content th, .md-content td {
   border: 1px solid var(--border-color);
   padding: 0.375rem 0.625rem;
   text-align: left;
 }
 
-.prose th,
 .md-content th { background: var(--bg-input); font-weight: 600; }
 
 /* Mobile touch improvements */

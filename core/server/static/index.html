@@ -62,7 +62,7 @@
         </a>
         <a class="sidebar-link" href="#settings" data-page="settings">
           <i data-lucide="settings"></i>
-          <span>配置</span>
+          <span data-i18n="nav.settings">配置</span>
         </a>
       </nav>
 
@@ -90,19 +90,6 @@
           </nav>
         </div>
         <div class="flex items-center gap-3">
-          <!-- Graph Selector (hidden — single library) -->
-          <div class="flex items-center gap-2" style="display:none;">
-            <label class="text-xs hidden sm:block" style="color:var(--text-muted);" data-i18n="common.graph">图谱:</label>
-            <select id="graph-selector" class="input text-xs py-1 px-2 w-36">
-              <option value="library">library</option>
-            </select>
-            <button id="graph-clear-btn" class="btn btn-ghost btn-sm p-1" title="清空图谱数据" data-i18n-title="graph.clearGraph">
-              <i data-lucide="eraser" style="width:14px;height:14px;color:var(--warning);"></i>
-            </button>
-            <button id="graph-delete-btn" class="btn btn-ghost btn-sm p-1" title="删除当前图谱" style="display:none;">
-              <i data-lucide="trash-2" style="width:14px;height:14px;color:var(--danger);"></i>
-            </button>
-          </div>
           <!-- Language selector -->
           <select id="lang-selector" class="input text-xs py-1 px-1.5" style="width:auto;min-width:60px;">
             <option value="zh">中文</option>
@@ -139,8 +126,6 @@
   <script src="/static/js/i18n/index.js"></script>
 
   <!-- Scripts (order matters) -->
-  <script src="/static/js/shared/sse-client.js"></script>
-  <script src="/static/js/shared/api-helpers.js"></script>
   <script src="/static/js/shared/format.js"></script>
   <script src="/static/js/shared/ui-utils.js"></script>
   <script src="/static/vendor/marked.min.js"></script>
@@ -148,12 +133,8 @@
   <script src="/static/js/components/toast.js"></script>
   <script src="/static/js/components/modal.js"></script>
   <script src="/static/js/shared/concept-detail.js"></script>
-  <script src="/static/js/pages/dashboard.js"></script>
-  <script src="/static/js/pages/memory.js"></script>
   <script src="/static/js/graph-utils.js"></script>
-  <script src="/static/js/pages/graph.js"></script>
-  <script src="/static/js/pages/search.js"></script>
-  <script src="/static/js/pages/api-test.js"></script>
-  <script src="/static/js/pages/settings.js"></script>
+  <!-- Page scripts (dashboard/memory/graph/search/api-test/settings) are lazy-loaded
+       on first visit via ensurePageLoaded() in app.js -->
 </body>
 </html>

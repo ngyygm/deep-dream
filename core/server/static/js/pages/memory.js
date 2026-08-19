@@ -15,14 +15,7 @@
     return '';
   }
 
-  function formatDocSize(bytes) {
-    const n = Number(bytes || 0);
-    if (!Number.isFinite(n) || n <= 0) return '0 B';
-    if (n < 1024) return `${n} B`;
-    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-    if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
-    return `${(n / (1024 * 1024 * 1024)).toFixed(1)} GB`;
-  }
+  const formatDocSize = Format.formatBytes;
 
   // ---- Upload Section ----
 
@@ -164,11 +157,7 @@
     const btnClear = document.getElementById('btn-clear-files');
     let selectedFiles = [];
 
-    function formatFileSize(bytes) {
-      if (bytes < 1024) return bytes + ' B';
-      if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-      return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
-    }
+    const formatFileSize = Format.formatBytes;
 
     function renderFileList() {
       const count = selectedFiles.length;

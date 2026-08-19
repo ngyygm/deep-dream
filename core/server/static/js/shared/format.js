@@ -96,6 +96,24 @@ window.Format = (function () {
     return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   }
 
+  function formatBytes(bytes) {
+    const n = Number(bytes || 0);
+    if (!Number.isFinite(n) || n <= 0) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB'];
+    let value = n;
+    let idx = 0;
+    while (value >= 1024 && idx < units.length - 1) {
+      value /= 1024;
+      idx += 1;
+    }
+    const digits = idx === 0 || value >= 10 ? 0 : 1;
+    return `${value.toFixed(digits)} ${units[idx]}`;
+  }
+
+  function isLightTheme() {
+    return document.documentElement.getAttribute('data-theme') === 'light';
+  }
+
   return {
     getLocale: getLocale,
     formatDate: formatDate,
@@ -107,6 +125,8 @@ window.Format = (function () {
     truncate: truncate,
     escapeHtml: escapeHtml,
     escapeAttr: escapeAttr,
+    formatBytes: formatBytes,
+    isLightTheme: isLightTheme,
   };
 })();
 

@@ -66,27 +66,13 @@
     return doc.relative_path || doc.absolute_path || doc.uri || doc.source_id || '';
   }
 
-  function formatBytes(bytes) {
-    const n = Number(bytes || 0);
-    if (!Number.isFinite(n) || n <= 0) return '0 B';
-    const units = ['B', 'KB', 'MB', 'GB'];
-    let value = n;
-    let idx = 0;
-    while (value >= 1024 && idx < units.length - 1) {
-      value /= 1024;
-      idx += 1;
-    }
-    const digits = idx === 0 || value >= 10 ? 0 : 1;
-    return `${value.toFixed(digits)} ${units[idx]}`;
-  }
+  const formatBytes = Format.formatBytes;
 
   function conceptTitle(concept) {
     return concept.name || concept.summary || truncate(concept.content || concept.family_id || '', 72);
   }
 
-  function isLightTheme() {
-    return document.documentElement.getAttribute('data-theme') === 'light';
-  }
+  const isLightTheme = Format.isLightTheme;
 
   function labelColor() {
     return isLightTheme() ? '#1e293b' : '#e2e8f0';

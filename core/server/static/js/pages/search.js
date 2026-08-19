@@ -27,8 +27,6 @@
   let _batchAbort = null;
   let _traverseAbort = null;
 
-  // ---- Path finder (delegated to shared PathFinder component) ----
-
   // ---- History helpers ----
   function loadHistory() {
     try {
@@ -995,29 +993,6 @@
     if (window.lucide) lucide.createIcons({ nodes: [area] });
     bindEvents(area);
     bindResultEvents(area);
-
-    // Path finder mode was removed from the v1 UI because the old endpoint set is gone.
-    if (searchMode === 'path' && window.PathFinder) {
-      const pfContainer = document.getElementById('pf-container');
-      if (pfContainer) {
-        PathFinder.init(pfContainer, {
-          api: state.api,
-          graphId: state.currentGraphId,
-          t: t,
-          onShowEntityDetail: window.showEntityDetail,
-          onShowRelationDetail: window.showRelationDetail,
-        });
-        // Restore path query values
-        if (saved.pathA) {
-          const el = pfContainer.querySelector('#pf-query-a');
-          if (el) el.value = saved.pathA;
-        }
-        if (saved.pathB) {
-          const el = pfContainer.querySelector('#pf-query-b');
-          if (el) el.value = saved.pathB;
-        }
-      }
-    }
   }
 
   // ---- Bind events on the main page ----
@@ -1366,7 +1341,6 @@
     }
     searchEntityMap = {};
     searchRelationMap = {};
-    if (window.PathFinder && typeof PathFinder.destroy === 'function') PathFinder.destroy();
   }
 
   registerPage('search', { render, destroy });

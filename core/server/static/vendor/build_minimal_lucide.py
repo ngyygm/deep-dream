@@ -4,20 +4,21 @@
 import re
 
 ICONS_KEBAB = [
-    "activity", "alert-triangle", "arrow-left", "arrow-right",
-    "arrow-right-left", "bar-chart-3", "box", "brain", "camera",
-    "check", "check-circle", "chevron-down", "chevron-left",
-    "chevron-right", "circle", "circle-dot", "clock", "copy",
-    "crosshair", "database", "dice-5", "eraser", "eye", "file-text",
-    "film", "git-branch", "git-commit", "git-compare", "git-merge",
-    "info", "keyboard", "layers", "layout-dashboard", "layout-grid",
-    "link", "list", "list-checks", "maximize-2", "menu",
-    "message-circle", "moon", "network", "pause", "pencil", "play",
-    "plus", "refresh-cw", "rotate-ccw", "route", "scan",
-    "scroll-text", "search", "send", "share-2", "skip-back",
-    "skip-forward", "sliders-horizontal", "sparkles", "sprout",
-    "square", "sun", "terminal", "trash-2", "upload", "upload-cloud",
-    "x", "x-circle", "zap",
+    # static data-lucide="" values in index.html + js/**
+    "activity", "alert-triangle", "arrow-left", "bar-chart-3", "box",
+    "brain", "check", "chevron-down", "circle-dot", "copy", "database",
+    "eraser", "file-text", "focus", "git-branch", "git-fork", "git-merge",
+    "history", "info", "layers", "layout-dashboard", "link", "list-checks",
+    "maximize-2", "menu", "moon", "network", "panel-left-close", "pause",
+    "pencil", "play", "plus", "refresh-cw", "save", "scroll-text", "search",
+    "send", "settings", "skip-back", "skip-forward", "sliders-horizontal",
+    "sun", "terminal", "trash-2", "upload", "upload-cloud", "x",
+    # dynamic: toast iconMap
+    "check-circle", "x-circle",
+    # dynamic: emptyState() default + explicit args (ui-utils/search.js)
+    "inbox", "search-x",
+    # dynamic: command palette (app.js) + graph.js palette/playback/panel toggle
+    "circle", "heart", "maximize", "panel-left-open",
 ]
 
 
@@ -30,7 +31,7 @@ def kebab_to_pascal(name):
 PASCAL_NAMES = set(kebab_to_pascal(n) for n in ICONS_KEBAB)
 
 SRC = "lucide.js"
-DST = "lucide-min.js"
+DST = "lucide.js"  # rebuild in place — index.html loads vendor/lucide.js
 
 with open(SRC, "r") as f:
     full = f.read()

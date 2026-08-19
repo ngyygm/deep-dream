@@ -275,8 +275,6 @@
         const remaining = _graphs.map(g => g.graph_id);
         setGraphId(remaining[0] || 'default');
       }
-      if (typeof loadGraphSelector === 'function') loadGraphSelector();
-      else syncGraphSelector();
     } catch (e) {
       showToast(t('dashboard.deleteGraphFailed') + `: ${e.message || e}`, 'error');
     }
@@ -343,14 +341,7 @@
   }
 
   /** Build the active tasks section (card layout). */
-  function formatTaskSize(bytes) {
-    const n = Number(bytes || 0);
-    if (!Number.isFinite(n) || n <= 0) return '0 B';
-    if (n < 1024) return `${n} B`;
-    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-    if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
-    return `${(n / (1024 * 1024 * 1024)).toFixed(1)} GB`;
-  }
+  const formatTaskSize = Format.formatBytes;
 
   /** Build the active tasks section (card layout). */
   function buildTasksSection(tasks) {
@@ -480,29 +471,10 @@
   async function fetchGraphs() {
     try {
       const res = await state.api.systemGraphs();
-      const prevIds = _graphs.map(g => g.graph_id).join(',');
       _graphs = res.data || [];
       updateGraphList();
       updateStatCards();
-      // Sync top nav selector from same data source
-      const curIds = _graphs.map(g => g.graph_id).join(',');
-      if (prevIds !== curIds) syncGraphSelector();
     } catch (err) { console.warn('fetchGraphs failed:', err); }
-  }
-
-  function syncGraphSelector() {
-    const sel = document.getElementById('graph-selector');
-    if (!sel) return;
-    const ids = _graphs.map(g => g.graph_id);
-    const currentVal = state.currentGraphId;
-    sel.innerHTML = ids.map(g =>
-      `<option value="${escapeHtml(g)}" ${g === currentVal ? 'selected' : ''}>${escapeHtml(g)}</option>`
-    ).join('');
-    if (!ids.includes(currentVal)) {
-      sel.innerHTML = `<option value="${escapeHtml(currentVal)}" selected>${escapeHtml(currentVal)}</option>` + sel.innerHTML;
-    }
-    const delBtn = document.getElementById('graph-delete-btn');
-    if (delBtn) delBtn.style.display = ids.length > 1 ? '' : 'none';
   }
 
   async function fetchTasks() {
