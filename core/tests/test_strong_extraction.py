@@ -368,7 +368,7 @@ class TestWindowBatchResolve:
         assert "待裁决关系对列表" in seen["prompt"]
 
     def test_entity_needs_batch_llm_predicates(self):
-        from core.remember.entity_batch import entity_needs_batch_llm
+        from core.remember.entity_alignment import entity_needs_batch_llm
         assert entity_needs_batch_llm("A", []) is False
         assert entity_needs_batch_llm("A", [{"name": "A", "combined_score": 0.9, "merge_safe": True}]) is False
         assert entity_needs_batch_llm("A", [{"name": "B", "combined_score": 0.1}]) is False
@@ -377,7 +377,7 @@ class TestWindowBatchResolve:
         assert entity_needs_batch_llm("A", [{"name": "A", "combined_score": 0.9, "merge_safe": False}]) is True
 
     def test_build_window_batch_verdicts_prefilters(self):
-        from core.remember.entity_parallel import _build_window_batch_verdicts
+        from core.remember.entity_alignment import _build_window_batch_verdicts
 
         class FakeClient:
             def __init__(self):
