@@ -59,11 +59,18 @@ class _StrongExtractionMixin:
 请一次性抽取上述窗口文本中的概念实体与实体间关系。要求：
 1. 实体：文本中出现的、值得长期记忆的概念对象（人物/组织/项目/物品/地点/抽象概念等）。
    每个实体给出规范简短名称（≤12字）与完整内容描述。
+   目标抽取约 {max_entities} 个实体：把窗口内所有可检索的事实网罗完整，
+   包括只出现一次的次要事实（日期/时长/数量/归属/偏好/计划/变动）。
+   对这类原子事实，实体名直接取原文中承载该事实的短语 span
+   （例："I've known these friends for 4 years" → 实体名 "known these friends for 4 years"；
+    "started her PhD in 2019" → 实体名 "started her PhD in 2019"），
+   让该事实可被逐字检索命中；span 名可放宽到 40 字符，不受 ≤12 字限制。
 2. 【命名硬约束】实体名必须逐字取自窗口文本中出现的名称 span：
    保留原文语言与拼写，禁止翻译、改写或自创名称。
    （例：英文文本中的 "LGBTQ support group" 不得写成 "LGBTQ互助小组"；
    人名/地名/机构名一律使用原文形式。）
 3. 关系：只连接已抽取的实体，描述两个实体之间在文本中体现的具体关系。
+   目标抽取约 {max_relations} 条关系，覆盖事实之间的连接。
 4. content 描述要结合窗口文本写出完整信息，不要空洞概括。
 
 只输出一个 ```json``` 代码块：
@@ -139,8 +146,11 @@ class _StrongExtractionMixin:
         _prev_step = getattr(self, "_current_distill_step", None)
         self._current_distill_step = "02s_onepass_extract"
         try:
+            # retries=2 → 截断自动扩容阶梯 1×/2×/4×：thinking 模型（无法关思考的
+            # 端点）推理即可烧掉 5K+ token，4096/8192 预算下 content 会整个为空，
+            # 必须给到 4× 档位才有机会在预算内完成推理+正文。
             result, _ = self.call_llm_until_json_parses(
-                messages, parse_fn=_parse, json_parse_retries=1,
+                messages, parse_fn=_parse, json_parse_retries=2,
             )
         finally:
             self._current_distill_step = _prev_step

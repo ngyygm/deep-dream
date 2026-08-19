@@ -74,6 +74,7 @@
       "alignment_policy": "conservative",
       "max_entities_per_window": 16,
       "max_relations_per_window": 24,
+      "episode_slice_chars": 0,
       "judge": {
         "enabled": false,
         "batch_min": 4,

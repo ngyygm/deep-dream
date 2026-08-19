@@ -130,7 +130,7 @@ class TestExtractWindowStructured:
             client.extract_window_structured(WINDOW)
 
     def test_empty_result_raises_and_retries(self, client, monkeypatch):
-        # 空 entities+空 relations 视为解析失败 → 重试一次 → 仍失败抛 ValueError
+        # 空 entities+空 relations 视为解析失败 → 重试 2 次（thinking 模型截断扩容阶梯）→ 仍失败抛 ValueError
         payload = "```json\n" + _dumps({"entities": [], "relations": []}) + "\n```"
         calls = {"n": 0}
 
@@ -141,7 +141,7 @@ class TestExtractWindowStructured:
         monkeypatch.setattr(client, "_call_llm", fake_call)
         with pytest.raises(ValueError):
             client.extract_window_structured(WINDOW)
-        assert calls["n"] == 2
+        assert calls["n"] == 3
 
     def test_known_entity_names_in_prompt(self, client, monkeypatch):
         captured = {}

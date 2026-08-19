@@ -110,6 +110,7 @@ DEFAULTS = {
             "max_entities_per_window": 16,
             "max_relations_per_window": 24,
             "filter_before_content_generation": False,
+            "episode_slice_chars": 0,
             "judge": {
                 "enabled": False,
                 "batch_min": 4,

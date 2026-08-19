@@ -141,6 +141,8 @@ class TemporalMemoryGraphProcessor(_PipelineMixin, _PipelineExtractionMixin, _Ex
         self.remember_preserve_source_language = bool(_remember_cfg.get("preserve_source_language", False))
         self.remember_max_entities_per_window = max(1, int(_remember_cfg.get("max_entities_per_window") or 16))
         self.remember_max_relations_per_window = max(1, int(_remember_cfg.get("max_relations_per_window") or 24))
+        # strong-v1 检索切片：窗口 episode 之外按 ~N 字在行边界追加薄 FTS 切片行（0=关闭）
+        self.remember_episode_slice_chars = max(0, int(_remember_cfg.get("episode_slice_chars") or 0))
         _relation_content_snippet_length = relation_content_snippet_length if relation_content_snippet_length is not None else 200
         _relation_endpoint_jaccard_threshold = (
             float(relation_endpoint_jaccard_threshold)

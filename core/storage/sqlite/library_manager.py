@@ -1686,7 +1686,8 @@ class LibraryManager:
                      override_doc_id: str = "",
                      heading_path: str = "",
                      episode_type: str = "",
-                     run_id: str = "") -> str:
+                     run_id: str = "",
+                     retrieval_slice_chars: int = 0) -> str:
         """Persist an Episode DTO and its source document."""
         import hashlib, uuid
         from . import content_fs
@@ -1801,8 +1802,85 @@ class LibraryManager:
         ep_repo.fts_sync_episode(conn, ep_id, doc_id, ver_id,
                                   name=title, source_text=text,
                                   memory_text=cache.content or "")
+        if retrieval_slice_chars and episode_type != "retrieval_slice":
+            self._write_retrieval_slices(
+                conn, text, doc_id, ver_id, ep_fam, title,
+                heading_path=heading_path,
+                base_chunk_index=existing_chunks,
+                run_id=run_id, slice_chars=int(retrieval_slice_chars),
+            )
         self._commit_if_not_batched(conn)
         return doc_hash
+
+    def _write_retrieval_slices(self, conn, text: str, doc_id: str, ver_id: str,
+                                ep_fam: str, title: str, *, heading_path: str,
+                                base_chunk_index: int, run_id: str,
+                                slice_chars: int) -> int:
+        """在窗口 episode 之外追加"检索切片" episode 行（episode_type=retrieval_slice）。
+
+        大窗口（strong-v1 6000 字）episode 因 FTS5 bm25 长度归一化处于劣势，
+        其中的证据 turn 难以进入检索候选集；按 ~slice_chars 在对话行边界切出
+        薄切片行作为纯 FTS 检索单元（memory_text 为空，不参与实体锚定语义）。
+        窗口 episode 原样保留：实体锚定、版本链、溯源全部不动。
+        行必须整行切分——检索层的 turn 解析依赖 "[turn_id] role: text" 行格式。
+
+        Returns:
+            写入的切片行数
+        """
+        import hashlib
+        import uuid
+        if slice_chars <= 0 or len(text or "") <= slice_chars:
+            return 0
+        lines = (text or "").splitlines()
+        line_offsets, running = [], 0
+        for line in lines:
+            line_offsets.append(running)
+            running += len(line) + 1
+        slices: list[tuple[int, list[str]]] = []  # (start_line_index, lines)
+        cur: list[str] = []
+        cur_start = 0
+        cur_len = 0
+        for i, line in enumerate(lines):
+            add = len(line) + 1
+            if cur and cur_len + add > slice_chars:
+                slices.append((cur_start, cur))
+                cur, cur_start, cur_len = [], i, 0
+            cur.append(line)
+            cur_len += add
+        if cur:
+            slices.append((cur_start, cur))
+        written = 0
+        for n, (start_line, slice_lines) in enumerate(slices, 1):
+            slice_text = "\n".join(slice_lines)
+            if not slice_text.strip():
+                continue
+            start_off = line_offsets[start_line]
+            slice_id = f"ep_{uuid.uuid4().hex[:16]}"
+            slice_hash = hashlib.sha256(slice_text.encode("utf-8")).hexdigest()[:16]
+            ep_repo.insert_episode(
+                conn, slice_id, ep_fam, doc_id, ver_id,
+                source_text=slice_text, memory_text="",
+                heading_path=heading_path,
+                start_offset=start_off,
+                end_offset=start_off + len(slice_text),
+                line_start=start_line,
+                line_end=start_line + len(slice_lines) - 1,
+                chunk_index=base_chunk_index + n,
+                chunk_hash=slice_hash,
+                name=title,
+                episode_type="retrieval_slice",
+                activity_type="",
+                event_time=_now_str(), processed_at=_now_str(),
+                run_id=run_id,
+            )
+            ep_repo.fts_sync_episode(conn, slice_id, doc_id, ver_id,
+                                      name=title, source_text=slice_text,
+                                      memory_text="")
+            written += 1
+        if written:
+            logger.info("检索切片｜%s｜窗口 %d 字 → %d 片（≤%d 字/片）",
+                        title, len(text or ""), written, slice_chars)
+        return written
 
     def save_entity(self, entity: Entity, _precomputed_embedding=None,
                      run_id: str = "", extra_json: str = "") -> None:

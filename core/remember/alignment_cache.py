@@ -60,6 +60,8 @@ class _CacheMixin:
 
         doc_hash = doc_hash or (compute_doc_hash(input_text) if input_text else "")
         _override = getattr(self, '_pipeline_override_doc_id', '') or ''
+        # strong-v1 检索切片：窗口 episode 之外按 ~N 字追加薄 FTS 切片行（0=关闭）
+        _slice_chars = int(getattr(self, 'remember_episode_slice_chars', 0) or 0)
         self.storage.save_episode(
             new_episode,
             text=input_text,
@@ -71,6 +73,7 @@ class _CacheMixin:
             heading_path=heading_path,
             episode_type=episode_type,
             run_id=run_id,
+            retrieval_slice_chars=_slice_chars,
         )
         self.current_episode = new_episode
 

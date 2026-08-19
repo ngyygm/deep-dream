@@ -108,9 +108,12 @@ def _quality_config(config: dict[str, Any], profile: str) -> dict[str, Any]:
             "mode": "strong_one_pass",
             "window_size_chars": 6000,
             "overlap_chars": 300,
-            "max_entities_per_window": 16,
-            "max_relations_per_window": 24,
+            "max_entities_per_window": 24,
+            "max_relations_per_window": 36,
             "filter_before_content_generation": True,
+            # 大窗口 episode 在 BM25 长度归一化下吃亏：追加 ~800 字薄检索切片行，
+            # 窗口 episode（实体锚定/版本链/溯源）原样保留
+            "episode_slice_chars": 800,
         })
         # 单遍大窗口：精炼轮在 strong 模式下无意义，强制关闭
         extraction = scoped.setdefault("pipeline", {}).setdefault("extraction", {})
@@ -637,6 +640,15 @@ class AnswerGenerator:
                 "'last week', use 'The week before <session "
                 "date>'; for 'yesterday', output the absolute calendar date. Collect every distinct requested field "
                 "and preserve concise wording from the evidence, with multiple requested facts separated by commas. "
+                "Scan every submitted session before answering and aggregate all instances of the requested fact across "
+                "sessions: a list answer names each distinct item found in any session, not only the first. When the exact "
+                "label is never stated but the evidence entails it (for example, a mentioned breakup or moving alone "
+                "entails a relationship status), give the entailed label rather than abstaining. When several sessions "
+                "describe similar but different events, first identify which event the question asks about (matching the "
+                "named people, place, and activity) and answer only from that event; image captions describe photographs "
+                "and must not replace narrated facts. Keep each fact to its "
+                "minimal phrase — one tight clause per fact, with no trailing clause after ';', 'which', or 'because': "
+                "extra true context is still wrong for a concise answer. "
                 "For identity labels, use the full conventional label rather than a shortened form (for example, "
                 "write 'transgender' rather than 'trans'); do not invent an identity absent from the evidence. "
                 "Direct factual Yes/No questions must use answer_type boolean and answer exactly Yes or No. "
