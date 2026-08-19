@@ -5,14 +5,11 @@ from typing import Any, Dict, List, Optional
 
 from ..utils import clean_markdown_code_blocks, wprint_info
 from .prompts import (
-    JUDGE_CONTENT_NEED_UPDATE_SYSTEM_PROMPT,
     MERGE_ENTITY_NAME_SYSTEM_PROMPT,
     JUDGE_RELATION_MATCH_SYSTEM_PROMPT,
     MERGE_MULTIPLE_RELATION_CONTENTS_SYSTEM_PROMPT,
     MERGE_MULTIPLE_ENTITY_CONTENTS_SYSTEM_PROMPT,
 )
-
-_TRUE_WORDS = frozenset(("true", "yes", "是", "需要更新", "需要"))
 
 
 def _contents_fast_path(contents: List[str]) -> Optional[str]:
@@ -32,7 +29,6 @@ def _contents_fast_path(contents: List[str]) -> Optional[str]:
     if all(c.strip() == base for c in contents[1:]):
         return contents[0]
     return None
-_FALSE_WORDS = frozenset(("false", "no", "否", "不需要更新", "不需要", "已包含"))
 
 
 class _ContentMergerMixin:
@@ -42,79 +38,6 @@ class _ContentMergerMixin:
     def _source_doc_label(source_document: Optional[str]) -> str:
         src = (source_document or "").strip()
         return src if src else "(未知文档)"
-
-    def judge_content_need_update(
-        self,
-        old_content: str,
-        new_content: str,
-        *,
-        old_source_document: str = "",
-        new_source_document: str = "",
-        old_name: str = "",
-        new_name: str = "",
-        object_type: str = "实体",
-    ) -> bool:
-        """
-        判断内容是否需要更新
-
-        比较最新版本的content和当前抽取的content，判断是否需要更新
-
-        判断规则：
-        1. 如果新内容的所有信息都已经被旧内容包含，返回False（不需要更新）
-        2. 如果新内容包含新信息、修正了旧内容、或与旧内容有实质性差异，返回True（需要更新）
-
-        Args:
-            old_content: 数据库中最新版本的content
-            new_content: 当前抽取的content
-
-        Returns:
-            True表示需要更新，False表示不需要更新
-        """
-        # 如果内容完全相同，不需要更新
-        _old_s = old_content.strip()
-        _new_s = new_content.strip()
-        if _old_s == _new_s:
-            return False
-
-        # 使用LLM判断新内容是否已经被旧内容包含
-        system_prompt = JUDGE_CONTENT_NEED_UPDATE_SYSTEM_PROMPT
-
-        prompt = f"""<对象类型>
-{object_type}
-</对象类型>
-
-<旧版本>
-- name: {old_name or '(未提供名称)'}
-- source_document: {self._source_doc_label(old_source_document)}
-- content:
-{old_content}
-</旧版本>
-
-<新版本>
-- name: {new_name or old_name or '(未提供名称)'}
-- source_document: {self._source_doc_label(new_source_document)}
-- content:
-{new_content}
-</新版本>
-
-请判断当前抽取的内容是否已被旧版本包含："""
-
-        response = self._call_llm(prompt, system_prompt)
-
-        # 提取 markdown 代码块内的内容（prompt 要求 LLM 输出 ```json true/false ```）
-        _cleaned = clean_markdown_code_blocks(response)
-        text = (_cleaned if _cleaned else response).strip().lower()
-        # 宽松匹配：处理LLM返回的各种格式
-        if text in _TRUE_WORDS:
-            return True
-        elif text in _FALSE_WORDS:
-            return False
-        else:
-            # 如果LLM返回明确的更新指令（包含"更新"等关键词），视为需要更新
-            if "更新" in text or "新信息" in text or "差异" in text:
-                return True
-            # 兜底：模糊响应默认不更新，避免版本膨胀
-            return False
 
     def merge_entity_name(self, old_name: str, new_name: str) -> str:
         """

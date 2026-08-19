@@ -48,42 +48,6 @@ def release_window_slot(processor) -> None:
 
 
 # ------------------------------------------------------------------
-# Extraction job wrapper
-# ------------------------------------------------------------------
-
-def run_extraction_job(
-    processor,
-    new_episode,
-    input_text: str,
-    document_name: str,
-    verbose: bool = True,
-    verbose_steps: bool = True,
-    event_time=None,
-    control_check_fn=None,
-):
-    with processor._runtime_lock:
-        processor._active_window_extractions += 1
-        processor._peak_window_extractions = max(
-            processor._peak_window_extractions,
-            processor._active_window_extractions,
-        )
-    try:
-        return processor._process_extraction(
-            new_episode,
-            input_text,
-            document_name,
-            verbose=verbose,
-            verbose_steps=verbose_steps,
-            event_time=event_time,
-            control_check_fn=control_check_fn,
-        )
-    finally:
-        with processor._runtime_lock:
-            processor._active_window_extractions = max(0, processor._active_window_extractions - 1)
-        release_window_slot(processor)
-
-
-# ------------------------------------------------------------------
 # Step-9 worker
 # ------------------------------------------------------------------
 
@@ -384,7 +348,10 @@ def build_timing_summary(window_timings):
         "step1-update_cache": "1b-缓存写入",
         "step1-cache_hit": "1c-缓存命中",
         "step2_entity_extract": "2-实体提取",
+        "step2s_onepass_extract": "  2s-单遍结构化抽取",
         "step3_entity_dedup": "3-实体去重",
+        "step3s_entity_gate": "  3s-实体质量门",
+        "step4s_relation_gate": "  4s-关系质量门",
         "step4_entity_content": "4-实体内容",
         "step4_entity_content_batch_llm": "  4a-实体内容批量LLM",
         "step4_entity_content_fallback_llm": "  4b-实体内容回退LLM",
@@ -472,7 +439,7 @@ def _timing_reason(key: str) -> str:
         return "embedding 编码/向量比较，用于候选召回和相似度快速路径。"
     if "db" in key or "mentions" in key or "refresh" in key:
         return "SQLite 读取/写入图谱结构、版本、边或溯源。"
-    if "quality" in key or "dedup" in key or "convert" in key or "normalize" in key:
+    if "quality" in key or "dedup" in key or "convert" in key or "normalize" in key or "gate" in key:
         return "纯代码规则处理，用于去重、名称解析和结构校验。"
     if key.startswith("step1"):
         return "文档/episode 缓存、blob、artifact 和 Document-first 结构写入。"

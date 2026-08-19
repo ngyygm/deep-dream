@@ -216,7 +216,7 @@ def prepare(ctx: click.Context, dataset: str, data_dir: Path, force: bool) -> No
 @click.option("--config", "config_path", type=click.Path(path_type=Path), default=None)
 @click.option("--scope-id", "scope_ids", multiple=True, help="Conversation/question scope to ingest.")
 @click.option("--session-limit", type=click.IntRange(min=1), default=None)
-@click.option("--remember-profile", type=click.Choice(["current", "quality-v1", "strong-v1"]), default="current", show_default=True)
+@click.option("--remember-profile", type=click.Choice(["strong-v1"]), default="strong-v1", show_default=True)
 @click.option("--ingest-workers", type=click.IntRange(min=1, max=8), default=1,
               show_default=True, help="文档级并发 ingest；>1 时每文档独立 processor（共享信号量/judge）。")
 @click.option("--resume", is_flag=True)
@@ -363,7 +363,7 @@ def answer(ctx: click.Context, run_dir: Path, config_path: Path | None,
 @click.option("--config", "config_path", type=click.Path(path_type=Path), default=None)
 @click.option("--scope-id", "scope_ids", multiple=True)
 @click.option("--session-limit", type=click.IntRange(min=1), default=None)
-@click.option("--remember-profile", type=click.Choice(["current", "quality-v1", "strong-v1"]), default="current", show_default=True)
+@click.option("--remember-profile", type=click.Choice(["strong-v1"]), default="strong-v1", show_default=True)
 @click.option("--track", "tracks", type=TRACK_CHOICE, multiple=True, default=("both",), show_default=True)
 @click.option("--eligible-evidence-only", is_flag=True)
 @click.option("--limit", type=click.IntRange(min=1), default=None)

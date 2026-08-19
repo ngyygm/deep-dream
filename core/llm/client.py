@@ -23,8 +23,6 @@ from .errors import LLMContextBudgetExceeded
 from .memory_ops import _MemoryOpsMixin
 from .content_merger import _ContentMergerMixin
 from .consolidation import _ConsolidationMixin
-from .summary_evolution import SummaryEvolutionMixin
-from .contradiction import ContradictionDetectionMixin
 from .extraction import _LLMExtractionMixin
 from .extraction_strong import _StrongExtractionMixin
 from .json_repair import (
@@ -44,7 +42,6 @@ from .prompts import (
     _XINFERENCE_500_MAX_RETRIES,
     _XINFERENCE_500_JITTER_MAX,
     _LLM_TPM_SLEEP_CAP_SECONDS,
-    _DISTILL_SKIP_STEPS,
     _CONNECTION_ERROR_KEYWORDS,
     _CONTEXT_OVERFLOW_NEEDLES,
     LLM_PRIORITY_STEP1,
@@ -114,7 +111,6 @@ class LLMCallStats:
 
 
 class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
-                 SummaryEvolutionMixin, ContradictionDetectionMixin,
                  _StrongExtractionMixin, _LLMExtractionMixin):
 
     @staticmethod
@@ -150,7 +146,6 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
                  alignment_content_snippet_length: Optional[int] = None,
                  alignment_relation_content_snippet_length: Optional[int] = None,
                  alignment_enabled: bool = False,
-                 alignment_max_llm_concurrency: Optional[int] = None,
                  alignment_openai_extra_body: Optional[Dict[str, Any]] = None,
                  call_stats: Optional[LLMCallStats] = None,
                  judge_service: Optional[Any] = None):
@@ -228,9 +223,6 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
         )
         self.alignment_enabled = bool(alignment_enabled)
         self.alignment_openai_extra_body = dict(alignment_openai_extra_body or {})
-        self._alignment_max_llm_concurrency: Optional[int] = None
-        if alignment_max_llm_concurrency is not None:
-            self._alignment_max_llm_concurrency = max(1, int(alignment_max_llm_concurrency))
 
         # 统一使用 Python SDK（openai>=1.0）访问；任一端点有 api/base 则非模拟模式
         self._endpoint_available = bool(
@@ -244,9 +236,7 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
         # 现在统一走同一个 PrioritySemaphore；保留 upstream/downstream 字段只为监控兼容。
         self._max_llm_concurrency: int = max_llm_concurrency or 0
         self._llm_upstream_slot_max: int = 0
-        self._llm_downstream_slot_max: int = 0
         self._llm_sem_upstream: Optional[PrioritySemaphore] = None
-        self._llm_sem_downstream: Optional[PrioritySemaphore] = None
         self._llm_semaphore: Optional[PrioritySemaphore] = None  # 兼容旧代码/测试：与上游相同或总池
         mc = max_llm_concurrency or 0
         if shared_llm_semaphore is not None:
@@ -337,27 +327,6 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
     def _estimate_messages_token_count(self, messages: List[Dict[str, Any]]) -> int:
         return estimate_messages_token_count(messages)
 
-    def _can_continue_multi_round(
-        self,
-        messages: List[Dict[str, Any]],
-        *,
-        next_user_content: str,
-        stage_label: str,
-    ) -> bool:
-        """续轮前先做预算预检；若已无法容纳下一轮请求，则直接正常停止。"""
-        # Estimate tokens without copying the messages list
-        existing_tokens = self._estimate_messages_token_count(messages)
-        next_user_msg = {"role": "user", "content": next_user_content}
-        extra_tokens = 8 + self._estimate_text_token_count(next_user_content)
-        total_estimated = existing_tokens + extra_tokens
-        if total_estimated >= self.context_window_tokens:
-            wprint_info(
-                f"[DeepDream] {stage_label} 多轮预检停止：下一轮估算输入约 {total_estimated} tokens，"
-                f"已触达输入上限 {self.context_window_tokens}"
-            )
-            return False
-        return True
-
     @staticmethod
     def _error_suggests_context_overflow(err: BaseException) -> bool:
         return error_suggests_context_overflow(err)
@@ -429,25 +398,17 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
         return self._llm_sem_upstream
 
     def get_llm_semaphore_active_count(self) -> int:
-        u = self._llm_sem_upstream.active_count if self._llm_sem_upstream else 0
-        d = self._llm_sem_downstream.active_count if self._llm_sem_downstream else 0
-        return u + d
+        return self._llm_sem_upstream.active_count if self._llm_sem_upstream else 0
 
     def get_llm_semaphore_max(self) -> int:
-        u = self._llm_upstream_slot_max or 0
-        d = self._llm_downstream_slot_max or 0
-        if u or d:
-            return u + d
-        return self._max_llm_concurrency
+        return self._llm_upstream_slot_max or self._max_llm_concurrency
 
     def get_llm_semaphore_detail(self) -> dict:
         u_active = self._llm_sem_upstream.active_count if self._llm_sem_upstream else 0
-        u_max = self._llm_upstream_slot_max or 0
-        d_active = self._llm_sem_downstream.active_count if self._llm_sem_downstream else 0
-        d_max = self._llm_downstream_slot_max or 0
         return {
-            "upstream_active": u_active, "upstream_max": u_max,
-            "downstream_active": d_active, "downstream_max": d_max,
+            "upstream_active": u_active, "upstream_max": self._llm_upstream_slot_max,
+            # 旧版 upstream/downstream 双池已合并为单闸门；保留键位兼容监控输出
+            "downstream_active": 0, "downstream_max": 0,
         }
 
     def _record_call_stats(self, *, model: str, messages: List[Dict[str, Any]],
@@ -723,9 +684,8 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
                         wprint_info(f"问题内容预览:\n{response_text}")
 
                 # 编码有效则返回响应（已取消乱码检测）
-                # 蒸馏数据保存（步骤2/3走多轮手动保存，在此跳过）
-                if (response_text and self._current_distill_step
-                        and self._current_distill_step not in _DISTILL_SKIP_STEPS):
+                # 蒸馏数据保存（按当前 step 标签归档）
+                if response_text and self._current_distill_step:
                     self._save_distill_conversation(
                         messages + [{"role": "assistant", "content": response_text}]
                     )

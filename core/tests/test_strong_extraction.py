@@ -235,11 +235,9 @@ class TestStrongV1PipelineEndToEnd:
     def test_strong_v1_ingests_and_writes_graph(self, tmp_path):
         proc = self._processor(tmp_path, {
             "profile": "strong-v1",
-            "mode": "strong_one_pass",
             "window_size_chars": 6000,
             "overlap_chars": 300,
         })
-        assert proc.remember_mode == "strong_one_pass"
         assert proc.remember_profile == "strong-v1"
         assert proc.document_processor.window_size == 6000
 
@@ -262,7 +260,6 @@ class TestStrongV1PipelineEndToEnd:
     def test_strong_v1_call_breakdown_has_no_legacy_recall_rounds(self, tmp_path):
         proc = self._processor(tmp_path, {
             "profile": "strong-v1",
-            "mode": "strong_one_pass",
             "window_size_chars": 6000,
             "overlap_chars": 300,
         })
@@ -274,14 +271,15 @@ class TestStrongV1PipelineEndToEnd:
         for legacy in ("03_anchor_recall", "03_recall", "05_content_write_rounds"):
             assert legacy not in by_step
 
-    def test_invalid_mode_falls_back_to_dual_model(self, tmp_path):
+    def test_mode_key_is_gone(self, tmp_path):
+        # mode 轴已删除：残留的 mode 键被忽略（未知键告警），管线无条件走单遍抽取
         proc = self._processor(tmp_path, {"profile": "strong-v1", "mode": "bogus_mode"})
-        assert proc.remember_mode == "dual_model"
+        assert not hasattr(proc, "remember_mode")
+        assert proc.remember_profile == "strong-v1"
 
     def test_strong_v1_uses_window_batch_alignment(self, tmp_path):
         proc = self._processor(tmp_path, {
             "profile": "strong-v1",
-            "mode": "strong_one_pass",
             "window_size_chars": 6000,
             "overlap_chars": 300,
         })
@@ -300,7 +298,6 @@ class TestStrongV1PipelineEndToEnd:
     def test_window_batch_alignment_can_be_disabled(self, tmp_path):
         proc = self._processor(tmp_path, {
             "profile": "strong-v1",
-            "mode": "strong_one_pass",
             "window_batch_alignment": False,
         })
         assert proc.window_batch_alignment_enabled is False

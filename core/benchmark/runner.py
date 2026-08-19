@@ -96,30 +96,16 @@ def _quality_config(config: dict[str, Any], profile: str) -> dict[str, Any]:
     scoped = copy.deepcopy(config)
     remember = scoped.setdefault("pipeline", {}).setdefault("remember", {})
     remember["profile"] = profile
-    if profile == "quality-v1":
+    if profile == "strong-v1":
         remember.update({
-            "preserve_source_language": True,
-            "max_entities_per_window": 16,
-            "max_relations_per_window": 24,
-            "filter_before_content_generation": True,
-        })
-    elif profile == "strong-v1":
-        remember.update({
-            "mode": "strong_one_pass",
             "window_size_chars": 6000,
             "overlap_chars": 300,
             "max_entities_per_window": 24,
             "max_relations_per_window": 36,
-            "filter_before_content_generation": True,
             # 大窗口 episode 在 BM25 长度归一化下吃亏：追加 ~800 字薄检索切片行，
             # 窗口 episode（实体锚定/版本链/溯源）原样保留
             "episode_slice_chars": 800,
         })
-        # 单遍大窗口：精炼轮在 strong 模式下无意义，强制关闭
-        extraction = scoped.setdefault("pipeline", {}).setdefault("extraction", {})
-        extraction["entity_refine_rounds"] = 0
-        extraction["relation_refine_rounds"] = 0
-        extraction["entity_post_enhancement"] = False
     return scoped
 
 
@@ -134,7 +120,7 @@ def create_manifest(
     question_ids: list[str] | None = None,
     retrieval_mode: str | None = None,
     max_agent_steps: int = 8,
-    remember_profile: str = "current",
+    remember_profile: str = "strong-v1",
 ) -> dict[str, Any]:
     """Create schema-v3 manifest; old arguments remain source compatible."""
     return {
@@ -470,12 +456,12 @@ def ingest_benchmark(
     *,
     scope_ids: list[str] | None = None,
     session_limit: int | None = None,
-    remember_profile: str = "current",
+    remember_profile: str = "strong-v1",
     resume: bool = False,
     ingest_workers: int = 1,
 ) -> dict[str, Any]:
-    if remember_profile not in {"current", "quality-v1", "strong-v1"}:
-        raise ValueError("remember_profile must be current, quality-v1, or strong-v1")
+    if remember_profile != "strong-v1":
+        raise ValueError("remember_profile must be strong-v1")
     items, dataset_path = _selected_items(dataset, data_dir, scope_ids=scope_ids or [])
     config = _quality_config(_load_config(config_path), remember_profile)
     if run_dir.exists() and not resume and any(run_dir.iterdir()):
@@ -486,7 +472,7 @@ def ingest_benchmark(
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         if manifest.get("dataset_sha256") != sha256_file(dataset_path):
             raise ValueError("Dataset hash changed; refusing to reuse this run")
-        if manifest.get("remember_profile", "current") != remember_profile:
+        if manifest.get("remember_profile", "strong-v1") != remember_profile:
             raise ValueError("Remember profile changed; use a new run directory")
     else:
         manifest = create_manifest(
@@ -1642,7 +1628,7 @@ def run_benchmark(
     tracks: Iterable[str] | None = None,
     scope_ids: list[str] | None = None,
     session_limit: int | None = None,
-    remember_profile: str = "current",
+    remember_profile: str = "strong-v1",
     eligible_evidence_only: bool = False,
 ) -> dict[str, Any]:
     """Convenience ingest + evaluate, with v2 retrieval-mode compatibility."""

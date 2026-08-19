@@ -5,8 +5,7 @@ Pipeline 审计优化后的 Prompt 验证测试。
 1. RESOLVE_RELATION_PAIR_BATCH — 简化后的关系批量对齐
 2. RESOLVE_ENTITY_CANDIDATES_BATCH — content 截断后的实体批量对齐
 3. MERGE_MULTIPLE_ENTITY_CONTENTS — 内容合并质量
-4. ENTITY_CONTENT_WRITE — 实体描述质量
-5. RELATION_CONTENT_WRITE — 关系描述质量
+4. RELATION_CONTENT_WRITE — 关系描述质量
 
 运行：cd /home/linkco/exa/Deep-Dream && conda run -n base python core/tests/test_pipeline_audit.py
 """
@@ -23,8 +22,6 @@ from core.llm.prompts import (
     RESOLVE_RELATION_PAIR_BATCH_SYSTEM_PROMPT,
     RESOLVE_ENTITY_CANDIDATES_BATCH_SYSTEM_PROMPT,
     MERGE_MULTIPLE_ENTITY_CONTENTS_SYSTEM_PROMPT,
-    ENTITY_CONTENT_WRITE_SYSTEM,
-    ENTITY_CONTENT_WRITE_USER,
     RELATION_CONTENT_WRITE_SYSTEM,
     RELATION_CONTENT_WRITE_USER,
 )
@@ -200,29 +197,10 @@ for case_name, old_content, new_content, check_desc in merge_cases:
 
 
 # ============================================================
-# 测试 4: ENTITY_CONTENT_WRITE (实体描述质量)
+# 测试 4: RELATION_CONTENT_WRITE (关系描述质量)
 # ============================================================
 print("\n" + "=" * 60)
-print("测试 4: ENTITY_CONTENT_WRITE (实体描述质量)")
-print("=" * 60)
-
-text_sample = "甄士隐居住在姑苏城阊门外，家中虽不甚富贵，然本地也推他为望族。只因这甄士隐禀性恬淡，不以功名为念，每日只以观花修竹、酌酒吟诗为乐。"
-user_prompt = ENTITY_CONTENT_WRITE_USER.format(entity_name="甄士隐", window_text=text_sample)
-resp = call_llm(ENTITY_CONTENT_WRITE_SYSTEM, user_prompt)
-result = parse_json_block(resp)
-content = result.get("content", "") if result else ""
-
-test("实体描述: 有内容", len(content) > 10, f"内容过短: '{content}'")
-test("实体描述: 无模板开头", not content.startswith("该实体") and not content.startswith("这是一个"),
-     f"有模板化开头: '{content[:20]}'")
-test("实体描述: 长度合理", 30 <= len(content) <= 150, f"长度={len(content)}")
-
-
-# ============================================================
-# 测试 5: RELATION_CONTENT_WRITE (关系描述质量)
-# ============================================================
-print("\n" + "=" * 60)
-print("测试 5: RELATION_CONTENT_WRITE (关系描述质量)")
+print("测试 4: RELATION_CONTENT_WRITE (关系描述质量)")
 print("=" * 60)
 
 user_prompt = RELATION_CONTENT_WRITE_USER.format(

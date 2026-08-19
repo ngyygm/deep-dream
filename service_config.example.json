@@ -62,15 +62,10 @@
       "max_alignment_candidates": null
     },
     "extraction": {
-      "extraction_rounds": 1,
-      "entity_extraction_rounds": 1,
-      "relation_extraction_rounds": 1,
-      "entity_post_enhancement": false,
-      "prompt_episode_max_chars": 2000,
-      "compress_multi_round_extraction": false
+      "prompt_episode_max_chars": 2000
     },
     "remember": {
-      "profile": "current",
+      "profile": "strong-v1",
       "alignment_policy": "conservative",
       "max_entities_per_window": 16,
       "max_relations_per_window": 24,

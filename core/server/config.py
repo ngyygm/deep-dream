@@ -79,37 +79,14 @@ DEFAULTS = {
             "max_alignment_candidates": None,
         },
         "extraction": {
-            "extraction_rounds": 1,
-            "entity_extraction_rounds": 1,
-            "relation_extraction_rounds": 1,
-            "entity_post_enhancement": False,
             "prompt_episode_max_chars": 2000,
-            "compress_multi_round_extraction": False,
         },
         "remember": {
-            "mode": "multi_step",
-            "anchor_recall_rounds": 1,
-            "named_entity_recall_rounds": 1,
-            "concrete_recall_rounds": 1,
-            "abstract_recall_rounds": 1,
-            "coverage_gap_rounds": 1,
-            "missing_concept_rounds": 1,
-            "entity_write_batch_size": 6,
-            "entity_content_batch_size": 6,
-            "relation_hint_rounds": 1,
-            "relation_candidate_rounds": 1,
-            "relation_expand_rounds": 1,
-            "relation_write_rounds": 1,
-            "pre_alignment_validation_retries": 2,
-            "validation_retries": 2,
-            "min_relation_candidates_per_window": 0,
-            "min_entities_per_100_chars_soft_target": 0.0,
             "alignment_policy": "conservative",
-            "profile": "current",
+            "profile": "strong-v1",
             "preserve_source_language": False,
             "max_entities_per_window": 16,
             "max_relations_per_window": 24,
-            "filter_before_content_generation": False,
             "episode_slice_chars": 0,
             "judge": {
                 "enabled": False,
@@ -224,64 +201,6 @@ def _normalize_runtime_config(config: Dict[str, Any]) -> Dict[str, Any]:
     cfg["pipeline"] = pipeline
 
     return cfg
-
-
-def merge_llm_extraction(llm: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    合并抽取阶段专用 LLM 配置（双模型管线）。
-
-    - llm.extraction.enabled == true：启用抽取专用模型（如 gemma4:26b），
-      自动切换到双模型管线（除非 remember_mode 显式指定为 legacy）。
-    - enabled == false 或未配置：关闭，抽取步骤与主模型共用。
-    - 并发只看 llm.max_concurrency；不再为 extraction 单独配置并发，避免同一服务被超发。
-    """
-    if llm.get("extraction_enabled") is False:
-        return {}
-
-    nested = llm.get("extraction")
-    if nested is True:
-        nested = {"enabled": True}
-    if nested is False:
-        return {}
-    if not isinstance(nested, dict):
-        return {}
-
-    if nested.get("enabled") is False:
-        return {}
-
-    def pick(nested_key: str, flat_key: str):
-        v = nested.get(nested_key)
-        if v is None and nested_key == "think":
-            v = nested.get("think_mode")
-        if v is not None:
-            return v
-        return llm.get(flat_key)
-
-    out: Dict[str, Any] = {}
-    mapping = (
-        ("base_url", "base_url"),
-        ("api_key", "api_key"),
-        ("model", "model"),
-        ("max_tokens", "max_tokens"),
-        ("think", "think"),
-        ("extra_body", "extra_body"),
-    )
-    for nk, fk in mapping:
-        val = pick(nk, fk)
-        if val is not None:
-            out["think_mode" if nk == "think" else nk] = val
-
-    cwt = pick("context_window_tokens", "context_window_tokens")
-    if cwt is not None:
-        out["context_window_tokens"] = int(cwt)
-
-    if nested.get("enabled") is True:
-        out["enabled"] = True
-        return out
-
-    if out:
-        out["enabled"] = True
-    return out
 
 
 def merge_llm_alignment(llm: Dict[str, Any]) -> Dict[str, Any]:

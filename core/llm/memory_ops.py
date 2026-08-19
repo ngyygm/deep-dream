@@ -9,7 +9,6 @@ from ..models import Episode
 from ..utils import clean_markdown_code_blocks, classify_episode_type
 from .prompts import (
     UPDATE_MEMORY_CACHE_SYSTEM_PROMPT,
-    CREATE_DOCUMENT_OVERALL_MEMORY_SYSTEM_PROMPT,
 )
 
 
@@ -132,60 +131,4 @@ class _MemoryOpsMixin:
             source_document=source_document_only,
             activity_type="文档处理",
             episode_type=classify_episode_type(input_text),
-        )
-
-    def create_document_overall_memory(self, text_preview: str, document_name: str = "",
-                                       event_time: Optional[datetime] = None,
-                                       previous_overall_content: Optional[str] = None) -> Episode:
-        """
-        生成文档整体记忆：描述「即将处理的内容」是什么，供下一文档作为初始背景。
-        与窗口链分离，生成后即可作为 B 的初始记忆，无需等 A 的最后一窗。
-
-        Args:
-            text_preview: 文档开头预览（如前 2000 字符）
-            document_name: 文档/来源名称
-            event_time: 事件时间
-            previous_overall_content: 上一文档的整体记忆（Markdown），可选，用于衔接
-
-        Returns:
-            Episode，activity_type="文档整体"
-        """
-        system_prompt = CREATE_DOCUMENT_OVERALL_MEMORY_SYSTEM_PROMPT
-        if previous_overall_content:
-            prompt = f"""<上一文档记忆>
-{previous_overall_content[:1500]}
-</上一文档记忆>
-
-<当前文档>
-文档名：{document_name}
-
-文档内容预览：
-{text_preview[:2000]}
-</当前文档>
-
-请生成当前文档的「文档整体记忆」："""
-        else:
-            prompt = f"""<当前文档>
-文档名：{document_name}
-
-文档内容预览：
-{text_preview[:2000]}
-</当前文档>
-
-请生成该文档的「文档整体记忆」："""
-        new_content = self._call_llm(prompt, system_prompt)
-        new_content = clean_markdown_code_blocks(new_content or "")
-        # XML 分隔符标签已在 _call_llm 中统一清理
-        _now = datetime.now()
-        base_time = event_time if event_time is not None else _now
-        new_cache_id = f"overall_{base_time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
-        source_document_only = document_name.split("/")[-1] if document_name else ""
-        return Episode(
-            absolute_id=new_cache_id,
-            content=new_content,
-            event_time=base_time,
-            processed_time=_now,
-            source_document=source_document_only,
-            activity_type="文档整体",
-            episode_type=classify_episode_type(text_preview),
         )

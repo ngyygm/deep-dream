@@ -48,9 +48,6 @@ _INT_PATHS = frozenset({
     "runtime.concurrency.window_workers",
     "runtime.retry.queue_max_retries",
     "runtime.retry.queue_retry_delay_seconds",
-    "pipeline.extraction.extraction_rounds",
-    "pipeline.extraction.entity_extraction_rounds",
-    "pipeline.extraction.relation_extraction_rounds",
     "pipeline.extraction.prompt_episode_max_chars",
     "pipeline.search.max_similar_entities",
     "pipeline.search.content_snippet_length",
@@ -73,11 +70,8 @@ _FLOAT_PATHS = frozenset({
 # Paths that expect boolean values.
 _BOOL_PATHS = frozenset({
     "llm.think",
-    "llm.extraction_enabled",
     "runtime.task.load_cache_memory",
     "runtime.integrity.auto_check_documents",
-    "pipeline.extraction.entity_post_enhancement",
-    "pipeline.extraction.compress_multi_round_extraction",
 })
 
 

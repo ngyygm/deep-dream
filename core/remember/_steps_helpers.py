@@ -1,38 +1,13 @@
 """Extraction pipeline helper functions and utilities.
 
 Split from steps.py — contains name dedup, validation, prose indexing,
-parallel map, and entity fallback content generation.
+and entity fallback content generation.
 """
 import re
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from core.utils import (
-    wprint_info,
-    capture_log_context as _capture_log_ctx,
-    set_window_label as _set_wl,
-    set_pipeline_role as _set_pr,
-)
-
 from .helpers import _clean_entity_name, _is_valid_entity_name, _core_entity_name
-from ._shared import _get_or_create_pool
-
-
-def _with_parent_log_ctx(fn, ctx):
-    """Wrap fn to restore parent thread's log context in child thread."""
-    def wrapper(*args, **kwargs):
-        label, role = ctx
-        if label is not None:
-            _set_wl(label)
-        if role is not None:
-            _set_pr(role)
-        try:
-            return fn(*args, **kwargs)
-        finally:
-            _set_wl(None)
-            _set_pr(None)
-    return wrapper
 
 # Pre-compiled patterns for _build_entity_fallback_content
 _MD_HEADER_RE = re.compile(r'^#{1,6}\s')
@@ -44,77 +19,6 @@ _SENTENCE_SPLIT_RE = re.compile(r'[。！？\n]')
 def _pair_key(a: str, b: str) -> Tuple[str, str]:
     """Deterministic unordered pair key — avoids list alloc + sorted() + tuple()."""
     return (a, b) if a <= b else (b, a)
-
-
-# ---------------------------------------------------------------------------
-# Parallel/sequential executor helper
-# ---------------------------------------------------------------------------
-
-# Lazily-initialized shared pool — avoids thread creation/teardown per call.
-_SHARED_POOL: list = [None]
-_SHARED_POOL_MAX_WORKERS: list = [1]
-
-
-def _get_shared_pool(max_workers: int) -> ThreadPoolExecutor:
-    """Return (and lazily create) the shared ThreadPoolExecutor."""
-    return _get_or_create_pool(_SHARED_POOL, max_workers, _SHARED_POOL_MAX_WORKERS, "extract")
-
-
-def _parallel_map(
-    items: List,
-    process_fn,
-    fallback_fn=None,
-    n_workers: int = 1,
-    thread_prefix: str = "extract",
-) -> List:
-    """Process items in parallel, falling back to sequential on RuntimeError.
-
-    Reuses a lazily-initialized module-level ThreadPoolExecutor to avoid
-    thread creation/teardown overhead across pipeline invocations.
-    """
-    if not items:
-        return []
-
-    def _sequential():
-        results = []
-        for item in items:
-            try:
-                r = process_fn(item)
-                if r is not None:
-                    results.append(r)
-            except Exception as exc:
-                if fallback_fn:
-                    results.append(fallback_fn(item, exc))
-        return results
-
-    if len(items) <= 1:
-        return _sequential()
-
-    n_workers = min(len(items), n_workers)
-    # 捕获父线程日志上下文，让子线程也能显示窗口/步骤信息
-    _ctx = _capture_log_ctx()
-    _wrapped_fn = _with_parent_log_ctx(process_fn, _ctx) if _ctx[0] or _ctx[1] else process_fn
-    pool = None
-    try:
-        pool = _get_shared_pool(n_workers)
-        futures = {pool.submit(_wrapped_fn, item): item for item in items}
-    except RuntimeError:
-        pool = None
-
-    if pool is None:
-        return _sequential()
-
-    results = []
-    for fut in as_completed(futures):
-        try:
-            r = fut.result()
-            if r is not None:
-                results.append(r)
-        except Exception as exc:
-            if fallback_fn:
-                results.append(fallback_fn(futures[fut], exc))
-
-    return results
 
 
 # ---------------------------------------------------------------------------
@@ -165,6 +69,74 @@ def _normalize_and_dedup_entity_names(raw_names: List[str]) -> List[str]:
             expanded.append(cleaned)
 
     return _dedup_entity_names(expanded)
+
+
+def _build_name_lookup(entity_name_set: Set[str]) -> Dict[str, Any]:
+    """Pre-compute lookup structures for entity name resolution."""
+    lower_map: Dict[str, str] = {}
+    core_name_map: Dict[str, List[str]] = {}
+    for name in entity_name_set:
+        lower_map[name.lower()] = name
+        core = _core_entity_name(name)
+        if core not in core_name_map:
+            core_name_map[core] = []
+        core_name_map[core].append(name)
+    return {"lower_map": lower_map, "core_name_map": core_name_map, "names": entity_name_set}
+
+
+def _resolve_entity_name(raw_name: str, entity_name_set: Set[str],
+                         _lookup: Optional[Dict[str, Any]] = None) -> Optional[str]:
+    """Resolve a potentially fuzzy entity name to a known name.
+
+    Args:
+        _lookup: Pre-computed lookup from _build_name_lookup(). If provided,
+                 avoids O(N) linear scans per call.
+    """
+    raw_name = raw_name.strip()
+    if not raw_name:
+        return None
+
+    # Exact match
+    if raw_name in entity_name_set:
+        return raw_name
+
+    if _lookup:
+        # Case-insensitive match via dict lookup (O(1))
+        lower_map = _lookup["lower_map"]
+        match = lower_map.get(raw_name.lower())
+        if match:
+            return match
+
+        # Core name match via dict lookup (O(1))
+        core_name_map = _lookup["core_name_map"]
+        raw_core = _core_entity_name(raw_name)
+        matches = core_name_map.get(raw_core)
+        if matches and len(matches) == 1:
+            return matches[0]
+
+        # Substring match (last resort, O(N))
+        for known in entity_name_set:
+            if raw_core in known or known in raw_core:
+                return known
+    else:
+        # Case-insensitive match
+        _raw_lower = raw_name.lower()
+        for known in entity_name_set:
+            if known.lower() == _raw_lower:
+                return known
+
+        # Core name match (strip parenthetical)
+        raw_core = _core_entity_name(raw_name)
+        matches = [n for n in entity_name_set if _core_entity_name(n) == raw_core]
+        if len(matches) == 1:
+            return matches[0]
+
+        # Substring match (if raw is a substring of a known name or vice versa)
+        for known in entity_name_set:
+            if raw_core in known or known in raw_core:
+                return known
+
+    return None
 
 
 # ---------------------------------------------------------------------------

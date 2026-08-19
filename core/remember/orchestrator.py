@@ -11,24 +11,6 @@ import time
 
 # Static defaults — computed once, not per call
 _REMEMBER_DEFAULTS = {
-    "mode": "dual_model",
-    "anchor_recall_rounds": 1,
-    "named_entity_recall_rounds": 1,
-    "concrete_recall_rounds": 1,
-    "abstract_recall_rounds": 1,
-    "coverage_gap_rounds": 1,
-    "missing_concept_rounds": 1,
-    "entity_write_batch_size": 20,
-    "entity_content_batch_size": 20,
-    "relation_content_batch_size": 20,
-    "relation_hint_rounds": 1,
-    "relation_candidate_rounds": 1,
-    "relation_expand_rounds": 1,
-    "relation_write_rounds": 1,
-    "pre_alignment_validation_retries": 2,
-    "validation_retries": 2,
-    "min_relation_candidates_per_window": 0,
-    "min_entities_per_100_chars_soft_target": 0.0,
     "alignment_policy": "conservative",
 }
 import uuid
@@ -50,7 +32,6 @@ from core.utils import (
 from core.log import info as _log_info
 from .alignment import _PipelineExtractionMixin
 from .helpers import dedupe_extraction_lists
-from .steps import _ExtractionStepsMixin
 from .cross_window import _CrossWindowDedupMixin
 from .orchestrator_pipeline import _PipelineMixin
 
@@ -67,7 +48,7 @@ class RememberControlFlow(Exception):
         self.remember_control_action = action
 
 
-class TemporalMemoryGraphProcessor(_PipelineMixin, _PipelineExtractionMixin, _ExtractionStepsMixin, _CrossWindowDedupMixin):
+class TemporalMemoryGraphProcessor(_PipelineMixin, _PipelineExtractionMixin, _CrossWindowDedupMixin):
     """时序记忆图谱处理器 - 主处理流程"""
 
     # ------------------------------------------------------------------
@@ -88,50 +69,6 @@ class TemporalMemoryGraphProcessor(_PipelineMixin, _PipelineExtractionMixin, _Ex
         if remember_config:
             _remember_cfg.update(remember_config)
         self.remember_config = _remember_cfg
-
-        def _remember_pick(primary_key: str, fallback_key: Optional[str] = None):
-            if primary_key in _remember_overrides:
-                return _remember_overrides.get(primary_key)
-            if primary_key in _remember_from_config:
-                return _remember_from_config.get(primary_key)
-            if fallback_key:
-                if fallback_key in _remember_overrides:
-                    return _remember_overrides.get(fallback_key)
-                if fallback_key in _remember_from_config:
-                    return _remember_from_config.get(fallback_key)
-            return _remember_cfg.get(primary_key)
-
-        self.remember_mode = str(_remember_cfg.get("mode") or "dual_model").strip() or "dual_model"
-        if self.remember_mode not in {"standard", "dual_model", "strong_one_pass"}:
-            self.remember_mode = "dual_model"
-        self.remember_anchor_recall_rounds = max(1, int(_remember_pick("anchor_recall_rounds") or 1))
-        _named_rounds = _remember_pick("named_entity_recall_rounds", "concrete_recall_rounds")
-        self.remember_named_entity_recall_rounds = max(1, int(_named_rounds or 1))
-        self.remember_concrete_recall_rounds = self.remember_named_entity_recall_rounds
-        self.remember_abstract_recall_rounds = max(1, int(_remember_pick("abstract_recall_rounds") or 1))
-        _coverage_gap_rounds = _remember_pick("coverage_gap_rounds", "missing_concept_rounds")
-        self.remember_coverage_gap_rounds = max(1, int(_coverage_gap_rounds or 1))
-        self.remember_missing_concept_rounds = self.remember_coverage_gap_rounds
-        _entity_write_batch_size = _remember_pick("entity_write_batch_size", "entity_content_batch_size")
-        self.remember_entity_write_batch_size = max(1, int(_entity_write_batch_size or 6))
-        self.remember_entity_content_batch_size = self.remember_entity_write_batch_size
-        self.remember_relation_content_batch_size = max(
-            1, int(_remember_pick("relation_content_batch_size") or _remember_cfg.get("relation_content_batch_size") or 20)
-        )
-        _relation_hint_rounds = _remember_pick("relation_hint_rounds", "relation_candidate_rounds")
-        self.remember_relation_hint_rounds = max(1, int(_relation_hint_rounds or 1))
-        self.remember_relation_candidate_rounds = self.remember_relation_hint_rounds
-        self.remember_relation_expand_rounds = max(1, int(_remember_pick("relation_expand_rounds") or 1))
-        self.remember_relation_write_rounds = max(1, int(_remember_pick("relation_write_rounds") or 1))
-        _pre_validation_retries = _remember_pick("pre_alignment_validation_retries", "validation_retries")
-        self.remember_pre_alignment_validation_retries = max(0, int(_pre_validation_retries or 0))
-        self.remember_validation_retries = self.remember_pre_alignment_validation_retries
-        self.remember_min_relation_candidates_per_window = max(
-            0, int(_remember_pick("min_relation_candidates_per_window") or 0)
-        )
-        self.remember_min_entities_per_100_chars_soft_target = max(
-            0.0, float(_remember_pick("min_entities_per_100_chars_soft_target") or 0.0)
-        )
         self.remember_alignment_policy = str(_remember_cfg.get("alignment_policy") or "conservative").strip() or "conservative"
         self.remember_alignment_conservative = self.remember_alignment_policy == "conservative"
         self.remember_profile = str(_remember_cfg.get("profile") or "current")
@@ -234,12 +171,7 @@ class TemporalMemoryGraphProcessor(_PipelineMixin, _PipelineExtractionMixin, _Ex
                  max_concurrent_windows: Optional[int] = None,
                  max_alignment_candidates: Optional[int] = None,
                  distill_data_dir: Optional[str] = None,
-                 entity_rounds: Optional[int] = None,
-                 relation_rounds: Optional[int] = None,
-                 entity_refine_rounds: Optional[int] = None,
-                 relation_refine_rounds: Optional[int] = None,
                  remember_config: Optional[Dict[str, Any]] = None,
-                 extraction_llm: Optional[Dict[str, Any]] = None,
                  graph_id: Optional[str] = None,
                  embedding_cache_max_size: Optional[int] = None,
                  embedding_cache_ttl: Optional[float] = None,
@@ -271,8 +203,6 @@ class TemporalMemoryGraphProcessor(_PipelineMixin, _PipelineExtractionMixin, _Ex
             embedding_name_search_threshold: Embedding 名称搜索阈值（可选）
             embedding_full_search_threshold: Embedding 全文搜索阈值（可选）
             max_concurrent_windows: 同时处理的滑窗数上限（默认 1）；满员时不唤醒下一窗口，避免窗口内实体/关系并行导致线程爆炸
-            entity_refine_rounds: 实体精炼轮次（默认 2）
-            relation_refine_rounds: 关系精炼轮次（默认 1）
             llm_context_window_tokens: 请求输入 prompt 的本地预检上限；未传时读 server 默认
             prompt_episode_max_chars: 注入抽取 prompt 的记忆缓存最大字符数；超长时自动截断，默认 2000
             embedding_cache_max_size: Embedding缓存最大条目数（默认8192，可从config.embedding.cache_max_size读取）
@@ -324,11 +254,10 @@ class TemporalMemoryGraphProcessor(_PipelineMixin, _PipelineExtractionMixin, _Ex
             )
         self.document_processor = DocumentProcessor(window_size, overlap)
         # strong-v1 单遍抽取：remember 配置可覆盖窗口尺寸（默认 6000/300 大窗口）
-        if self.remember_mode == "strong_one_pass":
-            _strong_ws = int(self.remember_config.get("window_size_chars") or 0)
-            if _strong_ws >= 500:
-                _strong_ov = int(self.remember_config.get("overlap_chars") or 0) or 300
-                self.document_processor = DocumentProcessor(_strong_ws, _strong_ov)
+        _strong_ws = int(self.remember_config.get("window_size_chars") or 0)
+        if _strong_ws >= 500:
+            _strong_ov = int(self.remember_config.get("overlap_chars") or 0) or 300
+            self.document_processor = DocumentProcessor(_strong_ws, _strong_ov)
         _al = alignment_llm or {}
         _main_openai_extra_body = ((config or {}).get("llm") or {}).get("extra_body") or {}
         # 主 client 与抽取 client 共享同一份调用计数，processor 层汇总输出
@@ -352,7 +281,6 @@ class TemporalMemoryGraphProcessor(_PipelineMixin, _PipelineExtractionMixin, _Ex
             openai_extra_body=_main_openai_extra_body,
             distill_data_dir=distill_data_dir,
             alignment_enabled=bool(_al.get("enabled", False)),
-            alignment_max_llm_concurrency=_al.get("max_concurrency"),
             alignment_base_url=_al.get("base_url"),
             alignment_api_key=_al.get("api_key"),
             alignment_model=_al.get("model"),
@@ -396,40 +324,6 @@ class TemporalMemoryGraphProcessor(_PipelineMixin, _PipelineExtractionMixin, _Ex
         self.max_similar_entities = _max_similar_entities
         self.content_snippet_length = _content_snippet_length
         self.relation_content_snippet_length = _relation_content_snippet_length
-
-        # Pipeline rounds (new name with old name fallback)
-        _er = entity_rounds if entity_rounds is not None else entity_refine_rounds
-        self.entity_rounds = _er if _er is not None else 2
-        _rr = relation_rounds if relation_rounds is not None else relation_refine_rounds
-        self.relation_rounds = _rr if _rr is not None else 3
-
-        # Extraction client (dual-model pipeline)
-        _el = extraction_llm or {}
-        self.extraction_client = None
-        self.extraction_client_enabled = False
-        if _el.get("enabled", False):
-            self.extraction_client = LLMClient(
-                _el.get("api_key", llm_api_key),
-                _el.get("model", llm_model),
-                _el.get("base_url", llm_base_url),
-                content_snippet_length=_content_snippet_length,
-                relation_content_snippet_length=_relation_content_snippet_length,
-                embedding_client=self.embedding_client,
-                think_mode=bool(_el.get("think_mode", False)),
-                max_tokens=_el.get("max_tokens"),
-                context_window_tokens=int(_el.get("context_window_tokens", _ctx_win)),
-                max_llm_concurrency=max_llm_concurrency or _el.get("max_concurrency"),
-                openai_extra_body=_el.get("extra_body", _main_openai_extra_body),
-                shared_llm_semaphore=_shared_llm_semaphore,
-                shared_llm_slot_max=_shared_llm_slot_max,
-                alignment_enabled=False,
-                call_stats=self.llm_call_stats,
-                judge_service=judge_service,
-            )
-            self.extraction_client_enabled = True
-            self.extraction_client.preserve_source_language = self.remember_preserve_source_language
-            if self.remember_mode not in ("standard", "legacy", "strong_one_pass"):
-                self.remember_mode = "dual_model"
 
         self.llm_threads = max(1, max_llm_concurrency) if max_llm_concurrency else 3
         self.load_cache_memory = load_cache_memory if load_cache_memory is not None else False
@@ -521,9 +415,6 @@ class TemporalMemoryGraphProcessor(_PipelineMixin, _PipelineExtractionMixin, _Ex
 
     def _release_window_slot(self) -> None:
         _pw.release_window_slot(self)
-
-    def _run_extraction_job(self, *args, **kwargs):
-        return _pw.run_extraction_job(self, *args, **kwargs)
 
     # Pipeline state helpers (delegated to pipeline_state module)
     def _init_remember_shared_state(self, N):

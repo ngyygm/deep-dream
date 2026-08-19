@@ -1,6 +1,6 @@
 """strong-v1 profile 的窗口抽取步骤：单次 LLM 调用 + 规则后处理。
 
-与 steps.py 的 _ExtractionStepsMixin._extract_only 签名/返回完全兼容：
+与 alignment.py 的 _extract_only 分派入口签名/返回完全兼容：
 (extracted_entities, extracted_relations) — dict 列表，无 family_id。
 
 复用的规则资产（与现管线同一实现，无行为分叉）：
@@ -22,6 +22,7 @@ from ._steps_helpers import (
     _normalize_and_dedup_entity_names, _validate_entity, _validate_relation,
     _prepare_prose_sentences, _ProseIndex, _build_entity_fallback_content,
     _MIN_ENTITY_CONTENT_LEN, _MIN_RELATION_CONTENT_LEN,
+    _build_name_lookup, _resolve_entity_name,
 )
 
 
@@ -61,13 +62,9 @@ def strong_extract_only(
         if progress_callback:
             progress_callback(p_lo + (p_hi - p_lo) * frac, label, msg)
 
-    extraction_client = self.extraction_client or self.llm_client
-
     _cancel_check_fn = (lambda: control_check_fn() is not None) if control_check_fn else None
     if _cancel_check_fn:
         self.llm_client.set_cancel_check(_cancel_check_fn)
-        if self.extraction_client_enabled:
-            extraction_client.set_cancel_check(_cancel_check_fn)
 
     try:
         # ------------------------------------------------------------------
@@ -75,10 +72,10 @@ def strong_extract_only(
         # ------------------------------------------------------------------
         _progress(0.10, f"{_win} · S2s: 单遍结构化抽取", "开始")
         _t = _time.time()
-        previous_priority = getattr(extraction_client._priority_local, "priority", None)
-        extraction_client._priority_local.priority = LLM_PRIORITY_STEP2
+        previous_priority = getattr(self.llm_client._priority_local, "priority", None)
+        self.llm_client._priority_local.priority = LLM_PRIORITY_STEP2
         try:
-            structured = extraction_client.extract_window_structured(
+            structured = self.llm_client.extract_window_structured(
                 input_text,
                 max_entities=getattr(self, "remember_max_entities_per_window", 16) * 2,
                 max_relations=getattr(self, "remember_max_relations_per_window", 24) * 2,
@@ -86,11 +83,11 @@ def strong_extract_only(
         finally:
             if previous_priority is None:
                 try:
-                    del extraction_client._priority_local.priority
+                    del self.llm_client._priority_local.priority
                 except AttributeError:
                     pass
             else:
-                extraction_client._priority_local.priority = previous_priority
+                self.llm_client._priority_local.priority = previous_priority
         _elapsed_onepass = _time.time() - _t
         _record_timing("step2s_onepass_extract", _elapsed_onepass)
         _check_control()
@@ -173,15 +170,15 @@ def strong_extract_only(
         # ------------------------------------------------------------------
         _progress(0.70, f"{_win} · S4s: 关系质量门", f"{len(raw_relations)} 条候选")
         _t = _time.time()
-        _name_lookup = self._build_name_lookup(set(entity_names))
+        _name_lookup = _build_name_lookup(set(entity_names))
         _entity_name_set = set(entity_names)
         relation_pairs: List[Tuple[str, str]] = []
         _pair_contents: Dict[Tuple[str, str], str] = {}
         seen_pairs = set()
         for r in raw_relations:
-            a = self._resolve_entity_name(
+            a = _resolve_entity_name(
                 r.get("entity1_name", ""), _entity_name_set, _lookup=_name_lookup)
-            b = self._resolve_entity_name(
+            b = _resolve_entity_name(
                 r.get("entity2_name", ""), _entity_name_set, _lookup=_name_lookup)
             if not a or not b or a == b:
                 continue
@@ -221,5 +218,3 @@ def strong_extract_only(
         return valid_entities, valid_relations
     finally:
         self.llm_client.clear_cancel_check()
-        if self.extraction_client_enabled:
-            extraction_client.clear_cancel_check()

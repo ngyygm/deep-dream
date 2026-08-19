@@ -267,15 +267,15 @@ class _OrphanMixin:
         entity_name_set = set(all_entity_names)
         recovered_fids = set()
         relation_processor = getattr(self, 'relation_processor', None)
-        from .steps import _ExtractionStepsMixin as _EPM
+        from ._steps_helpers import _build_name_lookup, _resolve_entity_name
 
         # Phase 1: Resolve names + parallel LLM content writing
-        _name_lookup = _EPM._build_name_lookup(entity_name_set)
+        _name_lookup = _build_name_lookup(entity_name_set)
         resolved_pairs = []
         for pair in raw_pairs:
             a, b = pair[0], pair[1]
-            resolved_a = _EPM._resolve_entity_name(a, entity_name_set, _lookup=_name_lookup)
-            resolved_b = _EPM._resolve_entity_name(b, entity_name_set, _lookup=_name_lookup)
+            resolved_a = _resolve_entity_name(a, entity_name_set, _lookup=_name_lookup)
+            resolved_b = _resolve_entity_name(b, entity_name_set, _lookup=_name_lookup)
             if not resolved_a or not resolved_b or resolved_a == resolved_b:
                 continue
             fid_a = name_to_fid.get(resolved_a)

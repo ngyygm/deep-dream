@@ -234,66 +234,6 @@ class TestMergeTwoContents:
             mock_merge.assert_not_called()
 
 
-class TestJudgeContentNeedUpdate:
-    """Test judge_content_need_update method."""
-
-    def test_judge_identical_content(self, processor):
-        """Test judgment when contents are identical."""
-        with patch.object(processor.llm_client, '_call_llm') as mock_llm:
-            mock_llm.return_value = "false"
-
-            result = processor.llm_client.judge_content_need_update(
-                old_content="Same content",
-                new_content="Same content",
-            )
-
-            # Should not call LLM for identical content
-            assert result is False
-            mock_llm.assert_not_called()
-
-    def test_judge_new_is_substring_of_old(self, processor):
-        """Test judgment when new is substring of old — goes to LLM."""
-        with patch.object(processor.llm_client, '_call_llm') as mock_llm:
-            mock_llm.return_value = "false"
-
-            result = processor.llm_client.judge_content_need_update(
-                old_content="Long content with all details",
-                new_content="content with all",
-            )
-
-            # No fast path — LLM decides
-            mock_llm.assert_called_once()
-            assert result is False
-
-    def test_judge_old_is_prefix_of_new(self, processor):
-        """Test judgment when old is prefix of new — goes to LLM."""
-        with patch.object(processor.llm_client, '_call_llm') as mock_llm:
-            mock_llm.return_value = "true"
-
-            result = processor.llm_client.judge_content_need_update(
-                old_content="Base info",
-                new_content="Base info extended",
-            )
-
-            # No fast path — LLM decides
-            mock_llm.assert_called_once()
-            assert result is True
-
-    def test_judge_requires_llm(self, processor):
-        """Test judgment when LLM is needed."""
-        with patch.object(processor.llm_client, '_call_llm') as mock_llm:
-            mock_llm.return_value = "true"
-
-            result = processor.llm_client.judge_content_need_update(
-                old_content="First version",
-                new_content="Different version",
-            )
-
-            # Should call LLM
-            mock_llm.assert_called_once()
-            assert result is True
-
-
 class TestMergeRelationContent:
     """Test relation content merge logic."""
 

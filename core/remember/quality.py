@@ -1,4 +1,4 @@
-"""Deterministic pre-LLM quality gates for the quality-v1 remember profile."""
+"""Deterministic pre-LLM quality gates for the strong-v1 remember profile."""
 from __future__ import annotations
 
 import re

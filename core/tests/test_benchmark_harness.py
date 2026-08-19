@@ -328,7 +328,7 @@ def _concurrent_ingest_fixture(tmp_path: Path) -> tuple[Path, Path]:
         "llm": {"model": "mock", "mock": True, "context_window_tokens": 32000},
         "embedding": {"model": "/nonexistent-mock-model"},
         "pipeline": {"remember": {
-            "profile": "strong-v1", "mode": "strong_one_pass",
+            "profile": "strong-v1",
             "window_size_chars": 6000, "overlap_chars": 300,
         }},
     }), encoding="utf-8")

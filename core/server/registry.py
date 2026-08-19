@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from core.remember.orchestrator import TemporalMemoryGraphProcessor
-from core.server.config import merge_llm_alignment, merge_llm_extraction, resolve_embedding_model  # noqa: F401
+from core.server.config import merge_llm_alignment, resolve_embedding_model  # noqa: F401
 from core.storage.embedding import EmbeddingClient
 
 if TYPE_CHECKING:
@@ -282,7 +282,6 @@ class GraphRegistry:
             "llm_model": llm.get("model", "gpt-4"),
             "llm_base_url": llm.get("base_url"),
             "alignment_llm": merge_llm_alignment(llm),
-            "extraction_llm": merge_llm_extraction(llm),
             "llm_think_mode": bool(llm.get("think", llm.get("think_mode", False))),
             "embedding_client": self._get_embedding_client(),
             "llm_max_tokens": llm.get("max_tokens"),
@@ -312,13 +311,7 @@ class GraphRegistry:
                 kwargs[key] = pipeline_search[key]
         if "max_alignment_candidates" in pipeline_alignment:
             kwargs["max_alignment_candidates"] = pipeline_alignment["max_alignment_candidates"]
-        for key in (
-            "prompt_episode_max_chars",
-            "entity_rounds",
-            "relation_rounds",
-            "entity_refine_rounds",
-            "relation_refine_rounds",
-        ):
+        for key in ("prompt_episode_max_chars",):
             if key in pipeline_extraction:
                 kwargs[key] = pipeline_extraction[key]
         if pipeline_remember:

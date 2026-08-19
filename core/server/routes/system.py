@@ -13,7 +13,6 @@ from typing import Any, Optional
 
 from flask import Blueprint, current_app, request
 
-from core.llm.client import LLM_PRIORITY_STEP6
 from core.server.llm_utils import call_llm_with_backoff, check_llm_available
 from core.server.routes.helpers import ok, err, _get_processor, _get_system_monitor
 

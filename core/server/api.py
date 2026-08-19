@@ -50,7 +50,6 @@ from core.server.registry import GraphRegistry
 from core.server.sse import sse_response, queue_to_generator
 from core.server import auth as auth_module
 from core import TemporalMemoryGraphProcessor
-from core.llm.client import LLM_PRIORITY_STEP6
 from core.server.llm_utils import check_llm_available, call_llm_with_backoff
 
 # Re-export helpers for backward-compatible imports

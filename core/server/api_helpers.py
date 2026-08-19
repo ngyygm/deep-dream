@@ -161,11 +161,7 @@ def build_processor(config: Dict[str, Any]):
             kwargs[key] = pipeline_search[key]
     if "max_alignment_candidates" in pipeline_alignment:
         kwargs["max_alignment_candidates"] = pipeline_alignment["max_alignment_candidates"]
-    for key in (
-        "extraction_rounds", "entity_extraction_rounds", "relation_extraction_rounds",
-        "entity_post_enhancement", "prompt_episode_max_chars",
-        "compress_multi_round_extraction",
-    ):
+    for key in ("prompt_episode_max_chars",):
         if key in pipeline_extraction:
             kwargs[key] = pipeline_extraction[key]
     if pipeline_remember:

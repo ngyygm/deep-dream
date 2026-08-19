@@ -314,7 +314,7 @@ class TestRememberConcurrencyConfig:
         assert detail["chains"][2]["eta_seconds"] == pytest.approx(400.0)
 
     def test_model_overrides_can_be_boolean_inherit(self):
-        from core.server.config import merge_llm_alignment, merge_llm_extraction
+        from core.server.config import merge_llm_alignment
 
         llm = {
             "api_key": "test",
@@ -323,30 +323,21 @@ class TestRememberConcurrencyConfig:
             "max_tokens": 16000,
             "context_window_tokens": 32000,
             "think": False,
-            "extraction": True,
             "alignment": True,
         }
 
-        extraction = merge_llm_extraction(llm)
         alignment = merge_llm_alignment(llm)
 
-        assert extraction["enabled"] is True
-        assert extraction["model"] == "base-model"
-        assert extraction["base_url"] == "http://example.invalid/v1"
         assert alignment["enabled"] is True
         assert "model" not in alignment
         assert "base_url" not in alignment
 
     def test_main_extra_body_does_not_enable_alignment_override(self):
-        from core.server.config import merge_llm_alignment, merge_llm_extraction
+        from core.server.config import merge_llm_alignment
 
         extra = {"chat_template_kwargs": {"enable_thinking": False}}
         llm = {"extra_body": extra}
         assert merge_llm_alignment(llm) == {}
-        assert merge_llm_extraction(llm) == {}
-
-        llm["extraction"] = True
-        assert merge_llm_extraction(llm)["extra_body"] == extra
 
         llm["alignment"] = {"enabled": True, "extra_body": extra}
         assert merge_llm_alignment(llm)["extra_body"] == extra

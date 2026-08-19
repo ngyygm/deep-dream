@@ -481,7 +481,7 @@ def _gate_processor(tmp_path, gate):
     return TemporalMemoryGraphProcessor(
         storage_path=str(tmp_path / "lib"),
         embedding_client=emb,
-        remember_config={"profile": "strong-v1", "mode": "strong_one_pass",
+        remember_config={"profile": "strong-v1",
                          "window_size_chars": 6000, "overlap_chars": 300},
         family_write_gate=gate,
     )

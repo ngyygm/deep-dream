@@ -1,9 +1,9 @@
-"""Extraction pipeline mixin: entity alignment, contradiction detection, debug snapshots.
+"""Extraction pipeline mixin: entity alignment, debug snapshots.
 
 Shared utilities (_AlignResult, etc.) → extraction_utils.py
 Extraction logic → extraction_pipeline.py
-Sub-mixins → alignment_contradiction.py, alignment_resolution.py,
-             alignment_orphan.py, alignment_cache.py, alignment_relations.py
+Sub-mixins → alignment_resolution.py, alignment_orphan.py,
+             alignment_cache.py, alignment_relations.py
 """
 from __future__ import annotations
 
@@ -16,18 +16,16 @@ from core.debug_log import log as dbg, log_section as dbg_section, _ENABLED as _
 from core.utils import wprint_info, wprint_warn
 from core.llm.client import LLM_PRIORITY_STEP6
 from .helpers import _AlignResult
-from .alignment_contradiction import _ContradictionMixin
 from .alignment_resolution import _ResolutionMixin
 from .alignment_orphan import _OrphanMixin
 from .alignment_cache import _CacheMixin
 from .alignment_relations import _RelationAlignMixin
 
 
-class _PipelineExtractionMixin(_ContradictionMixin, _ResolutionMixin, _OrphanMixin, _CacheMixin, _RelationAlignMixin):
+class _PipelineExtractionMixin(_ResolutionMixin, _OrphanMixin, _CacheMixin, _RelationAlignMixin):
     """Core pipeline extraction mixin — step9/step10 alignment plus sub-concerns.
 
     Composes:
-      - _ContradictionMixin: contradiction detection + summary evolution
       - _ResolutionMixin: same-name conflicts, missing-name resolution, name→ID
       - _OrphanMixin: orphan entity cleanup, fallback cooccurrence, recovery
       - _CacheMixin: step 1 cache update, debug directory
@@ -45,46 +43,27 @@ class _PipelineExtractionMixin(_ContradictionMixin, _ResolutionMixin, _OrphanMix
                       window_timings_ref: Optional[Dict[str, float]] = None,
                       control_check_fn=None,
                       early_entity_done_fn=None) -> Tuple[List[Dict], List[Dict]]:
-        """Dispatch extraction to V2 or V3 pipeline. No storage writes; safe for thread pools.
+        """单遍结构化抽取入口。No storage writes; safe for thread pools.
 
         Returns:
             (extracted_entities, extracted_relations) — dict lists, no family_id.
         """
-        mode = getattr(self, "remember_mode", "dual_model")
-        if mode == "strong_one_pass":
-            # strong-v1：单遍结构化抽取（1 次 LLM 调用 + 规则后处理）
-            from .strong_steps import strong_extract_only
-            return strong_extract_only(
-                self, new_episode, input_text, document_name,
-                verbose=verbose, verbose_steps=verbose_steps,
-                event_time=event_time, progress_callback=progress_callback,
-                progress_range=progress_range,
-                window_index=window_index, total_windows=total_windows,
-                window_timings_ref=window_timings_ref,
-                control_check_fn=control_check_fn,
-                early_entity_done_fn=early_entity_done_fn,
-            )
-        if mode in ("dual_model", "standard"):
-            return super()._extract_only(
-                new_episode, input_text, document_name,
-                verbose=verbose, verbose_steps=verbose_steps,
-                event_time=event_time, progress_callback=progress_callback,
-                progress_range=progress_range,
-                window_index=window_index, total_windows=total_windows,
-                window_timings_ref=window_timings_ref,
-                control_check_fn=control_check_fn,
-                early_entity_done_fn=early_entity_done_fn,
-            )
-        raise ValueError(f"Unsupported extraction mode: {mode!r}")
+        # strong-v1：单遍结构化抽取（1 次 LLM 调用 + 规则后处理）
+        from .strong_steps import strong_extract_only
+        return strong_extract_only(
+            self, new_episode, input_text, document_name,
+            verbose=verbose, verbose_steps=verbose_steps,
+            event_time=event_time, progress_callback=progress_callback,
+            progress_range=progress_range,
+            window_index=window_index, total_windows=total_windows,
+            window_timings_ref=window_timings_ref,
+            control_check_fn=control_check_fn,
+            early_entity_done_fn=early_entity_done_fn,
+        )
 
     # =========================================================================
     # 步骤9：实体对齐（写存储，必须串行跨窗口）
     # =========================================================================
-
-    def _post_align_entity_maintenance(self, unique_entities, verbose=False):
-        """Contradiction detection & summary evolution — disabled in auto pipeline (too expensive).
-        Manual API endpoints (/contradictions, /resolve-contradiction) still work."""
-        return
 
     def _record_entity_mentions(self, unique_entities, entity_name_to_id,
                                  new_episode, verbose=False):
@@ -519,9 +498,6 @@ class _PipelineExtractionMixin(_ContradictionMixin, _ResolutionMixin, _OrphanMix
                 dbg(f"  跳过: {_sr}")
 
         self.llm_client._current_distill_step = None
-
-        # Phase B+: 自动矛盾检测 + Phase B++: 自动摘要进化
-        self._post_align_entity_maintenance(unique_entities, verbose=verbose)
 
         # Episode→Entity MENTIONS + corroboration
         if progress_callback:
