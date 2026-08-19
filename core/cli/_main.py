@@ -56,7 +56,6 @@ _LAZY_COMMANDS: dict[str, str] = {
     # management
     "graph":      "core.cli.cmd_graph:graph",
     "vault":      "core.cli.cmd_vault:vault",
-    "library":    "core.cli.cmd_library:library",
     # server
     "server":     "core.cli.cmd_server:server",
     "task":       "core.cli.cmd_task:task",

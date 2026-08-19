@@ -10,7 +10,6 @@ import json
 import logging
 import gc
 import re
-import shutil
 import threading
 import time
 from datetime import datetime, timezone
@@ -46,7 +45,6 @@ class GraphRegistry:
         system_monitor: Optional["SystemMonitor"] = None,
     ):
         self._base_path = Path(base_storage_path)
-        self._graphs_path = self._base_path / "graphs"
         self._registry_path = self._base_path / "library.json"
         self._legacy_registry_path = self._base_path / "registry.json"
         self._config = config
@@ -55,8 +53,8 @@ class GraphRegistry:
         self._shared_llm_semaphore = None
         self._judge_service = None
         self._family_write_gate = None
-        self._processors: Dict[str, TemporalMemoryGraphProcessor] = {}
-        self._queues: Dict[str, object] = {}
+        self._processor: Optional[TemporalMemoryGraphProcessor] = None
+        self._queue: Optional[object] = None
         self._lock = threading.RLock()
 
         self._base_path.mkdir(parents=True, exist_ok=True)
@@ -121,9 +119,6 @@ class GraphRegistry:
         registry["library"] = existing
         self._write_registry(registry)
         return dict(existing)
-
-    def _remove_graph_metadata(self, graph_id: str) -> None:
-        self.set_graph_metadata(LIBRARY_ID, removed_legacy_graph_id=graph_id)
 
     # ------------------------------------------------------------------
     # Shared EmbeddingClient
@@ -224,13 +219,13 @@ class GraphRegistry:
     def get_processor(self, graph_id: str) -> TemporalMemoryGraphProcessor:
         graph_id = self.normalize_graph_id(graph_id)
         with self._lock:
-            if graph_id not in self._processors:
+            if self._processor is None:
                 graph_dir = self.graph_dir(graph_id)
                 graph_dir.mkdir(parents=True, exist_ok=True)
                 self.set_graph_metadata(graph_id)
-                self._processors[graph_id] = self._build_processor(str(graph_dir), graph_id)
-                self._prewarm_graph_indexes(graph_id, self._processors[graph_id])
-            return self._processors[graph_id]
+                self._processor = self._build_processor(str(graph_dir), graph_id)
+                self._prewarm_graph_indexes(graph_id, self._processor)
+            return self._processor
 
     def get_processor_with_retry(self, graph_id: str, max_retries: int = 2) -> TemporalMemoryGraphProcessor:
         for attempt in range(max_retries + 1):
@@ -339,8 +334,8 @@ class GraphRegistry:
     def get_queue(self, graph_id: str):
         graph_id = self.normalize_graph_id(graph_id)
         with self._lock:
-            if graph_id in self._queues:
-                return self._queues[graph_id]
+            if self._queue is not None:
+                return self._queue
 
         from core.server.task_queue import RememberTaskQueue
 
@@ -359,11 +354,11 @@ class GraphRegistry:
         )
 
         with self._lock:
-            if graph_id not in self._queues:
-                self._queues[graph_id] = queue
+            if self._queue is None:
+                self._queue = queue
                 if self._system_monitor is not None:
                     self._system_monitor.attach_graph(graph_id, processor, queue)
-            return self._queues[graph_id]
+            return self._queue
 
     # ------------------------------------------------------------------
     # Graph list/info
@@ -376,13 +371,13 @@ class GraphRegistry:
         graph_id = self.normalize_graph_id(graph_id)
         graph_dir = self.graph_dir(graph_id)
         metadata = self.get_graph_metadata(graph_id)
-        if not graph_dir.is_dir() and graph_id not in self._processors:
+        if not graph_dir.is_dir() and self._processor is None:
             return None
         metadata.setdefault("graph_id", graph_id)
         metadata.setdefault("path", str(graph_dir))
 
         stats = {}
-        processor = self._processors.get(graph_id)
+        processor = self._processor
         try:
             if processor and hasattr(processor, "storage"):
                 stats = processor.storage.get_stats()
