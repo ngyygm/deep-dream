@@ -205,23 +205,6 @@ def capture_log_context() -> tuple:
     )
 
 
-def run_with_log_context(fn, ctx: tuple):
-    """在子线程中恢复日志上下文后执行 fn。配合 capture_log_context() 使用。
-
-    用法: pool.submit(run_with_log_context, my_func, capture_log_context())
-    """
-    label, role = ctx
-    if label is not None:
-        _window_local.label = label
-    if role is not None:
-        _window_local.pipeline_role = role
-    try:
-        return fn()
-    finally:
-        _window_local.label = None
-        _window_local.pipeline_role = None
-
-
 def get_window_label() -> str:
     """获取当前线程的窗口标签，无标签时返回空字符串。"""
     return getattr(_window_local, 'label', None) or ""
@@ -270,15 +253,6 @@ if not _pipeline_logger.handlers:
     _pipeline_logger.addHandler(_handler)
     _pipeline_logger.setLevel(logging.DEBUG)
     _pipeline_logger.propagate = False  # Prevent duplicate output via root logger
-
-
-def wprint(msg: str = "") -> None:
-    """并行友好：固定列「时间 窗号 角色 | 正文」，经队列串行写出避免行级交错。"""
-    label = get_window_label() or "----"
-    role = _abbr_role(get_pipeline_role())
-    ts = datetime.now().strftime("%H:%M:%S")
-    line = f"{ts} {label:>10} {role:4} | {msg}"
-    _emit_log_line(line)
 
 
 # ---------------------------------------------------------------------------

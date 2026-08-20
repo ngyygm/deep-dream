@@ -1,12 +1,11 @@
 """
 核心数据结构定义
 
-旧模型（Entity, Relation, Episode）保留用于向后兼容。
-新模型（Concept）是统一的概念原语；Entity/Relation/Episode DTO 仅作为流水线适配对象。
+Entity / Relation / Episode / ContentPatch DTO，作为流水线适配对象。
 """
 from datetime import datetime
-from typing import List, Optional
-from dataclasses import dataclass, field
+from typing import Optional
+from dataclasses import dataclass
 
 
 @dataclass(slots=True)
@@ -99,60 +98,4 @@ class ContentPatch:
     diff_summary: str  # 变更摘要
     source_document: str  # 触发来源
     event_time: datetime
-
-
-# ---------------------------------------------------------------------------
-# 新统一模型 — Concept（概念）
-# ---------------------------------------------------------------------------
-
-# 概念角色常量
-ROLE_ENTITY = "entity"
-ROLE_RELATION = "relation"
-ROLE_OBSERVATION = "observation"
-
-
-@dataclass(slots=True)
-class ConceptVersion:
-    """概念的单个版本快照"""
-    absolute_id: str  # 版本唯一标识
-    content: str  # 该版本的内容快照
-    source_concept_id: str  # 产生该版本的源 observation 概念 ID
-    processed_time: datetime  # 该版本的产生时间
-    version_seq: int = 1  # 版本序号
-    valid_at: Optional[datetime] = None  # 有效期起始
-
-
-@dataclass(slots=True)
-class Concept:
-    """统一概念模型 — 系统的唯一原语
-
-    万物皆概念。Entity、Relation、Observation 只是角色的不同，
-    不是类型系统的区分。所有概念遵循相同的存储、版本、检索、遍历规则。
-
-    当前 v1 存储中，Document、Episode、Entity、Relation 都会落到
-    concept family/version/edge 图谱模型。
-    """
-    family_id: str  # 逻辑身份，跨版本不变
-    role: str  # 角色：entity | relation | observation
-    name: Optional[str] = None  # 显示名称（entity 用）
-    content: Optional[str] = None  # 当前版本的内容
-    embedding: Optional[bytes] = None  # 语义向量
-    confidence: Optional[float] = None  # 置信度 (0.0-1.0)
-    attributes: Optional[str] = None  # JSON 字符串，结构化属性
-
-    # 关系型概念专用：指向两端的概念
-    connects: Optional[List[str]] = None  # [concept_family_id, ...]
-
-    # 版本信息
-    versions: Optional[List[ConceptVersion]] = None
-
-    # 时间信息（当前版本）
-    created_at: Optional[datetime] = None  # 概念首次创建时间
-    updated_at: Optional[datetime] = None  # 最近更新时间
-
-    # 溯源：提及过此概念的源文本列表（observation concept family_ids）
-    sources: Optional[List[str]] = None
-
-    # 社区信息
-    community_id: Optional[str] = None
 
