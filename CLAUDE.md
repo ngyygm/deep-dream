@@ -27,6 +27,10 @@ Document-first concept graph knowledge server.
 - Web UI: `core/server/static/`
 - 端口: `16200`
 
+## 范围
+
+`research/` 是实验测评（benchmark harness、数据、运行记录）与论文工作区，不属于 Deep-Dream 系统本体；改系统时不要动它，跑评测时进入它（用法见 `research/README.md`）。
+
 ## Skill
 
 Deep-Dream 交互使用 `/deep-dream` skill，定义在 `.claude/skills/deep-dream/SKILL.md`。

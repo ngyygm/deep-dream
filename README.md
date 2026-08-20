@@ -18,14 +18,12 @@
 
 ---
 
-![Deep-Dream 项目总览](docs/picture/deep-dream-intro.png)
-
 ## 核心特性
 
 - **文档优先** — Markdown / 纯文本文件始终是 Source of Truth，概念图谱是语义叠加层
 - **Remember 管线** — 多步提取：分块 → 实体提取 → 关系发现 → 对齐合并 → 去重写入
 - **混合搜索** — BM25 全文检索 + 向量嵌入 + 图谱 BFS 扩展，RRF 融合排序
-- **CLI 控制台** — Click 8+ / Rich 13+，19 个命令，人类可读 Rich 输出 + `--json` 机器模式
+- **CLI 控制台** — Click 8+ / Rich 13+，17 个命令，人类可读 Rich 输出 + `--json` 机器模式
 - **Web UI** — Dashboard、记忆上传、交互式图谱、语义搜索、社区发现、设置管理
 - **概念版本化** — 每个概念维护 `family_id`（稳定身份）和版本链（随 Episode 演化）
 - **Vault 索引** — 支持 Obsidian / Markdown 库的 Wikilink 提取和标题解析
@@ -37,18 +35,14 @@
 
 `remember` 流程将原始文本转化为结构化的、有证据支撑的记忆：分块输入 → 提取实体与关系 → 质量门控 → 与已有概念对齐 → 写入本地图谱，全程保留来源证据。
 
-![Remember Pipeline](docs/picture/remember-pipeline.png)
+**管线步骤（strong-v1 单遍抽取）：**
 
-**管线步骤：**
-
-1. **文档分块** — Markdown 标题感知的智能分块，支持重叠窗口
+1. **文档分块** — Markdown 标题感知的智能分块，支持重叠窗口（strong-v1 默认 6000/300 大窗口）
 2. **Episode 生成** — 每个分块作为一个 Episode（记忆事件）
-3. **实体提取** — 多轮提取：锚点 → 命名实体 → 具象 → 抽象 → 覆盖度补充
-4. **实体内容写入** — 为每个实体生成结构化 Markdown 内容（支持批处理）
-5. **关系发现** — 多轮：提示 → 候选 → 扩展 → 写入，保留证据文本和行号
-6. **概念对齐** — 新概念与已有概念匹配合并（保守 / 标准 策略）
-7. **跨窗口去重** — 同一文档内跨 Episode 的概念去重
-8. **写入存储** — 所有数据写入 SQLite，嵌入同步更新
+3. **单遍抽取** — 每窗口一次 LLM 调用同时产出实体、实体内容与关系，保留证据文本和行号
+4. **概念对齐** — 窗口内批量对齐 + 与已有概念匹配合并（保守策略）
+5. **跨窗口去重合并** — 同一文档内跨 Episode 的同名概念合并，内容走统一合并器
+6. **写入存储** — FamilyWriteGate 家族级写入门控，写入 SQLite，嵌入同步更新
 
 ## 快速开始
 
@@ -109,9 +103,7 @@ start.bat
 
 CLI 是面向人类和 Agent 的控制面板：任务优先的命令结构、安全默认值、Rich 格式化输出，以及 `--json` 自动化模式。
 
-![CLI Design](docs/picture/cli-design.png)
-
-**19 个命令：**
+**17 个命令：**
 
 | 命令 | 说明 |
 |------|------|
@@ -127,40 +119,17 @@ CLI 是面向人类和 Agent 的控制面板：任务优先的命令结构、安
 | `deep-dream docs` | 文档管理 |
 | `deep-dream graph` | 图谱管理 |
 | `deep-dream vault` | Obsidian / Markdown 库索引 |
-| `deep-dream library` | 库级管理与迁移 |
 | `deep-dream server` | 启动 / 管理 API 服务器 |
 | `deep-dream task` | 任务队列管理 |
 | `deep-dream db` | 数据库维护 |
 | `deep-dream sql` | 直接 SQL 查询 |
 | `deep-dream completion` | Shell 补全设置 |
-| `deep-dream benchmark` | LongMemEval-S / LoCoMo 评测 |
 
-**全局选项：** `--json` · `--no-color` · `-q` / `-v` · `--dry-run` · `--config`
+**全局选项：** `--json` · `--no-color` · `-q` · `--config`
 
-### 长期记忆基准
+### 评测与论文工作
 
-```bash
-pip install -e '.[benchmark]'
-deep-dream benchmark prepare --dataset locomo
-deep-dream benchmark ingest --dataset locomo --run-dir .benchmark_runs/locomo-conv26 \
-  --config service_config.local.json --scope-id conv-26 --session-limit 6
-deep-dream benchmark evaluate .benchmark_runs/locomo-conv26 \
-  --config service_config.local.json --track baseline --track skill-agent \
-  --eligible-evidence-only --max-agent-steps 8
-# 查询结果会写入 retrieval.<track>.jsonl；修改回答规范后可只重跑回答
-deep-dream benchmark answer .benchmark_runs/locomo-conv26 \
-  --config service_config.local.json --source-track skill-agent \
-  --result-tag answer-v2
-deep-dream benchmark score .benchmark_runs/locomo-conv26
-deep-dream benchmark report .benchmark_runs/locomo-conv26
-```
-
-`baseline` 固定执行一次共享 Deep-Dream 检索；`skill-agent` 加载包内统一运行时策略，自主调用原始文档、episode、concept/provenance、图邻居与关系证据工具，最后只提交证据。两条轨道使用同一个独立回答器，完整工具参数、观察、证据 ID、token、延迟和停止原因都会保存，但不保存隐藏思维链。LoCoMo 每段 conversation 使用独立 library；首阶段只运行 LoCoMo，LongMemEval 暂缓。可用 `--remember-profile quality-v1` 建立源语言、低噪声 remember 对照库，必须使用新的 run 目录。
-
-`run` 仍是 `ingest + evaluate` 的快捷方式；`diagnose` 生成失败归因与隔离审计，`compare RUN_A RUN_B` 对比相同轨道的 remember A/B。schema v3 分别写入 `results.baseline.jsonl`、`results.skill-agent.jsonl`、每轨 summary/report 和统一 `comparison.md`。
-
-使用默认开启推理的 vLLM/Qwen 服务时，可在 `llm.extra_body` 中设置 `{"chat_template_kwargs": {"enable_thinking": false}}`；Deep-Dream 会将其透传到 OpenAI-compatible 请求，避免 Agent 的 JSON 动作 token 被推理内容占用。
-评测时还可通过 `evaluate --agent-thinking` / `--no-agent-thinking` 只切换查询 Agent 的思考模式；独立回答器始终关闭思考并使用规范化输出，因此两组查询轨迹可以公平对比。
+实验测评 harness（LoCoMo / LongMemEval / MEME 等）与论文工程位于 `research/`，与系统本体无关，用法见 [research/README.md](research/README.md)。
 
 ## Web UI
 
@@ -282,7 +251,7 @@ library/                     # 默认存储路径
   },
   "chunking": { "window_size": 1000, "overlap": 200 },
   "pipeline": {
-    "remember": { "mode": "multi_step", "alignment_policy": "conservative" }
+    "remember": { "profile": "strong-v1", "alignment_policy": "conservative" }
   }
 }
 ```

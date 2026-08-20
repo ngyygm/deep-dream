@@ -18,14 +18,12 @@ English · [简体中文](README.md)
 
 ---
 
-![Deep-Dream Overview](docs/picture/deep-dream-intro.png)
-
 ## Features
 
 - **Document-first** — Markdown / plain text files are always the source of truth; the concept graph is a semantic overlay
 - **Remember Pipeline** — Multi-step extraction: chunking → entity extraction → relation discovery → alignment merging → dedup + write
 - **Hybrid Search** — BM25 full-text + vector embeddings + graph BFS expansion, fused via Reciprocal Rank Fusion (RRF)
-- **CLI Console** — Click 8+ / Rich 13+, 19 commands, human-readable Rich output + `--json` machine mode
+- **CLI Console** — Click 8+ / Rich 13+, 17 commands, human-readable Rich output + `--json` machine mode
 - **Web UI** — Dashboard, memory upload, interactive graph, semantic search, community detection, settings
 - **Concept Versioning** — Each concept maintains a `family_id` (stable identity) and version chain (evolution over episodes)
 - **Vault Indexing** — Obsidian / Markdown vault support with Wikilink extraction and heading parsing
@@ -37,18 +35,14 @@ English · [简体中文](README.md)
 
 The `remember` flow converts raw text into structured, evidence-backed memory: chunk input → extract entities and relations → quality gates → align with existing concepts → write to local graph, with source evidence preserved throughout.
 
-![Remember Pipeline](docs/picture/remember-pipeline.png)
+**Pipeline steps (strong-v1 single-pass extraction):**
 
-**Pipeline steps:**
-
-1. **Document Chunking** — Markdown heading-aware smart chunking with overlap windows
+1. **Document Chunking** — Markdown heading-aware smart chunking with overlap windows (strong-v1 defaults to large 6000/300 windows)
 2. **Episode Generation** — Each chunk becomes an Episode (memory event)
-3. **Entity Extraction** — Multi-round: anchor → named entity → concrete → abstract → coverage gap
-4. **Entity Content Writing** — Structured Markdown content per entity (batch supported)
-5. **Relation Discovery** — Multi-round: hint → candidate → expand → write, preserving evidence text and line numbers
-6. **Concept Alignment** — Match and merge new concepts with existing ones (conservative / standard policy)
-7. **Cross-window Dedup** — Deduplicate concepts across episodes within the same document
-8. **Write to Storage** — All data written to SQLite with embeddings updated
+3. **Single-pass Extraction** — One LLM call per window produces entities, entity content, and relations together, preserving evidence text and line numbers
+4. **Concept Alignment** — In-window batch alignment + matching against existing concepts (conservative policy)
+5. **Cross-window Merge** — Same-name concepts across episodes in a document are merged via the unified content merger
+6. **Write to Storage** — FamilyWriteGate family-level write gating, written to SQLite with embeddings updated
 
 ## Quick Start
 
@@ -109,9 +103,7 @@ The server runs at `http://localhost:16200` by default.
 
 The CLI is the control panel for both humans and agents: task-first command structure, safe defaults, Rich-formatted output, and `--json` automation mode.
 
-![CLI Design](docs/picture/cli-design.png)
-
-**19 commands:**
+**17 commands:**
 
 | Command | Description |
 |---------|-------------|
@@ -127,40 +119,17 @@ The CLI is the control panel for both humans and agents: task-first command stru
 | `deep-dream docs` | Document management |
 | `deep-dream graph` | Graph management |
 | `deep-dream vault` | Obsidian / Markdown vault indexing |
-| `deep-dream library` | Library management & migration |
 | `deep-dream server` | Start / manage the API server |
 | `deep-dream task` | Task queue management |
 | `deep-dream db` | Database maintenance |
 | `deep-dream sql` | Direct SQL queries |
 | `deep-dream completion` | Shell completion setup |
-| `deep-dream benchmark` | LongMemEval-S / LoCoMo evaluation |
 
-**Global options:** `--json` · `--no-color` · `-q` / `-v` · `--dry-run` · `--config`
+**Global options:** `--json` · `--no-color` · `-q` · `--config`
 
-### Long-term memory benchmarks
+### Evaluation & paper work
 
-```bash
-pip install -e '.[benchmark]'
-deep-dream benchmark prepare --dataset locomo
-deep-dream benchmark ingest --dataset locomo --run-dir .benchmark_runs/locomo-conv26 \
-  --config service_config.local.json --scope-id conv-26 --session-limit 6
-deep-dream benchmark evaluate .benchmark_runs/locomo-conv26 \
-  --config service_config.local.json --track baseline --track skill-agent \
-  --eligible-evidence-only --max-agent-steps 8
-# Retrieval is cached in retrieval.<track>.jsonl; replay only answers after prompt changes.
-deep-dream benchmark answer .benchmark_runs/locomo-conv26 \
-  --config service_config.local.json --source-track skill-agent \
-  --result-tag answer-v2
-deep-dream benchmark score .benchmark_runs/locomo-conv26
-deep-dream benchmark report .benchmark_runs/locomo-conv26
-```
-
-`baseline` performs one fixed pass through the shared Deep-Dream retriever. `skill-agent` loads the packaged runtime policy, navigates raw documents, episodes, concept provenance, graph neighbors, and relation evidence, and submits evidence only. Both tracks use the same independent answerer. Tool arguments, observations, evidence IDs, tokens, latency, and stop reasons are persisted; hidden chain-of-thought is not. LoCoMo uses one isolated library per conversation. The first evaluation phase targets LoCoMo only; LongMemEval is deferred. Use a fresh run directory with `--remember-profile quality-v1` for the source-language/low-noise remember A/B.
-
-`run` remains an ingest + evaluate shortcut. `diagnose` writes failure attribution and isolation audits; `compare RUN_A RUN_B` compares matching tracks in remember A/B runs. Schema v3 writes `results.baseline.jsonl`, `results.skill-agent.jsonl`, per-track summaries/reports, and `comparison.md`.
-
-For vLLM/Qwen services that enable reasoning by default, set `llm.extra_body` to `{"chat_template_kwargs": {"enable_thinking": false}}`. Deep-Dream forwards it to OpenAI-compatible requests so reasoning does not consume the Agent's JSON-action token budget.
-For evaluation, `evaluate --agent-thinking` / `--no-agent-thinking` toggles reasoning only for the retrieval Agent. The independent normalized answerer always has reasoning disabled, keeping the two retrieval trajectories comparable.
+The evaluation harness (LoCoMo / LongMemEval / MEME, etc.) and the paper engineering live in `research/` and are not part of the system itself. See [research/README.md](research/README.md) for usage.
 
 ## Web UI
 
@@ -282,7 +251,7 @@ Configuration lives in `service_config.json`. Key options:
   },
   "chunking": { "window_size": 1000, "overlap": 200 },
   "pipeline": {
-    "remember": { "mode": "multi_step", "alignment_policy": "conservative" }
+    "remember": { "profile": "strong-v1", "alignment_policy": "conservative" }
   }
 }
 ```
