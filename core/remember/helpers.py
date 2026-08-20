@@ -11,7 +11,7 @@ from functools import lru_cache
 from typing import Any, Dict, List, Optional, Tuple
 
 from core.models import Entity
-from core.utils import normalize_entity_pair
+from core.utils import normalize_entity_pair, entity_match_key
 
 
 # ---------------------------------------------------------------------------
@@ -129,10 +129,13 @@ def _is_valid_entity_name(name: str) -> bool:
 # Entity core name extraction
 # ---------------------------------------------------------------------------
 
-@lru_cache(maxsize=2048)
 def _core_entity_name(name: str) -> str:
-    """提取实体名称的核心部分（去掉所有括号），用于去重比较。"""
-    return _PAREN_RE.sub('', name).strip()
+    """提取实体名称的核心匹配键（括号注记/称号后缀剥离 + casefold）。
+
+    P2 起委托 core.utils.entity_match_key——全库唯一名称同一性语义
+    （entity_match_key 自带 lru_cache，这里不再重复缓存）。
+    """
+    return entity_match_key(name)
 
 
 # ---------------------------------------------------------------------------

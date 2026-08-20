@@ -164,25 +164,19 @@ class GraphRegistry:
             if not remember.get("family_write_gate_enabled", True):
                 return None
             import sqlite3
-            from core.judge import FamilyWriteGate, norm_name
+            from core.judge import FamilyWriteGate
+            from core.judge.models import resolve_family_id_from_conn
             db_path = str(self._base_path / "library.db")
 
-            def _resolve(norm: str):
+            def _resolve(name: str):
                 try:
                     conn = sqlite3.connect(db_path, timeout=5)
                     try:
-                        rows = conn.execute(
-                            "SELECT entity_family_id, canonical_name FROM entity_families "
-                            "WHERE canonical_name = ? COLLATE NOCASE "
-                            "ORDER BY updated_at DESC LIMIT 4", (norm,)).fetchall()
+                        return resolve_family_id_from_conn(conn, name)
                     finally:
                         conn.close()
-                    for fid, name in rows:
-                        if norm_name(name) == norm:
-                            return fid
                 except Exception:
                     return None
-                return None
 
             self._family_write_gate = FamilyWriteGate(resolve_from_storage=_resolve)
         return self._family_write_gate

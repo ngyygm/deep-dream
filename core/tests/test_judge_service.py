@@ -1,49 +1,12 @@
-"""core.judge 单测：models keys / FamilyWriteGate / gate 接线。
+"""core.judge 单测：FamilyWriteGate / gate 接线。
 
-全部 mock LLM，不发真实请求。
+全部 mock LLM，不发真实请求。（P1 删除 memo 缓存后 key builder
+无生产消费方，已随之移除——key 测试一并删除。）
 """
 import threading
 import time
 
-from core.judge import (
-    FamilyWriteGate,
-    guard_key,
-    resolve_entity_key,
-    resolve_relation_key,
-)
-
-
-# ----------------------------------------------------------------------
-# keys
-# ----------------------------------------------------------------------
-
-class TestKeys:
-    def test_guard_key_symmetric(self):
-        a = guard_key("Noah", "描述A", "诺亚", "描述B")
-        b = guard_key("诺亚", "描述B", "Noah", "描述A")
-        assert a == b
-
-    def test_guard_key_name_match_type_differs(self):
-        assert guard_key("a", "c1", "b", "c2", "exact") != guard_key("a", "c1", "b", "c2", "none")
-
-    def test_guard_key_content_change_differs(self):
-        assert guard_key("a", "c1", "b", "c2") != guard_key("a", "c1-changed", "b", "c2")
-
-    def test_guard_key_norm_name(self):
-        # 大小写/空白归一应命中同一 key（A/B 对称拼装下双侧归一）
-        k1 = guard_key("Noah", "c", "Sakura", "d")
-        k2 = guard_key("noah", "c", "sakura", "d")
-        assert k1 == k2
-
-    def test_resolve_entity_key_candidates_order_insensitive(self):
-        ent = {"name": "X", "content": "cx"}
-        c1 = {"family_id": "f1", "name": "A", "content": "ca"}
-        c2 = {"family_id": "f2", "name": "B", "content": "cb"}
-        assert resolve_entity_key(ent, [c1, c2]) == resolve_entity_key(ent, [c2, c1])
-
-    def test_resolve_relation_key_pair_symmetric(self):
-        assert resolve_relation_key("Alice", "Bob", ["r"], []) == \
-               resolve_relation_key("Bob", "Alice", ["r"], [])
+from core.judge import FamilyWriteGate
 
 
 # ----------------------------------------------------------------------
@@ -62,7 +25,7 @@ class TestFamilyWriteGate:
 
     def test_storage_backed_resolve(self):
         store = {"noah": "fid_db"}
-        gate = FamilyWriteGate(resolve_from_storage=lambda n: store.get(n))
+        gate = FamilyWriteGate(resolve_from_storage=lambda n: store.get(n.casefold()))
         assert gate.resolve_name("Noah") == "fid_db"
 
     def test_concurrent_write_txn_no_duplicate_family(self):
@@ -102,24 +65,17 @@ class TestFamilyWriteGate:
 def _make_db_gate(db_path):
     """与 registry._get_family_write_gate 相同的短只读连接 resolver。"""
     import sqlite3
-    from core.judge import norm_name
+    from core.judge.models import resolve_family_id_from_conn
 
-    def _resolve(norm):
+    def _resolve(name):
         try:
             conn = sqlite3.connect(db_path, timeout=5)
             try:
-                rows = conn.execute(
-                    "SELECT entity_family_id, canonical_name FROM entity_families "
-                    "WHERE canonical_name = ? COLLATE NOCASE "
-                    "ORDER BY updated_at DESC LIMIT 4", (norm,)).fetchall()
+                return resolve_family_id_from_conn(conn, name)
             finally:
                 conn.close()
-            for fid, name in rows:
-                if norm_name(name) == norm:
-                    return fid
         except Exception:
             return None
-        return None
 
     return FamilyWriteGate(resolve_from_storage=_resolve)
 
@@ -210,3 +166,60 @@ class TestGateWiring:
         v = ep._gate_create_entity("Alice", "B 的内容", "ep2", "b.md")
         assert v.family_id == pending.family_id, "pending fid 必须收敛到同一 family"
         assert getattr(v, "episode_id", "") == "ep2"
+
+    def test_gate_converges_title_suffix_race(self, tmp_path):
+        """不变式 (d)：名称归一统一后的并发 ingest 检查。
+
+        A 以全名 "张三教授" 建 family（落盘 + register）；B 的候选检索
+        落空（竞态窗口），以 "张三" 走 create_new。统一前 gate 的
+        norm_name 不剥称号 → 双 family；统一后 write 临界区重验收敛。
+        直驱 _gate_create_entity——正是竞态兜底发生的缝隙。
+        """
+        import sqlite3
+        db = str(tmp_path / "lib" / "library.db")
+        gate = _make_db_gate(db)
+        proc = _gate_processor(tmp_path, gate)
+        ep = proc.entity_processor
+
+        a = ep._gate_create_entity("张三教授", "A 的内容", "ep1", "a.md")
+        proc.storage.save_entity(a)
+
+        # B：候选未命中（judged 为空 = 竞态窗口），名称是称号变体
+        b = ep._gate_create_entity("张三", "B 的内容", "ep2", "b.md")
+        assert b.family_id == a.family_id, "称号变体必须收敛到同一 family"
+
+        conn = sqlite3.connect(db)
+        rows = conn.execute(
+            "SELECT entity_family_id FROM entity_families").fetchall()
+        assert len(rows) == 1, f"称号变体竞态产生重复 family: {rows}"
+        conn.close()
+
+    def test_gate_converges_case_variant_race(self, tmp_path):
+        """不变式 (d)：'IBM' vs 'ibm' 大小写变体在 gate 处收敛。"""
+        gate = _make_db_gate(str(tmp_path / "lib" / "library.db"))
+        proc = _gate_processor(tmp_path, gate)
+        ep = proc.entity_processor
+
+        a = ep._gate_create_entity("IBM", "A 的内容", "ep1", "a.md")
+        proc.storage.save_entity(a)
+        b = ep._gate_create_entity("ibm", "B 的内容", "ep2", "b.md")
+        assert b.family_id == a.family_id
+
+    def test_gate_storage_leg_recalls_full_name_rows(self, tmp_path):
+        """冷启动（内存缓存空）后，存储腿前缀召回全名存储行。
+
+        DB 存 canonical_name="张三教授"，新 worker 以 "张三" 进入
+        write_txn——此前 SQL 精确等值匹配漏全名行，gate 兜底失效。
+        """
+        gate = _make_db_gate(str(tmp_path / "lib" / "library.db"))
+        proc = _gate_processor(tmp_path, gate)
+        ep = proc.entity_processor
+
+        seeded = ep._build_new_entity("张三教授", "人物。", "ep1", "a.md")
+        proc.storage.save_entity(seeded)
+
+        # 全新 gate：内存缓存为空，逼迫走存储腿
+        fresh_gate = _make_db_gate(str(tmp_path / "lib" / "library.db"))
+        ep2 = _gate_processor(tmp_path, fresh_gate).entity_processor
+        v = ep2._gate_create_entity("张三", "新内容", "ep2", "b.md")
+        assert v.family_id == seeded.family_id, "存储腿必须召回全名行并收敛"

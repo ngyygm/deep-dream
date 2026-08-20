@@ -38,8 +38,9 @@ def get_entity_family(conn, entity_family_id: str) -> Optional[dict]:
 
 
 def find_entity_family_by_name(conn, canonical_name: str) -> Optional[dict]:
+    # COLLATE NOCASE：'IBM' 与 'ibm' 同名（统一名称语义的 DB 侧配套）
     row = conn.execute(
-        "SELECT * FROM entity_families WHERE canonical_name = ?",
+        "SELECT * FROM entity_families WHERE canonical_name = ? COLLATE NOCASE",
         (canonical_name,),
     ).fetchone()
     if row is None:

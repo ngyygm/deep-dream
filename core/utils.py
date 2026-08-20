@@ -14,6 +14,7 @@ import re
 import sys
 import threading
 from datetime import datetime
+from functools import lru_cache
 
 # prompt 中用作分隔符的所有 XML 标签名（不含尖括号）
 _SEPARATOR_TAG_NAMES = frozenset({
@@ -101,6 +102,62 @@ def normalize_entity_pair(entity1: str, entity2: str) -> tuple:
     """
     a, b = (entity1 or "").strip(), (entity2 or "").strip()
     return (a, b) if a <= b else (b, a)
+
+
+# ---------------------------------------------------------------------------
+# 实体名身份归一化（全库唯一判定语义，P2 统一）
+#
+# 历史上存在 4 处语义不一致的实现（窗口去重 / 候选匹配 / FamilyWriteGate /
+# 关系端点解析各判各的），导致 '张三教授'vs'张三'、'IBM'vs'ibm' 在不同层
+# 得到不同的同一性结论。现在全部收敛到 entity_match_key。
+# ---------------------------------------------------------------------------
+
+# 括号注记（全角/半角）：LLM 常在名称尾部加场景注记，如 "曹操（魏王）"
+_PAREN_ANNOTATION_RE = re.compile(r'[（(][^）)]+[)）]')
+
+# 中文称号后缀：仅剥尾部，"张三教授" → "张三"
+_TITLE_SUFFIXES_RE = re.compile(
+    r'(?:教授|博士|先生|女士|同学|老师|工程师|经理|总监|院长|所长|主任|校长|站长|馆长|主编|首席|总裁'
+    r'|部长|省长|市长|县长|区长|镇长|村长|将军|上校|中校|少校|大校|司令|参谋|政委|舰长|机长)$'
+)
+
+_MATCH_WS_RE = re.compile(r"\s+")
+
+
+@lru_cache(maxsize=8192)
+def entity_match_key(name: str) -> str:
+    """实体身份匹配键：剥离括号注记与中文称号后缀 + 压缩空白 + casefold。
+
+    窗口内去重、候选匹配、关系端点解析、FamilyWriteGate、跨窗口同名
+    合并全部走这里——同一对名称在任意层得到同一结论。仅用于比较键，
+    展示名（canonical_name）保留原文。
+    """
+    raw = _MATCH_WS_RE.sub(" ", str(name or "")).strip()
+    s = _PAREN_ANNOTATION_RE.sub('', raw)
+    # 叠加称号（"李四博士教授"）最多剥两层
+    stripped = _TITLE_SUFFIXES_RE.sub('', s).strip()
+    if stripped and stripped != s:
+        again = _TITLE_SUFFIXES_RE.sub('', stripped).strip()
+        if again:
+            stripped = again
+    s = stripped or s or raw
+    return s.casefold()
+
+
+def entity_name_variants(name: str) -> tuple:
+    """返回名称的查找变体 (原文, 核心名)，用于 DB 按名查 family。
+
+    核心名 = 剥括号注记与称号后缀、压缩空白，但保留大小写——DB 里存的
+    canonical_name 是原文，大小写折叠交给 SQL COLLATE NOCASE。
+    """
+    raw = _MATCH_WS_RE.sub(" ", str(name or "")).strip()
+    core = _PAREN_ANNOTATION_RE.sub('', raw)
+    stripped = _TITLE_SUFFIXES_RE.sub('', core).strip()
+    if stripped and stripped != core:
+        again = _TITLE_SUFFIXES_RE.sub('', stripped).strip()
+        if again:
+            stripped = again
+    return (raw, (stripped or core or raw))
 
 
 def clean_markdown_code_blocks(text: str) -> str:

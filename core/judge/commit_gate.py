@@ -23,9 +23,10 @@ class FamilyWriteGate:
     def __init__(self, storage=None, *, resolve_from_storage=None):
         """
         Args:
-            storage: 存储管理器（提供按规范名查 family 的能力）
-            resolve_from_storage: 可注入的名称解析函数 (norm_name -> fid|None)，
-                                  测试用；缺省用 storage.find_family_id_by_name
+            storage: 存储管理器（提供 find_family_id_by_name 能力）
+            resolve_from_storage: 可注入的名称解析函数 (原文名 -> fid|None)，
+                                  测试/registry 用（registry 注入短只读连接版本）；
+                                  缺省用 storage.find_family_id_by_name
         """
         self._lock = threading.RLock()
         self._names: dict = {}
@@ -35,14 +36,14 @@ class FamilyWriteGate:
         else:
             self._resolve_from_storage = self._default_resolve
 
-    def _default_resolve(self, norm: str) -> Optional[str]:
+    def _default_resolve(self, name: str) -> Optional[str]:
         if self._storage is None:
             return None
         finder = getattr(self._storage, "find_family_id_by_name", None)
         if finder is None:
             return None
         try:
-            return finder(norm) or None
+            return finder(name) or None
         except Exception:
             return None
 
@@ -54,7 +55,11 @@ class FamilyWriteGate:
             yield
 
     def resolve_name(self, name: str) -> Optional[str]:
-        """规范名 -> 现存 fid（内存缓存优先，未命中查存储并缓存）。"""
+        """名称 -> 现存 fid（内存缓存优先，未命中查存储并缓存）。
+
+        存储腿收原文名——解析器内部用 entity_name_variants 做变体召回，
+        归一化后的键无法还原原文/核心名变体。
+        """
         from .models import norm_name
         norm = norm_name(name)
         if not norm:
@@ -62,7 +67,7 @@ class FamilyWriteGate:
         with self._lock:
             if norm in self._names:
                 return self._names[norm]
-        fid = self._resolve_from_storage(norm)
+        fid = self._resolve_from_storage(name)
         with self._lock:
             # double-check：等待期间可能有人 register 了同名
             if norm in self._names:

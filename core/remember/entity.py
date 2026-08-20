@@ -31,7 +31,6 @@ from core.remember.entity_candidates import (
     EntityCandidateBuilder,
     normalize_entity_name_for_matching,
 )
-from core.remember._shared import _TITLE_SUFFIXES_RE
 
 # Sub-module imports
 
@@ -993,7 +992,6 @@ class EntityProcessor(_EntityBatchMixin):
 
     # 名称规范化：委托给共享模块
     _normalize_entity_name_for_matching = staticmethod(normalize_entity_name_for_matching)
-    _TITLE_SUFFIXES_RE = _TITLE_SUFFIXES_RE  # re-export from entity_candidates module
 
     # ── Thin wrappers delegating to entity_search sub-module ──
 

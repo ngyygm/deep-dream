@@ -10,6 +10,8 @@
 from __future__ import annotations
 
 import json
+
+from core.utils import entity_match_key
 from typing import Any, Dict, List, Optional
 
 from .prompts import STRUCTURED_WINDOW_EXTRACTION_SYSTEM_PROMPT
@@ -106,13 +108,13 @@ class _StrongExtractionMixin:
                 content = str(item.get("content", "") or "").strip()
                 if not name or len(name) > 60:
                     continue
-                key = name.casefold()
+                key = entity_match_key(name)
                 if key in seen_names:
                     continue
                 seen_names.add(key)
                 entities.append({"name": name, "content": content})
 
-            name_set = {e["name"].casefold() for e in entities}
+            name_set = {entity_match_key(e["name"]) for e in entities}
             relations: List[Dict[str, str]] = []
             seen_pairs = set()
             for item in raw_relations[: max_relations * 2]:
@@ -121,12 +123,13 @@ class _StrongExtractionMixin:
                 a = str(item.get("entity1_name", "") or "").strip()
                 b = str(item.get("entity2_name", "") or "").strip()
                 content = str(item.get("content", "") or "").strip()
-                if not a or not b or a.casefold() == b.casefold():
+                ka, kb = entity_match_key(a), entity_match_key(b)
+                if not a or not b or ka == kb:
                     continue
-                # 端点必须是已抽取实体（按 casefold 匹配回规范名）
-                if a.casefold() not in name_set or b.casefold() not in name_set:
+                # 端点必须是已抽取实体（按统一匹配键回规范名）
+                if ka not in name_set or kb not in name_set:
                     continue
-                pk = tuple(sorted([a.casefold(), b.casefold()]))
+                pk = tuple(sorted([ka, kb]))
                 if pk in seen_pairs:
                     continue
                 seen_pairs.add(pk)
