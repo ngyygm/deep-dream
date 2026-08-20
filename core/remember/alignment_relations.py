@@ -276,12 +276,19 @@ class _OrphanMixin:
             return 0
 
         # ---- 兜底阶段：为仍然孤立的实体创建共现关系 ----
-        if progress_callback:
-            progress_callback(0.6, "创建兜底关系", f"为{len(truly_new_orphans)}个未补救实体创建共现关系", "step10")
-        _fallback_count = self._create_fallback_cooccurrence_relations(
-            truly_new_orphans, saved_entities,
-            episode_id, source_document, verbose,
-        )
+        # P2：默认关闭——轮询分配的共现关系（confidence 0.3）不承载真实语义，
+        # 只会污染图遍历/搜索排序；确需保连通时显式设置
+        # remember_config["fallback_cooccurrence_relations"] = True。
+        _fallback_count = 0
+        if getattr(self, 'remember_fallback_cooccurrence', False):
+            if progress_callback:
+                progress_callback(0.6, "创建兜底关系", f"为{len(truly_new_orphans)}个未补救实体创建共现关系", "step10")
+            _fallback_count = self._create_fallback_cooccurrence_relations(
+                truly_new_orphans, saved_entities,
+                episode_id, source_document, verbose,
+            )
+        elif verbose:
+            wprint_info(f"  │  孤立实体兜底｜已关闭（{len(truly_new_orphans)}个实体保持孤立）")
 
         if progress_callback:
             progress_callback(1.0, "完成",

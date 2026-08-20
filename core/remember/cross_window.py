@@ -12,9 +12,7 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 from core.models import Entity
-from core.utils import wprint_info, cosine_similarity
-from ._shared import _TITLE_SUFFIXES_RE
-from .helpers import _PAREN_ANNOTATION_RE
+from core.utils import wprint_info, cosine_similarity, entity_match_key
 
 
 class _CrossWindowDedupMixin:
@@ -257,9 +255,8 @@ class _CrossWindowDedupMixin:
                 _content_cache[e.family_id] = c
 
         def _normalize(name):
-            core = _PAREN_ANNOTATION_RE.sub('', name).strip()
-            core = _TITLE_SUFFIXES_RE.sub('', core).strip()
-            return core
+            # P2 统一：跨窗口同名合并的分组键与其他层同一语义
+            return entity_match_key(name)
 
         merged_fids = set()
         _merged_count = 0
@@ -378,7 +375,24 @@ class _CrossWindowDedupMixin:
 
             # Queue merged content entity
             if alias_content and alias_content not in primary_content:
-                merged_content = primary_content + "\n" + alias_content if primary_content else alias_content
+                # P2：走统一合并器（fast-path + LLM 最小修改融合），
+                # 不再做 primary+"\n"+alias 的朴素拼接（重复语义/口水句堆积）。
+                # 合并器不可用/失败时退回朴素拼接。
+                merged_content = None
+                _merge_fn = getattr(self.llm_client, "merge_multiple_entity_contents", None)
+                if _merge_fn is not None:
+                    try:
+                        merged_content = _merge_fn(
+                            [primary_content, alias_content],
+                            entity_sources=[_primary_ent.source_document or "",
+                                            _alias_ent.source_document or ""],
+                            entity_names=[primary_name, other_name],
+                        )
+                    except Exception:
+                        merged_content = None
+                if not merged_content:
+                    merged_content = (primary_content + "\n" + alias_content
+                                      if primary_content else alias_content)
                 _content_merges.append(Entity(
                     absolute_id=f"{primary_fid}_v{_uuid.uuid4().hex[:8]}",
                     family_id=primary_fid,

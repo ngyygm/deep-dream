@@ -10,19 +10,80 @@ from datetime import datetime
 from typing import Dict, List, Optional
 from collections import defaultdict
 
+import numpy as np
+
 from core.models import Episode
 from core.debug_log import log as dbg, log_section as dbg_section, _ENABLED as _dbg_enabled
-from core.utils import compute_doc_hash, wprint_info
+from core.utils import compute_doc_hash, wprint_info, cosine_similarity
 from core.llm.client import LLM_PRIORITY_ALIGN, LLM_PRIORITY_EXTRACT
 from .helpers import _AlignResult, _core_entity_name
 from .alignment_relations import _OrphanMixin, _RelationAlignMixin
+
+# 同名强制合并的 embedding 相似度门槛（与 cross_window.py 同名合并阈值一致，0.75）。
+# 名称相同是强信号但不足以断言同概念（"苹果"公司 vs"苹果"水果）：
+# 双方都有已存 embedding 时，余弦相似度低于该值则跳过合并、记入歧义集合；
+# 任一方无 embedding 可比时维持合并（日志标注 no-embedding-guard）。
+_SAME_NAME_MERGE_SIM_THRESHOLD = 0.75
 
 
 class _ResolutionMixin:
     """Same-name conflict resolution, missing-name resolution, and name-to-ID conversion."""
 
+    def _fetch_stored_entity_vectors(self, family_ids):
+        """批量读取实体已持久化的 embedding 向量（BLOB→float32 向量）。
+
+        纯本地 DB 读取，不触发 embedding 编码/LLM 调用；
+        无向量或读取失败时该 fid 对应值保持 None（调用方按"不可比"处理）。
+        """
+        vectors: Dict[str, Optional[np.ndarray]] = {fid: None for fid in family_ids}
+        batch_fn = getattr(self.storage, 'get_entities_by_family_ids', None)
+        fetched = {}
+        if batch_fn:
+            try:
+                fetched = batch_fn(list(family_ids)) or {}
+            except Exception:
+                fetched = {}
+        else:
+            single_fn = getattr(self.storage, 'get_entity_by_family_id', None)
+            for fid in family_ids:
+                try:
+                    ent = single_fn(fid) if single_fn else None
+                    if ent:
+                        fetched[fid] = ent
+                except Exception:
+                    continue
+        for fid, ent in fetched.items():
+            blob = getattr(ent, 'embedding', None)
+            if not blob:
+                continue
+            try:
+                vec = np.frombuffer(blob, dtype=np.float32)
+                if vec.size:
+                    vectors[fid] = vec
+            except Exception:
+                continue
+        return vectors
+
+    @staticmethod
+    def _same_name_pair_similarity(vec_map, fid_a, fid_b):
+        """返回 (余弦相似度, 是否可比)。任一方无已存向量时不可比。"""
+        va, vb = vec_map.get(fid_a), vec_map.get(fid_b)
+        if va is None or vb is None:
+            return 0.0, False
+        try:
+            return cosine_similarity(va, vb), True
+        except Exception:
+            # 维度不一致（更换 embedding 模型后新旧向量共存）等计算失败——
+            # 按不可比处理（维持合并现状），不让守卫打穿步骤9（cross_window 同保护）
+            return 0.0, False
+
     def _resolve_same_name_conflicts(self, entity_name_to_ids, verbose=False):
-        """Detect and resolve same-name entity conflicts by merging into primary."""
+        """Detect and resolve same-name entity conflicts by merging into primary.
+
+        同名不再无条件合并：双方都有已存 embedding 时按
+        _SAME_NAME_MERGE_SIM_THRESHOLD 门槛守卫（与跨窗口同名合并同阈值），
+        低相似跳过合并并记入 ambiguous_duplicate_names。
+        """
         duplicate_names = {name: ids for name, ids in entity_name_to_ids.items() if len(ids) > 1}
         ambiguous_duplicate_names = set()
 
@@ -41,14 +102,35 @@ class _ResolutionMixin:
         # Batch-fetch version counts for all duplicate-name entities
         _all_dup_fids = [fid for ids in entity_name_to_ids.values() if len(ids) > 1 for fid in ids]
         _dup_vc_map = self.storage.get_entity_version_counts(_all_dup_fids) if _all_dup_fids else {}
+        # 同名合并 embedding 守卫：批量预取已存向量（纯本地 DB 读取，不发 LLM/embedding 调用）
+        _dup_vec_map = self._fetch_stored_entity_vectors(_all_dup_fids) if _all_dup_fids else {}
         for name, ids in entity_name_to_ids.items():
             if len(ids) > 1:
                 versions_map = {fid: _dup_vc_map.get(fid, 0) for fid in ids}
 
-                # Same-name entities: always merge — name match is strong signal.
                 primary_id = max(ids, key=lambda fid: versions_map.get(fid, 0))
-                entity_name_to_id[name] = primary_id
-                duplicate_pairs = [(fid, primary_id) for fid in ids if fid and fid != primary_id]
+                duplicate_pairs = []
+                _ambiguous = False
+                for fid in ids:
+                    if not fid or fid == primary_id:
+                        continue
+                    sim, comparable = self._same_name_pair_similarity(_dup_vec_map, primary_id, fid)
+                    if comparable and sim < _SAME_NAME_MERGE_SIM_THRESHOLD:
+                        # 同名不同概念（如"苹果"公司 vs"苹果"水果）——跳过合并并记歧义
+                        _ambiguous = True
+                        ambiguous_duplicate_names.add(name)
+                        dbg(f"step9: 同名歧义跳过合并 | {name} sim={sim:.3f} {fid}≠{primary_id}")
+                        if verbose:
+                            wprint_info(
+                                f"【步骤9】冲突｜歧义｜{name} sim={sim:.2f} 保留 {fid}≠{primary_id}"
+                            )
+                        continue
+                    if comparable:
+                        dbg(f"step9: 同名合并 | {name} sim={sim:.3f} {fid}->{primary_id}")
+                    else:
+                        # 无 embedding 可比——维持合并现状
+                        dbg(f"step9: 同名合并 no-embedding-guard | {name} {fid}->{primary_id}")
+                    duplicate_pairs.append((fid, primary_id))
                 if duplicate_pairs:
                     batch_fn = getattr(self.storage, 'register_entity_redirects_batch', None)
                     if batch_fn:
@@ -56,10 +138,15 @@ class _ResolutionMixin:
                     else:
                         for fid, pid in duplicate_pairs:
                             self.storage.register_entity_redirect(fid, pid)
-                if verbose:
-                    wprint_info(
-                        f"【步骤9】冲突｜主实体｜{name}->{primary_id} v{versions_map.get(primary_id, 0)}"
-                    )
+                if _ambiguous:
+                    # 名称歧义——不建立名称→ID 映射，关系解析沿用 ambiguous 机制跳过/延后
+                    dbg(f"step9: 同名歧义不建映射 | {name}")
+                else:
+                    entity_name_to_id[name] = primary_id
+                    if verbose:
+                        wprint_info(
+                            f"【步骤9】冲突｜主实体｜{name}->{primary_id} v{versions_map.get(primary_id, 0)}"
+                        )
             else:
                 entity_name_to_id[name] = ids[0]
 
@@ -73,7 +160,7 @@ class _ResolutionMixin:
         Returns (entity_name_to_id, db_matched, fuzzy_matched).
         """
         _rel_entity_names = set()
-        # _core_entity_name is already @lru_cache(maxsize=2048) — no local cache needed
+        # _core_entity_name（= entity_match_key）自带 lru_cache — 无需本地缓存
 
         for rel_info in pending_relations:
             n1 = rel_info.get("entity1_name", "")
@@ -112,9 +199,11 @@ class _ResolutionMixin:
                     _db_matched += 1
 
             # Round 2: resolve core-name fuzzy matches
-            for core_name, eid in _db_map.items():
-                if core_name not in _core_name_map:
-                    _core_name_map[core_name] = eid
+            # db_map 以查询原文为键——并入匹配键空间时统一归一
+            for db_name, eid in _db_map.items():
+                db_key = _core_entity_name(db_name)
+                if db_key and db_key not in _core_name_map:
+                    _core_name_map[db_key] = eid
 
             for missing_name in _missing_names:
                 if missing_name in entity_name_to_id:
@@ -127,30 +216,29 @@ class _ResolutionMixin:
         # Rounds 3+4: Build lookup structures once, then iterate remaining missing names once
         _still_missing = [n for n in _rel_entity_names if n not in entity_name_to_id]
         if _still_missing:
-            # Round 3 structures: case-insensitive lookup
-            _lower_map: Dict[str, str] = {}
+            # Round 3 structures: 统一匹配键精确查找（casefold+剥注记/称号）
+            _key_map: Dict[str, str] = {}
             # Round 4 structures: core name + substring matching
             _known_cores = []
             _core_to_known: Dict[str, str] = {}
             for name, eid in entity_name_to_id.items():
-                low = name.lower()
-                if low not in _lower_map:
-                    _lower_map[low] = eid
-                core = _core_entity_name(name).lower()
-                if core and len(core) >= 2:
-                    _known_cores.append((name, core))
-                    if core not in _core_to_known:
-                        _core_to_known[core] = name
+                key = _core_entity_name(name)
+                if key and key not in _key_map:
+                    _key_map[key] = eid
+                if key and len(key) >= 2:
+                    _known_cores.append((name, key))
+                    if key not in _core_to_known:
+                        _core_to_known[key] = name
 
             for missing_name in _still_missing:
-                # Round 3: case-insensitive
-                low_missing = missing_name.lower()
-                if low_missing in _lower_map:
-                    entity_name_to_id[missing_name] = _lower_map[low_missing]
+                # Round 3: unified match key
+                key_missing = _core_entity_name(missing_name)
+                if key_missing in _key_map:
+                    entity_name_to_id[missing_name] = _key_map[key_missing]
                     _fuzzy_matched += 1
                     continue
                 # Round 4: substring fuzzy match
-                core_miss = _core_entity_name(missing_name).lower()
+                core_miss = key_missing
                 if not core_miss or len(core_miss) < 2:
                     continue
                 if core_miss in _core_to_known:
@@ -161,9 +249,17 @@ class _ResolutionMixin:
                 best_len = 0
                 for known, core_known in _known_cores:
                     if core_miss in core_known or core_known in core_miss:
-                        match_len = min(len(core_miss), len(core_known))
-                        if match_len > best_len:
-                            best_len = match_len
+                        short_len = min(len(core_miss), len(core_known))
+                        long_len = max(len(core_miss), len(core_known))
+                        # P2 收紧：无 LLM 验证的兜底路径——短核被长名
+                        # 偶然包含（如 "公司" ⊂ "阿里巴巴集团公司"）不自动
+                        # 归并。包含比 ≥0.5 覆盖真实别名形态（甄士隐/士隐、
+                        # Docker容器/Docker）；更松的别名交给有 LLM 验证的
+                        # cross_window 别名去重。
+                        if short_len * 2 < long_len:
+                            continue
+                        if short_len > best_len:
+                            best_len = short_len
                             best_match = known
                 if best_match:
                     entity_name_to_id[missing_name] = entity_name_to_id[best_match]
@@ -620,10 +716,10 @@ class _PipelineExtractionMixin(_ResolutionMixin, _OrphanMixin, _Step1CacheWriter
         for name, family_id in entity_name_to_id_from_entities.items():
             _name_to_fids[name].add(family_id)
 
-        for i, entity in enumerate(processed_entities):
-            if i < len(original_entity_names):
-                original_name = original_entity_names[i]
-                _name_to_fids[original_name].add(entity.family_id)
+        # 注：不做 processed_entities[i] ↔ original_entity_names[i] 的位置关联——
+        # 并行处理（max_workers>1）下顺序不保证，错位会把原始名挂到错误 family。
+        # entity_name_to_id_from_entities 是权威映射（process_entities 已注册
+        # 原始名与合并后规范名双键）。
 
         entity_name_to_ids = {name: list(fids) for name, fids in _name_to_fids.items()}
         dbg(f"step9: _name_to_fids | 名称变体{len(_name_to_fids)} 原始名{len(original_entity_names)} 处理后{len(processed_entities)} 唯一{len(unique_entities)}")
@@ -643,14 +739,11 @@ class _PipelineExtractionMixin(_ResolutionMixin, _OrphanMixin, _Step1CacheWriter
             wprint_info(f"【步骤9】同名去重｜{_t_dup_elapsed:.1f}s")
 
         merged_mappings = []
-        for i, entity in enumerate(processed_entities):
-            if i < len(original_entity_names):
-                original_name = original_entity_names[i]
-                if original_name != entity.name:
-                    merged_mappings.append((original_name, entity.name, entity.family_id))
-        # Note: positional mapping above may be incorrect if process_entities reorders
-        # results during parallel processing. The entity_name_to_id_from_entities mapping
-        # (line 368-369) is the authoritative source — positional is only a fallback.
+        for name, fid in entity_name_to_id_from_entities.items():
+            for entity in unique_entities:
+                if entity.family_id == fid and entity.name != name and name in original_entity_names:
+                    merged_mappings.append((name, entity.name, entity.family_id))
+                    break
         dbg(f"step9: 合并映射 | {len(merged_mappings)} 个名称变更")
 
         if verbose:

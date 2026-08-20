@@ -60,6 +60,9 @@ class TemporalMemoryGraphProcessor(_PipelineMixin, _PipelineExtractionMixin, _Cr
         self.remember_alignment_policy = str(_remember_cfg.get("alignment_policy") or "conservative").strip() or "conservative"
         self.remember_alignment_conservative = self.remember_alignment_policy == "conservative"
         self.remember_profile = str(_remember_cfg.get("profile") or "current")
+        # P2：孤立实体兜底共现关系（confidence 0.3 轮询配对）默认关闭——
+        # 见 alignment_relations.py 兜底阶段注释。
+        self.remember_fallback_cooccurrence = bool(_remember_cfg.get("fallback_cooccurrence_relations", False))
         # strong-v1：窗口级批量对齐裁决（step9 实体一次批量、step10 有已有关系的实体对一次批量）
         self.window_batch_alignment_enabled = bool(
             _remember_cfg.get("window_batch_alignment", self.remember_profile == "strong-v1"))
