@@ -5,11 +5,11 @@ import logging
 import re
 import sqlite3
 import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 from . import content_fs
+from .helpers import now_utc_str
 from .repositories import documents as doc_repo, episodes as ep_repo
 
 logger = logging.getLogger(__name__)
@@ -20,10 +20,6 @@ _WIKILINK_RE = re.compile(r'\[\[([^\]#|]+)(?:#[^\]|]*)?(?:\|([^\]]*))?\]\]')
 # Matches [display](href) where href is not http.
 # Negative lookbehind for '!' excludes image syntax ![alt](url).
 _MD_LINK_RE = re.compile(r'(?<!!)\[([^\]]*)\]\(([^)]+)\)')
-
-
-def _now_str() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 def _extract_links_with_positions(body: str) -> list[dict]:
@@ -212,7 +208,7 @@ def index_markdown_file(conn: sqlite3.Connection, library_path: Path,
         absolute_path=abs_path,
         vault_root=vault_root,
         relative_path=rel_path or file_path.name,
-        created_at=_now_str(), updated_at=_now_str(),
+        created_at=now_utc_str(), updated_at=now_utc_str(),
     )
 
     # Create version
@@ -223,9 +219,9 @@ def index_markdown_file(conn: sqlite3.Connection, library_path: Path,
         version_content_path=f"content/versions/{doc_id}/{content_hash}.md",
         title=title, char_count=len(text), line_count=len(text.splitlines()),
         byte_size=len(text.encode("utf-8")),
-        processed_at=_now_str(),
+        processed_at=now_utc_str(),
     )
-    doc_repo.update_current_version(conn, doc_id, ver_id, updated_at=_now_str())
+    doc_repo.update_current_version(conn, doc_id, ver_id, updated_at=now_utc_str())
 
     # Split into episodes
     from ...text_chunking import split_markdown_chunks
@@ -251,7 +247,7 @@ def index_markdown_file(conn: sqlite3.Connection, library_path: Path,
             chunk_index=i,
             chunk_hash=content_fs.compute_content_hash(chunk_text)[:16],
             name=chunk.get("heading", ""),
-            processed_at=_now_str(),
+            processed_at=now_utc_str(),
         )
         ep_repo.fts_sync_episode(conn, ep_id, doc_id, ver_id,
                                   name=chunk.get("heading", ""),
@@ -263,7 +259,7 @@ def index_markdown_file(conn: sqlite3.Connection, library_path: Path,
     if links_with_pos:
         # Delete any old links for this version (re-index safety)
         doc_repo.delete_document_links_by_version(conn, ver_id)
-        now = _now_str()
+        now = now_utc_str()
         for link_info in links_with_pos:
             link_target = link_info["link_target"]
             to_doc_id = _resolve_document_id(conn, link_target)

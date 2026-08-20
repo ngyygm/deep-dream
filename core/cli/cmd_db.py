@@ -22,13 +22,17 @@ import os
 import sqlite3
 import urllib.error
 import urllib.request
+from contextlib import contextmanager
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterator, Optional
 
 import click
 
+from core.storage.sqlite.helpers import now_utc_str
+
 from ._ctx import CliContext
 from ._exit_codes import ARGS, ERROR, NOT_FOUND
+from ._helpers import emit_json_error, emit_json_result
 from ._output import OutputManager
 
 
@@ -63,6 +67,29 @@ def _open_db_conn(config: Dict[str, Any]) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+@contextmanager
+def _db_session(out: OutputManager, config: Dict[str, Any]) -> Iterator[sqlite3.Connection]:
+    """db 子命令公共包装（P4.4b）：开库 / 异常信封 / 关闭三段样板收敛为一份。
+
+    库文件缺失时经 ``out.error`` 抛 SystemExit(NOT_FOUND)；主体抛出的异常
+    统一转 JSON 错误信封（--json）或人类可读错误，连接最终一定关闭。
+    """
+    try:
+        conn = _open_db_conn(config)
+    except FileNotFoundError as exc:
+        out.error(str(exc), code=NOT_FOUND)
+        return
+    try:
+        yield conn
+    except Exception as exc:
+        if out.is_json:
+            emit_json_error(str(exc))
+        else:
+            out.error(str(exc), code=ERROR)
+    finally:
+        conn.close()
 
 
 def _check_icon(ok: bool) -> str:
@@ -116,19 +143,17 @@ def init_v15(ctx: click.Context, smoke_test: bool) -> None:
         result = init_schema_v15(conn)
 
         if out.is_json:
-            payload = {
-                "success": True,
-                "command": "db init-v15",
-                "data": result,
-            }
+            extra: Optional[Dict[str, Any]] = None
             if smoke_test:
                 from core.storage.sqlite.integrity import validate_all  # deferred
                 violations = validate_all(
                     conn, library_path=storage_path, include_file_checks=False,
                 )
-                payload["smoke_test"] = len(violations) == 0
-                payload["violations"] = len(violations)
-            click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+                extra = {
+                    "smoke_test": len(violations) == 0,
+                    "violations": len(violations),
+                }
+            emit_json_result("db init-v15", result, extra=extra)
             return
 
         out.success(f"V1.5 schema initialized at {db_path}")
@@ -147,10 +172,7 @@ def init_v15(ctx: click.Context, smoke_test: bool) -> None:
                 )
     except Exception as exc:
         if out.is_json:
-            click.echo(json.dumps({
-                "success": False,
-                "error": str(exc),
-            }, ensure_ascii=False, indent=2))
+            emit_json_error(str(exc))
         else:
             out.error(str(exc), code=ERROR)
     finally:
@@ -185,10 +207,7 @@ def reset_v15(ctx: click.Context, yes: bool) -> None:
 
     if not yes:
         if out.is_json:
-            click.echo(json.dumps({
-                "success": False,
-                "error": "Destructive operation requires --yes flag.",
-            }, ensure_ascii=False, indent=2))
+            emit_json_error("Destructive operation requires --yes flag.")
         else:
             out.error(
                 "This is a destructive operation. Pass --yes to confirm.",
@@ -199,10 +218,7 @@ def reset_v15(ctx: click.Context, yes: bool) -> None:
 
     if not os.path.exists(db_path):
         if out.is_json:
-            click.echo(json.dumps({
-                "success": False,
-                "error": "No existing graph.db found.",
-            }, ensure_ascii=False, indent=2))
+            emit_json_error("No existing graph.db found.")
         else:
             out.error("No existing graph.db found.", code=NOT_FOUND)
         return
@@ -222,10 +238,7 @@ def reset_v15(ctx: click.Context, yes: bool) -> None:
 
     if not os.path.exists(backup_path):
         if out.is_json:
-            click.echo(json.dumps({
-                "success": False,
-                "error": "Backup failed.",
-            }, ensure_ascii=False, indent=2))
+            emit_json_error("Backup failed.")
         else:
             out.error("Backup failed.", code=ERROR)
         return
@@ -248,15 +261,11 @@ def reset_v15(ctx: click.Context, yes: bool) -> None:
         )
 
         if out.is_json:
-            click.echo(json.dumps({
-                "success": True,
-                "command": "db reset-v15",
-                "data": {
-                    "backup": backup_path,
-                    "violations": len(violations),
-                    **result,
-                },
-            }, ensure_ascii=False, indent=2))
+            emit_json_result("db reset-v15", {
+                "backup": backup_path,
+                "violations": len(violations),
+                **result,
+            })
         else:
             out.success(f"Fresh V1.5 database created at {db_path}")
             out.console.print(f"  Backup: {backup_path}")
@@ -266,11 +275,7 @@ def reset_v15(ctx: click.Context, yes: bool) -> None:
             )
     except Exception as exc:
         if out.is_json:
-            click.echo(json.dumps({
-                "success": False,
-                "error": str(exc),
-                "backup": backup_path,
-            }, ensure_ascii=False, indent=2))
+            emit_json_error(str(exc), backup=backup_path)
         else:
             out.error(f"Reset failed: {exc}", hint=f"Backup preserved at {backup_path}")
     finally:
@@ -287,15 +292,8 @@ def rebuild_fts(ctx: click.Context) -> None:
     """Rebuild the episodes full-text search index from scratch."""
     obj: CliContext = ctx.obj
     out = OutputManager(ctx)
-    config = obj.config
 
-    try:
-        conn = _open_db_conn(config)
-    except FileNotFoundError as exc:
-        out.error(str(exc), code=NOT_FOUND)
-        return
-
-    try:
+    with _db_session(out, obj.config) as conn:
         try:
             from core.storage.sqlite.repositories.episodes import rebuild_fts_all  # deferred
             count = rebuild_fts_all(conn)
@@ -318,23 +316,9 @@ def rebuild_fts(ctx: click.Context) -> None:
             conn.commit()
 
         if out.is_json:
-            click.echo(json.dumps({
-                "success": True,
-                "command": "db rebuild-fts",
-                "data": {"episodes_indexed": count},
-            }, ensure_ascii=False, indent=2))
+            emit_json_result("db rebuild-fts", {"episodes_indexed": count})
         else:
             out.success(f"FTS index rebuilt: {count} episode(s) indexed")
-    except Exception as exc:
-        if out.is_json:
-            click.echo(json.dumps({
-                "success": False,
-                "error": str(exc),
-            }, ensure_ascii=False, indent=2))
-        else:
-            out.error(str(exc), code=ERROR)
-    finally:
-        conn.close()
 
 
 # ------------------------------------------------------------------
@@ -358,9 +342,6 @@ def _backfill_embeddings_run(conn: sqlite3.Connection, client, batch_size: int,
     model = (getattr(client, "model_name", None)
              or getattr(client, "model_path", None)
              or "unknown")
-
-    def _now_str() -> str:
-        return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
 
     def _phase(owner_type: str, family_sql: str, text_fn, label: str) -> Dict[str, Any]:
         # family_id → active 版本 id（每组最新一条）
@@ -395,7 +376,7 @@ def _backfill_embeddings_run(conn: sqlite3.Connection, client, batch_size: int,
                 "(embedding_id, owner_type, owner_id, text_kind, text_hash, "
                 " embedding_model, dimensions, vector, created_at) "
                 f"VALUES (?, '{owner_type}', ?, 'content', ?, ?, ?, ?, ?)",
-                [(p[0], p[1], p[2], model, p[3], p[4], _now_str()) for p in payload],
+                [(p[0], p[1], p[2], model, p[3], p[4], now_utc_str()) for p in payload],
             )
             conn.commit()
             stored += len(batch)
@@ -462,51 +443,31 @@ def backfill_embeddings(ctx: click.Context, batch_size: int) -> None:
     """
     obj: CliContext = ctx.obj
     out = OutputManager(ctx)
-    config = obj.config
 
-    try:
-        conn = _open_db_conn(config)
-    except FileNotFoundError as exc:
-        out.error(str(exc), code=NOT_FOUND)
-        return
+    with _db_session(out, obj.config) as conn:
+        from core.server.config import resolve_embedding_model
+        from core.storage.embedding import EmbeddingClient
 
-    from core.server.config import resolve_embedding_model
-    from core.storage.embedding import EmbeddingClient
+        config = obj.config
+        emb_cfg = config.get("embedding") or {}
+        model_path, model_name, use_local = resolve_embedding_model(emb_cfg)
+        client = EmbeddingClient(
+            model_path=model_path, model_name=model_name,
+            device=emb_cfg.get("device", "cpu"), use_local=use_local,
+            api_key=emb_cfg.get("api_key"), api_base=emb_cfg.get("api_base"))
+        if not client.is_available():
+            out.error("embedding client 不可用（检查 embedding.model 配置）", code=ERROR)
+        client.encode("warm up")
 
-    emb_cfg = config.get("embedding") or {}
-    model_path, model_name, use_local = resolve_embedding_model(emb_cfg)
-    client = EmbeddingClient(
-        model_path=model_path, model_name=model_name,
-        device=emb_cfg.get("device", "cpu"), use_local=use_local,
-        api_key=emb_cfg.get("api_key"), api_base=emb_cfg.get("api_base"))
-    if not client.is_available():
-        out.error("embedding client 不可用（检查 embedding.model 配置）", code=ERROR)
-        conn.close()
-        return
-    client.encode("warm up")
-
-    progress = (lambda *_: None) if out.is_json else print
-    try:
+        progress = (lambda *_: None) if out.is_json else print
         stats = _backfill_embeddings_run(conn, client, batch_size, progress)
         if out.is_json:
-            click.echo(json.dumps({
-                "success": True,
-                "command": "db backfill-embeddings",
-                "data": stats,
-            }, ensure_ascii=False, indent=2))
+            emit_json_result("db backfill-embeddings", stats)
         else:
             out.success(
                 f"backfill complete: entity {stats['entity']['stored']}/{stats['entity']['candidates']}, "
                 f"relation {stats['relation']['stored']}/{stats['relation']['candidates']}, "
                 f"total in db {stats['total_in_db']}")
-    except Exception as exc:
-        if out.is_json:
-            click.echo(json.dumps({"success": False, "error": str(exc)},
-                                  ensure_ascii=False, indent=2))
-        else:
-            out.error(str(exc), code=ERROR)
-    finally:
-        conn.close()
 
 
 # ------------------------------------------------------------------
@@ -530,16 +491,9 @@ def validate(ctx: click.Context, repair: bool) -> None:
     """
     obj: CliContext = ctx.obj
     out = OutputManager(ctx)
-    config = obj.config
-    storage_path = _get_storage_path(config)
+    storage_path = _get_storage_path(obj.config)
 
-    try:
-        conn = _open_db_conn(config)
-    except FileNotFoundError as exc:
-        out.error(str(exc), code=NOT_FOUND)
-        return
-
-    try:
+    with _db_session(out, obj.config) as conn:
         from core.storage.sqlite.integrity import validate_all  # deferred
 
         violations = validate_all(
@@ -559,11 +513,10 @@ def validate(ctx: click.Context, repair: bool) -> None:
             }
             if repair:
                 data["current_files_rebuilt"] = files_rebuilt
-            click.echo(json.dumps({
-                "success": ok,
-                "command": f"db validate{' --repair' if repair else ''}",
-                "data": data,
-            }, ensure_ascii=False, indent=2))
+            # success 跟随校验结果（有 violations 时为 False，但仍是正常信封）
+            emit_json_result(
+                f"db validate{' --repair' if repair else ''}", data, success=ok,
+            )
         else:
             icon = _check_icon(ok)
             label = "validate --repair" if repair else "validate"
@@ -582,16 +535,6 @@ def validate(ctx: click.Context, repair: bool) -> None:
                 out.console.print(f"    - {' | '.join(_rich_esc(p) for p in parts)}")
             if len(violations) > 10:
                 out.console.print(f"    ... and {len(violations) - 10} more")
-    except Exception as exc:
-        if out.is_json:
-            click.echo(json.dumps({
-                "success": False,
-                "error": str(exc),
-            }, ensure_ascii=False, indent=2))
-        else:
-            out.error(str(exc), code=ERROR)
-    finally:
-        conn.close()
 
 
 # ------------------------------------------------------------------
@@ -608,37 +551,16 @@ def rebuild_current(ctx: click.Context) -> None:
     """
     obj: CliContext = ctx.obj
     out = OutputManager(ctx)
-    config = obj.config
-    storage_path = _get_storage_path(config)
+    storage_path = _get_storage_path(obj.config)
 
-    try:
-        conn = _open_db_conn(config)
-    except FileNotFoundError as exc:
-        out.error(str(exc), code=NOT_FOUND)
-        return
-
-    try:
+    with _db_session(out, obj.config) as conn:
         from core.storage.sqlite.content_fs import rebuild_current_files  # deferred
         count = rebuild_current_files(conn, storage_path)
 
         if out.is_json:
-            click.echo(json.dumps({
-                "success": True,
-                "command": "db rebuild-current",
-                "data": {"files_written": count},
-            }, ensure_ascii=False, indent=2))
+            emit_json_result("db rebuild-current", {"files_written": count})
         else:
             out.success(f"Rebuilt {count} current file(s)")
-    except Exception as exc:
-        if out.is_json:
-            click.echo(json.dumps({
-                "success": False,
-                "error": str(exc),
-            }, ensure_ascii=False, indent=2))
-        else:
-            out.error(str(exc), code=ERROR)
-    finally:
-        conn.close()
 
 
 # ------------------------------------------------------------------
@@ -669,15 +591,8 @@ def vacuum_embeddings(ctx: click.Context, inactive: bool, dry_run: bool) -> None
     """
     obj: CliContext = ctx.obj
     out = OutputManager(ctx)
-    config = obj.config
 
-    try:
-        conn = _open_db_conn(config)
-    except FileNotFoundError as exc:
-        out.error(str(exc), code=NOT_FOUND)
-        return
-
-    try:
+    with _db_session(out, obj.config) as conn:
         orphaned: int = 0
         deleted_doc: int = 0
         inactive_count: int = 0
@@ -707,16 +622,12 @@ def vacuum_embeddings(ctx: click.Context, inactive: bool, dry_run: bool) -> None
             orphaned = cursor.rowcount
 
         if out.is_json:
-            click.echo(json.dumps({
-                "success": True,
-                "command": "db vacuum-embeddings",
-                "data": {
-                    "orphaned_removed": orphaned,
-                    "deleted_doc_removed": deleted_doc,
-                    "inactive_removed": inactive_count,
-                    "dry_run": dry_run,
-                },
-            }, ensure_ascii=False, indent=2))
+            emit_json_result("db vacuum-embeddings", {
+                "orphaned_removed": orphaned,
+                "deleted_doc_removed": deleted_doc,
+                "inactive_removed": inactive_count,
+                "dry_run": dry_run,
+            })
         else:
             total = orphaned + deleted_doc + inactive_count
             label_suffix = " (dry-run)" if dry_run else ""
@@ -726,16 +637,6 @@ def vacuum_embeddings(ctx: click.Context, inactive: bool, dry_run: bool) -> None
             if inactive:
                 label = "reported (dry-run)" if dry_run else "removed"
                 out.console.print(f"  Inactive ({label}): {inactive_count}")
-    except Exception as exc:
-        if out.is_json:
-            click.echo(json.dumps({
-                "success": False,
-                "error": str(exc),
-            }, ensure_ascii=False, indent=2))
-        else:
-            out.error(str(exc), code=ERROR)
-    finally:
-        conn.close()
 
 
 # ------------------------------------------------------------------
@@ -758,14 +659,10 @@ def compact(ctx: click.Context, yes: bool) -> None:
     """
     obj: CliContext = ctx.obj
     out = OutputManager(ctx)
-    config = obj.config
 
     if not yes:
         if out.is_json:
-            click.echo(json.dumps({
-                "success": False,
-                "error": "VACUUM requires --yes flag to confirm.",
-            }, ensure_ascii=False, indent=2))
+            emit_json_error("VACUUM requires --yes flag to confirm.")
         else:
             out.error(
                 "Pass --yes to confirm the VACUUM operation.",
@@ -774,33 +671,13 @@ def compact(ctx: click.Context, yes: bool) -> None:
             )
         return
 
-    try:
-        conn = _open_db_conn(config)
-    except FileNotFoundError as exc:
-        out.error(str(exc), code=NOT_FOUND)
-        return
-
-    try:
+    with _db_session(out, obj.config) as conn:
         conn.execute("VACUUM")
 
         if out.is_json:
-            click.echo(json.dumps({
-                "success": True,
-                "command": "db compact",
-                "data": {},
-            }, ensure_ascii=False, indent=2))
+            emit_json_result("db compact", {})
         else:
             out.success("Database compacted (VACUUM complete)")
-    except Exception as exc:
-        if out.is_json:
-            click.echo(json.dumps({
-                "success": False,
-                "error": str(exc),
-            }, ensure_ascii=False, indent=2))
-        else:
-            out.error(str(exc), code=ERROR)
-    finally:
-        conn.close()
 
 
 # ------------------------------------------------------------------
@@ -818,68 +695,39 @@ def quality(ctx: click.Context) -> None:
     """
     obj: CliContext = ctx.obj
     out = OutputManager(ctx)
-    config = obj.config
 
-    try:
-        conn = _open_db_conn(config)
-    except FileNotFoundError as exc:
-        out.error(str(exc), code=NOT_FOUND)
-        return
-
-    try:
+    with _db_session(out, obj.config) as conn:
         cur = conn.cursor()
 
-        # -- Entities --------------------------------------------------------
-        row = cur.execute(
-            "SELECT COUNT(*) AS cnt FROM entity_families"
-        ).fetchone()
-        total_entities: int = row["cnt"] if row else 0
-
+        # -- 实体质量聚合（P4.4b：4 项计数合并为 1 条 SQL）---------------------
+        # 总数 / 已嵌入 / 孤儿（无 active 观测）/ 重名嫌疑（同 canonical_name
+        # 不同 family_id）
         row = cur.execute(
             """
-            SELECT COUNT(*) AS cnt
-            FROM entity_families ef
-            WHERE EXISTS (
-                SELECT 1 FROM embeddings e
-                WHERE e.owner_type = 'entity_family'
-                  AND e.owner_id = ef.entity_family_id
-            )
+            SELECT
+              (SELECT COUNT(*) FROM entity_families) AS total_entities,
+              (SELECT COUNT(*) FROM entity_families ef WHERE EXISTS (
+                  SELECT 1 FROM embeddings e
+                  WHERE e.owner_type = 'entity_family'
+                    AND e.owner_id = ef.entity_family_id)) AS entities_with_emb,
+              (SELECT COUNT(*) FROM entity_families ef WHERE NOT EXISTS (
+                  SELECT 1 FROM entity_observations eo
+                  WHERE eo.entity_family_id = ef.entity_family_id
+                    AND eo.status = 'active')) AS orphan_entities,
+              (SELECT COUNT(*) FROM (
+                  SELECT canonical_name FROM entity_families
+                  GROUP BY canonical_name HAVING COUNT(*) > 1)) AS duplicate_suspects
             """
         ).fetchone()
-        entities_with_emb: int = row["cnt"] if row else 0
-
-        # Orphan entity families: no active observations
-        row = cur.execute(
-            """
-            SELECT COUNT(*) AS cnt
-            FROM entity_families ef
-            WHERE NOT EXISTS (
-                SELECT 1 FROM entity_observations eo
-                WHERE eo.entity_family_id = ef.entity_family_id
-                  AND eo.status = 'active'
-            )
-            """
-        ).fetchone()
-        orphan_entities: int = row["cnt"] if row else 0
-
-        # Duplicate suspects: same canonical_name, different family_id
-        row = cur.execute(
-            """
-            SELECT COUNT(*) AS cnt FROM (
-                SELECT canonical_name
-                FROM entity_families
-                GROUP BY canonical_name
-                HAVING COUNT(*) > 1
-            )
-            """
-        ).fetchone()
-        duplicate_suspects: int = row["cnt"] if row else 0
+        total_entities: int = row["total_entities"] if row else 0
+        entities_with_emb: int = row["entities_with_emb"] if row else 0
+        orphan_entities: int = row["orphan_entities"] if row else 0
+        duplicate_suspects: int = row["duplicate_suspects"] if row else 0
 
         # -- Confidence ------------------------------------------------------
-        # entity_families does not have a confidence column; check
-        # entity_observations.extra_json for confidence if available,
-        # but also check if entity_observations has a confidence-like field.
-        # We try to compute from observations' extra_json as a best effort.
+        # entity_families 无 confidence 列；best-effort 从
+        # entity_observations.extra_json 聚合。json_extract 依赖 schema 版本，
+        # 失败时降级为 None/0，因此保留独立 try 而不并入上面的聚合。
         try:
             row = cur.execute(
                 """
@@ -902,67 +750,47 @@ def quality(ctx: click.Context) -> None:
             avg_confidence = None
             low_confidence_count = 0
 
-        # -- Relations -------------------------------------------------------
-        row = cur.execute(
-            "SELECT COUNT(*) AS cnt FROM relation_families"
-        ).fetchone()
-        total_relations: int = row["cnt"] if row else 0
-
-        # Relations with evidence (at least one active assertion linked to an episode)
+        # -- 关系/文档/向量/窗口聚合（P4.4b：6 项计数合并为 1 条 SQL）----------
+        # 关系总数 / 有证据（active assertion 且 evidence_text 非空）/ active
+        # 文档数 / 有内容文档（current_version 指向 active 且 char_count>0）/
+        # 向量总行数 / active 窗口数
         row = cur.execute(
             """
-            SELECT COUNT(DISTINCT rf.relation_family_id) AS cnt
-            FROM relation_families rf
-            JOIN relation_assertions ra
-              ON ra.relation_family_id = rf.relation_family_id
-             AND ra.status = 'active'
-            WHERE ra.evidence_text IS NOT NULL
-              AND ra.evidence_text != ''
+            SELECT
+              (SELECT COUNT(*) FROM relation_families) AS total_relations,
+              (SELECT COUNT(DISTINCT rf.relation_family_id)
+                 FROM relation_families rf
+                 JOIN relation_assertions ra
+                   ON ra.relation_family_id = rf.relation_family_id
+                  AND ra.status = 'active'
+                 WHERE ra.evidence_text IS NOT NULL
+                   AND ra.evidence_text != '') AS relations_with_evidence,
+              (SELECT COUNT(*) FROM documents WHERE status = 'active') AS total_docs,
+              (SELECT COUNT(*) FROM documents d
+                 WHERE d.status = 'active'
+                   AND d.current_version_id IS NOT NULL
+                   AND EXISTS (
+                       SELECT 1 FROM document_versions dv
+                       WHERE dv.document_version_id = d.current_version_id
+                         AND dv.status = 'active'
+                         AND dv.char_count > 0)) AS docs_with_content,
+              (SELECT COUNT(*) FROM embeddings) AS total_embeddings,
+              (SELECT COUNT(*) FROM episodes WHERE status = 'active') AS total_episodes
             """
         ).fetchone()
-        relations_with_evidence: int = row["cnt"] if row else 0
-
-        # -- Content coverage ------------------------------------------------
-        row = cur.execute(
-            "SELECT COUNT(*) AS cnt FROM documents WHERE status = 'active'"
-        ).fetchone()
-        total_docs: int = row["cnt"] if row else 0
-
-        row = cur.execute(
-            """
-            SELECT COUNT(*) AS cnt
-            FROM documents d
-            WHERE d.status = 'active'
-              AND d.current_version_id IS NOT NULL
-              AND EXISTS (
-                  SELECT 1 FROM document_versions dv
-                  WHERE dv.document_version_id = d.current_version_id
-                    AND dv.status = 'active'
-                    AND dv.char_count > 0
-              )
-            """
-        ).fetchone()
-        docs_with_content: int = row["cnt"] if row else 0
+        total_relations: int = row["total_relations"] if row else 0
+        relations_with_evidence: int = row["relations_with_evidence"] if row else 0
+        total_docs: int = row["total_docs"] if row else 0
+        docs_with_content: int = row["docs_with_content"] if row else 0
+        total_embeddings: int = row["total_embeddings"] if row else 0
+        total_episodes: int = row["total_episodes"] if row else 0
 
         content_pct: float = (
             round(docs_with_content / total_docs * 100, 1) if total_docs else 0.0
         )
-
-        # -- Embedding coverage ----------------------------------------------
-        row = cur.execute(
-            "SELECT COUNT(*) AS cnt FROM embeddings"
-        ).fetchone()
-        total_embeddings: int = row["cnt"] if row else 0
-
         emb_coverage_pct: float = (
             round(entities_with_emb / total_entities * 100, 1) if total_entities else 0.0
         )
-
-        # -- Episodes --------------------------------------------------------
-        row = cur.execute(
-            "SELECT COUNT(*) AS cnt FROM episodes WHERE status = 'active'"
-        ).fetchone()
-        total_episodes: int = row["cnt"] if row else 0
 
         # -- Build output ----------------------------------------------------
         data = {
@@ -983,11 +811,7 @@ def quality(ctx: click.Context) -> None:
         }
 
         if out.is_json:
-            click.echo(json.dumps({
-                "success": True,
-                "command": "db quality",
-                "data": data,
-            }, ensure_ascii=False, indent=2))
+            emit_json_result("db quality", data)
             return
 
         # Rich table output
@@ -1049,16 +873,6 @@ def quality(ctx: click.Context) -> None:
             columns=("Metric", "Value", "Detail", "Status"),
             rows=rows,
         )
-    except Exception as exc:
-        if out.is_json:
-            click.echo(json.dumps({
-                "success": False,
-                "error": str(exc),
-            }, ensure_ascii=False, indent=2))
-        else:
-            out.error(str(exc), code=ERROR)
-    finally:
-        conn.close()
 
 
 # ------------------------------------------------------------------
@@ -1105,11 +919,7 @@ def integrity(ctx: click.Context, doc_id: str, repair: bool) -> None:
         except Exception:
             pass
         if out.is_json:
-            click.echo(json.dumps({
-                "success": False,
-                "error": f"HTTP {exc.code}: {detail}",
-                "command": "db integrity",
-            }, ensure_ascii=False, indent=2))
+            emit_json_error(f"HTTP {exc.code}: {detail}", command="db integrity")
         else:
             out.error(
                 f"Server returned HTTP {exc.code}",
@@ -1119,11 +929,7 @@ def integrity(ctx: click.Context, doc_id: str, repair: bool) -> None:
         return
     except urllib.error.URLError as exc:
         if out.is_json:
-            click.echo(json.dumps({
-                "success": False,
-                "error": f"Connection failed: {exc.reason}",
-                "command": "db integrity",
-            }, ensure_ascii=False, indent=2))
+            emit_json_error(f"Connection failed: {exc.reason}", command="db integrity")
         else:
             out.error(
                 f"Cannot reach server at {base_url}",
@@ -1165,11 +971,7 @@ def integrity(ctx: click.Context, doc_id: str, repair: bool) -> None:
         payload_data: Dict[str, Any] = {"integrity": result}
         if repair and repair_result is not None:
             payload_data["repair"] = repair_result
-        click.echo(json.dumps({
-            "success": True,
-            "command": f"db integrity{' --repair' if repair else ''}",
-            "data": payload_data,
-        }, ensure_ascii=False, indent=2))
+        emit_json_result(f"db integrity{' --repair' if repair else ''}", payload_data)
         return
 
     # Rich output

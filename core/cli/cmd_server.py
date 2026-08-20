@@ -23,6 +23,7 @@ from typing import Any, Dict, Optional
 import click
 
 from ._exit_codes import ERROR
+from ._helpers import resolve_config_path
 
 
 # ------------------------------------------------------------------
@@ -56,12 +57,6 @@ def _pid_file_path(ctx: click.Context) -> Path:
 def _log_file_path(ctx: click.Context) -> Path:
     """Return the path to the server log file inside the library directory."""
     return _resolve_library_dir(ctx) / _LOG_FILENAME
-
-
-def _resolve_config_path(ctx: click.Context) -> str:
-    """Return the config file path stored on the root Click context."""
-    root_params = ctx.find_root().params
-    return root_params.get("config", "service_config.json")
 
 
 def _read_pid(pid_path: Path) -> Optional[int]:
@@ -254,7 +249,7 @@ def start(ctx: click.Context, host: Optional[str], port: Optional[int], detach: 
     out = OutputManager(ctx)
 
     # Resolve host / port from config if not supplied on the CLI.
-    config_path = _resolve_config_path(ctx)
+    config_path = resolve_config_path(ctx)
     try:
         from core.server.config import load_config
 

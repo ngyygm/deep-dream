@@ -21,10 +21,12 @@ from .orchestrator_pipeline import _PipelineMixin
 # Sub-modules (no circular import — they do NOT import from orchestrator.py)
 from . import pipeline_state as _ps
 from . import pipeline_workers as _pw
-
-_REMEMBER_DEFAULTS = {
-    "alignment_policy": "conservative",
-}
+from ._shared import (
+    REMEMBER_CONFIG_DEFAULTS,
+    REMEMBER_MAX_ENTITIES_PER_WINDOW_DEFAULT,
+    REMEMBER_MAX_RELATIONS_PER_WINDOW_DEFAULT,
+    REMEMBER_PROFILE_CURRENT,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -48,18 +50,26 @@ class TemporalMemoryGraphProcessor(_PipelineMixin, _PipelineExtractionMixin, _Cr
                                   relation_endpoint_jaccard_threshold,
                                   relation_endpoint_embedding_threshold,
                                   max_similar_entities, llm_context_window_tokens):
-        """解析 remember 配置：合并默认值 → config → remember_config 覆盖。"""
+        """解析 remember 配置：合并默认值 → config → remember_config 覆盖。
+
+        档位差异的唯一推导处：alignment_policy（conservative/其他）与 profile
+        （current/strong-v1/quality-v1）派生的参数默认值、子处理器覆盖、窗口
+        尺寸覆盖全部在本方法内看全；__init__ 只对返回值做机械应用，不自行
+        推导档位行为。数值默认常量的唯一出处是 _shared.REMEMBER_*。
+        """
         _content_snippet_length = content_snippet_length if content_snippet_length is not None else 300
         _remember_from_config = (((config or {}).get("pipeline") or {}).get("remember") or {})
         _remember_overrides = remember_config or {}
-        _remember_cfg = dict(_REMEMBER_DEFAULTS)
+        _default_policy = REMEMBER_CONFIG_DEFAULTS["alignment_policy"]
+        _remember_cfg = dict(REMEMBER_CONFIG_DEFAULTS)
         _remember_cfg.update(_remember_from_config)
-        if remember_config:
-            _remember_cfg.update(remember_config)
+        _remember_cfg.update(_remember_overrides)
         self.remember_config = _remember_cfg
-        self.remember_alignment_policy = str(_remember_cfg.get("alignment_policy") or "conservative").strip() or "conservative"
-        self.remember_alignment_conservative = self.remember_alignment_policy == "conservative"
-        self.remember_profile = str(_remember_cfg.get("profile") or "current")
+        self.remember_alignment_policy = (
+            str(_remember_cfg.get("alignment_policy") or _default_policy).strip() or _default_policy
+        )
+        self.remember_alignment_conservative = self.remember_alignment_policy == _default_policy
+        self.remember_profile = str(_remember_cfg.get("profile") or REMEMBER_PROFILE_CURRENT)
         # P2：孤立实体兜底共现关系（confidence 0.3 轮询配对）默认关闭——
         # 见 alignment_relations.py 兜底阶段注释。
         self.remember_fallback_cooccurrence = bool(_remember_cfg.get("fallback_cooccurrence_relations", False))
@@ -67,8 +77,10 @@ class TemporalMemoryGraphProcessor(_PipelineMixin, _PipelineExtractionMixin, _Cr
         self.window_batch_alignment_enabled = bool(
             _remember_cfg.get("window_batch_alignment", self.remember_profile == "strong-v1"))
         self.remember_preserve_source_language = bool(_remember_cfg.get("preserve_source_language", False))
-        self.remember_max_entities_per_window = max(1, int(_remember_cfg.get("max_entities_per_window") or 16))
-        self.remember_max_relations_per_window = max(1, int(_remember_cfg.get("max_relations_per_window") or 24))
+        self.remember_max_entities_per_window = max(
+            1, int(_remember_cfg.get("max_entities_per_window") or REMEMBER_MAX_ENTITIES_PER_WINDOW_DEFAULT))
+        self.remember_max_relations_per_window = max(
+            1, int(_remember_cfg.get("max_relations_per_window") or REMEMBER_MAX_RELATIONS_PER_WINDOW_DEFAULT))
         # strong-v1 检索切片：窗口 episode 之外按 ~N 字在行边界追加薄 FTS 切片行（0=关闭）
         self.remember_episode_slice_chars = max(0, int(_remember_cfg.get("episode_slice_chars") or 0))
         _relation_content_snippet_length = relation_content_snippet_length if relation_content_snippet_length is not None else 200
@@ -89,6 +101,32 @@ class TemporalMemoryGraphProcessor(_PipelineMixin, _PipelineExtractionMixin, _Cr
             _ctx_win = 8000
         _ctx_win = max(256, int(_ctx_win))
 
+        # ---- 窗口尺寸覆盖：strong-v1 单遍抽取可经 remember 配置换成大窗口 ----
+        # （server 配置默认 6000/300）；<500 视为未配置，回退构造参数 window_size/overlap。
+        _win_chars = int(_remember_cfg.get("window_size_chars") or 0)
+        if _win_chars >= 500:
+            _document_window = (_win_chars, int(_remember_cfg.get("overlap_chars") or 0) or 300)
+        else:
+            _document_window = None
+
+        # ---- 子处理器档位覆盖（conservative 档差异一处看全）----
+        # conservative：批量裁决置信度抬到 0.9；合并安全阈值加地板（embedding
+        # 0.7 / jaccard 0.55，只升不降）；关系逐条保留（preserve_distinct）。
+        # 非 conservative（如 aggressive）：仅关闭 preserve_distinct，
+        # 其余键缺省表示保留子处理器自身默认（None=不覆盖）。
+        if self.remember_alignment_conservative:
+            _subprocessor_overrides = {
+                "entity_batch_resolution_confidence": 0.9,
+                "entity_merge_safe_embedding_floor": 0.7,
+                "entity_merge_safe_jaccard_floor": 0.55,
+                "relation_batch_resolution_confidence": 0.9,
+                "preserve_distinct_relations_per_pair": True,
+            }
+        else:
+            _subprocessor_overrides = {
+                "preserve_distinct_relations_per_pair": False,
+            }
+
         # Return derived values needed by _create_components
         return {
             "content_snippet_length": _content_snippet_length,
@@ -97,6 +135,8 @@ class TemporalMemoryGraphProcessor(_PipelineMixin, _PipelineExtractionMixin, _Cr
             "relation_endpoint_embedding_threshold": _relation_endpoint_embedding_threshold,
             "max_similar_entities": _max_similar_entities,
             "context_window_tokens": _ctx_win,
+            "document_window": _document_window,
+            "subprocessor_overrides": _subprocessor_overrides,
         }
 
     # ------------------------------------------------------------------
@@ -243,12 +283,12 @@ class TemporalMemoryGraphProcessor(_PipelineMixin, _PipelineExtractionMixin, _Cr
                 relation_content_snippet_length=_relation_content_snippet_length,
                 graph_id=graph_id,
             )
-        self.document_processor = DocumentProcessor(window_size, overlap)
-        # strong-v1 单遍抽取：remember 配置可覆盖窗口尺寸（默认 6000/300 大窗口）
-        _strong_ws = int(self.remember_config.get("window_size_chars") or 0)
-        if _strong_ws >= 500:
-            _strong_ov = int(self.remember_config.get("overlap_chars") or 0) or 300
-            self.document_processor = DocumentProcessor(_strong_ws, _strong_ov)
+        # 窗口尺寸：remember 配置可覆盖构造参数（strong-v1 大窗口；推导在 _resolve_remember_config）
+        _document_window = _derived["document_window"]
+        if _document_window is not None:
+            self.document_processor = DocumentProcessor(_document_window[0], _document_window[1])
+        else:
+            self.document_processor = DocumentProcessor(window_size, overlap)
         _al = alignment_llm or {}
         _main_openai_extra_body = ((config or {}).get("llm") or {}).get("extra_body") or {}
         _llm_protocol = ((config or {}).get("llm") or {}).get("protocol")
@@ -304,14 +344,20 @@ class TemporalMemoryGraphProcessor(_PipelineMixin, _PipelineExtractionMixin, _Cr
         # FamilyWriteGate：并发创建同名 family 的竞态兜底（库级共享，registry 注入）
         self.family_write_gate = family_write_gate
         self.entity_processor.family_write_gate = family_write_gate
-        if self.remember_alignment_conservative:
-            self.entity_processor.batch_resolution_confidence_threshold = 0.9
-            self.entity_processor.merge_safe_embedding_threshold = max(self.entity_processor.merge_safe_embedding_threshold, 0.7)
-            self.entity_processor.merge_safe_jaccard_threshold = max(self.entity_processor.merge_safe_jaccard_threshold, 0.55)
-            self.relation_processor.batch_resolution_confidence_threshold = 0.9
-            self.relation_processor.preserve_distinct_relations_per_pair = True
-        else:
-            self.relation_processor.preserve_distinct_relations_per_pair = False
+        # 子处理器档位覆盖（conservative 等差异全部在 _resolve_remember_config
+        # 一处推导）；此处机械应用——阈值键缺省（None）表示保留子处理器默认，
+        # 地板（floor）语义为 max(现值, 地板)，只升不降
+        _sub = _derived["subprocessor_overrides"]
+        if _sub.get("entity_batch_resolution_confidence") is not None:
+            self.entity_processor.batch_resolution_confidence_threshold = _sub["entity_batch_resolution_confidence"]
+            self.entity_processor.merge_safe_embedding_threshold = max(
+                self.entity_processor.merge_safe_embedding_threshold,
+                _sub["entity_merge_safe_embedding_floor"])
+            self.entity_processor.merge_safe_jaccard_threshold = max(
+                self.entity_processor.merge_safe_jaccard_threshold,
+                _sub["entity_merge_safe_jaccard_floor"])
+            self.relation_processor.batch_resolution_confidence_threshold = _sub["relation_batch_resolution_confidence"]
+        self.relation_processor.preserve_distinct_relations_per_pair = _sub["preserve_distinct_relations_per_pair"]
 
         self.similarity_threshold = similarity_threshold if similarity_threshold is not None else 0.7
         self.max_similar_entities = _max_similar_entities

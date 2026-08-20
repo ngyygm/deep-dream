@@ -4,6 +4,22 @@ from concurrent.futures import ThreadPoolExecutor
 
 from core.utils import entity_match_key
 
+# ---------------------------------------------------------------------------
+# remember 配置默认值 —— 唯一出处
+#
+# orchestrator._resolve_remember_config 以 REMEMBER_CONFIG_DEFAULTS 为合并
+# 基线；各步骤模块（strong_steps 等）的 getattr 兜底引用其余常量，同一
+# 默认值不再散落多处。_shared 是叶子模块（仅依赖 core.utils），
+# orchestrator 与步骤模块顶层导入它都不构成环。
+# ---------------------------------------------------------------------------
+
+REMEMBER_CONFIG_DEFAULTS = {
+    "alignment_policy": "conservative",
+}
+REMEMBER_PROFILE_CURRENT = "current"
+REMEMBER_MAX_ENTITIES_PER_WINDOW_DEFAULT = 16
+REMEMBER_MAX_RELATIONS_PER_WINDOW_DEFAULT = 24
+
 # Shared thread pool — reused across entity processing calls within a session
 _ENTITY_POOL: list = [None]
 _ENTITY_POOL_MAX: list = [1]

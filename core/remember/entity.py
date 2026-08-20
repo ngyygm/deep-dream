@@ -16,13 +16,14 @@ import numpy as np
 import logging
 
 from core.debug_log import log_struct as _dbg_struct
+from core.judge.models import norm_name
 from core.models import Entity, Episode
 from core.storage.sqlite.manager import SQLiteGraphStorageManager
 from core.llm.client import LLMClient
 from core.utils import wprint_info
 
 
-from ._shared import _doc_basename, _get_entity_pool
+from ._shared import _doc_basename, _get_entity_pool, _ENTITY_POOL_MAX
 from core.content_schema import (
     ENTITY_SECTIONS,
     compute_content_patches,
@@ -375,7 +376,6 @@ def _process_entity_sequential_fallback(
         _detailed_tasks.append((cid, candidate_entity, candidate_info))
 
     # Execute LLM calls in parallel (3 workers to utilize concurrency budget)
-    from core.remember._shared import _get_entity_pool, _ENTITY_POOL_MAX
     _detailed_results: Dict[str, Optional[Dict]] = {}
     if len(_detailed_tasks) > 1:
         def _call_detailed(task):
@@ -1193,7 +1193,6 @@ class EntityProcessor(_EntityBatchMixin):
         if gate is None:
             return self._build_new_entity(name, content, episode_id, source_document,
                                           base_time=base_time, confidence=confidence)
-        from core.judge.models import norm_name
         _norm = norm_name(name)
         _judged = {norm_name(n) for n in (judged_candidate_names or ()) if n}
         with gate.write_txn():

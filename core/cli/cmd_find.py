@@ -9,14 +9,8 @@ from typing import Any, Dict, List, Optional
 
 import click
 
-
-def _escape_like(value: str) -> str:
-    """Escape LIKE wildcard characters (%_) so they match literally.
-
-    Uses '!' as the ESCAPE character to avoid backslash quoting issues
-    in Python triple-quoted SQL strings.
-    """
-    return value.replace("!", "!!").replace("%", "!%").replace("_", "!_")
+# P4.5：LIKE 转义与存储层共用同一实现（配对 SQL 子句 ESCAPE '!'）
+from core.storage.sqlite.helpers import escape_like
 
 
 # ------------------------------------------------------------------
@@ -99,7 +93,7 @@ def find(
         try:
             # Primary: search entity_families by name (most useful for users).
             conn = storage._conn()
-            like_pattern = f"%{_escape_like(query)}%"
+            like_pattern = f"%{escape_like(query)}%"
             rows = conn.execute(
                 """
                 SELECT ef.entity_family_id AS family_id,

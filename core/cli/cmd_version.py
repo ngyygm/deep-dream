@@ -20,19 +20,13 @@ def version(ctx: click.Context) -> None:
     out = OutputManager(ctx)
 
     # --- Deep-Dream version ---------------------------------------------------
+    # 单一版本来源：core.cli._main._resolve_version（包元数据优先，常量兜底），
+    # 与 ``deep-dream --version`` 输出保持一致。
     import importlib.metadata
 
-    try:
-        dd_version = importlib.metadata.version("deep-dream")
-    except Exception:
-        # Package not installed via pip / metadata missing — fall back to
-        # the constant defined in _main.py so we stay in sync.
-        try:
-            from core.cli._main import _VERSION
+    from core.cli._main import _resolve_version
 
-            dd_version = _VERSION
-        except Exception:
-            dd_version = "unknown"
+    dd_version = _resolve_version()
 
     # --- Python version -------------------------------------------------------
     py_version = (

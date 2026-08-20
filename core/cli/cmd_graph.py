@@ -22,6 +22,7 @@ from rich.panel import Panel as _Panel
 
 from ._ctx import CliContext
 from ._exit_codes import ERROR, NOT_FOUND
+from ._helpers import resolve_config_path
 from ._output import OutputManager, format_timestamp
 
 
@@ -50,15 +51,6 @@ def graph() -> None:
 # Helpers
 # ------------------------------------------------------------------
 
-def _resolve_config_path(ctx: click.Context) -> str:
-    """Extract the ``--config`` path from the Click root context."""
-    cur = ctx
-    while cur.parent is not None:
-        cur = cur.parent
-    params = getattr(ctx.obj, "_click_params", None) or {}
-    return params.get("config", "service_config.json")
-
-
 def _get_graph_id(ctx: click.Context, explicit: Optional[str] = None) -> str:
     """Return the active graph ID (always LIBRARY_ID in single-library mode)."""
     obj: CliContext = ctx.obj
@@ -75,7 +67,7 @@ def list_graphs(ctx: click.Context) -> None:
     """List all graphs and their status."""
     obj: CliContext = ctx.obj
     out = OutputManager(ctx)
-    config_path = _resolve_config_path(ctx)
+    config_path = resolve_config_path(ctx)
     obj.load_config(config_path)
 
     registry = obj.get_registry()
@@ -128,7 +120,7 @@ def create(ctx: click.Context, graph_id: str) -> None:
     """
     obj: CliContext = ctx.obj
     out = OutputManager(ctx)
-    config_path = _resolve_config_path(ctx)
+    config_path = resolve_config_path(ctx)
     obj.load_config(config_path)
 
     with obj.get_storage(graph_id, ensure=True) as storage:
@@ -169,7 +161,7 @@ def stats(ctx: click.Context, graph: Optional[str]) -> None:
     """Show statistics for a graph."""
     obj: CliContext = ctx.obj
     out = OutputManager(ctx)
-    config_path = _resolve_config_path(ctx)
+    config_path = resolve_config_path(ctx)
     obj.load_config(config_path)
     graph_id = _get_graph_id(ctx, graph)
 
@@ -244,7 +236,7 @@ def rebuild(ctx: click.Context, graph: Optional[str], yes: bool, dry_run: bool) 
     """
     obj: CliContext = ctx.obj
     out = OutputManager(ctx)
-    config_path = _resolve_config_path(ctx)
+    config_path = resolve_config_path(ctx)
     obj.load_config(config_path)
     graph_id = _get_graph_id(ctx, graph)
 

@@ -1,26 +1,10 @@
 """V1.5 table rows → legacy Entity/Relation/Episode DTO mapping."""
 import json as _json
-from datetime import datetime, timezone
 from typing import Optional
 
 from core.models import Entity, Episode, Relation
 
-
-def _parse_dt(value) -> Optional[datetime]:
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        return value
-    if isinstance(value, str):
-        try:
-            return datetime.fromisoformat(value)
-        except Exception:
-            return None
-    return None
-
-
-def _now():
-    return datetime.now(timezone.utc)
+from .helpers import _parse_dt, now_utc
 
 
 def _extract_confidence(extra_json_str: str) -> Optional[float]:
@@ -43,7 +27,7 @@ def observation_to_entity(
     version_seq: int = 1,
 ) -> Entity:
     """Map V1.5 entity_families + entity_observations rows → Entity DTO."""
-    now = _now()
+    now = now_utc()
     # V1.5 pipeline always creates markdown-formatted content; the schema
     # has no explicit content_format column, so default to "markdown".
     return Entity(
@@ -72,7 +56,7 @@ def assertion_to_relation(
     version_seq: int = 1,
 ) -> Relation:
     """Map V1.5 relation_families + relation_assertions rows → Relation DTO."""
-    now = _now()
+    now = now_utc()
     return Relation(
         absolute_id=assert_row["relation_id"],
         family_id=family_row["relation_family_id"],
@@ -99,7 +83,7 @@ def assertion_to_relation(
 
 def episode_row_to_dto(episode_row: dict) -> Episode:
     """Map V1.5 episodes row → Episode DTO."""
-    now = _now()
+    now = now_utc()
     return Episode(
         absolute_id=episode_row["episode_id"],
         content=episode_row.get("memory_text") or episode_row.get("source_text", ""),

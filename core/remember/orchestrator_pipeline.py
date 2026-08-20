@@ -10,6 +10,7 @@ import time
 import uuid
 
 from core.log import info as _log_info
+from core.storage.sqlite.repositories import pipeline as pipeline_repo
 from core.text_chunking import apply_document_metadata_prefix
 from core.utils import (
     clear_parallel_log_context,
@@ -172,7 +173,6 @@ class _PipelineMixin:
         clear_parallel_log_context()
 
         # Record pipeline run
-        from core.storage.sqlite.repositories import pipeline as pipeline_repo
         try:
             pipeline_repo.insert_pipeline_run(
                 self.storage._conn(), _run_id, "remember", "running",
@@ -502,7 +502,6 @@ class _PipelineMixin:
         # propagate the exception so the worker can retry.
         if _main_pipeline_exc is not None:
             try:
-                from core.storage.sqlite.repositories import pipeline as pipeline_repo
                 pipeline_repo.update_pipeline_run_status(
                     self.storage._conn(), _run_id, "failed",
                     finished_at=datetime.now().isoformat(),
@@ -583,7 +582,6 @@ class _PipelineMixin:
 
         # Update pipeline_run status to 'succeeded'
         try:
-            from core.storage.sqlite.repositories import pipeline as pipeline_repo
             pipeline_repo.update_pipeline_run_status(
                 self.storage._conn(), _run_id, "succeeded",
                 finished_at=datetime.now().isoformat(),

@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional
 import click
 
 from ._exit_codes import ERROR, NETWORK, NOT_FOUND
+from ._helpers import emit_json_result
 from ._output import OutputManager
 
 
@@ -132,6 +133,26 @@ def _error_message(resp: Dict[str, Any]) -> str:
     if "_network_error" in resp:
         return f"Cannot reach server at http://127.0.0.1:16200 ({resp['_network_error']})"
     return resp.get("error") or resp.get("message") or _json.dumps(resp, ensure_ascii=False)
+
+
+def _fail_if_error(
+    out: OutputManager,
+    resp: Dict[str, Any],
+    task_id: Optional[str] = None,
+) -> None:
+    """统一 API 错误出口（P4.4a）：网络不通报 NETWORK，404 报 NOT_FOUND，
+    其余报 ERROR；无错时直接返回。报错路径经 out.error 抛 SystemExit。"""
+    if not _is_error(resp):
+        return
+    if "_network_error" in resp:
+        out.error(
+            "Cannot reach server at http://127.0.0.1:16200",
+            hint=_SERVER_HINT,
+            code=NETWORK,
+        )
+    if task_id is not None and resp.get("_http_status") == 404:
+        out.error(f"Task not found: {task_id}", code=NOT_FOUND)
+    out.error(_error_message(resp), code=ERROR)
 
 
 def _ensure_connected(out: OutputManager) -> None:
@@ -281,15 +302,7 @@ def task_list(ctx: click.Context, status_filter: Optional[str], limit: int) -> N
 
     params: Dict[str, str] = {"limit": str(limit)}
     resp = _request("GET", "/remember/tasks", params=params)
-
-    if _is_error(resp):
-        if "_network_error" in resp:
-            out.error(
-                "Cannot reach server at http://127.0.0.1:16200",
-                hint=_SERVER_HINT,
-                code=NETWORK,
-            )
-        out.error(_error_message(resp), code=ERROR)
+    _fail_if_error(out, resp)
 
     data = resp.get("data", resp)
     tasks: List[Dict[str, Any]] = data.get("tasks", []) if isinstance(data, dict) else []
@@ -299,9 +312,7 @@ def task_list(ctx: click.Context, status_filter: Optional[str], limit: int) -> N
         tasks = [t for t in tasks if t.get("status") == status_filter]
 
     if out.is_json:
-        from ._output import json_result
-        payload = json_result("task-list", {"tasks": tasks, "count": len(tasks)})
-        click.echo(_json.dumps(payload, ensure_ascii=False, indent=2))
+        emit_json_result("task-list", {"tasks": tasks, "count": len(tasks)})
         return
 
     if out.is_quiet:
@@ -357,25 +368,12 @@ def task_status(ctx: click.Context, task_id: str) -> None:
     _ensure_connected(out)
 
     resp = _request("GET", f"/remember/tasks/{task_id}")
-
-    if _is_error(resp):
-        if "_network_error" in resp:
-            out.error(
-                "Cannot reach server at http://127.0.0.1:16200",
-                hint=_SERVER_HINT,
-                code=NETWORK,
-            )
-        http_status = resp.get("_http_status")
-        if http_status == 404:
-            out.error(f"Task not found: {task_id}", code=NOT_FOUND)
-        out.error(_error_message(resp), code=ERROR)
+    _fail_if_error(out, resp, task_id=task_id)
 
     data = resp.get("data", resp)
 
     if out.is_json:
-        from ._output import json_result
-        payload = json_result("task-status", data)
-        click.echo(_json.dumps(payload, ensure_ascii=False, indent=2))
+        emit_json_result("task-status", data)
         return
 
     if out.is_quiet:
@@ -492,26 +490,13 @@ def task_cancel(ctx: click.Context, task_id: str, yes: bool) -> None:
             click.confirm(f"Cancel task {task_id}?", abort=True)
 
     resp = _request("DELETE", f"/remember/tasks/{task_id}")
-
-    if _is_error(resp):
-        if "_network_error" in resp:
-            out.error(
-                "Cannot reach server at http://127.0.0.1:16200",
-                hint=_SERVER_HINT,
-                code=NETWORK,
-            )
-        http_status = resp.get("_http_status")
-        if http_status == 404:
-            out.error(f"Task not found: {task_id}", code=NOT_FOUND)
-        out.error(_error_message(resp), code=ERROR)
+    _fail_if_error(out, resp, task_id=task_id)
 
     data = resp.get("data", resp)
     message = data.get("message", "Task cancelled")
 
     if out.is_json:
-        from ._output import json_result
-        payload = json_result("task-cancel", data)
-        click.echo(_json.dumps(payload, ensure_ascii=False, indent=2))
+        emit_json_result("task-cancel", data)
         return
 
     out.success(f"Task {task_id}: {message}")
@@ -529,26 +514,13 @@ def task_pause(ctx: click.Context, task_id: str) -> None:
     _ensure_connected(out)
 
     resp = _request("POST", f"/remember/tasks/{task_id}/pause", body={})
-
-    if _is_error(resp):
-        if "_network_error" in resp:
-            out.error(
-                "Cannot reach server at http://127.0.0.1:16200",
-                hint=_SERVER_HINT,
-                code=NETWORK,
-            )
-        http_status = resp.get("_http_status")
-        if http_status == 404:
-            out.error(f"Task not found: {task_id}", code=NOT_FOUND)
-        out.error(_error_message(resp), code=ERROR)
+    _fail_if_error(out, resp, task_id=task_id)
 
     data = resp.get("data", resp)
     message = data.get("message", "Pause requested")
 
     if out.is_json:
-        from ._output import json_result
-        payload = json_result("task-pause", data)
-        click.echo(_json.dumps(payload, ensure_ascii=False, indent=2))
+        emit_json_result("task-pause", data)
         return
 
     out.success(f"Task {task_id}: {message}")
@@ -566,26 +538,13 @@ def task_resume(ctx: click.Context, task_id: str) -> None:
     _ensure_connected(out)
 
     resp = _request("POST", f"/remember/tasks/{task_id}/resume", body={})
-
-    if _is_error(resp):
-        if "_network_error" in resp:
-            out.error(
-                "Cannot reach server at http://127.0.0.1:16200",
-                hint=_SERVER_HINT,
-                code=NETWORK,
-            )
-        http_status = resp.get("_http_status")
-        if http_status == 404:
-            out.error(f"Task not found: {task_id}", code=NOT_FOUND)
-        out.error(_error_message(resp), code=ERROR)
+    _fail_if_error(out, resp, task_id=task_id)
 
     data = resp.get("data", resp)
     message = data.get("message", "Task resumed")
 
     if out.is_json:
-        from ._output import json_result
-        payload = json_result("task-resume", data)
-        click.echo(_json.dumps(payload, ensure_ascii=False, indent=2))
+        emit_json_result("task-resume", data)
         return
 
     out.success(f"Task {task_id}: {message}")
@@ -606,27 +565,14 @@ def task_retry(ctx: click.Context, task_id: str) -> None:
     _ensure_connected(out)
 
     resp = _request("POST", f"/remember/tasks/{task_id}/retry", body={})
-
-    if _is_error(resp):
-        if "_network_error" in resp:
-            out.error(
-                "Cannot reach server at http://127.0.0.1:16200",
-                hint=_SERVER_HINT,
-                code=NETWORK,
-            )
-        http_status = resp.get("_http_status")
-        if http_status == 404:
-            out.error(f"Task not found: {task_id}", code=NOT_FOUND)
-        out.error(_error_message(resp), code=ERROR)
+    _fail_if_error(out, resp, task_id=task_id)
 
     data = resp.get("data", resp)
     message = data.get("message", "Retry requested")
     retry_windows = data.get("retry_windows", [])
 
     if out.is_json:
-        from ._output import json_result
-        payload = json_result("task-retry", data)
-        click.echo(_json.dumps(payload, ensure_ascii=False, indent=2))
+        emit_json_result("task-retry", data)
         return
 
     out.success(f"Task {task_id}: {message}")
@@ -645,15 +591,7 @@ def task_resume_all(ctx: click.Context) -> None:
     _ensure_connected(out)
 
     resp = _request("POST", "/remember/tasks/resume-all", body={})
-
-    if _is_error(resp):
-        if "_network_error" in resp:
-            out.error(
-                "Cannot reach server at http://127.0.0.1:16200",
-                hint=_SERVER_HINT,
-                code=NETWORK,
-            )
-        out.error(_error_message(resp), code=ERROR)
+    _fail_if_error(out, resp)
 
     data = resp.get("data", resp)
     resumed = data.get("resumed", [])
@@ -661,9 +599,7 @@ def task_resume_all(ctx: click.Context) -> None:
     count = data.get("count", len(resumed))
 
     if out.is_json:
-        from ._output import json_result
-        payload = json_result("task-resume-all", data)
-        click.echo(_json.dumps(payload, ensure_ascii=False, indent=2))
+        emit_json_result("task-resume-all", data)
         return
 
     out.success(f"Resumed {count} task(s)")

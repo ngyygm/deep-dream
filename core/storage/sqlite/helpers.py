@@ -9,6 +9,31 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
+def now_utc() -> datetime:
+    """当前 UTC 时间（带时区）。DB 时间列的统一时间源。"""
+    return datetime.now(timezone.utc)
+
+
+def now_utc_str() -> str:
+    """当前 UTC 时间的 ISO 字符串（+00:00 带时区）。
+
+    created_at/processed_at/updated_at 等 DB 时间列的统一写入格式
+    （P4.5 收敛：merge / library_manager / vault_indexer / db backfill
+    共用此实现，避免混格式破坏 ORDER BY <时间列> 的字符串排序）。
+    """
+    return now_utc().isoformat()
+
+
+def escape_like(value: str) -> str:
+    """Escape LIKE wildcard characters (%_) so they match literally.
+
+    Uses '!' as the ESCAPE character to avoid backslash quoting issues
+    in Python triple-quoted SQL strings. 与 SQL 侧 ``ESCAPE '!'`` 子句
+    成对使用（P4.5 收敛：library_manager / cmd_concept / cmd_find 共用）。
+    """
+    return value.replace("!", "!!").replace("%", "!%").replace("_", "!_")
+
+
 def _parse_dt(value) -> Optional[datetime]:
     if value is None:
         return None

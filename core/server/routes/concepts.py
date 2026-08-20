@@ -1,16 +1,22 @@
 """
-Concept routes — Concept CRUD/search/traverse and document graph helpers.
+Concept routes — Concept CRUD/search/traverse.
+
+P4.3 拆分说明：
+  - 检索执行逻辑（RRF 融合/role boost/CJK 阈值/BM25+语义两路）在
+    core/find/concept_search.py，与 CLI ``concept search`` 共用同一实现（P4.2）。
+  - /documents*、/episodes*、/vaults* 路由在 routes/documents.py。
+  - /agent* 路由在 routes/agent.py（经 concepts_bp 嵌套注册，URL 不变）。
+本模块只保留概念/实体/关系路由。
 """
 from __future__ import annotations
 
 import logging
 import math as _math
 import re as _re
-import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict
 
-from flask import Blueprint, current_app, request
+from flask import Blueprint, request
 
 from core.server.routes.helpers import (
     ok,
@@ -21,213 +27,26 @@ from core.server.routes.helpers import (
     get_json_body,
 )
 from core.server.routes._constants import _VALID_SEARCH_MODES, _VALID_RERANKERS
+# P4.2：检索实现单点化——server 与 CLI 共用（别名保持本模块内的既有调用名）
+from core.find.concept_search import (
+    normalize_results as _normalize_results,
+    bm25_concept_search as _bm25_concept_search,
+    semantic_concept_search as _semantic_concept_search,
+    hybrid_concept_search as _hybrid_concept_search,
+)
 
 logger = logging.getLogger(__name__)
 
 concepts_bp = Blueprint("concepts", __name__)
 
-# ── CJK detection for BM25 fallback ──────────────────────────────────────────
-_CJK_RE = _re.compile(r'[一-鿿㐀-䶿]')
+# P4.3：/agent* 路由拆到 routes/agent.py；api.py 的注册行不可改
+# （concepts_bp 在 create_app 中注册），故以 Flask 嵌套蓝图挂载——
+# URL/方法与拆分前逐一相同。
+from core.server.routes.agent import agent_bp  # noqa: E402
 
-
-def _has_cjk(query: str) -> bool:
-    """Return True if the query contains any CJK character."""
-    if not query:
-        return False
-    return bool(_CJK_RE.search(query))
-
-
-def _is_cjk_dominant(query: str) -> bool:
-    """Return True if CJK characters make up >50% of the query.
-
-    When this returns True we skip BM25 entirely and fall back to
-    semantic search, because FTS5 unicode61 tokenizer produces noise
-    for CJK text.
-    """
-    if not query:
-        return False
-    cjk_chars = len(_CJK_RE.findall(query))
-    return cjk_chars > len(query) * 0.5
+concepts_bp.register_blueprint(agent_bp)
 
 _shared_pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="concept")
-
-
-def _entity_to_search_dict(e):
-    """Convert an Entity object to a search result dict."""
-    return {
-        "family_id": e.family_id,
-        "id": e.absolute_id,
-        "name": e.name,
-        "content": e.content,
-        "role": "entity",
-        "_score": getattr(e, "_score", 0.0),
-    }
-
-
-def _relation_to_search_dict(r):
-    """Convert a Relation object to a search result dict."""
-    return {
-        "family_id": r.family_id,
-        "id": r.absolute_id,
-        "name": "",
-        "content": r.content,
-        "role": "relation",
-        "entity1_name": "",
-        "entity2_name": "",
-        "_score": getattr(r, "_score", 0.0),
-    }
-
-
-def _normalize_results(results: list) -> list:
-    """Add ``_rank`` (1-based) and ``relevance`` (0-100) to search results.
-
-    Normalisation strategy within *one* result list:
-      - Highest score -> relevance 100
-      - Lowest non-zero score -> relevance 10
-      - Scores of 0 -> relevance 0
-      - Everything else is linearly interpolated between 10 and 100.
-    """
-    if not results:
-        return results
-
-    # Shallow-copy each item to avoid mutating shared objects
-    results = [{**item} for item in results]
-    scores = [item.get("_score") or 0.0 for item in results]
-    max_score = max(scores) if scores else 0.0
-
-    if max_score < 1e-8:
-        # All scores are zero – give everything relevance 0
-        for idx, item in enumerate(results):
-            item["_rank"] = idx + 1
-            item["relevance"] = 0
-        return results
-
-    # Find the lowest *non-zero* score
-    non_zero_scores = [s for s in scores if s > 0]
-    if not non_zero_scores:
-        min_nonzero = 0.0
-    else:
-        min_nonzero = min(non_zero_scores)
-
-    RELEVANCE_FLOOR = 10
-    RELEVANCE_CEIL = 100
-
-    for idx, item in enumerate(results):
-        item["_rank"] = idx + 1
-        score = scores[idx]
-        if score <= 0.0:
-            item["relevance"] = 0
-        elif abs(max_score - min_nonzero) < 1e-8:
-            # All non-zero scores are identical — differentiate by name length
-            # (shorter names are more likely to be real concept names)
-            name_len = len((item.get("name") or ""))
-            # Normalize name_len: 2 chars = best (100), 20+ chars = worst (10)
-            name_factor = max(0.0, 1.0 - max(0, name_len - 2) / 18.0)
-            item["relevance"] = round(RELEVANCE_FLOOR + name_factor * (RELEVANCE_CEIL - RELEVANCE_FLOOR), 1)
-        else:
-            # Linear interpolation: map [min_nonzero, max_score] -> [10, 100]
-            ratio = (score - min_nonzero) / (max_score - min_nonzero)
-            item["relevance"] = round(RELEVANCE_FLOOR + ratio * (RELEVANCE_CEIL - RELEVANCE_FLOOR), 1)
-
-    return results
-
-
-# ── Standalone reranker functions (dict-based, no HybridSearcher dependency) ────
-
-def _node_degree_rerank_standalone(items, degree_map, alpha=0.3):
-    """Node degree reranker for dict results.
-
-    Boosts items with more graph connections (higher degree).
-    """
-    if not items:
-        return items
-    max_degree = max(degree_map.values()) if degree_map else 1
-    if max_degree == 0:
-        max_degree = 1
-    inv_alpha = 1 - alpha
-    results = []
-    for item in items:
-        fid = item.get("family_id", "") or item.get("id", "")
-        score = item.get("_score", 0.0) or 0.0
-        degree = degree_map.get(fid, 0)
-        adjusted = score * inv_alpha + (degree / max_degree) * alpha
-        item = dict(item)
-        item["_score"] = round(adjusted, 6)
-        results.append(item)
-    results.sort(key=lambda x: x.get("_score", 0.0), reverse=True)
-    return results
-
-
-def _char_bigrams(text: str) -> set:
-    """Extract character bigrams from text for CJK similarity comparison.
-
-    For CJK text (which lacks whitespace word boundaries), character
-    bigrams provide a meaningful overlap metric. For Latin text, falls
-    back to whitespace-split tokens (existing behaviour).
-    """
-    if not text:
-        return set()
-    if _has_cjk(text):
-        # Use character bigrams for CJK text — captures meaningful
-        # sub-string overlap without requiring word segmentation.
-        bigrams = set()
-        chars = [c for c in text if not c.isspace()]
-        for i in range(len(chars) - 1):
-            bigrams.add(chars[i] + chars[i + 1])
-        return bigrams if bigrams else {text}
-    return set(text.split()) if text.strip() else set()
-
-
-def _mmr_rerank_standalone(items, query_text="", lambda_=0.5, top_k=20):
-    """MMR diversity reranker for dict results.
-
-    MMR = (1 - lambda) * relevance - lambda * max_sim_to_selected
-    Uses Jaccard word/bigram overlap as similarity (no embedding dependency).
-    For CJK text, character bigrams replace whitespace tokenization.
-    """
-    if not items or len(items) <= 1:
-        return items[:]
-    top_k = min(top_k, len(items))
-
-    def _get_tokens(item):
-        name = (item.get("name") or "").strip()
-        content = (item.get("content") or "")[:200]
-        text = (name + " " + content).strip()
-        return _char_bigrams(text)
-
-    def _jaccard(sa, sb):
-        if not sa or not sb:
-            return 0.0
-        return len(sa & sb) / len(sa | sb)
-
-    item_tokens = [_get_tokens(item) for item in items]
-
-    selected = []
-    remaining = list(range(len(items)))
-
-    # Sort by score descending, pick first
-    remaining.sort(key=lambda i: items[i].get("_score", 0.0), reverse=True)
-    first = remaining.pop(0)
-    selected.append(first)
-
-    while remaining and len(selected) < top_k:
-        best_mmr = -float("inf")
-        best_idx_pos = 0
-        for pos, idx in enumerate(remaining):
-            relevance = items[idx].get("_score", 0.0) or 0.0
-            max_sim = 0.0
-            for s_idx in selected:
-                sim = _jaccard(item_tokens[idx], item_tokens[s_idx])
-                if sim > max_sim:
-                    max_sim = sim
-            mmr = (1 - lambda_) * relevance - lambda_ * max_sim
-            if mmr > best_mmr:
-                best_mmr = mmr
-                best_idx_pos = pos
-        selected.append(remaining.pop(best_idx_pos))
-
-    return [items[i] for i in selected]
-
 
 # Pre-compiled regex for duplicate entity name normalization
 _BOOK_MARKS_RE = _re.compile(r'[《》]')
@@ -238,82 +57,6 @@ _VALID_CONCEPT_ROLES = ("document", "episode", "entity", "relation")
 # =========================================================
 # Concepts — 统一概念查询接口（Phase 4）
 # =========================================================
-
-@concepts_bp.route("/api/v1/agent/sql", methods=["POST"])
-def agent_read_sql():
-    """Agent-facing graph-local read-only SQL workbench."""
-    try:
-        processor = _get_processor()
-        storage = processor.storage
-        if not hasattr(storage, "read_sql"):
-            return err("当前存储后端不支持 Agent SQL 查询", 400)
-        body = get_json_body()
-        sql = (body.get("sql") or "").strip()
-        if not sql:
-            return err("sql 不能为空", 400)
-        params = body.get("params")
-        try:
-            limit = min(max(int(body.get("limit", 200)), 1), 10000)
-        except (ValueError, TypeError):
-            return err("limit 必须为整数", 400)
-        try:
-            timeout_seconds = float(body.get("timeout_seconds", 5.0))
-        except (ValueError, TypeError):
-            return err("timeout_seconds 必须为数字", 400)
-        if timeout_seconds <= 0 or timeout_seconds > 60:
-            return err("timeout_seconds 必须在 0-60 之间", 400)
-        explain = bool(body.get("explain") or body.get("include_query_plan"))
-        result = storage.read_sql(
-            sql,
-            params=params,
-            limit=limit,
-            timeout_seconds=timeout_seconds,
-            include_query_plan=explain,
-        )
-        result["graph_id"] = _get_graph_id()
-        return ok(result)
-    except (ValueError, TypeError, sqlite3.Error, TimeoutError) as exc:
-        return err(str(exc), 400)
-    except Exception as exc:
-        logger.exception("Agent SQL query failed: %s", exc)
-        return err("Agent SQL 查询失败", 500)
-
-
-@concepts_bp.route("/api/v1/agent/semantic-search", methods=["POST"])
-def agent_semantic_search():
-    """Agent-facing semantic candidate recall helper."""
-    try:
-        processor = _get_processor()
-        storage = processor.storage
-        if not hasattr(storage, "agent_semantic_search"):
-            return err("当前存储后端不支持 Agent 语义检索", 400)
-        body = get_json_body()
-        role = body.get("role") or None
-        try:
-            top_k = min(max(int(body.get("top_k", body.get("limit", 20))), 1), 1000)
-        except (ValueError, TypeError):
-            return err("top_k/limit 必须为整数", 400)
-        try:
-            threshold = float(body.get("threshold", 0.3))
-        except (ValueError, TypeError):
-            return err("threshold 必须为数字", 400)
-        if not (0.0 <= threshold <= 1.0):
-            return err("threshold 必须在 0-1 之间", 400)
-        result = storage.agent_semantic_search(
-            body.get("query") or "",
-            role=role,
-            top_k=top_k,
-            threshold=threshold,
-            source_document=(body.get("source_document") or "").strip() or None,
-        )
-        result["graph_id"] = _get_graph_id()
-        return ok(result)
-    except (ValueError, TypeError) as exc:
-        return err(str(exc), 400)
-    except Exception as exc:
-        logger.exception("Agent semantic search failed: %s", exc)
-        return err("Agent 语义检索失败", 500)
-
 
 @concepts_bp.route("/api/v1/concepts/search", methods=["POST"])
 @concepts_bp.route("/api/v1/find", methods=["POST"])
@@ -377,72 +120,25 @@ def search_concepts():
         expand = bool(body.get("expand", False))
         group = bool(body.get("group", False))
 
+        # P4.2：三种模式的执行体收敛在 core/find/concept_search.py
+        # （与 CLI concept search 同一实现；语义腿统一走
+        # storage.agent_semantic_search 单入口）。
         def _search(role_filter, result_limit):
             if search_mode == "bm25":
-                # Fetch extra candidates so threshold filtering doesn't empty results
-                candidate_limit = max(result_limit * 5, 50)
-                if role_filter == "entity":
-                    results = storage.search_entities_by_bm25(query, limit=candidate_limit, time_point=time_point, time_after=time_after, time_before=time_before)
-                    results = [_entity_to_search_dict(e) for e in results]
-                elif role_filter == "relation":
-                    results = storage.search_relations_by_bm25(query, limit=candidate_limit, time_point=time_point, time_after=time_after, time_before=time_before)
-                    results = [_relation_to_search_dict(r) for r in results]
-                else:
-                    results = storage.search_concepts_by_bm25(query, role=role_filter, limit=candidate_limit, time_point=time_point, source_document=source_document, time_after=time_after, time_before=time_before)
-                # Apply threshold to BM25 results (BM25 _score is normalized 0-1)
-                # For CJK queries, lower threshold to compensate for LIKE-based scoring
-                bm25_thresh = min(threshold, 0.15) if _has_cjk(query) else threshold
-                if bm25_thresh > 0:
-                    results = [item for item in results if (item.get("_score") or 0.0) >= bm25_thresh]
-                # Truncate to requested limit after threshold filtering
-                results = results[:result_limit]
-                meta = {"bm25_results": len(results), "semantic_results": 0, "effective_mode": "bm25_only"}
-                return results, meta
+                return _bm25_concept_search(
+                    storage, query, role_filter, result_limit, threshold,
+                    time_point=time_point, source_document=source_document,
+                    time_after=time_after, time_before=time_before)
             if search_mode == "semantic":
-                sem_threshold = min(threshold, 0.3) if _has_cjk(query) else threshold
-                # For non-CJK single-word queries (often cross-language), lower
-                # threshold slightly to avoid losing borderline semantic matches.
-                if not _has_cjk(query) and len(query.split()) <= 3 and sem_threshold > 0.45:
-                    sem_threshold = 0.45
-                results = storage.search_concepts_by_similarity(
-                    query_text=query, role=role_filter, threshold=sem_threshold, max_results=result_limit, time_point=time_point, source_document=source_document, time_after=time_after, time_before=time_before
-                )
-                meta = {"bm25_results": 0, "semantic_results": len(results), "effective_mode": "semantic_only"}
-                if _has_cjk(query):
-                    meta["effective_mode"] = "semantic_cjk"
-                # Apply role boost when no role filter is specified, matching
-                # hybrid mode's entity > relation > episode > document priority.
-                # Semantic cosine scores are in 0-1 range (typically 0.45-0.7),
-                # so boost values need to be larger than RRF's ~0.01-scale to
-                # have meaningful impact on ranking.
-                if role_filter is None and results:
-                    _role_rank = {"entity": 0.05, "relation": 0.02, "episode": 0.005, "document": 0.0}
-                    for item in results:
-                        item_role = item.get("role", "")
-                        boost = _role_rank.get(item_role, 0.0)
-                        if boost > 0:
-                            item["_score"] = (item.get("_score") or 0.0) + boost
-                    # Re-sort by boosted scores (storage returns pre-sorted, but
-                    # boost changes the ordering). Skip if a reranker will handle it.
-                    if reranker == "rrf":
-                        results.sort(key=lambda x: x.get("_score", 0.0), reverse=True)
-                # Apply reranker to standalone semantic results too
-                if reranker == "node_degree" and results and hasattr(storage, 'batch_get_entity_degrees'):
-                    try:
-                        fids = [item.get("family_id", "") or item.get("id", "") for item in results]
-                        degree_map = storage.batch_get_entity_degrees(fids)
-                        results = _node_degree_rerank_standalone(results, degree_map)
-                        meta["reranker"] = "node_degree"
-                    except Exception as exc:
-                        logger.debug("node_degree reranker failed: %s", exc)
-                elif reranker == "mmr" and results:
-                    try:
-                        results = _mmr_rerank_standalone(results, query_text=query, top_k=result_limit)
-                        meta["reranker"] = "mmr"
-                    except Exception as exc:
-                        logger.debug("mmr reranker failed: %s", exc)
-                return results, meta
-            return _hybrid_concept_search(storage, query, role_filter, result_limit, threshold, time_point=time_point, source_document=source_document, reranker=reranker, time_after=time_after, time_before=time_before)
+                return _semantic_concept_search(
+                    storage, query, role_filter, result_limit, threshold,
+                    reranker=reranker, time_point=time_point,
+                    source_document=source_document,
+                    time_after=time_after, time_before=time_before)
+            return _hybrid_concept_search(
+                storage, query, role_filter, result_limit, threshold,
+                time_point=time_point, source_document=source_document,
+                reranker=reranker, time_after=time_after, time_before=time_before)
 
         if request.path == "/api/v1/find":
             raw_me = body.get("max_entities", body.get("maxEntities", 20))
@@ -608,153 +304,6 @@ def search_concepts():
         return ok(resp_data)
     except Exception as e:
         return err(str(e), 500)
-
-
-def _hybrid_concept_search(storage, query: str, role, limit: int,
-                           threshold: float, time_point: str = None, source_document: str = None, reranker: str = "rrf",
-                           time_after: str = None, time_before: str = None):
-    """Hybrid concept search: BM25 + semantic embedding, fused via RRF.
-
-    Returns (results, meta) where meta indicates which search modes contributed.
-
-    For CJK queries, BM25 uses LIKE-based n-gram matching (not FTS5) and
-    semantic threshold is lowered to 0.3 for better recall on short queries.
-
-    P2.6：本函数不再向 _shared_pool 嵌套 submit，BM25/语义两路在调用线程
-    同步执行。外层 /find 已把 entity/relation 检索提交到同一个共享池并阻塞
-    等待结果；若此处再向同一池 submit，并发请求下全部 worker 都在等待排在
-    自己后面的内层任务，互等即自死锁。且 storage 为 per-thread sqlite 连接
-    （不变式 c），阻塞任务不得嵌套 submit 到同一池。
-    """
-
-    has_cjk = _has_cjk(query)
-
-    # Fetch a larger BM25 candidate pool so that threshold filtering
-    # doesn't accidentally empty the results for small limits.
-    bm25_candidate_limit = max(limit * 5, 50)
-
-    def _bm25():
-        try:
-            return storage.search_concepts_by_bm25(query, role=role, limit=bm25_candidate_limit, time_point=time_point, source_document=source_document, time_after=time_after, time_before=time_before)
-        except Exception as exc:
-            logger.warning("BM25 search failed for query=%r: %s", query, exc)
-            return []
-
-    # For CJK queries, lower the semantic threshold so short keyword
-    # queries (e.g. "爱情") can match entity embeddings.
-    # For short non-CJK queries (often cross-language), lower threshold to
-    # 0.45 to avoid losing borderline semantic matches.
-    semantic_threshold = threshold
-    if has_cjk:
-        semantic_threshold = min(threshold, 0.3)
-    elif not has_cjk and len(query.split()) <= 3 and semantic_threshold > 0.45:
-        semantic_threshold = 0.45
-
-    def _semantic():
-        try:
-            return storage.search_concepts_by_similarity(
-                query_text=query, role=role, threshold=semantic_threshold, max_results=limit * 2, time_point=time_point, source_document=source_document, time_after=time_after, time_before=time_before
-            )
-        except Exception as exc:
-            logger.warning("Semantic search failed for query=%r: %s", query, exc)
-            return []
-
-    # 同步执行（见函数 docstring 的 P2.6 说明）：不得向 _shared_pool 嵌套 submit
-    bm25_results = _bm25()
-    semantic_results = _semantic()
-
-    # Apply threshold to BM25 results in hybrid mode.
-    # BM25 scores are normalized 0-1; filter out results below threshold.
-    # For CJK queries, use a lower BM25 threshold because LIKE-based n-gram
-    # matching produces lower scores for multi-word queries (each entity may
-    # match only a subset of the space-separated terms).
-    bm25_threshold = threshold
-    if has_cjk:
-        bm25_threshold = min(threshold, 0.15)
-    if bm25_threshold > 0 and bm25_results:
-        bm25_results = [item for item in bm25_results
-                        if (item.get("_score") or 0.0) >= bm25_threshold]
-
-    meta = {
-        "bm25_results": len(bm25_results),
-        "semantic_results": len(semantic_results),
-        "effective_mode": "hybrid",
-    }
-    if has_cjk:
-        meta["effective_mode"] = "hybrid_cjk"
-        meta["reason"] = "CJK query — BM25 uses LIKE n-gram fallback, semantic threshold lowered"
-    if not bm25_results and not semantic_results:
-        return [], meta
-    _base_mode = ""
-    if not bm25_results:
-        _base_mode = "semantic_only"
-    elif not semantic_results:
-        _base_mode = "bm25_only"
-    if _base_mode:
-        meta["effective_mode"] = (_base_mode + "_cjk") if has_cjk else _base_mode
-
-    if not bm25_results and not semantic_results:
-        return [], meta
-
-    # RRF fusion on dict results (keyed by family_id)
-    k = 60
-    scores: Dict[str, float] = {}
-    items: Dict[str, dict] = {}
-    best_contrib: Dict[str, float] = {}
-    bm25_weight = 0.3
-    sem_weight = 0.7
-
-    for rank, item in enumerate(bm25_results):
-        fid = item.get("family_id", "") or item.get("id", "")
-        rrf = bm25_weight / (k + rank + 1)
-        scores[fid] = scores.get(fid, 0.0) + rrf
-        if fid not in items or rrf > best_contrib.get(fid, 0.0):
-            items[fid] = item
-            best_contrib[fid] = rrf
-
-    for rank, item in enumerate(semantic_results):
-        fid = item.get("family_id", "") or item.get("id", "")
-        rrf = sem_weight / (k + rank + 1)
-        scores[fid] = scores.get(fid, 0.0) + rrf
-        if fid not in items or rrf > best_contrib.get(fid, 0.0):
-            items[fid] = item
-            best_contrib[fid] = rrf
-
-    # When no role filter is applied, boost entity results above relation
-    # results, and relation above episode/document, to match the documented
-    # ranking priority: entity > relation > episode > document.
-    role_boost = {}
-    if role is None:
-        _role_rank = {"entity": 0.03, "relation": 0.015, "episode": 0.005, "document": 0.0}
-        for fid in scores:
-            item_role = items.get(fid, {}).get("role", "")
-            role_boost[fid] = _role_rank.get(item_role, 0.0)
-
-    sorted_items = sorted(scores.items(), key=lambda x: x[1] + role_boost.get(x[0], 0.0), reverse=True)
-    fused = []
-    for fid, rrf_score in sorted_items[:limit]:
-        item = items[fid]
-        final_score = rrf_score + role_boost.get(fid, 0.0)
-        item["_score"] = round(final_score, 6)
-        fused.append(item)
-
-    # Apply reranker (rrf = no-op, already RRF fused above)
-    if reranker == "node_degree" and fused and hasattr(storage, 'batch_get_entity_degrees'):
-        try:
-            fids = [item.get("family_id", "") or item.get("id", "") for item in fused]
-            degree_map = storage.batch_get_entity_degrees(fids)
-            fused = _node_degree_rerank_standalone(fused, degree_map)
-            meta["reranker"] = "node_degree"
-        except Exception as exc:
-            logger.debug("node_degree reranker failed: %s", exc)
-    elif reranker == "mmr" and fused:
-        try:
-            fused = _mmr_rerank_standalone(fused, query_text=query, top_k=limit)
-            meta["reranker"] = "mmr"
-        except Exception as exc:
-            logger.debug("mmr reranker failed: %s", exc)
-
-    return fused, meta
 
 
 @concepts_bp.route("/api/v1/concepts/suggest", methods=["GET", "POST"])
@@ -1002,283 +551,6 @@ def traverse_concepts():
         return err(str(e), 500)
 
 
-@concepts_bp.route("/api/v1/documents", methods=["GET"])
-def list_documents():
-    """List indexed Markdown documents for the current graph."""
-    try:
-        processor = _get_processor()
-        storage = processor.storage
-        if not hasattr(storage, "list_documents"):
-            return err("此功能暂不可用", 400)
-        try:
-            limit = min(max(int(request.args.get("limit", 50)), 1), 200)
-        except (ValueError, TypeError):
-            return err("limit 必须为整数", 400)
-        try:
-            offset = max(int(request.args.get("offset", 0)), 0)
-        except (ValueError, TypeError):
-            return err("offset 必须为整数", 400)
-        source_document = (request.args.get("source_document") or "").strip() or None
-        documents = storage.list_documents(limit=limit, offset=offset, source_document=source_document)
-        runtime = (current_app.config.get("config") or {}).get("runtime") or {}
-        integrity_cfg = runtime.get("integrity") or {}
-        # P3.7：列表页默认不再逐文档做完整性全量评估（每篇都要读全文 + 重切块 +
-        # 逐窗口查库，代价随文档数×窗口数线性叠加，且 chunk_hash 无索引时每次
-        # 查询都是 episodes 全表扫描——列表页不可承受）。完整性改为按需拉取：
-        # GET /api/v1/documents/<id>/integrity（memory 页已有"检查"按钮走该端点）。
-        # 前端对缺失的 integrity 字段已有降级显示（memory.js 显示"未检查"，
-        # graph.js 的窗口数改用列表自带的轻量 episode_count 字段）。
-        # 仅当用户显式配置 runtime.integrity.auto_check_documents=true 时保留旧行为。
-        if bool(integrity_cfg.get("auto_check_documents", False)) and documents:
-            try:
-                from core.server.routes.remember import _get_queue as _get_remember_queue
-                remember_queue = _get_remember_queue()
-                for doc in documents:
-                    doc_id = doc.get("document_version_id")
-                    if not doc_id:
-                        continue
-                    try:
-                        integrity = remember_queue.assess_document_integrity(doc_id)
-                        doc["integrity"] = {
-                            "complete": bool(integrity.get("complete")),
-                            "total_windows": integrity.get("total_windows", 0),
-                            "complete_windows": integrity.get("complete_windows", 0),
-                            "missing_windows": integrity.get("missing_windows", 0),
-                            "missing_window_indices": integrity.get("missing_window_indices", [])[:20],
-                        }
-                        if hasattr(storage, "update_document_integrity_metadata"):
-                            storage.update_document_integrity_metadata(doc_id, integrity)
-                    except Exception as exc:
-                        doc["integrity"] = {"complete": None, "error": str(exc)}
-            except Exception as exc:
-                logger.debug("document integrity auto-check skipped: %s", exc)
-        # Get actual total count (independent of pagination)
-        total = storage.count_documents(source_document=source_document) if hasattr(storage, "count_documents") else len(documents)
-        return ok({"documents": documents, "total": total, "limit": limit, "offset": offset})
-    except Exception as e:
-        return err(str(e), 500)
-
-
-@concepts_bp.route("/api/v1/documents/graph", methods=["POST"])
-def get_documents_graph():
-    """Return a Document -> Episode -> Concept subgraph for selected documents."""
-    try:
-        processor = _get_processor()
-        storage = processor.storage
-        if not hasattr(storage, "get_document_graph"):
-            return err("此功能暂不可用", 400)
-        body = get_json_body()
-        document_version_ids = body.get("document_version_ids") or []
-        document_family_ids = body.get("document_family_ids") or []
-        if isinstance(document_version_ids, str):
-            document_version_ids = [document_version_ids]
-        if isinstance(document_family_ids, str):
-            document_family_ids = [document_family_ids]
-        if not document_version_ids and not document_family_ids:
-            return err("document_version_ids 或 document_family_ids 至少提供一个", 400)
-        include_relations = bool(body.get("include_relations", True))
-        include_versions = bool(body.get("include_versions", True))
-        try:
-            max_episodes = min(max(int(body.get("max_episodes", 5000)), 1), 10000)
-        except (ValueError, TypeError):
-            return err("max_episodes 必须为整数", 400)
-        try:
-            max_concepts = min(max(int(body.get("max_concepts", 20000)), 1), 50000)
-        except (ValueError, TypeError):
-            return err("max_concepts 必须为整数", 400)
-        result = storage.get_document_graph(
-            document_version_ids=document_version_ids,
-            document_family_ids=document_family_ids,
-            include_relations=include_relations,
-            include_versions=include_versions,
-            max_episodes=max_episodes,
-            max_concepts=max_concepts,
-        )
-        return ok(result)
-    except ValueError as e:
-        return err(str(e), 400)
-    except Exception as e:
-        return err(str(e), 500)
-
-
-@concepts_bp.route("/api/v1/documents/graph/outline", methods=["POST"])
-def get_documents_graph_outline():
-    """Return the fast Document -> Episode skeleton for progressive graph rendering."""
-    try:
-        processor = _get_processor()
-        storage = processor.storage
-        if not hasattr(storage, "get_document_graph_outline"):
-            return err("此功能暂不可用", 400)
-        body = get_json_body()
-        document_version_ids = body.get("document_version_ids") or []
-        document_family_ids = body.get("document_family_ids") or []
-        if isinstance(document_version_ids, str):
-            document_version_ids = [document_version_ids]
-        if isinstance(document_family_ids, str):
-            document_family_ids = [document_family_ids]
-        if not document_version_ids and not document_family_ids:
-            return err("document_version_ids 或 document_family_ids 至少提供一个", 400)
-        try:
-            max_episodes = min(max(int(body.get("max_episodes", 10000)), 1), 10000)
-        except (ValueError, TypeError):
-            return err("max_episodes 必须为整数", 400)
-        result = storage.get_document_graph_outline(
-            document_version_ids=document_version_ids,
-            document_family_ids=document_family_ids,
-            max_episodes=max_episodes,
-        )
-        return ok(result)
-    except ValueError as e:
-        return err(str(e), 400)
-    except Exception as e:
-        return err(str(e), 500)
-
-
-@concepts_bp.route("/api/v1/documents/graph/chunk", methods=["POST"])
-def get_documents_graph_chunk():
-    """Return one episode-ordered concept batch for progressive graph rendering."""
-    try:
-        processor = _get_processor()
-        storage = processor.storage
-        if not hasattr(storage, "get_document_graph_chunk"):
-            return err("此功能暂不可用", 400)
-        body = get_json_body()
-        document_version_ids = body.get("document_version_ids") or []
-        document_family_ids = body.get("document_family_ids") or []
-        if isinstance(document_version_ids, str):
-            document_version_ids = [document_version_ids]
-        if isinstance(document_family_ids, str):
-            document_family_ids = [document_family_ids]
-        if not document_version_ids and not document_family_ids:
-            return err("document_version_ids 或 document_family_ids 至少提供一个", 400)
-        try:
-            cursor = max(int(body.get("cursor", 0)), 0)
-        except (ValueError, TypeError):
-            return err("cursor 必须为整数", 400)
-        try:
-            limit = min(max(int(body.get("limit", 12)), 1), 100)
-        except (ValueError, TypeError):
-            return err("limit 必须为整数", 400)
-        include_relations = bool(body.get("include_relations", True))
-        include_versions = bool(body.get("include_versions", True))
-        try:
-            max_concepts = min(max(int(body.get("max_concepts", 8000)), 1), 50000)
-        except (ValueError, TypeError):
-            return err("max_concepts 必须为整数", 400)
-        result = storage.get_document_graph_chunk(
-            document_version_ids=document_version_ids,
-            document_family_ids=document_family_ids,
-            cursor=cursor,
-            limit=limit,
-            include_relations=include_relations,
-            include_versions=include_versions,
-            max_concepts=max_concepts,
-        )
-        return ok(result)
-    except ValueError as e:
-        return err(str(e), 400)
-    except Exception as e:
-        return err(str(e), 500)
-
-
-@concepts_bp.route("/api/v1/episodes/<episode_version_id>/content", methods=["GET"])
-def get_episode_content(episode_version_id: str):
-    """Return source content for an episode version."""
-    try:
-        processor = _get_processor()
-        storage = processor.storage
-        if hasattr(storage, "get_episode_content_detail"):
-            detail = storage.get_episode_content_detail(episode_version_id)
-            if detail is None:
-                return err(f"episode_version_id 不存在: {episode_version_id}", 404)
-            return ok(detail)
-        if not hasattr(storage, "load_episode"):
-            return err("此功能暂不可用", 400)
-        episode = storage.load_episode(episode_version_id)
-        if episode is None:
-            return err(f"episode_version_id 不存在: {episode_version_id}", 404)
-        return ok({
-            "episode_id": episode.absolute_id,
-            "content": episode.content,
-            "source_document": episode.source_document or "",
-            "event_time": episode.event_time.isoformat() if episode.event_time else None,
-            "processed_time": episode.processed_time.isoformat() if episode.processed_time else None,
-            "activity_type": getattr(episode, "activity_type", None),
-            "episode_type": getattr(episode, "episode_type", None),
-        })
-    except Exception as e:
-        return err(str(e), 500)
-
-
-@concepts_bp.route("/api/v1/documents/batch", methods=["DELETE"])
-def batch_delete_documents():
-    """批量删除文档版本。"""
-    try:
-        processor = _get_processor()
-        storage = processor.storage
-        if not hasattr(storage, "delete_document_version"):
-            return err("此功能暂不可用", 400)
-        body = get_json_body()
-        ids = body.get("document_version_ids") or []
-        if not ids:
-            return err("document_version_ids 不能为空", 400)
-        if not isinstance(ids, list) or len(ids) > 100:
-            return err("document_version_ids 必须为列表，最多 100 个", 400)
-        results = []
-        for doc_id in ids:
-            try:
-                result = storage.delete_document_version(doc_id)
-                if isinstance(result, dict) and not result.get("deleted", True):
-                    results.append({"id": doc_id, "success": False, "error": result.get("reason", "not found")})
-                else:
-                    results.append({"id": doc_id, "success": True})
-            except Exception as e:
-                results.append({"id": doc_id, "success": False, "error": str(e)})
-        return ok({"results": results, "deleted": sum(1 for r in results if r["success"])})
-    except Exception as e:
-        return err(str(e), 500)
-
-
-@concepts_bp.route("/api/v1/documents/<document_version_id>", methods=["DELETE"])
-def delete_document_version(document_version_id: str):
-    """删除文档版本，以及该文档下的 episode/concept version/edge。"""
-    try:
-        processor = _get_processor()
-        storage = processor.storage
-        if not hasattr(storage, "delete_document_version"):
-            return err("此功能暂不可用", 400)
-        result = storage.delete_document_version(document_version_id)
-        if isinstance(result, dict) and not result.get("deleted", True):
-            reason = result.get("reason", "not found")
-            return err(f"文档版本不存在: {document_version_id} ({reason})", 404)
-        return ok(result)
-    except KeyError as e:
-        return err(str(e.args[0]) if e.args else str(e), 404)
-    except ValueError as e:
-        return err(str(e), 400)
-    except Exception as e:
-        return err(str(e), 500)
-
-
-@concepts_bp.route("/api/v1/vaults/index", methods=["POST"])
-def index_vault():
-    """Index a read-only Markdown/Obsidian vault into the current graph."""
-    try:
-        processor = _get_processor()
-        storage = processor.storage
-        if not hasattr(storage, "index_vault"):
-            return err("此功能暂不可用", 400)
-        body = get_json_body()
-        path = (body.get("path") or body.get("vault_path") or "").strip()
-        if not path:
-            return err("path 不能为空", 400)
-        force = bool(body.get("force", False))
-        result = storage.index_vault(path, force=force)
-        return ok(result)
-    except Exception as e:
-        return err(str(e), 500)
-
-
 @concepts_bp.route("/api/v1/concepts/<family_id>/mentions", methods=["GET"])
 def get_concept_mentions(family_id: str):
     """获取提及此概念的所有 Episode。"""
@@ -1359,4 +631,3 @@ def find_duplicate_entities():
         return ok({"duplicates": duplicates, "count": len(duplicates)})
     except Exception as e:
         return err(str(e), 500)
-

@@ -10,7 +10,6 @@ import logging
 import sqlite3
 import threading
 from contextlib import contextmanager
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -18,7 +17,14 @@ import numpy as np
 
 from ...models import Entity, Episode, Relation
 from .dto_mapping import assertion_to_relation, episode_row_to_dto, observation_to_entity
-from .helpers import _encode_and_normalize, _fmt_dt, _parse_dt, _time_bounds_sql
+from .helpers import (
+    _encode_and_normalize,
+    _fmt_dt,
+    _parse_dt,
+    _time_bounds_sql,
+    escape_like,
+    now_utc_str,
+)
 from .schema_v15 import init_schema_v15
 
 from .repositories import (
@@ -33,23 +39,6 @@ from .repositories import (
 logger = logging.getLogger(__name__)
 
 
-def _now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-def _now_str() -> str:
-    return _now().isoformat()
-
-
-def _escape_like(value: str) -> str:
-    """Escape LIKE wildcard characters (%_) so they match literally.
-
-    Uses '!' as the ESCAPE character to avoid backslash quoting issues
-    in Python triple-quoted SQL strings.
-    """
-    return value.replace("!", "!!").replace("%", "!%").replace("_", "!_")
-
-
 def _placeholders(values: List[str]) -> str:
     """生成 IN (...) 的占位符串（P3.5 批量查询用）。"""
     return ",".join("?" for _ in values)
@@ -62,14 +51,33 @@ def _in_clause_chunks(values: List[str], chunk_size: int = 400):
 
 
 class LibraryManager:
-    """V1.5 storage facade used by the remember pipeline and server."""
+    """V1.5 storage facade used by the remember pipeline and server.
+
+    返回契约（P4.6 文档化——只记录现状，不改任何返回类型）：
+
+    - 返回 ``Entity`` DTO：``get_entity_by_family_id`` / ``get_all_entities`` /
+      ``get_all_entities_before_time``、检索系的 ``search_entities_by_bm25`` /
+      ``search_entities_by_similarity``。检索系 DTO 附带动态属性 ``_score``
+      （BM25/余弦得分）与 ``embedding``（语义检索路径水合时才有值）。
+    - 返回 ``Relation`` DTO：``get_relation_by_family_id`` /
+      ``get_relations_by_family_ids`` / ``get_relations_by_entity_absolute_ids``、
+      检索系的 ``search_relations_by_bm25`` / ``search_relations_by_similarity``。
+    - 返回 ``dict``：概念统一面（``get_concept_by_family_id`` / ``list_concepts`` /
+      ``suggest_concepts`` / ``search_concepts_by_bm25``）与文档面
+      （``list_documents`` 等）。检索 dict 统一携带 ``family_id`` / ``role`` /
+      ``_score`` 键；``agent_semantic_search`` 为
+      ``{"results": List[dict], "total": int}`` 包装（语义检索单入口，P4.2）。
+    - 做 ``.get()`` 前先判类型：DTO 与 dict 混用是已知坑（见 CLAUDE.md）。
+    """
 
     def __init__(
         self,
         library_path: str = None,
         embedding_client=None,
         entity_content_snippet_length: int = 50,
-        # Old compat kwargs
+        # Old compat kwargs（P4.6：vector_dim/graph_id 经 grep 确认 __init__
+        # 不消费、也不落 self；core/tests/test_stress.py 仍按关键字传入且
+        # 该文件不在本次改动范围，故保留为显式 no-op 兼容参数）
         storage_path: str = None,
         vector_dim: int = 1024,
         graph_id: str = None,
@@ -224,7 +232,7 @@ class LibraryManager:
                  updated_at=excluded.updated_at""",
             (
                 document_id, state, int(total_windows), int(complete_windows),
-                _json.dumps(sorted(set(missing_windows or []))), _now_str(),
+                _json.dumps(sorted(set(missing_windows or []))), now_utc_str(),
             ),
         )
         self._commit_if_not_batched(conn)
@@ -300,7 +308,7 @@ class LibraryManager:
     def count_documents(self, source_document: str = None) -> int:
         conn = self._conn()
         if source_document:
-            esc = _escape_like(source_document)
+            esc = escape_like(source_document)
             row = conn.execute(
                 "SELECT COUNT(*) FROM documents WHERE status = 'active' "
                 "AND (title LIKE ? ESCAPE '!' OR managed_path LIKE ? ESCAPE '!' OR absolute_path LIKE ? ESCAPE '!')",
@@ -410,7 +418,7 @@ class LibraryManager:
         if not ver:
             return {"deleted": False, "reason": "not found"}
         doc_id = ver[0]
-        now = _now_str()
+        now = now_utc_str()
 
         # 1. Cascade-delete episodes belonging to this document
         ep_ids = [r[0] for r in conn.execute(
@@ -851,7 +859,7 @@ class LibraryManager:
 
     def get_all_entities_before_time(self, time_point, limit: int = 100,
                                      exclude_embedding: bool = False) -> List[Entity]:
-        ts = _fmt_dt(time_point) or _now_str()
+        ts = _fmt_dt(time_point) or now_utc_str()
         conn = self._conn()
         rows = conn.execute(
             "SELECT ef.entity_family_id, ef.canonical_name, ef.canonical_content, "
@@ -1192,11 +1200,17 @@ class LibraryManager:
                 relations.append(rel)
         return relations
 
-    def search_entities_by_similarity(self, query_text: str, threshold: float = 0.3,
-                                      max_results: int = 20, **kwargs) -> List[Entity]:
-        # P2.8 双界下推：time_after/time_before 经 kwargs 透传（兼容旧签名）
-        time_after = kwargs.get("time_after")
-        time_before = kwargs.get("time_before")
+    def _semantic_entity_search(self, query_text: str, threshold: float = 0.3,
+                                max_results: int = 20,
+                                time_after: str = None,
+                                time_before: str = None) -> List[Entity]:
+        """实体语义检索单一实现（P4.2 收敛点）。
+
+        嵌入召回 + 观测水合；agent_semantic_search 的实体腿走这里，
+        search_entities_by_similarity 是它的兼容薄别名（保持 List[Entity] 形状，
+        且不触发 agent_semantic_search 的 LIKE 兜底/关系腿——嵌入水合结果
+        携带 embedding，走 dict 往返会丢失该字段）。
+        """
         if not self.embedding_client or not self.embedding_client.is_available():
             return []
         result = _encode_and_normalize(self.embedding_client, query_text)
@@ -1235,6 +1249,18 @@ class LibraryManager:
                 e._score = sim
                 entities.append(e)
         return entities
+
+    def search_entities_by_similarity(self, query_text: str, threshold: float = 0.3,
+                                      max_results: int = 20, **kwargs) -> List[Entity]:
+        """P4.2 兼容薄别名：实现统一收敛至 agent_semantic_search 单入口的实体腿。
+
+        返回形状不变（List[Entity]，带 embedding/_score）；
+        time_after/time_before 经 kwargs 透传（兼容旧签名）。
+        """
+        return self._semantic_entity_search(query_text, threshold=threshold,
+                                            max_results=max_results,
+                                            time_after=kwargs.get("time_after"),
+                                            time_before=kwargs.get("time_before"))
 
     def search_relations_by_similarity(self, query_text: str, threshold: float = 0.3,
                                        max_results: int = 20, **kwargs) -> List[Relation]:
@@ -1302,38 +1328,10 @@ class LibraryManager:
             relations.append(rel)
         return relations
 
-    def search_concepts_by_similarity(self, query_text: str, role: str = None,
-                                      threshold: float = 0.3, max_results: int = 20,
-                                      **kwargs) -> List[dict]:
-        # P2.8 双界下推：time_after/time_before 经 kwargs 透传给实体/关系检索
-        time_after = kwargs.get("time_after")
-        time_before = kwargs.get("time_before")
-        results = []
-        if role is None or role == "entity":
-            for e in self.search_entities_by_similarity(query_text, threshold, max_results,
-                                                        time_after=time_after,
-                                                        time_before=time_before):
-                results.append({
-                    "family_id": e.family_id, "id": e.absolute_id,
-                    "name": e.name, "content": e.content,
-                    "role": "entity", "_score": getattr(e, "_score", 0.0),
-                })
-        if role is None or role == "relation":
-            for r in self.search_relations_by_similarity(query_text, threshold, max_results,
-                                                         time_after=time_after,
-                                                         time_before=time_before):
-                results.append({
-                    "family_id": r.family_id, "id": r.absolute_id,
-                    "name": "", "content": r.content,
-                    "entity1_name": "", "entity2_name": "",
-                    "role": "relation", "_score": getattr(r, "_score", 0.0),
-                })
-        return results
-
     def suggest_concepts(self, query: str, role: str = "entity", limit: int = 10,
                          source_document: str = None) -> List[dict]:
         conn = self._conn()
-        like = _escape_like(query) + "%"
+        like = escape_like(query) + "%"
         rows = conn.execute(
             "SELECT entity_family_id, canonical_name FROM entity_families "
             "WHERE canonical_name LIKE ? ESCAPE '!' "
@@ -1622,7 +1620,7 @@ class LibraryManager:
         name = updates.get("name", fam["canonical_name"])
         content = updates.get("content", fam.get("canonical_content", ""))
         ent_repo.upsert_entity_family(conn, family_id, name, content,
-                                       updated_at=_now_str())
+                                       updated_at=now_utc_str())
         # Update confidence on latest active observation if provided
         new_confidence = updates.get("confidence")
         if new_confidence is not None:
@@ -1812,14 +1810,51 @@ class LibraryManager:
 
     def agent_semantic_search(self, query: str, *, role: str = None,
                               top_k: int = 20, threshold: float = 0.3,
-                              source_document: str = None) -> dict:
-        results = self.search_concepts_by_similarity(query, role=role,
-                                                      threshold=threshold, max_results=top_k)
+                              source_document: str = None,
+                              time_point: str = None,
+                              time_after: str = None,
+                              time_before: str = None) -> dict:
+        """实体/概念语义检索唯一入口（P4.2：server 路由、CLI、explore 共用）。
+
+        过滤器收敛到此一处（此前由 server 路由向多个存储方法逐个透传）：
+          - role：None = 实体 + 关系两腿；"entity"/"relation" 只走对应腿；
+            其他 role（document/episode）语义检索无对应腿，返回空。
+          - time_after/time_before：闭区间双界下推（概念时间列 =
+            entity_observations.processed_at / relation_assertions.processed_at）。
+          - time_point / source_document：仅收口兼容参数，存储层当前不消费
+            （与收敛前行为一致；见 test_hybrid_ignored_filters_current_behavior
+            钉住的现状——实现它们属于精准性工作，不在结构收敛内）。
+
+        返回 ``{"results": List[dict], "total": int}``；检索 dict 统一携带
+        family_id/id/name/content/role/_score（关系额外带 entity1_name/entity2_name）。
+        """
+        results: List[dict] = []
+        if role is None or role == "entity":
+            for e in self._semantic_entity_search(query, threshold=threshold,
+                                                  max_results=top_k,
+                                                  time_after=time_after,
+                                                  time_before=time_before):
+                results.append({
+                    "family_id": e.family_id, "id": e.absolute_id,
+                    "name": e.name, "content": e.content,
+                    "role": "entity", "_score": getattr(e, "_score", 0.0),
+                })
+        if role is None or role == "relation":
+            for r in self.search_relations_by_similarity(query, threshold=threshold,
+                                                         max_results=top_k,
+                                                         time_after=time_after,
+                                                         time_before=time_before):
+                results.append({
+                    "family_id": r.family_id, "id": r.absolute_id,
+                    "name": "", "content": r.content,
+                    "entity1_name": "", "entity2_name": "",
+                    "role": "relation", "_score": getattr(r, "_score", 0.0),
+                })
         # Fallback: when embedding search returns no results (e.g. no
         # embedding client available), try a LIKE-based name lookup.
         if not results and (role is None or role == "entity"):
             conn = self._conn()
-            like = f"%{_escape_like(query)}%"
+            like = f"%{escape_like(query)}%"
             rows = conn.execute(
                 "SELECT ef.entity_family_id, ef.canonical_name, ef.canonical_content "
                 "FROM entity_families ef "
@@ -1970,7 +2005,7 @@ class LibraryManager:
                 conn, doc_id, title,
                 managed_path=content_md,
                 source_mode="managed" if source else "external",
-                created_at=_now_str(), updated_at=_now_str(),
+                created_at=now_utc_str(), updated_at=now_utc_str(),
             )
         else:
             # Document already exists (possibly via content-hash dedup):
@@ -1981,7 +2016,7 @@ class LibraryManager:
             )
             conn.execute(
                 "UPDATE documents SET managed_path = ?, status = 'active', updated_at = ? WHERE document_id = ?",
-                (content_md, _now_str(), doc_id),
+                (content_md, now_utc_str(), doc_id),
             )
 
         # Reuse existing version with same content hash, or create new one
@@ -2005,9 +2040,9 @@ class LibraryManager:
                 version_content_path=f"content/versions/{doc_id}/{content_hash}.md",
                 title=source, char_count=len(doc_text), line_count=len(doc_text.splitlines()),
                 byte_size=len(doc_text.encode("utf-8")),
-                processed_at=_now_str(),
+                processed_at=now_utc_str(),
             )
-            doc_repo.update_current_version(conn, doc_id, ver_id, updated_at=_now_str())
+            doc_repo.update_current_version(conn, doc_id, ver_id, updated_at=now_utc_str())
         return doc_id, ver_id, title, content_hash
 
     def save_episode(self, cache: Episode, text: str = "",
@@ -2076,8 +2111,8 @@ class LibraryManager:
             chunk_index=existing_chunks,
             chunk_hash=doc_hash or content_hash[:16],
             name=title,
-            event_time=_fmt_dt(cache.event_time) or _now_str(),
-            processed_at=_fmt_dt(cache.processed_time) or _now_str(),
+            event_time=_fmt_dt(cache.event_time) or now_utc_str(),
+            processed_at=_fmt_dt(cache.processed_time) or now_utc_str(),
             activity_type=cache.activity_type or "",
             episode_type=episode_type or getattr(cache, 'episode_type', '') or "",
             run_id=run_id,
@@ -2153,7 +2188,7 @@ class LibraryManager:
                 name=title,
                 episode_type="retrieval_slice",
                 activity_type="",
-                event_time=_now_str(), processed_at=_now_str(),
+                event_time=now_utc_str(), processed_at=now_utc_str(),
                 run_id=run_id,
             )
             ep_repo.fts_sync_episode(conn, slice_id, doc_id, ver_id,
@@ -2180,7 +2215,7 @@ class LibraryManager:
         fid = entity.family_id
         ent_repo.upsert_entity_family(
             conn, fid, entity.name, entity.content,
-            created_at=_now_str(), updated_at=_now_str(),
+            created_at=now_utc_str(), updated_at=now_utc_str(),
         )
         # Resolve episode_id — null it if the referenced episode doesn't exist (FK safety)
         raw_ep_id = entity.episode_id or ""
@@ -2216,7 +2251,7 @@ class LibraryManager:
             conn, obs_id, fid, ep_id,
             name=entity.name, content=entity.content,
             extra_json=extra_json or "{}",
-            processed_at=_fmt_dt(entity.processed_time) or _now_str(),
+            processed_at=_fmt_dt(entity.processed_time) or now_utc_str(),
             run_id=run_id,
         )
         # Store embedding if available
@@ -2260,7 +2295,7 @@ class LibraryManager:
                 fam = ent_repo.get_entity_family(conn, fid)
                 if not fam:
                     ent_repo.upsert_entity_family(conn, fid, name, "",
-                                                   created_at=_now_str(), updated_at=_now_str())
+                                                   created_at=now_utc_str(), updated_at=now_utc_str())
 
         # Upsert relation family
         fam = rel_repo.find_relation_family(conn, sub_fid, obj_fid)
@@ -2269,7 +2304,7 @@ class LibraryManager:
             rel_repo.upsert_relation_family(
                 conn, rel_fid, sub_fid, obj_fid,
                 canonical_content=relation.content,
-                created_at=_now_str(), updated_at=_now_str(),
+                created_at=now_utc_str(), updated_at=now_utc_str(),
             )
         else:
             rel_fid = fam["relation_family_id"]
@@ -2303,7 +2338,7 @@ class LibraryManager:
             evidence_line_start=relation.evidence_line_start or 0,
             evidence_line_end=relation.evidence_line_end or 0,
             extra_json=extra_json or "{}",
-            processed_at=_fmt_dt(relation.processed_time) or _now_str(),
+            processed_at=_fmt_dt(relation.processed_time) or now_utc_str(),
             run_id=run_id,
         )
         # Store embedding if available
@@ -2368,7 +2403,7 @@ class LibraryManager:
                 end_offset=ev.get("end_offset", 0),
                 line_start=ev.get("line_start", 0),
                 line_end=ev.get("line_end", 0),
-                created_at=_now_str(),
+                created_at=now_utc_str(),
             )
         self._commit_if_not_batched(conn)
 
@@ -2787,7 +2822,7 @@ class LibraryManager:
         emb_repo.insert_embedding(
             conn, f"emb_{owner_id}", owner_type, owner_id,
             text_kind, text_hash, model_name, dim, embedding_blob,
-            created_at=_now_str(),
+            created_at=now_utc_str(),
         )
 
     def _compute_entity_embedding(self, entity: Entity):

@@ -5,8 +5,8 @@ Subcommands
 roots     List searchable document root directories.
 list      List indexed documents.
 path      Resolve a document ID to a readable file path.
-search    Literal text search over readable document files.
-grep      Regex text search over readable document files.
+search    Text search over readable document files (--regex for regex mode).
+grep      Regex text search — alias of ``docs search --regex``.
 map       Map a file-system path to Deep-Dream document records.
 content   Read document content.
 delete    Delete a document version (DANGEROUS).
@@ -16,7 +16,6 @@ flags handled by :class:`OutputManager`.
 """
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Optional
 
@@ -25,15 +24,17 @@ import click
 from rich.markup import escape as _rich_escape
 from rich.panel import Panel as _Panel
 
-from ._ctx import CliContext
 from ._exit_codes import ARGS, NOT_FOUND
 from ._helpers import (
     document_file_payload,
     document_rows,
+    emit_json_error,
+    emit_json_result,
     map_path_to_documents,
+    resolve_command_context,
     search_document_files,
 )
-from ._output import OutputManager, format_timestamp
+from ._output import format_timestamp
 
 
 # ------------------------------------------------------------------
@@ -66,9 +67,7 @@ def docs() -> None:
 @click.pass_context
 def roots(ctx: click.Context, graph: Optional[str]) -> None:
     """List searchable document root directories."""
-    obj: CliContext = ctx.obj
-    out = OutputManager(ctx)
-    graph_id = obj.get_active_graph(graph)
+    obj, out, graph_id = resolve_command_context(ctx, graph)
 
     with obj.get_storage(graph_id) as storage:
         rows = document_rows(storage, limit=5000)
@@ -87,8 +86,7 @@ def roots(ctx: click.Context, graph: Optional[str]) -> None:
         }
 
     if out.is_json:
-        payload = {"success": True, "command": "docs roots", "graph_id": graph_id, "data": data}
-        click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        emit_json_result("docs roots", data, graph_id=graph_id)
         return
 
     if out.is_quiet:
@@ -109,9 +107,7 @@ def roots(ctx: click.Context, graph: Optional[str]) -> None:
 @click.pass_context
 def list_docs(ctx: click.Context, limit: int, graph: Optional[str]) -> None:
     """List indexed documents."""
-    obj: CliContext = ctx.obj
-    out = OutputManager(ctx)
-    graph_id = obj.get_active_graph(graph)
+    obj, out, graph_id = resolve_command_context(ctx, graph)
 
     with obj.get_storage(graph_id) as storage:
         rows = document_rows(storage, limit=limit)
@@ -120,8 +116,7 @@ def list_docs(ctx: click.Context, limit: int, graph: Optional[str]) -> None:
     data = {"documents": docs_data, "total": len(docs_data)}
 
     if out.is_json:
-        payload = {"success": True, "command": "docs list", "graph_id": graph_id, "data": data}
-        click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        emit_json_result("docs list", data, graph_id=graph_id)
         return
 
     if out.is_quiet:
@@ -150,9 +145,7 @@ def list_docs(ctx: click.Context, limit: int, graph: Optional[str]) -> None:
 @click.pass_context
 def path(ctx: click.Context, document_id: str, graph: Optional[str]) -> None:
     """Resolve a document ID to a readable file path."""
-    obj: CliContext = ctx.obj
-    out = OutputManager(ctx)
-    graph_id = obj.get_active_graph(graph)
+    obj, out, graph_id = resolve_command_context(ctx, graph)
 
     with obj.get_storage(graph_id) as storage:
         info = storage.get_document_file_info(document_id)
@@ -161,8 +154,7 @@ def path(ctx: click.Context, document_id: str, graph: Optional[str]) -> None:
         payload = document_file_payload(storage, info)
 
     if out.is_json:
-        result = {"success": True, "command": "docs path", "graph_id": graph_id, "data": payload}
-        click.echo(json.dumps(result, ensure_ascii=False, indent=2))
+        emit_json_result("docs path", payload, graph_id=graph_id)
         return
 
     if out.is_quiet:
@@ -187,83 +179,31 @@ def path(ctx: click.Context, document_id: str, graph: Optional[str]) -> None:
 
 
 # ------------------------------------------------------------------
-# docs search
+# docs search / docs grep（P4.4c：合并为同一实现，grep 为 --regex 别名）
 # ------------------------------------------------------------------
 
-@docs.command()
-@click.argument("pattern")
-@click.option("--limit", type=int, default=50, show_default=True, help="Maximum hits.")
-@_graph_option
-@click.pass_context
-def search(ctx: click.Context, pattern: str, limit: int, graph: Optional[str]) -> None:
-    """Literal text search over readable document files."""
-    obj: CliContext = ctx.obj
-    out = OutputManager(ctx)
-    graph_id = obj.get_active_graph(graph)
+def _text_search(
+    ctx: click.Context,
+    pattern: str,
+    limit: int,
+    graph: Optional[str],
+    *,
+    regex: bool,
+    command: str,
+) -> None:
+    """search/grep 公共实现：匹配模式与信封 command 名由调用方给出。
+
+    输出形状（JSON 字段、表格标题/列名）与合并前逐命令版本一致。
+    """
+    obj, out, graph_id = resolve_command_context(ctx, graph)
 
     with obj.get_storage(graph_id) as storage:
         try:
-            hits = search_document_files(storage, pattern, regex=False, limit=limit)
-        except ValueError as exc:
-            out.error(str(exc), code=ARGS)
-
-    data = {
-        "hits": hits,
-        "total": len(hits),
-        "used": {
-            "raw_files": True,
-            "sqlite": True,
-            "semantic": False,
-            "graph_traversal": False,
-            "api": False,
-        },
-    }
-
-    if out.is_json:
-        payload = {"success": True, "command": "docs search", "graph_id": graph_id, "data": data}
-        click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
-        return
-
-    if out.is_quiet:
-        return
-
-    columns = ("Title", "Line", "Text")
-    table_rows: list[list[str]] = []
-    for h in hits:
-        doc = h.get("document") or {}
-        text = h.get("text", "")
-        if len(text) > 120:
-            text = text[:117] + "..."
-        table_rows.append((
-            doc.get("title", ""),
-            str(doc.get("line_start", "")),
-            text,
-        ))
-    out.table(f"Search: {pattern!r} ({len(hits)} hits)", columns, table_rows)
-
-
-# ------------------------------------------------------------------
-# docs grep
-# ------------------------------------------------------------------
-
-@docs.command()
-@click.argument("pattern")
-@click.option("--limit", type=int, default=50, show_default=True, help="Maximum hits.")
-@_graph_option
-@click.pass_context
-def grep(ctx: click.Context, pattern: str, limit: int, graph: Optional[str]) -> None:
-    """Regex text search over readable document files."""
-    obj: CliContext = ctx.obj
-    out = OutputManager(ctx)
-    graph_id = obj.get_active_graph(graph)
-
-    with obj.get_storage(graph_id) as storage:
-        try:
-            hits = search_document_files(storage, pattern, regex=True, limit=limit)
+            hits = search_document_files(storage, pattern, regex=regex, limit=limit)
         except ValueError as exc:
             out.error(
                 str(exc),
-                hint="Use docs search for literal text matching.",
+                hint="Use docs search for literal text matching." if regex else None,
                 code=ARGS,
             )
 
@@ -280,14 +220,19 @@ def grep(ctx: click.Context, pattern: str, limit: int, graph: Optional[str]) -> 
     }
 
     if out.is_json:
-        payload = {"success": True, "command": "docs grep", "graph_id": graph_id, "data": data}
-        click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        emit_json_result(command, data, graph_id=graph_id)
         return
 
     if out.is_quiet:
         return
 
-    columns = ("Title", "Line", "Match")
+    if regex:
+        title = f"Grep: /{pattern}/ ({len(hits)} hits)"
+        match_header = "Match"
+    else:
+        title = f"Search: {pattern!r} ({len(hits)} hits)"
+        match_header = "Text"
+    columns = ("Title", "Line", match_header)
     table_rows: list[list[str]] = []
     for h in hits:
         doc = h.get("document") or {}
@@ -299,7 +244,33 @@ def grep(ctx: click.Context, pattern: str, limit: int, graph: Optional[str]) -> 
             str(doc.get("line_start", "")),
             text,
         ))
-    out.table(f"Grep: /{pattern}/ ({len(hits)} hits)", columns, table_rows)
+    out.table(title, columns, table_rows)
+
+
+@docs.command()
+@click.argument("pattern")
+@click.option("--limit", type=int, default=50, show_default=True, help="Maximum hits.")
+@click.option(
+    "--regex",
+    is_flag=True,
+    default=False,
+    help="Treat PATTERN as a regular expression (same as docs grep).",
+)
+@_graph_option
+@click.pass_context
+def search(ctx: click.Context, pattern: str, limit: int, regex: bool, graph: Optional[str]) -> None:
+    """Literal (or --regex) text search over readable document files."""
+    _text_search(ctx, pattern, limit, graph, regex=regex, command="docs search")
+
+
+@docs.command()
+@click.argument("pattern")
+@click.option("--limit", type=int, default=50, show_default=True, help="Maximum hits.")
+@_graph_option
+@click.pass_context
+def grep(ctx: click.Context, pattern: str, limit: int, graph: Optional[str]) -> None:
+    """Regex text search over readable document files (alias of docs search --regex)."""
+    _text_search(ctx, pattern, limit, graph, regex=True, command="docs grep")
 
 
 # ------------------------------------------------------------------
@@ -312,9 +283,7 @@ def grep(ctx: click.Context, pattern: str, limit: int, graph: Optional[str]) -> 
 @click.pass_context
 def map_cmd(ctx: click.Context, path: str, graph: Optional[str]) -> None:
     """Map a file-system path to Deep-Dream document records."""
-    obj: CliContext = ctx.obj
-    out = OutputManager(ctx)
-    graph_id = obj.get_active_graph(graph)
+    obj, out, graph_id = resolve_command_context(ctx, graph)
 
     with obj.get_storage(graph_id) as storage:
         docs_data = [document_file_payload(storage, d) for d in map_path_to_documents(storage, path)]
@@ -322,8 +291,7 @@ def map_cmd(ctx: click.Context, path: str, graph: Optional[str]) -> None:
     data = {"path": path, "documents": docs_data, "total": len(docs_data)}
 
     if out.is_json:
-        payload = {"success": True, "command": "docs map", "graph_id": graph_id, "data": data}
-        click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        emit_json_result("docs map", data, graph_id=graph_id)
         return
 
     if out.is_quiet:
@@ -367,9 +335,7 @@ def content(ctx: click.Context, document_id: str, full: bool, lines: Optional[st
     By default shows the first 200 lines.  Use --full to show everything,
     or --lines 10-30 to show a specific range.
     """
-    obj: CliContext = ctx.obj
-    out = OutputManager(ctx)
-    graph_id = obj.get_active_graph(graph)
+    obj, out, graph_id = resolve_command_context(ctx, graph)
 
     # Parse --lines range if given
     line_start: Optional[int] = None
@@ -436,8 +402,7 @@ def content(ctx: click.Context, document_id: str, full: bool, lines: Optional[st
     }
 
     if out.is_json:
-        payload = {"success": True, "command": "docs content", "graph_id": graph_id, "data": data}
-        click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        emit_json_result("docs content", data, graph_id=graph_id)
         return
 
     if out.is_quiet:
@@ -488,9 +453,7 @@ def delete(ctx: click.Context, document_id: str, yes: bool, graph: Optional[str]
     - Concept and relation families that become orphaned are removed.
     - Embeddings linked to deleted episodes are purged.
     """
-    obj: CliContext = ctx.obj
-    out = OutputManager(ctx)
-    graph_id = obj.get_active_graph(graph)
+    obj, out, graph_id = resolve_command_context(ctx, graph)
 
     with obj.get_storage(graph_id) as storage:
         # Pre-flight: confirm the document exists
@@ -500,12 +463,11 @@ def delete(ctx: click.Context, document_id: str, yes: bool, graph: Optional[str]
 
         if not yes:
             if out.is_json:
-                click.echo(json.dumps({
-                    "success": False,
-                    "error": "Deletion requires --yes confirmation.",
-                    "document_id": document_id,
-                    "title": info.get("title", ""),
-                }, ensure_ascii=False, indent=2))
+                emit_json_error(
+                    "Deletion requires --yes confirmation.",
+                    document_id=document_id,
+                    title=info.get("title", ""),
+                )
                 raise SystemExit(1)
 
             out.console.print(
@@ -528,8 +490,7 @@ def delete(ctx: click.Context, document_id: str, yes: bool, graph: Optional[str]
     }
 
     if out.is_json:
-        payload = {"success": True, "command": "docs delete", "graph_id": graph_id, "data": data}
-        click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        emit_json_result("docs delete", data, graph_id=graph_id)
         return
 
     if out.is_quiet:

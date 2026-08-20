@@ -19,6 +19,7 @@ import click
 
 from ._ctx import CliContext
 from ._exit_codes import ARGS, NOT_FOUND
+from ._helpers import resolve_config_path
 from ._output import OutputManager
 
 
@@ -168,16 +169,6 @@ def _coerce_value(path: str, raw: str) -> Any:
     return raw
 
 
-def _resolve_config_path(ctx: click.Context) -> str:
-    """Extract the ``--config`` path from the Click context chain."""
-    # Walk up to find the root context that has _click_params.
-    cur = ctx
-    while cur.parent is not None:
-        cur = cur.parent
-    params = getattr(ctx.obj, "_click_params", None) or {}
-    return params.get("config", "service_config.json")
-
-
 def _load_raw_config(config_path: str) -> Dict[str, Any]:
     """Load the raw JSON config file without merging defaults."""
     path = Path(config_path)
@@ -223,7 +214,7 @@ def show(ctx: click.Context, secrets: bool) -> None:
     obj: CliContext = ctx.obj
     out = OutputManager(ctx)
 
-    config_path = _resolve_config_path(ctx)
+    config_path = resolve_config_path(ctx)
     obj.load_config(config_path)
     resolved = obj.config
 
@@ -276,7 +267,7 @@ def get(ctx: click.Context, key: str) -> None:
     obj: CliContext = ctx.obj
     out = OutputManager(ctx)
 
-    config_path = _resolve_config_path(ctx)
+    config_path = resolve_config_path(ctx)
     obj.load_config(config_path)
 
     value = _get_nested(obj.config, key)
@@ -337,7 +328,7 @@ def set_value(ctx: click.Context, key: str, value: str, yes: bool) -> None:
     obj: CliContext = ctx.obj
     out = OutputManager(ctx)
 
-    config_path = _resolve_config_path(ctx)
+    config_path = resolve_config_path(ctx)
 
     # Coerce the string value to the appropriate type.
     try:

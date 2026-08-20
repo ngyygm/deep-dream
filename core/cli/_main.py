@@ -1,95 +1,77 @@
 """Root Click group for the Deep-Dream CLI.
 
-All heavy imports (core.remember, core.storage, etc.) are deferred so
-that ``--help`` and ``--version`` return in under 200 ms.
-
-The ``core`` package's ``__init__.py`` eagerly imports the entire
-pipeline, so we must avoid importing anything under ``core.*`` at
-module level here.  ``CliContext`` and command modules are imported
-lazily inside callbacks.
+``core/__init__.py`` is PEP 562 lazy, so the command modules can be
+imported and registered here directly (the ``_LazyGroup`` indirection
+that used to break the import cycle is gone).  Each ``cmd_*`` module
+itself only pulls in stdlib + click/rich + ``core.cli`` internals at
+module level; heavy imports (``core.remember``, ``core.storage``, …)
+stay deferred inside command callbacks, keeping ``--help`` and
+``--version`` fast.
 """
 from __future__ import annotations
 
-import importlib
+import importlib.metadata
 from typing import Any
 
 import click
 
 from ._exit_codes import ARGS, OK
+from .cmd_completion import completion
+from .cmd_concept import concept
+from .cmd_config import config
+from .cmd_db import db
+from .cmd_doctor import doctor
+from .cmd_docs import docs
+from .cmd_episode import episode
+from .cmd_explore import explore
+from .cmd_find import find
+from .cmd_graph import graph
+from .cmd_remember import remember
+from .cmd_relation import relation
+from .cmd_server import server
+from .cmd_sql import sql
+from .cmd_task import task
+from .cmd_vault import vault
+from .cmd_version import version
 
 
 # ------------------------------------------------------------------
-# Version — no core.* imports needed
+# Version — single source: installed package metadata, constant fallback
 # ------------------------------------------------------------------
 
-_VERSION = "2.0.0"
+_VERSION = "0.2.0"  # 与 pyproject.toml 同步；仅在包未安装/元数据缺失时兜底
+
+
+def _resolve_version() -> str:
+    """单一版本来源：优先读安装包元数据（源自 pyproject.toml），异常回退常量。"""
+    try:
+        return importlib.metadata.version("deep-dream")
+    except Exception:  # 未安装或元数据损坏
+        return _VERSION
 
 
 def _print_version(ctx: click.Context, param: click.Parameter, value: Any) -> None:
     """Print version and exit immediately (no heavy imports)."""
     if not value or ctx.resilient_parsing:
         return
-    click.echo(f"deep-dream {_VERSION}")
+    click.echo(f"deep-dream {_resolve_version()}")
     ctx.exit()
-
-
-# ------------------------------------------------------------------
-# Lazy command loader
-# ------------------------------------------------------------------
-
-_LAZY_COMMANDS: dict[str, str] = {
-    # meta / info
-    "version":    "core.cli.cmd_version:version",
-    "doctor":     "core.cli.cmd_doctor:doctor",
-    "config":     "core.cli.cmd_config:config",
-    "completion": "core.cli.cmd_completion:completion",
-    # core retrieval
-    "find":       "core.cli.cmd_find:find",
-    "remember":   "core.cli.cmd_remember:remember",
-    "explore":    "core.cli.cmd_explore:explore",
-    # data
-    "docs":       "core.cli.cmd_docs:docs",
-    "concept":    "core.cli.cmd_concept:concept",
-    "episode":    "core.cli.cmd_episode:episode",
-    "relation":   "core.cli.cmd_relation:relation",
-    # management
-    "graph":      "core.cli.cmd_graph:graph",
-    "vault":      "core.cli.cmd_vault:vault",
-    # server
-    "server":     "core.cli.cmd_server:server",
-    "task":       "core.cli.cmd_task:task",
-    # maintenance
-    "db":         "core.cli.cmd_db:db",
-    "sql":        "core.cli.cmd_sql:sql",
-}
-
-
-def _lazy_import(dotted_path: str):
-    """Import an object from a dotted path like 'pkg.mod:attr'."""
-    module_path, _, attr = dotted_path.partition(":")
-    mod = importlib.import_module(module_path)
-    return getattr(mod, attr)
-
-
-class _LazyGroup(click.Group):
-    """Click group that resolves commands from _LAZY_COMMANDS on demand."""
-
-    def list_commands(self, ctx: click.Context) -> list[str]:
-        return list(_LAZY_COMMANDS)
-
-    def get_command(self, ctx: click.Context, cmd_name: str) -> click.Command | None:
-        dotted = _LAZY_COMMANDS.get(cmd_name)
-        if dotted is None:
-            return None
-        try:
-            return _lazy_import(dotted)
-        except ImportError:
-            return None
 
 
 # ------------------------------------------------------------------
 # Root group
 # ------------------------------------------------------------------
+
+class _OrderedCommandGroup(click.Group):
+    """List subcommands in registration order.
+
+    click 默认按字母序列出子命令，会改变既有的 ``--help`` 输出顺序；
+    这里按注册顺序列出以保持输出不变。
+    """
+
+    def list_commands(self, ctx: click.Context) -> list[str]:
+        return list(self.commands)
+
 
 _HELP_TEXT = """\
 Deep-Dream — document-first concept graph knowledge server.
@@ -107,7 +89,7 @@ Use 'deep-dream <command> --help' for command-specific options.
 
 
 @click.group(
-    cls=_LazyGroup,
+    cls=_OrderedCommandGroup,
     invoke_without_command=False,
     context_settings=dict(
         help_option_names=["-h", "--help"],
@@ -159,6 +141,27 @@ def cli(ctx: click.Context, **kwargs: Any) -> None:
     ctx.obj = CliContext()
     # Store raw Click params so OutputManager can read --json/--quiet/--no-color
     ctx.obj._click_params = kwargs  # type: ignore[attr-defined]
+
+
+# -- 命令注册（顺序即 --help 列表顺序）----------------------------------
+
+cli.add_command(version)      # meta / info
+cli.add_command(doctor)
+cli.add_command(config)
+cli.add_command(completion)
+cli.add_command(find)         # core retrieval
+cli.add_command(remember)
+cli.add_command(explore)
+cli.add_command(docs)         # data
+cli.add_command(concept)
+cli.add_command(episode)
+cli.add_command(relation)
+cli.add_command(graph)        # management
+cli.add_command(vault)
+cli.add_command(server)       # server
+cli.add_command(task)
+cli.add_command(db)           # maintenance
+cli.add_command(sql)
 
 
 # ------------------------------------------------------------------

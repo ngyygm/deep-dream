@@ -28,17 +28,16 @@ from rich.panel import Panel as _Panel
 
 from ._ctx import CliContext
 from ._exit_codes import ERROR, NOT_FOUND
-from ._helpers import resolve_concept_id
+from ._helpers import resolve_config_path, resolve_concept_id
 from ._output import OutputManager, format_confidence, format_timestamp
-
-
-def _escape_like(value: str) -> str:
-    """Escape LIKE wildcard characters (%_) so they match literally.
-
-    Uses '!' as the ESCAPE character to avoid backslash quoting issues
-    in Python triple-quoted SQL strings.
-    """
-    return value.replace("!", "!!").replace("%", "!%").replace("_", "!_")
+# P4.2：bm25/semantic/hybrid 三种检索模式与 server 共用同一实现
+from core.find.concept_search import (
+    bm25_concept_search,
+    hybrid_concept_search,
+    semantic_concept_search,
+)
+# P4.5：LIKE 转义与存储层共用同一实现（配对 SQL 子句 ESCAPE '!'）
+from core.storage.sqlite.helpers import escape_like
 
 
 def _format_line_range(line_start: Any, line_end: Any) -> str:
@@ -68,15 +67,6 @@ def concept() -> None:
 # ------------------------------------------------------------------
 # Helpers
 # ------------------------------------------------------------------
-
-def _resolve_config_path(ctx: click.Context) -> str:
-    """Extract the ``--config`` path from the Click root context."""
-    cur = ctx
-    while cur.parent is not None:
-        cur = cur.parent
-    params = getattr(ctx.obj, "_click_params", None) or {}
-    return params.get("config", "service_config.json")
-
 
 def _get_graph_id(ctx: click.Context, explicit: Optional[str] = None) -> str:
     """Return the active graph ID (always LIBRARY_ID in single-library mode)."""
@@ -129,7 +119,7 @@ def search(
     """Search concepts by query string."""
     obj: CliContext = ctx.obj
     out = OutputManager(ctx)
-    config_path = _resolve_config_path(ctx)
+    config_path = resolve_config_path(ctx)
     obj.load_config(config_path)
     graph_id = _get_graph_id(ctx)
 
@@ -137,7 +127,7 @@ def search(
         if mode == "name":
             # Direct SQL LIKE search on entity canonical_name — works without embeddings or FTS.
             conn = storage._conn()
-            like_pattern = f"%{_escape_like(query)}%"
+            like_pattern = f"%{escape_like(query)}%"
             rows = conn.execute(
                 """
                 SELECT ef.entity_family_id AS family_id,
@@ -159,79 +149,32 @@ def search(
                 for r in rows
             ]
         elif mode == "semantic":
-            result = storage.agent_semantic_search(
-                query, role=role, top_k=limit, threshold=threshold,
+            # P4.2：与 server /api/v1/concepts/search 同一实现（语义腿统一走
+            # storage.agent_semantic_search 单入口，含 role boost/CJK 阈值）。
+            results, _meta = semantic_concept_search(
+                storage, query, role, limit, threshold,
             )
-            concepts = result.get("results", [])
+            concepts = results
         elif mode == "hybrid":
-            if hasattr(storage, "search_entities_by_bm25"):
-                raw_entities = storage.search_entities_by_bm25(query, limit=limit)
-                bm25_results = []
-                seen_fids: set[str] = set()
-                for ent in raw_entities:
-                    if isinstance(ent, dict):
-                        fid = ent.get("entity_family_id") or ent.get("family_id", "")
-                        name = ent.get("canonical_name") or ent.get("name", "")
-                        score = ent.get("_score", "")
-                    else:
-                        fid = getattr(ent, "family_id", "")
-                        name = getattr(ent, "name", "")
-                        score = getattr(ent, "_score", "")
-                    if fid and fid not in seen_fids:
-                        seen_fids.add(fid)
-                        bm25_results.append({
-                            "family_id": fid,
-                            "name": name,
-                            "role": "entity",
-                            "observation_count": "",
-                            "score": score,
-                        })
-            else:
-                bm25_results = storage.search_concepts_by_bm25(
-                    query, role=role, limit=limit,
-                )
-            sem_result = storage.agent_semantic_search(
-                query, role=role, top_k=limit, threshold=threshold,
+            # P4.2：与 server 同一 RRF 融合实现（k=60、0.3/0.7 权重、
+            # role boost）。此前 CLI 自带一套"BM25 去重拼接"逻辑，与
+            # server 排序不一致——以 server 端行为为准统一。
+            results, _meta = hybrid_concept_search(
+                storage, query, role, limit, threshold,
             )
-            semantic_results = sem_result.get("results", [])
-            # De-duplicate: BM25 first, then append unique semantic hits.
-            seen_ids = {c.get("family_id") for c in bm25_results}
-            for c in semantic_results:
-                fid = c.get("family_id")
-                if fid and fid not in seen_ids:
-                    bm25_results.append(c)
-                    seen_ids.add(fid)
-            concepts = bm25_results
+            concepts = results
         else:  # bm25
-            # search_concepts_by_bm25 returns raw episode-level hits
-            # without family_id/role.  Use search_entities_by_bm25 instead
-            # to get actual entity results with proper family resolution.
-            if hasattr(storage, "search_entities_by_bm25"):
-                raw_entities = storage.search_entities_by_bm25(query, limit=limit)
-                concepts = []
-                seen_fids: set[str] = set()
-                for ent in raw_entities:
-                    if isinstance(ent, dict):
-                        fid = ent.get("entity_family_id") or ent.get("family_id", "")
-                        name = ent.get("canonical_name") or ent.get("name", "")
-                        score = ent.get("_score", "")
-                    else:
-                        fid = getattr(ent, "family_id", "")
-                        name = getattr(ent, "name", "")
-                        score = getattr(ent, "_score", "")
-                    if fid and fid not in seen_fids:
-                        seen_fids.add(fid)
-                        concepts.append({
-                            "family_id": fid,
-                            "name": name,
-                            "role": "entity",
-                            "observation_count": "",
-                            "score": score,
-                        })
-            else:
-                concepts = storage.search_concepts_by_bm25(
-                    query, role=role, limit=limit,
-                )
+            # P4.2：与 server 同一 BM25 实现（role 分腿 + 阈值过滤 + CJK
+            # 降阈）。此前 CLI 无视 --role 固定走实体腿，现随 role 分流。
+            results, _meta = bm25_concept_search(
+                storage, query, role, limit, threshold,
+            )
+            concepts = results
+        # 共享实现的得分为 "_score"；表格 Score 列读 "score"（纯新增字段，
+        # JSON 输出保持 concepts/total/query/mode 结构不变）。
+        for c in concepts:
+            if isinstance(c, dict) and "score" not in c and c.get("_score") is not None:
+                c["score"] = c.get("_score", "")
 
     data = {
         "concepts": concepts,
@@ -314,7 +257,7 @@ def get(ctx: click.Context, family_id: str) -> None:
     """Display full details for a concept."""
     obj: CliContext = ctx.obj
     out = OutputManager(ctx)
-    config_path = _resolve_config_path(ctx)
+    config_path = resolve_config_path(ctx)
     obj.load_config(config_path)
     graph_id = _get_graph_id(ctx)
 
@@ -454,7 +397,7 @@ def trace(ctx: click.Context, family_id: str, time_point: Optional[str]) -> None
     """Trace concept provenance back to source episodes."""
     obj: CliContext = ctx.obj
     out = OutputManager(ctx)
-    config_path = _resolve_config_path(ctx)
+    config_path = resolve_config_path(ctx)
     obj.load_config(config_path)
     graph_id = _get_graph_id(ctx)
 
@@ -574,7 +517,7 @@ def neighbors(
     """Expand concept graph neighbors."""
     obj: CliContext = ctx.obj
     out = OutputManager(ctx)
-    config_path = _resolve_config_path(ctx)
+    config_path = resolve_config_path(ctx)
     obj.load_config(config_path)
     graph_id = _get_graph_id(ctx)
 
@@ -678,7 +621,7 @@ def versions(ctx: click.Context, family_id: str) -> None:
     """List all versions of a concept family."""
     obj: CliContext = ctx.obj
     out = OutputManager(ctx)
-    config_path = _resolve_config_path(ctx)
+    config_path = resolve_config_path(ctx)
     obj.load_config(config_path)
     graph_id = _get_graph_id(ctx)
 
@@ -758,7 +701,7 @@ def mentions(
     """Get episodes mentioning a concept."""
     obj: CliContext = ctx.obj
     out = OutputManager(ctx)
-    config_path = _resolve_config_path(ctx)
+    config_path = resolve_config_path(ctx)
     obj.load_config(config_path)
     graph_id = _get_graph_id(ctx)
 
@@ -860,7 +803,7 @@ def update(
     """Manually update a concept's name, content, or confidence."""
     obj: CliContext = ctx.obj
     out = OutputManager(ctx)
-    config_path = _resolve_config_path(ctx)
+    config_path = resolve_config_path(ctx)
     obj.load_config(config_path)
     graph_id = _get_graph_id(ctx)
 
@@ -972,7 +915,7 @@ def suggest(ctx: click.Context, prefix: str) -> None:
     """Suggest concept names by prefix."""
     obj: CliContext = ctx.obj
     out = OutputManager(ctx)
-    config_path = _resolve_config_path(ctx)
+    config_path = resolve_config_path(ctx)
     obj.load_config(config_path)
     graph_id = _get_graph_id(ctx)
 
@@ -1021,7 +964,7 @@ def duplicates(ctx: click.Context) -> None:
     """Detect potential duplicate entities."""
     obj: CliContext = ctx.obj
     out = OutputManager(ctx)
-    config_path = _resolve_config_path(ctx)
+    config_path = resolve_config_path(ctx)
     obj.load_config(config_path)
     graph_id = _get_graph_id(ctx)
 
@@ -1089,7 +1032,7 @@ def merge(
     """
     obj: CliContext = ctx.obj
     out = OutputManager(ctx)
-    config_path = _resolve_config_path(ctx)
+    config_path = resolve_config_path(ctx)
     obj.load_config(config_path)
     graph_id = _get_graph_id(ctx)
 

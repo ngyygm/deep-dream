@@ -1,7 +1,9 @@
 """Shared helper functions extracted from the legacy argparse CLI.
 
-These are pure utility functions with no argparse dependency.  They accept
-a ``SQLiteGraphStorageManager`` instance as their first argument.
+Mostly pure utility functions that accept a ``SQLiteGraphStorageManager``
+instance as their first argument, plus the command-boilerplate helpers
+(:func:`resolve_command_context` / :func:`emit_json_result` /
+:func:`emit_json_error`) shared by the ``cmd_*`` modules.
 
 NOTE: The ``SQLiteGraphStorageManager`` type hint uses ``Any`` at the
 module level to avoid triggering the heavy ``core/__init__.py`` import
@@ -9,10 +11,73 @@ chain.  The actual import only happens at call time.
 """
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Dict, Iterable, Optional
+
+import click
+
+from ._ctx import CliContext
+from ._output import OutputManager
+
+
+# ------------------------------------------------------------------
+# 命令样板收敛（P4.4a）
+# ------------------------------------------------------------------
+
+def resolve_config_path(ctx: click.Context) -> str:
+    """Extract the ``--config`` path from the Click root context.
+
+    P4.5 收敛：config/concept/server/graph 四处各持一份相同实现。
+    根组回调（``_main.cli``）把原始 Click 参数存在 ``ctx.obj._click_params``，
+    与 ``OutputManager`` 读取 ``--json/--quiet/--no-color`` 同一来源。
+    """
+    params = getattr(ctx.obj, "_click_params", None) or {}
+    return params.get("config", "service_config.json")
+
+
+def resolve_command_context(
+    ctx: click.Context,
+    graph: Optional[str] = None,
+) -> tuple[CliContext, OutputManager, str]:
+    """docs/episode 系子命令的公共 preamble：取 obj/out 并解析 graph_id。
+
+    收敛各命令开头重复的三行 ``obj = ctx.obj`` / ``out = OutputManager(ctx)``
+    / ``graph_id = obj.get_active_graph(graph)`` 样板。
+    """
+    obj: CliContext = ctx.obj
+    out = OutputManager(ctx)
+    return obj, out, obj.get_active_graph(graph)
+
+
+def emit_json_result(
+    command: str,
+    data: Any,
+    graph_id: Optional[str] = None,
+    extra: Optional[Dict[str, Any]] = None,
+    success: bool = True,
+) -> None:
+    """--json 模式统一成功信封。
+
+    键序与各命令原手写信封一致：success → command → [graph_id] → data → extra。
+    ``success`` 仅在个别命令（如 ``db validate``）随业务结果变化时显式传入。
+    """
+    payload: Dict[str, Any] = {"success": success, "command": command}
+    if graph_id is not None:
+        payload["graph_id"] = graph_id
+    payload["data"] = data
+    if extra:
+        payload.update(extra)
+    click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+
+
+def emit_json_error(error: str, **extra: Any) -> None:
+    """--json 模式统一错误信封：键序 success → error → 其余附加键。"""
+    payload: Dict[str, Any] = {"success": False, "error": error}
+    payload.update(extra)
+    click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
 
 
 # ------------------------------------------------------------------

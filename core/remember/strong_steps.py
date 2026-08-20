@@ -17,6 +17,13 @@ from typing import Dict, List, Optional, Tuple
 from core.utils import wprint_info
 from core.llm.client import LLM_PRIORITY_EXTRACT
 
+# remember 配置默认值唯一出处（与 orchestrator._resolve_remember_config 同源）
+from ._shared import (
+    REMEMBER_MAX_ENTITIES_PER_WINDOW_DEFAULT,
+    REMEMBER_MAX_RELATIONS_PER_WINDOW_DEFAULT,
+    REMEMBER_PROFILE_CURRENT,
+)
+
 from ._steps_helpers import (
     _pair_key,
     _normalize_and_dedup_entity_names, _validate_entity, _validate_relation,
@@ -77,8 +84,10 @@ def strong_extract_only(
         try:
             structured = self.llm_client.extract_window_structured(
                 input_text,
-                max_entities=getattr(self, "remember_max_entities_per_window", 16) * 2,
-                max_relations=getattr(self, "remember_max_relations_per_window", 24) * 2,
+                max_entities=getattr(self, "remember_max_entities_per_window",
+                                     REMEMBER_MAX_ENTITIES_PER_WINDOW_DEFAULT) * 2,
+                max_relations=getattr(self, "remember_max_relations_per_window",
+                                      REMEMBER_MAX_RELATIONS_PER_WINDOW_DEFAULT) * 2,
             )
         finally:
             if previous_priority is None:
@@ -125,14 +134,15 @@ def strong_extract_only(
         for e in raw_entities:
             _content_by_name.setdefault(e["name"], e.get("content", ""))
         entity_names = _normalize_and_dedup_entity_names(list(_content_by_name.keys()))
-        if getattr(self, "remember_profile", "current") in ("quality-v1", "strong-v1"):
+        if getattr(self, "remember_profile", REMEMBER_PROFILE_CURRENT) in ("quality-v1", "strong-v1"):
             from .quality import filter_entity_names
             # strong-v1：名称落地由 prompt 硬约束负责，这里不做逐字落地硬杀
             # （矩阵 C 教训：kimi 把英文概念译成中文名，落地检查把 4/6 实体杀光）
             entity_names = filter_entity_names(
                 entity_names, input_text,
-                limit=getattr(self, "remember_max_entities_per_window", 16),
-                require_grounding=getattr(self, "remember_profile", "current") != "strong-v1",
+                limit=getattr(self, "remember_max_entities_per_window",
+                              REMEMBER_MAX_ENTITIES_PER_WINDOW_DEFAULT),
+                require_grounding=getattr(self, "remember_profile", REMEMBER_PROFILE_CURRENT) != "strong-v1",
             )
 
         extracted_entities = []
@@ -189,11 +199,12 @@ def strong_extract_only(
             relation_pairs.append((a, b))
             _pair_contents[pk] = str(r.get("content", "") or "")
 
-        if getattr(self, "remember_profile", "current") in ("quality-v1", "strong-v1"):
+        if getattr(self, "remember_profile", REMEMBER_PROFILE_CURRENT) in ("quality-v1", "strong-v1"):
             from .quality import cap_relation_pairs
             relation_pairs = cap_relation_pairs(
                 relation_pairs,
-                limit=getattr(self, "remember_max_relations_per_window", 24),
+                limit=getattr(self, "remember_max_relations_per_window",
+                              REMEMBER_MAX_RELATIONS_PER_WINDOW_DEFAULT),
             )
 
         valid_relations = []

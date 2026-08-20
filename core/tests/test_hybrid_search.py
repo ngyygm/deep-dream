@@ -1,9 +1,10 @@
 """Tests for the LIVE hybrid retrieval stack.
 
 Covers (2026-08 audit, P0 safety net):
-- routes/concepts.py::_hybrid_concept_search — the RRF fusion actually served
-  by POST /api/v1/concepts/search and /api/v1/find (BM25+semantic fusion,
-  CJK threshold handling, fallback modes, role boost, BM25 threshold filter).
+- core/find/concept_search.py::hybrid_concept_search — the RRF fusion actually
+  served by POST /api/v1/concepts/search and /api/v1/find, and shared with CLI
+  ``concept search`` since P4.2 (BM25+semantic fusion, CJK threshold handling,
+  fallback modes, role boost, BM25 threshold filter).
 - storage-level FTS search incl. the short-CJK LIKE fallback path.
 - HybridSearcher.cluster_results — the only HybridSearcher method with a
   production caller.
@@ -22,7 +23,11 @@ from core.storage.sqlite.repositories import (
     episodes as ep_repo,
     search as search_repo,
 )
-from core.server.routes.concepts import _hybrid_concept_search, _has_cjk
+# P4.2/P4.3：检索实现自 routes/concepts.py 抽出至 core/find/concept_search.py
+from core.find.concept_search import (
+    hybrid_concept_search as _hybrid_concept_search,
+    has_cjk as _has_cjk,
+)
 
 NOW = "2026-05-26T00:00:00Z"
 
@@ -123,11 +128,13 @@ class _StubStorage:
                                 time_after=None, time_before=None):
         return self._by_role(self._bm25, role)
 
-    def search_concepts_by_similarity(self, query_text, role=None,
-                                      threshold=0.3, max_results=20,
-                                      time_point=None, source_document=None,
-                                      time_after=None, time_before=None):
-        return self._by_role(self._semantic, role)
+    # P4.2：语义腿统一走 agent_semantic_search 单入口（返回 {"results": ...} 包装）
+    def agent_semantic_search(self, query, *, role=None, top_k=20,
+                              threshold=0.3, source_document=None,
+                              time_point=None, time_after=None,
+                              time_before=None):
+        results = self._by_role(self._semantic, role)
+        return {"results": results, "total": len(results)}
 
 
 def _item(fid, role="entity", score=0.5):

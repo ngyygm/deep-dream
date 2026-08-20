@@ -12,7 +12,6 @@ flags handled by :class:`OutputManager`.
 """
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -21,14 +20,15 @@ import click
 from rich.markup import escape as _rich_escape
 from rich.panel import Panel as _Panel
 
-from ._ctx import CliContext
 from ._exit_codes import NOT_FOUND
 from ._helpers import (
     document_file_payload,
+    emit_json_result,
     map_path_to_documents,
     read_sql,
+    resolve_command_context,
 )
-from ._output import OutputManager, format_timestamp
+from ._output import format_timestamp
 
 
 # ------------------------------------------------------------------
@@ -64,9 +64,7 @@ def episode() -> None:
 @click.pass_context
 def from_file(ctx: click.Context, path: str, line: Optional[int], limit: int, graph: Optional[str]) -> None:
     """Map a file path (and optional line) to episodes."""
-    obj: CliContext = ctx.obj
-    out = OutputManager(ctx)
-    graph_id = obj.get_active_graph(graph)
+    obj, out, graph_id = resolve_command_context(ctx, graph)
 
     with obj.get_storage(graph_id) as storage:
         docs_data = [document_file_payload(storage, d) for d in map_path_to_documents(storage, path, limit=5)]
@@ -121,8 +119,7 @@ def from_file(ctx: click.Context, path: str, line: Optional[int], limit: int, gr
     }
 
     if out.is_json:
-        payload = {"success": True, "command": "episode from-file", "graph_id": graph_id, "data": data}
-        click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        emit_json_result("episode from-file", data, graph_id=graph_id)
         return
 
     if out.is_quiet:
@@ -151,9 +148,7 @@ def from_file(ctx: click.Context, path: str, line: Optional[int], limit: int, gr
 @click.pass_context
 def concepts(ctx: click.Context, episode_id: str, limit: int, graph: Optional[str]) -> None:
     """List concepts mentioned by an episode."""
-    obj: CliContext = ctx.obj
-    out = OutputManager(ctx)
-    graph_id = obj.get_active_graph(graph)
+    obj, out, graph_id = resolve_command_context(ctx, graph)
 
     with obj.get_storage(graph_id) as storage:
         concept_rows = read_sql(
@@ -180,8 +175,7 @@ def concepts(ctx: click.Context, episode_id: str, limit: int, graph: Optional[st
     }
 
     if out.is_json:
-        payload = {"success": True, "command": "episode concepts", "graph_id": graph_id, "data": data}
-        click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        emit_json_result("episode concepts", data, graph_id=graph_id)
         return
 
     if out.is_quiet:
@@ -209,9 +203,7 @@ def concepts(ctx: click.Context, episode_id: str, limit: int, graph: Optional[st
 @click.pass_context
 def get(ctx: click.Context, episode_id: str, graph: Optional[str]) -> None:
     """Get episode details."""
-    obj: CliContext = ctx.obj
-    out = OutputManager(ctx)
-    graph_id = obj.get_active_graph(graph)
+    obj, out, graph_id = resolve_command_context(ctx, graph)
 
     with obj.get_storage(graph_id) as storage:
         rows = read_sql(
@@ -244,8 +236,7 @@ def get(ctx: click.Context, episode_id: str, graph: Optional[str]) -> None:
     ep = rows[0]
 
     if out.is_json:
-        payload = {"success": True, "command": "episode get", "graph_id": graph_id, "data": ep}
-        click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        emit_json_result("episode get", ep, graph_id=graph_id)
         return
 
     if out.is_quiet:
@@ -280,9 +271,7 @@ def get(ctx: click.Context, episode_id: str, graph: Optional[str]) -> None:
 @click.pass_context
 def content(ctx: click.Context, episode_id: str, graph: Optional[str]) -> None:
     """Read episode source content."""
-    obj: CliContext = ctx.obj
-    out = OutputManager(ctx)
-    graph_id = obj.get_active_graph(graph)
+    obj, out, graph_id = resolve_command_context(ctx, graph)
 
     with obj.get_storage(graph_id) as storage:
         rows = read_sql(
@@ -321,8 +310,7 @@ def content(ctx: click.Context, episode_id: str, graph: Optional[str]) -> None:
     }
 
     if out.is_json:
-        payload = {"success": True, "command": "episode content", "graph_id": graph_id, "data": data}
-        click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        emit_json_result("episode content", data, graph_id=graph_id)
         return
 
     if out.is_quiet:

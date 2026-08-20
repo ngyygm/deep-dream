@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Tuple
+
+from .helpers import now_utc_str
 
 
 logger = logging.getLogger(__name__)
@@ -12,16 +13,12 @@ logger = logging.getLogger(__name__)
 _MAX_REDIRECT_DEPTH = 16
 
 
-def _now_str() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
 def register_redirect(conn: sqlite3.Connection,
                       source_family_id: str, target_family_id: str) -> None:
     conn.execute(
         "INSERT OR REPLACE INTO entity_redirects (source_family_id, target_family_id, created_at) "
         "VALUES (?, ?, ?)",
-        (source_family_id, target_family_id, _now_str()),
+        (source_family_id, target_family_id, now_utc_str()),
     )
 
 

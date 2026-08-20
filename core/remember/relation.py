@@ -18,6 +18,7 @@ from core.utils import (
 from core.models import Relation
 from core.llm.client import LLMClient, LLM_PRIORITY_ALIGN
 from core.debug_log import log as dbg
+from core.text_chunking import find_text_evidence
 import time as _time
 
 from core.utils import wprint_info, cosine_similarity
@@ -523,7 +524,6 @@ class RelationProcessor(_RelationConstructionMixin):
         _ev_line_end = None
         if source_text and entity1_name and entity2_name:
             try:
-                from core.text_chunking import find_text_evidence
                 # Search for sentences where both entity names appear
                 _hits_a = find_text_evidence(source_text, [entity1_name], limit=3)
                 _hits_b = find_text_evidence(source_text, [entity2_name], limit=3)
