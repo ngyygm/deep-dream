@@ -7,35 +7,25 @@ processing. Heavy logic is delegated to sub-modules:
   - entity_candidates: candidate building + enrich + search filters
 """
 from typing import List, Dict, Optional, Tuple, Any
-from collections import OrderedDict, defaultdict
-import re
+from collections import OrderedDict
 from datetime import datetime, timezone
-from concurrent.futures import ThreadPoolExecutor, as_completed, Future
+from concurrent.futures import Future
 
-import threading
 import uuid
-import time
 import numpy as np
 import logging
 
-logger = logging.getLogger(__name__)
-
-from core.debug_log import log as dbg, log_struct as _dbg_struct, log_section as _dbg_section
-from core.models import Entity, Episode, ContentPatch
+from core.debug_log import log_struct as _dbg_struct
+from core.models import Entity, Episode
 from core.storage.sqlite.manager import SQLiteGraphStorageManager
 from core.llm.client import LLMClient
-from core.utils import wprint_info, calculate_jaccard_similarity, cosine_similarity
+from core.utils import wprint_info
 
-# Pool refs are now in _shared
-from ._shared import _doc_basename, _get_or_create_pool, _get_entity_pool, _ENTITY_POOL, _ENTITY_POOL_MAX
+
+from ._shared import _doc_basename, _get_entity_pool
 from core.content_schema import (
     ENTITY_SECTIONS,
     compute_content_patches,
-    content_to_sections,
-    compute_section_diff,
-    sections_equal,
-    has_any_change,
-    section_hash,
 )
 from core.remember.entity_candidates import (
     EntityCandidateBuilder,
@@ -49,8 +39,6 @@ from core.remember.entity_candidates import (
     _calculate_jaccard_similarity as _calc_jaccard_fn,
     _cosine_similarity as _cosine_sim_fn,
     _alignment_guard as _alignment_guard_fn,
-    _search_entity_candidates as _search_entity_candidates_fn,
-    _filter_candidates_by_existing_relations as _filter_candidates_fn,
     _try_context_alias_merge as _try_context_alias_merge_fn,
 )
 
@@ -61,6 +49,8 @@ from core.remember.entity_alignment import (
 )
 
 
+logger = logging.getLogger(__name__)
+# Pool refs are now in _shared
 # ---------------------------------------------------------------------------
 # Construction factories + sequential fallback (moved from
 # entity_construction.py / entity_sequential.py)
@@ -210,7 +200,6 @@ def _process_entity_sequential_fallback(
     storage: SQLiteGraphStorageManager,
     llm_client: LLMClient,
     entity_tree_log: bool,
-    search_entity_candidates_fn,  # callable for _search_entity_candidates
     create_new_entity_fn,  # callable for _create_new_entity
     build_new_entity_fn,  # callable for _build_new_entity
     create_entity_version_fn,  # callable for _create_entity_version
@@ -260,26 +249,16 @@ def _process_entity_sequential_fallback(
         else:
             wprint_info(f"  ├─ 处理实体: {entity_name}")
 
-    # 步骤1：使用预构建候选或重新搜索
-    if prebuilt_candidates:
-        # Reuse candidates from batch path — extract Entity objects and version_counts
-        similar_entities = []
-        version_counts: Dict[str, int] = {}
-        for c in prebuilt_candidates:
-            ent = c.get("entity")
-            if ent is not None:
-                similar_entities.append(ent)
-                vc = c.get("version_count", 1)
-                if vc and c.get("family_id"):
-                    version_counts[c["family_id"]] = vc
-    else:
-        similar_entities = search_entity_candidates_fn(
-            entity_name, entity_content, similarity_threshold,
-            jaccard_search_threshold, embedding_name_search_threshold,
-            embedding_full_search_threshold,
-            extracted_entity_names, extracted_relation_pairs,
-        )
-        version_counts = {}
+    # 步骤1：使用预构建候选（batch 路径已生成）
+    similar_entities = []
+    version_counts: Dict[str, int] = {}
+    for c in (prebuilt_candidates or []):
+        ent = c.get("entity")
+        if ent is not None:
+            similar_entities.append(ent)
+            vc = c.get("version_count", 1)
+            if vc and c.get("family_id"):
+                version_counts[c["family_id"]] = vc
 
     if not similar_entities:
         # 没有找到相似实体，直接新建
@@ -554,7 +533,7 @@ def _process_entity_sequential_fallback(
 
                     # 如果有多个不同的目标实体ID，说明这些实体都是同一个实体
                     # 需要将其他目标实体ID合并到主要目标ID
-                    merge_result = storage.merge_entity_families(primary_target_id, other_targets)
+                    storage.merge_entity_families(primary_target_id, other_targets)
 
                     # 更新映射：将所有指向旧实体ID的映射更新为新的 primary_target_id
                     # 这确保映射中不会保留指向已合并ID的失效映射
@@ -577,7 +556,7 @@ def _process_entity_sequential_fallback(
                     entity_name_to_id[entity_name] = primary_target_id
                     entity_name_to_id[final_entity.name] = primary_target_id
                 else:
-                    target_name = latest_entity.name
+                    pass
 
                     # 收集所有需要合并到主要目标的实体的content
                     # 包括：主要目标实体 + 新实体 + 所有指向主要目标的候选实体 + 被合并到主要目标的其他目标实体
@@ -788,7 +767,6 @@ class EntityProcessor(_EntityBatchMixin):
         self.max_similar_entities = max_similar_entities
         self.content_snippet_length = content_snippet_length
         self.max_alignment_candidates = max_alignment_candidates  # None = 不限制
-        self.batch_resolution_enabled = True
         self.batch_resolution_confidence_threshold = 0.75
         self.verbose = verbose
         # 逐实体树状进度（处理实体 x/y、批量候选等）；默认关闭以免服务/API 控制台刷屏
@@ -1129,44 +1107,6 @@ class EntityProcessor(_EntityBatchMixin):
 
     # ── Thin wrappers delegating to entity_sequential sub-module ──
 
-    def _search_entity_candidates(
-        self,
-        entity_name: str,
-        entity_content: str,
-        similarity_threshold: float,
-        jaccard_search_threshold: Optional[float] = None,
-        embedding_name_search_threshold: Optional[float] = None,
-        embedding_full_search_threshold: Optional[float] = None,
-        extracted_entity_names: Optional[set] = None,
-        extracted_relation_pairs: Optional[set] = None,
-    ) -> List[Entity]:
-        return _search_entity_candidates_fn(
-            storage=self.storage,
-            llm_client=self.llm_client,
-            max_similar_entities=self.max_similar_entities,
-            entity_tree_log=self._entity_tree_log(),
-            entity_name=entity_name,
-            entity_content=entity_content,
-            similarity_threshold=similarity_threshold,
-            jaccard_search_threshold=jaccard_search_threshold,
-            embedding_name_search_threshold=embedding_name_search_threshold,
-            embedding_full_search_threshold=embedding_full_search_threshold,
-            extracted_entity_names=extracted_entity_names,
-            extracted_relation_pairs=extracted_relation_pairs,
-        )
-
-    def _filter_candidates_by_existing_relations(
-        self,
-        candidates: List[Entity],
-        entity_name: str,
-        extracted_entity_names: set,
-        extracted_relation_pairs: set,
-    ) -> List[Entity]:
-        return _filter_candidates_fn(
-            candidates, entity_name,
-            extracted_entity_names, extracted_relation_pairs,
-            entity_tree_log=self._entity_tree_log(),
-        )
 
     def _process_entity_sequential_fallback(self, extracted_entity: Dict[str, str],
                                episode_id: str,
@@ -1190,7 +1130,6 @@ class EntityProcessor(_EntityBatchMixin):
             storage=self.storage,
             llm_client=self.llm_client,
             entity_tree_log=self._entity_tree_log(),
-            search_entity_candidates_fn=self._search_entity_candidates,
             create_new_entity_fn=self._create_new_entity,
             build_new_entity_fn=self._build_new_entity,
             create_entity_version_fn=self._create_entity_version,

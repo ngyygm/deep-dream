@@ -1,6 +1,6 @@
 """strong-v1 profile 的窗口抽取步骤：单次 LLM 调用 + 规则后处理。
 
-与 alignment.py 的 _extract_only 分派入口签名/返回完全兼容：
+无存储写入，线程池安全；返回：
 (extracted_entities, extracted_relations) — dict 列表，无 family_id。
 
 复用的规则资产（与现管线同一实现，无行为分叉）：

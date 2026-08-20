@@ -7,9 +7,7 @@ as ``_align_entities``, ``_align_relations``, etc. without importing
 orchestrator.py (avoiding circular imports).
 """
 import logging
-import threading
 import time
-from typing import Any, Callable, Optional
 
 from core.utils import (
     clear_parallel_log_context,
@@ -125,7 +123,7 @@ def run_step9_worker(processor, state, window_abs_indices, total_chunks, doc_nam
             ar = processor._align_entities(
                 ents, rels, mc, state.input_texts[i], doc_name,
                 verbose=verbose, verbose_steps=verbose_steps, event_time=event_time,
-                progress_callback=lambda p, l, m: safe_progress(progress_callback, p, l, m, "step9"),
+                progress_callback=lambda p, label, m: safe_progress(progress_callback, p, label, m, "step9"),
                 progress_range=_pr_step9,
                 window_index=_wi, total_windows=total_chunks,
                 entity_embedding_prefetch=emb_prefetch_future,
@@ -232,7 +230,7 @@ def run_step10_worker(processor, state, window_abs_indices, total_chunks, doc_na
             processed_rels = processor._align_relations(
                 ar, mc, state.input_texts[i], doc_name,
                 verbose=verbose, verbose_steps=verbose_steps, event_time=event_time,
-                progress_callback=lambda p, l, m: safe_progress(progress_callback, p, l, m, "step10"),
+                progress_callback=lambda p, label, m: safe_progress(progress_callback, p, label, m, "step10"),
                 progress_range=_pr_step10,
                 window_index=_wi, total_windows=total_chunks,
                 prepared_relations_by_pair=prepared_relations_by_pair,
@@ -352,18 +350,14 @@ def build_timing_summary(window_timings):
         "step3_entity_dedup": "3-实体去重",
         "step3s_entity_gate": "  3s-实体质量门",
         "step4s_relation_gate": "  4s-关系质量门",
-        "step4_entity_content": "4-实体内容",
         "step4_entity_content_batch_llm": "  4a-实体内容批量LLM",
         "step4_entity_content_fallback_llm": "  4b-实体内容回退LLM",
         "step4_entity_content_code_fallback": "  4c-实体内容代码回退",
         "step5_entity_quality": "5-实体质量门",
-        "step6_relation_discovery": "6-关系发现",
         "step6_relation_wait": "  6a-等待并行关系发现",
         "step6_relation_normalize": "  6b-关系端点规范化",
-        "step7_relation_content": "7-关系内容",
         "step7_relation_content_batch_llm": "  7a-关系内容批量LLM",
         "step7_relation_content_fallback_llm": "  7b-关系内容回退LLM",
-        "step8_relation_quality": "8-关系质量门",
         "step9-process_entities": "9a-实体处理",
         "step9-vector_prefetch_wait": "  9a0-向量预热等待",
         "step9-entity_candidate_table": "  9a1-实体候选检索",

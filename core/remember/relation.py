@@ -5,7 +5,8 @@ from typing import List, Dict, Optional, Any, Tuple
 from datetime import datetime
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import uuid
+from ._shared import _doc_basename, _get_or_create_pool
+from .relation_construction import _RelationConstructionMixin
 import numpy as np
 
 from core.utils import (
@@ -16,15 +17,13 @@ from core.utils import (
 
 from core.models import Relation
 from core.llm.client import LLMClient, LLM_PRIORITY_ALIGN
-from core.debug_log import log as dbg, log_section as dbg_section, _ENABLED as _dbg_enabled
-from core.content_schema import RELATION_SECTIONS, compute_content_patches
+from core.debug_log import log as dbg
 import time as _time
 
-from core.utils import wprint_info, normalize_entity_pair, cosine_similarity
+from core.utils import wprint_info, cosine_similarity
 import logging as _logging
 _log_fn = _logging.getLogger(__name__).warning
 
-from .helpers import MIN_RELATION_CONTENT_LENGTH
 
 
 def _get_entity_names(relation: Dict[str, str]) -> Tuple[str, str]:
@@ -58,17 +57,12 @@ def _get_rel_pool(max_workers: int) -> ThreadPoolExecutor:
     return _get_or_create_pool(_REL_POOL, max_workers, _REL_POOL_MAX, "tmg-rel")
 
 
-from ._shared import _doc_basename, _get_or_create_pool
-from .relation_construction import _RelationConstructionMixin
-
-
 class RelationProcessor(_RelationConstructionMixin):
     """关系处理器 - 负责关系的搜索、对齐、更新和新建"""
     
     def __init__(self, storage, llm_client: LLMClient):
         self.storage = storage
         self.llm_client = llm_client
-        self.batch_resolution_enabled = True
         self.batch_resolution_confidence_threshold = 0.70
         self.preserve_distinct_relations_per_pair = False
         self.emb_new_threshold = 0.80
@@ -347,7 +341,7 @@ class RelationProcessor(_RelationConstructionMixin):
                         except Exception:
                             pass
                 try:
-                    self.storage.bulk_save_relations_with_embedding(_all_to_persist)
+                    self.storage.bulk_save_relations(_all_to_persist)
                 except Exception as _bulk_err:
                     _saved = 0
                     for _rel in _all_to_persist:
@@ -436,7 +430,7 @@ class RelationProcessor(_RelationConstructionMixin):
                         except Exception:
                             pass
                 try:
-                    self.storage.bulk_save_relations_with_embedding(_seq_all_persist)
+                    self.storage.bulk_save_relations(_seq_all_persist)
                 except Exception as _bulk_err:
                     _saved = 0
                     for _rel in _seq_all_persist:
@@ -700,7 +694,7 @@ class RelationProcessor(_RelationConstructionMixin):
 
         _action = batch_result.get("action", "")
         confidence = float(batch_result.get("confidence", 0.0) or 0.0)
-        if (not self.batch_resolution_enabled) or _action == "fallback" or (confidence < self.batch_resolution_confidence_threshold and fallback_to_single):
+        if _action == "fallback" or (confidence < self.batch_resolution_confidence_threshold and fallback_to_single):
             for merged_relation in pair_relations:
                 relation = self._process_single_relation(
                     merged_relation,

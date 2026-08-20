@@ -5,12 +5,10 @@ Entity/relation validation, deduplication, normalization, and quality gates.
 from __future__ import annotations
 
 
-import hashlib
 import re
 from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any, Dict, List, Optional, Tuple
-from collections import defaultdict
 
 from core.models import Entity
 from core.utils import normalize_entity_pair

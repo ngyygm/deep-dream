@@ -6,12 +6,13 @@ from __future__ import annotations
 
 import time as _time
 import uuid
+from datetime import datetime
 from typing import Dict, List, Optional
 from collections import defaultdict
 
 from core.models import Episode
 from core.debug_log import log as dbg, log_section as dbg_section, _ENABLED as _dbg_enabled
-from core.utils import compute_doc_hash, wprint_info, wprint_warn
+from core.utils import compute_doc_hash, wprint_info
 from core.llm.client import LLM_PRIORITY_ALIGN, LLM_PRIORITY_EXTRACT
 from .helpers import _AlignResult, _core_entity_name
 from .alignment_relations import _OrphanMixin, _RelationAlignMixin
@@ -292,35 +293,6 @@ class _PipelineExtractionMixin(_ResolutionMixin, _OrphanMixin, _Step1CacheWriter
       - _RelationAlignMixin: relation alignment, verification, serial window processing
     """
 
-    def _extract_only(self, new_episode: Episode, input_text: str,
-                      document_name: str, verbose: bool = True,
-                      verbose_steps: bool = True,
-                      event_time: Optional[datetime] = None,
-                      progress_callback=None,
-                      progress_range: tuple = (0.1, 0.5),
-                      window_index: int = 0,
-                      total_windows: int = 1,
-                      window_timings_ref: Optional[Dict[str, float]] = None,
-                      control_check_fn=None,
-                      early_entity_done_fn=None) -> Tuple[List[Dict], List[Dict]]:
-        """单遍结构化抽取入口。No storage writes; safe for thread pools.
-
-        Returns:
-            (extracted_entities, extracted_relations) — dict lists, no family_id.
-        """
-        # strong-v1：单遍结构化抽取（1 次 LLM 调用 + 规则后处理）
-        from .strong_steps import strong_extract_only
-        return strong_extract_only(
-            self, new_episode, input_text, document_name,
-            verbose=verbose, verbose_steps=verbose_steps,
-            event_time=event_time, progress_callback=progress_callback,
-            progress_range=progress_range,
-            window_index=window_index, total_windows=total_windows,
-            window_timings_ref=window_timings_ref,
-            control_check_fn=control_check_fn,
-            early_entity_done_fn=early_entity_done_fn,
-        )
-
     # =========================================================================
     # 步骤9：实体对齐（写存储，必须串行跨窗口）
     # =========================================================================
@@ -550,7 +522,8 @@ class _PipelineExtractionMixin(_ResolutionMixin, _OrphanMixin, _Step1CacheWriter
             if action:
                 from core.remember.orchestrator import RememberControlFlow
                 raise RememberControlFlow(action)
-            _cancel_bool_fn = lambda: control_check_fn() is not None
+            def _cancel_bool_fn():
+                return control_check_fn() is not None
             self.llm_client.set_cancel_check(_cancel_bool_fn)
 
         # LLM JSON 偶尔会在数组里混入 null/非对象项；这里仅丢弃坏项，不改变 prompt 或流程语义。

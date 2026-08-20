@@ -1,20 +1,12 @@
 """
 主处理流程：整合所有模块，实现完整的文档处理pipeline
 """
-from typing import Any, Callable, Dict, List, Optional
-from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor, Future
-import sys
+from typing import Any, Dict, Optional
+from concurrent.futures import ThreadPoolExecutor
 import logging
 import threading
-import time
 
 # Static defaults — computed once, not per call
-_REMEMBER_DEFAULTS = {
-    "alignment_policy": "conservative",
-}
-import uuid
-
 from .document import DocumentProcessor
 from core.llm.client import LLMClient, LLMCallStats
 from core.storage.embedding import EmbeddingClient
@@ -22,22 +14,18 @@ from core.storage import create_storage_manager
 from .entity import EntityProcessor
 from .relation import RelationProcessor
 from core.models import Episode
-from core.utils import (
-    clear_parallel_log_context,
-    compute_doc_hash,
-    set_pipeline_role,
-    set_window_label,
-    wprint_info,
-)
-from core.log import info as _log_info
 from .alignment import _PipelineExtractionMixin
-from .helpers import dedupe_extraction_lists
 from .cross_window import _CrossWindowDedupMixin
 from .orchestrator_pipeline import _PipelineMixin
 
 # Sub-modules (no circular import — they do NOT import from orchestrator.py)
 from . import pipeline_state as _ps
 from . import pipeline_workers as _pw
+
+_REMEMBER_DEFAULTS = {
+    "alignment_policy": "conservative",
+}
+
 
 logger = logging.getLogger(__name__)
 

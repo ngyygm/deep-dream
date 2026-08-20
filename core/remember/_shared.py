@@ -3,7 +3,6 @@
 import re
 from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
-from typing import Optional
 
 from .helpers import _PAREN_ANNOTATION_RE
 
@@ -11,29 +10,9 @@ from .helpers import _PAREN_ANNOTATION_RE
 _ENTITY_POOL: list = [None]
 _ENTITY_POOL_MAX: list = [1]
 
-# Supplement pool for candidate enrichment (entity/relation batch fetches)
-_SUPP_POOL: list = [None]
-_SUPP_POOL_MAX: list = [1]
-
-# BM25 pool for concept search parallelism
-_BM25_POOL: list = [None]
-_BM25_POOL_MAX: list = [2]
-BM25_POOL_MAX = 4
-
-
 def _get_entity_pool(max_workers: int) -> ThreadPoolExecutor:
     """Return (and lazily create) the shared entity ThreadPoolExecutor."""
     return _get_or_create_pool(_ENTITY_POOL, max_workers, _ENTITY_POOL_MAX, "entity")
-
-
-def _get_supp_pool(max_workers: int = 2) -> ThreadPoolExecutor:
-    """Return (and lazily create) the supplement ThreadPoolExecutor."""
-    return _get_or_create_pool(_SUPP_POOL, max_workers, _SUPP_POOL_MAX, "supp")
-
-
-def _get_bm25_pool(max_workers: int = 2) -> ThreadPoolExecutor:
-    """Return (and lazily create) the BM25 search ThreadPoolExecutor."""
-    return _get_or_create_pool(_BM25_POOL, max_workers, _BM25_POOL_MAX, "bm25")
 
 
 def _doc_basename(source_document: str) -> str:

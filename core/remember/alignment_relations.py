@@ -7,7 +7,7 @@ from typing import Dict, List, Optional
 
 from core.models import Episode
 from core.debug_log import log as dbg, _ENABLED as _dbg_enabled
-from core.utils import wprint_info, wprint_debug, wprint_warn
+from core.utils import wprint_info, wprint_debug
 from core.llm.client import LLM_PRIORITY_ALIGN
 from core.llm.prompts import RELATION_DISCOVER_SYSTEM, ORPHAN_RECOVERY_USER
 from .helpers import _AlignResult
@@ -63,7 +63,8 @@ class _RelationAlignMixin:
             if action:
                 from core.remember.orchestrator import RememberControlFlow
                 raise RememberControlFlow(action)
-            _cancel_bool_fn = lambda: control_check_fn() is not None
+            def _cancel_bool_fn():
+                return control_check_fn() is not None
             self.llm_client.set_cancel_check(_cancel_bool_fn)
 
         unique_entities = align_result.unique_entities
@@ -282,12 +283,6 @@ class _OrphanMixin:
             episode_id, source_document, verbose,
         )
 
-        if _fallback_count > 0 or recovered > 0:
-            try:
-                self.storage._cache.invalidate_keys(["graph_stats"])
-            except Exception:
-                pass
-
         if progress_callback:
             progress_callback(1.0, "完成",
                 f"补救{recovered}个 · 兜底{_fallback_count}个",
@@ -324,7 +319,7 @@ class _OrphanMixin:
 
         if not non_orphan_entities:
             if verbose:
-                wprint_info(f"  │  孤立实体兜底｜无法创建共现关系（无非孤立实体）")
+                wprint_info("  │  孤立实体兜底｜无法创建共现关系（无非孤立实体）")
             return 0
 
         relation_processor = getattr(self, 'relation_processor', None)

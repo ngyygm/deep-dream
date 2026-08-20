@@ -65,7 +65,6 @@ class _EntityBatchMixin:
       - self._alignment_guard(...)
       - self._try_context_alias_merge(...)
       - self._process_entity_sequential_fallback(...)
-      - self.batch_resolution_enabled (bool)
     """
 
     def _process_entity_with_batch_candidates(self,
@@ -304,13 +303,12 @@ class _EntityBatchMixin:
         _safe_create_new = (update_mode == "create_new")
 
 
-        _need_full_fallback = (not self.batch_resolution_enabled) or update_mode == "fallback"
+        _need_full_fallback = update_mode == "fallback"
         if _need_full_fallback:
             _dbg_struct("decision_fallback",
                         name=entity_name, batch_conf=f"{confidence:.2f}",
                         update_mode=update_mode,
-                        reason="disabled" if not self.batch_resolution_enabled else
-                               "fallback_mode" if update_mode == "fallback" else "low_confidence",
+                        reason="fallback_mode",
                         action="sequential_fallback")
             if self._entity_tree_log():
                 wprint_info(f"  │  批量裁决置信度不足，回退到旧逻辑 (confidence={confidence:.2f})")
@@ -357,31 +355,6 @@ class _EntityBatchMixin:
             })
 
         match_existing_id = (batch_result.get("match_existing_id") or "").strip()
-        # Handle within-batch alias matches (__batch_ prefixed IDs)
-        if match_existing_id.startswith("__batch_"):
-            batch_idx_str = match_existing_id[len("__batch_"):]
-            try:
-                batch_idx = int(batch_idx_str)
-            except ValueError:
-                batch_idx = -1
-            if batch_idx >= 0:
-                matched_candidate = _cand_by_fid.get(match_existing_id)
-                if matched_candidate:
-                    batch_name = matched_candidate.get("name", "")
-                    # Resolve via entity_name_to_id dict (populated incrementally during sequential processing)
-                    if batch_name:
-                        resolved_id = (entity_name_to_id or {}).get(batch_name)
-                        if resolved_id:
-                            match_existing_id = resolved_id
-                            if self._entity_tree_log():
-                                wprint_info(f"  │  Within-batch alias resolved: __batch_{batch_idx} '{batch_name}' → {match_existing_id}")
-                        else:
-                            # Entity not yet resolved — create new entity, let the other entity merge later
-                            match_existing_id = ""
-                            if self._entity_tree_log():
-                                wprint_info(f"  │  Within-batch alias: '{batch_name}' not yet in entity_name_to_id, creating new entity")
-                    else:
-                        match_existing_id = ""
         if match_existing_id:
             matched_candidate = _cand_by_fid.get(match_existing_id)
             latest_entity = matched_candidate.get("entity") if matched_candidate else None
@@ -970,7 +943,7 @@ def _process_entities_parallel(
         # 一次 UNWIND 写入所有实体
         _t_persist = time.monotonic()
         try:
-            storage.bulk_save_entities_with_embedding(entities_to_persist_final)
+            storage.bulk_save_entities(entities_to_persist_final)
         except Exception as _bulk_err:
             # Fallback: 逐条写入
             _saved = 0

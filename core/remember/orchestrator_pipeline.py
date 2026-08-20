@@ -1,7 +1,7 @@
 """
 Pipeline mixin: remember_text entry point, lifecycle helpers, and standalone main().
 """
-from typing import Any, Callable, Dict, Optional
+from typing import Callable, Dict, Optional
 from datetime import datetime
 import hashlib
 import logging
@@ -19,6 +19,7 @@ from core.utils import (
     wprint_info,
 )
 from .helpers import dedupe_extraction_lists
+from .strong_steps import strong_extract_only
 
 logger = logging.getLogger(__name__)
 
@@ -152,11 +153,13 @@ class _PipelineMixin:
         if target_window_indices is not None:
             _sorted_targets = sorted(target_window_indices)
             N = len(_sorted_targets)
-            _local_to_abs = lambda i: _sorted_targets[i]
+            def _local_to_abs(i):
+                return _sorted_targets[i]
             start_chunk = 0  # targeting handles absolute index mapping
         else:
             _sorted_targets = None
-            _local_to_abs = lambda i: start_chunk + i
+            def _local_to_abs(i):
+                return start_chunk + i
             N = total_chunks - start_chunk  # 待处理窗口数
         last_episode_id = None
         # Pre-compute absolute window indices for workers
@@ -391,10 +394,10 @@ class _PipelineMixin:
                                 _idx_lo = _abs_idx / total_chunks
                                 _idx_hi = (_abs_idx + 1) / total_chunks
                                 _idx_span = _idx_hi - _idx_lo
-                                ents, rels = self._extract_only(
-                                    mc, chunk_text, doc_name,
+                                ents, rels = strong_extract_only(
+                                    self, mc, chunk_text, doc_name,
                                     verbose=verbose, verbose_steps=verbose_steps, event_time=event_time,
-                                    progress_callback=lambda p, l, m: self._safe_progress(progress_callback, p, l, m, "main"),
+                                    progress_callback=lambda p, label, m: self._safe_progress(progress_callback, p, label, m, "main"),
                                     progress_range=(
                                         _idx_lo + _idx_span * (1.0 / 10.0),
                                         _idx_lo + _idx_span * (8.0 / 10.0),
