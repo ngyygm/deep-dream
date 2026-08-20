@@ -19,27 +19,27 @@ sys.path.insert(0, str(_project_root))
 from flask import Flask
 from core.server.api import create_app
 from core.server.registry import GraphRegistry
-from core.server.config import load_config
 from core.server.monitor import SystemMonitor, LOG_MODE_DETAIL
 from core.storage.sqlite.manager import SQLiteGraphStorageManager
 
 
 # Test configuration
 TEST_GRAPH_ID = "test_graph"
-TEST_CONFIG_PATH = _project_root / "service_config.json"
 
 
 @pytest.fixture(scope="session")
-def test_config():
-    """Load test configuration."""
-    if TEST_CONFIG_PATH.exists():
-        try:
-            return load_config(str(TEST_CONFIG_PATH))
-        except Exception:
-            pass
-    # Minimal fallback config for testing (SQLite by default)
+def test_config(tmp_path_factory):
+    """Hermetic test configuration.
+
+    Always builds on a session-scoped tmp directory — never reads the user's
+    real service_config.json and never touches ./graph/test in the repo.
+    Data intentionally persists for the whole session (the registry fixture
+    is function-scoped but shares this storage path), matching the historic
+    cross-test behavior without leaking to the working tree.
+    """
+    storage_root = tmp_path_factory.mktemp("deep_dream_test")
     return {
-        "storage_path": "./graph/test",
+        "storage_path": str(storage_root / "graph"),
         "storage": {"backend": "sqlite"},
         "host": "127.0.0.1",
         "port": 16200,
@@ -68,7 +68,7 @@ def system_monitor(test_config):
 @pytest.fixture(scope="function")
 def registry(test_config, system_monitor):
     """Create a GraphRegistry for testing."""
-    storage_path = test_config.get("storage_path", "./graph/test")
+    storage_path = test_config.get("storage_path")
     registry = GraphRegistry(
         storage_path,
         test_config,
