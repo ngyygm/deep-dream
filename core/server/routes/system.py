@@ -9,7 +9,6 @@ import os
 import threading
 import time
 from pathlib import Path
-from typing import Any, Optional
 
 from flask import Blueprint, current_app, request
 
@@ -29,59 +28,6 @@ _LLM_HEALTH_MIN_INTERVAL = 30.0  # seconds
 # LLM helpers - delegate to shared modules
 _call_llm_with_backoff = call_llm_with_backoff
 _check_llm_available = check_llm_available
-
-
-# ── Route Index ─────────────────────────────────────────────────────────
-
-_API_ROUTE_INDEX = {
-    "health": [
-        {"path": "/api/v1/health", "methods": ["GET"], "summary": "服务健康检查"},
-        {"path": "/api/v1/health/llm", "methods": ["GET"], "summary": "LLM 连通性检查"},
-    ],
-    "remember": [
-        {"path": "/api/v1/remember", "methods": ["POST"], "summary": "写入 Markdown/text 记忆"},
-        {"path": "/api/v1/remember/tasks", "methods": ["GET"], "summary": "查看 remember 任务队列"},
-        {"path": "/api/v1/remember/tasks/<task_id>", "methods": ["GET"], "summary": "查看任务详情"},
-        {"path": "/api/v1/remember/tasks/<task_id>/pause", "methods": ["POST"], "summary": "暂停任务"},
-        {"path": "/api/v1/remember/tasks/<task_id>/resume", "methods": ["POST"], "summary": "恢复任务"},
-        {"path": "/api/v1/remember/monitor", "methods": ["GET"], "summary": "任务监控数据"},
-    ],
-    "documents": [
-        {"path": "/api/v1/vaults/index", "methods": ["POST"], "summary": "索引只读 Markdown/Obsidian vault"},
-        {"path": "/api/v1/vaults/tree", "methods": ["GET"], "summary": "列出 vault 文件树"},
-        {"path": "/api/v1/documents", "methods": ["GET"], "summary": "列出文档版本"},
-        {"path": "/api/v1/documents/<document_version_id>", "methods": ["GET"], "summary": "读取文档版本"},
-        {"path": "/api/v1/documents/<document_version_id>/content", "methods": ["GET"], "summary": "读取文档内容"},
-        {"path": "/api/v1/documents/graph", "methods": ["POST"], "summary": "读取文档到 Episode 和 Concept 的可视化子图"},
-        {"path": "/api/v1/documents/search", "methods": ["POST"], "summary": "文档搜索"},
-        {"path": "/api/v1/episodes/<episode_version_id>/content", "methods": ["GET"], "summary": "读取剧集内容"},
-    ],
-    "concepts": [
-        {"path": "/api/v1/agent/sql", "methods": ["POST"], "summary": "Agent 只读 SQL 查询当前图谱"},
-        {"path": "/api/v1/agent/semantic-search", "methods": ["POST"], "summary": "Agent 语义候选召回"},
-        {"path": "/api/v1/concepts", "methods": ["GET"], "summary": "列出概念"},
-        {"path": "/api/v1/concepts/search", "methods": ["POST"], "summary": "搜索概念"},
-        {"path": "/api/v1/concepts/suggest", "methods": ["GET"], "summary": "概念名称补全"},
-        {"path": "/api/v1/concepts/<family_id>", "methods": ["GET"], "summary": "读取概念"},
-        {"path": "/api/v1/concepts/<family_id>/versions", "methods": ["GET"], "summary": "读取概念版本"},
-        {"path": "/api/v1/concepts/<family_id>/provenance", "methods": ["GET"], "summary": "读取概念溯源"},
-        {"path": "/api/v1/concepts/<family_id>/mentions", "methods": ["GET"], "summary": "读取概念提及"},
-        {"path": "/api/v1/concepts/<family_id>/neighbors", "methods": ["GET"], "summary": "读取概念邻居"},
-        {"path": "/api/v1/traverse", "methods": ["POST"], "summary": "遍历概念图"},
-        {"path": "/api/v1/find", "methods": ["POST"], "summary": "混合检索"},
-    ],
-    "system": [
-        {"path": "/api/v1/routes", "methods": ["GET"], "summary": "动态路由索引"},
-        {"path": "/api/v1/find/stats", "methods": ["GET"], "summary": "图谱计数（概念/文档/实体/关系/剧集）"},
-        {"path": "/api/v1/stats/counts", "methods": ["GET"], "summary": "概念计数（兼容旧路径）"},
-        {"path": "/api/v1/system/overview", "methods": ["GET"], "summary": "系统总览"},
-        {"path": "/api/v1/system/dashboard", "methods": ["GET"], "summary": "仪表盘合并端点"},
-        {"path": "/api/v1/system/graphs", "methods": ["GET"], "summary": "所有图谱摘要"},
-        {"path": "/api/v1/graphs", "methods": ["GET", "POST"], "summary": "列出/创建图谱（单库模式）"},
-        {"path": "/api/v1/system/config", "methods": ["GET", "PATCH"], "summary": "读取/更新服务配置"},
-        {"path": "/api/v1/system/logs", "methods": ["GET"], "summary": "最近系统日志"},
-    ],
-}
 
 
 @system_bp.route("/api/v1/routes", methods=["GET"])
@@ -127,6 +73,7 @@ def health():
 @system_bp.route("/api/v1/health/llm", methods=["GET"])
 def health_llm():
     """检查大模型是否可访问。"""
+    global _last_llm_health_time
     now = time.time()
     gid = getattr(request, 'graph_id', None) or request.args.get('graph_id', 'library')
     from core.server.registry import GraphRegistry
@@ -251,7 +198,7 @@ def create_graph():
             return err("Registry 未初始化", 503)
         from core.server.registry import GraphRegistry
         graph_id = GraphRegistry.normalize_graph_id(graph_id)
-        processor = registry.get_processor(graph_id)
+        _processor = registry.get_processor(graph_id)
         info = registry.get_graph_info(graph_id)
         return ok(info or {"graph_id": graph_id, "status": "exists"})
     except ValueError as e:

@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from core.server.task_progress import _TERMINAL_STATUSES, estimate_chunk_count
+from core.server.task_progress import _TERMINAL_STATUSES
 
 logger = logging.getLogger(__name__)
 

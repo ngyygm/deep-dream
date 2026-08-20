@@ -12,14 +12,13 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
-from flask import Blueprint, current_app, jsonify, make_response, request
+from flask import Blueprint, jsonify, make_response, request
 
 from core.server.routes.helpers import (
     _get_processor,
     _get_queue,
     _parse_bool_query,
     _validate_graph_id,
-    _validate_text_input,
     _validate_positive_int,
     _get_system_monitor,
     get_json_body,
@@ -648,7 +647,7 @@ def remember_status(task_id: str):
             deleted, message, status = remember_queue.request_delete_task(task_id)
             if not deleted:
                 if message == "任务不存在":
-                    return err(f"任务不存在。GET /api/v1/remember/tasks 查看所有任务", 404)
+                    return err("任务不存在。GET /api/v1/remember/tasks 查看所有任务", 404)
                 return err(message, 409)
             return ok({
                 "task_id": task_id,
@@ -657,7 +656,7 @@ def remember_status(task_id: str):
             })
         t = remember_queue.get_status(task_id)
         if t is None:
-            return err(f"任务不存在。GET /api/v1/remember/tasks 查看所有任务", 404)
+            return err("任务不存在。GET /api/v1/remember/tasks 查看所有任务", 404)
         data: Dict[str, Any] = remember_queue._task_to_dict(t)
         data["original_path"] = t.original_path
         if t.status == "completed" and t.result:

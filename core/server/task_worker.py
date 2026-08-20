@@ -8,7 +8,7 @@ import queue as _queue
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, TYPE_CHECKING
 
 from core.server.task_progress import (
     _DONE_STATUSES,
@@ -23,7 +23,9 @@ from core.server.task_journal import (
     remember_task_from_record,
     short_task_id,
 )
-from core.log import info as _log_info_fn, warn as _log_warn_fn, error as _log_error_fn
+
+if TYPE_CHECKING:
+    from core.server.task_queue import RememberTaskQueue
 
 logger = logging.getLogger(__name__)
 
@@ -304,8 +306,6 @@ def worker_loop(q: "RememberTaskQueue") -> None:  # noqa: C901 — legacy comple
                     "[Remember] 等待串行执行: task_id=%s, source_name=%r"
                     % (short_task_id(task.task_id), task.source_name)
                 )
-
-            last_exc = None
             for attempt in range(q._max_retries + 1):
                 try:
                     # 构建进度回调：将处理器的进度更新转发到任务跟踪
@@ -501,7 +501,6 @@ def worker_loop(q: "RememberTaskQueue") -> None:  # noqa: C901 — legacy comple
                             "[Remember] 任务已删除，忽略后续完成状态: task_id=%s"
                             % short_task_id(task.task_id)
                         )
-                        last_exc = None
                         break
 
                     # Warn on zero extractions (possible LLM issue)
@@ -610,7 +609,6 @@ def worker_loop(q: "RememberTaskQueue") -> None:  # noqa: C901 — legacy comple
                                 "[Remember] 自动重试耗尽: task_id=%s, %d 窗口仍失败: %s"
                                 % (short_task_id(task.task_id), _remaining, task.failed_window_indices)
                             )
-                            last_exc = None
                             break
 
                     if task.control_action == "cancel" or task.status == "cancelled":
@@ -618,7 +616,6 @@ def worker_loop(q: "RememberTaskQueue") -> None:  # noqa: C901 — legacy comple
                             "[Remember] 任务已删除，忽略后续完成状态: task_id=%s"
                             % short_task_id(task.task_id)
                         )
-                        last_exc = None
                         break
 
                     if int(result.get("failed_windows") or 0) > 0:
@@ -691,7 +688,6 @@ def worker_loop(q: "RememberTaskQueue") -> None:  # noqa: C901 — legacy comple
                         "[Remember] 完成: task_id=%s, chunks_processed=%s, 耗时=%.1fs"
                         % (short_task_id(task.task_id), result.get("chunks_processed"), elapsed)
                     )
-                    last_exc = None
                     break
                 except Exception as exc:
                     logger.exception(
@@ -716,7 +712,6 @@ def worker_loop(q: "RememberTaskQueue") -> None:  # noqa: C901 — legacy comple
                             "[Remember] 已暂停: task_id=%s, source_name=%r"
                             % (short_task_id(task.task_id), task.source_name)
                         )
-                        last_exc = None
                         break
                     if _control_action == "cancel":
                         q._update_task_progress(
@@ -737,9 +732,7 @@ def worker_loop(q: "RememberTaskQueue") -> None:  # noqa: C901 — legacy comple
                             "[Remember] 已删除运行中任务: task_id=%s, source_name=%r"
                             % (short_task_id(task.task_id), task.source_name)
                         )
-                        last_exc = None
                         break
-                    last_exc = exc
                     if attempt < q._max_retries:
                         delay = q._retry_delay
                         q._update_task_progress(

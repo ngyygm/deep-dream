@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Build a minimal lucide.js containing only the icons used by DeepDream."""
 
+import os
 import re
 
 ICONS_KEBAB = [
@@ -157,7 +158,6 @@ output = "".join(output_parts)
 with open(DST, "w") as f:
     f.write(output)
 
-import os
 orig_size = os.path.getsize(SRC)
 new_size = os.path.getsize(DST)
 print(f"\nDone! {orig_size} -> {new_size} ({new_size/orig_size*100:.1f}%)")

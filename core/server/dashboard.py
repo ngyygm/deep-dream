@@ -23,7 +23,6 @@ from rich.text import Text
 from rich.tree import Tree
 
 from core.server.monitor import (
-    LOG_MODE_MONITOR,
     SystemMonitor,
     _format_seconds,
 )

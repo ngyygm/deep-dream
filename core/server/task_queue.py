@@ -25,10 +25,8 @@ from core.utils import compute_doc_hash
 #   from core.server.task_queue import RememberTaskQueue, RememberTask
 from core.server.task_progress import (
     _TERMINAL_STATUSES,
-    _DONE_STATUSES,
     build_progress_detail as _build_progress_detail,
     estimate_chunk_count as _estimate_chunk_count,
-    remember_callback_ui_fields as _remember_callback_ui_fields,
 )
 from core.server.task_journal import (
     RememberTask,
@@ -954,33 +952,6 @@ class RememberTaskQueue:
             "tracked_count": len(items),
             "active_tasks": [self._task_to_dict(t) for t in active[:limit]],
         }
-
-    def shutdown(self) -> None:
-        """Best-effort queue shutdown used before graph deletion."""
-        with self._lock:
-            active_processors = list(self._active_processors.values())
-            for task in self._tasks.values():
-                if task.status == "running":
-                    task.control_action = "cancel"
-                    task.phase = "cancelling"
-                    task.phase_label = "删除图谱，停止任务"
-                elif task.status in ("queued", "paused"):
-                    task.status = "cancelled"
-                    task.phase = "cancelled"
-                    task.phase_label = "图谱已删除"
-                    task.finished_at = time.time()
-                task.last_update = time.time()
-                self._persist(task)
-            self._active_processors.clear()
-        with self._queue.mutex:
-            self._queue.queue.clear()
-            self._queue.not_full.notify_all()
-        for processor in active_processors:
-            try:
-                if processor is not None and hasattr(processor, "storage") and hasattr(processor.storage, "close"):
-                    processor.storage.close()
-            except Exception:
-                pass
 
     def _set_active_processor(self, task_id: str, processor: Any) -> None:
         with self._lock:

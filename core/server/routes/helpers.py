@@ -6,22 +6,20 @@ as well as common response helpers and serialization functions.
 """
 from __future__ import annotations
 
-import asyncio
 import time
 import logging
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, Optional
 
 from flask import current_app, jsonify, request
 
-_BOOL_TRUE = frozenset(("1", "true", "yes", "on"))
-_BOOL_FALSE = frozenset(("0", "false", "no", "off"))
-
 from core.find.hybrid import HybridSearcher
 
-from core.models import Entity, Episode, Relation
+from core.models import Entity, Relation
 from core.content_schema import parse_markdown_sections
-from core.perf import _perf_timer
+
+_BOOL_TRUE = frozenset(("1", "true", "yes", "on"))
+_BOOL_FALSE = frozenset(("0", "false", "no", "off"))
 
 logger = logging.getLogger(__name__)
 
@@ -62,23 +60,6 @@ def _validate_text_input(text, field_name="text", min_len=1, max_len=100000):
     return text
 
 
-def _fix_query_param(value: Optional[str]) -> Optional[str]:
-    """Fix UTF-8 mojibake in query parameters.
-
-    When clients send raw UTF-8 bytes in URLs without percent-encoding,
-    Werkzeug may decode them as Latin-1, producing garbled strings like
-    'è´¾å®ç' instead of '贾宝玉'. This detects and reverses the damage.
-    """
-    if not value or not isinstance(value, str):
-        return value
-    try:
-        raw = value.encode('latin-1')
-        fixed = raw.decode('utf-8')
-        return fixed
-    except (UnicodeDecodeError, UnicodeEncodeError):
-        return value
-
-
 def get_json_body():
     """Parse JSON body with malformed-JSON detection.
 
@@ -91,8 +72,7 @@ def get_json_body():
     if body is not None:
         return body
     # Body was present but not valid JSON
-    raw = request.data[:200].decode('utf-8', errors='replace')
-    raise ValueError(f"请求体不是有效的 JSON（请检查格式）")
+    raise ValueError("请求体不是有效的 JSON（请检查格式）")
 
 
 def _validate_positive_int(value, field_name="value"):
@@ -112,35 +92,6 @@ def _validate_positive_int(value, field_name="value"):
     if v <= 0:
         raise ValueError(f"{field_name} must be positive")
     return v
-
-
-# ── Safe endpoint decorator ─────────────────────────────────────────────────
-
-def safe_endpoint(func):
-    """Decorator that standardizes error handling for route endpoints.
-
-    - ValueError / TypeError → 400 with the message (client errors)
-    - Other exceptions → 500 with generic message (internal errors, details logged server-side)
-
-    Usage:
-        @concepts_bp.route("/api/v1/...")
-        @safe_endpoint
-        def my_endpoint():
-            ...
-    """
-    from functools import wraps
-
-    @wraps(func)
-    def wrapper(*args, **kwargs):
-        try:
-            return func(*args, **kwargs)
-        except (ValueError, TypeError) as e:
-            return err(str(e), 400)
-        except Exception as e:
-            logger.exception("Unhandled error in %s: %s", func.__name__, e)
-            return err(str(e), 500)
-
-    return wrapper
 
 
 # ── Response helpers ──────────────────────────────────────────────────────
@@ -186,25 +137,6 @@ def err(message: str, status: int = 400, hint: str = None) -> tuple:
     except RuntimeError:
         pass
     return jsonify(out), status
-
-
-# ── Async sync bridge ────────────────────────────────────────────────────
-
-# Module-level shared event loop for running async functions from sync Flask routes.
-# Avoids creating and destroying a new loop per request.
-_shared_loop: Optional[asyncio.AbstractEventLoop] = None
-
-
-def run_async(coro):
-    """Run an async coroutine from synchronous Flask route handlers.
-
-    Uses a shared event loop to avoid creating/destroying per-request,
-    which is wasteful and can leak resources on exceptions.
-    """
-    global _shared_loop
-    if _shared_loop is None or _shared_loop.is_closed():
-        _shared_loop = asyncio.new_event_loop()
-    return _shared_loop.run_until_complete(coro)
 
 
 # ── Serialization helpers ─────────────────────────────────────────────────
@@ -340,21 +272,6 @@ def enrich_relation_version_counts(relation_dicts, storage):
     return relation_dicts
 
 
-def episode_to_dict(c: Episode) -> Dict[str, Any]:
-    return {
-        "id": c.absolute_id,  # 向后兼容
-        "absolute_id": c.absolute_id,
-        "content": c.content,
-        "source_text": getattr(c, "source_text", "") or "",
-        "event_time": c.event_time.isoformat() if c.event_time else None,
-        "processed_time": c.processed_time.isoformat() if hasattr(c, 'processed_time') and c.processed_time else None,
-        "source_document": getattr(c, "source_document", "") or getattr(c, "doc_name", "") or "",
-        "doc_name": getattr(c, "source_document", "") or getattr(c, "doc_name", "") or "",
-        "activity_type": getattr(c, "activity_type", None),
-        "episode_type": getattr(c, "episode_type", None),
-    }
-
-
 # ── Request-scoped accessors ─────────────────────────────────────────────
 
 def _get_graph_id() -> str:
@@ -426,80 +343,3 @@ def _parse_bool_query(name: str) -> Optional[bool]:
     if s in _BOOL_FALSE:
         return False
     return None
-
-
-def _score_entity_versions_against_time(family_id: str, time_point: datetime, proc=None) -> List[Tuple[float, int, Entity]]:
-    if proc is None:
-        proc = _get_processor()
-    target = _normalize_time_for_compare(time_point)
-    scored: List[Tuple[float, int, Entity]] = []
-    for version in proc.storage.get_entity_versions(family_id):
-        if not version.event_time:
-            continue
-        vt = _normalize_time_for_compare(version.event_time)
-        delta_seconds = abs((vt - target).total_seconds())
-        direction_bias = 0 if vt <= target else 1
-        scored.append((delta_seconds, direction_bias, version))
-    def _sort_key(item):
-        pt = item[2].processed_time
-        ts = _normalize_time_for_compare(pt).timestamp() if pt else 0.0
-        return (item[0], item[1], -ts)
-
-    scored.sort(key=_sort_key)
-    return scored
-
-
-def _extract_candidate_ids(
-    storage: Any,
-    body: Dict[str, Any],
-) -> Tuple[Set[str], Set[str]]:
-    """按 query_text / 时间等条件从主图抽取实体与关系的 absolute id 集合。"""
-    entity_absolute_ids: Set[str] = set()
-    relation_absolute_ids: Set[str] = set()
-    time_before = body.get("time_before")
-    time_after = body.get("time_after")
-    max_entities = body.get("max_entities")
-    if max_entities is None:
-        max_entities = 100
-    max_relations = body.get("max_relations")
-    if max_relations is None:
-        max_relations = 500
-    time_before_dt = parse_time_point(time_before) if time_before else None
-    time_after_dt = parse_time_point(time_after) if time_after else None
-
-    entity_name = (body.get("entity_name") or body.get("query_text") or "").strip()
-    with _perf_timer("_extract_candidate_ids | entity_search"):
-        if entity_name:
-            entities = storage.search_entities_by_similarity(
-                entity_name,
-                threshold=float(body.get("similarity_threshold", 0.5)),
-                max_results=int(max_entities),
-            )
-        elif time_before_dt:
-            entities = storage.get_all_entities_before_time(time_before_dt, limit=max_entities, exclude_embedding=True)
-        else:
-            entities = storage.get_all_entities(limit=max_entities, exclude_embedding=True)
-        for e in entities:
-            entity_absolute_ids.add(e.absolute_id)
-
-    if not entity_absolute_ids:
-        return entity_absolute_ids, relation_absolute_ids
-
-    with _perf_timer("_extract_candidate_ids | relation_search"):
-        relations = storage.get_relations_by_entity_absolute_ids(
-            list(entity_absolute_ids), limit=max_relations
-        )
-        rel_time_map: Dict[str, float] = {}
-        for r in relations:
-            relation_absolute_ids.add(r.absolute_id)
-            if r.processed_time:
-                rel_time_map[r.absolute_id] = _normalize_time_for_compare(r.processed_time).timestamp()
-
-    if time_after_dt:
-        after_ts = _normalize_time_for_compare(time_after_dt).timestamp()
-        relation_absolute_ids = {
-            r_abs_id for r_abs_id in relation_absolute_ids
-            if rel_time_map.get(r_abs_id, 0.0) >= after_ts
-        }
-
-    return entity_absolute_ids, relation_absolute_ids

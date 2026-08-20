@@ -11,19 +11,35 @@ DeepDream 本地文档优先记忆库 API
 """
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
-_project_root = str(Path(__file__).resolve().parent.parent.parent)
-if _project_root not in sys.path:
-    sys.path.insert(0, _project_root)
-
 import argparse
 import atexit
 import errno
 import logging
 import mimetypes
 import os
+import signal
+import sys
+import threading
+import time
+from pathlib import Path
+from typing import Any, Dict, Optional
+
+from flask import Flask, abort, jsonify, make_response, redirect, request
+from werkzeug.exceptions import NotFound
+
+# sys.path bootstrap for direct-script execution — core.* imports must follow it
+_project_root = str(Path(__file__).resolve().parent.parent.parent)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
+from core.log import info as _log_info, error as _log_error
+
+from core.server.config import load_config
+from core.server.monitor import LOG_MODE_DETAIL, LOG_MODE_MONITOR, SystemMonitor
+from core.server.registry import GraphRegistry
+from core.server import auth as auth_module
+from core.server.llm_utils import check_llm_available, call_llm_with_backoff
+
 
 logger = logging.getLogger(__name__)
 
@@ -31,35 +47,10 @@ mimetypes.add_type("application/javascript", ".js")
 mimetypes.add_type("application/javascript", ".mjs")
 mimetypes.add_type("text/css", ".css")
 
-from core.log import info as _log_info, error as _log_error
-import signal
-import threading
-import time
-from typing import Any, Dict, Optional, Tuple
-
-from flask import Flask, abort, jsonify, make_response, redirect, request
-
 _MUTATING_METHODS = frozenset(("POST", "PUT", "DELETE", "PATCH"))
 _MUTATING_JSON_METHODS = frozenset(("POST", "PUT", "PATCH"))
-from werkzeug.exceptions import NotFound
-
-from core.server.config import load_config
-from core.server.monitor import LOG_MODE_DETAIL, LOG_MODE_MONITOR, SystemMonitor
-from core.server.task_queue import RememberTask, RememberTaskQueue
-from core.server.registry import GraphRegistry
-from core.server.sse import sse_response, queue_to_generator
-from core.server import auth as auth_module
-from core import TemporalMemoryGraphProcessor
-from core.server.llm_utils import check_llm_available, call_llm_with_backoff
-
 # Re-export helpers for backward-compatible imports
 from core.server.api_helpers import (  # noqa: F401
-    validate_graph_id as _validate_graph_id,
-    validate_text_input as _validate_text_input,
-    validate_positive_int as _validate_positive_int,
-    validate_float_range as _validate_float_range,
-    make_validation_error as _make_validation_error,
-    build_processor,
     tcp_bind_probe as _tcp_bind_probe,
     get_port_pids as _get_port_pids,
     kill_port_occupants as _kill_port_occupants,
@@ -180,27 +171,10 @@ def create_app(
         "/static/", "/favicon.ico",
     }
 
-    # Read-only endpoints that can be accessed with read permission
-    _READ_ONLY_ROUTES = {
-        "/api/v1/agent",
-        "/api/v1/find",
-        "/api/v1/concepts",
-        "/api/v1/documents",
-        "/api/v1/traverse",
-        "/api/v1/stats",
-    }
-
     def _is_public_route(path: str) -> bool:
         """Check if a path is a public endpoint."""
         for route in _PUBLIC_ROUTES:
             if path == route or path.startswith(route):
-                return True
-        return False
-
-    def _is_read_only_route(path: str) -> bool:
-        """Check if a path is a read-only endpoint."""
-        for route in _READ_ONLY_ROUTES:
-            if path.startswith(route):
                 return True
         return False
 
@@ -590,7 +564,7 @@ def main() -> int:
     if not ok_bind:
         # 自动尝试 kill 占用端口的旧进程
         system_monitor.event_log.warn("System", f"端口 {host}:{listen_port} 已被占用，尝试自动释放...")
-        killed = _kill_port_occupants(listen_port)
+        _kill_port_occupants(listen_port)
         ok_bind, bind_err = _tcp_bind_probe(host, listen_port)
         if not ok_bind:
             system_monitor.event_log.error("System", f"错误：无法在 {host}:{listen_port} 上绑定: {bind_err}")

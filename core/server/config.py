@@ -88,13 +88,6 @@ DEFAULTS = {
             "max_entities_per_window": 16,
             "max_relations_per_window": 24,
             "episode_slice_chars": 0,
-            "judge": {
-                "enabled": False,
-                "batch_min": 4,
-                "batch_delay_ms": 200,
-                "batch_max": 32,
-                "memo_ttl_seconds": 604800,
-            },
             "family_write_gate_enabled": True,
         },
         "debug": {

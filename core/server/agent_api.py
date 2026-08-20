@@ -3,12 +3,9 @@
 Migrated from the former MCP layer. Provides:
 - Response compaction (?compact=true): strips embeddings, truncates content, trims large lists
 - Error hints: auto-detects error patterns and appends actionable guidance
-- ID validation: catches family_id vs absolute_id confusion
-- Empty search hints: suggests alternatives when no results found
 """
 
 import json
-import re
 
 # ── Constants ──────────────────────────────────────────────────────────────
 
@@ -315,35 +312,3 @@ def error_hint(error_message):
         if matcher(lower):
             return hint
     return None
-
-
-def empty_search_hint(query_param="query"):
-    return f"No results found. Try: lower similarity_threshold, use search_mode='hybrid', or rephrase the {query_param}."
-
-
-# ── ID validation ─────────────────────────────────────────────────────────
-
-_FAMILY_ID_RE = re.compile(r'^(ent|rel)_')
-_UUID_RE = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.IGNORECASE)
-
-
-def validate_family_id(value, param_name="family_id"):
-    """Reject UUID-style absolute_ids where a family_id is expected."""
-    if isinstance(value, str) and '-' in value and value.count('-') == 4 and len(value) == 36:
-        prefix = value[:8]
-        raise ValueError(
-            f"'{prefix}...' looks like an absolute_id (UUID), but {param_name} requires a "
-            f"family_id (e.g. 'ent_abc123' or 'rel_abc123'). "
-            f"Use GET /find/entities/absolute/{value} if you need to access by version ID."
-        )
-    return value
-
-
-def validate_absolute_id(value, param_name="absolute_id"):
-    """Reject family_ids where an absolute_id is expected."""
-    if isinstance(value, str) and _FAMILY_ID_RE.match(value) and '-' not in value:
-        raise ValueError(
-            f"'{value}' looks like a family_id, but {param_name} requires an absolute_id "
-            f"(version ID like a UUID). Use GET /find/entities/{value} to find the current absolute_id."
-        )
-    return value

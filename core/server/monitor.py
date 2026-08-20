@@ -333,46 +333,6 @@ class GraphMonitor:
 
 
 # ---------------------------------------------------------------------------
-# RetryCounter — Retry tracking for LLM and storage operations
-# ---------------------------------------------------------------------------
-
-class RetryCounter:
-    """Track retry counts by category and label for monitoring."""
-
-    def __init__(self):
-        self._counts: Dict[Tuple[str, str], int] = {}
-        self._lock = threading.Lock()
-
-    def increment(self, category: str, label: str) -> None:
-        """Increment retry count for a given category and label.
-
-        Args:
-            category: Either "llm" or "storage"
-            label: For LLM: error type (e.g., "rate_limit", "timeout")
-                    For storage: operation name (e.g., "bulk_save_entities", "save_relation")
-        """
-        with self._lock:
-            key = (category, label)
-            self._counts[key] = self._counts.get(key, 0) + 1
-
-    def get_stats(self) -> Dict[str, Any]:
-        """Return current retry statistics, grouped by category."""
-        with self._lock:
-            llm_stats: Dict[str, int] = {}
-            storage_stats: Dict[str, int] = {}
-            for (category, label), count in self._counts.items():
-                if category == "llm":
-                    llm_stats[label] = count
-                elif category == "storage":
-                    storage_stats[label] = count
-            return {
-                "llm": llm_stats,
-                "storage": storage_stats,
-                "total_retries": sum(self._counts.values()),
-            }
-
-
-# ---------------------------------------------------------------------------
 # SystemMonitor — 系统级监控中心
 # ---------------------------------------------------------------------------
 
@@ -383,7 +343,6 @@ class SystemMonitor:
         self.config = config
         self.event_log = EventLog(mode=mode)
         self.access_tracker = AccessTracker()
-        self.retry_counter = RetryCounter()
         self._graphs: Dict[str, GraphMonitor] = {}
         self._graph_order: List[str] = []
         self._lock = threading.Lock()
@@ -618,14 +577,10 @@ class SystemMonitor:
         # 4. access stats
         access = self.access_tracker.get_stats(since_seconds=access_since)
 
-        # 5. retry stats
-        retry_stats = self.retry_counter.get_stats()
-
         return {
             "overview": overview,
             "graphs": graphs,
             "tasks": all_tasks[:task_limit],
             "logs": logs,
             "access_stats": access,
-            "retry_stats": retry_stats,
         }

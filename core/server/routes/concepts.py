@@ -8,7 +8,7 @@ import math as _math
 import re as _re
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Dict
+from typing import Dict
 
 from flask import Blueprint, current_app, request
 
@@ -17,11 +17,6 @@ from core.server.routes.helpers import (
     err,
     _get_processor,
     _get_graph_id,
-    entity_to_dict,
-    relation_to_dict,
-    enrich_relations,
-    episode_to_dict,
-    parse_time_point,
     _get_searcher,
     get_json_body,
 )
@@ -563,7 +558,6 @@ def search_concepts():
                     # Pre-load embeddings for clustering from vector cache
                     if hasattr(storage, '_vector_cache_for_role'):
                         try:
-                            import numpy as _np
                             role_for_cache = role or "entity"
                             cache = storage._vector_cache_for_role(role_for_cache)
                             matrix = cache.get("matrix")
