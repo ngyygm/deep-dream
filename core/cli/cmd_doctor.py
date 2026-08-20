@@ -13,7 +13,6 @@ from typing import Any, Dict, List, Optional
 
 import click
 
-from ._exit_codes import ERROR, OK
 
 
 # ------------------------------------------------------------------
@@ -94,7 +93,7 @@ def _check_llm(config: Dict[str, Any]) -> Dict[str, Any]:
     base_url = llm_cfg.get("base_url")
     try:
         from core.llm.client import LLMClient  # deferred
-        client = LLMClient(
+        LLMClient(
             api_key=api_key,
             model_name=model,
             base_url=base_url,
@@ -120,7 +119,6 @@ def _check_llm(config: Dict[str, Any]) -> Dict[str, Any]:
         configured = False
         reachable = False
         error = str(exc)
-        client = None  # type: ignore[assignment]
     return {
         "configured": configured,
         "model": model,

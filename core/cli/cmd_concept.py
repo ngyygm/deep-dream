@@ -27,7 +27,7 @@ from rich.markup import escape as _rich_escape
 from rich.panel import Panel as _Panel
 
 from ._ctx import CliContext
-from ._exit_codes import ERROR, NOT_FOUND, OK
+from ._exit_codes import ERROR, NOT_FOUND
 from ._helpers import resolve_concept_id
 from ._output import OutputManager, format_confidence, format_timestamp
 

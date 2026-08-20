@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Optional
 
 import click
 
@@ -26,12 +26,11 @@ from rich.markup import escape as _rich_escape
 from rich.panel import Panel as _Panel
 
 from ._ctx import CliContext
-from ._exit_codes import ARGS, ERROR, NOT_FOUND, OK
+from ._exit_codes import ARGS, NOT_FOUND
 from ._helpers import (
     document_file_payload,
     document_rows,
     map_path_to_documents,
-    read_sql,
     search_document_files,
 )
 from ._output import OutputManager, format_timestamp

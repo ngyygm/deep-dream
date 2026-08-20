@@ -28,7 +28,7 @@ from rich.markup import escape as _rich_escape
 from rich.panel import Panel as _Panel
 
 from ._ctx import CliContext
-from ._exit_codes import ARGS, NOT_FOUND, OK
+from ._exit_codes import NOT_FOUND
 from ._helpers import read_sql
 from ._output import OutputManager
 
@@ -313,8 +313,6 @@ def tree(ctx: click.Context, graph: Optional[str]) -> None:
 
             # Leaf: the filename with metadata
             filename = parts[-1] if parts else rel
-            char_count = d.get("char_count")
-            size_tag = f" [dim]({char_count:,} chars)[/dim]" if char_count else ""
             node[filename] = d  # leaf value is the document row
 
         # Render the nested dict into the Rich Tree

@@ -4,7 +4,6 @@ Subcommands
 -----------
 list      List all graphs and their status.
 create    Create a new graph.
-use       Set the active graph.
 stats     Show statistics for a graph.
 rebuild   DANGEROUS — clear graph data for rebuild (requires --yes).
 
@@ -14,7 +13,7 @@ flags handled by :class:`OutputManager`.
 from __future__ import annotations
 
 import json as _json
-from typing import Any, Dict, Optional
+from typing import Optional
 
 import click
 
@@ -22,7 +21,7 @@ from rich.markup import escape as _rich_escape
 from rich.panel import Panel as _Panel
 
 from ._ctx import CliContext
-from ._exit_codes import ERROR, NOT_FOUND, OK
+from ._exit_codes import ERROR, NOT_FOUND
 from ._output import OutputManager, format_timestamp
 
 
@@ -43,7 +42,7 @@ _graph_option = click.option(
 
 @click.group()
 def graph() -> None:
-    """Graph management — list, create, switch, and rebuild graphs."""
+    """Graph management — list, create, and rebuild graphs."""
     pass
 
 
@@ -157,62 +156,6 @@ def create(ctx: click.Context, graph_id: str) -> None:
             f"Families: {stats.get('concept_family_count', 0)}, "
             f"Edges: {stats.get('concept_edge_count', 0)}[/dim]"
         )
-
-
-# ------------------------------------------------------------------
-# graph use
-# ------------------------------------------------------------------
-
-@graph.command()
-@click.argument("graph_id")
-@click.pass_context
-def use(ctx: click.Context, graph_id: str) -> None:
-    """Set the active graph.
-
-    GRAPH_ID is the identifier of the graph to activate.
-    """
-    obj: CliContext = ctx.obj
-    out = OutputManager(ctx)
-    config_path = _resolve_config_path(ctx)
-    obj.load_config(config_path)
-
-    registry = obj.get_registry()
-    registry.set_graph_metadata(graph_id)
-
-    # Write the active graph to library.json so it persists.
-    from core.server.registry import LIBRARY_ID
-    from pathlib import Path
-    import json
-
-    registry_json_path = Path(obj.config.get("storage_path", "./library")) / "library.json"
-    data: Dict[str, Any] = {"library": {"id": LIBRARY_ID, "graph_id": LIBRARY_ID}}
-    if registry_json_path.exists():
-        try:
-            data = json.loads(registry_json_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            data = {"library": {"id": LIBRARY_ID, "graph_id": LIBRARY_ID}}
-    data.setdefault("library", {"id": LIBRARY_ID, "graph_id": LIBRARY_ID})
-    data["library"]["graph_id"] = LIBRARY_ID
-    registry_json_path.parent.mkdir(parents=True, exist_ok=True)
-    registry_json_path.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8",
-    )
-
-    result = {
-        "graph_id": graph_id,
-        "active_graph_id": graph_id,
-    }
-
-    if out.is_json:
-        from ._output import json_result
-        payload = json_result("graph use", result)
-        click.echo(_json.dumps(payload, ensure_ascii=False, indent=2))
-        return
-
-    if out.is_quiet:
-        return
-
-    out.success(f"Active graph set to {graph_id}")
 
 
 # ------------------------------------------------------------------

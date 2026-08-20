@@ -11,7 +11,6 @@ lazily inside callbacks.
 from __future__ import annotations
 
 import importlib
-import sys
 from typing import Any
 
 import click
@@ -62,7 +61,6 @@ _LAZY_COMMANDS: dict[str, str] = {
     # maintenance
     "db":         "core.cli.cmd_db:db",
     "sql":        "core.cli.cmd_sql:sql",
-    "benchmark":  "core.cli.cmd_benchmark:benchmark",
 }
 
 
@@ -143,18 +141,6 @@ Use 'deep-dream <command> --help' for command-specific options.
     is_flag=True,
     default=False,
     help="Suppress non-essential output.",
-)
-@click.option(
-    "-v", "--verbose",
-    is_flag=True,
-    default=False,
-    help="Enable verbose logging.",
-)
-@click.option(
-    "--dry-run",
-    is_flag=True,
-    default=False,
-    help="Show what would be done without executing.",
 )
 @click.option(
     "--version",

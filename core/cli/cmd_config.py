@@ -11,15 +11,14 @@ flags handled by :class:`OutputManager`.
 """
 from __future__ import annotations
 
-import copy
 import json
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 import click
 
 from ._ctx import CliContext
-from ._exit_codes import ARGS, ERROR, NOT_FOUND, OK
+from ._exit_codes import ARGS, NOT_FOUND
 from ._output import OutputManager
 
 

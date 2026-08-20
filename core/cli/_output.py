@@ -7,11 +7,10 @@
 from __future__ import annotations
 
 import json
-import sys
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, Optional, Sequence
 
 import click
 
@@ -152,15 +151,9 @@ class OutputManager:
     # ------------------------------------------------------------------
 
     def result(self, data: Any, meta: Optional[Dict[str, Any]] = None) -> None:
-        """Emit a result — JSON to stdout, Rich formatting to stderr."""
-        if self.is_json:
-            payload = json_result("", data, meta=meta)
-            click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
-            return
-        if self.is_quiet:
-            return
-        # Rich mode: pretty-print to stderr
-        self.console.print_json(json.dumps(data, ensure_ascii=False, indent=2))
+        """Emit a JSON result envelope to stdout (callers guard on ``is_json``)."""
+        payload = json_result("", data, meta=meta)
+        click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
 
     def table(
         self,
@@ -168,11 +161,7 @@ class OutputManager:
         columns: Sequence[str],
         rows: Sequence[Sequence[Any]],
     ) -> None:
-        """Render a table — Rich Table to stderr or JSON array to stdout."""
-        if self.is_json:
-            data = [dict(zip(columns, row)) for row in rows]
-            click.echo(json.dumps(data, ensure_ascii=False, indent=2))
-            return
+        """Render a Rich table to stderr (callers handle ``--json`` output)."""
         if self.is_quiet:
             return
         from rich.markup import escape as _escape

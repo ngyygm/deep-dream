@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional
 import click
 
 from ._exit_codes import ERROR, NETWORK, NOT_FOUND
-from ._output import OutputManager, format_timestamp
+from ._output import OutputManager
 
 
 # ------------------------------------------------------------------
@@ -37,21 +37,6 @@ def _api_url(path: str, params: Optional[Dict[str, str]] = None) -> str:
         if filtered:
             url += "?" + urllib.parse.urlencode(filtered)
     return url
-
-
-def _check_server() -> None:
-    """Probe /health to verify the server is reachable.
-
-    Raises SystemExit via OutputManager.error if the server is down.
-    """
-    try:
-        req = urllib.request.Request(f"{_API_BASE}/../health", method="GET")
-        with urllib.request.urlopen(req, timeout=3) as resp:
-            if resp.status >= 400:
-                raise OSError(f"HTTP {resp.status}")
-    except (OSError, urllib.error.URLError, TimeoutError) as exc:
-        # Build a minimal Click context for OutputManager
-        raise SystemExit(1)
 
 
 def _request(
@@ -131,7 +116,7 @@ def _ensure_connected(out: OutputManager) -> None:
                 raise OSError(f"HTTP {resp.status}")
     except (OSError, urllib.error.URLError, TimeoutError):
         out.error(
-            f"Cannot reach server at http://127.0.0.1:16200",
+            "Cannot reach server at http://127.0.0.1:16200",
             hint=_SERVER_HINT,
             code=NETWORK,
         )
@@ -273,7 +258,7 @@ def task_list(ctx: click.Context, status_filter: Optional[str], limit: int) -> N
     if _is_error(resp):
         if "_network_error" in resp:
             out.error(
-                f"Cannot reach server at http://127.0.0.1:16200",
+                "Cannot reach server at http://127.0.0.1:16200",
                 hint=_SERVER_HINT,
                 code=NETWORK,
             )
@@ -349,7 +334,7 @@ def task_status(ctx: click.Context, task_id: str) -> None:
     if _is_error(resp):
         if "_network_error" in resp:
             out.error(
-                f"Cannot reach server at http://127.0.0.1:16200",
+                "Cannot reach server at http://127.0.0.1:16200",
                 hint=_SERVER_HINT,
                 code=NETWORK,
             )
@@ -377,7 +362,6 @@ def _render_task_detail(out: OutputManager, data: Dict[str, Any]) -> None:
     """Render a full task detail panel."""
     from rich.panel import Panel
     from rich.markup import escape as _rich_esc
-    from rich.table import Table
 
     # -- Main info panel ---------------------------------------------------
     status = data.get("status", "unknown")
@@ -411,7 +395,6 @@ def _render_task_detail(out: OutputManager, data: Dict[str, Any]) -> None:
     out.console.print(Panel("\n".join(lines), title=f"Task {data.get('task_seq', '?')}: {_rich_esc(data.get('source_name', '?'))}", border_style="cyan"))
 
     # -- Pipeline step progress -------------------------------------------
-    progress_detail = data.get("progress_detail") or {}
     step_lines: List[str] = []
 
     main_progress = data.get("main_progress")
@@ -486,7 +469,7 @@ def task_cancel(ctx: click.Context, task_id: str, yes: bool) -> None:
     if _is_error(resp):
         if "_network_error" in resp:
             out.error(
-                f"Cannot reach server at http://127.0.0.1:16200",
+                "Cannot reach server at http://127.0.0.1:16200",
                 hint=_SERVER_HINT,
                 code=NETWORK,
             )
@@ -523,7 +506,7 @@ def task_pause(ctx: click.Context, task_id: str) -> None:
     if _is_error(resp):
         if "_network_error" in resp:
             out.error(
-                f"Cannot reach server at http://127.0.0.1:16200",
+                "Cannot reach server at http://127.0.0.1:16200",
                 hint=_SERVER_HINT,
                 code=NETWORK,
             )
@@ -560,7 +543,7 @@ def task_resume(ctx: click.Context, task_id: str) -> None:
     if _is_error(resp):
         if "_network_error" in resp:
             out.error(
-                f"Cannot reach server at http://127.0.0.1:16200",
+                "Cannot reach server at http://127.0.0.1:16200",
                 hint=_SERVER_HINT,
                 code=NETWORK,
             )
@@ -600,7 +583,7 @@ def task_retry(ctx: click.Context, task_id: str) -> None:
     if _is_error(resp):
         if "_network_error" in resp:
             out.error(
-                f"Cannot reach server at http://127.0.0.1:16200",
+                "Cannot reach server at http://127.0.0.1:16200",
                 hint=_SERVER_HINT,
                 code=NETWORK,
             )
@@ -639,7 +622,7 @@ def task_resume_all(ctx: click.Context) -> None:
     if _is_error(resp):
         if "_network_error" in resp:
             out.error(
-                f"Cannot reach server at http://127.0.0.1:16200",
+                "Cannot reach server at http://127.0.0.1:16200",
                 hint=_SERVER_HINT,
                 code=NETWORK,
             )

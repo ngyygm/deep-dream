@@ -20,21 +20,7 @@ from typing import Any, Dict, List
 import click
 
 from ._ctx import CliContext
-from ._exit_codes import ERROR, OK
 from ._output import OutputManager
-
-
-def _to_dict(item: Any) -> dict:
-    """Normalize an item to a plain dict.
-
-    ``agent_semantic_search`` may return Entity DTO objects instead of
-    dicts.  This helper ensures safe ``.get()`` access in all cases.
-    """
-    if isinstance(item, dict):
-        return item
-    if hasattr(item, "__dict__"):
-        return vars(item)
-    return {}
 
 
 # ------------------------------------------------------------------
@@ -255,9 +241,7 @@ def _render_human(
     from rich.panel import Panel
     from rich.markup import escape as _esc
     from rich.table import Table
-    from rich.text import Text
 
-    from ._helpers import compact_text
 
     coverage = data["coverage"]
 
@@ -290,12 +274,12 @@ def _render_human(
     cov_table.add_row(
         "Document file search",
         str(coverage["file_hits"]),
-        f"per-term limit applied",
+        "per-term limit applied",
     )
     cov_table.add_row(
         "Semantic concept search",
         str(coverage["semantic_hits"]),
-        f"threshold filtered",
+        "threshold filtered",
     )
     cov_table.add_row(
         "Source evidence",
@@ -467,7 +451,6 @@ def _render_evidence_cards(out: OutputManager, cards: List[dict]) -> None:
     from rich.markup import escape as _esc
     from rich.panel import Panel
 
-    from ._helpers import compact_text
 
     for idx, card in enumerate(cards, 1):
         claim = _esc(card.get("claim_hint", ""))

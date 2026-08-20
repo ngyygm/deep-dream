@@ -8,8 +8,6 @@ from typing import Any, Dict, List, Optional
 
 import click
 
-from ._exit_codes import OK
-
 
 def _escape_like(value: str) -> str:
     """Escape LIKE wildcard characters (%_) so they match literally.
@@ -88,7 +86,7 @@ def find(
       deep-dream find "machine learning"
       deep-dream find "transformer" --role entity --limit 10
     """
-    from ._output import OutputManager, format_confidence
+    from ._output import OutputManager
 
     out = OutputManager(ctx)
     cli_ctx = ctx.obj
@@ -184,6 +182,6 @@ def find(
         rows,
     )
     click.echo(
-        f'\n  Use "deep-dream concept get <family_id>" for details.',
+        '\n  Use "deep-dream concept get <family_id>" for details.',
         err=True,
     )

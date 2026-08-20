@@ -28,7 +28,7 @@ from typing import Any, Dict, Optional
 import click
 
 from ._ctx import CliContext
-from ._exit_codes import ARGS, ERROR, NOT_FOUND, OK
+from ._exit_codes import ARGS, ERROR, NOT_FOUND
 from ._output import OutputManager
 
 
