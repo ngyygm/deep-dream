@@ -43,7 +43,7 @@ from .prompts import (
     _CONNECTION_ERROR_KEYWORDS,
     LLM_PRIORITY_ALIGN,
     LLM_PRIORITY_EXTRACT,
-    estimate_text_token_count,
+    estimate_tokens,
     estimate_messages_token_count,
     error_suggests_context_overflow,
     ollama_root_from,
@@ -363,7 +363,7 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
 
     @staticmethod
     def _estimate_text_token_count(text: Any) -> int:
-        return estimate_text_token_count(text)
+        return estimate_tokens(text)
 
     def _estimate_messages_token_count(self, messages: List[Dict[str, Any]]) -> int:
         return estimate_messages_token_count(messages)

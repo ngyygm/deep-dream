@@ -13,6 +13,8 @@ LLM Prompt Templates — All prompts in one place.
   六、知识图谱整理 — 精细化判断
 """
 
+import re
+
 # ============================================================
 # 共享常量
 # ============================================================
@@ -278,38 +280,61 @@ LLM_PRIORITY_EXTRACT = 0
 LLM_PRIORITY_ALIGN = 1
 
 
-def estimate_text_token_count(text) -> int:
-    """保守估算 token 数。
+# CJK 字符区间：统一表意文字 + CJK 标点 + 全角形式（全角 ASCII／半角片假名等）。
+# 预编译一次，estimate_tokens 在请求热路径上逐 message 调用。
+_CJK_CHAR_RE = re.compile(r"[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]")
 
-    这里不追求精确 tokenizer 一致性，只需要在请求前避免总预算超过 8K。
-    对中文与 JSON 来说，字符数近似 token 数，适合做服务保护上限。
+
+def estimate_tokens(text) -> int:
+    """统一的 token 估算——context budget 预检、usage 缺失时的本地计数共用。
+
+    依据（经验近似，不追求与具体 tokenizer 精确一致，只做请求前的预算保护）：
+    - CJK 字符（\\u4e00-\\u9fff 汉字、\\u3000-\\u303f CJK 标点、\\uff00-\\uffef 全角符号）
+      约 1 token/字；
+    - 其余 ASCII 可打印字符约 0.25 token/字符（≈4 chars/token）；
+    - 混合文本按上表线性叠加，非 CJK 部分向上取整以保持保守。
+
+    旧实现直接取 len(text)：中文恰好 ≈1 token/字，但英文被高估约 4 倍，
+    导致纯英文 prompt 在 context budget 预检处被误拒。本函数只修正估算
+    数值来源，不改 prompt 内容，也不改扩容阶梯结构。
     """
     if text is None:
         return 0
     if not isinstance(text, str):
         text = str(text)
-    return len(text)
+    if not text:
+        return 0
+    cjk = len(_CJK_CHAR_RE.findall(text))
+    other = len(text) - cjk
+    return cjk + (other + 3) // 4
+
+
+def estimate_text_token_count(text) -> int:
+    """保守估算 token 数（旧入口名，统一委托 estimate_tokens）。"""
+    return estimate_tokens(text)
 
 
 def estimate_messages_token_count(messages) -> int:
-    """估算 messages 列表的 token 总数。"""
+    """估算 messages 列表的 token 总数（各部分统一走 estimate_tokens）。"""
     total = 0
     for msg in messages:
         total += 8  # role / 分隔符等固定开销
-        total += estimate_text_token_count(msg.get("role", ""))
+        total += estimate_tokens(msg.get("role", ""))
         content = msg.get("content", "")
         if isinstance(content, list):
             for part in content:
-                # Fast length estimation — avoid json.dumps per part
+                # Fast token estimation — avoid json.dumps per part
                 if isinstance(part, dict):
-                    part_len = sum(len(v) for v in part.values() if isinstance(v, str))
+                    part_tokens = sum(
+                        estimate_tokens(v) for v in part.values() if isinstance(v, str)
+                    )
                 elif isinstance(part, str):
-                    part_len = len(part)
+                    part_tokens = estimate_tokens(part)
                 else:
-                    part_len = len(str(part))
-                total += part_len  # estimate_text_token_count uses len() ≈ tokens
+                    part_tokens = estimate_tokens(str(part))
+                total += part_tokens
         else:
-            total += estimate_text_token_count(content)
+            total += estimate_tokens(content)
     return total + 16  # 请求包尾部保留固定开销
 
 
