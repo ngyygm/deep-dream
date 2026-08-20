@@ -338,6 +338,177 @@ def rebuild_fts(ctx: click.Context) -> None:
 
 
 # ------------------------------------------------------------------
+# db backfill-embeddings
+# ------------------------------------------------------------------
+
+def _backfill_embeddings_run(conn: sqlite3.Connection, client, batch_size: int,
+                             progress=print) -> Dict[str, Any]:
+    """为缺 embedding 的 active 实体/关系版本批量补算向量（原根目录脚本移植）。
+
+    embedding_model 记录 client 的 model_name/model_path——与
+    LibraryManager._active_embedding_model 同源，保证 P2 的按模型过滤
+    向量缓存能命中回填行（旧脚本用 config 原串，与管线写入不一致）。
+    """
+    import hashlib
+    import time
+
+    import numpy as np
+
+    # 与管线写入同一语义：client 属性优先，回退 unknown
+    model = (getattr(client, "model_name", None)
+             or getattr(client, "model_path", None)
+             or "unknown")
+
+    def _now_str() -> str:
+        return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+
+    def _phase(owner_type: str, family_sql: str, text_fn, label: str) -> Dict[str, Any]:
+        # family_id → active 版本 id（每组最新一条）
+        version_map = {}
+        for row in conn.execute(family_sql).fetchall():
+            version_map[row[0]] = row[1]
+        existing = {row[0] for row in conn.execute(
+            "SELECT owner_id FROM embeddings WHERE owner_type = ?", (owner_type,))}
+        # 家族明细行由调用方给出（family_sql 只回 fid+版本 id）
+        detail_rows = text_fn(version_map, existing)
+
+        stored = skipped = 0
+        t0 = time.time()
+        for offset in range(0, len(detail_rows), batch_size):
+            batch = detail_rows[offset:offset + batch_size]
+            try:
+                vecs = client.encode([item[2] for item in batch])
+            except Exception as exc:
+                progress(f"encode error at {offset}: {exc}")
+                skipped += len(batch)
+                continue
+            payload = []
+            for i, (_, version_id, text) in enumerate(batch):
+                blob = np.asarray(vecs[i], dtype=np.float32).tobytes()
+                payload.append((
+                    f"emb_{version_id}", version_id,
+                    hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                    len(blob) // 4, blob,
+                ))
+            conn.executemany(
+                "INSERT OR REPLACE INTO embeddings "
+                "(embedding_id, owner_type, owner_id, text_kind, text_hash, "
+                " embedding_model, dimensions, vector, created_at) "
+                f"VALUES (?, '{owner_type}', ?, 'content', ?, ?, ?, ?, ?)",
+                [(p[0], p[1], p[2], model, p[3], p[4], _now_str()) for p in payload],
+            )
+            conn.commit()
+            stored += len(batch)
+            done = min(offset + batch_size, len(detail_rows))
+            elapsed = time.time() - t0
+            rate = done / elapsed if elapsed > 0 else 0
+            eta = (len(detail_rows) - done) / rate / 60 if rate > 0 else 0
+            progress(f"  {label}: {done}/{len(detail_rows)} "
+                     f"({done * 100 // max(1, len(detail_rows))}%) "
+                     f"rate={rate:.0f}/s ETA={eta:.1f}min")
+        return {"candidates": len(detail_rows), "stored": stored, "skipped": skipped}
+
+    # Phase 1: 实体（name + content，512 字截断与旧脚本一致）
+    def _entity_todo(version_map, existing):
+        todo = []
+        for fid, name, content in conn.execute(
+            "SELECT entity_family_id, canonical_name, canonical_content FROM entity_families"
+        ).fetchall():
+            obs_id = version_map.get(fid)
+            if obs_id and obs_id not in existing:
+                text = f"{name}: {content}" if content else name
+                todo.append((fid, obs_id, text[:512]))
+        return todo
+
+    entity_stats = _phase(
+        "entity_obs",
+        "SELECT entity_family_id, entity_id FROM entity_observations "
+        "WHERE status = 'active' GROUP BY entity_family_id HAVING rowid = MAX(rowid)",
+        _entity_todo, "Entity")
+
+    # Phase 2: 关系（content，缺省用端点占位）
+    def _relation_todo(version_map, existing):
+        todo = []
+        for fid, content, sub_fid, obj_fid in conn.execute(
+            "SELECT relation_family_id, canonical_content, "
+            "       subject_entity_family_id, object_entity_family_id "
+            "FROM relation_families"
+        ).fetchall():
+            assert_id = version_map.get(fid)
+            if assert_id and assert_id not in existing:
+                text = content or f"relation_{(sub_fid or '')[:8]}_{(obj_fid or '')[:8]}"
+                todo.append((fid, assert_id, text[:512]))
+        return todo
+
+    relation_stats = _phase(
+        "relation_assert",
+        "SELECT relation_family_id, relation_id FROM relation_assertions "
+        "WHERE status = 'active' GROUP BY relation_family_id HAVING rowid = MAX(rowid)",
+        _relation_todo, "Relation")
+
+    total = conn.execute("SELECT COUNT(*) FROM embeddings").fetchone()[0]
+    return {"entity": entity_stats, "relation": relation_stats, "total_in_db": total}
+
+
+@db.command("backfill-embeddings")
+@click.option("--batch-size", default=128, show_default=True,
+              help="Encode batch size.")
+@click.pass_context
+def backfill_embeddings(ctx: click.Context, batch_size: int) -> None:
+    """Backfill missing embeddings for active entity/relation versions.
+
+    P2 的向量缓存按 active embedding 模型过滤——换模型后旧向量不再命中，
+    跑本命令按当前配置的 embedding 模型补算（原根目录 backfill_embeddings.py 移植）。
+    """
+    obj: CliContext = ctx.obj
+    out = OutputManager(ctx)
+    config = obj.config
+
+    try:
+        conn = _open_db_conn(config)
+    except FileNotFoundError as exc:
+        out.error(str(exc), code=NOT_FOUND)
+        return
+
+    from core.server.config import resolve_embedding_model
+    from core.storage.embedding import EmbeddingClient
+
+    emb_cfg = config.get("embedding") or {}
+    model_path, model_name, use_local = resolve_embedding_model(emb_cfg)
+    client = EmbeddingClient(
+        model_path=model_path, model_name=model_name,
+        device=emb_cfg.get("device", "cpu"), use_local=use_local)
+    if not client.is_available():
+        out.error("embedding client 不可用（检查 embedding.model 配置）", code=ERROR)
+        conn.close()
+        return
+    client.encode("warm up")
+
+    progress = (lambda *_: None) if out.is_json else print
+    try:
+        stats = _backfill_embeddings_run(conn, client, batch_size, progress)
+        if out.is_json:
+            click.echo(json.dumps({
+                "success": True,
+                "command": "db backfill-embeddings",
+                "data": stats,
+            }, ensure_ascii=False, indent=2))
+        else:
+            out.success(
+                f"backfill complete: entity {stats['entity']['stored']}/{stats['entity']['candidates']}, "
+                f"relation {stats['relation']['stored']}/{stats['relation']['candidates']}, "
+                f"total in db {stats['total_in_db']}")
+    except Exception as exc:
+        if out.is_json:
+            click.echo(json.dumps({"success": False, "error": str(exc)},
+                                  ensure_ascii=False, indent=2))
+        else:
+            out.error(str(exc), code=ERROR)
+    finally:
+        conn.close()
+
+
+# ------------------------------------------------------------------
 # db validate
 # ------------------------------------------------------------------
 

@@ -21,7 +21,6 @@ from ._output import OutputManager
 # Constants
 # ------------------------------------------------------------------
 
-_API_BASE = "http://127.0.0.1:16200/api/v1"
 _SERVER_HINT = "Start with 'deep-dream server start'."
 
 
@@ -29,9 +28,37 @@ _SERVER_HINT = "Start with 'deep-dream server start'."
 # HTTP helpers
 # ------------------------------------------------------------------
 
+def _resolve_api_base() -> str:
+    """解析 API base（P5：随配置走，不再硬编码端口）。
+
+    优先级：DEEPDREAM_API_BASE 环境变量 > DEEPDREAM_PORT > 当前 click
+    上下文配置的 server.port > 默认 16200。结果按进程缓存——一次 CLI
+    调用内配置不会变。
+    """
+    import os
+
+    cached = getattr(_resolve_api_base, "_cached", None)
+    if cached:
+        return cached
+    base = os.environ.get("DEEPDREAM_API_BASE")
+    if not base:
+        port = os.environ.get("DEEPDREAM_PORT")
+        if not port:
+            try:
+                ctx = click.get_current_context(silent=True)
+                cfg = ctx.obj.config if ctx is not None and ctx.obj is not None else {}
+                port = cfg.get("port")
+            except Exception:
+                port = None
+        base = f"http://127.0.0.1:{int(port or 16200)}"
+    base = base.rstrip("/")
+    _resolve_api_base._cached = f"{base}/api/v1"
+    return _resolve_api_base._cached
+
+
 def _api_url(path: str, params: Optional[Dict[str, str]] = None) -> str:
     """Build a full API URL from a relative path."""
-    url = f"{_API_BASE}{path}"
+    url = f"{_resolve_api_base()}{path}"
     if params:
         filtered = {k: v for k, v in params.items() if v is not None}
         if filtered:
@@ -110,7 +137,7 @@ def _error_message(resp: Dict[str, Any]) -> str:
 def _ensure_connected(out: OutputManager) -> None:
     """Check server connectivity; exit with a helpful message if unreachable."""
     try:
-        req = urllib.request.Request(f"{_API_BASE}/../health", method="GET")
+        req = urllib.request.Request(f"{_resolve_api_base()}/../health", method="GET")
         with urllib.request.urlopen(req, timeout=3) as resp:
             if resp.status >= 400:
                 raise OSError(f"HTTP {resp.status}")

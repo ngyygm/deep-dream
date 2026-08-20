@@ -10,7 +10,10 @@ from core.exceptions import ConfigError
 
 DEFAULTS = {
     "host": "0.0.0.0",
-    "port": 5001,
+    # 端口真相（P5）：与 README/CLAUDE.md/cmd_task._API_BASE 统一为 16200。
+    # 旧默认 5001 与文档宣称的 16200 不符——不读配置启动时落在 5001，
+    # CLI task 子命令却指向 16200，首个 remember 提交即连接失败。
+    "port": 16200,
     "flask_threaded": True,
     "monitor_refresh_seconds": 1.0,
     "auto_port_fallback": False,
