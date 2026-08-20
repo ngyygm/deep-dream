@@ -26,8 +26,6 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0", "pytest-cov", "ruff"]
-benchmark = ["nltk>=3.8", "regex>=2023.0", "tqdm>=4.66"]
-benchmark-agent = ["fastmcp==3.2.4"]
 
 [project.scripts]
 deep-dream = "core.cli:main"
@@ -46,3 +44,8 @@ markers = [
     "slow: test takes > 5 seconds",
     "e2e: test requires a running Deep-Dream server",
 ]
+
+[tool.ruff.lint.per-file-ignores]
+# 这两个文件在 import 前做 sys.path 引导（支持脚本直跑），core.* 必须在其后
+"core/server/api.py" = ["E402"]
+"core/tests/conftest.py" = ["E402"]
