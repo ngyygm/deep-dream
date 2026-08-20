@@ -28,7 +28,7 @@ from core.server.routes.helpers import (
 from core.server.routes._constants import _BOOL_TRUE, _BOOL_FALSE
 from core.server.monitor import LOG_MODE_DETAIL
 from core.server.task_queue import RememberTask
-from core.llm.sanitize import sanitize_user_input
+from core.llm.sanitize import clean_document_text
 
 # Security: Maximum text length to prevent DoS
 _MAX_TEXT_LENGTH = 10_000_000  # 10MB
@@ -132,10 +132,12 @@ def _parse_remember_input(post_json: Dict[str, Any]):
     if not _re.search(r'[\w一-鿿぀-ゟ゠-ヿ가-힯]', text):
         return err("文本缺少有效内容（仅包含标点/空白字符）", 400)
 
-    # Security: Sanitize for LLM prompt safety
-    text, was_sanitized = sanitize_user_input(text, max_length=_MAX_TEXT_LENGTH)
-    if was_sanitized:
-        logger.warning("Remember input was sanitized due to security concerns")
+    # 传输级清理：只截断超长、剔除控制字符，不改写正文（P5.5）。
+    # "ignore previous instructions" 等字样是正常文献内容，防注入边界在
+    # 指令构造层（prompts 把文档当数据处理），不在内容改写。
+    text, was_cleaned = clean_document_text(text, max_length=_MAX_TEXT_LENGTH)
+    if was_cleaned:
+        logger.info("Remember input was cleaned (length / control characters)")
 
     processor = _get_processor()
     sn = _remember_get_str("source_name", post_json)
