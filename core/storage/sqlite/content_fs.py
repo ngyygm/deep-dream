@@ -56,7 +56,6 @@ def write_version_snapshot(library_path: str, doc_id: str,
     Returns the relative path from library root.
     """
     rel_dir = os.path.join("content", "versions", doc_id)
-    abs_dir = os.path.join(library_path, rel_dir)
     filename = f"{content_hash}.md"
     rel_path = os.path.join(rel_dir, filename)
     abs_path = os.path.join(library_path, rel_path)
@@ -149,7 +148,6 @@ def write_submitted_content(library_path: str, source_name: str, content: str) -
     if ext.lower() != ".md":
         safe = f"{root}.md"
 
-    content_dir = os.path.join(library_path, "content")
     rel_path = os.path.join("content", safe)
     abs_path = os.path.join(library_path, rel_path)
 
@@ -178,66 +176,3 @@ def cleanup_temp_files(library_path: str) -> int:
                 except OSError:
                     pass
     return count
-
-
-def migrate_legacy_markdown(library_path: str) -> dict:
-    """Migrate markdown files from legacy directories to content/.
-
-    Priority: content/ > documents/managed > snapshots (fallback).
-
-    Returns {"migrated": int, "skipped": int, "conflicts": list}.
-    """
-    result = {"migrated": 0, "skipped": 0, "conflicts": []}
-    content_dir = os.path.join(library_path, "content")
-    os.makedirs(content_dir, exist_ok=True)
-
-    sources = []
-    for legacy_dir in ["documents/managed", "snapshots"]:
-        abs_dir = os.path.join(library_path, legacy_dir)
-        if os.path.isdir(abs_dir):
-            for fname in os.listdir(abs_dir):
-                if fname.endswith(".md"):
-                    sources.append(os.path.join(abs_dir, fname))
-
-    seen = {}
-    for src_path in sources:
-        fname = os.path.basename(src_path)
-        dest = os.path.join(content_dir, fname)
-
-        if fname in seen:
-            src_hash = compute_file_hash(src_path)
-            for existing_path in seen[fname]:
-                if compute_file_hash(existing_path) == src_hash:
-                    result["skipped"] += 1
-                    break
-            else:
-                safe = _safe_title(os.path.splitext(fname)[0])
-                disambig = src_hash[:8]
-                dest = os.path.join(content_dir, f"{safe}_{disambig}.md")
-                with open(src_path, "r", encoding="utf-8") as f:
-                    content = f.read()
-                _atomic_write(dest, content)
-                result["migrated"] += 1
-                result["conflicts"].append((src_path, dest))
-            seen[fname].append(src_path)
-            continue
-
-        if os.path.exists(dest):
-            dest_hash = compute_file_hash(dest)
-            src_hash = compute_file_hash(src_path)
-            if dest_hash == src_hash:
-                result["skipped"] += 1
-                seen[fname] = [src_path]
-                continue
-            safe = _safe_title(os.path.splitext(fname)[0])
-            disambig = compute_file_hash(src_path)[:8]
-            dest = os.path.join(current_dir, f"{safe}_{disambig}.md")
-            result["conflicts"].append((src_path, dest))
-
-        with open(src_path, "r", encoding="utf-8") as f:
-            content = f.read()
-        _atomic_write(dest, content)
-        seen[fname] = [src_path]
-        result["migrated"] += 1
-
-    return result

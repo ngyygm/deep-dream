@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 from .repositories import search as search_repo
 
@@ -184,29 +184,6 @@ def _build_lightweight_entities(conn: sqlite3.Connection,
     return entities
 
 
-def batch_get_entity_degrees(conn: sqlite3.Connection,
-                             family_ids: List[str]) -> Dict[str, int]:
-    if not family_ids:
-        return {}
-    placeholders = ",".join("?" for _ in family_ids)
-    rows = conn.execute(
-        f"SELECT entity_family_id, COUNT(*) as cnt FROM ("
-        f"  SELECT rf.subject_entity_family_id AS entity_family_id "
-        f"  FROM relation_families rf "
-        f"  WHERE rf.subject_entity_family_id IN ({placeholders}) "
-        f"  UNION ALL "
-        f"  SELECT rf.object_entity_family_id AS entity_family_id "
-        f"  FROM relation_families rf "
-        f"  WHERE rf.object_entity_family_id IN ({placeholders})"
-        f") GROUP BY entity_family_id",
-        family_ids + family_ids,
-    ).fetchall()
-    result = {fid: 0 for fid in family_ids}
-    for row in rows:
-        result[row[0]] = row[1]
-    return result
-
-
 # ── Document graph ────────────────────────────────────
 
 def _resolve_document_ids(conn, document_version_ids=None, document_family_ids=None):
@@ -380,7 +357,6 @@ def _build_edges(documents, episodes, entities, relations):
         doc_ver_by_doc_id[d["document_id"]] = d["document_version_id"]
 
     # HAS_EPISODE: document -> episode
-    episode_set = set(ep["version_id"] for ep in episodes)
     for ep in episodes:
         doc_ver = ep.get("document_version_id")
         if not doc_ver:
@@ -395,7 +371,6 @@ def _build_edges(documents, episodes, entities, relations):
         })
 
     # Entity family_ids set for validation
-    entity_families = {e["family_id"] for e in entities}
 
     return edges, doc_ver_by_doc_id
 

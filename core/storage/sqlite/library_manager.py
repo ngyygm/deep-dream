@@ -17,9 +17,8 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 import numpy as np
 
 from ...models import Entity, Episode, Relation
-from ..cache import QueryCache
 from .dto_mapping import assertion_to_relation, episode_row_to_dto, observation_to_entity
-from .helpers import _encode_and_normalize, _fmt_dt, _parse_dt
+from .helpers import _encode_and_normalize, _fmt_dt
 from .schema_v15 import init_schema_v15
 
 from .repositories import (
@@ -59,7 +58,6 @@ class LibraryManager:
         library_path: str = None,
         embedding_client=None,
         entity_content_snippet_length: int = 50,
-        relation_content_snippet_length: int = 50,
         # Old compat kwargs
         storage_path: str = None,
         vector_dim: int = 1024,
@@ -74,7 +72,6 @@ class LibraryManager:
         self._db_path = self.library_path / "library.db"
         self.embedding_client = embedding_client
         self.entity_content_snippet_length = entity_content_snippet_length
-        self.relation_content_snippet_length = relation_content_snippet_length
 
         # Directory layout for content files
         self.storage_path = self.library_path
@@ -100,7 +97,6 @@ class LibraryManager:
         self._lifecycle_lock = threading.RLock()
         self._closed = False
         self._entity_name_cache: Dict[str, str] = {}
-        self._cache = QueryCache(default_ttl=30, max_size=4096)
         self._vector_cache_lock = threading.RLock()
         self._vector_role_cache: Dict[str, dict] = {}
 
@@ -1607,7 +1603,6 @@ class LibraryManager:
         Called from pipeline_workers.py as a prefetch future and from
         registry.py in a background thread after server startup.
         """
-        import numpy as np
         if roles is None:
             roles = ["entity"]
         warmed = {}
@@ -1634,20 +1629,6 @@ class LibraryManager:
 
     def save_content_patches(self, patches):
         return 0
-
-    def adjust_confidence_on_corroboration(self, family_id: str, source_type: str = "entity",
-                                           **_ignored):
-        pass
-
-    def adjust_confidence_on_corroboration_batch(self, family_ids: List[str],
-                                                  source_type: str = "entity", **_ignored):
-        pass
-
-    def adjust_confidence_on_contradiction(self, family_id: str, source_type: str = "entity"):
-        pass
-
-    def refresh_relates_to_edges(self, family_ids: List[str] = None):
-        pass
 
     def batch_get_source_text_snippets(self, episode_ids: List[str],
                                         snippet_length: int = 200) -> Dict[str, str]:
@@ -1689,7 +1670,8 @@ class LibraryManager:
                      run_id: str = "",
                      retrieval_slice_chars: int = 0) -> str:
         """Persist an Episode DTO and its source document."""
-        import hashlib, uuid
+        import hashlib
+        import uuid
         from . import content_fs
 
         conn = self._conn()
@@ -1948,9 +1930,6 @@ class LibraryManager:
             for e in entities:
                 self.save_entity(e)
 
-    def bulk_save_entities_with_embedding(self, entities: List[Entity]) -> None:
-        self.bulk_save_entities(entities)
-
     def save_relation(self, relation: Relation,
                        run_id: str = "", extra_json: str = "") -> None:
         """Persist a Relation DTO as relation_family + relation_assertion."""
@@ -2037,9 +2016,6 @@ class LibraryManager:
             for r in relations:
                 self.save_relation(r)
 
-    def bulk_save_relations_with_embedding(self, relations: List[Relation]) -> None:
-        self.bulk_save_relations(relations)
-
     def save_episode_mentions(self, episode_id: str, entity_absolute_ids: List[str],
                               context: str = "", target_type: str = "entity") -> None:
         """Create entity_mention rows for entities mentioned in an episode."""
@@ -2076,7 +2052,6 @@ class LibraryManager:
                 if hits:
                     evidence_map[info["absolute_id"]] = hits[0]
 
-        import json
         for abs_id in entity_absolute_ids:
             fam_map = self.get_family_ids_by_absolute_ids([abs_id])
             fid = fam_map.get(abs_id, "")

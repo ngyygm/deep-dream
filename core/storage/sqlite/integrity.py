@@ -307,7 +307,6 @@ def validate_content_hash_matches_file(conn, library_path: str = "") -> list:
 def validate_pipeline_runs_version(conn) -> list:
     """Version-specific run types must have document_version_id."""
     v = _violations()
-    version_required = {"remember", "chunk", "embedding"}
     rows = conn.execute("""
         SELECT run_id, run_type, document_id, document_version_id
         FROM pipeline_runs

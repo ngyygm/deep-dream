@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 import sqlite3
 import time
-from typing import Any, Optional
+from typing import Any
 
 
 _SQL_COMMENT_RE = re.compile(r"(--[^\r\n]*|/\*.*?\*/)", re.DOTALL)

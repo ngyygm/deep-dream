@@ -32,43 +32,6 @@ def get_embedding(conn, owner_type: str, owner_id: str, text_kind: str,
     return row[0] if row else None
 
 
-def search_episode_embeddings(conn, query_vector: bytes,
-                              embedding_model: str,
-                              limit: int = 10) -> list:
-    """Search episode embeddings, filtered to active documents."""
-    # SQLite doesn't have native vector search; this returns candidate rows
-    # for Python-side cosine similarity. A proper vector index (e.g. sqlite-vec)
-    # would be used in production.
-    rows = conn.execute("""
-        SELECT e.embedding_id, e.owner_id, e.text_hash, e.vector,
-               ep.document_id, ep.episode_family_id
-        FROM embeddings e
-        JOIN episodes ep ON ep.episode_id = e.owner_id AND ep.status = 'active'
-        JOIN documents d ON d.document_id = ep.document_id AND d.status = 'active'
-        JOIN document_versions dv
-          ON dv.document_id = ep.document_id
-         AND dv.document_version_id = ep.document_version_id
-         AND dv.status = 'active'
-        WHERE e.owner_type = 'episode'
-          AND e.embedding_model = ?
-        ORDER BY e.created_at DESC
-        LIMIT ?
-    """, (embedding_model, limit * 3)).fetchall()
-
-    results = []
-    for row in rows:
-        results.append({
-            "embedding_id": row[0],
-            "owner_id": row[1],
-            "episode_id": row[1],
-            "text_hash": row[2],
-            "vector": row[3],
-            "document_id": row[4],
-            "episode_family_id": row[5],
-        })
-    return results[:limit]
-
-
 def search_entity_embeddings(conn, query_vector: bytes,
                              embedding_model: str,
                              limit: int = 10) -> list:

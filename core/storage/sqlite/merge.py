@@ -6,7 +6,6 @@ import sqlite3
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Tuple
 
-from .repositories import entities as ent_repo, relations as rel_repo
 
 logger = logging.getLogger(__name__)
 

@@ -1,5 +1,7 @@
 from .embedding import EmbeddingClient
 
+__all__ = ["EmbeddingClient", "create_storage_manager"]
+
 
 def create_storage_manager(config: dict, embedding_client=None, storage_path=None, **kwargs):
     """创建存储管理器。
@@ -15,7 +17,6 @@ def create_storage_manager(config: dict, embedding_client=None, storage_path=Non
     Returns:
         LibraryManager 实例
     """
-    storage_config = config.get("storage") or {}
     sp = storage_path or config.get("storage_path", "./library")
 
     from .sqlite.library_manager import LibraryManager
@@ -24,5 +25,4 @@ def create_storage_manager(config: dict, embedding_client=None, storage_path=Non
         library_path=sp,
         embedding_client=embedding_client,
         entity_content_snippet_length=kwargs.get("entity_content_snippet_length", 50),
-        relation_content_snippet_length=kwargs.get("relation_content_snippet_length", 50),
     )
