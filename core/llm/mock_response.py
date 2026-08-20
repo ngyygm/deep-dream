@@ -28,27 +28,6 @@ def mock_llm_response(prompt: str) -> str:
         match = re.search(rf"<{tag}>\s*(.*?)\s*</{tag}>", prompt, re.DOTALL)
         return match.group(1).strip() if match else ""
 
-    def _extract_bullet_names(*tags: str) -> list[str]:
-        for tag in tags:
-            block = _extract_tag_block(tag)
-            if not block:
-                continue
-            names = []
-            for line in block.splitlines():
-                line = line.strip()
-                if not line.startswith("-"):
-                    continue
-                item = line[1:].strip()
-                if "|" in item:
-                    item = item.split("|", 1)[0].strip()
-                if "<->" in item:
-                    continue
-                if item:
-                    names.append(item)
-            if names:
-                return names
-        return []
-
     def _names_from_concept_list() -> list[str]:
         if "概念列表：" not in prompt:
             return []
@@ -167,42 +146,8 @@ def mock_llm_response(prompt: str) -> str:
             "relations_to_create": [],
             "confidence": 0.9 if _match_id else 0.3,
         })
-    elif ("判断.*实体.*匹配" in prompt or "judge.*entity.*match" in prompt_lower or
-          "判断新抽取的实体是否与已有实体" in prompt):
-        return _mock_json_fence({
-            "family_id": "ent_001",
-            "need_update": False
-        })
     elif "输出格式纠错" in prompt or "json 代码块" in prompt_lower:
         return _mock_json_fence([])
-    elif ("抽取关系" in prompt or "抽取所有概念实体间的关系" in prompt or
-          "relation" in prompt_lower or "从输入文本中抽取实体之间的关系" in prompt or
-          "关系抽取" in prompt or "实体间的关系" in prompt):
-        names = _extract_bullet_names("概念实体列表", "稳定概念实体列表")
-        if not names and "已抽取的实体：" in prompt:
-            entities_section = prompt.split("已抽取的实体：", 1)[1].split("</已抽取实体>", 1)[0].strip()
-            if not entities_section:
-                return _mock_json_fence([])
-        if len(names) >= 2:
-            entity1_name, entity2_name = sorted((names[0], names[1]))
-        else:
-            entity1_name, entity2_name = "示例实体1", "示例实体2"
-        return _mock_json_fence([
-            {
-                "entity1_name": entity1_name,
-                "entity2_name": entity2_name,
-                "content": f"{entity1_name}与{entity2_name}之间存在稳定关系。"
-            }
-        ])
-    elif ("抽取实体" in prompt or "抽取所有概念实体" in prompt or "entity" in prompt_lower or
-          "从输入文本中抽取所有实体" in prompt or "实体抽取" in prompt or
-          "概念实体" in prompt):
-        return _mock_json_fence([
-            {
-                "name": "示例实体1",
-                "content": "这是一个示例实体的描述，包含足够的结构化信息。"
-            }
-        ])
     elif ("判断" in prompt and "合并" in prompt and "实体" in prompt) or "merge_entity_name" in prompt_lower:
         return _mock_json_fence({"merged_name": "示例实体1", "merged_content": "合并后的描述"})
     elif ("关系" in prompt and "匹配" in prompt) or "relation_match" in prompt_lower:

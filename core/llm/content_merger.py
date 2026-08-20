@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from ..utils import clean_markdown_code_blocks, wprint_info
+from ..utils import wprint_info
 from .prompts import (
     MERGE_ENTITY_NAME_SYSTEM_PROMPT,
     JUDGE_RELATION_MATCH_SYSTEM_PROMPT,

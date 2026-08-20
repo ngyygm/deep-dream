@@ -15,6 +15,15 @@ from core.utils import (
     set_window_label as _set_window_label,
     set_pipeline_role as _set_pipeline_role,
 )
+from .errors import LLMContextBudgetExceeded
+from .prompts import (
+    RELATION_CONTENT_WRITE_SYSTEM,
+    RELATION_CONTENT_WRITE_USER,
+    RELATION_BATCH_CONTENT_WRITE_SYSTEM,
+    RELATION_BATCH_CONTENT_WRITE_USER,
+    ENTITY_ALIGNMENT_JUDGE_SYSTEM,
+    ENTITY_ALIGNMENT_JUDGE_USER,
+)
 
 
 def _restore_log_context(ctx: tuple):
@@ -32,17 +41,6 @@ def _clear_log_context():
     _set_pipeline_role(None)
 
 _VALID_VERDICTS = frozenset(("same", "different", "uncertain"))
-
-from .errors import LLMContextBudgetExceeded
-from .prompts import (
-    RELATION_CONTENT_WRITE_SYSTEM,
-    RELATION_CONTENT_WRITE_USER,
-    RELATION_BATCH_CONTENT_WRITE_SYSTEM,
-    RELATION_BATCH_CONTENT_WRITE_USER,
-    ENTITY_ALIGNMENT_JUDGE_SYSTEM,
-    ENTITY_ALIGNMENT_JUDGE_USER,
-)
-
 
 class _LLMExtractionMixin:
     """Content writing, response parsing, and alignment judgment for LLMClient."""
@@ -262,20 +260,11 @@ class _LLMExtractionMixin:
     ) -> Dict[str, Any]:
         """Judge whether two entities describe the same object.
 
-        委托优先：若挂载了库级 judge_service（memo/single-flight/攒批），
-        先走服务；未启用时直调 _judge_entity_alignment_llm。
-
         Returns:
             {"verdict": "same"|"different"|"uncertain",
              "confidence": 0.0-1.0,
              "reason": "..."}
         """
-        _svc = getattr(self, "judge_service", None)
-        if _svc is not None:
-            return _svc.judge_entity_alignment(
-                self, name_a, content_a, name_b, content_b,
-                name_match_type=name_match_type,
-            )
         return self._judge_entity_alignment_llm(
             name_a, content_a, name_b, content_b,
             name_match_type=name_match_type,

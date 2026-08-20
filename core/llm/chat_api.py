@@ -14,7 +14,7 @@ import atexit
 from dataclasses import dataclass
 import json
 import threading
-from typing import Any, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from urllib import request
 from urllib.error import HTTPError, URLError
 
@@ -62,11 +62,8 @@ class OllamaChatResponse:
     """统一的非流式响应结构（兼容旧接口）。"""
 
     content: str
-    thinking: Optional[str] = None
     model: Optional[str] = None
-    done: Optional[bool] = None
     done_reason: Optional[str] = None
-    total_duration: Optional[int] = None
     prompt_eval_count: Optional[int] = None
     eval_count: Optional[int] = None
     raw: Optional[Dict[str, Any]] = None
@@ -123,14 +120,6 @@ def _extract_ollama_message_content(message: Any) -> str:
     return ""
 
 
-def _extract_ollama_thinking(data: Dict[str, Any]) -> Optional[str]:
-    message = data.get("message") or {}
-    thinking = None
-    if isinstance(message, dict):
-        thinking = message.get("thinking") or message.get("reasoning")
-    return thinking or data.get("thinking") or data.get("reasoning")
-
-
 def ollama_chat(
     messages: List[Dict[str, str]],
     *,
@@ -170,52 +159,12 @@ def ollama_chat(
     message = data.get("message") or {}
     return OllamaChatResponse(
         content=_extract_ollama_message_content(message),
-        thinking=_extract_ollama_thinking(data),
         model=data.get("model"),
-        done=data.get("done"),
         done_reason=data.get("done_reason"),
-        total_duration=data.get("total_duration"),
         prompt_eval_count=data.get("prompt_eval_count"),
         eval_count=data.get("eval_count"),
         raw=data,
     )
-
-
-def ollama_chat_stream(
-    messages: List[Dict[str, str]],
-    *,
-    model: str = "qwen3.5:4b",
-    base_url: str = "http://localhost:11434",
-    think: bool = False,
-    timeout: int = 300,
-) -> Iterator[Dict[str, Any]]:
-    """Ollama 流式 chat（原生 /api/chat 接口），逐块产出 chunk 字典。"""
-    payload = {
-        "model": model,
-        "messages": messages,
-        "stream": True,
-        "think": think,
-    }
-    req = request.Request(
-        _ollama_chat_url(base_url),
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with request.urlopen(req, timeout=timeout) as resp:
-            for line in resp:
-                if not line:
-                    continue
-                text = line.decode("utf-8").strip()
-                if not text:
-                    continue
-                yield json.loads(text)
-    except HTTPError as e:
-        detail = e.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"Ollama /api/chat HTTP {e.code}: {detail}") from e
-    except URLError as e:
-        raise RuntimeError(f"Ollama /api/chat 连接失败: {e}") from e
 
 
 def openai_compatible_chat(

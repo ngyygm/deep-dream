@@ -4,6 +4,11 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from ..utils import wprint_info
+from .prompts import (
+    RESOLVE_ENTITY_CANDIDATES_BATCH_SYSTEM_PROMPT,
+    analyze_entity_pair_detailed_system_prompt,
+    RESOLVE_RELATION_PAIR_BATCH_SYSTEM_PROMPT,
+)
 
 
 def _truncate(text: str, limit: int) -> str:
@@ -14,14 +19,6 @@ def _truncate(text: str, limit: int) -> str:
 def _content_snippet(entity: Dict[str, Any], limit: int = 200) -> str:
     """Extract a short content snippet from an entity dict."""
     return (entity.get("content") or "")[:limit]
-
-
-from .prompts import (
-    RESOLVE_ENTITY_CANDIDATES_BATCH_SYSTEM_PROMPT,
-    ENTITY_PAIR_JUDGMENT_RULES,
-    analyze_entity_pair_detailed_system_prompt,
-    RESOLVE_RELATION_PAIR_BATCH_SYSTEM_PROMPT,
-)
 
 
 class _ConsolidationMixin:
@@ -118,14 +115,7 @@ class _ConsolidationMixin:
                                         current_entity: Dict[str, Any],
                                         candidates: List[Dict[str, Any]],
                                         context_text: Optional[str] = None) -> Dict[str, Any]:
-        """一次性判断当前实体与多个候选的关系，减少逐候选 detailed 调用。
-
-        委托优先：挂载了 judge_service 时先走服务（memo/single-flight/攒批）。
-        """
-        _svc = getattr(self, "judge_service", None)
-        if _svc is not None:
-            return _svc.resolve_entity_candidates(
-                self, current_entity, candidates, context_text=context_text)
+        """一次性判断当前实体与多个候选的关系，减少逐候选 detailed 调用。"""
         return self._resolve_entity_candidates_llm(
             current_entity, candidates, context_text=context_text)
 
@@ -162,8 +152,6 @@ class _ConsolidationMixin:
                 match_type_note = "\n- name_match_type: substring（名称子串关系，可能是简称/别名）"
             elif _cand_mt == "exact":
                 match_type_note = "\n- name_match_type: exact（核心名称完全相同）"
-            elif _cand_mt == "within_batch_alias":
-                match_type_note = "\n- name_match_type: within_batch_alias（同批次别名，极强合并信号）"
 
             _cand_fid = candidate.get('family_id', '')
             _cand_name = candidate.get('name', '')
@@ -224,15 +212,7 @@ class _ConsolidationMixin:
                                     new_relation_contents: List[str],
                                     existing_relations: List[Dict[str, Any]],
                                     new_source_document: str = "") -> Dict[str, Any]:
-        """对同一实体对的一批候选关系做一次性 match/update/create 判定。
-
-        委托优先：挂载了 judge_service 时先走服务（memo/single-flight/攒批）。
-        """
-        _svc = getattr(self, "judge_service", None)
-        if _svc is not None:
-            return _svc.resolve_relation_pair(
-                self, entity1_name, entity2_name, new_relation_contents,
-                existing_relations, new_source_document=new_source_document)
+        """对同一实体对的一批候选关系做一次性 match/update/create 判定。"""
         return self._resolve_relation_pair_llm(
             entity1_name, entity2_name, new_relation_contents,
             existing_relations, new_source_document=new_source_document)

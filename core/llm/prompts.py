@@ -38,16 +38,8 @@ CONTENT_MERGE_REQUIREMENTS = """
 3. 新版本修正事实错误 → 才替换旧版本对应表述
 4. 不丢信息"""
 
-RELATION_VALIDITY_CRITERIA = """
-关联必须明确、直接、有意义。
-仅在同一场景出现、概念相似、时空接近但不构成实质交互的，不算有效关联。
-不确定时宁可不建关系。"""
-
 JSON_OUTPUT_OBJECT = """
 只输出一个 ```json``` 代码块，内为合法 JSON 对象，无其他文字。"""
-
-JSON_OUTPUT_BOOL = """
-只输出一个 ```json``` 代码块，内为 true 或 false，无其他文字。"""
 
 # DETAILED_JUDGMENT_PROCESS 已移除 — 直接使用 ENTITY_PAIR_JUDGMENT_RULES
 
@@ -213,25 +205,6 @@ RESOLVE_ENTITY_CANDIDATES_BATCH_SYSTEM_PROMPT = """你是知识图谱概念对�
 {"match_existing_id": "", "update_mode": "reuse_existing|merge_into_latest|create_new", "merged_name": "", "relations_to_create": [{"family_id": "", "relation_content": ""}], "confidence": 0.0}
 ```"""
 
-JUDGE_AND_GENERATE_RELATION_SYSTEM_PROMPT = f"""判断两个概念间是否存在明确、有意义的关联，有则生成关系描述。
-
-{RELATION_VALIDITY_CRITERIA}
-
-关系描述：只专注两者关系，准确完整，至少10字。
-
-{JSON_OUTPUT_OBJECT}
-{{{{"need_create": true/false, "confidence": 0.0-1.0, "content": "关系描述（need_create=true时必填）"}}}}"""
-
-JUDGE_AND_GENERATE_RELATION_DISCOVERY_PROMPT = f"""判断两个概念间是否存在潜在关联，在发现模式下优先发现关联。
-
-关联标准（放宽）：时空接近、概念相似、潜在因果、领域相关均可视为有效关联。
-不确定时倾向于发现关联（设置较低confidence），而非拒绝。
-
-关系描述：只专注两者关系，准确完整，至少10字。
-
-{JSON_OUTPUT_OBJECT}
-{{{{"need_create": true/false, "confidence": 0.0-1.0, "content": "关系描述（need_create=true时必填）"}}}}"""
-
 # ============================================================
 # 七、知识图谱整理 - 精细化判断（Detailed Judgment）
 # ============================================================
@@ -269,7 +242,8 @@ confidence: 确信匹配0.8-1.0，确信不匹配0.7-0.9，不确定0.3-0.6。
 # 八、LLM 调度常量与工具函数（从 client.py 提取）
 # ============================================================
 
-# 非 TPM 类错误：失败后等待秒数，最多 3 轮（第 4 次失败则放弃）
+# 非 TPM 类错误：失败后等待秒数。重试轮数由 _LLM_MAX_FAILURE_ROUNDS 决定（3 轮），
+# 因此只有前 3 个条目会被取到（多余条目为数据保留，不影响行为）
 _LLM_BACKOFF_SCHEDULE = [2, 5, 10, 20, 30]  # capped exponential, not 3^n
 _LLM_MAX_FAILURE_ROUNDS = 3
 # Xinference 500 内部错误（如 'choices' KeyError）的重试 schedule

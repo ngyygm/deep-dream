@@ -12,11 +12,9 @@ from concurrent.futures import CancelledError
 import json
 import os
 import random
-import re
 import threading
 import time
 
-from ..models import Episode
 from ..utils import clean_separator_tags, wprint_info
 from .chat_api import ollama_chat, openai_compatible_chat
 from .errors import LLMContextBudgetExceeded
@@ -33,8 +31,9 @@ from .json_repair import (
     _JSON_RETRY_USER_MESSAGE,
     _JSON_RETRY_TRUNCATION_SUFFIX,
 )
-from .mock_response import _mock_json_fence, mock_llm_response
+from .mock_response import mock_llm_response
 from .prompts import (
+    _LLM_BACKOFF_BASE,
     _LLM_BACKOFF_SCHEDULE,
     _LLM_MAX_FAILURE_ROUNDS,
     _XINFERENCE_500_BACKOFF,
@@ -42,7 +41,6 @@ from .prompts import (
     _XINFERENCE_500_JITTER_MAX,
     _LLM_TPM_SLEEP_CAP_SECONDS,
     _CONNECTION_ERROR_KEYWORDS,
-    _CONTEXT_OVERFLOW_NEEDLES,
     LLM_PRIORITY_ALIGN,
     LLM_PRIORITY_EXTRACT,
     estimate_text_token_count,
@@ -209,8 +207,6 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
                 context_window_tokens：请求输入 prompt 的 token 预算上限；本地仅预检输入，不再用它压缩输出 max_tokens。
             timeout_seconds / connect_timeout_seconds:
                 LLM API 请求超时配置（秒）。timeout_seconds 控制总请求超时（默认 300），connect_timeout_seconds 控制连接超时（默认 30）。
-            prompt_episode_max_chars:
-                进入抽取类 prompt 的记忆缓存最大字符数；超长时自动截断，避免异常缓存拖爆上下文预算。
             alignment_enabled:
                 False 时忽略所有 alignment_*，步骤 6/7 与上游共用同一模型配置。
             shared_llm_semaphore / shared_llm_slot_max:
@@ -222,8 +218,6 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
                 共享的调用计数器；同一 processor 的多个 LLMClient 传同一实例即可汇总。
         """
         self._call_stats = call_stats if call_stats is not None else LLMCallStats()
-        # 库级对齐判断服务（memo/single-flight/攒批）；None 时判断方法走原始直调路径
-        self.judge_service = judge_service
         self.api_key = api_key
         self.model_name = model_name
         self.base_url = base_url
@@ -250,10 +244,6 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
         # Timeout configuration for LLM requests
         self.timeout_seconds = max(10, int(timeout_seconds)) if timeout_seconds is not None else 300
         self.connect_timeout_seconds = max(5, int(connect_timeout_seconds)) if connect_timeout_seconds is not None else 30
-        if prompt_episode_max_chars is None:
-            self.prompt_episode_max_chars = 2000
-        else:
-            self.prompt_episode_max_chars = max(0, int(prompt_episode_max_chars))
 
         self.alignment_base_url = self._strip_opt_str(alignment_base_url)
         if alignment_api_key is None:
@@ -593,7 +583,7 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
         Args:
             prompt: 用户提示（messages 为 None 时使用）
             system_prompt: 系统提示（可选）
-            max_retries: 兼容保留；普通 API 错误固定为最多 5 轮退避重试（3^1…3^5 秒等待）。
+            max_retries: 兼容保留（已忽略）；普通 API 错误固定为最多 3 轮退避重试（等待 2/5/10 秒）。
             timeout: 超时时间（秒），默认使用 self.timeout_seconds（300秒）
             allow_mock_fallback: 失败时是否降级为模拟响应；启动握手等场景应传 False，避免误判为可用
             messages: 完整对话列表（可选）；传入时直接使用，忽略 prompt 和 system_prompt
@@ -624,7 +614,6 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
                 messages.append({"role": "system", "content": system_prompt})
             messages.append({"role": "user", "content": prompt})
 
-        last_error = None
         _utf8_round = 0
         _normal_failures = 0
         _500_failures = 0
@@ -731,7 +720,7 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
                         wprint_info(f"问题内容预览:\n{response_text}")
                         continue
                     else:
-                        wprint_info(f"警告：检测到非UTF-8编码但已达到最大重试次数，返回原始响应")
+                        wprint_info("警告：检测到非UTF-8编码但已达到最大重试次数，返回原始响应")
                         wprint_info(f"问题内容预览:\n{response_text}")
 
                 # 编码有效则返回响应（已取消乱码检测）
@@ -746,7 +735,6 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
             except Exception as e:
                 # 统一处理错误，包括连接错误、超时等
                 error_str = str(e).lower()
-                last_error = e
                 is_timeout = "timeout" in error_str or "timed out" in error_str
                 is_fd_error = (
                     isinstance(e, OSError) and getattr(e, "errno", None) == 24
@@ -891,13 +879,6 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
             finally:
                 if _sem is not None and _sem_held:
                     _sem.release()
-
-        # 理论上不会到达这里，但为了稳妥保留兜底
-        if last_error:
-            wprint_info("所有重试都失败，使用模拟响应")
-        if allow_mock_fallback:
-            return mock_llm_response(prompt)
-        return ""
 
     # Delegate to extracted module-level functions for backward compatibility
     def _clean_json_string(self, json_str: str) -> str:

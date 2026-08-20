@@ -13,8 +13,6 @@ import json
 import re
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
-# 与 entity_search._alignment_guard 的 LRU key 截断保持一致
-_GUARD_CONTENT_TRUNC = 200
 # 与 LLMClient.judge_entity_alignment 的 prompt 截断一致
 _PROMPT_CONTENT_TRUNC = 500
 _CANDIDATE_CONTENT_TRUNC = 200
