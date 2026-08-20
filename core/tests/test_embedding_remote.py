@@ -98,3 +98,15 @@ def test_local_mode_still_default(stub_openai):
     c.model = None
     assert c.is_available() is False
     assert stub_openai.last is None
+
+
+def test_use_local_false_skips_local_model():
+    """P6.3：use_local=False 且无远程端点时不加载本地默认模型。
+
+    此前该组合无视 use_local 直接加载 all-MiniLM-L6-v2——测试环境的
+    processor 构建每次白付 ~7s 模型加载。
+    """
+    c = EmbeddingClient(use_local=False)
+    assert c.model is None
+    assert c._remote_client is None
+    assert c.is_available() is False

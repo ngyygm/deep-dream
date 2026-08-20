@@ -2690,6 +2690,31 @@ class LibraryManager:
                 or getattr(client, 'model_path', None)
                 or 'unknown')
 
+    def embedding_model_report(self) -> Dict[str, Any]:
+        """P6.1：embedding 模型一致性报告（只读 GROUP BY，走 embedding_model 索引）。
+
+        返回 {"active": str, "models": {model: 行数}, "consistent": bool,
+        "warning": Optional[str]}——判定逻辑见 helpers.embedding_consistency，
+        registry 启动预热线程与 doctor 均消费此报告。
+        """
+        from .helpers import embedding_consistency
+        active = self._active_embedding_model()
+        report: Dict[str, Any] = {
+            "active": active, "models": {}, "consistent": True, "warning": None}
+        try:
+            conn = self._conn()
+            rows = conn.execute(
+                "SELECT embedding_model, COUNT(*) AS c FROM embeddings "
+                "GROUP BY embedding_model ORDER BY c DESC"
+            ).fetchall()
+        except Exception:
+            return report
+        report["models"] = {r[0]: int(r[1]) for r in rows}
+        consistent, warning = embedding_consistency(active, report["models"])
+        report["consistent"] = consistent
+        report["warning"] = warning
+        return report
+
     # Role-to-SQL configuration for vector cache loading
     _VECTOR_ROLE_CONFIG = {
         "entity": {

@@ -222,6 +222,13 @@ class GraphRegistry:
                 if storage and hasattr(storage, "prewarm_vector_search"):
                     warmed = storage.prewarm_vector_search()
                     logger.info("Prewarmed vector search for graph %s: %s", graph_id, warmed)
+                # P6.1：embedding 模型一致性校验（GROUP BY 走 embedding_model 索引，
+                # 与预热同线程执行，不给启动路径加延迟）；不匹配时大声警告——
+                # 跨模型余弦是垃圾值，但向量缓存有多数模型回退兜底（不变式 e）
+                if storage and hasattr(storage, "embedding_model_report"):
+                    report = storage.embedding_model_report()
+                    if report.get("warning"):
+                        logger.warning("[graph %s] %s", graph_id, report["warning"])
             except Exception as exc:
                 logger.debug("Prewarm vector search failed for graph %s: %s", graph_id, exc)
 

@@ -197,6 +197,15 @@ class EmbeddingClient:
                 wprint_info(f"警告：远程 embedding 客户端初始化失败，将使用文本相似度搜索: {e}")
             return
 
+        # use_local=False 且未配置远程端点：明确不加载本地模型（检索走文本相似度）。
+        # 此前该分支无视 use_local 直接加载默认 all-MiniLM-L6-v2——测试里每个
+        # processor 构建都白付 ~7s 模型加载（P6.3：全量套件 ~430s 的大头）
+        if not self.use_local:
+            wprint_info(
+                "embedding.use_local=false 且未配置 api_key/api_base——"
+                "不加载本地 embedding 模型，检索走文本相似度")
+            return
+
         try:
             from sentence_transformers import SentenceTransformer
 

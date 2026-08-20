@@ -103,6 +103,52 @@ def _check_schema(storage_root: Path) -> Dict[str, Any]:
     return result
 
 
+def _check_embedding_models(storage_root: Path, config: Dict[str, Any]) -> Dict[str, Any]:
+    """P6.1：存量 embedding 模型分布与当前配置模型的一致性（只读 GROUP BY）。
+
+    active 判定与 LibraryManager._active_embedding_model 及写入路径同源
+    （model_name or model_path or 'unknown'）；判定逻辑复用
+    helpers.embedding_consistency，与 server 启动警告一致。
+    """
+    result: Dict[str, Any] = {
+        "active": "unknown",
+        "models": {},
+        "consistent": True,
+        "warning": None,
+        "error": None,
+    }
+    from core.server.config import resolve_embedding_model  # deferred
+
+    emb_cfg = config.get("embedding") or {}
+    model_path, model_name, _use_local = resolve_embedding_model(emb_cfg)
+    active = model_name or model_path or "unknown"
+    result["active"] = active
+
+    db_path = storage_root / "library.db"
+    if not db_path.is_file():
+        return result
+    import sqlite3  # deferred
+    from core.storage.sqlite.helpers import embedding_consistency  # deferred
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            rows = conn.execute(
+                "SELECT embedding_model, COUNT(*) AS c FROM embeddings "
+                "GROUP BY embedding_model ORDER BY c DESC"
+            ).fetchall()
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        result["error"] = str(exc)
+        return result
+    result["models"] = {r[0]: int(r[1]) for r in rows}
+    consistent, warning = embedding_consistency(active, result["models"])
+    result["consistent"] = consistent
+    result["warning"] = warning
+    return result
+
+
 def _check_config(config_path: str) -> Dict[str, Any]:
     """Check whether the config file exists and is loadable."""
     p = Path(config_path)
@@ -253,6 +299,7 @@ def doctor(ctx: click.Context, api_base: str) -> None:
     # ---- Run checks ----
     storage = _check_storage(storage_root)
     schema = _check_schema(storage_root)
+    emb_models = _check_embedding_models(storage_root, config)
     config_status = _check_config(config_path)
     llm = _check_llm(config)
     embedding = _check_embedding(config)
@@ -262,6 +309,7 @@ def doctor(ctx: click.Context, api_base: str) -> None:
     data = {
         "storage": storage,
         "schema": schema,
+        "embedding_models": emb_models,
         "config": config_status,
         "llm": llm,
         "embedding": embedding,
@@ -335,6 +383,26 @@ def _render_human(out: "OutputManager", data: Dict[str, Any]) -> None:  # noqa: 
         "DB schema",
         _check_icon(sc["exists"] and sc["ok"]),
         _rich_esc(schema_detail),
+    )
+
+    # Embedding 模型一致性（P6.1：active 配置 vs 存量分布）
+    em = data["embedding_models"]
+    if em.get("error"):
+        emb_ok = False
+        emb_detail = f"unreadable: {em['error']}"
+    elif not em["models"]:
+        emb_ok = True
+        emb_detail = f"active={em['active']}  (no stored embeddings)"
+    else:
+        mix = ", ".join(f"{m}: {c}" for m, c in em["models"].items())
+        emb_ok = bool(em["consistent"])
+        emb_detail = f"active={em['active']}  stored [{mix}]"
+        if em["warning"]:
+            emb_detail += f"  — {em['warning']}"
+    table.add_row(
+        "Embedding models",
+        _check_icon(emb_ok),
+        _rich_esc(emb_detail),
     )
 
     # Config

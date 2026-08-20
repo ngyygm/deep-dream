@@ -34,6 +34,37 @@ def escape_like(value: str) -> str:
     return value.replace("!", "!!").replace("%", "!%").replace("_", "!_")
 
 
+def embedding_consistency(active: str, models: dict):
+    """P6.1：active embedding 模型与存量向量分布的一致性判定（纯函数）。
+
+    LibraryManager.embedding_model_report 与 CLI doctor 共用（查询各自实现，
+    判定只此一份）。models 为 {embedding_model: 行数}（可来自
+    GROUP BY embedding_model）。返回 (consistent, warning)：
+    - 空库或 active 有行 → (True, None)；active 有行但库内混有其他模型时
+      返回 (True, 碎片化提示)——不阻塞，提示可 backfill 统一
+    - active 无行且库非空 → (False, 指向 `deep-dream db backfill-embeddings`
+      的警告；此时向量检索会回退多数模型，余弦相似度跨模型无意义)
+    """
+    if not models:
+        return True, None
+    if active in models:
+        other = {m: c for m, c in models.items() if m != active}
+        if other:
+            return True, (
+                f"库内存在多个 embedding 模型的向量（当前 {active!r} "
+                f"{models[active]} 行，另有 {other}）——"
+                f"可运行 `deep-dream db backfill-embeddings` 按当前模型统一补算"
+            )
+        return True, None
+    majority = max(models, key=models.get)
+    return False, (
+        f"embedding 模型与存量数据不一致：当前配置模型 {active!r} 无任何向量，"
+        f"存量 {models[majority]} 行属 {majority!r}——向量检索将回退多数模型，"
+        f"跨模型余弦相似度无意义。请运行 `deep-dream db backfill-embeddings` "
+        f"按当前模型补算"
+    )
+
+
 def _parse_dt(value) -> Optional[datetime]:
     if value is None:
         return None
