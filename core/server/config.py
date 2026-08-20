@@ -38,6 +38,10 @@ DEFAULTS = {
         "connect_timeout_seconds": 30,
         # 透传 OpenAI 兼容端点的额外 body（如 chat_template_kwargs.enable_thinking）
         "extra_body": {},
+        # 端点协议显式声明："openai"（/v1/chat/completions）或 "ollama"（/api/chat）；
+        # null/"auto" 时按 base_url/api_key 嗅探（旧默认行为）。自建网关等
+        # 嗅探无法识别的端点应显式设为 "openai"。
+        "protocol": None,
         # 对齐阶段专用模型（双模型管线）；enabled=false 时与主模型共用
         "alignment": {},
     },
@@ -92,6 +96,13 @@ DEFAULTS = {
             "max_relations_per_window": 24,
             "episode_slice_chars": 0,
             "family_write_gate_enabled": True,
+            # 窗口级批量对齐；null = 跟随 profile（strong-v1 默认开）
+            "window_batch_alignment": None,
+            # strong-v1 大窗口覆盖；null = 用 chunking.window_size
+            "window_size_chars": None,
+            "overlap_chars": None,
+            # 置信度 0.3 共现兜底关系（P2 默认关）
+            "fallback_cooccurrence_relations": False,
         },
         "debug": {
             "distill_data_dir": None,
@@ -274,6 +285,9 @@ def _validate_config(config: Dict[str, Any]) -> None:
             errors.append(f"llm.context_window_tokens 应为整数，当前值: {_cwt}")
     if llm.get("extra_body") is not None and not isinstance(llm.get("extra_body"), dict):
         errors.append("llm.extra_body 必须是 JSON object")
+    _proto = llm.get("protocol")
+    if _proto is not None and str(_proto).strip().lower() not in {"auto", "openai", "ollama"}:
+        errors.append(f"llm.protocol 只支持 openai/ollama/auto，当前值: {_proto}")
 
     chunking = config.get("chunking") or {}
     ws = chunking.get("window_size", 1000)
@@ -317,7 +331,7 @@ def _warn_unknown_keys(user: Dict[str, Any]) -> None:
     logger = logging.getLogger(__name__)
     for key in user:
         if key not in DEFAULTS:
-            logger.warning("配置键未知（已忽略）: %r — 请对照 service_config.example.json", key)
+            logger.warning("配置键未收录于默认值: %r — 请对照 service_config.example.json（拼写错误将不生效）", key)
     for section, defaults in DEFAULTS.items():
         user_section = user.get(section)
         if not isinstance(user_section, dict) or not isinstance(defaults, dict):

@@ -187,6 +187,7 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
                  shared_llm_semaphore: Optional[SharedLLMSemaphore] = None,
                  shared_llm_slot_max: Optional[int] = None,
                  openai_extra_body: Optional[Dict[str, Any]] = None,
+                 protocol: Optional[str] = None,
                  alignment_base_url: Optional[str] = None,
                  alignment_api_key: Optional[str] = None,
                  alignment_model: Optional[str] = None,
@@ -235,6 +236,10 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
         self.think_mode = think_mode
         self.max_tokens = max_tokens
         self.openai_extra_body = dict(openai_extra_body or {})
+        # 端点协议显式声明（llm.protocol）：openai/ollama；None/auto 回退 URL 嗅探。
+        # 自建 OpenAI 兼容网关常不含 /v1 后缀、也不在已知域名表内，嗅探会误判为 Ollama。
+        _proto = self._strip_opt_str(protocol)
+        self.protocol = _proto.lower() if _proto and _proto.lower() in {"openai", "ollama"} else None
         if context_window_tokens is None:
             raise ValueError(
                 "context_window_tokens 未设置。请在 service_config.json 的 llm 中配置 context_window_tokens，"
@@ -412,6 +417,11 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
 
     def _use_openai_compatible_url(self, url: Optional[str], api_key: Optional[str]) -> bool:
         """是否为 OpenAI 兼容接口；url / api_key 为本次请求实际使用的值。"""
+        # llm.protocol 显式声明优先于一切嗅探
+        if self.protocol == "openai":
+            return True
+        if self.protocol == "ollama":
+            return False
         key = api_key
         eff = url if url is not None else self.base_url
         if not key or not eff:

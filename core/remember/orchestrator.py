@@ -251,6 +251,7 @@ class TemporalMemoryGraphProcessor(_PipelineMixin, _PipelineExtractionMixin, _Cr
             self.document_processor = DocumentProcessor(_strong_ws, _strong_ov)
         _al = alignment_llm or {}
         _main_openai_extra_body = ((config or {}).get("llm") or {}).get("extra_body") or {}
+        _llm_protocol = ((config or {}).get("llm") or {}).get("protocol")
         # 主 client 与抽取 client 共享同一份调用计数，processor 层汇总输出
         self.llm_call_stats = LLMCallStats()
         self.llm_client = LLMClient(
@@ -270,6 +271,7 @@ class TemporalMemoryGraphProcessor(_PipelineMixin, _PipelineExtractionMixin, _Cr
             prompt_episode_max_chars=prompt_episode_max_chars,
             max_llm_concurrency=max_llm_concurrency,
             openai_extra_body=_main_openai_extra_body,
+            protocol=_llm_protocol,
             distill_data_dir=distill_data_dir,
             alignment_enabled=bool(_al.get("enabled", False)),
             alignment_base_url=_al.get("base_url"),
