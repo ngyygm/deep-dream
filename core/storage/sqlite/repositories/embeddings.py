@@ -48,6 +48,7 @@ def search_entity_embeddings(conn, query_vector: bytes,
          AND dv.status = 'active'
         WHERE e.owner_type = 'entity_obs'
           AND e.embedding_model = ?
+        ORDER BY e.created_at DESC, e.embedding_id DESC
         LIMIT ?
     """, (embedding_model, limit)).fetchall()
 
@@ -73,6 +74,7 @@ def search_relation_embeddings(conn, query_vector: bytes,
          AND dv.status = 'active'
         WHERE e.owner_type = 'relation_assert'
           AND e.embedding_model = ?
+        ORDER BY e.created_at DESC, e.embedding_id DESC
         LIMIT ?
     """, (embedding_model, limit)).fetchall()
 

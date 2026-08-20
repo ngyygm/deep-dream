@@ -64,6 +64,45 @@ def _check_storage(storage_root: Path) -> Dict[str, Any]:
     }
 
 
+def _check_schema(storage_root: Path) -> Dict[str, Any]:
+    """Check V1.5 schema completeness (tables/indexes/views + user_version).
+
+    只读检查（sqlite_master + PRAGMA），坏库上也能安全运行并报出缺失，
+    不会触发建表修复——修复由 LibraryManager 打开库时的启动自愈负责。
+    """
+    db_path: Optional[Path] = None
+    for name in ("library.db", "graph.db"):
+        candidate = storage_root / name
+        if candidate.is_file():
+            db_path = candidate
+            break
+    result: Dict[str, Any] = {
+        "db_path": str((db_path or storage_root / "library.db").resolve()),
+        "exists": db_path is not None,
+        "ok": False,
+        "user_version": None,
+        "missing_tables": [],
+        "missing_indexes": [],
+        "missing_views": [],
+        "error": None,
+    }
+    if db_path is None:
+        return result
+
+    import sqlite3  # deferred
+    from core.storage.sqlite.schema_v15 import schema_health  # deferred
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        result.update(schema_health(conn))
+    except sqlite3.Error as exc:
+        # 库文件损坏/非 SQLite 格式：诊断命令必须报出错误而不是自己炸掉
+        result["error"] = str(exc)
+    finally:
+        conn.close()
+    return result
+
+
 def _check_config(config_path: str) -> Dict[str, Any]:
     """Check whether the config file exists and is loadable."""
     p = Path(config_path)
@@ -213,6 +252,7 @@ def doctor(ctx: click.Context, api_base: str) -> None:
 
     # ---- Run checks ----
     storage = _check_storage(storage_root)
+    schema = _check_schema(storage_root)
     config_status = _check_config(config_path)
     llm = _check_llm(config)
     embedding = _check_embedding(config)
@@ -221,6 +261,7 @@ def doctor(ctx: click.Context, api_base: str) -> None:
 
     data = {
         "storage": storage,
+        "schema": schema,
         "config": config_status,
         "llm": llm,
         "embedding": embedding,
@@ -262,6 +303,38 @@ def _render_human(out: "OutputManager", data: Dict[str, Any]) -> None:  # noqa: 
         _check_icon(s["exists"]),
         f"{s['path']}  ({s['size_human']}, {s['file_count']} files)"
         if s["exists"] else f"{s['path']}  (not found)",
+    )
+
+    # DB schema（表齐全性 + user_version）
+    sc = data["schema"]
+    if not sc["exists"]:
+        schema_detail = f"{sc['db_path']}  (database file not found)"
+    elif sc.get("error"):
+        # 库文件存在但读不出来（损坏/非 SQLite 格式）
+        schema_detail = f"unreadable database: {sc['error']}"
+    elif sc["ok"]:
+        exp = sc["expected"]
+        schema_detail = (
+            f"tables {exp['tables']}/{exp['tables']}, "
+            f"indexes {exp['indexes']}/{exp['indexes']}, "
+            f"views {exp['views']}/{exp['views']}  "
+            f"(user_version={sc['user_version']})"
+        )
+    else:
+        missing_parts: list[str] = []
+        for label, key in (("tables", "missing_tables"),
+                           ("indexes", "missing_indexes"),
+                           ("views", "missing_views")):
+            if sc[key]:
+                missing_parts.append(f"{label}: {', '.join(sc[key])}")
+        schema_detail = (
+            f"missing {'; '.join(missing_parts)}  "
+            f"(user_version={sc['user_version']})"
+        )
+    table.add_row(
+        "DB schema",
+        _check_icon(sc["exists"] and sc["ok"]),
+        _rich_esc(schema_detail),
     )
 
     # Config
@@ -341,8 +414,12 @@ def _render_human(out: "OutputManager", data: Dict[str, Any]) -> None:  # noqa: 
         out.console.print("[dim]No graphs found.[/dim]")
 
     # -- Overall verdict ---------------------------------------------
+    # schema：库文件不存在不拉低 verdict（全新安装尚未建库），
+    # 但库存在而缺表/索引必须算失败——那正是搜索静默 0 结果的根因。
+    schema_ok = (not sc["exists"]) or sc["ok"]
     all_ok = (
         s["exists"]
+        and schema_ok
         and cfg_ok
         and llm_ok
         and emb_ok

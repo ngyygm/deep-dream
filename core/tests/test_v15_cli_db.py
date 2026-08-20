@@ -124,3 +124,57 @@ def test_db_reset_v15_backup_old(test_library, capsys):
     count = conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
     assert count == 0
     conn.close()
+
+
+# ── doctor schema 健康检查（P2.3）──────────────────────
+
+def test_doctor_schema_check_reports_missing_tables(tmp_path):
+    """doctor 的 schema 检查在缺表库上报出缺失（只读，不修复）。"""
+    from core.cli.cmd_doctor import _check_schema
+
+    conn = sqlite3.connect(str(tmp_path / "library.db"))
+    conn.execute("CREATE TABLE documents (document_id TEXT)")
+    conn.commit()
+    conn.close()
+
+    report = _check_schema(tmp_path)
+    assert report["exists"] is True
+    assert report["ok"] is False
+    assert "episodes_fts" in report["missing_tables"]
+    assert "document_ingestion_state" in report["missing_tables"]
+    assert isinstance(report["user_version"], int)
+
+
+def test_doctor_schema_check_healthy_db(tmp_path):
+    from core.cli.cmd_doctor import _check_schema
+
+    conn = sqlite3.connect(str(tmp_path / "library.db"))
+    from core.storage.sqlite.schema_v15 import init_schema_v15
+    init_schema_v15(conn)
+    conn.close()
+
+    report = _check_schema(tmp_path)
+    assert report["exists"] is True
+    assert report["ok"] is True
+    assert report["missing_tables"] == []
+
+
+def test_doctor_schema_check_missing_db(tmp_path):
+    """库文件不存在：报告 exists=False，不抛错（全新安装场景）。"""
+    from core.cli.cmd_doctor import _check_schema
+
+    report = _check_schema(tmp_path)
+    assert report["exists"] is False
+    assert report["ok"] is False
+
+
+def test_doctor_schema_check_corrupt_db_file(tmp_path):
+    """库文件损坏/非 SQLite 格式：doctor 报 error 字段，自身不崩。"""
+    from core.cli.cmd_doctor import _check_schema
+
+    (tmp_path / "library.db").write_bytes(b"definitely not a sqlite database")
+    report = _check_schema(tmp_path)
+    assert report["exists"] is True
+    assert report["ok"] is False
+    assert report["error"]
+    assert "missing_tables" in report  # 默认字段仍在，JSON 形状稳定

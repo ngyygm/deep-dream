@@ -4,6 +4,7 @@ For semantic search, use ``deep-dream concept search --semantic`` instead.
 """
 from __future__ import annotations
 
+import sqlite3
 from typing import Any, Dict, List, Optional
 
 import click
@@ -155,7 +156,9 @@ def find(
                     if len(concepts) >= limit:
                         break
 
-        except (ZeroDivisionError, ValueError) as exc:
+        except (ZeroDivisionError, ValueError, sqlite3.OperationalError) as exc:
+            # sqlite3.OperationalError：存储层 P2.3 起不再吞 schema 错误
+            # （缺表等），这里转为友好报错而非裸 traceback。
             out.error(
                 f"Search failed: {exc}",
                 hint="Try a different query or use 'deep-dream concept search --semantic'.",

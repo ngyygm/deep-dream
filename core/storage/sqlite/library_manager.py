@@ -18,7 +18,7 @@ import numpy as np
 
 from ...models import Entity, Episode, Relation
 from .dto_mapping import assertion_to_relation, episode_row_to_dto, observation_to_entity
-from .helpers import _encode_and_normalize, _fmt_dt
+from .helpers import _encode_and_normalize, _fmt_dt, _parse_dt, _time_bounds_sql
 from .schema_v15 import init_schema_v15
 
 from .repositories import (
@@ -637,6 +637,15 @@ class LibraryManager:
                 result[name] = fam["entity_family_id"]
         return result
 
+    def find_family_id_by_name(self, name: str) -> Optional[str]:
+        """按统一名称语义查 family（FamilyWriteGate 存储腿，原文名入参）。
+
+        解析逻辑与 registry 注入的短连接版本共用
+        core.judge.models.resolve_family_id_from_conn（变体召回 + 归一过滤）。
+        """
+        from core.judge.models import resolve_family_id_from_conn
+        return resolve_family_id_from_conn(self._conn(), name)
+
     def get_entity_names_by_absolute_ids(self, absolute_ids: List[str]) -> Dict[str, str]:
         if not absolute_ids:
             return {}
@@ -961,8 +970,11 @@ class LibraryManager:
 
     def search_concepts_by_bm25(self, query: str, role: str = None,
                                 limit: int = 20, time_point: str = None,
-                                source_document: str = None) -> List[dict]:
-        raw = search_repo.search_fts(self._conn(), query, limit=limit)
+                                source_document: str = None,
+                                time_after: str = None,
+                                time_before: str = None) -> List[dict]:
+        raw = search_repo.search_fts(self._conn(), query, limit=limit,
+                                     time_after=time_after, time_before=time_before)
         if raw:
             scores = [r.get("score", 0) for r in raw]
             min_s, max_s = min(scores), max(scores)
@@ -974,8 +986,11 @@ class LibraryManager:
         return raw
 
     def search_entities_by_bm25(self, query: str, limit: int = 20,
-                                time_point: str = None) -> List[Entity]:
-        results = search_repo.search_fts(self._conn(), query, limit=limit)
+                                time_point: str = None,
+                                time_after: str = None,
+                                time_before: str = None) -> List[Entity]:
+        results = search_repo.search_fts(self._conn(), query, limit=limit,
+                                         time_after=time_after, time_before=time_before)
         # Normalize BM25 scores (FTS5 returns negative, more negative = more relevant)
         # Invert so that most relevant → 1.0, least relevant → 0.0
         if results:
@@ -984,6 +999,9 @@ class LibraryManager:
             span = max_s - min_s
             for r in results:
                 r["_score"] = (max_s - r.get("score", 0)) / span if span else 0.5
+        # 概念本身的时间列是 entity_observations.processed_at（P2.8 双界下推）
+        obs_time_sql, obs_time_params = _time_bounds_sql(
+            "eo.processed_at", time_after, time_before)
         entities = []
         for r in results:
             ep_id = r.get("episode_id")
@@ -994,8 +1012,8 @@ class LibraryManager:
                 "SELECT eo.*, ef.canonical_name, ef.canonical_content "
                 "FROM entity_observations eo "
                 "JOIN entity_families ef ON ef.entity_family_id = eo.entity_family_id "
-                "WHERE eo.episode_id = ? AND eo.status = 'active'",
-                (ep_id,),
+                f"WHERE eo.episode_id = ? AND eo.status = 'active'{obs_time_sql}",
+                (ep_id,) + tuple(obs_time_params),
             ).fetchone()
             if obs:
                 obs = dict(obs)
@@ -1008,8 +1026,11 @@ class LibraryManager:
         return entities
 
     def search_relations_by_bm25(self, query: str, limit: int = 20,
-                                 time_point: str = None) -> List[Relation]:
-        results = search_repo.search_fts(self._conn(), query, limit=limit)
+                                 time_point: str = None,
+                                 time_after: str = None,
+                                 time_before: str = None) -> List[Relation]:
+        results = search_repo.search_fts(self._conn(), query, limit=limit,
+                                         time_after=time_after, time_before=time_before)
         # Normalize BM25 scores (FTS5 returns negative, more negative = more relevant)
         # Invert so that most relevant → 1.0, least relevant → 0.0
         if results:
@@ -1018,6 +1039,9 @@ class LibraryManager:
             span = max_s - min_s
             for r in results:
                 r["_score"] = (max_s - r.get("score", 0)) / span if span else 0.5
+        # 概念本身的时间列是 relation_assertions.processed_at（P2.8 双界下推）
+        ra_time_sql, ra_time_params = _time_bounds_sql(
+            "ra.processed_at", time_after, time_before)
         relations = []
         for r in results:
             ep_id = r.get("episode_id")
@@ -1026,8 +1050,8 @@ class LibraryManager:
             conn = self._conn()
             ra = conn.execute(
                 "SELECT ra.* FROM relation_assertions ra "
-                "WHERE ra.episode_id = ? AND ra.status = 'active'",
-                (ep_id,),
+                f"WHERE ra.episode_id = ? AND ra.status = 'active'{ra_time_sql}",
+                (ep_id,) + tuple(ra_time_params),
             ).fetchone()
             if ra:
                 ra = dict(ra)
@@ -1041,6 +1065,9 @@ class LibraryManager:
 
     def search_entities_by_similarity(self, query_text: str, threshold: float = 0.3,
                                       max_results: int = 20, **kwargs) -> List[Entity]:
+        # P2.8 双界下推：time_after/time_before 经 kwargs 透传（兼容旧签名）
+        time_after = kwargs.get("time_after")
+        time_before = kwargs.get("time_before")
         if not self.embedding_client or not self.embedding_client.is_available():
             return []
         result = _encode_and_normalize(self.embedding_client, query_text)
@@ -1061,6 +1088,9 @@ class LibraryManager:
             if sim >= threshold:
                 scored.append((sim, c))
         scored.sort(key=lambda x: -x[0])
+        # 概念本身的时间列是 entity_observations.processed_at（P2.8 双界下推）
+        obs_time_sql, obs_time_params = _time_bounds_sql(
+            "eo.processed_at", time_after, time_before)
         entities = []
         for sim, c in scored[:max_results]:
             conn = self._conn()
@@ -1068,8 +1098,8 @@ class LibraryManager:
                 "SELECT eo.*, ef.canonical_name, ef.canonical_content "
                 "FROM entity_observations eo "
                 "JOIN entity_families ef ON ef.entity_family_id = eo.entity_family_id "
-                "WHERE eo.entity_id = ? AND eo.status = 'active'",
-                (c["owner_id"],),
+                f"WHERE eo.entity_id = ? AND eo.status = 'active'{obs_time_sql}",
+                (c["owner_id"],) + tuple(obs_time_params),
             ).fetchone()
             if obs:
                 obs = dict(obs)
@@ -1083,6 +1113,9 @@ class LibraryManager:
 
     def search_relations_by_similarity(self, query_text: str, threshold: float = 0.3,
                                        max_results: int = 20, **kwargs) -> List[Relation]:
+        # P2.8 双界下推：断言读取后按 processed_at 双界过滤（闭区间）
+        lo_dt = _parse_dt(kwargs.get("time_after"))
+        hi_dt = _parse_dt(kwargs.get("time_before"))
         if not self.embedding_client or not self.embedding_client.is_available():
             return []
         result = _encode_and_normalize(self.embedding_client, query_text)
@@ -1107,6 +1140,12 @@ class LibraryManager:
         for sim, c in scored[:max_results]:
             rel = self.get_relation_by_absolute_id(c["owner_id"])
             if rel:
+                # 概念本身的时间列是 relation_assertions.processed_at（P2.8 双界下推）
+                when = rel.processed_time
+                if lo_dt and (when is None or when < lo_dt):
+                    continue
+                if hi_dt and (when is None or when > hi_dt):
+                    continue
                 rel._pending_patches = []
                 relations.append(rel)
         return relations
@@ -1114,16 +1153,23 @@ class LibraryManager:
     def search_concepts_by_similarity(self, query_text: str, role: str = None,
                                       threshold: float = 0.3, max_results: int = 20,
                                       **kwargs) -> List[dict]:
+        # P2.8 双界下推：time_after/time_before 经 kwargs 透传给实体/关系检索
+        time_after = kwargs.get("time_after")
+        time_before = kwargs.get("time_before")
         results = []
         if role is None or role == "entity":
-            for e in self.search_entities_by_similarity(query_text, threshold, max_results):
+            for e in self.search_entities_by_similarity(query_text, threshold, max_results,
+                                                        time_after=time_after,
+                                                        time_before=time_before):
                 results.append({
                     "family_id": e.family_id, "id": e.absolute_id,
                     "name": e.name, "content": e.content,
                     "role": "entity", "_score": getattr(e, "_score", 0.0),
                 })
         if role is None or role == "relation":
-            for r in self.search_relations_by_similarity(query_text, threshold, max_results):
+            for r in self.search_relations_by_similarity(query_text, threshold, max_results,
+                                                         time_after=time_after,
+                                                         time_before=time_before):
                 results.append({
                     "family_id": r.family_id, "id": r.absolute_id,
                     "name": "", "content": r.content,
@@ -1513,28 +1559,35 @@ class LibraryManager:
     def register_entity_redirects_batch(self, redirects: Dict[str, str]):
         from .merge import register_redirects_batch
         register_redirects_batch(self._conn(), redirects)
+        self.invalidate_vector_caches()
 
     def merge_entity_families(self, target_family_id: str,
                               source_family_ids: List[str],
                               skip_name_check: bool = False) -> Dict[str, Any]:
         from .merge import merge_entity_families
-        return merge_entity_families(self._conn(), target_family_id, source_family_ids)
+        result = merge_entity_families(self._conn(), target_family_id, source_family_ids)
+        self.invalidate_vector_caches()
+        return result
 
     def redirect_entity_relations(self, old_family_id: str, new_family_id: str):
         from .merge import redirect_entity_relations
         redirect_entity_relations(self._conn(), old_family_id, new_family_id)
+        self.invalidate_vector_caches()
         self._commit_if_not_batched()
 
     def delete_entity_all_versions(self, family_id: str) -> int:
         from .merge import delete_entity_all_versions
         result = delete_entity_all_versions(self._conn(), family_id)
+        self.invalidate_vector_caches()
         self._commit_if_not_batched()
         return result
 
     def dedup_merge_batch(self, pairs: List[Tuple[str, str]]) -> int:
         from .merge import dedup_merge_batch
         with self._write_batch():
-            return dedup_merge_batch(self._conn(), pairs)
+            result = dedup_merge_batch(self._conn(), pairs)
+        self.invalidate_vector_caches()
+        return result
 
     # ------------------------------------------------------------------
     # Vault indexing (stubs — delegate to vault_indexer.py)
@@ -1656,6 +1709,7 @@ class LibraryManager:
             conn.execute(f"DELETE FROM {table}")
         conn.execute("INSERT INTO episodes_fts(episodes_fts) VALUES('rebuild')")
         conn.commit()
+        self.invalidate_vector_caches()
 
     # ------------------------------------------------------------------
     # Write methods (pipeline-facing)
@@ -2201,14 +2255,33 @@ class LibraryManager:
         return row[0] if row else ""
 
     def _vector_cache_for_role(self, role: str) -> dict:
-        """Return cached vector matrix for a role, loading on first access."""
+        """Return cached vector matrix for a role, loading on first access.
+
+        按 active embedding model 缓存——模型切换后自动重建（不变式 e）。
+        """
+        model = self._active_embedding_model()
         with self._vector_cache_lock:
             cached = self._vector_role_cache.get(role)
-            if cached is not None:
+            if cached is not None and cached.get("model") == model:
                 return cached
             result = self._build_vector_cache_for_role(role)
             self._vector_role_cache[role] = result
             return result
+
+    def invalidate_vector_caches(self) -> None:
+        """清除向量矩阵缓存（合并/重定向/删除后调用——懒重建）。
+
+        不在每次 embedding 插入时失效：新增观测只是缓存暂时缺行，
+        事后一致；结构性变更（family 消失/改挂）才会让缓存指向死 fid。
+        """
+        with self._vector_cache_lock:
+            self._vector_role_cache.clear()
+
+    def _active_embedding_model(self) -> str:
+        client = getattr(self, "embedding_client", None)
+        return (getattr(client, 'model_name', None)
+                or getattr(client, 'model_path', None)
+                or 'unknown')
 
     # Role-to-SQL configuration for vector cache loading
     _VECTOR_ROLE_CONFIG = {
@@ -2243,33 +2316,56 @@ class LibraryManager:
     def _build_vector_cache_for_role(self, role: str) -> dict:
         """Load all embeddings for a role from SQLite into a numpy matrix.
 
-        Returns {"matrix": np.ndarray(N,D), "rows": [{"family_id": str}, ...], "_loaded": True}
-        or {"matrix": None, "rows": [], "_loaded": True} if no data / error.
+        Returns {"matrix": np.ndarray(N,D), "rows": [{"family_id": str}, ...],
+        "_loaded": True, "model": str} or {"matrix": None, "rows": [], ...} if
+        no data / error.
+
+        按 active embedding model 过滤（与 search_entity_embeddings 对齐）。
+        混模型库：active model 无行时回退到多数模型并告警（不变式 e）——
+        此前不过滤，换模型后余弦是跨模型垃圾值且永不失效。
         """
         import numpy as np
 
         config = self._VECTOR_ROLE_CONFIG.get(role)
         if config is None:
-            return {"matrix": None, "rows": [], "_loaded": True}
+            return {"matrix": None, "rows": [], "_loaded": True, "model": ""}
 
         sql = (
             f"SELECT e.vector, {config['family_col']}, {config['owner_col']} "
             f"FROM embeddings e "
             f"{config['join_fragment']} "
-            f"WHERE e.owner_type = ? "
+            f"WHERE e.owner_type = ? AND e.embedding_model = ? "
             f"  AND NOT EXISTS ({config['dedup_fragment']})"
         )
 
+        model = self._active_embedding_model()
         try:
             conn = self._conn()
-            rows = conn.execute(sql, (config["owner_type"],)).fetchall()
+            rows = conn.execute(sql, (config["owner_type"], model)).fetchall()
+            if not rows:
+                # 多数模型回退：存量库的 embeddings 大多属旧模型时仍可用
+                maj = conn.execute(
+                    "SELECT embedding_model, COUNT(*) AS c FROM embeddings "
+                    "WHERE owner_type = ? GROUP BY embedding_model "
+                    "ORDER BY c DESC LIMIT 1",
+                    (config["owner_type"],),
+                ).fetchone()
+                if maj and maj[1] > 0:
+                    rows = conn.execute(sql, (config["owner_type"], maj[0])).fetchall()
+                    if rows:
+                        logger.warning(
+                            "向量缓存：active model %r 无 %s embeddings，"
+                            "回退多数模型 %r（%d 行）——换模型后请运行 "
+                            "backfill-embeddings 重建",
+                            model, config["owner_type"], maj[0], len(rows))
+                        model = maj[0]
         except Exception as exc:
             logger.debug("_build_vector_cache_for_role(%s) SQL failed: %s", role, exc)
-            return {"matrix": None, "rows": [], "_loaded": True}
+            return {"matrix": None, "rows": [], "_loaded": True, "model": model}
 
         if not rows:
             logger.debug("_build_vector_cache_for_role(%s): no embeddings found", role)
-            return {"matrix": None, "rows": [], "_loaded": True}
+            return {"matrix": None, "rows": [], "_loaded": True, "model": model}
 
         # Build rows metadata and matrix
         meta_rows = []
@@ -2288,12 +2384,12 @@ class LibraryManager:
             vectors.append(vec)
 
         if not vectors:
-            return {"matrix": None, "rows": [], "_loaded": True}
+            return {"matrix": None, "rows": [], "_loaded": True, "model": model}
 
         matrix = np.vstack(vectors)
-        logger.info("_build_vector_cache_for_role(%s): loaded %d vectors, dim=%d",
-                     role, matrix.shape[0], matrix.shape[1])
-        return {"matrix": matrix, "rows": meta_rows, "_loaded": True}
+        logger.info("_build_vector_cache_for_role(%s): loaded %d vectors, dim=%d, model=%s",
+                     role, matrix.shape[0], matrix.shape[1], model)
+        return {"matrix": matrix, "rows": meta_rows, "_loaded": True, "model": model}
 
     def _document_version_for_episode(self, episode_id: str) -> str:
         row = self._conn().execute(

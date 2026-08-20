@@ -359,15 +359,11 @@ def search_concepts():
         if search_mode not in _VALID_SEARCH_MODES:
             return err(f"search_mode '{search_mode}' 无效，可选: {', '.join(_VALID_SEARCH_MODES)}", 400)
         time_point = (body.get("time_point") or "").strip() or None
-        # Also accept time_after/time_before (used by the Web UI)
+        # Web UI 双界过滤：time_after/time_before 作为闭区间双界分别下推存储层
+        # （P2.8）。旧实现把两界折叠成单个 time_point，静默丢弃另一界；
+        # time_point 在搜索路径的存储层不消费，仅保留透传以兼容旧调用方。
         time_after = (body.get("time_after") or "").strip() or None
         time_before = (body.get("time_before") or "").strip() or None
-        # time_after/time_before take precedence over time_point
-        if time_after or time_before:
-            if time_after:
-                time_point = time_after
-            elif time_before:
-                time_point = time_before
         source_document = (body.get("source_document") or "").strip() or None
         # max_name_length: opt-in filter to exclude long dialogue-fragment entity names.
         # Default 0 = disabled. Recommended: 15 to filter novel dialogue fragments.
@@ -386,13 +382,13 @@ def search_concepts():
                 # Fetch extra candidates so threshold filtering doesn't empty results
                 candidate_limit = max(result_limit * 5, 50)
                 if role_filter == "entity":
-                    results = storage.search_entities_by_bm25(query, limit=candidate_limit, time_point=time_point)
+                    results = storage.search_entities_by_bm25(query, limit=candidate_limit, time_point=time_point, time_after=time_after, time_before=time_before)
                     results = [_entity_to_search_dict(e) for e in results]
                 elif role_filter == "relation":
-                    results = storage.search_relations_by_bm25(query, limit=candidate_limit, time_point=time_point)
+                    results = storage.search_relations_by_bm25(query, limit=candidate_limit, time_point=time_point, time_after=time_after, time_before=time_before)
                     results = [_relation_to_search_dict(r) for r in results]
                 else:
-                    results = storage.search_concepts_by_bm25(query, role=role_filter, limit=candidate_limit, time_point=time_point, source_document=source_document)
+                    results = storage.search_concepts_by_bm25(query, role=role_filter, limit=candidate_limit, time_point=time_point, source_document=source_document, time_after=time_after, time_before=time_before)
                 # Apply threshold to BM25 results (BM25 _score is normalized 0-1)
                 # For CJK queries, lower threshold to compensate for LIKE-based scoring
                 bm25_thresh = min(threshold, 0.15) if _has_cjk(query) else threshold
@@ -409,7 +405,7 @@ def search_concepts():
                 if not _has_cjk(query) and len(query.split()) <= 3 and sem_threshold > 0.45:
                     sem_threshold = 0.45
                 results = storage.search_concepts_by_similarity(
-                    query_text=query, role=role_filter, threshold=sem_threshold, max_results=result_limit, time_point=time_point, source_document=source_document
+                    query_text=query, role=role_filter, threshold=sem_threshold, max_results=result_limit, time_point=time_point, source_document=source_document, time_after=time_after, time_before=time_before
                 )
                 meta = {"bm25_results": 0, "semantic_results": len(results), "effective_mode": "semantic_only"}
                 if _has_cjk(query):
@@ -446,7 +442,7 @@ def search_concepts():
                     except Exception as exc:
                         logger.debug("mmr reranker failed: %s", exc)
                 return results, meta
-            return _hybrid_concept_search(storage, query, role_filter, result_limit, threshold, time_point=time_point, source_document=source_document, reranker=reranker)
+            return _hybrid_concept_search(storage, query, role_filter, result_limit, threshold, time_point=time_point, source_document=source_document, reranker=reranker, time_after=time_after, time_before=time_before)
 
         if request.path == "/api/v1/find":
             raw_me = body.get("max_entities", body.get("maxEntities", 20))
@@ -615,13 +611,20 @@ def search_concepts():
 
 
 def _hybrid_concept_search(storage, query: str, role, limit: int,
-                           threshold: float, time_point: str = None, source_document: str = None, reranker: str = "rrf"):
+                           threshold: float, time_point: str = None, source_document: str = None, reranker: str = "rrf",
+                           time_after: str = None, time_before: str = None):
     """Hybrid concept search: BM25 + semantic embedding, fused via RRF.
 
     Returns (results, meta) where meta indicates which search modes contributed.
 
     For CJK queries, BM25 uses LIKE-based n-gram matching (not FTS5) and
     semantic threshold is lowered to 0.3 for better recall on short queries.
+
+    P2.6：本函数不再向 _shared_pool 嵌套 submit，BM25/语义两路在调用线程
+    同步执行。外层 /find 已把 entity/relation 检索提交到同一个共享池并阻塞
+    等待结果；若此处再向同一池 submit，并发请求下全部 worker 都在等待排在
+    自己后面的内层任务，互等即自死锁。且 storage 为 per-thread sqlite 连接
+    （不变式 c），阻塞任务不得嵌套 submit 到同一池。
     """
 
     has_cjk = _has_cjk(query)
@@ -632,7 +635,7 @@ def _hybrid_concept_search(storage, query: str, role, limit: int,
 
     def _bm25():
         try:
-            return storage.search_concepts_by_bm25(query, role=role, limit=bm25_candidate_limit, time_point=time_point, source_document=source_document)
+            return storage.search_concepts_by_bm25(query, role=role, limit=bm25_candidate_limit, time_point=time_point, source_document=source_document, time_after=time_after, time_before=time_before)
         except Exception as exc:
             logger.warning("BM25 search failed for query=%r: %s", query, exc)
             return []
@@ -650,16 +653,15 @@ def _hybrid_concept_search(storage, query: str, role, limit: int,
     def _semantic():
         try:
             return storage.search_concepts_by_similarity(
-                query_text=query, role=role, threshold=semantic_threshold, max_results=limit * 2, time_point=time_point, source_document=source_document
+                query_text=query, role=role, threshold=semantic_threshold, max_results=limit * 2, time_point=time_point, source_document=source_document, time_after=time_after, time_before=time_before
             )
         except Exception as exc:
             logger.warning("Semantic search failed for query=%r: %s", query, exc)
             return []
 
-    bm25_fut = _shared_pool.submit(_bm25)
-    sem_fut = _shared_pool.submit(_semantic)
-    bm25_results = bm25_fut.result()
-    semantic_results = sem_fut.result()
+    # 同步执行（见函数 docstring 的 P2.6 说明）：不得向 _shared_pool 嵌套 submit
+    bm25_results = _bm25()
+    semantic_results = _semantic()
 
     # Apply threshold to BM25 results in hybrid mode.
     # BM25 scores are normalized 0-1; filter out results below threshold.

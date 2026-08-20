@@ -5,6 +5,7 @@ No backward compatibility with old concept_* tables.
 """
 
 import logging
+import re
 import sqlite3
 
 logger = logging.getLogger(__name__)
@@ -323,6 +324,28 @@ _FTS_DEFAULT_SQL = """CREATE VIRTUAL TABLE IF NOT EXISTS episodes_fts USING fts5
     memory_text
 )"""
 
+# ── Schema 完整性清单（doctor / 启动诊断用）─────────────────
+#
+# 期望对象名直接从上方 DDL 推导（单一事实源），避免手工清单漂移。
+
+_COMPAT_VIEW_NAMES = (
+    "v_document_files", "v_episodes", "v_latest_concept",
+    "v_mentions", "v_relation_edges",
+)
+
+EXPECTED_TABLES = tuple(
+    re.search(r"CREATE TABLE IF NOT EXISTS (\w+)", ddl).group(1)
+    for ddl in TABLES_SQL
+) + ("episodes_fts",)
+
+EXPECTED_INDEXES = tuple(
+    re.match(r"CREATE (?:UNIQUE )?INDEX IF NOT EXISTS (\w+)", sql.strip()).group(1)
+    for sql in INDEXES_SQL
+)
+
+EXPECTED_VIEWS = ("graph_edges",) + _COMPAT_VIEW_NAMES
+
+
 # ── Views ──────────────────────────────────────────────────
 
 GRAPH_EDGES_SQL = """CREATE VIEW IF NOT EXISTS graph_edges AS
@@ -449,6 +472,39 @@ def _check_trigram(conn: sqlite3.Connection) -> bool:
 # ── Schema init ────────────────────────────────────────────
 
 
+def _object_exists(conn: sqlite3.Connection, name: str) -> bool:
+    """Return True if a table/view/index with *name* exists in sqlite_master."""
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE name = ?", (name,)
+    ).fetchone()
+    return row is not None
+
+
+def schema_health(conn: sqlite3.Connection) -> dict:
+    """只读体检：V1.5 表/索引/视图齐全性 + PRAGMA user_version。
+
+    只查 sqlite_master 与 PRAGMA——库缺任何表也不会抛错，
+    供 doctor / 诊断命令在坏库上安全运行。
+    """
+    present = {row[0] for row in conn.execute("SELECT name FROM sqlite_master")}
+    missing_tables = [t for t in EXPECTED_TABLES if t not in present]
+    missing_indexes = [i for i in EXPECTED_INDEXES if i not in present]
+    missing_views = [v for v in EXPECTED_VIEWS if v not in present]
+    user_version = conn.execute("PRAGMA user_version").fetchone()[0]
+    return {
+        "ok": not (missing_tables or missing_indexes or missing_views),
+        "user_version": user_version,
+        "missing_tables": missing_tables,
+        "missing_indexes": missing_indexes,
+        "missing_views": missing_views,
+        "expected": {
+            "tables": len(EXPECTED_TABLES),
+            "indexes": len(EXPECTED_INDEXES),
+            "views": len(EXPECTED_VIEWS),
+        },
+    }
+
+
 def create_tables(conn: sqlite3.Connection) -> None:
     for ddl in TABLES_SQL:
         conn.execute(ddl)
@@ -462,6 +518,22 @@ def create_indexes(conn: sqlite3.Connection) -> None:
 def create_fts(conn: sqlite3.Connection, use_trigram: bool = True) -> None:
     sql = _FTS_TRIGRAM_SQL if use_trigram else _FTS_DEFAULT_SQL
     conn.execute(sql)
+
+
+def _rebuild_fts_if_episodes_exist(conn: sqlite3.Connection) -> bool:
+    """从 active episodes 重建 episodes_fts；无 episode 则无需重建。
+
+    补建的 FTS 表是空表——不重建的话搜索静默 0 结果（P2.3 实证问题）。
+    """
+    from .repositories.episodes import rebuild_fts_all  # 延迟导入避免环
+    active = conn.execute(
+        "SELECT COUNT(*) FROM episodes WHERE status = 'active'"
+    ).fetchone()[0]
+    if not active:
+        return False
+    count = rebuild_fts_all(conn)
+    logger.warning("episodes_fts 缺失/为空——启动自愈：已重建 %d 行索引", count)
+    return True
 
 
 # ── CLI / DocumentService compatibility views ────────────────
@@ -611,7 +683,7 @@ WHERE ra.status = 'active';
 def create_views(conn: sqlite3.Connection) -> None:
     conn.execute("DROP VIEW IF EXISTS graph_edges")
     conn.execute(GRAPH_EDGES_SQL)
-    for name in ("v_document_files", "v_episodes", "v_latest_concept", "v_mentions", "v_relation_edges"):
+    for name in _COMPAT_VIEW_NAMES:
         conn.execute(f"DROP VIEW IF EXISTS {name}")
     for stmt in _COMPAT_VIEWS_SQL.split(";"):
         stmt = stmt.strip()
@@ -622,8 +694,11 @@ def create_views(conn: sqlite3.Connection) -> None:
 def init_schema_v15(conn: sqlite3.Connection) -> dict:
     """Initialize the complete V1.5 schema.
 
+    全部 DDL 均为 IF NOT EXISTS，打开已有库时自动补建缺失表（启动自愈）；
+    FTS 表缺失/为空时会从 episodes 重建索引。
+
     Returns a dict with capability info:
-        {"fts_tokenizer": "trigram"|"default"}
+        {"fts_tokenizer": "trigram"|"default", "fts_rebuilt": bool}
     """
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
@@ -632,12 +707,22 @@ def init_schema_v15(conn: sqlite3.Connection) -> dict:
     _check_fts5(conn)
     use_trigram = _check_trigram(conn)
 
+    # 启动自愈（P2.3）：出厂/旧库可能缺表（如 episodes_fts）。补建普通表
+    # 用 IF NOT EXISTS 即可；FTS 表补建后是空索引，必须跟随一次 rebuild，
+    # 否则表存在但搜任何词都 0 结果。
+    fts_existed = _object_exists(conn, "episodes_fts")
     create_tables(conn)
     create_indexes(conn)
     create_fts(conn, use_trigram=use_trigram)
+    fts_rebuilt = False
+    if not fts_existed or conn.execute(
+        "SELECT COUNT(*) FROM episodes_fts"
+    ).fetchone()[0] == 0:
+        fts_rebuilt = _rebuild_fts_if_episodes_exist(conn)
     create_views(conn)
     conn.commit()
 
     tokenizer = "trigram" if use_trigram else "default"
-    logger.info("V1.5 schema initialized (fts_tokenizer=%s)", tokenizer)
-    return {"fts_tokenizer": tokenizer}
+    logger.info("V1.5 schema initialized (fts_tokenizer=%s, fts_rebuilt=%s)",
+                tokenizer, fts_rebuilt)
+    return {"fts_tokenizer": tokenizer, "fts_rebuilt": fts_rebuilt}

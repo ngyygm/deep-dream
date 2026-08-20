@@ -10,6 +10,7 @@ chain.  The actual import only happens at call time.
 from __future__ import annotations
 
 import re
+import sqlite3
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
@@ -37,7 +38,9 @@ def resolve_concept_id(storage: Any, value: str) -> Optional[str]:
             fid = matches[0].get("family_id") or matches[0].get("entity_family_id")
             if fid:
                 return fid
-    except (ZeroDivisionError, ValueError):
+    except (ZeroDivisionError, ValueError, sqlite3.OperationalError):
+        # OperationalError：存储层 P2.3 起 schema 错误上抛——降级到
+        # 第 3 步 LIKE（其设计目标正是"无 FTS 也可用"），而非直接炸掉。
         pass
     # 3. SQL LIKE on entity name (works without embeddings or FTS)
     try:

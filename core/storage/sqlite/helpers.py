@@ -50,6 +50,28 @@ def _fmt_dt(value) -> Optional[str]:
     return str(value)
 
 
+def _time_bounds_sql(column: str, time_after=None, time_before=None):
+    """构建 processed_at 双界（闭区间）过滤 SQL 片段与参数。
+
+    P2.8：time_after/time_before 分别作为下/上界下推到 SQL，
+    修复此前路由层把两界折叠成单个 time_point、静默丢弃另一界的问题。
+    界值经 _fmt_dt 归一后与 ISO 字符串列直接可比
+    （与 get_all_entities_before_time 同一约定）。
+    """
+    conds, params = [], []
+    if time_after is not None:
+        lo = _fmt_dt(time_after)
+        if lo:
+            conds.append(f"{column} >= ?")
+            params.append(lo)
+    if time_before is not None:
+        hi = _fmt_dt(time_before)
+        if hi:
+            conds.append(f"{column} <= ?")
+            params.append(hi)
+    return (" AND " + " AND ".join(conds)) if conds else "", params
+
+
 def _encode_and_normalize(embedding_client, text: str):
     """Encode text via embedding client, L2-normalize, return (bytes, ndarray) or None."""
     if not embedding_client or not embedding_client.is_available():
