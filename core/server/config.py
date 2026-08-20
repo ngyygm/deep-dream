@@ -48,6 +48,9 @@ DEFAULTS = {
     "embedding": {
         "model": None,
         "device": "cpu",
+        # 远程 OpenAI 兼容 /v1/embeddings 端点（设置任一即走远程，不加载本地模型）
+        "api_key": None,
+        "api_base": None,
     },
     "chunking": {
         "window_size": 1000,
@@ -329,18 +332,21 @@ def _validate_config(config: Dict[str, Any]) -> None:
 
 
 def _warn_unknown_keys(user: Dict[str, Any]) -> None:
-    """用户配置里出现 DEFAULTS 未覆盖的键时告警（P5：配置面收敛，防拼写错误静默失效）。"""
+    """用户配置里出现 DEFAULTS 未覆盖的键时告警（P5：配置面收敛，防拼写错误静默失效）。
+
+    `_` 前缀键视为注释（JSON 无原生注释的通行约定），不告警。
+    """
     import logging
     logger = logging.getLogger(__name__)
     for key in user:
-        if key not in DEFAULTS:
+        if key not in DEFAULTS and not key.startswith("_"):
             logger.warning("配置键未收录于默认值: %r — 请对照 service_config.example.json（拼写错误将不生效）", key)
     for section, defaults in DEFAULTS.items():
         user_section = user.get(section)
         if not isinstance(user_section, dict) or not isinstance(defaults, dict):
             continue
         for key in user_section:
-            if key not in defaults:
+            if key not in defaults and not key.startswith("_"):
                 logger.warning(
                     "配置键未知（已忽略）: %s.%s — 请对照 service_config.example.json", section, key)
 

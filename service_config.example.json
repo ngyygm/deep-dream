@@ -31,7 +31,10 @@
   },
   "embedding": {
     "model": "Qwen/Qwen3-Embedding-0.6B",
-    "device": "cpu"
+    "device": "cpu",
+    "_comment": "设置 api_key/api_base 后走远程 OpenAI 兼容 /v1/embeddings，不加载本地模型（sentence-transformers 转为可选依赖）",
+    "api_key": null,
+    "api_base": null
   },
   "chunking": {
     "window_size": 1000,
