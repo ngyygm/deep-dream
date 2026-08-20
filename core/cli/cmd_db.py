@@ -477,7 +477,8 @@ def backfill_embeddings(ctx: click.Context, batch_size: int) -> None:
     model_path, model_name, use_local = resolve_embedding_model(emb_cfg)
     client = EmbeddingClient(
         model_path=model_path, model_name=model_name,
-        device=emb_cfg.get("device", "cpu"), use_local=use_local)
+        device=emb_cfg.get("device", "cpu"), use_local=use_local,
+        api_key=emb_cfg.get("api_key"), api_base=emb_cfg.get("api_base"))
     if not client.is_available():
         out.error("embedding client 不可用（检查 embedding.model 配置）", code=ERROR)
         conn.close()

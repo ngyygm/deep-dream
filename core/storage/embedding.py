@@ -8,6 +8,7 @@ from collections import OrderedDict
 from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
+import openai
 
 from ..utils import wprint_info
 
@@ -143,7 +144,8 @@ class EmbeddingClient:
     def __init__(self, model_path: Optional[str] = None, model_name: Optional[str] = None,
                  device: str = "cpu", use_local: bool = True,
                  cache_max_size: int = 8192, cache_ttl: float = 3600.0,
-                 max_concurrency: int = 1):
+                 max_concurrency: int = 1,
+                 api_key: Optional[str] = None, api_base: Optional[str] = None):
         """
         初始化Embedding客户端
 
@@ -155,12 +157,18 @@ class EmbeddingClient:
             cache_max_size: 嵌入缓存最大条目数（默认8192）
             cache_ttl: 缓存条目TTL秒数（默认3600秒）
             max_concurrency: 同一 embedding 模型的最大并发 encode 数；本地 GPU 默认 1 更稳定
+            api_key / api_base: 远程 OpenAI 兼容 /v1/embeddings 端点（vLLM / OpenAI /
+                自建网关）。设置后不加载本地模型——sentence-transformers 转为可选依赖
+                （pip install deep-dream[local-embeddings]）
         """
         self.model_path = model_path
         self.model_name = model_name
         self.device = device
         self.use_local = use_local
+        self.api_key = api_key
+        self.api_base = api_base
         self.model = None
+        self._remote_client = None
         # 本地 embedding 模型通常是单 GPU/单进程推理；多个 encode 并发会争抢显存和算力，
         # 在 Qwen3 embedding 这类模型上经常比串行更慢。需要时可通过配置显式调大。
         _sem_value = max(1, int(max_concurrency or 1))
@@ -173,6 +181,22 @@ class EmbeddingClient:
 
     def _init_model(self):
         """初始化embedding模型"""
+        # 远程模式：OpenAI 兼容 /v1/embeddings，不加载本地模型
+        if self.api_key or self.api_base:
+            try:
+                self._remote_client = openai.OpenAI(
+                    api_key=self.api_key or "none",
+                    base_url=self.api_base or None,
+                )
+                wprint_info(
+                    f"使用远程 embedding 端点: {self.api_base} "
+                    f"(model={self.model_name or 'default'})"
+                )
+            except Exception as e:
+                self._remote_client = None
+                wprint_info(f"警告：远程 embedding 客户端初始化失败，将使用文本相似度搜索: {e}")
+            return
+
         try:
             from sentence_transformers import SentenceTransformer
 
@@ -202,7 +226,7 @@ class EmbeddingClient:
         except ImportError:
             self.model = None
             wprint_info("警告：未安装sentence-transformers库，将使用文本相似度搜索")
-            wprint_info("安装命令: pip install sentence-transformers")
+            wprint_info("安装命令: pip install 'deep-dream[local-embeddings]'（或改用 embedding.api_key/api_base 远程端点）")
         except Exception as e:
             self.model = None
             wprint_info(f"警告：embedding 模型加载失败，将使用文本相似度搜索: {e}")
@@ -218,7 +242,7 @@ class EmbeddingClient:
         Returns:
             向量数组（numpy array）
         """
-        if self.model is None:
+        if self.model is None and self._remote_client is None:
             return None
 
         single_input = isinstance(texts, str)
@@ -282,6 +306,10 @@ class EmbeddingClient:
 
     def _encode_chunk(self, texts: List[str], batch_size: int) -> Optional[np.ndarray]:
         """编码单批文本，使用信号量控制并发。"""
+        if self._remote_client is not None:
+            return self._encode_chunk_remote(texts)
+        if self.model is None:
+            return None
         with self._encode_semaphore:
             try:
                 return self.model.encode(
@@ -294,6 +322,22 @@ class EmbeddingClient:
                 wprint_info(f"Embedding编码错误: {e}")
                 return None
 
+    def _encode_chunk_remote(self, texts: List[str]) -> Optional[np.ndarray]:
+        """远程 OpenAI 兼容 /v1/embeddings 编码。"""
+        try:
+            resp = self._remote_client.embeddings.create(
+                model=self.model_name or self.model_path or "default",
+                input=list(texts),
+            )
+            vecs = np.array([d.embedding for d in resp.data], dtype=np.float32)
+            if vecs.ndim != 2 or vecs.shape[0] != len(texts):
+                wprint_info(f"Embedding 远程返回形状异常: {vecs.shape}")
+                return None
+            return vecs
+        except Exception as e:
+            wprint_info(f"Embedding远程编码错误: {e}")
+            return None
+
     def encode_uncached(self, texts: Union[str, List[str]], batch_size: int = 32) -> np.ndarray:
         """
         编码文本为向量，绕过缓存（用于需要确保结果不共享的场景）。
@@ -305,7 +349,7 @@ class EmbeddingClient:
         Returns:
             向量数组（numpy array）
         """
-        if self.model is None:
+        if self.model is None and self._remote_client is None:
             return None
 
         if isinstance(texts, str):
@@ -318,7 +362,7 @@ class EmbeddingClient:
 
     def is_available(self) -> bool:
         """检查embedding模型是否可用"""
-        return self.model is not None
+        return self.model is not None or self._remote_client is not None
 
     # ------------------------------------------------------------------
     # Cache management & statistics

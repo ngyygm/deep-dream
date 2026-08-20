@@ -17,14 +17,15 @@ dependencies = [
     "PyJWT>=2.0",
     "httpx>=0.24",
     "numpy>=1.21.0",
-    # Embedding / ML（sentence-transformers 自带 torch/transformers 依赖）
-    "sentence-transformers>=2.2.0",
     # CLI
     "click>=8.1",
     "rich>=13.0",
 ]
 
 [project.optional-dependencies]
+# 本地 embedding 推理（sentence-transformers 自带 torch/transformers 重依赖）。
+# 不装时配置 embedding.api_key/api_base 走远程 OpenAI 兼容 /v1/embeddings。
+local-embeddings = ["sentence-transformers>=2.2.0"]
 dev = ["pytest>=7.0", "pytest-cov", "ruff"]
 
 [project.scripts]

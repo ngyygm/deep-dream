@@ -133,6 +133,8 @@ class GraphRegistry:
                 cache_max_size=int(embedding.get("cache_max_size") or 8192),
                 cache_ttl=float(embedding.get("cache_ttl") or 3600.0),
                 max_concurrency=int(embedding.get("max_concurrency") or 1),
+                api_key=embedding.get("api_key"),
+                api_base=embedding.get("api_base"),
             )
         return self._embedding_client
 
