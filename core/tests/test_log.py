@@ -1,9 +1,7 @@
 """Tests for core/log.py unified logging module."""
 import logging
-import os
 from unittest import mock
 
-import pytest
 
 from core.log import debug, error, info, warn, _server_logger, _ServerLogHandler
 
@@ -16,7 +14,7 @@ class TestServerLogHandler:
         )
         record.source = "System"
         lines = []
-        with mock.patch("core.log._emit_log_line", side_effect=lambda l: lines.append(l)):
+        with mock.patch("core.log._emit_log_line", side_effect=lambda line: lines.append(line)):
             handler.emit(record)
         assert len(lines) == 1
         line = lines[0]
@@ -32,7 +30,7 @@ class TestServerLogHandler:
         )
         record.source = "Neo4j"
         lines = []
-        with mock.patch("core.log._emit_log_line", side_effect=lambda l: lines.append(l)):
+        with mock.patch("core.log._emit_log_line", side_effect=lambda line: lines.append(line)):
             handler.emit(record)
         line = lines[0]
         parts = line.split("|")
@@ -71,7 +69,7 @@ class TestPublicAPI:
 
     def test_end_to_end_info(self):
         lines = []
-        with mock.patch("core.log._emit_log_line", side_effect=lambda l: lines.append(l)):
+        with mock.patch("core.log._emit_log_line", side_effect=lambda line: lines.append(line)):
             info("Test", "integration check")
         assert len(lines) == 1
         assert "Test" in lines[0]
@@ -82,7 +80,7 @@ class TestLevelFiltering:
     def test_debug_suppressed_at_info_level(self):
         _server_logger.setLevel(logging.INFO)
         lines = []
-        with mock.patch("core.log._emit_log_line", side_effect=lambda l: lines.append(l)):
+        with mock.patch("core.log._emit_log_line", side_effect=lambda line: lines.append(line)):
             debug("Test", "should not appear")
         assert len(lines) == 0
 
@@ -91,7 +89,7 @@ class TestLevelFiltering:
         try:
             _server_logger.setLevel(logging.DEBUG)
             lines = []
-            with mock.patch("core.log._emit_log_line", side_effect=lambda l: lines.append(l)):
+            with mock.patch("core.log._emit_log_line", side_effect=lambda line: lines.append(line)):
                 debug("Test", "should appear")
             assert len(lines) == 1
         finally:

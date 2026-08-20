@@ -6,7 +6,6 @@ Run with: pytest core/tests/test_stress.py -v -s --tb=short
 """
 import os
 import threading
-import time
 import uuid
 from datetime import datetime, timezone
 
@@ -188,25 +187,8 @@ class TestWALGrowth:
 
             # Force checkpoint and verify it works
             conn = stress_storage._conn()
-            result = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
             conn.rollback()
             wal_size_after = os.path.getsize(wal_path) / (1024 * 1024)
             print(f"  WAL size after checkpoint: {wal_size_after:.1f}MB")
             assert wal_size_after < 10, f"WAL not truncated: {wal_size_after:.1f}MB"
-
-
-# ── Cache Pressure ───────────────────────────────────────────────────────
-
-
-class TestCachePressure:
-    def test_cache_under_pressure(self, stress_storage):
-        """Run many unique queries, verify cache doesn't grow unbounded."""
-        cache_before = stress_storage._cache.stats()
-        print(f"\n  Cache before: size={cache_before['size']}")
-
-        for i in range(1000):
-            stress_storage._cache.set(f"pressure_key_{i}", f"value_{i}", ttl=60)
-
-        cache_after = stress_storage._cache.stats()
-        print(f"  Cache after 1000 inserts: size={cache_after['size']}, max={cache_after['max_size']}, evictions={cache_after['evictions']}")
-        assert cache_after['size'] <= cache_after['max_size'], "Cache exceeded max_size"

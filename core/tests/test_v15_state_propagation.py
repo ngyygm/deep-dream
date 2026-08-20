@@ -12,7 +12,7 @@ from core.storage.sqlite.repositories import (
     embeddings as emb_repo,
     search as search_repo,
 )
-from core.storage.sqlite.integrity import validate_all, validate_fts_consistency
+from core.storage.sqlite.integrity import validate_fts_consistency
 from core.storage.sqlite.content_fs import compute_content_hash
 
 NOW = "2026-05-26T00:00:00Z"

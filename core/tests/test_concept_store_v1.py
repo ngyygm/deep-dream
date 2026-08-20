@@ -1,5 +1,4 @@
 from datetime import datetime, timedelta
-import json
 from pathlib import Path
 
 from core.models import Entity, Episode, Relation
@@ -162,7 +161,7 @@ def test_relation_is_concept_with_asserts_and_connects(tmp_path):
 
         concept = store.get_concept_by_family_id("confam_rel")
         assert concept["role"] == "relation"
-        provenance = store.get_concept_provenance("confam_rel")
+        store.get_concept_provenance("confam_rel")
         # V1.5: provenance comes from entity_mentions, so no ASSERTS edges for relation families
         # The relation is returned by get_relations_by_entities
         connected = store.get_relations_by_entities("confam_alice", "confam_bob")
@@ -253,7 +252,7 @@ def test_vault_index_parses_obsidian_links_and_heading_episodes(tmp_path):
         episodes = store.search_concepts_by_bm25("Detail", limit=10)
         assert episodes
         # V1.5: DOCUMENT_LINK edges come from document_links table via graph_edges view
-        edges = store._conn().execute(
+        store._conn().execute(
             "SELECT edge_type FROM graph_edges WHERE edge_type = 'DOCUMENT_LINK'"
         ).fetchall()
         # document_links may or may not be created by vault_indexer depending on implementation;

@@ -9,7 +9,6 @@ Run with: pytest core/tests/test_api.py -v
 """
 from __future__ import annotations
 
-import uuid
 
 from core.tests.conftest import TEST_GRAPH_ID
 

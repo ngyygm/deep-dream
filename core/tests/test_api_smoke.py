@@ -72,5 +72,5 @@ class TestRouteRegistrationSmoke:
     def test_route_module_has_routes(self, test_app):
         for route_module_name, flask_route_group in test_app.blueprints.items():
             assert len(flask_route_group.deferred_functions) > 0 or hasattr(flask_route_group, "name"), (
-                f"Route module '{route_module}' has no registered routes"
+                f"Route module '{route_module_name}' has no registered routes"
             )

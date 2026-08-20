@@ -4,10 +4,8 @@ Tests for EmbeddingClient semaphore configuration.
 Tests that the embedding semaphore defaults to one local encode at a time,
 with an explicit override for deployments that can safely run more.
 """
-import os
 import threading
-from unittest.mock import Mock, patch, MagicMock
-import pytest
+from unittest.mock import patch
 
 from core.storage.embedding import EmbeddingClient
 

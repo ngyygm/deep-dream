@@ -9,7 +9,6 @@ from core.storage.sqlite.repositories import (
     episodes as ep_repo,
     entities as ent_repo,
     relations as rel_repo,
-    embeddings as emb_repo,
     search as search_repo,
 )
 from core.storage.sqlite.integrity import validate_all

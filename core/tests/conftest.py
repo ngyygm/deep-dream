@@ -5,18 +5,15 @@ This module provides common fixtures and utilities for testing the Deep-Dream
 knowledge graph system, including Flask test client, processor, and storage
 fixtures.
 """
-import os
 import shutil
 import sys
 import pytest
 from pathlib import Path
-from typing import Generator
 
 # Add project root to path
 _project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(_project_root))
 
-from flask import Flask
 from core.server.api import create_app
 from core.server.registry import GraphRegistry
 from core.server.monitor import SystemMonitor, LOG_MODE_DETAIL
@@ -123,7 +120,6 @@ def storage(processor):
 @pytest.fixture(scope="function")
 def sqlite_storage(tmp_path):
     """Direct SQLite storage manager for unit tests (no Flask/registry overhead)."""
-    from core.storage.sqlite.manager import SQLiteGraphStorageManager
     mgr = SQLiteGraphStorageManager(
         storage_path=str(tmp_path / "graph"),
         vector_dim=1024,

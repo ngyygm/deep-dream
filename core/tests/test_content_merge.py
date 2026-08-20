@@ -8,8 +8,7 @@ Tests the fast-forward content merge strategy from Deep-Dream-CLI.md:
 4. No information loss — merged content contains all info from both old and new
 5. Content schema (Markdown sections + ContentPatch) is preserved after merge
 """
-import pytest
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 from datetime import datetime, timezone
 
 from core.models import Entity
@@ -74,7 +73,8 @@ class TestMergeTwoContents:
 
     def test_merge_identical_content(self, processor):
         """Test merge when contents are identical."""
-        from core.models import Entity
+
+
         from datetime import datetime, timezone
 
         old_entity = Entity(
@@ -106,8 +106,6 @@ class TestMergeTwoContents:
 
     def test_merge_old_is_substring_of_new(self, processor):
         """Test merge when old content is substring of new — still calls LLM."""
-        from core.models import Entity
-        from datetime import datetime, timezone
 
         old_content = "Basic info"
         new_content = "Basic info with additional details"
@@ -139,8 +137,6 @@ class TestMergeTwoContents:
 
     def test_merge_new_starts_with_old(self, processor):
         """Test merge when new content starts with old — still calls LLM."""
-        from core.models import Entity
-        from datetime import datetime, timezone
 
         old_content = "Base knowledge"
         new_content = "Base knowledge plus new insights"
@@ -172,8 +168,6 @@ class TestMergeTwoContents:
 
     def test_merge_requires_llm(self, processor):
         """Test merge when LLM is needed (no fast path)."""
-        from core.models import Entity
-        from datetime import datetime, timezone
 
         old_content = "First perspective on topic"
         new_content = "Different perspective on same topic"
@@ -206,8 +200,6 @@ class TestMergeTwoContents:
 
     def test_merge_empty_old_content(self, processor):
         """Test merge when old content is empty."""
-        from core.models import Entity
-        from datetime import datetime, timezone
 
         old_entity = Entity(
             absolute_id="old_1",
@@ -387,8 +379,6 @@ class TestContentMergeIntegration:
         old_content = "# Title\n\n- Item 1\n- Item 2"
         new_content = "# Title\n\n- Item 1\n- Item 2\n- Item 3"
 
-        from core.models import Entity
-        from datetime import datetime, timezone
 
         old_entity = Entity(
             absolute_id="old_1",
@@ -605,8 +595,6 @@ class TestFastForwardMergeStrategy:
         old_content = "Python is a high-level programming language"
         new_content = "Python is a high-level programming language created by Guido van Rossum"
 
-        from core.models import Entity
-        from datetime import datetime, timezone
 
         old_entity = Entity(
             absolute_id="old_1",
@@ -622,7 +610,7 @@ class TestFastForwardMergeStrategy:
         with patch.object(processor.llm_client, 'merge_multiple_entity_contents') as mock_merge:
             mock_merge.return_value = new_content
 
-            result = processor.entity_processor._merge_two_contents(
+            processor.entity_processor._merge_two_contents(
                 old_entity,
                 "Python",
                 new_content,
@@ -643,8 +631,6 @@ class TestFastForwardMergeStrategy:
         old_content = "JavaScript is a programming language."
         new_content = "JavaScript is a programming language. It was created by Brendan Eich in 1995."
 
-        from core.models import Entity
-        from datetime import datetime, timezone
 
         old_entity = Entity(
             absolute_id="old_1",
@@ -682,8 +668,6 @@ class TestFastForwardMergeStrategy:
         old_content = "The capital of Australia is Sydney."
         new_content = "The capital of Australia is Canberra."
 
-        from core.models import Entity
-        from datetime import datetime, timezone
 
         old_entity = Entity(
             absolute_id="old_1",
@@ -721,8 +705,6 @@ class TestFastForwardMergeStrategy:
         old_content = "Rust is a systems programming language focused on safety."
         new_content = "Rust has a strong type system and memory safety guarantees."
 
-        from core.models import Entity
-        from datetime import datetime, timezone
 
         old_entity = Entity(
             absolute_id="old_1",
@@ -780,8 +762,6 @@ It includes supervised, unsupervised, and reinforcement learning.
 
 Used in image recognition, NLP, and robotics."""
 
-        from core.models import Entity
-        from datetime import datetime, timezone
 
         old_entity = Entity(
             absolute_id="old_1",
@@ -842,20 +822,6 @@ This is a test.
 
 Fact 1, Fact 2"""
 
-        from core.models import Entity
-        from datetime import datetime, timezone
-
-        old_entity = Entity(
-            absolute_id="old_1",
-            family_id="ent_test",
-            name="TestEntity",
-            content=old_content,
-            event_time=datetime.now(timezone.utc),
-            processed_time=datetime.now(timezone.utc),
-            episode_id="test_ep",
-            source_document="doc1.txt",
-            content_format="markdown",
-        )
 
         # Verify all expected sections are present
         sections = parse_markdown_sections(old_content)
@@ -881,8 +847,6 @@ A depends on B.
 
 In software architecture."""
 
-        from core.models import Relation
-        from datetime import datetime, timezone
 
         # Verify relation sections
         sections = parse_markdown_sections(old_content)

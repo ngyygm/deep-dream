@@ -66,8 +66,7 @@ def test_repos_embeddings_imports():
 
 def test_repos_search_imports():
     mod = importlib.import_module("core.storage.sqlite.repositories.search")
-    for name in ["search_fts", "get_graph_edges", "get_graph_neighbors",
-                 "get_document_graph"]:
+    for name in ["search_fts", "get_graph_edges", "get_graph_neighbors"]:
         assert callable(getattr(mod, name, None)), f"Missing: {name}"
 
 

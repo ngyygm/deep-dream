@@ -253,7 +253,6 @@ def test_fts_query_special_characters_quoted(v15):
 
 
 def test_concepts_by_bm25_normalizes_scores(v15):
-    from core.storage.sqlite.library_manager import LibraryManager
     _seed(v15)
     # Use the repo-level path through a thin wrapper: verify normalization
     # logic directly on search_fts output instead of instantiating the
@@ -281,7 +280,7 @@ def test_cluster_results_groups_similar_items():
     total = sum(c["count"] for c in clusters)
     assert total == 4
     labels = {c["label"] for c in clusters}
-    assert all(isinstance(l, str) and l for l in labels)
+    assert all(isinstance(label, str) and label for label in labels)
 
 
 def test_cluster_results_few_items_returns_empty():
