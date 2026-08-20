@@ -32,6 +32,9 @@ class RememberTask:
     original_path: str
     cache_document_path: Optional[str] = None
     override_doc_id: str = ""
+    # P3.8：len(text.encode("utf-8")) 只在首次序列化时算一次，
+    # 之后 task_to_dict 直读（轮询接口每秒多次全量 encode 3MB 文本是纯浪费）。
+    document_size_bytes: Optional[int] = None
     status: str = "queued"          # queued | running | completed | failed
     result: Optional[Dict] = None
     error: Optional[str] = None

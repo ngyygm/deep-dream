@@ -390,6 +390,32 @@ function ensurePageLoaded(name) {
   return _loadingPages[name];
 }
 
+// ---- vis-network lazy loading (P3.9) ----
+// vis-network（本地静态文件，~682KB）只有 graph/search 两页用到；其余页面
+// （dashboard/memory/api-test/settings）不再为它付出下载+解析成本。
+// 首次调用动态注入 <script>（本地 /static 路径，不走 CDN，离线可用），
+// 后续调用直接复用已加载的 Promise。
+const _VIS_SRC = '/static/vendor/vis-network.min.js';
+let _visLoaded = false;
+let _visLoading = null;
+
+function ensureVisNetwork() {
+  if (_visLoaded || typeof vis !== 'undefined') {
+    _visLoaded = true;
+    return Promise.resolve();
+  }
+  if (_visLoading) return _visLoading;
+  _visLoading = new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = _VIS_SRC;
+    s.onload = () => { _visLoaded = true; resolve(); };
+    s.onerror = () => { _visLoading = null; reject(new Error(`Failed to load vis-network: ${_VIS_SRC}`)); };
+    document.head.appendChild(s);
+  });
+  return _visLoading;
+}
+window.ensureVisNetwork = ensureVisNetwork;
+
 async function handleRoute() {
   const rawHash = (window.location.hash || '#dashboard').slice(1);
   const [hash] = rawHash.split('?');

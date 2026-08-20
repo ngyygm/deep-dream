@@ -288,10 +288,24 @@ class TestStrongV1PipelineEndToEnd:
         assert proc.entity_processor.window_batch_alignment_enabled is True
         assert proc.relation_processor.window_batch_alignment_enabled is True
 
-        # 第二次入库：库中已有关系 → 关系侧窗口批量裁决应被调用（distill 标签可观测）。
-        # 实体侧此场景全部命中精确同名快路径（by-design 不进批量），预筛逻辑由下方单测覆盖。
+        # 第二次入库：库中已有关系。默认 conservative 档下
+        # preserve_distinct_relations_per_pair=True，_process_one_relation_pair
+        # 在消费裁决前就走逐条保留路径 → 窗口批量裁决是纯浪费，应被跳过（P3.1）。
         proc.remember_text(STRONG_TEXT, doc_name="wb1.md", verbose=False)
         result = proc.remember_text(STRONG_TEXT, doc_name="wb2.md", verbose=False)
+        by_step = (result.get("llm_call_stats") or {}).get("by_step") or {}
+        assert int((by_step.get("10s_window_batch_relations") or {}).get("calls", 0)) == 0
+
+    def test_aggressive_policy_keeps_window_batch_relations(self, tmp_path):
+        # aggressive 档（preserve_distinct=False）裁决结果会进持久化路径 → 批量裁决保留
+        proc = self._processor(tmp_path, {
+            "profile": "strong-v1",
+            "alignment_policy": "aggressive",
+        })
+        assert proc.remember_alignment_conservative is False
+        assert proc.relation_processor.preserve_distinct_relations_per_pair is False
+        proc.remember_text(STRONG_TEXT, doc_name="aggr1.md", verbose=False)
+        result = proc.remember_text(STRONG_TEXT, doc_name="aggr2.md", verbose=False)
         by_step = (result.get("llm_call_stats") or {}).get("by_step") or {}
         assert int((by_step.get("10s_window_batch_relations") or {}).get("calls", 0)) >= 1
 

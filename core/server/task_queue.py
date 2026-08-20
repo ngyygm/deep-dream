@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional
 
 from core.server.monitor import LOG_MODE_DETAIL
 from core.log import info as _log_info_fn, warn as _log_warn_fn, error as _log_error_fn
+from core.text_chunking import apply_document_metadata_prefix
 from core.utils import compute_doc_hash
 
 # Re-export from sub-modules so that the public import paths stay unchanged:
@@ -181,31 +182,44 @@ class RememberTaskQueue:
         _log_error_fn("Remember", message)
 
     def _estimate_total_chunks(self, text: str) -> int:
-        """Use the same markdown/window chunker as the remember pipeline."""
-        try:
-            document_processor = getattr(self._processor, "document_processor", None)
-            chunk_text = getattr(document_processor, "chunk_text", None)
-            if callable(chunk_text):
-                return max(1, len(chunk_text(text or "")))
-        except Exception as e:
-            self._log_warn("[Remember] chunk 数估算回退: %s" % e)
+        """P3.6：入队时的显式兜底估算（算术公式，不跑完整 chunk_text）。
+
+        真实窗口数由 remember run 产出（result.window_hashes / 进度标签分母）
+        校正；入队阶段没有任何 run 产出，不值得为一条"预计 N 个窗口"的
+        提示语把整篇文档完整切一遍。
+        """
         return _estimate_chunk_count(len(text or ""), self._window_size, self._overlap)
 
-    def _remember_window_hashes(self, task: RememberTask) -> List[str]:
+    def _compute_window_hashes(self, text: str, source_name: str) -> List[str]:
+        """无 run 产出时的兜底：现场 chunk_text 一遍并逐窗计算哈希。
+
+        窗口 0 的「[文档元数据]」前缀与 orchestrator 共享同一 helper，
+        保证与入库时写入 episodes.chunk_hash 的字节一致（不变式 a）。
+        """
         try:
             document_processor = getattr(self._processor, "document_processor", None)
             chunk_text = getattr(document_processor, "chunk_text", None)
-            chunks = chunk_text(task.text or "") if callable(chunk_text) else []
+            chunks = chunk_text(text or "") if callable(chunk_text) else []
         except Exception as e:
-            self._log_warn("[Remember] 修复窗口检测失败，chunk 计算回退为空: %s" % e)
+            self._log_warn("[Remember] 窗口哈希兜底计算失败，chunk 计算回退为空: %s" % e)
             chunks = []
         hashes: List[str] = []
         for idx, item in enumerate(chunks or []):
             chunk = item[0] if isinstance(item, (list, tuple)) and item else str(item)
-            if idx == 0 and task.source_name and not task.source_name.startswith(("auto_", "api:")):
-                chunk = f"[文档元数据] 文档名：{task.source_name} [/文档元数据]\n\n{chunk}"
+            chunk = apply_document_metadata_prefix(source_name, chunk, idx)
             hashes.append(compute_doc_hash(chunk))
         return hashes
+
+    def _remember_window_hashes(self, task: RememberTask) -> List[str]:
+        # P3.6：优先复用 remember run 产出的窗口哈希（随 result 持久化在
+        # journal 中），只有无完整产出时才回退为现场重算。
+        _result = getattr(task, "result", None)
+        if isinstance(_result, dict):
+            hashes = _result.get("window_hashes")
+            if (isinstance(hashes, list) and hashes
+                    and all(isinstance(h, str) and h for h in hashes)):
+                return list(hashes)
+        return self._compute_window_hashes(task.text or "", task.source_name or "")
 
     def _resolve_doc_id_for_task(self, task: RememberTask) -> str:
         """Resolve the existing doc_id for a task so retries reuse the same document.
@@ -419,10 +433,13 @@ class RememberTaskQueue:
             anchor = t.created_at or now
         end_at = t.finished_at or (t.last_update if t.status == "paused" else now)
         progress_detail = _build_progress_detail(t, now)
-        try:
-            document_size_bytes = len((t.text or "").encode("utf-8"))
-        except Exception:
-            document_size_bytes = len(t.text or "")
+        # P3.8：全文 UTF-8 字节数首算后挂在 task 上，轮询序列化不再反复 encode 全文
+        if t.document_size_bytes is None:
+            try:
+                t.document_size_bytes = len((t.text or "").encode("utf-8"))
+            except Exception:
+                t.document_size_bytes = len(t.text or "")
+        document_size_bytes = t.document_size_bytes
         return {
             "task_id": t.task_id,
             "task_seq": t.task_seq,
@@ -520,20 +537,8 @@ class RememberTaskQueue:
         return task.task_id
 
     def _document_window_hashes(self, title: str, text: str) -> List[str]:
-        try:
-            document_processor = getattr(self._processor, "document_processor", None)
-            chunk_text = getattr(document_processor, "chunk_text", None)
-            chunks = chunk_text(text or "") if callable(chunk_text) else []
-        except Exception as e:
-            self._log_warn("[Remember] 文档完整性 chunk 计算失败: %s" % e)
-            chunks = []
-        hashes: List[str] = []
-        for idx, item in enumerate(chunks or []):
-            chunk = item[0] if isinstance(item, (list, tuple)) and item else str(item)
-            if idx == 0 and title and not title.startswith(("auto_", "api:")):
-                chunk = f"[文档元数据] 文档名：{title} [/文档元数据]\n\n{chunk}"
-            hashes.append(compute_doc_hash(chunk))
-        return hashes
+        # P3.6：与修复检测共用同一兜底实现（无 run 产出时的唯一重算路径）
+        return self._compute_window_hashes(text or "", title or "")
 
     def assess_document_integrity(self, document_version_id: str) -> Dict[str, Any]:
         storage = getattr(self._processor, "storage", None)

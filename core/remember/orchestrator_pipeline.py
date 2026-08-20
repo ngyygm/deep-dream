@@ -10,6 +10,7 @@ import time
 import uuid
 
 from core.log import info as _log_info
+from core.text_chunking import apply_document_metadata_prefix
 from core.utils import (
     clear_parallel_log_context,
     classify_episode_type,
@@ -120,6 +121,10 @@ class _PipelineMixin:
         total_length = len(text)
         chunks = self.document_processor.chunk_text(text)
         total_chunks = len(chunks)
+        # P3.6 窗口哈希只算一次：run 内已对每个窗口计算 chunk 哈希（缓存
+        # 查找复用同一值），按绝对窗口索引收集后随 result 传给 task_queue
+        # 的修复检测/完整性检查，避免同一文档被重复 chunk_text。
+        _window_hashes: list = [None] * total_chunks
 
         # Generate a run_id for this pipeline invocation
         _run_id = uuid.uuid4().hex
@@ -234,8 +239,8 @@ class _PipelineMixin:
                     else:
                         chunk, start, end = _chunk_tuple[:3]
                         _heading_path = ""
-                    if _wi == 0 and doc_name and not doc_name.startswith(("auto_", "api:")):
-                        chunk = f"[文档元数据] 文档名：{doc_name} [/文档元数据]\n\n{chunk}"
+                    # 不变式 a：window-0 元数据前缀与 task_queue 共享同一 helper，保持字节一致
+                    chunk = apply_document_metadata_prefix(doc_name, chunk, _wi)
 
                     _wlabel = f"W{_wi + 1}/{total_chunks}"
                     if verbose:
@@ -266,6 +271,7 @@ class _PipelineMixin:
                     # Step1: 更新缓存
                     _t_step1_start = time.time()
                     _chunk_hash = compute_doc_hash(chunk)
+                    _window_hashes[_wi] = _chunk_hash
                     _t_cache_lookup = time.time()
                     existing_mc, _saved_extraction = (
                         self.storage.find_cache_and_extraction_by_doc_hash(_chunk_hash, document_path=document_path)
@@ -460,6 +466,13 @@ class _PipelineMixin:
         for i in range(N):
             state.step10_done_ev[i].wait()
 
+        # P3.3：run 结束释放候选表 run 级投影缓存（所有 step9 已完成，此后不再
+        # 构建候选表；成功/失败/控制流中断路径都经过这里）
+        try:
+            self.entity_processor.release_candidate_run_cache()
+        except Exception:
+            logger.debug("release candidate run cache failed (non-critical)", exc_info=True)
+
         # 无论成功还是异常，都清理 _current_state，避免残留上一个任务的快照
         with self._current_state_lock:
             self._current_state = None
@@ -610,6 +623,10 @@ class _PipelineMixin:
             "window_timings": state.window_timings,
             "timing_summary": timing_summary or self._build_timing_summary(state.window_timings),
             "llm_call_stats": self.get_llm_call_stats(),
+            # P3.6：按绝对窗口索引的 chunk 哈希（未到达的窗口为 None），
+            # 供 task_queue 修复检测/完整性检查复用，免掉重复 chunk_text。
+            "window_hashes": _window_hashes,
+            "total_chunks": total_chunks,
         }
 
         if _failed_windows > 0:

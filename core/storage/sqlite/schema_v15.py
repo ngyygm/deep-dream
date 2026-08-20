@@ -257,6 +257,10 @@ INDEXES_SQL = [
     "ON episodes(episode_family_id, processed_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_episodes_document "
     "ON episodes(document_id, document_version_id)",
+    # P3.4：find_cache_by_doc_hash 按 chunk_hash 等值查找 + processed_at DESC 取最新，
+    # 此前无该列索引只能全表扫（每窗口 2 次）；复合列让排序也走索引。
+    "CREATE INDEX IF NOT EXISTS idx_episodes_chunk_hash "
+    "ON episodes(chunk_hash, processed_at DESC)",
 
     "CREATE INDEX IF NOT EXISTS idx_entityfam_name "
     "ON entity_families(canonical_name)",

@@ -14,6 +14,7 @@ from core.server.task_progress import (
     _DONE_STATUSES,
     _TERMINAL_STATUSES,
     _RE_MAIN_1_8_DONE,
+    _RE_WINDOW_ONLY,
     estimate_chunk_count,
     remember_callback_ui_fields,
 )
@@ -312,6 +313,13 @@ def worker_loop(q: "RememberTaskQueue") -> None:  # noqa: C901 — legacy comple
                     _task_ref = task  # 闭包引用
 
                     def _on_progress(progress: float, phase_label: str, message: str, chain_id: str = "step9", _t=_task_ref):
+                        # P3.6：入队估算只是算术兜底；run 进度标签的分母是
+                        # 真实总窗口数，用它尽早校正，避免进度分母失真。
+                        _wm = _RE_WINDOW_ONLY.search(phase_label or "")
+                        if _wm:
+                            _run_total = int(_wm.group(2))
+                            if _run_total > 0 and _run_total != _t.total_chunks:
+                                _t.total_chunks = _run_total
                         _fields = remember_callback_ui_fields(
                             _t, progress, phase_label, message, chain_id,
                         )
@@ -505,6 +513,14 @@ def worker_loop(q: "RememberTaskQueue") -> None:  # noqa: C901 — legacy comple
 
                     # Warn on zero extractions (possible LLM issue)
                     if isinstance(result, dict):
+                        # P3.6：run 产出的真实总窗口数（含 run 未到达窗口的
+                        # window_hashes 全长）校正入队估算，终态分母不失真。
+                        _run_total = result.get("total_chunks") or 0
+                        if not _run_total:
+                            _wh = result.get("window_hashes")
+                            _run_total = len(_wh) if isinstance(_wh, list) and _wh else 0
+                        if _run_total > 0 and _run_total != task.total_chunks:
+                            task.total_chunks = int(_run_total)
                         entities = result.get("entities", 0)
                         relations = result.get("relations", 0)
                         if entities == 0 and relations == 0:

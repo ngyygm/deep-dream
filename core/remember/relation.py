@@ -212,9 +212,13 @@ class RelationProcessor(_RelationConstructionMixin):
         total_pairs = len(relations_by_pair)
         _rel_done = 0
 
-        # strong-v1 窗口级批量预裁决：有已有关系的实体对一次调用全部判完
+        # strong-v1 窗口级批量预裁决：有已有关系的实体对一次调用全部判完。
+        # conservative 档（preserve_distinct_relations_per_pair=True）下，
+        # _process_one_relation_pair 在消费裁决结果之前就走逐条保留路径返回，
+        # 裁决不改变持久化行为 → 跳过这次纯浪费的 LLM 批量调用（False 路径行为不变）。
         _window_rel_verdicts: Dict[str, Dict[str, Any]] = {}
-        if getattr(self, "window_batch_alignment_enabled", False):
+        if (getattr(self, "window_batch_alignment_enabled", False)
+                and not self.preserve_distinct_relations_per_pair):
             _t_wb = _time.monotonic()
             _pairs_to_judge = []
             for pair_key, pair_rels in relations_by_pair.items():

@@ -1022,7 +1022,14 @@ def list_documents():
         documents = storage.list_documents(limit=limit, offset=offset, source_document=source_document)
         runtime = (current_app.config.get("config") or {}).get("runtime") or {}
         integrity_cfg = runtime.get("integrity") or {}
-        if bool(integrity_cfg.get("auto_check_documents", True)) and documents:
+        # P3.7：列表页默认不再逐文档做完整性全量评估（每篇都要读全文 + 重切块 +
+        # 逐窗口查库，代价随文档数×窗口数线性叠加，且 chunk_hash 无索引时每次
+        # 查询都是 episodes 全表扫描——列表页不可承受）。完整性改为按需拉取：
+        # GET /api/v1/documents/<id>/integrity（memory 页已有"检查"按钮走该端点）。
+        # 前端对缺失的 integrity 字段已有降级显示（memory.js 显示"未检查"，
+        # graph.js 的窗口数改用列表自带的轻量 episode_count 字段）。
+        # 仅当用户显式配置 runtime.integrity.auto_check_documents=true 时保留旧行为。
+        if bool(integrity_cfg.get("auto_check_documents", False)) and documents:
             try:
                 from core.server.routes.remember import _get_queue as _get_remember_queue
                 remember_queue = _get_remember_queue()

@@ -67,7 +67,10 @@ DEFAULTS = {
             "stall_timeout_seconds": 600,
         },
         "integrity": {
-            "auto_check_documents": True,
+            # P3.7：默认关闭——GET /documents 列表页逐文档全量评估代价过高，
+            # 完整性改为按需拉取（GET /api/v1/documents/<id>/integrity）。
+            # 显式设为 true 可恢复旧的列表页自动评估行为。
+            "auto_check_documents": False,
         },
     },
     "pipeline": {

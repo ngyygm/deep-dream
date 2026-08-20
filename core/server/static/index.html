@@ -11,8 +11,8 @@
   <!-- Tailwind CSS (prebuilt local stylesheet) -->
   <link rel="stylesheet" href="/static/css/tailwind-output.css">
 
-  <!-- vis-network.js (local) -->
-  <script src="/static/vendor/vis-network.min.js"></script>
+  <!-- vis-network (local, ~682KB) 不再全局加载：仅 graph/search 页需要，
+       由 app.js 的 ensureVisNetwork() 按需动态注入（保持离线可用） -->
 
   <!-- Lucide Icons (local) -->
   <script src="/static/vendor/lucide.js"></script>

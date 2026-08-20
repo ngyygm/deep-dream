@@ -98,6 +98,8 @@
   }
 
   function render(container) {
+    // P3.9：进页即预取 vis-network（与文档列表请求并行，等真正画图时通常已就绪）
+    ensureVisNetwork().catch(err => console.error('vis-network prefetch failed:', err));
     container.innerHTML = `
       <div class="page-enter graph-viz-shell">
         <aside class="card graph-doc-panel">
@@ -334,7 +336,8 @@
       const size = formatBytes(d.size);
       const entityCount = Number(d.entity_count || 0).toLocaleString();
       const relationCount = Number(d.relation_count || 0).toLocaleString();
-      const episodeCount = Number(d.integrity?.total_windows || d.integrity?.complete_windows || 0).toLocaleString();
+      // P3.7：integrity 不再随列表返回——优先用轻量 episode_count，auto_check 显式开启时仍读 integrity
+      const episodeCount = Number(d.episode_count ?? d.integrity?.total_windows ?? d.integrity?.complete_windows ?? 0).toLocaleString();
       const timeStr = (invalid || deleting) ? '' : (formatDateMs(d.processed_time || d.updated_at || d.created_at) || '').replace(/\.\d{3}$/, '');
       return `
         <div class="doc-graph-item ${selected ? 'selected' : ''}" data-doc-id="${escapeAttr(id || '')}" style="grid-template-columns:auto minmax(0,1fr) auto;${(deleting || invalid) ? 'opacity:0.55;pointer-events:none;' : ''}">
@@ -1162,13 +1165,23 @@
     return endpoints.slice(0, 2);
   }
 
-  function drawGraph(step, options = {}) {
+  async function drawGraph(step, options = {}) {
     if (!graphModel || !graphModel.documents.length) {
       clearGraphCanvas(t('graph.noSubgraphToShow'));
       return;
     }
     const canvas = document.getElementById('document-graph-canvas');
     if (!canvas) return;
+    // P3.9：vis-network 按需加载（本页首次绘图时可能仍在下载，等它就绪；
+    // 加载失败则降级为空态提示，而不是抛 ReferenceError）
+    try {
+      await ensureVisNetwork();
+    } catch (loadErr) {
+      console.error('vis-network load failed:', loadErr);
+      clearGraphCanvas(`${t('graph.loadSubgraphFailed')}: ${escapeHtml(loadErr.message)}`);
+      return;
+    }
+    if (!canvas.isConnected) return;  // 等待期间页面已切走
     destroyNetwork();
     canvas.innerHTML = '';
 

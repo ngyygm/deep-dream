@@ -63,6 +63,19 @@ def split_markdown_chunks(text: str, *, window_size: int, overlap: int) -> List[
     return chunks or [{"content": body, "heading_path": "", "start_offset": 0, "end_offset": len(body)}]
 
 
+def apply_document_metadata_prefix(doc_name: str, chunk: str, window_index: int) -> str:
+    """窗口 0 注入「[文档元数据]」前缀（orchestrator 与 task_queue 共用，字节一致）。
+
+    remember 流水线在窗口 0 的 chunk 前拼接文档名元数据标记，task_queue 的
+    修复检测 / 完整性检查计算窗口哈希时必须拼出完全相同的字节串，否则
+    chunk_hash 对不上、窗口会被误判为缺失。两处统一从这里取，避免漂移
+    （不变式 a：前缀内容不得改动）。
+    """
+    if window_index == 0 and doc_name and not doc_name.startswith(("auto_", "api:")):
+        return f"[文档元数据] 文档名：{doc_name} [/文档元数据]\n\n{chunk}"
+    return chunk
+
+
 def sentence_spans(text: str, *, base_offset: int = 0) -> List[Dict[str, object]]:
     """Return sentence-like spans with offsets relative to the source document."""
     body = text or ""
@@ -189,7 +202,30 @@ def _candidate_matches(body: str, normalized_body: str, offset_map: List[int], n
         start = idx + max(1, len(normalized_needle))
 
 
+# 模糊子串搜索的复杂度约束（P3.10）：
+# 旧实现对每个句子枚举 0.7n..1.25n 的全部长度 × 全部起始位置，逐窗口跑
+# SequenceMatcher——长实体名时是 O(n²) 起步（实测 n=74 的单候选单窗口 ~480ms）。
+# 约束方式（结果语义近似，取舍见函数 docstring）：
+#   1. 长度按 |窗口长度 - n| 升序枚举——相似度理论上限 2·min(n,ℓ)/(n+ℓ) 随偏差
+#      增大单调下降，先扫理论上限最高的窗口，截断只损失低潜力尾部；
+#   2. 总枚举窗口数受“字符工作量预算”约束（≈ windows × n² 有上限）：小名不受
+#      影响（预算高于全枚举量），长名收敛到 O(预算 / n²)；
+#   3. 最佳相似度达到早停阈值即停止（后续窗口理论上限 1.0，超越概率极低）。
+_SIMILAR_EARLY_STOP_RATIO = 0.95
+_SIMILAR_WORK_BUDGET = 4_000_000
+_SIMILAR_MIN_WINDOWS = 64
+
+
 def _similar_substring_matches(body: str, normalized_body: str, offset_map: List[int], needle: str):
+    """句子内模糊子串匹配（至多产出一个最佳窗口）。
+
+    在旧版“全枚举取全局最优”的基础上加了排序 + 预算 + 早停：
+    - 未触发预算/早停时，最佳相似度与旧版一致（仅同分并列时所选窗口可能不同，
+      本版优先长度更接近 n 的窗口）；
+    - 早停在首个 ≥0.95 的窗口处全局停止：其后若存在略更优（如 0.975）的窗口
+      会被错过——两者都已过 0.78 阈值，置信度损失上界 ~0.05；
+    - 触发预算截断后以低潜力尾部被丢弃为代价换取确定性上界。
+    """
     normalized_needle, _ = _normalized_with_offsets(needle)
     n = len(normalized_needle)
     if n < 4 or not normalized_body:
@@ -197,7 +233,14 @@ def _similar_substring_matches(body: str, normalized_body: str, offset_map: List
     min_len = max(3, int(n * 0.7))
     max_len = max(n + 4, int(n * 1.25))
     step = 1 if n <= 10 else 2
+    max_windows = max(_SIMILAR_MIN_WINDOWS, _SIMILAR_WORK_BUDGET // (n * n))
     best = None
+    windows = 0
+    # seq2 固定为 needle：difflib 会缓存 seq2 的字符索引，逐窗口只换 seq1。
+    # autojunk 必须关掉：默认值只作用于 seq2，固定 seq2=needle 后会把“高频字符
+    # 超 1%”的判定挪到 needle 头上——n≥200 的名字会被整体 junk 成 0 匹配，
+    # 出现旧版能命中、新版返回空的静默回退（旧版 junk 作用在候选窗一侧）。
+    matcher = SequenceMatcher(None, "", normalized_needle, autojunk=False)
     for sentence in sentence_spans(body):
         sentence_start = int(sentence["start_offset"])
         sentence_text = str(sentence["text"])
@@ -205,12 +248,24 @@ def _similar_substring_matches(body: str, normalized_body: str, offset_map: List
         if not normalized_sentence:
             continue
         sentence_max_len = min(len(normalized_sentence), max_len)
-        for length in range(min_len, sentence_max_len + 1):
+        if sentence_max_len < min_len:
+            continue
+        exhausted = False
+        for length in sorted(range(min_len, sentence_max_len + 1), key=lambda v: abs(v - n)):
             for idx in range(0, len(normalized_sentence) - length + 1, step):
-                candidate = normalized_sentence[idx:idx + length]
-                ratio = SequenceMatcher(None, normalized_needle, candidate).ratio()
+                matcher.set_seq1(normalized_sentence[idx:idx + length])
+                ratio = matcher.ratio()
+                windows += 1
                 if best is None or ratio > best[0]:
                     best = (ratio, sentence_start + sentence_offsets[idx], sentence_start + sentence_offsets[idx + length - 1] + 1)
+                # 早停 / 预算耗尽都在最内层判断：单个长句子也要受预算约束
+                if best[0] >= _SIMILAR_EARLY_STOP_RATIO or windows >= max_windows:
+                    exhausted = True
+                    break
+            if exhausted:
+                break
+        if exhausted:
+            break
     if not best or best[0] < 0.78:
         return
     ratio, local_start, local_end = best

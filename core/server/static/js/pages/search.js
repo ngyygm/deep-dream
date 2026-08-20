@@ -647,11 +647,20 @@
   }
 
   // ---- Build vis-network graph from search results (uses shared GraphUtils) ----
-  function renderSearchGraph(entities, relations) {
-    if (typeof vis === 'undefined') return;
-
+  async function renderSearchGraph(entities, relations) {
     const canvas = document.getElementById('search-graph-canvas');
     if (!canvas) return;
+
+    // P3.9：vis-network 按需加载（仅"可视化"标签需要；加载失败则静默跳过，与旧版
+    // typeof vis === 'undefined' 的降级行为一致）
+    try {
+      await ensureVisNetwork();
+    } catch (loadErr) {
+      console.error('vis-network load failed:', loadErr);
+      return;
+    }
+    if (!canvas.isConnected) return;  // 等待期间页面已切走
+
 
     // Destroy previous network
     if (searchNetwork) {
@@ -1283,6 +1292,8 @@
 
   // ---- Main render ----
   async function render(container, params) {
+    // P3.9：进页即预取 vis-network（仅可视化视图需要，与首屏渲染并行）
+    ensureVisNetwork().catch(err => console.error('vis-network prefetch failed:', err));
     window.showEntityDetail = openSearchEntityDetail;
     window.showRelationDetail = openSearchRelationDetail;
     currentResults = null;

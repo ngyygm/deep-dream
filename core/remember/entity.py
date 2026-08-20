@@ -790,6 +790,10 @@ class EntityProcessor(_EntityBatchMixin):
     def _entity_tree_log(self) -> bool:
         return self._entity_tree_log_result
 
+    def release_candidate_run_cache(self) -> None:
+        """run 结束释放候选表 run 级投影缓存（orchestrator_pipeline 在所有窗口完成后调用）。"""
+        self._candidate_builder.release_run_cache()
+
     def encode_entities_for_candidate_table(
         self, extracted_entities: List[Dict[str, str]]
     ) -> Tuple[Optional[Any], Optional[Any]]:

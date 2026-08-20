@@ -8,6 +8,7 @@ Retrieval strategy:
 That's it. No Jaccard matrix, BM25, content-mention, neighbor expansion, etc.
 """
 import logging
+import threading
 import time
 from collections import OrderedDict
 from typing import Any, Dict, List, Optional, Tuple
@@ -17,7 +18,7 @@ import numpy as np
 from core.storage.sqlite.manager import SQLiteGraphStorageManager
 from core.llm.client import LLMClient
 from core.debug_log import log_struct as _dbg_struct
-from core.utils import wprint_info, _bigrams, calculate_jaccard_similarity, cosine_similarity
+from core.utils import wprint_info, calculate_jaccard_similarity, cosine_similarity
 from ._shared import normalize_entity_name_for_matching
 
 logger = logging.getLogger(__name__)
@@ -49,9 +50,133 @@ class EntityCandidateBuilder:
         self.merge_safe_embedding_threshold = merge_safe_embedding_threshold
         self.verbose = verbose
         self.entity_progress_verbose = entity_progress_verbose
+        # run 级投影索引缓存（P3.3）：同一 remember run 内窗口间库内容不变
+        # （除本 run 新建/更新的实体），全量投影扫描只做一次，后续窗口按
+        # observation rowid 增量并入；结构性变更（合并/重定向，向量缓存代数
+        # 变化）触发整体重建。缓存以 run 为界（token 取 storage._current_run_id，
+        # 与 save_entity 的 run_id 传递同款做法），run 结束由管线显式释放。
+        self._run_cache_lock = threading.Lock()
+        self._run_projection_cache: Optional[Dict[str, Any]] = None
 
     def _entity_tree_log(self) -> bool:
         return self.verbose and self.entity_progress_verbose
+
+    # ------------------------------------------------------------------
+    # Run-level projection index cache
+    # ------------------------------------------------------------------
+
+    def release_run_cache(self) -> None:
+        """释放 run 级投影缓存（run 结束调用；下一次构建时按新 run 重建）。"""
+        with self._run_cache_lock:
+            self._run_projection_cache = None
+
+    def _build_projection_cache_entries(self, projections: List[Dict]) -> Dict[str, Any]:
+        """把投影行组装为 run 缓存条目（fid/name/core 三索引 + 计数）。"""
+        fid_to_proj: Dict[str, Dict] = {}
+        name_to_proj: Dict[str, Dict] = {}
+        core_to_proj: Dict[str, Dict] = {}
+        for p in projections:
+            p["_core_name"] = normalize_entity_name_for_matching(p["name"])
+            fid_to_proj[p["family_id"]] = p
+            # 与逐窗口重建时的语义一致：name 后写覆盖，core 首见保留
+            name_to_proj[p["name"]] = p
+            core_to_proj.setdefault(p["_core_name"], p)
+        return {
+            "fid_to_proj": fid_to_proj,
+            "name_to_proj": name_to_proj,
+            "core_to_proj": core_to_proj,
+            "n": len(fid_to_proj),
+        }
+
+    def _refresh_run_cache_entries(self, cache: Dict[str, Any], fresh: List[Dict]) -> bool:
+        """把增量刷新取回的投影行并入 run 缓存（替换旧条目或新增）。
+
+        返回 True 表示检测到改名（name/core 匹配键被赢家腾空，次级同名
+        family 的回退映射无法从增量信息恢复）→ 调用方应丢弃缓存整体重建
+        （与全量重扫语义保持严格等价；run 内改名罕见，重建开销可忽略）。
+
+        键的覆盖语义（与全量重扫 DESC 序严格一致）：
+        - name 键：全局 updated_at 最旧的赢 → 缓存已有键保留（setdefault），
+          批内（fresh 均新于缓存条目）同名校晚者覆盖较早者；
+        - core 键：全局 updated_at 最新的赢 → 批内首见（最新）直接覆盖
+          缓存旧键（fresh 的 updated_at 必然新于缓存快照内所有条目）。
+        """
+        fid_to_proj = cache["fid_to_proj"]
+        name_to_proj = cache["name_to_proj"]
+        core_to_proj = cache["core_to_proj"]
+        # 批内聚合：name 后见（批内较旧）覆盖、core 首见（批内最新）保留
+        batch_name: Dict[str, Dict] = {}
+        batch_core: Dict[str, Dict] = {}
+        renamed = False
+        for p in fresh:
+            p["_core_name"] = normalize_entity_name_for_matching(p["name"])
+            old = fid_to_proj.get(p["family_id"])
+            if old is not None:
+                if old["name"] != p["name"] or old.get("_core_name") != p["_core_name"]:
+                    renamed = True
+                # 移除旧名映射（改名后旧名不应继续命中）
+                if name_to_proj.get(old["name"]) is old:
+                    del name_to_proj[old["name"]]
+                if core_to_proj.get(old.get("_core_name", "")) is old:
+                    del core_to_proj[old.get("_core_name", "")]
+                cache["n"] -= 1
+            fid_to_proj[p["family_id"]] = p
+            batch_name[p["name"]] = p
+            batch_core.setdefault(p["_core_name"], p)
+            cache["n"] += 1
+        if renamed:
+            return True
+        # name：缓存已有键（更旧）赢，批内新键补充
+        for name, p in batch_name.items():
+            name_to_proj.setdefault(name, p)
+        # core：批内首见（更新）直接覆盖缓存旧键
+        core_to_proj.update(batch_core)
+        return False
+
+    def _load_projection_index(self, snippet_len: int) -> Dict[str, Any]:
+        """加载（或增量刷新）run 级投影索引。step9 逐窗口链式调用，锁竞争可忽略。"""
+        token = getattr(self.storage, "_current_run_id", "") or ""
+        vgen = getattr(self.storage, "_vector_cache_generation", 0)
+        with self._run_cache_lock:
+            cache = self._run_projection_cache
+            if cache is not None and (
+                    cache.get("token") != token
+                    or cache.get("snippet_len") != snippet_len
+                    or cache.get("vgen") != vgen):
+                # run 边界 / 切片长度变化 / 结构性变更（合并、重定向、删除）→ 丢弃重建
+                cache = None
+            if cache is None:
+                # marker 先于全量扫描取：扫描期间并发生效的新行下一窗口会被增量
+                # 重复并入（无害），反之（marker 后取）则可能被永久漏掉
+                _, max_obs_rowid = self.storage.get_changed_entity_families_since_obs_rowid()
+                projections = self.storage.get_latest_entities_projection(snippet_len)
+                cache = self._build_projection_cache_entries(projections)
+                cache.update({"token": token, "snippet_len": snippet_len,
+                              "vgen": vgen, "max_obs_rowid": max_obs_rowid})
+                self._run_projection_cache = cache
+                cache["rebuild"] = True
+            else:
+                cache["rebuild"] = False
+                changed_fids, max_obs_rowid = (
+                    self.storage.get_changed_entity_families_since_obs_rowid(cache["max_obs_rowid"]))
+                if changed_fids:
+                    fresh = self.storage.get_entities_projection_for_families(changed_fids, snippet_len)
+                    renamed = self._refresh_run_cache_entries(cache, fresh)
+                    cache["max_obs_rowid"] = max_obs_rowid
+                    cache["refreshed"] = len(fresh)
+                    if renamed:
+                        # 改名使 name/core 回退映射不可增量恢复 → 丢弃整体重建
+                        cache = None
+                else:
+                    cache["refreshed"] = 0
+                if cache is None:
+                    projections = self.storage.get_latest_entities_projection(snippet_len)
+                    cache = self._build_projection_cache_entries(projections)
+                    cache.update({"token": token, "snippet_len": snippet_len,
+                                  "vgen": vgen, "max_obs_rowid": max_obs_rowid})
+                    self._run_projection_cache = cache
+                    cache["rebuild"] = True
+            return cache
 
     def build_candidate_table(
         self,
@@ -65,26 +190,21 @@ class EntityCandidateBuilder:
         """Build candidate table: vector top-K + exact name lookup."""
         _t0 = time.monotonic()
 
-        # ── Fetch projections & build lookup dicts ──
-        projections = self.storage.get_latest_entities_projection(
-            self.llm_client.effective_entity_snippet_length()
-        )
-        if not projections:
+        # ── Load run-level projection index (full scan once per run, incremental after) ──
+        _snippet_len = self.llm_client.effective_entity_snippet_length()
+        index = self._load_projection_index(_snippet_len)
+        n_projections = index["n"]
+        if not n_projections:
             wprint_info("[candidate_table] ⚠️ No existing entities for alignment")
             return {}
+        name_to_proj: Dict[str, Dict] = index["name_to_proj"]
+        core_to_proj: Dict[str, Dict] = index["core_to_proj"]
+        fid_to_proj: Dict[str, Dict] = index["fid_to_proj"]
 
-        name_to_proj: Dict[str, Dict] = {}
-        core_to_proj: Dict[str, Dict] = {}
-        fid_to_proj: Dict[str, Dict] = {}
-        for p in projections:
-            fid_to_proj[p["family_id"]] = p
-            name_to_proj[p["name"]] = p
-            core = normalize_entity_name_for_matching(p["name"])
-            p["_core_name"] = core
-            if core not in core_to_proj:
-                core_to_proj[core] = p
-
-        wprint_info(f"[candidate_table] {len(projections)} existing entities")
+        if index.get("rebuild"):
+            wprint_info(f"[candidate_table] {n_projections} existing entities (run 缓存重建)")
+        else:
+            wprint_info(f"[candidate_table] {n_projections} existing entities (run 缓存命中, 增量并入 {index.get('refreshed', 0)})")
 
         # ── Encode extracted entities ──
         name_embeddings: Optional[Any] = None
@@ -93,7 +213,6 @@ class EntityCandidateBuilder:
             name_embeddings, full_embeddings = prefetched_embeddings
         elif self.storage.embedding_client and self.storage.embedding_client.is_available():
             _N = len(extracted_entities)
-            _snippet_len = self.llm_client.effective_entity_snippet_length()
             _name_texts = [e["name"] for e in extracted_entities]
             _full_texts = [
                 f"# {e['name']}\n{e.get('content', '')[:_snippet_len]}"
@@ -108,39 +227,13 @@ class EntityCandidateBuilder:
 
         # Vectorized similarity via graph-local embedding matrix. Keep the
         # retrieval width bounded; exact/core-name matches are added separately.
-        top_k = max(self.max_alignment_candidates or self.max_similar_entities, len(projections), 10)
+        top_k = max(self.max_alignment_candidates or self.max_similar_entities, n_projections, 10)
         name_emb_scores, full_emb_scores = self._search_embedding_top_k(
             extracted_entities, name_embeddings, full_embeddings, top_k,
         )
 
         _t_vec = time.monotonic()
         wprint_info(f"[candidate_timing] embedding vector top-K search: {_t_vec - _t_encode:.3f}s")
-
-        # Pre-compute core names for all projections (avoids E × P calls to normalize function)
-        for p in projections:
-            p["_core_name"] = normalize_entity_name_for_matching(p["name"])
-
-        # Pre-compute core names + bigram sets for all extracted entities (avoids E × P recomputation)
-        _empty_fs = frozenset()
-        ext_bigrams = []
-        ext_core_bigrams = []
-        ext_core_names: List[str] = []
-        for ee in extracted_entities:
-            _n = ee["name"]
-            ext_bigrams.append(_bigrams(_n.lower().strip()) if _n else _empty_fs)
-            _c = normalize_entity_name_for_matching(_n)
-            ext_core_names.append(_c)
-            ext_core_bigrams.append(_bigrams(_c.lower().strip()) if _c else _empty_fs)
-        proj_bigrams = []
-        proj_core_bigrams = []
-        for p in projections:
-            _n = p["name"]
-            proj_bigrams.append(_bigrams(_n.lower().strip()) if _n else _empty_fs)
-            proj_core_bigrams.append(_bigrams(p["_core_name"].lower().strip()) if p["_core_name"] else _empty_fs)
-
-        # Build initial candidate rows
-        _t_matrix = time.monotonic()
-        wprint_info(f"[candidate_timing] matrix build + precompute: {_t_matrix - _t_encode:.3f}s")
 
         # ── Build per-entity candidates ──
         candidate_table: Dict[int, List[Dict[str, Any]]] = {}

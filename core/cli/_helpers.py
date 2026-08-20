@@ -364,20 +364,72 @@ def search_document_terms(
     per_term_limit: int = 5,
     total_limit: int = 20,
 ) -> list[dict]:
-    """Search documents for each expanded query term."""
+    """Search documents for each expanded query term.
+
+    P3.11 单遍多词：原先逐词调用 search_document_files——每个词都把全库文档
+    重读一遍（N 词 = N 次全库扫描）。现在一趟遍历文档行（每行只 lowercase
+    一次），同时匹配全部词并按词配额收集；合并阶段复刻旧的词序、跨词去重
+    与 total 截断语义。空词直接跳过（expand_query_terms 不会产出空词）。
+    """
+    needles: list[tuple[dict, str, str]] = [
+        (info, str(info.get("term") or ""), str(info.get("term") or "").lower())
+        for info in terms
+        if str(info.get("term") or "").strip()
+    ]
+    if not needles:
+        return []
+    quota = {term: 0 for _info, term, _needle in needles}
+    collected: dict[str, list[tuple[dict, int, str]]] = {term: [] for _info, term, _needle in needles}
+    for doc in iter_searchable_documents(storage):
+        if all(q >= per_term_limit for q in quota.values()):
+            break  # 每个词都已收满配额，无需再扫
+        path = Path(doc["resolved_path"])
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except UnicodeDecodeError:
+            try:
+                lines = path.read_text(encoding="utf-8-sig").splitlines()
+            except Exception:
+                continue
+        except OSError:
+            continue
+        lowered_lines = [(line_no, line, line.lower())
+                         for line_no, line in enumerate(lines, start=1)]
+        for info, term, needle in needles:
+            if quota[term] >= per_term_limit:
+                continue
+            for line_no, line, hay in lowered_lines:
+                if needle not in hay:
+                    continue
+                quota[term] += 1
+                collected[term].append((doc, line_no, line))
+                if quota[term] >= per_term_limit:
+                    break
     hits: list[dict] = []
     seen = set()
-    for term_info in terms:
-        term = term_info["term"]
-        for hit in search_document_files(storage, term, regex=False, limit=per_term_limit):
-            doc = hit.get("document") or {}
-            key = (doc.get("document_version_id"), doc.get("line_start"), hit.get("text"))
+    for info, term, _needle in needles:
+        for doc, line_no, line in collected.get(term, []):
+            key = (doc.get("document_version_id"), line_no, line)
             if key in seen:
                 continue
             seen.add(key)
-            hit["matched_term"] = term
-            hit["term_source"] = term_info.get("source", "expanded")
-            hits.append(hit)
+            hits.append({
+                "document": {
+                    "document_version_id": doc.get("document_version_id", ""),
+                    "title": doc.get("title", ""),
+                    "read_path": doc.get("resolved_path") or doc.get("read_path", ""),
+                    "source_mode": doc.get("source_mode", ""),
+                    "line_start": line_no,
+                    "line_end": line_no,
+                },
+                "episode": None,
+                "concepts": [],
+                "relations": [],
+                "verification": doc.get("verification", "raw_file"),
+                "text": line,
+                "matched_term": term,
+                "term_source": info.get("source", "expanded"),
+            })
             if len(hits) >= total_limit:
                 return hits
     return hits

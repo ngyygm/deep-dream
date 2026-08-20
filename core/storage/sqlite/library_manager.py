@@ -50,6 +50,17 @@ def _escape_like(value: str) -> str:
     return value.replace("!", "!!").replace("%", "!%").replace("_", "!_")
 
 
+def _placeholders(values: List[str]) -> str:
+    """生成 IN (...) 的占位符串（P3.5 批量查询用）。"""
+    return ",".join("?" for _ in values)
+
+
+def _in_clause_chunks(values: List[str], chunk_size: int = 400):
+    """把 id 列表切成不超过 chunk_size 的段，规避 SQLite 变量数上限（P3.5）。"""
+    for i in range(0, len(values), chunk_size):
+        yield values[i:i + chunk_size]
+
+
 class LibraryManager:
     """V1.5 storage facade used by the remember pipeline and server."""
 
@@ -99,6 +110,17 @@ class LibraryManager:
         self._entity_name_cache: Dict[str, str] = {}
         self._vector_cache_lock = threading.RLock()
         self._vector_role_cache: Dict[str, dict] = {}
+        # 向量缓存代数：结构性变更（合并/重定向/删除）时递增，
+        # 供 remember 管线的 run 级候选表缓存感知库结构变化并整体重建
+        self._vector_cache_generation: int = 0
+        # P3.2 per-run 文档级解析缓存：run_id → {解析前 doc_id: (doc_id, ver_id, title, content_hash)}
+        # 同一 run 的窗口复用首个窗口的文档级结果，避免每窗口重复
+        # 全文件读 / content hash / 去重查询 / current 重写 / 版本检查。
+        self._run_doc_lock = threading.Lock()
+        self._run_doc_cache: Dict[str, Dict[str, tuple]] = {}
+        # 文档级解析的 double-check 锁：与 _run_doc_lock 分开，锁序恒为
+        # _run_doc_init_lock → _run_doc_lock，读缓存（_run_doc_resolve）不排队。
+        self._run_doc_init_lock = threading.Lock()
 
         conn = self._conn()
         init_schema_v15(conn)
@@ -216,34 +238,63 @@ class LibraryManager:
             d["role"] = "document"
             if d.get("current_version_id"):
                 d["document_version_id"] = d["current_version_id"]
-        # Enrich with size from document_versions and counts
+        # P3.5：原实现逐文档 3 条 SQL（版本尺寸 + 实体数 + 关系数），
+        # 50 文档 ≈ 150 查询；改为 IN() 批量 + GROUP BY 聚合，恒定 4 条以内。
+        ver_ids = [d["document_version_id"] for d in docs if d.get("document_version_id")]
+        ver_sizes: Dict[str, Tuple] = {}
+        for chunk in _in_clause_chunks(ver_ids):
+            rows = conn.execute(
+                f"SELECT document_version_id, byte_size, char_count FROM document_versions "
+                f"WHERE document_version_id IN ({_placeholders(chunk)})",
+                chunk,
+            ).fetchall()
+            ver_sizes.update({r[0]: (r[1], r[2]) for r in rows})
+        doc_ids = list({d["document_id"] for d in docs if d.get("document_id")})
+        entity_counts: Dict[str, int] = {}
+        relation_counts: Dict[str, int] = {}
+        # P3.7：轻量 episode_count（走 idx_episodes_one_active_chunk 部分索引的批量
+        # COUNT）——integrity 字段从列表响应移除后，graph 页的窗口数改用它展示。
+        episode_counts: Dict[str, int] = {}
+        for chunk in _in_clause_chunks(ver_ids):
+            for row in conn.execute(
+                f"SELECT document_version_id, COUNT(*) FROM episodes "
+                f"WHERE status = 'active' AND document_version_id IN ({_placeholders(chunk)}) "
+                f"GROUP BY document_version_id",
+                chunk,
+            ).fetchall():
+                episode_counts[row[0]] = row[1]
+        for chunk in _in_clause_chunks(doc_ids):
+            for row in conn.execute(
+                f"SELECT ep.document_id, COUNT(DISTINCT eo.entity_family_id) "
+                f"FROM entity_mentions em "
+                f"JOIN entity_observations eo ON eo.entity_id = em.entity_id AND eo.status = 'active' "
+                f"JOIN episodes ep ON ep.episode_id = em.episode_id AND ep.status = 'active' "
+                f"WHERE ep.document_id IN ({_placeholders(chunk)}) "
+                f"GROUP BY ep.document_id",
+                chunk,
+            ).fetchall():
+                entity_counts[row[0]] = row[1]
+            for row in conn.execute(
+                f"SELECT ep.document_id, COUNT(DISTINCT ra.relation_family_id) "
+                f"FROM relation_assertions ra "
+                f"JOIN episodes ep ON ep.episode_id = ra.episode_id AND ep.status = 'active' "
+                f"WHERE ra.status = 'active' AND ep.document_id IN ({_placeholders(chunk)}) "
+                f"GROUP BY ep.document_id",
+                chunk,
+            ).fetchall():
+                relation_counts[row[0]] = row[1]
         for d in docs:
             ver_id = d.get("document_version_id")
-            if ver_id:
-                ver = conn.execute(
-                    "SELECT byte_size, char_count FROM document_versions WHERE document_version_id = ?",
-                    (ver_id,),
-                ).fetchone()
-                if ver:
-                    d["size"] = ver[0] or 0
-                    d["char_count"] = ver[1] or 0
+            if ver_id and ver_id in ver_sizes:
+                size, char_count = ver_sizes[ver_id]
+                d["size"] = size or 0
+                d["char_count"] = char_count or 0
             doc_id = d.get("document_id")
             if doc_id:
-                ep_cnt = conn.execute(
-                    "SELECT COUNT(DISTINCT eo.entity_family_id) FROM entity_mentions em "
-                    "JOIN entity_observations eo ON eo.entity_id = em.entity_id AND eo.status = 'active' "
-                    "JOIN episodes ep ON ep.episode_id = em.episode_id AND ep.status = 'active' "
-                    "WHERE ep.document_id = ?",
-                    (doc_id,),
-                ).fetchone()[0]
-                rel_cnt = conn.execute(
-                    "SELECT COUNT(DISTINCT ra.relation_family_id) FROM relation_assertions ra "
-                    "JOIN episodes ep ON ep.episode_id = ra.episode_id AND ep.status = 'active' "
-                    "WHERE ra.status = 'active' AND ep.document_id = ?",
-                    (doc_id,),
-                ).fetchone()[0]
-                d["entity_count"] = ep_cnt
-                d["relation_count"] = rel_cnt
+                d["entity_count"] = entity_counts.get(doc_id, 0)
+                d["relation_count"] = relation_counts.get(doc_id, 0)
+            if ver_id:
+                d["episode_count"] = episode_counts.get(ver_id, 0)
         return docs
 
     def count_documents(self, source_document: str = None) -> int:
@@ -677,21 +728,9 @@ class LibraryManager:
         ).fetchall()
         return {row[0]: row[1] for row in rows}
 
-    def get_latest_entities_projection(self, content_snippet_length: int = None) -> List[dict]:
-        snippet_len = content_snippet_length or self.entity_content_snippet_length
-        conn = self._conn()
-        rows = conn.execute(
-            "SELECT ef.entity_family_id, ef.canonical_name, ef.canonical_content, "
-            "  eo.entity_id, eo.content, eo.processed_at, "
-            "  (SELECT COUNT(*) FROM entity_observations eo2 "
-            "   WHERE eo2.entity_family_id = ef.entity_family_id AND eo2.status != 'deleted') as version_count "
-            "FROM entity_families ef "
-            "JOIN entity_observations eo ON eo.entity_family_id = ef.entity_family_id AND eo.status = 'active' "
-            "WHERE NOT EXISTS ("
-            "  SELECT 1 FROM entity_redirects r WHERE r.source_family_id = ef.entity_family_id"
-            ") "
-            "ORDER BY ef.updated_at DESC"
-        ).fetchall()
+    @staticmethod
+    def _assemble_entities_projection(rows, snippet_len: int) -> List[dict]:
+        """把投影 SQL 行组装为候选检索用 dict 列表（全量/子集查询共用）。"""
         results = []
         seen = set()
         for row in rows:
@@ -714,6 +753,70 @@ class LibraryManager:
                 ),
             })
         return results
+
+    def get_latest_entities_projection(self, content_snippet_length: int = None) -> List[dict]:
+        snippet_len = content_snippet_length or self.entity_content_snippet_length
+        conn = self._conn()
+        rows = conn.execute(
+            "SELECT ef.entity_family_id, ef.canonical_name, ef.canonical_content, "
+            "  eo.entity_id, eo.content, eo.processed_at, "
+            "  (SELECT COUNT(*) FROM entity_observations eo2 "
+            "   WHERE eo2.entity_family_id = ef.entity_family_id AND eo2.status != 'deleted') as version_count "
+            "FROM entity_families ef "
+            "JOIN entity_observations eo ON eo.entity_family_id = ef.entity_family_id AND eo.status = 'active' "
+            "WHERE NOT EXISTS ("
+            "  SELECT 1 FROM entity_redirects r WHERE r.source_family_id = ef.entity_family_id"
+            ") "
+            "ORDER BY ef.updated_at DESC"
+        ).fetchall()
+        return self._assemble_entities_projection(rows, snippet_len)
+
+    def get_entities_projection_for_families(self, family_ids: List[str],
+                                             content_snippet_length: int = None) -> List[dict]:
+        """按 family_id 子集重取 latest 投影（remember run 级候选表缓存的增量刷新用）。
+
+        与 get_latest_entities_projection 同一 JOIN/排序/去重语义，只是限定
+        family 范围，避免 run 内每窗口全库重扫。
+        """
+        if not family_ids:
+            return []
+        snippet_len = content_snippet_length or self.entity_content_snippet_length
+        conn = self._conn()
+        placeholders = ",".join("?" for _ in family_ids)
+        rows = conn.execute(
+            "SELECT ef.entity_family_id, ef.canonical_name, ef.canonical_content, "
+            "  eo.entity_id, eo.content, eo.processed_at, "
+            "  (SELECT COUNT(*) FROM entity_observations eo2 "
+            "   WHERE eo2.entity_family_id = ef.entity_family_id AND eo2.status != 'deleted') as version_count "
+            "FROM entity_families ef "
+            "JOIN entity_observations eo ON eo.entity_family_id = ef.entity_family_id AND eo.status = 'active' "
+            f"WHERE ef.entity_family_id IN ({placeholders}) "
+            "AND NOT EXISTS ("
+            "  SELECT 1 FROM entity_redirects r WHERE r.source_family_id = ef.entity_family_id"
+            ") "
+            "ORDER BY ef.updated_at DESC",
+            family_ids,
+        ).fetchall()
+        return self._assemble_entities_projection(rows, snippet_len)
+
+    def get_changed_entity_families_since_obs_rowid(self, after_obs_rowid: Optional[int] = None) -> Tuple[List[str], int]:
+        """返回 after_obs_rowid 之后写入过 observation 的 family_id 列表与当前最大 rowid。
+
+        run 内新建实体/已有实体新版本都会插入 entity_observations 行，rowid 单调
+        递增 → 一次轻量定位即可找到需增量刷新的 family（合并/重定向这类结构性
+        变更不产生新行，由向量缓存代数兜底触发整体重建）。
+        after_obs_rowid=None 表示只取当前最大 rowid 作初始 marker，不扫变更行。
+        """
+        conn = self._conn()
+        max_rowid = int(conn.execute(
+            "SELECT COALESCE(MAX(rowid), 0) FROM entity_observations").fetchone()[0])
+        if after_obs_rowid is None or after_obs_rowid >= max_rowid:
+            return [], max_rowid
+        rows = conn.execute(
+            "SELECT DISTINCT entity_family_id FROM entity_observations WHERE rowid > ?",
+            (after_obs_rowid,),
+        ).fetchall()
+        return [r[0] for r in rows], max_rowid
 
     def get_all_entities(self, limit: int = 100, offset: int = None,
                          exclude_embedding: bool = False) -> List[Entity]:
@@ -810,7 +913,9 @@ class LibraryManager:
         row = conn.execute(
             "SELECT * FROM relation_assertions "
             "WHERE relation_family_id = ? AND status = 'active' "
-            "ORDER BY processed_at DESC LIMIT 1",
+            # rowid DESC 显式决出并列 processed_at 的胜者（后插入者），
+            # 与 _batch_latest_assertions_by_family / _VECTOR_ROLE_CONFIG 一致
+            "ORDER BY processed_at DESC, rowid DESC LIMIT 1",
             (family_id,),
         ).fetchone()
         if not row:
@@ -903,7 +1008,7 @@ class LibraryManager:
         if not family_ids:
             return []
         conn = self._conn()
-        placeholders = ",".join("?" for _ in family_ids)
+        placeholders = _placeholders(family_ids)
         # Find relation_families where subject or object is in family_ids
         rows = conn.execute(
             f"SELECT DISTINCT rf.relation_family_id "
@@ -912,12 +1017,29 @@ class LibraryManager:
             f"   OR rf.object_entity_family_id IN ({placeholders})",
             family_ids + family_ids,
         ).fetchall()
-        rel_fids = [row[0] for row in rows]
+        rel_fids = [row[0] for row in rows][:limit]
+        if not rel_fids:
+            return []
+        # P3.5：原实现逐 fid 调 get_relation_by_family_id（每个 5-6 条 SQL，
+        # 20 fid ≈ 180 查询）；改为批量：families + 最新断言 + 最新观测 + embeddings。
+        fams = self._batch_relation_families(rel_fids)
+        asserts = self._batch_latest_assertions_by_family(rel_fids)
+        obs_ids = self._batch_latest_obs_ids_by_families(
+            [f.get("subject_entity_family_id", "") for f in fams.values()]
+            + [f.get("object_entity_family_id", "") for f in fams.values()])
+        embs = self._batch_relation_embedding_blobs(
+            [a.get("relation_id", "") for a in asserts.values()])
         relations = []
-        for fid in rel_fids[:limit]:
-            rel = self.get_relation_by_family_id(fid)
-            if rel:
-                relations.append(rel)
+        for fid in rel_fids:
+            fam = fams.get(fid)
+            row = asserts.get(fid)
+            if not fam or not row:
+                continue
+            relations.append(assertion_to_relation(
+                fam, row,
+                subject_entity_id=obs_ids.get(row.get("subject_entity_family_id") or "", ""),
+                object_entity_id=obs_ids.get(row.get("object_entity_family_id") or "", ""),
+                embedding_blob=embs.get(row.get("relation_id") or "")))
         return relations
 
     def get_entity_relations_by_family_id(self, family_id: str, limit: int = 100,
@@ -1002,21 +1124,17 @@ class LibraryManager:
         # 概念本身的时间列是 entity_observations.processed_at（P2.8 双界下推）
         obs_time_sql, obs_time_params = _time_bounds_sql(
             "eo.processed_at", time_after, time_before)
+        # P3.5：原实现逐结果 1 条观测查询（N+1）；改为按 episode_id 一批 IN() 取回。
+        obs_by_ep = self._batch_active_observations(
+            [r.get("episode_id") for r in results], "episode_id",
+            obs_time_sql, tuple(obs_time_params))
         entities = []
         for r in results:
             ep_id = r.get("episode_id")
             if not ep_id:
                 continue
-            conn = self._conn()
-            obs = conn.execute(
-                "SELECT eo.*, ef.canonical_name, ef.canonical_content "
-                "FROM entity_observations eo "
-                "JOIN entity_families ef ON ef.entity_family_id = eo.entity_family_id "
-                f"WHERE eo.episode_id = ? AND eo.status = 'active'{obs_time_sql}",
-                (ep_id,) + tuple(obs_time_params),
-            ).fetchone()
+            obs = obs_by_ep.get(ep_id)
             if obs:
-                obs = dict(obs)
                 fam = {"entity_family_id": obs["entity_family_id"],
                        "canonical_name": obs["canonical_name"],
                        "canonical_content": obs["canonical_content"]}
@@ -1042,25 +1160,36 @@ class LibraryManager:
         # 概念本身的时间列是 relation_assertions.processed_at（P2.8 双界下推）
         ra_time_sql, ra_time_params = _time_bounds_sql(
             "ra.processed_at", time_after, time_before)
+        # P3.5：原实现逐结果 1 条断言查询 + 1 次 family 探测（N+1）；改为两批 IN()。
+        ra_by_ep: Dict[str, dict] = {}
+        conn = self._conn()
+        ep_ids = [r.get("episode_id") for r in results]
+        for chunk in _in_clause_chunks([e for e in dict.fromkeys(ep_ids) if e]):
+            rows = conn.execute(
+                f"SELECT ra.* FROM relation_assertions ra "
+                f"WHERE ra.episode_id IN ({_placeholders(chunk)}) "
+                f"  AND ra.status = 'active'{ra_time_sql} "
+                f"ORDER BY ra.rowid",
+                tuple(chunk) + tuple(ra_time_params),
+            ).fetchall()
+            for row in rows:
+                ra_by_ep.setdefault(row["episode_id"], dict(row))
+        fams = self._batch_relation_families(
+            [ra["relation_family_id"] for ra in ra_by_ep.values()])
         relations = []
         for r in results:
             ep_id = r.get("episode_id")
             if not ep_id:
                 continue
-            conn = self._conn()
-            ra = conn.execute(
-                "SELECT ra.* FROM relation_assertions ra "
-                f"WHERE ra.episode_id = ? AND ra.status = 'active'{ra_time_sql}",
-                (ep_id,) + tuple(ra_time_params),
-            ).fetchone()
-            if ra:
-                ra = dict(ra)
-                fam = rel_repo.get_relation_family(conn, ra["relation_family_id"])
-                if fam:
-                    rel = assertion_to_relation(fam, ra)
-                    rel._pending_patches = []
-                    rel._score = r.get("_score", 0.0)
-                    relations.append(rel)
+            ra = ra_by_ep.get(ep_id)
+            if not ra:
+                continue
+            fam = fams.get(ra["relation_family_id"])
+            if fam:
+                rel = assertion_to_relation(fam, ra)
+                rel._pending_patches = []
+                rel._score = r.get("_score", 0.0)
+                relations.append(rel)
         return relations
 
     def search_entities_by_similarity(self, query_text: str, threshold: float = 0.3,
@@ -1091,18 +1220,14 @@ class LibraryManager:
         # 概念本身的时间列是 entity_observations.processed_at（P2.8 双界下推）
         obs_time_sql, obs_time_params = _time_bounds_sql(
             "eo.processed_at", time_after, time_before)
+        # P3.5：原实现逐候选 1 条观测查询（N+1）；改为按 entity_id 一批 IN() 取回。
+        obs_by_id = self._batch_active_observations(
+            [c["owner_id"] for _sim, c in scored[:max_results]], "entity_id",
+            obs_time_sql, tuple(obs_time_params))
         entities = []
         for sim, c in scored[:max_results]:
-            conn = self._conn()
-            obs = conn.execute(
-                "SELECT eo.*, ef.canonical_name, ef.canonical_content "
-                "FROM entity_observations eo "
-                "JOIN entity_families ef ON ef.entity_family_id = eo.entity_family_id "
-                f"WHERE eo.entity_id = ? AND eo.status = 'active'{obs_time_sql}",
-                (c["owner_id"],) + tuple(obs_time_params),
-            ).fetchone()
+            obs = obs_by_id.get(c["owner_id"])
             if obs:
-                obs = dict(obs)
                 fam = {"entity_family_id": obs["entity_family_id"],
                        "canonical_name": obs["canonical_name"],
                        "canonical_content": obs["canonical_content"]}
@@ -1136,18 +1261,45 @@ class LibraryManager:
             if sim >= threshold:
                 scored.append((sim, c))
         scored.sort(key=lambda x: -x[0])
+        # P3.5：原实现逐候选调 get_relation_by_absolute_id（每个 4-5 条 SQL，N+1）；
+        # 改为批量：断言+family 一批、最新观测 id 一批、embeddings 一批。
+        owner_ids = [c["owner_id"] for _sim, c in scored[:max_results]]
+        rows_by_id: Dict[str, dict] = {}
+        conn = self._conn()
+        for chunk in _in_clause_chunks([i for i in dict.fromkeys(owner_ids) if i]):
+            rows = conn.execute(
+                f"SELECT ra.*, rf.relation_family_id, rf.subject_entity_family_id, "
+                f"  rf.object_entity_family_id, rf.canonical_content "
+                f"FROM relation_assertions ra "
+                f"JOIN relation_families rf ON rf.relation_family_id = ra.relation_family_id "
+                f"WHERE ra.relation_id IN ({_placeholders(chunk)})",
+                chunk,
+            ).fetchall()
+            rows_by_id.update({r["relation_id"]: dict(r) for r in rows})
+        obs_ids = self._batch_latest_obs_ids_by_families(
+            [r.get("subject_entity_family_id") or "" for r in rows_by_id.values()]
+            + [r.get("object_entity_family_id") or "" for r in rows_by_id.values()])
+        embs = self._batch_relation_embedding_blobs(list(rows_by_id))
         relations = []
         for sim, c in scored[:max_results]:
-            rel = self.get_relation_by_absolute_id(c["owner_id"])
-            if rel:
-                # 概念本身的时间列是 relation_assertions.processed_at（P2.8 双界下推）
-                when = rel.processed_time
-                if lo_dt and (when is None or when < lo_dt):
-                    continue
-                if hi_dt and (when is None or when > hi_dt):
-                    continue
-                rel._pending_patches = []
-                relations.append(rel)
+            row = rows_by_id.get(c["owner_id"])
+            if not row:
+                continue
+            fam = {k: row[k] for k in ("relation_family_id", "subject_entity_family_id",
+                                       "object_entity_family_id", "canonical_content")}
+            rel = assertion_to_relation(
+                fam, row,
+                subject_entity_id=obs_ids.get(row.get("subject_entity_family_id") or "", ""),
+                object_entity_id=obs_ids.get(row.get("object_entity_family_id") or "", ""),
+                embedding_blob=embs.get(c["owner_id"]))
+            # 概念本身的时间列是 relation_assertions.processed_at（P2.8 双界下推）
+            when = rel.processed_time
+            if lo_dt and (when is None or when < lo_dt):
+                continue
+            if hi_dt and (when is None or when > hi_dt):
+                continue
+            rel._pending_patches = []
+            relations.append(rel)
         return relations
 
     def search_concepts_by_similarity(self, query_text: str, role: str = None,
@@ -1256,6 +1408,45 @@ class LibraryManager:
             result["processed_time"] = result.get("processed_at")
             return result
         return None
+
+    def get_concept_names_by_family_ids(self, family_ids: List[str]) -> Dict[str, str]:
+        """批量解析概念显示名（CLI concept get/neighbors 的逐邻居名字查询收敛，P3.5）。
+
+        取名语义与 get_concept_by_family_id 一致，按同优先级探测三类表：
+        entity → canonical_name；episode → heading_path 或 name；
+        relation family 无名称列，返回 fid 本身（原 ``.get("name", fid)`` 同值）。
+        未命中任何表的 fid 不出现在结果里——调用方保持"名字未解析"状态。
+        """
+        uniq = [f for f in dict.fromkeys(family_ids) if f]
+        if not uniq:
+            return {}
+        conn = self._conn()
+        names: Dict[str, str] = {}
+        remaining = list(uniq)
+        for chunk in _in_clause_chunks(remaining):
+            rows = conn.execute(
+                f"SELECT entity_family_id, canonical_name FROM entity_families "
+                f"WHERE entity_family_id IN ({_placeholders(chunk)})",
+                chunk,
+            ).fetchall()
+            names.update({r[0]: r[1] or "" for r in rows})
+        remaining = [f for f in remaining if f not in names]
+        for chunk in _in_clause_chunks(remaining):
+            rows = conn.execute(
+                f"SELECT relation_family_id FROM relation_families "
+                f"WHERE relation_family_id IN ({_placeholders(chunk)})",
+                chunk,
+            ).fetchall()
+            names.update({r[0]: r[0] for r in rows})
+        remaining = [f for f in remaining if f not in names]
+        for chunk in _in_clause_chunks(remaining):
+            rows = conn.execute(
+                f"SELECT episode_id, heading_path, name FROM episodes "
+                f"WHERE episode_id IN ({_placeholders(chunk)})",
+                chunk,
+            ).fetchall()
+            names.update({r[0]: (r[1] or "") or (r[2] or "") for r in rows})
+        return names
 
     def list_concepts(self, role: str = None, limit: int = 50, offset: int = 0,
                       time_point: str = None, name: str = None) -> List[dict]:
@@ -1715,29 +1906,36 @@ class LibraryManager:
     # Write methods (pipeline-facing)
     # ------------------------------------------------------------------
 
-    def save_episode(self, cache: Episode, text: str = "",
-                     document_path: str = "", doc_hash: str = "",
-                     start_offset: int = 0, end_offset = None,
-                     override_doc_id: str = "",
-                     heading_path: str = "",
-                     episode_type: str = "",
-                     run_id: str = "",
-                     retrieval_slice_chars: int = 0) -> str:
-        """Persist an Episode DTO and its source document."""
-        import hashlib
-        import uuid
+    def _run_doc_resolve(self, run_id: str, doc_key: str) -> Optional[tuple]:
+        """P3.2：读取 per-run 文档级解析缓存，未命中返回 None。"""
+        if not run_id:
+            return None
+        with self._run_doc_lock:
+            return self._run_doc_cache.get(run_id, {}).get(doc_key)
+
+    def _run_doc_store(self, run_id: str, doc_key: str,
+                       doc_id: str, ver_id: str, title: str,
+                       content_hash: str) -> None:
+        """P3.2：写入 per-run 文档级解析缓存（锁内 setdefault，保证恰好一次生效）。"""
+        if not run_id:
+            return
+        with self._run_doc_lock:
+            # 防膨胀：保留的 run 数超上限时整体清空（最坏情况重做一次文档级解析）
+            if len(self._run_doc_cache) >= 8:
+                self._run_doc_cache.clear()
+            self._run_doc_cache.setdefault(run_id, {}).setdefault(
+                doc_key, (doc_id, ver_id, title, content_hash)
+            )
+
+    def _resolve_episode_document(self, conn, text: str, source: str,
+                                  document_path: str, doc_id: str,
+                                  override_doc_id: str) -> tuple:
+        """save_episode 的文档级解析部分（P3.2：同一 run 只执行一次）。
+
+        全文件读 → content hash → 跨文档去重 → 文档行 ensure → current 重写
+        → 版本复用/快照。返回 (doc_id, ver_id, title, content_hash)。
+        """
         from . import content_fs
-
-        conn = self._conn()
-        text = text or cache.content
-        source = cache.source_document or ""
-
-        # Determine document identity from source or path
-        if override_doc_id:
-            doc_id = override_doc_id
-        else:
-            source_key = document_path or source or text[:64]
-            doc_id = f"doc_{hashlib.sha256(source_key.encode()).hexdigest()[:16]}"
 
         # Read full document content if available, otherwise fall back to text
         doc_text = text
@@ -1810,6 +2008,55 @@ class LibraryManager:
                 processed_at=_now_str(),
             )
             doc_repo.update_current_version(conn, doc_id, ver_id, updated_at=_now_str())
+        return doc_id, ver_id, title, content_hash
+
+    def save_episode(self, cache: Episode, text: str = "",
+                     document_path: str = "", doc_hash: str = "",
+                     start_offset: int = 0, end_offset = None,
+                     override_doc_id: str = "",
+                     heading_path: str = "",
+                     episode_type: str = "",
+                     run_id: str = "",
+                     retrieval_slice_chars: int = 0) -> str:
+        """Persist an Episode DTO and its source document."""
+        import hashlib
+        import uuid
+
+        conn = self._conn()
+        text = text or cache.content
+        source = cache.source_document or ""
+
+        # Determine document identity from source or path
+        if override_doc_id:
+            doc_id = override_doc_id
+        else:
+            source_key = document_path or source or text[:64]
+            doc_id = f"doc_{hashlib.sha256(source_key.encode()).hexdigest()[:16]}"
+
+        # P3.2 文档级工作每 run 一次：同一 run 的首个窗口完成文档级解析
+        # （全文件读、content hash、跨文档去重、current 重写、版本快照）后
+        # 记入 per-run 缓存，后续窗口直接复用 (doc_id, ver_id, title)，
+        # 每窗口只剩 episode 行写入 + FTS 同步。step1 串行路径不再被
+        # 文档级 I/O 逐窗口阻塞。run_id 为空（直连调用/测试）不启用，
+        # 保持原有逐次完整解析语义。
+        # 并发竞态：锁 + double-check 保证文档级初始化恰发生一次——管线下
+        # step1 本就在 _cache_lock 下串行（首窗口先行），这里是直连并发
+        # 调用路径的兜底；解析 + 入缓存同在 _run_doc_init_lock 内完成，
+        # _run_doc_store 的 setdefault 保证首个完成者的结果生效。
+        _doc_key = doc_id
+        _doc_resolved = self._run_doc_resolve(run_id, _doc_key)
+        if _doc_resolved is None:
+            if run_id:
+                with self._run_doc_init_lock:
+                    _doc_resolved = self._run_doc_resolve(run_id, _doc_key)
+                    if _doc_resolved is None:
+                        _doc_resolved = self._resolve_episode_document(
+                            conn, text, source, document_path, doc_id, override_doc_id)
+                        self._run_doc_store(run_id, _doc_key, *_doc_resolved)
+            else:
+                _doc_resolved = self._resolve_episode_document(
+                    conn, text, source, document_path, doc_id, override_doc_id)
+        doc_id, ver_id, title, content_hash = _doc_resolved
 
         # Create episode
         ep_id = cache.absolute_id or f"ep_{uuid.uuid4().hex[:16]}"
@@ -2249,10 +2496,133 @@ class LibraryManager:
         row = self._conn().execute(
             "SELECT entity_id FROM entity_observations "
             "WHERE entity_family_id = ? AND status = 'active' "
-            "ORDER BY processed_at DESC LIMIT 1",
+            # 同上：rowid 决并列，与 _batch_latest_obs_ids_by_families 一致
+            "ORDER BY processed_at DESC, rowid DESC LIMIT 1",
             (family_id,),
         ).fetchone()
         return row[0] if row else ""
+
+    # ── P3.5 批量读取 helpers（N+1 收敛用，语义与上面的单条版一致）──
+
+    def _batch_active_observations(self, ids: List[str], key_column: str,
+                                   time_sql: str = "",
+                                   time_params: Tuple = ()) -> Dict[str, dict]:
+        """按 key_column（episode_id / entity_id）批量取 active 观测 + family 名称列。
+
+        key_column='episode_id' 时每组保留 rowid 最小行：原单条查询走
+        idx_entityobs_episode(episode_id) 索引序 fetchone，显式 ORDER BY rowid
+        固化该语义；key_column='entity_id' 是主键，本就至多一行。
+        """
+        uniq = [i for i in dict.fromkeys(ids) if i]
+        if not uniq:
+            return {}
+        conn = self._conn()
+        out: Dict[str, dict] = {}
+        order_sql = " ORDER BY eo.rowid" if key_column == "episode_id" else ""
+        for chunk in _in_clause_chunks(uniq):
+            rows = conn.execute(
+                f"SELECT eo.*, ef.canonical_name, ef.canonical_content "
+                f"FROM entity_observations eo "
+                f"JOIN entity_families ef ON ef.entity_family_id = eo.entity_family_id "
+                f"WHERE eo.{key_column} IN ({_placeholders(chunk)}) "
+                f"  AND eo.status = 'active'{time_sql}{order_sql}",
+                tuple(chunk) + tuple(time_params),
+            ).fetchall()
+            for row in rows:
+                out.setdefault(row[key_column], dict(row))
+        return out
+
+    def _batch_relation_families(self, family_ids: List[str]) -> Dict[str, dict]:
+        """批量取 relation_families 行（rel_repo.get_relation_family 的批量版）。"""
+        uniq = [f for f in dict.fromkeys(family_ids) if f]
+        if not uniq:
+            return {}
+        conn = self._conn()
+        out: Dict[str, dict] = {}
+        for chunk in _in_clause_chunks(uniq):
+            rows = conn.execute(
+                f"SELECT * FROM relation_families "
+                f"WHERE relation_family_id IN ({_placeholders(chunk)})",
+                chunk,
+            ).fetchall()
+            out.update({r["relation_family_id"]: dict(r) for r in rows})
+        return out
+
+    def _batch_latest_assertions_by_family(self, family_ids: List[str]) -> Dict[str, dict]:
+        """批量取每个 relation family 的最新 active 断言。
+
+        等价于逐 fid ``ORDER BY processed_at DESC LIMIT 1``；NOT EXISTS 反连接
+        以 (processed_at, rowid) 决定次序（与 _VECTOR_ROLE_CONFIG 同模式），
+        走 idx_relassert_family(relation_family_id, processed_at DESC)。
+        """
+        uniq = [f for f in dict.fromkeys(family_ids) if f]
+        if not uniq:
+            return {}
+        conn = self._conn()
+        out: Dict[str, dict] = {}
+        for chunk in _in_clause_chunks(uniq):
+            rows = conn.execute(
+                f"SELECT ra.* FROM relation_assertions ra "
+                f"WHERE ra.relation_family_id IN ({_placeholders(chunk)}) "
+                f"  AND ra.status = 'active' "
+                f"  AND NOT EXISTS ("
+                f"    SELECT 1 FROM relation_assertions ra2 "
+                f"    WHERE ra2.relation_family_id = ra.relation_family_id "
+                f"      AND ra2.status = 'active' "
+                f"      AND (ra2.processed_at > ra.processed_at "
+                f"           OR (ra2.processed_at = ra.processed_at "
+                f"               AND ra2.rowid > ra.rowid)))",
+                chunk,
+            ).fetchall()
+            for row in rows:
+                out[row["relation_family_id"]] = dict(row)
+        return out
+
+    def _batch_latest_obs_ids_by_families(self, family_ids: List[str]) -> Dict[str, str]:
+        """批量取每个 entity family 的最新 active 观测 id（_latest_obs_id_for_family 的批量版）。"""
+        uniq = [f for f in dict.fromkeys(family_ids) if f]
+        if not uniq:
+            return {}
+        conn = self._conn()
+        out: Dict[str, str] = {}
+        for chunk in _in_clause_chunks(uniq):
+            rows = conn.execute(
+                f"SELECT eo.entity_family_id, eo.entity_id FROM entity_observations eo "
+                f"WHERE eo.entity_family_id IN ({_placeholders(chunk)}) "
+                f"  AND eo.status = 'active' "
+                f"  AND NOT EXISTS ("
+                f"    SELECT 1 FROM entity_observations eo2 "
+                f"    WHERE eo2.entity_family_id = eo.entity_family_id "
+                f"      AND eo2.status = 'active' "
+                f"      AND (eo2.processed_at > eo.processed_at "
+                f"           OR (eo2.processed_at = eo.processed_at "
+                f"               AND eo2.rowid > eo.rowid)))",
+                chunk,
+            ).fetchall()
+            out.update({r[0]: r[1] for r in rows})
+        return out
+
+    def _batch_relation_embedding_blobs(self, assertion_ids: List[str]) -> Dict[str, bytes]:
+        """批量取断言 embedding（_get_embedding_blob('relation_assert', …) 的批量版）。
+
+        ORDER BY created_at DESC 后每组取首行，与单条版"最新一条"一致。
+        """
+        uniq = [i for i in dict.fromkeys(assertion_ids) if i]
+        if not uniq:
+            return {}
+        conn = self._conn()
+        out: Dict[str, bytes] = {}
+        for chunk in _in_clause_chunks(uniq):
+            rows = conn.execute(
+                f"SELECT owner_id, vector FROM embeddings "
+                f"WHERE owner_type = 'relation_assert' "
+                f"  AND owner_id IN ({_placeholders(chunk)}) "
+                f"ORDER BY created_at DESC",
+                chunk,
+            ).fetchall()
+            for owner_id, vector in rows:
+                out.setdefault(owner_id, vector)
+        return out
 
     def _vector_cache_for_role(self, role: str) -> dict:
         """Return cached vector matrix for a role, loading on first access.
@@ -2276,6 +2646,8 @@ class LibraryManager:
         """
         with self._vector_cache_lock:
             self._vector_role_cache.clear()
+            # 代数递增：run 级候选表缓存据此感知结构变更并整体重建
+            self._vector_cache_generation += 1
 
     def _active_embedding_model(self) -> str:
         client = getattr(self, "embedding_client", None)

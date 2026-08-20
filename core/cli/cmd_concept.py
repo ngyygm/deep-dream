@@ -336,15 +336,29 @@ def get(ctx: click.Context, family_id: str) -> None:
             )
             relations = neighbors
             # Resolve neighbor names while storage is still open.
-            for r in relations:
-                target_fid = r.get("family_id", "")
-                if target_fid:
-                    try:
-                        _nbr = storage.get_concept_by_family_id(target_fid)
-                        if _nbr:
-                            r["name"] = _nbr.get("name", target_fid)
-                    except Exception:
-                        pass
+            # P3.5：逐邻居 get_concept_by_family_id 是 N+1；有批量接口时一次取回。
+            batch_names = getattr(storage, "get_concept_names_by_family_ids", None)
+            if batch_names is not None:
+                try:
+                    name_map = batch_names(
+                        [r.get("family_id", "") for r in relations if r.get("family_id")])
+                except Exception:
+                    name_map = None
+                if name_map is not None:
+                    for r in relations:
+                        target_fid = r.get("family_id", "")
+                        if target_fid and target_fid in name_map:
+                            r["name"] = name_map[target_fid]
+            else:
+                for r in relations:
+                    target_fid = r.get("family_id", "")
+                    if target_fid:
+                        try:
+                            _nbr = storage.get_concept_by_family_id(target_fid)
+                            if _nbr:
+                                r["name"] = _nbr.get("name", target_fid)
+                        except Exception:
+                            pass
         except Exception:
             pass
 
@@ -577,15 +591,41 @@ def neighbors(
             fid, max_depth=depth, max_results=limit,
         )
         # Resolve neighbor names while storage is still open.
-        for n in results:
-            target_fid = n.get("family_id", "")
-            if target_fid and not n.get("name"):
-                try:
-                    _nbr = storage.get_concept_by_family_id(target_fid)
-                    if _nbr:
-                        n["name"] = _nbr.get("name", target_fid)
-                except Exception:
-                    pass
+        # P3.5：逐邻居 get_concept_by_family_id 是 N+1；有批量接口时一次取回，
+        # 只回填原本缺名的邻居（与原逐条逻辑一致）。
+        batch_names = getattr(storage, "get_concept_names_by_family_ids", None)
+        if batch_names is not None:
+            try:
+                name_map = batch_names(
+                    [n.get("family_id", "") for n in results
+                     if n.get("family_id") and not n.get("name")])
+            except Exception:
+                name_map = None
+            if name_map is not None:
+                for n in results:
+                    target_fid = n.get("family_id", "")
+                    if target_fid and not n.get("name") and target_fid in name_map:
+                        n["name"] = name_map[target_fid]
+            else:
+                for n in results:
+                    target_fid = n.get("family_id", "")
+                    if target_fid and not n.get("name"):
+                        try:
+                            _nbr = storage.get_concept_by_family_id(target_fid)
+                            if _nbr:
+                                n["name"] = _nbr.get("name", target_fid)
+                        except Exception:
+                            pass
+        else:
+            for n in results:
+                target_fid = n.get("family_id", "")
+                if target_fid and not n.get("name"):
+                    try:
+                        _nbr = storage.get_concept_by_family_id(target_fid)
+                        if _nbr:
+                            n["name"] = _nbr.get("name", target_fid)
+                    except Exception:
+                        pass
 
     data = {
         "family_id": fid,
