@@ -87,7 +87,8 @@ class _EntityBatchMixin:
                                      _version_lock: Optional[Any] = None,
                                      entity_name_to_id: Optional[Dict[str, str]] = None,
                                      prefetched_embedding: Optional[Any] = None,
-                                     precomputed_verdict: Optional[Dict[str, Any]] = None) -> Tuple:
+                                     precomputed_verdict: Optional[Dict[str, Any]] = None,
+                                     _llm_budget: Optional[Any] = None) -> Tuple:
         """批量候选 + 批量裁决主路径，低置信度时回退旧逻辑。
 
         Args:
@@ -95,6 +96,8 @@ class _EntityBatchMixin:
             _version_lock: 可选线程锁，保护 already_versioned_family_ids 的并发访问。
             precomputed_verdict: 窗口级批量预裁决结果（strong-v1）；schema 与
                 resolve_entity_candidates_batch 返回一致，非空时跳过单体 LLM 调用。
+            _llm_budget: 单窗口逐实体补裁配额（_WindowAlignLLMBudget）；None=不限。
+                用尽时合成安全缺省 create_new 判决，免掉单体 LLM 调用。
         """
         entity_name = extracted_entity["name"]
         entity_content = extracted_entity["content"]
@@ -277,17 +280,44 @@ class _EntityBatchMixin:
                         action="alias_merge_guard_verified")
             wprint_info(f"[entity_timing] '{entity_name}' alias_merge → {time.monotonic() - _t_entity_start:.1f}s")
             return alias_merged
-        batch_result = precomputed_verdict or self.llm_client.resolve_entity_candidates_batch(
-            {
-                "family_id": "NEW_ENTITY",
-                "name": entity_name,
-                "content": entity_content,
-                "source_document": _doc_basename(source_document),
-                "version_count": 0,
-            },
-            candidates,
-            context_text=context_text,
-        )
+        if precomputed_verdict is not None:
+            batch_result = precomputed_verdict
+        elif _llm_budget is not None and not _llm_budget.take():
+            # 窗口补裁配额用尽：合成安全缺省判决。多余的 create_new family 可由
+            # 簇收敛/跨窗口去重后续合并（可逆），错并进同一家族不可逆——宁可新建。
+            # 与 LLM 判 create_new 走完全相同的下游路径，只是免掉这次调用。
+            _dbg_struct("decision_align_budget_exhausted",
+                        name=entity_name,
+                        n_candidates=len(candidates),
+                        best_score=f"{candidates[0].get('combined_score', 0):.3f}" if candidates else "0",
+                        action="create_new")
+            wprint_info(
+                f"[align-budget] '{entity_name}' 窗口对齐配额用尽 → create_new"
+                f" (top={candidates[0].get('name', '?')} {candidates[0].get('combined_score', 0):.2f})"
+                if candidates else f"[align-budget] '{entity_name}' 窗口对齐配额用尽 → create_new"
+            )
+            batch_result = {
+                "update_mode": "create_new",
+                # 0.7 对齐其它免 LLM 新建路径（无候选/低相似）的默认置信度：
+                # 这是全库受验最少的实体，存 1.0 会让真家族的 corroboration
+                # 加成（+0.05，上限 1.0）永远追不上配额复制体，检索排序被污染。
+                "confidence": 0.7,
+                "match_existing_id": "",
+                "merged_name": "",
+                "relations_to_create": [],
+            }
+        else:
+            batch_result = self.llm_client.resolve_entity_candidates_batch(
+                {
+                    "family_id": "NEW_ENTITY",
+                    "name": entity_name,
+                    "content": entity_content,
+                    "source_document": _doc_basename(source_document),
+                    "version_count": 0,
+                },
+                candidates,
+                context_text=context_text,
+            )
         confidence = float(batch_result.get("confidence", 0.0) or 0.0)
         update_mode = batch_result.get("update_mode") or "reuse_existing"
 
@@ -298,10 +328,29 @@ class _EntityBatchMixin:
                     match_existing_id=batch_result.get("match_existing_id", ""),
                     merged_name=batch_result.get("merged_name", ""),
                     n_relations=len(batch_result.get("relations_to_create", []) or []))
-        # Trust batch_resolve decisions directly — update_mode is the LLM's judgment,
-        # confidence is just self-reported noise. create_new = no match = fast path.
+        # ── 置信度门 + kill-switch（f7）──
+        # 低置信度 merge_into 判决不得直接执行：把不相关实体错并进同一家族
+        # 无法自动恢复，而多余的 create_new 可由跨窗口去重/后续 run 收敛——
+        # 与关系腿 relation.py 的 batch_resolution_confidence_threshold 门语义
+        # 对称（默认 0.75，conservative 档由 orchestrator 抬到 0.9）。
+        _batch_conf_threshold = float(
+            getattr(self, "batch_resolution_confidence_threshold", 0.75) or 0.0)
+        if (update_mode == "merge_into_latest"
+                and confidence < _batch_conf_threshold):
+            _dbg_struct("decision_batch_merge_low_confidence",
+                        name=entity_name, batch_conf=f"{confidence:.2f}",
+                        threshold=f"{_batch_conf_threshold:.2f}",
+                        matched_fid=batch_result.get("match_existing_id", ""),
+                        action="degrade_to_create_new")
+            if self._entity_tree_log():
+                wprint_info(f"  │  批量裁决置信度不足(conf={confidence:.2f}<{_batch_conf_threshold:.2f})，merge_into 降级为新建")
+            update_mode = "create_new"
+        # batch_resolution_enabled kill-switch：显式关闭批量裁决时走完整
+        # sequential fallback（getattr 兜底默认开启，兼容未设该属性的宿主）
+        if not getattr(self, "batch_resolution_enabled", True):
+            update_mode = "fallback"
+        # create_new（含上面置信度降级来的）是安全判决：不进入 match_existing 分支
         _safe_create_new = (update_mode == "create_new")
-
 
         _need_full_fallback = update_mode == "fallback"
         if _need_full_fallback:
@@ -355,7 +404,9 @@ class _EntityBatchMixin:
             })
 
         match_existing_id = (batch_result.get("match_existing_id") or "").strip()
-        if match_existing_id:
+        # _safe_create_new 生效：判决为 create_new（或被置信度门降级）时即便
+        # LLM 顺手填了 match_existing_id 也不得按 reuse/merge 处理
+        if match_existing_id and not _safe_create_new:
             matched_candidate = _cand_by_fid.get(match_existing_id)
             latest_entity = matched_candidate.get("entity") if matched_candidate else None
             if not latest_entity:
@@ -543,6 +594,29 @@ def _build_window_batch_verdicts(
         return {}
 
 
+class _WindowAlignLLMBudget:
+    """单窗口逐实体对齐补裁的 LLM 调用配额（线程安全）。
+
+    pipeline.remember.window_align_llm_cap（0/None=不限）。窗口批裁决缺票的
+    歧义带实体每个要补一次单体裁决调用；scope 尾部实体池变大时该数失控
+    （9→40+ calls/window，吞吐三倍化劣化），配额只剪病理窗口——正常窗口
+    补裁数在 2-4 个，默认帽不会触发。
+    """
+
+    __slots__ = ("remaining", "lock")
+
+    def __init__(self, cap: int):
+        self.remaining = max(0, int(cap))
+        self.lock = threading.Lock()
+
+    def take(self) -> bool:
+        with self.lock:
+            if self.remaining <= 0:
+                return False
+            self.remaining -= 1
+            return True
+
+
 def _process_entities_sequential(
     storage: SQLiteGraphStorageManager,
     llm_client: LLMClient,
@@ -566,6 +640,7 @@ def _process_entities_sequential(
     already_versioned_family_ids: Optional[set] = None,
     window_timings_ref: Optional[Dict[str, float]] = None,
     window_batch_alignment: bool = False,
+    window_align_llm_cap: int = 0,
 ) -> Tuple[List[Entity], List[Dict], Dict[str, str]]:
     """串行处理实体（原逻辑）。"""
     from core.remember.entity import _preprocess_extraction_context
@@ -599,6 +674,8 @@ def _process_entities_sequential(
             llm_client, extracted_entities, candidate_table, context_text)
         if window_timings_ref is not None:
             window_timings_ref["step9-window_batch_alignment"] = time.monotonic() - _t_wb
+    # 单窗口逐实体补裁配额（0=不限）
+    _llm_budget = _WindowAlignLLMBudget(window_align_llm_cap) if window_align_llm_cap else None
 
     total_entities = len(extracted_entities)
     _skipped_orphans = 0
@@ -640,6 +717,7 @@ def _process_entities_sequential(
             entity_name_to_id=entity_name_to_id,
             prefetched_embedding=_ent_emb,
             precomputed_verdict=_window_verdicts.get(extracted_entity.get("name", "")) or None,
+            _llm_budget=_llm_budget,
         )
 
         if entity:
@@ -664,6 +742,10 @@ def _process_entities_sequential(
             on_entity_processed(entity, entity_name_to_id, relations or [])
     if window_timings_ref is not None:
         window_timings_ref["step9-entity_align_loop"] = time.monotonic() - _t_loop
+
+    # ALIGN-V2：窗口实体全部落库后，应用窗口批量裁决带出的候选等价组（flag 关闭时为 no-op）
+    from core.remember.align_v2 import maybe_apply_window_cluster_dupes
+    maybe_apply_window_cluster_dupes(storage, _window_verdicts, verbose=entity_tree_log)
 
     # Batch corroboration: 独立来源印证 → 置信度提升
     if _corroborated_fids:
@@ -704,6 +786,7 @@ def _process_entities_parallel(
     already_versioned_family_ids: Optional[set] = None,
     window_timings_ref: Optional[Dict[str, float]] = None,
     window_batch_alignment: bool = False,
+    window_align_llm_cap: int = 0,
 ) -> Tuple[List[Entity], List[Dict], Dict[str, str]]:
     """多线程处理实体；合并冲突时以数据库中已存在的 family_id 为准。"""
     from core.remember.entity import _preprocess_extraction_context
@@ -736,6 +819,8 @@ def _process_entities_parallel(
     if window_batch_alignment:
         _window_verdicts = _build_window_batch_verdicts(
             llm_client, extracted_entities, candidate_table, context_text)
+    # 单窗口逐实体补裁配额（0=不限）；工作线程共享同一实例，锁保护递减
+    _llm_budget = _WindowAlignLLMBudget(window_align_llm_cap) if window_align_llm_cap else None
 
     _distill_step = llm_client._current_distill_step
     _priority = getattr(llm_client._priority_local, 'priority', LLM_PRIORITY_ALIGN)
@@ -788,6 +873,7 @@ def _process_entities_parallel(
             _version_lock=_version_lock,
             prefetched_embedding=_ent_emb,
             precomputed_verdict=_window_verdicts.get(extracted_entity.get("name", "")) or None,
+            _llm_budget=_llm_budget,
         )
         return (idx, entity, relations, name_mapping, to_persist)
 
@@ -990,5 +1076,9 @@ def _process_entities_parallel(
         for r in results:
             if r[1]:
                 on_entity_processed(r[1], entity_name_to_id, r[2] or [])
+
+    # ALIGN-V2：窗口实体全部落库后，应用窗口批量裁决带出的候选等价组（flag 关闭时为 no-op）
+    from core.remember.align_v2 import maybe_apply_window_cluster_dupes
+    maybe_apply_window_cluster_dupes(storage, _window_verdicts, verbose=entity_tree_log)
 
     return processed_entities, pending_relations, entity_name_to_id

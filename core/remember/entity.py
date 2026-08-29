@@ -74,7 +74,9 @@ def _construct_entity(name: str, content: str, episode_id: str,
     _now = datetime.now(timezone.utc)
     event_time = base_time if base_time is not None else _now
     processed_time = _now
-    entity_record_id = f"entity_{processed_time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+    # Keep enough entropy for high-throughput/concurrent writes.  Eight hex
+    # characters caused real UNIQUE collisions in the stress suite.
+    entity_record_id = f"entity_{processed_time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex}"
     source_document_only = _doc_basename(source_document)
     # Use LLM-provided confidence if available, otherwise default
     initial_confidence = confidence if confidence is not None else 0.7
@@ -209,6 +211,7 @@ def _process_entity_sequential_fallback(
     calculate_jaccard_fn,  # callable for _calculate_jaccard_similarity
     cosine_similarity_fn,  # callable for _cosine_similarity
     merge_two_contents_fn,  # callable for _merge_two_contents
+    gate_invalidate_fn,  # callable: 合并删除 family 后失效 FamilyWriteGate 缓存
     extracted_entity: Dict[str, str],
     episode_id: str,
     similarity_threshold: float,
@@ -533,6 +536,12 @@ def _process_entity_sequential_fallback(
                     # 如果有多个不同的目标实体ID，说明这些实体都是同一个实体
                     # 需要将其他目标实体ID合并到主要目标ID
                     storage.merge_entity_families(primary_target_id, other_targets)
+                    # 合并删除了 other_targets 的 family 行——失效 gate 的
+                    # name→fid 缓存，否则后续同 name 解析拿到死 fid，save 的
+                    # UPSERT 会复活已删 family（f2）
+                    if gate_invalidate_fn:
+                        for _dead_fid in other_targets:
+                            gate_invalidate_fn(_dead_fid)
 
                     # 更新映射：将所有指向旧实体ID的映射更新为新的 primary_target_id
                     # 这确保映射中不会保留指向已合并ID的失效映射
@@ -887,6 +896,7 @@ class EntityProcessor(_EntityBatchMixin):
                     already_versioned_family_ids=already_versioned_family_ids,
                     window_timings_ref=window_timings_ref,
                     window_batch_alignment=getattr(self, "window_batch_alignment_enabled", False),
+                    window_align_llm_cap=getattr(self, "window_align_llm_cap", 0),
                 )
             else:
                 result = self._process_entities_sequential(
@@ -906,6 +916,7 @@ class EntityProcessor(_EntityBatchMixin):
                     already_versioned_family_ids=already_versioned_family_ids,
                     window_timings_ref=window_timings_ref,
                     window_batch_alignment=getattr(self, "window_batch_alignment_enabled", False),
+                    window_align_llm_cap=getattr(self, "window_align_llm_cap", 0),
                 )
             return result
         finally:
@@ -926,7 +937,8 @@ class EntityProcessor(_EntityBatchMixin):
                         prefetched_embeddings: Optional[Tuple[Optional[Any], Optional[Any]]] = None,
                         already_versioned_family_ids: Optional[set] = None,
                         window_timings_ref: Optional[Dict[str, float]] = None,
-                        window_batch_alignment: bool = False) -> Tuple[List[Entity], List[Dict], Dict[str, str]]:
+                        window_batch_alignment: bool = False,
+                        window_align_llm_cap: int = 0) -> Tuple[List[Entity], List[Dict], Dict[str, str]]:
         return _process_entities_sequential_fn(
             storage=self.storage,
             llm_client=self.llm_client,
@@ -950,6 +962,7 @@ class EntityProcessor(_EntityBatchMixin):
             already_versioned_family_ids=already_versioned_family_ids,
             window_timings_ref=window_timings_ref,
             window_batch_alignment=window_batch_alignment,
+            window_align_llm_cap=window_align_llm_cap,
         )
 
     def _process_entities_parallel(self, extracted_entities: List[Dict[str, str]],
@@ -966,7 +979,8 @@ class EntityProcessor(_EntityBatchMixin):
                         prefetched_embeddings: Optional[Tuple[Optional[Any], Optional[Any]]] = None,
                         already_versioned_family_ids: Optional[set] = None,
                         window_timings_ref: Optional[Dict[str, float]] = None,
-                        window_batch_alignment: bool = False) -> Tuple[List[Entity], List[Dict], Dict[str, str]]:
+                        window_batch_alignment: bool = False,
+                        window_align_llm_cap: int = 0) -> Tuple[List[Entity], List[Dict], Dict[str, str]]:
         return _process_entities_parallel_fn(
             storage=self.storage,
             llm_client=self.llm_client,
@@ -992,6 +1006,7 @@ class EntityProcessor(_EntityBatchMixin):
             already_versioned_family_ids=already_versioned_family_ids,
             window_timings_ref=window_timings_ref,
             window_batch_alignment=window_batch_alignment,
+            window_align_llm_cap=window_align_llm_cap,
         )
 
     # 名称规范化：委托给共享模块
@@ -1141,6 +1156,7 @@ class EntityProcessor(_EntityBatchMixin):
             calculate_jaccard_fn=self._calculate_jaccard_similarity,
             cosine_similarity_fn=self._cosine_similarity,
             merge_two_contents_fn=self._merge_two_contents,
+            gate_invalidate_fn=self._invalidate_gate_fid,
             extracted_entity=extracted_entity,
             episode_id=episode_id,
             similarity_threshold=similarity_threshold,
@@ -1200,27 +1216,61 @@ class EntityProcessor(_EntityBatchMixin):
             if _norm and _norm not in _judged:
                 existing_fid = gate.resolve_name(name)
             if existing_fid:
-                latest = None
-                try:
-                    latest = self.storage.get_entity_by_family_id(existing_fid)
-                except Exception:
-                    latest = None
-                if latest is not None:
-                    gate.register(latest.name, latest.family_id)
+                latest = self._gate_latest_entity(existing_fid)
+                if latest is None and not gate.is_pending(existing_fid):
+                    # 缓存 fid 非 pending 却取不到实体：合并/删除后的死缓存
+                    # （invalidate 未被通知到的路径，如跨进程 CLI 合并直接删了
+                    # family 行）。失效该条目并重查一次存储——解析到别的 fid
+                    # 说明有合并幸存者，改在幸存者下建版本；否则在死 fid 下
+                    # 建版本会让 save 的 UPSERT 复活已删除的 family（f2）。
+                    gate.invalidate(family_id=existing_fid)
+                    _re_fid = gate.resolve_name(name) or None
+                    if _re_fid != existing_fid:
+                        existing_fid = _re_fid
+                        latest = self._gate_latest_entity(existing_fid) if existing_fid else None
+                    # _re_fid == existing_fid：family 行仍在（如 observation 全部
+                    # superseded），维持原行为——继续在该 fid 下建版本
+                if existing_fid:
+                    if latest is not None:
+                        # 存储已确认的 family：只更新名称缓存，不标 pending——
+                        # 反复 register 会让 pending 永久膨胀、死 fid 兜底被跳过
+                        gate.remember(latest.name, latest.family_id)
+                        return self._build_entity_version(
+                            latest.family_id, latest.name, latest.content or content,
+                            episode_id, source_document, base_time=base_time,
+                            old_content=latest.content or "",
+                            old_content_format=latest.content_format or "plain")
+                    # 缓存命中的 fid 尚未提交（并发 worker 刚 register，save 还在门外）：
+                    # 不得落穿另建新 family——直接在该 fid 下建版本，两 worker 收敛同一家族
                     return self._build_entity_version(
-                        latest.family_id, latest.name, latest.content or content,
-                        episode_id, source_document, base_time=base_time,
-                        old_content=latest.content or "",
-                        old_content_format=latest.content_format or "plain")
-                # 缓存命中的 fid 尚未提交（并发 worker 刚 register，save 还在门外）：
-                # 不得落穿另建新 family——直接在该 fid 下建版本，两 worker 收敛同一家族
-                return self._build_entity_version(
-                    existing_fid, name, content, episode_id, source_document,
-                    base_time=base_time, old_content="", old_content_format="plain")
+                        existing_fid, name, content, episode_id, source_document,
+                        base_time=base_time, old_content="", old_content_format="plain")
             entity = self._build_new_entity(name, content, episode_id, source_document,
                                             base_time=base_time, confidence=confidence)
             gate.register(name, entity.family_id)
             return entity
+
+    def _gate_latest_entity(self, family_id: str) -> Optional[Entity]:
+        """gate 临界区内取 family 现行实体；异常按"无行"处理。"""
+        try:
+            return self.storage.get_entity_by_family_id(family_id)
+        except Exception:
+            return None
+
+    def _invalidate_gate_fid(self, family_id: str) -> None:
+        """合并/删除 family 后失效 FamilyWriteGate 缓存（f2）。
+
+        gate 内存缓存若继续指向已删 fid，后续同名解析拿到死 fid，
+        pending 分支在死 fid 下建版本、save 的 UPSERT 复活已删 family。
+        storage 层不感知 judge，故在 pipeline 调用方失效。
+        """
+        gate = getattr(self, "family_write_gate", None)
+        if gate is None or not family_id:
+            return
+        try:
+            gate.invalidate(family_id=family_id)
+        except Exception:
+            pass
 
 
     def _create_new_entity(self, name: str, content: str, episode_id: str,

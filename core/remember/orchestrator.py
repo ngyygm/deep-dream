@@ -76,6 +76,17 @@ class TemporalMemoryGraphProcessor(_PipelineMixin, _PipelineExtractionMixin, _Cr
         # strong-v1：窗口级批量对齐裁决（step9 实体一次批量、step10 有已有关系的实体对一次批量）
         self.window_batch_alignment_enabled = bool(
             _remember_cfg.get("window_batch_alignment", self.remember_profile == "strong-v1"))
+        # ALIGN-V2 簇收敛对齐引擎（pipeline.remember.cluster_convergence）：
+        # 窗口等价组收集入队 + step9 跨窗口并行 + scope 末全库收敛合并
+        self.cluster_convergence_enabled = bool(_remember_cfg.get("cluster_convergence", False))
+        # 窗口对齐 LLM 配额（pipeline.remember.window_align_llm_cap，0=不限）：
+        # 窗口批裁决缺票实体逐个补裁的单窗口调用上限；超额实体安全缺省 create_new，
+        # 留给簇收敛/跨窗口去重后续合并。scope 尾部实体池变大时歧义带实体膨胀
+        # （9→40+ calls/window 三倍化），此帽只剪病理窗口，正常窗口（2-4 个）不触发。
+        self.window_align_llm_cap = max(0, int(_remember_cfg.get("window_align_llm_cap", 0) or 0))
+        if self.cluster_convergence_enabled:
+            from core.remember import align_v2
+            align_v2.set_enabled(True)
         self.remember_preserve_source_language = bool(_remember_cfg.get("preserve_source_language", False))
         self.remember_max_entities_per_window = max(
             1, int(_remember_cfg.get("max_entities_per_window") or REMEMBER_MAX_ENTITIES_PER_WINDOW_DEFAULT))
@@ -292,6 +303,7 @@ class TemporalMemoryGraphProcessor(_PipelineMixin, _PipelineExtractionMixin, _Cr
         _al = alignment_llm or {}
         _main_openai_extra_body = ((config or {}).get("llm") or {}).get("extra_body") or {}
         _llm_protocol = ((config or {}).get("llm") or {}).get("protocol")
+        _llm_json_object_mode = bool(((config or {}).get("llm") or {}).get("json_object_mode", False))
         # 主 client 与抽取 client 共享同一份调用计数，processor 层汇总输出
         self.llm_call_stats = LLMCallStats()
         self.llm_client = LLMClient(
@@ -311,6 +323,7 @@ class TemporalMemoryGraphProcessor(_PipelineMixin, _PipelineExtractionMixin, _Cr
             prompt_episode_max_chars=prompt_episode_max_chars,
             max_llm_concurrency=max_llm_concurrency,
             openai_extra_body=_main_openai_extra_body,
+            json_object_mode=_llm_json_object_mode,
             protocol=_llm_protocol,
             distill_data_dir=distill_data_dir,
             alignment_enabled=bool(_al.get("enabled", False)),
@@ -341,6 +354,8 @@ class TemporalMemoryGraphProcessor(_PipelineMixin, _PipelineExtractionMixin, _Cr
         # strong-v1 窗口级批量对齐开关传递给步骤9/10处理器
         self.entity_processor.window_batch_alignment_enabled = self.window_batch_alignment_enabled
         self.relation_processor.window_batch_alignment_enabled = self.window_batch_alignment_enabled
+        # 窗口对齐逐实体补裁配额（0=不限；见 _resolve_remember_config 处注释）
+        self.entity_processor.window_align_llm_cap = self.window_align_llm_cap
         # FamilyWriteGate：并发创建同名 family 的竞态兜底（库级共享，registry 注入）
         self.family_write_gate = family_write_gate
         self.entity_processor.family_write_gate = family_write_gate

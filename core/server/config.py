@@ -2,6 +2,7 @@
 统一服务 API 配置加载：从 JSON 文件读取并返回配置字典，缺失项使用默认值。
 """
 import json
+import math
 from pathlib import Path
 from typing import Any, Dict, Tuple
 
@@ -9,16 +10,29 @@ from core.exceptions import ConfigError
 
 
 DEFAULTS = {
-    "host": "0.0.0.0",
+    # Bind to loopback by default; exposing a local memory store on every
+    # interface must be an explicit deployment decision.
+    "host": "127.0.0.1",
     # 端口真相（P5）：与 README/CLAUDE.md/cmd_task._API_BASE 统一为 16200。
     # 旧默认 5001 与文档宣称的 16200 不符——不读配置启动时落在 5001，
     # CLI task 子命令却指向 16200，首个 remember 提交即连接失败。
     "port": 16200,
     "flask_threaded": True,
+    "max_request_bytes": 12 * 1024 * 1024,
+    "rate_limit_per_minute": 0,
     "monitor_refresh_seconds": 1.0,
     "auto_port_fallback": False,
     "log_mode": "detail",
     "storage_path": "./library",
+    "auth": {
+        # Loopback development stays frictionless.  Non-loopback listeners
+        # are forced into strict authentication by create_app regardless of
+        # these local defaults.
+        "enabled": None,
+        "strict_mode": None,
+        "allow_dev_key": False,
+        "api_keys_file": None,
+    },
     "storage": {
         "backend": "sqlite",
         "vector_dim": 1024,
@@ -42,12 +56,16 @@ DEFAULTS = {
         # null/"auto" 时按 base_url/api_key 嗅探（旧默认行为）。自建网关等
         # 嗅探无法识别的端点应显式设为 "openai"。
         "protocol": None,
+        # OpenAI 兼容端点请求 response_format={"type":"json_object"}（结构化调用
+        # 更稳，少重试）；默认关，确认端点支持后开启。端点 4xx 拒绝时自动降级重试
+        "json_object_mode": False,
         # 对齐阶段专用模型（双模型管线）；enabled=false 时与主模型共用
         "alignment": {},
     },
     "embedding": {
         "model": None,
         "device": "cpu",
+        "trust_remote_code": False,
         # 远程 OpenAI 兼容 /v1/embeddings 端点（设置任一即走远程，不加载本地模型）
         "api_key": None,
         "api_base": None,
@@ -68,6 +86,7 @@ DEFAULTS = {
         "task": {
             "load_cache_memory": False,
             "stall_timeout_seconds": 600,
+            "queue_max_size": 1000,
         },
         "integrity": {
             # P3.7：默认关闭——GET /documents 列表页逐文档全量评估代价过高，
@@ -102,8 +121,13 @@ DEFAULTS = {
             "max_relations_per_window": 24,
             "episode_slice_chars": 0,
             "family_write_gate_enabled": True,
-            # 窗口级批量对齐；null = 跟随 profile（strong-v1 默认开）
-            "window_batch_alignment": None,
+            # 窗口级批量对齐（主 run 实证等效 B1 档，默认显式开启）
+            "window_batch_alignment": True,
+            # ALIGN-V2 簇收敛对齐引擎：窗口等价组收集 + step9 跨窗口并行 +
+            # scope 末全库收敛合并（详见 core/remember/align_v2.py）。
+            # 2026-08-29 全量对比后转默认引擎：calls/doc -65%、tok/doc -20%、
+            # 三轨全升、重复家族率 0.8%→0.2%（research/reports/lme_v1_vs_v2_full_2026-08-29.md）
+            "cluster_convergence": True,
             # strong-v1 大窗口覆盖；null = 用 chunking.window_size
             "window_size_chars": None,
             "overlap_chars": None,
@@ -130,7 +154,11 @@ def resolve_embedding_model(embedding: Dict[str, Any]) -> Tuple[Any, Any, bool]:
             path = Path(model).expanduser().resolve()
             if path.exists():
                 return str(path), None, True
-            return None, model, False
+            # A model name (for example ``Qwen/...``) is a local/HuggingFace
+            # model request unless the operator explicitly disables local
+            # loading.  Returning False here silently degraded the example
+            # configuration to text-only search.
+            return None, model, embedding.get("use_local") is not False
     model_path = embedding.get("model_path")
     model_name = embedding.get("model_name")
     use_local = bool(embedding.get("use_local", True))
@@ -167,14 +195,30 @@ def _normalize_runtime_config(config: Dict[str, Any]) -> Dict[str, Any]:
     # 队列/窗口线程不超过 LLM 并发：max_concurrency=1 时整体按串行语义运行
     llm = cfg.get("llm") or {}
     max_llm_conc = llm.get("max_concurrency")
-    cap = int(max_llm_conc) if max_llm_conc is not None else None
+    try:
+        cap = None if max_llm_conc is None else int(max_llm_conc)
+    except (TypeError, ValueError):
+        # Preserve the malformed value so _validate_config can raise the
+        # documented ConfigError instead of leaking a raw ValueError here.
+        cap = None
 
-    def _resolve_worker_count(value, default: int, *, auto_default: int) -> int:
+    def _resolve_worker_count(value, default: int, *, auto_default: int) -> Any:
         if value is None:
             return int(default)
         if isinstance(value, str) and value.strip().lower() in {"auto", "default", ""}:
             return int(auto_default)
-        return int(value)
+        # Preserve malformed scalar types for the schema validator.  Calling
+        # int(1.5) here would silently turn an invalid worker count into 1;
+        # bool is likewise not a valid integer configuration even though it is
+        # an int subclass in Python.
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, float) and not value.is_integer():
+            return value
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return value
 
     # 回填新结构。用户只需要设置 llm.max_concurrency；window_workers 默认自动跟随，
     # 用于让多个 episode 形成流水线，但最终 LLM 请求仍由全局闸门限制。
@@ -182,17 +226,34 @@ def _normalize_runtime_config(config: Dict[str, Any]) -> Dict[str, Any]:
     conc["queue_workers"] = _resolve_worker_count(conc.get("queue_workers"), 1, auto_default=1)
     conc["window_workers"] = _resolve_worker_count(
         conc.get("window_workers"), _auto_windows, auto_default=_auto_windows)
-    if max_llm_conc is not None:
-        if cap >= 1:
+    if isinstance(cap, int) and cap >= 1:
+        if isinstance(conc.get("queue_workers"), int):
             conc["queue_workers"] = min(conc["queue_workers"], cap)
+        if isinstance(conc.get("window_workers"), int):
             conc["window_workers"] = min(conc["window_workers"], cap)
-    retry["queue_max_retries"] = int(
-        retry.get("queue_max_retries") if retry.get("queue_max_retries") is not None else 2)
-    retry["queue_retry_delay_seconds"] = float(
-        retry.get("queue_retry_delay_seconds")
-        if retry.get("queue_retry_delay_seconds") is not None else 2
-    )
-    task["load_cache_memory"] = bool(task.get("load_cache_memory", False))
+    _retries = retry.get("queue_max_retries")
+    try:
+        if isinstance(_retries, bool) or (
+            isinstance(_retries, float) and not _retries.is_integer()
+        ):
+            retry["queue_max_retries"] = _retries
+        else:
+            retry["queue_max_retries"] = int(_retries if _retries is not None else 2)
+    except (TypeError, ValueError):
+        retry["queue_max_retries"] = _retries
+    _retry_delay = retry.get("queue_retry_delay_seconds")
+    try:
+        retry["queue_retry_delay_seconds"] = float(_retry_delay if _retry_delay is not None else 2)
+    except (TypeError, ValueError):
+        retry["queue_retry_delay_seconds"] = _retry_delay
+    _cache_value = task.get("load_cache_memory", False)
+    if isinstance(_cache_value, str):
+        _cache_lower = _cache_value.strip().lower()
+        if _cache_lower in {"true", "1", "yes", "on"}:
+            _cache_value = True
+        elif _cache_lower in {"false", "0", "no", "off", ""}:
+            _cache_value = False
+    task["load_cache_memory"] = _cache_value
     runtime["concurrency"] = conc
     runtime["retry"] = retry
     runtime["task"] = task
@@ -274,9 +335,61 @@ def _validate_config(config: Dict[str, Any]) -> None:
     """校验配置值合法性，不合法时抛出 ConfigError。"""
     errors: list = []
 
+    def _number(value: Any, name: str, *, integer: bool = False,
+                minimum: float | None = None, maximum: float | None = None):
+        """Validate a scalar without leaking raw TypeError/ValueError."""
+        if isinstance(value, bool):
+            errors.append(f"{name} 应为{'整数' if integer else '数字'}，当前值: {value}")
+            return None
+        try:
+            if integer:
+                if isinstance(value, float) and not value.is_integer():
+                    raise ValueError
+                parsed = int(value)
+            else:
+                parsed = float(value)
+        except (TypeError, ValueError):
+            errors.append(f"{name} 应为{'整数' if integer else '数字'}，当前值: {value}")
+            return None
+        if not integer and not math.isfinite(parsed):
+            errors.append(f"{name} 必须是有限数字，当前值: {value}")
+            return None
+        if minimum is not None and parsed < minimum:
+            errors.append(f"{name} 应 >= {minimum}，当前值: {value}")
+        if maximum is not None and parsed > maximum:
+            errors.append(f"{name} 应 <= {maximum}，当前值: {value}")
+        return parsed
+
     port = config.get("port")
-    if port is not None and not (1 <= int(port) <= 65535):
-        errors.append(f"port 应在 1-65535 之间，当前值: {port}")
+    if port is not None:
+        _number(port, "port", integer=True, minimum=1, maximum=65535)
+    for bool_name in ("flask_threaded", "auto_port_fallback"):
+        if bool_name in config and not isinstance(config[bool_name], bool):
+            errors.append(f"{bool_name} 必须是 true/false")
+    _number(config.get("max_request_bytes", 12 * 1024 * 1024),
+            "max_request_bytes", integer=True,
+            minimum=1_048_576, maximum=256 * 1024 * 1024)
+    _number(config.get("rate_limit_per_minute", 0),
+            "rate_limit_per_minute", integer=True, minimum=0, maximum=100_000)
+    _number(config.get("monitor_refresh_seconds", 1.0),
+            "monitor_refresh_seconds", minimum=0.05, maximum=3600)
+    if "host" in config and not isinstance(config["host"], str):
+        errors.append("host 必须是字符串")
+
+    auth = config.get("auth")
+    if auth is not None:
+        if not isinstance(auth, dict):
+            errors.append("auth 必须是 JSON object")
+        else:
+            for auth_bool in ("enabled", "strict_mode", "allow_dev_key"):
+                if auth_bool in auth and auth[auth_bool] is not None and not isinstance(auth[auth_bool], bool):
+                    errors.append(f"auth.{auth_bool} 必须是 true/false")
+            if auth.get("api_keys_file") is not None and not isinstance(auth.get("api_keys_file"), str):
+                errors.append("auth.api_keys_file 必须是字符串")
+
+    embedding = config.get("embedding") or {}
+    if "trust_remote_code" in embedding and not isinstance(embedding["trust_remote_code"], bool):
+        errors.append("embedding.trust_remote_code 必须是 true/false")
 
     llm = config.get("llm") or {}
     if not llm.get("api_key") and not llm.get("base_url") and llm.get("mock") is not True:
@@ -291,6 +404,11 @@ def _validate_config(config: Dict[str, Any]) -> None:
             errors.append(f"llm.context_window_tokens 应为整数，当前值: {_cwt}")
     if llm.get("extra_body") is not None and not isinstance(llm.get("extra_body"), dict):
         errors.append("llm.extra_body 必须是 JSON object")
+    _number(llm.get("max_concurrency", 1), "llm.max_concurrency", integer=True, minimum=1, maximum=128)
+    _number(llm.get("timeout_seconds", 300), "llm.timeout_seconds", minimum=1, maximum=86400)
+    _number(llm.get("connect_timeout_seconds", 30), "llm.connect_timeout_seconds", minimum=0.1, maximum=3600)
+    if llm.get("max_tokens") is not None:
+        _number(llm.get("max_tokens"), "llm.max_tokens", integer=True, minimum=1, maximum=2_000_000)
     _proto = llm.get("protocol")
     if _proto is not None and str(_proto).strip().lower() not in {"auto", "openai", "ollama"}:
         errors.append(f"llm.protocol 只支持 openai/ollama/auto，当前值: {_proto}")
@@ -298,19 +416,45 @@ def _validate_config(config: Dict[str, Any]) -> None:
     chunking = config.get("chunking") or {}
     ws = chunking.get("window_size", 1000)
     ol = chunking.get("overlap", 200)
-    if ws is not None and ol is not None and int(ol) >= int(ws):
+    ws_i = _number(ws, "chunking.window_size", integer=True, minimum=1, maximum=1_000_000)
+    ol_i = _number(ol, "chunking.overlap", integer=True, minimum=0, maximum=999_999)
+    if ws_i is not None and ol_i is not None and ol_i >= ws_i:
         errors.append(f"chunking.overlap ({ol}) 必须小于 chunking.window_size ({ws})")
 
     pipeline = config.get("pipeline") or {}
+    search = pipeline.get("search") or {}
     thresholds = [
-        ("pipeline.similarity_threshold", pipeline.get("similarity_threshold")),
-        ("pipeline.jaccard_search_threshold", pipeline.get("jaccard_search_threshold")),
-        ("pipeline.embedding_name_search_threshold", pipeline.get("embedding_name_search_threshold")),
-        ("pipeline.embedding_full_search_threshold", pipeline.get("embedding_full_search_threshold")),
+        ("pipeline.search.similarity_threshold", search.get("similarity_threshold")),
+        ("pipeline.search.jaccard_search_threshold", search.get("jaccard_search_threshold")),
+        ("pipeline.search.embedding_name_search_threshold", search.get("embedding_name_search_threshold")),
+        ("pipeline.search.embedding_full_search_threshold", search.get("embedding_full_search_threshold")),
     ]
     for name, val in thresholds:
-        if val is not None and not (0.0 <= float(val) <= 1.0):
-            errors.append(f"{name} 应在 0.0-1.0 之间，当前值: {val}")
+        if val is not None:
+            _number(val, name, minimum=0.0, maximum=1.0)
+
+    runtime = config.get("runtime") or {}
+    concurrency = runtime.get("concurrency") or {}
+    retry = runtime.get("retry") or {}
+    _number(concurrency.get("queue_workers", 1), "runtime.concurrency.queue_workers", integer=True, minimum=1, maximum=64)
+    window_workers = concurrency.get("window_workers")
+    if window_workers is not None and not (isinstance(window_workers, str) and window_workers.strip().lower() in {"auto", "default"}):
+        _number(window_workers, "runtime.concurrency.window_workers", integer=True, minimum=1, maximum=64)
+    _number(retry.get("queue_max_retries", 2), "runtime.retry.queue_max_retries", integer=True, minimum=0, maximum=20)
+    _number(retry.get("queue_retry_delay_seconds", 2), "runtime.retry.queue_retry_delay_seconds", minimum=0, maximum=3600)
+    _number((runtime.get("task") or {}).get("queue_max_size", 1000),
+            "runtime.task.queue_max_size", integer=True, minimum=1, maximum=100_000)
+
+    storage = config.get("storage") or {}
+    _number(storage.get("vector_dim", 1024), "storage.vector_dim", integer=True, minimum=1, maximum=65536)
+
+    embedding = config.get("embedding") or {}
+    if embedding.get("max_concurrency") is not None:
+        _number(embedding.get("max_concurrency"), "embedding.max_concurrency", integer=True, minimum=1, maximum=64)
+    if embedding.get("cache_max_size") is not None:
+        _number(embedding.get("cache_max_size"), "embedding.cache_max_size", integer=True, minimum=1, maximum=1_000_000)
+    if embedding.get("cache_ttl") is not None:
+        _number(embedding.get("cache_ttl"), "embedding.cache_ttl", minimum=1, maximum=31_536_000)
 
     extraction = (pipeline.get("extraction") or {})
     _pmcmc = extraction.get("prompt_episode_max_chars", pipeline.get("prompt_episode_max_chars"))
@@ -367,6 +511,9 @@ def load_config(config_path: str) -> Dict[str, Any]:
 
     with open(path, "r", encoding="utf-8") as f:
         user = json.load(f)
+
+    if not isinstance(user, dict):
+        raise ConfigError("配置文件根节点必须是 JSON object")
 
     _warn_unknown_keys(user)
     # 先对用户原始配置做一次字段归一，避免默认值掩盖来源。

@@ -12,6 +12,7 @@ from concurrent.futures import CancelledError
 import json
 import os
 import random
+import re
 import threading
 import time
 
@@ -32,6 +33,10 @@ from .json_repair import (
     _JSON_RETRY_TRUNCATION_SUFFIX,
 )
 from .mock_response import mock_llm_response
+
+# openai SDK 系错误文本里的 4xx 状态码（"Error code: 400 - ..." / "status code: 404"）；
+# 无 status_code 属性的异常用它兜底识别"端点拒绝"类错误
+_RE_4XX_STATUS = re.compile(r"(?:error|status)[ _-]?code[: ]+4\d\d", re.IGNORECASE)
 from .prompts import (
     _LLM_BACKOFF_BASE,
     _LLM_BACKOFF_SCHEDULE,
@@ -57,6 +62,11 @@ except ImportError:  # pragma: no cover
 
 # Static error keywords — computed once at import time, not per-call
 _RATE_LIMIT_KEYWORDS = ("rate_limit", "rate limit", "tpm", "throttl", "capacity", "overloaded")
+# A persistent 429 must not pin a remember worker forever.  Keep the retry
+# budget generous for transient provider throttling, but fail with a
+# structured error once either bound is reached.
+_TPM_MAX_RETRIES = 8
+_TPM_MAX_DURATION_SECONDS = 15 * 60
 
 
 def _is_rate_limit_tpm_error(exc: BaseException, _pre_lowered: str = None) -> bool:
@@ -187,6 +197,7 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
                  shared_llm_semaphore: Optional[SharedLLMSemaphore] = None,
                  shared_llm_slot_max: Optional[int] = None,
                  openai_extra_body: Optional[Dict[str, Any]] = None,
+                 json_object_mode: bool = False,
                  protocol: Optional[str] = None,
                  alignment_base_url: Optional[str] = None,
                  alignment_api_key: Optional[str] = None,
@@ -236,6 +247,10 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
         self.think_mode = think_mode
         self.max_tokens = max_tokens
         self.openai_extra_body = dict(openai_extra_body or {})
+        # OpenAI 兼容端点的 response_format={"type":"json_object"}（llm.json_object_mode）：
+        # 仅对 call_llm_until_json_parses 这类结构化调用生效；端点不支持时自动降级关闭。
+        # 默认关闭——须显式确认端点支持后才开启（vllm/sglang 系网关普遍支持）。
+        self.json_object_mode = bool(json_object_mode)
         # 端点协议显式声明（llm.protocol）：openai/ollama；None/auto 回退 URL 嗅探。
         # 自建 OpenAI 兼容网关常不含 /v1 后缀、也不在已知域名表内，嗅探会误判为 Ollama。
         _proto = self._strip_opt_str(protocol)
@@ -629,8 +644,13 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
         _500_failures = 0
         _conn_failures = 0
         _tpm_round = 0
+        _tpm_started_at = time.monotonic()
         _detailed_error_logged = False
-        _priority_init = getattr(self._priority_local, "priority", LLM_PRIORITY_ALIGN)
+        # Extraction is the default route.  Alignment is opt-in via the
+        # thread-local priority; defaulting to it made startup health checks
+        # probe the wrong endpoint when the two channels were configured
+        # separately.
+        _priority_init = getattr(self._priority_local, "priority", LLM_PRIORITY_EXTRACT)
         _mt0 = self._effective_max_tokens_base(_priority_init)
         _effective_max_tokens = _mt0 if _mt0 is not None else 4096
         _cancel_fn = self._cancel_check_fn
@@ -660,15 +680,46 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
 
                 if self._use_openai_compatible_url(_eff_base, _eff_key):
                     _bu = (_eff_base or "").rstrip("/")
-                    resp = openai_compatible_chat(
-                        messages,
-                        model=_eff_model,
-                        base_url=_bu,
-                        api_key=_eff_key,
-                        timeout=timeout,
-                        max_tokens=_api_max_tokens,
-                        extra_body=self._effective_openai_extra_body(_priority_init),
+                    # json_mode 调用 + 端点已启用 json_object → 请求结构化输出。
+                    # 端点拒绝（400 提及 response_format）时永久降级并原位重试一次，
+                    # 避免每个调用都撞墙。
+                    _rf = (
+                        {"type": "json_object"}
+                        if (json_mode and getattr(self, "json_object_mode", False))
+                        else None
                     )
+                    resp = None
+                    for _rf_attempt in range(2):
+                        try:
+                            resp = openai_compatible_chat(
+                                messages,
+                                model=_eff_model,
+                                base_url=_bu,
+                                api_key=_eff_key,
+                                timeout=timeout,
+                                max_tokens=_api_max_tokens,
+                                extra_body=self._effective_openai_extra_body(_priority_init),
+                                response_format=_rf,
+                            )
+                            break
+                        except Exception as _rf_err:
+                            # 仅 4xx 才视为"端点确实不支持该参数"而降级——5xx/网络
+                            # 瞬态错误即使报错文本里带 response_format 也不能永久
+                            # 关闭；反过来端点用非英文/无细节文案拒绝参数时同样
+                            # 凭 4xx 状态码降级，不依赖报错措辞。
+                            _rf_status = getattr(_rf_err, "status_code", None)
+                            _rf_4xx = (
+                                isinstance(_rf_status, int) and 400 <= _rf_status < 500
+                            ) or _RE_4XX_STATUS.search(str(_rf_err)) is not None
+                            if _rf_attempt == 0 and _rf is not None and _rf_4xx:
+                                self.json_object_mode = False
+                                _rf = None
+                                wprint_info(
+                                    "[DeepDream] 端点拒绝 response_format=json_object（4xx），"
+                                    f"已自动禁用并以无结构化模式重试: {_rf_err}"
+                                )
+                                continue
+                            raise
                 else:
                     resp = ollama_chat(
                         messages,
@@ -823,15 +874,26 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
                         time.sleep(0.5)
                         continue
 
-                # 429 / TPM / 速率限制：视为可恢复，指数退避直至成功，不限制重试次数
+                # 429 / TPM / 速率限制：指数退避，但必须有轮次和总时限，
+                # 避免单个任务永久占住 worker。
                 if is_tpm_error:
                     _tpm_round += 1
+                    _tpm_elapsed = time.monotonic() - _tpm_started_at
+                    if _tpm_round > _TPM_MAX_RETRIES or _tpm_elapsed >= _TPM_MAX_DURATION_SECONDS:
+                        if _sem is not None:
+                            _sem.release()
+                        _sem_held = False
+                        raise RuntimeError(
+                            f"LLM rate limit retry budget exhausted after {_tpm_round - 1} retries "
+                            f"({_tpm_elapsed:.1f}s): {e}"
+                        ) from e
                     wait_seconds = min(
                         _LLM_BACKOFF_BASE ** min(_tpm_round, 12),
-                        _LLM_TPM_SLEEP_CAP_SECONDS,
+                        min(_LLM_TPM_SLEEP_CAP_SECONDS, 60),
                     )
                     wprint_info(
-                        f"LLM 速率限制（TPM/429），{wait_seconds}s 后重试（不限制次数，第 {_tpm_round} 次等待）: {e}"
+                        f"LLM 速率限制（TPM/429），{wait_seconds}s 后重试 "
+                        f"（第 {_tpm_round}/{_TPM_MAX_RETRIES} 次）: {e}"
                     )
                     if _sem is not None:
                         _sem.release()

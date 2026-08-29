@@ -347,7 +347,7 @@ class _RelationConstructionMixin:
         _now = datetime.now(timezone.utc)
         ts = base_time if base_time is not None else _now
         processed_time = _now
-        relation_record_id = f"relation_{processed_time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+        relation_record_id = f"relation_{processed_time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex}"
 
         if entity1.name <= entity2.name:
             entity1_absolute_id, entity2_absolute_id = entity1.absolute_id, entity2.absolute_id

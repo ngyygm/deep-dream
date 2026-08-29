@@ -367,6 +367,7 @@ class _Step1CacheWriterMixin:
             heading_path=heading_path,
             episode_type=episode_type,
             run_id=run_id,
+            chunk_index=max(0, int(window_index or 1) - 1),
             retrieval_slice_chars=_slice_chars,
         )
         self.current_episode = new_episode
@@ -853,4 +854,3 @@ class _PipelineExtractionMixin(_ResolutionMixin, _OrphanMixin, _Step1CacheWriter
             resolved_family_ids=_validated_fids,
             ambiguous_duplicate_names=ambiguous_duplicate_names,
         )
-

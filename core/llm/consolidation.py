@@ -349,7 +349,10 @@ class _ConsolidationMixin:
                 name = str(ent.get("name", ""))
                 cands = candidates_by_name.get(name) or []
                 cand_lines = []
-                for idx, cand in enumerate(cands[:6], 1):
+                # 候选列表不截断：候选表本身已按 max_alignment_candidates /
+                # max_similar_entities（默认 10）封顶，与单实体路径传全量一致；
+                # 截到前 6 会让真实匹配排在第 7-10 名的别名实体永远选不中
+                for idx, cand in enumerate(cands, 1):
                     _mt = cand.get('name_match_type', 'none')
                     mt_note = ""
                     if _mt == "substring":
@@ -366,16 +369,27 @@ class _ConsolidationMixin:
                     + ("\n".join(cand_lines) if cand_lines else "  （无候选）")
                     + "\n</待对齐实体>"
                 )
+            # ALIGN-V2：同时判定候选之间的等价类（重复 family 收敛）
+            from core.remember.align_v2 import align_v2_enabled
+            _cluster_mode = align_v2_enabled()
+            _dupes_schema = (
+                ', "duplicate_candidate_groups": [["family_id_a", "family_id_b"], ...]（仅当上方候选中存在明显同一实体的不同 family 时给出，每组≥2个 family_id，没有则省略该字段）'
+                if _cluster_mode else ""
+            )
+            _dupes_instr = (
+                "\n另外：请检查全部候选实体之间，若存在明显描述同一对象却重复入库的不同 family（不同 family_id），在 duplicate_candidate_groups 中按等价组列出。仅在非常确定时列出。"
+                if _cluster_mode else ""
+            )
             prompt = f"""以下是对同一窗口内多个待入库实体的对齐裁决任务。{context_note}
 
 <待对齐实体列表>
 {chr(10).join(blocks)}
 </待对齐实体列表>
 
-请逐实体判断：该实体与哪个候选在文本中扮演相同角色（角色指纹对比）。各实体独立判断，互不影响。
+请逐实体判断：该实体与哪个候选在文本中扮演相同角色（角色指纹对比）。各实体独立判断，互不影响。{_dupes_instr}
 
 输出一个 ```json``` 代码块：
-{{"results": [{{"name": "实体名", "match_existing_id": "", "update_mode": "reuse_existing|merge_into_latest|create_new", "merged_name": "", "relations_to_create": [{{"family_id": "", "relation_content": ""}}], "confidence": 0.0}}]}}"""
+{{"results": [{{"name": "实体名", "match_existing_id": "", "update_mode": "reuse_existing|merge_into_latest|create_new", "merged_name": "", "relations_to_create": [{{"family_id": "", "relation_content": ""}}], "confidence": 0.0}}]{_dupes_schema}}}"""
 
             try:
                 result, _ = self.call_llm_until_json_parses(
@@ -401,6 +415,16 @@ class _ConsolidationMixin:
                     row.setdefault("relations_to_create", [])
                     row.setdefault("confidence", 0.0)
                     verdicts[name] = row
+                if _cluster_mode:
+                    from core.remember.align_v2 import DUPES_KEY
+                    _groups = result.get("duplicate_candidate_groups")
+                    if isinstance(_groups, list) and _groups:
+                        # 多批调用时合并等价组（调用方在应用前会统一清洗）
+                        _existing = verdicts.get(DUPES_KEY)
+                        if isinstance(_existing, list):
+                            _existing.extend(_groups)
+                        else:
+                            verdicts[DUPES_KEY] = list(_groups)
             except Exception as e:
                 wprint_info(f"[window_batch] 实体窗口批量裁决失败（{start // max_entities_per_call + 1} 批）: {e}")
                 continue

@@ -1,6 +1,7 @@
 """
 Pipeline mixin: remember_text entry point, lifecycle helpers, and standalone main().
 """
+from functools import wraps
 from typing import Callable, Dict, Optional
 from datetime import datetime
 import hashlib
@@ -26,9 +27,117 @@ from .strong_steps import strong_extract_only
 logger = logging.getLogger(__name__)
 
 
+def _clear_pipeline_context(method):
+    """Ensure per-run storage context is cleared on every exit path.
+
+    ``remember_text`` has several early returns and control-flow exceptions
+    (pause/cancel/retry).  Keeping cleanup in a small wrapper prevents a
+    failed run from leaking its run/document identifiers into the next task.
+    """
+    @wraps(method)
+    def _wrapped(self, *args, **kwargs):
+        try:
+            return method(self, *args, **kwargs)
+        finally:
+            storage = getattr(self, "storage", None)
+            if storage is not None:
+                try:
+                    storage._current_run_id = ""
+                except Exception:
+                    logger.debug("failed to clear pipeline run context", exc_info=True)
+            # This attribute is consumed by save_episode while the method is
+            # running; it must not survive an early return or exception.
+            try:
+                self._pipeline_override_doc_id = ""
+            except Exception:
+                pass
+    return _wrapped
+
+
 class _PipelineMixin:
     """Mixin that provides the remember_text pipeline and lifecycle methods."""
 
+    def _recompute_document_publish_windows(self, *, last_episode_id: str,
+                                            override_doc_id: str, total_chunks: int,
+                                            failed_window_indices, successful_window_indices,
+                                            default_document_id: str):
+        """成功/暂停 epilogue 共用：从持久化 episodes 重算文档完整窗口集合。
+
+        Recompute publication from the document's persisted active windows,
+        rather than assuming that a targeted repair implies every other window
+        already exists — a new document repaired at W0 must remain hidden until
+        W1..Wn are actually present.  反过来，target_window_indices/start_chunk
+        限定的一次 run 没碰到的历史窗口，只要已有 active episode 就不算
+        missing：暂停/修复不得把已完整入库的文档整体降级出搜索。
+
+        Returns:
+            (document_id, active_window_indices)。本次 run 失败的窗口从
+            active 集合剔除；持久化查询不可用时保守退回本 run 的成功窗口
+            （绝不把未处理窗口当完整）。
+        """
+        _publish_document_id = default_document_id
+        _active_window_indices = set()
+        try:
+            _doc_row = None
+            if last_episode_id:
+                _doc_row = self.storage._conn().execute(
+                    "SELECT document_id, document_version_id FROM episodes "
+                    "WHERE episode_id = ?", (last_episode_id,)
+                ).fetchone()
+            if _doc_row is None and override_doc_id:
+                _doc_row = self.storage._conn().execute(
+                    "SELECT document_id, current_version_id FROM documents "
+                    "WHERE document_id = ?", (override_doc_id,)
+                ).fetchone()
+            if _doc_row:
+                _publish_document_id = _doc_row[0] or _publish_document_id
+                _ver_id = _doc_row[1]
+                if _ver_id:
+                    _rows = self.storage._conn().execute(
+                        "SELECT chunk_index FROM episodes "
+                        "WHERE document_version_id = ? AND status = 'active'",
+                        (_ver_id,),
+                    ).fetchall()
+                    _active_window_indices = {
+                        int(r[0]) for r in _rows
+                        if r[0] is not None and 0 <= int(r[0]) < total_chunks
+                    }
+        except Exception:
+            logger.debug("failed to recompute persisted ingestion windows", exc_info=True)
+
+        _active_window_indices.difference_update(failed_window_indices or ())
+        # If the storage lookup was unavailable, retain the conservative
+        # local successes only; never claim unprocessed windows complete.
+        if not _active_window_indices:
+            _active_window_indices = set(successful_window_indices or ())
+        return _publish_document_id, _active_window_indices
+
+    def _publish_final_ingestion_state(self, *, set_publish_state, last_episode_id: str,
+                                       override_doc_id: str, total_chunks: int,
+                                       failed_window_indices, successful_window_indices,
+                                       default_document_id: str):
+        """成功/暂停 epilogue 共用：按重算的完整窗口集合写 ingestion state。"""
+        if not set_publish_state:
+            return
+        _publish_document_id, _active_window_indices = self._recompute_document_publish_windows(
+            last_episode_id=last_episode_id,
+            override_doc_id=override_doc_id,
+            total_chunks=total_chunks,
+            failed_window_indices=failed_window_indices,
+            successful_window_indices=successful_window_indices,
+            default_document_id=default_document_id,
+        )
+        _expected_windows = set(range(total_chunks))
+        _missing_windows = sorted(_expected_windows - _active_window_indices)
+        _complete_windows = len(_expected_windows & _active_window_indices)
+        _publish_state = "active" if not _missing_windows else "incomplete"
+        set_publish_state(
+            _publish_document_id, _publish_state, total_windows=total_chunks,
+            complete_windows=_complete_windows,
+            missing_windows=_missing_windows,
+        )
+
+    @_clear_pipeline_context
     def remember_text(self, text: str, doc_name: str = "", verbose: bool = False,
                       verbose_steps: bool = True,
                       load_cache_memory: Optional[bool] = None,
@@ -496,7 +605,43 @@ class _PipelineMixin:
             _log_info("Remember","警告: step10 线程在 join(60s) 超时后仍在运行")
 
         if state.control_state["action"] is not None:
-            raise RememberControlFlow(state.control_state["action"])
+            _action = state.control_state["action"]
+            # Control-flow exceptions intentionally skip the normal success
+            # epilogue.  Close the persistence loop here so a paused/cancelled
+            # document is not left permanently in ``processing`` and its
+            # pipeline_run does not remain ``running`` forever.
+            try:
+                # 完整性口径与成功 epilogue 相同：从持久化 episodes 重算。
+                # 只按本次 run 的目标窗口断言完整性——run 之外的历史窗口
+                # 只要有 active episode 就不算 missing，暂停/修复中的文档
+                # 不会因本次 run 未跑完全库而被整体降级出搜索。
+                _successful_window_indices = [
+                    _local_to_abs(i) for i in range(N)
+                    if state.step10_results[i] is not None
+                ]
+                _failed_window_indices = [
+                    _local_to_abs(i) for i in range(N)
+                    if state.step10_results[i] is None and state.window_failures[i] is not None
+                ]
+                self._publish_final_ingestion_state(
+                    set_publish_state=_set_publish_state,
+                    last_episode_id=last_episode_id,
+                    override_doc_id=override_doc_id,
+                    total_chunks=total_chunks,
+                    failed_window_indices=_failed_window_indices,
+                    successful_window_indices=_successful_window_indices,
+                    default_document_id=_atomic_document_id,
+                )
+                pipeline_repo.update_pipeline_run_status(
+                    self.storage._conn(), _run_id,
+                    "paused" if _action == "pause" else "cancelled",
+                    finished_at=datetime.now().isoformat(),
+                    error=f"pipeline { _action } by control request",
+                )
+                self.storage._commit_if_not_batched(self.storage._conn())
+            except Exception:
+                logger.debug("failed to finalize controlled pipeline run", exc_info=True)
+            raise RememberControlFlow(_action)
 
         # If the main pipeline crashed (not just individual window errors),
         # propagate the exception so the worker can retry.
@@ -527,6 +672,19 @@ class _PipelineMixin:
             _dedup_exc = e
             logger.error("Cross-window dedup failed: %s", e, exc_info=True)
             _log_info("Remember",f"后处理｜跨窗口去重失败: {e}")
+
+        # ========== ALIGN-V2：文档末全库收敛扫描（同名/别名 family 簇合并） ==========
+        from core.remember.align_v2 import align_v2_enabled, doc_end_library_sweep
+        if align_v2_enabled():
+            try:
+                _sweep_stats = doc_end_library_sweep(self, verbose=verbose or verbose_steps)
+                if _sweep_stats.get("pairs_judged"):
+                    _log_info("Remember",
+                              f"align-v2 收敛扫描｜判定 {_sweep_stats['pairs_judged']} 对｜"
+                              f"合并 {_sweep_stats['merged']} family｜{_sweep_stats['seconds']}s")
+            except Exception as e:
+                logger.error("align-v2 library sweep failed: %s", e, exc_info=True)
+                _log_info("Remember", f"align-v2 收敛扫描失败: {e}")
 
         # ========== 计时汇总 ==========
         timing_summary = self._summarize_window_timings(state.window_timings)
@@ -565,11 +723,16 @@ class _PipelineMixin:
         ]
 
         if _set_publish_state:
-            _publish_state = "active" if not _failed_window_indices else "incomplete"
-            _set_publish_state(
-                _atomic_document_id, _publish_state, total_windows=total_chunks,
-                complete_windows=len(_successful_window_indices),
-                missing_windows=_failed_window_indices,
+            # 完整性口径与暂停 epilogue 共用：从持久化 active episodes 重算
+            #（见 _recompute_document_publish_windows docstring）
+            self._publish_final_ingestion_state(
+                set_publish_state=_set_publish_state,
+                last_episode_id=last_episode_id,
+                override_doc_id=override_doc_id,
+                total_chunks=total_chunks,
+                failed_window_indices=_failed_window_indices,
+                successful_window_indices=_successful_window_indices,
+                default_document_id=_atomic_document_id,
             )
 
         # Resolve document_version_id from the last episode

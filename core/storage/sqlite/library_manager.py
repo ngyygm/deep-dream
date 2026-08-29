@@ -241,7 +241,8 @@ class LibraryManager:
                        source_document: str = None) -> List[dict]:
         conn = self._conn()
         docs = doc_repo.list_documents(conn, status="active",
-                                       limit=limit, offset=offset)
+                                       limit=limit, offset=offset,
+                                       source_document=source_document)
         for d in docs:
             d["role"] = "document"
             if d.get("current_version_id"):
@@ -359,23 +360,73 @@ class LibraryManager:
         ver = dict(ver)
         doc = doc_repo.get_document(conn, ver["document_id"]) or {}
 
-        # Read content from managed file or snapshot
+        def _read_text_slice(path: Path, start: int, length: int) -> str:
+            """Read only the requested character window from a UTF-8 file."""
+            start = min(max(int(start or 0), 0), 10_000_000)
+            length = min(max(int(length or 0), 0), 10_000_000)
+            if length <= 0:
+                return ""
+            chunks: list[str] = []
+            skipped = 0
+            remaining = length
+            with path.open("r", encoding="utf-8", errors="replace") as handle:
+                while remaining > 0:
+                    block = handle.read(min(64 * 1024, remaining + max(0, start - skipped)))
+                    if not block:
+                        break
+                    if skipped < start:
+                        drop = min(start - skipped, len(block))
+                        skipped += drop
+                        block = block[drop:]
+                    if block:
+                        take = block[:remaining]
+                        chunks.append(take)
+                        remaining -= len(take)
+                    if skipped >= start and remaining <= 0:
+                        break
+            return "".join(chunks)
+
+        library_root = self.library_path.resolve()
+
+        def _library_file(raw_path: str) -> Path | None:
+            if not raw_path:
+                return None
+            candidate = (self.library_path / raw_path).resolve()
+            if not candidate.is_relative_to(library_root):
+                logger.warning("拒绝读取 library 外部路径: %s", raw_path)
+                return None
+            return candidate
+
+        # Current versions may use the mutable managed file.  Historical (or
+        # deleted) versions must prefer their immutable snapshot; falling back
+        # to ``documents.managed_path`` there would silently show today's
+        # content for an old-version request.
         content = ""
         read_path = ""
         managed = doc.get("managed_path", "")
-        if managed:
-            full = self.library_path / managed
-            if full.exists():
-                content = full.read_text(encoding="utf-8")
+        is_current = (
+            ver.get("status") == "active"
+            and ver.get("document_version_id") == doc.get("current_version_id")
+        )
+        if is_current and managed:
+            full = _library_file(managed)
+            if full and full.exists():
+                content = _read_text_slice(full, offset, limit)
                 read_path = managed
         if not content and ver.get("version_content_path"):
-            full = self.library_path / ver["version_content_path"]
-            if full.exists():
-                content = full.read_text(encoding="utf-8")
+            full = _library_file(ver["version_content_path"])
+            if full and full.exists():
+                content = _read_text_slice(full, offset, limit)
                 read_path = ver["version_content_path"]
-
-        if offset > 0 or limit < len(content):
-            content = content[offset:offset + limit]
+        # A current version created by an older database may not have a
+        # snapshot.  Only that current-version case may safely fall back to
+        # the managed file; historical requests remain empty rather than
+        # leaking the wrong version.
+        if not content and is_current and managed and not read_path:
+            full = _library_file(managed)
+            if full and full.exists():
+                content = _read_text_slice(full, offset, limit)
+                read_path = managed
         return {
             "content": content,
             "read_path": read_path,
@@ -391,6 +442,14 @@ class LibraryManager:
             return {}
         ver = dict(ver)
         doc = doc_repo.get_document(conn, ver["document_id"]) or {}
+        is_current = (
+            ver.get("status") == "active"
+            and ver.get("document_version_id") == doc.get("current_version_id")
+        )
+        preferred_read_path = (
+            doc.get("managed_path", "") if is_current
+            else ver.get("version_content_path", "")
+        )
         return {
             "document_version_id": document_version_id,
             "document_id": ver.get("document_id"),
@@ -405,14 +464,47 @@ class LibraryManager:
             "snapshot_path": ver.get("version_content_path", ""),
             "vault_root": doc.get("vault_root", ""),
             "relative_path": doc.get("relative_path", ""),
-            "read_path": doc.get("managed_path", "") or ver.get("version_content_path", ""),
+            "read_path": preferred_read_path,
         }
+
+    @staticmethod
+    def _delete_observations_safe(conn, obs_ids: list) -> None:
+        """删除 entity_observations 前先清掉指向它们的外键行。
+
+        对齐会把别的文档/episode 的 entity_mentions（entity_id 锚点）和
+        relation_assertions（subject/object_entity_id）挂到这些观察上；
+        mentions.episode_id 还可为 NULL。只按 episode 过滤删 mention、
+        只按 episode 删 assertion 会漏掉这些交叉引用，随后删除观察时触发
+        FOREIGN KEY 约束（部分失败文档重灌时暴露）。relation_mentions 对
+        relation_assertions 有 ON DELETE CASCADE，无需手动清。
+        """
+        if not obs_ids:
+            return
+        obs_ph = ",".join("?" for _ in obs_ids)
+        conn.execute(f"DELETE FROM entity_mentions WHERE entity_id IN ({obs_ph})", obs_ids)
+        cross_assert_ids = [r[0] for r in conn.execute(
+            f"SELECT relation_id FROM relation_assertions "
+            f"WHERE subject_entity_id IN ({obs_ph}) OR object_entity_id IN ({obs_ph})",
+            obs_ids + obs_ids,
+        ).fetchall()]
+        if cross_assert_ids:
+            cross_ph = ",".join("?" for _ in cross_assert_ids)
+            conn.execute(f"DELETE FROM relation_assertions WHERE relation_id IN ({cross_ph})", cross_assert_ids)
+            conn.execute(
+                f"DELETE FROM embeddings WHERE owner_type = 'relation_assert' AND owner_id IN ({cross_ph})",
+                cross_assert_ids,
+            )
+        conn.execute(f"DELETE FROM entity_observations WHERE entity_id IN ({obs_ph})", obs_ids)
+        conn.execute(
+            f"DELETE FROM embeddings WHERE owner_type = 'entity_obs' AND owner_id IN ({obs_ph})",
+            obs_ids,
+        )
 
     def delete_document_version(self, document_version_id: str) -> dict:
         conn = self._conn()
         # Get document_id
         ver = conn.execute(
-            "SELECT document_id FROM document_versions WHERE document_version_id = ?",
+            "SELECT document_id, status FROM document_versions WHERE document_version_id = ?",
             (document_version_id,),
         ).fetchone()
         if not ver:
@@ -420,9 +512,11 @@ class LibraryManager:
         doc_id = ver[0]
         now = now_utc_str()
 
-        # 1. Cascade-delete episodes belonging to this document
+        # 1. Cascade-delete episodes belonging to this *version*.  Filtering
+        # only by document_id used to erase every historical version when a
+        # user removed one old snapshot.
         ep_ids = [r[0] for r in conn.execute(
-            "SELECT episode_id FROM episodes WHERE document_id = ?", (doc_id,)
+            "SELECT episode_id FROM episodes WHERE document_version_id = ?", (document_version_id,)
         ).fetchall()]
 
         if ep_ids:
@@ -446,23 +540,25 @@ class LibraryManager:
             ).fetchall()]
             # Delete relation_assertions linked to these episodes
             conn.execute(f"DELETE FROM relation_assertions WHERE episode_id IN ({ph})", ep_ids)
-            # Collect observation IDs for embedding cleanup
+            # Collect observation IDs, then delete them FK-safely: alignment
+            # can anchor other episodes' mentions / assertions onto them.
             obs_ids_to_delete = [r[0] for r in conn.execute(
                 f"SELECT entity_id FROM entity_observations WHERE episode_id IN ({ph})", ep_ids
             ).fetchall()]
-            # Delete entity_observations linked to these episodes
-            conn.execute(f"DELETE FROM entity_observations WHERE episode_id IN ({ph})", ep_ids)
+            self._delete_observations_safe(conn, obs_ids_to_delete)
             # Delete embeddings linked to these episodes
             conn.execute(f"DELETE FROM embeddings WHERE owner_type = 'episode' AND owner_id IN ({ph})", ep_ids)
-            # Delete embeddings for the observations and assertions we just removed
-            if obs_ids_to_delete:
-                obs_ph = ",".join("?" for _ in obs_ids_to_delete)
-                conn.execute(f"DELETE FROM embeddings WHERE owner_type = 'entity_obs' AND owner_id IN ({obs_ph})", obs_ids_to_delete)
+            # Delete embeddings for the assertions we just removed
             if rel_assert_ids_to_delete:
                 rass_ph = ",".join("?" for _ in rel_assert_ids_to_delete)
                 conn.execute(f"DELETE FROM embeddings WHERE owner_type = 'relation_assert' AND owner_id IN ({rass_ph})", rel_assert_ids_to_delete)
 
-            # Delete episodes
+            # Delete episodes. document_links.from_episode_id 外键指向本版本
+            # episodes（vault_indexer 写入），且无 ON DELETE 级联——必须先删
+            # 这些链接行再删 episodes，否则 FOREIGN KEY 约束失败并留下
+            # 部分 DML（版本级链接清理在函数尾部另行兜底）。
+            conn.execute(f"DELETE FROM document_links WHERE from_episode_id IN ({ph})", ep_ids)
+            conn.execute(f"DELETE FROM episodes_fts WHERE episode_id IN ({ph})", ep_ids)
             conn.execute(f"DELETE FROM episodes WHERE episode_id IN ({ph})", ep_ids)
 
             # For entity families: only delete if no observations remain
@@ -501,10 +597,7 @@ class LibraryManager:
                         list(to_delete),
                     ).fetchall()] if to_delete else []
                     conn.execute(f"DELETE FROM entity_mentions WHERE entity_family_id IN ({del_ph})", list(to_delete))
-                    conn.execute(f"DELETE FROM entity_observations WHERE entity_family_id IN ({del_ph})", list(to_delete))
-                    if orphan_obs_ids:
-                        oobs_ph = ",".join("?" for _ in orphan_obs_ids)
-                        conn.execute(f"DELETE FROM embeddings WHERE owner_type = 'entity_obs' AND owner_id IN ({oobs_ph})", orphan_obs_ids)
+                    self._delete_observations_safe(conn, orphan_obs_ids)
                     conn.execute(f"DELETE FROM embeddings WHERE owner_type = 'entity_family' AND owner_id IN ({del_ph})", list(to_delete))
                     conn.execute(f"DELETE FROM entity_families WHERE entity_family_id IN ({del_ph})", list(to_delete))
 
@@ -529,15 +622,23 @@ class LibraryManager:
                         conn.execute(f"DELETE FROM embeddings WHERE owner_type = 'relation_assert' AND owner_id IN ({oa_ph})", orphan_assert_ids)
                     conn.execute(f"DELETE FROM relation_families WHERE relation_family_id IN ({del_ph})", list(to_delete))
 
-        # Delete document_links for this document
-        conn.execute("DELETE FROM document_links WHERE from_document_id = ?", (doc_id,))
+        # Delete links originating from this version only; other snapshots of
+        # the same document retain their provenance.
+        conn.execute("DELETE FROM document_links WHERE from_document_version_id = ?", (document_version_id,))
 
         # Soft-delete document_version and document
         conn.execute(
             "UPDATE document_versions SET status = 'deleted', processed_at = ? WHERE document_version_id = ?",
             (now, document_version_id),
         )
-        doc_repo.soft_delete_document(conn, doc_id, updated_at=now)
+        active = conn.execute(
+            "SELECT document_version_id FROM document_versions WHERE document_id = ? AND status = 'active' ORDER BY processed_at DESC LIMIT 1",
+            (doc_id,),
+        ).fetchone()
+        if active:
+            doc_repo.update_current_version(conn, doc_id, active[0], updated_at=now)
+        else:
+            doc_repo.soft_delete_document(conn, doc_id, updated_at=now)
         conn.commit()
         return {"deleted": True, "document_id": doc_id}
 
@@ -554,14 +655,18 @@ class LibraryManager:
     def get_episode(self, cache_id: str) -> Optional[dict]:
         return ep_repo.get_episode(self._conn(), cache_id)
 
-    def get_episode_content_detail(self, cache_id: str) -> Optional[dict]:
+    def get_episode_content_detail(self, cache_id: str, *, max_chars: int = 200_000) -> Optional[dict]:
         row = ep_repo.get_episode(self._conn(), cache_id)
         if not row:
             return None
+        max_chars = min(max(int(max_chars or 200_000), 1), 1_000_000)
+        source_text = row.get("source_text", "") or ""
+        memory_text = row.get("memory_text", "") or ""
         return {
             "episode_id": row.get("episode_id", ""),
-            "source_text": row.get("source_text", ""),
-            "memory_text": row.get("memory_text", ""),
+            "source_text": source_text[:max_chars],
+            "memory_text": memory_text[:max_chars],
+            "truncated": len(source_text) > max_chars or len(memory_text) > max_chars,
             "heading_path": row.get("heading_path", ""),
             "start_offset": row.get("start_offset", 0),
             "end_offset": row.get("end_offset", 0),
@@ -1103,23 +1208,124 @@ class LibraryManager:
                                 source_document: str = None,
                                 time_after: str = None,
                                 time_before: str = None) -> List[dict]:
-        raw = search_repo.search_fts(self._conn(), query, limit=limit,
-                                     time_after=time_after, time_before=time_before)
-        if raw:
-            scores = [r.get("score", 0) for r in raw]
-            min_s, max_s = min(scores), max(scores)
-            span = max_s - min_s
-            for r in raw:
-                # FTS5 bm25() returns negative values; most negative = most relevant.
-                # Invert so most relevant → 1.0.
-                r["_score"] = (max_s - r.get("score", 0)) / span if span else 0.5
-        return raw
+        """Return normalized concept DTOs rather than raw episode FTS rows.
+
+        The old role-less path returned ``episodes_fts`` records with no
+        ``family_id``/``role``.  Consumers then treated an episode as a
+        concept and RRF collapsed unrelated hits under an empty key.  Keep
+        the episode FTS index as the evidence source, but hydrate both concept
+        roles and expose one stable DTO shape.  Pure document rows with no
+        extracted concept receive an explicit ``role='episode'`` DTO so
+        document search remains useful without masquerading as a concept.
+        """
+        roles = [role] if role in {"entity", "relation"} else ["entity", "relation"]
+        results: List[dict] = []
+        per_role_limit = max(limit, (limit + len(roles) - 1) // len(roles))
+        for current_role in roles:
+            objects = (
+                self.search_entities_by_bm25(
+                    query, limit=per_role_limit, time_point=time_point,
+                    source_document=source_document, time_after=time_after,
+                    time_before=time_before,
+                )
+                if current_role == "entity" else
+                self.search_relations_by_bm25(
+                    query, limit=per_role_limit, time_point=time_point,
+                    source_document=source_document, time_after=time_after,
+                    time_before=time_before,
+                )
+            )
+            for obj in objects:
+                if current_role == "entity":
+                    results.append({
+                        "family_id": obj.family_id,
+                        "id": obj.absolute_id,
+                        "name": obj.name,
+                        "content": obj.content,
+                        "role": "entity",
+                        "_score": getattr(obj, "_score", 0.0),
+                    })
+                else:
+                    results.append({
+                        "family_id": obj.family_id,
+                        "id": obj.absolute_id,
+                        "name": "",
+                        "content": obj.content,
+                        "role": "relation",
+                        "entity1_name": "",
+                        "entity2_name": "",
+                        "_score": getattr(obj, "_score", 0.0),
+                    })
+        if not results and role is None:
+            # A newly indexed document may legitimately have no entity or
+            # relation observations yet. Preserve document search with a
+            # typed evidence DTO instead of returning raw FTS rows.
+            evidence = search_repo.search_fts(
+                self._conn(), query, limit=limit,
+                source_document=source_document,
+                time_after=time_after, time_before=time_before,
+            )
+            # 与实体/关系腿同款 BM25 归一（FTS5 原始分为负、越小越相关）。
+            # 不归一会把负分原样塞进 _score，下游阈值过滤（0.5 / CJK 0.15）
+            # 会把 episode 兜底腿的真命中全部丢掉。
+            if evidence:
+                scores = [r.get("score", 0) for r in evidence]
+                min_s, max_s = min(scores), max(scores)
+                span = max_s - min_s
+                for r in evidence:
+                    r["_score"] = (max_s - r.get("score", 0)) / span if span else 0.5
+            for row in evidence:
+                episode_id = row.get("episode_id")
+                if not episode_id:
+                    continue
+                text = row.get("source_text") or row.get("memory_text") or ""
+                results.append({
+                    "family_id": episode_id,
+                    "id": episode_id,
+                    "episode_id": episode_id,
+                    "name": text[:120],
+                    "content": text,
+                    "role": "episode",
+                    "_score": row.get("_score", 0.0),
+                })
+        results.sort(key=lambda item: item.get("_score", 0.0), reverse=True)
+        return results[:limit]
+
+    def search_episodes_by_fts(self, query: str, limit: int = 20,
+                               source_document: str = None,
+                               time_after: str = None,
+                               time_before: str = None) -> List[dict]:
+        """Episode 原文 FTS 检索（搜索单入口的文本通道）。
+
+        与 ``search_concepts_by_bm25``（概念 DTO，无 episode 维度）互补：
+        返回 ``episodes_fts`` 命中行（episode_id/document_id/source_text），
+        供 explore 的 episode-bm25 通道按原文取证。
+        """
+        rows = search_repo.search_fts(
+            self._conn(), query, limit=limit,
+            source_document=source_document,
+            time_after=time_after, time_before=time_before,
+        )
+        out: List[dict] = []
+        for row in rows:
+            episode_id = row.get("episode_id")
+            if not episode_id:
+                continue
+            out.append({
+                "episode_id": episode_id,
+                "document_id": row.get("document_id"),
+                "source_text": row.get("source_text") or row.get("memory_text") or "",
+                "score": row.get("score", 0.0),
+            })
+        return out
 
     def search_entities_by_bm25(self, query: str, limit: int = 20,
                                 time_point: str = None,
+                                source_document: str = None,
                                 time_after: str = None,
                                 time_before: str = None) -> List[Entity]:
         results = search_repo.search_fts(self._conn(), query, limit=limit,
+                                         source_document=source_document,
                                          time_after=time_after, time_before=time_before)
         # Normalize BM25 scores (FTS5 returns negative, more negative = more relevant)
         # Invert so that most relevant → 1.0, least relevant → 0.0
@@ -1153,9 +1359,11 @@ class LibraryManager:
 
     def search_relations_by_bm25(self, query: str, limit: int = 20,
                                  time_point: str = None,
+                                 source_document: str = None,
                                  time_after: str = None,
                                  time_before: str = None) -> List[Relation]:
         results = search_repo.search_fts(self._conn(), query, limit=limit,
+                                         source_document=source_document,
                                          time_after=time_after, time_before=time_before)
         # Normalize BM25 scores (FTS5 returns negative, more negative = more relevant)
         # Invert so that most relevant → 1.0, least relevant → 0.0
@@ -1200,6 +1408,36 @@ class LibraryManager:
                 relations.append(rel)
         return relations
 
+    def _semantic_candidate_rows(self, search_fn, owner_type: str,
+                                 query_vec: bytes, limit: int) -> list:
+        """SQL 语义检索腿的候选行获取（f6：多数模型回退）。
+
+        与 ``_build_vector_cache_for_role`` 的回退语义对齐：active model
+        在 embeddings 表无行时回退到该 owner_type 的多数模型并告警——
+        否则换模型后（未 backfill）公开语义检索静默返回空，而 remember
+        管线的向量缓存腿仍靠回退继续工作。跨模型余弦无意义，仍提示
+        backfill-embeddings 重建。
+        """
+        model = self._active_embedding_model()
+        conn = self._conn()
+        rows = search_fn(conn, query_vec, embedding_model=model, limit=limit)
+        if not rows:
+            maj = conn.execute(
+                "SELECT embedding_model, COUNT(*) AS c FROM embeddings "
+                "WHERE owner_type = ? GROUP BY embedding_model "
+                "ORDER BY c DESC LIMIT 1",
+                (owner_type,),
+            ).fetchone()
+            if maj and maj[1] > 0 and maj[0] != model:
+                rows = search_fn(conn, query_vec, embedding_model=maj[0], limit=limit)
+                if rows:
+                    logger.warning(
+                        "语义检索：active model %r 无 %s embeddings，"
+                        "回退多数模型 %r（%d 行）——换模型后请运行 "
+                        "backfill-embeddings 重建",
+                        model, owner_type, maj[0], len(rows))
+        return rows
+
     def _semantic_entity_search(self, query_text: str, threshold: float = 0.3,
                                 max_results: int = 20,
                                 time_after: str = None,
@@ -1217,12 +1455,9 @@ class LibraryManager:
         if not result:
             return []
         query_vec, query_nd = result
-        candidates = emb_repo.search_entity_embeddings(
-            self._conn(), query_vec,
-            embedding_model=(getattr(self.embedding_client, 'model_name', None)
-                             or getattr(self.embedding_client, 'model_path', None)
-                             or 'unknown'),
-            limit=max_results * 3,
+        candidates = self._semantic_candidate_rows(
+            emb_repo.search_entity_embeddings, "entity_obs",
+            query_vec, limit=max_results * 3,
         )
         scored = []
         for c in candidates:
@@ -1273,12 +1508,9 @@ class LibraryManager:
         if not result:
             return []
         query_vec, query_nd = result
-        candidates = emb_repo.search_relation_embeddings(
-            self._conn(), query_vec,
-            embedding_model=(getattr(self.embedding_client, 'model_name', None)
-                             or getattr(self.embedding_client, 'model_path', None)
-                             or 'unknown'),
-            limit=max_results * 3,
+        candidates = self._semantic_candidate_rows(
+            emb_repo.search_relation_embeddings, "relation_assert",
+            query_vec, limit=max_results * 3,
         )
         scored = []
         for c in candidates:
@@ -1325,6 +1557,7 @@ class LibraryManager:
             if hi_dt and (when is None or when > hi_dt):
                 continue
             rel._pending_patches = []
+            rel._score = sim
             relations.append(rel)
         return relations
 
@@ -1644,6 +1877,65 @@ class LibraryManager:
         conn.commit()
         return {"updated": True, "family_id": family_id}
 
+    def adjust_confidence_on_corroboration(self, family_id: str,
+                                           source_type: str = "entity",
+                                           **_ignored) -> None:
+        """独立来源印证 → 概念置信度 +0.05（封顶 1.0）。
+
+        remember 管线（alignment / entity_alignment / relation*）在
+        try/except 里调用；方法缺失时 AttributeError 被吞成静默 no-op。
+        """
+        self.adjust_confidence_on_corroboration_batch([family_id],
+                                                      source_type=source_type)
+
+    def adjust_confidence_on_corroboration_batch(self, family_ids: List[str],
+                                                 source_type: str = "entity",
+                                                 **_ignored) -> None:
+        """批量印证调整：最新 active 观测/断言的 extra_json["confidence"] +0.05。
+
+        v1.5 schema 无独立 confidence 列——置信度随观测/断言行存
+        extra_json（get_concept_by_family_id 同一读取口），因此只更新
+        family 最新 active 行；extra_json 未记录置信度时不动
+        （对应旧实现的 ``confidence IS NOT NULL`` 语义）。
+        """
+        import json as _json
+        from .dto_mapping import _extract_confidence
+        if not family_ids:
+            return
+        conn = self._conn()
+        if source_type == "relation":
+            pick_sql = ("SELECT relation_id, extra_json FROM relation_assertions "
+                        "WHERE relation_family_id = ? AND status = 'active' "
+                        "ORDER BY processed_at DESC, rowid DESC LIMIT 1")
+            update_sql = ("UPDATE relation_assertions SET extra_json = ? "
+                          "WHERE relation_id = ?")
+        else:
+            pick_sql = ("SELECT entity_id, extra_json FROM entity_observations "
+                        "WHERE entity_family_id = ? AND status = 'active' "
+                        "ORDER BY processed_at DESC, rowid DESC LIMIT 1")
+            update_sql = ("UPDATE entity_observations SET extra_json = ? "
+                          "WHERE entity_id = ?")
+        for fid in family_ids:
+            if not fid:
+                continue
+            row = conn.execute(pick_sql, (fid,)).fetchone()
+            if not row:
+                continue
+            owner_id, extra_json = row[0], row[1] or "{}"
+            current = _extract_confidence(extra_json)
+            if current is None:
+                continue
+            try:
+                extra = _json.loads(extra_json)
+            except (ValueError, TypeError):
+                extra = {}
+            if not isinstance(extra, dict):
+                extra = {}
+            extra["confidence"] = min(float(current) + 0.05, 1.0)
+            conn.execute(update_sql,
+                         (_json.dumps(extra, ensure_ascii=False), owner_id))
+        self._commit_if_not_batched(conn)
+
     def find_duplicate_entities_fast(self, limit: int = 500) -> List[dict]:
         """Find entity families sharing the same canonical_name."""
         conn = self._conn()
@@ -1682,10 +1974,12 @@ class LibraryManager:
                            include_relations: bool = True,
                            include_versions: bool = True,
                            max_episodes: int = 500,
-                           max_concepts: int = 1000) -> dict:
+        max_concepts: int = 1000) -> dict:
         from .graph_traversal import get_document_graph
         return get_document_graph(self._conn(), document_version_ids,
-                                  document_family_ids, max_episodes, max_concepts)
+                                  document_family_ids, max_episodes, max_concepts,
+                                  include_relations=include_relations,
+                                  include_versions=include_versions)
 
     def get_document_graph_outline(self, document_version_ids: List[str] = None,
                                     document_family_ids: List[str] = None,
@@ -1743,32 +2037,38 @@ class LibraryManager:
 
     def register_entity_redirect(self, source_id: str, target_id: str):
         from .merge import register_redirect
-        register_redirect(self._conn(), source_id, target_id)
+        with self._write_batch() as conn:
+            register_redirect(conn, source_id, target_id)
 
     def register_entity_redirects_batch(self, redirects: Dict[str, str]):
         from .merge import register_redirects_batch
-        register_redirects_batch(self._conn(), redirects)
+        with self._write_batch() as conn:
+            register_redirects_batch(conn, redirects)
         self.invalidate_vector_caches()
 
     def merge_entity_families(self, target_family_id: str,
                               source_family_ids: List[str],
                               skip_name_check: bool = False) -> Dict[str, Any]:
         from .merge import merge_entity_families
-        result = merge_entity_families(self._conn(), target_family_id, source_family_ids)
+        with self._write_batch() as conn:
+            result = merge_entity_families(
+                conn, target_family_id, source_family_ids,
+                skip_name_check=skip_name_check,
+            )
         self.invalidate_vector_caches()
         return result
 
     def redirect_entity_relations(self, old_family_id: str, new_family_id: str):
         from .merge import redirect_entity_relations
-        redirect_entity_relations(self._conn(), old_family_id, new_family_id)
+        with self._write_batch() as conn:
+            redirect_entity_relations(conn, old_family_id, new_family_id)
         self.invalidate_vector_caches()
-        self._commit_if_not_batched()
 
     def delete_entity_all_versions(self, family_id: str) -> int:
         from .merge import delete_entity_all_versions
-        result = delete_entity_all_versions(self._conn(), family_id)
+        with self._write_batch() as conn:
+            result = delete_entity_all_versions(conn, family_id)
         self.invalidate_vector_caches()
-        self._commit_if_not_batched()
         return result
 
     def dedup_merge_batch(self, pairs: List[Tuple[str, str]]) -> int:
@@ -1902,12 +2202,75 @@ class LibraryManager:
         family_ids = list(set(fam_map.values()))
         return self.get_relations_by_family_ids(family_ids, limit=limit)
 
-    # ------------------------------------------------------------------
-    # No-op stubs (same as old manager)
-    # ------------------------------------------------------------------
-
     def save_content_patches(self, patches):
-        return 0
+        """Persist section-level entity/relation content diffs.
+
+        ContentPatch objects are deliberately kept independent from the
+        version tables: a patch describes the transition *to* a new absolute
+        version and can therefore be queried even after the previous version
+        is superseded.  ``INSERT OR IGNORE`` makes retries idempotent while
+        the write-batch boundary keeps a multi-patch flush atomic.
+        """
+        if not patches:
+            return 0
+        inserted = 0
+        with self._write_batch() as conn:
+            for patch in patches:
+                get = patch.get if isinstance(patch, dict) else lambda key, default=None: getattr(patch, key, default)
+                patch_id = str(get("uuid", "") or "").strip()
+                target_type = str(get("target_type", "") or "").strip()
+                target_absolute_id = str(get("target_absolute_id", "") or "").strip()
+                target_family_id = str(get("target_family_id", "") or "").strip()
+                section_key = str(get("section_key", "") or "").strip()
+                if not patch_id or target_type not in {"Entity", "Relation"}:
+                    raise ValueError("content patch requires a valid uuid and target_type")
+                if not target_absolute_id or not target_family_id or not section_key:
+                    raise ValueError("content patch target/section cannot be empty")
+                event_time = get("event_time")
+                if hasattr(event_time, "isoformat"):
+                    event_time = event_time.isoformat()
+                event_time = str(event_time or now_utc_str())
+                cursor = conn.execute(
+                    """INSERT OR IGNORE INTO content_patches
+                       (patch_id,target_type,target_absolute_id,target_family_id,
+                        section_key,change_type,old_hash,new_hash,diff_summary,
+                        source_document,event_time)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        patch_id,
+                        target_type,
+                        target_absolute_id,
+                        target_family_id,
+                        section_key,
+                        str(get("change_type", "modified") or "modified"),
+                        str(get("old_hash", "") or ""),
+                        str(get("new_hash", "") or ""),
+                        str(get("diff_summary", "") or ""),
+                        str(get("source_document", "") or ""),
+                        event_time,
+                    ),
+                )
+                inserted += max(0, int(cursor.rowcount or 0))
+        return inserted
+
+    def get_content_patches(self, *, target_family_id: str = "",
+                            target_absolute_id: str = "", limit: int = 100) -> list[dict]:
+        """Return persisted section diffs, newest first, with a hard limit."""
+        limit = min(max(int(limit or 100), 1), 1000)
+        conditions = []
+        params = []
+        if target_family_id:
+            conditions.append("target_family_id = ?")
+            params.append(target_family_id)
+        if target_absolute_id:
+            conditions.append("target_absolute_id = ?")
+            params.append(target_absolute_id)
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        rows = self._conn().execute(
+            f"SELECT * FROM content_patches {where} ORDER BY event_time DESC, patch_id DESC LIMIT ?",
+            (*params, limit),
+        ).fetchall()
+        return [dict(row) for row in rows]
 
     def batch_get_source_text_snippets(self, episode_ids: List[str],
                                         snippet_length: int = 200) -> Dict[str, str]:
@@ -1928,12 +2291,16 @@ class LibraryManager:
 
     def clear_graph_data(self):
         conn = self._conn()
-        for table in ("entity_mentions", "relation_assertions", "relation_families",
+        for table in ("content_patches", "entity_mentions", "relation_mentions",
+                      "relation_assertions", "relation_families",
                        "entity_observations", "entity_families", "entity_redirects",
                        "document_links", "embeddings", "pipeline_runs",
-                       "episodes", "document_versions", "documents"):
+                       "episodes", "document_ingestion_state", "document_versions", "documents"):
             conn.execute(f"DELETE FROM {table}")
-        conn.execute("INSERT INTO episodes_fts(episodes_fts) VALUES('rebuild')")
+        # FTS5's ``rebuild`` command only refreshes rows backed by the content
+        # table; this index is maintained explicitly, so stale standalone
+        # rows would survive a graph clear.  Delete them before committing.
+        conn.execute("DELETE FROM episodes_fts")
         conn.commit()
         self.invalidate_vector_caches()
 
@@ -1972,6 +2339,24 @@ class LibraryManager:
         """
         from . import content_fs
 
+        # A targeted retry receives one window as ``text`` and an explicit
+        # document identity.  Reuse the existing active version *before* any
+        # current-file write: treating that window as the full document used
+        # to truncate the managed file during repair.
+        doc = doc_repo.get_document(conn, doc_id)
+        if override_doc_id and doc:
+            old_ver = doc_repo.get_active_version(conn, doc_id)
+            if old_ver:
+                return (
+                    doc_id,
+                    old_ver["document_version_id"],
+                    doc.get("title") or source,
+                    old_ver.get("content_hash") or "",
+                )
+            # 版本已不存在（benchmark resume 重置 / 用户删除快照后重灌）：
+            # 不再 raise，落回下面的常规路径从 document_path 重建版本，
+            # 保持稳定 doc_id。
+
         # Read full document content if available, otherwise fall back to text
         doc_text = text
         if document_path and Path(document_path).exists():
@@ -1997,7 +2382,7 @@ class LibraryManager:
         # Ensure document exists
         doc = doc_repo.get_document(conn, doc_id)
         if not doc:
-            title = source or Path(document_path).stem if document_path else ""
+            title = (source or Path(document_path).stem) if document_path else (source or doc_id)
             content_md = content_fs.write_current_file(
                 str(self.library_path), title or doc_id, doc_text, doc_id=doc_id,
             )
@@ -2045,13 +2430,30 @@ class LibraryManager:
             doc_repo.update_current_version(conn, doc_id, ver_id, updated_at=now_utc_str())
         return doc_id, ver_id, title, content_hash
 
-    def save_episode(self, cache: Episode, text: str = "",
+    def save_episode(self, *args, **kwargs) -> str:
+        """Serialize episode/document writes across processor connections.
+
+        Document initialization, version switching, FTS replacement, and the
+        episode insert must be one writer critical section.  Without this,
+        concurrent windows can hold SQLite WAL snapshots while each tries to
+        upgrade to a writer, causing an intermittent lock/deadlock and
+        partially initialized per-run document caches.
+        """
+        # A window write spans document/version resolution, episode replacement,
+        # FTS maintenance, retrieval slices, and optional graph retirement.  Keep
+        # the whole unit rollback-safe: an error in a late slice insert must not
+        # leave the connection holding a half-published transaction.
+        with self._write_batch():
+            return self._save_episode_unlocked(*args, **kwargs)
+
+    def _save_episode_unlocked(self, cache: Episode, text: str = "",
                      document_path: str = "", doc_hash: str = "",
                      start_offset: int = 0, end_offset = None,
                      override_doc_id: str = "",
                      heading_path: str = "",
                      episode_type: str = "",
                      run_id: str = "",
+                     chunk_index: Optional[int] = None,
                      retrieval_slice_chars: int = 0) -> str:
         """Persist an Episode DTO and its source document."""
         import hashlib
@@ -2093,30 +2495,118 @@ class LibraryManager:
                     conn, text, source, document_path, doc_id, override_doc_id)
         doc_id, ver_id, title, content_hash = _doc_resolved
 
-        # Create episode
+        # Create/update episode.  Pipeline callers provide the absolute window
+        # index so targeted repair replaces the same slot instead of appending
+        # a duplicate at ``COUNT(*)``.
         ep_id = cache.absolute_id or f"ep_{uuid.uuid4().hex[:16]}"
         ep_fam = f"epfam_{doc_id}_{doc_hash or ep_id}"
-        # Compute next chunk_index for this version
-        existing_chunks = conn.execute(
-            "SELECT COUNT(*) FROM episodes WHERE document_version_id = ?",
-            (ver_id,),
-        ).fetchone()[0]
-        ep_repo.insert_episode(
-            conn, ep_id, ep_fam, doc_id, ver_id,
-            source_text=text,
-            memory_text=cache.content or "",
-            heading_path=heading_path or getattr(cache, 'heading_path', '') or "",
-            start_offset=start_offset,
-            end_offset=end_offset if end_offset is not None else len(text),
-            chunk_index=existing_chunks,
-            chunk_hash=doc_hash or content_hash[:16],
-            name=title,
-            event_time=_fmt_dt(cache.event_time) or now_utc_str(),
-            processed_at=_fmt_dt(cache.processed_time) or now_utc_str(),
-            activity_type=cache.activity_type or "",
-            episode_type=episode_type or getattr(cache, 'episode_type', '') or "",
-            run_id=run_id,
+        _explicit_chunk_index = chunk_index is not None
+        if chunk_index is None:
+            chunk_index = conn.execute(
+                "SELECT COUNT(*) FROM episodes WHERE document_version_id = ?",
+                (ver_id,),
+            ).fetchone()[0]
+        else:
+            chunk_index = max(0, int(chunk_index))
+        values = (
+            doc_id, ver_id, text, cache.content or "",
+            heading_path or getattr(cache, 'heading_path', '') or "",
+            start_offset, end_offset if end_offset is not None else len(text),
+            chunk_index, doc_hash or content_hash[:16], title,
+            episode_type or getattr(cache, 'episode_type', '') or "",
+            cache.activity_type or "", _fmt_dt(cache.event_time) or now_utc_str(),
+            _fmt_dt(cache.processed_time) or now_utc_str(), run_id,
         )
+        existing_id = conn.execute(
+            "SELECT episode_id FROM episodes WHERE episode_id = ?", (ep_id,)
+        ).fetchone()
+        if existing_id:
+            conn.execute(
+                """UPDATE episodes SET document_id=?, document_version_id=?,
+                   episode_family_id=?, source_text=?, memory_text=?,
+                   heading_path=?, start_offset=?, end_offset=?, chunk_index=?,
+                   chunk_hash=?, name=?, episode_type=?, activity_type=?,
+                   status='active', event_time=?, processed_at=?, run_id=?
+                   WHERE episode_id=?""",
+                (doc_id, ver_id, ep_fam, values[2], values[3], values[4],
+                 values[5], values[6], values[7], values[8], values[9],
+                 values[10], values[11], values[12], values[13], values[14], ep_id),
+            )
+        else:
+            # Replace an incomplete active row occupying this window.  Its
+            # downstream observations remain tied to the superseded episode
+            # and therefore stay out of active graph views.
+            collision = None
+            if _explicit_chunk_index:
+                _slot_rows = conn.execute(
+                    "SELECT episode_id, chunk_hash, status FROM episodes "
+                    "WHERE document_version_id=? AND chunk_index=?",
+                    (ver_id, chunk_index),
+                ).fetchall()
+                # 同 hash 槽位优先：表级 UNIQUE 按 (ver, chunk, hash) 拦截，真正
+                # 冲突的只有内容相同的那一行；不同 hash 的历史行不构成冲突。
+                collision = next(
+                    (r for r in _slot_rows if (r[1] or "") == (values[8] or "")),
+                    _slot_rows[0] if _slot_rows else None,
+                )
+            if collision and collision[0] != ep_id:
+                old_episode_id = collision[0]
+                if (collision[1] or "") == (values[8] or ""):
+                    # 同 (ver, chunk, hash) 槽位在表级 UNIQUE 下只能容纳一行——
+                    # 无论 active 还是墓碑。稳定 ID 重试（reset 后同内容重灌）、
+                    # 簇收敛合并的墓碑、以及同窗口内容被两个不同 Episode 身份
+                    #（一有 absolute_id 一用 uuid）先后保存的竞态，都会占着槽位
+                    # 拦下 INSERT；退位（只改 status）救不回来。同内容换身份重存
+                    # 一律连子观测硬删后按新身份重插（同 hash 子行描述的就是同
+                    # 一窗口，由新保存方的步骤 9/10 重新生成）。
+                    conn.execute(
+                        "DELETE FROM entity_observations WHERE episode_id=?",
+                        (old_episode_id,),
+                    )
+                    conn.execute(
+                        "DELETE FROM relation_assertions WHERE episode_id=?",
+                        (old_episode_id,),
+                    )
+                    conn.execute(
+                        "DELETE FROM entity_mentions WHERE episode_id=?",
+                        (old_episode_id,),
+                    )
+                    conn.execute(
+                        "DELETE FROM episodes WHERE episode_id=?",
+                        (old_episode_id,),
+                    )
+                    ep_repo.fts_delete_episodes(conn, [old_episode_id])
+                else:
+                    # Replacing a window must retire its graph observations too;
+                    # otherwise the old facts remain visible beside the repaired
+                    # facts even though the episode itself is superseded.
+                    conn.execute(
+                        "UPDATE entity_observations SET status='superseded' "
+                        "WHERE episode_id=? AND status='active'",
+                        (old_episode_id,),
+                    )
+                    conn.execute(
+                        "UPDATE relation_assertions SET status='superseded' "
+                        "WHERE episode_id=? AND status='active'",
+                        (old_episode_id,),
+                    )
+                    conn.execute(
+                        "DELETE FROM entity_mentions WHERE episode_id=?",
+                        (old_episode_id,),
+                    )
+                    conn.execute(
+                        "UPDATE episodes SET status='superseded' WHERE episode_id=?",
+                        (old_episode_id,),
+                    )
+                    ep_repo.fts_delete_episodes(conn, [old_episode_id])
+            ep_repo.insert_episode(
+                conn, ep_id, ep_fam, doc_id, ver_id,
+                source_text=values[2], memory_text=values[3], heading_path=values[4],
+                start_offset=values[5], end_offset=values[6], chunk_index=values[7],
+                chunk_hash=values[8], name=values[9], episode_type=values[10],
+                activity_type=values[11], event_time=values[12],
+                processed_at=values[13], run_id=values[14],
+            )
         ep_repo.fts_sync_episode(conn, ep_id, doc_id, ver_id,
                                   name=title, source_text=text,
                                   memory_text=cache.content or "")
@@ -2124,7 +2614,7 @@ class LibraryManager:
             self._write_retrieval_slices(
                 conn, text, doc_id, ver_id, ep_fam, title,
                 heading_path=heading_path,
-                base_chunk_index=existing_chunks,
+                base_chunk_index=chunk_index,
                 run_id=run_id, slice_chars=int(retrieval_slice_chars),
             )
         self._commit_if_not_batched(conn)
@@ -2167,6 +2657,34 @@ class LibraryManager:
             cur_len += add
         if cur:
             slices.append((cur_start, cur))
+        # Main document windows use non-negative chunk indexes.  Retrieval-only
+        # rows need a disjoint namespace; using ``base + n`` made the next main
+        # window collide with the previous window's slices under
+        # idx_episodes_one_active_chunk.  Reserve a deterministic negative range
+        # per base window so rewrites can also retire stale slices reliably.
+        slice_stride = 1_000_000
+        if len(slices) >= slice_stride:
+            raise ValueError("too many retrieval slices for one episode")
+        slice_prefix = (max(0, int(base_chunk_index)) + 1) * slice_stride
+        slice_low = -(slice_prefix + slice_stride - 1)
+        slice_high = -(slice_prefix + 1)
+        stale_slice_ids = [
+            row[0] for row in conn.execute(
+                "SELECT episode_id FROM episodes WHERE document_version_id=? "
+                "AND episode_type='retrieval_slice' AND status='active' "
+                "AND chunk_index BETWEEN ? AND ?",
+                (ver_id, slice_low, slice_high),
+            ).fetchall()
+        ]
+        if stale_slice_ids:
+            placeholders = ",".join("?" for _ in stale_slice_ids)
+            conn.execute(
+                f"UPDATE episodes SET status='superseded' "
+                f"WHERE episode_id IN ({placeholders})",
+                stale_slice_ids,
+            )
+            ep_repo.fts_delete_episodes(conn, stale_slice_ids)
+
         written = 0
         for n, (start_line, slice_lines) in enumerate(slices, 1):
             slice_text = "\n".join(slice_lines)
@@ -2183,7 +2701,7 @@ class LibraryManager:
                 end_offset=start_off + len(slice_text),
                 line_start=start_line,
                 line_end=start_line + len(slice_lines) - 1,
-                chunk_index=base_chunk_index + n,
+                chunk_index=-(slice_prefix + n),
                 chunk_hash=slice_hash,
                 name=title,
                 episode_type="retrieval_slice",
@@ -2233,6 +2751,12 @@ class LibraryManager:
         _emb_raw = _precomputed_embedding or entity.embedding
         if isinstance(_emb_raw, (list, tuple)):
             _emb_raw = _emb_raw[0]  # extract bytes from (bytes, ndarray)
+        if _emb_raw is None:
+            # 管线的单条持久化路径（对齐命中/更新）不预计算向量；这里兜底
+            # 编码一次，保证 embeddings 表有行可查（agent_semantic_search /
+            # hybrid scope 依赖）。批量路径已填 entity.embedding，不会走到。
+            _computed = self._compute_entity_embedding(entity)
+            _emb_raw = _computed[0] if _computed else None
 
         # Check for existing active observation for same episode+family (only when ep exists)
         obs_id = entity.absolute_id or f"entobs_{uuid.uuid4().hex[:16]}"
@@ -2246,6 +2770,7 @@ class LibraryManager:
                     self._store_embedding_if_available(
                         "entity_obs", existing_obs_id, "content",
                         entity.name or entity.content, _emb_raw)
+                self._commit_if_not_batched(conn)
                 return
         ent_repo.insert_entity_observation(
             conn, obs_id, fid, ep_id,
@@ -2267,7 +2792,7 @@ class LibraryManager:
                 self.save_entity(e)
 
     def save_relation(self, relation: Relation,
-                       run_id: str = "", extra_json: str = "") -> None:
+                       run_id: str = "", extra_json: str = "") -> str | None:
         """Persist a Relation DTO as relation_family + relation_assertion."""
         import uuid
         import json as _json
@@ -2328,7 +2853,7 @@ class LibraryManager:
             obj_abs = self._latest_obs_id_for_family(obj_fid)
 
         ra_id = relation.absolute_id or f"rel_{uuid.uuid4().hex[:16]}"
-        rel_repo.insert_relation_assertion(
+        persisted_relation_id = rel_repo.insert_relation_assertion(
             conn, ra_id, rel_fid, rel_ep_id,
             sub_abs, obj_abs, sub_fid, obj_fid,
             content=relation.content,
@@ -2341,11 +2866,19 @@ class LibraryManager:
             processed_at=_fmt_dt(relation.processed_time) or now_utc_str(),
             run_id=run_id,
         )
-        # Store embedding if available
-        if relation.embedding:
-            self._store_embedding_if_available("relation_assert", ra_id, "content",
-                                                relation.content, relation.embedding)
+        # Store embedding if available（relation 的向量同样只在合并检查分支被
+        # 预计算；这里兜底编码，见 save_entity 同款注释）
+        _rel_emb = relation.embedding
+        if isinstance(_rel_emb, (list, tuple)):
+            _rel_emb = _rel_emb[0]
+        if not _rel_emb:
+            _computed_rel = self._compute_relation_embedding(relation)
+            _rel_emb = _computed_rel[0] if _computed_rel else None
+        if _rel_emb and persisted_relation_id:
+            self._store_embedding_if_available("relation_assert", persisted_relation_id, "content",
+                                                relation.content, _rel_emb)
         self._commit_if_not_batched(conn)
+        return persisted_relation_id
 
     def bulk_save_relations(self, relations: List[Relation]) -> None:
         with self._write_batch():
@@ -2358,6 +2891,35 @@ class LibraryManager:
         import uuid
         from ...text_chunking import find_text_evidence
         conn = self._conn()
+
+        if target_type == "relation":
+            # Relation assertions already carry episode provenance, but the
+            # pipeline also emits an explicit MENTIONS edge.  Store it in a
+            # relation-specific table instead of violating entity_mentions FK.
+            inserted = 0
+            for relation_id in dict.fromkeys(entity_absolute_ids):
+                row = conn.execute(
+                    "SELECT relation_family_id, content, evidence_start_offset, "
+                    "evidence_end_offset, evidence_line_start, evidence_line_end "
+                    "FROM relation_assertions WHERE relation_id=? AND episode_id=? "
+                    "AND status='active'",
+                    (relation_id, episode_id),
+                ).fetchone()
+                if not row:
+                    continue
+                mention_id = f"rment_{uuid.uuid4().hex[:16]}"
+                cur = conn.execute(
+                    "INSERT OR IGNORE INTO relation_mentions "
+                    "(mention_id, relation_id, relation_family_id, episode_id, "
+                    "surface_text, start_offset, end_offset, line_start, line_end, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (mention_id, relation_id, row[0], episode_id, row[1] or "",
+                     row[2] or 0, row[3] or 0, row[4] or 0, row[5] or 0,
+                     now_utc_str()),
+                )
+                inserted += int(cur.rowcount or 0)
+            self._commit_if_not_batched(conn)
+            return inserted
 
         # Get episode source text
         ep = ep_repo.get_episode(conn, episode_id)
@@ -2408,9 +2970,13 @@ class LibraryManager:
         self._commit_if_not_batched(conn)
 
     def save_extraction_result(self, doc_hash: str, entities: list,
-                               relations: list, document_path: str = "") -> bool:
+                               relations: list, document_path: str = "",
+                               document_version_id: str = "") -> bool:
         """Save extraction results to task extraction cache."""
-        ep = self.find_cache_by_doc_hash(doc_hash, document_path=document_path)
+        ep = self.find_cache_by_doc_hash(
+            doc_hash, document_path=document_path,
+            document_version_id=document_version_id,
+        )
         if not ep:
             return False
         cache_dir = self.extraction_cache_dir / ep.absolute_id
@@ -2422,8 +2988,12 @@ class LibraryManager:
         return True
 
     def load_extraction_result(self, doc_hash: str,
-                               document_path: str = "") -> Optional[tuple]:
-        ep = self.find_cache_by_doc_hash(doc_hash, document_path=document_path)
+                               document_path: str = "",
+                               document_version_id: str = "") -> Optional[tuple]:
+        ep = self.find_cache_by_doc_hash(
+            doc_hash, document_path=document_path,
+            document_version_id=document_version_id,
+        )
         if not ep:
             return None
         path = self.extraction_cache_dir / ep.absolute_id / "extraction.json"
@@ -2433,32 +3003,56 @@ class LibraryManager:
         return (data.get("entities", []), data.get("relations", []))
 
     def find_cache_by_doc_hash(self, doc_hash: str,
-                                document_path: str = "") -> Optional[Episode]:
+                                document_path: str = "",
+                                document_version_id: str = "") -> Optional[Episode]:
         conn = self._conn()
+        params: list[Any] = [doc_hash]
+        scope_sql = ""
+        if document_version_id:
+            scope_sql = " AND e.document_version_id = ?"
+            params.append(document_version_id)
+        elif document_path:
+            # Cache hashes are not globally unique: two documents can share a
+            # paragraph.  Scope lookup to the document identity/path first so
+            # extraction results cannot silently cross-contaminate tasks.
+            import hashlib
+            derived_id = "doc_" + hashlib.sha256(document_path.encode("utf-8")).hexdigest()[:16]
+            scope_sql = (
+                " AND (e.document_id = ? OR d.absolute_path = ? "
+                "OR d.managed_path = ? OR d.relative_path = ?)"
+            )
+            params.extend([derived_id, document_path, document_path, document_path])
         row = conn.execute(
-            "SELECT * FROM episodes WHERE chunk_hash = ? AND status = 'active' "
-            "ORDER BY processed_at DESC LIMIT 1",
-            (doc_hash,),
+            "SELECT e.* FROM episodes e JOIN documents d ON d.document_id = e.document_id "
+            "WHERE e.chunk_hash = ? AND e.status = 'active'" + scope_sql +
+            " ORDER BY e.processed_at DESC LIMIT 1",
+            params,
         ).fetchone()
         if row:
             return episode_row_to_dto(dict(row))
         return None
 
     def find_cache_and_extraction_by_doc_hash(self, doc_hash: str,
-                                               document_path: str = ""):
-        ep = self.find_cache_by_doc_hash(doc_hash, document_path)
+                                               document_path: str = "",
+                                               document_version_id: str = ""):
+        ep = self.find_cache_by_doc_hash(doc_hash, document_path, document_version_id)
         if not ep:
             return None, None
-        extraction = self.load_extraction_result(doc_hash, document_path)
+        extraction = self.load_extraction_result(
+            doc_hash, document_path, document_version_id
+        )
         return ep, extraction
 
     def assess_remember_window_statuses(self, doc_hashes: List[str],
-                                         document_path: str = "") -> List[dict]:
+                                         document_path: str = "",
+                                         document_version_id: str = "") -> List[dict]:
         conn = self._conn()
         results = []
         for idx, h in enumerate(doc_hashes):
-            ep = self.find_cache_by_doc_hash(h, document_path)
-            ext = self.load_extraction_result(h, document_path) if ep else None
+            ep = self.find_cache_by_doc_hash(h, document_path, document_version_id)
+            ext = self.load_extraction_result(
+                h, document_path, document_version_id
+            ) if ep else None
 
             ep_exists = ep is not None
             ext_exists = ext is not None
@@ -2478,7 +3072,8 @@ class LibraryManager:
                     # Only verify DB if extraction found entities
                     if _ext_ents > 0:
                         _db_count = conn.execute(
-                            "SELECT COUNT(*) FROM entity_observations WHERE episode_id = ?",
+                            "SELECT COUNT(*) FROM entity_observations "
+                            "WHERE episode_id = ? AND status = 'active'",
                             (ep_id,)
                         ).fetchone()[0]
                         if _db_count == 0:
@@ -2870,3 +3465,101 @@ class LibraryManager:
         for r in relations:
             results.append(self._compute_relation_embedding(r))
         return results
+
+    # ==================================================================
+    # Scope sandbox（任务 A 追加区块）——概念 → episode → document 批量回溯
+    # 仅供 core/find/scope.py 的 build_document_scope 消费；上方方法未改动。
+    # ==================================================================
+
+    def concept_source_documents(self, family_ids: List[str], *,
+                                 include_offsets: bool = True) -> List[dict]:
+        """批量回溯 family → episode → document 的裸数据（scope 沙箱用）。
+
+        对 entity family 走 entity_mentions + entity_observations，对
+        relation family 走 relation_assertions（family 命中哪张表由 id 空间
+        自然区分）；IN 分块查询后按 (family_id, episode_id) 去重——
+        mention / assertion 行（带证据偏移）优先于 observation 行。
+
+        可见性过滤与搜索视图（repositories/search.py::search_fts、
+        v_document_files）保持一致：episodes.status='active' AND
+        documents.status='active' AND document_versions.status='active' AND
+        COALESCE(document_ingestion_state.state, 'active')='active'。
+
+        每行返回：family_id / role('entity'|'relation') / episode_id /
+        episode_name / source_text（前 512 字符，供 snippet 用）/ document_id
+        / title / source_mode / managed_path / absolute_path；
+        include_offsets=True 时另带 episode_start_offset / episode_end_offset
+        （episode 在文档中的位置）与 evidence_start_offset /
+        evidence_end_offset（mention/断言在 episode 中的证据位置，observation
+        来源为 None）。
+        """
+        uniq = [f for f in dict.fromkeys(family_ids or []) if f]
+        if not uniq:
+            return []
+        conn = self._conn()
+        # (表, family 列, role, 证据偏移投影, 额外 status 过滤)
+        # entity_mentions 无 status 列；mention 行不 join entity_observations
+        # 的 active 校验——旧观测被 superseded 不影响"该 family 出现在该
+        # episode"这一事实（scope 回溯要召回不要精排）。
+        sources = [
+            ("entity_mentions", "entity_family_id", "entity",
+             "src.start_offset AS evidence_start_offset, "
+             "src.end_offset AS evidence_end_offset, ", "1=1"),
+            ("relation_assertions", "relation_family_id", "relation",
+             "src.evidence_start_offset AS evidence_start_offset, "
+             "src.evidence_end_offset AS evidence_end_offset, ",
+             "src.status = 'active'"),
+            ("entity_observations", "entity_family_id", "entity",
+             "NULL AS evidence_start_offset, NULL AS evidence_end_offset, ",
+             "src.status = 'active'"),
+        ]
+        _source_sql = (
+            "SELECT {fid_col} AS family_id, '{role}' AS role, "
+            "        src.episode_id, ep.name AS episode_name, "
+            "        {evidence}"
+            "        ep.start_offset AS episode_start_offset, "
+            "        ep.end_offset AS episode_end_offset, "
+            "        substr(ep.source_text, 1, 512) AS source_text, "
+            "        d.document_id, d.title, d.source_mode, "
+            "        d.managed_path, d.absolute_path "
+            "FROM {table} src "
+            "JOIN episodes ep ON ep.episode_id = src.episode_id "
+            "               AND ep.status = 'active' "
+            "JOIN documents d ON d.document_id = ep.document_id "
+            "                AND d.status = 'active' "
+            "LEFT JOIN document_ingestion_state dis "
+            "       ON dis.document_id = d.document_id "
+            "JOIN document_versions dv "
+            "       ON dv.document_id = ep.document_id "
+            "      AND dv.document_version_id = ep.document_version_id "
+            "      AND dv.status = 'active' "
+            "WHERE src.{fid_col} IN ({ph}) "
+            "  AND src.episode_id IS NOT NULL "
+            "  AND {status_filter} "
+            "  AND COALESCE(dis.state, 'active') = 'active'"
+        )
+        rows: Dict[Tuple[str, str], dict] = {}
+        for table, fid_col, role, evidence_sql, extra_filter in sources:
+            for chunk in _in_clause_chunks(uniq):
+                sql = _source_sql.format(
+                    table=table, fid_col=fid_col, role=role,
+                    evidence=evidence_sql, ph=_placeholders(chunk),
+                    status_filter=extra_filter)
+                for r in conn.execute(sql, chunk).fetchall():
+                    row = dict(r)
+                    key = (row["family_id"], row["episode_id"])
+                    existing = rows.get(key)
+                    # observation 行（证据偏移 None）不覆盖 mention/断言行
+                    if existing is None or (
+                            existing.get("evidence_start_offset") is None
+                            and row.get("evidence_start_offset") is not None):
+                        rows[key] = row
+        result = []
+        for key in sorted(rows):
+            row = rows[key]
+            if not include_offsets:
+                for offset_key in ("evidence_start_offset", "evidence_end_offset",
+                                   "episode_start_offset", "episode_end_offset"):
+                    row.pop(offset_key, None)
+            result.append(row)
+        return result

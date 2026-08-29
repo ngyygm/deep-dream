@@ -177,10 +177,13 @@ def openai_compatible_chat(
     max_tokens: Optional[int] = None,
     temperature: Optional[float] = None,
     extra_body: Optional[Dict[str, Any]] = None,
+    response_format: Optional[Dict[str, Any]] = None,
 ) -> OllamaChatResponse:
     """OpenAI 兼容 chat（非流式）。"""
     client = _openai_shared_client(base_url, api_key)
     kwargs: Dict[str, Any] = dict(model=model, messages=messages, timeout=timeout)
+    if response_format:
+        kwargs["response_format"] = response_format
     if max_tokens is not None:
         if model.lower().startswith(("gpt-5", "o1", "o3", "o4")):
             kwargs["max_completion_tokens"] = max_tokens

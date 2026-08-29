@@ -18,6 +18,24 @@ from core.utils import wprint_info, cosine_similarity, entity_match_key
 class _CrossWindowDedupMixin:
     """Cross-window dedup methods. Expects `self.storage` and `self.llm_client`."""
 
+    def _invalidate_gate_cache(self, removed_fids) -> None:
+        """合并删除 family 后失效 FamilyWriteGate 的 name→fid 缓存（f2）。
+
+        gate 的内存缓存一旦指向被删 fid，后续同名解析拿到死 fid，
+        pending 分支在死 fid 下建版本、save 的 UPSERT 会复活已删 family
+        （合并被静默撤销）。storage 层不感知 judge，故在 pipeline 调用方失效。
+        失效对象传整个批次的 old fids：对未被删的 fid 失效只是触发下次
+        存储重解析，无副作用。
+        """
+        gate = getattr(self, "family_write_gate", None)
+        if gate is None or not removed_fids:
+            return
+        for fid in removed_fids:
+            try:
+                gate.invalidate(family_id=fid)
+            except Exception:
+                pass
+
     def _cross_window_dedup(self, align_results, verbose=True):
         """After all windows complete, find and merge same-name entities with different family_ids.
 
@@ -128,6 +146,7 @@ class _CrossWindowDedupMixin:
                 # Single batch call — all redirect+delete+register in one session
                 try:
                     total_deleted = _batch_fn([(p[0], p[1]) for p in _merge_pairs])
+                    self._invalidate_gate_cache([p[0] for p in _merge_pairs])
                     if verbose:
                         for old_fid, primary_fid, name, sim in _merge_pairs:
                             wprint_info(f"【后处理】同名合并｜{name} sim={sim:.2f} {old_fid}→{primary_fid} (batch, total del={total_deleted}v)")
@@ -140,6 +159,7 @@ class _CrossWindowDedupMixin:
                             self.storage.redirect_entity_relations(old_fid, primary_fid)
                             deleted = self.storage.delete_entity_all_versions(old_fid)
                             self.storage.register_entity_redirect(old_fid, primary_fid)
+                            self._invalidate_gate_cache([old_fid])
                             if verbose:
                                 wprint_info(f"【后处理】同名合并｜{name} sim={sim:.2f} {old_fid}→{primary_fid} (deleted {deleted}v)")
                         except Exception as e2:
@@ -152,6 +172,7 @@ class _CrossWindowDedupMixin:
                         self.storage.redirect_entity_relations(old_fid, primary_fid)
                         deleted = self.storage.delete_entity_all_versions(old_fid)
                         self.storage.register_entity_redirect(old_fid, primary_fid)
+                        self._invalidate_gate_cache([old_fid])
                         if verbose:
                             wprint_info(f"【后处理】同名合并｜{name} sim={sim:.2f} {old_fid}→{primary_fid} (deleted {deleted}v)")
                     except Exception as e:
@@ -394,7 +415,7 @@ class _CrossWindowDedupMixin:
                     merged_content = (primary_content + "\n" + alias_content
                                       if primary_content else alias_content)
                 _content_merges.append(Entity(
-                    absolute_id=f"{primary_fid}_v{_uuid.uuid4().hex[:8]}",
+                    absolute_id=f"{primary_fid}_v{_uuid.uuid4().hex}",
                     family_id=primary_fid,
                     name=primary_name,
                     content=merged_content,
@@ -432,6 +453,7 @@ class _CrossWindowDedupMixin:
             if _batch_fn:
                 try:
                     total_deleted = _batch_fn(_dedup_pairs)
+                    self._invalidate_gate_cache([p[0] for p in _dedup_pairs])
                     if verbose:
                         for other_name, primary_name, llm_conf, other_fid, primary_fid in _merge_info:
                             wprint_info(f"【后处理】名称别名合并｜'{other_name}' → '{primary_name}' LLM_conf={llm_conf:.2f} {other_fid}→{primary_fid} (batch, total del={total_deleted}v)")
@@ -443,6 +465,7 @@ class _CrossWindowDedupMixin:
                             self.storage.redirect_entity_relations(other_fid, primary_fid)
                             deleted = self.storage.delete_entity_all_versions(other_fid)
                             self.storage.register_entity_redirect(other_fid, primary_fid)
+                            self._invalidate_gate_cache([other_fid])
                             if verbose:
                                 wprint_info(f"【后处理】名称别名合并｜'{other_name}' → '{primary_name}' LLM_conf={llm_conf:.2f} {other_fid}→{primary_fid} (deleted {deleted}v)")
                         except Exception as e2:
@@ -454,6 +477,7 @@ class _CrossWindowDedupMixin:
                         self.storage.redirect_entity_relations(other_fid, primary_fid)
                         deleted = self.storage.delete_entity_all_versions(other_fid)
                         self.storage.register_entity_redirect(other_fid, primary_fid)
+                        self._invalidate_gate_cache([other_fid])
                         if verbose:
                             wprint_info(f"【后处理】名称别名合并｜'{other_name}' → '{primary_name}' LLM_conf={llm_conf:.2f} {other_fid}→{primary_fid} (deleted {deleted}v)")
                     except Exception as e:

@@ -10,12 +10,14 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Iterable
 
-from core.agent import runtime_policy_metadata
+from research.benchmark import runtime_policy_metadata
 
-from .datasets import BenchmarkItem, MemorySession, group_by_scope, load_benchmark, parse_timestamp, sha256_file
+from .datasets import BenchmarkItem, MemorySession, data_dir_for_dataset_path, group_by_scope, load_benchmark, parse_timestamp, sha256_file
 from .metrics import retrieval_at_k
 from .reporting import append_jsonl, latest_by_question, read_jsonl, write_json
 from .retrieval import UnifiedRetriever
@@ -504,6 +506,20 @@ def ingest_benchmark(
                 )
                 ingested += _ing
                 skipped += _skip
+                # ALIGN-V2：scope 收尾串行收敛（ingest 期间只收集等价组不合并，
+                # 避免与并行文档写入竞争 FK/锁）。收敛成功后落 manifest 标记；
+                # resume 重启时凭标记跳过——否则每次重启都把已有 scope 的收敛
+                # 全量重跑（重启税 ∝ scope 数：16 个 scope 一次 ~2.8h 纯重复）。
+                if not scope_manifest.get("converged"):
+                    try:
+                        from core.remember.align_v2 import align_v2_enabled, final_convergence_flush
+                        if align_v2_enabled():
+                            _flush = final_convergence_flush(processor, verbose=True)
+                            print(f"[align-v2] scope={scope_id} 收尾收敛完成: {_flush}", flush=True)
+                            scope_manifest["converged"] = True
+                            write_json(manifest_path, manifest)
+                    except Exception as _exc:
+                        print(f"[align-v2] scope={scope_id} 收尾收敛失败(不阻断): {_exc}", flush=True)
                 continue
             for session in sessions:
                 document_id = _document_id(dataset, scope_id, session.session_id)
@@ -1108,7 +1124,7 @@ def retrieve_benchmark(
         config = copy.deepcopy(config)
         config.setdefault("llm", {})["agent_think"] = bool(agent_thinking)
     items, dataset_path = _selected_items(
-        manifest["dataset"], Path(manifest["dataset_path"]).parent,
+        manifest["dataset"], data_dir_for_dataset_path(manifest["dataset"], Path(manifest["dataset_path"])),
         question_ids=question_ids, limit=limit,
     )
     if sha256_file(dataset_path) != manifest["dataset_sha256"]:
@@ -1291,6 +1307,7 @@ def evaluate_benchmark(
     context_k: int | None = None,
     evidence_token_budget: int = 1600,
     neighbor_turns: int = 1,
+    answer_workers: int = 1,
 ) -> dict[str, Any]:
     if retrieval_profile != "legacy":
         context_k = int(context_k or answer_top_k)
@@ -1324,7 +1341,7 @@ def evaluate_benchmark(
         config = copy.deepcopy(config)
         config.setdefault("llm", {})["agent_think"] = bool(agent_thinking)
     items, dataset_path = _selected_items(
-        manifest["dataset"], Path(manifest["dataset_path"]).parent,
+        manifest["dataset"], data_dir_for_dataset_path(manifest["dataset"], Path(manifest["dataset_path"])),
         question_ids=question_ids,
     )
     if sha256_file(dataset_path) != manifest["dataset_sha256"]:
@@ -1333,6 +1350,8 @@ def evaluate_benchmark(
     artifact_tracks = {track: _artifact_track(track, result_tag) for track in source_tracks}
     answerer = AnswerGenerator(config, profile=answer_profile)
     processed = errors = 0
+    # 题级并行时保护 jsonl 追加与共享计数器；串行（默认）路径无锁。
+    _io_lock = threading.Lock()
 
     from core.server.registry import GraphRegistry
     for scope_id, scope_items in group_by_scope(items).items():
@@ -1393,16 +1412,17 @@ def evaluate_benchmark(
                     for row in latest_by_question(read_jsonl(retrieval_path))
                     if row.get("status") != "error"
                 } if resume else {}
-                for item in selected:
+                def _one(item, _track=track, _artifact_track=artifact_track,
+                         _retrieval_path=retrieval_path):
                     if item.question_id in completed:
-                        continue
+                        return None
                     started = time.monotonic()
-                    base = _base_record(item, artifact_track)
+                    base = _base_record(item, _artifact_track)
                     snapshot = cached_retrieval.get(item.question_id)
                     try:
                         if snapshot is None:
                             retrieval_started = time.monotonic()
-                            if track == "baseline":
+                            if _track == "baseline":
                                 if hasattr(retriever, "explore"):
                                     retrieval = retriever.explore(
                                         item.question,
@@ -1430,7 +1450,7 @@ def evaluate_benchmark(
                                     "retrieval_model": None,
                                 }
                             else:
-                                retrieval_payload = agents[track].retrieve(item)
+                                retrieval_payload = agents[_track].retrieve(item)
                                 contexts = retrieval_payload["retrieved"]
                                 ranked_sessions = [row["session_id"] for row in contexts]
                                 ranked_turns = retrieval_payload["retrieved_turn_ids"]
@@ -1438,7 +1458,7 @@ def evaluate_benchmark(
                             snapshot = {
                                 **base,
                                 "status": "completed",
-                                "source_track": track,
+                                "source_track": _track,
                                 "result_tag": result_tag,
                                 "retrieved": contexts,
                                 "ranked_session_ids": ranked_sessions,
@@ -1449,28 +1469,53 @@ def evaluate_benchmark(
                             snapshot["failure_attribution"] = _preliminary_failure(snapshot, visible_set)
                             snapshot["retrieval_cache_schema"] = 1
                             snapshot["retrieval_cache_sha256"] = _cache_digest(snapshot)
-                            append_jsonl(retrieval_path, snapshot)
+                            with _io_lock:
+                                append_jsonl(_retrieval_path, snapshot)
                         contexts = list(snapshot.get("retrieved") or [])
                         answer = answerer.answer(item, contexts[:answer_top_k])
-                        record = _combine_answer(snapshot, answer, artifact_track=artifact_track)
+                        record = _combine_answer(snapshot, answer, artifact_track=_artifact_track)
+                        return record, None
                     except Exception as exc:
-                        record = {
+                        return None, {
                             **base,
                             **(snapshot or {}),
-                            "track": artifact_track,
+                            "track": _artifact_track,
                             "status": "error",
                             "retrieved": list((snapshot or {}).get("retrieved") or []),
                             "ranked_session_ids": list((snapshot or {}).get("ranked_session_ids") or []),
                             "ranked_turn_ids": list((snapshot or {}).get("ranked_turn_ids") or []),
                             "retrieval_metrics": dict((snapshot or {}).get("retrieval_metrics") or {}),
                             "hypothesis": "", "prompt": "",
-                            "failure_attribution": "agent_stopped_early" if track == "skill-agent" else "retrieval_miss",
+                            "failure_attribution": "agent_stopped_early" if _track == "skill-agent" else "retrieval_miss",
                             "total_latency_seconds": round(time.monotonic() - started, 3),
                             "error": {"type": type(exc).__name__, "message": str(exc)},
                         }
-                        errors += 1
-                    append_jsonl(results_path, record)
-                    processed += 1
+
+                if answer_workers <= 1:
+                    for item in selected:
+                        outcome = _one(item)
+                        if outcome is None:
+                            continue
+                        record, err = outcome
+                        if err is not None:
+                            record = err
+                            errors += 1
+                        append_jsonl(results_path, record)
+                        processed += 1
+                else:
+                    with ThreadPoolExecutor(max_workers=answer_workers) as pool:
+                        futures = {pool.submit(_one, item): item for item in selected}
+                        for future in as_completed(futures):
+                            outcome = future.result()
+                            if outcome is None:
+                                continue
+                            record, err = outcome
+                            if err is not None:
+                                record = err
+                                errors += 1
+                            with _io_lock:
+                                append_jsonl(results_path, record)
+                            processed += 1
         finally:
             processor.storage.close()
     manifest["tracks"] = list(dict.fromkeys([
@@ -1519,7 +1564,7 @@ def replay_answers(
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     config = _load_config(config_path)
     items, dataset_path = _selected_items(
-        manifest["dataset"], Path(manifest["dataset_path"]).parent,
+        manifest["dataset"], data_dir_for_dataset_path(manifest["dataset"], Path(manifest["dataset_path"])),
         question_ids=question_ids,
     )
     if sha256_file(dataset_path) != manifest["dataset_sha256"]:

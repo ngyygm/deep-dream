@@ -53,9 +53,16 @@ def run_step9_worker(processor, state, window_abs_indices, total_chunks, doc_nam
                      verbose, verbose_steps, event_time, progress_callback,
                      step9_chunk_done_callback, control_callback,
                      RememberControlFlow):
-    """Step-9 worker thread: entity alignment, chained across windows."""
+    """Step-9 worker thread: entity alignment, chained across windows.
+
+    ALIGN-V2（DD_ALIGN_V2=1）下窗口并行：拆掉 step9_done_ev[i-1] 串行链，
+    同文档各窗口的实体对齐并发执行；同名重复 family 由窗口簇合并 + 文档末
+    全库收敛扫描（align_v2.py）负责收敛。
+    """
+    from core.remember.align_v2 import align_v2_enabled
     _emb_available = bool(processor.storage.embedding_client and processor.storage.embedding_client.is_available())
-    for i in range(state.N):
+
+    def _step9_window(i: int):
         # As soon as entity content is available (step5), start read-only
         # preparation for step9. The actual alignment still waits for full
         # step2-8 extraction so relation inputs are unchanged.
@@ -63,7 +70,7 @@ def run_step9_worker(processor, state, window_abs_indices, total_chunks, doc_nam
         _action = poll_control(state, control_callback)
         if _action:
             signal_control_stop(state, _action, i, set_extract=False, set_step9=True, set_step10=True)
-            break
+            return
         _wi = window_abs_indices[i]
         set_window_label(f"W{_wi + 1}/{total_chunks}")
         set_pipeline_role("步骤9")
@@ -81,12 +88,12 @@ def run_step9_worker(processor, state, window_abs_indices, total_chunks, doc_nam
                 vec_prefetch_future = safe_prefetch_submit(state, prewarm_fn, ["entity"])
         state.extract_done[i].wait()
         _er = state.extract_results[i]
-        if i > 0:
+        if i > 0 and not align_v2_enabled():
             state.step9_done_ev[i - 1].wait()
         _action = poll_control(state, control_callback)
         if _action:
             signal_control_stop(state, _action, i, set_extract=False, set_step9=True, set_step10=True)
-            break
+            return
         with processor._runtime_lock:
             processor._active_step9 += 1
         _already_versioned = set()
@@ -100,7 +107,7 @@ def run_step9_worker(processor, state, window_abs_indices, total_chunks, doc_nam
                     _stage, _exc = _upstream
                     if verbose or verbose_steps:
                         wprint_info(f"【步骤9】跳过｜上游｜{_stage} {_exc}")
-                    continue
+                    return
                 raise RuntimeError(
                     f"step9 skipped for window {_wi}: extract result is None (extraction failed)"
                 )
@@ -155,6 +162,21 @@ def run_step9_worker(processor, state, window_abs_indices, total_chunks, doc_nam
             if _success and step9_chunk_done_callback:
                 step9_chunk_done_callback(_wi + 1)
             clear_parallel_log_context()
+
+    # ── 调度：默认逐窗口串行链；ALIGN-V2 下窗口并行 ──
+    if align_v2_enabled() and state.N > 1:
+        from concurrent.futures import ThreadPoolExecutor
+        _workers = max(2, min(getattr(processor, "llm_threads", 4) or 4, 8))
+        with ThreadPoolExecutor(max_workers=_workers, thread_name_prefix="step9v2") as _pool:
+            _futures = [_pool.submit(_step9_window, _i) for _i in range(state.N)]
+            for _f in _futures:
+                try:
+                    _f.result()
+                except Exception:
+                    logger.exception("step9v2 window task crashed")
+    else:
+        for _i in range(state.N):
+            _step9_window(_i)
 
 
 # ------------------------------------------------------------------
