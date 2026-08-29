@@ -16,10 +16,10 @@ import json
 import time
 from pathlib import Path
 
-from core.benchmark.mcp_server import ScopedMemoryServer
-from core.benchmark.metrics import retrieval_at_k
+from research.benchmark.mcp_server import ScopedMemoryServer
+from research.benchmark.metrics import retrieval_at_k
 
-RUN_DIR = Path(".benchmark_runs/locomo-full-quality-v1")
+RUN_DIR = Path(__file__).resolve().parents[1] / ".benchmark_runs" / "locomo-full-quality-v1"
 # The frozen libraries were built with all-MiniLM-L6-v2 (384-dim) per the run
 # manifest. service_config.example.json points at Qwen/Qwen3-Embedding-0.6B,
 # whose vectors are dimensionally incompatible with the precomputed corpus

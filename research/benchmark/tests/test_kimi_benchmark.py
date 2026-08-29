@@ -44,7 +44,7 @@ def _run_fixture(tmp_path: Path) -> tuple[Path, Path]:
             "category": 1, "evidence": ["D1:1"],
         }],
     }]), encoding="utf-8")
-    from core.benchmark.datasets import sha256_file
+    from research.benchmark.datasets import sha256_file
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     (run_dir / "run_manifest.json").write_text(json.dumps({
@@ -66,7 +66,7 @@ def _run_fixture(tmp_path: Path) -> tuple[Path, Path]:
 
 
 def test_kimi_runtime_strips_reasoning_and_requires_submitted_ids(tmp_path, monkeypatch):
-    from core.benchmark.kimi_runtime import KimiAgentRuntime
+    from research.benchmark.kimi_runtime import KimiAgentRuntime
     executable = _fake_kimi(tmp_path / "kimi")
     run_dir, config = _run_fixture(tmp_path)
     monkeypatch.setenv("TEST_QWEN_KEY", "not-a-real-key")
@@ -89,8 +89,8 @@ def test_kimi_runtime_strips_reasoning_and_requires_submitted_ids(tmp_path, monk
 
 
 def test_agent_query_writes_direct_evidence_and_v5_manifest(tmp_path, monkeypatch):
-    from core.benchmark.kimi_benchmark import agent_query_benchmark
-    from core.benchmark.reporting import read_jsonl
+    from research.benchmark.kimi_benchmark import agent_query_benchmark
+    from research.benchmark.reporting import read_jsonl
     executable = _fake_kimi(tmp_path / "kimi")
     run_dir, config = _run_fixture(tmp_path)
     monkeypatch.setenv("TEST_QWEN_KEY", "not-a-real-key")
@@ -113,7 +113,7 @@ def test_agent_query_writes_direct_evidence_and_v5_manifest(tmp_path, monkeypatc
 
 
 def test_kimi_final_evidence_must_match_submit(tmp_path, monkeypatch):
-    from core.benchmark.kimi_runtime import KimiAgentRuntime
+    from research.benchmark.kimi_runtime import KimiAgentRuntime
     executable = _fake_kimi(tmp_path / "kimi")
     text = executable.read_text().replace(
         "'stop_reason':'submit_evidence',**submit",
@@ -131,14 +131,14 @@ def test_kimi_final_evidence_must_match_submit(tmp_path, monkeypatch):
 
 
 def test_mcp_normalizes_json_array_strings():
-    from core.benchmark.mcp_server import _string_list
+    from research.benchmark.mcp_server import _string_list
     assert _string_list('["session_1", "session_1"]') == ["session_1"]
     assert _string_list(["D1:1"]) == ["D1:1"]
     assert _string_list(None) == []
 
 
 def test_persistent_runtime_reuses_process_but_requires_fresh_sessions(tmp_path, monkeypatch):
-    from core.benchmark.kimi_runtime import KimiAgentRuntime
+    from research.benchmark.kimi_runtime import KimiAgentRuntime
 
     run_dir, config = _run_fixture(tmp_path)
     executable = tmp_path / "runtime" / "bin" / "kimi"

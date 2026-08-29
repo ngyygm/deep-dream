@@ -3,23 +3,23 @@ from pathlib import Path
 
 import pytest
 
-from core.benchmark.agentic import (
+from research.benchmark.agentic import (
     AgenticMemoryRunner,
     AgenticMemoryTools,
     _agent_extra_body,
     _parse_json_object,
 )
-from core.benchmark.datasets import BenchmarkItem, MemorySession, load_locomo, load_longmemeval, parse_timestamp
-from core.benchmark.metrics import aggregate_records, locomo_f1, retrieval_at_k, token_f1
-from core.benchmark.retrieval import (
+from research.benchmark.datasets import BenchmarkItem, MemorySession, load_locomo, load_longmemeval, parse_timestamp
+from research.benchmark.metrics import aggregate_records, locomo_f1, retrieval_at_k, token_f1
+from research.benchmark.retrieval import (
     HYBRID_V2_WEIGHTS,
     HybridRetrievalConfig,
     UnifiedRetriever,
     extract_query_terms,
 )
-from core.benchmark.runner import _document_id
-from core.benchmark.scoring import JUDGE_MODEL, longmemeval_judge_prompt, report_run, score_run
-from core.benchmark import runner
+from research.benchmark.runner import _document_id
+from research.benchmark.scoring import JUDGE_MODEL, longmemeval_judge_prompt, report_run, score_run
+from research.benchmark import runner
 
 
 def test_runtime_policy_is_packaged_and_fingerprinted():
@@ -595,7 +595,7 @@ def test_answerer_rejects_missing_named_api_key_env(monkeypatch):
 
 
 def test_locomo_semantic_judge_parses_json_and_resumes_1540_protocol(tmp_path, monkeypatch):
-    from core.benchmark import judging
+    from research.benchmark import judging
 
     assert judging._parse_label('{"reasoning":"same fact","label":"CORRECT"}') == (
         True, "same fact",
@@ -645,7 +645,7 @@ def test_locomo_semantic_judge_parses_json_and_resumes_1540_protocol(tmp_path, m
 
 
 def test_locomo_batch_judge_submits_collects_and_resumes(tmp_path, monkeypatch):
-    from core.benchmark import judging
+    from research.benchmark import judging
 
     run = tmp_path / "run"
     run.mkdir()
@@ -838,7 +838,7 @@ def test_mock_end_to_end_run_is_resumable(tmp_path, monkeypatch):
                       "text": session.text, "turn_ids": session.turn_ids,
                       "matched_turn_ids": session.turn_ids, "evidence": []}], session.turn_ids)
 
-    import core.benchmark.agentic as agentic_module
+    import research.benchmark.agentic as agentic_module
     monkeypatch.setattr(agentic_module, "AgentDecisionModel", lambda _config: FakePolicy())
     monkeypatch.setattr(agentic_module, "AgenticMemoryTools", FakeAgentTools)
     agentic_dir = tmp_path / "agentic-run"

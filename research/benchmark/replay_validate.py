@@ -19,10 +19,10 @@ import time
 from pathlib import Path
 from collections import defaultdict
 
-from core.benchmark.mcp_server import ScopedMemoryServer
-from core.benchmark.metrics import retrieval_at_k
+from research.benchmark.mcp_server import ScopedMemoryServer
+from research.benchmark.metrics import retrieval_at_k
 
-RUN_DIR = Path(".benchmark_runs/locomo-full-quality-v1")
+RUN_DIR = Path(__file__).resolve().parents[1] / ".benchmark_runs" / "locomo-full-quality-v1"
 CONFIG_PATH = Path("service_config.local.json")
 RESULTS_JSONL = RUN_DIR / "results.kimi-agent-direct-memory-v2c-gate210.jsonl"
 KS = (1, 3, 5, 10, 20)

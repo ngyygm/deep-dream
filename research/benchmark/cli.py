@@ -1,4 +1,4 @@
-"""``deep-dream benchmark`` — isolated dual-track evaluation harness."""
+"""Isolated dual-track evaluation harness — run via ``python -m research.benchmark.cli``."""
 from __future__ import annotations
 
 from datetime import datetime
@@ -9,6 +9,9 @@ from typing import Any
 import click
 from click.core import ParameterSource
 
+
+# benchmark data lives under research/ (this file is research/benchmark/cli.py)
+RESEARCH_ROOT = Path(__file__).resolve().parents[1]
 
 DATASET_CHOICE = click.Choice(["longmemeval-s", "locomo"], case_sensitive=False)
 TRACK_CHOICE = click.Choice(["baseline", "skill-agent", "both"], case_sensitive=False)
@@ -31,7 +34,7 @@ def _root_config(ctx: click.Context) -> Path:
 
 
 def _default_run_dir(dataset: str) -> Path:
-    return Path(".benchmark_runs") / f"{dataset}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    return RESEARCH_ROOT / ".benchmark_runs" / f"{dataset}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
 
 
 def _context_k(ctx: click.Context, context_k: int, top_k: int | None) -> int:
@@ -60,8 +63,8 @@ def runtime() -> None:
 @click.pass_context
 def runtime_install(ctx: click.Context, runtime_name: str, version: str,
                     runtime_root: Path | None) -> None:
-    """Install an exact external runtime into .benchmark_runtime."""
-    from core.benchmark.kimi_runtime import install_kimi_runtime
+    """Install an exact external runtime into research/.benchmark_runtime."""
+    from research.benchmark.kimi_runtime import install_kimi_runtime
     if runtime_name != "kimi":  # defensive; Click currently exposes only Kimi
         raise click.UsageError(f"Unsupported runtime: {runtime_name}")
     result = install_kimi_runtime(version=version, root=runtime_root)
@@ -77,7 +80,7 @@ def runtime_install(ctx: click.Context, runtime_name: str, version: str,
 def runtime_check(ctx: click.Context, runtime_name: str, version: str,
                   runtime_root: Path | None, executable: Path | None) -> None:
     """Verify the pinned runtime version and executable fingerprint."""
-    from core.benchmark.kimi_runtime import check_kimi_runtime
+    from research.benchmark.kimi_runtime import check_kimi_runtime
     if runtime_name != "kimi":
         raise click.UsageError(f"Unsupported runtime: {runtime_name}")
     result = check_kimi_runtime(version=version, root=runtime_root, executable=executable)
@@ -124,7 +127,7 @@ def agent_query(
     runtime_executable: Path | None, resume: bool,
 ) -> None:
     """Run Kimi as an autonomous, conversation-scoped Deep-Dream query Agent."""
-    from core.benchmark.kimi_benchmark import agent_query_benchmark
+    from research.benchmark.kimi_benchmark import agent_query_benchmark
     result = agent_query_benchmark(
         run_dir, config_path or _root_config(ctx), runtime_name=runtime_name, modes=modes,
         agent_model=agent_model, agent_thinking=_thinking_value(agent_thinking),
@@ -179,7 +182,7 @@ def agent_evaluate(
     runtime_root: Path | None, runtime_executable: Path | None, resume: bool,
 ) -> None:
     """Run Kimi query and then replay the evidence through the shared answerer."""
-    from core.benchmark.kimi_benchmark import agent_evaluate_benchmark
+    from research.benchmark.kimi_benchmark import agent_evaluate_benchmark
     result = agent_evaluate_benchmark(
         run_dir, config_path or _root_config(ctx), runtime_name=runtime_name, modes=modes,
         agent_model=agent_model, agent_thinking=_thinking_value(agent_thinking),
@@ -198,12 +201,12 @@ def agent_evaluate(
 
 @benchmark.command("prepare")
 @click.option("--dataset", type=click.Choice(["longmemeval-s", "locomo", "all"]), default="all", show_default=True)
-@click.option("--data-dir", type=click.Path(path_type=Path), default=Path(".benchmark_data"), show_default=True)
+@click.option("--data-dir", type=click.Path(path_type=Path), default=RESEARCH_ROOT / ".benchmark_data", show_default=True)
 @click.option("--force", is_flag=True, help="Re-download existing files.")
 @click.pass_context
 def prepare(ctx: click.Context, dataset: str, data_dir: Path, force: bool) -> None:
     """Download official data and record source hashes."""
-    from core.benchmark.datasets import prepare_dataset
+    from research.benchmark.datasets import prepare_dataset
     names = ["longmemeval-s", "locomo"] if dataset == "all" else [dataset]
     records = [prepare_dataset(name, data_dir, force=force) for name in names]
     _emit(ctx, {"datasets": records, "data_dir": str(data_dir.resolve())}, "Benchmark data prepared")
@@ -212,7 +215,7 @@ def prepare(ctx: click.Context, dataset: str, data_dir: Path, force: bool) -> No
 @benchmark.command("ingest")
 @click.option("--dataset", type=DATASET_CHOICE, required=True)
 @click.option("--run-dir", type=click.Path(path_type=Path), required=True)
-@click.option("--data-dir", type=click.Path(path_type=Path), default=Path(".benchmark_data"), show_default=True)
+@click.option("--data-dir", type=click.Path(path_type=Path), default=RESEARCH_ROOT / ".benchmark_data", show_default=True)
 @click.option("--config", "config_path", type=click.Path(path_type=Path), default=None)
 @click.option("--scope-id", "scope_ids", multiple=True, help="Conversation/question scope to ingest.")
 @click.option("--session-limit", type=click.IntRange(min=1), default=None)
@@ -225,7 +228,7 @@ def ingest(ctx: click.Context, dataset: str, run_dir: Path, data_dir: Path,
            config_path: Path | None, scope_ids: tuple[str, ...], session_limit: int | None,
            remember_profile: str, ingest_workers: int, resume: bool) -> None:
     """Remember sessions into one isolated library per conversation scope."""
-    from core.benchmark.runner import ingest_benchmark
+    from research.benchmark.runner import ingest_benchmark
     result = ingest_benchmark(
         dataset, data_dir, run_dir, config_path or _root_config(ctx),
         scope_ids=list(scope_ids), session_limit=session_limit,
@@ -268,7 +271,7 @@ def evaluate(ctx: click.Context, run_dir: Path, config_path: Path | None,
              semantic_threshold: float, resume: bool, answer_profile: str,
              agent_thinking: bool | None, result_tag: str | None) -> None:
     """Run fixed baseline and/or autonomous skill-agent over a frozen library."""
-    from core.benchmark.runner import evaluate_benchmark
+    from research.benchmark.runner import evaluate_benchmark
     resolved_context_k = _context_k(ctx, context_k, top_k)
     result = evaluate_benchmark(
         run_dir, config_path or _root_config(ctx), tracks=tracks,
@@ -313,7 +316,7 @@ def retrieve(ctx: click.Context, run_dir: Path, config_path: Path | None,
              semantic_threshold: float, agent_thinking: bool | None,
              result_tag: str | None, resume: bool) -> None:
     """Persist retrieval evidence without invoking the answer model."""
-    from core.benchmark.runner import retrieve_benchmark
+    from research.benchmark.runner import retrieve_benchmark
     resolved_context_k = _context_k(ctx, context_k, top_k)
     result = retrieve_benchmark(
         run_dir, config_path or _root_config(ctx), tracks=tracks,
@@ -346,7 +349,7 @@ def answer(ctx: click.Context, run_dir: Path, config_path: Path | None,
            question_ids: tuple[str, ...], result_tag: str,
            answer_profile: str, resume: bool) -> None:
     """Replay only the answer stage from persisted retrieval/Agent evidence."""
-    from core.benchmark.runner import replay_answers
+    from research.benchmark.runner import replay_answers
     selected_tracks = source_tracks or tracks
     result = replay_answers(
         run_dir, config_path or _root_config(ctx), tracks=selected_tracks,
@@ -358,7 +361,7 @@ def answer(ctx: click.Context, run_dir: Path, config_path: Path | None,
 
 @benchmark.command("run")
 @click.option("--dataset", type=DATASET_CHOICE, required=True)
-@click.option("--data-dir", type=click.Path(path_type=Path), default=Path(".benchmark_data"), show_default=True)
+@click.option("--data-dir", type=click.Path(path_type=Path), default=RESEARCH_ROOT / ".benchmark_data", show_default=True)
 @click.option("--run-dir", type=click.Path(path_type=Path), default=None)
 @click.option("--config", "config_path", type=click.Path(path_type=Path), default=None)
 @click.option("--scope-id", "scope_ids", multiple=True)
@@ -381,7 +384,7 @@ def run(ctx: click.Context, dataset: str, data_dir: Path, run_dir: Path | None,
         limit: int | None, question_ids: tuple[str, ...], resume: bool, top_k: int,
         semantic_threshold: float, max_agent_steps: int, retrieval_mode: str | None) -> None:
     """Shortcut for ingest followed by dual-track evaluation."""
-    from core.benchmark.runner import run_benchmark
+    from research.benchmark.runner import run_benchmark
     run_dir = run_dir or _default_run_dir(dataset)
     result = run_benchmark(
         dataset, data_dir, run_dir, config_path or _root_config(ctx),
@@ -400,7 +403,7 @@ def run(ctx: click.Context, dataset: str, data_dir: Path, run_dir: Path | None,
 @click.pass_context
 def score(ctx: click.Context, run_dir: Path, no_judge: bool) -> None:
     """Calculate official-compatible metrics for every track."""
-    from core.benchmark.scoring import score_run
+    from research.benchmark.scoring import score_run
     _emit(ctx, score_run(run_dir, judge=not no_judge), "Benchmark scoring completed")
 
 
@@ -431,7 +434,7 @@ def judge(
     resume: bool,
 ) -> None:
     """Run a versioned, resumable semantic judge over existing answers."""
-    from core.benchmark.judging import judge_run
+    from research.benchmark.judging import judge_run
     result = judge_run(
         run_dir,
         config_path or _root_config(ctx),
@@ -456,7 +459,7 @@ def judge(
 def judge_batch(ctx: click.Context, action: str, run_dir: Path, config_path: Path | None,
                 tracks: tuple[str, ...], protocol: str, judge_tag: str) -> None:
     """Submit, inspect, or collect resumable semantic judging batch jobs."""
-    from core.benchmark.judging import batch_judge
+    from research.benchmark.judging import batch_judge
     result = batch_judge(
         run_dir, config_path or _root_config(ctx), action=action, tracks=list(tracks),
         protocol=protocol, judge_tag=judge_tag,
@@ -469,7 +472,7 @@ def judge_batch(ctx: click.Context, action: str, run_dir: Path, config_path: Pat
 @click.pass_context
 def report(ctx: click.Context, run_dir: Path) -> None:
     """Regenerate per-track and comparison reports."""
-    from core.benchmark.scoring import report_run
+    from research.benchmark.scoring import report_run
     _emit(ctx, report_run(run_dir), "Benchmark report generated")
 
 
@@ -478,7 +481,7 @@ def report(ctx: click.Context, run_dir: Path) -> None:
 @click.pass_context
 def diagnose(ctx: click.Context, run_dir: Path) -> None:
     """Attribute failures and audit conversation/evidence isolation."""
-    from core.benchmark.scoring import diagnose_run
+    from research.benchmark.scoring import diagnose_run
     _emit(ctx, diagnose_run(run_dir), "Benchmark diagnosis completed")
 
 
@@ -488,5 +491,5 @@ def diagnose(ctx: click.Context, run_dir: Path) -> None:
 @click.pass_context
 def compare(ctx: click.Context, run_a: Path, run_b: Path) -> None:
     """Compare matching tracks from two scored runs."""
-    from core.benchmark.scoring import compare_runs
+    from research.benchmark.scoring import compare_runs
     _emit(ctx, compare_runs(run_a, run_b), "Benchmark runs compared")

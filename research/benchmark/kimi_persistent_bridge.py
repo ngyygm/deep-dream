@@ -51,7 +51,7 @@ async def _run_one(args: argparse.Namespace, request: dict[str, Any]) -> dict[st
             "deep-dream": {
                 "command": request["mcp_python"],
                 "args": [
-                    "-m", "core.benchmark.mcp_server",
+                    "-m", "research.benchmark.mcp_server",
                     "--run-dir", request["run_dir"],
                     "--scope-id", request["scope_id"],
                     "--config", request["service_config"],

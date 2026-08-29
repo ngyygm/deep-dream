@@ -31,11 +31,11 @@ hold precomputed 384-dim all-MiniLM-L6-v2 corpus embeddings. Requires
 ``HF_HUB_OFFLINE=1`` so the query embedding loads from the local cache.
 
 Usage:
-    python -m core.benchmark.replay_provenance_ablation            # all 210
-    python -m core.benchmark.replay_provenance_ablation 16          # 16-q sample
+    python -m research.benchmark.replay_provenance_ablation            # all 210
+    python -m research.benchmark.replay_provenance_ablation 16          # 16-q sample
 
 Emits:
-    .benchmark_runs/locomo-full-quality-v1/
+    research/.benchmark_runs/locomo-full-quality-v1/
         provenance_ablation.x7-v1.jsonl
         provenance_ablation.x7-v1.summary.json
 """
@@ -49,13 +49,13 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-from core.benchmark.mcp_server import ScopedMemoryServer
-from core.benchmark.metrics import retrieval_at_k
-from core.benchmark.retrieval import ALL_RETRIEVAL_CHANNELS
+from research.benchmark.mcp_server import ScopedMemoryServer
+from research.benchmark.metrics import retrieval_at_k
+from research.benchmark.retrieval import ALL_RETRIEVAL_CHANNELS
 # Reuse the verified X3 query-reconstruction, bootstrap CI, payload-byte, and
 # gate-record/sample loaders so this ablation shares X3's exact trajectory
 # reconstruction and metric definitions byte-for-byte.
-from core.benchmark.replay_budget_frontier import (
+from research.benchmark.replay_budget_frontier import (
     CONFIG_PATH,
     KS,
     RESULTS_JSONL,

@@ -13,11 +13,11 @@ hold precomputed 384-dim all-MiniLM-L6-v2 corpus embeddings, and the query
 embedding loads locally. No LLM/embedding-API keys are used.
 
 Usage:
-    python -m core.benchmark.replay_budget_frontier            # all 210
-    python -m core.benchmark.replay_budget_frontier 16          # 16-q sample
+    python -m research.benchmark.replay_budget_frontier            # all 210
+    python -m research.benchmark.replay_budget_frontier 16          # 16-q sample
 
 Emits:
-    .benchmark_runs/locomo-full-quality-v1/
+    research/.benchmark_runs/locomo-full-quality-v1/
         channel_policy_replay.depth-sweep.prefix-monotonic-v1.jsonl
         channel_policy_replay.depth-sweep.prefix-monotonic-v1.summary.json
 """
@@ -31,10 +31,10 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-from core.benchmark.mcp_server import ScopedMemoryServer
-from core.benchmark.metrics import retrieval_at_k
+from research.benchmark.mcp_server import ScopedMemoryServer
+from research.benchmark.metrics import retrieval_at_k
 
-RUN_DIR = Path(".benchmark_runs/locomo-full-quality-v1")
+RUN_DIR = Path(__file__).resolve().parents[1] / ".benchmark_runs" / "locomo-full-quality-v1"
 # The frozen libraries were built with all-MiniLM-L6-v2 (384-dim) per the run
 # manifest. service_config.example.json points at Qwen/Qwen3-Embedding-0.6B,
 # whose vectors are dimensionally incompatible with the precomputed corpus

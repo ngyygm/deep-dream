@@ -35,7 +35,7 @@ def _project_root() -> Path:
 
 
 def default_runtime_root() -> Path:
-    return _project_root() / ".benchmark_runtime" / "kimi-cli"
+    return Path(__file__).resolve().parents[1] / ".benchmark_runtime" / "kimi-cli"
 
 
 def runtime_dir(version: str = KIMI_RUNTIME_VERSION, root: Path | None = None) -> Path:
@@ -356,7 +356,7 @@ class KimiAgentRuntime:
                 "deep-dream": {
                     "command": sys.executable,
                     "args": [
-                        "-m", "core.benchmark.mcp_server",
+                        "-m", "research.benchmark.mcp_server",
                         "--run-dir", str(self.run_dir),
                         "--scope-id", scope_id,
                         "--config", str(self.config_path),
