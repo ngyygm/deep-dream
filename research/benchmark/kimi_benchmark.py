@@ -12,7 +12,7 @@ import subprocess
 import time
 from typing import Any, Iterable
 
-from core.agent import runtime_policy_metadata
+from research.benchmark import runtime_policy_metadata
 
 from .datasets import BenchmarkItem, group_by_scope, sha256_file
 from .kimi_runtime import (

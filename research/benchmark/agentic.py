@@ -9,7 +9,7 @@ import re
 import time
 from typing import Any
 
-from core.agent import load_runtime_policy
+from research.benchmark import load_runtime_policy
 from core.cli._helpers import concept_source_evidence, relation_evidence
 
 from .datasets import BenchmarkItem, MemorySession

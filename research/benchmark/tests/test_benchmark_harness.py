@@ -23,7 +23,7 @@ from research.benchmark import runner
 
 
 def test_runtime_policy_is_packaged_and_fingerprinted():
-    from core.agent import load_runtime_policy, runtime_policy_metadata
+    from research.benchmark import load_runtime_policy, runtime_policy_metadata
     policy = load_runtime_policy()
     metadata = runtime_policy_metadata()
     assert "submit_evidence" in policy
@@ -203,7 +203,7 @@ def test_hybrid_v2_resolves_home_country_referential_bridge():
 
 def test_benchmark_cli_rejects_top_k_with_context_k_and_keeps_alias(tmp_path, monkeypatch):
     from click.testing import CliRunner
-    from core.cli.cmd_benchmark import benchmark
+    from research.benchmark.cli import benchmark
 
     run_dir = tmp_path / "run"
     run_dir.mkdir()

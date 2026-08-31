@@ -17,7 +17,9 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
     records = []
-    for line in path.read_text(encoding="utf-8").splitlines():
+    # 只按 \n 切：记录内可能含合法的 Unicode 行分隔符（  等，
+    # ensure_ascii=False 会原样落盘），splitlines() 会把它们当行边界切碎记录。
+    for line in path.read_text(encoding="utf-8").split("\n"):
         if line.strip():
             records.append(json.loads(line))
     return records

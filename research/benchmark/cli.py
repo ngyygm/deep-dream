@@ -13,7 +13,7 @@ from click.core import ParameterSource
 # benchmark data lives under research/ (this file is research/benchmark/cli.py)
 RESEARCH_ROOT = Path(__file__).resolve().parents[1]
 
-DATASET_CHOICE = click.Choice(["longmemeval-s", "locomo"], case_sensitive=False)
+DATASET_CHOICE = click.Choice(["longmemeval-s", "locomo", "memoryagentbench"], case_sensitive=False)
 TRACK_CHOICE = click.Choice(["baseline", "skill-agent", "both"], case_sensitive=False)
 
 
@@ -200,7 +200,7 @@ def agent_evaluate(
 
 
 @benchmark.command("prepare")
-@click.option("--dataset", type=click.Choice(["longmemeval-s", "locomo", "all"]), default="all", show_default=True)
+@click.option("--dataset", type=click.Choice(["longmemeval-s", "locomo", "memoryagentbench", "all"]), default="all", show_default=True)
 @click.option("--data-dir", type=click.Path(path_type=Path), default=RESEARCH_ROOT / ".benchmark_data", show_default=True)
 @click.option("--force", is_flag=True, help="Re-download existing files.")
 @click.pass_context
@@ -220,7 +220,7 @@ def prepare(ctx: click.Context, dataset: str, data_dir: Path, force: bool) -> No
 @click.option("--scope-id", "scope_ids", multiple=True, help="Conversation/question scope to ingest.")
 @click.option("--session-limit", type=click.IntRange(min=1), default=None)
 @click.option("--remember-profile", type=click.Choice(["strong-v1"]), default="strong-v1", show_default=True)
-@click.option("--ingest-workers", type=click.IntRange(min=1, max=8), default=1,
+@click.option("--ingest-workers", type=click.IntRange(min=1, max=32), default=1,
               show_default=True, help="文档级并发 ingest；>1 时每文档独立 processor（共享信号量/judge）。")
 @click.option("--resume", is_flag=True)
 @click.pass_context
@@ -256,6 +256,8 @@ def ingest(ctx: click.Context, dataset: str, run_dir: Path, data_dir: Path,
 @click.option("--neighbor-turns", type=click.IntRange(min=0, max=10), default=1, show_default=True)
 @click.option("--semantic-threshold", type=click.FloatRange(min=0, max=1), default=0.3, show_default=True)
 @click.option("--resume", is_flag=True)
+@click.option("--answer-workers", type=click.IntRange(min=1, max=32), default=1, show_default=True,
+              help="Per-question parallel workers inside each track (skill-agent speeds up ~Nx).")
 @click.option("--answer-profile", type=click.Choice(["legacy", "normalized-v1"]),
               default="normalized-v1", show_default=True)
 @click.option("--agent-thinking/--no-agent-thinking", default=None,
@@ -268,7 +270,8 @@ def evaluate(ctx: click.Context, run_dir: Path, config_path: Path | None,
              question_ids: tuple[str, ...], limit: int | None,
              max_agent_steps: int, candidate_k: int, context_k: int, top_k: int | None,
              retrieval_profile: str, evidence_token_budget: int, neighbor_turns: int,
-             semantic_threshold: float, resume: bool, answer_profile: str,
+             semantic_threshold: float, resume: bool, answer_workers: int,
+             answer_profile: str,
              agent_thinking: bool | None, result_tag: str | None) -> None:
     """Run fixed baseline and/or autonomous skill-agent over a frozen library."""
     from research.benchmark.runner import evaluate_benchmark
@@ -281,7 +284,7 @@ def evaluate(ctx: click.Context, run_dir: Path, config_path: Path | None,
         answer_profile=answer_profile, agent_thinking=agent_thinking, result_tag=result_tag,
         retrieval_profile=retrieval_profile, candidate_k=candidate_k,
         context_k=resolved_context_k, evidence_token_budget=evidence_token_budget,
-        neighbor_turns=neighbor_turns,
+        neighbor_turns=neighbor_turns, answer_workers=answer_workers,
     )
     _emit(ctx, result, "Benchmark evaluation completed")
 
@@ -493,3 +496,7 @@ def compare(ctx: click.Context, run_a: Path, run_b: Path) -> None:
     """Compare matching tracks from two scored runs."""
     from research.benchmark.scoring import compare_runs
     _emit(ctx, compare_runs(run_a, run_b), "Benchmark runs compared")
+
+
+if __name__ == "__main__":
+    benchmark()

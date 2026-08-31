@@ -45,8 +45,6 @@ import hashlib
 import json
 import sys
 import time
-from collections import defaultdict
-from pathlib import Path
 from typing import Any
 
 from research.benchmark.mcp_server import ScopedMemoryServer
@@ -58,7 +56,6 @@ from research.benchmark.retrieval import ALL_RETRIEVAL_CHANNELS
 from research.benchmark.replay_budget_frontier import (
     CONFIG_PATH,
     KS,
-    RESULTS_JSONL,
     RUN_DIR,
     _bootstrap_ci,
     _evidence_payload_bytes,

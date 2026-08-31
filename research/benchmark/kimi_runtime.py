@@ -14,7 +14,7 @@ import threading
 import time
 from typing import Any
 
-from core.agent import load_runtime_policy
+from research.benchmark import load_runtime_policy
 
 
 KIMI_RUNTIME_VERSION = "1.49.0"
@@ -169,6 +169,11 @@ def _write_agent_files(
     work_dir.mkdir(parents=True, exist_ok=True)
     prompt_path = work_dir / "system.md"
     policy = load_runtime_policy().strip()
+    contract_guidance = (
+        "- Decide autonomously how many retrieval steps are needed. Continue while another query can materially improve the evidence."
+        if agent_directed_steps
+        else "- By step 10, stop exploring and call `submit_evidence` with the best evidence already found\n  (or three empty ID arrays). Never spend the final two steps on another search."
+    )
     prompt_path.write_text(
         f"""# Deep-Dream LoCoMo Memory Agent
 
@@ -180,7 +185,7 @@ def _write_agent_files(
 - Never ask the user, use a shell, access files, browse the web, or call subagents.
 - The question category, reference answer, and gold evidence are unavailable by design.
 - Before finishing, call `submit_evidence` with only IDs actually returned by tools.
-{("- Decide autonomously how many retrieval steps are needed. Continue while another query can materially improve the evidence." if agent_directed_steps else "- By step 10, stop exploring and call `submit_evidence` with the best evidence already found\n  (or three empty ID arrays). Never spend the final two steps on another search.")}
+{contract_guidance}
 - After the tool accepts the submission, return exactly one JSON object and no prose:
   {{"answer":"concise final answer","session_ids":[],"episode_ids":[],"turn_ids":[],"confidence":0.0,"stop_reason":"submit_evidence"}}
 - Copy the accepted evidence IDs into the final object. The answer may make ordinary inferences,

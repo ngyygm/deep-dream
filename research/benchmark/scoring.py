@@ -14,7 +14,12 @@ from .metrics import aggregate_records, locomo_f1
 from .reporting import append_jsonl, latest_by_question, read_jsonl, render_markdown, write_json
 
 
-JUDGE_MODEL = "gpt-4o-2024-08-06"
+# 官方 judge 默认按 gpt-4o 协议；换 OpenAI 兼容端点（如 kimi-k3）时用环境变量
+# 覆盖。kimi-k3 等 reasoning 模型必须抬高 max_tokens，否则预算全花在
+# reasoning_content 上、content 为空，全部判 no（实测 10 -> 1024 可用）。
+JUDGE_MODEL = os.environ.get("LONGMEMEVAL_JUDGE_MODEL", "gpt-4o-2024-08-06")
+JUDGE_MAX_TOKENS = int(os.environ.get("LONGMEMEVAL_JUDGE_MAX_TOKENS", "10"))
+JUDGE_BASE_URL = os.environ.get("LONGMEMEVAL_JUDGE_BASE_URL") or os.environ.get("OPENAI_BASE_URL")
 
 
 def longmemeval_judge_prompt(task: str, question: str, answer: str, response: str,
@@ -53,7 +58,7 @@ def longmemeval_judge_prompt(task: str, question: str, answer: str, response: st
 
 def _judge(record: dict[str, Any], api_key: str) -> tuple[bool, str]:
     from openai import OpenAI
-    client = OpenAI(api_key=api_key)
+    client = OpenAI(api_key=api_key, base_url=JUDGE_BASE_URL)
     prompt = longmemeval_judge_prompt(
         str(record["question_type"]), record["question"], record["answer"], record["hypothesis"],
         abstention=str(record["question_id"]).endswith("_abs"),
@@ -63,7 +68,7 @@ def _judge(record: dict[str, Any], api_key: str) -> tuple[bool, str]:
         try:
             response = client.chat.completions.create(
                 model=JUDGE_MODEL, messages=[{"role": "user", "content": prompt}],
-                temperature=0, max_tokens=10,
+                temperature=0, max_tokens=JUDGE_MAX_TOKENS,
             )
             text = response.choices[0].message.content.strip()
             return "yes" in text.lower(), text

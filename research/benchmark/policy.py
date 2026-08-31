@@ -12,7 +12,7 @@ RUNTIME_POLICY_VERSION = "1.0.0"
 @lru_cache(maxsize=1)
 def load_runtime_policy() -> str:
     """Return the packaged policy used by every autonomous memory agent."""
-    return resources.files("core.agent").joinpath(
+    return resources.files("research.benchmark").joinpath(
         "policies/deep_dream_runtime.md"
     ).read_text(encoding="utf-8")
 
