@@ -127,3 +127,8 @@ graph_migrated*/
 service_config.kimi.json
 service_config.kimi-judge.json
 service_config.kimi-a4096.json
+service_config.kimi-*.json
+
+# 本地运行库与脚手架（勿提交）
+library_kimi/
+tmp/
