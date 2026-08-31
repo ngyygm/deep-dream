@@ -1,0 +1,17 @@
+\begin{table}[t]
+\centering
+\caption{LongMemEval main results. Published rows (GPT-4o-mini / GPT-4o, Full-context vs.\ Zep) reproduced verbatim from \citet{rasmussen2025zep} (arXiv:2501.13956). The \textbf{Deep-Dream} row uses Qwen3.7-plus as both answerer and cross-judge---a different protocol; its accuracy (84.6\%) is placed beside the published numbers, not as a shared leaderboard. Latency/avg-context for Deep-Dream are not measured under the published protocol (---). The six-category breakdown is in Table~\ref{tab:zep-longmemeval-cat}.}
+\label{tab:zep-longmemeval}
+\footnotesize
+\begin{tabular}{llrrl}
+\toprule
+Answerer & System & Accuracy & Latency (s) & Avg.\ context \\
+\midrule
+GPT-4o-mini & Full-context & 55.4\% & 31.30 & 115k \\
+GPT-4o-mini & Zep & 63.8\% & 3.20 & 1.6k \\
+GPT-4o & Full-context & 60.2\% & 28.90 & 115k \\
+GPT-4o & Zep & 71.2\% & 2.58 & 1.6k \\
+\textbf{Deep-Dream} & \textbf{Qwen3.7-plus} & \textbf{84.6\%} & --- & --- \\
+\bottomrule
+\end{tabular}
+\end{table}

@@ -1,0 +1,47 @@
+\section{Deep-Dream}
+
+\subsection{Memory model}
+
+Let a source document or conversation be $D$ and let $e_i$ denote an episode created from a heading-aware span of $D$. Deep-Dream stores $D$, document versions, and episodes as authoritative records. An extracted entity is represented by a stable family identifier $f$ and a set of observations $o_{f,i}$, each linked to an episode and source span. A relation uses the analogous family/assertion representation. The family provides a stable handle for search and alignment; an observation records what a particular source asserted at a particular time. The system never needs to overwrite the source text to update a derived record.
+
+We distinguish three states. A \emph{complete} document has all expected windows processed and is searchable. A \emph{processing} document may have intermediate rows but is hidden from search. An \emph{active} observation is eligible for current retrieval; historical observations remain addressable through provenance. This publication boundary prevents a query from seeing a partially ingested document.
+
+\subsection{Remember pipeline}
+
+The Remember pipeline uses a sequence of small, auditable stages: (i) heading-aware chunking, (ii) entity discovery and normalization, (iii) entity content generation, (iv) quality validation, (v) relation discovery and endpoint validation, (vi) relation content generation, (vii) conservative alignment to existing families, and (viii) atomic publication. Stronger extraction calls can propose entities and relations, but the storage layer records the source episode and provenance rather than treating generated prose as an independent document. Batch content writing and rule-based gates reduce malformed or empty records; alignment preserves observations instead of silently collapsing all mentions into one mutable string.
+
+\subsection{Hybrid navigation and source expansion}
+
+For a query $q$, Deep-Dream obtains candidate records from lexical search, semantic similarity, concept search, relation evidence, and graph-neighborhood expansion. Reciprocal-rank fusion combines candidate lists without requiring one channel to dominate. The query path then resolves candidate records to source episodes and spans. When an exact span is too narrow to answer a multi-turn question, the runtime expands to neighboring turns. This is a retrieval policy, not a claim that more context is always better; the experiments report evidence recall together with response size.
+
+\subsection{Source-bounded agent interface}
+
+Each benchmark question runs in a fresh conversation scope. The agent cannot see the gold answer, gold evidence identifiers, or other conversations. Its tools are read-only and return source, episode, concept, relation, and provenance records. The final call has the following contract:
+
+\begin{enumerate}
+    \item every submitted identifier must have been returned by a tool call in the current question;
+    \item the identifier must belong to an active, eligible scope and document state;
+    \item source-level identifiers are retained so an independent auditor can inspect the exact text;
+    \item the answer and trajectory are stored separately from hidden reasoning text.
+\end{enumerate}
+
+This contract enforces provenance reachability, not semantic entailment. A model can still submit a relevant-looking source and produce an unsupported answer. For that reason, we treat answer--evidence consistency and abstention precision as missing mechanism evaluations rather than silently folding them into QA accuracy.
+
+\begin{algorithm}[t]
+\caption{Source-bounded query execution}
+\label{alg:query}
+\begin{algorithmic}[1]
+\REQUIRE query $q$, active scope $s$, memory overlay $G$, source store $D$
+\STATE $C \leftarrow \textsc{Fuse}(\textsc{Lexical}(q),\textsc{Semantic}(q),\textsc{Graph}(q,G))$
+\STATE $S \leftarrow \textsc{ResolveToSource}(C,D)$
+\STATE $S' \leftarrow \textsc{ExpandNeighbors}(S)$ when the query requires multi-turn context
+\STATE expose only records in $S'$ to the fresh agent context
+\STATE $a,E \leftarrow \textsc{AgentAnswerAndSubmit}(q,S')$
+\STATE reject any $e\in E$ not returned in this scope or not active; otherwise persist $(a,E)$
+\RETURN answer $a$, evidence $E$, and an auditable trajectory
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Implementation and audit artifacts}
+
+The local benchmark runtime records dataset and prompt provenance, model identifiers, tool observations, evidence IDs, latency, exit status, and code/runtime hashes. The evidence ledger in \texttt{paper/results/benchmark\_summary.json} is generated from frozen JSON summaries and per-item JSONL files. We preserve failed integrity checks and negative results instead of dropping them from the paper input.

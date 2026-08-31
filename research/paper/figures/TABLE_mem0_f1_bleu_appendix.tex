@@ -1,0 +1,24 @@
+\begin{table}[t]
+\centering
+\caption{Mem0 LoCoMo deterministic metrics, reproduced verbatim from \citet{chhikara2025mem0} (Table~1). F1 / BLEU-1 over the four categories (Single-hop / Multi-hop / Open-domain / Temporal). Deep-Dream does not compute token-overlap metrics (its metric is binary LLM-judge accuracy, Table~\ref{tab:mem0-baselines}), so no Deep-Dream column appears here; this table is included for completeness of the published reproduction only.}
+\label{tab:mem0-f1-bleu}
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{lcc}
+\toprule
+Method & F1 (S/M/O/T) & BLEU-1 (S/M/O/T) \\
+\midrule
+LoCoMo & 25.02 / 12.04 / 40.36 / 18.41 & 19.75 / 11.16 / 29.05 / 14.77 \\
+ReadAgent & 9.15 / 5.31 / 9.67 / 12.60 & 6.48 / 5.12 / 7.66 / 8.87 \\
+MemoryBank & 5.00 / 5.56 / 6.61 / 9.68 & 4.77 / 5.94 / 5.16 / 6.99 \\
+MemGPT & 26.65 / 9.15 / 41.04 / 25.52 & 17.72 / 7.44 / 34.34 / 19.44 \\
+A-Mem & 27.02 / 12.14 / 44.65 / 45.85 & 20.09 / 12.00 / 37.06 / 36.67 \\
+A-Mem* & 20.76 / 9.22 / 33.34 / 35.40 & 14.90 / 8.81 / 27.58 / 31.08 \\
+LangMem & 35.51 / 26.04 / 40.91 / 30.75 & 26.86 / 22.32 / 33.63 / 25.84 \\
+Zep & 35.74 / 19.37 / 49.56 / 42.00 & 23.30 / 14.82 / 38.92 / 34.53 \\
+OpenAI & 34.30 / 20.09 / 39.31 / 14.04 & 23.72 / 15.42 / 31.16 / 11.25 \\
+Mem0 & 38.72 / 28.64 / 47.65 / 48.93 & 27.13 / 21.58 / 38.72 / 40.51 \\
+$Mem0^g$ & 38.09 / 24.32 / 49.27 / 51.55 & 26.03 / 18.82 / 40.30 / 40.28 \\
+\bottomrule
+\end{tabular}
+\end{table}

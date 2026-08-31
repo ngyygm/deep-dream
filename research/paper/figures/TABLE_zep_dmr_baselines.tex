@@ -1,0 +1,20 @@
+\begin{table}[t]
+\centering
+\caption{Published Deep Memory Retrieval (DMR) baselines reproduced verbatim from \citet{rasmussen2025zep} (arXiv:2501.13956). DMR has 500 multi-session conversations (5 sessions, $\leq$12 messages each) with one single-hop fact-retrieval question per conversation. Deep-Dream does not currently run DMR, so this table is a contextual reference only.}
+\label{tab:zep-dmr}
+\small
+\begin{tabular}{llr}
+\toprule
+Method & Answerer & Accuracy \\
+\midrule
+Recursive Summarization & GPT-4-turbo & 35.3\% \\
+Conversation Summaries & GPT-4-turbo & 78.6\% \\
+MemGPT & GPT-4-turbo & 93.4\% \\
+Full-conversation & GPT-4-turbo & 94.4\% \\
+Zep & GPT-4-turbo & 94.8\% \\
+Conversation Summaries & GPT-4o-mini & 88.0\% \\
+Full-conversation & GPT-4o-mini & 98.0\% \\
+Zep & GPT-4o-mini & 98.2\% \\
+\bottomrule
+\end{tabular}
+\end{table}

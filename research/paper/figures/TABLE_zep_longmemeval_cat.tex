@@ -1,0 +1,18 @@
+\begin{table*}[t]
+\centering
+\caption{LongMemEval six-category breakdown (binary accuracy, \%). Published Full-context and Zep values reproduced verbatim from \citet{rasmussen2025zep} (arXiv:2501.13956); the \textbf{Deep-Dream (Q.)} row is Qwen3.7-plus answerer+cross-judge on the same six categories. Different answerer/judge, so this is a matched-granularity contextual reference, not a shared leaderboard. Sess.\ pref.\ is the hardest category for all systems.}
+\label{tab:zep-longmemeval-cat}
+\footnotesize
+\setlength{\tabcolsep}{3.5pt}
+\begin{tabular}{lcccccc}
+\toprule
+System & Sess.\ pref. & Sess.\ asst. & Temporal & Multi-sess. & Knowledge upd. & Sess.\ user \\
+\midrule
+Full-ctx (4o-mini) & 30.0 & 81.8 & 36.5 & 40.6 & 76.9 & 81.4 \\
+Zep (4o-mini) & 53.3 & 75.0 & 54.1 & 47.4 & 74.4 & 92.9 \\
+Full-ctx (4o) & 20.0 & 94.6 & 45.1 & 44.3 & 78.2 & 81.4 \\
+Zep (4o) & 56.7 & 80.4 & 62.4 & 57.9 & 83.3 & 92.9 \\
+\textbf{Deep-Dream (Q.)} & \textbf{53.3} & \textbf{100.0} & \textbf{84.2} & \textbf{74.4} & \textbf{91.0} & \textbf{98.6} \\
+\bottomrule
+\end{tabular}
+\end{table*}

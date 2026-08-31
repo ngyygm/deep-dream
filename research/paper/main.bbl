@@ -1,0 +1,57 @@
+\begin{thebibliography}{8}
+\providecommand{\natexlab}[1]{#1}
+\providecommand{\url}[1]{\texttt{#1}}
+\expandafter\ifx\csname urlstyle\endcsname\relax
+  \providecommand{\doi}[1]{doi: #1}\else
+  \providecommand{\doi}{doi: \begingroup \urlstyle{rm}\Url}\fi
+
+\bibitem[Chhikara et~al.(2025)Chhikara, Khant, Aryan, Singh, and Yadav]{chhikara2025mem0}
+Prateek Chhikara, Dev Khant, Saket Aryan, Taranjeet Singh, and Deshraj Yadav.
+\newblock Mem0: Building production-ready ai agents with scalable long-term memory.
+\newblock \emph{arXiv preprint arXiv:2504.19413}, 2025.
+\newblock URL \url{https://arxiv.org/abs/2504.19413}.
+
+\bibitem[Hu et~al.(2025)Hu, Wang, and McAuley]{hu2025memoryagentbench}
+Yuanzhe Hu, Yu~Wang, and Julian McAuley.
+\newblock Evaluating memory in llm agents via incremental multi-turn interactions.
+\newblock \emph{arXiv preprint arXiv:2507.05257}, 2025.
+\newblock URL \url{https://arxiv.org/abs/2507.05257}.
+
+\bibitem[Jung et~al.(2026)Jung, Rubinstein, Uselis, Yun, and Oh]{jung2026meme}
+Seokwon Jung, Alexander Rubinstein, Arnas Uselis, Sangdoo Yun, and Seong~Joon Oh.
+\newblock Meme: Multi-entity {\&} evolving memory evaluation.
+\newblock \emph{arXiv preprint arXiv:2605.12477}, 2026.
+\newblock URL \url{https://arxiv.org/abs/2605.12477}.
+
+\bibitem[Maharana et~al.(2024)Maharana, Lee, Tulyakov, Bansal, Barbieri, and Fang]{maharana2024locomo}
+Adyasha Maharana, Dong-Ho Lee, Sergey Tulyakov, Mohit Bansal, Francesco Barbieri, and Yuwei Fang.
+\newblock Evaluating very long-term conversational memory of llm agents.
+\newblock In \emph{Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers)}, pp.\  13851--13870, 2024.
+\newblock \doi{10.18653/v1/2024.acl-long.747}.
+\newblock URL \url{https://aclanthology.org/2024.acl-long.747/}.
+
+\bibitem[Rasmussen et~al.(2025)Rasmussen, Paliychuk, Beauvais, Ryan, and Chalef]{rasmussen2025zep}
+Preston Rasmussen, Pavlo Paliychuk, Travis Beauvais, Jack Ryan, and Daniel Chalef.
+\newblock Zep: A temporal knowledge graph architecture for agent memory.
+\newblock \emph{arXiv preprint arXiv:2501.13956}, 2025.
+\newblock URL \url{https://arxiv.org/abs/2501.13956}.
+
+\bibitem[Tavakoli et~al.(2026)Tavakoli, Salemi, Ye, Abdalla, Zamani, and Mitchell]{tavakoli2026beam}
+Mohammad Tavakoli, Alireza Salemi, Carrie Ye, Mohamed Abdalla, Hamed Zamani, and J.~Ross Mitchell.
+\newblock Beyond a million tokens: Benchmarking and enhancing long-term memory in llms.
+\newblock \emph{arXiv preprint arXiv:2510.27246}, 2026.
+\newblock URL \url{https://arxiv.org/abs/2510.27246}.
+
+\bibitem[Wu et~al.(2025)Wu, Wang, Yu, Zhang, Chang, and Yu]{wu2025longmemeval}
+Di~Wu, Hongwei Wang, Wenhao Yu, Yuwei Zhang, Kai-Wei Chang, and Dong Yu.
+\newblock Longmemeval: Benchmarking chat assistants on long-term interactive memory.
+\newblock \emph{International Conference on Learning Representations}, 2025.
+\newblock URL \url{https://arxiv.org/abs/2410.10813}.
+
+\bibitem[Xu et~al.(2025)Xu, Liang, Mei, Gao, Tan, and Zhang]{xu2025amem}
+Wujiang Xu, Zujie Liang, Kai Mei, Hang Gao, Juntao Tan, and Yongfeng Zhang.
+\newblock A-mem: Agentic memory for llm agents.
+\newblock \emph{Advances in Neural Information Processing Systems}, 2025.
+\newblock URL \url{https://arxiv.org/abs/2502.12110}.
+
+\end{thebibliography}

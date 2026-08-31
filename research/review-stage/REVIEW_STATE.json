@@ -1,0 +1,10 @@
+{
+  "run_id": "run_20260813_ddreview",
+  "round": 2,
+  "agent_id": "/root/experiment_review",
+  "status": "completed_provisional",
+  "last_score": 7.0,
+  "last_verdict": "almost",
+  "pending_experiments": ["X7 evidence-gate adversarial tests", "X8 update/delete microbenchmark", "X9 controlled Mem0/Graphiti comparison", "rerun valid depth/CI diagnostics"],
+  "timestamp": "2026-08-13T14:20:00+08:00"
+}

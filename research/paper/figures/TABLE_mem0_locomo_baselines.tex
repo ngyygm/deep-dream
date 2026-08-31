@@ -1,0 +1,26 @@
+\begin{table*}[t]
+\centering
+\caption{LoCoMo per-category $J$ (binary CORRECT/WRONG accuracy, LLM-judged). Published rows reproduced verbatim from \citet{chhikara2025mem0} (arXiv:2504.19413, Table~1): Mem0 reports mean$\pm$std over 10 runs with GPT-4o-mini as both answerer and judge (std omitted, all $\leq$0.75; appendix). \textbf{Deep-Dream} applies the \emph{same} $J$ methodology with Kimi-K3 substituted for GPT-4o-mini as both answerer and judge (single run): the primary row uses the same-model judge as Mem0; the $\dagger$ row judges the same K3 answers with an independent Qwen3.7-plus cross-judge (cross-judge agreement 98.51\%). Same 841/282/96/321 question populations (1{,}540 total, Mem0-compatible subset). \emph{Caveat:} the K3-answerer run is flagged \texttt{formal\_claim\_allowed=false}---1{,}529 historical answer rows predate runtime-code fingerprinting (answers unchanged, sha 76af5772; per-item JSONL carries \texttt{runtime\_code\_sha256}); reported as a diagnostic cross-judge result, not a fingerprint-complete formal result. Deterministic F1/BLEU-1 omitted for space (Table~\ref{tab:mem0-f1-bleu}). Weighted $J$: Mem0 $\approx$62.14, $Mem0^g$ $\approx$61.36. Deep-Dream agg.\ $J$: 95.19\% / 94.22\% ($\dagger$).}
+\label{tab:mem0-baselines}
+\footnotesize
+\setlength{\tabcolsep}{5pt}
+\begin{tabular}{lc}
+\toprule
+Method & $J$ (S/M/O/T) \\
+\midrule
+LoCoMo & --- / --- / --- / --- \\
+ReadAgent & --- / --- / --- / --- \\
+MemoryBank & --- / --- / --- / --- \\
+MemGPT & --- / --- / --- / --- \\
+A-Mem & --- / --- / --- / --- \\
+A-Mem* & 39.79 / 18.85 / 54.05 / 49.91 \\
+LangMem & 62.23 / 47.92 / 71.12 / 23.43 \\
+Zep & 61.70 / 41.35 / 76.60 / 49.31 \\
+OpenAI & 63.79 / 42.92 / 62.29 / 21.71 \\
+Mem0 & 67.13 / 51.15 / 72.93 / 55.51 \\
+$Mem0^g$ & 65.71 / 47.19 / 75.71 / 58.13 \\
+\textbf{Deep-Dream} & 97.38 / 93.62 / 80.21 / 95.33 \\
+\textbf{Deep-Dream}$^\dagger$ & 96.91 / 92.91 / 77.08 / 93.46 \\
+\bottomrule
+\end{tabular}
+\end{table*}

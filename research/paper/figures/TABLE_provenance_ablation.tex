@@ -1,0 +1,17 @@
+\begin{table*}[t]
+\centering
+\caption{X7 provenance ablation, offline retrieval replay on the 210-question gate set. Arms 1--4 form a clean channel ablation: only \texttt{enabled\_channels} differs, so any recall delta is attributable to that channel set. Arms 5 (evidence-bound agent, gate ON) and 6 (unsurfaced evidence, gate relaxed) reuse arm~4's five-channel ranking and are retrieval-identical to arm~4; their distinguishing columns (QA accuracy, unsupported-answer rate, mean evidence tokens) require the LLM agent run and are pending. The evidence-gate plumbing was proved offline: with the gate ON, submitting an unsurfaced turn raises; with the gate relaxed the same submission is accepted (\texttt{plumbing\_ok}=true). Bootstrap CIs: 2{,}000 resamples, 95\%.}
+\label{tab:provenance-ablation}
+\small
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{llrrr}
+\toprule
+Arm & Channels (additive) & Recall-any@10 [95\% CI] & Recall-all@10 [95\% CI] & Mean bytes@10 \\
+\midrule
+1 & raw-doc + episode-bm25 & 72.38 [66.67, 78.57] & 51.43 [44.76, 58.10] & 1833 \\
+2 & + semantic-provenance & 72.38 [66.67, 78.57] & 51.43 [44.76, 58.10] & 1841 \\
+3 & + graph-neighbor & 71.43 [65.70, 77.62] & 50.95 [44.29, 57.62] & 1845 \\
+4 & + relation-evidence (full 5) & 72.38 [66.65, 78.57] & 51.90 [45.24, 58.58] & 1847 \\
+\bottomrule
+\end{tabular}
+\end{table*}

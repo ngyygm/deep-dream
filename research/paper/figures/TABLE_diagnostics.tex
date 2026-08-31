@@ -1,0 +1,19 @@
+\begin{table*}[t]
+\centering
+\caption{Diagnostic retrieval results. The channel rows use a 210-question development/gate set. The expansion rows use 105 cases selected from prior errors; lexical+semantic channels are held fixed across the span and neighbor rows.}
+\label{tab:diagnostics}
+\small
+\begin{tabular}{lrrr}
+\toprule
+Configuration & Recall-any & Recall-all & Mean bytes \\
+\midrule
+Lexical & 92.38\% & 75.24\% & --- \\
+Semantic & 89.05\% & 70.48\% & --- \\
+Fused & 92.86\% & 78.10\% & --- \\
+\midrule
+Lexical+semantic span & 70.48\% & 52.38\% & 3089 \\
+Span + $\pm1$ turn & 84.76\% & 65.71\% & 3456 \\
+Span + $\pm2$ turns & 89.52\% & 73.33\% & 3609 \\
+\bottomrule
+\end{tabular}
+\end{table*}

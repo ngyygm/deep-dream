@@ -1,0 +1,15 @@
+% Figure 1: architecture
+\begin{figure*}[t]
+  \centering
+  \includegraphics[width=0.96\textwidth]{figures/fig1_architecture.pdf}
+  \caption{Deep-Dream separates navigation from factual authority. Derived concepts, observations, assertions, and graph neighborhoods guide candidate generation, but the query path must return to active, scope-valid source spans before submitting evidence. The left schematic illustrates the failure mode in which a compressed fact or graph edge directly becomes answer authority.}
+  \label{fig:architecture}
+\end{figure*}
+
+% Figure 2: retrieval diagnostics
+\begin{figure*}[t]
+  \centering
+  \includegraphics[width=0.92\textwidth]{figures/fig2_retrieval_ablation.pdf}
+  \caption{Retrieval diagnostics on LoCoMo development/gate samples. (a) On 210 questions, fused retrieval has higher recall-all than either channel alone. (b) On 105 cases selected from prior errors, adding neighboring turns to the same lexical+semantic span retrieval increases evidence coverage. Both panels are development diagnostics rather than held-out final QA comparisons.}
+  \label{fig:retrieval}
+\end{figure*}

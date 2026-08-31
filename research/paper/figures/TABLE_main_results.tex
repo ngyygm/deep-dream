@@ -1,0 +1,19 @@
+\begin{table*}[t]
+\centering
+\caption{Deep-Dream results under explicitly labeled local protocols. The K3-as-answerer row substitutes Kimi-K3 for GPT-4o-mini as both answerer and judge on Mem0's $J$ protocol (same 1,540-question subset); other rows use the local Qwen/Kimi cross-judge setup. Binary $J$ is not numerically comparable to LoCoMo token-F1.}
+\label{tab:main-results}
+\small
+\setlength{\tabcolsep}{4.5pt}
+\begin{tabular}{lrrll}
+\toprule
+Benchmark & $N$ & Result & Answerer & Judge / protocol \\
+\midrule
+LoCoMo original & 1986 & 64.99 token-F1 & Qwen3.6-27B & quality-v1 baseline \\
+LoCoMo Mem0-compatible & 1540 & 93.18\% (1435/1540) & Qwen3.7-plus & Qwen3.7-plus, exact prompt \\
+LoCoMo Mem0-compatible & 1540 & 93.57\% (1441/1540) & Qwen3.7-plus & Kimi-K3 cross-judge \\
+LoCoMo Mem0-compatible & 1540 & \textbf{95.19\% (1466/1540)} & \textbf{Kimi-K3} & \textbf{K3 answerer$+$judge (Mem0 $J$, GPT$\to$K3)} \\
+LongMemEval-S & 500 & 84.60\% (423/500) & Qwen3.7-plus & Qwen3.7-plus cross-judge \\
+LoCoMo-Plus cognitive & 401 & 64.59\% (259/401) & Qwen3.7-plus & Qwen3.7-plus cross-judge \\
+\bottomrule
+\end{tabular}
+\end{table*}
