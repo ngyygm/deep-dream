@@ -23,7 +23,7 @@ English · [简体中文](README.md)
 - **Document-first** — Markdown / plain text files are always the source of truth; the concept graph is a semantic overlay
 - **Remember Pipeline** — Multi-step extraction: chunking → entity extraction → relation discovery → alignment merging → dedup + write
 - **Hybrid Search** — BM25 full-text + vector embeddings + graph BFS expansion, fused via Reciprocal Rank Fusion (RRF)
-- **CLI Console** — Click 8+ / Rich 13+, 17 commands, human-readable Rich output + `--json` machine mode
+- **CLI Console** — Click 8+ / Rich 13+, 19 commands, human-readable Rich output + `--json` machine mode
 - **Web UI** — Dashboard, memory upload, interactive graph, semantic search, community detection, settings
 - **Concept Versioning** — Each concept maintains a `family_id` (stable identity) and version chain (evolution over episodes)
 - **Vault Indexing** — Obsidian / Markdown vault support with Wikilink extraction and heading parsing
@@ -53,8 +53,11 @@ The `remember` flow converts raw text into structured, evidence-backed memory: c
 git clone <repo-url>
 cd deep-dream
 
-# Install dependencies
+# Base install (remote embeddings or text-only search)
 pip install -e .
+
+# Install this extra for the local HuggingFace embedding in the example
+pip install -e '.[local-embeddings]'
 ```
 
 ### Configure
@@ -88,7 +91,7 @@ Supports any OpenAI-compatible endpoint (Ollama, LM Studio, GLM, Xinference, etc
 
 ```bash
 # Start via CLI
-deep-dream server start --config service_config.json
+deep-dream --config service_config.json server start
 
 # Or run directly
 python -m core.server.api --config service_config.json
@@ -99,11 +102,29 @@ start.bat
 
 The server runs at `http://localhost:16200` by default.
 
+Keep `host: "127.0.0.1"` for local-only use. For a LAN listener, enable
+`auth.enabled` and `auth.strict_mode`, then provide an API-key file through
+`DEEPDREAM_API_KEYS_FILE` (or `auth.api_keys_file`). The key button in the UI
+stores that API key for browser requests. The file format is:
+
+```json
+{
+  "desktop": {
+    "key": "replace-with-a-long-random-secret",
+    "permissions": ["read", "find:read", "remember:write", "concepts:read", "documents:read"]
+  }
+}
+```
+
+The example above is a least-privilege key. For configuration, document/Vault
+writes, or graph clearing, use a separate administrative key with
+`"permissions": ["admin"]`; do not give that permission to ordinary browser users.
+
 ## CLI
 
 The CLI is the control panel for both humans and agents: task-first command structure, safe defaults, Rich-formatted output, and `--json` automation mode.
 
-**17 commands:**
+**19 commands:**
 
 | Command | Description |
 |---------|-------------|
@@ -111,6 +132,7 @@ The CLI is the control panel for both humans and agents: task-first command stru
 | `deep-dream doctor` | System health check |
 | `deep-dream config` | View / edit configuration |
 | `deep-dream remember` | Write text / files into memory graph |
+| `deep-dream ingest <path>` | Direct file ingestion (`--profile log` = zero-LLM fast path) |
 | `deep-dream find <query>` | Semantic concept search |
 | `deep-dream explore` | Concept semantic exploration |
 | `deep-dream concept` | Concept CRUD |
@@ -123,13 +145,30 @@ The CLI is the control panel for both humans and agents: task-first command stru
 | `deep-dream task` | Task queue management |
 | `deep-dream db` | Database maintenance |
 | `deep-dream sql` | Direct SQL queries |
+| `deep-dream scope <query>` | Graph-bounded document scope (`--materialize` for sandbox dir) |
 | `deep-dream completion` | Shell completion setup |
 
 **Global options:** `--json` · `--no-color` · `-q` · `--config`
 
 ### Evaluation & paper work
 
-The evaluation harness (LoCoMo / LongMemEval / MEME, etc.) and the paper engineering live in `research/` and are not part of the system itself. See [research/README.md](research/README.md) for usage.
+The evaluation harness (LoCoMo / LongMemEval / MemoryAgentBench, etc.) and the paper engineering live in `research/` and are not part of the system itself. See [research/README.md](research/README.md) for usage.
+
+## Benchmark Results
+
+Full-pipeline scores with a single model (Kimi-k3) serving as memory builder, question answerer, and (for judged domains) evaluator (2026-08, v2 engine):
+
+| Benchmark | Track / protocol | Score |
+|---|---|---:|
+| **LongMemEval-S** (full 1176 docs / 25 scopes) | pi (agentic retrieval) | **0.926** (v1 0.889) |
+| **MemoryAgentBench** (sampled 767 Qs / 10 scopes, official scorer) | pi | **0.6511** (TTL 0.46 / FC-MH 0.70) |
+| **BigCodeBench** (instruct/full, calibrated) | completion pass@1 | 0.4859 |
+| **ALFWorld** (max 50 steps) | in-dist / out-of-dist | 0.9786 / 0.9851 |
+
+- **v1→v2 paired experiments**: the v2 memory engine (cluster convergence + window-batch alignment) wins on all five LME dimensions (accuracy +0.04, recall@10 +8pp, calls/doc −65%); on MAB it lifts both target domains (TTL MCC 0.43→0.46, FC-MH 0.67→0.70) while cutting calls/doc by 46%.
+- **Landscape**: MAB Overall leads every published system in the official paper's Table 2 (~+10pp after sampling-scope adjustment); on the judge-free FC-MH task it scores 70 vs a field best of 7 (deterministic SubEM). LME 0.926 sits in the top tier of the public ecosystem.
+- **Caveats**: scores come from our own evaluation pipeline; judged domains use kimi-k3 as both actor and judge (official baselines mostly use GPT-4o judging); the MAB run is a sampled subset (767 of 3671 questions). Full methodology disclosures live in the reports.
+- Complete data, paired comparisons, and the external-system landscape table: [`research/reports/`](research/reports/).
 
 ## Web UI
 
@@ -139,7 +178,7 @@ Deep-Dream ships with a full-featured single-page application:
 - **Memory** — Text / file upload, task monitoring, document browsing
 - **Graph Visualization** — Interactive vis-network graph with growth animation, document subgraphs, timeline playback, role-colored nodes (document=purple, episode=blue, entity=teal, relation=amber)
 - **Semantic Search** — Three modes (normal / multi-query / traverse), path finder, threshold & time filters, search history
-- **Communities** — Louvain community detection, community browsing and visualization
+- **Graph analysis** — Document subgraphs, neighbor traversal, and timeline views
 - **API Test** — Raw API request testing interface
 - **Settings** — Live configuration editor
 
@@ -184,8 +223,10 @@ Base URL: `http://localhost:16200/api/v1`
 | Category | Endpoint | Description |
 |----------|----------|-------------|
 | Memory | `POST /remember` | Submit text / file for memory ingestion |
+| | `POST /ingest` | Unified ingestion (prose pipeline / zero-LLM log) |
 | | `GET /remember/tasks` | Task queue list |
 | Search | `POST /concepts/search` | Semantic concept search |
+| | `POST /scope` | Graph-bounded document scope (optional sandbox) |
 | | `POST /traverse` | Graph traversal |
 | Concepts | `GET /concepts` | List concepts |
 | | `GET /concepts/<family_id>` | Concept detail |
@@ -198,7 +239,6 @@ Base URL: `http://localhost:16200/api/v1`
 | | `GET /vaults/tree` | Vault file tree |
 | System | `GET /health` | Health check |
 | | `GET /stats/counts` | Concept statistics |
-| | `POST /communities/detect` | Community detection |
 
 **Agent workflow:**
 
@@ -209,6 +249,11 @@ Base URL: `http://localhost:16200/api/v1`
 4. Use concepts/relations for semantic expansion and alignment
 5. Verify final claims against raw text or episode source_text
 ```
+
+**Agent Harness (pi):** `harness/pi/` turns [pi](https://github.com/earendil-works/pi)
+(MIT) into a Deep-Dream-native harness — an extension registers the `dd_scope` /
+`dd_search` / `dd_ingest` memory tools and the graph-bounded sandbox workflow
+(graph bounds scope → bash reads). See [harness/pi/README.md](harness/pi/README.md).
 
 ## Storage Layout
 
@@ -232,7 +277,7 @@ Configuration lives in `service_config.json`. Key options:
 
 ```json
 {
-  "host": "0.0.0.0",
+  "host": "127.0.0.1",
   "port": 16200,
   "storage_path": "./library",
   "storage": { "backend": "sqlite", "vector_dim": 1024 },
