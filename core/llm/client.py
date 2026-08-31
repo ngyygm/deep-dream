@@ -523,7 +523,7 @@ class LLMClient(_MemoryOpsMixin, _ContentMergerMixin, _ConsolidationMixin,
         *,
         parse_fn: Callable[[str], Any],
         json_parse_retries: int = 1,
-        timeout: int = 300,
+        timeout: Optional[int] = None,
         allow_mock_fallback: bool = True,
         json_retry_user_message: Optional[str] = None,
     ) -> Tuple[Any, str]:

@@ -2390,6 +2390,10 @@ class LibraryManager:
                 conn, doc_id, title,
                 managed_path=content_md,
                 source_mode="managed" if source else "external",
+                # absolute_path 落库是窗口缓存作用域命中（断点续传）的前提：
+                # find_cache_by_doc_hash 按 document_path 关联 documents 行，
+                # 缺失时同内容重跑永远 miss，整 doc 从头重算。
+                absolute_path=document_path or "",
                 created_at=now_utc_str(), updated_at=now_utc_str(),
             )
         else:

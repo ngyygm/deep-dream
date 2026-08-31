@@ -149,11 +149,12 @@ class _StrongExtractionMixin:
         _prev_step = getattr(self, "_current_distill_step", None)
         self._current_distill_step = "02s_onepass_extract"
         try:
-            # retries=2 → 截断自动扩容阶梯 1×/2×/4×：thinking 模型（无法关思考的
-            # 端点）推理即可烧掉 5K+ token，4096/8192 预算下 content 会整个为空，
-            # 必须给到 4× 档位才有机会在预算内完成推理+正文。
+            # retries=5：thinking 模型（无法关思考的端点）偶发把整个输出预算烧在
+            # 推理上（content 空 + finish_reason=length），3 次尝试有概率全空，
+            # 窗口永久失败会级联成整 doc 重跑（benchmark 下一次循环 1h+）。
+            # 每次重试是新的思考掷骰，5 次全空概率指数级低；截断扩容阶梯 1×..16×。
             result, _ = self.call_llm_until_json_parses(
-                messages, parse_fn=_parse, json_parse_retries=2,
+                messages, parse_fn=_parse, json_parse_retries=5,
             )
         finally:
             self._current_distill_step = _prev_step
