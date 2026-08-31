@@ -19,7 +19,7 @@ def _make_entity(idx, graph_id="stress"):
     now = datetime.now(timezone.utc)
     ts = now.strftime("%Y%m%d_%H%M%S")
     return Entity(
-        absolute_id=f"entity_{ts}_{uuid.uuid4().hex[:8]}",
+        absolute_id=f"entity_{ts}_{uuid.uuid4().hex}",
         family_id=f"fam_{idx}_{threading.get_ident()}",
         name=f"Stress Entity {idx} from thread {threading.get_ident()}",
         content=f"Content for stress test entity {idx}.",
@@ -35,7 +35,7 @@ def _make_relation(idx, e1, e2):
     ts = now.strftime("%Y%m%d_%H%M%S")
     sorted_ids = sorted([e1, e2])
     return Relation(
-        absolute_id=f"relation_{ts}_{uuid.uuid4().hex[:8]}",
+        absolute_id=f"relation_{ts}_{uuid.uuid4().hex}",
         family_id=f"r_fam_{idx}_{threading.get_ident()}",
         entity1_absolute_id=sorted_ids[0],
         entity2_absolute_id=sorted_ids[1],

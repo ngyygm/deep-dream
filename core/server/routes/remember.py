@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import queue as _queue
 import re
 import shutil
 import subprocess
@@ -36,6 +37,12 @@ _MAX_FILE_SIZE = 10_000_000  # 10MB
 _ALLOWED_FILE_EXTENSIONS = {'.txt', '.text', '.md', '.markdown', '.json', '.html', '.htm', '.csv', '.log', '.pdf', '.docx', '.doc'}
 
 logger = logging.getLogger(__name__)
+
+
+def _task_error_for_client(task_id: str, error: str | None) -> str:
+    """Log pipeline details server-side without returning paths/keys upstream."""
+    logger.debug("remember task %s failed: %s", task_id, error or "unknown")
+    return "记忆处理失败，请查看服务日志或任务详情"
 
 remember_bp = Blueprint("remember", __name__)
 
@@ -81,6 +88,8 @@ def _remember_get_bool(name: str, post_json: Dict[str, Any]) -> Optional[bool]:
 
 def _parse_remember_input(post_json: Dict[str, Any]):
     """Parse and validate request input. Returns (text, source_name, load_cache, event_time) or error tuple."""
+    if "text" in post_json and post_json["text"] is not None and not isinstance(post_json["text"], str):
+        return err("text 必须为字符串", 400)
     text = _remember_get_str("text", post_json)
 
     # 如果 text 为空，尝试从 multipart 上传文件读取
@@ -107,9 +116,9 @@ def _parse_remember_input(post_json: Dict[str, Any]):
                 text = _uploaded_file_to_markdown(content, file.filename, file_ext)
             except ValueError as exc:
                 return err(str(exc), 400)
-            except Exception as exc:
+            except Exception:
                 logger.exception("Failed to convert uploaded file %s", file.filename)
-                return err(f"文件转换失败: {exc}", 400)
+                return err("文件转换失败，请检查文件格式或安装对应的导入依赖", 400)
 
     if not text:
         return err("缺少 text 或 file（必填其一）", 400)
@@ -143,6 +152,9 @@ def _parse_remember_input(post_json: Dict[str, Any]):
     sn = _remember_get_str("source_name", post_json)
     dn = _remember_get_str("doc_name", post_json)
     sd = _remember_get_str("source_document", post_json)
+    for _field_name, _field_value in (("source_name", sn), ("doc_name", dn), ("source_document", sd)):
+        if len(_field_value) > 256 or any(ord(ch) < 32 for ch in _field_value):
+            return err(f"{_field_name} 长度不能超过 256 且不能包含控制字符", 400)
     # 如果从文件上传且未指定 source_name，用文件名
     if request.files and request.files.get("file") and request.files["file"].filename:
         if not sn and not dn and not sd:
@@ -498,7 +510,7 @@ def _handle_sync_wait(remember_queue, task_id: str, timeout: float):
     elif done_task.status == "failed":
         return make_response(jsonify({
             "success": False,
-            "error": done_task.error or "Unknown error",
+            "error": _task_error_for_client(task_id, done_task.error),
             "data": {
                 "task_id": task_id,
                 "task_seq": task_dict.get("task_seq"),
@@ -559,7 +571,7 @@ def remember():
     输入方式（三选一）：
       - JSON body 的 text 字段（适合短文本）
       - multipart/form-data 的 file 字段（适合长文本/文件上传）
-      - JSON body 的 file_path 字段（仅限服务端本机文件）
+      - 不支持直接读取服务端 ``file_path``；请使用 text 或 multipart file
 
     参数：
       - graph_id（可选）：目标图谱 ID，默认 "default"
@@ -595,6 +607,21 @@ def remember():
         # Otherwise it should be a 4-tuple with parsed values
         text, source_name, load_cache, event_time = parsed
 
+        # Validate synchronous-wait options before persisting content or
+        # submitting a task.  Previously ``wait=true&timeout=bad`` returned
+        # 400 only after the task was already queued, inviting duplicate
+        # submissions on client retry.
+        wait_mode = _remember_get_bool("wait", post_json)
+        timeout = 300
+        if wait_mode:
+            timeout_str = _remember_get_str("timeout", post_json)
+            if timeout_str:
+                try:
+                    timeout = _validate_positive_int(timeout_str, "timeout")
+                    timeout = max(10, min(3600, timeout))
+                except ValueError:
+                    return err("timeout 必须为正整数", 400)
+
         _log_remember_request(text, source_name, event_time)
 
         # Save submitted content to library/content/
@@ -608,17 +635,7 @@ def remember():
         task = _build_remember_task(text, source_name, load_cache, event_time)
         remember_queue.submit(task)
 
-        # Synchronous wait mode
-        wait_mode = _remember_get_bool("wait", post_json)
         if wait_mode:
-            timeout = 300
-            timeout_str = _remember_get_str("timeout", post_json)
-            if timeout_str:
-                try:
-                    timeout = _validate_positive_int(timeout_str, "timeout")
-                    timeout = max(10, min(3600, timeout))
-                except ValueError:
-                    return err("timeout 必须为正整数", 400)
             return _handle_sync_wait(remember_queue, task.task_id, timeout)
 
         # Default async mode: return 202 immediately
@@ -632,6 +649,8 @@ def remember():
                 "original_path": task.original_path,
             },
         }), 202)
+    except _queue.Full:
+        return err("任务队列已满，请稍后重试", 429, hint="Retry-After: 5")
     except ValueError as ve:
         return err(str(ve), 400)
     except Exception as e:
@@ -661,10 +680,10 @@ def remember_status(task_id: str):
             return err("任务不存在。GET /api/v1/remember/tasks 查看所有任务", 404)
         data: Dict[str, Any] = remember_queue._task_to_dict(t)
         data["original_path"] = t.original_path
+        if data.get("error"):
+            data["error"] = _task_error_for_client(task_id, data["error"])
         if t.status == "completed" and t.result:
             data["result"] = t.result
-        if t.status == "failed" and t.error:
-            data["error"] = t.error
         return ok(data)
     except Exception as e:
         return err(str(e), 500)
@@ -755,7 +774,8 @@ def remember_queue_list():
     """查看记忆写入任务队列；推荐使用 /api/v1/remember/tasks。"""
     try:
         remember_queue = _get_queue()
-        limit = min(request.args.get("limit", 50, type=int), 200)
+        requested_limit = request.args.get("limit", 50, type=int)
+        limit = min(max(requested_limit or 50, 1), 200)
         tasks = remember_queue.list_tasks(limit=limit)
         return ok({"tasks": tasks, "count": len(tasks)})
     except Exception as e:
@@ -832,4 +852,3 @@ def remember_monitor():
         })
     except Exception as e:
         return err(str(e), 500)
-

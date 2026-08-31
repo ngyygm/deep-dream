@@ -69,8 +69,8 @@ def insert_relation_assertion(
     evidence_line_start: int = 0, evidence_line_end: int = 0,
     extra_json: str = "{}",
     processed_at: str = "", run_id: str = ""
-) -> None:
-    conn.execute(
+) -> str | None:
+    cur = conn.execute(
         """INSERT OR IGNORE INTO relation_assertions
            (relation_id, relation_family_id, episode_id,
             subject_entity_id, object_entity_id,
@@ -88,6 +88,21 @@ def insert_relation_assertion(
          evidence_line_start, evidence_line_end,
          extra_json, processed_at, run_id),
     )
+    if cur.rowcount:
+        return relation_id
+    # INSERT OR IGNORE can legitimately hit the active assertion uniqueness
+    # constraint with a different relation_id.  Return the actual persisted row
+    # so callers do not report success for a phantom assertion or attach an
+    # embedding to an orphan ID.
+    row = conn.execute(
+        "SELECT relation_id FROM relation_assertions "
+        "WHERE status='active' AND relation_family_id=? AND episode_id IS ? "
+        "AND subject_entity_family_id=? AND object_entity_family_id=? "
+        "ORDER BY processed_at DESC, rowid DESC LIMIT 1",
+        (relation_family_id, episode_id, subject_entity_family_id,
+         object_entity_family_id),
+    ).fetchone()
+    return row[0] if row else None
 
 
 def supersede_assertions_by_episodes(conn, episode_ids: list) -> int:

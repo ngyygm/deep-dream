@@ -221,10 +221,10 @@ def bm25_concept_search(storage, query: str, role_filter, result_limit: int,
     # Fetch extra candidates so threshold filtering doesn't empty results
     candidate_limit = max(result_limit * 5, 50)
     if role_filter == "entity":
-        results = storage.search_entities_by_bm25(query, limit=candidate_limit, time_point=time_point, time_after=time_after, time_before=time_before)
+        results = storage.search_entities_by_bm25(query, limit=candidate_limit, time_point=time_point, source_document=source_document, time_after=time_after, time_before=time_before)
         results = [entity_to_search_dict(e) for e in results]
     elif role_filter == "relation":
-        results = storage.search_relations_by_bm25(query, limit=candidate_limit, time_point=time_point, time_after=time_after, time_before=time_before)
+        results = storage.search_relations_by_bm25(query, limit=candidate_limit, time_point=time_point, source_document=source_document, time_after=time_after, time_before=time_before)
         results = [relation_to_search_dict(r) for r in results]
     else:
         results = storage.search_concepts_by_bm25(query, role=role_filter, limit=candidate_limit, time_point=time_point, source_document=source_document, time_after=time_after, time_before=time_before)

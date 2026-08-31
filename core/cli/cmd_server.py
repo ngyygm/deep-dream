@@ -22,7 +22,7 @@ from typing import Any, Dict, Optional
 
 import click
 
-from ._exit_codes import ERROR
+from ._exit_codes import ARGS, ERROR
 from ._helpers import resolve_config_path
 
 
@@ -32,7 +32,7 @@ from ._helpers import resolve_config_path
 
 _PID_FILENAME = "server.pid"
 _LOG_FILENAME = "server.log"
-_DEFAULT_HOST = "0.0.0.0"
+_DEFAULT_HOST = "127.0.0.1"
 _DEFAULT_PORT = 16200
 
 
@@ -254,7 +254,15 @@ def start(ctx: click.Context, host: Optional[str], port: Optional[int], detach: 
         from core.server.config import load_config
 
         config = load_config(config_path)
-    except Exception:
+    except Exception as exc:
+        root_ctx = ctx.find_root()
+        try:
+            source = root_ctx.get_parameter_source("config")
+            explicit = source is not None and source.name in {"COMMANDLINE", "ENVIRONMENT"}
+        except Exception:
+            explicit = False
+        if explicit or Path(config_path).exists():
+            out.error(f"配置加载失败: {exc}", code=ARGS)
         config = {}
 
     host = host or config.get("host", _DEFAULT_HOST)
@@ -290,7 +298,9 @@ def start(ctx: click.Context, host: Optional[str], port: Optional[int], detach: 
         "--skip-llm-check",
     ]
     if verbose:
-        server_args.append("--debug")
+        # Verbose means more application logging; it must not enable Flask's
+        # interactive debugger or its reloader in a managed service process.
+        server_args.append("--verbose")
 
     if detach:
         # Ensure the library directory exists.

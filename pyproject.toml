@@ -7,7 +7,7 @@ name = "deep-dream"
 version = "0.2.0"
 description = "Deep-Dream Document-first concept memory graph server"
 requires-python = ">=3.10"
-license = {text = "MIT"}
+license = "MIT"
 readme = "README.md"
 
 dependencies = [
@@ -36,7 +36,13 @@ where = ["."]
 include = ["core*"]
 
 [tool.setuptools.package-data]
-"core.agent" = ["policies/*.md"]
+"core.server" = [
+    "static/index.html",
+    "static/css/*.css",
+    "static/js/*.js",
+    "static/js/**/*.js",
+    "static/vendor/*",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["core/tests"]

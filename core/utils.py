@@ -242,8 +242,17 @@ def _emit_log_line(line: str) -> None:
                         _out.write(item + "\n")
                         _out.flush()
                     except UnicodeEncodeError:
-                        _out.write(item.encode("utf-8", errors="replace").decode("utf-8", errors="replace") + "\n")
-                        _out.flush()
+                        try:
+                            _out.write(item.encode("utf-8", errors="replace").decode("utf-8", errors="replace") + "\n")
+                            _out.flush()
+                        except (OSError, ValueError):
+                            # Test runners and embedders may close the stream
+                            # while this daemon is draining its queue.
+                            break
+                    except (OSError, ValueError):
+                        # Never leak a background-thread traceback when stdout
+                        # is replaced/closed during shutdown.
+                        break
 
             threading.Thread(target=_writer, name="tmg-log-writer", daemon=True).start()
     _log_queue.put(line)

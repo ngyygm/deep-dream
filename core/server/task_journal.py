@@ -5,14 +5,22 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import tempfile
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from core.server.task_progress import _TERMINAL_STATUSES
+
+try:  # POSIX (macOS/Linux); Windows keeps the in-process lock fallback.
+    import fcntl
+except ImportError:  # pragma: no cover - exercised only on Windows
+    fcntl = None
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +76,9 @@ class RememberTask:
     repair_window_statuses: List[Dict] = field(default_factory=list)
     retry_attempt: int = 0
     max_retries: int = 3
+    # Monotonically increasing execution lease.  A retry gets a new generation
+    # so callbacks from a previous worker can no longer publish state.
+    execution_generation: int = 0
     last_update: float = field(default_factory=time.time)
     done_event: threading.Event = field(default_factory=threading.Event)
 
@@ -116,6 +127,7 @@ def task_to_dict(task: RememberTask) -> Dict[str, Any]:
         "repair_window_statuses": task.repair_window_statuses,
         "retry_attempt": task.retry_attempt,
         "max_retries": task.max_retries,
+        "execution_generation": task.execution_generation,
         "last_update": task.last_update,
     }
 
@@ -174,6 +186,7 @@ def remember_task_from_record(rec: Dict[str, Any], text: str) -> RememberTask:
         repair_window_statuses=list(rec.get("repair_window_statuses") or []),
         retry_attempt=int(rec.get("retry_attempt") or 0),
         max_retries=int(rec.get("max_retries") or 3),
+        execution_generation=int(rec.get("execution_generation") or 0),
         last_update=float(rec.get("last_update") or time.time()),
     )
 
@@ -189,12 +202,26 @@ class RememberJournal:
         self.dir = Path(storage_root) / "tasks"
         self.dir.mkdir(parents=True, exist_ok=True)
         self._file = self.dir / "queue.jsonl"
+        self._lock_file = self.dir / "queue.jsonl.lock"
         self._lock = threading.Lock()
+
+    @contextmanager
+    def _process_lock(self):
+        """Serialize journal read/modify/replace across worker processes."""
+        with open(self._lock_file, "a+", encoding="utf-8") as lock_handle:
+            if fcntl is not None:
+                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                if fcntl is not None:
+                    fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
 
     def write(self, task: RememberTask) -> None:
         """写入/更新任务：如果已完成/失败/已取消则从文件中移除，否则更新行。"""
         with self._lock:
-            self._write_unlocked(task)
+            with self._process_lock():
+                self._write_unlocked(task)
 
     def _write_unlocked(self, task: RememberTask) -> None:
         """内部方法，不加锁（由调用方保证线程安全）。"""
@@ -220,20 +247,37 @@ class RememberJournal:
                             pass  # 保留无法解析的行（ corrupted JSON ）
                         lines.append(raw_line)
             except Exception as e:
-                logger.warning("读取任务日志失败: %s", e)
-                lines = []
+                # Never replace a journal we could not read.  Treating a
+                # transient I/O/JSON error as an empty file silently erased
+                # every other in-flight task on the next progress update.
+                logger.warning("读取任务日志失败，保留原文件: %s", e)
+                raise
 
         # 活跃任务写回，终态任务不写（从队列中移除）
         if task.status not in _TERMINAL_STATUSES:
             lines.append(line)
 
         # 原子写入
-        tmp = self._file.with_suffix(".jsonl.tmp")
-        with open(tmp, "w", encoding="utf-8") as f:
-            f.write("\n".join(lines))
-            if lines:
-                f.write("\n")
-        tmp.replace(self._file)
+        tmp_name = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=self.dir,
+                prefix=f".{self._file.name}.", suffix=".tmp", delete=False,
+            ) as f:
+                tmp_name = f.name
+                f.write("\n".join(lines))
+                if lines:
+                    f.write("\n")
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_name, self._file)
+            tmp_name = None
+        finally:
+            if tmp_name:
+                try:
+                    os.unlink(tmp_name)
+                except OSError:
+                    pass
 
     def read_record(self, task_id: str) -> Optional[Dict[str, Any]]:
         if not self._file.exists():

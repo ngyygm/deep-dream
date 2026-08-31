@@ -7,6 +7,12 @@
   // ---- Smart refresh state ----
   let _hasActiveTasks = false;
 
+  function scheduleRefresh() {
+    if (state.refreshTimers.memory) clearInterval(state.refreshTimers.memory);
+    const interval = _hasActiveTasks ? 3000 : 15000;
+    state.refreshTimers.memory = setInterval(refreshTasks, interval);
+  }
+
   // ---- Helpers ----
 
   function progressClass(status) {
@@ -174,7 +180,7 @@
       selectedFiles.forEach((file, idx) => {
         html += `<div style="display:flex;align-items:center;gap:0.5rem;padding:0.25rem 0;font-size:0.8125rem;" data-file-idx="${idx}">
           <i data-lucide="file-text" style="width:14px;height:14px;flex-shrink:0;color:var(--text-muted);"></i>
-          <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(file.name)}">${escapeHtml(file.name)}</span>
+          <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeAttr(file.name)}">${escapeHtml(file.name)}</span>
           <span class="mono" style="color:var(--text-muted);font-size:0.75rem;flex-shrink:0;">${formatFileSize(file.size)}</span>
           <button class="btn-remove-file" data-idx="${idx}" style="background:none;border:none;color:var(--text-muted);cursor:pointer;padding:2px;display:flex;align-items:center;">
             <i data-lucide="x" style="width:14px;height:14px;"></i>
@@ -352,9 +358,9 @@
           ? `<div style="font-size:0.7rem;color:var(--warning);margin-top:0.2rem;">${t('memory.repairOnlyWindows', { count: escapeHtml(String(repairCount)) })}</div>`
           : '';
         return `
-          <tr data-task-id="${escapeHtml(task.task_id)}" title="${t('memory.taskDetail')}">
+          <tr data-task-id="${escapeAttr(task.task_id)}" title="${t('memory.taskDetail')}">
             <td>${escapeHtml(truncate(task.source_name || '-', 24))}</td>
-            <td><span class="mono" title="${escapeHtml(String(task.document_size_bytes || 0))} bytes">${escapeHtml(docSize)}</span></td>
+            <td><span class="mono" title="${escapeAttr(String(task.document_size_bytes || 0))} bytes">${escapeHtml(docSize)}</span></td>
             <td>${escapeHtml(loadCacheLabel)}</td>
             <td>${statusBadge(task.status, task.phase)}</td>
             <td>${progressCell}${repairHint}</td>
@@ -374,19 +380,19 @@
                 </button>
               ` : ''}
               ${canPause ? `
-                <button class="btn btn-secondary btn-sm btn-pause-task" data-task-id="${escapeHtml(task.task_id)}" title="${t('memory.pauseTask')}" style="margin-right:0.35rem;">
+                <button class="btn btn-secondary btn-sm btn-pause-task" data-task-id="${escapeAttr(task.task_id)}" title="${t('memory.pauseTask')}" style="margin-right:0.35rem;">
                   <i data-lucide="pause" style="width:14px;height:14px;"></i>
                   ${t('memory.pauseTask')}
                 </button>
               ` : ''}
               ${canResume ? `
-                <button class="btn btn-secondary btn-sm btn-resume-task" data-task-id="${escapeHtml(task.task_id)}" title="${t('memory.startTask')}" style="margin-right:0.35rem;">
+                <button class="btn btn-secondary btn-sm btn-resume-task" data-task-id="${escapeAttr(task.task_id)}" title="${t('memory.startTask')}" style="margin-right:0.35rem;">
                   <i data-lucide="play" style="width:14px;height:14px;"></i>
                   ${t('memory.startTask')}
                 </button>
               ` : ''}
               ${canDelete ? `
-                <button class="btn btn-secondary btn-sm btn-delete-task" data-task-id="${escapeHtml(task.task_id)}" title="${t('memory.deleteTask')}">
+                <button class="btn btn-secondary btn-sm btn-delete-task" data-task-id="${escapeAttr(task.task_id)}" title="${t('memory.deleteTask')}">
                   <i data-lucide="trash-2" style="width:14px;height:14px;"></i>
                   ${t('memory.deleteTask')}
                 </button>
@@ -848,7 +854,7 @@
       return `
         <tr style="${(deleting || invalid) ? 'opacity:0.55;' : ''}${selected && !deleting && !invalid ? 'background:rgba(59,130,246,0.08);' : ''}">
           <td style="width:2rem;text-align:center;">
-            <input type="checkbox" class="doc-row-checkbox" data-doc-id="${escapeHtml(docId)}" ${selected ? 'checked' : ''} ${(deleting || invalid) ? 'disabled' : ''}>
+            <input type="checkbox" class="doc-row-checkbox" data-doc-id="${escapeAttr(docId)}" ${selected ? 'checked' : ''} ${(deleting || invalid) ? 'disabled' : ''}>
           </td>
           <td>${escapeHtml(truncate(title, 32))}${integrityHtml}</td>
           <td class="mono">${escapeHtml(size)}</td>
@@ -1255,14 +1261,9 @@
     loadTasks();
     loadDocs();
 
-    // Smart auto-refresh: fast (3s) when tasks active, slow (15s) when idle
-    function scheduleRefresh() {
-      if (state.refreshTimers.memory) clearInterval(state.refreshTimers.memory);
-      const interval = _hasActiveTasks ? 3000 : 15000;
-      state.refreshTimers.memory = setInterval(() => {
-        refreshTasks();
-      }, interval);
-    }
+    // Smart auto-refresh: fast (3s) when tasks active, slow (15s) when idle.
+    // This lives at module scope so loadTasks can reschedule after the first
+    // response; the old nested function was invisible there.
     scheduleRefresh();
 
     // Visibility detection: pause polling when tab is hidden, resume when visible

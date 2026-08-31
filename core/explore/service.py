@@ -127,10 +127,18 @@ def explore_memory(
     ]
 
     # Literal episode FTS is a separate channel from semantic concept search.
+    # search_concepts_by_bm25 自 P4 起返回概念 DTO（无 episode_id）；episode
+    # 文本通道必须走 search_episodes_by_fts（episodes_fts 原始行）。
+    episode_search = getattr(storage, "search_episodes_by_fts", None)
     episode_hits: list[dict[str, Any]] = []
     episode_seen: set[str] = set()
     for term_info in query_terms[:opts.semantic_queries]:
-        for raw in storage.search_concepts_by_bm25(term_info["term"], limit=opts.limit):
+        raw_rows = (
+            episode_search(term_info["term"], limit=opts.limit)
+            if episode_search is not None else
+            storage.search_concepts_by_bm25(term_info["term"], limit=opts.limit)
+        )
+        for raw in raw_rows:
             row = _dict(raw)
             episode_id = str(row.get("episode_id") or "")
             if not episode_id or episode_id in episode_seen or not scope.episode_allowed(episode_id):
@@ -152,7 +160,7 @@ def explore_memory(
         )
         for raw in semantic.get("results", []):
             row = _dict(raw)
-            score = row.get("score")
+            score = row.get("score", row.get("_score"))
             if score is not None and float(score or 0.0) < opts.min_semantic_score:
                 continue
             family_id = str(row.get("family_id") or "")
@@ -166,7 +174,10 @@ def explore_memory(
                 break
         if len(semantic_results) >= opts.limit:
             break
-    semantic_results.sort(key=lambda row: float(row.get("score") or 0.0), reverse=True)
+    # agent_semantic_search 返回 _score（P4.2 DTO 约定）；兼容旧 score 键。
+    semantic_results.sort(
+        key=lambda row: float(row.get("score", row.get("_score")) or 0.0), reverse=True
+    )
 
     concept_ids = [str(row.get("family_id")) for row in semantic_results if row.get("family_id")]
     source_evidence = [

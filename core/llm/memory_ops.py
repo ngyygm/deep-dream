@@ -121,7 +121,7 @@ class _MemoryOpsMixin:
 
         _now = datetime.now()
         base_time = event_time if event_time is not None else _now
-        new_cache_id = f"cache_{base_time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+        new_cache_id = f"cache_{base_time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex}"
 
         return Episode(
             absolute_id=new_cache_id,

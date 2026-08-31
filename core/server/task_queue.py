@@ -14,6 +14,7 @@ import logging
 import queue as _queue
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -61,16 +62,25 @@ class RememberTaskQueue:
         max_history: int = 200,
         max_retries: int = 2,
         retry_delay_seconds: float = 2,
+        max_queue_size: int = 1000,
         event_log=None,
         stall_timeout_seconds: float = 600,
     ):
         self._processor = processor
         self._processor_factory = processor_factory
         self._journal = RememberJournal(storage_path)
-        self._queue: "_queue.Queue[RememberTask]" = _queue.Queue()
+        self._max_queue_size = min(max(int(max_queue_size or 1000), 1), 100_000)
+        # Recovery runs before worker threads start.  Use an unbounded queue
+        # during replay so a large journal cannot block application startup;
+        # enforce the configured bound for all newly submitted work below.
+        self._queue: "_queue.Queue[RememberTask]" = _queue.Queue(maxsize=0)
         self._tasks: Dict[str, RememberTask] = {}
         self._active_processors: Dict[str, Any] = {}
-        self._lock = threading.Lock()
+        # Repair detection may update the same task metadata while resume is
+        # holding the queue lock.  A plain Lock deadlocked every normal
+        # paused-task resume; RLock keeps the state transition atomic while
+        # allowing that nested bookkeeping.
+        self._lock = threading.RLock()
         self._seq_counter = 0
         self._max_history = max_history
         self._max_retries = max(0, max_retries)
@@ -93,6 +103,11 @@ class RememberTaskQueue:
             persist_fn=self._persist,
             log_info_fn=self._log_info,
         )
+        # Sequence numbers are persisted in the journal.  Continue after the
+        # highest recovered value so a restart cannot address a new task by a
+        # duplicate short sequence.
+        self._seq_counter = max((int(t.task_seq or 0) for t in self._tasks.values()), default=0)
+        self._queue.maxsize = self._max_queue_size
         for i in range(max(1, max_workers)):
             t = threading.Thread(target=_worker_loop, args=(self,), name=f"remember-worker-{i}", daemon=True)
             t.start()
@@ -124,10 +139,13 @@ class RememberTaskQueue:
                             )
                             task.finished_at = now
                             task.last_update = now
+                            task.control_action = "cancel"
                             task.done_event.set()
                             self._persist(task)
-                            self._tasks.pop(task.task_id, None)
-                            self._active_processors.pop(task.task_id, None)
+                            # Keep the failed task in history so clients can
+                            # inspect/retry it.  The worker still owns the
+                            # active processor and will clear it in its normal
+                            # finally path after observing the cancel token.
                 for tid in stalled_ids:
                     self._log_warn(
                         f"[Remember] 看门狗: 标记停滞任务失败: "
@@ -276,7 +294,20 @@ class RememberTaskQueue:
         hashes = self._remember_window_hashes(task)
         if not hashes:
             return []
-        statuses = assess(hashes, document_path=task.original_path)
+        _version_scope = ""
+        if getattr(task, "override_doc_id", ""):
+            try:
+                _row = storage._conn().execute(
+                    "SELECT current_version_id FROM documents WHERE document_id = ?",
+                    (task.override_doc_id,),
+                ).fetchone()
+                _version_scope = (_row[0] if _row else "") or ""
+            except Exception:
+                logger.debug("failed to resolve repair version scope", exc_info=True)
+        statuses = assess(
+            hashes, document_path=task.original_path,
+            document_version_id=_version_scope,
+        )
         # Annotate missing phase for each incomplete window
         for s in statuses:
             if not s.get("complete"):
@@ -321,8 +352,14 @@ class RememberTaskQueue:
         finished_at: Optional[float] = None,
         error: Optional[str] = None,
         result: Optional[Dict[str, Any]] = None,
+        execution_generation: Optional[int] = None,
     ) -> None:
         with self._lock:
+            if (
+                execution_generation is not None
+                and int(task.execution_generation or 0) != int(execution_generation)
+            ):
+                return
             # Prevent overwriting terminal states with completed/running
             # (e.g. watchdog marks stalled task "failed"; worker must not
             # overwrite it with "completed" after the fact)
@@ -471,6 +508,7 @@ class RememberTaskQueue:
             "started_at": t.started_at,
             "finished_at": t.finished_at,
             "last_update": t.last_update,
+            "execution_generation": t.execution_generation,
             "error": t.error,
             "failed_window_indices": t.failed_window_indices,
             "failed_window_errors": t.failed_window_errors,
@@ -486,8 +524,16 @@ class RememberTaskQueue:
     # Terminal state transitions always bypass this throttle.
     _PERSIST_DEBOUNCE_S = 2.0
 
-    def _persist(self, task: RememberTask, *, _now: float = 0.0) -> None:
+    def _persist(
+        self, task: RememberTask, *, _now: float = 0.0,
+        execution_generation: Optional[int] = None,
+    ) -> None:
         """Debounced persist: skip write if last write for this task was <2s ago and not terminal."""
+        if (
+            execution_generation is not None
+            and int(task.execution_generation or 0) != int(execution_generation)
+        ):
+            return
         tid = task.task_id
         if task.status not in _TERMINAL_STATUSES:
             now = _now or time.monotonic()
@@ -532,7 +578,27 @@ class RememberTaskQueue:
             self._tasks[task.task_id] = task
             _trim_history(self._tasks, self._max_history, self._lock)
         self._persist(task)
-        self._queue.put(task)
+        try:
+            self._queue.put_nowait(task)
+        except _queue.Full:
+            # Do not leave a task that was never accepted in memory/journal.
+            # Callers can return 429 and retry with backpressure.
+            with self._lock:
+                self._tasks.pop(task.task_id, None)
+            task.status = "cancelled"
+            task.phase = "cancelled"
+            task.error = "任务队列已满，请稍后重试"
+            task.finished_at = time.time()
+            if task.original_path:
+                try:
+                    Path(task.original_path).unlink(missing_ok=True)
+                except OSError:
+                    pass
+            try:
+                self._persist(task)
+            except Exception:
+                logger.debug("persist queue-full task cleanup failed", exc_info=True)
+            raise
         self._log_info("[Remember] 任务入队: task_id=%s, source_name=%r" % (_short_task_id(task.task_id), task.source_name))
         return task.task_id
 
@@ -548,7 +614,9 @@ class RememberTaskQueue:
         title = doc.get("title") or ""
         text = doc.get("content") or ""
         hashes = self._document_window_hashes(title, text)
-        statuses = storage.assess_remember_window_statuses(hashes, document_path="")
+        statuses = storage.assess_remember_window_statuses(
+            hashes, document_path="", document_version_id=document_version_id,
+        )
         missing = [s for s in statuses if not s.get("complete")]
         return {
             "document_version_id": document_version_id,
@@ -572,7 +640,7 @@ class RememberTaskQueue:
         missing = list(integrity.get("missing_window_indices") or [])
         if not missing:
             return {"submitted": False, "message": "文档完整，无需修复", "integrity": integrity}
-        task_id = "repair_" + document_version_id + "_" + str(int(time.time()))
+        task_id = "repair_" + document_version_id + "_" + uuid.uuid4().hex
         originals_dir = self._journal.dir / "originals"
         originals_dir.mkdir(parents=True, exist_ok=True)
         original_path = originals_dir / ("%s.txt" % task_id)
@@ -791,11 +859,23 @@ class RememberTaskQueue:
             task = self._tasks.get(task_id)
             if task is None:
                 return False, "任务不存在", "missing"
-            if task.status != "paused":
-                return False, "仅已暂停的任务可以继续", task.status
-            if not task.failed_window_indices:
-                missing = self.detect_repair_windows(task)
-                if missing:
+            if task.status not in ("paused", "failed"):
+                return False, "仅已暂停或失败的任务可以继续", task.status
+
+        # ``detect_repair_windows`` takes the same lock to publish its
+        # assessment.  Run it outside the transition lock; otherwise a
+        # future change from RLock back to Lock would reintroduce a request
+        # deadlock, and the storage query would unnecessarily block workers.
+        with self._lock:
+            task = self._tasks.get(task_id)
+            needs_detection = bool(task and not task.failed_window_indices)
+        if needs_detection:
+            missing = self.detect_repair_windows(task)
+            with self._lock:
+                task = self._tasks.get(task_id)
+                if task is None or task.status not in ("paused", "failed"):
+                    return False, "任务状态已改变，请稍后重试", task.status if task else "missing"
+                if missing and not task.failed_window_indices:
                     task.failed_window_indices = list(missing)
                     task.failed_window_errors = [
                         {
@@ -805,8 +885,16 @@ class RememberTaskQueue:
                         }
                         for s in (task.repair_window_statuses or [])
                     ]
+
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task is None:
+                return False, "任务不存在", "missing"
+            if task.status not in ("paused", "failed"):
+                return False, "任务状态已改变，请稍后重试", task.status
             _is_retry = bool(task.failed_window_indices)
             task.control_action = None
+            task.execution_generation = int(task.execution_generation or 0) + 1
             task.status = "queued"
             task.phase = "queued"
             if _is_retry:
@@ -826,7 +914,21 @@ class RememberTaskQueue:
                 "step10": int(task.step10_done_chunks or task.processed_chunks or 0),
             }
             task.last_update = time.time()
-            self._queue.put(task)
+        # Never block while holding ``self._lock``.  Workers acquire that lock
+        # before transitioning a dequeued task, so a full queue would
+        # otherwise deadlock the worker and this request indefinitely.
+        try:
+            self._queue.put_nowait(task)
+        except _queue.Full:
+            with self._lock:
+                if task.status == "queued":
+                    task.status = "paused"
+                    task.phase = "paused"
+                    task.phase_label = "队列已满，等待稍后继续"
+                    task.message = "队列已满，请稍后重试"
+                    task.last_update = time.time()
+            self._persist(task)
+            return False, "任务队列已满，请稍后重试", "paused"
         self._persist(task)
         if _is_retry:
             self._log_info(
@@ -970,6 +1072,16 @@ class RememberTaskQueue:
             if processor is None or current is processor:
                 self._active_processors.pop(task_id, None)
 
+    def _control_action_for_generation(self, task: RememberTask, generation: int) -> Optional[str]:
+        """Return control state for a worker lease, cancelling stale workers."""
+        with self._lock:
+            if int(task.execution_generation or 0) != int(generation):
+                return "cancel"
+            tracked = self._tasks.get(task.task_id)
+            if tracked is not task:
+                return "cancel"
+            return task.control_action
+
     def get_runtime_stats_snapshot(self) -> Dict[str, int]:
         with self._lock:
             processors = list(self._active_processors.values())
@@ -1002,6 +1114,12 @@ class RememberTaskQueue:
             "llm_downstream_active": 0,
             "llm_downstream_max": 0,
         }
+        semaphore_seen: set[int] = set()
+        semaphore_keys = {
+            "llm_semaphore_active", "llm_semaphore_max",
+            "llm_upstream_active", "llm_upstream_max",
+            "llm_downstream_active", "llm_downstream_max",
+        }
         for processor in unique_processors:
             if not hasattr(processor, "get_runtime_stats"):
                 continue
@@ -1010,8 +1128,34 @@ class RememberTaskQueue:
             except Exception as e:
                 logger.debug("获取 processor runtime stats 失败: %s", e)
                 continue
+            # Runtime stats are reported by every task processor, but the
+            # registry injects one shared LLM semaphore into all of them.
+            # Count that shared capacity once; otherwise two active tasks make
+            # a global max=3 appear as max=6 (and active slots are duplicated).
+            llm_client = getattr(processor, "llm_client", None)
+            sem = getattr(llm_client, "_llm_sem_upstream", None)
+            if sem is None:
+                sem = getattr(llm_client, "_llm_semaphore", None)
+            if sem is not None:
+                sem_id = id(sem)
+                if sem_id not in semaphore_seen:
+                    semaphore_seen.add(sem_id)
+                    try:
+                        active = int(getattr(sem, "active_count", 0) or 0)
+                        maximum = int(getattr(sem, "max_value", 0) or 0)
+                    except (TypeError, ValueError):
+                        active = maximum = 0
+                    totals["llm_semaphore_active"] += active
+                    totals["llm_semaphore_max"] += maximum
+                    totals["llm_upstream_active"] += active
+                    totals["llm_upstream_max"] += maximum
+            else:
+                # Legacy/fake processors may expose only the flattened stats.
+                for key in semaphore_keys:
+                    totals[key] += int(stats.get(key, 0) or 0)
             for key in totals:
-                totals[key] += int(stats.get(key, 0) or 0)
+                if key not in semaphore_keys:
+                    totals[key] += int(stats.get(key, 0) or 0)
         return totals
 
     def get_pipeline_snapshot(self) -> Optional[Dict]:

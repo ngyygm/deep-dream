@@ -86,8 +86,11 @@ def test_graph_edges_excludes_deleted_document(v15):
 
 def test_fts_consistency_detects_stale_rows(v15):
     _full_setup(v15)
-    # FTS row exists but episode is now superseded
+    # The lifecycle helper now removes stale FTS rows as part of superseding.
+    # Recreate one deliberately so this test still exercises the integrity
+    # validator's detection path.
     doc_repo.supersede_active_version_cascade(v15, "doc1")
+    ep_repo.fts_sync_episode(v15, "ep1", "doc1", "ver1", source_text="stale")
     violations = validate_fts_consistency(v15)
     assert len(violations) > 0, "Should detect stale FTS rows after supersede"
 

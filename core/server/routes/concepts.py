@@ -5,7 +5,6 @@ P4.3 拆分说明：
   - 检索执行逻辑（RRF 融合/role boost/CJK 阈值/BM25+语义两路）在
     core/find/concept_search.py，与 CLI ``concept search`` 共用同一实现（P4.2）。
   - /documents*、/episodes*、/vaults* 路由在 routes/documents.py。
-  - /agent* 路由在 routes/agent.py（经 concepts_bp 嵌套注册，URL 不变）。
 本模块只保留概念/实体/关系路由。
 """
 from __future__ import annotations
@@ -39,19 +38,42 @@ logger = logging.getLogger(__name__)
 
 concepts_bp = Blueprint("concepts", __name__)
 
-# P4.3：/agent* 路由拆到 routes/agent.py；api.py 的注册行不可改
-# （concepts_bp 在 create_app 中注册），故以 Flask 嵌套蓝图挂载——
-# URL/方法与拆分前逐一相同。
-from core.server.routes.agent import agent_bp  # noqa: E402
-
-concepts_bp.register_blueprint(agent_bp)
-
 _shared_pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="concept")
 
 # Pre-compiled regex for duplicate entity name normalization
 _BOOK_MARKS_RE = _re.compile(r'[《》]')
 _PAREN_ANNOTATION_RE = _re.compile(r'\s*[（(][^）)]+[）)]\s*')
 _VALID_CONCEPT_ROLES = ("document", "episode", "entity", "relation")
+
+
+def _strict_body_bool(value, field_name: str, default: bool = False) -> bool:
+    """Parse a JSON boolean without Python's truthiness surprises.
+
+    In particular, ``bool("false")`` is True, which previously made a
+    seemingly harmless request enable expensive expand/group work.
+    """
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in ("1", "true", "yes", "on"):
+            return True
+        if normalized in ("0", "false", "no", "off"):
+            return False
+    raise ValueError(f"{field_name} 必须为布尔值")
+
+
+def _body_text(body: dict, field_name: str, *, default: str = "") -> str:
+    value = body.get(field_name, default)
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} 必须为字符串")
+    return value.strip()
 
 
 # =========================================================
@@ -72,9 +94,11 @@ def search_concepts():
         if _body_compact:
             from flask import g as _g
             _g.compact = True
-        query = (body.get("query") or "").strip()
+        query = _body_text(body, "query")
         if not query:
             return err("query 不能为空", 400)
+        if len(query) > 4096:
+            return err("query 过长（最多 4096 个字符）", 400)
         role = body.get("role") or None
         if role is not None:
             if str(role).strip().lower() not in _VALID_CONCEPT_ROLES:
@@ -98,16 +122,18 @@ def search_concepts():
             threshold = float(body.get("threshold", 0.5))
         except (ValueError, TypeError):
             return err("threshold 必须为数字", 400)
+        if not _math.isfinite(threshold) or not 0.0 <= threshold <= 1.0:
+            return err("threshold 必须是 0 到 1 之间的有限数字", 400)
         search_mode = str(body.get("search_mode", "bm25") or "bm25").strip().lower()
         if search_mode not in _VALID_SEARCH_MODES:
             return err(f"search_mode '{search_mode}' 无效，可选: {', '.join(_VALID_SEARCH_MODES)}", 400)
-        time_point = (body.get("time_point") or "").strip() or None
+        time_point = _body_text(body, "time_point") or None
         # Web UI 双界过滤：time_after/time_before 作为闭区间双界分别下推存储层
         # （P2.8）。旧实现把两界折叠成单个 time_point，静默丢弃另一界；
         # time_point 在搜索路径的存储层不消费，仅保留透传以兼容旧调用方。
-        time_after = (body.get("time_after") or "").strip() or None
-        time_before = (body.get("time_before") or "").strip() or None
-        source_document = (body.get("source_document") or "").strip() or None
+        time_after = _body_text(body, "time_after") or None
+        time_before = _body_text(body, "time_before") or None
+        source_document = _body_text(body, "source_document") or None
         # max_name_length: opt-in filter to exclude long dialogue-fragment entity names.
         # Default 0 = disabled. Recommended: 15 to filter novel dialogue fragments.
         try:
@@ -117,8 +143,11 @@ def search_concepts():
         reranker = (body.get("reranker") or "").strip().lower() or "rrf"
         if reranker not in _VALID_RERANKERS:
             return err(f"reranker '{reranker}' 无效，可选: {', '.join(_VALID_RERANKERS)}", 400)
-        expand = bool(body.get("expand", False))
-        group = bool(body.get("group", False))
+        try:
+            expand = _strict_body_bool(body.get("expand"), "expand")
+            group = _strict_body_bool(body.get("group"), "group")
+        except ValueError as exc:
+            return err(str(exc), 400)
 
         # P4.2：三种模式的执行体收敛在 core/find/concept_search.py
         # （与 CLI concept search 同一实现；语义腿统一走
@@ -474,7 +503,7 @@ def batch_concept_neighbors():
             max_results = min(max(int(body.get('max_results', 200)), 1), 1000)
         except (ValueError, TypeError):
             return err("max_results 必须为整数", 400)
-        time_point = (body.get("time_point") or "").strip() or None
+        time_point = _body_text(body, "time_point") or None
         fields_raw = (body.get("fields") or "").strip()
         allowed = set(f.strip() for f in fields_raw.split(",") if f.strip()) if fields_raw else None
 
@@ -529,6 +558,10 @@ def traverse_concepts():
         start_ids = body.get("start_family_ids") or []
         if not start_ids:
             return err("start_family_ids 不能为空", 400)
+        if not isinstance(start_ids, list) or len(start_ids) > 100:
+            return err("start_family_ids 必须为列表，最多 100 个", 400)
+        if any(not isinstance(fid, str) or not fid.strip() or len(fid) > 512 for fid in start_ids):
+            return err("start_family_ids 包含无效 ID", 400)
         try:
             max_depth = min(max(int(body.get('max_depth', 2)), 1), 3)
         except (ValueError, TypeError):
@@ -539,10 +572,15 @@ def traverse_concepts():
             max_results = min(max(int(raw_max), 1), 2000)
         except (ValueError, TypeError):
             return err("max_results 必须为整数", 400)
-        time_point = (body.get("time_point") or "").strip() or None
+        time_point = _body_text(body, "time_point") or None
         edge_types = body.get("edge_types") or body.get("edge_type") or None
         if isinstance(edge_types, str):
             edge_types = [edge_types]
+        elif edge_types is not None:
+            if not isinstance(edge_types, list) or len(edge_types) > 32 or any(
+                not isinstance(item, str) or len(item) > 64 for item in edge_types
+            ):
+                return err("edge_types 必须为最多 32 个字符串的列表", 400)
         # Scale per-level timeout with depth: ~15s per level, min 30s total
         _traverse_timeout = max(30.0, 15.0 * max_depth)
         result = storage.traverse_concepts(start_ids, max_depth=max_depth, time_point=time_point, edge_types=edge_types, max_results=max_results, _timeout_seconds=_traverse_timeout)

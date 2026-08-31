@@ -67,6 +67,21 @@ def _api_url(path: str, params: Optional[Dict[str, str]] = None) -> str:
     return url
 
 
+def _resolve_api_key() -> str | None:
+    """Resolve an API key from the global CLI option or environment."""
+    import os
+
+    try:
+        ctx = click.get_current_context(silent=True)
+        params = getattr(getattr(ctx, "obj", None), "_click_params", None) or {}
+        value = params.get("api_key")
+        if value:
+            return str(value)
+    except Exception:
+        pass
+    return os.environ.get("DEEPDREAM_API_KEY") or None
+
+
 def _request(
     method: str,
     path: str,
@@ -96,6 +111,9 @@ def _request(
         data = _json.dumps(body).encode("utf-8")
     req = urllib.request.Request(url, data=data, method=method)
     req.add_header("Accept", "application/json")
+    api_key = _resolve_api_key()
+    if api_key:
+        req.add_header("X-API-Key", api_key)
     if data is not None:
         req.add_header("Content-Type", "application/json")
     try:
@@ -131,7 +149,7 @@ def _is_error(resp: Dict[str, Any]) -> bool:
 def _error_message(resp: Dict[str, Any]) -> str:
     """Extract a human-readable error message from a response."""
     if "_network_error" in resp:
-        return f"Cannot reach server at http://127.0.0.1:16200 ({resp['_network_error']})"
+        return f"Cannot reach server at {_resolve_api_base()} ({resp['_network_error']})"
     return resp.get("error") or resp.get("message") or _json.dumps(resp, ensure_ascii=False)
 
 
@@ -146,7 +164,7 @@ def _fail_if_error(
         return
     if "_network_error" in resp:
         out.error(
-            "Cannot reach server at http://127.0.0.1:16200",
+            f"Cannot reach server at {_resolve_api_base()}",
             hint=_SERVER_HINT,
             code=NETWORK,
         )
@@ -158,13 +176,16 @@ def _fail_if_error(
 def _ensure_connected(out: OutputManager) -> None:
     """Check server connectivity; exit with a helpful message if unreachable."""
     try:
-        req = urllib.request.Request(f"{_resolve_api_base()}/../health", method="GET")
+        req = urllib.request.Request(_api_url("/health"), method="GET")
+        api_key = _resolve_api_key()
+        if api_key:
+            req.add_header("X-API-Key", api_key)
         with urllib.request.urlopen(req, timeout=3) as resp:
             if resp.status >= 400:
                 raise OSError(f"HTTP {resp.status}")
     except (OSError, urllib.error.URLError, TimeoutError):
         out.error(
-            "Cannot reach server at http://127.0.0.1:16200",
+            f"Cannot reach server at {_resolve_api_base()}",
             hint=_SERVER_HINT,
             code=NETWORK,
         )

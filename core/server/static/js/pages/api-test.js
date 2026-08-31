@@ -244,13 +244,13 @@
   // ---- Render endpoint list ----
   function renderEndpointList() {
     return API_CATALOG.map(cat => `
-      <div class="endpoint-category" data-category="${escapeHtml(cat.category)}">
-        <button class="endpoint-category-header" data-category-toggle="${escapeHtml(cat.category)}">
+      <div class="endpoint-category" data-category="${escapeAttr(cat.category)}">
+        <button class="endpoint-category-header" data-category-toggle="${escapeAttr(cat.category)}">
           <i data-lucide="chevron-down" style="width:14px;height:14px;"></i>
           <span style="font-size:0.8rem;font-weight:600;">${escapeHtml(cat.category)}</span>
           <span class="badge badge-secondary" style="margin-left:4px;">${cat.endpoints.length}</span>
         </button>
-        <div class="endpoint-category-list" data-category-list="${escapeHtml(cat.category)}">
+        <div class="endpoint-category-list" data-category-list="${escapeAttr(cat.category)}">
           ${cat.endpoints.map(ep => `
             <button class="endpoint-item ${selectedEndpoint === ep ? 'active' : ''}" data-endpoint-index="${API_CATALOG.indexOf(cat)}-${cat.endpoints.indexOf(ep)}">
               ${methodBadge(ep.method)}
@@ -268,7 +268,7 @@
       return `
         <div class="card h-full">
           <div style="padding:40px;">
-            ${emptyState(i18n.noEndpoint(), 'mouse-pointer-click')}
+            ${emptyState(i18n.noEndpoint(), 'info')}
           </div>
         </div>
       `;
@@ -340,14 +340,14 @@
         return `
           <div>
             ${label}
-            <textarea id="${id}" class="input" rows="3" placeholder="${escapeHtml(param.name)}" data-location="${location}" data-name="${escapeHtml(param.name)}" data-type="text">${escapeHtml(param.default || '')}</textarea>
+            <textarea id="${escapeAttr(id)}" class="input" rows="3" placeholder="${escapeAttr(param.name)}" data-location="${escapeAttr(location)}" data-name="${escapeAttr(param.name)}" data-type="text">${escapeHtml(param.default || '')}</textarea>
           </div>
         `;
       case 'checkbox':
         return `
           <div style="display:flex;align-items:center;gap:8px;">
             <label class="toggle">
-              <input type="checkbox" id="${id}" ${param.default ? 'checked' : ''} data-location="${location}" data-name="${escapeHtml(param.name)}" data-type="checkbox">
+              <input type="checkbox" id="${escapeAttr(id)}" ${param.default ? 'checked' : ''} data-location="${escapeAttr(location)}" data-name="${escapeAttr(param.name)}" data-type="checkbox">
               <span class="toggle-slider"></span>
             </label>
             ${label}
@@ -357,8 +357,8 @@
         return `
           <div>
             ${label}
-            <select id="${id}" class="input" data-location="${location}" data-name="${escapeHtml(param.name)}" data-type="text">
-              ${param.options.map(o => `<option value="${escapeHtml(o)}" ${o === param.default ? 'selected' : ''}>${o || '—'}</option>`).join('')}
+            <select id="${escapeAttr(id)}" class="input" data-location="${escapeAttr(location)}" data-name="${escapeAttr(param.name)}" data-type="text">
+              ${param.options.map(o => `<option value="${escapeAttr(o)}" ${o === param.default ? 'selected' : ''}>${escapeHtml(o || '—')}</option>`).join('')}
             </select>
           </div>
         `;
@@ -366,21 +366,21 @@
         return `
           <div>
             ${label}
-            <input type="number" id="${id}" class="input" value="${param.default || ''}" data-location="${location}" data-name="${escapeHtml(param.name)}" data-type="number">
+            <input type="number" id="${escapeAttr(id)}" class="input" value="${escapeAttr(param.default || '')}" data-location="${escapeAttr(location)}" data-name="${escapeAttr(param.name)}" data-type="number">
           </div>
         `;
       case 'file':
         return `
           <div>
             ${label}
-            <input type="file" id="${id}" class="input" data-location="${location}" data-name="${escapeHtml(param.name)}" data-type="file">
+            <input type="file" id="${escapeAttr(id)}" class="input" data-location="${escapeAttr(location)}" data-name="${escapeAttr(param.name)}" data-type="file">
           </div>
         `;
       default:
         return `
           <div>
             ${label}
-            <input type="text" id="${id}" class="input" value="${escapeHtml(param.default || '')}" data-location="${location}" data-name="${escapeHtml(param.name)}" data-type="text">
+            <input type="text" id="${escapeAttr(id)}" class="input" value="${escapeAttr(param.default || '')}" data-location="${escapeAttr(location)}" data-name="${escapeAttr(param.name)}" data-type="text">
           </div>
         `;
     }
@@ -673,7 +673,7 @@
 
     container.innerHTML = `
       <div class="page-enter">
-        <div style="display:flex;gap:16px;height:calc(100vh - 120px);min-height:500px;">
+        <div class="api-test-shell">
           <!-- Left: Endpoint list -->
           <div style="width:260px;flex-shrink:0;overflow-y:auto;" class="card" id="api-left-panel">
             <div style="padding:12px 16px;border-bottom:1px solid var(--border-color);">

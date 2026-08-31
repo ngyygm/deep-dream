@@ -58,6 +58,12 @@ class CliContext:
         try:
             self._config = _load_config(config_path)
         except Exception:
+            explicit = bool(self._click_params and self._click_params.get("_config_explicit"))
+            # A malformed or unreadable file must never silently switch a
+            # command to another storage root.  Only the absent default file
+            # may use the built-in development defaults.
+            if explicit or Path(config_path).exists():
+                raise
             self._config = copy.deepcopy(_get_defaults())
         if not self._config.get("storage_path"):
             self._config["storage_path"] = "./library"

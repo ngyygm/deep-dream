@@ -79,7 +79,7 @@
   function endpointBar(path, count, maxCount) {
     const pct = maxCount > 0 ? (count / maxCount * 100) : 0;
     return `<div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.375rem;">
-      <span class="mono truncate" style="flex:1;min-width:0;font-size:0.8125rem;color:var(--text-secondary);" title="${escapeHtml(path)}">${escapeHtml(path)}</span>
+      <span class="mono truncate" style="flex:1;min-width:0;font-size:0.8125rem;color:var(--text-secondary);" title="${escapeAttr(path)}">${escapeHtml(path)}</span>
       <div style="width:120px;flex-shrink:0;">
         <div class="progress-bar"><div class="progress-bar-fill" style="width:${pct.toFixed(1)}%;background:var(--primary);"></div></div>
       </div>
@@ -371,13 +371,13 @@
       const docSize = formatTaskSize(tk.document_size_bytes ?? tk.text_size_bytes ?? tk.size_bytes ?? 0);
 
       return `
-        <div class="dashboard-task-card" data-task-id="${escapeHtml(tk.task_id)}" style="padding:10px 12px;border-bottom:1px solid var(--border-color);cursor:pointer;transition:background 0.1s;"
+        <div class="dashboard-task-card" data-task-id="${escapeAttr(tk.task_id)}" style="padding:10px 12px;border-bottom:1px solid var(--border-color);cursor:pointer;transition:background 0.1s;"
              onmouseenter="this.style.background='var(--bg-surface-hover)'" onmouseleave="this.style.background='transparent'">
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
             <div style="display:flex;align-items:center;gap:8px;min-width:0;flex:1;">
               ${statusBadge(tk.status, tk.phase)}
-              <span style="font-size:0.8rem;color:var(--text-secondary);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(tk.source_name || '-')}">${escapeHtml(tk.source_name || '-')}</span>
-              <span class="mono" style="font-size:0.75rem;color:var(--text-muted);flex-shrink:0;white-space:nowrap;" title="${escapeHtml(String(tk.document_size_bytes || 0))} bytes">${escapeHtml(docSize)}</span>
+              <span style="font-size:0.8rem;color:var(--text-secondary);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeAttr(tk.source_name || '-')}">${escapeHtml(tk.source_name || '-')}</span>
+              <span class="mono" style="font-size:0.75rem;color:var(--text-muted);flex-shrink:0;white-space:nowrap;" title="${escapeAttr(String(tk.document_size_bytes || 0))} bytes">${escapeHtml(docSize)}</span>
               <span style="font-size:0.75rem;color:var(--text-muted);flex-shrink:0;white-space:nowrap;">${t('memory.overallProgress')} ${(overallPct * 100).toFixed(2)}%</span>
             </div>
             <span class="mono" style="font-size:0.75rem;color:var(--text-muted);flex-shrink:0;">${elapsedText(tk)}</span>
@@ -404,7 +404,7 @@
       ? recentErrors.map(e => `<div style="display:flex;align-items:center;gap:0.5rem;padding:0.25rem 0;font-size:0.8125rem;">
           <span class="mono" style="color:var(--text-muted);flex-shrink:0;">${escapeHtml(e.time)}</span>
           <span class="badge badge-error">${e.status_code}</span>
-          <span class="mono truncate" style="color:var(--text-secondary);min-width:0;" title="${escapeHtml(e.method + ' ' + e.path)}">${escapeHtml(e.method + ' ' + e.path)}</span>
+          <span class="mono truncate" style="color:var(--text-secondary);min-width:0;" title="${escapeAttr(e.method + ' ' + e.path)}">${escapeHtml(e.method + ' ' + e.path)}</span>
         </div>`).join('')
       : `<div style="font-size:0.8125rem;color:var(--text-muted);">${t('dashboard.noRecentErrors')}</div>`;
 
@@ -715,10 +715,15 @@
 
     if (window.lucide) lucide.createIcons();
 
-    // Bind event: auto-scroll checkbox (after logs section renders)
-    const autoScrollCb = document.getElementById('dashboard-log-autoscroll');
-    if (autoScrollCb) {
-      autoScrollCb.addEventListener('change', () => { _autoScroll = autoScrollCb.checked; });
+    // The logs section is rendered asynchronously, so binding immediately
+    // after the shell is created used to miss the checkbox entirely.  Delegate
+    // once from the stable page container; subsequent partial log renders keep
+    // the control functional.
+    if (!container.dataset.dashboardEventsBound) {
+      container.dataset.dashboardEventsBound = 'true';
+      container.addEventListener('change', event => {
+        if (event.target?.id === 'dashboard-log-autoscroll') _autoScroll = event.target.checked;
+      });
     }
 
     // Initial load: fetch all in parallel (one-time)

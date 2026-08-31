@@ -70,6 +70,8 @@ def get_json_body():
         return {}
     body = request.get_json(silent=True)
     if body is not None:
+        if not isinstance(body, dict):
+            raise ValueError("请求体必须是 JSON object")
         return body
     # Body was present but not valid JSON
     raise ValueError("请求体不是有效的 JSON（请检查格式）")

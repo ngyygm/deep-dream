@@ -157,9 +157,9 @@
              <span style="font-size:0.75rem;color:var(--text-muted);white-space:nowrap;">${t('search.recent')}</span>
              ${history.map(q => `
                <span class="badge badge-primary" style="cursor:pointer;display:inline-flex;align-items:center;gap:4px;padding:2px 10px;font-size:0.75rem;"
-                     data-history-query="${escapeHtml(q)}">
+                     data-history-query="${escapeAttr(q)}">
                  ${escapeHtml(truncate(q, 30))}
-                 <i data-lucide="x" style="width:10px;height:10px;opacity:0.6;" data-history-remove="${escapeHtml(q)}"></i>
+                 <i data-lucide="x" style="width:10px;height:10px;opacity:0.6;" data-history-remove="${escapeAttr(q)}"></i>
                </span>
              `).join('')}
            </div>
@@ -194,7 +194,7 @@
           ${multiQueries.map((q, i) => `
             <div class="multi-query-row" data-index="${i}" style="display:flex;gap:8px;align-items:center;">
               <span class="mono" style="font-size:0.75rem;color:var(--text-muted);min-width:20px;">${i + 1}.</span>
-              <input type="text" class="input multi-query-input" value="${escapeHtml(q)}"
+              <input type="text" class="input multi-query-input" value="${escapeAttr(q)}"
                      placeholder="${t('search.query')} ${i + 1}" style="flex:1;">
               ${multiQueries.length > 1 ? `
                 <button class="btn btn-ghost btn-sm remove-query-btn" data-index="${i}" title="${t('common.remove')}">
@@ -462,10 +462,10 @@
                 <td><span class="mono" style="font-size:0.75rem;color:var(--text-muted);font-weight:600;">#${rank}</span></td>
                 <td><span class="badge" style="font-size:0.7rem;${badgeStyle}">${relevanceDisplay}</span></td>
                 <td><strong>${nameHighlight}</strong>${e.version_count > 1 ? ' <span class="badge badge-primary" style="font-size:0.65rem;">v' + e.version_count + '</span>' : ''}</td>
-                <td class="truncate" title="${escapeHtml(e.content || '')}">${contentHighlight}</td>
+                <td class="truncate" title="${escapeAttr(e.content || '')}">${contentHighlight}</td>
                 <td class="mono" style="font-size:0.8rem;">${formatDate(e.event_time)}</td>
                 <td class="mono" style="font-size:0.8rem;">${formatDateMs(e.processed_time)}</td>
-                <td class="truncate" title="${escapeHtml(e.source_document || '')}">${escapeHtml(truncate(e.source_document, 40))}</td>
+                <td class="truncate" title="${escapeAttr(e.source_document || '')}">${escapeHtml(truncate(e.source_document, 40))}</td>
                 <td style="text-align:center;">${neighborsBadge}</td>
               </tr>
               ${neighborDetailRow}
@@ -508,7 +508,7 @@
                     ${escapeHtml(entity1Label)}
                   </span>
                 </td>
-                <td class="truncate" title="${escapeHtml(r.content || '')}">${contentHighlight}</td>
+                <td class="truncate" title="${escapeAttr(r.content || '')}">${contentHighlight}</td>
                 <td>
                   <span class="badge badge-info" style="font-size:0.75rem;">
                     ${escapeHtml(entity2Label)}
@@ -516,7 +516,7 @@
                 </td>
                 <td class="mono" style="font-size:0.8rem;">${formatDate(r.event_time)}</td>
                 <td class="mono" style="font-size:0.8rem;">${formatDateMs(r.processed_time)}</td>
-                <td class="truncate" title="${escapeHtml(r.source_document || '')}">${escapeHtml(truncate(r.source_document, 40))}</td>
+                <td class="truncate" title="${escapeAttr(r.source_document || '')}">${escapeHtml(truncate(r.source_document, 40))}</td>
               </tr>
             `;}).join('')}
           </tbody>
@@ -761,6 +761,7 @@
         expand: filters.expand,
         search_mode: filters.search_mode,
         reranker: filters.reranker,
+        signal: _searchAbort.signal,
       });
 
       currentResults = res.data || { entities: [], relations: [] };
@@ -772,7 +773,7 @@
       refreshResults();
       showToast(t('search.found', { e: currentResults.entities.length, r: currentResults.relations.length }), 'success');
     } catch (err) {
-      showToast(`${t('search.searchFailed')}: ${err.message}`, 'error');
+      if (err?.name !== 'AbortError') showToast(`${t('search.searchFailed')}: ${err.message}`, 'error');
     } finally {
       if (btn) {
         btn.disabled = false;
@@ -820,6 +821,7 @@
             expand: filters.expand,
             search_mode: filters.search_mode,
             reranker: filters.reranker,
+            signal: _batchAbort.signal,
           });
           batchResults[i] = { query: q, entities: res.data?.entities || [], relations: res.data?.relations || [] };
         } catch (err) {
@@ -834,7 +836,7 @@
       refreshResults();
       showToast(t('search.batchComplete', { count: queries.length }), 'success');
     } catch (err) {
-      showToast(`${t('search.batchFailed')}: ${err.message}`, 'error');
+      if (err?.name !== 'AbortError') showToast(`${t('search.batchFailed')}: ${err.message}`, 'error');
     } finally {
       if (btn) {
         btn.disabled = false;
@@ -945,9 +947,9 @@
         <span style="font-size:0.75rem;color:var(--text-muted);white-space:nowrap;">${t('search.recent')}</span>
         ${history.map(q => `
           <span class="badge badge-primary" style="cursor:pointer;display:inline-flex;align-items:center;gap:4px;padding:2px 10px;font-size:0.75rem;"
-                data-history-query="${escapeHtml(q)}">
+                data-history-query="${escapeAttr(q)}">
             ${escapeHtml(truncate(q, 30))}
-            <i data-lucide="x" style="width:10px;height:10px;opacity:0.6;" data-history-remove="${escapeHtml(q)}"></i>
+            <i data-lucide="x" style="width:10px;height:10px;opacity:0.6;" data-history-remove="${escapeAttr(q)}"></i>
           </span>
         `).join('')}
       </div>
@@ -1155,7 +1157,7 @@
     }
 
     try {
-      const res = await state.api.traverseGraph(seedIds, maxDepth, maxNodes, state.currentGraphId);
+      const res = await state.api.traverseGraph(seedIds, maxDepth, maxNodes, state.currentGraphId, { signal: _traverseAbort.signal });
       const data = res.data || {};
       // 后端 traverse 返回 {concepts: {family_id: concept, ...}, relations: [...], edges: [...]}
       let entities, relations;
@@ -1176,7 +1178,7 @@
       refreshResults();
       showToast(t('search.traverseSuccess', { count: entities.length }), 'success');
     } catch (err) {
-      showToast(`${t('search.traverseFailed')}: ${err.message}`, 'error');
+      if (err?.name !== 'AbortError') showToast(`${t('search.traverseFailed')}: ${err.message}`, 'error');
     } finally {
       if (btn) {
         btn.disabled = false;

@@ -1,12 +1,13 @@
 """V1.5 Document-first Concept Graph Schema.
 
-Clean schema reset. 12 tables + 1 FTS + 1 view.
+Clean schema reset. 13 tables + 1 FTS + compatibility views.
 No backward compatibility with old concept_* tables.
 """
 
 import logging
 import re
 import sqlite3
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -170,6 +171,23 @@ TABLES_SQL = [
     FOREIGN KEY(object_entity_id) REFERENCES entity_observations(entity_id)
 )""",
 
+    """CREATE TABLE IF NOT EXISTS relation_mentions (
+    mention_id TEXT PRIMARY KEY,
+    relation_id TEXT NOT NULL,
+    relation_family_id TEXT NOT NULL,
+    episode_id TEXT NOT NULL,
+    surface_text TEXT NOT NULL DEFAULT '',
+    start_offset INTEGER DEFAULT 0,
+    end_offset INTEGER DEFAULT 0,
+    line_start INTEGER DEFAULT 0,
+    line_end INTEGER DEFAULT 0,
+    created_at TEXT NOT NULL,
+    UNIQUE(relation_id, episode_id),
+    FOREIGN KEY(relation_id) REFERENCES relation_assertions(relation_id) ON DELETE CASCADE,
+    FOREIGN KEY(relation_family_id) REFERENCES relation_families(relation_family_id),
+    FOREIGN KEY(episode_id) REFERENCES episodes(episode_id) ON DELETE CASCADE
+    )""",
+
     """CREATE TABLE IF NOT EXISTS embeddings (
     embedding_id TEXT PRIMARY KEY,
     owner_type TEXT NOT NULL
@@ -193,7 +211,7 @@ TABLES_SQL = [
         CHECK(run_type IN ('remember', 'reindex', 'migration',
                            'chunk', 'embedding', 'fts_rebuild')),
     status TEXT NOT NULL
-        CHECK(status IN ('running', 'succeeded', 'failed')),
+        CHECK(status IN ('running', 'succeeded', 'failed', 'paused', 'cancelled')),
     document_id TEXT DEFAULT NULL,
     document_version_id TEXT DEFAULT NULL,
     episode_count INTEGER DEFAULT 0,
@@ -229,6 +247,20 @@ TABLES_SQL = [
     source_family_id TEXT PRIMARY KEY,
     target_family_id TEXT NOT NULL,
     created_at TEXT NOT NULL
+)""",
+
+    """CREATE TABLE IF NOT EXISTS content_patches (
+    patch_id TEXT PRIMARY KEY,
+    target_type TEXT NOT NULL CHECK(target_type IN ('Entity', 'Relation')),
+    target_absolute_id TEXT NOT NULL,
+    target_family_id TEXT NOT NULL,
+    section_key TEXT NOT NULL,
+    change_type TEXT NOT NULL,
+    old_hash TEXT NOT NULL DEFAULT '',
+    new_hash TEXT NOT NULL DEFAULT '',
+    diff_summary TEXT NOT NULL DEFAULT '',
+    source_document TEXT NOT NULL DEFAULT '',
+    event_time TEXT NOT NULL
 )""",
 ]
 
@@ -284,6 +316,10 @@ INDEXES_SQL = [
     "ON relation_assertions(relation_family_id, processed_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_relassert_episode "
     "ON relation_assertions(episode_id)",
+    "CREATE INDEX IF NOT EXISTS idx_relmentions_episode "
+    "ON relation_mentions(episode_id)",
+    "CREATE INDEX IF NOT EXISTS idx_relmentions_family "
+    "ON relation_mentions(relation_family_id)",
     "CREATE INDEX IF NOT EXISTS idx_relassert_subject "
     "ON relation_assertions(subject_entity_family_id)",
     "CREATE INDEX IF NOT EXISTS idx_relassert_object "
@@ -303,6 +339,11 @@ INDEXES_SQL = [
 
     "CREATE INDEX IF NOT EXISTS idx_redirects_target "
     "ON entity_redirects(target_family_id)",
+
+    "CREATE INDEX IF NOT EXISTS idx_content_patches_family "
+    "ON content_patches(target_family_id, event_time DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_content_patches_target "
+    "ON content_patches(target_absolute_id, event_time DESC)",
 ]
 
 # ── FTS ────────────────────────────────────────────────────
@@ -348,6 +389,20 @@ EXPECTED_INDEXES = tuple(
 )
 
 EXPECTED_VIEWS = ("graph_edges",) + _COMPAT_VIEW_NAMES
+
+# ``CREATE TABLE IF NOT EXISTS`` cannot repair a table that exists with an
+# older/partial column set.  Keep a small structural fingerprint so doctor
+# reports that condition instead of declaring such a database healthy.
+REQUIRED_COLUMNS = {
+    "documents": {"document_id", "title", "status", "updated_at"},
+    "document_versions": {"document_version_id", "document_id", "content_hash", "status"},
+    "episodes": {"episode_id", "document_id", "document_version_id", "source_text", "status"},
+    "entity_families": {"entity_family_id", "canonical_name"},
+    "entity_observations": {"entity_id", "entity_family_id", "episode_id", "status"},
+    "relation_families": {"relation_family_id", "subject_entity_family_id", "object_entity_family_id"},
+    "relation_assertions": {"relation_id", "relation_family_id", "episode_id", "status"},
+    "content_patches": {"patch_id", "target_type", "target_family_id", "event_time"},
+}
 
 
 # ── Views ──────────────────────────────────────────────────
@@ -494,13 +549,22 @@ def schema_health(conn: sqlite3.Connection) -> dict:
     missing_tables = [t for t in EXPECTED_TABLES if t not in present]
     missing_indexes = [i for i in EXPECTED_INDEXES if i not in present]
     missing_views = [v for v in EXPECTED_VIEWS if v not in present]
+    missing_columns = {}
+    for table, required in REQUIRED_COLUMNS.items():
+        if table not in present:
+            continue
+        actual = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        absent = sorted(required - actual)
+        if absent:
+            missing_columns[table] = absent
     user_version = conn.execute("PRAGMA user_version").fetchone()[0]
     return {
-        "ok": not (missing_tables or missing_indexes or missing_views),
+        "ok": not (missing_tables or missing_indexes or missing_views or missing_columns),
         "user_version": user_version,
         "missing_tables": missing_tables,
         "missing_indexes": missing_indexes,
         "missing_views": missing_views,
+        "missing_columns": missing_columns,
         "expected": {
             "tables": len(EXPECTED_TABLES),
             "indexes": len(EXPECTED_INDEXES),
@@ -650,7 +714,25 @@ SELECT
 FROM entity_mentions em
 JOIN entity_observations eo
   ON eo.entity_id = em.entity_id AND eo.status = 'active'
-WHERE em.episode_id != '';
+WHERE em.episode_id != ''
+UNION ALL
+SELECT
+    rm.mention_id AS edge_id,
+    rm.relation_family_id AS target_family_id,
+    rm.relation_id AS target_version_id,
+    'MENTIONS' AS edge_type,
+    rm.episode_id AS episode_version_id,
+    '' AS document_version_id,
+    '' AS source_family_id,
+    '' AS source_version_id,
+    'relation' AS target_role,
+    rm.surface_text AS target_name,
+    1.0 AS weight,
+    NULL AS confidence,
+    '{}' AS provenance,
+    rm.created_at
+FROM relation_mentions rm
+WHERE rm.episode_id != '';
 
 CREATE VIEW IF NOT EXISTS v_relation_edges AS
 SELECT
@@ -706,6 +788,9 @@ def init_schema_v15(conn: sqlite3.Connection) -> dict:
     """
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
+    # Make the schema generation explicit so doctor/migration tooling can
+    # distinguish a V1.5 database from an unversioned legacy file.
+    conn.execute("PRAGMA user_version = 15")
 
     _check_json1(conn)
     _check_fts5(conn)
@@ -717,12 +802,26 @@ def init_schema_v15(conn: sqlite3.Connection) -> dict:
     fts_existed = _object_exists(conn, "episodes_fts")
     create_tables(conn)
     create_indexes(conn)
-    create_fts(conn, use_trigram=use_trigram)
+    # 并发首建竞态自愈：多个连接同时初始化同一新库时，CREATE VIRTUAL
+    # TABLE / 首次实例化 episodes_fts 可能互踩（"vtable constructor
+    # failed" / "already exists"）。对方建成则 IF NOT EXISTS 变 no-op，
+    # 短暂退避后重试即可收敛。
     fts_rebuilt = False
-    if not fts_existed or conn.execute(
-        "SELECT COUNT(*) FROM episodes_fts"
-    ).fetchone()[0] == 0:
-        fts_rebuilt = _rebuild_fts_if_episodes_exist(conn)
+    for attempt in range(5):
+        try:
+            create_fts(conn, use_trigram=use_trigram)
+            if not fts_existed or conn.execute(
+                "SELECT COUNT(*) FROM episodes_fts"
+            ).fetchone()[0] == 0:
+                fts_rebuilt = _rebuild_fts_if_episodes_exist(conn)
+            break
+        except sqlite3.OperationalError as exc:
+            if "episodes_fts" not in str(exc) or attempt == 4:
+                raise
+            logger.warning(
+                "episodes_fts 并发初始化冲突（attempt %d）: %s — 退避重试",
+                attempt + 1, exc)
+            time.sleep(0.2 * (attempt + 1))
     create_views(conn)
     conn.commit()
 

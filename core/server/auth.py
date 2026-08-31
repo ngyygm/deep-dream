@@ -53,11 +53,50 @@ DEFAULT_PERMISSIONS = {
         "concepts:write",
         "documents:read",
         "documents:write",
+        "graphs:write",
+        "system:write",
     },
 }
 
 # In-memory API key store (in production, use a database)
 _API_KEYS: Dict[str, Set[str]] = {}
+_ALLOW_DEV_KEY: bool | None = None
+
+
+def _strict_bool(value: Any, default: bool = False) -> bool:
+    """Parse configuration booleans without ``bool('false')`` surprises."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off", ""}:
+            return False
+    return default
+
+
+def authentication_configured(config: Dict[str, Any] | None = None) -> bool:
+    """Return whether request authentication should be active.
+
+    Local development has historically worked without a secret key.  Treating
+    the absence of a secret as an authenticated deployment is misleading (and
+    makes the UI appear to work while silently accepting unauthenticated
+    writes).  An explicit ``auth.enabled`` value always wins; otherwise auth
+    is enabled only when a signing key, API-key file, or strict mode is
+    configured.
+    """
+    auth_config = (config or {}).get("auth") or {}
+    if "enabled" in auth_config and auth_config.get("enabled") is not None:
+        return _strict_bool(auth_config.get("enabled"))
+    return bool(
+        SECRET_KEY
+        or auth_config.get("strict_mode", False)
+        or auth_config.get("api_keys_file")
+        or os.environ.get("DEEPDREAM_API_KEYS_FILE")
+    )
 
 
 def load_api_keys(file_path: str | None = None) -> None:
@@ -75,11 +114,20 @@ def load_api_keys(file_path: str | None = None) -> None:
     Args:
         file_path: Path to API keys file (default: from env var)
     """
+    # Reloading auth must not leave keys from a previous configuration valid.
+    # This matters for long-running workers and for tests that construct more
+    # than one application in the same Python process.
+    _API_KEYS.clear()
+
     if file_path is None:
         file_path = os.environ.get("DEEPDREAM_API_KEYS_FILE")
 
     if not file_path or not os.path.exists(file_path):
-        # Load default development key
+        # A predictable key is useful for an explicitly local development
+        # server, but must never silently remain valid in strict mode.
+        if _ALLOW_DEV_KEY is False:
+            logger.error("No API-key file configured; refusing the development fallback key")
+            return
         default_key = os.environ.get("DEEPDREAM_DEFAULT_API_KEY", "dev-key-insecure")
         _API_KEYS[default_key] = DEFAULT_PERMISSIONS["api_key"]
         logger.warning("Using default development API key - NOT FOR PRODUCTION")
@@ -110,11 +158,35 @@ def init_auth(config: Dict[str, Any] | None = None) -> None:
             -.auth.api_keys_file: Path to API keys file
             - auth.strict_mode: Require auth even if SECRET_KEY not set (default: False)
     """
+    global _ALLOW_DEV_KEY
     config = config or {}
     auth_config = config.get("auth", {})
+    if not isinstance(auth_config, dict):
+        auth_config = {}
+    strict_mode = _strict_bool(auth_config.get("strict_mode"), bool(SECRET_KEY))
+    host = str(config.get("host", "127.0.0.1")).strip().lower()
+    loopback = host in {"127.0.0.1", "localhost", "::1"}
+    # A predictable development credential is only available through an
+    # explicit opt-in on a loopback listener.  Merely setting a production
+    # SECRET_KEY must never silently create a second known credential.
+    _ALLOW_DEV_KEY = (
+        (
+            _strict_bool(auth_config.get("allow_dev_key", False))
+            or (
+                not SECRET_KEY
+                and not (auth_config.get("api_keys_file") or os.environ.get("DEEPDREAM_API_KEYS_FILE"))
+                and ("enabled" not in auth_config or auth_config.get("enabled") is None)
+            )
+        )
+        and loopback and not strict_mode
+    )
 
     # Check if authentication is explicitly disabled
-    if not auth_config.get("enabled", True):
+    if not _strict_bool(auth_config.get("enabled"), True):
+        # Keep the legacy helper behaviour available to local unit tests, but
+        # no request is authenticated when the app explicitly disables auth.
+        _ALLOW_DEV_KEY = True
+        _API_KEYS.clear()
         logger.info("Authentication explicitly disabled via config")
         return
 
@@ -151,6 +223,8 @@ def _validate_api_key(api_key: str) -> Tuple[bool, Set[str]]:
         (is_valid, permissions_set) tuple
     """
     if not _API_KEYS:
+        if _ALLOW_DEV_KEY is False:
+            return False, set()
         default_key = os.environ.get("DEEPDREAM_DEFAULT_API_KEY", "dev-key-insecure")
         if hmac.compare_digest(api_key, default_key):
             return True, DEFAULT_PERMISSIONS["api_key"]
@@ -217,3 +291,70 @@ def create_jwt_token(user_id: str, permissions: List[str] | None = None) -> str:
     }
 
     return jwt.encode(payload, SECRET_KEY, algorithm=JWT_ALGORITHM)
+
+
+# POST endpoints that only calculate/read data.  They are intentionally kept
+# explicit so a newly-added mutating endpoint is denied by default.
+_READ_ONLY_POST_PATHS = frozenset({
+    "/api/v1/find",
+    "/api/v1/traverse",
+    "/api/v1/concepts/batch-neighbors",
+    "/api/v1/concepts/search",
+    "/api/v1/concepts/suggest",
+    "/api/v1/concepts/traverse",
+    "/api/v1/documents/graph",
+    "/api/v1/documents/graph/chunk",
+    "/api/v1/documents/graph/outline",
+})
+
+
+def required_permission(method: str, path: str) -> str | None:
+    """Map an API request to the smallest permission it needs.
+
+    ``None`` is reserved for CORS preflight and framework-only requests.  A
+    read permission is still required for ordinary GETs when auth is active.
+    """
+    method = (method or "GET").upper()
+    path = path or "/"
+    if method == "OPTIONS":
+        return None
+
+    is_read = method in {"GET", "HEAD"} or path in _READ_ONLY_POST_PATHS
+    if is_read:
+        if path.startswith("/api/v1/find") or path == "/api/v1/traverse":
+            return "find:read"
+        if path.startswith("/api/v1/concepts"):
+            return "concepts:read"
+        if path.startswith("/api/v1/documents") or path.startswith("/api/v1/episodes"):
+            return "documents:read"
+        if path.startswith("/api/v1/remember"):
+            return "read"
+        return "read"
+
+    if path.startswith("/api/v1/remember"):
+        return "remember:write"
+    if path.startswith("/api/v1/concepts"):
+        return "concepts:write"
+    if path.startswith("/api/v1/documents") or path.startswith("/api/v1/vaults"):
+        return "documents:write"
+    if path.startswith("/api/v1/graphs"):
+        return "graphs:write"
+    if path.startswith("/api/v1/system/config"):
+        return "system:write"
+    return "write"
+
+
+def has_permission(permissions: Set[str] | None, required: str | None) -> bool:
+    """Check a permission, supporting explicit admin/write wildcards."""
+    if required is None:
+        return True
+    perms = permissions or set()
+    if "admin" in perms or "*" in perms or required in perms:
+        return True
+    if required == "read" and "read" in perms:
+        return True
+    if required.endswith(":read") and "read" in perms:
+        return True
+    if required.endswith(":write") and "write" in perms:
+        return True
+    return False

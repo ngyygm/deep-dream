@@ -11,6 +11,9 @@ stay deferred inside command callbacks, keeping ``--help`` and
 from __future__ import annotations
 
 import importlib.metadata
+import json
+import os
+import sys
 from typing import Any
 
 import click
@@ -26,8 +29,10 @@ from .cmd_episode import episode
 from .cmd_explore import explore
 from .cmd_find import find
 from .cmd_graph import graph
+from .cmd_ingest import ingest
 from .cmd_remember import remember
 from .cmd_relation import relation
+from .cmd_scope import scope
 from .cmd_server import server
 from .cmd_sql import sql
 from .cmd_task import task
@@ -125,6 +130,12 @@ Use 'deep-dream <command> --help' for command-specific options.
     help="Suppress non-essential output.",
 )
 @click.option(
+    "--api-key",
+    envvar="DEEPDREAM_API_KEY",
+    default=None,
+    help="API key for authenticated server/task commands.",
+)
+@click.option(
     "--version",
     is_flag=True,
     callback=_print_version,
@@ -141,6 +152,13 @@ def cli(ctx: click.Context, **kwargs: Any) -> None:
     ctx.obj = CliContext()
     # Store raw Click params so OutputManager can read --json/--quiet/--no-color
     ctx.obj._click_params = kwargs  # type: ignore[attr-defined]
+    try:
+        source = ctx.get_parameter_source("config")
+        ctx.obj._click_params["_config_explicit"] = bool(  # type: ignore[index]
+            source is not None and source.name in {"COMMANDLINE", "ENVIRONMENT"}
+        )
+    except Exception:
+        ctx.obj._click_params["_config_explicit"] = False  # type: ignore[index]
 
 
 # -- 命令注册（顺序即 --help 列表顺序）----------------------------------
@@ -151,6 +169,8 @@ cli.add_command(config)
 cli.add_command(completion)
 cli.add_command(find)         # core retrieval
 cli.add_command(remember)
+cli.add_command(ingest)
+cli.add_command(scope)
 cli.add_command(explore)
 cli.add_command(docs)         # data
 cli.add_command(concept)
@@ -176,5 +196,15 @@ def main(argv: list[str] | None = None) -> int:
         return int(exc.code) if exc.code is not None else OK
     except click.UsageError as exc:
         click.echo(f"Error: {exc.format_message()}", err=True)
+        return ARGS
+    except Exception as exc:
+        # Keep machine-readable invocations parseable even when a command
+        # fails before it can construct OutputManager (for example malformed
+        # config JSON).  Human invocations retain a concise stderr error.
+        args = list(argv) if argv is not None else sys.argv[1:]
+        if "--json" in args or os.environ.get("DEEPDREAM_JSON_OUTPUT") == "1":
+            click.echo(json.dumps({"success": False, "error": str(exc)}, ensure_ascii=False))
+        else:
+            click.echo(f"Error: {exc}", err=True)
         return ARGS
     return OK

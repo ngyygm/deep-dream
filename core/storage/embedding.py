@@ -145,7 +145,8 @@ class EmbeddingClient:
                  device: str = "cpu", use_local: bool = True,
                  cache_max_size: int = 8192, cache_ttl: float = 3600.0,
                  max_concurrency: int = 1,
-                 api_key: Optional[str] = None, api_base: Optional[str] = None):
+                 api_key: Optional[str] = None, api_base: Optional[str] = None,
+                 trust_remote_code: bool = False):
         """
         初始化Embedding客户端
 
@@ -167,6 +168,7 @@ class EmbeddingClient:
         self.use_local = use_local
         self.api_key = api_key
         self.api_base = api_base
+        self.trust_remote_code = bool(trust_remote_code)
         self.model = None
         self._remote_client = None
         # 本地 embedding 模型通常是单 GPU/单进程推理；多个 encode 并发会争抢显存和算力，
@@ -215,7 +217,7 @@ class EmbeddingClient:
                 self.model = SentenceTransformer(
                     self.model_path,
                     device=self.device,
-                    trust_remote_code=True
+                    trust_remote_code=self.trust_remote_code,
                 )
             elif self.model_name:
                 # 使用HuggingFace模型名称
@@ -223,7 +225,7 @@ class EmbeddingClient:
                 self.model = SentenceTransformer(
                     self.model_name,
                     device=self.device,
-                    trust_remote_code=True
+                    trust_remote_code=self.trust_remote_code,
                 )
             else:
                 # 使用默认模型
@@ -273,9 +275,12 @@ class EmbeddingClient:
         # --- Encode only the misses ---
         miss_embeddings = self._encode_uncached(miss_texts, batch_size)
         if miss_embeddings is None:
-            # Encode failed -- return whatever we have from cache, or None
-            hit_results = [r for r in cached_results if r is not None]
-            return np.stack(hit_results) if hit_results else None
+            # A partial cache hit cannot be returned as a shorter array: doing
+            # so silently shifts vectors away from their input texts and can
+            # attach an embedding to the wrong entity/relation.  Fail the
+            # whole batch and let the caller use its text-search fallback or
+            # retry instead.
+            return None
 
         # --- Store misses in cache ---
         self._cache.set_batch(miss_texts, miss_embeddings)
@@ -316,7 +321,11 @@ class EmbeddingClient:
     def _encode_chunk(self, texts: List[str], batch_size: int) -> Optional[np.ndarray]:
         """编码单批文本，使用信号量控制并发。"""
         if self._remote_client is not None:
-            return self._encode_chunk_remote(texts)
+            # Remote endpoints are subject to the same configured concurrency
+            # budget as local models; otherwise multiple workers can overwhelm
+            # a gateway despite embedding.max_concurrency.
+            with self._encode_semaphore:
+                return self._encode_chunk_remote(texts)
         if self.model is None:
             return None
         with self._encode_semaphore:
@@ -338,8 +347,30 @@ class EmbeddingClient:
                 model=self.model_name or self.model_path or "default",
                 input=list(texts),
             )
-            vecs = np.array([d.embedding for d in resp.data], dtype=np.float32)
-            if vecs.ndim != 2 or vecs.shape[0] != len(texts):
+            items = list(getattr(resp, "data", None) or [])
+            indexed: list[tuple[int, object]] = []
+            for position, item in enumerate(items):
+                # OpenAI-compatible servers are allowed to return data in a
+                # different order; the index is the only reliable alignment
+                # with the input batch.  A few older compatible gateways omit
+                # ``index``; in that case their list order is the contract.
+                raw_index = getattr(item, "index", None)
+                idx = position if raw_index is None else int(raw_index)
+                indexed.append((idx, getattr(item, "embedding")))
+            indices = [idx for idx, _ in indexed]
+            if sorted(indices) != list(range(len(texts))):
+                wprint_info(f"Embedding 远程返回索引异常: {indices!r}")
+                return None
+            vecs = np.array(
+                [embedding for _, embedding in sorted(indexed, key=lambda pair: pair[0])],
+                dtype=np.float32,
+            )
+            if (
+                vecs.ndim != 2
+                or vecs.shape[0] != len(texts)
+                or vecs.shape[1] <= 0
+                or not np.isfinite(vecs).all()
+            ):
                 wprint_info(f"Embedding 远程返回形状异常: {vecs.shape}")
                 return None
             return vecs

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import hashlib
 import re
 import sqlite3
 import uuid
@@ -20,6 +21,8 @@ _WIKILINK_RE = re.compile(r'\[\[([^\]#|]+)(?:#[^\]|]*)?(?:\|([^\]]*))?\]\]')
 # Matches [display](href) where href is not http.
 # Negative lookbehind for '!' excludes image syntax ![alt](url).
 _MD_LINK_RE = re.compile(r'(?<!!)\[([^\]]*)\]\(([^)]+)\)')
+_SUPPORTED_SUFFIXES = frozenset({".md", ".markdown", ".txt", ".text"})
+_MAX_INDEX_BYTES = 32 * 1024 * 1024
 
 
 def _extract_links_with_positions(body: str) -> list[dict]:
@@ -149,29 +152,110 @@ def index_markdown_file(conn: sqlite3.Connection, library_path: Path,
                         path: str, vault_root: str = "",
                         force: bool = False) -> dict:
     """Index a single Markdown file into the V1.5 schema."""
-    file_path = Path(path)
-    if not file_path.exists():
+    file_path = Path(path).expanduser()
+    try:
+        resolved_path = file_path.resolve(strict=True)
+    except OSError:
         return {"error": f"File not found: {path}"}
+    if not resolved_path.is_file():
+        return {"error": f"Not a file: {path}"}
+    if resolved_path.suffix.lower() not in _SUPPORTED_SUFFIXES:
+        return {"error": f"Unsupported file type: {resolved_path.suffix or '(none)'}"}
+    try:
+        if resolved_path.stat().st_size > _MAX_INDEX_BYTES:
+            return {"error": f"File exceeds {_MAX_INDEX_BYTES} byte limit: {path}"}
+    except OSError:
+        return {"error": f"Unable to stat file: {path}"}
 
+    root_path: Path | None = None
+    if vault_root:
+        try:
+            root_path = Path(vault_root).expanduser().resolve(strict=True)
+            if not root_path.is_dir() or not resolved_path.is_relative_to(root_path):
+                return {"error": f"File is outside vault root: {path}"}
+        except (OSError, ValueError):
+            return {"error": f"Invalid vault root: {vault_root}"}
+
+    file_path = resolved_path
     text = file_path.read_text(encoding="utf-8")
     content_hash = content_fs.compute_content_hash(text)
     parsed = parse_markdown(text)
     title = parsed["title"] or file_path.stem
-    doc_id = f"doc_{content_hash[:16]}"
+    rel_path = str(file_path.relative_to(root_path)) if root_path else file_path.name
+    # Document identity is the canonical path, not the mutable content hash.
+    # This prevents two same-content files from collapsing into one document
+    # and lets edits form a real version chain.
+    # For single-file indexing there is no vault root, so a basename is not
+    # sufficient: ``/a/readme.md`` and ``/b/readme.md`` must remain distinct.
+    # Keep the friendly basename in the stored relative_path field, but use
+    # the canonical absolute path for the identity hash.
+    identity_path = str(file_path) if root_path is None else rel_path
+    identity = f"{root_path or ''}\0{identity_path}"
+    stable_doc_id = "doc_" + hashlib.sha256(identity.encode("utf-8")).hexdigest()[:32]
+    # Reuse an existing path identity where possible so upgrading a database
+    # created by the old hash-based indexer does not create a second row.
+    path_row = conn.execute(
+        "SELECT document_id FROM documents WHERE absolute_path = ? LIMIT 1",
+        (str(file_path),),
+    ).fetchone()
+    doc_id = path_row[0] if path_row else stable_doc_id
     # A file on disk is always "external" — only content created by the
     # remember pipeline (no real file) is "managed".
     source_mode = "external"
 
-    # Check for existing version with same hash
+    # Check for an existing version with the same hash.  A superseded/deleted
+    # version is not "unchanged": when a file is reverted to an older byte
+    # sequence it must become the current active version again.
     existing = doc_repo.get_version_by_hash(conn, doc_id, content_hash)
-    if existing and not force:
+    if existing and existing.get("status") == "active" and not force:
         return {"document_id": doc_id, "status": "unchanged"}
 
     # When force-reindexing, supersede the old active version and its
     # downstream episodes/observations/assertions so that INSERTs below
     # don't collide with UNIQUE constraints.
-    if existing and force:
+    if existing and existing.get("status") == "active" and force:
+        # ``document_versions`` has a unique (document_id, content_hash)
+        # constraint.  Re-indexing identical bytes cannot create a new
+        # version safely; leave the existing version intact instead of
+        # raising an IntegrityError after partially superseding its data.
+        return {"document_id": doc_id, "version_id": existing.get("document_version_id"), "status": "unchanged"}
+
+    if doc_repo.get_active_version(conn, doc_id):
         doc_repo.supersede_active_version_cascade(conn, doc_id)
+
+    # Re-use a historical version row when the file content is reverted.  The
+    # schema intentionally enforces UNIQUE(document_id, content_hash), so
+    # inserting a second row for the same bytes would fail.  Old active
+    # episodes are superseded and removed from FTS; their historical
+    # observations remain available for audit but cannot leak into current
+    # search results.
+    reuse_version_id = None
+    if existing and existing.get("status") != "active":
+        reuse_version_id = existing.get("document_version_id")
+        old_ep_rows = conn.execute(
+            "SELECT episode_id FROM episodes WHERE document_version_id = ? AND status = 'active'",
+            (reuse_version_id,),
+        ).fetchall()
+        old_ep_ids = [row[0] for row in old_ep_rows]
+        if old_ep_ids:
+            placeholders = ",".join("?" for _ in old_ep_ids)
+            conn.execute(
+                f"DELETE FROM episodes_fts WHERE episode_id IN ({placeholders})",
+                old_ep_ids,
+            )
+            conn.execute(
+                f"UPDATE entity_observations SET status = 'superseded' WHERE episode_id IN ({placeholders}) AND status = 'active'",
+                old_ep_ids,
+            )
+            conn.execute(
+                f"UPDATE relation_assertions SET status = 'superseded' WHERE episode_id IN ({placeholders}) AND status = 'active'",
+                old_ep_ids,
+            )
+            conn.execute(
+                f"UPDATE episodes SET status = 'superseded' WHERE episode_id IN ({placeholders})",
+                old_ep_ids,
+            )
+        doc_repo.reactivate_version(conn, reuse_version_id)
 
     # Extract links with line positions from the body (after frontmatter).
     # Re-derive body and count how many frontmatter lines were removed so
@@ -193,14 +277,6 @@ def index_markdown_file(conn: sqlite3.Connection, library_path: Path,
 
     # Create document
     abs_path = str(file_path)
-    rel_path = ""
-    if vault_root and abs_path.startswith(vault_root):
-        rel_path = abs_path[len(vault_root):].lstrip("/\\")
-    elif vault_root:
-        try:
-            rel_path = str(file_path.relative_to(vault_root))
-        except ValueError:
-            pass
     doc_repo.insert_document(
         conn, doc_id, title,
         managed_path="",
@@ -211,16 +287,25 @@ def index_markdown_file(conn: sqlite3.Connection, library_path: Path,
         created_at=now_utc_str(), updated_at=now_utc_str(),
     )
 
-    # Create version
-    ver_id = f"docver_{content_hash[:16]}"
+    # Create (or reactivate) version.
+    ver_id = reuse_version_id or f"docver_{uuid.uuid4().hex}"
     content_fs.write_version_snapshot(str(library_path), doc_id, content_hash, text)
-    doc_repo.insert_document_version(
-        conn, ver_id, doc_id, content_hash,
-        version_content_path=f"content/versions/{doc_id}/{content_hash}.md",
-        title=title, char_count=len(text), line_count=len(text.splitlines()),
-        byte_size=len(text.encode("utf-8")),
-        processed_at=now_utc_str(),
-    )
+    if reuse_version_id is None:
+        doc_repo.insert_document_version(
+            conn, ver_id, doc_id, content_hash,
+            version_content_path=f"content/versions/{doc_id}/{content_hash}.md",
+            title=title, char_count=len(text), line_count=len(text.splitlines()),
+            byte_size=len(text.encode("utf-8")),
+            processed_at=now_utc_str(),
+        )
+    else:
+        conn.execute(
+            """UPDATE document_versions SET title = ?, char_count = ?, line_count = ?,
+               byte_size = ?, status = 'active', processed_at = ?
+               WHERE document_version_id = ?""",
+            (title, len(text), len(text.splitlines()),
+             len(text.encode("utf-8")), now_utc_str(), ver_id),
+        )
     doc_repo.update_current_version(conn, doc_id, ver_id, updated_at=now_utc_str())
 
     # Split into episodes
@@ -235,20 +320,44 @@ def index_markdown_file(conn: sqlite3.Connection, library_path: Path,
         line_start = text.count("\n", 0, start_off) + 1
         line_end = text.count("\n", 0, end_off) + 1
         chunk_text = chunk.get("content", "") or chunk.get("text", "")
-        ep_id = f"ep_{uuid.uuid4().hex[:16]}"
-        ep_repo.insert_episode(
-            conn, ep_id, f"epfam_{doc_id}_{i}", doc_id, ver_id,
-            source_text=chunk_text,
-            heading_path=chunk.get("heading_path", ""),
-            start_offset=start_off,
-            end_offset=end_off,
-            line_start=line_start,
-            line_end=line_end,
-            chunk_index=i,
-            chunk_hash=content_fs.compute_content_hash(chunk_text)[:16],
-            name=chunk.get("heading", ""),
-            processed_at=now_utc_str(),
-        )
+        chunk_hash = content_fs.compute_content_hash(chunk_text)[:16]
+        # 复用已有 episode 行（含 superseded）：文件 revert 回旧内容时走
+        # reuse_version_id 路径，旧行仍在库里占着 (document_version_id,
+        # chunk_index, chunk_hash) 唯一三元组——重新 INSERT 必撞约束，
+        # 该文件从此永远无法重新索引。此处复活原行（沿用 episode_id，
+        # 刷新正文/行号等派生字段），无既有行时才 INSERT 新行。
+        existing_ep = conn.execute(
+            "SELECT episode_id FROM episodes "
+            "WHERE document_version_id = ? AND chunk_index = ? AND chunk_hash = ?",
+            (ver_id, i, chunk_hash),
+        ).fetchone()
+        if existing_ep:
+            ep_id = existing_ep[0]
+            conn.execute(
+                """UPDATE episodes SET episode_family_id = ?, source_text = ?,
+                   heading_path = ?, start_offset = ?, end_offset = ?,
+                   line_start = ?, line_end = ?, name = ?,
+                   status = 'active', processed_at = ?
+                   WHERE episode_id = ?""",
+                (f"epfam_{doc_id}_{i}", chunk_text, chunk.get("heading_path", ""),
+                 start_off, end_off, line_start, line_end, chunk.get("heading", ""),
+                 now_utc_str(), ep_id),
+            )
+        else:
+            ep_id = f"ep_{uuid.uuid4().hex[:16]}"
+            ep_repo.insert_episode(
+                conn, ep_id, f"epfam_{doc_id}_{i}", doc_id, ver_id,
+                source_text=chunk_text,
+                heading_path=chunk.get("heading_path", ""),
+                start_offset=start_off,
+                end_offset=end_off,
+                line_start=line_start,
+                line_end=line_end,
+                chunk_index=i,
+                chunk_hash=chunk_hash,
+                name=chunk.get("heading", ""),
+                processed_at=now_utc_str(),
+            )
         ep_repo.fts_sync_episode(conn, ep_id, doc_id, ver_id,
                                   name=chunk.get("heading", ""),
                                   heading_path=chunk.get("heading_path", ""),
@@ -317,6 +426,10 @@ def index_vault(conn: sqlite3.Connection, library_path: Path,
                 errors += 1
         except Exception as e:
             logger.warning("Failed to index %s: %s", f, e)
+            try:
+                conn.rollback()
+            except sqlite3.Error:
+                pass
             errors += 1
 
     return {"files": len(files), "indexed": indexed, "errors": errors}

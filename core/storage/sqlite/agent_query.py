@@ -15,6 +15,9 @@ _SQL_BLOCKED_TOKENS = {
     "attach", "detach", "vacuum", "pragma", "reindex", "analyze",
     "begin", "commit", "rollback", "savepoint", "release",
 }
+_MAX_SQL_VALUE_BYTES = 2_000_000
+_MAX_RESULT_BYTES = 2_000_000
+_MAX_CELL_CHARS = 100_000
 
 
 def _sql_for_validation(sql: str) -> str:
@@ -56,6 +59,8 @@ def execute_readonly_query(conn: sqlite3.Connection, sql: str,
     db_path = conn.execute("PRAGMA database_list").fetchone()[2]
     ro_conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5)
     ro_conn.row_factory = sqlite3.Row
+    if hasattr(ro_conn, "setlimit") and hasattr(sqlite3, "SQLITE_LIMIT_LENGTH"):
+        ro_conn.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, _MAX_SQL_VALUE_BYTES)
     ro_conn.set_progress_handler(lambda: (_ := time.time()) - start > timeout_seconds and (
         __import__('sqlite3').OperationalError("timeout") or None
     ), 100)
@@ -67,8 +72,18 @@ def execute_readonly_query(conn: sqlite3.Connection, sql: str,
         rows = rows[:limit]
         columns = [d[0] for d in cursor.description] if cursor.description else []
         result_rows = []
+        result_bytes = 0
         for row in rows:
-            result_rows.append({col: _json_safe(row[col]) for col in columns})
+            item = {col: _json_safe(row[col]) for col in columns}
+            item_bytes = sum(
+                len(str(key).encode("utf-8")) + len(str(value).encode("utf-8"))
+                for key, value in item.items()
+            )
+            if result_bytes + item_bytes > _MAX_RESULT_BYTES:
+                truncated = True
+                break
+            result_rows.append(item)
+            result_bytes += item_bytes
     except Exception as exc:
         return {"error": str(exc), "columns": [], "rows": [], "row_count": 0,
                 "truncated": False, "elapsed_ms": (time.time() - start) * 1000}
@@ -96,4 +111,6 @@ def execute_readonly_query(conn: sqlite3.Connection, sql: str,
 def _json_safe(value):
     if isinstance(value, bytes):
         return f"<BLOB {len(value)} bytes>"
+    if isinstance(value, str) and len(value) > _MAX_CELL_CHARS:
+        return value[:_MAX_CELL_CHARS] + "… <truncated>"
     return value

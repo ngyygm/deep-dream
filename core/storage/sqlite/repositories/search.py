@@ -3,7 +3,7 @@
 import re
 import logging
 
-from ..helpers import _time_bounds_sql
+from ..helpers import _time_bounds_sql, escape_like
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +34,26 @@ def _fts5_or_query(query: str) -> str:
     return " OR ".join(f'"{term.replace(chr(34), chr(34) * 2)}"' for term in terms)
 
 
+# 疑问句框架词：全词 AND 查不到时先去掉它们再试一次，避免直接跌进
+# 停用词主导 bm25 排序的 OR 兜底（大库里正确 episode 会被 "when/did/the"
+# 的命中挤出版本 limit——scope 沙箱库小的时候这层遮罩看不见）。
+_STOPWORDS = frozenset("""
+a an and are as at be been being by did do does doing for from had has have
+having he her hers him his how i in is it its of on or she that the their
+them they this to was we were what when where which who whom whose will with
+why you your
+""".split())
+
+
+def _fts5_content_query(query: str) -> str:
+    """Literal FTS5 AND query over content terms (stopwords stripped)."""
+    terms = [
+        term for term in re.findall(r"\w+", query, flags=re.UNICODE)
+        if term.lower() not in _STOPWORDS
+    ]
+    return " ".join(f'"{term.replace(chr(34), chr(34) * 2)}"' for term in terms)
+
+
 def _cjk_prefix_range(query: str):
     """把查询转成可走 idx_entityfam_name 的字典序前缀区间 (lower, upper)。
 
@@ -57,7 +77,8 @@ _COLS = ["episode_id", "name", "heading_path", "source_text",
 
 def search_fts(conn, query: str, limit: int = 20,
                like_fallback: bool = False,
-               time_after: str = None, time_before: str = None) -> list:
+               time_after: str = None, time_before: str = None,
+               source_document: str = None) -> list:
     """Search episodes_fts, joining to active documents/versions.
 
     time_after/time_before：episode.processed_at 双界过滤（闭区间，P2.8）。
@@ -67,7 +88,11 @@ def search_fts(conn, query: str, limit: int = 20,
     此前静默返回空列表，用户搜任何词都 0 结果且无提示。
     """
     use_like = like_fallback or _is_short_cjk(query)
-    match_query = _fts5_query(query)
+    full_query = _fts5_query(query)
+    # 内容词（去疑问框架停用词）优先：问句的全词 AND 只会命中"恰好也
+    # 包含 when/did/to/the"的少数 episode，大库里相关性反而差。无停用词
+    # 的查询（词组/关键词）content == 全词 AND，行为不变。
+    match_query = _fts5_content_query(query) or full_query
     if not match_query:
         return []
 
@@ -75,6 +100,15 @@ def search_fts(conn, query: str, limit: int = 20,
     # FTS 主查询别名是 e，短 CJK 兜底查询别名是 ep——各自生成片段。
     time_sql, time_params = _time_bounds_sql("e.processed_at", time_after, time_before)
     ep_time_sql, ep_time_params = _time_bounds_sql("ep.processed_at", time_after, time_before)
+    source_value = str(source_document or "").strip()
+    source_sql = ""
+    source_params = ()
+    if source_value:
+        source_sql = (
+            " AND (d.document_id = ? OR d.title = ? OR d.relative_path = ? "
+            "OR d.absolute_path = ?)"
+        )
+        source_params = (source_value,) * 4
 
     sql = f"""
         SELECT episodes_fts.episode_id,
@@ -100,20 +134,23 @@ def search_fts(conn, query: str, limit: int = 20,
          AND dv.document_version_id = e.document_version_id
          AND dv.status = 'active'
         WHERE episodes_fts MATCH ?
-          AND COALESCE(dis.state, 'active') = 'active'{time_sql}
+          AND COALESCE(dis.state, 'active') = 'active'{source_sql}{time_sql}
         ORDER BY score
         LIMIT ?
     """
-    rows = conn.execute(sql, (match_query,) + tuple(time_params) + (limit,)).fetchall()
+    rows = conn.execute(sql, (match_query,) + source_params + tuple(time_params) + (limit,)).fetchall()
 
-    # Natural-language questions often contain one harmless term absent
-    # from the corpus. Preserve precise AND semantics first, then degrade
-    # to literal any-term/min-match retrieval instead of returning nothing.
+    # 降级链：content-AND（主路径，见上）→ 全词 AND（content 剔掉了
+    # 实际存在的词时）→ 任意词 OR。始终优先精确 AND 语义，绝不让停用词
+    # 主导的 bm25 排序直接对外。
     match_mode = "and"
+    if not rows and full_query and full_query != match_query:
+        rows = conn.execute(sql, (full_query,) + source_params + tuple(time_params) + (limit,)).fetchall()
+        match_mode = "and_full"
     if not rows:
         or_query = _fts5_or_query(query)
         if or_query and or_query != match_query:
-            rows = conn.execute(sql, (or_query,) + tuple(time_params) + (limit,)).fetchall()
+            rows = conn.execute(sql, (or_query,) + source_params + tuple(time_params) + (limit,)).fetchall()
             match_mode = "or"
 
     results = [dict(zip(_COLS, r)) for r in rows]
@@ -141,10 +178,10 @@ def search_fts(conn, query: str, limit: int = 20,
                  AND dv.document_version_id = ep.document_version_id
                  AND dv.status = 'active'
                 WHERE ef.canonical_name >= ? AND ef.canonical_name < ?
-                  AND COALESCE(dis.state, 'active') = 'active'{ep_time_sql}
+                  AND COALESCE(dis.state, 'active') = 'active'{source_sql}{ep_time_sql}
                 ORDER BY ep.processed_at DESC, ep.episode_id
                 LIMIT ?
-            """, tuple(rng) + tuple(ep_time_params) + (limit,)).fetchall()
+            """, tuple(rng) + source_params + tuple(ep_time_params) + (limit,)).fetchall()
             for r in prefix_rows:
                 d = dict(zip(_COLS, r))
                 if d["episode_id"] not in existing_ids:
@@ -155,7 +192,7 @@ def search_fts(conn, query: str, limit: int = 20,
     if use_like and len(results) < limit:
         # 最后兜底：%xx% 全表 LIKE。带 match_mode='like' 且按
         # processed_at DESC, episode_id 确定排序（此前行序任意、无标记）。
-        like_pattern = f"%{query}%"
+        like_pattern = f"%{escape_like(query)}%"
         like_rows = conn.execute(f"""
             SELECT ep.episode_id, ep.name, ep.heading_path,
                    ep.source_text, ep.memory_text,
@@ -170,10 +207,10 @@ def search_fts(conn, query: str, limit: int = 20,
              AND dv.status = 'active'
             WHERE ep.status = 'active'
               AND COALESCE(dis.state, 'active') = 'active'
-              AND (ep.source_text LIKE ? OR ep.memory_text LIKE ? OR ep.name LIKE ?){ep_time_sql}
+              AND (ep.source_text LIKE ? ESCAPE '!' OR ep.memory_text LIKE ? ESCAPE '!' OR ep.name LIKE ? ESCAPE '!'){source_sql}{ep_time_sql}
             ORDER BY ep.processed_at DESC, ep.episode_id
             LIMIT ?
-        """, (like_pattern, like_pattern, like_pattern) + tuple(ep_time_params) + (limit,)).fetchall()
+        """, (like_pattern, like_pattern, like_pattern) + source_params + tuple(ep_time_params) + (limit,)).fetchall()
 
         for r in like_rows:
             d = dict(zip(_COLS, r))

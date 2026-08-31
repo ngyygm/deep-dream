@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import atexit
 import errno
+import hashlib
 import logging
 import mimetypes
 import os
@@ -25,7 +26,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from flask import Flask, abort, jsonify, make_response, redirect, request
-from werkzeug.exceptions import NotFound
+from werkzeug.exceptions import NotFound, RequestEntityTooLarge
 
 # sys.path bootstrap for direct-script execution — core.* imports must follow it
 _project_root = str(Path(__file__).resolve().parent.parent.parent)
@@ -70,20 +71,89 @@ def create_app(
     app.config["system_monitor"] = system_monitor
     app.config["registry"] = registry
     app.config["config"] = config or {}
+    # Bound request parsing before route code or document converters see the
+    # payload.  The remember endpoint accepts up to 10 MiB of text; leave a
+    # small multipart/JSON envelope allowance and make the limit configurable.
+    try:
+        app.config["MAX_CONTENT_LENGTH"] = max(
+            1_048_576, int(app.config["config"].get("max_request_bytes", 12 * 1024 * 1024))
+        )
+    except (TypeError, ValueError):
+        app.config["MAX_CONTENT_LENGTH"] = 12 * 1024 * 1024
 
-    # Build version for cache-busting (hash of static dir mtime)
-    _static_version = str(int(static_dir.stat().st_mtime))
+    # Build a cache-busting token from the actual static files.  A directory's
+    # mtime does not necessarily change when a file is edited (notably on
+    # macOS and after wheel extraction), which otherwise leaves browsers
+    # running stale JavaScript after a deploy.
+    static_fingerprint = hashlib.sha256()
+    for static_file in sorted(p for p in static_dir.rglob("*") if p.is_file()):
+        try:
+            static_fingerprint.update(str(static_file.relative_to(static_dir)).encode("utf-8"))
+            # Hash bytes, not only mtime/size: deployment tools can preserve
+            # timestamps (or rewrite a file to the same length), which would
+            # otherwise leave clients with stale JavaScript after a release.
+            static_fingerprint.update(static_file.read_bytes())
+        except OSError:
+            continue
+    _static_version = static_fingerprint.hexdigest()[:16]
 
-    # CORS：仅允许同源和 localhost 跨域调用
-    _ALLOWED_ORIGINS = {"http://localhost", "http://127.0.0.1"}
+    # CORS：同源请求不带 Origin；开发时允许 localhost/127.0.0.1 的任意
+    # 端口，避免前端通过 Vite/静态预览端口调用 API 时被悄悄拦截。
+    # 反向代理/远程部署经 DEEP_DREAM_ALLOWED_ORIGINS 显式放行（逗号分隔，
+    # 支持完整 origin "https://dd.example.com" 或裸主机名 "dd.example.com"）。
+    from urllib.parse import urlsplit
+
+    _extra_allowed_origins = {
+        e.strip() for e in os.environ.get("DEEP_DREAM_ALLOWED_ORIGINS", "").split(",")
+        if e.strip()
+    }
+
+    def _is_allowed_origin(origin: str | None) -> bool:
+        if not origin:
+            return False
+        try:
+            parsed = urlsplit(origin)
+        except ValueError:
+            return False
+        if parsed.scheme in {"http", "https"} and parsed.hostname in {
+            "localhost", "127.0.0.1", "::1",
+        }:
+            return True
+        if not _extra_allowed_origins or not parsed.hostname:
+            return False
+        for entry in _extra_allowed_origins:
+            if "://" in entry:
+                try:
+                    ep = urlsplit(entry)
+                except ValueError:
+                    continue
+                if (parsed.scheme == ep.scheme and parsed.hostname == ep.hostname
+                        and parsed.port == ep.port):
+                    return True
+            elif parsed.hostname == entry:
+                return True  # 裸主机名：任意 scheme/端口（操作者显式授权）
+        return False
+
+    def _is_same_request_origin(origin: str | None) -> bool:
+        if not origin:
+            return False
+        try:
+            supplied = urlsplit(origin)
+            expected = urlsplit(request.host_url)
+            return (
+                supplied.scheme == expected.scheme
+                and supplied.hostname == expected.hostname
+                and supplied.port == expected.port
+            )
+        except ValueError:
+            return False
+
     @app.after_request
     def _cors_headers(response):
         origin = request.environ.get("HTTP_ORIGIN")
-        # Security: Use exact match instead of startswith to prevent subdomain attacks
-        if origin in _ALLOWED_ORIGINS:
+        if _is_allowed_origin(origin):
             response.headers["Access-Control-Allow-Origin"] = origin
-        else:
-            response.headers["Access-Control-Allow-Origin"] = ""
+            response.headers["Vary"] = "Origin"
         response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
         response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Graph-Id, X-API-Key"
         # Security: Add security headers
@@ -92,11 +162,13 @@ def create_app(
         # Comprehensive CSP policy (relaxed for local/LAN access)
         csp_directives = [
             "default-src 'self'",
-            "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
+            # Inline event handlers remain for legacy page templates; avoid
+            # unsafe-eval so injected content cannot turn strings into code.
+            "script-src 'self' 'unsafe-inline'",
             "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
             "img-src 'self' data: https: blob:",
             "font-src 'self' data: https://fonts.gstatic.com",
-            "connect-src 'self' http://localhost:* http://127.0.0.1:* ws://localhost:*",
+            "connect-src 'self' http://localhost:* https://localhost:* http://127.0.0.1:* https://127.0.0.1:* ws://localhost:* ws://127.0.0.1:*",
             "object-src 'none'",
             "base-uri 'self'",
             "form-action 'self'",
@@ -115,8 +187,37 @@ def create_app(
 
     @app.before_request
     def _cors_preflight():
+        origin = request.environ.get("HTTP_ORIGIN")
+        # 同源放行；跨端口开发场景（如 Vite 5173 → API 16200）按上方
+        # localhost 系 allowlist 放行，否则 _is_allowed_origin 会沦为死代码；
+        # 两边都不命中的陌生 Origin 才 403。
+        if origin and not (_is_same_request_origin(origin) or _is_allowed_origin(origin)):
+            return jsonify({"success": False, "error": "Cross-origin request denied"}), 403
         if request.method == "OPTIONS":
             return make_response("", 204)
+
+    @app.before_request
+    def _reject_cross_site_mutations():
+        """CORS is not a CSRF control: reject cross-site writes explicitly.
+
+        例外：allowlist 命中的 Origin（localhost 系开发流、
+        DEEP_DREAM_ALLOWED_ORIGINS 显式放行）与 CORS 读腿口径一致——
+        跨端口开发（Vite 5173 → API 16200）的 POST 不再需要另架 proxy。
+        """
+        if request.method not in {"POST", "PUT", "PATCH", "DELETE"}:
+            return None
+        origin = request.environ.get("HTTP_ORIGIN")
+        # 破坏性管理面（/graphs/* 的 clear/delete 类）保持最严口径：即便
+        # Origin 命中 allowlist 也拒绝跨站变更——localhost 开发流只需要
+        # 普通 API POST，不该顺手放开清库这类操作。
+        if not request.path.startswith("/api/v1/graphs/") and _is_allowed_origin(origin):
+            return None
+        fetch_site = (request.headers.get("Sec-Fetch-Site") or "").lower()
+        if fetch_site in {"cross-site", "same-site"} or (
+            origin and not _is_same_request_origin(origin)
+        ):
+            return jsonify({"success": False, "error": "Cross-origin mutation denied"}), 403
+        return None
 
     @app.before_request
     def _record_start():
@@ -156,27 +257,73 @@ def create_app(
 
     config = config or {}
 
-    # Initialize authentication module
-    auth_module.init_auth(config)
-
     # Configure authentication from config
     auth_config = config.get("auth", {})
-    auth_enabled = auth_config.get("enabled", True)
-    strict_mode = auth_config.get("strict_mode", False)
+    if not isinstance(auth_config, dict):
+        auth_config = {}
+    else:
+        auth_config = dict(auth_config)
+    _bind_host = str(config.get("host", "127.0.0.1")).strip().lower()
+    _is_loopback_host = _bind_host in {"127.0.0.1", "localhost", "::1"}
+    # A network-facing listener is never anonymous by accident.  Enforce this
+    # before init_auth so even ``auth.enabled=false`` cannot reactivate the
+    # predictable development key on 0.0.0.0/LAN addresses.
+    if not _is_loopback_host:
+        auth_config.update({"enabled": True, "strict_mode": True, "allow_dev_key": False})
+        config["auth"] = auth_config
+
+    # Initialize authentication only after the effective network policy is
+    # known; init_auth decides whether the development fallback key may exist.
+    auth_module.init_auth(config)
+
+    auth_enabled = auth_module._strict_bool(
+        auth_config.get("enabled"), auth_module.authentication_configured(config)
+    )
+    # Once a signing secret is configured, fail closed by default.  Local
+    # installs with no secret remain usable without auth; deployments can
+    # explicitly opt out with auth.strict_mode=false if they truly need that.
+    strict_mode = auth_module._strict_bool(
+        auth_config.get("strict_mode"), bool(auth_module.SECRET_KEY)
+    )
+    # Never expose an authenticated-by-default application on a non-loopback
+    # interface without a real credential source.  Previously this combination
+    # silently granted unauthenticated ``read`` permissions when no secret was
+    # present (even though the dev API key had been disabled).
+    _has_credential_source = bool(
+        auth_module.SECRET_KEY
+        or auth_config.get("api_keys_file")
+        or os.environ.get("DEEPDREAM_API_KEYS_FILE")
+    )
+    if not _is_loopback_host and not _has_credential_source:
+        strict_mode = True
+        logger.error(
+            "Non-loopback host without SECRET_KEY/API-key file: protected APIs are locked; "
+            "configure credentials before exposing this service"
+        )
 
     # Public endpoints that don't require authentication
-    _PUBLIC_ROUTES = {
-        "/", "/health", "/api/", "/api/v1/",
-        "/api/v1/routes",
-        "/static/", "/favicon.ico",
-    }
+    _PUBLIC_EXACT_ROUTES = frozenset({
+        "/", "/health", "/api", "/api/", "/api/v1/",
+        "/api/v1/routes", "/api/v1/health", "/favicon.ico",
+    })
+    _PUBLIC_PREFIX_ROUTES = ("/static/",)
 
-    def _is_public_route(path: str) -> bool:
-        """Check if a path is a public endpoint."""
-        for route in _PUBLIC_ROUTES:
-            if path == route or path.startswith(route):
-                return True
-        return False
+    def _is_public_route(path: str, method: str = "GET") -> bool:
+        """Check if a path is a public endpoint.
+
+        Do not use ``startswith('/')`` for the root route: every Flask path
+        starts with a slash, which previously made strict authentication a
+        no-op for the entire API.
+        """
+        if path in _PUBLIC_EXACT_ROUTES or any(
+            path.startswith(prefix) for prefix in _PUBLIC_PREFIX_ROUTES
+        ):
+            return True
+        # The dashboard is a client-side SPA.  Its non-API fallback paths
+        # must remain public so a browser can refresh /memory or /settings;
+        # this does not expose any data because all /api/* requests still go
+        # through authentication and authorization.
+        return method.upper() == "GET" and not path.startswith(("/api/", "/health"))
 
     @app.before_request
     def _authenticate_request():
@@ -186,7 +333,7 @@ def create_app(
             return None
 
         # Skip authentication for public routes
-        if _is_public_route(request.path):
+        if _is_public_route(request.path, request.method):
             return None
 
         # Skip OPTIONS requests for CORS preflight
@@ -202,7 +349,10 @@ def create_app(
                 from flask import g
                 g.authenticated = True
                 g.auth_method = "api_key"
-                g.user_id = f"api_key:{api_key[:8]}"
+                # Never put even a prefix of the credential in logs/monitor
+                # records; use a stable non-reversible identifier instead.
+                key_digest = hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:12]
+                g.user_id = f"api_key:{key_digest}"
                 g.permissions = permissions
                 return None
             else:
@@ -245,6 +395,21 @@ def create_app(
         g.permissions = {"read"}  # Default to read-only access
         return None
 
+    @app.before_request
+    def _authorize_request():
+        """Enforce the permissions assigned by the authentication hook."""
+        if not auth_enabled or request.method == "OPTIONS" or _is_public_route(request.path, request.method):
+            return None
+        from flask import g
+        required = auth_module.required_permission(request.method, request.path)
+        if required and not auth_module.has_permission(getattr(g, "permissions", set()), required):
+            return jsonify({
+                "success": False,
+                "error": "Permission denied",
+                "required_permission": required,
+            }), 403
+        return None
+
     # 不需要 graph_id 的路由（白名单）
     _NO_GRAPH_ID_ROUTES = frozenset([
         "/", "/api/v1/routes", "/api/v1/health",
@@ -256,7 +421,11 @@ def create_app(
     from collections import deque as _deque
     _rate_limit_store: Dict[str, _deque] = {}
     _rate_limit_lock = threading.Lock()
-    _RATE_LIMIT = int(config.get("rate_limit_per_minute", 0))
+    try:
+        _RATE_LIMIT = max(0, min(int(config.get("rate_limit_per_minute", 0)), 100_000))
+    except (TypeError, ValueError):
+        logger.warning("Invalid rate_limit_per_minute; rate limiting disabled")
+        _RATE_LIMIT = 0
     _RATE_WINDOW = 60.0  # 秒
 
     @app.before_request
@@ -268,11 +437,10 @@ def create_app(
         # Skip for file upload endpoints
         if request.path.startswith("/api/v1/remember") and request.content_type and "multipart" in request.content_type:
             return
-        # For JSON endpoints, require application/json content type
+        # For JSON endpoints, require application/json content type.  Plain
+        # HTML forms are deliberately rejected: browsers can submit them to a
+        # loopback service without CORS permission and mutate local data.
         if request.content_type and not request.content_type.startswith("application/json"):
-            # Allow form data for compatibility
-            if request.content_type.startswith("application/x-www-form-urlencoded") or request.content_type.startswith("multipart/form-data"):
-                return
             return jsonify({"success": False, "error": "Invalid Content-Type. Use application/json"}), 415
 
     @app.before_request
@@ -296,7 +464,10 @@ def create_app(
         if request.method in _MUTATING_METHODS:
             body = request.get_json(silent=True)
             if isinstance(body, dict):
-                gid = (body.get("graph_id") or "").strip()
+                raw_gid = body.get("graph_id")
+                if raw_gid is not None and not isinstance(raw_gid, str):
+                    return jsonify({"success": False, "error": "graph_id must be a string"}), 400
+                gid = (raw_gid or "").strip()
         # 3. Form data
         if not gid:
             gid = (request.form.get("graph_id") or "").strip()
@@ -358,11 +529,13 @@ def create_app(
     from core.server.routes.remember import remember_bp
     from core.server.routes.concepts import concepts_bp
     from core.server.routes.documents import documents_bp
+    from core.server.routes.library import library_bp
 
     app.register_blueprint(system_bp)
     app.register_blueprint(remember_bp)
     app.register_blueprint(documents_bp)
     app.register_blueprint(concepts_bp)
+    app.register_blueprint(library_bp)
 
     # JSON 404 for API routes (HTML 404 for everything else)
     @app.errorhandler(404)
@@ -370,6 +543,14 @@ def create_app(
         if request.path.startswith("/api/"):
             return jsonify({"success": False, "error": f"Endpoint not found: {request.path}", "elapsed_ms": 0}), 404
         return e
+
+    @app.errorhandler(RequestEntityTooLarge)
+    def _request_too_large(e):
+        return jsonify({
+            "success": False,
+            "error": "请求体过大",
+            "max_bytes": app.config.get("MAX_CONTENT_LENGTH"),
+        }), 413
 
     # ── Compact response middleware (?compact=true) ────────────────────
     from flask import g as _g
@@ -448,7 +629,7 @@ def create_app(
     @app.route("/<path:path>", methods=["GET"])
     def serve_spa(path):
         # API 路由不拦截
-        if path.startswith("/api/") or path.startswith("/health"):
+        if path == "health" or path.startswith("health/") or path == "api" or path.startswith("api/"):
             return abort(404)
         # 尝试静态文件
         try:
@@ -470,9 +651,6 @@ def _call_llm_with_backoff(processor, prompt, timeout=60, max_waits=5, backoff_b
 
 
 def main() -> int:
-    # 优先使用本地缓存的模型，避免每次启动都尝试联网检查更新
-    os.environ.setdefault("HF_HUB_OFFLINE", "1")
-
     parser = argparse.ArgumentParser(description="DeepDream 自然语言记忆图 API（Remember + Find）")
     parser.add_argument("--config", type=str, required=True, help="配置文件路径（如 service_config.json）")
     parser.add_argument("--host", type=str, default=None, help="覆盖配置中的 host")
@@ -500,6 +678,11 @@ def main() -> int:
         action="store_true",
         help="若配置端口被占用，自动尝试后续连续端口（最多 +10）",
     )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="输出更详细的服务日志（不会开启 Flask 调试器或自动重载）",
+    )
     parser.add_argument("--debug", action="store_true", help="开启 Flask 调试模式")
     args = parser.parse_args()
 
@@ -515,13 +698,16 @@ def main() -> int:
     config["monitor_refresh_seconds"] = monitor_refresh
     config["_config_path"] = config_path
 
+    if args.verbose:
+        logging.getLogger().setLevel(logging.DEBUG)
+
     # 禁用 Flask/werkzeug 的 HTTP access log（控制台太吵）
     logging.getLogger("werkzeug").setLevel(logging.ERROR)
 
     # 创建 SystemMonitor（替代 ConsoleReporter）
     system_monitor = SystemMonitor(config=config, mode=log_mode)
 
-    host = args.host if args.host is not None else config.get("host", "0.0.0.0")
+    host = args.host if args.host is not None else config.get("host", "127.0.0.1")
     port = args.port if args.port is not None else config.get("port", 16200)
     config["host"] = host
     config["port"] = port
@@ -562,28 +748,20 @@ def main() -> int:
     listen_port, port_switched = _resolve_listen_port(host, port, auto_fb)
     ok_bind, bind_err = _tcp_bind_probe(host, listen_port)
     if not ok_bind:
-        # 自动尝试 kill 占用端口的旧进程
-        system_monitor.event_log.warn("System", f"端口 {host}:{listen_port} 已被占用，尝试自动释放...")
-        _kill_port_occupants(listen_port)
-        ok_bind, bind_err = _tcp_bind_probe(host, listen_port)
-        if not ok_bind:
-            system_monitor.event_log.error("System", f"错误：无法在 {host}:{listen_port} 上绑定: {bind_err}")
-            system_monitor.event_log.error("System", f"  配置的端口为 {port}。")
-            if not auto_fb:
-                system_monitor.event_log.error(
-                    "System",
-                    "  解决：结束占用该端口的进程，或改用 --port <其他端口>，"
-                    "或在配置中设置 auto_port_fallback: true 并加 --auto-port。",
-                )
-                try:
-                    system_monitor.event_log.error("System", f"  排查示例: ss -tlnp | grep ':{port} ' 或 lsof -i :{port}")
-                except Exception as _e:
-                    logger.debug("端口排查提示失败: %s", _e)
-            else:
-                system_monitor.event_log.error("System", "  已尝试自动换端口但仍失败，请检查系统权限或防火墙设置。")
-            return 1
+        # Never terminate an arbitrary process that happens to own the port.
+        # ``--auto-port`` already provides a safe opt-in fallback; otherwise
+        # fail with an actionable message and leave the other service alone.
+        system_monitor.event_log.error("System", f"错误：无法在 {host}:{listen_port} 上绑定: {bind_err}")
+        system_monitor.event_log.error("System", f"  配置的端口为 {port}。")
+        if not auto_fb:
+            system_monitor.event_log.error(
+                "System",
+                "  解决：结束占用该端口的进程，或改用 --port <其他端口>，"
+                "或在配置中设置 auto_port_fallback: true 并加 --auto-port。",
+            )
         else:
-            system_monitor.event_log.info("System", f"旧进程已清理，端口 {listen_port} 已释放。")
+            system_monitor.event_log.error("System", "  已尝试自动换端口但仍失败，请检查系统权限或防火墙设置。")
+        return 1
     if port_switched:
         system_monitor.event_log.warn("System", f"注意：端口 {port} 已被占用，已自动改用 {listen_port}。")
 
@@ -669,7 +847,9 @@ def main() -> int:
                 logger.debug("atexit 关闭 graph %s 存储失败: %s", gid, _e)
 
     try:
-        app.run(host=host, port=listen_port, debug=args.debug, threaded=threaded)
+        # Flask's debugger/reloader is unsafe for a service process and makes
+        # detached PID management unreliable.  Keep it explicitly opt-in.
+        app.run(host=host, port=listen_port, debug=args.debug, use_reloader=False, threaded=threaded)
     except OSError as e:
         system_monitor.event_log.error("System", f"错误：HTTP 服务启动失败: {e}")
         if e.errno == errno.EADDRINUSE:
@@ -681,4 +861,3 @@ def main() -> int:
 if __name__ == "__main__":
     import sys
     sys.exit(main())
-

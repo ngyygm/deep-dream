@@ -10,6 +10,9 @@ import json
 import logging
 import re
 import threading
+import os
+import tempfile
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
@@ -17,6 +20,11 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from core.remember.orchestrator import TemporalMemoryGraphProcessor
 from core.server.config import merge_llm_alignment, resolve_embedding_model  # noqa: F401
 from core.storage.embedding import EmbeddingClient
+
+try:  # POSIX (macOS/Linux); Windows falls back to the in-process RLock.
+    import fcntl
+except ImportError:  # pragma: no cover - exercised only on Windows
+    fcntl = None
 
 if TYPE_CHECKING:
     from core.server.monitor import SystemMonitor
@@ -44,6 +52,7 @@ class GraphRegistry:
     ):
         self._base_path = Path(base_storage_path)
         self._registry_path = self._base_path / "library.json"
+        self._registry_lock_path = self._base_path / "library.json.lock"
         self._legacy_registry_path = self._base_path / "registry.json"
         self._config = config
         self._system_monitor = system_monitor
@@ -53,10 +62,12 @@ class GraphRegistry:
         self._processor: Optional[TemporalMemoryGraphProcessor] = None
         self._queue: Optional[object] = None
         self._lock = threading.RLock()
+        self._queue_init_lock = threading.Lock()
 
         self._base_path.mkdir(parents=True, exist_ok=True)
-        if not self._registry_path.exists():
-            self._write_registry({"library": {"id": LIBRARY_ID}})
+        with self._process_registry_lock():
+            if not self._registry_path.exists():
+                self._write_registry_unlocked({"library": {"id": LIBRARY_ID}})
 
     # ------------------------------------------------------------------
     # Paths and registry metadata
@@ -87,12 +98,45 @@ class GraphRegistry:
             pass
         return {"library": {"id": LIBRARY_ID}}
 
-    def _write_registry(self, data: Dict[str, Any]) -> None:
+    @contextmanager
+    def _process_registry_lock(self):
+        """Serialize registry read-modify-write across server/CLI processes."""
+        self._base_path.mkdir(parents=True, exist_ok=True)
+        with open(self._registry_lock_path, "a+", encoding="utf-8") as lock_handle:
+            if fcntl is not None:
+                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                if fcntl is not None:
+                    fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+
+    def _write_registry_unlocked(self, data: Dict[str, Any]) -> None:
         data.setdefault("library", {"id": LIBRARY_ID})
         self._base_path.mkdir(parents=True, exist_ok=True)
-        tmp = self._registry_path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(self._registry_path)
+        tmp_name = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=self._base_path,
+                prefix=".library.json.", suffix=".tmp", delete=False,
+            ) as tmp:
+                tmp_name = tmp.name
+                json.dump(data, tmp, ensure_ascii=False, indent=2)
+                tmp.write("\n")
+                tmp.flush()
+                os.fsync(tmp.fileno())
+            os.replace(tmp_name, self._registry_path)
+            tmp_name = None
+        finally:
+            if tmp_name:
+                try:
+                    os.unlink(tmp_name)
+                except OSError:
+                    pass
+
+    def _write_registry(self, data: Dict[str, Any]) -> None:
+        with self._process_registry_lock():
+            self._write_registry_unlocked(data)
 
     def get_graph_metadata(self, graph_id: str) -> Dict[str, Any]:
         graph_id = self.normalize_graph_id(graph_id)
@@ -104,18 +148,19 @@ class GraphRegistry:
 
     def set_graph_metadata(self, graph_id: str, **kwargs) -> Dict[str, Any]:
         graph_id = self.normalize_graph_id(graph_id)
-        registry = self._read_registry()
-        existing = dict(registry.get("library") or {})
-        existing.setdefault("id", LIBRARY_ID)
-        existing.setdefault("graph_id", graph_id)
-        existing.setdefault("created_at", datetime.now(timezone.utc).isoformat())
-        for key, value in kwargs.items():
-            if value is not None:
-                existing[key] = value
-        existing["updated_at"] = datetime.now(timezone.utc).isoformat()
-        registry["library"] = existing
-        self._write_registry(registry)
-        return dict(existing)
+        with self._process_registry_lock():
+            registry = self._read_registry()
+            existing = dict(registry.get("library") or {})
+            existing.setdefault("id", LIBRARY_ID)
+            existing.setdefault("graph_id", graph_id)
+            existing.setdefault("created_at", datetime.now(timezone.utc).isoformat())
+            for key, value in kwargs.items():
+                if value is not None:
+                    existing[key] = value
+            existing["updated_at"] = datetime.now(timezone.utc).isoformat()
+            registry["library"] = existing
+            self._write_registry_unlocked(registry)
+            return dict(existing)
 
     # ------------------------------------------------------------------
     # Shared EmbeddingClient
@@ -135,6 +180,7 @@ class GraphRegistry:
                 max_concurrency=int(embedding.get("max_concurrency") or 1),
                 api_key=embedding.get("api_key"),
                 api_base=embedding.get("api_base"),
+                trust_remote_code=bool(embedding.get("trust_remote_code", False)),
             )
         return self._embedding_client
 
@@ -249,6 +295,11 @@ class GraphRegistry:
         pipeline_extraction = pipeline.get("extraction") or {}
         pipeline_remember = pipeline.get("remember") or {}
         pipeline_debug = pipeline.get("debug") or {}
+        llm_mock = llm.get("mock") is True
+        # ``llm.mock`` is an explicit offline mode, not merely a validation
+        # hint.  Strip every configured endpoint (including alignment) so a
+        # copied production key cannot accidentally send prompts remotely.
+        effective_alignment = {"enabled": False} if llm_mock else merge_llm_alignment(llm)
 
         kwargs: dict = {
             "storage_path": storage_path,
@@ -256,10 +307,10 @@ class GraphRegistry:
             "graph_id": graph_id,
             "window_size": window_size,
             "overlap": overlap,
-            "llm_api_key": llm.get("api_key"),
+            "llm_api_key": None if llm_mock else llm.get("api_key"),
             "llm_model": llm.get("model", "gpt-4"),
-            "llm_base_url": llm.get("base_url"),
-            "alignment_llm": merge_llm_alignment(llm),
+            "llm_base_url": None if llm_mock else llm.get("base_url"),
+            "alignment_llm": effective_alignment,
             "llm_think_mode": bool(llm.get("think", llm.get("think_mode", False))),
             "embedding_client": self._get_embedding_client(),
             "llm_max_tokens": llm.get("max_tokens"),
@@ -303,32 +354,39 @@ class GraphRegistry:
 
     def get_queue(self, graph_id: str):
         graph_id = self.normalize_graph_id(graph_id)
-        with self._lock:
-            if self._queue is not None:
-                return self._queue
+        # Queue construction starts worker/watchdog threads and replays the
+        # journal.  Serialize that whole operation; a check-then-build race
+        # used to leave a discarded queue (and live daemon workers) behind.
+        self._queue_init_lock.acquire()
+        try:
+            with self._lock:
+                if self._queue is not None:
+                    return self._queue
 
-        from core.server.task_queue import RememberTaskQueue
+            from core.server.task_queue import RememberTaskQueue
 
-        processor = self.get_processor(graph_id)
-        event_log = self._system_monitor.event_log if self._system_monitor is not None else None
-        _runtime = self._config.get("runtime") or {}
-        queue = RememberTaskQueue(
-            processor,
-            Path(processor.storage.storage_path),
-            processor_factory=lambda gid=graph_id: self.create_task_processor(gid),
-            max_workers=((_runtime.get("concurrency") or {}).get("queue_workers") or 1),
-            max_retries=((_runtime.get("retry") or {}).get("queue_max_retries") or 2),
-            retry_delay_seconds=((_runtime.get("retry") or {}).get("queue_retry_delay_seconds") or 2),
-            event_log=event_log,
-            stall_timeout_seconds=((_runtime.get("task") or {}).get("stall_timeout_seconds") or 600),
-        )
+            processor = self.get_processor(graph_id)
+            event_log = self._system_monitor.event_log if self._system_monitor is not None else None
+            _runtime = self._config.get("runtime") or {}
+            queue = RememberTaskQueue(
+                processor,
+                Path(processor.storage.storage_path),
+                processor_factory=lambda gid=graph_id: self.create_task_processor(gid),
+                max_workers=((_runtime.get("concurrency") or {}).get("queue_workers") or 1),
+                max_retries=((_runtime.get("retry") or {}).get("queue_max_retries") or 2),
+                retry_delay_seconds=((_runtime.get("retry") or {}).get("queue_retry_delay_seconds") or 2),
+                max_queue_size=((_runtime.get("task") or {}).get("queue_max_size") or 1000),
+                event_log=event_log,
+                stall_timeout_seconds=((_runtime.get("task") or {}).get("stall_timeout_seconds") or 600),
+            )
 
-        with self._lock:
-            if self._queue is None:
+            with self._lock:
                 self._queue = queue
                 if self._system_monitor is not None:
                     self._system_monitor.attach_graph(graph_id, processor, queue)
-            return self._queue
+                return self._queue
+        finally:
+            self._queue_init_lock.release()
 
     # ------------------------------------------------------------------
     # Graph list/info

@@ -17,6 +17,35 @@ logger = logging.getLogger(__name__)
 documents_bp = Blueprint("documents", __name__)
 
 
+def _strict_bool(value, default: bool = False) -> bool:
+    """Parse JSON/query booleans without treating ``"false"`` as true."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off", ""}:
+            return False
+    raise ValueError("布尔参数必须是 true/false")
+
+
+def _id_list(value, field: str, *, maximum: int = 500) -> list[str]:
+    if value is None:
+        return []
+    values = [value] if isinstance(value, str) else value
+    if not isinstance(values, list) or len(values) > maximum:
+        raise ValueError(f"{field} 必须是列表，最多 {maximum} 个")
+    normalized = []
+    for item in values:
+        if not isinstance(item, str) or not item.strip() or len(item) > 512:
+            raise ValueError(f"{field} 包含无效 ID")
+        normalized.append(item.strip())
+    return normalized
+
+
 def _document_service() -> DocumentService:
     processor = _get_processor()
     return DocumentService(processor.storage)
@@ -43,7 +72,11 @@ def search_document_files():
     """Search raw readable files before entering the graph layer."""
     try:
         query = (request.args.get("q") or request.args.get("query") or "").strip()
-        regex = (request.args.get("regex") or "").lower() in {"1", "true", "yes", "on"}
+        regex = _strict_bool(request.args.get("regex"), False)
+        if len(query) > 4096:
+            return err("查询文本最多 4096 个字符", 400)
+        if regex and len(query) > 512:
+            return err("正则查询模式最多 512 个字符", 400)
         try:
             limit = min(max(int(request.args.get("limit", 50)), 1), 500)
         except (TypeError, ValueError):
@@ -60,7 +93,7 @@ def read_document_content(document_version_id: str):
     """Read a document slice from raw file, managed file, or snapshot fallback."""
     try:
         try:
-            offset = max(int(request.args.get("offset", 0)), 0)
+            offset = min(max(int(request.args.get("offset", 0)), 0), 10_000_000)
             limit = min(max(int(request.args.get("limit", 20000)), 1), 10_000_000)
         except (TypeError, ValueError):
             return err("offset/limit 必须为整数", 400)
@@ -186,16 +219,12 @@ def get_documents_graph():
         if not hasattr(storage, "get_document_graph"):
             return err("此功能暂不可用", 400)
         body = get_json_body()
-        document_version_ids = body.get("document_version_ids") or []
-        document_family_ids = body.get("document_family_ids") or []
-        if isinstance(document_version_ids, str):
-            document_version_ids = [document_version_ids]
-        if isinstance(document_family_ids, str):
-            document_family_ids = [document_family_ids]
+        document_version_ids = _id_list(body.get("document_version_ids"), "document_version_ids")
+        document_family_ids = _id_list(body.get("document_family_ids"), "document_family_ids")
         if not document_version_ids and not document_family_ids:
             return err("document_version_ids 或 document_family_ids 至少提供一个", 400)
-        include_relations = bool(body.get("include_relations", True))
-        include_versions = bool(body.get("include_versions", True))
+        include_relations = _strict_bool(body.get("include_relations"), True)
+        include_versions = _strict_bool(body.get("include_versions"), True)
         try:
             max_episodes = min(max(int(body.get("max_episodes", 5000)), 1), 10000)
         except (ValueError, TypeError):
@@ -228,12 +257,8 @@ def get_documents_graph_outline():
         if not hasattr(storage, "get_document_graph_outline"):
             return err("此功能暂不可用", 400)
         body = get_json_body()
-        document_version_ids = body.get("document_version_ids") or []
-        document_family_ids = body.get("document_family_ids") or []
-        if isinstance(document_version_ids, str):
-            document_version_ids = [document_version_ids]
-        if isinstance(document_family_ids, str):
-            document_family_ids = [document_family_ids]
+        document_version_ids = _id_list(body.get("document_version_ids"), "document_version_ids")
+        document_family_ids = _id_list(body.get("document_family_ids"), "document_family_ids")
         if not document_version_ids and not document_family_ids:
             return err("document_version_ids 或 document_family_ids 至少提供一个", 400)
         try:
@@ -261,12 +286,8 @@ def get_documents_graph_chunk():
         if not hasattr(storage, "get_document_graph_chunk"):
             return err("此功能暂不可用", 400)
         body = get_json_body()
-        document_version_ids = body.get("document_version_ids") or []
-        document_family_ids = body.get("document_family_ids") or []
-        if isinstance(document_version_ids, str):
-            document_version_ids = [document_version_ids]
-        if isinstance(document_family_ids, str):
-            document_family_ids = [document_family_ids]
+        document_version_ids = _id_list(body.get("document_version_ids"), "document_version_ids")
+        document_family_ids = _id_list(body.get("document_family_ids"), "document_family_ids")
         if not document_version_ids and not document_family_ids:
             return err("document_version_ids 或 document_family_ids 至少提供一个", 400)
         try:
@@ -277,8 +298,8 @@ def get_documents_graph_chunk():
             limit = min(max(int(body.get("limit", 12)), 1), 100)
         except (ValueError, TypeError):
             return err("limit 必须为整数", 400)
-        include_relations = bool(body.get("include_relations", True))
-        include_versions = bool(body.get("include_versions", True))
+        include_relations = _strict_bool(body.get("include_relations"), True)
+        include_versions = _strict_bool(body.get("include_versions"), True)
         try:
             max_concepts = min(max(int(body.get("max_concepts", 8000)), 1), 50000)
         except (ValueError, TypeError):
@@ -306,7 +327,11 @@ def get_episode_content(episode_version_id: str):
         processor = _get_processor()
         storage = processor.storage
         if hasattr(storage, "get_episode_content_detail"):
-            detail = storage.get_episode_content_detail(episode_version_id)
+            try:
+                max_chars = min(max(int(request.args.get("limit", 200_000)), 1), 1_000_000)
+            except (TypeError, ValueError):
+                return err("limit 必须为整数", 400)
+            detail = storage.get_episode_content_detail(episode_version_id, max_chars=max_chars)
             if detail is None:
                 return err(f"episode_version_id 不存在: {episode_version_id}", 404)
             return ok(detail)
@@ -315,9 +340,14 @@ def get_episode_content(episode_version_id: str):
         episode = storage.load_episode(episode_version_id)
         if episode is None:
             return err(f"episode_version_id 不存在: {episode_version_id}", 404)
+        try:
+            max_chars = min(max(int(request.args.get("limit", 200_000)), 1), 1_000_000)
+        except (TypeError, ValueError):
+            return err("limit 必须为整数", 400)
         return ok({
             "episode_id": episode.absolute_id,
-            "content": episode.content,
+            "content": (episode.content or "")[:max_chars],
+            "truncated": len(episode.content or "") > max_chars,
             "source_document": episode.source_document or "",
             "event_time": episode.event_time.isoformat() if episode.event_time else None,
             "processed_time": episode.processed_time.isoformat() if episode.processed_time else None,
@@ -387,11 +417,17 @@ def index_vault():
         if not hasattr(storage, "index_vault"):
             return err("此功能暂不可用", 400)
         body = get_json_body()
-        path = (body.get("path") or body.get("vault_path") or "").strip()
+        raw_path = body.get("path") if body.get("path") is not None else body.get("vault_path")
+        if raw_path is not None and not isinstance(raw_path, str):
+            return err("path 必须为字符串", 400)
+        path = (raw_path or "").strip()
         if not path:
             return err("path 不能为空", 400)
-        force = bool(body.get("force", False))
+        force = _strict_bool(body.get("force"), False)
         result = storage.index_vault(path, force=force)
         return ok(result)
-    except Exception as e:
-        return err(str(e), 500)
+    except ValueError as e:
+        return err(str(e), 400)
+    except Exception:
+        logger.exception("vault index request failed")
+        return err("文档索引失败", 500)

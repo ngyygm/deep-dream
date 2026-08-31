@@ -20,6 +20,7 @@ from typing import Any, Dict, Iterable, Optional
 import click
 
 from ._ctx import CliContext
+from ._exit_codes import ERROR
 from ._output import OutputManager
 
 
@@ -74,10 +75,20 @@ def emit_json_result(
 
 
 def emit_json_error(error: str, **extra: Any) -> None:
-    """--json 模式统一错误信封：键序 success → error → 其余附加键。"""
+    """--json 模式统一错误信封并以非零码终止命令。
+
+    JSON consumers must be able to distinguish a failed command from a
+    successful command whose payload happens to contain ``success=false``.
+    Raising Click's exit exception after emitting keeps the envelope on
+    stdout while making shell/CI callers observe ``ERROR``.
+    """
     payload: Dict[str, Any] = {"success": False, "error": error}
     payload.update(extra)
     click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+    # Use SystemExit rather than click.exceptions.Exit: Click treats the
+    # latter as a normal return when ``standalone_mode=False`` (the mode used
+    # by our console entry point), which would incorrectly yield rc=0.
+    raise SystemExit(ERROR)
 
 
 # ------------------------------------------------------------------
@@ -98,9 +109,15 @@ def resolve_concept_id(storage: Any, value: str) -> Optional[str]:
         return concept["family_id"]
     # 2. BM25 search
     try:
-        matches = storage.search_concepts_by_bm25(value, limit=1)
-        if matches:
-            fid = matches[0].get("family_id") or matches[0].get("entity_family_id")
+        matches = storage.search_concepts_by_bm25(value, limit=5)
+        for match in matches:
+            # episode 兜底腿（无实体/关系观测时的文档检索 DTO）把
+            # family_id 填成 episode_id——那不是概念 family id，直接返回
+            # 会让下游 versions/neighbors 拿着 episode_id 查空。跳过它，
+            # 取第一个真正的实体/关系命中；全是 episode 命中则落到第 3 步。
+            if match.get("role") == "episode":
+                continue
+            fid = match.get("family_id") or match.get("entity_family_id")
             if fid:
                 return fid
     except (ZeroDivisionError, ValueError, sqlite3.OperationalError):

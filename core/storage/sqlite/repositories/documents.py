@@ -132,6 +132,13 @@ def supersede_active_version_cascade(conn, document_id: str) -> list:
     ep_ids = _supersede_episodes_by_version(conn, ver_id)
     if ep_ids:
         placeholders = ",".join("?" for _ in ep_ids)
+        # Episodes are soft-superseded, but the explicit FTS table has no
+        # status column/trigger.  Remove the stale rows before indexing the
+        # replacement version, otherwise searches return invisible content.
+        conn.execute(
+            f"DELETE FROM episodes_fts WHERE episode_id IN ({placeholders})",
+            ep_ids,
+        )
         conn.execute(
             f"UPDATE entity_observations SET status = 'superseded' WHERE episode_id IN ({placeholders}) AND status = 'active'",
             ep_ids,
@@ -159,14 +166,21 @@ def _supersede_episodes_by_version(conn, document_version_id: str) -> list:
 
 
 def list_documents(conn, status: str = "active", limit: int = 100,
-                   offset: int = 0) -> list:
+                   offset: int = 0, source_document: str = None) -> list:
     cols = [d[0] for d in conn.execute("SELECT * FROM documents LIMIT 0").description]
+    params = [status]
+    where = "status = ?"
+    if source_document:
+        # Keep filtering identical to count_documents so pagination and total
+        # cannot describe different sets of documents.
+        from ..helpers import escape_like
+        escaped = escape_like(source_document)
+        where += " AND (title LIKE ? ESCAPE '!' OR managed_path LIKE ? ESCAPE '!' OR absolute_path LIKE ? ESCAPE '!')"
+        params.extend([f"%{escaped}%", f"%{escaped}%", f"%{escaped}%"])
+    params.extend([limit, offset])
     rows = conn.execute(
-        """SELECT * FROM documents
-           WHERE status = ?
-           ORDER BY updated_at DESC
-           LIMIT ? OFFSET ?""",
-        (status, limit, offset),
+        f"SELECT * FROM documents WHERE {where} ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+        params,
     ).fetchall()
     return [dict(zip(cols, r)) for r in rows]
 

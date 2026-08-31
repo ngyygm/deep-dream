@@ -365,7 +365,14 @@ def _backfill_embeddings_run(conn: sqlite3.Connection, client, batch_size: int,
                 continue
             payload = []
             for i, (_, version_id, text) in enumerate(batch):
-                blob = np.asarray(vecs[i], dtype=np.float32).tobytes()
+                vec = np.asarray(vecs[i], dtype=np.float32).reshape(-1)
+                # 与管线写路径（helpers._encode_and_normalize）一致：落库前
+                # L2 归一化。读侧语义检索全部按单位向量算点积，未归一的
+                # 回填行会把 cos*|v| 当相似度，冲垮阈值判定与 top-K 排序。
+                norm = np.linalg.norm(vec)
+                if norm > 0:
+                    vec = vec / norm
+                blob = vec.tobytes()
                 payload.append((
                     f"emb_{version_id}", version_id,
                     hashlib.sha256(text.encode("utf-8")).hexdigest(),

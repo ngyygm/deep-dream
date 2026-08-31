@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import time
 from typing import List, Optional, Tuple
 
 from .repositories import search as search_repo
@@ -109,14 +110,22 @@ def traverse_concepts(conn: sqlite3.Connection,
                       max_results: int = 500,
                       edge_types: Optional[List[str]] = None,
                       timeout_seconds: float = 30.0) -> dict:
+    deadline = time.monotonic() + min(max(float(timeout_seconds or 30.0), 0.1), 120.0)
+    timed_out = False
     visited = set(start_ids)
     all_edges = []
     frontier = list(start_ids)
     for _ in range(max_depth):
         next_frontier = []
         for fid in frontier:
+            if time.monotonic() >= deadline:
+                timed_out = True
+                break
             neighbors = search_repo.get_graph_neighbors(conn, fid, limit=max_results)
             for n in neighbors:
+                if time.monotonic() >= deadline:
+                    timed_out = True
+                    break
                 if edge_types and n.get("edge_type") not in edge_types:
                     continue
                 all_edges.append(n)
@@ -132,11 +141,15 @@ def traverse_concepts(conn: sqlite3.Connection,
                 if neighbor and neighbor not in visited:
                     visited.add(neighbor)
                     next_frontier.append(neighbor)
+            if timed_out:
+                break
         frontier = next_frontier
-        if not frontier or len(all_edges) >= max_results:
+        if timed_out or not frontier or len(all_edges) >= max_results:
             break
     return {"edges": all_edges[:max_results], "visited": list(visited),
-            "visited_count": len(visited), "truncated": len(all_edges) > max_results}
+            "visited_count": len(visited),
+            "truncated": timed_out or len(all_edges) > max_results,
+            "timed_out": timed_out}
 
 
 def batch_bfs_traverse(conn: sqlite3.Connection,
@@ -386,21 +399,29 @@ def _build_mention_edges(conn, episode_ids, documents):
         doc_ver_by_doc_id[d["document_id"]] = d["document_version_id"]
 
     rows = conn.execute(
-        f"SELECT em.episode_id, em.entity_family_id, em.entity_id "
+        f"SELECT 'entity' AS target_role, em.episode_id, em.entity_family_id, em.entity_id "
         f"FROM entity_mentions em "
-        f"WHERE em.episode_id IN ({ph})",
-        episode_ids,
+        f"JOIN entity_observations eo ON eo.entity_id=em.entity_id AND eo.status='active' "
+        f"WHERE em.episode_id IN ({ph}) "
+        f"UNION ALL "
+        f"SELECT 'relation' AS target_role, rm.episode_id, rm.relation_family_id, rm.relation_id "
+        f"FROM relation_mentions rm "
+        f"JOIN relation_assertions ra ON ra.relation_id=rm.relation_id AND ra.status='active' "
+        f"WHERE rm.episode_id IN ({ph})",
+        [*episode_ids, *episode_ids],
     ).fetchall()
     edges = []
     for r in rows:
+        role = r[0]
         edges.append({
-            "edge_id": f"ment:{r[0]}:{r[1]}",
-            "from": f"episode:{r[0]}",
-            "to": f"concept:{r[1]}",
+            "edge_id": f"ment:{r[1]}:{r[2]}" if role == "entity" else f"rment:{r[1]}:{r[2]}",
+            "from": f"episode:{r[1]}",
+            "to": f"concept:{r[2]}",
             "edge_type": "MENTIONS",
-            "target_family_id": r[1],
-            "target_version_id": r[2],
-            "episode_version_id": r[0],
+            "target_family_id": r[2],
+            "target_version_id": r[3],
+            "target_role": role,
+            "episode_version_id": r[1],
         })
     return edges
 
@@ -505,7 +526,9 @@ def get_document_graph(conn: sqlite3.Connection,
                        document_version_ids: List[str] = None,
                        document_family_ids: List[str] = None,
                        max_episodes: int = 10000,
-                       max_concepts: int = 50000) -> dict:
+                       max_concepts: int = 50000,
+                       include_relations: bool = True,
+                       include_versions: bool = True) -> dict:
     doc_ids, resolved_ver_ids, doc_rows = _resolve_document_ids(
         conn, document_version_ids, document_family_ids)
 
@@ -522,7 +545,7 @@ def get_document_graph(conn: sqlite3.Connection,
     episode_ids = [ep["version_id"] for ep in episodes]
 
     entities = _build_entity_concepts(conn, episode_ids)
-    relations = _build_relation_concepts(conn, episode_ids)
+    relations = _build_relation_concepts(conn, episode_ids) if include_relations else []
     if max_concepts and len(entities) > max_concepts:
         kept_entity_fams = {c["family_id"] for c in entities[:max_concepts]}
         entities = entities[:max_concepts]
@@ -533,12 +556,12 @@ def get_document_graph(conn: sqlite3.Connection,
 
     has_ep_edges = _build_has_episode_edges(episodes)
     mention_edges = _build_mention_edges(conn, episode_ids, documents)
-    relation_edges = _build_relation_edges(conn, episode_ids, relations)
+    relation_edges = _build_relation_edges(conn, episode_ids, relations) if include_relations else []
     all_edges = has_ep_edges + mention_edges + relation_edges
 
     entity_fams = {e["family_id"] for e in entities}
     relation_fams = {r["family_id"] for r in relations}
-    versions = _build_version_counts(conn, entity_fams, relation_fams)
+    versions = _build_version_counts(conn, entity_fams, relation_fams) if include_versions else {}
 
     return {
         "documents": documents,

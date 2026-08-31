@@ -1,10 +1,16 @@
 {
-  "host": "0.0.0.0",
+  "host": "127.0.0.1",
   "port": 16200,
   "auto_port_fallback": false,
   "log_mode": "detail",
   "monitor_refresh_seconds": 1.0,
   "storage_path": "./library",
+  "auth": {
+    "enabled": null,
+    "strict_mode": null,
+    "allow_dev_key": false,
+    "api_keys_file": null
+  },
   "storage": {
     "backend": "sqlite",
     "vector_dim": 1024
@@ -32,6 +38,7 @@
   "embedding": {
     "model": "Qwen/Qwen3-Embedding-0.6B",
     "device": "cpu",
+    "trust_remote_code": false,
     "_comment": "设置 api_key/api_base 后走远程 OpenAI 兼容 /v1/embeddings，不加载本地模型（sentence-transformers 转为可选依赖）",
     "api_key": null,
     "api_base": null
@@ -47,7 +54,8 @@
     },
     "task": {
       "load_cache_memory": false,
-      "stall_timeout_seconds": 600
+      "stall_timeout_seconds": 600,
+      "queue_max_size": 1000
     },
     "retry": {
       "queue_max_retries": 2,
@@ -79,5 +87,6 @@
       "distill_data_dir": "distill_pipeline"
     }
   },
-  "flask_threaded": true
+  "flask_threaded": true,
+  "max_request_bytes": 12582912
 }

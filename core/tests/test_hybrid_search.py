@@ -264,6 +264,25 @@ def test_fts_search_matches_seeded_text(v15):
     assert hits[0]["episode_id"] == "ep1"
 
 
+def test_fts_source_document_filter_is_applied(v15):
+    """A document selector must not silently fall back to cross-document hits."""
+    _seed(v15)
+    _insert_doc(v15, doc_id="doc2", title="Other Doc")
+    _insert_version(v15, doc_id="doc2", ver_id="ver2", content_hash="hash2")
+    _insert_episode(v15, "ep3", "doc2", "ver2",
+                    "张三在北京大学研究人工智能", "fam-ep3", chunk_index=0)
+
+    all_hits = search_repo.search_fts(v15, "人工智能", limit=10)
+    assert {hit["episode_id"] for hit in all_hits} == {"ep1", "ep3"}
+    doc1_hits = search_repo.search_fts(
+        v15, "人工智能", source_document="doc1", limit=10
+    )
+    assert {hit["episode_id"] for hit in doc1_hits} == {"ep1"}
+    assert search_repo.search_fts(
+        v15, "人工智能", source_document="missing-doc", limit=10
+    ) == []
+
+
 def test_fts_search_and_mode_fallback_to_or(v15):
     """All-term AND miss degrades to OR instead of returning nothing."""
     _seed(v15)

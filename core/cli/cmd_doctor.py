@@ -84,6 +84,7 @@ def _check_schema(storage_root: Path) -> Dict[str, Any]:
         "missing_tables": [],
         "missing_indexes": [],
         "missing_views": [],
+        "missing_columns": {},
         "error": None,
     }
     if db_path is None:

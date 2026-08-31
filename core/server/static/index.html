@@ -3,28 +3,29 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="deepdream-static-version" content="{{STATIC_VERSION}}">
   <title>DeepDream</title>
 
   <!-- Fonts (local) -->
-  <link rel="stylesheet" href="/static/vendor/fonts.css">
+  <link rel="stylesheet" href="/static/vendor/fonts.css?v={{STATIC_VERSION}}">
 
   <!-- Tailwind CSS (prebuilt local stylesheet) -->
-  <link rel="stylesheet" href="/static/css/tailwind-output.css">
+  <link rel="stylesheet" href="/static/css/tailwind-output.css?v={{STATIC_VERSION}}">
 
   <!-- vis-network (local, ~682KB) 不再全局加载：仅 graph/search 页需要，
        由 app.js 的 ensureVisNetwork() 按需动态注入（保持离线可用） -->
 
   <!-- Lucide Icons (local) -->
-  <script src="/static/vendor/lucide.js"></script>
+  <script src="/static/vendor/lucide.js?v={{STATIC_VERSION}}"></script>
 
   <!-- Custom Styles -->
-  <link rel="stylesheet" href="/static/css/app.css">
-  <link rel="stylesheet" href="/static/css/graph-timeline.css">
+  <link rel="stylesheet" href="/static/css/app.css?v={{STATIC_VERSION}}">
+  <link rel="stylesheet" href="/static/css/graph-timeline.css?v={{STATIC_VERSION}}">
 </head>
 <body class="overflow-hidden" style="background:var(--bg-primary);color:var(--text-primary);">
   <div class="flex h-screen">
     <!-- Sidebar -->
-    <aside id="sidebar" class="sidebar w-56 flex flex-col flex-shrink-0 z-50">
+    <aside id="sidebar" class="sidebar w-56 flex flex-col flex-shrink-0 z-50" aria-label="主导航">
       <!-- Logo -->
       <div class="px-4 py-4" style="border-bottom:1px solid var(--border-color);">
         <div class="flex items-center gap-2.5">
@@ -39,8 +40,8 @@
       </div>
 
       <!-- Navigation -->
-      <nav class="flex-1 px-3 py-3 space-y-0.5 overflow-y-auto">
-        <a class="sidebar-link active" href="#dashboard" data-page="dashboard">
+      <nav class="flex-1 px-3 py-3 space-y-0.5 overflow-y-auto" aria-label="页面导航">
+        <a class="sidebar-link active" href="#dashboard" data-page="dashboard" aria-current="page">
           <i data-lucide="layout-dashboard"></i>
           <span data-i18n="nav.dashboard">仪表盘</span>
         </a>
@@ -81,7 +82,7 @@
       <header class="h-12 flex items-center justify-between px-4 flex-shrink-0" style="border-bottom:1px solid var(--border-color);background:var(--bg-surface);">
         <div class="flex items-center gap-3">
           <!-- Mobile sidebar toggle -->
-          <button id="sidebar-toggle" class="btn btn-ghost btn-sm p-1.5 md:hidden">
+          <button id="sidebar-toggle" class="btn btn-ghost btn-sm p-1.5" aria-label="打开导航" aria-expanded="false" aria-controls="sidebar" title="打开导航">
             <i data-lucide="menu" style="width:18px;height:18px;"></i>
           </button>
           <!-- Breadcrumb -->
@@ -91,13 +92,20 @@
         </div>
         <div class="flex items-center gap-3">
           <!-- Language selector -->
+          <label class="sr-only" for="lang-selector">语言</label>
           <select id="lang-selector" class="input text-xs py-1 px-1.5" style="width:auto;min-width:60px;">
             <option value="zh">中文</option>
             <option value="en">EN</option>
             <option value="ja">日本語</option>
           </select>
           <!-- Theme toggle -->
-          <button id="theme-toggle" class="btn btn-ghost btn-sm p-1.5" title="Toggle theme">
+          <button id="command-palette-toggle" class="btn btn-ghost btn-sm p-1.5" aria-label="打开快捷命令" title="快捷命令 (⌘K)">
+            <i data-lucide="terminal" style="width:16px;height:16px;"></i>
+          </button>
+          <button id="api-key-toggle" class="btn btn-ghost btn-sm p-1.5" aria-label="设置 API 访问密钥" title="设置 API 访问密钥">
+            <i data-lucide="key-round" style="width:16px;height:16px;"></i>
+          </button>
+          <button id="theme-toggle" class="btn btn-ghost btn-sm p-1.5" title="切换主题" aria-label="切换主题">
             <i data-lucide="moon" id="theme-icon-dark" style="width:16px;height:16px;"></i>
             <i data-lucide="sun" id="theme-icon-light" style="width:16px;height:16px;display:none;"></i>
           </button>
@@ -120,20 +128,20 @@
   <div id="toast-container" class="toast-container" role="status" aria-live="polite"></div>
 
   <!-- i18n (must load before app.js) -->
-  <script src="/static/js/i18n/zh.js"></script>
-  <script src="/static/js/i18n/en.js"></script>
-  <script src="/static/js/i18n/ja.js"></script>
-  <script src="/static/js/i18n/index.js"></script>
+  <script src="/static/js/i18n/zh.js?v={{STATIC_VERSION}}"></script>
+  <script src="/static/js/i18n/en.js?v={{STATIC_VERSION}}"></script>
+  <script src="/static/js/i18n/ja.js?v={{STATIC_VERSION}}"></script>
+  <script src="/static/js/i18n/index.js?v={{STATIC_VERSION}}"></script>
 
   <!-- Scripts (order matters) -->
-  <script src="/static/js/shared/format.js"></script>
-  <script src="/static/js/shared/ui-utils.js"></script>
-  <script src="/static/vendor/marked.min.js"></script>
-  <script src="/static/js/app.js"></script>
-  <script src="/static/js/components/toast.js"></script>
-  <script src="/static/js/components/modal.js"></script>
-  <script src="/static/js/shared/concept-detail.js"></script>
-  <script src="/static/js/graph-utils.js"></script>
+  <script src="/static/js/shared/format.js?v={{STATIC_VERSION}}"></script>
+  <script src="/static/js/shared/ui-utils.js?v={{STATIC_VERSION}}"></script>
+  <script src="/static/vendor/marked.min.js?v={{STATIC_VERSION}}"></script>
+  <script src="/static/js/app.js?v={{STATIC_VERSION}}"></script>
+  <script src="/static/js/components/toast.js?v={{STATIC_VERSION}}"></script>
+  <script src="/static/js/components/modal.js?v={{STATIC_VERSION}}"></script>
+  <script src="/static/js/shared/concept-detail.js?v={{STATIC_VERSION}}"></script>
+  <script src="/static/js/graph-utils.js?v={{STATIC_VERSION}}"></script>
   <!-- Page scripts (dashboard/memory/graph/search/api-test/settings) are lazy-loaded
        on first visit via ensurePageLoaded() in app.js -->
 </body>

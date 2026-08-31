@@ -62,16 +62,30 @@ class DeepDreamApi {
 
     const promise = this._doRequest(method, url, headers, options);
     this._inflight.set(dedupeKey, promise);
+    // abort 时同步逐出去重缓存：被 abort 的旧请求要等微任务才走 finally 删 key，
+    // 而同 body 的重发（如搜索页连按 Enter 先 abort 再发）在同步阶段就会命中
+    // 去重判断、拿到注定失败的旧 promise，导致新请求永远发不出去。
+    // 按 promise 身份比对，避免误删后续同 key 的新条目。
+    if (options.signal) {
+      const evict = () => {
+        if (this._inflight.get(dedupeKey) === promise) this._inflight.delete(dedupeKey);
+      };
+      if (options.signal.aborted) evict();
+      else options.signal.addEventListener('abort', evict);
+    }
     try { return await promise; }
     finally { this._inflight.delete(dedupeKey); }
   }
 
   async _doRequest(method, url, headers, options) {
     try {
+      const apiKey = localStorage.getItem('deepdream_api_key');
+      if (apiKey) headers['X-API-Key'] = apiKey;
       const res = await fetch(url, {
         method,
         headers,
         body: options.body || null,
+        signal: options.signal,
       });
       let data;
       const ct = (res.headers.get('content-type') || '').toLowerCase();
@@ -86,6 +100,9 @@ class DeepDreamApi {
         }
       }
       if (!res.ok) {
+        if (res.status === 401) {
+          window.dispatchEvent(new CustomEvent('deepdream-auth-required'));
+        }
         throw new Error(data.error || `HTTP ${res.status}`);
       }
       return data;
@@ -97,10 +114,10 @@ class DeepDreamApi {
     }
   }
 
-  get(path) { return this.request('GET', path); }
-  post(path, json) { return this.request('POST', path, { json }); }
-  delete(path) { return this.request('DELETE', path); }
-  postForm(path, formData) { return this.request('POST', path, { body: formData }); }
+  get(path, options = {}) { return this.request('GET', path, options); }
+  post(path, json, options = {}) { return this.request('POST', path, { ...options, json }); }
+  delete(path, options = {}) { return this.request('DELETE', path, options); }
+  postForm(path, formData, options = {}) { return this.request('POST', path, { ...options, body: formData }); }
 
   // System
   health(graphId = 'default') {
@@ -110,7 +127,11 @@ class DeepDreamApi {
   // Graphs
   createGraph(graphId) { return this.post('/api/v1/graphs', { graph_id: graphId }); }
   deleteGraph(graphId) { return this.delete(`/api/v1/graphs/${encodeURIComponent(graphId)}`); }
-  clearGraph(graphId) { return this.post(`/api/v1/graphs/${encodeURIComponent(graphId)}/clear`, {}); }
+  clearGraph(graphId) {
+    return this.post(`/api/v1/graphs/${encodeURIComponent(graphId)}/clear`, {
+      confirm_graph_id: graphId,
+    });
+  }
 
   // Remember
   rememberText(graphId, text, options = {}) {
@@ -171,7 +192,7 @@ class DeepDreamApi {
     if (options.timeBefore) body.time_before = options.timeBefore;
     if (options.timeAfter) body.time_after = options.timeAfter;
     if (options.reranker) body.reranker = options.reranker;
-    return this.post('/api/v1/find', body);
+    return this.post('/api/v1/find', body, { signal: options.signal });
   }
 
   // Concept compatibility helpers used by the existing graph/search UI.
@@ -191,13 +212,13 @@ class DeepDreamApi {
     return this.request('PATCH', `/api/v1/concepts/${encodeURIComponent(familyId)}?graph_id=${encodeURIComponent(graphId)}`, { json: data });
   }
 
-  traverseGraph(seedFamilyIds, maxDepth = 3, maxNodes = 100, graphId = 'default') {
+  traverseGraph(seedFamilyIds, maxDepth = 3, maxNodes = 100, graphId = 'default', options = {}) {
     return this.post('/api/v1/traverse', {
       start_family_ids: seedFamilyIds,
       max_depth: maxDepth,
       max_nodes: maxNodes,
       graph_id: graphId,
-    });
+    }, options);
   }
 
   relationByAbsoluteId(absoluteId, graphId = 'default') {
@@ -214,8 +235,10 @@ class DeepDreamApi {
     return this.get(`/api/v1/stats/counts?graph_id=${encodeURIComponent(graphId)}`);
   }
 
-  listDocs(graphId = 'default') {
-    return this.get(`/api/v1/documents?graph_id=${encodeURIComponent(graphId)}`).then(res => ({
+  listDocs(graphId = 'default', options = {}) {
+    const limit = Math.min(Math.max(Number(options.limit) || 200, 1), 500);
+    const offset = Math.max(Number(options.offset) || 0, 0);
+    return this.get(`/api/v1/documents?graph_id=${encodeURIComponent(graphId)}&limit=${limit}&offset=${offset}`, options).then(res => ({
       ...res,
       data: { ...(res.data || {}), docs: res.data?.documents || [] },
     }));
@@ -306,7 +329,10 @@ function getUrlGraphId() {
 
 const state = {
   api: new DeepDreamApi(),
-  currentGraphId: getUrlGraphId() || localStorage.getItem('deepdream_graph_id') || localStorage.getItem('tmg_graph_id') || 'default',
+  currentGraphId: (() => {
+    const saved = getUrlGraphId() || localStorage.getItem('deepdream_graph_id') || localStorage.getItem('tmg_graph_id');
+    return saved === 'default' || !saved ? 'library' : saved;
+  })(),
   refreshTimers: {},
   currentPage: null,
   events: new EventTarget(),
@@ -336,12 +362,40 @@ function renderMarkdown(text) {
   if (typeof marked === 'undefined') return escapeHtml(text);
   try {
     marked.setOptions({ breaks: true, gfm: true });
-    var html = marked.parse(text);
-    html = html.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '');
-    return html;
+    return sanitizeMarkdownHtml(marked.parse(text));
   } catch (e) {
     return escapeHtml(text);
   }
+}
+
+// Model/user generated Markdown is inserted into several detail panes.  A
+// script-only regex still permits event handlers, SVG and javascript: links;
+// use a small structural allowlist once, at the shared rendering boundary.
+function sanitizeMarkdownHtml(html) {
+  if (typeof document === 'undefined') return escapeHtml(html);
+  const allowedTags = new Set(['P', 'BR', 'STRONG', 'EM', 'DEL', 'CODE', 'PRE', 'BLOCKQUOTE', 'UL', 'OL', 'LI', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'TABLE', 'THEAD', 'TBODY', 'TR', 'TH', 'TD', 'A', 'HR']);
+  const template = document.createElement('template');
+  template.innerHTML = html;
+  const clean = node => {
+    [...node.childNodes].forEach(child => {
+      if (child.nodeType !== Node.ELEMENT_NODE) return;
+      if (!allowedTags.has(child.tagName)) {
+        child.replaceWith(document.createTextNode(child.textContent || ''));
+        return;
+      }
+      [...child.attributes].forEach(attr => {
+        if (child.tagName !== 'A' || !['href', 'title', 'target', 'rel'].includes(attr.name.toLowerCase())) child.removeAttribute(attr.name);
+      });
+      if (child.tagName === 'A') {
+        const href = child.getAttribute('href') || '';
+        if (!/^(https?:|mailto:|#)/i.test(href)) child.removeAttribute('href');
+        if (child.getAttribute('target') === '_blank') child.setAttribute('rel', 'noopener noreferrer');
+      }
+      clean(child);
+    });
+  };
+  clean(template.content);
+  return template.innerHTML;
 }
 
 // ---- Router ----
@@ -358,19 +412,25 @@ const _pageSloganKeys = {
   'api-test': 'slogan.apiTest', settings: 'slogan.settings',
 };
 
+const _staticVersion = document.querySelector('meta[name="deepdream-static-version"]')?.content || '';
+function staticAsset(path) {
+  return _staticVersion ? `${path}?v=${encodeURIComponent(_staticVersion)}` : path;
+}
+
 function registerPage(name, module) { pages[name] = module; }
 function navigate(hash) { window.location.hash = hash; }
+let _routeGeneration = 0;
 
 // ---- Page lazy-loading ----
 // Page scripts register themselves via registerPage() when evaluated;
 // ensurePageLoaded injects each page's script on first visit.
 const _pageScripts = {
-  dashboard: '/static/js/pages/dashboard.js',
-  memory: '/static/js/pages/memory.js',
-  graph: '/static/js/pages/graph.js',
-  search: '/static/js/pages/search.js',
-  'api-test': '/static/js/pages/api-test.js',
-  settings: '/static/js/pages/settings.js',
+  dashboard: staticAsset('/static/js/pages/dashboard.js'),
+  memory: staticAsset('/static/js/pages/memory.js'),
+  graph: staticAsset('/static/js/pages/graph.js'),
+  search: staticAsset('/static/js/pages/search.js'),
+  'api-test': staticAsset('/static/js/pages/api-test.js'),
+  settings: staticAsset('/static/js/pages/settings.js'),
 };
 const _loadedPages = {};
 const _loadingPages = {};
@@ -395,7 +455,7 @@ function ensurePageLoaded(name) {
 // （dashboard/memory/api-test/settings）不再为它付出下载+解析成本。
 // 首次调用动态注入 <script>（本地 /static 路径，不走 CDN，离线可用），
 // 后续调用直接复用已加载的 Promise。
-const _VIS_SRC = '/static/vendor/vis-network.min.js';
+const _VIS_SRC = staticAsset('/static/vendor/vis-network.min.js');
 let _visLoaded = false;
 let _visLoading = null;
 
@@ -417,6 +477,7 @@ function ensureVisNetwork() {
 window.ensureVisNetwork = ensureVisNetwork;
 
 async function handleRoute() {
+  const routeGeneration = ++_routeGeneration;
   const rawHash = (window.location.hash || '#dashboard').slice(1);
   const [hash] = rawHash.split('?');
   const [page, ...params] = hash.split('/').filter(Boolean);
@@ -433,13 +494,17 @@ async function handleRoute() {
     if (window.lucide) lucide.createIcons();
     return;
   }
+  if (routeGeneration !== _routeGeneration) return;
   const pageModule = pages[pageName];
 
   Object.values(state.refreshTimers).forEach(t => clearInterval(t));
   state.refreshTimers = {};
 
   document.querySelectorAll('.sidebar-link').forEach(link => {
-    link.classList.toggle('active', link.getAttribute('data-page') === pageName);
+    const active = link.getAttribute('data-page') === pageName;
+    link.classList.toggle('active', active);
+    if (active) link.setAttribute('aria-current', 'page');
+    else link.removeAttribute('aria-current');
   });
 
   const container = document.getElementById('page-content');
@@ -469,9 +534,11 @@ async function handleRoute() {
 
   try { await pageModule.render(container, params); }
   catch (err) {
+    if (routeGeneration !== _routeGeneration) return;
     console.error(`Error rendering page ${pageName}:`, err);
     container.innerHTML = `<div class="page-enter"><div class="empty-state"><i data-lucide="alert-triangle"></i><p>${t('common.pageLoadError')}: ${escapeHtml(err.message)}</p><button class="btn btn-secondary mt-3" onclick="handleRoute()">${t('common.retry')}</button></div></div>`;
   }
+  if (routeGeneration !== _routeGeneration) return;
   if (window.lucide) lucide.createIcons();
 }
 
@@ -479,9 +546,53 @@ function toggleTheme() { const html = document.documentElement; const isDark = h
 function updateThemeIcon(theme) { const darkIcon = document.getElementById('theme-icon-dark'); const lightIcon = document.getElementById('theme-icon-light'); if (darkIcon) darkIcon.style.display = theme === 'dark' ? '' : 'none'; if (lightIcon) lightIcon.style.display = theme === 'light' ? '' : 'none'; }
 function initTheme() { const saved = localStorage.getItem('deepdream_theme') || localStorage.getItem('tmg_theme') || 'dark'; document.documentElement.setAttribute('data-theme', saved); updateThemeIcon(saved); }
 
+function updateApiKeyButton() {
+  const button = document.getElementById('api-key-toggle');
+  if (!button) return;
+  const configured = Boolean(localStorage.getItem('deepdream_api_key'));
+  button.classList.toggle('is-configured', configured);
+  button.classList.remove('attention');
+  button.title = configured ? t('common.apiKeyConfigured') : t('common.apiKeySet');
+  button.setAttribute('aria-label', button.title);
+}
+
+function openApiKeyDialog() {
+  const current = localStorage.getItem('deepdream_api_key') || '';
+  const modal = showModal({
+    title: t('common.apiKeyTitle'),
+    content: `
+      <p style="margin:0 0 0.75rem;color:var(--text-secondary);font-size:0.85rem;line-height:1.6;">${escapeHtml(t('common.apiKeyHint'))}</p>
+      <label class="form-label" for="api-key-input">${escapeHtml(t('common.apiKeyLabel'))}</label>
+      <input id="api-key-input" class="input" type="password" autocomplete="off" spellcheck="false" placeholder="${escapeAttr(t('common.apiKeyPlaceholder'))}" value="${escapeAttr(current)}">
+      <p style="margin:0.5rem 0 0;color:var(--text-muted);font-size:0.75rem;">${escapeHtml(t('common.apiKeyStorage'))}</p>
+    `,
+    footer: `<div style="display:flex;justify-content:space-between;gap:0.5rem;width:100%;"><button class="btn btn-ghost api-key-clear">${escapeHtml(t('common.apiKeyClear'))}</button><div style="display:flex;gap:0.5rem;"><button class="btn btn-secondary api-key-cancel">${escapeHtml(t('common.cancel'))}</button><button class="btn btn-primary api-key-save">${escapeHtml(t('common.save'))}</button></div></div>`,
+  });
+  const input = modal.overlay.querySelector('#api-key-input');
+  const save = () => {
+    const value = (input?.value || '').trim();
+    if (value) localStorage.setItem('deepdream_api_key', value);
+    else localStorage.removeItem('deepdream_api_key');
+    updateApiKeyButton();
+    modal.close();
+    showToast(t('common.apiKeySaved'), 'success');
+    handleRoute();
+  };
+  modal.overlay.querySelector('.api-key-save')?.addEventListener('click', save);
+  modal.overlay.querySelector('.api-key-cancel')?.addEventListener('click', () => modal.close());
+  modal.overlay.querySelector('.api-key-clear')?.addEventListener('click', () => {
+    localStorage.removeItem('deepdream_api_key');
+    if (input) input.value = '';
+    updateApiKeyButton();
+    showToast(t('common.apiKeyCleared'), 'info');
+  });
+  input?.addEventListener('keydown', (event) => { if (event.key === 'Enter') save(); });
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
   initTheme();
   window.I18N.init();
+  updateApiKeyButton();
   const themeBtn = document.getElementById('theme-toggle');
   if (themeBtn) themeBtn.addEventListener('click', toggleTheme);
   window.addEventListener('hashchange', handleRoute);
@@ -490,12 +601,45 @@ document.addEventListener('DOMContentLoaded', async () => {
   const sidebar = document.getElementById('sidebar');
   if (toggle && sidebar) {
     const backdrop = document.createElement('div'); backdrop.className = 'sidebar-backdrop'; backdrop.id = 'sidebar-backdrop'; document.body.appendChild(backdrop);
-    toggle.addEventListener('click', () => { sidebar.classList.toggle('open'); backdrop.classList.toggle('active', sidebar.classList.contains('open')); });
+    const syncToggle = () => {
+      const open = sidebar.classList.contains('open');
+      toggle.setAttribute('aria-expanded', String(open));
+      toggle.setAttribute('aria-label', open ? '关闭导航' : '打开导航');
+      toggle.title = open ? '关闭导航' : '打开导航';
+    };
+    toggle.addEventListener('click', () => {
+      if (window.innerWidth < 768) {
+        sidebar.classList.toggle('open');
+        backdrop.classList.toggle('active', sidebar.classList.contains('open'));
+      } else {
+        sidebar.classList.toggle('collapsed');
+        localStorage.setItem('deepdream_sidebar_collapsed', sidebar.classList.contains('collapsed'));
+      }
+      syncToggle();
+    });
     backdrop.addEventListener('click', () => { sidebar.classList.remove('open'); backdrop.classList.remove('active'); });
-    sidebar.querySelectorAll('.sidebar-link').forEach(link => { link.addEventListener('click', () => { if (window.innerWidth < 768) { sidebar.classList.remove('open'); backdrop.classList.remove('active'); } }); });
+    sidebar.querySelectorAll('.sidebar-link').forEach(link => { link.addEventListener('click', () => { if (window.innerWidth < 768) { sidebar.classList.remove('open'); backdrop.classList.remove('active'); syncToggle(); } }); });
     const collapsed = localStorage.getItem('deepdream_sidebar_collapsed') === 'true';
     if (collapsed && window.innerWidth >= 768) sidebar.classList.add('collapsed');
+    window.addEventListener('resize', () => {
+      if (window.innerWidth >= 768) { sidebar.classList.remove('open'); backdrop.classList.remove('active'); }
+      syncToggle();
+    });
+    syncToggle();
   }
+  const commandToggle = document.getElementById('command-palette-toggle');
+  if (commandToggle) commandToggle.addEventListener('click', _openCommandPalette);
+  const apiKeyToggle = document.getElementById('api-key-toggle');
+  if (apiKeyToggle) apiKeyToggle.addEventListener('click', openApiKeyDialog);
+  let lastAuthPrompt = 0;
+  window.addEventListener('deepdream-auth-required', () => {
+    const now = Date.now();
+    if (now - lastAuthPrompt < 8000) return;
+    lastAuthPrompt = now;
+    const button = document.getElementById('api-key-toggle');
+    if (button) button.classList.add('attention');
+    showToast(t('common.apiKeyRequired'), 'warning', 7000);
+  });
 });
 
 function _toggleSidebarCollapse() { const sidebar = document.getElementById('sidebar'); if (!sidebar) return; sidebar.classList.toggle('collapsed'); localStorage.setItem('deepdream_sidebar_collapsed', sidebar.classList.contains('collapsed')); }
@@ -533,7 +677,7 @@ document.addEventListener('keydown', (e) => {
 
 registerShortcut('k', 'Open command palette', () => _openCommandPalette(), { ctrlKey: true, global: true });
 registerShortcut('/', 'Focus search', () => { navigate('#search'); setTimeout(() => { const el = document.getElementById('search-input'); if (el) el.focus(); }, 100); }, { global: true });
-registerShortcut('b', 'Toggle sidebar', () => { const sidebar = document.getElementById('sidebar'); if (sidebar) sidebar.classList.toggle('collapsed'); }, { ctrlKey: true, global: true });
+registerShortcut('b', 'Toggle sidebar', () => _toggleSidebarCollapse(), { ctrlKey: true, global: true });
 registerShortcut('?', 'Show shortcuts', () => _showShortcutsHelp(), { ctrlKey: true, global: true });
 registerShortcut('1', 'Dashboard', () => navigate('#dashboard'), { altKey: true });
 registerShortcut('2', 'Memory', () => navigate('#memory'), { altKey: true });
@@ -607,7 +751,7 @@ window.showEpisodeDetailModal = async function(uuid) {
     function _relationLabel(rel) { const full = _fullRelations[rel.absolute_id]; if (!full) return escapeHtml(rel.family_id || '-'); const e1 = _entityNameMap[full.entity1_absolute_id] || full.entity1_absolute_id || '?'; const e2 = _entityNameMap[full.entity2_absolute_id] || full.entity2_absolute_id || '?'; const content = truncate(full.content || '', 40); return `${escapeHtml(e1)} <span style="color:var(--text-muted);">→</span> ${escapeHtml(content)} <span style="color:var(--text-muted);">→</span> ${escapeHtml(e2)}`; }
     function _buildMainHtml() { let body = `<div style="display:flex;flex-direction:column;gap:1rem;"><div style="display:grid;grid-template-columns:auto 1fr;gap:0.25rem 0.75rem;font-size:0.85rem;"><span style="color:var(--text-secondary);">UUID:</span><span class="font-mono text-xs">${escapeHtml(ep.uuid || '')}</span>${ep.episode_type ? `<span style="color:var(--text-secondary);">${t('episodes.episodeType')}:</span><span>${escapeHtml(ep.episode_type)}</span>` : ''}<span style="color:var(--text-secondary);">${t('common.source')}:</span><span>${escapeHtml(ep.source_document || '-')}</span><span style="color:var(--text-secondary);">${t('relations.eventTime')}:</span><span class="mono" style="font-size:0.8125rem;">${formatDate(ep.event_time)}</span>${ep.processed_time ? `<span style="color:var(--text-secondary);">${t('relations.processedTime')}:</span><span class="mono" style="font-size:0.8125rem;">${formatDateMs(ep.processed_time)}</span>` : ''}</div>`; const mainTabs = []; if (hasCache) mainTabs.push('cache'); if (hasOriginal) mainTabs.push('original'); if (hasConcepts) mainTabs.push('concepts'); if (mainTabs.length === 0) mainTabs.push('cache'); const useMainTabs = mainTabs.length > 1; if (useMainTabs) { const tabBtns = mainTabs.map((tab, i) => { const labels = { cache: t('memory.cacheSummary'), original: t('memory.originalText'), concepts: `${t('episodes.tabConcepts')} (${epEntities.length + epRelations.length})` }; const active = i === 0; return `<button class="ep-main-tab ${active ? 'active' : ''}" data-ep-main="${tab}" style="padding:0.5rem 1rem;font-size:0.85rem;border:none;background:none;cursor:pointer;border-bottom:2px solid ${active ? 'var(--primary)' : 'transparent'};color:${active ? 'var(--text-primary)' : 'var(--text-muted)'};font-weight:${active ? '600' : '400'};">${labels[tab]}</button>`; }).join(''); body += `<div style="display:flex;gap:0;border-bottom:1px solid var(--border-color);">${tabBtns}</div>`; } if (hasCache) { body += `<div id="ep-panel-cache" class="ep-main-panel" style="${useMainTabs && mainTabs[0] !== 'cache' ? 'display:none;' : ''}max-height:500px;overflow-y:auto;background:var(--bg-secondary);padding:0.75rem;border-radius:0.5rem;font-size:0.85rem;line-height:1.6;white-space:pre-wrap;word-break:break-word;">${renderMarkdown(cacheText)}</div>`; } if (hasOriginal) { body += `<div id="ep-panel-original" class="ep-main-panel" style="${useMainTabs && mainTabs[0] !== 'original' ? 'display:none;' : ''}max-height:500px;overflow-y:auto;background:var(--bg-secondary);padding:0.75rem;border-radius:0.5rem;font-size:0.85rem;line-height:1.6;white-space:pre-wrap;word-break:break-word;">${escapeHtml(originalText)}</div>`; } if (!hasCache && !hasOriginal) { body += `<div style="color:var(--text-muted);font-size:0.85rem;padding:1rem;">${t('episodes.noContent')}</div>`; } if (hasConcepts) { const entityList = epEntities.length > 0 ? epEntities.map((ent, i) => `<div class="flex items-center gap-2 p-2 rounded cursor-pointer" style="background:var(--bg-secondary);font-size:0.85rem;margin-bottom:4px;" data-ep-entity-idx="${i}"><i data-lucide="circle-dot" style="width:14px;height:14px;color:var(--primary);flex-shrink:0;"></i><span class="font-medium">${escapeHtml(ent.name || ent.family_id || '-')}</span></div>`).join('') : `<p style="color:var(--text-muted);font-size:0.85rem;padding:0.5rem;">${t('episodes.noEntities')}</p>`; const relationList = epRelations.length > 0 ? epRelations.map((rel, i) => `<div class="flex items-center gap-2 p-2 rounded cursor-pointer" style="background:var(--bg-secondary);font-size:0.85rem;margin-bottom:4px;" data-ep-relation-idx="${i}"><i data-lucide="link" style="width:14px;height:14px;color:var(--warning);flex-shrink:0;"></i><span>${_relationLabel(rel)}</span></div>`).join('') : `<p style="color:var(--text-muted);font-size:0.85rem;padding:0.5rem;">${t('episodes.noRelations')}</p>`; body += `<div id="ep-panel-concepts" class="ep-main-panel" style="display:none;"><div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;"><div><h4 style="margin-bottom:0.5rem;font-size:0.85rem;color:var(--text-secondary);"><i data-lucide="circle-dot" style="width:14px;height:14px;color:var(--primary);vertical-align:middle;"></i>${t('episodes.entities')} (${epEntities.length})</h4>${entityList}</div><div><h4 style="margin-bottom:0.5rem;font-size:0.85rem;color:var(--text-secondary);"><i data-lucide="link" style="width:14px;height:14px;color:var(--warning);vertical-align:middle;"></i>${t('episodes.relations')} (${epRelations.length})</h4>${relationList}</div></div></div>`; } body += '</div>'; return body; }
     function _buildEntityDetailHtml(entity) { let h = `<div style="display:flex;flex-direction:column;gap:0.75rem;"><div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.25rem;"><button class="btn btn-secondary btn-sm" id="ep-back-btn" title="${t('common.back')}"><i data-lucide="arrow-left" style="width:14px;height:14px;"></i></button><span class="badge badge-primary">${t('graph.entityDetail')}</span></div><h3 style="font-size:1.1rem;font-weight:600;color:var(--text-primary);word-break:break-word;">${escapeHtml(entity.name || t('graph.unnamedEntity'))}</h3><div style="display:grid;grid-template-columns:auto 1fr;gap:0.25rem 0.75rem;font-size:0.85rem;"><span style="color:var(--text-secondary);">ID:</span><span class="mono text-xs">${escapeHtml(entity.absolute_id || '')}</span><span style="color:var(--text-secondary);">Family:</span><span class="mono text-xs">${escapeHtml(entity.family_id || '')}</span>${entity.episode_type ? `<span style="color:var(--text-secondary);">${t('episodes.episodeType')}:</span><span>${escapeHtml(entity.episode_type)}</span>` : ''}${entity.event_time ? `<span style="color:var(--text-secondary);">${t('relations.eventTime')}:</span><span class="mono" style="font-size:0.8125rem;">${formatDate(entity.event_time)}</span>` : ''}</div>${entity.content ? `<div><span class="form-label" style="margin-bottom:0.25rem;">${t('graph.content')}</span><div class="md-content" style="max-height:350px;overflow-y:auto;background:var(--bg-secondary);padding:0.75rem;border-radius:0.5rem;font-size:0.85rem;line-height:1.6;">${renderMarkdown(entity.content)}</div></div>` : ''}</div>`; return h; }
-    function _buildRelationDetailHtml(relation) { const e1 = _entityNameMap[relation.entity1_absolute_id] || relation.entity1_absolute_id || '?'; const e2 = _entityNameMap[relation.entity2_absolute_id] || relation.entity2_absolute_id || '?'; let h = `<div style="display:flex;flex-direction:column;gap:0.75rem;"><div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.25rem;"><button class="btn btn-secondary btn-sm" id="ep-back-btn" title="${t('common.back')}"><i data-lucide="arrow-left" style="width:14px;height:14px;"></i></button><span class="badge" style="background:var(--info-dim);color:var(--info);">${t('graph.relationDetail')}</span></div><h3 style="font-size:1.1rem;font-weight:600;color:var(--text-primary);word-break:break-word;">${escapeHtml(truncate(relation.content || t('graph.unnamedRelation'), 80))}</h3><div style="display:grid;grid-template-columns:auto 1fr;gap:0.25rem 0.75rem;font-size:0.85rem;"><span style="color:var(--text-secondary);">${t('graph.fromEntity')}:</span><span style="color:var(--info);cursor:pointer;" class="ep-nav-entity" data-nav-abs="${escapeHtml(relation.entity1_absolute_id)}">${escapeHtml(e1)}</span><span style="color:var(--text-secondary);">${t('graph.toEntity')}:</span><span style="color:var(--info);cursor:pointer;" class="ep-nav-entity" data-nav-abs="${escapeHtml(relation.entity2_absolute_id)}">${escapeHtml(e2)}</span><span style="color:var(--text-secondary);">${t('graph.relationId')}:</span><span class="mono text-xs">${escapeHtml(relation.family_id || '-')}</span>${relation.event_time ? `<span style="color:var(--text-secondary);">${t('graph.eventTime')}:</span><span class="mono" style="font-size:0.8125rem;">${formatDate(relation.event_time)}</span>` : ''}${relation.processed_time ? `<span style="color:var(--text-secondary);">${t('graph.processedTime')}:</span><span class="mono" style="font-size:0.8125rem;">${formatDateMs(relation.processed_time)}</span>` : ''}</div>${relation.content ? `<div><span class="form-label" style="margin-bottom:0.25rem;">${t('graph.content')}</span><div class="md-content" style="max-height:350px;overflow-y:auto;background:var(--bg-secondary);padding:0.75rem;border-radius:0.5rem;font-size:0.85rem;line-height:1.6;">${renderMarkdown(relation.content)}</div></div>` : ''}</div>`; return h; }
+    function _buildRelationDetailHtml(relation) { const e1 = _entityNameMap[relation.entity1_absolute_id] || relation.entity1_absolute_id || '?'; const e2 = _entityNameMap[relation.entity2_absolute_id] || relation.entity2_absolute_id || '?'; let h = `<div style="display:flex;flex-direction:column;gap:0.75rem;"><div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.25rem;"><button class="btn btn-secondary btn-sm" id="ep-back-btn" title="${t('common.back')}"><i data-lucide="arrow-left" style="width:14px;height:14px;"></i></button><span class="badge" style="background:var(--info-dim);color:var(--info);">${t('graph.relationDetail')}</span></div><h3 style="font-size:1.1rem;font-weight:600;color:var(--text-primary);word-break:break-word;">${escapeHtml(truncate(relation.content || t('graph.unnamedRelation'), 80))}</h3><div style="display:grid;grid-template-columns:auto 1fr;gap:0.25rem 0.75rem;font-size:0.85rem;"><span style="color:var(--text-secondary);">${t('graph.fromEntity')}:</span><span style="color:var(--info);cursor:pointer;" class="ep-nav-entity" data-nav-abs="${escapeAttr(relation.entity1_absolute_id)}">${escapeHtml(e1)}</span><span style="color:var(--text-secondary);">${t('graph.toEntity')}:</span><span style="color:var(--info);cursor:pointer;" class="ep-nav-entity" data-nav-abs="${escapeAttr(relation.entity2_absolute_id)}">${escapeHtml(e2)}</span><span style="color:var(--text-secondary);">${t('graph.relationId')}:</span><span class="mono text-xs">${escapeHtml(relation.family_id || '-')}</span>${relation.event_time ? `<span style="color:var(--text-secondary);">${t('graph.eventTime')}:</span><span class="mono" style="font-size:0.8125rem;">${formatDate(relation.event_time)}</span>` : ''}${relation.processed_time ? `<span style="color:var(--text-secondary);">${t('graph.processedTime')}:</span><span class="mono" style="font-size:0.8125rem;">${formatDateMs(relation.processed_time)}</span>` : ''}</div>${relation.content ? `<div><span class="form-label" style="margin-bottom:0.25rem;">${t('graph.content')}</span><div class="md-content" style="max-height:350px;overflow-y:auto;background:var(--bg-secondary);padding:0.75rem;border-radius:0.5rem;font-size:0.85rem;line-height:1.6;">${renderMarkdown(relation.content)}</div></div>` : ''}</div>`; return h; }
     const _navStack = [];
     const { overlay, close } = showModal({ title: t('episodes.detail'), content: _buildMainHtml(), size: 'lg' });
     const _bodyEl = overlay.querySelector('.modal-body');
