@@ -40,6 +40,7 @@ id 0.9786 / ood 0.9851，平均步数 ~17（上限 50）——接近饱和，ood
 1. **记忆质量主指标看 LME（0.926 pi）+ MAB（v2 pi 0.6511，靶点域 TTL 0.46 / FC-MH 0.70 均已拉起）**，pi 轨一致最强，验证 dd_scope 沙箱 + bash 验据的 agentic 检索路径。
 2. v2 引擎在两大记忆基准均完成配对终判（LME 五维全胜、MAB 靶点双升 + 成本 −46%），**默认引擎地位坐实**；剩余短板收敛到 MAB 的 TTL/FC-MH（抽取密度）与 LME 的 single-session/preference（会话内记忆）。
 3. BCB / ALFWorld 接近饱和或与记忆无关，保持作回归锚点，每次引擎大改后抽跑即可。
+4. **对外部系统的横向定位**见 `memory_systems_horizontal_2026-08-31.md`：MAB Overall 领先已发表最佳 ~10pp（口径调整后）、FC-MH 数量级领先（70 vs 7）、TTL 落后全文方案是全行业共病；LME 0.926 居第一梯队（厂商自宣互打架， ours 自判需披露）。
 
 ## 记忆沉淀索引
 
