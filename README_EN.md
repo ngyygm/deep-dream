@@ -166,9 +166,44 @@ Full-pipeline scores with a single model (Kimi-k3) serving as memory builder, qu
 | **ALFWorld** (max 50 steps) | in-dist / out-of-dist | 0.9786 / 0.9851 |
 
 - **v1→v2 paired experiments**: the v2 memory engine (cluster convergence + window-batch alignment) wins on all five LME dimensions (accuracy +0.04, recall@10 +8pp, calls/doc −65%); on MAB it lifts both target domains (TTL MCC 0.43→0.46, FC-MH 0.67→0.70) while cutting calls/doc by 46%.
-- **Landscape**: MAB Overall leads every published system in the official paper's Table 2 (~+10pp after sampling-scope adjustment); on the judge-free FC-MH task it scores 70 vs a field best of 7 (deterministic SubEM). LME 0.926 sits in the top tier of the public ecosystem.
-- **Caveats**: scores come from our own evaluation pipeline; judged domains use kimi-k3 as both actor and judge (official baselines mostly use GPT-4o judging); the MAB run is a sampled subset (767 of 3671 questions). Full methodology disclosures live in the reports.
-- Complete data, paired comparisons, and the external-system landscape table: [`research/reports/`](research/reports/).
+
+### External-system landscape
+
+**MemoryAgentBench** — against the official paper's Table 2 (ICLR 2026, arXiv:2507.05257; both sides use the same scorer repo commit, %):
+
+| System | AR Avg | TTL Avg | LRU Avg | SF Avg | **Overall** |
+|---|---:|---:|---:|---:|---:|
+| **Deep-Dream v2 pi (kimi-k3)** | **92.8** | 46.0 | 41.7 | **80.0** | **65.1** |
+| Deep-Dream v1 pi | 94.0 | 43.0 | 52.3 | 78.5 | 67.0\* |
+| GPT-4o (full text) | 58.1 | 50.0 | 54.9 | 32.5 | 48.8 |
+| Claude-3.7-Sonnet (full text) | 59.7 | **53.9** | **62.2** | 22.5 | 49.6 |
+| GPT-4.1-mini (long context) | 71.8 | 46.2 | 49.1 | 20.5 | 46.9 |
+| Gemini-2.0-Flash | 65.1 | 46.4 | 41.6 | 16.5 | 42.4 |
+| BM25 (simple RAG) | 60.5 | 44.5 | 35.6 | 25.5 | 41.5 |
+| HippoRAG-v2 | 65.1 | 35.8 | 36.2 | 29.5 | 41.6 |
+| MIRIX (4.1-mini) | 63.0 | 35.7 | 40.5 | 11.5 | 37.7 |
+| MemGPT | 34.3 | 40.8 | 22.4 | 15.5 | 28.3 |
+| Zep | 37.5 | 37.5 | 16.2 | 5.0 | 24.0 |
+| Mem0 | 32.6 | 21.2 | 20.7 | 10.0 | 21.1 |
+| Cognee | 28.3 | 22.8 | 16.0 | 15.5 | 20.6 |
+
+\* v1's 67.0 includes a lucky single-question LRU Summ score (0.212); v2 overtakes once that domain is excluded. TTL is our weakest domain (46.0; on the MCC task it trails full-text approaches by 30–50pp), while the judge-free domains show the largest lead (FC-MH 70 vs a field best of 7, deterministic SubEM scoring).
+
+**LongMemEval ecosystem** — vendor self-reported numbers under mutually inconsistent protocols; for positioning only (%):
+
+| System / approach | Score | Source & credibility |
+|---|---:|---|
+| OMEGA (local memory) | 95.4 (GPT-4.1) | Vendor-claimed, awaits independent reproduction |
+| Mem0 | 93.4 (GPT-4o) | Vendor-claimed; publicly challenged by Zep, independent reproductions 49–68 |
+| **Deep-Dream pi (kimi-k3)** | **92.6** | Self-run + self-judged (kimi judge) |
+| Zep / Graphiti | 71.2 (GPT-4o) | Vendor-claimed, a third party reproduced the same value with 4o-mini |
+| Full-text GPT-4o | ~60 | Zep re-test |
+| Full-text GPT-4.1 (1M window) | 56.7 | Zep re-test ("overselling long-context") |
+
+BigCodeBench / ALFWorld are agent-carrier benchmarks, not comparable across memory systems; they serve as regression anchors.
+
+- **Caveats (read first)**: scores come from our own evaluation pipeline; judged domains use kimi-k3 as both actor and judge (official baselines mostly use GPT-4o judging); the MAB run is a sampled subset (767 of 3671 questions; the TTL domain covers only MCC and the AR domain omits MH-QA) — filling in those low-scoring tasks yields an estimated Overall of 59–61, still ~10pp ahead of the best published system. Full methodology disclosures live in the reports.
+- Complete data, paired comparisons, and the external-system landscape tables: [`research/reports/`](research/reports/) (full landscape: [`memory_systems_horizontal_2026-08-31.md`](research/reports/memory_systems_horizontal_2026-08-31.md)).
 
 ## Web UI
 

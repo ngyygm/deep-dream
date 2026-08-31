@@ -164,9 +164,44 @@ CLI 是面向人类和 Agent 的控制面板：任务优先的命令结构、安
 | **ALFWorld**（max 50 步） | in-dist / out-of-dist | 0.9786 / 0.9851 |
 
 - **v1→v2 配对实验**：v2 记忆引擎（簇收敛 + 窗口批量对齐）在 LME 五维全胜（准确率 +0.04、recall@10 +8pp、calls/doc −65%）；MAB 两个短腿域双拉起（TTL MCC 0.43→0.46、FC-MH 0.67→0.70）、calls/doc −46%。
-- **横向定位**：MAB Overall 领先官方论文 Table 2 全部已发表系统（采样口径调整后仍约 +10pp）；无 judge 域 FC-MH 70 vs 全场最佳 7（SubEM 确定性判分）。LME 0.926 居公开生态第一梯队。
-- **口径说明**：成绩来自自建评测管线，判分域使用 kimi-k3 自判（官方基线多为 GPT-4o 判分）；MAB 为采样子集（全量 3671 题中的 767 题）。完整口径披露见报告。
-- 完整数据、配对对比与外部系统横向表：[`research/reports/`](research/reports/)。
+
+### 外部系统横向对比
+
+**MemoryAgentBench** —— 对照官方论文 Table 2（ICLR 2026，arXiv:2507.05257；双方使用同一 scorer 仓库 commit，%）：
+
+| 系统 | AR Avg | TTL Avg | LRU Avg | SF Avg | **Overall** |
+|---|---:|---:|---:|---:|---:|
+| **Deep-Dream v2 pi（kimi-k3）** | **92.8** | 46.0 | 41.7 | **80.0** | **65.1** |
+| Deep-Dream v1 pi | 94.0 | 43.0 | 52.3 | 78.5 | 67.0\* |
+| GPT-4o（全文） | 58.1 | 50.0 | 54.9 | 32.5 | 48.8 |
+| Claude-3.7-Sonnet（全文） | 59.7 | **53.9** | **62.2** | 22.5 | 49.6 |
+| GPT-4.1-mini（长上下文） | 71.8 | 46.2 | 49.1 | 20.5 | 46.9 |
+| Gemini-2.0-Flash | 65.1 | 46.4 | 41.6 | 16.5 | 42.4 |
+| BM25（简单 RAG） | 60.5 | 44.5 | 35.6 | 25.5 | 41.5 |
+| HippoRAG-v2 | 65.1 | 35.8 | 36.2 | 29.5 | 41.6 |
+| MIRIX（4.1-mini） | 63.0 | 35.7 | 40.5 | 11.5 | 37.7 |
+| MemGPT | 34.3 | 40.8 | 22.4 | 15.5 | 28.3 |
+| Zep | 37.5 | 37.5 | 16.2 | 5.0 | 24.0 |
+| Mem0 | 32.6 | 21.2 | 20.7 | 10.0 | 21.1 |
+| Cognee | 28.3 | 22.8 | 16.0 | 15.5 | 20.6 |
+
+\* v1 的 67.0 含 LRU Summ 单题运气分（0.212），v2 剔除该域后反超。TTL 是我们最大短腿（46.0，其中 MCC 任务落后全文方案 30–50pp）；无 judge 判分域领先最大（FC-MH 70 vs 全场最佳 7，SubEM 确定性判分）。
+
+**LongMemEval 生态** —— 各家自测、口径互不一致，分数供定位参考（%）：
+
+| 系统/方案 | 成绩 | 来源与可信度 |
+|---|---:|---|
+| OMEGA（本地记忆） | 95.4（GPT-4.1） | 厂商自宣，待独立复现 |
+| Mem0 | 93.4（GPT-4o） | 厂商自宣；被 Zep 公开质疑，独立复现 49–68 |
+| **Deep-Dream pi（kimi-k3）** | **92.6** | 自测 + 自判（kimi judge） |
+| Zep / Graphiti | 71.2（GPT-4o） | 厂商自宣，第三方用 4o-mini 复现出同值 |
+| 全文 GPT-4o | ~60 | Zep 复测 |
+| 全文 GPT-4.1（1M 窗口） | 56.7 | Zep 复测（"overselling long-context"） |
+
+BigCodeBench / ALFWorld 为 agent 载体基准，与记忆系统不可横向，作回归锚点。
+
+- **口径说明（必读）**：成绩来自自建评测管线，判分域使用 kimi-k3 自判（官方基线多为 GPT-4o 判分）；MAB 为采样子集（全量 3671 题中的 767 题，TTL 域只含 MCC、AR 域无 MH-QA），补齐低分任务后估算 Overall ≈ 59–61，仍领先官方表最佳约 10pp。完整口径披露见报告。
+- 完整数据、配对对比与外部系统横向表：[`research/reports/`](research/reports/)（横向全表：[`memory_systems_horizontal_2026-08-31.md`](research/reports/memory_systems_horizontal_2026-08-31.md)）。
 
 ## Web UI
 
