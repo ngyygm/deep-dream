@@ -1,0 +1,18 @@
+\begin{table}[t]
+\centering
+\footnotesize
+\begin{tabular}{@{}lllp{2.9cm}@{}}
+\toprule
+Benchmark & Protocol & Score & Roles \\
+\midrule
+LME-S, 500 questions & sampled & 84.60 & answerer kimi-k3, cross-judge Qwen3.7-plus \\
+LME full ingest, baseline & paired $n{=}25$ & 0.68 $\to$ 0.72 & kimi-k3 \\
+LME full ingest, tool agent & paired $n{=}25$ & 0.68 $\to$ 0.72 & kimi-k3 \\
+LME full ingest, sandbox & paired $n{=}27$ & 0.889 $\to$ 0.926 & kimi-k3 (self-judged) \\
+LoCoMo-1540, binary $J$ & Mem0's exact protocol & 95.19 & kimi-k3 answerer + judge, single run \\
+\quad same answers, cross-judge & re-judged & 94.22 (agr.\ 98.51\%) & judge Qwen3.7-plus \\
+\bottomrule
+\end{tabular}
+\caption{Protocol-labeled context on other benchmarks ($v1{\to}v2$ engine pairs; roles disclosed per row). The LoCoMo run differs from Mem0's published $J$ in two admitted ways---single run versus 10-run mean$\pm$std, and the answerer/judge model---and carries a disclosed legacy-fingerprint caveat; it is context, not a superiority claim. The LME sandbox track's two extra questions follow its session-evidence eligibility rule; cross-track comparisons are same-track only.}
+\label{tab:protocol-other}
+\end{table}

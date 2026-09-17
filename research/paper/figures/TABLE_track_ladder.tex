@@ -1,0 +1,18 @@
+\begin{table}[t]
+\centering
+\footnotesize
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+ & \multicolumn{2}{c}{Overall} & \multicolumn{2}{c}{Sandbox per-domain} \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}
+Answer path ($n{=}767$) & $v1$ & $v2$ & domain & $v1$ \ $\to$ \ $v2$ \\
+\midrule
+Rung 1 single-shot & 30.3 & 32.4 & AR (SH-QA / LME-S$^{*}$ / EventQA) & 94.0 \ $\to$ \ 92.8 \\
+Rung 2 memory-tool agent & 37.6 & 40.7 & TTL (MCC, icl\_clinic150) & 43.0 \ $\to$ \ 46.0 \\
+Rung 3 source-sandbox & 66.9$^{*}$ & \textbf{65.1} & LRU ($\infty$Bench-Sum / DetQA) & 52.3 \ $\to$ \ 41.7 \\
+ & & & SF (FC-SH / FC-MH) & 78.5 \ $\to$ \ 80.0 \\
+\bottomrule
+\end{tabular}
+\caption{The answer-path ladder, official MemoryAgentBench scorer, kimi-k3 answerer, identical frozen libraries and question stream per generation; per-domain cells are shown for the sandbox rung (rungs 1--2 in \cref{app:mab-per-task}). $^{*}$The $v1$ Overall carries the $n{=}1$ $\infty$Bench-Sum flip (0.212 $\to$ 0.000); excluding that task $v2$ leads 75.5 vs.\ 74.7. Rungs differ as systems (\cref{tab:rung-differences}); deltas are consistent-with readings, not single-factor estimates.}
+\label{tab:track-ladder}
+\end{table}

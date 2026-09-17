@@ -1,47 +1,63 @@
 \section{Deep-Dream}
+\label{sec:deep-dream}
 
 \subsection{Memory model}
 
-Let a source document or conversation be $D$ and let $e_i$ denote an episode created from a heading-aware span of $D$. Deep-Dream stores $D$, document versions, and episodes as authoritative records. An extracted entity is represented by a stable family identifier $f$ and a set of observations $o_{f,i}$, each linked to an episode and source span. A relation uses the analogous family/assertion representation. The family provides a stable handle for search and alignment; an observation records what a particular source asserted at a particular time. The system never needs to overwrite the source text to update a derived record.
-
-We distinguish three states. A \emph{complete} document has all expected windows processed and is searchable. A \emph{processing} document may have intermediate rows but is hidden from search. An \emph{active} observation is eligible for current retrieval; historical observations remain addressable through provenance. This publication boundary prevents a query from seeing a partially ingested document.
+Let a source document or conversation be $D$ and let $e_i$ denote an episode created from a heading-aware span of $D$. Deep-Dream stores $D$, document versions, and episodes as authoritative records. An extracted entity is represented by a stable family identifier $f$ and observations $o_{f,i}$, each linked to an episode and source span; relations use the analogous family/assertion representation. The family is a stable handle for search and alignment; an observation records what a particular source asserted at a particular time, so updating a derived record never overwrites source text. A publication boundary separates states: \emph{complete} documents are searchable while \emph{processing} documents are hidden, and \emph{active} observations answer current retrieval while historical ones remain addressable through provenance, so queries never see partially ingested state.
 
 \subsection{Remember pipeline}
 
-The Remember pipeline uses a sequence of small, auditable stages: (i) heading-aware chunking, (ii) entity discovery and normalization, (iii) entity content generation, (iv) quality validation, (v) relation discovery and endpoint validation, (vi) relation content generation, (vii) conservative alignment to existing families, and (viii) atomic publication. Stronger extraction calls can propose entities and relations, but the storage layer records the source episode and provenance rather than treating generated prose as an independent document. Batch content writing and rule-based gates reduce malformed or empty records; alignment preserves observations instead of silently collapsing all mentions into one mutable string.
+The Remember pipeline chains small, auditable stages---heading-aware chunking; entity and relation discovery with validation and content generation; conservative alignment to existing families; window-batch alignment; cluster convergence---followed by atomic publication. Convergence merges duplicate concept families across ingestion windows: in the paired engine comparison (\cref{sec:engine-paired}) it eliminates duplicate families outright (rate $0.20{\to}0.00$ on MemoryAgentBench scopes) while reducing ingest calls per document by 46--65\%. Extraction calls may propose entities and relations, but the storage layer records the source episode and provenance rather than treating generated prose as an independent document.
+
+\subsection{Answer paths on a frozen library}
+\label{sec:answer-paths}
+
+The paper's central comparison varies the answer path while holding the memory fixed. All three paths run against the same frozen libraries (identical ingested documents, engine commit, and scope contents), the same question stream, and the same scorer; they differ in how the answer path may reach sources.
+
+\textbf{Rung 1: single-shot retrieval.} One fused retrieval call (lexical, semantic, and graph channels, reciprocal-rank fusion, top-$k$ source spans with neighbor expansion) produces an evidence payload; a separate one-shot answerer consumes question plus payload. No tools, no loop.
+
+\textbf{Rung 2: memory-tool agent.} An agent interacts with read-only memory tools---scope search, entity/relation fetch, provenance lookup---under a bounded step policy, then submits an evidence set through the submission contract; a separate answerer consumes question plus submitted evidence. The agent navigates the derived overlay but never reads raw documents end-to-end.
+
+\textbf{Rung 3: source-sandbox verification.} The agent calls scope materialization, which uses the overlay to select \emph{which} sources (and which versions) are relevant and exposes them as a sandbox of verbatim documents. The agent then verifies and answers inside the sandbox with ordinary tools---file reading, \texttt{grep}, small scripts---and outputs the answer together with the evidence spans it read.
+
+The rungs differ as \emph{systems} (\cref{tab:rung-differences}): tools, answerer arrangement, loop, prompt, and compute change together, so the ladder upper-bounds the marginal effect of source verification; the single-factor evidence is the channel and gate ablations (\cref{sec:provenance-ablation}).
+
+\emph{The overlay's role in the winning path} deserves emphasis: the ablation shows its retrieval channels are recall-null. In rung~3 the overlay decides \emph{which sources are in scope}, the sandbox holds verbatim sources, and the gate turns any overlay error into a missing file---a missed scope---never a fact the agent could still assert. Its measured roles are scope materialization, versioning, and deduplication: navigation, not retrieval.
+
+\begin{table}[t]
+\centering
+\footnotesize
+\begin{tabular}{@{}p{1.55cm}p{1.7cm}p{2.1cm}p{2.35cm}@{}}
+\toprule
+ & \textbf{Rung 1} single-shot & \textbf{Rung 2} tool agent & \textbf{Rung 3} sandbox \\
+\midrule
+Source access & top-$k$ spans from one fused call & derived records via tools & whole sources in sandbox \\
+Tools & none & read-only memory tools & shell (\texttt{grep}, read, script) \\
+Answerer & separate, one-shot & separate, reads submitted evidence & the verifying agent itself \\
+Loop & none & bounded tool loop & bounded verification loop \\
+Prompt & QA over payload & tool policy + submit & verify-then-answer policy \\
+Compute / q & \RungOneCost & \RungTwoCost & \RungThreeCost \\
+\bottomrule
+\end{tabular}
+\caption{What changes at each rung of the answer-path ladder. All rungs share frozen libraries, question stream, answerer model (kimi-k3), and scorer; compute per question is recomputed from run logs (tokens and calls, \cref{sec:ladder}).}
+\label{tab:rung-differences}
+\end{table}
 
 \subsection{Hybrid navigation and source expansion}
 
-For a query $q$, Deep-Dream obtains candidate records from lexical search, semantic similarity, concept search, relation evidence, and graph-neighborhood expansion. Reciprocal-rank fusion combines candidate lists without requiring one channel to dominate. The query path then resolves candidate records to source episodes and spans. When an exact span is too narrow to answer a multi-turn question, the runtime expands to neighboring turns. This is a retrieval policy, not a claim that more context is always better; the experiments report evidence recall together with response size.
+For a query, candidate records come from lexical search, semantic similarity, concept search, relation evidence, and graph-neighborhood expansion, combined by reciprocal-rank fusion without requiring one channel to dominate. The query path resolves candidates to source episodes and spans and expands to neighboring turns when an exact span is too narrow for a multi-turn question. This is a retrieval policy, not a claim that more context is always better; the experiments report evidence recall together with response size.
 
-\subsection{Source-bounded agent interface}
+\subsection{Evidence gate}
 
-Each benchmark question runs in a fresh conversation scope. The agent cannot see the gold answer, gold evidence identifiers, or other conversations. Its tools are read-only and return source, episode, concept, relation, and provenance records. The final call has the following contract:
-
+Each benchmark question runs in a fresh conversation scope: the agent cannot see the gold answer, gold evidence identifiers, or other conversations, and its tools are read-only. The final submission must satisfy:
 \begin{enumerate}
-    \item every submitted identifier must have been returned by a tool call in the current question;
-    \item the identifier must belong to an active, eligible scope and document state;
+    \item every submitted identifier was returned by a tool call in the current question;
+    \item the identifier belongs to an active, eligible scope and document state;
     \item source-level identifiers are retained so an independent auditor can inspect the exact text;
     \item the answer and trajectory are stored separately from hidden reasoning text.
 \end{enumerate}
-
-This contract enforces provenance reachability, not semantic entailment. A model can still submit a relevant-looking source and produce an unsupported answer. For that reason, we treat answer--evidence consistency and abstention precision as missing mechanism evaluations rather than silently folding them into QA accuracy.
-
-\begin{algorithm}[t]
-\caption{Source-bounded query execution}
-\label{alg:query}
-\begin{algorithmic}[1]
-\REQUIRE query $q$, active scope $s$, memory overlay $G$, source store $D$
-\STATE $C \leftarrow \textsc{Fuse}(\textsc{Lexical}(q),\textsc{Semantic}(q),\textsc{Graph}(q,G))$
-\STATE $S \leftarrow \textsc{ResolveToSource}(C,D)$
-\STATE $S' \leftarrow \textsc{ExpandNeighbors}(S)$ when the query requires multi-turn context
-\STATE expose only records in $S'$ to the fresh agent context
-\STATE $a,E \leftarrow \textsc{AgentAnswerAndSubmit}(q,S')$
-\STATE reject any $e\in E$ not returned in this scope or not active; otherwise persist $(a,E)$
-\RETURN answer $a$, evidence $E$, and an auditable trajectory
-\end{algorithmic}
-\end{algorithm}
+The contract enforces provenance reachability, not semantic entailment---a model can still submit a relevant-looking source and produce an unsupported answer. The gate is verified deterministically, without any LLM, in \cref{sec:provenance-ablation}, together with deployed-run rejection statistics.
 
 \subsection{Implementation and audit artifacts}
 
-The local benchmark runtime records dataset and prompt provenance, model identifiers, tool observations, evidence IDs, latency, exit status, and code/runtime hashes. The evidence ledger in \texttt{paper/results/benchmark\_summary.json} is generated from frozen JSON summaries and per-item JSONL files. We preserve failed integrity checks and negative results instead of dropping them from the paper input.
+The runtime records dataset and prompt provenance, model identifiers, tool observations, evidence IDs, latency, exit status, and code/runtime hashes for every question. The machine-readable evidence ledger is generated from frozen JSON summaries and per-item JSONL files; failed integrity checks and negative results are preserved in the paper input rather than dropped.

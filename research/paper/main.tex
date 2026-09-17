@@ -44,6 +44,9 @@
 % Shared math commands
 \input{math_commands}
 
+% Recomputed-from-logs macros (sentinels until artifact sync; see figures/RECOMPUTED_MACROS.tex)
+\input{figures/RECOMPUTED_MACROS}
+
 % === ANONYMOUS SUBMISSION ===
 % Comment out \iclrfinalcopy for anonymous submission
 % Uncomment for camera-ready version
@@ -67,11 +70,13 @@
 \input{sections/0_abstract}
 \end{abstract}
 
+\input{figures/latex_includes}
 \input{sections/1_introduction}
 \input{sections/2_related_work}
 \input{sections/3_method}
 \input{sections/4_experiments}
-\input{sections/5_conclusion}
+\input{sections/5_analysis_limitations}
+\input{sections/6_conclusion}
 
 \bibliography{references}
 \bibliographystyle{iclr2026_conference}

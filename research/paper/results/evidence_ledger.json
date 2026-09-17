@@ -1,0 +1,2289 @@
+{
+  "channel_diagnostic_pct": {
+    "causal_scope": "Channel comparison; not a held-out final QA result.",
+    "counts": {
+      "fused_recall_all": 164,
+      "fused_recall_any": 195,
+      "lexical_recall_all": 158,
+      "lexical_recall_any": 194,
+      "questions": 210,
+      "semantic_recall_all": 148,
+      "semantic_recall_any": 187
+    },
+    "fused": {
+      "recall_all": 78.0952,
+      "recall_any": 92.8571
+    },
+    "lexical": {
+      "recall_all": 75.2381,
+      "recall_any": 92.381
+    },
+    "population": "210-question development/gate set",
+    "semantic": {
+      "recall_all": 70.4762,
+      "recall_any": 89.0476
+    }
+  },
+  "depth_diagnostic": {
+    "bootstrap_resamples": 2000,
+    "ci_level": 0.95,
+    "depth_10": {
+      "mean_evidence_payload_bytes": 1847.12,
+      "recall_all_pct": 51.9048,
+      "recall_any_pct": 72.381
+    },
+    "depth_20": {
+      "mean_evidence_payload_bytes": 3617.36,
+      "recall_all_pct": 59.5238,
+      "recall_any_pct": 81.9048
+    },
+    "embedding_model": "all-MiniLM-L6-v2",
+    "interpretation": "Retrieval is run once per reconstructed agent query at max depth (candidate_k=20) and OR-fused by best rank per turn; each k-slice is a prefix of one fixed ranking, so prefix monotonicity holds by construction (0 violations). The earlier depth10-vs20 replay changed primary result sets on every question and is retained below as a negative integrity finding, not a clean ablation.",
+    "invariant_violations": 0,
+    "ks": [
+      1,
+      3,
+      5,
+      10,
+      20
+    ],
+    "method": "single-max-run-prefix-slice",
+    "offline": true,
+    "per_k": {
+      "1": {
+        "mean_evidence_payload_bytes": 199.19,
+        "n": 210,
+        "recall_all_ci_high_pct": 19.0476,
+        "recall_all_ci_low_pct": 10.0,
+        "recall_all_pct": 14.2857,
+        "recall_any_ci_high_pct": 32.381,
+        "recall_any_ci_low_pct": 20.4762,
+        "recall_any_pct": 26.1905
+      },
+      "10": {
+        "mean_evidence_payload_bytes": 1847.12,
+        "n": 210,
+        "recall_all_ci_high_pct": 58.5833,
+        "recall_all_ci_low_pct": 45.2381,
+        "recall_all_pct": 51.9048,
+        "recall_any_ci_high_pct": 78.5714,
+        "recall_any_ci_low_pct": 66.6548,
+        "recall_any_pct": 72.381
+      },
+      "20": {
+        "mean_evidence_payload_bytes": 3617.36,
+        "n": 210,
+        "recall_all_ci_high_pct": 66.1905,
+        "recall_all_ci_low_pct": 52.8571,
+        "recall_all_pct": 59.5238,
+        "recall_any_ci_high_pct": 87.1429,
+        "recall_any_ci_low_pct": 76.6667,
+        "recall_any_pct": 81.9048
+      },
+      "3": {
+        "mean_evidence_payload_bytes": 575.7,
+        "n": 210,
+        "recall_all_ci_high_pct": 37.619,
+        "recall_all_ci_low_pct": 25.2381,
+        "recall_all_pct": 31.4286,
+        "recall_any_ci_high_pct": 58.0952,
+        "recall_any_ci_low_pct": 44.2857,
+        "recall_any_pct": 50.9524
+      },
+      "5": {
+        "mean_evidence_payload_bytes": 942.71,
+        "n": 210,
+        "recall_all_ci_high_pct": 46.1905,
+        "recall_all_ci_low_pct": 33.7976,
+        "recall_all_pct": 40.0,
+        "recall_any_ci_high_pct": 67.1429,
+        "recall_any_ci_low_pct": 53.8095,
+        "recall_any_pct": 60.4762
+      }
+    },
+    "population": "210-question development/gate set",
+    "retained_invalid_replay": {
+      "interpretation": "The invalid depth10-vs20 replay changed primary result sets on all 210 questions; retained in the evidence ledger as an integrity finding, not a clean ablation.",
+      "primary_result_invariant_passed": false,
+      "primary_result_invariant_violations": 210
+    },
+    "valid_prefix_ablation": true
+  },
+  "four_benchmark": {
+    "alfworld": {
+      "id": {
+        "games": 140,
+        "model": "kimi-k3",
+        "success_rate": 0.9786,
+        "tokens_total": 5028459,
+        "won": 137
+      },
+      "ood": {
+        "games": 134,
+        "model": "kimi-k3",
+        "success_rate": 0.9851,
+        "tokens_total": 5025052,
+        "won": 132
+      }
+    },
+    "bigcodebench": {
+      "answerer": "kimi-k3",
+      "calibrated": true,
+      "completion_gt_pass_rate": 0.855379188712522,
+      "completion_pass_at_1": 0.4858906525573192,
+      "hard_gt_pass_rate": 0.7777777777777778,
+      "hard_pass_at_1": 0.28378378378378377
+    },
+    "deterministic_recomputes": {
+      "contents": {
+        "consolidation_paired": {
+          "fc_mh": {
+            "delta": 0.03,
+            "delta_ci95": [
+              -0.07,
+              0.13
+            ],
+            "n": 100,
+            "v1": 0.67,
+            "v2": 0.7
+          },
+          "ttl_mcc": {
+            "delta": 0.03,
+            "delta_ci95": [
+              -0.07,
+              0.13
+            ],
+            "n": 100,
+            "v1": 0.43,
+            "v2": 0.46
+          }
+        },
+        "failure_taxonomy_v2_pi": {
+          "by_domain_count": {
+            "AR": 21,
+            "LRU": 2,
+            "SF": 40,
+            "TTL": 54
+          },
+          "by_domain_percent": {
+            "AR": 17.9,
+            "LRU": 1.7,
+            "SF": 34.2,
+            "TTL": 46.2
+          },
+          "macro_overall_miss_percent": 34.9,
+          "of_767": 15.3,
+          "sf_split": {
+            "FC-MH": 30,
+            "FC-SH": 10
+          },
+          "zero_score_questions": 117
+        },
+        "gate_rejections": {
+          "lme_v1": {
+            "events": 0,
+            "questions": 0
+          },
+          "lme_v2": {
+            "events": 0,
+            "questions": 0
+          },
+          "mab_v1": {
+            "ended_at_max_steps": 2,
+            "events": 11,
+            "questions": 9,
+            "resubmitted_in_loop": 7
+          },
+          "mab_v2": {
+            "ended_at_max_steps": 2,
+            "events": 11,
+            "questions": 11,
+            "resubmitted_in_loop": 9
+          }
+        },
+        "ladder_deltas": {
+          "delta_pi_minus_skill_v2": {
+            "ci95": [
+              0.214,
+              0.3049
+            ],
+            "point": 0.2443
+          },
+          "delta_skill_minus_base_v2": {
+            "ci95": [
+              0.0146,
+              0.1489
+            ],
+            "point": 0.0827
+          },
+          "overall_ci95_v1_x100": {
+            "baseline": [
+              24.1,
+              44.9
+            ],
+            "pi": [
+              61.6,
+              80.5
+            ],
+            "skill-agent": [
+              30.2,
+              48.5
+            ]
+          },
+          "overall_ci95_v2_x100": {
+            "baseline": [
+              26.5,
+              49.0
+            ],
+            "pi": [
+              59.6,
+              80.8
+            ],
+            "skill-agent": [
+              35.4,
+              52.4
+            ]
+          }
+        },
+        "rung_cost_v2": {
+          "rung1": null,
+          "rung2": {
+            "latency_seconds_mean": 69.0,
+            "latency_seconds_p95": 189.5,
+            "llm_calls_per_question": 6.12,
+            "questions": 767,
+            "tokens_per_question": 34977.0
+          },
+          "rung3": {
+            "latency_seconds_mean": 62.7,
+            "latency_seconds_p95": 211.0,
+            "llm_calls_per_question": 6.58,
+            "questions": 767,
+            "tokens_per_question": 95956.6
+          }
+        },
+        "x7": {
+          "equivalence_bound_points": 2.4,
+          "metrics": {
+            "arm1_source_lexical": {
+              "mrr@10": 0.402,
+              "ndcg@10": 0.4199,
+              "recall@1": 0.2571,
+              "recall_any@10": 0.7238
+            },
+            "arm2_source_semantic": {
+              "mrr@10": 0.4006,
+              "ndcg@10": 0.4218,
+              "recall@1": 0.2476,
+              "recall_any@10": 0.7238
+            },
+            "arm3_source_neighbors": {
+              "mrr@10": 0.4054,
+              "ndcg@10": 0.422,
+              "recall@1": 0.2571,
+              "recall_any@10": 0.7143
+            },
+            "arm4_source_relations": {
+              "mrr@10": 0.4098,
+              "ndcg@10": 0.427,
+              "recall@1": 0.2619,
+              "recall_any@10": 0.7238
+            }
+          }
+        }
+      },
+      "self_check": {
+        "v1:baseline": 0.3025,
+        "v1:pi": 0.6695,
+        "v1:skill-agent": 0.3759,
+        "v2:baseline": 0.324,
+        "v2:pi": 0.6511,
+        "v2:skill-agent": 0.4068
+      },
+      "source": "paper/results/recompute_from_logs.py",
+      "values_file": "paper/results/recomputed_values.json"
+    },
+    "engine_comparison": {
+      "lme": {
+        "calls_delta_pct": -65.5,
+        "docs_in_manifest": {
+          "v1": 940,
+          "v2": 1020
+        },
+        "from_reports": {
+          "dataset_total_active_documents": {
+            "v1": 1176,
+            "v2": 1176
+          },
+          "duplicate_family_rate": {
+            "v1": 0.008,
+            "v2": 0.002
+          },
+          "duplicate_family_rows": {
+            "v1": 482,
+            "v2": 99
+          },
+          "entity_families": {
+            "v1": 59892,
+            "v2": 55878
+          },
+          "note": "LME ingest stats coverage 940/1020 of 1176 docs (scheduler-kill losses, unbiased for per-doc ratios); both library DBs hold 1176/1176 active docs.",
+          "provenance": "reports/lme_v1_vs_v2_full_2026-08-29.md"
+        },
+        "manifest": {
+          "v1": {
+            "dataset_sha256": "d6f21ea9d60a0d56f34a05b609c79c88a451d2ae03597821ea3d5a9678c3a442",
+            "git_commit": "73d9c5e6996aad48c981068056b34d15388f99f9",
+            "path": ".benchmark_runs/longmemeval-kimik3-full-v1/run_manifest.json"
+          },
+          "v2": {
+            "dataset_sha256": "d6f21ea9d60a0d56f34a05b609c79c88a451d2ae03597821ea3d5a9678c3a442",
+            "git_commit": "73d9c5e6996aad48c981068056b34d15388f99f9",
+            "path": ".benchmark_runs/longmemeval-kimik3-full-v2/run_manifest.json"
+          }
+        },
+        "per_doc": {
+          "v1": {
+            "llm_calls_per_doc": 63.82,
+            "tokens_per_doc": 138997.19
+          },
+          "v2": {
+            "llm_calls_per_doc": 22.0,
+            "tokens_per_doc": 111701.73
+          }
+        },
+        "stats_coverage_docs": {
+          "v1": 940,
+          "v2": 1020
+        },
+        "tokens_delta_pct": -19.6
+      },
+      "mab": {
+        "calls_delta_pct": -45.9,
+        "docs_in_manifest": {
+          "v1": 58,
+          "v2": 46
+        },
+        "from_reports": {
+          "duplicate_family_rate": {
+            "v1": 0.2,
+            "v2": 0.0
+          },
+          "duplicate_names": {
+            "v1": 154,
+            "v2": 61
+          },
+          "entity_families": {
+            "v1": 20426,
+            "v2": 19244
+          },
+          "provenance": "reports/mab_v1_vs_v2_2026-08-30.md"
+        },
+        "manifest": {
+          "v1": {
+            "dataset_sha256": "98f7bd1774526cc95712ef4227f67167a59ef4ad416834ae451ea37b9ae02b07",
+            "git_commit": "73d9c5e6996aad48c981068056b34d15388f99f9",
+            "path": ".benchmark_runs/memoryagentbench-kimik3-sample-v1/run_manifest.json"
+          },
+          "v2": {
+            "dataset_sha256": "98f7bd1774526cc95712ef4227f67167a59ef4ad416834ae451ea37b9ae02b07",
+            "git_commit": "8fa96510036b46c2c4fb6232a8a7b5e2d4a34a07",
+            "path": ".benchmark_runs/memoryagentbench-kimik3-sample-v2/run_manifest.json"
+          }
+        },
+        "paired_intersection_docs": 45,
+        "per_doc_intersection": {
+          "v1": {
+            "llm_calls_per_doc": 608.93,
+            "tokens_per_doc": 1456319.13
+          },
+          "v2": {
+            "llm_calls_per_doc": 329.38,
+            "tokens_per_doc": 1191450.82
+          }
+        },
+        "stats_coverage_docs": {
+          "v1": 58,
+          "v2": 46
+        },
+        "tokens_delta_pct": -18.2
+      },
+      "purpose": "Paired v1->v2 ingest efficiency on identical datasets (paper Sec. engine-paired). Calls/tokens per document are recomputed here from per-document llm_call_stats in the hashed run manifests; MAB ratios use the 45-document paired intersection (manifests missing from one generation are excluded). Library-level counts (duplicate-family rates, entity-family totals, dataset active-document totals) require the per-scope library DBs, which remain on the benchmark machine, and are recorded verbatim from the hashed v1/v2 comparison reports listed in sources."
+    },
+    "longmemeval_full_ingest": {
+      "v1_baseline": {
+        "by_type": {
+          "knowledge-update": {
+            "count": 4,
+            "score": 0.75
+          },
+          "multi-session": {
+            "count": 7,
+            "score": 0.5714285714285714
+          },
+          "single-session-assistant": {
+            "count": 2,
+            "score": 1.0
+          },
+          "single-session-preference": {
+            "count": 2,
+            "score": 0.0
+          },
+          "single-session-user": {
+            "count": 4,
+            "score": 0.75
+          },
+          "temporal-reasoning": {
+            "count": 6,
+            "score": 0.8333333333333334
+          }
+        },
+        "overall": 0.68,
+        "retrieval_baseline": {
+          "session_evidence_recall@10": 0.7666666666666667,
+          "session_ndcg_any@1": 0.72
+        },
+        "scored": 25,
+        "total": 25,
+        "track": "baseline"
+      },
+      "v1_pi": {
+        "by_type": {
+          "knowledge-update": {
+            "count": 4,
+            "score": 1.0
+          },
+          "multi-session": {
+            "count": 7,
+            "score": 0.8571428571428571
+          },
+          "single-session-assistant": {
+            "count": 2,
+            "score": 0.5
+          },
+          "single-session-preference": {
+            "count": 2,
+            "score": 0.5
+          },
+          "single-session-user": {
+            "count": 5,
+            "score": 1.0
+          },
+          "temporal-reasoning": {
+            "count": 7,
+            "score": 1.0
+          }
+        },
+        "overall": 0.8888888888888888,
+        "retrieval_baseline": {},
+        "scored": 27,
+        "total": 27,
+        "track": "pi"
+      },
+      "v1_skill-agent": {
+        "by_type": {
+          "knowledge-update": {
+            "count": 4,
+            "score": 0.75
+          },
+          "multi-session": {
+            "count": 7,
+            "score": 0.7142857142857143
+          },
+          "single-session-assistant": {
+            "count": 2,
+            "score": 0.5
+          },
+          "single-session-preference": {
+            "count": 2,
+            "score": 0.0
+          },
+          "single-session-user": {
+            "count": 4,
+            "score": 0.75
+          },
+          "temporal-reasoning": {
+            "count": 6,
+            "score": 0.8333333333333334
+          }
+        },
+        "overall": 0.68,
+        "retrieval_baseline": {},
+        "scored": 25,
+        "total": 25,
+        "track": "skill-agent"
+      },
+      "v2_baseline": {
+        "by_type": {
+          "knowledge-update": {
+            "count": 4,
+            "score": 0.75
+          },
+          "multi-session": {
+            "count": 7,
+            "score": 0.5714285714285714
+          },
+          "single-session-assistant": {
+            "count": 2,
+            "score": 1.0
+          },
+          "single-session-preference": {
+            "count": 2,
+            "score": 0.5
+          },
+          "single-session-user": {
+            "count": 4,
+            "score": 0.75
+          },
+          "temporal-reasoning": {
+            "count": 6,
+            "score": 0.8333333333333334
+          }
+        },
+        "overall": 0.72,
+        "retrieval_baseline": {
+          "session_evidence_recall@10": 0.8466666666666667,
+          "session_ndcg_any@1": 0.8
+        },
+        "scored": 25,
+        "total": 25,
+        "track": "baseline"
+      },
+      "v2_pi": {
+        "by_type": {
+          "knowledge-update": {
+            "count": 4,
+            "score": 1.0
+          },
+          "multi-session": {
+            "count": 7,
+            "score": 1.0
+          },
+          "single-session-assistant": {
+            "count": 2,
+            "score": 0.5
+          },
+          "single-session-preference": {
+            "count": 2,
+            "score": 0.5
+          },
+          "single-session-user": {
+            "count": 5,
+            "score": 1.0
+          },
+          "temporal-reasoning": {
+            "count": 7,
+            "score": 1.0
+          }
+        },
+        "overall": 0.9259259259259259,
+        "retrieval_baseline": {},
+        "scored": 27,
+        "total": 27,
+        "track": "pi"
+      },
+      "v2_skill-agent": {
+        "by_type": {
+          "knowledge-update": {
+            "count": 4,
+            "score": 0.5
+          },
+          "multi-session": {
+            "count": 7,
+            "score": 0.7142857142857143
+          },
+          "single-session-assistant": {
+            "count": 2,
+            "score": 1.0
+          },
+          "single-session-preference": {
+            "count": 2,
+            "score": 0.5
+          },
+          "single-session-user": {
+            "count": 4,
+            "score": 0.75
+          },
+          "temporal-reasoning": {
+            "count": 6,
+            "score": 0.8333333333333334
+          }
+        },
+        "overall": 0.72,
+        "retrieval_baseline": {},
+        "scored": 25,
+        "total": 25,
+        "track": "skill-agent"
+      }
+    },
+    "memoryagentbench": {
+      "entity2id_sha256": "63353aca481bc9558b502f91cb98f6fa26438796fdd7e0bc06b5a1532126e8b5",
+      "note": "v1/v2 engine generations are paired on the identical 767-question stream, scorer commit, and entity2id fingerprint (verified single unique sha across all six summaries).",
+      "official_scorer_commit": "455306dcabc3842526eb83cd4e225e5d486c5c5d",
+      "subset": {
+        "dropped_for_budget": [
+          {
+            "context_chars": 1589693,
+            "family": "longmemeval_s",
+            "scope_id": "mab-ar-018"
+          },
+          {
+            "context_chars": 1118123,
+            "family": "factconsolidation_sh",
+            "scope_id": "mab-cr-007"
+          },
+          {
+            "context_chars": 1118123,
+            "family": "factconsolidation_mh",
+            "scope_id": "mab-cr-003"
+          },
+          {
+            "context_chars": 406539,
+            "family": "detective_qa",
+            "scope_id": "mab-lru-102"
+          },
+          {
+            "context_chars": 404907,
+            "family": "icl",
+            "scope_id": "mab-ttl-001"
+          },
+          {
+            "context_chars": 394453,
+            "family": "icl",
+            "scope_id": "mab-ttl-005"
+          },
+          {
+            "context_chars": 393385,
+            "family": "icl",
+            "scope_id": "mab-ttl-004"
+          },
+          {
+            "context_chars": 369249,
+            "family": "icl",
+            "scope_id": "mab-ttl-003"
+          },
+          {
+            "context_chars": 298903,
+            "family": "infbench_sum_eng_shots2",
+            "scope_id": "mab-lru-077"
+          },
+          {
+            "context_chars": 295720,
+            "family": "infbench_sum_eng_shots2",
+            "scope_id": "mab-lru-084"
+          },
+          {
+            "context_chars": 295222,
+            "family": "infbench_sum_eng_shots2",
+            "scope_id": "mab-lru-091"
+          },
+          {
+            "context_chars": 273473,
+            "family": "factconsolidation_sh",
+            "scope_id": "mab-cr-006"
+          },
+          {
+            "context_chars": 273473,
+            "family": "factconsolidation_mh",
+            "scope_id": "mab-cr-002"
+          },
+          {
+            "context_chars": 136565,
+            "family": "factconsolidation_sh",
+            "scope_id": "mab-cr-005"
+          },
+          {
+            "context_chars": 136565,
+            "family": "factconsolidation_mh",
+            "scope_id": "mab-cr-001"
+          },
+          {
+            "context_chars": 5658996,
+            "family": "recsys_redial_full",
+            "scope_id": "mab-ttl-000"
+          },
+          {
+            "context_chars": 1881772,
+            "family": "ruler_qa2_421K",
+            "scope_id": "mab-ar-001"
+          }
+        ],
+        "scopes": [
+          {
+            "competency": "AR",
+            "context_chars": 985698,
+            "context_documents": 9,
+            "context_sha256": "d6d85ecc896724ed1bca17db169dfb947808adcdc0362598c79194acfbd2faa8",
+            "family": "ruler_qa1_197K",
+            "official_source": "ruler_qa1_197K",
+            "questions": 100,
+            "scope_id": "mab-ar-000"
+          },
+          {
+            "competency": "AR",
+            "context_chars": 1694961,
+            "context_documents": 15,
+            "context_sha256": "74109788618f5270d7b83af2f0dd0cf8b4a151ed15d39f5e5bb827e2e58f4966",
+            "family": "eventqa_full",
+            "official_source": "eventqa_full",
+            "questions": 100,
+            "scope_id": "mab-ar-005"
+          },
+          {
+            "competency": "AR",
+            "context_chars": 272813,
+            "context_documents": 3,
+            "context_sha256": "ec65b7cb50d7280b85da1116991a736e46f1181e2cf3dfcbf83cdf1f11a03974",
+            "family": "eventqa_65536",
+            "official_source": "eventqa_65536",
+            "questions": 100,
+            "scope_id": "mab-ar-010"
+          },
+          {
+            "competency": "AR",
+            "context_chars": 548401,
+            "context_documents": 5,
+            "context_sha256": "13f7b62d03ae1368db57715dc7655dc3ad46e7b714966115e517211505722a41",
+            "family": "eventqa_131072",
+            "official_source": "eventqa_131072",
+            "questions": 100,
+            "scope_id": "mab-ar-015"
+          },
+          {
+            "competency": "AR",
+            "context_chars": 1588305,
+            "context_documents": 14,
+            "context_sha256": "df9c9f3f789da3e2b728eaf66415a448a3a8d8513b58656860ff78077a15366b",
+            "family": "longmemeval_s",
+            "official_source": "longmemeval_s*",
+            "questions": 60,
+            "scope_id": "mab-ar-020"
+          },
+          {
+            "competency": "CR",
+            "context_chars": 26157,
+            "context_documents": 1,
+            "context_sha256": "e46cb14b53eedd71bf92762974a597d46b001157b6b769c03865dee9641818a1",
+            "family": "factconsolidation_mh",
+            "official_source": "factconsolidation_mh_6k",
+            "questions": 100,
+            "scope_id": "mab-cr-000"
+          },
+          {
+            "competency": "CR",
+            "context_chars": 26157,
+            "context_documents": 1,
+            "context_sha256": "e46cb14b53eedd71bf92762974a597d46b001157b6b769c03865dee9641818a1",
+            "family": "factconsolidation_sh",
+            "official_source": "factconsolidation_sh_6k",
+            "questions": 100,
+            "scope_id": "mab-cr-004"
+          },
+          {
+            "competency": "LRU",
+            "context_chars": 272368,
+            "context_documents": 3,
+            "context_sha256": "b5ce958a6db779794a0fedfc9e5f2087593af5465654938c65b37df1a5a70eb6",
+            "family": "infbench_sum_eng_shots2",
+            "official_source": "infbench_sum_eng_shots2",
+            "questions": 1,
+            "scope_id": "mab-lru-058"
+          },
+          {
+            "competency": "LRU",
+            "context_chars": 399861,
+            "context_documents": 4,
+            "context_sha256": "cd66eabd2f070a3893d685ddfadfbd749c5d65115a27afc5fb7296ba5728a1e3",
+            "family": "detective_qa",
+            "official_source": "detective_qa",
+            "questions": 6,
+            "scope_id": "mab-lru-100"
+          },
+          {
+            "competency": "TTL",
+            "context_chars": 366252,
+            "context_documents": 4,
+            "context_sha256": "36d1c3fde8d8fb214807824aa6beef6c1059e2187afb68d9f214faec137a7aad",
+            "family": "icl",
+            "official_source": "icl_clinic150_7050shot_balance",
+            "questions": 100,
+            "scope_id": "mab-ttl-002"
+          }
+        ],
+        "totals": {
+          "context_chars": 6180973,
+          "families": [
+            "detective_qa",
+            "eventqa_131072",
+            "eventqa_65536",
+            "eventqa_full",
+            "factconsolidation_mh",
+            "factconsolidation_sh",
+            "icl",
+            "infbench_sum_eng_shots2",
+            "longmemeval_s",
+            "ruler_qa1_197K"
+          ],
+          "questions": 767,
+          "scopes": 10
+        }
+      },
+      "tracks": {
+        "v1_baseline": {
+          "domains": {
+            "AR": {
+              "Avg": 0.57,
+              "EventQA": 0.9033333333333333,
+              "LME(S*)": 0.26666666666666666,
+              "SH-QA": 0.54
+            },
+            "LRU": {
+              "Avg": 0.25,
+              "DetQA": 0.5,
+              "Summ": 0.0
+            },
+            "SF": {
+              "Avg": 0.35000000000000003,
+              "FC-MH": 0.02,
+              "FC-SH": 0.68
+            },
+            "TTL": {
+              "Avg": 0.04,
+              "MCC": 0.04
+            }
+          },
+          "judge_model": "kimi-k3",
+          "overall": 0.3025,
+          "questions": 767
+        },
+        "v1_pi": {
+          "domains": {
+            "AR": {
+              "Avg": 0.94,
+              "EventQA": 0.98,
+              "LME(S*)": 0.9,
+              "SH-QA": 0.94
+            },
+            "LRU": {
+              "Avg": 0.5228613569321534,
+              "DetQA": 0.8333333333333334,
+              "Summ": 0.21238938053097342
+            },
+            "SF": {
+              "Avg": 0.785,
+              "FC-MH": 0.67,
+              "FC-SH": 0.9
+            },
+            "TTL": {
+              "Avg": 0.43,
+              "MCC": 0.43
+            }
+          },
+          "judge_model": "kimi-k3",
+          "overall": 0.6694653392330383,
+          "questions": 767
+        },
+        "v1_skill-agent": {
+          "domains": {
+            "AR": {
+              "Avg": 0.7266666666666666,
+              "EventQA": 0.9066666666666666,
+              "LME(S*)": 0.43333333333333335,
+              "SH-QA": 0.84
+            },
+            "LRU": {
+              "Avg": 0.3918338108882522,
+              "DetQA": 0.5,
+              "Summ": 0.28366762177650434
+            },
+            "SF": {
+              "Avg": 0.35500000000000004,
+              "FC-MH": 0.04,
+              "FC-SH": 0.67
+            },
+            "TTL": {
+              "Avg": 0.03,
+              "MCC": 0.03
+            }
+          },
+          "judge_model": "kimi-k3",
+          "overall": 0.3758751193887297,
+          "questions": 767
+        },
+        "v2_baseline": {
+          "domains": {
+            "AR": {
+              "Avg": 0.5977777777777777,
+              "EventQA": 0.8966666666666666,
+              "LME(S*)": 0.4166666666666667,
+              "SH-QA": 0.48
+            },
+            "LRU": {
+              "Avg": 0.3333333333333333,
+              "DetQA": 0.6666666666666666,
+              "Summ": 0.0
+            },
+            "SF": {
+              "Avg": 0.34500000000000003,
+              "FC-MH": 0.03,
+              "FC-SH": 0.66
+            },
+            "TTL": {
+              "Avg": 0.02,
+              "MCC": 0.02
+            }
+          },
+          "judge_model": "kimi-k3",
+          "overall": 0.32402777777777775,
+          "questions": 767
+        },
+        "v2_pi": {
+          "domains": {
+            "AR": {
+              "Avg": 0.9277777777777777,
+              "EventQA": 0.98,
+              "LME(S*)": 0.8833333333333333,
+              "SH-QA": 0.92
+            },
+            "LRU": {
+              "Avg": 0.4166666666666667,
+              "DetQA": 0.8333333333333334,
+              "Summ": 0.0
+            },
+            "SF": {
+              "Avg": 0.8,
+              "FC-MH": 0.7,
+              "FC-SH": 0.9
+            },
+            "TTL": {
+              "Avg": 0.46,
+              "MCC": 0.46
+            }
+          },
+          "judge_model": "kimi-k3",
+          "overall": 0.6511111111111111,
+          "questions": 767
+        },
+        "v2_skill-agent": {
+          "domains": {
+            "AR": {
+              "Avg": 0.7066666666666667,
+              "EventQA": 0.8833333333333333,
+              "LME(S*)": 0.5166666666666667,
+              "SH-QA": 0.72
+            },
+            "LRU": {
+              "Avg": 0.5654269972451791,
+              "DetQA": 0.8333333333333334,
+              "Summ": 0.2975206611570248
+            },
+            "SF": {
+              "Avg": 0.335,
+              "FC-MH": 0.04,
+              "FC-SH": 0.63
+            },
+            "TTL": {
+              "Avg": 0.02,
+              "MCC": 0.02
+            }
+          },
+          "judge_model": "kimi-k3",
+          "overall": 0.40677341597796146,
+          "questions": 767
+        }
+      }
+    },
+    "scope_note": "Primary v2-reframe evidence: MemoryAgentBench under the official scorer on a 767-question stratified subset (59 documents, 10 scopes; full benchmark is 3,671 questions / 29 tasks), LongMemEval-S full ingest paired tracks, BigCodeBench and ALFWorld as memory-insensitive agent-carrier anchors. Cross-system comparisons never subtract across calibers; see the paper's caliber-discipline statements."
+  },
+  "main_results": {
+    "locomo_1540_by_category_counts": {
+      "multi_hop": 282,
+      "open_domain": 96,
+      "single_hop": 841,
+      "temporal": 321
+    },
+    "locomo_1540_by_category_pct": {
+      "multi_hop": 91.844,
+      "open_domain": 73.9583,
+      "single_hop": 95.3627,
+      "temporal": 94.3925
+    },
+    "locomo_1540_k3_answerer_accuracy_pct": 95.1948,
+    "locomo_1540_k3_answerer_by_category_pct": {
+      "multi_hop": 93.617,
+      "open_domain": 80.2083,
+      "single_hop": 97.3841,
+      "temporal": 95.3271
+    },
+    "locomo_1540_k3_answerer_correct": 1466,
+    "locomo_1540_k3_answerer_cross_judge_agreement": {
+      "agreement": 0.9851,
+      "both_correct": 1447,
+      "both_wrong": 70,
+      "kimi_k3_only_correct": 19,
+      "qwen37_only_correct": 4
+    },
+    "locomo_1540_k3_answerer_paired_vs_qwen37_answerer": {
+      "accuracy_delta_points": 1.6234,
+      "net": 25,
+      "regressions": 25,
+      "repairs": 50
+    },
+    "locomo_1540_k3_answerer_qwen37_judge_accuracy_pct": 94.2208,
+    "locomo_1540_k3_answerer_qwen37_judge_by_category_pct": {
+      "multi_hop": 92.9078,
+      "open_domain": 77.0833,
+      "single_hop": 96.9084,
+      "temporal": 93.4579
+    },
+    "locomo_1540_k3_answerer_qwen37_judge_correct": 1451,
+    "locomo_1540_k3_answerer_roles": {
+      "answerer": "kimi-k3",
+      "category_mapping_note": "Local by_type codes map to Mem0's LoCoMo categories by question count: type4=Single-hop(841), type1=Multi-hop(282), type3=Open-domain(96), type2=Temporal(321). Total 1540.",
+      "integrity_caveat": "Diagnostic cross-judge run: answer rows are unchanged from the locomo-full-quality-v1 source run (answer_rows_unchanged=true, sha 76af5772...) and the per-item JSONL carries runtime_code_sha256 on all 2063 rows, but the run is flagged formal_claim_allowed=false because 1529 historical answer rows predate runtime-code fingerprinting in the legacy source run. Reported as a diagnostic cross-judge result, not a fingerprint-complete formal result.",
+      "judge_independent": "qwen3.7-plus cross-judge",
+      "judge_primary": "kimi-k3 (same-model)",
+      "library_snapshot_sha256": "cf2e76b8d3274309f8f4d847fa4345f190784d6865b9686566b3e893e2bd6b38",
+      "metric": "binary CORRECT/WRONG accuracy (Mem0's J methodology: GPT-4o-mini answerer+judge replaced by K3 answerer+judge)",
+      "prompt_commit": "4b61c5d31b9c668a12b4f5e78064248a02c82d2b",
+      "prompt_mode": "unified-no-evidence-exact",
+      "prompt_repository": "mem0ai/memory-benchmarks",
+      "retrieval_model": "kimi-k3",
+      "run_dir": ".benchmark_runs/locomo-k3-agent-judge-diagnostic-v1",
+      "single_run_note": "Single run, vs Mem0's published J as mean+/-std over 10 runs."
+    },
+    "locomo_1540_k3_answerer_runtime_fingerprints": {
+      "dataset_sha256": "79fa87e90f04081343b8c8debecb80a9a6842b76a7aa537dc9fdf651ea698ff4",
+      "library_snapshot_sha256": "cf2e76b8d3274309f8f4d847fa4345f190784d6865b9686566b3e893e2bd6b38",
+      "rows": 2063,
+      "runtime_code_sha256_counts": {
+        "2fa32774c58d17e3271334997f49cb99795ce677c39f474f840d62ab26be409f": 2019,
+        "36b459332dcb1505721bb818b8e04b88489711ea93553b64ffaec573d967804c": 33,
+        "42afb1acd71e516420411b744fe5d91f4cc63c05a2bd370db67ff55f54523510": 11
+      },
+      "source": ".benchmark_runs/locomo-k3-agent-judge-diagnostic-v1/results.kimi-agent-direct-k3-agent-full-thinking-off-v1.jsonl"
+    },
+    "locomo_1540_k3_answerer_total": 1540,
+    "locomo_1540_kimik3_accuracy_pct": 93.5714,
+    "locomo_1540_kimik3_by_category_pct": {
+      "multi_hop": 90.7801,
+      "open_domain": 76.0417,
+      "single_hop": 96.0761,
+      "temporal": 94.704
+    },
+    "locomo_1540_kimik3_correct": 1441,
+    "locomo_1540_legacy_prompt_judge_pct": 92.2078,
+    "locomo_1540_legacy_prompt_judge_total": 1540,
+    "locomo_1540_qwen37_accuracy_pct": 93.1818,
+    "locomo_1540_qwen37_correct": 1435,
+    "locomo_1540_roles": {
+      "answerer": "qwen3.7-plus",
+      "category_mapping_note": "Local by_type codes map to Mem0's LoCoMo categories by question count: type4=Single-hop(841), type1=Multi-hop(282), type3=Open-domain(96), type2=Temporal(321). Total 1540.",
+      "judge_kimik3": "kimi-k3 cross-judge",
+      "judge_qwen37": "qwen3.7-plus, exact prompt",
+      "metric": "binary CORRECT/WRONG accuracy (same J methodology as Mem0)",
+      "prompt_commit": "4b61c5d31b9c668a12b4f5e78064248a02c82d2b",
+      "prompt_repository": "mem0ai/memory-benchmarks"
+    },
+    "locomo_1986_token_f1_pct": 64.9887,
+    "locomo_1986_total": 1986,
+    "locomo_plus_401_correct": 259,
+    "locomo_plus_401_qwen37_accuracy_pct": 64.5885,
+    "longmemeval_by_type_counts": {
+      "knowledge-update": 78,
+      "multi-session": 133,
+      "single-session-assistant": 56,
+      "single-session-preference": 30,
+      "single-session-user": 70,
+      "temporal-reasoning": 133
+    },
+    "longmemeval_by_type_pct": {
+      "knowledge-update": 91.0256,
+      "multi-session": 74.4361,
+      "single-session-assistant": 100.0,
+      "single-session-preference": 53.3333,
+      "single-session-user": 98.5714,
+      "temporal-reasoning": 84.2105
+    },
+    "longmemeval_s_500_correct": 423,
+    "longmemeval_s_500_qwen37_accuracy_pct": 84.6,
+    "roles": {
+      "locomo_1540_k3_answerer": {
+        "answerer": "kimi-k3",
+        "judge": "kimi-k3 (same-model) + qwen3.7-plus cross-judge",
+        "prompt_commit": "4b61c5d31b9c668a12b4f5e78064248a02c82d2b",
+        "prompt_mode": "unified-no-evidence-exact",
+        "prompt_repository": "mem0ai/memory-benchmarks",
+        "retrieval_model": "kimi-k3",
+        "run_dir": ".benchmark_runs/locomo-k3-agent-judge-diagnostic-v1"
+      },
+      "locomo_1540_kimik3": {
+        "answerer": "qwen3.7-plus",
+        "judge": "kimi-k3",
+        "prompt_commit": "4b61c5d31b9c668a12b4f5e78064248a02c82d2b",
+        "prompt_repository": "mem0ai/memory-benchmarks"
+      },
+      "locomo_1540_qwen37": {
+        "answerer": "qwen3.7-plus",
+        "judge": "qwen3.7-plus",
+        "prompt_commit": "4b61c5d31b9c668a12b4f5e78064248a02c82d2b",
+        "prompt_repository": "mem0ai/memory-benchmarks"
+      },
+      "longmemeval_s_500": {
+        "answerer": "qwen3.7-plus",
+        "judge": "qwen3.7-plus",
+        "prompt_mode": "official-compatible-prompt",
+        "prompt_repository": "xiaowu0162/LongMemEval"
+      }
+    }
+  },
+  "meme_limitation": {
+    "after_raw_accuracy_pct": 62.2478,
+    "after_raw_correct": 432,
+    "after_raw_total": 694,
+    "episodes": 100,
+    "task_accuracy_pct": {
+      "Abs_real": 59.2308,
+      "Agg": 80.0,
+      "Cas_real": 46.3415,
+      "Del": 0.0,
+      "ER": 100.0,
+      "Tr": 97.0
+    }
+  },
+  "provenance_ablation_x7": {
+    "arms": {
+      "arm1_source_lexical": {
+        "channels": [
+          "raw-document",
+          "episode-bm25"
+        ],
+        "description": "source-only lexical (raw-document + episode-bm25)",
+        "gate_mode": "evidence_bound",
+        "per_k": {
+          "1": {
+            "mean_evidence_payload_bytes": 201.82,
+            "n": 210,
+            "recall_all_ci_high_pct": 19.0476,
+            "recall_all_ci_low_pct": 10.0,
+            "recall_all_pct": 14.2857,
+            "recall_any_ci_high_pct": 31.9048,
+            "recall_any_ci_low_pct": 20.0,
+            "recall_any_pct": 25.7143
+          },
+          "10": {
+            "mean_evidence_payload_bytes": 1833.06,
+            "n": 210,
+            "recall_all_ci_high_pct": 58.0952,
+            "recall_all_ci_low_pct": 44.7619,
+            "recall_all_pct": 51.4286,
+            "recall_any_ci_high_pct": 78.5714,
+            "recall_any_ci_low_pct": 66.6667,
+            "recall_any_pct": 72.381
+          },
+          "20": {
+            "mean_evidence_payload_bytes": 3573.58,
+            "n": 210,
+            "recall_all_ci_high_pct": 66.6667,
+            "recall_all_ci_low_pct": 53.3214,
+            "recall_all_pct": 60.0,
+            "recall_any_ci_high_pct": 86.6667,
+            "recall_any_ci_low_pct": 76.6667,
+            "recall_any_pct": 81.4286
+          },
+          "3": {
+            "mean_evidence_payload_bytes": 577.52,
+            "n": 210,
+            "recall_all_ci_high_pct": 35.7143,
+            "recall_all_ci_low_pct": 23.3333,
+            "recall_all_pct": 29.5238,
+            "recall_any_ci_high_pct": 56.1905,
+            "recall_any_ci_low_pct": 42.8571,
+            "recall_any_pct": 49.5238
+          },
+          "5": {
+            "mean_evidence_payload_bytes": 939.79,
+            "n": 210,
+            "recall_all_ci_high_pct": 45.2381,
+            "recall_all_ci_low_pct": 31.9048,
+            "recall_all_pct": 38.5714,
+            "recall_any_ci_high_pct": 67.1429,
+            "recall_any_ci_low_pct": 53.8095,
+            "recall_any_pct": 60.4762
+          }
+        },
+        "retrieval_identical_to": null
+      },
+      "arm2_source_semantic": {
+        "channels": [
+          "raw-document",
+          "episode-bm25",
+          "semantic-provenance"
+        ],
+        "description": "source lexical + semantic provenance",
+        "gate_mode": "evidence_bound",
+        "per_k": {
+          "1": {
+            "mean_evidence_payload_bytes": 196.76,
+            "n": 210,
+            "recall_all_ci_high_pct": 19.0476,
+            "recall_all_ci_low_pct": 10.0,
+            "recall_all_pct": 14.2857,
+            "recall_any_ci_high_pct": 30.4762,
+            "recall_any_ci_low_pct": 19.0476,
+            "recall_any_pct": 24.7619
+          },
+          "10": {
+            "mean_evidence_payload_bytes": 1841.26,
+            "n": 210,
+            "recall_all_ci_high_pct": 58.0952,
+            "recall_all_ci_low_pct": 44.7619,
+            "recall_all_pct": 51.4286,
+            "recall_any_ci_high_pct": 78.5714,
+            "recall_any_ci_low_pct": 66.6667,
+            "recall_any_pct": 72.381
+          },
+          "20": {
+            "mean_evidence_payload_bytes": 3599.6,
+            "n": 210,
+            "recall_all_ci_high_pct": 66.2024,
+            "recall_all_ci_low_pct": 53.3214,
+            "recall_all_pct": 60.0,
+            "recall_any_ci_high_pct": 86.1905,
+            "recall_any_ci_low_pct": 75.7143,
+            "recall_any_pct": 80.9524
+          },
+          "3": {
+            "mean_evidence_payload_bytes": 573.36,
+            "n": 210,
+            "recall_all_ci_high_pct": 37.1429,
+            "recall_all_ci_low_pct": 24.7619,
+            "recall_all_pct": 30.9524,
+            "recall_any_ci_high_pct": 57.1429,
+            "recall_any_ci_low_pct": 43.8095,
+            "recall_any_pct": 50.4762
+          },
+          "5": {
+            "mean_evidence_payload_bytes": 941.08,
+            "n": 210,
+            "recall_all_ci_high_pct": 47.619,
+            "recall_all_ci_low_pct": 34.2857,
+            "recall_all_pct": 40.9524,
+            "recall_any_ci_high_pct": 67.619,
+            "recall_any_ci_low_pct": 54.2857,
+            "recall_any_pct": 60.9524
+          }
+        },
+        "retrieval_identical_to": null
+      },
+      "arm3_source_neighbors": {
+        "channels": [
+          "raw-document",
+          "episode-bm25",
+          "semantic-provenance",
+          "graph-neighbor"
+        ],
+        "description": "source + neighboring spans (graph-neighbor)",
+        "gate_mode": "evidence_bound",
+        "per_k": {
+          "1": {
+            "mean_evidence_payload_bytes": 199.94,
+            "n": 210,
+            "recall_all_ci_high_pct": 19.0476,
+            "recall_all_ci_low_pct": 10.0,
+            "recall_all_pct": 14.2857,
+            "recall_any_ci_high_pct": 31.9048,
+            "recall_any_ci_low_pct": 20.0,
+            "recall_any_pct": 25.7143
+          },
+          "10": {
+            "mean_evidence_payload_bytes": 1844.61,
+            "n": 210,
+            "recall_all_ci_high_pct": 57.619,
+            "recall_all_ci_low_pct": 44.2857,
+            "recall_all_pct": 50.9524,
+            "recall_any_ci_high_pct": 77.619,
+            "recall_any_ci_low_pct": 65.7024,
+            "recall_any_pct": 71.4286
+          },
+          "20": {
+            "mean_evidence_payload_bytes": 3617.66,
+            "n": 210,
+            "recall_all_ci_high_pct": 66.1905,
+            "recall_all_ci_low_pct": 52.8571,
+            "recall_all_pct": 59.5238,
+            "recall_any_ci_high_pct": 86.6667,
+            "recall_any_ci_low_pct": 76.1905,
+            "recall_any_pct": 81.4286
+          },
+          "3": {
+            "mean_evidence_payload_bytes": 577.16,
+            "n": 210,
+            "recall_all_ci_high_pct": 37.1429,
+            "recall_all_ci_low_pct": 24.7619,
+            "recall_all_pct": 30.9524,
+            "recall_any_ci_high_pct": 57.631,
+            "recall_any_ci_low_pct": 44.2857,
+            "recall_any_pct": 50.9524
+          },
+          "5": {
+            "mean_evidence_payload_bytes": 946.93,
+            "n": 210,
+            "recall_all_ci_high_pct": 46.1905,
+            "recall_all_ci_low_pct": 32.8571,
+            "recall_all_pct": 39.5238,
+            "recall_any_ci_high_pct": 66.1905,
+            "recall_any_ci_low_pct": 52.8571,
+            "recall_any_pct": 59.5238
+          }
+        },
+        "retrieval_identical_to": null
+      },
+      "arm4_source_relations": {
+        "channels": [
+          "raw-document",
+          "episode-bm25",
+          "semantic-provenance",
+          "graph-neighbor",
+          "relation-evidence"
+        ],
+        "description": "source + versioned concepts/relations (full 5 channels)",
+        "gate_mode": "evidence_bound",
+        "per_k": {
+          "1": {
+            "mean_evidence_payload_bytes": 199.19,
+            "n": 210,
+            "recall_all_ci_high_pct": 19.0476,
+            "recall_all_ci_low_pct": 10.0,
+            "recall_all_pct": 14.2857,
+            "recall_any_ci_high_pct": 32.381,
+            "recall_any_ci_low_pct": 20.4762,
+            "recall_any_pct": 26.1905
+          },
+          "10": {
+            "mean_evidence_payload_bytes": 1847.12,
+            "n": 210,
+            "recall_all_ci_high_pct": 58.5833,
+            "recall_all_ci_low_pct": 45.2381,
+            "recall_all_pct": 51.9048,
+            "recall_any_ci_high_pct": 78.5714,
+            "recall_any_ci_low_pct": 66.6548,
+            "recall_any_pct": 72.381
+          },
+          "20": {
+            "mean_evidence_payload_bytes": 3617.36,
+            "n": 210,
+            "recall_all_ci_high_pct": 66.1905,
+            "recall_all_ci_low_pct": 52.8571,
+            "recall_all_pct": 59.5238,
+            "recall_any_ci_high_pct": 87.1429,
+            "recall_any_ci_low_pct": 76.6667,
+            "recall_any_pct": 81.9048
+          },
+          "3": {
+            "mean_evidence_payload_bytes": 575.7,
+            "n": 210,
+            "recall_all_ci_high_pct": 37.619,
+            "recall_all_ci_low_pct": 25.2381,
+            "recall_all_pct": 31.4286,
+            "recall_any_ci_high_pct": 58.0952,
+            "recall_any_ci_low_pct": 44.2857,
+            "recall_any_pct": 50.9524
+          },
+          "5": {
+            "mean_evidence_payload_bytes": 942.71,
+            "n": 210,
+            "recall_all_ci_high_pct": 46.1905,
+            "recall_all_ci_low_pct": 33.7976,
+            "recall_all_pct": 40.0,
+            "recall_any_ci_high_pct": 67.1429,
+            "recall_any_ci_low_pct": 53.8095,
+            "recall_any_pct": 60.4762
+          }
+        },
+        "retrieval_identical_to": null
+      },
+      "arm5_full_evidence_bound_agent": {
+        "channels": [
+          "raw-document",
+          "episode-bm25",
+          "semantic-provenance",
+          "graph-neighbor",
+          "relation-evidence"
+        ],
+        "description": "full Deep-Dream + evidence-bound Agent (gate ON; agent run fills QA columns)",
+        "gate_mode": "evidence_bound",
+        "per_k": {
+          "1": {
+            "mean_evidence_payload_bytes": 199.19,
+            "n": 210,
+            "recall_all_ci_high_pct": 19.0476,
+            "recall_all_ci_low_pct": 10.0,
+            "recall_all_pct": 14.2857,
+            "recall_any_ci_high_pct": 32.381,
+            "recall_any_ci_low_pct": 20.4762,
+            "recall_any_pct": 26.1905
+          },
+          "10": {
+            "mean_evidence_payload_bytes": 1847.12,
+            "n": 210,
+            "recall_all_ci_high_pct": 58.5833,
+            "recall_all_ci_low_pct": 45.2381,
+            "recall_all_pct": 51.9048,
+            "recall_any_ci_high_pct": 78.5714,
+            "recall_any_ci_low_pct": 66.6548,
+            "recall_any_pct": 72.381
+          },
+          "20": {
+            "mean_evidence_payload_bytes": 3617.36,
+            "n": 210,
+            "recall_all_ci_high_pct": 66.1905,
+            "recall_all_ci_low_pct": 52.8571,
+            "recall_all_pct": 59.5238,
+            "recall_any_ci_high_pct": 87.1429,
+            "recall_any_ci_low_pct": 76.6667,
+            "recall_any_pct": 81.9048
+          },
+          "3": {
+            "mean_evidence_payload_bytes": 575.7,
+            "n": 210,
+            "recall_all_ci_high_pct": 37.619,
+            "recall_all_ci_low_pct": 25.2381,
+            "recall_all_pct": 31.4286,
+            "recall_any_ci_high_pct": 58.0952,
+            "recall_any_ci_low_pct": 44.2857,
+            "recall_any_pct": 50.9524
+          },
+          "5": {
+            "mean_evidence_payload_bytes": 942.71,
+            "n": 210,
+            "recall_all_ci_high_pct": 46.1905,
+            "recall_all_ci_low_pct": 33.7976,
+            "recall_all_pct": 40.0,
+            "recall_any_ci_high_pct": 67.1429,
+            "recall_any_ci_low_pct": 53.8095,
+            "recall_any_pct": 60.4762
+          }
+        },
+        "retrieval_identical_to": "arm4_source_relations"
+      },
+      "arm6_full_unsurfaced_evidence": {
+        "channels": [
+          "raw-document",
+          "episode-bm25",
+          "semantic-provenance",
+          "graph-neighbor",
+          "relation-evidence"
+        ],
+        "description": "full Deep-Dream, unread derived memory into answer (gate relaxed; agent run fills QA columns)",
+        "gate_mode": "unsurfaced_evidence_allowed",
+        "per_k": {
+          "1": {
+            "mean_evidence_payload_bytes": 199.19,
+            "n": 210,
+            "recall_all_ci_high_pct": 19.0476,
+            "recall_all_ci_low_pct": 10.0,
+            "recall_all_pct": 14.2857,
+            "recall_any_ci_high_pct": 32.381,
+            "recall_any_ci_low_pct": 20.4762,
+            "recall_any_pct": 26.1905
+          },
+          "10": {
+            "mean_evidence_payload_bytes": 1847.12,
+            "n": 210,
+            "recall_all_ci_high_pct": 58.5833,
+            "recall_all_ci_low_pct": 45.2381,
+            "recall_all_pct": 51.9048,
+            "recall_any_ci_high_pct": 78.5714,
+            "recall_any_ci_low_pct": 66.6548,
+            "recall_any_pct": 72.381
+          },
+          "20": {
+            "mean_evidence_payload_bytes": 3617.36,
+            "n": 210,
+            "recall_all_ci_high_pct": 66.1905,
+            "recall_all_ci_low_pct": 52.8571,
+            "recall_all_pct": 59.5238,
+            "recall_any_ci_high_pct": 87.1429,
+            "recall_any_ci_low_pct": 76.6667,
+            "recall_any_pct": 81.9048
+          },
+          "3": {
+            "mean_evidence_payload_bytes": 575.7,
+            "n": 210,
+            "recall_all_ci_high_pct": 37.619,
+            "recall_all_ci_low_pct": 25.2381,
+            "recall_all_pct": 31.4286,
+            "recall_any_ci_high_pct": 58.0952,
+            "recall_any_ci_low_pct": 44.2857,
+            "recall_any_pct": 50.9524
+          },
+          "5": {
+            "mean_evidence_payload_bytes": 942.71,
+            "n": 210,
+            "recall_all_ci_high_pct": 46.1905,
+            "recall_all_ci_low_pct": 33.7976,
+            "recall_all_pct": 40.0,
+            "recall_any_ci_high_pct": 67.1429,
+            "recall_any_ci_low_pct": 53.8095,
+            "recall_any_pct": 60.4762
+          }
+        },
+        "retrieval_identical_to": "arm4_source_relations"
+      }
+    },
+    "bootstrap_resamples": 2000,
+    "ci_level": 0.95,
+    "embedding_model": "all-MiniLM-L6-v2",
+    "flag_validation": {
+      "gate_on_raised": true,
+      "gate_relaxed_accepted": true,
+      "plumbing_ok": true,
+      "ran": true
+    },
+    "interpretation": "Arms 1-4 form a clean retrieval-channel ablation: only enabled_channels differs, so any recall delta is attributable to that channel set. Arms 5 and 6 reuse arm 4's five-channel ranking; their distinguishing columns (unsupported-answer rate, mean evidence tokens) are produced by the LLM agent run, not this offline replay. flag_validation proves the arm-6 allow_unsurfaced_evidence plumbing raises/skips correctly without any LLM call.",
+    "ks": [
+      1,
+      3,
+      5,
+      10,
+      20
+    ],
+    "method": "per-channel-source-only-to-overlay-replay",
+    "offline": true,
+    "population": "210-question development/gate set",
+    "questions": 210,
+    "requires_llm_for_qa_columns": [
+      "arm5_full_evidence_bound_agent",
+      "arm6_full_unsurfaced_evidence"
+    ]
+  },
+  "published_baselines": {
+    "mem0_locomo": {
+      "answerer": "GPT-4o-mini",
+      "benchmark": "LoCoMo",
+      "categories": {
+        "multi_hop": 282,
+        "open_domain": 96,
+        "single_hop": 841,
+        "temporal": 321
+      },
+      "category_order": [
+        "single_hop",
+        "multi_hop",
+        "open_domain",
+        "temporal"
+      ],
+      "metrics": [
+        "F1",
+        "BLEU-1",
+        "J (GPT-4o-mini rubric, mean+/-std over 10 runs)"
+      ],
+      "rows": [
+        {
+          "bleu1": [
+            19.75,
+            11.16,
+            29.05,
+            14.77
+          ],
+          "f1": [
+            25.02,
+            12.04,
+            40.36,
+            18.41
+          ],
+          "j": null,
+          "method": "LoCoMo"
+        },
+        {
+          "bleu1": [
+            6.48,
+            5.12,
+            7.66,
+            8.87
+          ],
+          "f1": [
+            9.15,
+            5.31,
+            9.67,
+            12.6
+          ],
+          "j": null,
+          "method": "ReadAgent"
+        },
+        {
+          "bleu1": [
+            4.77,
+            5.94,
+            5.16,
+            6.99
+          ],
+          "f1": [
+            5.0,
+            5.56,
+            6.61,
+            9.68
+          ],
+          "j": null,
+          "method": "MemoryBank"
+        },
+        {
+          "bleu1": [
+            17.72,
+            7.44,
+            34.34,
+            19.44
+          ],
+          "f1": [
+            26.65,
+            9.15,
+            41.04,
+            25.52
+          ],
+          "j": null,
+          "method": "MemGPT"
+        },
+        {
+          "bleu1": [
+            20.09,
+            12.0,
+            37.06,
+            36.67
+          ],
+          "f1": [
+            27.02,
+            12.14,
+            44.65,
+            45.85
+          ],
+          "j": null,
+          "method": "A-Mem"
+        },
+        {
+          "bleu1": [
+            14.9,
+            8.81,
+            27.58,
+            31.08
+          ],
+          "f1": [
+            20.76,
+            9.22,
+            33.34,
+            35.4
+          ],
+          "j": [
+            39.79,
+            18.85,
+            54.05,
+            49.91
+          ],
+          "j_std": [
+            0.38,
+            0.31,
+            0.22,
+            0.31
+          ],
+          "method": "A-Mem*"
+        },
+        {
+          "bleu1": [
+            26.86,
+            22.32,
+            33.63,
+            25.84
+          ],
+          "f1": [
+            35.51,
+            26.04,
+            40.91,
+            30.75
+          ],
+          "j": [
+            62.23,
+            47.92,
+            71.12,
+            23.43
+          ],
+          "j_std": [
+            0.75,
+            0.47,
+            0.2,
+            0.39
+          ],
+          "method": "LangMem"
+        },
+        {
+          "bleu1": [
+            23.3,
+            14.82,
+            38.92,
+            34.53
+          ],
+          "f1": [
+            35.74,
+            19.37,
+            49.56,
+            42.0
+          ],
+          "j": [
+            61.7,
+            41.35,
+            76.6,
+            49.31
+          ],
+          "j_std": [
+            0.32,
+            0.48,
+            0.13,
+            0.5
+          ],
+          "method": "Zep"
+        },
+        {
+          "bleu1": [
+            23.72,
+            15.42,
+            31.16,
+            11.25
+          ],
+          "f1": [
+            34.3,
+            20.09,
+            39.31,
+            14.04
+          ],
+          "j": [
+            63.79,
+            42.92,
+            62.29,
+            21.71
+          ],
+          "j_std": [
+            0.46,
+            0.63,
+            0.12,
+            0.2
+          ],
+          "method": "OpenAI"
+        },
+        {
+          "bleu1": [
+            27.13,
+            21.58,
+            38.72,
+            40.51
+          ],
+          "f1": [
+            38.72,
+            28.64,
+            47.65,
+            48.93
+          ],
+          "j": [
+            67.13,
+            51.15,
+            72.93,
+            55.51
+          ],
+          "j_std": [
+            0.65,
+            0.31,
+            0.11,
+            0.34
+          ],
+          "method": "Mem0"
+        },
+        {
+          "bleu1": [
+            26.03,
+            18.82,
+            40.3,
+            40.28
+          ],
+          "f1": [
+            38.09,
+            24.32,
+            49.27,
+            51.55
+          ],
+          "j": [
+            65.71,
+            47.19,
+            75.71,
+            58.13
+          ],
+          "j_std": [
+            0.45,
+            0.67,
+            0.21,
+            0.44
+          ],
+          "method": "Mem0^g"
+        }
+      ],
+      "source": "Chhikara et al., 2025 (arXiv:2504.19413), Table 1",
+      "weighted_j": {
+        "mem0": 62.14,
+        "mem0_g": 61.36
+      }
+    },
+    "scope_note": "Published numbers reproduced verbatim from the cited papers and used as contextual baselines only. They are NOT strict head-to-head results: Deep-Dream's answerer (Qwen3.7-plus), judges, prompts, and memory implementation differ from both Mem0 (GPT-4o-mini answerer/judge, rubric J) and Zep/Graphiti (GPT-4o/4o-mini answerers). Per the paper's protocol-aware stance these are cross-protocol references, not a shared leaderboard. Cited directly rather than re-run, as authorized.",
+    "zep_dmr": {
+      "benchmark": "Deep Memory Retrieval (DMR)",
+      "description": "500 multi-session conversations (5 sessions each, <=12 messages/session), one single-hop fact-retrieval question per conversation.",
+      "rows": [
+        {
+          "accuracy_pct": 35.3,
+          "answerer": "GPT-4-turbo",
+          "method": "Recursive Summarization"
+        },
+        {
+          "accuracy_pct": 78.6,
+          "answerer": "GPT-4-turbo",
+          "method": "Conversation Summaries"
+        },
+        {
+          "accuracy_pct": 93.4,
+          "answerer": "GPT-4-turbo",
+          "method": "MemGPT"
+        },
+        {
+          "accuracy_pct": 94.4,
+          "answerer": "GPT-4-turbo",
+          "method": "Full-conversation"
+        },
+        {
+          "accuracy_pct": 94.8,
+          "answerer": "GPT-4-turbo",
+          "method": "Zep"
+        },
+        {
+          "accuracy_pct": 88.0,
+          "answerer": "GPT-4o-mini",
+          "method": "Conversation Summaries"
+        },
+        {
+          "accuracy_pct": 98.0,
+          "answerer": "GPT-4o-mini",
+          "method": "Full-conversation"
+        },
+        {
+          "accuracy_pct": 98.2,
+          "answerer": "GPT-4o-mini",
+          "method": "Zep"
+        }
+      ],
+      "source": "Rasmussen et al., 2025 (arXiv:2501.13956), DMR table"
+    },
+    "zep_longmemeval": {
+      "benchmark": "LongMemEval",
+      "category_breakdown_full_to_zep": {
+        "knowledge-update": {
+          "gpt4o": [
+            78.2,
+            83.3
+          ],
+          "gpt4o_mini": [
+            76.9,
+            74.4
+          ]
+        },
+        "multi-session": {
+          "gpt4o": [
+            44.3,
+            57.9
+          ],
+          "gpt4o_mini": [
+            40.6,
+            47.4
+          ]
+        },
+        "single-session-assistant": {
+          "gpt4o": [
+            94.6,
+            80.4
+          ],
+          "gpt4o_mini": [
+            81.8,
+            75.0
+          ]
+        },
+        "single-session-preference": {
+          "gpt4o": [
+            20.0,
+            56.7
+          ],
+          "gpt4o_mini": [
+            30.0,
+            53.3
+          ]
+        },
+        "single-session-user": {
+          "gpt4o": [
+            81.4,
+            92.9
+          ],
+          "gpt4o_mini": [
+            81.4,
+            92.9
+          ]
+        },
+        "temporal-reasoning": {
+          "gpt4o": [
+            45.1,
+            62.4
+          ],
+          "gpt4o_mini": [
+            36.5,
+            54.1
+          ]
+        }
+      },
+      "main": [
+        {
+          "accuracy_pct": 55.4,
+          "answerer": "GPT-4o-mini",
+          "avg_context_tokens": "115k",
+          "latency_s": 31.3,
+          "system": "Full-context"
+        },
+        {
+          "accuracy_pct": 63.8,
+          "answerer": "GPT-4o-mini",
+          "avg_context_tokens": "1.6k",
+          "latency_s": 3.2,
+          "system": "Zep"
+        },
+        {
+          "accuracy_pct": 60.2,
+          "answerer": "GPT-4o",
+          "avg_context_tokens": "115k",
+          "latency_s": 28.9,
+          "system": "Full-context"
+        },
+        {
+          "accuracy_pct": 71.2,
+          "answerer": "GPT-4o",
+          "avg_context_tokens": "1.6k",
+          "latency_s": 2.58,
+          "system": "Zep"
+        }
+      ],
+      "source": "Rasmussen et al., 2025 (arXiv:2501.13956), LongMemEval table"
+    }
+  },
+  "schema_version": 4,
+  "scope_note": "Protocol-aligned internal and cross-judge results; not a strict external leaderboard. Retrieval diagnostics are associations unless their comparison changes only one factor.",
+  "source_expansion_diagnostic": {
+    "causal_scope": "The lexical-semantic-span and neighbor rows keep channel composition fixed; the sample is selected from prior errors and remains a development diagnostic rather than a held-out test.",
+    "counts": {
+      "lexical-semantic-context3-legacy": {
+        "questions": 105,
+        "recall_all": 68,
+        "recall_any": 91
+      },
+      "lexical-semantic-span": {
+        "questions": 105,
+        "recall_all": 55,
+        "recall_any": 74
+      },
+      "lexical-semantic-span-neighbors1": {
+        "questions": 105,
+        "recall_all": 69,
+        "recall_any": 89
+      },
+      "lexical-semantic-span-neighbors2": {
+        "questions": 105,
+        "recall_all": 77,
+        "recall_any": 94
+      }
+    },
+    "legacy_context_3": {
+      "mean_gold_recall_pct": 75.1889,
+      "mean_response_bytes": 3425.44,
+      "recall_all_pct": 64.7619,
+      "recall_any_pct": 86.6667
+    },
+    "lexical_semantic_span": {
+      "mean_gold_recall_pct": 60.9201,
+      "mean_response_bytes": 3088.77,
+      "recall_all_pct": 52.381,
+      "recall_any_pct": 70.4762
+    },
+    "lexical_span": {
+      "mean_gold_recall_pct": 60.8624,
+      "mean_response_bytes": 2911.69,
+      "recall_all_pct": 51.4286,
+      "recall_any_pct": 71.4286
+    },
+    "neighbors_1": {
+      "mean_gold_recall_pct": 73.9727,
+      "mean_response_bytes": 3456.11,
+      "recall_all_pct": 65.7143,
+      "recall_any_pct": 84.7619
+    },
+    "neighbors_2": {
+      "mean_gold_recall_pct": 80.8775,
+      "mean_response_bytes": 3609.03,
+      "recall_all_pct": 73.3333,
+      "recall_any_pct": 89.5238
+    },
+    "population": "105 cases selected from prior errors"
+  },
+  "sources": [
+    {
+      "path": ".benchmark_runs/locomo-full-quality-v1/summary.baseline.json",
+      "sha256": "27e19c7312b4a162dfb1fb75e70f9d5540e533842a90612be07e201e2acf908a"
+    },
+    {
+      "path": ".benchmark_runs/locomo-full-quality-v1/judge_summary.kimi-agent-direct-qwen37-full-thinking-off.qwen37-mem0-current-exact-direct.json",
+      "sha256": "f3a1b0f448daec0764be1dd0a6efba6815524b9cc6f234db37e1cda15b8f0c34"
+    },
+    {
+      "path": ".benchmark_runs/locomo-full-quality-v1/judge_summary.kimi-agent-direct-qwen37-full-thinking-off.qwen37-kimi-full.json",
+      "sha256": "6745a4673785f13158f9bcdec183bfdd753a17c6396222c51f78a4339c5eb07e"
+    },
+    {
+      "path": ".benchmark_runs/locomo-full-quality-v1/judge_comparison.kimik3-mem0-current-exact-direct-v2-nothink.json",
+      "sha256": "bbf2a23b7621f19e53e6960ac33293931906d456dc6a16d2e18757ba91004a10"
+    },
+    {
+      "path": ".benchmark_runs/longmemeval-source-v24-full500/judge_summary.kimi-agent-direct-longmem500-memory-v24-full.qwen37-longmem-official-memory-v24-full500.json",
+      "sha256": "1e8d8ebd4c3499f78ffa726f8de31ba46d756dcb2ccdb95e28d381f3192b4835"
+    },
+    {
+      "path": ".benchmark_runs/locomo-plus-cognitive-qwen35-cues-full-v1/judge_summary.kimi-agent-direct-locomo-plus-qwen37-qwen35-cues-full-v1.qwen37-locomo-plus-official-qwen35-cues-full-v1-final2.json",
+      "sha256": "1285ae3e7cfb1a6976e9db56803a3fa1af515edd56a3a41b242b67ca4d417d16"
+    },
+    {
+      "path": ".benchmark_runs/locomo-full-quality-v1/channel_policy_replay.lexical-vs-semantic-independent-v1.summary.json",
+      "sha256": "2e5bdb850572f456514cd30bfeafa4ceb19b39bf36e0822b0dd50347f335f576"
+    },
+    {
+      "path": ".benchmark_runs/locomo-full-quality-v1/channel_policy_replay.lexical-vs-fused-independent-v1.summary.json",
+      "sha256": "3a4f607331eda5b2a9e2fc7a45f03d498b2dc61d699a478b1d14913c760123f7"
+    },
+    {
+      "path": ".benchmark_runs/locomo-full-quality-v1/retrieval_ablation.source-v2-neighbor-expansion.wrong.summary.json",
+      "sha256": "ac6235225215f8d92c52c14ced90f80d07e538bd8224bb985cde7baaf164c501"
+    },
+    {
+      "path": ".benchmark_runs/locomo-full-quality-v1/channel_policy_replay.depth10-vs20-v1.summary.json",
+      "sha256": "23f48bd9445a312a7abefc5e688c3741c0f09ecb961994a77018abf716f550a1"
+    },
+    {
+      "path": ".benchmark_runs/locomo-full-quality-v1/channel_policy_replay.depth-sweep.prefix-monotonic-v1.summary.json",
+      "sha256": "0882197d0b7f7d201bd0a448a43ed17031a4b884b8891e37c999d89bdadda7e2"
+    },
+    {
+      "path": ".benchmark_runs/meme-filler32k-qwen35-full100-k3-v1/meme_official_judge_kimik3_summary.json",
+      "sha256": "863ce6449f4dba71d729286b98e9d3422214a5ef5042e5099620f7c9d487ec0a"
+    },
+    {
+      "path": ".benchmark_runs/locomo-full-quality-v1/channel_policy_replay.provenance_ablation.x7-v1.summary.json",
+      "sha256": "f484b78ac6e9a4a2009d18c1c85d49b0b6ec29d031e41b9e59a572042a549e63"
+    },
+    {
+      "path": ".benchmark_runs/locomo-k3-agent-judge-diagnostic-v1/judge_summary.kimi-agent-direct-k3-agent-full-thinking-off-v1.kimik3-agent-v1-legacy-fingerprint-diagnostic.json",
+      "sha256": "ee0c00944b226662e39141dec5c7152e2b6d5c8a5839caf75a5ecbcebe13883c"
+    },
+    {
+      "path": ".benchmark_runs/locomo-k3-agent-judge-diagnostic-v1/judge_summary.kimi-agent-direct-k3-agent-full-thinking-off-v1.qwen37-k3-agent-v1-legacy-fingerprint-diagnostic.json",
+      "sha256": "cc3a6b22860371aa419f2ee8718b4e01ea6a06a44931efb5f3da5651f891641d"
+    },
+    {
+      "path": ".benchmark_runs/locomo-k3-agent-judge-diagnostic-v1/assessment.kimik3-agent-v1-legacy-fingerprint-diagnostic.json",
+      "sha256": "a3035e5c2019b6df6ff86136806ee7d17f9e121862041a490a57a0408a06b4aa"
+    },
+    {
+      "path": ".benchmark_runs/mab-sample.stats.json",
+      "sha256": "7875a6bf9f2866c7633ad25de8984f33f7107fa5b53973b06daaa71b140cad21"
+    },
+    {
+      "path": ".benchmark_runs/bigcodebench-kimik3-v1/raw.completion-sanitized-calibrated_pass_at_k.json",
+      "sha256": "3556b072f5fe80f14943e6e207349f507528f76b96dba99b9ae6a4e4e4717ebc"
+    },
+    {
+      "path": ".benchmark_runs/bigcodebench-kimik3-v1/raw.hard-sanitized-calibrated_pass_at_k.json",
+      "sha256": "73dc7bf5ca3722daaaa8979693d0acc03019ed64556edbde64527bb8de363422"
+    },
+    {
+      "path": "paper/results/recomputed_values.json",
+      "sha256": "f84d7d98260858ca88caa5c055e7df76df59c36992901ef2d872b663e55f2539"
+    },
+    {
+      "path": ".benchmark_runs/memoryagentbench-kimik3-sample-v1/memoryagentbench_summary.baseline.kimik3-official-v1.sampled.json",
+      "sha256": "1cb4511d7ab9bf2bd160f2db27b5d244883fa442e0e8b1baa3b1da7781f0ab02"
+    },
+    {
+      "path": ".benchmark_runs/memoryagentbench-kimik3-sample-v1/memoryagentbench_summary.skill-agent.kimik3-official-v1.sampled.json",
+      "sha256": "97b8175dc2df01a1f439a940f5a7e4899d7489c77369afe9cd6e50de013493cd"
+    },
+    {
+      "path": ".benchmark_runs/memoryagentbench-kimik3-sample-v1/memoryagentbench_summary.pi.kimik3-official-v1.sampled.json",
+      "sha256": "b2db703e0a28489547c3a9451fde17939df563a232eb11ecdc68dcfa6eaf22d2"
+    },
+    {
+      "path": ".benchmark_runs/memoryagentbench-kimik3-sample-v2/memoryagentbench_summary.baseline.kimik3-official-v1.sampled.json",
+      "sha256": "fcc9dc063f6ff32b3132157bc22867d2e4b0f56e8cb1f765a7323cb0934f09c1"
+    },
+    {
+      "path": ".benchmark_runs/memoryagentbench-kimik3-sample-v2/memoryagentbench_summary.skill-agent.kimik3-official-v1.sampled.json",
+      "sha256": "a91de7b72c44a9217d7b9efc1737de67d2ff7d8954459c46a55da979ff29ac6a"
+    },
+    {
+      "path": ".benchmark_runs/memoryagentbench-kimik3-sample-v2/memoryagentbench_summary.pi.kimik3-official-v1.sampled.json",
+      "sha256": "788518028be2778b475312ade871dbd9a32dfb5c74dcb11de692d18d73bbfd0c"
+    },
+    {
+      "path": ".benchmark_runs/longmemeval-kimik3-full-v1/summary.baseline.json",
+      "sha256": "26f28ed2c60d94c1487d400634f4ac07bed7e8c1d51248cd240e66bfdc57db89"
+    },
+    {
+      "path": ".benchmark_runs/longmemeval-kimik3-full-v1/summary.skill-agent.json",
+      "sha256": "b4a7e211c2a9c73c8a3eb63960ff7b0ad756b15c1244c3c8d82057471a68d19c"
+    },
+    {
+      "path": ".benchmark_runs/longmemeval-kimik3-full-v1/summary.pi.json",
+      "sha256": "6236c518f2a26016d17b5f41f55c017f94a94663ebd9c506f57b0ad03e28abb0"
+    },
+    {
+      "path": ".benchmark_runs/longmemeval-kimik3-full-v2/summary.baseline.json",
+      "sha256": "d2200043ba8464ed63e69fa83462824e117db2a9755b912d9d3da290bfb240f0"
+    },
+    {
+      "path": ".benchmark_runs/longmemeval-kimik3-full-v2/summary.skill-agent.json",
+      "sha256": "ad06ce2bf87fd0e137e7abe9e84ba591ecbf119f094a4d546ff3a6516f69809e"
+    },
+    {
+      "path": ".benchmark_runs/longmemeval-kimik3-full-v2/summary.pi.json",
+      "sha256": "3f25055f36bd89918e572465ab747bee3d7a60c24d72a97c5797f28151167569"
+    },
+    {
+      "path": ".benchmark_runs/alfworld-id/summary.alfworld.json",
+      "sha256": "7a5e7adf09453a4537cb1f19afe28ef6e8a752d5373ed74788377a54ee4e5253"
+    },
+    {
+      "path": ".benchmark_runs/alfworld-ood/summary.alfworld.json",
+      "sha256": "5738241ccfe3280cfe39b4ad29bd891e536568966c8b2d09180c89a18f882798"
+    },
+    {
+      "path": ".benchmark_runs/memoryagentbench-kimik3-sample-v1/run_manifest.json",
+      "sha256": "df731c473ecf35c568a8bd89eaa0d95a22bd70843e88ac301507b43739823577"
+    },
+    {
+      "path": ".benchmark_runs/memoryagentbench-kimik3-sample-v2/run_manifest.json",
+      "sha256": "ad71159e8d906d80d95a980447e334313c7065b02241bf0ce9256a4a29db0511"
+    },
+    {
+      "path": ".benchmark_runs/longmemeval-kimik3-full-v1/run_manifest.json",
+      "sha256": "e87b4a309afc7b37a3b4e369f2d1ad716e96431216d894e67752b856e9fcb3d4"
+    },
+    {
+      "path": ".benchmark_runs/longmemeval-kimik3-full-v2/run_manifest.json",
+      "sha256": "99b79012169c6b6105247997762c08ff722a91afb4ec0ca1903501bc4cedc1d1"
+    },
+    {
+      "path": "reports/lme_v1_vs_v2_full_2026-08-29.md",
+      "sha256": "511a940fe757d72c1b40f0e87886de0f8eae48a281824457d753f5459efc92a3"
+    },
+    {
+      "path": "reports/mab_v1_vs_v2_2026-08-30.md",
+      "sha256": "4e2d7c60d01110cb8849d9ffe04cb712a4235b36713ddbb42ca8e04d30c7b5b7"
+    },
+    {
+      "path": ".benchmark_runs/memoryagentbench-kimik3-sample-v1/memoryagentbench_scores.baseline.kimik3-official-v1.sampled.jsonl",
+      "sha256": "e1f6b9a955910ddaf7deaf79b3f77242e0bf53738cc829dbe05350b0bb93ae50"
+    },
+    {
+      "path": ".benchmark_runs/memoryagentbench-kimik3-sample-v1/memoryagentbench_scores.skill-agent.kimik3-official-v1.sampled.jsonl",
+      "sha256": "22e182a243619418ecbaf08fc9a9a13a91ec3eca059f4f9ad365ff0d8cae4f4f"
+    },
+    {
+      "path": ".benchmark_runs/memoryagentbench-kimik3-sample-v1/memoryagentbench_scores.pi.kimik3-official-v1.sampled.jsonl",
+      "sha256": "2f9558143cfb5a2aafab58f3d695c7dd2c832b7b7c46d90b11a228c54671db69"
+    },
+    {
+      "path": ".benchmark_runs/memoryagentbench-kimik3-sample-v2/memoryagentbench_scores.baseline.kimik3-official-v1.sampled.jsonl",
+      "sha256": "f68115c532a3f351ee1a3401a0551332c564c7201bce237dce489c65ea99d1a6"
+    },
+    {
+      "path": ".benchmark_runs/memoryagentbench-kimik3-sample-v2/memoryagentbench_scores.skill-agent.kimik3-official-v1.sampled.jsonl",
+      "sha256": "ed24a221d7434c1ecfd958626ed7cc9260aab0a00007af2c5f115b516cb9d020"
+    },
+    {
+      "path": ".benchmark_runs/memoryagentbench-kimik3-sample-v2/memoryagentbench_scores.pi.kimik3-official-v1.sampled.jsonl",
+      "sha256": "49093142be38c019abd94bdfeddd76330daf166e065b41ef54bc33ca57bcfcc1"
+    },
+    {
+      "path": ".benchmark_runs/locomo-k3-agent-judge-diagnostic-v1/run_manifest.json",
+      "sha256": "35919778c5be699ffdf34ecfdac8e2102e82abf7739dee35137600a23e3b99e6"
+    },
+    {
+      "path": ".benchmark_data/memoryagentbench/entity2id.json",
+      "sha256": "63353aca481bc9558b502f91cb98f6fa26438796fdd7e0bc06b5a1532126e8b5"
+    },
+    {
+      "path": ".benchmark_data/locomo10.json",
+      "sha256": "79fa87e90f04081343b8c8debecb80a9a6842b76a7aa537dc9fdf651ea698ff4"
+    },
+    {
+      "path": ".benchmark_data/longmemeval_s_cleaned.json",
+      "sha256": "d6f21ea9d60a0d56f34a05b609c79c88a451d2ae03597821ea3d5a9678c3a442"
+    },
+    {
+      "path": ".benchmark_data/locomo-plus/locomo_plus.json",
+      "sha256": "af2fc6e5e0e88735e28d8dd1ef474b718861a73beb21779809e3b9e1a4fe3d23"
+    },
+    {
+      "path": ".benchmark_runs/locomo-full-quality-v1/judge_results.kimi-agent-direct-qwen37-full-thinking-off.qwen37-mem0-current-exact-direct.jsonl",
+      "sha256": "f424c16ff514675aed2af0458c80bfc80630853ab13959281de26e0743162bff"
+    },
+    {
+      "path": ".benchmark_runs/locomo-full-quality-v1/judge_results.kimi-agent-direct-qwen37-full-thinking-off.kimik3-mem0-current-exact-direct-v2-nothink.jsonl",
+      "sha256": "e149ef9196371953a9e3e55298342f7fc5c8ad68e5f7aece830f19cdb2f4b14a"
+    },
+    {
+      "path": ".benchmark_runs/longmemeval-source-v24-full500/judge_results.kimi-agent-direct-longmem500-memory-v24-full.qwen37-longmem-official-memory-v24-full500.jsonl",
+      "sha256": "cc8b665e7bc084fbfb6546ddafca14c3988ff39c8a29e0fc63edf831f8aea160"
+    },
+    {
+      "path": ".benchmark_runs/locomo-plus-cognitive-qwen35-cues-full-v1/judge_results.kimi-agent-direct-locomo-plus-qwen37-qwen35-cues-full-v1.qwen37-locomo-plus-official-qwen35-cues-full-v1-final2.jsonl",
+      "sha256": "46a82374f670ec0b6e6abb2be4863844a650a32e1aa4207dc98fbef003f2ae5c"
+    },
+    {
+      "path": ".benchmark_runs/locomo-full-quality-v1/channel_policy_replay.lexical-vs-semantic-independent-v1.jsonl",
+      "sha256": "7c2c0112488a63f2edddc8eeb538c6ef79aa68c8c8a7f6b279692112cbacf661"
+    },
+    {
+      "path": ".benchmark_runs/locomo-full-quality-v1/channel_policy_replay.lexical-vs-fused-independent-v1.jsonl",
+      "sha256": "6404f6f6ca197dd72b5f28dc4abe63dfb49a531db71594ef2e465e5efb024803"
+    },
+    {
+      "path": ".benchmark_runs/locomo-full-quality-v1/retrieval_ablation.source-v2-neighbor-expansion.wrong.jsonl",
+      "sha256": "13394a8e17f2cf536d5ff1c9457049739f03f3fcabd3b4f33fb965dd22f46e68"
+    },
+    {
+      "path": ".benchmark_runs/locomo-full-quality-v1/channel_policy_replay.depth-sweep.prefix-monotonic-v1.jsonl",
+      "sha256": "c998ce7dd712245bbbaf0d808607d37b157c4093bf1458fccc270de24ee78953"
+    },
+    {
+      "path": ".benchmark_runs/locomo-full-quality-v1/channel_policy_replay.provenance_ablation.x7-v1.jsonl",
+      "sha256": "0d95fe7369d1ddecbea717afd1b17a0ed89c3660cbc960d91185153034f04308"
+    },
+    {
+      "path": ".benchmark_runs/locomo-k3-agent-judge-diagnostic-v1/results.kimi-agent-direct-k3-agent-full-thinking-off-v1.jsonl",
+      "sha256": "76af5772909d29739107e8ebc9f8d2b137224336358d3ccc1f0b400f016bce8a"
+    },
+    {
+      "path": ".benchmark_runs/locomo-k3-agent-judge-diagnostic-v1/judge_results.kimi-agent-direct-k3-agent-full-thinking-off-v1.kimik3-agent-v1-legacy-fingerprint-diagnostic.jsonl",
+      "sha256": "a9802c023b2cf240f646285ec6f4bb1624a39bd230b57a2286b9378fb5732682"
+    },
+    {
+      "path": ".benchmark_runs/locomo-k3-agent-judge-diagnostic-v1/judge_results.kimi-agent-direct-k3-agent-full-thinking-off-v1.qwen37-k3-agent-v1-legacy-fingerprint-diagnostic.jsonl",
+      "sha256": "dc0a1fea7320bb1ac0a739160900dd2dee82fefc95dc09a306596cb4fd45adfd"
+    }
+  ]
+}

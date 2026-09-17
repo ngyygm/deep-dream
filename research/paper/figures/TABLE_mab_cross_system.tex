@@ -1,0 +1,30 @@
+\begin{table}[t]
+\centering
+\footnotesize
+\setlength{\tabcolsep}{3.8pt}
+\begin{tabular}{@{}llrrrrr@{}}
+\toprule
+ & System (answerer) & AR & TTL & LRU & SF & Overall \\
+\midrule
+\rotatebox{90}{ours\rlap{$^{\dagger}$}}
+ & Rung 3 sandbox (kimi-k3) & 92.8 & 46.0 & 41.7 & 80.0 & 65.1 \\
+\midrule
+\multirow{5}{*}{\rotatebox{90}{full-ctx}}
+ & GPT-4o & 58.1 & 50.0 & 54.9 & 32.5 & 48.8 \\
+ & GPT-4o-mini & 49.2 & 48.6 & 46.2 & 25.0 & 42.2 \\
+ & GPT-4.1-mini & 71.8 & 46.2 & 49.1 & 20.5 & 46.9 \\
+ & Gemini-2.0-Flash & 65.1 & 46.4 & 41.6 & 16.5 & 42.4 \\
+ & Claude-3.7-Sonnet & 59.7 & \textbf{53.9} & \textbf{62.2} & 22.5 & 49.6 \\
+\midrule
+\multirow{6}{*}{\rotatebox{90}{published}}
+ & BM25 simple RAG (GPT-4o-mini) & 60.5 & 44.5 & 35.6 & 25.5 & 41.5 \\
+ & HippoRAG-2 (GPT-4o-mini) & 65.1 & 35.8 & 36.2 & 29.5 & 41.6 \\
+ & MIRIX (GPT-4.1-mini) & 63.0 & 35.7 & 40.5 & 11.5 & 37.7 \\
+ & MemGPT (GPT-4o-mini) & 34.3 & 40.8 & 22.4 & 15.5 & 28.3 \\
+ & Zep (GPT-4o-mini) & 37.5 & 37.5 & 16.2 & 5.0 & 24.0 \\
+ & Mem0 (GPT-4o-mini) & 32.6 & 21.2 & 20.7 & 10.0 & 21.1 \\
+\bottomrule
+\end{tabular}
+\caption{Cross-system positioning on MemoryAgentBench under the official scorer (scores $\times$100; AR/TTL/LRU/SF are domain averages). $^{\dagger}$Our row uses the stratified sampled subset (767 questions, 10 scopes, 59 documents; all four domains, 8 of 29 tasks), kimi-k3 answerer, official scorer at commit 455306d; the rung~1/2 Overall values (32.4/40.7) appear in \cref{tab:track-ladder}, and the adjusted Overall (59--61) in \cref{app:adjusted-overall}. Published rows are cited verbatim from the official paper's Table~2 \citep{hu2025memoryagentbench} (full benchmark; answerers as listed; memory-system rows run GPT-4o-mini except MIRIX on GPT-4.1-mini). Every full-context family scores at most 5 on FactConsolidation-MH; best published FC-MH of any system is 7 (published FC columns at 262K-average contexts; our SF cells are the 6K variants, \cref{app:sampling}). No two rows share answerer, judge, and subset; we never subtract across calibers.}
+\label{tab:mab-cross-system}
+\end{table}

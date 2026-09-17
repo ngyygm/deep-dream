@@ -1,50 +1,129 @@
-\begin{thebibliography}{8}
+\begin{thebibliography}{17}
 \providecommand{\natexlab}[1]{#1}
 \providecommand{\url}[1]{\texttt{#1}}
 \expandafter\ifx\csname urlstyle\endcsname\relax
   \providecommand{\doi}[1]{doi: #1}\else
   \providecommand{\doi}{doi: \begingroup \urlstyle{rm}\Url}\fi
 
-\bibitem[Chhikara et~al.(2025)Chhikara, Khant, Aryan, Singh, and Yadav]{chhikara2025mem0}
+\bibitem[Chhikara et~al.(2025)Chhikara, Khant, Aryan, Singh, and
+  Yadav]{chhikara2025mem0}
 Prateek Chhikara, Dev Khant, Saket Aryan, Taranjeet Singh, and Deshraj Yadav.
-\newblock Mem0: Building production-ready ai agents with scalable long-term memory.
+\newblock Mem0: Building production-ready ai agents with scalable long-term
+  memory.
 \newblock \emph{arXiv preprint arXiv:2504.19413}, 2025.
 \newblock URL \url{https://arxiv.org/abs/2504.19413}.
 
+\bibitem[Gao et~al.(2023)Gao, Yen, Yu, and Chen]{gao2023alce}
+Tianyu Gao, Howard Yen, Jiatong Yu, and Danqi Chen.
+\newblock Enabling large language models to generate text with citations.
+\newblock \emph{arXiv preprint arXiv:2305.14627}, 2023.
+\newblock URL \url{https://arxiv.org/abs/2305.14627}.
+
+\bibitem[Gutiérrez et~al.(2025)Gutiérrez, Shu, Qi, Zhou, and
+  Su]{gutierrez2025hipporag2}
+Bernal~Jiménez Gutiérrez, Yiheng Shu, Weijian Qi, Sizhe Zhou, and Yu~Su.
+\newblock From rag to memory: Non-parametric continual learning for large
+  language models.
+\newblock \emph{arXiv preprint arXiv:2502.14802}, 2025.
+\newblock URL \url{https://arxiv.org/abs/2502.14802}.
+
 \bibitem[Hu et~al.(2025)Hu, Wang, and McAuley]{hu2025memoryagentbench}
 Yuanzhe Hu, Yu~Wang, and Julian McAuley.
-\newblock Evaluating memory in llm agents via incremental multi-turn interactions.
+\newblock Evaluating memory in llm agents via incremental multi-turn
+  interactions.
 \newblock \emph{arXiv preprint arXiv:2507.05257}, 2025.
 \newblock URL \url{https://arxiv.org/abs/2507.05257}.
 
 \bibitem[Jung et~al.(2026)Jung, Rubinstein, Uselis, Yun, and Oh]{jung2026meme}
-Seokwon Jung, Alexander Rubinstein, Arnas Uselis, Sangdoo Yun, and Seong~Joon Oh.
+Seokwon Jung, Alexander Rubinstein, Arnas Uselis, Sangdoo Yun, and Seong~Joon
+  Oh.
 \newblock Meme: Multi-entity {\&} evolving memory evaluation.
 \newblock \emph{arXiv preprint arXiv:2605.12477}, 2026.
 \newblock URL \url{https://arxiv.org/abs/2605.12477}.
 
-\bibitem[Maharana et~al.(2024)Maharana, Lee, Tulyakov, Bansal, Barbieri, and Fang]{maharana2024locomo}
-Adyasha Maharana, Dong-Ho Lee, Sergey Tulyakov, Mohit Bansal, Francesco Barbieri, and Yuwei Fang.
+\bibitem[Lewis et~al.(2020)Lewis, Perez, Piktus, Petroni, Karpukhin, Goyal,
+  K{\"u}ttler, Lewis, Yih, Rockt{\"a}schel, Riedel, and Kiela]{lewis2020rag}
+Patrick S.~H. Lewis, Ethan Perez, Aleksandra Piktus, Fabio Petroni, Vladimir
+  Karpukhin, Naman Goyal, Heinrich K{\"u}ttler, Mike Lewis, Wen-tau Yih, Tim
+  Rockt{\"a}schel, Sebastian Riedel, and Douwe Kiela.
+\newblock Retrieval-augmented generation for knowledge-intensive {NLP} tasks.
+\newblock In \emph{Advances in Neural Information Processing Systems},
+  volume~33, pp.\  9459--9474, 2020.
+\newblock URL \url{https://arxiv.org/abs/2005.11401}.
+
+\bibitem[Liu et~al.(2024)Liu, Lin, Hewitt, Parandekar, Chen, and
+  Liang]{liu2024lost}
+Nelson~F. Liu, Kevin Lin, John Hewitt, Ashwin Parandekar, Danqi Chen, and Percy
+  Liang.
+\newblock Lost in the middle: How language models use long contexts.
+\newblock \emph{Transactions of the Association for Computational Linguistics},
+  12:\penalty0 157--173, 2024.
+\newblock \doi{10.1162/tacl_a_00638}.
+\newblock URL \url{https://arxiv.org/abs/2307.03172}.
+
+\bibitem[Maharana et~al.(2024)Maharana, Lee, Tulyakov, Bansal, Barbieri, and
+  Fang]{maharana2024locomo}
+Adyasha Maharana, Dong-Ho Lee, Sergey Tulyakov, Mohit Bansal, Francesco
+  Barbieri, and Yuwei Fang.
 \newblock Evaluating very long-term conversational memory of llm agents.
-\newblock In \emph{Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers)}, pp.\  13851--13870, 2024.
+\newblock In \emph{Proceedings of the 62nd Annual Meeting of the Association
+  for Computational Linguistics (Volume 1: Long Papers)}, pp.\  13851--13870,
+  2024.
 \newblock \doi{10.18653/v1/2024.acl-long.747}.
 \newblock URL \url{https://aclanthology.org/2024.acl-long.747/}.
 
-\bibitem[Rasmussen et~al.(2025)Rasmussen, Paliychuk, Beauvais, Ryan, and Chalef]{rasmussen2025zep}
-Preston Rasmussen, Pavlo Paliychuk, Travis Beauvais, Jack Ryan, and Daniel Chalef.
+\bibitem[Markovic et~al.(2025)Markovic, Obradovic, Hajdu, and
+  Pavlovic]{markovic2025cognee}
+Vasilije Markovic, Lazar Obradovic, Laszlo Hajdu, and Jovan Pavlovic.
+\newblock Optimizing the interface between knowledge graphs and llms for
+  complex reasoning.
+\newblock \emph{arXiv preprint arXiv:2505.24478}, 2025.
+\newblock URL \url{https://arxiv.org/abs/2505.24478}.
+
+\bibitem[Packer et~al.(2023)Packer, Fang, Patil, Lin, Wooders, and
+  Gonzalez]{packer2023memgpt}
+Charles Packer, Vivian Fang, Shishir~G. Patil, Kevin Lin, Sarah Wooders, and
+  Joseph~E. Gonzalez.
+\newblock Memgpt: Towards llms as operating systems.
+\newblock \emph{arXiv preprint arXiv:2310.08560}, 2023.
+\newblock URL \url{https://arxiv.org/abs/2310.08560}.
+
+\bibitem[Rasmussen et~al.(2025)Rasmussen, Paliychuk, Beauvais, Ryan, and
+  Chalef]{rasmussen2025zep}
+Preston Rasmussen, Pavlo Paliychuk, Travis Beauvais, Jack Ryan, and Daniel
+  Chalef.
 \newblock Zep: A temporal knowledge graph architecture for agent memory.
 \newblock \emph{arXiv preprint arXiv:2501.13956}, 2025.
 \newblock URL \url{https://arxiv.org/abs/2501.13956}.
 
-\bibitem[Tavakoli et~al.(2026)Tavakoli, Salemi, Ye, Abdalla, Zamani, and Mitchell]{tavakoli2026beam}
-Mohammad Tavakoli, Alireza Salemi, Carrie Ye, Mohamed Abdalla, Hamed Zamani, and J.~Ross Mitchell.
-\newblock Beyond a million tokens: Benchmarking and enhancing long-term memory in llms.
+\bibitem[Shridhar et~al.(2021)Shridhar, Yuan, C{\^o}t{\'e}, Bisk, Trischler,
+  and Hausknecht]{shridhar2021alfworld}
+Mohit Shridhar, Xingdi Yuan, Marc-Alexandre C{\^o}t{\'e}, Yonatan Bisk, Adam
+  Trischler, and Matthew Hausknecht.
+\newblock Alfworld: Aligning text and embodied environments for interactive
+  learning.
+\newblock In \emph{International Conference on Learning Representations}, 2021.
+\newblock URL \url{https://arxiv.org/abs/2010.03768}.
+
+\bibitem[Tavakoli et~al.(2026)Tavakoli, Salemi, Ye, Abdalla, Zamani, and
+  Mitchell]{tavakoli2026beam}
+Mohammad Tavakoli, Alireza Salemi, Carrie Ye, Mohamed Abdalla, Hamed Zamani,
+  and J.~Ross Mitchell.
+\newblock Beyond a million tokens: Benchmarking and enhancing long-term memory
+  in llms.
 \newblock \emph{arXiv preprint arXiv:2510.27246}, 2026.
 \newblock URL \url{https://arxiv.org/abs/2510.27246}.
 
+\bibitem[Wang \& Chen(2025)Wang and Chen]{wang2025mirix}
+Yu~Wang and Xi~Chen.
+\newblock Mirix: Multi-agent memory system for llm-based agents.
+\newblock \emph{arXiv preprint arXiv:2507.07957}, 2025.
+\newblock URL \url{https://arxiv.org/abs/2507.07957}.
+
 \bibitem[Wu et~al.(2025)Wu, Wang, Yu, Zhang, Chang, and Yu]{wu2025longmemeval}
 Di~Wu, Hongwei Wang, Wenhao Yu, Yuwei Zhang, Kai-Wei Chang, and Dong Yu.
-\newblock Longmemeval: Benchmarking chat assistants on long-term interactive memory.
+\newblock Longmemeval: Benchmarking chat assistants on long-term interactive
+  memory.
 \newblock \emph{International Conference on Learning Representations}, 2025.
 \newblock URL \url{https://arxiv.org/abs/2410.10813}.
 
@@ -53,5 +132,14 @@ Wujiang Xu, Zujie Liang, Kai Mei, Hang Gao, Juntao Tan, and Yongfeng Zhang.
 \newblock A-mem: Agentic memory for llm agents.
 \newblock \emph{Advances in Neural Information Processing Systems}, 2025.
 \newblock URL \url{https://arxiv.org/abs/2502.12110}.
+
+\bibitem[Zhuo et~al.(2024)Zhuo, Vu, Chim, Hu, Yu, Widyasari,
+  et~al.]{zhuo2024bigcodebench}
+Terry~Yue Zhuo, Minh~Chien Vu, Jenny Chim, Han Hu, Wenhao Yu, Ratnadira
+  Widyasari, et~al.
+\newblock Bigcodebench: Benchmarking code generation with diverse function
+  calls and complex instructions.
+\newblock \emph{arXiv preprint arXiv:2406.15877}, 2024.
+\newblock URL \url{https://arxiv.org/abs/2406.15877}.
 
 \end{thebibliography}

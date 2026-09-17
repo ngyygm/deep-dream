@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+from collections import Counter
 from pathlib import Path
 
 
@@ -34,6 +35,15 @@ def main() -> dict:
     locomo_kimi_path = (
         ".benchmark_runs/locomo-full-quality-v1/"
         "judge_comparison.kimik3-mem0-current-exact-direct-v2-nothink.json"
+    )
+    # Same qwen3.7-plus answers as locomo_path, judged with the earlier
+    # simplified judge prompt (judge_tag qwen37-kimi-full) instead of Mem0's
+    # exact prompt: the prompt-substitution point of the 92.21/93.18/93.57/95.19
+    # quartet cited in the paper's judge-sensitivity disclosure.
+    locomo_legacy_prompt_path = (
+        ".benchmark_runs/locomo-full-quality-v1/"
+        "judge_summary.kimi-agent-direct-qwen37-full-thinking-off."
+        "qwen37-kimi-full.json"
     )
     longmem_path = (
         ".benchmark_runs/longmemeval-source-v24-full500/"
@@ -91,9 +101,72 @@ def main() -> dict:
         ".benchmark_runs/locomo-k3-agent-judge-diagnostic-v1/"
         "assessment.kimik3-agent-v1-legacy-fingerprint-diagnostic.json"
     )
+    # Four-benchmark primary evidence (v2 reframe): MAB official-scorer runs,
+    # LME full ingest, BigCodeBench, ALFWorld, plus the deterministic
+    # recomputes (paper/results/recompute_from_logs.py output).
+    mab_summary_paths = {
+        f"{version}_{track}": (
+            f".benchmark_runs/memoryagentbench-kimik3-sample-{version}/"
+            f"memoryagentbench_summary.{track}.kimik3-official-v1.sampled.json"
+        )
+        for version in ("v1", "v2")
+        for track in ("baseline", "skill-agent", "pi")
+    }
+    mab_stats_path = ".benchmark_runs/mab-sample.stats.json"
+    lme_full_paths = {
+        f"{version}_{track}": (
+            f".benchmark_runs/longmemeval-kimik3-full-{version}/summary.{track}.json"
+        )
+        for version in ("v1", "v2")
+        for track in ("baseline", "skill-agent", "pi")
+    }
+    bcb_completion_path = (
+        ".benchmark_runs/bigcodebench-kimik3-v1/"
+        "raw.completion-sanitized-calibrated_pass_at_k.json"
+    )
+    bcb_hard_path = (
+        ".benchmark_runs/bigcodebench-kimik3-v1/"
+        "raw.hard-sanitized-calibrated_pass_at_k.json"
+    )
+    alfworld_paths = {
+        split: f".benchmark_runs/alfworld-{split}/summary.alfworld.json"
+        for split in ("id", "ood")
+    }
+    recomputed_values_path = "paper/results/recomputed_values.json"
+    # Engine-comparison ingest efficiency (paper §4.4): per-document
+    # llm_call_stats aggregated from the hashed run manifests. Library-level
+    # counts (duplicate-family rates, dataset active-document totals) require
+    # the per-scope library DBs, which remain on the benchmark machine, and
+    # are recorded with hashed-report provenance instead.
+    mab_manifest_paths = {
+        version: (
+            f".benchmark_runs/memoryagentbench-kimik3-sample-{version}/run_manifest.json"
+        )
+        for version in ("v1", "v2")
+    }
+    lme_manifest_paths = {
+        version: f".benchmark_runs/longmemeval-kimik3-full-{version}/run_manifest.json"
+        for version in ("v1", "v2")
+    }
+    engine_report_paths = {
+        "lme_v1_vs_v2": "reports/lme_v1_vs_v2_full_2026-08-29.md",
+        "mab_v1_vs_v2": "reports/mab_v1_vs_v2_2026-08-30.md",
+    }
+    mab_scores_paths = {
+        f"{version}_{track}": (
+            f".benchmark_runs/memoryagentbench-kimik3-sample-{version}/"
+            f"memoryagentbench_scores.{track}.kimik3-official-v1.sampled.jsonl"
+        )
+        for version in ("v1", "v2")
+        for track in ("baseline", "skill-agent", "pi")
+    }
+    k3_run_manifest_path = (
+        ".benchmark_runs/locomo-k3-agent-judge-diagnostic-v1/run_manifest.json"
+    )
 
     locomo_original, s0 = load(locomo_original_path)
     locomo, s1 = load(locomo_path)
+    locomo_legacy_prompt, s1b = load(locomo_legacy_prompt_path)
     locomo_kimi, s2 = load(locomo_kimi_path)
     longmem, s3 = load(longmem_path)
     locomo_plus, s4 = load(locomo_plus_path)
@@ -107,6 +180,84 @@ def main() -> dict:
     k3_judge, s_k3j = load(k3_answerer_kimik3_judge_path)
     qwen_judge, s_qj = load(k3_answerer_qwen37_judge_path)
     k3_assessment, s_k3a = load(k3_answerer_assessment_path)
+    mab_summaries = {k: load(p)[0] for k, p in mab_summary_paths.items()}
+    mab_stats, s_mab_stats = load(mab_stats_path)
+    lme_full = {k: load(p)[0] for k, p in lme_full_paths.items()}
+    bcb_completion, s_bcb_c = load(bcb_completion_path)
+    bcb_hard, s_bcb_h = load(bcb_hard_path)
+    alfworld = {k: load(p)[0] for k, p in alfworld_paths.items()}
+    recomputed_values, s_recomputed = load(recomputed_values_path)
+    k3_run_manifest, s_k3_manifest = load(k3_run_manifest_path)
+
+    def per_doc_ingest(relpath: str) -> dict:
+        manifest = json.loads((ROOT / relpath).read_text())
+        docs = {}
+        for scope_id, scope in manifest["scopes"].items():
+            for doc_id, doc in scope["documents"].items():
+                stats = doc.get("llm_call_stats") or {}
+                docs[f"{scope_id}/{doc_id}"] = {
+                    "calls": stats.get("calls", 0),
+                    "tokens": stats.get("prompt_tokens", 0)
+                    + stats.get("completion_tokens", 0),
+                    "has_stats": bool(stats),
+                }
+        return docs
+
+    def _mean(values) -> float:
+        values = list(values)
+        return round(sum(values) / len(values), 2)
+
+    lme_ingest = {v: per_doc_ingest(p) for v, p in lme_manifest_paths.items()}
+    mab_ingest = {v: per_doc_ingest(p) for v, p in mab_manifest_paths.items()}
+    lme_with_stats = {
+        v: [d for d in docs.values() if d["has_stats"]]
+        for v, docs in lme_ingest.items()
+    }
+    mab_intersection = sorted(
+        key
+        for key, doc in mab_ingest["v1"].items()
+        if key in mab_ingest["v2"]
+        and doc["has_stats"]
+        and mab_ingest["v2"][key]["has_stats"]
+    )
+
+    def ingest_summary(docs: list) -> dict:
+        return {
+            "llm_calls_per_doc": _mean(d["calls"] for d in docs),
+            "tokens_per_doc": _mean(d["tokens"] for d in docs),
+        }
+
+    lme_v1, lme_v2 = ingest_summary(lme_with_stats["v1"]), ingest_summary(lme_with_stats["v2"])
+    mab_i_v1 = ingest_summary([mab_ingest["v1"][k] for k in mab_intersection])
+    mab_i_v2 = ingest_summary([mab_ingest["v2"][k] for k in mab_intersection])
+
+    # Runtime-code fingerprint triple on the K3-as-answerer per-item JSONL
+    # (2,063 rows; the 8-hex prefixes cited in the paper's appendix A.10).
+    k3_results_path = (
+        ".benchmark_runs/locomo-k3-agent-judge-diagnostic-v1/"
+        "results.kimi-agent-direct-k3-agent-full-thinking-off-v1.jsonl"
+    )
+    k3_runtime_counts = Counter()
+    k3_library_snapshots = Counter()
+    k3_rows = 0
+    with (ROOT / k3_results_path).open() as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            row = json.loads(line)
+            k3_rows += 1
+            if row.get("runtime_code_sha256"):
+                k3_runtime_counts[row["runtime_code_sha256"]] += 1
+            if row.get("library_snapshot_sha256"):
+                k3_library_snapshots[row["library_snapshot_sha256"]] += 1
+
+    def manifest_meta(relpath: str) -> dict:
+        manifest = json.loads((ROOT / relpath).read_text())
+        return {
+            "dataset_sha256": manifest.get("dataset_sha256"),
+            "git_commit": manifest.get("git_commit"),
+        }
 
     track_name = "kimi-agent-direct-qwen37-full-thinking-off"
     kimi_track = locomo_kimi["tracks"][track_name]
@@ -121,7 +272,17 @@ def main() -> dict:
             "mean_response_bytes": round(row["average_page_bytes"], 2),
         }
 
-    sources = [s0, s1, s2, s3, s4, s5, s6, s7, s8, s8b, s9, s10, s_k3j, s_qj, s_k3a]
+    sources = [s0, s1, s1b, s2, s3, s4, s5, s6, s7, s8, s8b, s9, s10, s_k3j, s_qj, s_k3a,
+               s_mab_stats, s_bcb_c, s_bcb_h, s_recomputed]
+    sources.extend(source_meta(p) for p in mab_summary_paths.values())
+    sources.extend(source_meta(p) for p in lme_full_paths.values())
+    sources.extend(source_meta(p) for p in alfworld_paths.values())
+    sources.extend(source_meta(p) for p in mab_manifest_paths.values())
+    sources.extend(source_meta(p) for p in lme_manifest_paths.values())
+    sources.extend(source_meta(p) for p in engine_report_paths.values())
+    sources.extend(source_meta(p) for p in mab_scores_paths.values())
+    sources.append(s_k3_manifest)
+    sources.append(source_meta(".benchmark_data/memoryagentbench/entity2id.json"))
     for extra in [
         ".benchmark_data/locomo10.json",
         ".benchmark_data/longmemeval_s_cleaned.json",
@@ -142,7 +303,7 @@ def main() -> dict:
         sources.append(source_meta(extra))
 
     return {
-        "schema_version": 2,
+        "schema_version": 4,
         "scope_note": (
             "Protocol-aligned internal and cross-judge results; not a strict external leaderboard. "
             "Retrieval diagnostics are associations unless their comparison changes only one factor."
@@ -152,6 +313,10 @@ def main() -> dict:
             "locomo_1986_total": locomo_original["total"],
             "locomo_1540_qwen37_accuracy_pct": pct(locomo["overall"]),
             "locomo_1540_qwen37_correct": round(locomo["overall"] * locomo["total"]),
+            # Judge-prompt substitution on the same 1,540 answers: legacy
+            # simplified prompt (92.21) vs Mem0 exact prompt above (93.18).
+            "locomo_1540_legacy_prompt_judge_pct": pct(locomo_legacy_prompt["overall"]),
+            "locomo_1540_legacy_prompt_judge_total": locomo_legacy_prompt["total"],
             "locomo_1540_kimik3_accuracy_pct": pct(kimi_track["overall"]),
             "locomo_1540_kimik3_correct": round(kimi_track["overall"] * kimi_track["total"]),
             "longmemeval_s_500_qwen37_accuracy_pct": pct(longmem["overall"]),
@@ -216,6 +381,22 @@ def main() -> dict:
                     "kimi_k3_only_correct"
                 ],
                 "both_wrong": k3_assessment["cross_judge_agreement"]["both_wrong"],
+            },
+            "locomo_1540_k3_answerer_runtime_fingerprints": {
+                "source": k3_results_path,
+                "rows": k3_rows,
+                "runtime_code_sha256_counts": {
+                    sha: count
+                    for sha, count in sorted(
+                        k3_runtime_counts.items(), key=lambda kv: (-kv[1], kv[0])
+                    )
+                },
+                "library_snapshot_sha256": (
+                    k3_library_snapshots.most_common(1)[0][0]
+                    if k3_library_snapshots
+                    else None
+                ),
+                "dataset_sha256": k3_run_manifest.get("dataset_sha256"),
             },
             "locomo_1540_k3_answerer_paired_vs_qwen37_answerer": {
                 "repairs": k3_assessment["paired_comparison"]["repairs"],
@@ -457,6 +638,166 @@ def main() -> dict:
                     },
                 }
                 for name, arm in provenance_ablation["arms"].items()
+            },
+        },
+        "four_benchmark": {
+            "scope_note": (
+                "Primary v2-reframe evidence: MemoryAgentBench under the official "
+                "scorer on a 767-question stratified subset (59 documents, 10 scopes; "
+                "full benchmark is 3,671 questions / 29 tasks), LongMemEval-S full "
+                "ingest paired tracks, BigCodeBench and ALFWorld as memory-insensitive "
+                "agent-carrier anchors. Cross-system comparisons never subtract across "
+                "calibers; see the paper's caliber-discipline statements."
+            ),
+            "memoryagentbench": {
+                "subset": {
+                    "scopes": mab_stats["scopes"],
+                    "totals": mab_stats["totals"],
+                    "dropped_for_budget": mab_stats["dropped_for_budget"],
+                },
+                "official_scorer_commit": mab_summaries["v2_pi"]["official_scorer_commit"],
+                "entity2id_sha256": mab_summaries["v2_pi"]["entity2id_sha256"],
+                "tracks": {
+                    key: {
+                        "questions": d["questions"],
+                        "judge_model": d["judge_model"],
+                        "overall": d["table3"]["Overall"],
+                        "domains": {
+                            dom: {task: val for task, val in cells.items() if val is not None}
+                            for dom, cells in d["table3"].items() if dom != "Overall"
+                        },
+                    }
+                    for key, d in mab_summaries.items()
+                },
+                "note": (
+                    "v1/v2 engine generations are paired on the identical 767-question "
+                    "stream, scorer commit, and entity2id fingerprint (verified single "
+                    "unique sha across all six summaries)."
+                ),
+            },
+            "longmemeval_full_ingest": {
+                key: {
+                    "track": d.get("track"),
+                    "scored": d.get("scored"),
+                    "total": d.get("total"),
+                    "overall": d.get("overall"),
+                    "by_type": {
+                        k: {"score": v["score"], "count": v["count"]}
+                        for k, v in (d.get("by_type") or {}).items()
+                    },
+                    "retrieval_baseline": {
+                        m: d["retrieval"][m]
+                        for m in ("session_evidence_recall@10", "session_ndcg_any@1")
+                        if d.get("track") == "baseline" and m in (d.get("retrieval") or {})
+                    },
+                }
+                for key, d in lme_full.items()
+            },
+            "bigcodebench": {
+                "answerer": "kimi-k3",
+                "calibrated": True,
+                "completion_pass_at_1": bcb_completion["pass@1"],
+                "hard_pass_at_1": bcb_hard["pass@1"],
+                "completion_gt_pass_rate": bcb_completion["gt_pass_rate"],
+                "hard_gt_pass_rate": bcb_hard["gt_pass_rate"],
+            },
+            "alfworld": {
+                split: {
+                    "model": d["model"],
+                    "games": d["overall"]["games"],
+                    "won": d["overall"]["won"],
+                    "success_rate": d["overall"]["success_rate"],
+                    "tokens_total": d["tokens"]["total"],
+                }
+                for split, d in alfworld.items()
+            },
+            "deterministic_recomputes": {
+                "source": "paper/results/recompute_from_logs.py",
+                "values_file": recomputed_values_path,
+                "self_check": recomputed_values["official_macro_overall"],
+                "contents": {
+                    "ladder_deltas": recomputed_values["ladder"],
+                    "rung_cost_v2": recomputed_values["rung_cost_v2"],
+                    "x7": recomputed_values["x7"],
+                    "gate_rejections": recomputed_values["gate_rejections"],
+                    "failure_taxonomy_v2_pi": recomputed_values["failure_taxonomy_v2_pi"],
+                    "consolidation_paired": recomputed_values["consolidation_paired"],
+                },
+            },
+            "engine_comparison": {
+                "purpose": (
+                    "Paired v1->v2 ingest efficiency on identical datasets (paper "
+                    "Sec. engine-paired). Calls/tokens per document are recomputed "
+                    "here from per-document llm_call_stats in the hashed run "
+                    "manifests; MAB ratios use the 45-document paired intersection "
+                    "(manifests missing from one generation are excluded). "
+                    "Library-level counts (duplicate-family rates, entity-family "
+                    "totals, dataset active-document totals) require the per-scope "
+                    "library DBs, which remain on the benchmark machine, and are "
+                    "recorded verbatim from the hashed v1/v2 comparison reports "
+                    "listed in sources."
+                ),
+                "lme": {
+                    "manifest": {
+                        v: {"path": p, **manifest_meta(p)}
+                        for v, p in lme_manifest_paths.items()
+                    },
+                    "stats_coverage_docs": {
+                        v: len(lme_with_stats[v]) for v in ("v1", "v2")
+                    },
+                    "docs_in_manifest": {v: len(lme_ingest[v]) for v in ("v1", "v2")},
+                    "per_doc": {"v1": lme_v1, "v2": lme_v2},
+                    "calls_delta_pct": round(
+                        (lme_v2["llm_calls_per_doc"] / lme_v1["llm_calls_per_doc"] - 1)
+                        * 100,
+                        1,
+                    ),
+                    "tokens_delta_pct": round(
+                        (lme_v2["tokens_per_doc"] / lme_v1["tokens_per_doc"] - 1) * 100,
+                        1,
+                    ),
+                    "from_reports": {
+                        "provenance": engine_report_paths["lme_v1_vs_v2"],
+                        "note": (
+                            "LME ingest stats coverage 940/1020 of 1176 docs "
+                            "(scheduler-kill losses, unbiased for per-doc ratios); "
+                            "both library DBs hold 1176/1176 active docs."
+                        ),
+                        "dataset_total_active_documents": {"v1": 1176, "v2": 1176},
+                        "entity_families": {"v1": 59892, "v2": 55878},
+                        "duplicate_family_rows": {"v1": 482, "v2": 99},
+                        "duplicate_family_rate": {"v1": 0.008, "v2": 0.002},
+                    },
+                },
+                "mab": {
+                    "manifest": {
+                        v: {"path": p, **manifest_meta(p)}
+                        for v, p in mab_manifest_paths.items()
+                    },
+                    "stats_coverage_docs": {
+                        v: sum(1 for d in docs.values() if d["has_stats"])
+                        for v, docs in mab_ingest.items()
+                    },
+                    "docs_in_manifest": {v: len(mab_ingest[v]) for v in ("v1", "v2")},
+                    "paired_intersection_docs": len(mab_intersection),
+                    "per_doc_intersection": {"v1": mab_i_v1, "v2": mab_i_v2},
+                    "calls_delta_pct": round(
+                        (mab_i_v2["llm_calls_per_doc"] / mab_i_v1["llm_calls_per_doc"] - 1)
+                        * 100,
+                        1,
+                    ),
+                    "tokens_delta_pct": round(
+                        (mab_i_v2["tokens_per_doc"] / mab_i_v1["tokens_per_doc"] - 1)
+                        * 100,
+                        1,
+                    ),
+                    "from_reports": {
+                        "provenance": engine_report_paths["mab_v1_vs_v2"],
+                        "duplicate_family_rate": {"v1": 0.2, "v2": 0.0},
+                        "duplicate_names": {"v1": 154, "v2": 61},
+                        "entity_families": {"v1": 20426, "v2": 19244},
+                    },
+                },
             },
         },
         "published_baselines": {
