@@ -1,13 +1,13 @@
 # Fdb version 4
-["bibtex main"] 1789696507.26512 "main.aux" "main.bbl" "main" 1789696509.04944 0
+["bibtex main"] 1789701320.59668 "main.aux" "main.bbl" "main" 1789701322.46568 0
   "./iclr2026_conference.bst" 1788165763.94415 26973 af983813ca1a1414954dbceae7baa2a1 ""
-  "./references.bib" 1789633224.54156 5994 8af84e4b0e3ec2b0d0f2e25abe8bad9c ""
-  "main.aux" 1789696508.55879 30962 5d281c36048b8b11a1309a39a34bb391 "pdflatex"
+  "./references.bib" 1789701125.99196 6522 a47efac2c7253e090a178de4bee9e2fe ""
+  "main.aux" 1789701321.99495 31818 1e745c38d3e170fcf81100bb021872e0 "pdflatex"
   (generated)
   "main.bbl"
   "main.blg"
   (rewritten before read)
-["pdflatex"] 1789696507.43173 "main.tex" "main.pdf" "main" 1789696509.0501 0
+["pdflatex"] 1789701320.76043 "main.tex" "main.pdf" "main" 1789701322.46639 0
   "/etc/texmf/web2c/texmf.cnf" 1773496204.75543 475 c0e671620eb5563b2130f56340a5fde8 ""
   "/usr/share/texlive/texmf-dist/fonts/enc/dvips/base/8r.enc" 1165713224 4850 80dc9bab7f31fb78a000ccfed0e27cab ""
   "/usr/share/texlive/texmf-dist/fonts/map/fontname/texfonts.map" 1577235249 3524 cb3e574dea2d1052e39280babc910dc8 ""
@@ -44,6 +44,7 @@
   "/usr/share/texlive/texmf-dist/fonts/type1/public/amsfonts/cm/cmr10.pfb" 1248133631 35752 024fb6c41858982481f6968b5fc26508 ""
   "/usr/share/texlive/texmf-dist/fonts/type1/public/amsfonts/cm/cmr9.pfb" 1248133631 33993 9b89b85fd2d9df0482bd47194d1d3bf3 ""
   "/usr/share/texlive/texmf-dist/fonts/type1/public/amsfonts/cm/cmsy10.pfb" 1248133631 32569 5e5ddc8df908dea60932f3c484a54c0d ""
+  "/usr/share/texlive/texmf-dist/fonts/type1/public/amsfonts/cm/cmsy5.pfb" 1248133631 32915 7bf7720c61a5b3a7ff25b0964421c9b6 ""
   "/usr/share/texlive/texmf-dist/fonts/type1/public/amsfonts/cm/cmsy6.pfb" 1248133631 32587 1788b0c1c5b39540c96f5e42ccd6dae8 ""
   "/usr/share/texlive/texmf-dist/fonts/type1/public/amsfonts/cm/cmsy7.pfb" 1248133631 32716 08e384dc442464e7285e891af9f45947 ""
   "/usr/share/texlive/texmf-dist/fonts/type1/public/amsfonts/cm/cmsy9.pfb" 1248133631 32442 c975af247b6702f7ca0c299af3616b80 ""
@@ -161,19 +162,19 @@
   "figures/fig3_cost.pdf" 1789695921.68156 14390 1ecae2ce528ef5fd2b60742926312c3d ""
   "figures/latex_includes.tex" 1789663953.99219 1379 6be8abe732d83f15a0d4c682e0578a5c ""
   "iclr2026_conference.sty" 1788165763.94415 9025 a040392a6cfee8dc54aae17eb2635282 ""
-  "main.aux" 1789696508.55879 30962 5d281c36048b8b11a1309a39a34bb391 "pdflatex"
-  "main.bbl" 1789696507.41978 6877 f88c98e7222068496eee16989aca39dc "bibtex main"
-  "main.out" 1789696508.56079 6875 8b377934a2f961c7391269443ff1d991 "pdflatex"
-  "main.tex" 1789696490.50255 2523 132d975d37bd0bef4df5726040ad1dcf ""
+  "main.aux" 1789701321.99495 31818 1e745c38d3e170fcf81100bb021872e0 "pdflatex"
+  "main.bbl" 1789701320.74994 7365 8cc1dc2e3e4a330c9dc4ba328eec23c5 "bibtex main"
+  "main.out" 1789701321.99695 7210 a09be9d096d42a111092692159dd0b80 "pdflatex"
+  "main.tex" 1789701308.42881 2521 f5c7464f21b4f08741d72a1dd0a73846 ""
   "math_commands.tex" 1788165763.94515 1279 4d3ba70bd33c2b6f137420f63b02098a ""
   "sections/0_abstract.tex" 1789663950.59115 1557 42fe6676bfa5e58d5089b54b4df59d3b ""
   "sections/1_introduction.tex" 1789663922.14284 3767 30abe88711ebbd34190e152e148751eb ""
   "sections/2_related_work.tex" 1789640837.79983 3499 3377b8cbe1f37a86411094dd2b57d915 ""
-  "sections/3_method.tex" 1789696492.69558 6853 1a803d96793791f19607baa32711fa66 ""
-  "sections/4_experiments.tex" 1789696497.06864 11937 0b1d141e74d47bb38326a2e948a5e951 ""
-  "sections/5_analysis_limitations.tex" 1789696426.69667 2904 a96b15fda135bd97403cde2be7cf35ee ""
-  "sections/6_conclusion.tex" 1789696498.49566 1230 387a8ad350121de1e0f4c558b4f0d45f ""
-  "sections/A_appendix.tex" 1789695943.17788 13657 12248f56ecadf6dcb27a365c064cd6f4 ""
+  "sections/3_method.tex" 1789701262.25033 7088 53f03f5692d48792f4eb747590f91491 ""
+  "sections/4_experiments.tex" 1789701263.48934 11891 f4a999baea85f5e688f4a546424429f8 ""
+  "sections/5_analysis_limitations.tex" 1789701306.76079 2893 0cf31fc1fd4ab913677d417956b950cd ""
+  "sections/6_conclusion.tex" 1789701305.73678 1180 45e1206db34e5e44841ef81507762d3f ""
+  "sections/A_appendix.tex" 1789701180.87051 19105 0af71f4a92f202623233bf06394df14a ""
   (generated)
   "main.aux"
   "main.log"

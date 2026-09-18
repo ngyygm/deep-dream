@@ -1,9 +1,16 @@
-\begin{thebibliography}{17}
+\begin{thebibliography}{19}
 \providecommand{\natexlab}[1]{#1}
 \providecommand{\url}[1]{\texttt{#1}}
 \expandafter\ifx\csname urlstyle\endcsname\relax
   \providecommand{\doi}[1]{doi: #1}\else
   \providecommand{\doi}{doi: \begingroup \urlstyle{rm}\Url}\fi
+
+\bibitem[Chernoff(1952)]{chernoff1952measure}
+Herman Chernoff.
+\newblock A measure of asymptotic efficiency for tests of a hypothesis based on
+  the sum of observations.
+\newblock \emph{The Annals of Mathematical Statistics}, 23\penalty0
+  (4):\penalty0 493--507, 1952.
 
 \bibitem[Chhikara et~al.(2025)Chhikara, Khant, Aryan, Singh, and
   Yadav]{chhikara2025mem0}
@@ -95,6 +102,11 @@ Preston Rasmussen, Pavlo Paliychuk, Travis Beauvais, Jack Ryan, and Daniel
 \newblock Zep: A temporal knowledge graph architecture for agent memory.
 \newblock \emph{arXiv preprint arXiv:2501.13956}, 2025.
 \newblock URL \url{https://arxiv.org/abs/2501.13956}.
+
+\bibitem[Shannon(1959)]{shannon1959coding}
+Claude~E. Shannon.
+\newblock Coding theorems for a discrete source with a fidelity criterion.
+\newblock \emph{IRE National Convention Record, Part 4}, pp.\  142--163, 1959.
 
 \bibitem[Shridhar et~al.(2021)Shridhar, Yuan, C{\^o}t{\'e}, Bisk, Trischler,
   and Hausknecht]{shridhar2021alfworld}

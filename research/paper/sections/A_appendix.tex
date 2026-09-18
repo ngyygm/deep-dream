@@ -102,6 +102,31 @@ The single Deep-Dream $J$ row placed inside Mem0's $J$ column is produced by run
 
 A stricter controlled comparison---freezing the same answer model, judge model, prompt, temperature, evidence budget, dataset revision, and Graphiti/Zep implementation commit---remains the only path to a shared leaderboard, but it is not a submission hard gate now that the published numbers are cited directly.
 
+\subsection{An information-theoretic reading of the architecture}
+\label{app:info-theory}
+
+This appendix gives the paper's two design commitments a formal shape. Every statement is either a structural property of the architecture (checkable against the schema and code) or a conditional proposition with explicit assumptions; none upgrades the causal wording discipline of \cref{sec:ladder,sec:provenance-ablation}.
+
+\textbf{Write time: alignment as deferred decision.} Let the source stream be immutable documents, each extracted mention carry a feature vector (name and content embeddings, attribute assertions, relation-endpoint co-occurrence), and each family hold an append-only observation list linked to exact source spans. Merging is non-destructive---the losing family's observations re-attach with provenance, and merges are idempotent---so alignment errors are revisable coarsenings, not information loss.
+
+\begin{proposition}[Revisability]
+\label{prop:revisability}
+In the append-only data model, any coarsening of the current family partition is realizable at any later time by non-destructive merges, with no loss of evidence. A store that instead overwrites an entity record with a running summary $\sigma$ satisfies $I(Z;\sigma) \le I(Z;O)$ (data processing inequality), strictly when the summary discards identity-discriminative detail---a loss no later evidence can restore.
+\end{proposition}
+
+First-shot alignment accuracy is therefore not the quantity that matters; evidence retention is. The system's conservative thresholds (low-confidence merges degrade to creating a new family) deliberately bias early errors toward over-splitting---the recoverable direction, since a wrong merge contaminates one handle with two entities' evidence and is strictly harder for the read path to detect.
+
+\begin{proposition}[Convergence under pooled evidence]
+\label{prop:convergence}
+Assume observation features are i.i.d.\ given entity identity, with distinct entities $e \neq e'$ emitting $P_e \neq P_{e'}$ of Chernoff information $C(P_e,P_{e'}) > 0$. Then the error probability of the same/different-entity test on two families with $k$ pooled observations decays as $\exp(-k\,C(P_e,P_{e'}))$ \citep{chernoff1952measure}; in particular, the probability that a true merge---split early under weak evidence---remains undetected decays exponentially in corroborating evidence, independent of the initial segmentation.
+\end{proposition}
+
+The assumptions are idealizations (features correlate across windows; same-name-different-entity pairs are exactly low-$C$ cases), and the measured quantities are two engine generations, not a controlled evidence sweep. What the mechanism correspondence supports: window-batch adjudication pools a window's candidates into one decision, and the scope-end sweep re-judges duplicate groups with full-library context to a fixed point---each raises evidence per decision. The measured joint effect is consolidation quality and ingest efficiency improving together: same-name duplicate families fall 340$\to$124 (MAB) and 482$\to$99 (LME) while ingest calls per document fall 46--65\% (\cref{app:ledger}). Relation-endpoint co-occurrence, injected as alignment evidence, is a high-discrimination feature in exactly this sense---shared relational neighborhoods separate the same/different hypotheses---and the same edges later widen the retrieval graph.
+
+\textbf{Store: an index, not a reconstruction.} The derived layer is never answer text: all three rungs' answerers consume verbatim spans (retrieval resolves candidates back to source episodes and snippets). Reconstruction distortion is thus structurally zero---reconstruction never occurs---and all loss is \emph{addressing} loss: the derived layer may lose information about how to find a fact, never about the fact itself. Candidate generation runs over the family index (full-text search, embedding similarity, graph neighborhoods, reciprocal-rank fusion), so macro concept retrieval and span-level resolution form one deterministic chain whose cost scales with index size, not source bytes.
+
+\textbf{Read time: one-sided error, query-chosen distortion.} Because the evidence gate admits only identifiers surfaced by tool calls and cited spans are functions of the immutable sources alone, any overlay perturbation (a stale relation, a wrong scope materialization) enters the answer only through what is read---it can change coverage, never the authenticity or auditability of what is cited. This is the formal content of ``a missed scope, never a fabricated fact'' (provenance reachability, not entailment, \cref{sec:deep-dream}). Likewise, a summarizing memory fixes a rate--distortion point at write time that every future query inherits \citep{shannon1959coding}; a source-grounded system defers that choice to query time---the answerer's reading policy selects its own operating point. The ladder's measured points---(25.1k tokens, 0.324), (35.0k, 0.407), (96.0k, 0.651) Overall, replicated across generations (\cref{sec:ladder})---trace agents choosing progressively lower-distortion points at higher rate, with the hardest verification tasks separating most (FC-MH 2--4 vs.\ 67--70). The framing claims this association, not single-factor causality, and the X7 equivalence bound still caps the derived channels' offline addressing contribution at $\pm$2.4 points: their measured value is selection, not recall (\cref{sec:provenance-ablation}).
+
 \input{figures/TABLE_protocol_other}
 
 \input{figures/TABLE_mem0_locomo_baselines}
