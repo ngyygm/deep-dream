@@ -246,7 +246,13 @@
           }
         },
         "rung_cost_v2": {
-          "rung1": null,
+          "rung1": {
+            "latency_seconds_mean": 32.6,
+            "latency_seconds_p95": 109.9,
+            "llm_calls_per_question": 1.0,
+            "questions": 767,
+            "tokens_per_question": 25068.3
+          },
           "rung2": {
             "latency_seconds_mean": 69.0,
             "latency_seconds_p95": 189.5,
@@ -310,25 +316,381 @@
           "v1": 940,
           "v2": 1020
         },
-        "from_reports": {
-          "dataset_total_active_documents": {
-            "v1": 1176,
-            "v2": 1176
+        "library_dbs": {
+          "v1": {
+            "definition": "canonical_name normalized (strip+lower), grouped within each scope library; rows = families living in a shared-name group, groups = distinct shared names; rate = rows / total families.",
+            "documents": 1176,
+            "dup_name_groups": 234,
+            "dup_name_row_rate": 0.008,
+            "dup_name_rows": 482,
+            "entity_families": 59892,
+            "path_pattern": ".benchmark_runs/longmemeval-kimik3-full-v1/libraries/<scope>/library.db",
+            "per_scope": {
+              "06db6396_275ca884cc": {
+                "documents": 51,
+                "dup_name_groups": 10,
+                "dup_name_rows": 20,
+                "entity_families": 2428,
+                "sha256": "c779128b0130dd14d099dc53b8cb7552b198598a0cc3063c68a9a41fdbbb6b45"
+              },
+              "0ea62687_f092a1d62c": {
+                "documents": 43,
+                "dup_name_groups": 21,
+                "dup_name_rows": 45,
+                "entity_families": 2360,
+                "sha256": "cfed20d7063fefdde0729c8cec70632c3a34109f4e137bbc1d797e3fada98592"
+              },
+              "10d9b85a_a4c109d214": {
+                "documents": 44,
+                "dup_name_groups": 2,
+                "dup_name_rows": 4,
+                "entity_families": 2236,
+                "sha256": "9d51e67ac25bf563491cb5329d8d75bf552d402d5a7f2c341d8a32e314c645e5"
+              },
+              "118b2229_bd3a35a95b": {
+                "documents": 45,
+                "dup_name_groups": 1,
+                "dup_name_rows": 2,
+                "entity_families": 2339,
+                "sha256": "4a988be950471d655fcf809ecf4b39a003b020593704850cb86f162cce58d3c7"
+              },
+              "18bc8abd_5ec0c79521": {
+                "documents": 43,
+                "dup_name_groups": 9,
+                "dup_name_rows": 18,
+                "entity_families": 2178,
+                "sha256": "2207c8d752f9c265e16d3880f5680da9ac4d6d131e3ba1ceeaca496e39c49546"
+              },
+              "1b9b7252_2242992bff": {
+                "documents": 46,
+                "dup_name_groups": 19,
+                "dup_name_rows": 40,
+                "entity_families": 2352,
+                "sha256": "7584f87d9bd8f22f9d9382e7bf990024676f12d27464916c01b561ffa409cbf4"
+              },
+              "2b8f3739_59ff53ecf3": {
+                "documents": 47,
+                "dup_name_groups": 4,
+                "dup_name_rows": 9,
+                "entity_families": 2434,
+                "sha256": "d0f97977c0d6649a9adcfbd1130507ced7dd0515277f6a7f91aa77c3632ba53e"
+              },
+              "37f165cf_90bd9a9447": {
+                "documents": 45,
+                "dup_name_groups": 12,
+                "dup_name_rows": 24,
+                "entity_families": 2416,
+                "sha256": "224ffca444562d8845e06a24a7dd3dc603415cc95bd734ef1a8b7ec921de7113"
+              },
+              "41275add_3e0b7b83ab": {
+                "documents": 53,
+                "dup_name_groups": 23,
+                "dup_name_rows": 48,
+                "entity_families": 2529,
+                "sha256": "f34a2f3cb327a13e9bcdca84dd1bf65ffca4a04b2c6c643b677c3c74250b9a20"
+              },
+              "5025383b_b7896a56a1": {
+                "documents": 46,
+                "dup_name_groups": 7,
+                "dup_name_rows": 14,
+                "entity_families": 2263,
+                "sha256": "4aae530b3bacd9d24c78fca7a057a574a7ed1765d0e6a9eddaa0ee2eddc25051"
+              },
+              "57f827a0_ae36569992": {
+                "documents": 51,
+                "dup_name_groups": 5,
+                "dup_name_rows": 10,
+                "entity_families": 2438,
+                "sha256": "764b7f826efd38cb077e65660a12c072dde91171f08af9f0953256eff98c7b76"
+              },
+              "58bf7951_06daf8e2d3": {
+                "documents": 56,
+                "dup_name_groups": 1,
+                "dup_name_rows": 2,
+                "entity_families": 2334,
+                "sha256": "6afe2d8b92576489b515a4b6f858e949fba39a3202ff5df05573ceab0028d27d"
+              },
+              "5a4f22c0_62681644a5": {
+                "documents": 49,
+                "dup_name_groups": 11,
+                "dup_name_rows": 22,
+                "entity_families": 2385,
+                "sha256": "2b60fc1e5d9717a9e99d07315266c4c26d7697e65b7f3385e7c0929d7c6486e3"
+              },
+              "618f13b2_a755f4655d": {
+                "documents": 49,
+                "dup_name_groups": 16,
+                "dup_name_rows": 32,
+                "entity_families": 2478,
+                "sha256": "63e8d9070e4c9a72c306bcb1759d208adceb2223af5c812c16277fd0786dc368"
+              },
+              "75f70248_9afb031b09": {
+                "documents": 42,
+                "dup_name_groups": 4,
+                "dup_name_rows": 8,
+                "entity_families": 2361,
+                "sha256": "cb037387b787cdafafb984fc284c86d7482da688ae131e9c059cd9fa618af3a7"
+              },
+              "80ec1f4f_b5ae7089ce": {
+                "documents": 46,
+                "dup_name_groups": 3,
+                "dup_name_rows": 6,
+                "entity_families": 2365,
+                "sha256": "53027abe5983cf069056d1b77065049cb923515d536682bc940c6dd46ad03207"
+              },
+              "bc8a6e93_abs_12f884ee10": {
+                "documents": 47,
+                "dup_name_groups": 1,
+                "dup_name_rows": 2,
+                "entity_families": 2467,
+                "sha256": "111b4ecd3ee17cc57e9e3babb30c09d9f343005dd8828c1b067aa921ec68abc2"
+              },
+              "e4e14d04_c018394cb0": {
+                "documents": 45,
+                "dup_name_groups": 3,
+                "dup_name_rows": 6,
+                "entity_families": 2571,
+                "sha256": "5f40a60d6849c182d80df3d6be5838ff8fb68219f7e78c11f8865eb003bcee3d"
+              },
+              "eeda8a6d_ce926540db": {
+                "documents": 49,
+                "dup_name_groups": 2,
+                "dup_name_rows": 4,
+                "entity_families": 2555,
+                "sha256": "669ea5f096e97c86ff99c886aa77ef899c3d093f8c19f28ca864875b85f5b5db"
+              },
+              "faba32e5_55d698607e": {
+                "documents": 46,
+                "dup_name_groups": 5,
+                "dup_name_rows": 10,
+                "entity_families": 2395,
+                "sha256": "ef5a991b7aefc927a2b7eedb7db015358e5b84624578f5b0a31f935ed3b2fe29"
+              },
+              "gpt4_2487a7cb_a04e616312": {
+                "documents": 47,
+                "dup_name_groups": 23,
+                "dup_name_rows": 51,
+                "entity_families": 2461,
+                "sha256": "3e3828b088371a94e03fb597a67ba0c3cc3c38c87211dec156917558164a16af"
+              },
+              "gpt4_4ef30696_86bf072e0e": {
+                "documents": 49,
+                "dup_name_groups": 18,
+                "dup_name_rows": 37,
+                "entity_families": 2419,
+                "sha256": "61b7e34c6978aebc7ce644788df4c60fa9b5c8757f03488aec213f737919f114"
+              },
+              "gpt4_78cf46a3_2ab6ce05f2": {
+                "documents": 49,
+                "dup_name_groups": 10,
+                "dup_name_rows": 20,
+                "entity_families": 2372,
+                "sha256": "8f8d3c5276f628666337b1384ed20a7eca72034170047cc00a57be39f3a4816a"
+              },
+              "gpt4_af6db32f_4dee38cce3": {
+                "documents": 42,
+                "dup_name_groups": 7,
+                "dup_name_rows": 14,
+                "entity_families": 2368,
+                "sha256": "54330886ac3c30cfc48ea993cd7cca8a0dbc67acfb34061f86a3f29d063fcb81"
+              },
+              "gpt4_c27434e8_abs_fe1ba46dc8": {
+                "documents": 46,
+                "dup_name_groups": 17,
+                "dup_name_rows": 34,
+                "entity_families": 2388,
+                "sha256": "756f809032fc113b9e35d5ccacdea2566498768fb71db01ef2d56d1949e79398"
+              }
+            },
+            "scopes": 25
           },
-          "duplicate_family_rate": {
-            "v1": 0.008,
-            "v2": 0.002
-          },
-          "duplicate_family_rows": {
-            "v1": 482,
-            "v2": 99
-          },
-          "entity_families": {
-            "v1": 59892,
-            "v2": 55878
-          },
-          "note": "LME ingest stats coverage 940/1020 of 1176 docs (scheduler-kill losses, unbiased for per-doc ratios); both library DBs hold 1176/1176 active docs.",
-          "provenance": "reports/lme_v1_vs_v2_full_2026-08-29.md"
+          "v2": {
+            "definition": "canonical_name normalized (strip+lower), grouped within each scope library; rows = families living in a shared-name group, groups = distinct shared names; rate = rows / total families.",
+            "documents": 1176,
+            "dup_name_groups": 49,
+            "dup_name_row_rate": 0.0018,
+            "dup_name_rows": 99,
+            "entity_families": 55878,
+            "path_pattern": ".benchmark_runs/longmemeval-kimik3-full-v2/libraries/<scope>/library.db",
+            "per_scope": {
+              "06db6396_275ca884cc": {
+                "documents": 51,
+                "dup_name_groups": 2,
+                "dup_name_rows": 4,
+                "entity_families": 2265,
+                "sha256": "f8c2f8465d450082daebc6aa61f0f40811dfa6a5c43e95bb50ae92c85d00f250"
+              },
+              "0ea62687_f092a1d62c": {
+                "documents": 43,
+                "dup_name_groups": 1,
+                "dup_name_rows": 2,
+                "entity_families": 2130,
+                "sha256": "1a2fad18fa1accfca7fed099221b5ae74dbde4d6a82e2d0924f66cdf2e1dfc3d"
+              },
+              "10d9b85a_a4c109d214": {
+                "documents": 44,
+                "dup_name_groups": 0,
+                "dup_name_rows": 0,
+                "entity_families": 2104,
+                "sha256": "53a8ee8df58c1431ab21006e50ad127b8b217c2d645fb504c3d5070eef6ec0b1"
+              },
+              "118b2229_bd3a35a95b": {
+                "documents": 45,
+                "dup_name_groups": 4,
+                "dup_name_rows": 9,
+                "entity_families": 2162,
+                "sha256": "a3c8c75fffb2ad88b5b6b65ac01775e21bcf2ba6e42d97120f56d6ab38087cbd"
+              },
+              "18bc8abd_5ec0c79521": {
+                "documents": 43,
+                "dup_name_groups": 3,
+                "dup_name_rows": 6,
+                "entity_families": 2057,
+                "sha256": "b041d08b7c618f46b88bd6ba41f3903704b38cf535491230bbcc35270dc1dbdc"
+              },
+              "1b9b7252_2242992bff": {
+                "documents": 46,
+                "dup_name_groups": 4,
+                "dup_name_rows": 8,
+                "entity_families": 2228,
+                "sha256": "414f728e64d8b98da8af2bf6bf6889ee77ef5fe883b404e78092abe6fd0b77f3"
+              },
+              "2b8f3739_59ff53ecf3": {
+                "documents": 47,
+                "dup_name_groups": 3,
+                "dup_name_rows": 6,
+                "entity_families": 2210,
+                "sha256": "89184f957d6b0720f70e0c422697c75e5a4ef061f4c7fd7e71cc9b75fe1ecd84"
+              },
+              "37f165cf_90bd9a9447": {
+                "documents": 45,
+                "dup_name_groups": 2,
+                "dup_name_rows": 4,
+                "entity_families": 2182,
+                "sha256": "26878835e94a0cad967d1905c49226bdbe7dd4e85f70c45817a2683dda4edafa"
+              },
+              "41275add_3e0b7b83ab": {
+                "documents": 53,
+                "dup_name_groups": 5,
+                "dup_name_rows": 10,
+                "entity_families": 2356,
+                "sha256": "a202a826f8ad57e6c95a4f21dedb53908c25849f7456b5f35d6e65dff346cc8f"
+              },
+              "5025383b_b7896a56a1": {
+                "documents": 46,
+                "dup_name_groups": 1,
+                "dup_name_rows": 2,
+                "entity_families": 2080,
+                "sha256": "bb053615f8bdc24a04e9480e200ed2d6ccca8b375509b58618e6f182d6bfcc3a"
+              },
+              "57f827a0_ae36569992": {
+                "documents": 51,
+                "dup_name_groups": 2,
+                "dup_name_rows": 4,
+                "entity_families": 2281,
+                "sha256": "eca5880c139249970dc7fc116ecfac505e9e7f3b6fd5b15bf90f9500fa856285"
+              },
+              "58bf7951_06daf8e2d3": {
+                "documents": 56,
+                "dup_name_groups": 0,
+                "dup_name_rows": 0,
+                "entity_families": 2234,
+                "sha256": "72e24d7c8fd12c3c5b3c32342ed4f6cd22286a80b6834f68f72016041c33e0f7"
+              },
+              "5a4f22c0_62681644a5": {
+                "documents": 49,
+                "dup_name_groups": 1,
+                "dup_name_rows": 2,
+                "entity_families": 2139,
+                "sha256": "061575e131aa0f51619dfe642c005ff1791343f73d0905f2f01cb8363dcf836e"
+              },
+              "618f13b2_a755f4655d": {
+                "documents": 49,
+                "dup_name_groups": 2,
+                "dup_name_rows": 4,
+                "entity_families": 2258,
+                "sha256": "945a432d77e464b146d5ef007675f1d5d4ea54f03b5de998ce07f85cc1361a8f"
+              },
+              "75f70248_9afb031b09": {
+                "documents": 42,
+                "dup_name_groups": 1,
+                "dup_name_rows": 2,
+                "entity_families": 2189,
+                "sha256": "2a88520efec5971f1e47af4e858510a02b875b79ab69772eeef3da09df762815"
+              },
+              "80ec1f4f_b5ae7089ce": {
+                "documents": 46,
+                "dup_name_groups": 1,
+                "dup_name_rows": 2,
+                "entity_families": 2201,
+                "sha256": "39dbd8e0a440a8229cd9c15599f62ea6b225070974686ede4b7c9010691e3993"
+              },
+              "bc8a6e93_abs_12f884ee10": {
+                "documents": 47,
+                "dup_name_groups": 0,
+                "dup_name_rows": 0,
+                "entity_families": 2258,
+                "sha256": "b87c43ef9f4501f0fe468302aa693bbafbedc1925fbd6cf4a5613e79a7cedbbd"
+              },
+              "e4e14d04_c018394cb0": {
+                "documents": 45,
+                "dup_name_groups": 2,
+                "dup_name_rows": 4,
+                "entity_families": 2480,
+                "sha256": "15604bbc3889129ad14794303892975caae3577f5e3fa7d04af4543f3b2e50b9"
+              },
+              "eeda8a6d_ce926540db": {
+                "documents": 49,
+                "dup_name_groups": 2,
+                "dup_name_rows": 4,
+                "entity_families": 2484,
+                "sha256": "559d32b6d2c0414d8e79337c2d9158bf3d744c60ee638752c723d8fff861f5bf"
+              },
+              "faba32e5_55d698607e": {
+                "documents": 46,
+                "dup_name_groups": 1,
+                "dup_name_rows": 2,
+                "entity_families": 2195,
+                "sha256": "4c7827a50b472c01edb24ba8b4e4b07d63ec3732ddcca45a96e8a8a9bc806c6b"
+              },
+              "gpt4_2487a7cb_a04e616312": {
+                "documents": 47,
+                "dup_name_groups": 2,
+                "dup_name_rows": 4,
+                "entity_families": 2323,
+                "sha256": "14998d2536ae5c78ef6d3f47872ecd0e37b6f40a0debcaa9dceac04ab4a18099"
+              },
+              "gpt4_4ef30696_86bf072e0e": {
+                "documents": 49,
+                "dup_name_groups": 5,
+                "dup_name_rows": 10,
+                "entity_families": 2245,
+                "sha256": "98d60cf5856db945920fee860cfdff689aaf048b0ee8b5c7a95bc224a78fb536"
+              },
+              "gpt4_78cf46a3_2ab6ce05f2": {
+                "documents": 49,
+                "dup_name_groups": 3,
+                "dup_name_rows": 6,
+                "entity_families": 2347,
+                "sha256": "8668aa286f644ab71b7a6b30b1d6da7f205bb52f49a5484ccc4dcb6d1677e301"
+              },
+              "gpt4_af6db32f_4dee38cce3": {
+                "documents": 42,
+                "dup_name_groups": 1,
+                "dup_name_rows": 2,
+                "entity_families": 2236,
+                "sha256": "054e8f1bb5a7222a07f1dca023e20c8c780e54dd3255ca4d47f6977219adeaf1"
+              },
+              "gpt4_c27434e8_abs_fe1ba46dc8": {
+                "documents": 46,
+                "dup_name_groups": 1,
+                "dup_name_rows": 2,
+                "entity_families": 2234,
+                "sha256": "9d8b2d2b8c00084e5a59ea91c5453678e347c49b06c4242f752e683d5626e87d"
+              }
+            },
+            "scopes": 25
+          }
         },
         "manifest": {
           "v1": {
@@ -352,6 +714,10 @@
             "tokens_per_doc": 111701.73
           }
         },
+        "report_crosscheck": {
+          "note": "The report's 59,892/55,878 families, 482->99 duplicate rows, and 0.008->0.002 rates reproduce exactly under the normalized-name definition above; its 1,176/1,176 active-document totals match the DB counts. Ingest stats coverage 940/1020 of 1,176 docs (scheduler-kill losses, unbiased for per-doc ratios).",
+          "provenance": "reports/lme_v1_vs_v2_full_2026-08-29.md"
+        },
         "stats_coverage_docs": {
           "v1": 940,
           "v2": 1020
@@ -364,20 +730,171 @@
           "v1": 58,
           "v2": 46
         },
-        "from_reports": {
-          "duplicate_family_rate": {
-            "v1": 0.2,
-            "v2": 0.0
+        "library_dbs": {
+          "v1": {
+            "definition": "canonical_name normalized (strip+lower), grouped within each scope library; rows = families living in a shared-name group, groups = distinct shared names; rate = rows / total families.",
+            "documents": 59,
+            "dup_name_groups": 154,
+            "dup_name_row_rate": 0.0166,
+            "dup_name_rows": 340,
+            "entity_families": 20426,
+            "path_pattern": ".benchmark_runs/memoryagentbench-kimik3-sample-v1/libraries/<scope>/library.db",
+            "per_scope": {
+              "mab-ar-000_677804eb18": {
+                "documents": 9,
+                "dup_name_groups": 9,
+                "dup_name_rows": 20,
+                "entity_families": 3662,
+                "sha256": "9bf93dee13f8b89049a78f9eb7fc57344a3e8d40ecabf98199caa21b0a13d8a3"
+              },
+              "mab-ar-005_5e2d629d51": {
+                "documents": 15,
+                "dup_name_groups": 23,
+                "dup_name_rows": 50,
+                "entity_families": 4772,
+                "sha256": "c2a2f22c4b79c8e58c09ce95c3fa48fb17bb25234cdd918e615991d1583afae7"
+              },
+              "mab-ar-010_296aaf9519": {
+                "documents": 3,
+                "dup_name_groups": 16,
+                "dup_name_rows": 43,
+                "entity_families": 849,
+                "sha256": "d5d90c81f48d4d0f13cb66639ebe344e96b5f327da07e111953220b6522c698f"
+              },
+              "mab-ar-015_fd52e0b203": {
+                "documents": 5,
+                "dup_name_groups": 14,
+                "dup_name_rows": 32,
+                "entity_families": 1697,
+                "sha256": "d4ba5ced2700d26944abca725cfad75262caa00118a02eabc5fd60dd88e07768"
+              },
+              "mab-ar-020_70c681beea": {
+                "documents": 14,
+                "dup_name_groups": 56,
+                "dup_name_rows": 118,
+                "entity_families": 6157,
+                "sha256": "94fb7b3e56a0936363d5bf4c8604055f4eb8348dbca1c65345a85cfe22c66cd7"
+              },
+              "mab-cr-000_7815b7c43e": {
+                "documents": 1,
+                "dup_name_groups": 0,
+                "dup_name_rows": 0,
+                "entity_families": 101,
+                "sha256": "957882fb2895f46516396f0045c1caf690e142be48ed73078430ae893482d9e2"
+              },
+              "mab-cr-004_dcc1d1955a": {
+                "documents": 1,
+                "dup_name_groups": 0,
+                "dup_name_rows": 0,
+                "entity_families": 102,
+                "sha256": "726e887c9ce238ffeb8e2d95b9622a4fd670c1cac569cb33750a9371a6efc540"
+              },
+              "mab-lru-058_523fe83cb2": {
+                "documents": 3,
+                "dup_name_groups": 6,
+                "dup_name_rows": 15,
+                "entity_families": 974,
+                "sha256": "047bd88e537945a65df6c92131f1a3f9f4e5f70cd23c4f134475394c8670e7e5"
+              },
+              "mab-lru-100_984a4573d6": {
+                "documents": 4,
+                "dup_name_groups": 15,
+                "dup_name_rows": 32,
+                "entity_families": 1233,
+                "sha256": "4723aa5627a16ac70cb845bcc184fa8cd6e9efb88ee164fb6c804e241806757c"
+              },
+              "mab-ttl-002_7483ec3894": {
+                "documents": 4,
+                "dup_name_groups": 15,
+                "dup_name_rows": 30,
+                "entity_families": 879,
+                "sha256": "6c7590525cb6da08cc57f6fb6fec3baf62e0508140282e20c0ee5d2a3a215d79"
+              }
+            },
+            "scopes": 10
           },
-          "duplicate_names": {
-            "v1": 154,
-            "v2": 61
-          },
-          "entity_families": {
-            "v1": 20426,
-            "v2": 19244
-          },
-          "provenance": "reports/mab_v1_vs_v2_2026-08-30.md"
+          "v2": {
+            "definition": "canonical_name normalized (strip+lower), grouped within each scope library; rows = families living in a shared-name group, groups = distinct shared names; rate = rows / total families.",
+            "documents": 59,
+            "dup_name_groups": 61,
+            "dup_name_row_rate": 0.0064,
+            "dup_name_rows": 124,
+            "entity_families": 19244,
+            "path_pattern": ".benchmark_runs/memoryagentbench-kimik3-sample-v2/libraries/<scope>/library.db",
+            "per_scope": {
+              "mab-ar-000_677804eb18": {
+                "documents": 9,
+                "dup_name_groups": 1,
+                "dup_name_rows": 2,
+                "entity_families": 3550,
+                "sha256": "f4b8ae2da3332bc30f8952fbfce691026d5002c3da631f6a1254762f3d588ee4"
+              },
+              "mab-ar-005_5e2d629d51": {
+                "documents": 15,
+                "dup_name_groups": 16,
+                "dup_name_rows": 32,
+                "entity_families": 4392,
+                "sha256": "f12c0ef1575bd4b9ab8afba9a4aa884d8e5a2b8e7d67611ddd49f69275d94817"
+              },
+              "mab-ar-010_296aaf9519": {
+                "documents": 3,
+                "dup_name_groups": 1,
+                "dup_name_rows": 2,
+                "entity_families": 801,
+                "sha256": "bca230a1493d985a35f56897c5b7a2ca1ba75c255a1ded2d0385b860075f798d"
+              },
+              "mab-ar-015_fd52e0b203": {
+                "documents": 5,
+                "dup_name_groups": 1,
+                "dup_name_rows": 2,
+                "entity_families": 1565,
+                "sha256": "79b8d060757b7017dd0e5ff127cba8e5f6a38dda5baeb121d5daa16b49c03972"
+              },
+              "mab-ar-020_70c681beea": {
+                "documents": 14,
+                "dup_name_groups": 35,
+                "dup_name_rows": 72,
+                "entity_families": 5970,
+                "sha256": "8f7136366e5030e876231f3e1c3a1b7273ff3f760ea1cd1be0817160db4fce64"
+              },
+              "mab-cr-000_7815b7c43e": {
+                "documents": 1,
+                "dup_name_groups": 0,
+                "dup_name_rows": 0,
+                "entity_families": 103,
+                "sha256": "ac612bfcc4b1fdc3b3ef3d26ddf5cbf68377ee70ee153e6bd1038e31c8135b83"
+              },
+              "mab-cr-004_dcc1d1955a": {
+                "documents": 1,
+                "dup_name_groups": 0,
+                "dup_name_rows": 0,
+                "entity_families": 104,
+                "sha256": "3ba6b95ceca9e3c46130c6567afedd8426793a756ad3cc7fd2173dd9bc336dee"
+              },
+              "mab-lru-058_523fe83cb2": {
+                "documents": 3,
+                "dup_name_groups": 1,
+                "dup_name_rows": 2,
+                "entity_families": 925,
+                "sha256": "ba4ab2b9e1c87b3d3bb638ca564b24bd49013cf2101f4129ab051ef060b6093c"
+              },
+              "mab-lru-100_984a4573d6": {
+                "documents": 4,
+                "dup_name_groups": 4,
+                "dup_name_rows": 8,
+                "entity_families": 1055,
+                "sha256": "52959e01e6676032412cfed106a5c66761269b75f85e7b4253e5c363b672e53a"
+              },
+              "mab-ttl-002_7483ec3894": {
+                "documents": 4,
+                "dup_name_groups": 2,
+                "dup_name_rows": 4,
+                "entity_families": 779,
+                "sha256": "7cbac2c47112bdeed18f78c8cc30b423307b882dfa6c8538860092eeb979be2b"
+              }
+            },
+            "scopes": 10
+          }
         },
         "manifest": {
           "v1": {
@@ -402,13 +919,17 @@
             "tokens_per_doc": 1191450.82
           }
         },
+        "report_crosscheck": {
+          "note": "The report's 20,426/19,244 families and 154->61 duplicate names reproduce exactly under the normalized-name definition above. Its headline 'duplicate_family_rate 0.20->0.00' is NOT reproducible from the shipped databases under any standard definition (computed global row rate 0.0166->0.0064); the paper cites the computed values, and this note records the discrepancy.",
+          "provenance": "reports/mab_v1_vs_v2_2026-08-30.md"
+        },
         "stats_coverage_docs": {
           "v1": 58,
           "v2": 46
         },
         "tokens_delta_pct": -18.2
       },
-      "purpose": "Paired v1->v2 ingest efficiency on identical datasets (paper Sec. engine-paired). Calls/tokens per document are recomputed here from per-document llm_call_stats in the hashed run manifests; MAB ratios use the 45-document paired intersection (manifests missing from one generation are excluded). Library-level counts (duplicate-family rates, entity-family totals, dataset active-document totals) require the per-scope library DBs, which remain on the benchmark machine, and are recorded verbatim from the hashed v1/v2 comparison reports listed in sources."
+      "purpose": "Paired v1->v2 ingest efficiency on identical datasets (paper Sec. engine-paired). Calls/tokens per document are recomputed here from per-document llm_call_stats in the hashed run manifests; MAB ratios use the 45-document paired intersection (manifests missing from one generation are excluded). Library-level counts (document totals, entity-family totals, duplicate-name statistics) are recomputed from the hashed per-scope library DBs; the hashed v1/v2 comparison reports remain in sources as narrative provenance."
     },
     "longmemeval_full_ingest": {
       "v1_baseline": {
@@ -1974,7 +2495,7 @@
       "source": "Rasmussen et al., 2025 (arXiv:2501.13956), LongMemEval table"
     }
   },
-  "schema_version": 4,
+  "schema_version": 5,
   "scope_note": "Protocol-aligned internal and cross-judge results; not a strict external leaderboard. Retrieval diagnostics are associations unless their comparison changes only one factor.",
   "source_expansion_diagnostic": {
     "causal_scope": "The lexical-semantic-span and neighbor rows keep channel composition fixed; the sample is selected from prior errors and remains a development diagnostic rather than a held-out test.",
@@ -2111,7 +2632,7 @@
     },
     {
       "path": "paper/results/recomputed_values.json",
-      "sha256": "f84d7d98260858ca88caa5c055e7df76df59c36992901ef2d872b663e55f2539"
+      "sha256": "9912c06734a9a17e860e44f02600eda96a9efa51f26bda9c5cea40daf434df95"
     },
     {
       "path": ".benchmark_runs/memoryagentbench-kimik3-sample-v1/memoryagentbench_summary.baseline.kimik3-official-v1.sampled.json",

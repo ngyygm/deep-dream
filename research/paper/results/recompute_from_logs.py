@@ -1,8 +1,7 @@
 """Deterministic recomputes for the paper's six contract items (no LLM).
 
 Reads frozen artifacts under research/.benchmark_runs and regenerates:
-  1. paper/figures/RECOMPUTED_MACROS.tex   (LaTeX macros, sentinels kept
-     only where the source artifact has not been synced yet)
+  1. paper/figures/RECOMPUTED_MACROS.tex   (LaTeX macros)
   2. paper/results/recomputed_values.json  (machine-readable, consumed by
      gen_fig2_ladder.py / gen_fig3_cost.py and the evidence ledger)
 
@@ -85,8 +84,13 @@ def load_meta(version: str, track: str) -> dict[str, tuple]:
     return out
 
 
-def load_results(version: str, track: str) -> dict[str, dict]:
-    """question_id -> last results row (retries collapse keep-last)."""
+def load_cost_fields(version: str, track: str) -> dict[str, dict]:
+    """question_id -> scalar cost fields (keep-last on retry duplicates).
+
+    Extracts only the cost scalars per row: results.baseline.jsonl embeds the
+    full retrieved context (~1.4 MB/row), so holding whole rows for 767
+    questions would pin ~1 GB of RAM for a handful of numbers.
+    """
     path = os.path.join(mab_dir(version), f"results.{track}.jsonl")
     if not os.path.exists(path):
         return {}
@@ -94,7 +98,13 @@ def load_results(version: str, track: str) -> dict[str, dict]:
     with open(path) as fh:
         for line in fh:
             d = json.loads(line)
-            out[d["question_id"]] = d  # keep-last on duplicates
+            out[d["question_id"]] = {
+                "tokens": int(d.get("prompt_tokens") or 0)
+                + int(d.get("completion_tokens") or 0),
+                "calls": int(d.get("agent_steps") or 0)
+                + int(d.get("answer_attempts") or 0),
+                "latency": d.get("total_latency_seconds", d.get("latency_seconds")),
+            }
     return out
 
 
@@ -184,28 +194,23 @@ def main() -> None:
     }
     print("[1] ladder deltas:", json.dumps(report["ladder"], indent=1))
 
-    # ---- 2) per-rung cost (v2; rung1 needs results.baseline.jsonl) ----------
+    # ---- 2) per-rung cost (v2; rung1 from results.baseline.jsonl) -----------
     cost = {}
-    for rung, track in (("rung2", "skill-agent"), ("rung3", "pi")):
-        rows = load_results("v2", track)
+    for rung, track in (("rung1", "baseline"), ("rung2", "skill-agent"), ("rung3", "pi")):
+        rows = load_cost_fields("v2", track)
         if not rows:
             cost[rung] = None
             continue
-        toks, calls, lat = [], [], []
-        for q, d in rows.items():
-            toks.append(int(d.get("prompt_tokens") or 0) + int(d.get("completion_tokens") or 0))
-            calls.append(int(d.get("agent_steps") or 0) + int(d.get("answer_attempts") or 0))
-            lat_val = d.get("total_latency_seconds", d.get("latency_seconds"))
-            if lat_val is not None:
-                lat.append(float(lat_val))
+        toks = [d["tokens"] for d in rows.values()]
+        calls = [d["calls"] for d in rows.values()]
+        lat = [float(d["latency"]) for d in rows.values() if d["latency"] is not None]
         cost[rung] = {
             "questions": len(rows),
             "tokens_per_question": round(float(np.mean(toks)), 1),
-            "llm_calls_per_question": round(float(np.mean(calls), ), 2),
+            "llm_calls_per_question": round(float(np.mean(calls)), 2),
             "latency_seconds_mean": round(float(np.mean(lat)), 1) if lat else None,
             "latency_seconds_p95": round(float(np.percentile(lat, 95)), 1) if lat else None,
         }
-    cost["rung1"] = None  # results.baseline.jsonl not yet synced for MAB
     report["rung_cost_v2"] = cost
     print("[2] rung cost:", json.dumps(cost, indent=1))
 
@@ -352,7 +357,7 @@ def main() -> None:
 \\newcommand{{\\XSevenBound}}{{$\\pm{x7_bound:.1f}$ points}}
 \\newcommand{{\\XSevenMetrics}}{{recall@1 $ {'/'.join(f'{x7_metrics[a]['recall@1']*100:.1f}' for a in core_arms)}$, MRR@10 $ {'/'.join(f'{x7_metrics[a]['mrr@10']*100:.1f}' for a in core_arms)}$, nDCG@10 $ {'/'.join(f'{x7_metrics[a]['ndcg@10']*100:.1f}' for a in core_arms)}$}}
 \\newcommand{{\\GateRejectStats}}{{{gate_v2['questions']}/767 questions in the deployed $v2$ skill-agent run had an evidence submission rejected as unsurfaced ({gate_v1}/767 in $v1$); {gate_v2['resubmitted_in_loop']} of the {gate_v2['questions']} resubmitted tool-surfaced evidence inside the loop and the remaining {gate_v2['ended_at_max_steps']} ended at the step cap and were answered from tool-surfaced context; zero rejections on the LME runs}}
-\\newcommand{{\\FailureTaxonomy}}{{{tax['by_domain_percent'].get('TTL', 0)}\\% test-time learning, {tax['by_domain_percent'].get('SF', 0)}\\% selective forgetting ({tax['sf_split']['FC-MH']}/{tax['sf_split']['FC-SH']} FC-MH/FC-SH questions), {tax['by_domain_percent'].get('AR', 0)}\\% long-context reading, {tax['by_domain_percent'].get('LRU', 0)}\\% long-range understanding---{tax['zero_score_questions']} zero-score questions of 767; the 34.9\\% headline is the macro-averaged Overall complement}}
+\\newcommand{{\\FailureTaxonomy}}{{{tax['by_domain_percent'].get('TTL', 0)}\\% test-time learning, {tax['by_domain_percent'].get('SF', 0)}\\% selective forgetting ({tax['sf_split']['FC-MH']}/{tax['sf_split']['FC-SH']} FC-MH/FC-SH questions), {tax['by_domain_percent'].get('AR', 0)}\\% long-context reading, {tax['by_domain_percent'].get('LRU', 0)}\\% long-range understanding}}
 """
     macro_path = os.path.join(PAPER, "figures", "RECOMPUTED_MACROS.tex")
     with open(macro_path, "w") as fh:

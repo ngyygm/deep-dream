@@ -10,7 +10,7 @@ The main local artifacts are:
 \begin{itemize}
     \item MemoryAgentBench tracks: \path{.benchmark_runs/<run>/memoryagentbench_summary.<track>...sampled.json} with per-item \path{memoryagentbench_scores.<track>...jsonl}; sampling frame from \path{mab_sample.py} (\path{mab-sample.scopes.txt}, \path{.stats.json}).
     \item LoCoMo-1540 exact judge summary: \path{.benchmark_runs/locomo-full-quality-v1/judge_summary.kimi-agent-direct-qwen37-full-thinking-off.qwen37-mem0-current-exact-direct.json}; the judge-prompt-substitution point (92.21) is \path{...qwen37-kimi-full.json} in the same run directory.
-    \item Engine-comparison ingest efficiency (\cref{sec:engine-paired}) derives from per-document \path{llm_call_stats} in the run manifests of the same MAB/LME run directories; the ledger's \texttt{engine\_comparison} block recomputes the per-document ratios from the hashed manifests (LME 940/1020 docs with stats; MAB 58/46 with stats, 45-document paired intersection) and carries the library-level counts (duplicate-family rates, entity-family totals) with hashed-report provenance, since the per-scope library DBs remain on the benchmark machine.
+    \item Engine-comparison ingest efficiency (\cref{sec:engine-paired}) derives from per-document \path{llm_call_stats} in the run manifests of the same MAB/LME run directories; the ledger's \texttt{engine\_comparison} block recomputes the per-document ratios from the hashed manifests (LME 940/1020 docs with stats; MAB 58/46 with stats, 45-document paired intersection) and the library-level counts (document totals, entity-family totals, duplicate-name statistics over normalized \path{canonical\_name}) from the hashed per-scope library databases.
     \item K3-as-answerer diagnostic: \path{.../judge_summary...legacy-fingerprint-diagnostic.json} under \path{.benchmark_runs/locomo-k3-agent-judge-diagnostic-v1/} (primary, 95.19\%) and the independent Qwen3.7-plus cross-judge (94.22\%).
     \item LongMemEval-S-500 summary: \path{.benchmark_runs/longmemeval-source-v24-full500/judge_summary...memory-v24-full500.json}.
     \item LoCoMo-Plus-401 summary: \path{.benchmark_runs/locomo-plus-cognitive-qwen35-cues-full-v1/judge_summary...full-v1-final2.json}.
@@ -60,7 +60,7 @@ All rungs use kimi-k3 as answerer with per-rung prompts archived verbatim in the
 \begin{figure}[t]
   \centering
   \includegraphics[width=\columnwidth]{figures/fig3_cost.pdf}
-  \caption{Per-question compute by rung, recomputed deterministically from run logs (tokens and LLM calls, mean over the 767 questions; $v2$ engine). Rung 1's per-question log was not part of the artifact sync; its position is marked pending rather than estimated. The top rung buys its accuracy with an agentic verification loop; the cost accounting is part of the result, not a footnote.}
+  \caption{Per-question compute by rung, recomputed deterministically from run logs (tokens and LLM calls, mean over the 767 questions; $v2$ engine). The single-shot rung is one LLM call over a 25k-token fused retrieval payload; the top rung buys its accuracy with an agentic verification loop at $3.8\times$ the tokens. The cost accounting is part of the result, not a footnote.}
   \label{fig:cost}
 \end{figure}
 

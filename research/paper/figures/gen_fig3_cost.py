@@ -1,10 +1,9 @@
 """Figure 3: per-question compute by rung (tokens and LLM calls).
 
 Values are read from paper/results/recomputed_values.json (written by
-paper/results/recompute_from_logs.py from the frozen MAB v2 run logs).
-Rung 1's per-question file (results.baseline.jsonl) was not part of the
-artifact sync; until it arrives the rung-1 position carries an explicit
-"pending" marker instead of an estimated value — no fabricated numbers.
+paper/results/recompute_from_logs.py from the frozen MAB v2 run logs,
+including rung 1 from results.baseline.jsonl). A rung whose source log is
+missing renders as an explicit "pending" marker, never an estimate.
 Regenerate: python gen_fig3_cost.py
 """
 

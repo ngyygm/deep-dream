@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import sqlite3
 from collections import Counter
 from pathlib import Path
 
@@ -259,6 +260,56 @@ def main() -> dict:
             "git_commit": manifest.get("git_commit"),
         }
 
+    def library_stats(relroot: str) -> dict:
+        """Rollup over the per-scope library DBs: document totals, entity
+        families, and duplicate-name statistics over normalized
+        canonical_name (the consolidation-cleanliness metric). DBs are
+        opened read-only and hashed so the counts are bound to the exact
+        frozen artifacts they were computed from."""
+        per_scope = {}
+        for db in sorted((ROOT / relroot).glob("*/library.db")):
+            con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+            names = [
+                row[0].strip().lower()
+                for row in con.execute("SELECT canonical_name FROM entity_families")
+            ]
+            docs = con.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
+            con.close()
+            name_counts = Counter(names)
+            per_scope[db.parent.name] = {
+                "sha256": hashlib.sha256(db.read_bytes()).hexdigest(),
+                "documents": docs,
+                "entity_families": len(names),
+                "dup_name_rows": sum(v for v in name_counts.values() if v > 1),
+                "dup_name_groups": sum(1 for v in name_counts.values() if v > 1),
+            }
+        families = sum(s["entity_families"] for s in per_scope.values())
+        dup_rows = sum(s["dup_name_rows"] for s in per_scope.values())
+        return {
+            "path_pattern": relroot + "/<scope>/library.db",
+            "scopes": len(per_scope),
+            "documents": sum(s["documents"] for s in per_scope.values()),
+            "entity_families": families,
+            "dup_name_rows": dup_rows,
+            "dup_name_groups": sum(s["dup_name_groups"] for s in per_scope.values()),
+            "dup_name_row_rate": round(dup_rows / families, 4) if families else None,
+            "definition": (
+                "canonical_name normalized (strip+lower), grouped within each "
+                "scope library; rows = families living in a shared-name group, "
+                "groups = distinct shared names; rate = rows / total families."
+            ),
+            "per_scope": per_scope,
+        }
+
+    lme_libs = {
+        v: library_stats(f".benchmark_runs/longmemeval-kimik3-full-{v}/libraries")
+        for v in ("v1", "v2")
+    }
+    mab_libs = {
+        v: library_stats(f".benchmark_runs/memoryagentbench-kimik3-sample-{v}/libraries")
+        for v in ("v1", "v2")
+    }
+
     track_name = "kimi-agent-direct-qwen37-full-thinking-off"
     kimi_track = locomo_kimi["tracks"][track_name]
     nprof = neighbors["profiles"]
@@ -303,7 +354,7 @@ def main() -> dict:
         sources.append(source_meta(extra))
 
     return {
-        "schema_version": 4,
+        "schema_version": 5,
         "scope_note": (
             "Protocol-aligned internal and cross-judge results; not a strict external leaderboard. "
             "Retrieval diagnostics are associations unless their comparison changes only one factor."
@@ -731,11 +782,10 @@ def main() -> dict:
                     "here from per-document llm_call_stats in the hashed run "
                     "manifests; MAB ratios use the 45-document paired intersection "
                     "(manifests missing from one generation are excluded). "
-                    "Library-level counts (duplicate-family rates, entity-family "
-                    "totals, dataset active-document totals) require the per-scope "
-                    "library DBs, which remain on the benchmark machine, and are "
-                    "recorded verbatim from the hashed v1/v2 comparison reports "
-                    "listed in sources."
+                    "Library-level counts (document totals, entity-family totals, "
+                    "duplicate-name statistics) are recomputed from the hashed "
+                    "per-scope library DBs; the hashed v1/v2 comparison reports "
+                    "remain in sources as narrative provenance."
                 ),
                 "lme": {
                     "manifest": {
@@ -756,17 +806,17 @@ def main() -> dict:
                         (lme_v2["tokens_per_doc"] / lme_v1["tokens_per_doc"] - 1) * 100,
                         1,
                     ),
-                    "from_reports": {
+                    "library_dbs": lme_libs,
+                    "report_crosscheck": {
                         "provenance": engine_report_paths["lme_v1_vs_v2"],
                         "note": (
-                            "LME ingest stats coverage 940/1020 of 1176 docs "
-                            "(scheduler-kill losses, unbiased for per-doc ratios); "
-                            "both library DBs hold 1176/1176 active docs."
+                            "The report's 59,892/55,878 families, 482->99 duplicate "
+                            "rows, and 0.008->0.002 rates reproduce exactly under "
+                            "the normalized-name definition above; its 1,176/1,176 "
+                            "active-document totals match the DB counts. Ingest "
+                            "stats coverage 940/1020 of 1,176 docs (scheduler-kill "
+                            "losses, unbiased for per-doc ratios)."
                         ),
-                        "dataset_total_active_documents": {"v1": 1176, "v2": 1176},
-                        "entity_families": {"v1": 59892, "v2": 55878},
-                        "duplicate_family_rows": {"v1": 482, "v2": 99},
-                        "duplicate_family_rate": {"v1": 0.008, "v2": 0.002},
                     },
                 },
                 "mab": {
@@ -791,11 +841,19 @@ def main() -> dict:
                         * 100,
                         1,
                     ),
-                    "from_reports": {
+                    "library_dbs": mab_libs,
+                    "report_crosscheck": {
                         "provenance": engine_report_paths["mab_v1_vs_v2"],
-                        "duplicate_family_rate": {"v1": 0.2, "v2": 0.0},
-                        "duplicate_names": {"v1": 154, "v2": 61},
-                        "entity_families": {"v1": 20426, "v2": 19244},
+                        "note": (
+                            "The report's 20,426/19,244 families and 154->61 "
+                            "duplicate names reproduce exactly under the "
+                            "normalized-name definition above. Its headline "
+                            "'duplicate_family_rate 0.20->0.00' is NOT "
+                            "reproducible from the shipped databases under any "
+                            "standard definition (computed global row rate "
+                            "0.0166->0.0064); the paper cites the computed "
+                            "values, and this note records the discrepancy."
+                        ),
                     },
                 },
             },

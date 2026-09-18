@@ -44,6 +44,13 @@
 % Shared math commands
 \input{math_commands}
 
+% Vertical-space discipline for the 9-page body budget: modest tightening of
+% float separation (ICLR template defaults: \textfloatsep 20pt, \floatsep 12pt).
+\setlength{\textfloatsep}{9pt plus 2pt minus 2pt}
+\setlength{\floatsep}{10pt plus 2pt minus 2pt}
+\setlength{\intextsep}{10pt plus 2pt minus 2pt}
+\setlength{\abovecaptionskip}{6pt plus 1pt minus 1pt}
+
 % Recomputed-from-logs macros (sentinels until artifact sync; see figures/RECOMPUTED_MACROS.tex)
 \input{figures/RECOMPUTED_MACROS}
 

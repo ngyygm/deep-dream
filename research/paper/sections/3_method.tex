@@ -7,7 +7,7 @@ Let a source document or conversation be $D$ and let $e_i$ denote an episode cre
 
 \subsection{Remember pipeline}
 
-The Remember pipeline chains small, auditable stages---heading-aware chunking; entity and relation discovery with validation and content generation; conservative alignment to existing families; window-batch alignment; cluster convergence---followed by atomic publication. Convergence merges duplicate concept families across ingestion windows: in the paired engine comparison (\cref{sec:engine-paired}) it eliminates duplicate families outright (rate $0.20{\to}0.00$ on MemoryAgentBench scopes) while reducing ingest calls per document by 46--65\%. Extraction calls may propose entities and relations, but the storage layer records the source episode and provenance rather than treating generated prose as an independent document.
+The Remember pipeline chains small, auditable stages---heading-aware chunking; entity and relation discovery with validation and content generation; conservative alignment to existing families; window-batch alignment; cluster convergence---followed by atomic publication. Convergence merges duplicate concept families across ingestion windows: in the paired engine comparison (\cref{sec:engine-paired}) it cuts same-name duplicate families from 340 to 124 on MemoryAgentBench scopes and from 482 to 99 on LongMemEval while cutting ingest calls per document 46--65\%. Extraction calls may propose entities and relations, but the storage layer records the source episode and provenance rather than treating generated prose as an independent document.
 
 \subsection{Answer paths on a frozen library}
 \label{sec:answer-paths}
@@ -39,7 +39,7 @@ Prompt & QA over payload & tool policy + submit & verify-then-answer policy \\
 Compute / q & \RungOneCost & \RungTwoCost & \RungThreeCost \\
 \bottomrule
 \end{tabular}
-\caption{What changes at each rung of the answer-path ladder. All rungs share frozen libraries, question stream, answerer model (kimi-k3), and scorer; compute per question is recomputed from run logs (tokens and calls, \cref{sec:ladder}).}
+\caption{What changes at each rung. All rungs share frozen libraries, question stream, answerer model (kimi-k3), and scorer; compute per question is recomputed from run logs (\cref{sec:ladder}).}
 \label{tab:rung-differences}
 \end{table}
 

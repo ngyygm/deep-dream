@@ -1,13 +1,13 @@
 # Fdb version 4
-["bibtex main"] 1789664401.31627 "main.aux" "main.bbl" "main" 1789664403.1386 0
+["bibtex main"] 1789696507.26512 "main.aux" "main.bbl" "main" 1789696509.04944 0
   "./iclr2026_conference.bst" 1788165763.94415 26973 af983813ca1a1414954dbceae7baa2a1 ""
   "./references.bib" 1789633224.54156 5994 8af84e4b0e3ec2b0d0f2e25abe8bad9c ""
-  "main.aux" 1789664402.66609 31068 83a2713af3c268bc7fb4562518120ebd "pdflatex"
+  "main.aux" 1789696508.55879 30962 5d281c36048b8b11a1309a39a34bb391 "pdflatex"
   (generated)
   "main.bbl"
   "main.blg"
   (rewritten before read)
-["pdflatex"] 1789664401.4805 "main.tex" "main.pdf" "main" 1789664403.13931 0
+["pdflatex"] 1789696507.43173 "main.tex" "main.pdf" "main" 1789696509.0501 0
   "/etc/texmf/web2c/texmf.cnf" 1773496204.75543 475 c0e671620eb5563b2130f56340a5fde8 ""
   "/usr/share/texlive/texmf-dist/fonts/enc/dvips/base/8r.enc" 1165713224 4850 80dc9bab7f31fb78a000ccfed0e27cab ""
   "/usr/share/texlive/texmf-dist/fonts/map/fontname/texfonts.map" 1577235249 3524 cb3e574dea2d1052e39280babc910dc8 ""
@@ -146,7 +146,7 @@
   "/usr/share/texmf/web2c/texmf.cnf" 1707919699 40399 f2c302f7d2af602abb742093540a5834 ""
   "/var/lib/texmf/fonts/map/pdftex/updmap/pdftex.map" 1773496230.12183 5472669 54eaf61a88b6b7896ebd0dac973cb29c ""
   "/var/lib/texmf/web2c/pdftex/pdflatex.fmt" 1773496262 8215117 0a425392e566d17c6e6d0c9b175d416b ""
-  "figures/RECOMPUTED_MACROS.tex" 1789638854.87249 1523 9845fc6a5c0e5960ae9e8d4155d1e376 ""
+  "figures/RECOMPUTED_MACROS.tex" 1789696385.89811 1431 b3b9d5b280c9080d1c6ca73bf8b65ed0 ""
   "figures/TABLE_mab_cross_system.tex" 1789663952.82118 2081 240181e1e4bb48b9815e08054e2ec6e1 ""
   "figures/TABLE_mem0_f1_bleu_appendix.tex" 1788165763.94115 1448 89d3e8b648f7f9f95a960ef0d00d9e29 ""
   "figures/TABLE_mem0_locomo_baselines.tex" 1788165763.94115 1959 63cb0f27205627b209ed213abbe64035 ""
@@ -158,22 +158,22 @@
   "figures/TABLE_zep_longmemeval_cat.tex" 1788165763.94115 1080 a40d72cd4d35b3218d0a39fea9d3c0fb ""
   "figures/fig1_architecture.pdf" 1789639495.14585 29943 aa594cedc233612561fc07b79183dcec ""
   "figures/fig2_ladder.pdf" 1789663977.09045 24981 355b7c883c8d4ccdced44af2ad25b82a ""
-  "figures/fig3_cost.pdf" 1789638901.52347 16229 19c73b52f783318eabde731f339e914e ""
+  "figures/fig3_cost.pdf" 1789695921.68156 14390 1ecae2ce528ef5fd2b60742926312c3d ""
   "figures/latex_includes.tex" 1789663953.99219 1379 6be8abe732d83f15a0d4c682e0578a5c ""
   "iclr2026_conference.sty" 1788165763.94415 9025 a040392a6cfee8dc54aae17eb2635282 ""
-  "main.aux" 1789664402.66609 31068 83a2713af3c268bc7fb4562518120ebd "pdflatex"
-  "main.bbl" 1789664401.47008 6877 f88c98e7222068496eee16989aca39dc "bibtex main"
-  "main.out" 1789664402.66809 6875 8b377934a2f961c7391269443ff1d991 "pdflatex"
-  "main.tex" 1789632820.66107 2165 8bc14d061ad925c36d6407cf9e2a73d0 ""
+  "main.aux" 1789696508.55879 30962 5d281c36048b8b11a1309a39a34bb391 "pdflatex"
+  "main.bbl" 1789696507.41978 6877 f88c98e7222068496eee16989aca39dc "bibtex main"
+  "main.out" 1789696508.56079 6875 8b377934a2f961c7391269443ff1d991 "pdflatex"
+  "main.tex" 1789696490.50255 2523 132d975d37bd0bef4df5726040ad1dcf ""
   "math_commands.tex" 1788165763.94515 1279 4d3ba70bd33c2b6f137420f63b02098a ""
   "sections/0_abstract.tex" 1789663950.59115 1557 42fe6676bfa5e58d5089b54b4df59d3b ""
   "sections/1_introduction.tex" 1789663922.14284 3767 30abe88711ebbd34190e152e148751eb ""
   "sections/2_related_work.tex" 1789640837.79983 3499 3377b8cbe1f37a86411094dd2b57d915 ""
-  "sections/3_method.tex" 1789640931.37117 6879 830873faadd046b1ac51e7def0d2ed1d ""
-  "sections/4_experiments.tex" 1789663912.52773 12001 9756c6244d3a74d83f8c667f9e19de97 ""
-  "sections/5_analysis_limitations.tex" 1789663925.19587 2998 66b6d793e05b9098e3272b9959fdf7ae ""
-  "sections/6_conclusion.tex" 1789663926.24688 1257 3bdd2d749a76a97372ab15c845289c47 ""
-  "sections/A_appendix.tex" 1789664397.37804 13667 c987b8ce829ecfb9d73395e4dbecd52c ""
+  "sections/3_method.tex" 1789696492.69558 6853 1a803d96793791f19607baa32711fa66 ""
+  "sections/4_experiments.tex" 1789696497.06864 11937 0b1d141e74d47bb38326a2e948a5e951 ""
+  "sections/5_analysis_limitations.tex" 1789696426.69667 2904 a96b15fda135bd97403cde2be7cf35ee ""
+  "sections/6_conclusion.tex" 1789696498.49566 1230 387a8ad350121de1e0f4c558b4f0d45f ""
+  "sections/A_appendix.tex" 1789695943.17788 13657 12248f56ecadf6dcb27a365c064cd6f4 ""
   (generated)
   "main.aux"
   "main.log"

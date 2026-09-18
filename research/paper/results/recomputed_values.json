@@ -54,6 +54,13 @@
   }
  },
  "rung_cost_v2": {
+  "rung1": {
+   "questions": 767,
+   "tokens_per_question": 25068.3,
+   "llm_calls_per_question": 1.0,
+   "latency_seconds_mean": 32.6,
+   "latency_seconds_p95": 109.9
+  },
   "rung2": {
    "questions": 767,
    "tokens_per_question": 34977.0,
@@ -67,8 +74,7 @@
    "llm_calls_per_question": 6.58,
    "latency_seconds_mean": 62.7,
    "latency_seconds_p95": 211.0
-  },
-  "rung1": null
+  }
  },
  "x7": {
   "metrics": {
