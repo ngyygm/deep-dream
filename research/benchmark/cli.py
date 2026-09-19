@@ -362,6 +362,32 @@ def answer(ctx: click.Context, run_dir: Path, config_path: Path | None,
     _emit(ctx, result, "Benchmark answers replayed")
 
 
+@benchmark.command("fullctx-evaluate")
+@click.argument("run_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option("--config", "config_path", type=click.Path(path_type=Path), default=None)
+@click.option("--result-tag", default="kimik3-v1", show_default=True)
+@click.option("--answer-profile", type=click.Choice(["legacy", "normalized-v1"]),
+              default="normalized-v1", show_default=True)
+@click.option("--question-id", "question_ids", multiple=True)
+@click.option("--limit", type=click.IntRange(min=1), default=None)
+@click.option("--qa-workers", type=click.IntRange(min=1, max=16), default=2, show_default=True)
+@click.option("--strict-fit", is_flag=True,
+              help="Fail instead of excluding scopes whose corpus exceeds the context budget.")
+@click.option("--resume", is_flag=True)
+@click.pass_context
+def fullctx_evaluate(ctx: click.Context, run_dir: Path, config_path: Path | None,
+                     result_tag: str, answer_profile: str, question_ids: tuple[str, ...],
+                     limit: int | None, qa_workers: int, strict_fit: bool, resume: bool) -> None:
+    """Answer every question from the full visible corpus (no memory system)."""
+    from research.benchmark.full_context import fullctx_evaluate_benchmark
+    result = fullctx_evaluate_benchmark(
+        run_dir, config_path or _root_config(ctx), result_tag=result_tag,
+        answer_profile=answer_profile, question_ids=question_ids, limit=limit,
+        resume=resume, qa_workers=qa_workers, strict_fit=strict_fit,
+    )
+    _emit(ctx, result, "Full-context anchor evaluation completed")
+
+
 @benchmark.command("run")
 @click.option("--dataset", type=DATASET_CHOICE, required=True)
 @click.option("--data-dir", type=click.Path(path_type=Path), default=RESEARCH_ROOT / ".benchmark_data", show_default=True)

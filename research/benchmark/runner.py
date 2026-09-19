@@ -605,18 +605,26 @@ class AnswerGenerator:
     SUPPORT_VALUES = {"supported", "unsupported", "false_premise"}
     ANSWER_TYPES = {"boolean", "date", "duration", "list", "span", "likely"}
 
-    def __init__(self, config: dict[str, Any], *, profile: str = "normalized-v1"):
+    def __init__(self, config: dict[str, Any], *, profile: str = "normalized-v1",
+                 full_context: bool = False):
         if profile not in self.PROFILES:
             raise ValueError(f"Unknown answer profile: {profile}")
         self.config = config.get("llm") or {}
         self.profile = profile
+        self.full_context = bool(full_context)
 
     @staticmethod
-    def _context_blocks(contexts: list[dict[str, Any]], max_chars: int) -> list[str]:
+    def _context_blocks(contexts: list[dict[str, Any]], max_chars: int, *,
+                        strict: bool = False) -> list[str]:
         blocks, used = [], 0
         for row in contexts:
             block = f"Session {row['session_id']} ({row.get('timestamp') or 'unknown time'}):\n{row['text']}"
             if used + len(block) > max_chars:
+                if strict:
+                    raise ValueError(
+                        f"full-context evidence exceeds the prompt budget: "
+                        f"{used + len(block)} > {max_chars} chars"
+                    )
                 if max_chars - used > 200:
                     blocks.append(block[:max_chars - used])
                 break
@@ -626,8 +634,14 @@ class AnswerGenerator:
 
     def build_prompt(self, item: BenchmarkItem, contexts: list[dict[str, Any]]) -> str:
         context_window = int(self.config.get("context_window_tokens") or 8000)
-        max_chars = max(4000, min(120000, (context_window - 1500) * 4))
-        blocks = self._context_blocks(contexts, max_chars)
+        if self.full_context:
+            # Full-context anchor: the whole visible corpus must fit — no 120k cap
+            # and no silent truncation, or the anchor claim would be void.
+            max_chars = max(4000, (context_window - 1500) * 4)
+            blocks = self._context_blocks(contexts, max_chars, strict=True)
+        else:
+            max_chars = max(4000, min(120000, (context_window - 1500) * 4))
+            blocks = self._context_blocks(contexts, max_chars)
         date_line = f"Question date: {item.question_date}\n" if item.question_date else ""
         if self.profile == "normalized-v1":
             return (
