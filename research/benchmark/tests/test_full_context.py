@@ -63,6 +63,41 @@ def test_full_context_prompt_over_budget_raises_instead_of_truncating():
         raise AssertionError("expected a strict budget violation")
 
 
+def test_neutral_v1_prompt_is_task_neutral_and_answer_passes_through_verbatim():
+    config = {"llm": {"model": "kimi-k3", "context_window_tokens": 262144}}
+    sessions = [MemorySession("s1", "1 June 2024", "clinic: 0->a, 1->b, 2->c")]
+    item = _item(
+        question="Continue the pattern: 3->", sessions=sessions,
+        visible=["s1"],
+    )
+    answerer = AnswerGenerator(config, profile="neutral-v1", full_context=True)
+    prompt = answerer.build_prompt(item, _visible_contexts(item))
+    # The contract defers to the question's own instructions and keeps the JSON
+    # payload to a bare answer — no support/answer_type machinery, no QA heuristics.
+    assert "question's own instructions" in prompt
+    assert '"answer"' in prompt and "answer_type" not in prompt
+    assert "false_premise" not in prompt
+    assert "Continue the pattern: 3->" in prompt
+    assert "clinic: 0->a, 1->b, 2->c" in prompt
+
+    # Normalization is a non-empty check only: boolean/date/comma heuristics and
+    # support downgrades must not rewrite the model's answer.
+    answer, payload = answerer._normalize_payload(
+        item, _visible_contexts(item), {"answer": "3->d"}
+    )
+    assert answer == "3->d" and payload == {"answer": "3->d"}
+    verbatim, _ = answerer._normalize_payload(
+        item, _visible_contexts(item), {"answer": "Yes, since the log says so"}
+    )
+    assert verbatim == "Yes, since the log says so"
+    try:
+        answerer._normalize_payload(item, _visible_contexts(item), {"answer": "  "})
+    except ValueError as exc:
+        assert "non-empty" in str(exc)
+    else:
+        raise AssertionError("empty neutral answers must be rejected")
+
+
 def _write_manifest(run_dir: Path, dataset_path: Path):
     manifest = {
         "dataset": "locomo", "dataset_path": str(dataset_path),
@@ -71,10 +106,13 @@ def _write_manifest(run_dir: Path, dataset_path: Path):
     (run_dir / "run_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
 
 
-def _patch_pipeline(monkeypatch, items):
-    monkeypatch.setattr(
-        fullctx_module, "_selected_items", lambda *a, **k: (items, Path("/tmp/dataset.json")),
-    )
+def _patch_pipeline(monkeypatch, items, calls=None):
+    def _fake_selected(*args, **kwargs):
+        if calls is not None:
+            calls.append((args, kwargs))
+        return items, Path("/tmp/dataset.json")
+
+    monkeypatch.setattr(fullctx_module, "_selected_items", _fake_selected)
     monkeypatch.setattr(fullctx_module, "sha256_file", lambda path: "fixed-hash")
     monkeypatch.setattr(
         fullctx_module, "_load_config",
@@ -165,3 +203,34 @@ def test_fullctx_strict_fit_refuses_oversize_scopes(tmp_path, monkeypatch):
     else:
         raise AssertionError("strict_fit should refuse to run with oversize scopes")
     assert not (run_dir / "results.full-context-test.jsonl").exists()
+
+
+def test_fullctx_walks_up_to_data_root_and_passes_scope_ids(tmp_path, monkeypatch):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    # Registry filename sits at the data root; the manifest points one level below
+    # (memoryagentbench-style nested layout) — the data dir must be derived by
+    # walking up, not by blindly taking the manifest path's parent.
+    (tmp_path / "locomo10.json").write_text("{}", encoding="utf-8")
+    nested = tmp_path / "memoryagentbench"
+    nested.mkdir()
+    _write_manifest(run_dir, nested / "locomo10.json")
+
+    calls = []
+    small = _item(
+        question_id="q1", scope_id="scope-a",
+        sessions=[MemorySession("s1", "1 June 2024", "Alice moved to Paris.")],
+    )
+    _patch_pipeline(monkeypatch, [small], calls=calls)
+
+    result = fullctx_evaluate_benchmark(
+        run_dir, tmp_path / "config.json", result_tag="scopes",
+        scope_ids=("scope-a",),
+    )
+    assert result["processed"] == 1 and result["errors"] == 0
+
+    args, kwargs = calls[0]
+    assert args[0] == "locomo"
+    assert Path(args[1]) == tmp_path.resolve()
+    assert kwargs["scope_ids"] == ("scope-a",)
+    assert kwargs["question_ids"] == ()

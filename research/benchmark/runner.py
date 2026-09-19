@@ -601,7 +601,7 @@ def ingest_benchmark(
 class AnswerGenerator:
     """Track-independent answer model; no benchmark category enters the prompt."""
 
-    PROFILES = {"legacy", "normalized-v1"}
+    PROFILES = {"legacy", "normalized-v1", "neutral-v1"}
     SUPPORT_VALUES = {"supported", "unsupported", "false_premise"}
     ANSWER_TYPES = {"boolean", "date", "duration", "list", "span", "likely"}
 
@@ -643,6 +643,21 @@ class AnswerGenerator:
             max_chars = max(4000, min(120000, (context_window - 1500) * 4))
             blocks = self._context_blocks(contexts, max_chars)
         date_line = f"Question date: {item.question_date}\n" if item.question_date else ""
+        if self.profile == "neutral-v1":
+            # Task-neutral contract for anchors: the question's own instructions and
+            # format decide the answer shape — the prompt must not impose a
+            # conversational-QA contract (forced Yes/No, comma-joined fields, …)
+            # that rewrites what pattern-continuation or free-form tasks expect.
+            return (
+                "Answer the question using only the provided context. Follow the question's own "
+                "instructions, including any answer format the question itself asks for. The context "
+                "takes precedence over world knowledge. If several context passages disagree, use "
+                "the most recent one. If the context does not contain the answer, answer exactly "
+                "'No information available.' Do not add explanations.\n\n"
+                "Return exactly one JSON object and no prose:\n"
+                '{"answer":"concise answer"}\n\n'
+                f"{date_line}Question: {item.question}\n\nContext:\n" + "\n\n".join(blocks)
+            )
         if self.profile == "normalized-v1":
             return (
                 "Answer using only the submitted conversation evidence. Do not use a benchmark label or a hidden "
@@ -744,6 +759,13 @@ class AnswerGenerator:
         contexts: list[dict[str, Any]],
         payload: dict[str, Any],
     ) -> tuple[str, dict[str, Any]]:
+        if self.profile == "neutral-v1":
+            # No boolean forcing, no date rewriting, no comma rules: the answer
+            # string passes through verbatim once it is non-empty.
+            answer = str(payload.get("answer") or "").strip()
+            if not answer:
+                raise ValueError("answer must be a non-empty string")
+            return answer, {"answer": answer}
         support = str(payload.get("support") or "").strip().lower()
         answer_type = str(payload.get("answer_type") or "").strip().lower()
         answer = str(payload.get("answer") or "").strip()
@@ -800,7 +822,7 @@ class AnswerGenerator:
                 think=bool(self.config.get("answer_think", False)),
                 timeout=int(self.config.get("timeout_seconds") or 300),
                 num_predict=int(self.config.get("max_tokens") or 1000),
-                json_format=self.profile == "normalized-v1",
+                json_format=self.profile != "legacy",
             )
         extra_body = copy.deepcopy(self.config.get("answer_extra_body") or self.config.get("extra_body") or {})
         if "enable_thinking" not in extra_body and "reasoning" not in extra_body:
@@ -824,8 +846,13 @@ class AnswerGenerator:
 
     def answer(self, item: BenchmarkItem, contexts: list[dict[str, Any]]) -> dict[str, Any]:
         prompt = self.build_prompt(item, contexts)
+        system_message = (
+            "You are a careful assistant answering strictly from the provided context."
+            if self.profile == "neutral-v1"
+            else "You are a precise long-term conversational memory assistant."
+        )
         messages = [
-            {"role": "system", "content": "You are a precise long-term conversational memory assistant."},
+            {"role": "system", "content": system_message},
             {"role": "user", "content": prompt},
         ]
         started = time.monotonic()

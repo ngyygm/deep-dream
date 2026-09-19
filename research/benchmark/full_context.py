@@ -11,7 +11,10 @@ Integrity rules:
   up front and recorded in the manifest (``--strict-fit`` refuses to run instead),
   because a silently truncated "full context" would void the anchor claim;
 - the full prompt is not embedded in per-question records (it is the whole corpus);
-  a SHA-256 plus the contributing session IDs identify it instead.
+  a SHA-256 plus the contributing session IDs identify it instead;
+- ``--answer-profile neutral-v1`` is the recommended anchor contract: it follows the
+  question's own instructions instead of the conversational-QA heuristics, which
+  structurally break pattern-continuation tasks (e.g. in-context-learning MCC).
 """
 from __future__ import annotations
 
@@ -23,7 +26,7 @@ from pathlib import Path
 import time
 from typing import Any, Iterable
 
-from .datasets import BenchmarkItem, sha256_file
+from .datasets import DATASETS, BenchmarkItem, sha256_file
 from .reporting import append_jsonl, latest_by_question, read_jsonl, write_json
 from .runner import (
     AnswerGenerator, _artifact_track, _base_record, _load_config,
@@ -58,6 +61,7 @@ def _prompt_chars(contexts: list[dict[str, Any]]) -> int:
 def fullctx_evaluate_benchmark(
     run_dir: Path, config_path: Path, *, result_tag: str = "kimik3-v1",
     answer_profile: str = "normalized-v1", question_ids: Iterable[str] = (),
+    scope_ids: Iterable[str] = (),
     limit: int | None = None, resume: bool = False, qa_workers: int = 2,
     strict_fit: bool = False,
 ) -> dict[str, Any]:
@@ -66,9 +70,16 @@ def fullctx_evaluate_benchmark(
     manifest_path = run_dir / "run_manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     config = _load_config(config_path)
+    # dataset_path may sit at the data root (flat files) or one level down
+    # (memoryagentbench/manifest.json); walk up until the registry filename
+    # resolves, so the data dir is derived instead of assumed.
+    dataset_rel = DATASETS[manifest["dataset"]]["filename"]
+    data_dir = Path(manifest["dataset_path"]).resolve().parent
+    while data_dir != data_dir.parent and not (data_dir / dataset_rel).exists():
+        data_dir = data_dir.parent
     items, dataset_path = _selected_items(
-        manifest["dataset"], Path(manifest["dataset_path"]).parent,
-        question_ids=question_ids,
+        manifest["dataset"], data_dir, question_ids=question_ids,
+        scope_ids=scope_ids,
     )
     if sha256_file(dataset_path) != manifest["dataset_sha256"]:
         raise ValueError("Dataset hash changed; refusing full-context evaluation")

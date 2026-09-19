@@ -159,7 +159,7 @@ def agent_query(
               default="autonomous", show_default=True)
 @click.option("--result-tag", default="kimi-qwen37-thinking-on", show_default=True)
 @click.option("--answer-result-tag", default="qwen37-answer-v1", show_default=True)
-@click.option("--answer-profile", type=click.Choice(["legacy", "normalized-v1"]),
+@click.option("--answer-profile", type=click.Choice(["legacy", "normalized-v1", "neutral-v1"]),
               default="normalized-v1", show_default=True)
 @click.option("--question-id", "question_ids", multiple=True)
 @click.option("--limit", type=click.IntRange(min=1), default=None)
@@ -258,7 +258,7 @@ def ingest(ctx: click.Context, dataset: str, run_dir: Path, data_dir: Path,
 @click.option("--resume", is_flag=True)
 @click.option("--answer-workers", type=click.IntRange(min=1, max=32), default=1, show_default=True,
               help="Per-question parallel workers inside each track (skill-agent speeds up ~Nx).")
-@click.option("--answer-profile", type=click.Choice(["legacy", "normalized-v1"]),
+@click.option("--answer-profile", type=click.Choice(["legacy", "normalized-v1", "neutral-v1"]),
               default="normalized-v1", show_default=True)
 @click.option("--agent-thinking/--no-agent-thinking", default=None,
               help="Override thinking only for Agent retrieval decisions.")
@@ -343,7 +343,7 @@ def retrieve(ctx: click.Context, run_dir: Path, config_path: Path | None,
 )
 @click.option("--question-id", "question_ids", multiple=True)
 @click.option("--result-tag", default="answer-normalized-v1", show_default=True)
-@click.option("--answer-profile", type=click.Choice(["legacy", "normalized-v1"]),
+@click.option("--answer-profile", type=click.Choice(["legacy", "normalized-v1", "neutral-v1"]),
               default="normalized-v1", show_default=True)
 @click.option("--resume", is_flag=True)
 @click.pass_context
@@ -366,9 +366,12 @@ def answer(ctx: click.Context, run_dir: Path, config_path: Path | None,
 @click.argument("run_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
 @click.option("--config", "config_path", type=click.Path(path_type=Path), default=None)
 @click.option("--result-tag", default="kimik3-v1", show_default=True)
-@click.option("--answer-profile", type=click.Choice(["legacy", "normalized-v1"]),
+@click.option("--answer-profile", type=click.Choice(["legacy", "normalized-v1", "neutral-v1"]),
               default="normalized-v1", show_default=True)
 @click.option("--question-id", "question_ids", multiple=True)
+@click.option("--scope-id", "scope_ids", multiple=True,
+              help="Restrict to the given scopes (e.g. a run's frozen sample); "
+                   "default takes every question the dataset ships.")
 @click.option("--limit", type=click.IntRange(min=1), default=None)
 @click.option("--qa-workers", type=click.IntRange(min=1, max=16), default=2, show_default=True)
 @click.option("--strict-fit", is_flag=True,
@@ -377,13 +380,14 @@ def answer(ctx: click.Context, run_dir: Path, config_path: Path | None,
 @click.pass_context
 def fullctx_evaluate(ctx: click.Context, run_dir: Path, config_path: Path | None,
                      result_tag: str, answer_profile: str, question_ids: tuple[str, ...],
-                     limit: int | None, qa_workers: int, strict_fit: bool, resume: bool) -> None:
+                     scope_ids: tuple[str, ...], limit: int | None, qa_workers: int,
+                     strict_fit: bool, resume: bool) -> None:
     """Answer every question from the full visible corpus (no memory system)."""
     from research.benchmark.full_context import fullctx_evaluate_benchmark
     result = fullctx_evaluate_benchmark(
         run_dir, config_path or _root_config(ctx), result_tag=result_tag,
-        answer_profile=answer_profile, question_ids=question_ids, limit=limit,
-        resume=resume, qa_workers=qa_workers, strict_fit=strict_fit,
+        answer_profile=answer_profile, question_ids=question_ids, scope_ids=scope_ids,
+        limit=limit, resume=resume, qa_workers=qa_workers, strict_fit=strict_fit,
     )
     _emit(ctx, result, "Full-context anchor evaluation completed")
 
