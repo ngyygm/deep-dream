@@ -1,0 +1,45 @@
+{
+  "host": "127.0.0.1",
+  "port": 16200,
+  "auto_port_fallback": false,
+  "storage_path": "./library",
+  "storage": {
+    "backend": "sqlite",
+    "vector_dim": 384
+  },
+  "llm": {
+    "api_key": "***REDACTED***",
+    "model": "kimi-k3",
+    "base_url": "http://sz-infer.x2robot.cn/infer/inf-ddjulule2xcaenzd/v1",
+    "max_tokens": 32768,
+    "context_window_tokens": 262144,
+    "max_concurrency": 2
+  },
+  "embedding": {
+    "model": "all-MiniLM-L6-v2",
+    "device": "cpu"
+  },
+  "chunking": {
+    "window_size": 800,
+    "overlap": 100
+  },
+  "pipeline": {
+    "extraction": {
+      "entity_refine_rounds": 0,
+      "relation_refine_rounds": 0,
+      "entity_post_enhancement": false
+    },
+    "remember": {
+      "profile": "current",
+      "mode": "multi_step",
+      "anchor_recall_rounds": 1,
+      "named_entity_recall_rounds": 1,
+      "abstract_recall_rounds": 1,
+      "coverage_gap_rounds": 0,
+      "relation_hint_rounds": 1,
+      "relation_expand_rounds": 0,
+      "relation_write_rounds": 1
+    }
+  },
+  "timeout_seconds": 1800
+}

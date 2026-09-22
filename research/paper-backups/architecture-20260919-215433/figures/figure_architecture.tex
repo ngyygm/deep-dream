@@ -1,0 +1,6 @@
+\begin{figure*}[t]
+  \centering
+  \includegraphics[width=\textwidth]{figures/fig1_architecture.pdf}
+  \caption{Deep-Dream separates agent-controlled progressive reading from a linked memory stack. The concept layer provides stable handles and relation neighborhoods; the version layer records observation-time revisions and conflicts; and the evidence layer resolves each address to an episode, chunk, and exact source span. During \emph{write}, uncertain mentions may remain split and later converge; during \emph{read}, the agent traverses concepts and relations, checks compatible versions, opens source evidence, and stops when the evidence gate is satisfied. Concept--version and version--evidence links make the representation revisable without changing the authority of the original span.}
+  \label{fig:architecture}
+\end{figure*}

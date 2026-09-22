@@ -1,0 +1,17 @@
+\begin{table*}[t]
+\centering
+\caption{X7 来源记录消融：210 题检查集上的离线检索重放。臂 1--4 构成干净的通道消融：只有 \texttt{enabled\_channels} 不同，因此任何召回差异都可归因于该通道集合。臂 5（引用核对智能体，开启检查）与臂 6（未被检索到的证据，放宽检查）复用臂 4 的五通道排序，与臂 4 检索一致；它们的区分列（问答准确率、无支撑答案率、平均证据 token）需要 LLM 智能体运行，尚待完成。引用检查流程已离线验证：开启检查时提交一个未浮现的对话轮会被拒绝；放宽检查时同一提交被接受（\texttt{plumbing\_ok}=true）。在部署的 MAB 运行中，检查按设计触发：\GateRejectStats{}。Bootstrap 置信区间：2{,}000 次重采样，95\%。}
+\label{tab:provenance-ablation}
+\small
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{llrrr}
+\toprule
+臂 & 通道(累加) & Recall-any@10 [95\% CI] & Recall-all@10 [95\% CI] & 平均字节@10 \\
+\midrule
+1 & raw-doc + episode-bm25 & 72.38 [66.67, 78.57] & 51.43 [44.76, 58.10] & 1833 \\
+2 & + semantic-provenance & 72.38 [66.67, 78.57] & 51.43 [44.76, 58.10] & 1841 \\
+3 & + graph-neighbor & 71.43 [65.70, 77.62] & 50.95 [44.29, 57.62] & 1845 \\
+4 & + relation-evidence (full 5) & 72.38 [66.65, 78.57] & 51.90 [45.24, 58.58] & 1847 \\
+\bottomrule
+\end{tabular}
+\end{table*}

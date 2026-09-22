@@ -1,0 +1,19 @@
+\begin{table*}[t]
+\centering
+\footnotesize
+\setlength{\tabcolsep}{5pt}
+\renewcommand{\arraystretch}{1.08}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{@{}p{0.16\textwidth}p{0.31\textwidth}rrrr@{}}
+\toprule
+臂 & 对齐修订 & 调用/文档 & 总 token/文档 & 实体重定向 & 重复组 \\
+\midrule
+A & 基线 & 68.4 & 145{,}378 & 0 & 8 \\
+B1 & 批量候选检查 & 24.2 & 108{,}467 & 1 & 12 \\
+B2 & 批量检查 + 最后一致性检查 & 29.4 & 111{,}853 & 245 & 6 \\
+\bottomrule
+\end{tabular}
+}%
+\caption{每臂 137 份 LongMemEval-S 文档上的三臂对齐研究。B1 提供大幅效率下降；B2 在最后一致性检查上比 B1 多花约 3\% 的 token，是唯一具有实质非破坏性族重定向的臂，降低了同名重复组。质量切片太小，不足以做质量主张。B1 与 B2 使用同一份保存的服务配置；B2 的差别在运行时实现与对齐开关。}
+\label{tab:alignment-ab}
+\end{table*}

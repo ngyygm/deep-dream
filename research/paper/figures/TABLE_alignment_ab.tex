@@ -1,0 +1,19 @@
+\begin{table*}[t]
+\centering
+\footnotesize
+\setlength{\tabcolsep}{5pt}
+\renewcommand{\arraystretch}{1.08}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{@{}p{0.16\textwidth}p{0.31\textwidth}rrrr@{}}
+\toprule
+Arm & Alignment revision & Calls/doc & Total tokens/doc & Entity redirects & Duplicate groups \\
+\midrule
+A & Baseline & 68.4 & 145{,}378 & 0 & 8 \\
+B1 & Window-batch alignment & 24.2 & 108{,}467 & 1 & 12 \\
+B2 & Batch review + final consistency check & 29.4 & 111{,}853 & 245 & 6 \\
+\bottomrule
+\end{tabular}
+}%
+\caption{Three-arm alignment study on 137 LongMemEval-S documents per arm. B1 provides the large efficiency reduction; B2 spends about 3\% more tokens than B1 on final consistency check and is the only arm with substantial non-destructive family redirection, reducing same-name duplicate groups. The quality slice is too small for a quality claim. B1 and B2 use the same saved service configuration; B2 differs through the runtime implementation and alignment switch.}
+\label{tab:alignment-ab}
+\end{table*}

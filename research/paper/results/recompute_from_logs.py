@@ -6,8 +6,17 @@ Reads frozen artifacts under research/.benchmark_runs and regenerates:
      gen_fig2_ladder.py / gen_fig3_cost.py and the evidence ledger)
 
 Self-check: the official macro aggregation recomputed from per-question
-scores MUST reproduce the frozen Overall values (v1 .3025/.3759/.6695,
-v2 .3240/.4068/.6511); any mismatch aborts with a nonzero exit.
+scores MUST reproduce the frozen Overall values (v1 .3025/.3759/.6695 at
+the paired 767-question set; v2 .3333/.4000/.7101 at the extended
+1074-question set); any mismatch aborts with a nonzero exit.
+
+Calibers (2026-09-21 holefill): the v2 (Align+) run was extended in place
+with four scopes (mab-ttl-000 200q, mab-ar-001 100q, mab-lru-101 6q,
+mab-lru-001 1q) to 1074 questions; the v1 (Base) run was NOT extended, so
+every v1<->v2 paired statistic stays on the original 767-question
+intersection, and every v2 headline moves to 1074. The full-context anchor
+(fullctx-neutral-v1) covers 614 of the 1074 (ttl-000 and ar-001 exceed the
+1,042,576-char strict budget and are excluded by manifest).
 
 Usage: python recompute_from_logs.py   (from research/paper/results)
 """
@@ -30,11 +39,13 @@ N_BOOT = 2000
 # Official MAB aggregation: source task -> (domain, task label).
 SOURCE_TO_CELL = {
     "ruler_qa1_197K": ("AR", "SH-QA"),
+    "ruler_qa2_421K": ("AR", "MH-QA"),
     "longmemeval_s*": ("AR", "LME(S*)"),
     "eventqa_65536": ("AR", "EventQA"),
     "eventqa_131072": ("AR", "EventQA"),
     "eventqa_full": ("AR", "EventQA"),
     "icl_clinic150_7050shot_balance": ("TTL", "MCC"),
+    "recsys_redial_full": ("TTL", "Recom"),
     "infbench_sum_eng_shots2": ("LRU", "Summ"),
     "detective_qa": ("LRU", "DetQA"),
     "factconsolidation_sh_6k": ("SF", "FC-SH"),
@@ -42,10 +53,14 @@ SOURCE_TO_CELL = {
 }
 DOMAINS = ["AR", "TTL", "LRU", "SF"]
 
+# v1 (Base) froze at the paired 767-question caliber; v2 (Align+) was
+# extended 2026-09-21 to 1074 questions (holefill chain, official scorer
+# rerun in place, summaries 0.333274/0.399959/0.710078).
 FROZEN_OVERALL = {
     ("v1", "baseline"): 0.3025, ("v1", "skill-agent"): 0.3759, ("v1", "pi"): 0.6695,
-    ("v2", "baseline"): 0.3240, ("v2", "skill-agent"): 0.4068, ("v2", "pi"): 0.6511,
+    ("v2", "baseline"): 0.3333, ("v2", "skill-agent"): 0.4000, ("v2", "pi"): 0.7101,
 }
+N_PAIRED, N_EXTENDED = 767, 1074
 
 
 def mab_dir(version: str) -> str:
@@ -88,8 +103,8 @@ def load_cost_fields(version: str, track: str) -> dict[str, dict]:
     """question_id -> scalar cost fields (keep-last on retry duplicates).
 
     Extracts only the cost scalars per row: results.baseline.jsonl embeds the
-    full retrieved context (~1.4 MB/row), so holding whole rows for 767
-    questions would pin ~1 GB of RAM for a handful of numbers.
+    full retrieved context (~1.4 MB/row), so holding whole rows for 1074
+    questions would pin ~1.5 GB of RAM for a handful of numbers.
     """
     path = os.path.join(mab_dir(version), f"results.{track}.jsonl")
     if not os.path.exists(path):
@@ -155,15 +170,19 @@ def main() -> None:
     # ---- load all six score sets + meta ------------------------------------
     scores = {(v, t): load_scores(v, t) for v in ("v1", "v2") for t in ("baseline", "skill-agent", "pi")}
     meta = load_meta("v2", "pi")  # identical question stream across tracks/engines
-    qids = sorted(scores[("v2", "pi")].keys())
-    assert len(qids) == 767, f"expected 767 questions, got {len(qids)}"
-    for key, sc in scores.items():
-        assert sorted(sc.keys()) == qids, f"question stream mismatch for {key}"
+    qids = sorted(scores[("v2", "pi")].keys())          # extended caliber, 1074
+    qids_paired = sorted(scores[("v1", "pi")].keys())   # frozen Base caliber, 767
+    assert len(qids) == N_EXTENDED, f"expected {N_EXTENDED} questions, got {len(qids)}"
+    assert len(qids_paired) == N_PAIRED, f"expected {N_PAIRED} paired questions, got {len(qids_paired)}"
+    assert set(qids_paired) <= set(qids), "paired v1 set must be a subset of extended v2"
+    qids_of = {"v1": qids_paired, "v2": qids}
+    for (v, t), sc in scores.items():
+        assert sorted(sc.keys()) == qids_of[v], f"question stream mismatch for {v}/{t}"
 
     # ---- self-check: reproduce frozen macro Overalls -----------------------
     recomputed_overall = {}
     for (v, t), sc in scores.items():
-        val = macro_overall(qids, sc, meta)
+        val = macro_overall(qids_of[v], sc, meta)
         recomputed_overall[f"{v}:{t}"] = round(val, 4)
         assert abs(val - FROZEN_OVERALL[(v, t)]) < 5e-5, (
             f"self-check failed for {v}/{t}: recomputed {val:.4f} "
@@ -177,7 +196,7 @@ def main() -> None:
     arms_v2 = {t: scores[("v2", t)] for t in ("baseline", "skill-agent", "pi")}
     arms_v1 = {t: scores[("v1", t)] for t in ("baseline", "skill-agent", "pi")}
     boot_v2 = paired_bootstrap_macro(qids, arms_v2, meta, rng)
-    boot_v1 = paired_bootstrap_macro(qids, arms_v1, meta, rng)
+    boot_v1 = paired_bootstrap_macro(qids_paired, arms_v1, meta, rng)
 
     delta_skill_base = boot_v2["skill-agent"] - boot_v2["baseline"]
     delta_pi_skill = boot_v2["pi"] - boot_v2["skill-agent"]
@@ -296,7 +315,7 @@ def main() -> None:
     fc_sh = sum(1 for q in miss_qids if SOURCE_TO_CELL[meta[q][0]] == ("SF", "FC-SH"))
     report["failure_taxonomy_v2_pi"] = {
         "zero_score_questions": total_miss,
-        "of_767": round(100 * total_miss / 767, 1),
+        f"of_{N_EXTENDED}": round(100 * total_miss / N_EXTENDED, 1),
         "macro_overall_miss_percent": round(100 * (1 - FROZEN_OVERALL[("v2", "pi")]), 1),
         "by_domain_count": dict(domain_of),
         "by_domain_percent": pct,
@@ -308,7 +327,7 @@ def main() -> None:
     consol = {}
     for label, source in (("ttl_mcc", "icl_clinic150_7050shot_balance"),
                           ("fc_mh", "factconsolidation_mh_6k")):
-        sub = [q for q in qids if meta[q][0] == source]
+        sub = [q for q in qids_paired if meta[q][0] == source]
         a = np.array([scores[("v1", "pi")][q] for q in sub])
         b = np.array([scores[("v2", "pi")][q] for q in sub])
         diffs = b - a
@@ -326,6 +345,78 @@ def main() -> None:
     report["consolidation_paired"] = consol
     print("[6] consolidation:", json.dumps(consol, indent=1))
 
+    # ---- 7) domain/task matrices + exact overalls (wires gen_fig2 panels) ---
+    def domain_task_x100(qid_list, sc):
+        by_cell: dict[tuple[str, str], list[float]] = defaultdict(list)
+        for q in qid_list:
+            by_cell[SOURCE_TO_CELL[meta[q][0]]].append(sc[q])
+        domains = {
+            dom: round(100 * float(np.mean([np.mean(v) for (d, _), v in by_cell.items() if d == dom])), 1)
+            for dom in DOMAINS if any(d == dom for (d, _) in by_cell)
+        }
+        tasks = {task: round(100 * float(np.mean(v)), 1)
+                 for (_, task), v in sorted(by_cell.items())}
+        return domains, tasks
+
+    for v in ("v1", "v2"):
+        qv = qids_of[v]
+        overalls, domains_v, tasks_v = {}, {}, {}
+        for t in ("baseline", "skill-agent", "pi"):
+            overalls[t] = round(macro_overall(qv, scores[(v, t)], meta) * 100, 1)
+            domains_v[t], tasks_v[t] = domain_task_x100(qv, scores[(v, t)])
+        report["ladder"][f"overall_{v}_x100"] = overalls
+        report["ladder"][f"domains_{v}_x100"] = domains_v
+        report["ladder"][f"tasks_{v}_x100"] = tasks_v
+    print("[7] fig2 matrices: v2 overall", report["ladder"]["overall_v2_x100"])
+
+    # ---- 8) same-question alignment vs the full-context anchor -------------
+    anchor_track = "full-context-kimik3-neutral-v1"
+    anchor = load_scores("v2", anchor_track)
+    inter = sorted(set(qids) & set(anchor))
+    assert len(inter) == 614, f"expected 614 anchor-covered questions, got {len(inter)}"
+    align_tracks = ["baseline", "skill-agent", "pi", "fullctx-neutral"]
+    arms_align = {**{t: scores[("v2", t)] for t in ("baseline", "skill-agent", "pi")},
+                  "fullctx-neutral": anchor}
+    boot_align = paired_bootstrap_macro(inter, arms_align, meta, rng)
+    delta_pi_anchor = boot_align["pi"] - boot_align["fullctx-neutral"]
+    align: dict = {"n": len(inter), "tracks": align_tracks,
+                   "overall_x100": {}, "overall_ci95_x100": {}, "domains_x100": {},
+                   "delta_pi_minus_anchor_x100": {
+                       "point": round((macro_overall(inter, arms_align["pi"], meta)
+                                       - macro_overall(inter, anchor, meta)) * 100, 1),
+                       "ci95": [round(x * 100, 1) for x in ci(delta_pi_anchor)]}}
+    for t in align_tracks:
+        align["overall_x100"][t] = round(macro_overall(inter, arms_align[t], meta) * 100, 1)
+        lo, hi = ci(boot_align[t])
+        align["overall_ci95_x100"][t] = [round(lo * 100, 1), round(hi * 100, 1)]
+        align["domains_x100"][t] = domain_task_x100(inter, arms_align[t])[0]
+    report["same_question_alignment"] = align
+    print(f"[8] same-question alignment n={len(inter)}:",
+          json.dumps(align["overall_x100"]))
+
+    # ---- 8b) retained fullctx-v1 artifact at its own coverage --------------
+    fc_v1 = load_scores("v2", "full-context-kimik3-v1")
+    inter_v1 = sorted(set(qids) & set(fc_v1))
+    report["fullctx_v1_artifact"] = {
+        "n": len(inter_v1),
+        "overall_x100": round(macro_overall(inter_v1, fc_v1, meta) * 100, 1),
+        "note": "prompt-sensitivity artifact (normalized-v1 profile) at its own coverage; no bootstrap",
+    }
+    print("[8b] fullctx-v1 artifact:", json.dumps(report["fullctx_v1_artifact"]))
+
+    # ---- 8c) anchor operating cost (efficiency axis) ------------------------
+    ac = load_cost_fields("v2", anchor_track)
+    if ac:
+        atoks = [d["tokens"] for d in ac.values()]
+        report["anchor_cost_neutral_v1"] = {
+            "questions": len(ac),
+            "tokens_per_question_mean": round(float(np.mean(atoks)), 0),
+            "tokens_total_per_round_millions": round(float(np.sum(atoks)) / 1e6, 1),
+            "llm_calls_per_question": round(
+                float(np.mean([d["calls"] for d in ac.values()])), 2),
+        }
+        print("[8c] anchor cost:", json.dumps(report["anchor_cost_neutral_v1"]))
+
     # ---- write outputs ------------------------------------------------------
     with open(os.path.join(os.path.dirname(__file__), "recomputed_values.json"), "w") as fh:
         json.dump(report, fh, indent=1, ensure_ascii=False)
@@ -336,6 +427,15 @@ def main() -> None:
     gate_v2 = gate["mab_v2"]
     gate_v1 = gate["mab_v1"]["questions"]
     tax = report["failure_taxonomy_v2_pi"]
+    align_rep = report.get("same_question_alignment", {})
+    align_n = align_rep.get("n", 0)
+    anchor_ov_str = f"{align_rep.get('overall_x100', {}).get('fullctx-neutral', float('nan')):.1f}"
+    pi_ext_str = f"{report['ladder']['overall_v2_x100']['pi']:.1f}"
+    gap = align_rep.get("delta_pi_minus_anchor_x100",
+                        {"point": float("nan"), "ci95": [float("nan"), float("nan")]})
+    _at = report.get("anchor_cost_neutral_v1", {}).get("tokens_total_per_round_millions")
+    anchor_tok_str = (f"${_at:.0f}\\text{{M}}$ tokens per full anchor round"
+                      if _at else r"\textbf{[RECOMPUTE:anchor-cost]}")
 
     def cost_str(c: dict | None) -> str:
         if not c:
@@ -346,17 +446,23 @@ def main() -> None:
     macros = f"""% AUTO-GENERATED by paper/results/recompute_from_logs.py — deterministic, no LLM.
 % Sources: research/.benchmark_runs (frozen artifacts), seed={SEED}, {N_BOOT} bootstrap resamples.
 % Self-check passed: recomputed macro Overalls reproduce frozen
-%   v1 0.3025/0.3759/0.6695 and v2 0.3240/0.4068/0.6511 exactly.
-\\newcommand{{\\RungOneCost}}{{{cost_str(cost.get('rung1'))}}}
-\\newcommand{{\\RungTwoCost}}{{{cost_str(cost.get('rung2'))}}}
-\\newcommand{{\\RungThreeCost}}{{{cost_str(cost.get('rung3'))}}}
+%   v1 0.3025/0.3759/0.6695 (paired n=767) and v2 0.3333/0.4000/0.7101
+%   (extended n=1074) exactly. Anchor: fullctx-neutral-v1, n=614.
+\\newcommand{{\\DirectRetrievalCost}}{{{cost_str(cost.get('rung1'))}}}
+\\newcommand{{\\MemoryToolCost}}{{{cost_str(cost.get('rung2'))}}}
+\\newcommand{{\\SourceGroundedCost}}{{{cost_str(cost.get('rung3'))}}}
 \\newcommand{{\\LadderDeltaSkillBaseCI}}{{${lad['delta_skill_minus_base_v2']['point']:+.3f}$ [${lad['delta_skill_minus_base_v2']['ci95'][0]:+.3f}$, ${lad['delta_skill_minus_base_v2']['ci95'][1]:+.3f}$]}}
 \\newcommand{{\\LadderDeltaPiSkillCI}}{{${lad['delta_pi_minus_skill_v2']['point']:+.3f}$ [${lad['delta_pi_minus_skill_v2']['ci95'][0]:+.3f}$, ${lad['delta_pi_minus_skill_v2']['ci95'][1]:+.3f}$]}}
 \\newcommand{{\\ConsolTTLCI}}{{${consol['ttl_mcc']['delta']:+.3f}$ [${consol['ttl_mcc']['delta_ci95'][0]:+.3f}$, ${consol['ttl_mcc']['delta_ci95'][1]:+.3f}$]}}
 \\newcommand{{\\ConsolFCMHCI}}{{${consol['fc_mh']['delta']:+.3f}$ [${consol['fc_mh']['delta_ci95'][0]:+.3f}$, ${consol['fc_mh']['delta_ci95'][1]:+.3f}$]}}
 \\newcommand{{\\XSevenBound}}{{$\\pm{x7_bound:.1f}$ points}}
 \\newcommand{{\\XSevenMetrics}}{{recall@1 $ {'/'.join(f'{x7_metrics[a]['recall@1']*100:.1f}' for a in core_arms)}$, MRR@10 $ {'/'.join(f'{x7_metrics[a]['mrr@10']*100:.1f}' for a in core_arms)}$, nDCG@10 $ {'/'.join(f'{x7_metrics[a]['ndcg@10']*100:.1f}' for a in core_arms)}$}}
-\\newcommand{{\\GateRejectStats}}{{{gate_v2['questions']}/767 questions in the deployed $v2$ skill-agent run had an evidence submission rejected as unsurfaced ({gate_v1}/767 in $v1$); {gate_v2['resubmitted_in_loop']} of the {gate_v2['questions']} resubmitted tool-surfaced evidence inside the loop and the remaining {gate_v2['ended_at_max_steps']} ended at the step cap and were answered from tool-surfaced context; zero rejections on the LME runs}}
+\\newcommand{{\\GateRejectStats}}{{{gate_v2['questions']}/{N_EXTENDED} questions in the deployed $v2$ skill-agent run had an evidence submission rejected as unsurfaced ({gate_v1}/{N_PAIRED} in $v1$); {gate_v2['resubmitted_in_loop']} of the {gate_v2['questions']} resubmitted tool-surfaced evidence inside the loop and the remaining {gate_v2['ended_at_max_steps']} ended at the step cap and were answered from tool-surfaced context; zero rejections on the LME runs}}
+\\newcommand{{\\FullctxAnchorOverall}}{{{anchor_ov_str}}}
+\\newcommand{{\\FullctxAnchorCoverage}}{{{align_n}/{N_EXTENDED} questions}}
+\\newcommand{{\\PiExtendedOverall}}{{{pi_ext_str}}}
+\\newcommand{{\\PiMinusAnchorCI}}{{${gap['point']:+.1f}$ [${gap['ci95'][0]:+.1f}$, ${gap['ci95'][1]:+.1f}$]}}
+\\newcommand{{\\AnchorTokensPerRound}}{{{anchor_tok_str}}}
 \\newcommand{{\\FailureTaxonomy}}{{{tax['by_domain_percent'].get('TTL', 0)}\\% test-time learning, {tax['by_domain_percent'].get('SF', 0)}\\% selective forgetting ({tax['sf_split']['FC-MH']}/{tax['sf_split']['FC-SH']} FC-MH/FC-SH questions), {tax['by_domain_percent'].get('AR', 0)}\\% long-context reading, {tax['by_domain_percent'].get('LRU', 0)}\\% long-range understanding}}
 """
     macro_path = os.path.join(PAPER, "figures", "RECOMPUTED_MACROS.tex")

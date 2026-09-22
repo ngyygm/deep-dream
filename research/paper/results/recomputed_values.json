@@ -5,75 +5,195 @@
   "v1:baseline": 0.3025,
   "v1:skill-agent": 0.3759,
   "v1:pi": 0.6695,
-  "v2:baseline": 0.324,
-  "v2:skill-agent": 0.4068,
-  "v2:pi": 0.6511
+  "v2:baseline": 0.3333,
+  "v2:skill-agent": 0.4,
+  "v2:pi": 0.7101
  },
  "ladder": {
   "delta_skill_minus_base_v2": {
-   "point": 0.0827,
+   "point": 0.0667,
    "ci95": [
-    0.0146,
-    0.1489
+    0.0228,
+    0.1168
    ]
   },
   "delta_pi_minus_skill_v2": {
-   "point": 0.2443,
+   "point": 0.3101,
    "ci95": [
-    0.214,
-    0.3049
+    0.2531,
+    0.3687
    ]
   },
   "overall_ci95_v2_x100": {
    "baseline": [
-    26.5,
-    49.0
+    27.7,
+    41.7
    ],
    "skill-agent": [
-    35.4,
-    52.4
+    36.4,
+    48.6
    ],
    "pi": [
-    59.6,
-    80.8
+    63.7,
+    79.6
    ]
   },
   "overall_ci95_v1_x100": {
    "baseline": [
-    24.1,
-    44.9
+    24.0,
+    45.7
    ],
    "skill-agent": [
-    30.2,
-    48.5
+    30.4,
+    49.2
    ],
    "pi": [
-    61.6,
-    80.5
+    61.3,
+    80.1
    ]
+  },
+  "overall_v1_x100": {
+   "baseline": 30.2,
+   "skill-agent": 37.6,
+   "pi": 66.9
+  },
+  "domains_v1_x100": {
+   "baseline": {
+    "AR": 57.0,
+    "TTL": 4.0,
+    "LRU": 25.0,
+    "SF": 35.0
+   },
+   "skill-agent": {
+    "AR": 72.7,
+    "TTL": 3.0,
+    "LRU": 39.2,
+    "SF": 35.5
+   },
+   "pi": {
+    "AR": 94.0,
+    "TTL": 43.0,
+    "LRU": 52.3,
+    "SF": 78.5
+   }
+  },
+  "tasks_v1_x100": {
+   "baseline": {
+    "EventQA": 90.3,
+    "LME(S*)": 26.7,
+    "SH-QA": 54.0,
+    "DetQA": 50.0,
+    "Summ": 0.0,
+    "FC-MH": 2.0,
+    "FC-SH": 68.0,
+    "MCC": 4.0
+   },
+   "skill-agent": {
+    "EventQA": 90.7,
+    "LME(S*)": 43.3,
+    "SH-QA": 84.0,
+    "DetQA": 50.0,
+    "Summ": 28.4,
+    "FC-MH": 4.0,
+    "FC-SH": 67.0,
+    "MCC": 3.0
+   },
+   "pi": {
+    "EventQA": 98.0,
+    "LME(S*)": 90.0,
+    "SH-QA": 94.0,
+    "DetQA": 83.3,
+    "Summ": 21.2,
+    "FC-MH": 67.0,
+    "FC-SH": 90.0,
+    "MCC": 43.0
+   }
+  },
+  "overall_v2_x100": {
+   "baseline": 33.3,
+   "skill-agent": 40.0,
+   "pi": 71.0
+  },
+  "domains_v2_x100": {
+   "baseline": {
+    "AR": 50.3,
+    "TTL": 2.6,
+    "LRU": 45.9,
+    "SF": 34.5
+   },
+   "skill-agent": {
+    "AR": 63.5,
+    "TTL": 2.6,
+    "LRU": 60.4,
+    "SF": 33.5
+   },
+   "pi": {
+    "AR": 88.8,
+    "TTL": 52.9,
+    "LRU": 62.3,
+    "SF": 80.0
+   }
+  },
+  "tasks_v2_x100": {
+   "baseline": {
+    "EventQA": 89.7,
+    "LME(S*)": 41.7,
+    "MH-QA": 22.0,
+    "SH-QA": 48.0,
+    "DetQA": 66.7,
+    "Summ": 25.0,
+    "FC-MH": 3.0,
+    "FC-SH": 66.0,
+    "MCC": 2.0,
+    "Recom": 3.2
+   },
+   "skill-agent": {
+    "EventQA": 88.3,
+    "LME(S*)": 51.7,
+    "MH-QA": 42.0,
+    "SH-QA": 72.0,
+    "DetQA": 83.3,
+    "Summ": 37.5,
+    "FC-MH": 4.0,
+    "FC-SH": 63.0,
+    "MCC": 2.0,
+    "Recom": 3.2
+   },
+   "pi": {
+    "EventQA": 98.0,
+    "LME(S*)": 88.3,
+    "MH-QA": 77.0,
+    "SH-QA": 92.0,
+    "DetQA": 83.3,
+    "Summ": 41.2,
+    "FC-MH": 70.0,
+    "FC-SH": 90.0,
+    "MCC": 46.0,
+    "Recom": 59.8
+   }
   }
  },
  "rung_cost_v2": {
   "rung1": {
-   "questions": 767,
-   "tokens_per_question": 25068.3,
+   "questions": 1074,
+   "tokens_per_question": 27504.5,
    "llm_calls_per_question": 1.0,
-   "latency_seconds_mean": 32.6,
-   "latency_seconds_p95": 109.9
+   "latency_seconds_mean": 31.0,
+   "latency_seconds_p95": 99.3
   },
   "rung2": {
-   "questions": 767,
-   "tokens_per_question": 34977.0,
-   "llm_calls_per_question": 6.12,
-   "latency_seconds_mean": 69.0,
-   "latency_seconds_p95": 189.5
+   "questions": 1074,
+   "tokens_per_question": 43166.0,
+   "llm_calls_per_question": 6.5,
+   "latency_seconds_mean": 65.9,
+   "latency_seconds_p95": 172.8
   },
   "rung3": {
-   "questions": 767,
-   "tokens_per_question": 95956.6,
-   "llm_calls_per_question": 6.58,
-   "latency_seconds_mean": 62.7,
-   "latency_seconds_p95": 211.0
+   "questions": 1074,
+   "tokens_per_question": 328610.2,
+   "llm_calls_per_question": 10.16,
+   "latency_seconds_mean": 95.0,
+   "latency_seconds_p95": 451.7
   }
  },
  "x7": {
@@ -113,10 +233,10 @@
    "ended_at_max_steps": 2
   },
   "mab_v2": {
-   "questions": 11,
-   "events": 11,
-   "resubmitted_in_loop": 9,
-   "ended_at_max_steps": 2
+   "questions": 14,
+   "events": 14,
+   "resubmitted_in_loop": 11,
+   "ended_at_max_steps": 3
   },
   "lme_v1": {
    "questions": 0,
@@ -128,20 +248,20 @@
   }
  },
  "failure_taxonomy_v2_pi": {
-  "zero_score_questions": 117,
-  "of_767": 15.3,
-  "macro_overall_miss_percent": 34.9,
+  "zero_score_questions": 209,
+  "of_1074": 19.5,
+  "macro_overall_miss_percent": 29.0,
   "by_domain_count": {
-   "AR": 21,
+   "AR": 44,
    "SF": 40,
-   "LRU": 2,
-   "TTL": 54
+   "LRU": 3,
+   "TTL": 122
   },
   "by_domain_percent": {
-   "AR": 17.9,
-   "SF": 34.2,
-   "LRU": 1.7,
-   "TTL": 46.2
+   "AR": 21.1,
+   "SF": 19.1,
+   "LRU": 1.4,
+   "TTL": 58.4
   },
   "sf_split": {
    "FC-MH": 30,
@@ -169,5 +289,82 @@
     0.13
    ]
   }
+ },
+ "same_question_alignment": {
+  "n": 614,
+  "tracks": [
+   "baseline",
+   "skill-agent",
+   "pi",
+   "fullctx-neutral"
+  ],
+  "overall_x100": {
+   "baseline": 38.6,
+   "skill-agent": 44.6,
+   "pi": 70.8,
+   "fullctx-neutral": 78.7
+  },
+  "overall_ci95_x100": {
+   "baseline": [
+    32.8,
+    47.0
+   ],
+   "skill-agent": [
+    40.9,
+    52.9
+   ],
+   "pi": [
+    63.0,
+    79.5
+   ],
+   "fullctx-neutral": [
+    72.5,
+    86.3
+   ]
+  },
+  "domains_x100": {
+   "baseline": {
+    "AR": 72.0,
+    "TTL": 2.0,
+    "LRU": 45.9,
+    "SF": 34.5
+   },
+   "skill-agent": {
+    "AR": 82.5,
+    "TTL": 2.0,
+    "LRU": 60.4,
+    "SF": 33.5
+   },
+   "pi": {
+    "AR": 95.0,
+    "TTL": 46.0,
+    "LRU": 62.3,
+    "SF": 80.0
+   },
+   "fullctx-neutral": {
+    "AR": 96.8,
+    "TTL": 75.0,
+    "LRU": 65.2,
+    "SF": 78.0
+   }
+  },
+  "delta_pi_minus_anchor_x100": {
+   "point": -7.9,
+   "ci95": [
+    -11.9,
+    -3.9
+   ]
+  }
+ },
+ "fullctx_v1_artifact": {
+  "n": 607,
+  "overall_x100": 46.0,
+  "note": "prompt-sensitivity artifact (normalized-v1 profile) at its own coverage; no bootstrap"
+ },
+ "anchor_cost_neutral_v1": {
+  "questions": 614,
+  "tokens_per_question_mean": 88214.0,
+  "tokens_total_per_round_millions": 54.2,
+  "llm_calls_per_question": 1.0
  }
 }

@@ -1,0 +1,171 @@
+\section{可复现性与审计细节}
+
+\subsection{工件账本}
+\label{app:ledger}
+
+机器可读账本由发布的账本脚本与重算脚本生成。它记录论文所引每一次运行的源摘要、数据集与逐题 JSONL SHA-256 值，并在论文写作前重新生成、与脚本输出逐字节比对。当前账本覆盖 MemoryAgentBench 各轨道（两代引擎 $\times$ 三条答案路径、commit 455306d 处的官方评分器、一致的 \texttt{entity2id} 指纹）、LongMemEval 整批对话写入后的配对运行与 500 题运行、LoCoMo-1986/1540 及 K3 作答诊断、LoCoMo-Plus-401 \citep{li-etal-2026-locomo}、X7 通道诊断、源扩展诊断、修复后的预算前沿重放、MEME、BigCodeBench \citep{zhuo2024bigcodebench} 与 ALFWorld \citep{shridhar2021alfworld}。每次运行的清单记录数据集与提示词来源、模型标识符、工具观测、证据 ID、延迟、退出状态与代码/运行时哈希；未通过完整性检查的结果与负面结果均予保留而非丢弃。账本生成与重算脚本随发布的补充材料一同提供，因此该链条可端到端重建。
+
+发布的补充材料包含重建每张表所需的机器可读清单、逐题分数、提示词与运行时哈希。论文在每个结果旁报告数据集、模型、评审、子集与完整性状态，使比较保持可审计，同时不暴露机器特定的存储位置。
+
+\input{figures/figure_architecture_zh}
+\input{figures/figure_alignment_zh}
+\input{figures/figure_alignment_outcomes_zh}
+\input{figures/TABLE_answer_paths_zh}
+\input{figures/figure_agent_trace_zh}
+\input{figures/TABLE_experiment_map_zh}
+
+\subsection{版本溯源与对齐 A/B 研究}
+\label{app:alignment-ab}
+
+随附的证据包补充了一项完整的三臂对齐研究（LongMemEval-S）：三个文档组（42+49+46 份文档，每臂 137 份文档）、先写入全部文档、同一 Kimi-K3 端点。臂 A 为不带批量候选检查的基线；B1 启用批量候选检查；B2 额外启用修订后的收敛实现（并行对齐、推迟的非破坏性合并，以及最后一致性检查）。保存的 B1 与 B2 服务配置逐字节相同；二者的差异在运行时代码与 B2 开关上，因此臂分配从清单与代码快照读出，而不是从文件名推断。该研究的统计功效面向效率与整合而非质量：每个文档组在每条评测轨道上只贡献一道题。
+
+另一项 LME Base/Align+ 引擎差异（初始/修订实现）是从 commit $73d9c5e$ 到 $8fa9651$ 的事后重建。后者还包含四项吞吐修复，因此仅凭它无法确定 Align+ 运行中各时点哪些修复处于生效状态。我们以清单内嵌的流水线配置、运行时策略哈希与技能哈希为准；重建的差异只是未提交代码的溯源材料，并不是“每项后来的修复从首次修订运行起就已生效”的主张。
+
+\subsection{MemoryAgentBench 抽样框与污染说明}
+\label{app:sampling}
+
+抽样子集按发布账本中记录的固定任务组清单抽取：10 个任务组、59 份文档上的 767 题配对样本，并在 Align+ 引擎上原地扩展四个任务组（RULER-421K 多跳问答 100 题；完整 Redial 推荐语料 200 题；再加一个 DetectiveQA 任务组 6 题；再加一个 $\infty$Bench-Sum 任务组 1 题）至 14 个任务组上的 1{,}074 题；完整基准为 29 个任务、3{,}671 题。四种能力全部覆盖；扩展后仍有 17 个任务未被抽样。配对样本及其 \texttt{entity2id} 指纹为全部六次运行（三条路径 $\times$ 两代）共享；307 道扩展题仅存在于 Align+；两个大型扩展文档组（190 万与 570 万字符）超出完整上下文参照 1{,}042{,}576 字符的严格预算，因此参照覆盖为 1{,}074 题中的 614 题。参照使用中性提示词档案；同一次运行的 normalized-v1 档案在其自身的 607 题覆盖上得 46.0 分——这是账本中保留的提示词敏感性痕迹，不作为参照使用。文档组长度是异质的，并在跨系统单元格领先的场合均予披露：两个事实整合（FactConsolidation）文档组是 6K 变体（各 26{,}157 字符）；32K/64K/262K 的 FC 变体（13.6 万--110 万字符）与其他未抽样文档组因预算被舍弃，全部连同上下文大小列于发布账本的子集块中；EventQA 按 64K/128K/完整文档组抽样，而非只取已发表的全本均值；LRU 域有 $n{=}7$ 道配对题与 14 道扩展题（$\infty$Bench-Sum 先 1 后 2，DetectiveQA 先 6 后 12），因此 LRU 单元格是方向性的。MAB 源语料是公开的；答题模型的预训练是否见过它们无法排除、也无法事后度量，且每一行跨系统表格都声明自己的答题模型、评审与子集。
+
+\input{figures/TABLE_alignment_ab_zh}
+
+\subsection{调整 Overall 的推导}
+\label{app:adjusted-overall}
+
+配对样本漏掉了两个对所有人都得分很低的任务——AR 的 MH-QA 与 TTL 的推荐——早期草稿用插补处理：代入已发表的非全上下文参考值（推荐 $\approx$13、MH-QA $\approx$60）后，调整 Overall 为 $\approx$59.0，而配对样本口径的原始值为 65.1，敏感性下的区间为 59--61。扩展取代了插补：两个任务现在都在 Align+ 上直接测得（读取原文 MH-QA 77.0、推荐 59.8；\cref{tab:main-results}），扩展 Overall 为 71.0，两个任务都进入了聚合。扩展样本的构成仍与完整基准不同（17 个任务未抽样），因此我们继续只陈述原始值、绝不做跨样本口径的相减；插补估计在此保留，作为发布账本的溯源材料。
+
+
+\subsection{各路径提示词与配置}
+\label{app:configs}
+
+所有路径都用 Kimi-K3 作答，提示词逐字存档于 \cref{app:ledger} 所列的运行清单与代码快照中；发布的补充材料完整重印它们。Base$\to$Align+ 的引擎配置差异如下：最大输出 token 16{,}384$\to$32{,}768；可用上下文窗口 32k$\to$262{,}144；重试 2$\to$5；超时 300\,s$\to$1{,}200\,s；Align+ 启用绝对路径持久化。直接检索做一次融合检索调用与一次作答调用；工具辅助读取会多次调用只读工具；原文读取智能体物化一个文档组、读取并验证源文件，且只提交通过引用检查的跨度。
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\columnwidth]{figures/fig3_cost.pdf}
+  \caption{冻结产物的运行点诊断（Align+ 引擎；面板 a 覆盖全部 1{,}074 题）。(a) 答案延迟的均值到 p95，标注 token 数与调用数；(b) 配对的 Base$\to$Align+ 入库成本；(c) 有效的固定排序检索预算前沿；(d) $k{=}10$ 处的仅源文档通道重放。}
+  \label{fig:cost}
+\end{figure}
+
+\subsection{附加定量诊断}
+\label{app:additional-diagnostics}
+
+账本还包含类型级更新分数、一次受控的源扩展重放，以及 MEME 删除边界。图~\ref{fig:diagnostics} 报告这些量，并让样本量与开发集限制保持可见。
+
+\input{figures/figure_diagnostics_zh}
+
+\subsection{载体参照（BigCodeBench \citep{zhuo2024bigcodebench}、ALFWorld \citep{shridhar2021alfworld}）}
+\label{app:carrier-anchors}
+
+BigCodeBench：0.4859 完成率 / 0.2838 困难 pass@1（校准切分）。ALFWorld：0.9786 同分布 / 0.9851 异分布成功率。两者都是对记忆不敏感的智能体载体回归测试：它们锚定智能体载体能正确执行任务，而不与记忆基准横向比较。
+
+\subsection{MAB 入库清单缺口}
+\label{app:manifest-gaps}
+
+Base 与 Align+ 的 MAB 入库运行共享 45 份文档的配对交集。在某一代中缺失清单的文档被排除在每文档效率比之外，因此效率比只在交集上计算（每文档调用 609$\to$329，$-46\%$）；token 比使用同一交集。题目级结果不受影响：全部 767 道配对题在两代中都对着冻结库运行，307 道扩展题只在 Align+ 引擎上运行，因此入库成本比仍定义在配对交集上。
+
+\subsection{预算前沿}
+\label{app:budget}
+
+早期的一次 depth-10 对 depth-20 重放作为一项完整性发现被保留：其前缀不变量在全部 210 题上失败（\texttt{primary\_result\_invariant\_violations=210}），因此它不用于任何正面主张。修复后的设计对每个查询以最大深度只运行一次检索，并把固定的排序切到 $k\in\{1,3,5,10,20\}$；前缀单调性因此按构造成立（零违例），前沿从 $k{=}1$ 到 $k{=}20$ 单调上升，每个 $k$ 的百分位 bootstrap 置信区间从冻结的重放产物重新计算。
+
+\subsection{X7 通道消融细节}
+
+\input{figures/TABLE_provenance_ablation_zh}
+
+
+\subsection{测试条件说明}
+
+原始 LoCoMo token-F1 轨道含 1{,}986 题与五个类别。Mem0 兼容轨道含 1{,}540 题与四个类别。LongMemEval-S 含 500 题；整批写入后的配对运行使用 \cref{sec:setup} 所述的 $n{=}25/25/27$。MEME 的 100 个会话片段产生异质的任务数（所引运行中 ER/Agg/Tr/Del/Cas/Abs 的事后检查数为 100/100/100/100/164/130）。raw 分数与 real 分数不可互换。
+
+\subsection{保留的完整性失败}
+
+\cref{app:budget} 的深度重放报告 \texttt{primary\_result\_invariant\_violations=210} 且 \texttt{passed=false}。MEME 删除结果为 0\% 的 real 准确率。X7 通道消融是零结果，以等价界的形式报告而非丢弃。$\infty$Bench-Sum 的 $n{=}1$ 翻转直接使 Align+ Overall 损失 2.7 分（Base$\to$Align+ 净差距为 1.8 分），并在每处比较中披露。LongMemEval 上直接检索与工具辅助读取打平的结果虽然对记忆工具路径不利，仍予报告。这些记录保持可见，因为一篇可审计的记忆论文应当同时暴露失败与零结果的机制，而不只是成功的机制。
+
+\subsection{外部比较协议}
+\label{sec:published-baselines}
+
+Mem0 原论文报告 LoCoMo 类别级 F1、BLEU-1 与一个二值 $J$：GPT-4o-mini 评审把每个答案标为 CORRECT 或 WRONG，得分即判定为 CORRECT 的百分比（10 次独立运行的均值$\pm$标准差）。Zep 原论文报告 DMR 与 LongMemEval，答题模型为 GPT-4o 系列。我们不在自己的协议下重跑这些系统，而是在下方逐字重印其已发表表格（表~\ref{tab:mem0-baselines}--\ref{tab:zep-longmemeval}）作为不同测试流程下的参考结果。因篇幅从正文表格中省略的 Mem0 确定性 token 重叠指标重印于表~\ref{tab:mem0-f1-bleu}。
+
+\input{figures/TABLE_protocol_other_zh}
+
+\textbf{K3 替换行。}
+\label{app:k3-substitution}
+放入 Mem0 $J$ 列内的唯一一行 Deep-Dream $J$，是用 Mem0 原样的二值评分方式、以 Kimi-K3 同时替换 GPT-4o-mini 的答题与评审角色得到的——唯一的改动就是模型。同模型 K3 评审下得 95.19\%（S/M/O/T 为 97.38/93.62/80.21/95.33）；同一批 K3 答案经独立的 Qwen3.7-plus 交叉评审得 94.22\%（96.91/92.91/77.08/93.46；交叉评审一致率 98.51\%）。相对 Mem0 已发表 $J$ 的两处差异照例明示：单次运行而非 10 次运行均值$\pm$标准差；模型为 Kimi-K3 而非 GPT-4o-mini。我们额外披露一条完整性注意事项：该运行清单带有 \texttt{diagnostic\_override=\{kind:legacy-missing-runtime-code-fingerprint, formal\_claim\_allowed:false\}}，因为 1{,}540 行答案中有 1{,}529 行来自早于运行时代码指纹机制的遗留源运行（\texttt{legacy-source-run}）。答案本身未变（\texttt{answer\_rows\_unchanged=true}，答案 SHA-256 为 76af5772），且逐题 JSONL 在全部 2{,}063 行上都带 \texttt{runtime\_code\_sha256}（3 个不同哈希：2fa32774 覆盖 2{,}019 行、36b45933 覆盖 33 行、42afb1ac 覆盖 11 行），数据集 SHA-256（79fa87e9）与库快照（cf2e76b8）与 Qwen 作答运行相同，Mem0 二值评审提示词也相同（仓库 \texttt{mem0ai/memory-benchmarks}，commit 4b61c5d，模式 \texttt{unified-no-evidence-exact-direct}）。因此我们把 95.19\% 报告为诊断性交叉评审结果，而不是指纹完备的正式条目。
+
+更严格的受控比较——冻结相同的答题模型、评审模型、提示词、温度、证据预算、数据集修订版本与 Graphiti/Zep 实现 commit——仍是通向共享榜单的唯一途径；但既然已发表数字被直接引用，它不再是投稿的硬性门槛。
+
+\subsection{架构的信息论读法}
+\label{app:info-theory}
+
+本附录给论文的两条设计承诺一个形式化表述。每一条陈述要么是架构的结构性质（可对照 schema 与代码检查），要么是带显式假设的条件命题；没有一条提升 \cref{sec:ladder,sec:provenance-ablation} 的因果措辞纪律。
+
+\subsubsection{写入时：渐进式实体对齐}
+
+设不可变源流为 $S=D_1,\ldots,D_T$。每条抽取出的提及产生一个特征向量 $X_t$，包含名称与内容嵌入、属性以及关系端点共现。设 $Z$ 为潜在实体指派，$M_t=(F_t,O_t,G_t)$ 为 $t$ 条观测后的状态：概念族 $F_t$、只增观测库 $O_t$ 与关系图 $G_t$。观测从不被摘要替换；它始终保持与其精确源跨度的链接。
+
+\begin{equation}
+  \begin{aligned}
+  O_{t+1}&=O_t\cup\{(X_{t+1},\mathrm{span}_{t+1})\},\\
+  I(Z;O_{1:t+1})&=I(Z;O_{1:t})+
+  I(Z;X_{t+1}\mid O_{1:t})\ge I(Z;O_{1:t}).
+  \end{aligned}
+  \label{eq:information-growth}
+\end{equation}
+
+第二个恒等式是只增流的记账事实：新观测可以增加关于身份的信息，而已有证据不会被丢弃。它解释了系统为何不必在首次提及时就解出实体链接。低置信度合并成为一个额外的族（过切分）；之后的观测可以通过重定向指针对族做合并，同时保留两边的观测集。过早的错误合并才是危险的错误，因为它把两个实体的证据污染进同一个检索位置。
+
+\begin{proposition}[可修订性]
+\label{prop:revisability}
+在只增数据模型中，当前族划分的任何粗化都可以在之后由非破坏性合并实现，且不损失证据。若一个存储改为用滚动摘要 $\sigma$ 覆写实体，则由数据处理不等式有 $I(Z;\sigma)\le I(Z;O)$，且每当身份可判别的细节被丢弃时不等式严格。
+\end{proposition}
+
+\begin{proposition}[汇聚证据下的收敛]
+\label{prop:convergence}
+假设特征在给定实体身份时 i.i.d.，且两个不同实体 $e\ne e'$ 的输出分布 $P_e\ne P_{e'}$ 具有 Chernoff 信息 $C(P_e,P_{e'})>0$。对使用 $k$ 条汇聚观测的同/异实体检验，似然比误差满足 $\Pr[\mathrm{error}]\le\exp[-kC(P_e,P_{e'})]$ \citep{chernoff1952measure}。因此，一个在弱证据下被初始拆分的真实合并未被察觉的概率，随佐证证据指数下降。
+\end{proposition}
+
+这些假设是理想化的：真实窗口相关、抽取噪声重尾、同名异实体对的 $C$ 可能很小。因此该预测是定性的，而不是一个实测收敛速率。它与实现的批量处理和末尾复查一致——后者用更多汇聚上下文重测候选族。在配对引擎运行中，同名重复组从 340$\to$124（MAB）、482$\to$99（LME），每文档入库调用下降 46--65\%；这些是实测参考值，不是对 $C$ 的估计。关系边承担两个角色：端点共现在写入时帮助区分假设，所得的图在读取时提供额外路径。
+
+\subsubsection{读取时：层级检索位置与渐进披露}
+
+派生层是一个检索索引，而不是答案重构。设 $A_t(q)$ 把问题映射到概念族与关系邻域，$\rho$ 为选择打开哪些候选的智能体策略。所得的源上下文构成一条自适应链
+\begin{equation}
+  C_0(q)\subseteq C_1(q)\subseteq\cdots\subseteq S,\qquad
+  a_{k+1}=\rho\bigl(q,M_t,C_{\le k},u_k\bigr),
+  \label{eq:progressive-disclosure}
+\end{equation}
+其中 $u_k$ 是智能体的当前不确定性。概念搜索给出快速的宏观检索线索；族观测与关系边对其精化；最终读取返回确切的会话片段与跨度。这正是同一表示既支持自主探索、又支持读取原文答案的原因。
+
+把重构失真定义为被引用文本与其声称代表的源文本之间的差异，把寻址损失定义为未能把相关源跨度放入 $C_k$。由于每条路径都把候选解析到逐字源跨度、且引用检查只接受当前回合浮现的跨度，重构失真按构造为零；全部残余损失都是寻址损失。摘要式记忆在写入时固定一个率--失真点，而 $\rho$ 逐查询选择阅读预算 \citep{shannon1959coding}。智能体可以在一次紧凑的概念查询后停止，也可以在不确定性仍高时披露更多邻域与源文件，而不改变证据的权威性。
+
+\subsubsection{双速率分解与答案风险}
+设 $A(q)$ 为派生派生图层输出的检索位置，$E_C$ 为候选集 $C$ 选出的精确源跨度。对答案相关变量 $Y$，链式法则给出
+\begin{equation}
+  I(Y;A,E_C\mid Q=q)=I(Y;A\mid Q=q)+I(Y;E_C\mid A,Q=q).
+  \label{eq:appendix-two-rate}
+\end{equation}
+第一项是紧凑概念/关系检索位置提供的信息；第二项是打开源文本才获得的信息。纯摘要记忆把 $S$ 替换为信道输出 $\widetilde S=f(S)$，无法使 $I(Y;\widetilde S\mid Q)$ 超过 $I(Y;S\mid Q)$；Deep-Dream 则在寻址之后仍保持源信道可用。这是一种信息瓶颈解释，而不是“实现解决了该瓶颈变分问题”的主张 \citep{tishby2000information}。
+
+为完整起见，设 $R_q$ 为相关源跨度被寻址这一事件，$V_q$ 为验证者在读取后正确作答这一事件。则
+\begin{equation}
+  \Pr[\widehat Y=Y\mid q]\ge \Pr[R_q\mid q]\Pr[V_q\mid R_q,q].
+  \label{eq:appendix-answer-bound}
+\end{equation}
+派生图层主要影响检索位置召回，逐步读取原文影响条件验证。引用检查在其显式可达性契约下把引用来源错误的概率设为零；语义不相关仍在保证之外。该分解解释了为什么改进应当在需要多次提及、时序更新或事实整合的问题上最大，以及为什么仅图的离线召回变化不必预测完整的在线增益。
+
+扩展样本上 Align+ 的实测运行点为（27.5k token，0.333）、（43.2k，0.400）与（328.6k，0.710）的 Overall；冻结在配对样本上的 Base 代复现了该次序（0.3025/0.3759/0.6695）。FC-MH 分数（2--4 对 67--70）显示了自适应源阅读在何处最重要。X7 在开发切片上把派生通道的离线检索贡献界定在 $\pm2.4$ 分以内；派生图层的在线价值是文档组选择与链接扩展，由原文读取智能体行使，而不会被该消融移除。
+
+\begin{samepage}
+\begin{proposition}[单侧寻址错误]
+\label{prop:one-sided}
+对任何派生图层状态，$A_t$ 中的错误可以改变哪些跨度进入 $C_k$，但不能改变被引用检查接纳的跨度的文本或溯源。因此派生图层错误造成的是覆盖缺失，而不是捏造的引用内容；该保证是被引用原文是否被打开，不是语义蕴含。
+\end{proposition}
+\end{samepage}
+
+这套表述增加了数学结构，但没有提升阶梯的因果措辞：指数陈述是有条件的，重名计数是代理量，实测的阶梯仍是一个系统比较。
+
+\input{figures/TABLE_mem0_locomo_baselines_zh}
+\input{figures/TABLE_zep_dmr_baselines_zh}
+\input{figures/TABLE_zep_longmemeval_baselines_zh}
+\input{figures/TABLE_zep_longmemeval_cat_zh}
+\input{figures/TABLE_mem0_f1_bleu_appendix_zh}

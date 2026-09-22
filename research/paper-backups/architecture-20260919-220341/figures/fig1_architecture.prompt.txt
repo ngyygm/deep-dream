@@ -1,0 +1,38 @@
+Generated with the built-in image generation tool. Design reference: user-supplied A-RAG figure (style and visual organization only). Example text is illustrative, not benchmark data.
+
+Use case: scientific-educational.
+Create a completely redesigned, publication-quality academic architecture diagram for the Deep-Dream memory system. This is a replacement figure for an ICLR paper, NOT a slide. Reference image 1 provides the desired restraint, compact editorial composition, elegant line icons, and well-integrated layer/agent illustration. Do NOT copy its wording or its specific RAG architecture. Design an original figure for the specification below.
+
+Canvas: high resolution landscape, aspect ratio approximately 1.9:1, white background with tight but breathable margins, very crisp clean vector-like raster rendering. It will print 6.5 inches wide. All text must remain legible at that size. No caption outside the figure. No large banner title or marketing tagline.
+Visual design: elegant scientific illustration, restrained thin dark navy strokes, soft blue (#EAF2F8), teal (#EAF5F3), and pale rose (#FAEDF1) fills. Blue (#27648B), teal (#277F7D), muted rose (#B65374) as semantic accents. Nearly all text dark charcoal. Consistent sans-serif typography: small bold section titles, clean medium labels; no tiny paragraphs. No gradients, shadows, glossy effects, rainbow colors, decorative stars, oversized boxes, thick frames, or cartoon mascots. Small sober outline icons only: search, clock, open page, document. Curved lines used sparingly. Make the layout feel designed, not generated from generic flowchart boxes.
+
+Content: agent on left about 32% width, linked memory on right about 64%. Thin pale divider between. Three aligned visual levels on the right; each should use compact flat lightly-tinted background area, not a full 3D shelf and not a huge empty rectangle. The actual node chains and readable source cards should dominate the memory illustration.
+Main top headings, modest: "(a) Adaptive reading" on left, "(b) Temporal concept memory" on right.
+
+LEFT: a small outlined query pill at top, exact text "Where does Alex plan to go now?"
+Below it, a vertical example sequence of three neatly composed tool-result units, aligned with the right-side levels:
+1. blue search icon and short title "Find concepts"; small result chips "Alex" and "Trip".
+2. rose clock icon and short title "Inspect history"; small result text "Paris → Rome".
+3. teal open-page icon and short title "Read evidence"; small result text "Open the supporting spans".
+Each unit has a small numbered circular marker; no long descriptions. At bottom, a restrained decision diamond labelled "Enough evidence?" with a yes arrow to the answer capsule "Rome [E2]" and a no return loop in the LEFT outer margin to the tool selection sequence, labelled "Search further". Add a small label near top of loop "Agent selects next read" to make this an illustrative adaptive path, not a required fixed pipeline. Connections from the three units to their respective right levels should be short thin horizontal arrows labelled only "search", "inspect", and "read". No crossing the nodes or text.
+
+RIGHT: very compact write strip just below main heading with a document icon followed by exact small labels "New text → Extract → Align → Link". This strip must not become a fourth layer. The memory has the following three areas:
+
+Top area blue: title "Concepts & relations". Subtitle only "Stable identities". Show THREE actual labeled nodes linked in a tidy horizontal graph:
+"Alex" — plans → "Trip" — has → "Destination".
+Alex is a small round person-concept node; Trip and Destination simple filled circles. Relationship labels placed clearly above edges. The conceptual identity "Trip" is the central stable handle across the two versions below. Keep enough space between text labels. No random extra nodes. Stable conceptual identity and relation are navigation, NOT the final answer.
+
+Middle area pale rose: title "Versions". Subtitle "Observation time".
+Two compact version nodes/cards laid out left to right, one labeled "t₁ · Paris" and one labeled "t₂ · Rome", with an arrow from t₁ to t₂. Both are linked from the SAME Trip concept above by elegant thin dashed lines, with a very small key label "same concept". Both previous and new observations remain visible. A subtle rightward axis below this version row labelled "observed earlier → observed later". These are observation times, not event-time axes. No V1/V2, Base/Align, rung names, or fabricated performance values.
+
+Bottom area pale teal: title "Source evidence". Subtitle "Original text retained".
+Two source document cards beneath corresponding versions with simple folded-corner page icons. First card exact text on two short lines:
+"E1"
+"Alex plans to visit Paris."
+Second:
+"E2"
+"Alex now plans to visit Rome."
+Thin downward provenance links from each corresponding version to its evidence card. Put tiny label "source span" between the links, not across text. Use teal highlight on the relevant place in each quote. No connecting E1 to E2 as a sequential evidence graph: these are independent immutable sources.
+
+Keep visual gutters between all three levels for the concept-to-version and version-to-source links, which are crucial. Do not imply concepts are sources or sources are overwritten. At bottom right outside the shaded areas put a very small three-item line legend: solid line = relation, arrow = later observation, dotted line = source or identity link. Exact short labels "relation", "next observation", "provenance / identity". Be sparing and preserve legibility. Optional omit legend if it crowds.
+Accuracy requirements: this is an ILLUSTRATIVE example, not an experimental result. No claim of perfect entity alignment or guaranteed correctness. The final read confirms the quoted E2 and the agent can loop. The hierarchy is concepts / versions / source evidence, NOT keyword / sentence / document levels. The figure should communicate all this visually in seconds. Clear typographic hierarchy and carefully composed whitespace are essential.

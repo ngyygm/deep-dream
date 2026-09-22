@@ -1,0 +1,14 @@
+diff --git a/research/benchmark/runner.py b/research/benchmark/runner.py
+index c0ef0b3..a4c338c 100644
+--- a/research/benchmark/runner.py
++++ b/research/benchmark/runner.py
+@@ -652,8 +652,7 @@ class AnswerGenerator:
+                 "Answer the question using only the provided context. Follow the question's own "
+                 "instructions, including any answer format the question itself asks for. The context "
+                 "takes precedence over world knowledge. If several context passages disagree, use "
+-                "the most recent one. If the context does not contain the answer, answer exactly "
+-                "'No information available.' Do not add explanations.\n\n"
++                "the most recent one. Do not add explanations.\n\n"
+                 "Return exactly one JSON object and no prose:\n"
+                 '{"answer":"concise answer"}\n\n'
+                 f"{date_line}Question: {item.question}\n\nContext:\n" + "\n\n".join(blocks)

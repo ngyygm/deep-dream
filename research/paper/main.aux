@@ -2,165 +2,222 @@
 \providecommand\hyper@newdestlabel[2]{}
 \providecommand\HyField@AuxAddToFields[1]{}
 \providecommand\HyField@AuxAddToCoFields[2]{}
-\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces Deep-Dream separates navigation from factual authority. Derived concept families, observations, assertions, and graph neighborhoods form a non-authoritative overlay for scope materialization and candidate generation; the three answer paths differ in how far the answerer may go toward the verbatim sources---fused retrieval payload (rung 1), read-only memory tools (rung 2), or a sandbox of verbatim sources with verification tools and an evidence gate (rung 3). An overlay error can cause a missed scope, never a fabricated fact.}}{1}{figure.caption.1}\protected@file@percent }
-\providecommand*\caption@xref[2]{\@setref\relax\@undefined{#1}}
-\newlabel{fig:architecture}{{1}{1}{Deep-Dream separates navigation from factual authority. Derived concept families, observations, assertions, and graph neighborhoods form a non-authoritative overlay for scope materialization and candidate generation; the three answer paths differ in how far the answerer may go toward the verbatim sources---fused retrieval payload (rung 1), read-only memory tools (rung 2), or a sandbox of verbatim sources with verification tools and an evidence gate (rung 3). An overlay error can cause a missed scope, never a fabricated fact}{figure.caption.1}{}}
-\newlabel{fig:architecture@cref}{{[figure][1][]1}{[1][1][]1}}
 \@writefile{toc}{\contentsline {section}{\numberline {1}Introduction}{1}{section.1}\protected@file@percent }
-\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces The answer-path ladder on MemoryAgentBench (official scorer, $n{=}767$, kimi-k3 answerer, frozen libraries per generation): Overall by track for engine $v1$ (hatched) and $v2$ (solid); whiskers, shown on the $v2$ bars only, are paired-bootstrap 95\% CIs over the 767 shared questions. The BM25 row (41.5, official paper, full set, GPT-4o-mini) is drawn as a published-reference band, not a same-protocol bar: answerer, judge, and subset differ; no subtraction is implied.}}{2}{figure.caption.2}\protected@file@percent }
-\newlabel{fig:ladder}{{2}{2}{The answer-path ladder on MemoryAgentBench (official scorer, $n{=}767$, kimi-k3 answerer, frozen libraries per generation): Overall by track for engine $v1$ (hatched) and $v2$ (solid); whiskers, shown on the $v2$ bars only, are paired-bootstrap 95\% CIs over the 767 shared questions. The BM25 row (41.5, official paper, full set, GPT-4o-mini) is drawn as a published-reference band, not a same-protocol bar: answerer, judge, and subset differ; no subtraction is implied}{figure.caption.2}{}}
-\newlabel{fig:ladder@cref}{{[figure][2][]2}{[1][1][]2}}
-\citation{maharana2024locomo}
-\citation{wu2025longmemeval}
+\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces Separating navigation from evidence. Deep-Dream first locates candidate source text and then lets the agent read, verify, or stop within a budget.}}{1}{figure.caption.1}\protected@file@percent }
+\providecommand*\caption@xref[2]{\@setref\relax\@undefined{#1}}
+\newlabel{fig:motivation}{{1}{1}{Separating navigation from evidence. Deep-Dream first locates candidate source text and then lets the agent read, verify, or stop within a budget}{figure.caption.1}{}}
+\newlabel{fig:motivation@cref}{{[figure][1][]1}{[1][1][]1}}
+\citation{maharana2024locomo,wu2025longmemeval}
 \citation{jung2026meme}
 \citation{hu2025memoryagentbench}
-\citation{tavakoli2026beam}
-\citation{packer2023memgpt}
-\citation{xu2025amem}
-\citation{chhikara2025mem0}
-\citation{gutierrez2025hipporag2}
-\citation{markovic2025cognee}
-\citation{wang2025mirix}
+\citation{packer2023memgpt,xu2025amem,chhikara2025mem0,gutierrez2025hipporag2,markovic2025cognee,wang2025mirix,rasmussen2025zep}
+\@writefile{toc}{\contentsline {section}{\numberline {2}Related Work}{2}{section.2}\protected@file@percent }
+\newlabel{sec:related-work}{{2}{2}{Related Work}{section.2}{}}
+\newlabel{sec:related-work@cref}{{[section][2][]2}{[1][2][]2}}
+\@writefile{toc}{\contentsline {paragraph}{Memory benchmarks.}{2}{section*.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Structured memory.}{2}{section*.3}\protected@file@percent }
+\citation{tishby2000information}
+\citation{shannon1959coding}
+\citation{ramsauer2021hopfield}
+\citation{fellegi1969theory}
 \citation{lewis2020rag}
+\citation{du2026arag}
 \citation{liu2024lost}
-\citation{hu2025memoryagentbench}
-\citation{rasmussen2025zep}
 \citation{gao2023alce}
-\@writefile{toc}{\contentsline {section}{\numberline {2}Related Work}{3}{section.2}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Long-term conversational memory benchmarks.}{3}{section*.3}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Structured memory systems.}{3}{section*.4}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Long context and retrieval.}{3}{section*.5}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Temporal and graph memory.}{3}{section*.6}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Evidence and provenance.}{3}{section*.7}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {3}Deep-Dream}{4}{section.3}\protected@file@percent }
-\newlabel{sec:deep-dream}{{3}{4}{Deep-Dream}{section.3}{}}
-\newlabel{sec:deep-dream@cref}{{[section][3][]3}{[1][3][]4}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {3.1}Memory model}{4}{subsection.3.1}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {3.2}Remember pipeline}{4}{subsection.3.2}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {3.3}Answer paths on a frozen library}{4}{subsection.3.3}\protected@file@percent }
-\newlabel{sec:answer-paths}{{3.3}{4}{Answer paths on a frozen library}{subsection.3.3}{}}
-\newlabel{sec:answer-paths@cref}{{[subsection][3][3]3.3}{[1][4][]4}}
+\@writefile{toc}{\contentsline {paragraph}{Information-theoretic and associative memory.}{3}{section*.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Retrieval, long context, and source tracking.}{3}{section*.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {3}Deep-Dream}{3}{section.3}\protected@file@percent }
+\newlabel{sec:deep-dream}{{3}{3}{Deep-Dream}{section.3}{}}
+\newlabel{sec:deep-dream@cref}{{[section][3][]3}{[1][3][]3}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.1}Memory model}{3}{subsection.3.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.2}Ingestion and alignment: two engine generations}{3}{subsection.3.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.3}How answers obtain evidence}{4}{subsection.3.3}\protected@file@percent }
+\newlabel{sec:answer-paths}{{3.3}{4}{How answers obtain evidence}{subsection.3.3}{}}
+\newlabel{sec:answer-paths@cref}{{[subsection][3][3]3.3}{[1][3][]4}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.4}Progressive disclosure in information-theoretic terms}{4}{subsection.3.4}\protected@file@percent }
+\newlabel{sec:information-view}{{3.4}{4}{Progressive disclosure in information-theoretic terms}{subsection.3.4}{}}
+\newlabel{sec:information-view@cref}{{[subsection][4][3]3.4}{[1][4][]4}}
+\newlabel{eq:two-rate-code}{{2}{4}{Progressive disclosure in information-theoretic terms}{equation.3.2}{}}
+\newlabel{eq:two-rate-code@cref}{{[equation][2][]2}{[1][4][]4}}
+\newlabel{eq:answer-decomposition}{{3}{4}{Progressive disclosure in information-theoretic terms}{equation.3.3}{}}
+\newlabel{eq:answer-decomposition@cref}{{[equation][3][]3}{[1][4][]4}}
+\@writefile{toc}{\contentsline {section}{\numberline {4}Experiments}{4}{section.4}\protected@file@percent }
+\newlabel{sec:experiments}{{4}{4}{Experiments}{section.4}{}}
+\newlabel{sec:experiments@cref}{{[section][4][]4}{[1][4][]4}}
+\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces MemoryAgentBench results by method and task (official scorer, Kimi-K3 answerer). (a) Overall scores: Base on the frozen paired sample ($n{=}767$), Align+ on the extended sample ($n{=}1074$), with marginal 95\% bootstrap intervals; (b) Align+ domain scores at the extended sample; (c) selected task scores; (d) all 209 residual zero-score items of the extended sample. The two sample definitions are labeled separately.}}{5}{figure.caption.6}\protected@file@percent }
+\newlabel{fig:ladder}{{2}{5}{MemoryAgentBench results by method and task (official scorer, Kimi-K3 answerer). (a) Overall scores: Base on the frozen paired sample ($n{=}767$), Align+ on the extended sample ($n{=}1074$), with marginal 95\% bootstrap intervals; (b) Align+ domain scores at the extended sample; (c) selected task scores; (d) all 209 residual zero-score items of the extended sample. The two sample definitions are labeled separately}{figure.caption.6}{}}
+\newlabel{fig:ladder@cref}{{[figure][2][]2}{[1][5][]5}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.1}Test setup and task groups}{5}{subsection.4.1}\protected@file@percent }
+\newlabel{sec:setup}{{4.1}{5}{Test setup and task groups}{subsection.4.1}{}}
+\newlabel{sec:setup@cref}{{[subsection][1][4]4.1}{[1][4][]5}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.2}RQ1: Does step-by-step source reading improve answers?}{5}{subsection.4.2}\protected@file@percent }
+\newlabel{sec:ladder}{{4.2}{5}{RQ1: Does step-by-step source reading improve answers?}{subsection.4.2}{}}
+\newlabel{sec:ladder@cref}{{[subsection][2][4]4.2}{[1][5][]5}}
+\@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces MemoryAgentBench; scores are official component scores $\times 100$. Task rows and the Overall ($n{=}767$) row use the paired sample shared by both engines. $^{\ddagger }$ marks the two task groups added when the Align+ engine was extended in place to $n{=}1074$ (RULER-421K multi-hop QA and the full Redial recommendation corpus); the Base run was frozen at the paired sample, and both task groups exceed the full-context row's strict character budget (\cref  {app:sampling}), so they carry no same-model coverage. The Overall ($n{=}1074$) row is that extended sample; scores from the two samples are never subtracted. Bold/underlined entries are best/second-best within each task and sample, $^{*}$ marks sampled LongMemEval-S, and $^{\dagger }$ marks the singleton $\infty $Bench-Sum row of the paired sample (a second task group enters only the extended sample, so LRU remains directional: $n{=}7$ paired, $14$ extended).}}{6}{table.caption.7}\protected@file@percent }
+\newlabel{tab:main-results}{{1}{6}{MemoryAgentBench; scores are official component scores $\times 100$. Task rows and the Overall ($n{=}767$) row use the paired sample shared by both engines. $^{\ddagger }$ marks the two task groups added when the Align+ engine was extended in place to $n{=}1074$ (RULER-421K multi-hop QA and the full Redial recommendation corpus); the Base run was frozen at the paired sample, and both task groups exceed the full-context row's strict character budget (\cref {app:sampling}), so they carry no same-model coverage. The Overall ($n{=}1074$) row is that extended sample; scores from the two samples are never subtracted. Bold/underlined entries are best/second-best within each task and sample, $^{*}$ marks sampled LongMemEval-S, and $^{\dagger }$ marks the singleton $\infty $Bench-Sum row of the paired sample (a second task group enters only the extended sample, so LRU remains directional: $n{=}7$ paired, $14$ extended)}{table.caption.7}{}}
+\newlabel{tab:main-results@cref}{{[table][1][]1}{[1][6][]6}}
+\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces Recorded LongMemEval trace (question \texttt  {2b8f3739}): concept tracing exposes four episode pointers across two documents, and a separate semantic hit locates the third sales record. Seven successful calls take 13.96\,s; step 8 reaches the limit after a malformed response, then a separate answerer computes $120+225+(20\times 7.5)=495$.}}{6}{figure.caption.8}\protected@file@percent }
+\newlabel{fig:agent-trace}{{3}{6}{Recorded LongMemEval trace (question \texttt {2b8f3739}): concept tracing exposes four episode pointers across two documents, and a separate semantic hit locates the third sales record. Seven successful calls take 13.96\,s; step 8 reaches the limit after a malformed response, then a separate answerer computes $120+225+(20\times 7.5)=495$}{figure.caption.8}{}}
+\newlabel{fig:agent-trace@cref}{{[figure][3][]3}{[1][6][]6}}
 \citation{hu2025memoryagentbench}
-\@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces What changes at each rung. All rungs share frozen libraries, question stream, answerer model (kimi-k3), and scorer; compute per question is recomputed from run logs (\cref  {sec:ladder}).}}{5}{table.caption.8}\protected@file@percent }
-\newlabel{tab:rung-differences}{{1}{5}{What changes at each rung. All rungs share frozen libraries, question stream, answerer model (kimi-k3), and scorer; compute per question is recomputed from run logs (\cref {sec:ladder})}{table.caption.8}{}}
-\newlabel{tab:rung-differences@cref}{{[table][1][]1}{[1][4][]5}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {3.4}Hybrid navigation and source expansion}{5}{subsection.3.4}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {3.5}Evidence gate}{5}{subsection.3.5}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {3.6}Implementation and audit artifacts}{5}{subsection.3.6}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {4}Experiments}{5}{section.4}\protected@file@percent }
-\newlabel{sec:experiments}{{4}{5}{Experiments}{section.4}{}}
-\newlabel{sec:experiments@cref}{{[section][4][]4}{[1][5][]5}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {4.1}Setup and caliber discipline}{5}{subsection.4.1}\protected@file@percent }
-\newlabel{sec:setup}{{4.1}{5}{Setup and caliber discipline}{subsection.4.1}{}}
-\newlabel{sec:setup@cref}{{[subsection][1][4]4.1}{[1][5][]5}}
-\citation{zhuo2024bigcodebench}
-\citation{shridhar2021alfworld}
+\citation{chhikara2025mem0}
+\citation{rasmussen2025zep}
 \citation{hu2025memoryagentbench}
-\@writefile{lot}{\contentsline {table}{\numberline {2}{\ignorespaces The answer-path ladder, official MemoryAgentBench scorer, kimi-k3 answerer, identical frozen libraries and question stream per generation; per-domain cells are shown for the sandbox rung (rungs 1--2 in \cref  {app:mab-per-task}). $^{*}$The $v1$ Overall carries the $n{=}1$ $\infty $Bench-Sum flip (0.212 $\to $ 0.000); excluding that task $v2$ leads 75.5 vs.\ 74.7. Rungs differ as systems (\cref  {tab:rung-differences}); deltas are consistent-with readings, not single-factor estimates.}}{6}{table.caption.9}\protected@file@percent }
-\newlabel{tab:track-ladder}{{2}{6}{The answer-path ladder, official MemoryAgentBench scorer, kimi-k3 answerer, identical frozen libraries and question stream per generation; per-domain cells are shown for the sandbox rung (rungs 1--2 in \cref {app:mab-per-task}). $^{*}$The $v1$ Overall carries the $n{=}1$ $\infty $Bench-Sum flip (0.212 $\to $ 0.000); excluding that task $v2$ leads 75.5 vs.\ 74.7. Rungs differ as systems (\cref {tab:rung-differences}); deltas are consistent-with readings, not single-factor estimates}{table.caption.9}{}}
-\newlabel{tab:track-ladder@cref}{{[table][2][]2}{[1][6][]6}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {4.2}The answer-path ladder}{6}{subsection.4.2}\protected@file@percent }
-\newlabel{sec:ladder}{{4.2}{6}{The answer-path ladder}{subsection.4.2}{}}
-\newlabel{sec:ladder@cref}{{[subsection][2][4]4.2}{[1][6][]6}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {4.3}Cross-system positioning under the official scorer}{6}{subsection.4.3}\protected@file@percent }
-\newlabel{sec:cross-system}{{4.3}{6}{Cross-system positioning under the official scorer}{subsection.4.3}{}}
-\newlabel{sec:cross-system@cref}{{[subsection][3][4]4.3}{[1][6][]6}}
-\citation{hu2025memoryagentbench}
-\citation{hu2025memoryagentbench}
-\@writefile{toc}{\contentsline {subsection}{\numberline {4.4}Paired engine comparison: what navigation costs and keeps}{7}{subsection.4.4}\protected@file@percent }
-\newlabel{sec:engine-paired}{{4.4}{7}{Paired engine comparison: what navigation costs and keeps}{subsection.4.4}{}}
-\newlabel{sec:engine-paired@cref}{{[subsection][4][4]4.4}{[1][7][]7}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {4.5}Retrieval diagnostics: channel equivalence bound, gate, budget}{7}{subsection.4.5}\protected@file@percent }
-\newlabel{sec:provenance-ablation}{{4.5}{7}{Retrieval diagnostics: channel equivalence bound, gate, budget}{subsection.4.5}{}}
-\newlabel{sec:provenance-ablation@cref}{{[subsection][5][4]4.5}{[1][7][]7}}
-\@writefile{lot}{\contentsline {table}{\numberline {3}{\ignorespaces Cross-system positioning on MemoryAgentBench under the official scorer (scores $\times $100; AR/TTL/LRU/SF are domain averages). $^{\dagger }$Our row uses the stratified sampled subset (767 questions, 10 scopes, 59 documents; all four domains, 8 of 29 tasks), kimi-k3 answerer, official scorer at commit 455306d; the rung~1/2 Overall values (32.4/40.7) appear in \cref  {tab:track-ladder}, and the adjusted Overall (59--61) in \cref  {app:adjusted-overall}. Published rows are cited verbatim from the official paper's Table~2 \citep  {hu2025memoryagentbench} (full benchmark; answerers as listed; memory-system rows run GPT-4o-mini except MIRIX on GPT-4.1-mini). Every full-context family scores at most 5 on FactConsolidation-MH; best published FC-MH of any system is 7 (published FC columns at 262K-average contexts; our SF cells are the 6K variants, \cref  {app:sampling}). No two rows share answerer, judge, and subset; we never subtract across calibers.}}{8}{table.caption.10}\protected@file@percent }
-\newlabel{tab:mab-cross-system}{{3}{8}{Cross-system positioning on MemoryAgentBench under the official scorer (scores $\times $100; AR/TTL/LRU/SF are domain averages). $^{\dagger }$Our row uses the stratified sampled subset (767 questions, 10 scopes, 59 documents; all four domains, 8 of 29 tasks), kimi-k3 answerer, official scorer at commit 455306d; the rung~1/2 Overall values (32.4/40.7) appear in \cref {tab:track-ladder}, and the adjusted Overall (59--61) in \cref {app:adjusted-overall}. Published rows are cited verbatim from the official paper's Table~2 \citep {hu2025memoryagentbench} (full benchmark; answerers as listed; memory-system rows run GPT-4o-mini except MIRIX on GPT-4.1-mini). Every full-context family scores at most 5 on FactConsolidation-MH; best published FC-MH of any system is 7 (published FC columns at 262K-average contexts; our SF cells are the 6K variants, \cref {app:sampling}). No two rows share answerer, judge, and subset; we never subtract across calibers}{table.caption.10}{}}
-\newlabel{tab:mab-cross-system@cref}{{[table][3][]3}{[1][7][]8}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {4.6}Integrity and negative results}{8}{subsection.4.6}\protected@file@percent }
-\newlabel{sec:negatives}{{4.6}{8}{Integrity and negative results}{subsection.4.6}{}}
-\newlabel{sec:negatives@cref}{{[subsection][6][4]4.6}{[1][8][]8}}
-\bibdata{references}
-\bibcite{chernoff1952measure}{{1}{1952}{{Chernoff}}{{}}}
+\citation{chhikara2025mem0}
+\citation{rasmussen2025zep}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.3}RQ2: Does a temporal, versioned state help updates and sessions?}{7}{subsection.4.3}\protected@file@percent }
+\newlabel{sec:temporal-benchmark}{{4.3}{7}{RQ2: Does a temporal, versioned state help updates and sessions?}{subsection.4.3}{}}
+\newlabel{sec:temporal-benchmark@cref}{{[subsection][3][4]4.3}{[1][6][]7}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.4}RQ3: Do concept and relation paths support multi-hop consolidation?}{7}{subsection.4.4}\protected@file@percent }
+\newlabel{sec:relational-benchmark}{{4.4}{7}{RQ3: Do concept and relation paths support multi-hop consolidation?}{subsection.4.4}{}}
+\newlabel{sec:relational-benchmark@cref}{{[subsection][4][4]4.4}{[1][7][]7}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.5}RQ4: Does progressive alignment make construction revisable and economical?}{7}{subsection.4.5}\protected@file@percent }
+\newlabel{sec:engine-versions}{{4.5}{7}{RQ4: Does progressive alignment make construction revisable and economical?}{subsection.4.5}{}}
+\newlabel{sec:engine-versions@cref}{{[subsection][5][4]4.5}{[1][7][]7}}
+\newlabel{sec:engine-paired}{{4.5}{7}{RQ4: Does progressive alignment make construction revisable and economical?}{subsection.4.5}{}}
+\newlabel{sec:engine-paired@cref}{{[subsection][5][4]4.5}{[1][7][]7}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.6}RQ5: Where does the append-only design fail?}{7}{subsection.4.6}\protected@file@percent }
+\newlabel{sec:deletion-boundary}{{4.6}{7}{RQ5: Where does the append-only design fail?}{subsection.4.6}{}}
+\newlabel{sec:deletion-boundary@cref}{{[subsection][6][4]4.6}{[1][7][]7}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.7}Comparison with other systems}{7}{subsection.4.7}\protected@file@percent }
+\newlabel{sec:cross-system}{{4.7}{7}{Comparison with other systems}{subsection.4.7}{}}
+\newlabel{sec:cross-system@cref}{{[subsection][7][4]4.7}{[1][7][]7}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.8}Mechanism diagnostics: offline retrieval and online reading}{7}{subsection.4.8}\protected@file@percent }
+\newlabel{sec:external-comparisons}{{4.8}{7}{Mechanism diagnostics: offline retrieval and online reading}{subsection.4.8}{}}
+\newlabel{sec:external-comparisons@cref}{{[subsection][8][4]4.8}{[1][7][]7}}
+\newlabel{sec:provenance-ablation}{{4.8}{7}{Mechanism diagnostics: offline retrieval and online reading}{subsection.4.8}{}}
+\newlabel{sec:provenance-ablation@cref}{{[subsection][8][4]4.8}{[1][7][]7}}
+\@writefile{lot}{\contentsline {table}{\numberline {2}{\ignorespaces Comparison with published MemoryAgentBench, LoCoMo, and LongMemEval-S results. Each block lists its answerer, judge, subset, and test procedure; published rows are from Hu et al.~\citep  {hu2025memoryagentbench}, Chhikara et al.~\citep  {chhikara2025mem0}, and Rasmussen et al.~\citep  {rasmussen2025zep}. In (b), the weighted column is recomputed from published category means under the 841/282/96/321 counts; cross-block rows use different protocols and are background, not controlled comparisons. Our MAB rows use the Align+ extended sample ($n{=}1074$, 14 task groups; \cref  {app:sampling}); the same-model full-context row is a reference at 614/1{,}074 coverage, rather than a competing system, and its margin over the source-reading agent ($-7.9$ points, 95\% CI $[-11.9,-3.9]$) is analyzed in \cref  {sec:ladder}. LRU has only $n{=}14$ questions, including $n{=}2$ from $\infty $Bench-Sum.}}{8}{table.caption.9}\protected@file@percent }
+\newlabel{tab:main-cross-system}{{2}{8}{Comparison with published MemoryAgentBench, LoCoMo, and LongMemEval-S results. Each block lists its answerer, judge, subset, and test procedure; published rows are from Hu et al.~\citep {hu2025memoryagentbench}, Chhikara et al.~\citep {chhikara2025mem0}, and Rasmussen et al.~\citep {rasmussen2025zep}. In (b), the weighted column is recomputed from published category means under the 841/282/96/321 counts; cross-block rows use different protocols and are background, not controlled comparisons. Our MAB rows use the Align+ extended sample ($n{=}1074$, 14 task groups; \cref {app:sampling}); the same-model full-context row is a reference at 614/1{,}074 coverage, rather than a competing system, and its margin over the source-reading agent ($-7.9$ points, 95\% CI $[-11.9,-3.9]$) is analyzed in \cref {sec:ladder}. LRU has only $n{=}14$ questions, including $n{=}2$ from $\infty $Bench-Sum}{table.caption.9}{}}
+\newlabel{tab:main-cross-system@cref}{{[table][2][]2}{[1][7][]8}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.9}Where the system still fails}{8}{subsection.4.9}\protected@file@percent }
+\newlabel{sec:negatives}{{4.9}{8}{Where the system still fails}{subsection.4.9}{}}
+\newlabel{sec:negatives@cref}{{[subsection][9][4]4.9}{[1][8][]8}}
 \@writefile{toc}{\contentsline {section}{\numberline {5}Analysis and Limitations}{9}{section.5}\protected@file@percent }
 \newlabel{sec:analysis}{{5}{9}{Analysis and Limitations}{section.5}{}}
 \newlabel{sec:analysis@cref}{{[section][5][]5}{[1][8][]9}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {5.1}What the decomposition does and does not show}{9}{subsection.5.1}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {5.2}Positioning, read conservatively}{9}{subsection.5.2}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {5.3}Limitations}{9}{subsection.5.3}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {5.4}Future work}{9}{subsection.5.4}\protected@file@percent }
 \@writefile{toc}{\contentsline {section}{\numberline {6}Conclusion}{9}{section.6}\protected@file@percent }
 \newlabel{sec:conclusion}{{6}{9}{Conclusion}{section.6}{}}
 \newlabel{sec:conclusion@cref}{{[section][6][]6}{[1][9][]9}}
+\bibdata{references}
+\bibcite{chernoff1952measure}{{1}{1952}{{Chernoff}}{{}}}
 \bibcite{chhikara2025mem0}{{2}{2025}{{Chhikara et~al.}}{{Chhikara, Khant, Aryan, Singh, and Yadav}}}
-\bibcite{gao2023alce}{{3}{2023}{{Gao et~al.}}{{Gao, Yen, Yu, and Chen}}}
-\bibcite{gutierrez2025hipporag2}{{4}{2025}{{Gutiérrez et~al.}}{{Gutiérrez, Shu, Qi, Zhou, and Su}}}
-\bibcite{hu2025memoryagentbench}{{5}{2025}{{Hu et~al.}}{{Hu, Wang, and McAuley}}}
-\bibcite{jung2026meme}{{6}{2026}{{Jung et~al.}}{{Jung, Rubinstein, Uselis, Yun, and Oh}}}
-\bibcite{lewis2020rag}{{7}{2020}{{Lewis et~al.}}{{Lewis, Perez, Piktus, Petroni, Karpukhin, Goyal, K{\"u}ttler, Lewis, Yih, Rockt{\"a}schel, Riedel, and Kiela}}}
-\bibcite{liu2024lost}{{8}{2024}{{Liu et~al.}}{{Liu, Lin, Hewitt, Parandekar, Chen, and Liang}}}
-\bibcite{maharana2024locomo}{{9}{2024}{{Maharana et~al.}}{{Maharana, Lee, Tulyakov, Bansal, Barbieri, and Fang}}}
-\bibcite{markovic2025cognee}{{10}{2025}{{Markovic et~al.}}{{Markovic, Obradovic, Hajdu, and Pavlovic}}}
-\bibcite{packer2023memgpt}{{11}{2023}{{Packer et~al.}}{{Packer, Fang, Patil, Lin, Wooders, and Gonzalez}}}
-\bibcite{rasmussen2025zep}{{12}{2025}{{Rasmussen et~al.}}{{Rasmussen, Paliychuk, Beauvais, Ryan, and Chalef}}}
-\bibcite{shannon1959coding}{{13}{1959}{{Shannon}}{{}}}
-\bibcite{shridhar2021alfworld}{{14}{2021}{{Shridhar et~al.}}{{Shridhar, Yuan, C{\^o}t{\'e}, Bisk, Trischler, and Hausknecht}}}
-\bibcite{tavakoli2026beam}{{15}{2026}{{Tavakoli et~al.}}{{Tavakoli, Salemi, Ye, Abdalla, Zamani, and Mitchell}}}
-\bibcite{wang2025mirix}{{16}{2025}{{Wang \& Chen}}{{Wang and Chen}}}
-\bibcite{wu2025longmemeval}{{17}{2025}{{Wu et~al.}}{{Wu, Wang, Yu, Zhang, Chang, and Yu}}}
-\bibcite{xu2025amem}{{18}{2025}{{Xu et~al.}}{{Xu, Liang, Mei, Gao, Tan, and Zhang}}}
-\bibcite{zhuo2024bigcodebench}{{19}{2024}{{Zhuo et~al.}}{{Zhuo, Vu, Chim, Hu, Yu, Widyasari, et~al.}}}
+\bibcite{du2026arag}{{3}{2026}{{Du et~al.}}{{Du, Xu, Zhu, Wang, Wang, Wang, and Mao}}}
+\bibcite{fellegi1969theory}{{4}{1969}{{Fellegi \& Sunter}}{{Fellegi and Sunter}}}
+\bibcite{gao2023alce}{{5}{2023}{{Gao et~al.}}{{Gao, Yen, Yu, and Chen}}}
+\bibcite{gutierrez2025hipporag2}{{6}{2025}{{Guti{\'e}rrez et~al.}}{{Guti{\'e}rrez, Shu, Qi, Zhou, and Su}}}
+\bibcite{hu2025memoryagentbench}{{7}{2025}{{Hu et~al.}}{{Hu, Wang, and McAuley}}}
+\bibcite{jung2026meme}{{8}{2026}{{Jung et~al.}}{{Jung, Rubinstein, Uselis, Yun, and Oh}}}
+\bibcite{lewis2020rag}{{9}{2020}{{Lewis et~al.}}{{Lewis, Perez, Piktus, Petroni, Karpukhin, Goyal, K{\"u}ttler, Lewis, Yih, Rockt{\"a}schel, Riedel, and Kiela}}}
+\bibcite{li-etal-2026-locomo}{{10}{2026}{{Li et~al.}}{{Li, Guo, Zhang, Xu, Huang, Liu, Xu, Xu, and Liu}}}
+\bibcite{liu2024lost}{{11}{2024}{{Liu et~al.}}{{Liu, Lin, Hewitt, Parandekar, Chen, and Liang}}}
+\newlabel{sec:ai-assistance}{{6}{10}{AI Assistance}{section*.10}{}}
+\newlabel{sec:ai-assistance@cref}{{[section][6][]6}{[1][10][]10}}
+\bibcite{maharana2024locomo}{{12}{2024}{{Maharana et~al.}}{{Maharana, Lee, Tulyakov, Bansal, Barbieri, and Fang}}}
+\bibcite{markovic2025cognee}{{13}{2025}{{Markovic et~al.}}{{Markovic, Obradovic, Hajdu, and Pavlovic}}}
+\bibcite{packer2023memgpt}{{14}{2023}{{Packer et~al.}}{{Packer, Wooders, Lin, Fang, Patil, Stoica, and Gonzalez}}}
+\bibcite{ramsauer2021hopfield}{{15}{2021}{{Ramsauer et~al.}}{{Ramsauer, Sch{\"a}fl, Lehner, Seidl, Widrich, Gruber, Holzleitner, Adler, Kreil, Kopp, Klambauer, Brandstetter, and Hochreiter}}}
+\bibcite{rasmussen2025zep}{{16}{2025}{{Rasmussen et~al.}}{{Rasmussen, Paliychuk, Beauvais, Ryan, and Chalef}}}
+\bibcite{shannon1959coding}{{17}{1959}{{Shannon}}{{}}}
+\bibcite{shridhar2021alfworld}{{18}{2021}{{Shridhar et~al.}}{{Shridhar, Yuan, C{\^o}t{\'e}, Bisk, Trischler, and Hausknecht}}}
+\bibcite{tishby2000information}{{19}{2000}{{Tishby et~al.}}{{Tishby, Pereira, and Bialek}}}
+\bibcite{wang2025mirix}{{20}{2025}{{Wang \& Chen}}{{Wang and Chen}}}
+\bibcite{wu2025longmemeval}{{21}{2025}{{Wu et~al.}}{{Wu, Wang, Yu, Zhang, Chang, and Yu}}}
+\bibcite{xu2025amem}{{22}{2025}{{Xu et~al.}}{{Xu, Liang, Mei, Gao, Tan, and Zhang}}}
+\bibcite{zhuo2024bigcodebench}{{23}{2025}{{Zhuo et~al.}}{{Zhuo, Vu, Chim, Hu, Yu, Widyasari, et~al.}}}
 \bibstyle{iclr2026_conference}
+\citation{li-etal-2026-locomo}
+\citation{zhuo2024bigcodebench}
+\citation{shridhar2021alfworld}
+\@writefile{lof}{\contentsline {figure}{\numberline {4}{\ignorespaces Deep-Dream's document-first temporal concept graph. Multiple documents keep their Episodes and connect through shared concept families and relation edges. Selecting a family exposes its observation-time version chain and the exact source span for each revision; uncertain matches can remain separate and converge when later content and relation context arrive.}}{12}{figure.caption.12}\protected@file@percent }
+\newlabel{fig:architecture}{{4}{12}{Deep-Dream's document-first temporal concept graph. Multiple documents keep their Episodes and connect through shared concept families and relation edges. Selecting a family exposes its observation-time version chain and the exact source span for each revision; uncertain matches can remain separate and converge when later content and relation context arrive}{figure.caption.12}{}}
+\newlabel{fig:architecture@cref}{{[figure][4][2147483647]4}{[1][12][]12}}
+\@writefile{lot}{\contentsline {table}{\numberline {3}{\ignorespaces Differences between the three reading methods. All three paths share frozen libraries, question stream, Kimi-K3, and the official scorer.}}{12}{table.caption.15}\protected@file@percent }
+\newlabel{tab:answer-path-differences}{{3}{12}{Differences between the three reading methods. All three paths share frozen libraries, question stream, Kimi-K3, and the official scorer}{table.caption.15}{}}
+\newlabel{tab:answer-path-differences@cref}{{[table][3][2147483647]3}{[1][12][]12}}
 \@writefile{toc}{\contentsline {section}{\numberline {A}Reproducibility and audit details}{12}{appendix.A}\protected@file@percent }
 \@writefile{toc}{\contentsline {subsection}{\numberline {A.1}Artifact ledger}{12}{subsection.A.1}\protected@file@percent }
 \newlabel{app:ledger}{{A.1}{12}{Artifact ledger}{subsection.A.1}{}}
 \newlabel{app:ledger@cref}{{[subappendix][1][2147483647,1]A.1}{[1][12][]12}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {A.2}MemoryAgentBench sampling frame and contamination note}{12}{subsection.A.2}\protected@file@percent }
-\newlabel{app:sampling}{{A.2}{12}{MemoryAgentBench sampling frame and contamination note}{subsection.A.2}{}}
-\newlabel{app:sampling@cref}{{[subappendix][2][2147483647,1]A.2}{[1][12][]12}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {A.3}Adjusted Overall derivation}{13}{subsection.A.3}\protected@file@percent }
-\newlabel{app:adjusted-overall}{{A.3}{13}{Adjusted Overall derivation}{subsection.A.3}{}}
-\newlabel{app:adjusted-overall@cref}{{[subappendix][3][2147483647,1]A.3}{[1][13][]13}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {A.4}MAB per-task detail}{13}{subsection.A.4}\protected@file@percent }
-\newlabel{app:mab-per-task}{{A.4}{13}{MAB per-task detail}{subsection.A.4}{}}
-\newlabel{app:mab-per-task@cref}{{[subappendix][4][2147483647,1]A.4}{[1][13][]13}}
-\@writefile{lot}{\contentsline {table}{\numberline {4}{\ignorespaces Per-task scores ($\times $100) under the official scorer for all six ladder runs (three rungs $\times $ two engine generations); every cell is read from the released evidence ledger (\cref  {app:ledger}), and domain aggregates and per-rung compute appear in \cref  {tab:track-ladder}. $\infty $Bench-Sum has $n{=}1$ in the sampled subset---the $21.2{\to }0.0$ sandbox flip is a single-question event, disclosed wherever Overall $v1{\to }v2$ is compared. The consolidation tasks separate the rungs most sharply: single retrieval and the tool rung stay at or near zero at both generations, and only the sandbox rung lifts them (MCC $43$--$46$, FC-MH $67$--$70$).}}{13}{table.caption.12}\protected@file@percent }
-\newlabel{tab:mab-per-task}{{4}{13}{Per-task scores ($\times $100) under the official scorer for all six ladder runs (three rungs $\times $ two engine generations); every cell is read from the released evidence ledger (\cref {app:ledger}), and domain aggregates and per-rung compute appear in \cref {tab:track-ladder}. $\infty $Bench-Sum has $n{=}1$ in the sampled subset---the $21.2{\to }0.0$ sandbox flip is a single-question event, disclosed wherever Overall $v1{\to }v2$ is compared. The consolidation tasks separate the rungs most sharply: single retrieval and the tool rung stay at or near zero at both generations, and only the sandbox rung lifts them (MCC $43$--$46$, FC-MH $67$--$70$)}{table.caption.12}{}}
-\newlabel{tab:mab-per-task@cref}{{[table][4][2147483647]4}{[1][13][]13}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {A.5}Per-rung prompts and configurations}{13}{subsection.A.5}\protected@file@percent }
-\newlabel{app:configs}{{A.5}{13}{Per-rung prompts and configurations}{subsection.A.5}{}}
-\newlabel{app:configs@cref}{{[subappendix][5][2147483647,1]A.5}{[1][13][]13}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {A.6}Carrier anchors (BigCodeBench, ALFWorld)}{13}{subsection.A.6}\protected@file@percent }
-\newlabel{app:carrier-anchors}{{A.6}{13}{Carrier anchors (BigCodeBench, ALFWorld)}{subsection.A.6}{}}
-\newlabel{app:carrier-anchors@cref}{{[subappendix][6][2147483647,1]A.6}{[1][13][]13}}
-\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces Per-question compute by rung, recomputed deterministically from run logs (tokens and LLM calls, mean over the 767 questions; $v2$ engine). The single-shot rung is one LLM call over a 25k-token fused retrieval payload; the top rung buys its accuracy with an agentic verification loop at $3.8\times $ the tokens. The cost accounting is part of the result, not a footnote.}}{14}{figure.caption.13}\protected@file@percent }
-\newlabel{fig:cost}{{3}{14}{Per-question compute by rung, recomputed deterministically from run logs (tokens and LLM calls, mean over the 767 questions; $v2$ engine). The single-shot rung is one LLM call over a 25k-token fused retrieval payload; the top rung buys its accuracy with an agentic verification loop at $3.8\times $ the tokens. The cost accounting is part of the result, not a footnote}{figure.caption.13}{}}
-\newlabel{fig:cost@cref}{{[figure][3][2147483647]3}{[1][13][]14}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {A.7}MAB ingest manifest gaps}{14}{subsection.A.7}\protected@file@percent }
-\newlabel{app:manifest-gaps}{{A.7}{14}{MAB ingest manifest gaps}{subsection.A.7}{}}
-\newlabel{app:manifest-gaps@cref}{{[subappendix][7][2147483647,1]A.7}{[1][13][]14}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {A.8}Budget frontier}{14}{subsection.A.8}\protected@file@percent }
-\newlabel{app:budget}{{A.8}{14}{Budget frontier}{subsection.A.8}{}}
-\newlabel{app:budget@cref}{{[subappendix][8][2147483647,1]A.8}{[1][14][]14}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {A.9}X7 channel ablation detail}{14}{subsection.A.9}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {A.10}Protocol boundaries}{14}{subsection.A.10}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {A.11}Integrity failures retained}{14}{subsection.A.11}\protected@file@percent }
-\@writefile{lot}{\contentsline {table}{\numberline {5}{\ignorespaces X7 provenance ablation, offline retrieval replay on the 210-question gate set. Arms 1--4 form a clean channel ablation: only \texttt  {enabled\_channels} differs, so any recall delta is attributable to that channel set. Arms 5 (evidence-bound agent, gate ON) and 6 (unsurfaced evidence, gate relaxed) reuse arm~4's five-channel ranking and are retrieval-identical to arm~4; their distinguishing columns (QA accuracy, unsupported-answer rate, mean evidence tokens) require the LLM agent run and are pending. The evidence-gate plumbing was proved offline: with the gate ON, submitting an unsurfaced turn is rejected; with the gate relaxed the same submission is accepted (\texttt  {plumbing\_ok}=true). In the deployed MAB runs the gate fired as designed: 11/767 questions in the deployed $v2$ skill-agent run had an evidence submission rejected as unsurfaced (9/767 in $v1$); 9 of the 11 resubmitted tool-surfaced evidence inside the loop and the remaining 2 ended at the step cap and were answered from tool-surfaced context; zero rejections on the LME runs{}. Bootstrap CIs: 2{,}000 resamples, 95\%.}}{15}{table.caption.14}\protected@file@percent }
-\newlabel{tab:provenance-ablation}{{5}{15}{X7 provenance ablation, offline retrieval replay on the 210-question gate set. Arms 1--4 form a clean channel ablation: only \texttt {enabled\_channels} differs, so any recall delta is attributable to that channel set. Arms 5 (evidence-bound agent, gate ON) and 6 (unsurfaced evidence, gate relaxed) reuse arm~4's five-channel ranking and are retrieval-identical to arm~4; their distinguishing columns (QA accuracy, unsupported-answer rate, mean evidence tokens) require the LLM agent run and are pending. The evidence-gate plumbing was proved offline: with the gate ON, submitting an unsurfaced turn is rejected; with the gate relaxed the same submission is accepted (\texttt {plumbing\_ok}=true). In the deployed MAB runs the gate fired as designed: \GateRejectStats {}. Bootstrap CIs: 2{,}000 resamples, 95\%}{table.caption.14}{}}
-\newlabel{tab:provenance-ablation@cref}{{[table][5][2147483647]5}{[1][14][]15}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {A.12}External comparison protocol}{15}{subsection.A.12}\protected@file@percent }
-\newlabel{sec:published-baselines}{{A.12}{15}{External comparison protocol}{subsection.A.12}{}}
-\newlabel{sec:published-baselines@cref}{{[subappendix][12][2147483647,1]A.12}{[1][15][]15}}
-\newlabel{app:k3-substitution}{{A.12}{15}{External comparison protocol}{subsection.A.12}{}}
-\newlabel{app:k3-substitution@cref}{{[subappendix][12][2147483647,1]A.12}{[1][15][]15}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {A.2}Version provenance and alignment A/B study}{12}{subsection.A.2}\protected@file@percent }
+\newlabel{app:alignment-ab}{{A.2}{12}{Version provenance and alignment A/B study}{subsection.A.2}{}}
+\newlabel{app:alignment-ab@cref}{{[subappendix][2][2147483647,1]A.2}{[1][12][]12}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5}{\ignorespaces Same-question alignment on the $n{=}614$ questions covered by the same-model full-context reference (Kimi-K3 answerer; official macro scorer). (a) Overall scores with marginal 95\% bootstrap intervals; the source-reading method scores below the reference by $7.9$ points [95\% CI $-11.9$, $-3.9$]. (b) Domain profiles: the reference's margin concentrates in TTL, while the source-reading method matches or exceeds the reference on AR, LRU, and SF.}}{13}{figure.caption.13}\protected@file@percent }
+\newlabel{fig:alignment}{{5}{13}{Same-question alignment on the $n{=}614$ questions covered by the same-model full-context reference (Kimi-K3 answerer; official macro scorer). (a) Overall scores with marginal 95\% bootstrap intervals; the source-reading method scores below the reference by $7.9$ points [95\% CI $-11.9$, $-3.9$]. (b) Domain profiles: the reference's margin concentrates in TTL, while the source-reading method matches or exceeds the reference on AR, LRU, and SF}{figure.caption.13}{}}
+\newlabel{fig:alignment@cref}{{[figure][5][2147483647]5}{[1][12][]13}}
+\@writefile{lof}{\contentsline {figure}{\numberline {6}{\ignorespaces Paired construction diagnostics for the bundled Base$\to $Align+ revision. (a) Ingest calls and same-name duplicate families decrease on the documented MAB and LongMemEval intersections. (b) The paired MCC and FC-MH slices each increase by 3 points; intervals are retained because this is a bundled comparison, not a component ablation.}}{13}{figure.caption.14}\protected@file@percent }
+\newlabel{fig:alignment-outcomes}{{6}{13}{Paired construction diagnostics for the bundled Base$\to $Align+ revision. (a) Ingest calls and same-name duplicate families decrease on the documented MAB and LongMemEval intersections. (b) The paired MCC and FC-MH slices each increase by 3 points; intervals are retained because this is a bundled comparison, not a component ablation}{figure.caption.14}{}}
+\newlabel{fig:alignment-outcomes@cref}{{[figure][6][2147483647]6}{[1][12][]13}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {A.3}MemoryAgentBench sampling frame and contamination note}{13}{subsection.A.3}\protected@file@percent }
+\newlabel{app:sampling}{{A.3}{13}{MemoryAgentBench sampling frame and contamination note}{subsection.A.3}{}}
+\newlabel{app:sampling@cref}{{[subappendix][3][2147483647,1]A.3}{[1][13][]13}}
+\@writefile{lot}{\contentsline {table}{\numberline {4}{\ignorespaces Research questions and measurements. Each row tests a distinct prediction of the search--evidence separation; published comparison rows keep their test details so the score differences can be checked.}}{14}{table.caption.16}\protected@file@percent }
+\newlabel{tab:experiment-map}{{4}{14}{Research questions and measurements. Each row tests a distinct prediction of the search--evidence separation; published comparison rows keep their test details so the score differences can be checked}{table.caption.16}{}}
+\newlabel{tab:experiment-map@cref}{{[table][4][2147483647]4}{[1][12][]14}}
+\@writefile{lot}{\contentsline {table}{\numberline {5}{\ignorespaces Three-arm alignment study on 137 LongMemEval-S documents per arm. B1 provides the large efficiency reduction; B2 spends about 3\% more tokens than B1 on final consistency check and is the only arm with substantial non-destructive family redirection, reducing same-name duplicate groups. The quality slice is too small for a quality claim. B1 and B2 use the same saved service configuration; B2 differs through the runtime implementation and alignment switch.}}{14}{table.caption.17}\protected@file@percent }
+\newlabel{tab:alignment-ab}{{5}{14}{Three-arm alignment study on 137 LongMemEval-S documents per arm. B1 provides the large efficiency reduction; B2 spends about 3\% more tokens than B1 on final consistency check and is the only arm with substantial non-destructive family redirection, reducing same-name duplicate groups. The quality slice is too small for a quality claim. B1 and B2 use the same saved service configuration; B2 differs through the runtime implementation and alignment switch}{table.caption.17}{}}
+\newlabel{tab:alignment-ab@cref}{{[table][5][2147483647]5}{[1][14][]14}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {A.4}Adjusted Overall derivation}{14}{subsection.A.4}\protected@file@percent }
+\newlabel{app:adjusted-overall}{{A.4}{14}{Adjusted Overall derivation}{subsection.A.4}{}}
+\newlabel{app:adjusted-overall@cref}{{[subappendix][4][2147483647,1]A.4}{[1][14][]14}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {A.5}Per-path prompts and configurations}{14}{subsection.A.5}\protected@file@percent }
+\newlabel{app:configs}{{A.5}{14}{Per-path prompts and configurations}{subsection.A.5}{}}
+\newlabel{app:configs@cref}{{[subappendix][5][2147483647,1]A.5}{[1][14][]14}}
+\citation{zhuo2024bigcodebench}
+\citation{shridhar2021alfworld}
+\@writefile{lof}{\contentsline {figure}{\numberline {7}{\ignorespaces Operating-point diagnostics from frozen artifacts (Align+ engine; panel a over all 1{,}074 questions). (a) Mean-to-p95 answer latency with tokens and calls annotated; (b) paired Base$\to $Align+ ingest cost; (c) the valid fixed-ranking retrieval-budget frontier; (d) source-only channel replay at $k{=}10$.}}{15}{figure.caption.18}\protected@file@percent }
+\newlabel{fig:cost}{{7}{15}{Operating-point diagnostics from frozen artifacts (Align+ engine; panel a over all 1{,}074 questions). (a) Mean-to-p95 answer latency with tokens and calls annotated; (b) paired Base$\to $Align+ ingest cost; (c) the valid fixed-ranking retrieval-budget frontier; (d) source-only channel replay at $k{=}10$}{figure.caption.18}{}}
+\newlabel{fig:cost@cref}{{[figure][7][2147483647]7}{[1][14][]15}}
+\@writefile{lof}{\contentsline {figure}{\numberline {8}{\ignorespaces Additional quantitative diagnostics from the frozen ledger. (a) LongMemEval type scores for the paired Base/Align+ tracks; the directional samples have $n{=}25/25/27$ and are shown as coarse percentages. (b) Source-expansion recall versus response payload on 105 prior-error cases; this is a development diagnostic, not a held-out test. (c) MEME real task accuracy with task-specific denominators, exposing the 0\% deletion boundary.}}{15}{figure.caption.19}\protected@file@percent }
+\newlabel{fig:diagnostics}{{8}{15}{Additional quantitative diagnostics from the frozen ledger. (a) LongMemEval type scores for the paired Base/Align+ tracks; the directional samples have $n{=}25/25/27$ and are shown as coarse percentages. (b) Source-expansion recall versus response payload on 105 prior-error cases; this is a development diagnostic, not a held-out test. (c) MEME real task accuracy with task-specific denominators, exposing the 0\% deletion boundary}{figure.caption.19}{}}
+\newlabel{fig:diagnostics@cref}{{[figure][8][2147483647]8}{[1][14][]15}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {A.6}Additional quantitative diagnostics}{15}{subsection.A.6}\protected@file@percent }
+\newlabel{app:additional-diagnostics}{{A.6}{15}{Additional quantitative diagnostics}{subsection.A.6}{}}
+\newlabel{app:additional-diagnostics@cref}{{[subappendix][6][2147483647,1]A.6}{[1][14][]15}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {A.7}Carrier anchors (BigCodeBench \citep  {zhuo2024bigcodebench}, ALFWorld \citep  {shridhar2021alfworld})}{15}{subsection.A.7}\protected@file@percent }
+\newlabel{app:carrier-anchors}{{A.7}{15}{Carrier anchors (BigCodeBench \citep {zhuo2024bigcodebench}, ALFWorld \citep {shridhar2021alfworld})}{subsection.A.7}{}}
+\newlabel{app:carrier-anchors@cref}{{[subappendix][7][2147483647,1]A.7}{[1][15][]15}}
+\@writefile{lot}{\contentsline {table}{\numberline {6}{\ignorespaces X7 provenance ablation, offline retrieval replay on the 210-question gate set. Arms 1--4 form a clean channel ablation: only \texttt  {enabled\_channels} differs, so any recall delta is attributable to that channel set. Arms 5 (evidence-bound agent, gate ON) and 6 (unsurfaced evidence, gate relaxed) reuse arm~4's five-channel ranking and are retrieval-identical to arm~4; their distinguishing columns (QA accuracy, unsupported-answer rate, mean evidence tokens) require the LLM agent run and are pending. The evidence-gate plumbing was proved offline: with the gate ON, submitting an unsurfaced turn is rejected; with the gate relaxed the same submission is accepted (\texttt  {plumbing\_ok}=true). In the deployed MAB runs the gate fired as designed: 14/1074 questions in the deployed $v2$ skill-agent run had an evidence submission rejected as unsurfaced (9/767 in $v1$); 11 of the 14 resubmitted tool-surfaced evidence inside the loop and the remaining 3 ended at the step cap and were answered from tool-surfaced context; zero rejections on the LME runs{}. Bootstrap CIs: 2{,}000 resamples, 95\%.}}{16}{table.caption.20}\protected@file@percent }
+\newlabel{tab:provenance-ablation}{{6}{16}{X7 provenance ablation, offline retrieval replay on the 210-question gate set. Arms 1--4 form a clean channel ablation: only \texttt {enabled\_channels} differs, so any recall delta is attributable to that channel set. Arms 5 (evidence-bound agent, gate ON) and 6 (unsurfaced evidence, gate relaxed) reuse arm~4's five-channel ranking and are retrieval-identical to arm~4; their distinguishing columns (QA accuracy, unsupported-answer rate, mean evidence tokens) require the LLM agent run and are pending. The evidence-gate plumbing was proved offline: with the gate ON, submitting an unsurfaced turn is rejected; with the gate relaxed the same submission is accepted (\texttt {plumbing\_ok}=true). In the deployed MAB runs the gate fired as designed: \GateRejectStats {}. Bootstrap CIs: 2{,}000 resamples, 95\%}{table.caption.20}{}}
+\newlabel{tab:provenance-ablation@cref}{{[table][6][2147483647]6}{[1][16][]16}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {A.8}MAB ingest manifest gaps}{16}{subsection.A.8}\protected@file@percent }
+\newlabel{app:manifest-gaps}{{A.8}{16}{MAB ingest manifest gaps}{subsection.A.8}{}}
+\newlabel{app:manifest-gaps@cref}{{[subappendix][8][2147483647,1]A.8}{[1][16][]16}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {A.9}Budget frontier}{16}{subsection.A.9}\protected@file@percent }
+\newlabel{app:budget}{{A.9}{16}{Budget frontier}{subsection.A.9}{}}
+\newlabel{app:budget@cref}{{[subappendix][9][2147483647,1]A.9}{[1][16][]16}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {A.10}X7 channel ablation detail}{16}{subsection.A.10}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {A.11}Protocol boundaries}{16}{subsection.A.11}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {A.12}Integrity failures retained}{16}{subsection.A.12}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {A.13}External comparison test details}{16}{subsection.A.13}\protected@file@percent }
+\newlabel{sec:published-baselines}{{A.13}{16}{External comparison test details}{subsection.A.13}{}}
+\newlabel{sec:published-baselines@cref}{{[subappendix][13][2147483647,1]A.13}{[1][16][]16}}
+\@writefile{lot}{\contentsline {table}{\numberline {7}{\ignorespaces Results on other benchmarks under their stated test procedures; each row states its answerer and judge. The LoCoMo run differs from Mem0's published $J$ in two admitted ways---single run versus 10-run mean$\pm $std, and the answerer/judge model---and carries a disclosed legacy-fingerprint caveat; we state these conditions so the comparison is reproducible. The LME source-reading agent track's two extra questions follow its session evidence rule; comparisons are made only within the same track.}}{17}{table.caption.21}\protected@file@percent }
+\newlabel{tab:protocol-other}{{7}{17}{Results on other benchmarks under their stated test procedures; each row states its answerer and judge. The LoCoMo run differs from Mem0's published $J$ in two admitted ways---single run versus 10-run mean$\pm $std, and the answerer/judge model---and carries a disclosed legacy-fingerprint caveat; we state these conditions so the comparison is reproducible. The LME source-reading agent track's two extra questions follow its session evidence rule; comparisons are made only within the same track}{table.caption.21}{}}
+\newlabel{tab:protocol-other@cref}{{[table][7][2147483647]7}{[1][17][]17}}
+\newlabel{app:k3-substitution}{{A.13}{17}{External comparison test details}{table.caption.21}{}}
+\newlabel{app:k3-substitution@cref}{{[subappendix][13][2147483647,1]A.13}{[1][17][]17}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {A.14}An information-theoretic reading of the architecture}{17}{subsection.A.14}\protected@file@percent }
+\newlabel{app:info-theory}{{A.14}{17}{An information-theoretic reading of the architecture}{subsection.A.14}{}}
+\newlabel{app:info-theory@cref}{{[subappendix][14][2147483647,1]A.14}{[1][17][]17}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {A.14.1}Write time: progressive entity alignment}{17}{subsubsection.A.14.1}\protected@file@percent }
+\newlabel{eq:information-growth}{{4}{17}{Write time: progressive entity alignment}{equation.A.4}{}}
+\newlabel{eq:information-growth@cref}{{[equation][4][2147483647]4}{[1][17][]17}}
 \citation{chernoff1952measure}
 \citation{shannon1959coding}
-\@writefile{toc}{\contentsline {subsection}{\numberline {A.13}An information-theoretic reading of the architecture}{16}{subsection.A.13}\protected@file@percent }
-\newlabel{app:info-theory}{{A.13}{16}{An information-theoretic reading of the architecture}{subsection.A.13}{}}
-\newlabel{app:info-theory@cref}{{[subappendix][13][2147483647,1]A.13}{[1][15][]16}}
-\newlabel{prop:revisability}{{A.1}{16}{Revisability}{theorem.A.1}{}}
-\newlabel{prop:revisability@cref}{{[proposition][1][2147483647,1]A.1}{[1][16][]16}}
-\newlabel{prop:convergence}{{A.2}{16}{Convergence under pooled evidence}{theorem.A.2}{}}
-\newlabel{prop:convergence@cref}{{[proposition][2][2147483647,1]A.2}{[1][16][]16}}
+\citation{tishby2000information}
+\newlabel{prop:revisability}{{A.1}{18}{Revisability}{theorem.A.1}{}}
+\newlabel{prop:revisability@cref}{{[proposition][1][2147483647,1]A.1}{[1][18][]18}}
+\newlabel{prop:convergence}{{A.2}{18}{Convergence under pooled evidence}{theorem.A.2}{}}
+\newlabel{prop:convergence@cref}{{[proposition][2][2147483647,1]A.2}{[1][18][]18}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {A.14.2}Read time: hierarchical search and step-by-step reading}{18}{subsubsection.A.14.2}\protected@file@percent }
+\newlabel{eq:progressive-disclosure}{{5}{18}{Read time: hierarchical search and step-by-step reading}{equation.A.5}{}}
+\newlabel{eq:progressive-disclosure@cref}{{[equation][5][2147483647]5}{[1][18][]18}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {A.14.3}Two-rate decomposition and answer risk}{18}{subsubsection.A.14.3}\protected@file@percent }
+\newlabel{eq:appendix-two-rate}{{6}{18}{Two-rate decomposition and answer risk}{equation.A.6}{}}
+\newlabel{eq:appendix-two-rate@cref}{{[equation][6][2147483647]6}{[1][18][]18}}
+\newlabel{eq:appendix-answer-bound}{{7}{18}{Two-rate decomposition and answer risk}{equation.A.7}{}}
+\newlabel{eq:appendix-answer-bound@cref}{{[equation][7][2147483647]7}{[1][18][]18}}
 \citation{chhikara2025mem0}
 \citation{chhikara2025mem0}
 \citation{rasmussen2025zep}
@@ -171,22 +228,21 @@
 \citation{rasmussen2025zep}
 \citation{chhikara2025mem0}
 \citation{chhikara2025mem0}
-\@writefile{lot}{\contentsline {table}{\numberline {6}{\ignorespaces Protocol-labeled context on other benchmarks ($v1{\to }v2$ engine pairs; roles disclosed per row). The LoCoMo run differs from Mem0's published $J$ in two admitted ways---single run versus 10-run mean$\pm $std, and the answerer/judge model---and carries a disclosed legacy-fingerprint caveat; it is context, not a superiority claim. The LME sandbox track's two extra questions follow its session-evidence eligibility rule; cross-track comparisons are same-track only.}}{17}{table.caption.15}\protected@file@percent }
-\newlabel{tab:protocol-other}{{6}{17}{Protocol-labeled context on other benchmarks ($v1{\to }v2$ engine pairs; roles disclosed per row). The LoCoMo run differs from Mem0's published $J$ in two admitted ways---single run versus 10-run mean$\pm $std, and the answerer/judge model---and carries a disclosed legacy-fingerprint caveat; it is context, not a superiority claim. The LME sandbox track's two extra questions follow its session-evidence eligibility rule; cross-track comparisons are same-track only}{table.caption.15}{}}
-\newlabel{tab:protocol-other@cref}{{[table][6][2147483647]6}{[1][16][]17}}
-\@writefile{lot}{\contentsline {table}{\numberline {7}{\ignorespaces LoCoMo per-category $J$ (binary CORRECT/WRONG accuracy, LLM-judged). Published rows reproduced verbatim from \citet  {chhikara2025mem0} (arXiv:2504.19413, Table~1): Mem0 reports mean$\pm $std over 10 runs with GPT-4o-mini as both answerer and judge (std omitted, all $\leq $0.75; appendix). \textbf  {Deep-Dream} applies the \emph  {same} $J$ methodology with Kimi-K3 substituted for GPT-4o-mini as both answerer and judge (single run): the primary row uses the same-model judge as Mem0; the $\dagger $ row judges the same K3 answers with an independent Qwen3.7-plus cross-judge (cross-judge agreement 98.51\%). Same 841/282/96/321 question populations (1{,}540 total, Mem0-compatible subset). \emph  {Caveat:} the K3-answerer run is flagged \texttt  {formal\_claim\_allowed=false}---1{,}529 historical answer rows predate runtime-code fingerprinting (answers unchanged, sha 76af5772; per-item JSONL carries \texttt  {runtime\_code\_sha256}); reported as a diagnostic cross-judge result, not a fingerprint-complete formal result. Deterministic F1/BLEU-1 omitted for space (Table~\ref {tab:mem0-f1-bleu}). Weighted $J$: Mem0 $\approx $62.14, $Mem0^g$ $\approx $61.36. Deep-Dream agg.\ $J$: 95.19\% / 94.22\% ($\dagger $).}}{17}{table.caption.16}\protected@file@percent }
-\newlabel{tab:mem0-baselines}{{7}{17}{LoCoMo per-category $J$ (binary CORRECT/WRONG accuracy, LLM-judged). Published rows reproduced verbatim from \citet {chhikara2025mem0} (arXiv:2504.19413, Table~1): Mem0 reports mean$\pm $std over 10 runs with GPT-4o-mini as both answerer and judge (std omitted, all $\leq $0.75; appendix). \textbf {Deep-Dream} applies the \emph {same} $J$ methodology with Kimi-K3 substituted for GPT-4o-mini as both answerer and judge (single run): the primary row uses the same-model judge as Mem0; the $\dagger $ row judges the same K3 answers with an independent Qwen3.7-plus cross-judge (cross-judge agreement 98.51\%). Same 841/282/96/321 question populations (1{,}540 total, Mem0-compatible subset). \emph {Caveat:} the K3-answerer run is flagged \texttt {formal\_claim\_allowed=false}---1{,}529 historical answer rows predate runtime-code fingerprinting (answers unchanged, sha 76af5772; per-item JSONL carries \texttt {runtime\_code\_sha256}); reported as a diagnostic cross-judge result, not a fingerprint-complete formal result. Deterministic F1/BLEU-1 omitted for space (Table~\ref {tab:mem0-f1-bleu}). Weighted $J$: Mem0 $\approx $62.14, $Mem0^g$ $\approx $61.36. Deep-Dream agg.\ $J$: 95.19\% / 94.22\% ($\dagger $)}{table.caption.16}{}}
-\newlabel{tab:mem0-baselines@cref}{{[table][7][2147483647]7}{[1][17][]17}}
-\@writefile{lot}{\contentsline {table}{\numberline {8}{\ignorespaces Published Deep Memory Retrieval (DMR) baselines reproduced verbatim from \citet  {rasmussen2025zep} (arXiv:2501.13956). DMR has 500 multi-session conversations (5 sessions, $\leq $12 messages each) with one single-hop fact-retrieval question per conversation. Deep-Dream does not currently run DMR, so this table is a contextual reference only.}}{18}{table.caption.17}\protected@file@percent }
-\newlabel{tab:zep-dmr}{{8}{18}{Published Deep Memory Retrieval (DMR) baselines reproduced verbatim from \citet {rasmussen2025zep} (arXiv:2501.13956). DMR has 500 multi-session conversations (5 sessions, $\leq $12 messages each) with one single-hop fact-retrieval question per conversation. Deep-Dream does not currently run DMR, so this table is a contextual reference only}{table.caption.17}{}}
-\newlabel{tab:zep-dmr@cref}{{[table][8][2147483647]8}{[1][17][]18}}
-\@writefile{lot}{\contentsline {table}{\numberline {9}{\ignorespaces LongMemEval main results. Published rows (GPT-4o-mini / GPT-4o, Full-context vs.\ Zep) reproduced verbatim from \citet  {rasmussen2025zep} (arXiv:2501.13956). The \textbf  {Deep-Dream} row uses Qwen3.7-plus as both answerer and cross-judge---a different protocol; its accuracy (84.6\%) is placed beside the published numbers, not as a shared leaderboard. Latency/avg-context for Deep-Dream are not measured under the published protocol (---). The six-category breakdown is in Table~\ref {tab:zep-longmemeval-cat}.}}{18}{table.caption.18}\protected@file@percent }
-\newlabel{tab:zep-longmemeval}{{9}{18}{LongMemEval main results. Published rows (GPT-4o-mini / GPT-4o, Full-context vs.\ Zep) reproduced verbatim from \citet {rasmussen2025zep} (arXiv:2501.13956). The \textbf {Deep-Dream} row uses Qwen3.7-plus as both answerer and cross-judge---a different protocol; its accuracy (84.6\%) is placed beside the published numbers, not as a shared leaderboard. Latency/avg-context for Deep-Dream are not measured under the published protocol (---). The six-category breakdown is in Table~\ref {tab:zep-longmemeval-cat}}{table.caption.18}{}}
-\newlabel{tab:zep-longmemeval@cref}{{[table][9][2147483647]9}{[1][17][]18}}
-\@writefile{lot}{\contentsline {table}{\numberline {10}{\ignorespaces LongMemEval six-category breakdown (binary accuracy, \%). Published Full-context and Zep values reproduced verbatim from \citet  {rasmussen2025zep} (arXiv:2501.13956); the \textbf  {Deep-Dream (Q.)} row is Qwen3.7-plus answerer+cross-judge on the same six categories. Different answerer/judge, so this is a matched-granularity contextual reference, not a shared leaderboard. Sess.\ pref.\ is the hardest category for all systems.}}{18}{table.caption.19}\protected@file@percent }
-\newlabel{tab:zep-longmemeval-cat}{{10}{18}{LongMemEval six-category breakdown (binary accuracy, \%). Published Full-context and Zep values reproduced verbatim from \citet {rasmussen2025zep} (arXiv:2501.13956); the \textbf {Deep-Dream (Q.)} row is Qwen3.7-plus answerer+cross-judge on the same six categories. Different answerer/judge, so this is a matched-granularity contextual reference, not a shared leaderboard. Sess.\ pref.\ is the hardest category for all systems}{table.caption.19}{}}
-\newlabel{tab:zep-longmemeval-cat@cref}{{[table][10][2147483647]10}{[1][17][]18}}
-\@writefile{lot}{\contentsline {table}{\numberline {11}{\ignorespaces Mem0 LoCoMo deterministic metrics, reproduced verbatim from \citet  {chhikara2025mem0} (Table~1). F1 / BLEU-1 over the four categories (Single-hop / Multi-hop / Open-domain / Temporal). Deep-Dream does not compute token-overlap metrics (its metric is binary LLM-judge accuracy, Table~\ref {tab:mem0-baselines}), so no Deep-Dream column appears here; this table is included for completeness of the published reproduction only.}}{18}{table.caption.20}\protected@file@percent }
-\newlabel{tab:mem0-f1-bleu}{{11}{18}{Mem0 LoCoMo deterministic metrics, reproduced verbatim from \citet {chhikara2025mem0} (Table~1). F1 / BLEU-1 over the four categories (Single-hop / Multi-hop / Open-domain / Temporal). Deep-Dream does not compute token-overlap metrics (its metric is binary LLM-judge accuracy, Table~\ref {tab:mem0-baselines}), so no Deep-Dream column appears here; this table is included for completeness of the published reproduction only}{table.caption.20}{}}
-\newlabel{tab:mem0-f1-bleu@cref}{{[table][11][2147483647]11}{[1][17][]18}}
-\gdef \@abspage@last{18}
+\@writefile{lot}{\contentsline {table}{\numberline {8}{\ignorespaces LoCoMo per-category $J$ (binary CORRECT/WRONG accuracy, LLM-judged). Published rows reproduced verbatim from \citet  {chhikara2025mem0} (arXiv:2504.19413, Table~1): Mem0 reports mean$\pm $std over 10 runs with GPT-4o-mini as both answerer and judge (std omitted, all $\leq $0.75). \textbf  {Deep-Dream} applies the binary $J$ rubric pinned at repository commit \texttt  {4b61c5d}---a 2026 revision of the Mem0 judging prompt whose tolerance rules differ from the 2025 paper's Appendix~A---with Kimi-K3 as both answerer and judge (single run); the $\dagger $ row judges the same K3 answers with an independent Qwen3.7-plus cross-judge (cross-judge agreement 98.51\%). Same 841/282/96/321 question populations (1{,}540 total, Mem0-compatible subset). \emph  {Caveat:} the K3-answerer run is flagged \texttt  {formal\_claim\_allowed=false}---1{,}529 historical answer rows predate runtime-code fingerprinting (answers unchanged, sha 76af5772; per-item JSONL carries \texttt  {runtime\_code\_sha256}); reported as a diagnostic cross-judge result, not a fingerprint-complete formal result. Deterministic F1/BLEU-1 omitted for space (Table~\ref {tab:mem0-f1-bleu}). Weighted $J$, recomputed from the published category means under the 841/282/96/321 counts: Mem0 $\approx $62.14, $Mem0^g$ $\approx $61.36; the paper's own Table~2 reports Overall $J=66.88$ (Mem0) and $68.44$ ($Mem0^g$). Deep-Dream agg.\ $J$: 95.19\% / 94.22\% ($\dagger $).}}{19}{table.caption.22}\protected@file@percent }
+\newlabel{tab:mem0-baselines}{{8}{19}{LoCoMo per-category $J$ (binary CORRECT/WRONG accuracy, LLM-judged). Published rows reproduced verbatim from \citet {chhikara2025mem0} (arXiv:2504.19413, Table~1): Mem0 reports mean$\pm $std over 10 runs with GPT-4o-mini as both answerer and judge (std omitted, all $\leq $0.75). \textbf {Deep-Dream} applies the binary $J$ rubric pinned at repository commit \texttt {4b61c5d}---a 2026 revision of the Mem0 judging prompt whose tolerance rules differ from the 2025 paper's Appendix~A---with Kimi-K3 as both answerer and judge (single run); the $\dagger $ row judges the same K3 answers with an independent Qwen3.7-plus cross-judge (cross-judge agreement 98.51\%). Same 841/282/96/321 question populations (1{,}540 total, Mem0-compatible subset). \emph {Caveat:} the K3-answerer run is flagged \texttt {formal\_claim\_allowed=false}---1{,}529 historical answer rows predate runtime-code fingerprinting (answers unchanged, sha 76af5772; per-item JSONL carries \texttt {runtime\_code\_sha256}); reported as a diagnostic cross-judge result, not a fingerprint-complete formal result. Deterministic F1/BLEU-1 omitted for space (Table~\ref {tab:mem0-f1-bleu}). Weighted $J$, recomputed from the published category means under the 841/282/96/321 counts: Mem0 $\approx $62.14, $Mem0^g$ $\approx $61.36; the paper's own Table~2 reports Overall $J=66.88$ (Mem0) and $68.44$ ($Mem0^g$). Deep-Dream agg.\ $J$: 95.19\% / 94.22\% ($\dagger $)}{table.caption.22}{}}
+\newlabel{tab:mem0-baselines@cref}{{[table][8][2147483647]8}{[1][19][]19}}
+\@writefile{lot}{\contentsline {table}{\numberline {9}{\ignorespaces Published Deep Memory Retrieval (DMR) baselines reproduced verbatim from \citet  {rasmussen2025zep} (arXiv:2501.13956). DMR has 500 multi-session conversations (5 sessions, $\leq $12 messages each) with one single-hop fact-retrieval question per conversation. Deep-Dream does not currently run DMR, so this table is a contextual reference only.}}{19}{table.caption.23}\protected@file@percent }
+\newlabel{tab:zep-dmr}{{9}{19}{Published Deep Memory Retrieval (DMR) baselines reproduced verbatim from \citet {rasmussen2025zep} (arXiv:2501.13956). DMR has 500 multi-session conversations (5 sessions, $\leq $12 messages each) with one single-hop fact-retrieval question per conversation. Deep-Dream does not currently run DMR, so this table is a contextual reference only}{table.caption.23}{}}
+\newlabel{tab:zep-dmr@cref}{{[table][9][2147483647]9}{[1][19][]19}}
+\newlabel{prop:one-sided}{{A.3}{19}{One-sided search error}{theorem.A.3}{}}
+\newlabel{prop:one-sided@cref}{{[proposition][3][2147483647,1]A.3}{[1][19][]19}}
+\@writefile{lot}{\contentsline {table}{\numberline {10}{\ignorespaces LongMemEval main results. Published rows (GPT-4o-mini / GPT-4o, Full-context vs.\ Zep) reproduced verbatim from \citet  {rasmussen2025zep} (arXiv:2501.13956). The \textbf  {Deep-Dream} row uses Qwen3.7-plus as both answerer and cross-judge---a different test procedure; its accuracy (84.6\%) is shown beside the published numbers with that condition stated. Latency and average context for Deep-Dream were not measured under the published test procedure (---). The six-category breakdown is in Table~\ref {tab:zep-longmemeval-cat}.}}{20}{table.caption.24}\protected@file@percent }
+\newlabel{tab:zep-longmemeval}{{10}{20}{LongMemEval main results. Published rows (GPT-4o-mini / GPT-4o, Full-context vs.\ Zep) reproduced verbatim from \citet {rasmussen2025zep} (arXiv:2501.13956). The \textbf {Deep-Dream} row uses Qwen3.7-plus as both answerer and cross-judge---a different test procedure; its accuracy (84.6\%) is shown beside the published numbers with that condition stated. Latency and average context for Deep-Dream were not measured under the published test procedure (---). The six-category breakdown is in Table~\ref {tab:zep-longmemeval-cat}}{table.caption.24}{}}
+\newlabel{tab:zep-longmemeval@cref}{{[table][10][2147483647]10}{[1][19][]20}}
+\@writefile{lot}{\contentsline {table}{\numberline {11}{\ignorespaces LongMemEval six-category breakdown (binary accuracy, \%). Published Full-context and Zep values reproduced verbatim from \citet  {rasmussen2025zep} (arXiv:2501.13956); the \textbf  {Deep-Dream (Q.)} row is Qwen3.7-plus answerer+cross-judge on the same six categories. Different answerer/judge, so this is a matched-granularity contextual reference, not a shared leaderboard. Sess.\ pref.\ is the hardest category for all systems.}}{20}{table.caption.25}\protected@file@percent }
+\newlabel{tab:zep-longmemeval-cat}{{11}{20}{LongMemEval six-category breakdown (binary accuracy, \%). Published Full-context and Zep values reproduced verbatim from \citet {rasmussen2025zep} (arXiv:2501.13956); the \textbf {Deep-Dream (Q.)} row is Qwen3.7-plus answerer+cross-judge on the same six categories. Different answerer/judge, so this is a matched-granularity contextual reference, not a shared leaderboard. Sess.\ pref.\ is the hardest category for all systems}{table.caption.25}{}}
+\newlabel{tab:zep-longmemeval-cat@cref}{{[table][11][2147483647]11}{[1][19][]20}}
+\@writefile{lot}{\contentsline {table}{\numberline {12}{\ignorespaces Mem0 LoCoMo deterministic metrics, reproduced verbatim from \citet  {chhikara2025mem0} (Table~1). F1 / BLEU-1 over the four categories (Single-hop / Multi-hop / Open-domain / Temporal). Deep-Dream does not compute token-overlap metrics (its metric is binary LLM-judge accuracy, Table~\ref {tab:mem0-baselines}), so no Deep-Dream column appears here; this table is included for completeness of the published reproduction only.}}{20}{table.caption.26}\protected@file@percent }
+\newlabel{tab:mem0-f1-bleu}{{12}{20}{Mem0 LoCoMo deterministic metrics, reproduced verbatim from \citet {chhikara2025mem0} (Table~1). F1 / BLEU-1 over the four categories (Single-hop / Multi-hop / Open-domain / Temporal). Deep-Dream does not compute token-overlap metrics (its metric is binary LLM-judge accuracy, Table~\ref {tab:mem0-baselines}), so no Deep-Dream column appears here; this table is included for completeness of the published reproduction only}{table.caption.26}{}}
+\newlabel{tab:mem0-f1-bleu@cref}{{[table][12][2147483647]12}{[1][19][]20}}
+\gdef \@abspage@last{20}

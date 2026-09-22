@@ -1,0 +1,26 @@
+\begin{table*}[t]
+\centering
+\caption{LoCoMo 分类别 $J$（二值 CORRECT/WRONG 准确率，LLM 评审）。已发表行逐字复现自 \citet{chhikara2025mem0}（arXiv:2504.19413，表~1）：Mem0 报告 10 次运行的均值$\pm$标准差，答题与评审均为 GPT-4o-mini（标准差省略，全部 $\le$0.75）。\textbf{Deep-Dream} 应用固定在仓库提交 \texttt{4b61c5d} 的二值 $J$ 评分规则——该 2026 修订版评审提示的容差规则异于 2025 年论文的附录 A——以 Kimi-K3 同时作答与评审（单次运行）；$\dagger$ 行用独立的 Qwen3.7-plus 交叉评审评判同一批 K3 答案（交叉评审一致率 98.51\%）。相同的 841/282/96/321 题目群体（共 1{,}540 题，Mem0 兼容子集）。\emph{注意事项：}K3 作答运行被标记 \texttt{formal\_claim\_allowed=false}——1{,}529 条历史答案行早于运行时代码指纹（答案未变，sha 76af5772；逐条 JSONL 携带 \texttt{runtime\_code\_sha256}）；作为诊断性交叉评审结果报告，而非指纹完备的正式结果。确定性的 F1/BLEU-1 因篇幅省略（表~\ref{tab:mem0-f1-bleu}）。加权 $J$（由已发表分类均值按 841/282/96/321 题量重加权）：Mem0 $\approx$62.14，$Mem0^g$ $\approx$61.36；其论文表 2 另报 Overall $J=66.88$（Mem0）与 $68.44$（$Mem0^g$）。Deep-Dream 聚合 $J$：95.19\% / 94.22\%（$\dagger$）。表体为已发表数据的逐字复现，保留英文。}
+\label{tab:mem0-baselines}
+\footnotesize
+\setlength{\tabcolsep}{5pt}
+\begin{tabular}{lc}
+\toprule
+Method & $J$ (S/M/O/T) \\
+\midrule
+LoCoMo & --- / --- / --- / --- \\
+ReadAgent & --- / --- / --- / --- \\
+MemoryBank & --- / --- / --- / --- \\
+MemGPT & --- / --- / --- / --- \\
+A-Mem & --- / --- / --- / --- \\
+A-Mem* & 39.79 / 18.85 / 54.05 / 49.91 \\
+LangMem & 62.23 / 47.92 / 71.12 / 23.43 \\
+Zep & 61.70 / 41.35 / 76.60 / 49.31 \\
+OpenAI & 63.79 / 42.92 / 62.29 / 21.71 \\
+Mem0 & 67.13 / 51.15 / 72.93 / 55.51 \\
+$Mem0^g$ & 65.71 / 47.19 / 75.71 / 58.13 \\
+\textbf{Deep-Dream} & 97.38 / 93.62 / 80.21 / 95.33 \\
+\textbf{Deep-Dream}$^\dagger$ & 96.91 / 92.91 / 77.08 / 93.46 \\
+\bottomrule
+\end{tabular}
+\end{table*}

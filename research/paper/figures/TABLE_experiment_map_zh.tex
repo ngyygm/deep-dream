@@ -1,0 +1,19 @@
+\begin{table*}[t]
+\centering
+\small
+\setlength{\tabcolsep}{2.5pt}
+\renewcommand{\arraystretch}{1.16}
+\begin{tabular*}{\textwidth}{@{\extracolsep{\fill}}p{0.04\textwidth}p{0.25\textwidth}p{0.65\textwidth}@{}}
+\toprule
+\textbf{RQ} & \textbf{记忆能力} & \textbf{基准与可观测预测} \\
+\midrule
+1 & 逐步读取原文 & MemoryAgentBench 在相同的 767 题上比较直接检索、多次调用只读记忆工具与读取原文并核对引用。当智能体可以持续阅读时，分数应当在事实整合与多次提及任务上拉开最大。 \\
+2 & 时序与多会话访问 & LongMemEval 测试更新与跨会话链接。版本化观测应让较早与较晚的事实都仍然能被找到，而偏好问题仍是潜在用户状态建模的边界。 \\
+3 & 关系整合 & LoCoMo 区分单跳、多跳、时序与开放域问题。当答案需要连接多个会话片段或修订较早数值时，概念族与关系路径应当最关键。 \\
+4 & 可修订构建 & Base/Align+ 配对运行度量重复族、入库调用、token 与任务切片。渐进式对齐预测更低的构建成本与更好的整合，但不要求分数全面上升。 \\
+5 & 删除与缺失边界 & MEME 测试删除、级联与缺失。当前的只增存储应保留溯源，但尚不能保证删除后的抑制。 \\
+\bottomrule
+\end{tabular*}
+\caption{研究问题与测量方式。每一行检验检索——证据分离的一条不同预测；已发表结果保留各自的测试条件，便于检查分数差异。}
+\label{tab:experiment-map}
+\end{table*}

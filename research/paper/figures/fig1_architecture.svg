@@ -1,0 +1,164 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="820" viewBox="0 0 1600 820" role="img" aria-labelledby="title desc">
+<title id="title">A document-first temporal concept graph</title><desc id="desc">Figure 5. Illustrative document/Episode/entity-family graph and selected-concept history. Three documents share the Trip concept through provenance links. A Paris plan is updated to Rome and later confirmed. Each observation remains linked to its own original source; processing time is the sole state axis. Relations connect concepts, and uncertain families may be redirected after additional evidence. This is not a measured benchmark case.</desc>
+<defs>
+<marker id="blue" markerUnits="userSpaceOnUse" viewBox="0 0 12 10" refX="10" refY="5" markerWidth="12" markerHeight="10" orient="auto"><path d="M0 0 L11 5 L0 10 Z" fill="#24669B"/></marker>
+<marker id="teal" markerUnits="userSpaceOnUse" viewBox="0 0 12 10" refX="10" refY="5" markerWidth="12" markerHeight="10" orient="auto"><path d="M0 0 L11 5 L0 10 Z" fill="#18888B"/></marker>
+<marker id="rose" markerUnits="userSpaceOnUse" viewBox="0 0 12 10" refX="10" refY="5" markerWidth="12" markerHeight="10" orient="auto"><path d="M0 0 L11 5 L0 10 Z" fill="#B64C72"/></marker>
+<marker id="ink" markerUnits="userSpaceOnUse" viewBox="0 0 12 10" refX="10" refY="5" markerWidth="12" markerHeight="10" orient="auto"><path d="M0 0 L11 5 L0 10 Z" fill="#193D55"/></marker>
+<marker id="muted" markerUnits="userSpaceOnUse" viewBox="0 0 12 10" refX="10" refY="5" markerWidth="12" markerHeight="10" orient="auto"><path d="M0 0 L11 5 L0 10 Z" fill="#5C7282"/></marker>
+</defs>
+<rect width="1600" height="820" fill="white"/>
+<text x="30" y="40" font-family="Arial, Helvetica, sans-serif" font-size="27" font-weight="700" fill="#24669B" text-anchor="start">a</text>
+<text x="65" y="40" font-family="Arial, Helvetica, sans-serif" font-size="29" font-weight="700" fill="#193D55" text-anchor="start">Across documents: shared concepts</text>
+<text x="1013" y="40" font-family="Arial, Helvetica, sans-serif" font-size="27" font-weight="700" fill="#18888B" text-anchor="start">b</text>
+<text x="1048" y="40" font-family="Arial, Helvetica, sans-serif" font-size="29" font-weight="700" fill="#193D55" text-anchor="start">Within a concept: history + source</text>
+<text x="30" y="72" font-family="Arial, Helvetica, sans-serif" font-size="21" font-weight="400" fill="#5C7282" text-anchor="start">Documents retain their Episodes; mentions meet at a stable family.</text>
+<text x="1013" y="72" font-family="Arial, Helvetica, sans-serif" font-size="21" font-weight="400" fill="#5C7282" text-anchor="start">Selecting Trip opens its linked observations.</text>
+<rect x="14" y="95" width="955" height="602" rx="26" fill="#F5F8FB" stroke="none" stroke-width="1.8"/>
+<rect x="993" y="95" width="591" height="602" rx="26" fill="#F0F7F6" stroke="none" stroke-width="1.8"/>
+<g id="document-episode-links">
+<path d="M170 224 L170 278" fill="none" stroke="#24669B" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#blue)"/>
+<path d="M474 224 L474 278" fill="none" stroke="#24669B" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#blue)"/>
+<path d="M778 224 L778 278" fill="none" stroke="#24669B" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#blue)"/>
+<text x="31" y="264" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="400" fill="#5C7282" text-anchor="start">contains</text>
+</g>
+<g id="cross-document-mentions">
+<path d="M170 364 C170 432 350 394 432 465" fill="none" stroke="#18888B" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="6 6" marker-end="url(#teal)"/>
+<path d="M474 364 L474 448" fill="none" stroke="#18888B" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="6 6" marker-end="url(#teal)"/>
+<path d="M778 364 C778 419 589 397 518 465" fill="none" stroke="#18888B" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="6 6" marker-end="url(#teal)"/>
+<text x="477" y="408" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="400" fill="#18888B" text-anchor="middle">mentions</text>
+</g>
+<g id="relation-edges">
+<path d="M209 505 L416 505" fill="none" stroke="#B64C72" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#rose)"/>
+<text x="309" y="491" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="400" fill="#B64C72" text-anchor="middle">plans</text>
+<path d="M522 481 C590 441 650 458 712 458" fill="none" stroke="#B64C72" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="7 5" marker-end="url(#rose)"/>
+<text x="614" y="441" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="400" fill="#B64C72" text-anchor="middle">destination · earlier</text>
+<path d="M523 527 C592 565 647 576 712 576" fill="none" stroke="#B64C72" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#rose)"/>
+<text x="614" y="607" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="400" fill="#B64C72" text-anchor="middle">destination · later</text>
+</g>
+<g id="documents">
+<ellipse cx="170" cy="210" rx="91" ry="12" fill="#E0EAF1"/>
+<g transform="translate(135 112) scale(0.72)">
+<path d="M3 3 H58 L78 23 V99 H3 Z" fill="#FFFFFF" stroke="#24669B" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M58 3 V23 H78" fill="none" stroke="#24669B" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M16 36 L62 36" fill="none" stroke="#24669B" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M16 49 L64 49" fill="none" stroke="#24669B" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M16 62 L64 62" fill="none" stroke="#24669B" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M16 76 L53 76" fill="none" stroke="#24669B" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+</g>
+<text x="170" y="215" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="700" fill="#193D55" text-anchor="middle">notes.md</text>
+<rect x="58" y="287" width="224" height="77" rx="15" fill="#FFFFFF" stroke="#ADC8DE" stroke-width="1.8"/>
+<text x="170" y="318" font-family="Arial, Helvetica, sans-serif" font-size="23" font-weight="700" fill="#24669B" text-anchor="middle">E1 · Plan</text>
+<text x="170" y="345" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="400" fill="#5C7282" text-anchor="middle">Paris planned</text>
+<ellipse cx="474" cy="210" rx="91" ry="12" fill="#E0EAF1"/>
+<g transform="translate(439 112) scale(0.72)">
+<path d="M3 3 H58 L78 23 V99 H3 Z" fill="#FFFFFF" stroke="#24669B" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M58 3 V23 H78" fill="none" stroke="#24669B" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M16 36 L62 36" fill="none" stroke="#24669B" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M16 49 L64 49" fill="none" stroke="#24669B" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M16 62 L64 62" fill="none" stroke="#24669B" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M16 76 L53 76" fill="none" stroke="#24669B" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+</g>
+<text x="474" y="215" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="700" fill="#193D55" text-anchor="middle">update.md</text>
+<rect x="362" y="287" width="224" height="77" rx="15" fill="#FFFFFF" stroke="#ADC8DE" stroke-width="1.8"/>
+<text x="474" y="318" font-family="Arial, Helvetica, sans-serif" font-size="23" font-weight="700" fill="#24669B" text-anchor="middle">E2 · Change</text>
+<text x="474" y="345" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="400" fill="#5C7282" text-anchor="middle">Rome replaces Paris</text>
+<ellipse cx="778" cy="210" rx="91" ry="12" fill="#E0EAF1"/>
+<g transform="translate(743 112) scale(0.72)">
+<path d="M3 3 H58 L78 23 V99 H3 Z" fill="#FFFFFF" stroke="#24669B" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M58 3 V23 H78" fill="none" stroke="#24669B" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M16 36 L62 36" fill="none" stroke="#24669B" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M16 49 L64 49" fill="none" stroke="#24669B" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M16 62 L64 62" fill="none" stroke="#24669B" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M16 76 L53 76" fill="none" stroke="#24669B" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+</g>
+<text x="778" y="215" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="700" fill="#193D55" text-anchor="middle">receipt.md</text>
+<rect x="666" y="287" width="224" height="77" rx="15" fill="#FFFFFF" stroke="#ADC8DE" stroke-width="1.8"/>
+<text x="778" y="318" font-family="Arial, Helvetica, sans-serif" font-size="23" font-weight="700" fill="#24669B" text-anchor="middle">E3 · Confirm</text>
+<text x="778" y="345" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="400" fill="#5C7282" text-anchor="middle">Rome confirmed</text>
+</g>
+<g id="concept-families">
+<circle cx="162" cy="505" r="46" fill="#E7F4F2" stroke="#18888B" stroke-width="2.4"/>
+<text x="162" y="513" font-family="Arial, Helvetica, sans-serif" font-size="26" font-weight="700" fill="#193D55" text-anchor="middle">Alex</text>
+<circle cx="474" cy="505" r="59" fill="none" stroke="#A1D0C9" stroke-width="1.6"/>
+<circle cx="474" cy="505" r="51" fill="#CEE9E3" stroke="#18888B" stroke-width="3"/>
+<text x="474" y="513" font-family="Arial, Helvetica, sans-serif" font-size="30" font-weight="700" fill="#193D55" text-anchor="middle">Trip</text>
+<text x="474" y="588" font-family="Arial, Helvetica, sans-serif" font-size="21" font-weight="700" fill="#18888B" text-anchor="middle">shared family</text>
+<text x="474" y="614" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="400" fill="#5C7282" text-anchor="middle">f_trip</text>
+<circle cx="760" cy="458" r="46" fill="#E7F4F2" stroke="#18888B" stroke-width="2.2"/>
+<text x="760" y="466" font-family="Arial, Helvetica, sans-serif" font-size="25" font-weight="700" fill="#193D55" text-anchor="middle">Paris</text>
+<circle cx="760" cy="576" r="46" fill="#E7F4F2" stroke="#18888B" stroke-width="2.2"/>
+<text x="760" y="584" font-family="Arial, Helvetica, sans-serif" font-size="25" font-weight="700" fill="#193D55" text-anchor="middle">Rome</text>
+<text x="60" y="662" font-family="Arial, Helvetica, sans-serif" font-size="21" font-weight="400" fill="#193D55" text-anchor="start">Cross-document links arise through shared families and relations.</text>
+</g>
+<g id="selected-concept">
+<circle cx="1036" cy="135" r="17" fill="#CEE9E3" stroke="#18888B" stroke-width="2"/>
+<text x="1068" y="143" font-family="Arial, Helvetica, sans-serif" font-size="26" font-weight="700" fill="#193D55" text-anchor="start">Trip</text>
+<text x="1150" y="142" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="400" fill="#5C7282" text-anchor="start">stable identity: f_trip</text>
+<rect x="1398" y="117" width="152" height="32" rx="16" fill="#D8EEEA" stroke="none" stroke-width="1.8"/>
+<text x="1474.0" y="140" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="700" fill="#18888B" text-anchor="middle">Selected</text>
+<text x="1056" y="192" font-family="Arial, Helvetica, sans-serif" font-size="21" font-weight="700" fill="#18888B" text-anchor="start">Processing / observation time</text>
+<path d="M1037 220 L1037 478" fill="none" stroke="#18888B" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#teal)"/>
+<text x="1502" y="192" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="400" fill="#5C7282" text-anchor="end">version chain</text>
+<circle cx="1037" cy="250" r="7" fill="#24669B" stroke="#24669B" stroke-width="1"/>
+<rect x="1064" y="216" width="486" height="70" rx="12" fill="#FFFFFF" stroke="#BBD6D1" stroke-width="1.4"/>
+<rect x="1079" y="235" width="90" height="32" rx="16" fill="#EAF2F9" stroke="none" stroke-width="1.8"/>
+<text x="1124.0" y="258" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="700" fill="#24669B" text-anchor="middle">rev. 1</text>
+<text x="1190" y="259" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="700" fill="#24669B" text-anchor="start">Paris</text>
+<path d="M1261 251 L1293 251" fill="none" stroke="#5C7282" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#muted)"/>
+<text x="1306" y="257" font-family="Arial, Helvetica, sans-serif" font-size="19" font-weight="400" fill="#5C7282" text-anchor="start">notes.md · E1</text>
+<circle cx="1037" cy="345" r="7" fill="#B64C72" stroke="#B64C72" stroke-width="1"/>
+<rect x="1064" y="311" width="486" height="70" rx="12" fill="#FFFFFF" stroke="#BBD6D1" stroke-width="1.4"/>
+<rect x="1079" y="330" width="90" height="32" rx="16" fill="#F8EBF0" stroke="none" stroke-width="1.8"/>
+<text x="1124.0" y="353" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="700" fill="#B64C72" text-anchor="middle">rev. 2</text>
+<text x="1190" y="354" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="700" fill="#B64C72" text-anchor="start">Rome</text>
+<path d="M1261 346 L1293 346" fill="none" stroke="#5C7282" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#muted)"/>
+<text x="1306" y="352" font-family="Arial, Helvetica, sans-serif" font-size="19" font-weight="400" fill="#5C7282" text-anchor="start">update.md · E2</text>
+<circle cx="1037" cy="440" r="7" fill="#18888B" stroke="#18888B" stroke-width="1"/>
+<rect x="1064" y="406" width="486" height="70" rx="12" fill="#FFFFFF" stroke="#BBD6D1" stroke-width="1.4"/>
+<rect x="1079" y="425" width="90" height="32" rx="16" fill="#E7F4F2" stroke="none" stroke-width="1.8"/>
+<text x="1124.0" y="448" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="700" fill="#18888B" text-anchor="middle">rev. 3</text>
+<text x="1190" y="449" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="700" fill="#18888B" text-anchor="start">Rome</text>
+<path d="M1261 441 L1293 441" fill="none" stroke="#5C7282" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#muted)"/>
+<text x="1306" y="447" font-family="Arial, Helvetica, sans-serif" font-size="19" font-weight="400" fill="#5C7282" text-anchor="start">receipt.md · E3</text>
+<text x="1064" y="512" font-family="Arial, Helvetica, sans-serif" font-size="21" font-weight="700" fill="#18888B" text-anchor="start">Each revision resolves to its own source.</text>
+<rect x="1020" y="538" width="534" height="132" rx="16" fill="#FFFFFF" stroke="#DFC5CF" stroke-width="1.5"/>
+<g transform="translate(1037 557) scale(0.6)">
+<path d="M3 3 H58 L78 23 V99 H3 Z" fill="#FFFFFF" stroke="#B64C72" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M58 3 V23 H78" fill="none" stroke="#B64C72" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<rect x="14" y="56" width="53" height="13" rx="2" fill="#F8EBF0" stroke="none" stroke-width="1.8"/>
+<path d="M16 36 L62 36" fill="none" stroke="#B64C72" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M16 49 L64 49" fill="none" stroke="#B64C72" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M16 62 L64 62" fill="none" stroke="#B64C72" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M16 76 L53 76" fill="none" stroke="#B64C72" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+</g>
+<text x="1102" y="568" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="700" fill="#B64C72" text-anchor="start">Original evidence · update.md / E2</text>
+<text x="1102" y="598" font-family="Arial, Helvetica, sans-serif" font-size="23" font-weight="400" fill="#193D55" text-anchor="start">“Alex changed the destination</text>
+<text x="1102" y="627" font-family="Arial, Helvetica, sans-serif" font-size="23" font-weight="400" fill="#193D55" text-anchor="start">from Paris to Rome.”</text>
+<text x="1102" y="652" font-family="Arial, Helvetica, sans-serif" font-size="19" font-weight="400" fill="#5C7282" text-anchor="start">Earlier evidence is still addressable.</text>
+</g>
+<g id="progressive-alignment">
+<rect x="14" y="717" width="1570" height="86" rx="18" fill="#F6F8F9" stroke="none" stroke-width="1.8"/>
+<text x="35" y="750" font-family="Arial, Helvetica, sans-serif" font-size="22" font-weight="700" fill="#193D55" text-anchor="start">Progressive alignment</text>
+<text x="35" y="780" font-family="Arial, Helvetica, sans-serif" font-size="19" font-weight="400" fill="#5C7282" text-anchor="start">Identity can be revised.</text>
+<circle cx="337" cy="746" r="14" fill="#E7F4F2" stroke="#18888B" stroke-width="1.8"/>
+<circle cx="365" cy="774" r="14" fill="#E7F4F2" stroke="#18888B" stroke-width="1.8"/>
+<text x="398" y="749" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="700" fill="#18888B" text-anchor="start">Uncertain match</text>
+<text x="398" y="775" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="400" fill="#5C7282" text-anchor="start">keep families separate</text>
+<path d="M613 760 L681 760" fill="none" stroke="#18888B" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#teal)"/>
+<g transform="translate(710 734) scale(0.43)">
+<path d="M3 3 H58 L78 23 V99 H3 Z" fill="#FFFFFF" stroke="#24669B" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M58 3 V23 H78" fill="none" stroke="#24669B" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M16 36 L62 36" fill="none" stroke="#24669B" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M16 49 L64 49" fill="none" stroke="#24669B" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M16 62 L64 62" fill="none" stroke="#24669B" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M16 76 L53 76" fill="none" stroke="#24669B" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+</g>
+<text x="766" y="750" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="700" fill="#24669B" text-anchor="start">More evidence</text>
+<text x="766" y="776" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="400" fill="#5C7282" text-anchor="start">content + relation context</text>
+<path d="M1002 760 L1070 760" fill="none" stroke="#18888B" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#teal)"/>
+<circle cx="1115" cy="760" r="23" fill="#CEE9E3" stroke="#18888B" stroke-width="2"/>
+<text x="1155" y="750" font-family="Arial, Helvetica, sans-serif" font-size="21" font-weight="700" fill="#18888B" text-anchor="start">Redirect compatible families</text>
+<text x="1155" y="776" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="400" fill="#5C7282" text-anchor="start">preserve observations and source links</text>
+</g>
+</svg>

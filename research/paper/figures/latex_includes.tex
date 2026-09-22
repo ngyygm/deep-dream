@@ -1,15 +1,23 @@
 % Figure 1: architecture (hero)
 \begin{figure*}[t]
   \centering
-  \includegraphics[width=0.85\textwidth]{figures/fig1_architecture.pdf}
-  \caption{Deep-Dream separates navigation from factual authority. Derived concept families, observations, assertions, and graph neighborhoods form a non-authoritative overlay for scope materialization and candidate generation; the three answer paths differ in how far the answerer may go toward the verbatim sources---fused retrieval payload (rung 1), read-only memory tools (rung 2), or a sandbox of verbatim sources with verification tools and an evidence gate (rung 3). An overlay error can cause a missed scope, never a fabricated fact.}
+  \includegraphics[width=\textwidth]{figures/fig1_architecture.pdf}
+  \caption{Deep-Dream as a document-first temporal concept graph. Processing time is the single state axis: each write appends a source-linked observation/version, while concepts and relations provide a revisable search index. During \emph{write}, uncertain mentions may remain separate and later converge; during \emph{store}, families and relation edges expose low-cost coarse search while episodes and exact spans remain authoritative; during \emph{read}, the agent progressively expands the search, opens source evidence, and stops when the citation check passes. The graph finds candidates; verbatim source spans authorize the answer.}
   \label{fig:architecture}
 \end{figure*}
 
 % Figure 2: answer-path ladder (headline)
-\begin{figure}[t]
+\begin{figure*}[t]
   \centering
-  \includegraphics[width=0.9\columnwidth]{figures/fig2_ladder.pdf}
-  \caption{The answer-path ladder on MemoryAgentBench (official scorer, $n{=}767$, kimi-k3 answerer, frozen libraries per generation): Overall by track for engine $v1$ (hatched) and $v2$ (solid); whiskers, shown on the $v2$ bars only, are paired-bootstrap 95\% CIs over the 767 shared questions. The BM25 row (41.5, official paper, full set, GPT-4o-mini) is drawn as a published-reference band, not a same-protocol bar: answerer, judge, and subset differ; no subtraction is implied.}
+  \includegraphics[width=0.98\textwidth]{figures/fig2_ladder.pdf}
+  \caption{MemoryAgentBench answer-method results (official scorer, $n{=}767$, Kimi-K3 answerer). (a) Overall scores for Deep-Dream Base (hatched) and Align+ (solid), with paired-bootstrap 95\% CIs on Align+ and a published BM25 reference band. (b) Align+ domain scores show where step-by-step source reading matters: accurate retrieval (AR), temporal/test-time learning (TTL), long-range understanding (LRU), and selective forgetting (SF). (c) Representative task rows expose the largest path separations, especially MCC and FC-MH. (d) The residual zero-score taxonomy reports all 117 failed items by domain. The published BM25 value uses a different answerer, judge, and subset; the two samples are reported separately.}
   \label{fig:ladder}
-\end{figure}
+\end{figure*}
+
+
+
+
+
+
+
+

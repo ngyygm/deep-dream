@@ -1,0 +1,111 @@
+% ICLR 2026 Paper Template — 中文逐句对应版
+% 与 main.tex 同构：同一批图表 PDF、同一 RECOMPUTED_MACROS 数字宏；
+% 仅正文与图表 caption 译为中文，图内英文标签保留原始实验命名。
+% 编译：latexmk -xelatex main-zh.tex
+
+\PassOptionsToPackage{table}{xcolor}
+\documentclass{article}
+\usepackage{iclr2026_conference,times}
+
+% Math
+\usepackage{amsmath,amssymb,amsfonts,amsthm,mathtools}
+
+% Typography
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{hyperref}
+\usepackage{url}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{microtype}
+\usepackage{xcolor}
+\usepackage{graphicx}
+\usepackage{subcaption}
+\usepackage{multirow}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+
+% 中文（xelatex + Fandol 字体集）
+\usepackage[UTF8]{ctex}
+
+% cleveref must be loaded AFTER hyperref
+\usepackage[capitalize,noabbrev]{cleveref}
+\hypersetup{hidelinks}
+
+% Theorems（环境名中文化，编号规则同英文版）
+\theoremstyle{plain}
+\newtheorem{theorem}{定理}[section]
+\newtheorem{proposition}[theorem]{命题}
+\newtheorem{lemma}[theorem]{引理}
+\newtheorem{corollary}[theorem]{推论}
+\theoremstyle{definition}
+\newtheorem{definition}[theorem]{定义}
+\newtheorem{assumption}[theorem]{假设}
+\theoremstyle{remark}
+\newtheorem{remark}[theorem]{注}
+
+% cleveref names for custom theorem types
+\crefname{assumption}{Assumption}{Assumptions}
+\Crefname{assumption}{Assumption}{Assumptions}
+
+% 中文 cleveref 名称
+\crefname{figure}{图}{图}
+\Crefname{figure}{图}{图}
+\crefname{table}{表}{表}
+\Crefname{table}{表}{表}
+\crefname{equation}{式}{式}
+\Crefname{equation}{式}{式}
+\crefname{section}{节}{节}
+\Crefname{section}{节}{节}
+\crefname{appendix}{附录}{附录}
+\Crefname{appendix}{附录}{附录}
+\crefname{proposition}{命题}{命题}
+\Crefname{proposition}{命题}{命题}
+\crefname{page}{页}{页}
+\renewcommand{\abstractname}{摘要}
+
+% Shared math commands
+\input{math_commands}
+
+% 与 main.tex 相同的浮动体与行距纪律
+\setlength{\textfloatsep}{4pt plus 1pt minus 1pt}
+\setlength{\floatsep}{4pt plus 1pt minus 1pt}
+\setlength{\intextsep}{4pt plus 1pt minus 1pt}
+\setlength{\abovecaptionskip}{2pt plus 1pt minus 1pt}
+\renewcommand{\baselinestretch}{0.90}
+
+% Recomputed-from-logs macros（与英文版共享同一文件，数字自动一致）
+\input{figures/RECOMPUTED_MACROS}
+
+% === ANONYMOUS SUBMISSION ===
+% \iclrfinalcopy
+
+\title{Deep-Dream：面向智能体长期记忆的时序概念图谱\\
+\large（中文逐句对应版；图表与数值宏与英文版共用）}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+\input{sections/0_abstract_zh}
+\end{abstract}
+
+\input{sections/1_introduction_zh}
+\input{sections/2_related_work_zh}
+\input{sections/3_method_zh}
+\input{sections/4_experiments_zh}
+\input{sections/5_analysis_limitations_zh}
+\input{sections/6_conclusion_zh}
+
+\newpage
+\input{sections/7_ai_assistance_zh}
+
+\bibliography{references}
+\bibliographystyle{iclr2026_conference}
+
+\newpage
+\appendix
+\input{sections/A_appendix_zh}
+
+\end{document}

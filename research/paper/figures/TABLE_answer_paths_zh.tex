@@ -1,0 +1,18 @@
+\begin{table*}[t]
+\centering
+\small
+\setlength{\tabcolsep}{3.5pt}
+\begin{tabular}{@{}p{0.15\textwidth}p{0.23\textwidth}p{0.25\textwidth}p{0.30\textwidth}@{}}
+\toprule
+\textbf{属性} & \textbf{直接检索} & \textbf{工具辅助读取} & \textbf{原文读取} \\
+\midrule
+源访问 & top-$k$ 跨度 & 派生记录 & 逐字源文件 \\
+工具 & 无 & 记忆工具 & 读取、grep、脚本 \\
+答题模型 & 独立 & 独立 & 带验证的智能体 \\
+循环 & 无 & 多次只读调用 & 多次读取并核对 \\
+每题成本 & \DirectRetrievalCost & \MemoryToolCost & \SourceGroundedCost \\
+\bottomrule
+\end{tabular}
+\caption{三种读取方式的差异。三条路径共享冻结库、问题流、Kimi-K3 与官方评分器。}
+\label{tab:answer-path-differences}
+\end{table*}

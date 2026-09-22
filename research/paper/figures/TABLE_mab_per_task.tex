@@ -1,0 +1,22 @@
+\begin{table*}[t]
+\centering
+\footnotesize
+\begin{tabular}{@{}lcccccc@{}}
+\toprule
+ & \multicolumn{2}{c}{Direct retrieval} & \multicolumn{2}{c}{Memory-tool agent} & \multicolumn{2}{c}{Source-grounded agent} \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}\cmidrule(lr){6-7}
+Task (domain) & Base & Align+ & Base & Align+ & Base & Align+ \\
+\midrule
+SH-QA (AR) & 54 & 48 & 84 & 72 & 94 & 92 \\
+LongMemEval-S$^{*}$ (AR) & 26.7 & 41.7 & 43.3 & 51.7 & 90.0 & 88.3 \\
+EventQA (AR) & 90.3 & 89.7 & 90.7 & 88.3 & 98.0 & 98.0 \\
+MCC icl\_clinic150 (TTL) & 4 & 2 & 3 & 2 & 43 & 46 \\
+$\infty$Bench-Sum (LRU) & 0.0 & 0.0 & 28.4 & 29.8 & 21.2 & 0.0 \\
+DetectiveQA (LRU) & 50.0 & 66.7 & 50.0 & 83.3 & 83.3 & 83.3 \\
+FC-SH (SF) & 68 & 66 & 67 & 63 & 90 & 90 \\
+FC-MH (SF) & 2 & 3 & 4 & 4 & 67 & 70 \\
+\bottomrule
+\end{tabular}
+\caption{Per-task MAB scores ($\times100$) for all six path runs. The table is the sampled subset (767 questions, eight tasks); $\infty$Bench-Sum has $n=1$, so its Source-grounded agent flip is reported separately. The largest path gaps occur on MCC and FC-MH, where access to verbatim sources changes the evidence available to the verifier.}
+\label{tab:mab-per-task}
+\end{table*}

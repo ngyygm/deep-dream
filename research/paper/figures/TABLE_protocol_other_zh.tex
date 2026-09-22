@@ -1,0 +1,20 @@
+\begin{table*}[t]
+\centering
+\small
+\setlength{\tabcolsep}{2pt}
+\renewcommand{\arraystretch}{1.12}
+\begin{tabular*}{\textwidth}{@{\extracolsep{\fill}}>{\raggedright\arraybackslash}p{0.30\textwidth}>{\raggedright\arraybackslash}p{0.21\textwidth}>{\centering\arraybackslash}p{0.16\textwidth}>{\raggedright\arraybackslash}p{0.29\textwidth}@{}}
+\toprule
+基准 & 协议 & 分数 & 答题 / 评审 \\
+\midrule
+LongMemEval-S (500) & 抽样，$n{=}500$ & 84.60 & Kimi-K3；Qwen3.7-plus 交叉评审 \\
+LongMemEval，直接检索 & 配对，$n{=}25$ & 0.68 $\to$ 0.72 & Kimi-K3 作答 \\
+LongMemEval，工具辅助读取 & 配对，$n{=}25$ & 0.68 $\to$ 0.72 & Kimi-K3 作答 \\
+LongMemEval，原文读取 & 配对，$n{=}27$ & 0.889 $\to$ 0.926 & Kimi-K3；自评审 \\
+LoCoMo-1540 & Mem0 $J$ 评分 & 95.19 & Kimi-K3；作答+评审；$n{=}1$ \\
+LoCoMo-1540（同一批答案） & 交叉评审 & 94.22 & Qwen3.7-plus；一致率 98.51\% \\
+\bottomrule
+\end{tabular*}
+\caption{其他基准在各自测试流程下的结果；每行列出答题模型和评审模型。LoCoMo 运行与 Mem0 已发表的 $J$ 有两处明示差异——单次运行对 10 次运行均值$\pm$标准差，以及作答/评审模型——并携带已披露的遗留指纹注意事项；这些条件同时列出，便于复核比较。LME 原文读取轨道多出的两题来自其会话证据规则；比较只在同一测试轨道内进行。}
+\label{tab:protocol-other}
+\end{table*}

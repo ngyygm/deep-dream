@@ -1,0 +1,21 @@
+\begin{table*}[t]
+\centering
+\small
+\setlength{\tabcolsep}{2.5pt}
+\renewcommand{\arraystretch}{1.16}
+\begin{tabular*}{\textwidth}{@{\extracolsep{\fill}}p{0.04\textwidth}p{0.25\textwidth}p{0.65\textwidth}@{}}
+\toprule
+\textbf{RQ} & \textbf{Memory capability} & \textbf{Benchmark and observable prediction} \\
+\midrule
+1 & Step-by-step source reading & MemoryAgentBench compares direct retrieval, repeated read-only memory calls, and source reading with citation checks on the same 767 questions. Scores should separate most on fact consolidation and multi-mention tasks when the agent can keep reading. \\
+2 & Temporal and multi-session access & LongMemEval tests updates and cross-session links. Versioned observations should keep both earlier and later facts available, while preference questions remain a boundary for latent-user-state modeling. \\
+3 & Relational consolidation & LoCoMo separates single-hop, multi-hop, temporal, and open-domain questions. Concept families and relation links should matter most when an answer joins episodes or revises an earlier value. \\
+4 & Revisable construction & Base/Align+ paired runs measure duplicate families, ingest calls, tokens, and task slices. Progressive alignment predicts lower construction cost and better consolidation without requiring a uniform score increase. \\
+5 & Deletion and absence boundary & MEME tests deletion, cascade, and absence. The current append-only store should retain source links but cannot yet guarantee suppression after deletion. \\
+\bottomrule
+\end{tabular*}
+\caption{Research questions and measurements. Each row tests a distinct prediction of the search--evidence separation; published comparison rows keep their test details so the score differences can be checked.}
+\label{tab:experiment-map}
+\end{table*}
+
+

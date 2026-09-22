@@ -1,18 +1,20 @@
-\begin{table}[t]
+\begin{table*}[t]
 \centering
-\footnotesize
-\begin{tabular}{@{}lllp{2.9cm}@{}}
+\small
+\setlength{\tabcolsep}{2pt}
+\renewcommand{\arraystretch}{1.12}
+\begin{tabular*}{\textwidth}{@{\extracolsep{\fill}}>{\raggedright\arraybackslash}p{0.30\textwidth}>{\raggedright\arraybackslash}p{0.21\textwidth}>{\centering\arraybackslash}p{0.16\textwidth}>{\raggedright\arraybackslash}p{0.29\textwidth}@{}}
 \toprule
-Benchmark & Protocol & Score & Roles \\
+Benchmark & Protocol & Score & Answerer / judge \\
 \midrule
-LME-S, 500 questions & sampled & 84.60 & answerer kimi-k3, cross-judge Qwen3.7-plus \\
-LME full ingest, baseline & paired $n{=}25$ & 0.68 $\to$ 0.72 & kimi-k3 \\
-LME full ingest, tool agent & paired $n{=}25$ & 0.68 $\to$ 0.72 & kimi-k3 \\
-LME full ingest, sandbox & paired $n{=}27$ & 0.889 $\to$ 0.926 & kimi-k3 (self-judged) \\
-LoCoMo-1540, binary $J$ & Mem0's exact protocol & 95.19 & kimi-k3 answerer + judge, single run \\
-\quad same answers, cross-judge & re-judged & 94.22 (agr.\ 98.51\%) & judge Qwen3.7-plus \\
+LongMemEval-S (500) & sampled, $n{=}500$ & 84.60 & Kimi-K3; Qwen3.7-plus cross-judge \\
+LongMemEval, direct & paired, $n{=}25$ & 0.68 $\to$ 0.72 & Kimi-K3 answerer \\
+LongMemEval, tool-assisted & paired, $n{=}25$ & 0.68 $\to$ 0.72 & Kimi-K3 answerer \\
+LongMemEval, source-reading & paired, $n{=}27$ & 0.889 $\to$ 0.926 & Kimi-K3; self-judged \\
+LoCoMo-1540 & Mem0 $J$ scoring & 95.19 & Kimi-K3; answerer+judge; $n{=}1$ \\
+LoCoMo-1540 (same answers) & cross-judged & 94.22 & Qwen3.7-plus; agreement 98.51\% \\
 \bottomrule
-\end{tabular}
-\caption{Protocol-labeled context on other benchmarks ($v1{\to}v2$ engine pairs; roles disclosed per row). The LoCoMo run differs from Mem0's published $J$ in two admitted ways---single run versus 10-run mean$\pm$std, and the answerer/judge model---and carries a disclosed legacy-fingerprint caveat; it is context, not a superiority claim. The LME sandbox track's two extra questions follow its session-evidence eligibility rule; cross-track comparisons are same-track only.}
+\end{tabular*}
+\caption{Results on other benchmarks under their stated test procedures; each row states its answerer and judge. The LoCoMo run differs from Mem0's published $J$ in two admitted ways---single run versus 10-run mean$\pm$std, and the answerer/judge model---and carries a disclosed legacy-fingerprint caveat; we state these conditions so the comparison is reproducible. The LME source-reading agent track's two extra questions follow its session evidence rule; comparisons are made only within the same track.}
 \label{tab:protocol-other}
-\end{table}
+\end{table*}

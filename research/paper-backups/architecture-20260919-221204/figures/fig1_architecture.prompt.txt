@@ -1,0 +1,6 @@
+Generated with the built-in image generation tool after inspecting the Deep-Dream frontend.
+The diagram follows the implemented visual structure: Markdown documents selected in the
+left panel; Document -> Episode nodes; Episode -> Entity-family provenance links; relation
+assertions rendered as labeled edges between entities; and version history, diff, source
+Episode, and raw evidence shown only in the selected-concept Details panel. The artwork is
+illustrative and contains no benchmark values.

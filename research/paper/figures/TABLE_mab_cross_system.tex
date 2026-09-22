@@ -1,13 +1,15 @@
-\begin{table}[t]
+\begin{table*}[t]
 \centering
-\footnotesize
-\setlength{\tabcolsep}{3.8pt}
+\small
+\setlength{\tabcolsep}{8pt}
+\renewcommand{\arraystretch}{1.12}
+\resizebox{0.98\textwidth}{!}{%
 \begin{tabular}{@{}llrrrrr@{}}
 \toprule
  & System (answerer) & AR & TTL & LRU & SF & Overall \\
 \midrule
 \rotatebox{90}{ours\rlap{$^{\dagger}$}}
- & Rung 3 sandbox (kimi-k3) & 92.8 & 46.0 & 41.7 & 80.0 & 65.1 \\
+ & Source-grounded agent (Kimi-K3) & 92.8 & 46.0 & 41.7 & 80.0 & 65.1 \\
 \midrule
 \multirow{5}{*}{\rotatebox{90}{full-ctx}}
  & GPT-4o & 58.1 & 50.0 & 54.9 & 32.5 & 48.8 \\
@@ -24,7 +26,9 @@
  & Zep (GPT-4o-mini) & 37.5 & 37.5 & 16.2 & 5.0 & 24.0 \\
  & Mem0 (GPT-4o-mini) & 32.6 & 21.2 & 20.7 & 10.0 & 21.1 \\
 \bottomrule
-\end{tabular}
-\caption{Cross-system positioning on MemoryAgentBench under the official scorer (scores $\times$100; AR/TTL/LRU/SF are domain averages). $^{\dagger}$Our row uses the stratified sampled subset (767 questions, 10 scopes, 59 documents; all four domains, 8 of 29 tasks), kimi-k3 answerer, official scorer at commit 455306d; the rung~1/2 Overall values (32.4/40.7) appear in \cref{tab:track-ladder}, and the adjusted Overall (59--61) in \cref{app:adjusted-overall}. Published rows are cited verbatim from the official paper's Table~2 \citep{hu2025memoryagentbench} (full benchmark; answerers as listed; memory-system rows run GPT-4o-mini except MIRIX on GPT-4.1-mini). Every full-context family scores at most 5 on FactConsolidation-MH; best published FC-MH of any system is 7 (published FC columns at 262K-average contexts; our SF cells are the 6K variants, \cref{app:sampling}). No two rows share answerer, judge, and subset; we never subtract across calibers.}
+\end{tabular}}
+\caption{Cross-system positioning on MemoryAgentBench under the official scorer (scores $\times$100; AR/TTL/LRU/SF are domain averages). $^{\dagger}$Our row uses the stratified sampled subset (767 questions, 10 task groups, 59 documents; all four domains, 8 of 29 tasks), Kimi-K3 answerer, and the official scorer at commit 455306d; the Direct retrieval and Memory-tool agent Overall values (32.4/40.7) appear in \cref{tab:main-results}, and the adjusted Overall (59--61) in \cref{app:adjusted-overall}. Published rows are cited verbatim from the official paper's Table~2 \citep{hu2025memoryagentbench} (full benchmark; answerers as listed; memory-system rows run GPT-4o-mini except MIRIX on GPT-4.1-mini). Every full-context family scores at most 5 on FactConsolidation-MH; best published FC-MH of any system is 7 (published FC columns at 262K-average contexts; our SF cells are the 6K variants, \cref{app:sampling}). The rows use different answerers, judges, or subsets; scores are not subtracted across test settings.}
 \label{tab:mab-cross-system}
-\end{table}
+\end{table*}
+
+

@@ -1,0 +1,73 @@
+\begin{table*}[t]
+\centering
+\scriptsize
+\setlength{\tabcolsep}{2.4pt}
+\renewcommand{\arraystretch}{0.94}
+\textbf{(a) MemoryAgentBench (official scorer)}\\[-2pt]
+\resizebox{0.90\textwidth}{!}{%
+\begin{tabular}{@{}lrrrrr@{}}
+\toprule
+System / answerer & AR & TTL & LRU & SF & Overall \\
+\midrule
+Full-context / GPT-4o & 58.1 & 50.0 & 54.9 & 32.5 & 48.8 \\
+Full-context / GPT-4o-mini & 49.2 & 48.6 & 46.2 & 25.0 & 42.2 \\
+Full-context / GPT-4.1-mini & 71.8 & 46.2 & 49.1 & 20.5 & 46.9 \\
+Full-context / Gemini-2.0-Flash & 65.1 & 46.4 & 41.6 & 16.5 & 42.4 \\
+Full-context / Claude-3.7-Sonnet & 59.7 & 53.9 & 62.2 & 22.5 & 49.6 \\
+BM25 RAG / GPT-4o-mini & 60.5 & 44.5 & 35.6 & 25.5 & 41.5 \\
+HippoRAG-2 / GPT-4o-mini & 65.1 & 35.8 & 36.2 & 29.5 & 41.6 \\
+MIRIX / GPT-4.1-mini & 63.0 & 35.7 & 40.5 & 11.5 & 37.7 \\
+MemGPT / GPT-4o-mini & 34.3 & 40.8 & 22.4 & 15.5 & 28.3 \\
+Zep / GPT-4o-mini & 37.5 & 37.5 & 16.2 & 5.0 & 24.0 \\
+Mem0 / GPT-4o-mini & 32.6 & 21.2 & 20.7 & 10.0 & 21.1 \\
+\midrule
+\rowcolor{blue!9}
+Deep-Dream / Full context (Kimi-K3, $n{=}614$) & \textbf{96.8} & \textbf{75.0} & \textbf{65.2} & 78.0 & \textbf{78.7} \\
+\rowcolor{blue!9}
+Deep-Dream / Direct retrieval (Kimi-K3) & 50.3 & 2.6 & 45.9 & 34.5 & 33.3 \\
+\rowcolor{blue!9}
+Deep-Dream / Memory-tool agent (Kimi-K3) & 63.5 & 2.6 & 60.4 & 33.5 & 40.0 \\
+\rowcolor{blue!9}
+\textbf{Deep-Dream / Source reading (Kimi-K3)} & 88.8 & 52.9 & 62.3 & \textbf{80.0} & 71.0 \\
+\bottomrule
+\end{tabular}}
+
+\vspace{5pt}
+\textbf{(b) LoCoMo $J$ score (\%; Mem0 scoring)}\\[-2pt]
+\resizebox{0.90\textwidth}{!}{%
+\begin{tabular}{@{}lrrrrr@{}}
+\toprule
+System / judge & Single-hop & Multi-hop & Open-domain & Temporal & Weighted \\
+\midrule
+Mem0 / GPT-4o-mini & 67.13 & 51.15 & 72.93 & 55.51 & $\approx$62.14 \\
+Mem0$^g$ / GPT-4o-mini & 65.71 & 47.19 & 75.71 & 58.13 & $\approx$61.36 \\
+Zep / GPT-4o-mini & 61.70 & 41.35 & 76.60 & 49.31 & $\approx$56.32 \\
+LangMem / GPT-4o-mini & 62.23 & 47.92 & 71.12 & 23.43 & $\approx$52.08 \\
+OpenAI / GPT-4o-mini & 63.79 & 42.92 & 62.29 & 21.71 & $\approx$51.10 \\
+A-Mem$^*$ / GPT-4o-mini & 39.79 & 18.85 & 54.05 & 49.91 & $\approx$38.95 \\
+\midrule
+\rowcolor{blue!9}
+\textbf{Deep-Dream / Kimi-K3} & \textbf{97.38} & \textbf{93.62} & \textbf{80.21} & \textbf{95.33} & \textbf{95.19} \\
+\rowcolor{blue!9}
+Deep-Dream / Qwen3.7-plus cross-judge & 96.91 & 92.91 & 77.08 & 93.46 & 94.22 \\
+\bottomrule
+\end{tabular}}
+
+\vspace{5pt}
+\textbf{(c) LongMemEval-S (\%)}\\[-2pt]
+\resizebox{0.90\textwidth}{!}{%
+\begin{tabular}{@{}lrrrrrrr@{}}
+\toprule
+System / answerer & Overall & Sess. pref. & Sess. asst. & Temporal & Multi-sess. & Knowl. upd. & Sess. user \\
+\midrule
+Full-context / GPT-4o-mini & 55.4 & 30.0 & 81.8 & 36.5 & 40.6 & 76.9 & 81.4 \\
+Zep / GPT-4o-mini & 63.8 & 53.3 & 75.0 & 54.1 & 47.4 & 74.4 & 92.9 \\
+Full-context / GPT-4o & 60.2 & 20.0 & 94.6 & 45.1 & 44.3 & 78.2 & 81.4 \\
+Zep / GPT-4o & 71.2 & 56.7 & 80.4 & 62.4 & 57.9 & 83.3 & 92.9 \\
+\rowcolor{blue!9}
+\textbf{Deep-Dream / Qwen3.7-plus} & \textbf{84.6} & 53.3 & \textbf{100.0} & \textbf{84.2} & \textbf{74.4} & \textbf{91.0} & \textbf{98.6} \\
+\bottomrule
+\end{tabular}}
+\caption{Comparison with published MemoryAgentBench, LoCoMo, and LongMemEval-S results. Each block lists its answerer, judge, subset, and test procedure; published rows are from Hu et al.~\citep{hu2025memoryagentbench}, Chhikara et al.~\citep{chhikara2025mem0}, and Rasmussen et al.~\citep{rasmussen2025zep}. In (b), the weighted column is recomputed from published category means under the 841/282/96/321 counts; cross-block rows use different protocols and are background, not controlled comparisons. Our MAB rows use the Align+ extended sample ($n{=}1074$, 14 task groups; \cref{app:sampling}); the same-model full-context row is a reference at 614/1{,}074 coverage, rather than a competing system, and its margin over the source-reading agent ($-7.9$ points, 95\% CI $[-11.9,-3.9]$) is analyzed in \cref{sec:ladder}. LRU has only $n{=}14$ questions, including $n{=}2$ from $\infty$Bench-Sum.}
+\label{tab:main-cross-system}
+\end{table*}

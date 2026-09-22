@@ -1,0 +1,61 @@
+\begin{table*}[t]
+\centering
+\scriptsize
+\setlength{\tabcolsep}{3.2pt}
+\renewcommand{\arraystretch}{1.06}
+\begin{minipage}[t]{0.47\textwidth}
+\centering
+\textbf{(a) LoCoMo binary-$J$ (\%)}\\[-2pt]
+\resizebox{\linewidth}{!}{%
+\begin{tabular}{lrrrrr}
+\toprule
+System & Single & Multi & Open & Temp. & Weighted \\
+\midrule
+\rowcolor{blue!9}
+\textbf{Deep-Dream (K3)} & \textbf{97.38} & \textbf{93.62} & \textbf{80.21} & \textbf{95.33} & \textbf{95.19} \\
+Deep-Dream$^\dagger$ (cross-judge) & 96.91 & 92.91 & 77.08 & 93.46 & 94.22 \\
+\midrule
+Mem0 & 67.13 & 51.15 & 72.93 & 55.51 & 62.14 \\
+Mem0$^g$ & 65.71 & 47.19 & 75.71 & 58.13 & 61.36 \\
+Zep & 61.70 & 41.35 & 76.60 & 49.31 & $\approx$56.32 \\
+LangMem & 62.23 & 47.92 & 71.12 & 23.43 & $\approx$52.08 \\
+OpenAI & 63.79 & 42.92 & 62.29 & 21.71 & $\approx$51.10 \\
+A-Mem$^*$ & 39.79 & 18.85 & 54.05 & 49.91 & $\approx$38.95 \\
+\bottomrule
+\end{tabular}}
+\end{minipage}
+\hfill
+\begin{minipage}[t]{0.51\textwidth}
+\centering
+\textbf{(b) LongMemEval-S (\%)}\\[-2pt]
+\resizebox{\linewidth}{!}{%
+\begin{tabular}{lrrrrrrr}
+\toprule
+System & Overall & Sess. pref. & Sess. asst. & Temporal & Multi-sess. & Knowl. upd. & Sess. user \\
+\midrule
+Full-ctx (4o-mini) & 55.4 & 30.0 & 81.8 & 36.5 & 40.6 & 76.9 & 81.4 \\
+Zep (4o-mini) & 63.8 & 53.3 & 75.0 & 54.1 & 47.4 & 74.4 & 92.9 \\
+Full-ctx (4o) & 60.2 & 20.0 & 94.6 & 45.1 & 44.3 & 78.2 & 81.4 \\
+Zep (4o) & 71.2 & 56.7 & 80.4 & 62.4 & 57.9 & 83.3 & 92.9 \\
+\rowcolor{blue!9}
+\textbf{Deep-Dream (Q.)} & \textbf{84.6} & 53.3 & \textbf{100.0} & \textbf{84.2} & \textbf{74.4} & \textbf{91.0} & \textbf{98.6} \\
+\bottomrule
+\end{tabular}}
+\vspace{3pt}
+
+\resizebox{\linewidth}{!}{%
+\begin{tabular}{lrrr}
+\toprule
+Answerer / system & Accuracy & Latency (s) & Avg. context \\
+\midrule
+GPT-4o-mini / Full-context & 55.4 & 31.30 & 115k \\
+GPT-4o-mini / Zep & 63.8 & 3.20 & 1.6k \\
+GPT-4o / Full-context & 60.2 & 28.90 & 115k \\
+GPT-4o / Zep & 71.2 & 2.58 & 1.6k \\
+Qwen3.7-plus / Deep-Dream & \textbf{84.6} & --- & --- \\
+\bottomrule
+\end{tabular}}
+\end{minipage}
+\caption{High-value external comparisons promoted from the appendix. (a) LoCoMo uses Mem0's $J$ scoring procedure on the same 1,540-question population; the Deep-Dream rows substitute Kimi-K3 as answerer and judge, with the dagger row independently cross-judged. Weighted values for published systems are recomputed from the reported category scores and the 841/282/96/321 category counts. (b) LongMemEval-S uses the published six-category breakdown; Deep-Dream uses Qwen3.7-plus answerer plus cross-judge, so the two blocks use their stated test conditions and are compared on their reported metrics.}
+\label{tab:cross-benchmark}
+\end{table*}

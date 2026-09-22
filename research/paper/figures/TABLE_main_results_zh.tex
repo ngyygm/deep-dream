@@ -1,0 +1,58 @@
+\begin{table*}[t]
+\centering
+\footnotesize
+\setlength{\tabcolsep}{4.5pt}
+\renewcommand{\arraystretch}{1.12}
+\begin{tabular*}{\textwidth}{@{\extracolsep{\fill}}lrrrrrrr@{}}
+\toprule
+ & \multicolumn{2}{c}{直接检索}
+ & \multicolumn{2}{c}{工具辅助读取}
+ & \multicolumn{2}{c}{原文读取}
+ & \multicolumn{1}{c}{Align+} \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}\cmidrule(lr){6-7}\cmidrule(lr){8-8}
+任务 / 域
+ & Base & Align+ & Base & Align+ & Base & Align+
+ & \shortstack{Align+\\增益} \\
+\midrule
+\rowcolor{blue!10}
+\multicolumn{8}{@{}l}{\textbf{AR：准确检索（Accurate Retrieval）}} \\
+SH-QA
+ & 54.0 & 48.0 & 84.0 & 72.0 & \textbf{94.0} & \underline{92.0} & 44.0 \\
+MH-QA$^{\ddagger}$
+ & -- & 22.0 & -- & \underline{42.0} & -- & \textbf{77.0} & -- \\
+LongMemEval-S$^{*}$
+ & 26.7 & 41.7 & 43.3 & 51.7 & \textbf{90.0} & \underline{88.3} & 46.6 \\
+EventQA
+ & \underline{90.3} & 89.7 & \underline{90.7} & 88.3 & \textbf{98.0} & \textbf{98.0} & 8.3 \\
+\midrule
+\rowcolor{green!10}
+\multicolumn{8}{@{}l}{\textbf{TTL：时序与测试时学习（Temporal and Test-time Learning）}} \\
+MCC, icl\_clinic150
+ & 4.0 & 2.0 & 3.0 & 2.0 & \underline{43.0} & \textbf{46.0} & 44.0 \\
+Recom$^{\ddagger}$
+ & -- & \underline{3.2} & -- & \underline{3.2} & -- & \textbf{59.8} & -- \\
+\midrule
+\rowcolor{orange!12}
+\multicolumn{8}{@{}l}{\textbf{LRU：长程理解（Long-range Understanding）}} \\
+$\infty$Bench-Sum$^{\dagger}$
+ & 0.0 & 0.0 & \underline{28.4} & \textbf{29.8} & 21.2 & 0.0 & 0.0 \\
+DetectiveQA
+ & 50.0 & \underline{66.7} & 50.0 & \textbf{83.3} & \textbf{83.3} & \textbf{83.3} & 16.6 \\
+\midrule
+\rowcolor{purple!10}
+\multicolumn{8}{@{}l}{\textbf{SF：选择性遗忘（Selective Forgetting）}} \\
+FC-SH
+ & \underline{68.0} & 66.0 & 67.0 & 63.0 & \textbf{90.0} & \textbf{90.0} & 24.0 \\
+FC-MH
+ & 2.0 & 3.0 & 4.0 & 4.0 & \underline{67.0} & \textbf{70.0} & 67.0 \\
+\midrule
+\rowcolor{gray!12}
+\textbf{Overall ($n=767$)}
+ & 30.3 & 32.4 & 37.6 & 40.7 & \textbf{66.9} & \underline{65.1} & 32.7 \\
+Overall ($n{=}1074$，扩展)
+ & -- & 33.3 & -- & 40.0 & -- & \textbf{71.0} & -- \\
+\bottomrule
+\end{tabular*}
+\caption{MemoryAgentBench；分数为官方分量分数 $\times100$。任务行与 Overall（$n{=}767$）行使用两个引擎共享的配对样本。$^{\ddagger}$ 标记 Align+ 引擎原地扩展到 $n{=}1074$ 时新增的两个任务组（RULER-421K 多跳问答与完整 Redial 推荐语料）；Base 运行冻结在配对样本上，且两个任务组都超出完整上下文行的严格字符预算（\cref{app:sampling}），因此没有同模型覆盖。Overall（$n{=}1074$）行即该扩展样本；两个样本的分数绝不相减。加粗/下划线为各任务与样本内的最佳/次佳，$^{*}$ 标记抽样的 LongMemEval-S，$^{\dagger}$ 标记配对样本的单例 $\infty$Bench-Sum 行（第二个任务组仅进入扩展样本，因此 LRU 仍是方向性的：配对 $n{=}7$、扩展 $14$）。}
+\label{tab:main-results}
+\end{table*}

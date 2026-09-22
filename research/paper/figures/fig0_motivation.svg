@@ -1,0 +1,126 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="470" viewBox="0 0 1440 470" role="img" aria-labelledby="title desc">
+<title id="title">Memory addressing and adaptive evidence reading</title><desc id="desc">Figure 1. Fixed top-k retrieval and query-time progressive disclosure. The graph addresses source spans; the agent can return to search after a read. The provenance gate checks read identifiers, not answer correctness.</desc>
+<defs>
+<marker id="blue" markerUnits="userSpaceOnUse" viewBox="0 0 12 10" refX="10" refY="5" markerWidth="12" markerHeight="10" orient="auto"><path d="M0 0 L11 5 L0 10 Z" fill="#24669B"/></marker>
+<marker id="teal" markerUnits="userSpaceOnUse" viewBox="0 0 12 10" refX="10" refY="5" markerWidth="12" markerHeight="10" orient="auto"><path d="M0 0 L11 5 L0 10 Z" fill="#18888B"/></marker>
+<marker id="rose" markerUnits="userSpaceOnUse" viewBox="0 0 12 10" refX="10" refY="5" markerWidth="12" markerHeight="10" orient="auto"><path d="M0 0 L11 5 L0 10 Z" fill="#B64C72"/></marker>
+<marker id="ink" markerUnits="userSpaceOnUse" viewBox="0 0 12 10" refX="10" refY="5" markerWidth="12" markerHeight="10" orient="auto"><path d="M0 0 L11 5 L0 10 Z" fill="#193D55"/></marker>
+<marker id="muted" markerUnits="userSpaceOnUse" viewBox="0 0 12 10" refX="10" refY="5" markerWidth="12" markerHeight="10" orient="auto"><path d="M0 0 L11 5 L0 10 Z" fill="#5C7282"/></marker>
+</defs>
+<rect width="1440" height="470" fill="white"/>
+<g id="fixed-read">
+<rect x="10" y="10" width="450" height="442" rx="25" fill="#F3F6F8" stroke="none" stroke-width="1.8"/>
+<text x="35" y="52" font-family="Arial, Helvetica, sans-serif" font-size="27" font-weight="700" fill="#24669B" text-anchor="start">a</text>
+<text x="72" y="52" font-family="Arial, Helvetica, sans-serif" font-size="29" font-weight="700" fill="#193D55" text-anchor="start">Fixed read</text>
+<text x="35" y="86" font-family="Arial, Helvetica, sans-serif" font-size="21" font-weight="400" fill="#5C7282" text-anchor="start">One retrieval sets the answer context</text>
+<ellipse cx="98" cy="278" rx="61" ry="13" fill="#E1E8ED"/>
+<g transform="translate(70.7 140) scale(0.85)">
+<path d="M3 3 H58 L78 23 V99 H3 Z" fill="#EAF2F9" stroke="#24669B" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M58 3 V23 H78" fill="none" stroke="#24669B" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M16 36 L62 36" fill="none" stroke="#24669B" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M16 49 L64 49" fill="none" stroke="#24669B" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M16 62 L64 62" fill="none" stroke="#24669B" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M16 76 L53 76" fill="none" stroke="#24669B" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+</g>
+<g transform="translate(61.35 149.35) scale(0.85)">
+<path d="M3 3 H58 L78 23 V99 H3 Z" fill="#FFFFFF" stroke="#24669B" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M58 3 V23 H78" fill="none" stroke="#24669B" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M16 36 L62 36" fill="none" stroke="#24669B" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M16 49 L64 49" fill="none" stroke="#24669B" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M16 62 L64 62" fill="none" stroke="#24669B" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M16 76 L53 76" fill="none" stroke="#24669B" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+</g>
+<g transform="translate(52 158.7) scale(0.85)">
+<path d="M3 3 H58 L78 23 V99 H3 Z" fill="#FFFFFF" stroke="#24669B" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M58 3 V23 H78" fill="none" stroke="#24669B" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M16 36 L62 36" fill="none" stroke="#24669B" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M16 49 L64 49" fill="none" stroke="#24669B" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M16 62 L64 62" fill="none" stroke="#24669B" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M16 76 L53 76" fill="none" stroke="#24669B" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+</g>
+<path d="M151 210 L197 210" fill="none" stroke="#24669B" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#blue)"/>
+<rect x="213" y="157" width="82" height="105" rx="8" fill="#FFFFFF" stroke="#24669B" stroke-width="2.4"/>
+<path d="M229 177 L280 177" fill="none" stroke="#8EAFC8" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M229 193 L272 193" fill="none" stroke="#8EAFC8" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M229 209 L278 209" fill="none" stroke="#8EAFC8" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M229 225 L266 225" fill="none" stroke="#8EAFC8" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M229 241 L275 241" fill="none" stroke="#8EAFC8" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M309 210 L347 210" fill="none" stroke="#24669B" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#blue)"/>
+<path d="M365 175 H419 Q431 175 431 187 V225 Q431 237 419 237 H385 L365 254 V237 Q353 237 353 225 V187 Q353 175 365 175" fill="#FFFFFF" stroke="#24669B" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M366 194 L416 194" fill="none" stroke="#24669B" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M366 211 L406 211" fill="none" stroke="#24669B" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="98" y="318" font-family="Arial, Helvetica, sans-serif" font-size="21" font-weight="700" fill="#193D55" text-anchor="middle">Documents</text>
+<text x="254" y="318" font-family="Arial, Helvetica, sans-serif" font-size="21" font-weight="700" fill="#193D55" text-anchor="middle">Top-k spans</text>
+<text x="393" y="318" font-family="Arial, Helvetica, sans-serif" font-size="21" font-weight="700" fill="#193D55" text-anchor="middle">Answer</text>
+<path d="M40 352 L430 352" fill="none" stroke="#D5E0E6" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="40" y="390" font-family="Arial, Helvetica, sans-serif" font-size="23" font-weight="700" fill="#24669B" text-anchor="start">Fixed evidence budget</text>
+<text x="40" y="423" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="400" fill="#5C7282" text-anchor="start">No feedback to select another read</text>
+</g>
+<g id="adaptive-read">
+<rect x="478" y="10" width="952" height="442" rx="25" fill="#F1F8F8" stroke="none" stroke-width="1.8"/>
+<text x="503" y="52" font-family="Arial, Helvetica, sans-serif" font-size="27" font-weight="700" fill="#18888B" text-anchor="start">b</text>
+<text x="540" y="52" font-family="Arial, Helvetica, sans-serif" font-size="29" font-weight="700" fill="#193D55" text-anchor="start">Deep-Dream</text>
+<rect x="1073" y="29" width="328" height="32" rx="16" fill="#DDEEEE" stroke="none" stroke-width="1.8"/>
+<text x="1237.0" y="52" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="700" fill="#18888B" text-anchor="middle">Agent-controlled read</text>
+<text x="503" y="86" font-family="Arial, Helvetica, sans-serif" font-size="21" font-weight="400" fill="#5C7282" text-anchor="start">Concepts locate evidence; the agent decides what to open next</text>
+<ellipse cx="612" cy="281" rx="99" ry="13" fill="#DCECEC"/>
+<g transform="translate(543 160) scale(0.95)">
+<path d="M0 43 L37 6" fill="none" stroke="#18888B" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M0 43 L42 80" fill="none" stroke="#18888B" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M37 6 L81 43" fill="none" stroke="#18888B" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M42 80 L81 43" fill="none" stroke="#18888B" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M81 43 L121 5" fill="none" stroke="#18888B" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M81 43 L132 78" fill="none" stroke="#18888B" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<circle cx="0" cy="43" r="13" fill="#EAF2F9" stroke="#24669B" stroke-width="2.6"/>
+<circle cx="37" cy="6" r="15" fill="#E7F4F2" stroke="#18888B" stroke-width="2.6"/>
+<circle cx="42" cy="80" r="12" fill="#EAF2F9" stroke="#24669B" stroke-width="2.6"/>
+<circle cx="81" cy="43" r="18" fill="#E7F4F2" stroke="#18888B" stroke-width="2.6"/>
+<circle cx="121" cy="5" r="13" fill="#EAF2F9" stroke="#24669B" stroke-width="2.6"/>
+<circle cx="132" cy="78" r="13" fill="#E7F4F2" stroke="#18888B" stroke-width="2.6"/>
+</g>
+<path d="M701 210 L775 210" fill="none" stroke="#18888B" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#teal)"/>
+<text x="738" y="188" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="400" fill="#18888B" text-anchor="middle">locate</text>
+<g transform="translate(793 153) scale(0.96)">
+<path d="M3 3 H58 L78 23 V99 H3 Z" fill="#FFFFFF" stroke="#B64C72" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M58 3 V23 H78" fill="none" stroke="#B64C72" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<rect x="14" y="56" width="53" height="13" rx="2" fill="#F8EBF0" stroke="none" stroke-width="1.8"/>
+<path d="M16 36 L62 36" fill="none" stroke="#B64C72" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M16 49 L64 49" fill="none" stroke="#B64C72" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M16 62 L64 62" fill="none" stroke="#B64C72" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M16 76 L53 76" fill="none" stroke="#B64C72" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+</g>
+<g transform="translate(881 153) scale(0.96)">
+<path d="M3 3 H58 L78 23 V99 H3 Z" fill="#FFFFFF" stroke="#B64C72" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M58 3 V23 H78" fill="none" stroke="#B64C72" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<rect x="14" y="56" width="53" height="13" rx="2" fill="#F8EBF0" stroke="none" stroke-width="1.8"/>
+<path d="M16 36 L62 36" fill="none" stroke="#B64C72" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M16 49 L64 49" fill="none" stroke="#B64C72" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M16 62 L64 62" fill="none" stroke="#B64C72" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M16 76 L53 76" fill="none" stroke="#B64C72" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+</g>
+<path d="M973 210 L1033 210" fill="none" stroke="#18888B" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#teal)"/>
+<circle cx="1081" cy="210" r="37.2" fill="#E7F4F2" stroke="#18888B" stroke-width="2.3"/>
+<path d="M1063.95 210 l12.4 12.4 l24.8 -29.45" fill="none" stroke="#18888B" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M1129 210 L1193 210" fill="none" stroke="#18888B" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#teal)"/>
+<g transform="translate(1234 147) scale(1.02)">
+<path d="M3 3 H58 L78 23 V99 H3 Z" fill="#FFFFFF" stroke="#24669B" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M58 3 V23 H78" fill="none" stroke="#24669B" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M16 36 L62 36" fill="none" stroke="#24669B" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M16 49 L64 49" fill="none" stroke="#24669B" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M16 62 L64 62" fill="none" stroke="#24669B" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M16 76 L53 76" fill="none" stroke="#24669B" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+</g>
+<circle cx="1320" cy="242" r="21.6" fill="#E7F4F2" stroke="#18888B" stroke-width="2.3"/>
+<path d="M1310.1 242 l7.2 7.2 l14.4 -17.1" fill="none" stroke="#18888B" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="609" y="314" font-family="Arial, Helvetica, sans-serif" font-size="21" font-weight="700" fill="#193D55" text-anchor="middle">Concept + relation graph</text>
+<text x="873" y="314" font-family="Arial, Helvetica, sans-serif" font-size="21" font-weight="700" fill="#193D55" text-anchor="middle">Source spans</text>
+<text x="1082" y="314" font-family="Arial, Helvetica, sans-serif" font-size="21" font-weight="700" fill="#193D55" text-anchor="middle">Read-ID check</text>
+<text x="1280" y="314" font-family="Arial, Helvetica, sans-serif" font-size="21" font-weight="700" fill="#193D55" text-anchor="middle">Cited answer</text>
+<text x="1082" y="339" font-family="Arial, Helvetica, sans-serif" font-size="17" font-weight="400" fill="#5C7282" text-anchor="middle">provenance only</text>
+<path d="M873 333 V375 Q873 387 860 387 H621 Q608 387 608 373 V341" fill="none" stroke="#18888B" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="7 6" marker-end="url(#teal)"/>
+<rect x="670" y="367" width="173" height="36" rx="8" fill="#F1F8F8" stroke="none" stroke-width="1.8"/>
+<text x="756" y="391" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="700" fill="#18888B" text-anchor="middle">Need more evidence?</text>
+<text x="1113" y="397" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="700" fill="#18888B" text-anchor="middle">Search  /  expand  /  read  /  stop</text>
+<text x="1113" y="426" font-family="Arial, Helvetica, sans-serif" font-size="19" font-weight="400" fill="#5C7282" text-anchor="middle">Read budget follows the question</text>
+</g>
+</svg>

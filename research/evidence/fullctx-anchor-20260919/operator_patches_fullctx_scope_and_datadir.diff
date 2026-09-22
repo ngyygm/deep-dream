@@ -1,0 +1,72 @@
+diff --git a/research/benchmark/cli.py b/research/benchmark/cli.py
+index c75cd2b..4b652f8 100644
+--- a/research/benchmark/cli.py
++++ b/research/benchmark/cli.py
+@@ -369,6 +369,9 @@ def answer(ctx: click.Context, run_dir: Path, config_path: Path | None,
+ @click.option("--answer-profile", type=click.Choice(["legacy", "normalized-v1"]),
+               default="normalized-v1", show_default=True)
+ @click.option("--question-id", "question_ids", multiple=True)
++@click.option("--scope-id", "scope_ids", multiple=True,
++              help="Restrict to the given scopes (e.g. a run's frozen sample); "
++                   "default takes every question the dataset ships.")
+ @click.option("--limit", type=click.IntRange(min=1), default=None)
+ @click.option("--qa-workers", type=click.IntRange(min=1, max=16), default=2, show_default=True)
+ @click.option("--strict-fit", is_flag=True,
+@@ -377,13 +380,14 @@ def answer(ctx: click.Context, run_dir: Path, config_path: Path | None,
+ @click.pass_context
+ def fullctx_evaluate(ctx: click.Context, run_dir: Path, config_path: Path | None,
+                      result_tag: str, answer_profile: str, question_ids: tuple[str, ...],
+-                     limit: int | None, qa_workers: int, strict_fit: bool, resume: bool) -> None:
++                     scope_ids: tuple[str, ...], limit: int | None, qa_workers: int,
++                     strict_fit: bool, resume: bool) -> None:
+     """Answer every question from the full visible corpus (no memory system)."""
+     from research.benchmark.full_context import fullctx_evaluate_benchmark
+     result = fullctx_evaluate_benchmark(
+         run_dir, config_path or _root_config(ctx), result_tag=result_tag,
+-        answer_profile=answer_profile, question_ids=question_ids, limit=limit,
+-        resume=resume, qa_workers=qa_workers, strict_fit=strict_fit,
++        answer_profile=answer_profile, question_ids=question_ids, scope_ids=scope_ids,
++        limit=limit, resume=resume, qa_workers=qa_workers, strict_fit=strict_fit,
+     )
+     _emit(ctx, result, "Full-context anchor evaluation completed")
+ 
+diff --git a/research/benchmark/full_context.py b/research/benchmark/full_context.py
+index 0c876d4..7cb0fce 100644
+--- a/research/benchmark/full_context.py
++++ b/research/benchmark/full_context.py
+@@ -23,7 +23,7 @@ from pathlib import Path
+ import time
+ from typing import Any, Iterable
+ 
+-from .datasets import BenchmarkItem, sha256_file
++from .datasets import DATASETS, BenchmarkItem, sha256_file
+ from .reporting import append_jsonl, latest_by_question, read_jsonl, write_json
+ from .runner import (
+     AnswerGenerator, _artifact_track, _base_record, _load_config,
+@@ -58,6 +58,7 @@ def _prompt_chars(contexts: list[dict[str, Any]]) -> int:
+ def fullctx_evaluate_benchmark(
+     run_dir: Path, config_path: Path, *, result_tag: str = "kimik3-v1",
+     answer_profile: str = "normalized-v1", question_ids: Iterable[str] = (),
++    scope_ids: Iterable[str] = (),
+     limit: int | None = None, resume: bool = False, qa_workers: int = 2,
+     strict_fit: bool = False,
+ ) -> dict[str, Any]:
+@@ -66,9 +67,16 @@ def fullctx_evaluate_benchmark(
+     manifest_path = run_dir / "run_manifest.json"
+     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+     config = _load_config(config_path)
++    # dataset_path may sit at the data root (flat files) or one level down
++    # (memoryagentbench/manifest.json); walk up until the registry filename
++    # resolves, so the data dir is derived instead of assumed.
++    dataset_rel = DATASETS[manifest["dataset"]]["filename"]
++    data_dir = Path(manifest["dataset_path"]).resolve().parent
++    while data_dir != data_dir.parent and not (data_dir / dataset_rel).exists():
++        data_dir = data_dir.parent
+     items, dataset_path = _selected_items(
+-        manifest["dataset"], Path(manifest["dataset_path"]).parent,
+-        question_ids=question_ids,
++        manifest["dataset"], data_dir, question_ids=question_ids,
++        scope_ids=scope_ids,
+     )
+     if sha256_file(dataset_path) != manifest["dataset_sha256"]:
+         raise ValueError("Dataset hash changed; refusing full-context evaluation")

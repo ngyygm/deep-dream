@@ -1,0 +1,30 @@
+Use case: infographic-diagram / style-transfer.
+Asset type: Figure 1, a compact motivation inset for the first page of an ICLR research paper.
+
+Primary request: completely redesign the supplied old first-page motivation diagram (second image), using the FIRST image, the detailed Deep-Dream WRITE / STORE / READ architecture, as the exact visual-style reference. Create a restrained, beautifully organized companion diagram, not a miniature copy of the detailed architecture. English labels only.
+
+Input images:
+1. Style reference: detailed Deep-Dream architecture. Match its crisp navy line icons, small colored graph nodes, thin blue/teal rounded panel outlines, very pale fills, circular section badges, clean condensed sans-serif typography, white document icons with blue lines, and disciplined orthogonal arrows.
+2. Content to replace: old two-panel evidence-path diagram. Preserve only its conceptual comparison. Discard its layout, thick outlines, giant bold text, unused blank areas, slogan decorations and redundant boxes.
+
+Canvas: wide landscape, approximately 2.6:1 aspect ratio, high resolution for print, pure white background, tightly composed but generous internal spacing. All content must be readable at 6.3 inches wide. Render two horizontal neighboring comparison panels: left about 38% width and right about 60%, with a narrow gutter. Use no large overall title or question banner. No external caption. Avoid excessive text.
+
+LEFT PANEL:
+Small circular badge '1' and header 'One-shot retrieval', navy with muted gray-blue accent.
+Inside show one clean left-to-right chain of three purposeful scientific line icons and short labels:
+document stack 'Source corpus' -> selected document stack 'Top-k chunks' -> response page 'Answer'.
+Below this chain a quiet gray-blue line of text: 'One retrieval. Fixed context.'
+A thin enclosure around the selected chunks and answer communicates the fixed evidence boundary; label subtly 'Fixed evidence budget'.
+Do not claim all RAG systems behave this way. This explicitly depicts one-shot retrieval only.
+
+RIGHT PANEL:
+Small circular badge '2' and header 'Deep-Dream', navy and teal matching the reference. Small subtitle 'Agent-controlled disclosure'.
+Inside show a clear horizontal evidence path with three stages:
+(a) compact concept-and-relation graph: 5 or 6 small blue/teal nodes joined by thin directed edges, with label 'Concepts + relations' and smaller 'Navigate'.
+(b) two source-document line icons, one with 2 highlighted source lines; label 'Verbatim source spans' and smaller 'Read'. Include a tiny source locator 'notes.md:12-28' below, as an illustrative locator.
+(c) compact source page with green check and label 'Cited answer'. Before the answer, show a modest green outlined gate/check icon labeled 'Provenance gate' and small text 'Read + traceable'. Gate checks provenance, not factual correctness.
+Thin directional arrows connect graph -> source spans -> provenance gate -> cited answer. Manage geometry so no labels overlap and labels do not sit on arrows.
+Below these stages, depict agent choice as an actual feedback loop: a small navy outlined decision box 'Read more or answer' connected to the read stage; a dashed navy return arrow labeled 'More evidence' loops back from this decision to the graph / source lookup. A short 'Ready' branch flows to the provenance gate and cited answer. The loop must be visually legible and clearly communicate optional adaptive exploration, not a fixed compulsory chain.
+At the bottom of the right panel place a short, quiet teal statement 'Navigate broadly. Verify in the source.' Do not add a big footer banner.
+
+Visual design: reference-quality academic figure, tidy rounded rectangles, 1-pixel-ish colored outlines, restrained blue/teal palette with tiny rose accents allowed only on highlighted source lines, no heavy black, no large saturated blocks. Use small simple scientific pictograms as in the reference architecture. Consistent baseline and spacing. Headers larger than labels but never shouting. White background, no gradients, no textures, no shadows, no glossy 3D, no cute robots, no decorative stars, no poster-like marketing aesthetic. No numerical experimental results or plots. Typography sharp and correctly spelled. All arrows deliberate, all content within boundaries.

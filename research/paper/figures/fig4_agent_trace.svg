@@ -1,0 +1,197 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="5.5in" height="2.75in" viewBox="0 0 1600 800" role="img" aria-labelledby="title desc">
+  <title id="title">Deep-Dream: from concept navigation to a source-supported answer</title>
+  <desc id="desc">A real LongMemEval memory-tool agent trace, question 2b8f3739. Memory exploration surfaces the Harvest Festival Market family and a separate semantic source hit. Concept tracing returns four episode pointers across documents D1 and D2. The agent reads D2 and D3. Source statements support 120 + 225 + 20 times 7.50 = 495 dollars. Seven successful tool calls precede a malformed response on step eight; retrieval ends at the step limit and a separate answerer returns 495 dollars. Document labels are display aliases, not version numbers.</desc>
+  <metadata>Source: longmemeval-kimik3-full-v2; question_id: 2b8f3739; track: skill-agent (paper label: Memory-tool agent); D1=answer_23759615_1; D2=answer_23759615_2; D3=answer_23759615_3. Values are condensed from turn 1 of each document. No raster images, external fonts, scripts or proprietary illustration assets.</metadata>
+  <defs>
+    <style>
+      text { font-family: Arial, Helvetica, sans-serif; fill: #273B49; }
+      .heading { font-size: 29px; font-weight: 700; }
+      .label { font-size: 25px; }
+      .small { font-size: 24.5px; }
+      .muted { fill: #627783; }
+      .blue { fill: #2468A8; }
+      .teal { fill: #267E83; }
+      .coral { fill: #BF496B; }
+      .bold { font-weight: 700; }
+      .outline { stroke: #4C6779; stroke-width: 2.8; stroke-linejoin: round; stroke-linecap: round; }
+      .link { fill: none; stroke: #5B9299; stroke-width: 3; stroke-linecap: round; }
+      .source-link { fill: none; stroke: #67969E; stroke-width: 2.5; stroke-dasharray: 7 7; stroke-linecap: round; }
+    </style>
+    <marker id="arrow-teal" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0 L9 4.5 L0 9 Z" fill="#4D888F"/></marker>
+    <marker id="arrow-blue" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0 L10 5 L0 10 Z" fill="#2468A8"/></marker>
+    <marker id="arrow-coral" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0 L10 5 L0 10 Z" fill="#BF496B"/></marker>
+    <symbol id="magnifier" viewBox="0 0 70 70">
+      <circle cx="27" cy="27" r="20" fill="#E5F1F6" stroke="#2468A8" stroke-width="4"/>
+      <path d="M41 42 L61 62" stroke="#2468A8" stroke-width="7" stroke-linecap="round"/>
+      <path d="M14 25 Q15 15 25 14" fill="none" stroke="white" stroke-width="4" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="herbs" viewBox="0 0 94 94">
+      <path d="M46 81 Q41 47 27 18 M46 81 Q52 47 68 17 M46 81 L48 11" fill="none" stroke="#548674" stroke-width="3.5" stroke-linecap="round"/>
+      <g fill="#94C5AD" stroke="#548674" stroke-width="2">
+        <path d="M38 47 Q13 48 13 29 Q31 28 38 47Z"/><path d="M34 33 Q19 26 22 12 Q38 14 34 33Z"/>
+        <path d="M48 29 Q36 17 45 5 Q60 12 48 29Z"/><path d="M48 48 Q59 27 72 36 Q69 53 48 48Z"/>
+        <path d="M59 40 Q55 18 75 12 Q86 31 59 40Z"/>
+      </g>
+      <path d="M34 68 L57 71 M33 73 L58 75" fill="none" stroke="#C69C65" stroke-width="5" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="jam" viewBox="0 0 94 94">
+      <path d="M23 25 L23 77 Q23 85 31 85 L67 85 Q75 85 75 77 L75 25Z" fill="#F3D5DA" stroke="#966A78" stroke-width="2.8"/>
+      <path d="M28 39 L70 39 L70 77 Q70 81 65 81 L33 81 Q28 81 28 77Z" fill="#D893A7"/>
+      <path d="M22 19 L76 19 L76 31 L22 31Z" fill="#C5D9DF" stroke="#627E8B" stroke-width="2.8"/>
+      <path d="M29 20 L29 30 M40 20 L40 30 M51 20 L51 30 M62 20 L62 30 M70 20 L70 30" stroke="#8FAAB3" stroke-width="2"/>
+      <rect x="31" y="48" width="35" height="25" rx="4" fill="#FFF9F2"/>
+      <path d="M46 57 Q38 52 39 63 Q45 72 50 63 Q54 51 46 57" fill="#BF496B"/>
+      <path d="M46 56 L49 51" stroke="#548674" stroke-width="2.5" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="plant" viewBox="0 0 94 94">
+      <path d="M48 63 L48 16 M48 46 L30 30 M48 37 L64 22" fill="none" stroke="#548674" stroke-width="3" stroke-linecap="round"/>
+      <path d="M47 28 Q34 9 49 3 Q66 15 47 28Z M43 45 Q16 43 20 24 Q41 24 43 45Z M52 36 Q54 12 77 17 Q76 37 52 36Z" fill="#9DCBB0" stroke="#548674" stroke-width="2"/>
+      <path d="M25 61 L71 61 L65 86 L32 86Z" fill="#D5B494" stroke="#9D7C60" stroke-width="2.5"/>
+      <path d="M23 56 L73 56 L73 65 L23 65Z" fill="#E8CFB5" stroke="#9D7C60" stroke-width="2.5"/>
+    </symbol>
+    <symbol id="agent" viewBox="0 0 100 90">
+      <path d="M49 24 L49 12" stroke="#4C6779" stroke-width="3"/>
+      <circle cx="49" cy="9" r="5" fill="#8CBCC4" stroke="#4C6779" stroke-width="2"/>
+      <path d="M20 31 Q20 23 29 23 L71 23 Q80 23 80 31 L80 64 Q80 72 71 72 L29 72 Q20 72 20 64Z" fill="#ECF3F7" stroke="#4C6779" stroke-width="3"/>
+      <path d="M11 39 L11 55 M89 39 L89 55" stroke="#4C6779" stroke-width="5" stroke-linecap="round"/>
+      <circle cx="37" cy="43" r="4.5" fill="#2468A8"/><circle cx="63" cy="43" r="4.5" fill="#2468A8"/>
+      <path d="M38 59 L62 59" stroke="#4C6779" stroke-width="3" stroke-linecap="round"/>
+    </symbol>
+  </defs>
+
+  <rect width="5.5in" height="2.75in" fill="white"/>
+
+  <!-- Question: one reading entry point, with no enclosing workflow container. -->
+  <g id="question">
+    <use xlink:href="#agent" x="30" y="9" width="92" height="83"/>
+    <text x="144" y="42" font-size="30" font-weight="700">What is the total amount of money I earned</text>
+    <text x="144" y="79" font-size="30" font-weight="700">from selling my products at the markets?</text>
+    <text x="1560" y="41" class="small muted" text-anchor="end">LongMemEval · 2b8f3739</text>
+    <text x="1560" y="77" class="small muted" text-anchor="end">Recorded memory-tool agent run</text>
+    <path d="M40 109 H1560" stroke="#D8E3E9" stroke-width="2"/>
+  </g>
+
+  <g id="panel-labels">
+    <text x="40" y="157" class="heading teal">a  Navigate memory</text>
+    <text x="650" y="157" class="heading blue">b  Open source evidence</text>
+    <text x="1280" y="157" class="heading coral">c  Combine facts</text>
+  </g>
+
+  <!-- One selected concept family with four actual provenance records. -->
+  <g id="concept-and-provenance">
+    <path d="M135 210 C221 172 358 191 420 282 C451 340 421 448 364 492 C297 547 166 507 130 426 C99 355 85 246 135 210Z" fill="#F1F7F6"/>
+    <use xlink:href="#magnifier" x="53" y="242" width="69" height="69"/>
+    <path d="M115 281 Q143 281 158 300" class="link" marker-end="url(#arrow-teal)"/>
+    <text x="52" y="214" class="small teal">Explore</text>
+    <text x="168" y="217" class="small muted">Selected concept family</text>
+
+    <path d="M285 296 Q355 234 447 231 M290 328 Q368 354 447 369 M283 349 Q367 412 447 414 M270 365 Q349 464 447 459" class="link"/>
+    <circle cx="230" cy="325" r="68" fill="#D8ECE7" stroke="#478B87" stroke-width="3"/>
+    <circle cx="211" cy="296" r="8" fill="#F2F8F5"/>
+    <text x="230" y="310" class="label bold teal" text-anchor="middle">Harvest</text>
+    <text x="230" y="339" class="label bold teal" text-anchor="middle">Festival</text>
+    <text x="230" y="368" class="label bold teal" text-anchor="middle">Market</text>
+    <text x="330" y="270" class="small teal">Trace</text>
+
+    <g fill="#F2F7FB" stroke="#638FAC" stroke-width="2.5">
+      <circle cx="470" cy="231" r="22"/>
+      <circle cx="470" cy="369" r="22"/>
+      <circle cx="470" cy="414" r="22"/>
+      <circle cx="470" cy="459" r="22"/>
+    </g>
+    <g class="small blue" text-anchor="middle">
+      <text x="470" y="239">e1</text><text x="470" y="377">e2</text>
+      <text x="470" y="422">e3</text><text x="470" y="467">e4</text>
+    </g>
+    <path d="M494 231 Q565 231 629 260" class="source-link" marker-end="url(#arrow-teal)"/>
+    <path d="M494 369 Q566 369 629 407 M494 414 H629 M494 459 Q566 459 629 421" class="source-link" marker-end="url(#arrow-teal)"/>
+    <text x="157" y="446" class="small teal">4 episode pointers</text>
+    <text x="157" y="478" class="small muted">across 2 documents</text>
+
+    <!-- This source is found separately; it is not invented as a third family version. -->
+    <path d="M87 316 C81 407 82 549 143 576 H629" fill="none" stroke="#2468A8" stroke-width="2.8" stroke-dasharray="7 7" marker-end="url(#arrow-blue)"/>
+    <rect x="146" y="542" width="416" height="31" fill="white"/>
+    <text x="151" y="565" class="small blue">Separate semantic source hit</text>
+    <text x="151" y="609" class="small muted">Exploration also locates D3</text>
+  </g>
+
+  <!-- Folded source sheets and original vector objects, not nested flowchart boxes. -->
+  <g id="document-d1">
+    <path d="M645 206 H1158 L1190 238 V323 H645Z" fill="#FAFCFD" class="outline"/>
+    <path d="M1158 206 V238 H1190" fill="#E4EEF4" class="outline"/>
+    <path d="M646 224 V305" stroke="#759ABD" stroke-width="5"/>
+    <use xlink:href="#herbs" x="658" y="223" width="88" height="88"/>
+    <text x="760" y="237" class="small bold blue">D1 · turn 1</text>
+    <text x="760" y="271" class="label">12 bunches of herbs</text>
+    <text x="760" y="305" class="small muted">Source returned by trace</text>
+    <path d="M1044 274 H1175" stroke="#C8DEEA" stroke-width="27"/>
+    <text x="1105" y="285" font-size="39" font-weight="700" fill="#2468A8" text-anchor="middle">$120</text>
+  </g>
+
+  <g id="document-d2">
+    <path d="M645 357 H1158 L1190 389 V474 H645Z" fill="#FAFCFD" class="outline"/>
+    <path d="M1158 357 V389 H1190" fill="#E4EEF4" class="outline"/>
+    <path d="M646 375 V456" stroke="#759ABD" stroke-width="5"/>
+    <use xlink:href="#jam" x="658" y="374" width="88" height="88"/>
+    <text x="760" y="388" class="small bold blue">D2 · turn 1</text>
+    <text x="760" y="422" class="label">15 jars of jam</text>
+    <text x="760" y="456" class="small muted">Session opened in call 6</text>
+    <path d="M1044 425 H1175" stroke="#C8DEEA" stroke-width="27"/>
+    <text x="1105" y="436" font-size="39" font-weight="700" fill="#2468A8" text-anchor="middle">$225</text>
+  </g>
+
+  <g id="document-d3">
+    <path d="M645 508 H1158 L1190 540 V625 H645Z" fill="#FAFCFD" class="outline"/>
+    <path d="M1158 508 V540 H1190" fill="#E4EEF4" class="outline"/>
+    <path d="M646 526 V607" stroke="#759ABD" stroke-width="5"/>
+    <use xlink:href="#plant" x="658" y="525" width="88" height="88"/>
+    <text x="760" y="539" class="small bold blue">D3 · turn 1</text>
+    <text x="760" y="573" class="label">20 potted herbs</text>
+    <text x="760" y="607" class="small muted">Session opened in call 7</text>
+    <path d="M1044 563 H1175" stroke="#C8DEEA" stroke-width="27"/>
+    <text x="1105" y="574" font-size="35" font-weight="700" fill="#2468A8" text-anchor="middle">$7.50</text>
+    <text x="1105" y="606" class="small muted" text-anchor="middle">per plant</text>
+  </g>
+
+  <!-- Evidence is passed to the separate recorded answerer. -->
+  <g id="answerer">
+    <path d="M1209 259 Q1230 259 1230 284 V389 Q1230 414 1252 414 Q1230 414 1230 439 V550 Q1230 575 1209 575" fill="none" stroke="#B1C3CE" stroke-width="2.8"/>
+    <path d="M1253 414 H1280" fill="none" stroke="#BF496B" stroke-width="3" marker-end="url(#arrow-coral)"/>
+    <use xlink:href="#agent" x="1390" y="210" width="101" height="91"/>
+    <text x="1441" y="326" class="small muted" text-anchor="middle">Separate answerer</text>
+    <text x="1435" y="383" font-size="31" text-anchor="middle">120 + 225</text>
+    <text x="1435" y="425" font-size="31" text-anchor="middle">+ (20 × 7.50)</text>
+    <path d="M1305 450 H1566" stroke="#E4B5C2" stroke-width="2"/>
+    <ellipse cx="1435" cy="498" rx="132" ry="46" fill="#F9E9EE"/>
+    <text x="1435" y="516" font-size="57" font-weight="700" fill="#BF496B" text-anchor="middle">$495</text>
+    <text x="1435" y="582" class="small bold coral" text-anchor="middle">Matches the reference</text>
+    <text x="1435" y="615" class="small muted" text-anchor="middle">Three source records</text>
+  </g>
+
+  <!-- A compact chronological strip preserves all executed calls and the real stop condition. -->
+  <g id="observed-sequence">
+    <path d="M40 662 H1560" stroke="#D8E3E9" stroke-width="2"/>
+    <text x="40" y="695" class="small bold muted">Recorded sequence</text>
+    <path d="M303 720 H1451" stroke="#CFDDE3" stroke-width="3"/>
+    <g fill="white" stroke="#6F919F" stroke-width="2.5">
+      <circle cx="303" cy="720" r="18"/><circle cx="467" cy="720" r="18"/>
+      <circle cx="631" cy="720" r="18"/><circle cx="795" cy="720" r="18"/>
+      <circle cx="959" cy="720" r="18"/><circle cx="1123" cy="720" r="18"/>
+      <circle cx="1287" cy="720" r="18"/>
+    </g>
+    <circle cx="1451" cy="720" r="18" fill="#FAEEF1" stroke="#C17C92" stroke-width="2.5"/>
+    <g class="small bold" text-anchor="middle">
+      <text x="303" y="728">1</text><text x="467" y="728">2</text><text x="631" y="728">3</text>
+      <text x="795" y="728">4</text><text x="959" y="728">5</text><text x="1123" y="728">6</text>
+      <text x="1287" y="728">7</text><text x="1451" y="728" fill="#BF496B">8</text>
+    </g>
+    <g class="small" text-anchor="middle">
+      <text x="303" y="767">Search: 0</text><text x="467" y="767">Explore</text><text x="631" y="767">Trace</text>
+      <text x="795" y="767">Search: 0</text><text x="959" y="767">Explore</text><text x="1123" y="767">Read D2</text>
+      <text x="1287" y="767">Read D3</text><text x="1451" y="767" fill="#BF496B">Step limit*</text>
+    </g>
+    <text x="40" y="740" class="small muted">7 tool calls</text>
+    <text x="40" y="772" class="small muted">13.96 s retrieval</text>
+  </g>
+</svg>

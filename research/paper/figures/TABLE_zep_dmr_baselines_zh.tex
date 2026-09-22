@@ -1,0 +1,20 @@
+\begin{table}[t]
+\centering
+\caption{已发表的深度记忆检索（DMR）基线，逐字复现自 \citet{rasmussen2025zep}（arXiv:2501.13956）。DMR 包含 500 段多会话对话（5 个会话、每会话 $\le$12 条消息），每段对话一道单跳事实检索题。Deep-Dream 目前未运行 DMR，因此本表仅作上下文参照。表体保留英文原文。}
+\label{tab:zep-dmr}
+\small
+\begin{tabular}{llr}
+\toprule
+Method & Answerer & Accuracy \\
+\midrule
+Recursive Summarization & GPT-4-turbo & 35.3\% \\
+Conversation Summaries & GPT-4-turbo & 78.6\% \\
+MemGPT & GPT-4-turbo & 93.4\% \\
+Full-conversation & GPT-4-turbo & 94.4\% \\
+Zep & GPT-4-turbo & 94.8\% \\
+Conversation Summaries & GPT-4o-mini & 88.0\% \\
+Full-conversation & GPT-4o-mini & 98.0\% \\
+Zep & GPT-4o-mini & 98.2\% \\
+\bottomrule
+\end{tabular}
+\end{table}

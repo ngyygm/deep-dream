@@ -1,0 +1,13 @@
+\section{相关工作}
+
+\paragraph{记忆基准。}
+LoCoMo 与 LongMemEval 测试长对话、时序更新与多会话推理 \citep{maharana2024locomo,wu2025longmemeval}。MEME 增加删除、级联与缺失检查 \citep{jung2026meme}。MemoryAgentBench（MAB）在一个官方评分框架内评测检索、测试时学习、长程理解与选择性遗忘 \citep{hu2025memoryagentbench}；我们将其作为主仪器，并让其任务级指标保持可见。
+
+\paragraph{结构化记忆。}
+MemGPT、A-MEM、Mem0、HippoRAG-2、Cognee、MIRIX 和 Zep/Graphiti 通过摘要、笔记或图改进持久性 \citep{packer2023memgpt,xu2025amem,chhikara2025mem0,gutierrez2025hipporag2,markovic2025cognee,wang2025mirix,rasmussen2025zep}。Deep-Dream 同样需要紧凑检索，但把权威边界分开：一个派生节点指向一个源文本跨度；它本身不是答案证据。
+
+\paragraph{信息论与联想记忆。}
+信息瓶颈形式化了在保留与目标变量相关信息前提下的紧凑表示 \citep{tishby2000information}，率失真理论刻画有损重构的代价 \citep{shannon1959coding}。联想记忆模型解释从部分线索出发的内容能被找到检索 \citep{ramsauer2021hopfield}，概率记录链接则区分误链接与漏链接两类错误 \citep{fellegi1969theory}。我们把这些思想用作记忆接口的分析：图层是压缩的检索索引，精确文本是保留的证据，延迟的实体合并用可容忍的漏链接代价，换取对灾难性误链接污染的规避。
+
+\paragraph{检索、长上下文与来源记录。}
+检索增强生成负责选择证据 \citep{lewis2020rag}。Agentic 检索则把检索决策暴露给模型：A-RAG 将关键词、语义与分块阅读工具交给一个在开放域多跳语料上的推理模型，并报告在可比或更少检索 token 下随测试时算力扩展的准确率 \citep{du2026arag}；其人工失败分析将实体混淆识别为主导残差错误，而对话与长篇记忆不在其测试设置内。Deep-Dream 共享渐进披露原则，但将其应用于长期记忆而非静态语料：概念与版本链接、只增观测和源跨度权威让后续读取可验证，而不仅是更便宜；实体混淆正是我们的对齐层与延迟合并设计要降低的失败类别。当相关跨度远离注意力窗口两端时，长上下文模型可能丢失信息 \citep{liu2024lost}。归因工作通常在生成之后检查引用 \citep{gao2023alce}；我们的引用检查只确认被引用的原文确实被打开。它并不证明蕴含，我们显式报告这一局限。

@@ -1,0 +1,17 @@
+\begin{table}[t]
+\centering
+\caption{LongMemEval 主要结果。已发表行（GPT-4o-mini / GPT-4o，全上下文 对 Zep）逐字复现自 \citet{rasmussen2025zep}（arXiv:2501.13956）。\textbf{Deep-Dream} 行使用 Qwen3.7-plus 同时作答与交叉评审——这是一个不同的协议；其准确率（84.6\%）被放在已发表数字旁边，而非共享榜单。Deep-Dream 的延迟/平均上下文未在已发表协议下测量（---）。六类别分解见表~\ref{tab:zep-longmemeval-cat}。表体保留英文原文。}
+\label{tab:zep-longmemeval}
+\footnotesize
+\begin{tabular}{llrrl}
+\toprule
+Answerer & System & Accuracy & Latency (s) & Avg.\ context \\
+\midrule
+GPT-4o-mini & Full-context & 55.4\% & 31.30 & 115k \\
+GPT-4o-mini & Zep & 63.8\% & 3.20 & 1.6k \\
+GPT-4o & Full-context & 60.2\% & 28.90 & 115k \\
+GPT-4o & Zep & 71.2\% & 2.58 & 1.6k \\
+\textbf{Qwen3.7-plus} & \textbf{Deep-Dream} & \textbf{84.6\%} & --- & --- \\
+\bottomrule
+\end{tabular}
+\end{table}
