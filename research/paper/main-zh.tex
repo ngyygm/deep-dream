@@ -5,7 +5,7 @@
 
 \PassOptionsToPackage{table}{xcolor}
 \documentclass{article}
-\usepackage{iclr2026_conference,times}
+\usepackage{iclr2027_conference,times}
 
 % Math
 \usepackage{amsmath,amssymb,amsfonts,amsthm,mathtools}
@@ -86,6 +86,8 @@
 \begin{document}
 
 \maketitle
+% fancyhdr v4.1 下 \lhead 为局部赋值，样式文件将其置于 \@maketitle 的 vbox 分组内会丢失，故在分组外显式设定页眉
+\lhead{Under review as a conference paper at ICLR 2027}
 
 \begin{abstract}
 \input{sections/0_abstract_zh}
@@ -102,7 +104,7 @@
 \input{sections/7_ai_assistance_zh}
 
 \bibliography{references}
-\bibliographystyle{iclr2026_conference}
+\bibliographystyle{iclr2027_conference}
 
 \newpage
 \appendix
