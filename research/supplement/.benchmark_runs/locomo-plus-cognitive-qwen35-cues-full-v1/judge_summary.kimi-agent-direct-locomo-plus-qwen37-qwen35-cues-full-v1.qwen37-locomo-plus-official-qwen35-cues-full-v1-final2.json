@@ -1,0 +1,27 @@
+{
+  "dataset": "locomo-plus",
+  "track": "kimi-agent-direct-locomo-plus-qwen37-qwen35-cues-full-v1",
+  "protocol": "locomo-plus-cognitive",
+  "judge_tag": "qwen37-locomo-plus-official-qwen35-cues-full-v1-final2",
+  "judge_model": "qwen3.7-plus",
+  "library_snapshot_sha256": "58f760d258e3fc3000b1587d71a46398bb8ccb67050d0441ca4ed5d44e7411ad",
+  "runtime_code_sha256": "1f85cda6aea472ce2dd0aafd4c49fed7e3b940c35599ca5569e099a17f7ea753",
+  "prompt_source": {
+    "repository": "xjtuleeyf/Locomo-Plus",
+    "path": "evaluation_framework/task_eval/prompt.py",
+    "mode": "official-cognitive-memory-awareness",
+    "scoring": "correct=1, wrong=0"
+  },
+  "total": 401,
+  "completed": 401,
+  "pending": 0,
+  "errors": 0,
+  "overall": 0.6458852867830424,
+  "by_type": {
+    "Cognitive": {
+      "score": 0.6458852867830424,
+      "count": 401
+    }
+  },
+  "average_latency_seconds": 3.5776558603491275
+}

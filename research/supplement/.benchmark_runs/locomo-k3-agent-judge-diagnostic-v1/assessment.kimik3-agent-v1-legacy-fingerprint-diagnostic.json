@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "experiment": "locomo-k3-agent-v1-legacy-fingerprint-diagnostic",
+  "protocol": "locomo-1540",
+  "judge_model": "kimi-k3",
+  "judge_thinking": false,
+  "judge_prompt": "Mem0-current exact",
+  "completed": 1540,
+  "errors": 0,
+  "candidate": {
+    "agent_model": "kimi-k3",
+    "pass": 1466,
+    "accuracy": 0.951948051948052,
+    "by_type": {
+      "1": 0.9361702127659575,
+      "2": 0.9532710280373832,
+      "3": 0.8020833333333334,
+      "4": 0.9738406658739596
+    }
+  },
+  "same_judge_baseline": {
+    "agent_model": "qwen3.7-plus",
+    "pass": 1441,
+    "accuracy": 0.9357142857142857
+  },
+  "paired_comparison": {
+    "repairs": 50,
+    "regressions": 25,
+    "net": 25,
+    "accuracy_delta_points": 1.62337662337663
+  },
+  "independent_qwen37_judge": {
+    "completed": 1540,
+    "errors": 0,
+    "pass": 1451,
+    "accuracy": 0.9422077922077922,
+    "same_judge_qwen37_agent_baseline": {
+      "pass": 1435,
+      "accuracy": 0.9318181818181818
+    },
+    "paired_agent_comparison": {
+      "repairs": 50,
+      "regressions": 34,
+      "net": 16,
+      "accuracy_delta_points": 1.03896103896104
+    },
+    "by_type": {
+      "1": 0.9290780141843972,
+      "2": 0.9345794392523364,
+      "3": 0.7708333333333334,
+      "4": 0.9690844233055886
+    }
+  },
+  "cross_judge_agreement": {
+    "agreement": 0.9850649350649351,
+    "both_correct": 1447,
+    "qwen37_only_correct": 4,
+    "kimi_k3_only_correct": 19,
+    "both_wrong": 70
+  },
+  "integrity": {
+    "answer_rows_unchanged": true,
+    "source_and_diagnostic_answer_sha256": "76af5772909d29739107e8ebc9f8d2b137224336358d3ccc1f0b400f016bce8a",
+    "library_snapshot_sha256": "cf2e76b8d3274309f8f4d847fa4345f190784d6865b9686566b3e893e2bd6b38",
+    "runtime_code_sha256": "",
+    "limitation": "1529 historical answer rows predate runtime-code fingerprinting; this is a diagnostic cross-judge result, not a fingerprint-complete formal result."
+  }
+}

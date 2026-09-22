@@ -1,0 +1,77 @@
+{
+  "tag": "source-v2-neighbor-expansion",
+  "track": "kimi-agent-direct-memory-v2c-gate210",
+  "query_source": "agent_tool_calls_with_question_fallback",
+  "subset": "wrong",
+  "question_count": 105,
+  "limit": 10,
+  "profiles": {
+    "lexical-span": {
+      "questions": 105,
+      "recall_any": 75,
+      "recall_any_rate": 0.7142857142857143,
+      "recall_all": 54,
+      "recall_all_rate": 0.5142857142857142,
+      "mean_gold_recall": 0.6086243386243386,
+      "average_page_bytes": 2911.68985018685,
+      "average_pairwise_jaccard": 2.6455026455026456e-05,
+      "average_unique_turns": 9.909300366300366
+    },
+    "lexical-semantic-span": {
+      "questions": 105,
+      "recall_any": 74,
+      "recall_any_rate": 0.7047619047619048,
+      "recall_all": 55,
+      "recall_all_rate": 0.5238095238095238,
+      "mean_gold_recall": 0.6092007797270955,
+      "average_page_bytes": 3088.771132111275,
+      "average_pairwise_jaccard": 0.0,
+      "average_unique_turns": 9.985714285714286
+    },
+    "lexical-semantic-span-neighbors1": {
+      "questions": 105,
+      "recall_any": 89,
+      "recall_any_rate": 0.8476190476190476,
+      "recall_all": 69,
+      "recall_all_rate": 0.6571428571428571,
+      "mean_gold_recall": 0.7397270955165692,
+      "average_page_bytes": 3456.1081715903147,
+      "average_pairwise_jaccard": 0.01574859446060504,
+      "average_unique_turns": 25.877356952571237
+    },
+    "lexical-semantic-span-neighbors2": {
+      "questions": 105,
+      "recall_any": 94,
+      "recall_any_rate": 0.8952380952380953,
+      "recall_all": 77,
+      "recall_all_rate": 0.7333333333333333,
+      "mean_gold_recall": 0.8087747145641883,
+      "average_page_bytes": 3609.0250804750804,
+      "average_pairwise_jaccard": 0.028117330794980706,
+      "average_unique_turns": 39.73292534449677
+    },
+    "lexical-semantic-context3-legacy": {
+      "questions": 105,
+      "recall_any": 91,
+      "recall_any_rate": 0.8666666666666667,
+      "recall_all": 68,
+      "recall_all_rate": 0.6476190476190476,
+      "mean_gold_recall": 0.7518892469268409,
+      "average_page_bytes": 3425.437613072113,
+      "average_pairwise_jaccard": 0.04924519650054041,
+      "average_unique_turns": 17.412281615210187
+    },
+    "lexical-semantic-span-neighbors2-derived": {
+      "questions": 105,
+      "recall_any": 94,
+      "recall_any_rate": 0.8952380952380953,
+      "recall_all": 77,
+      "recall_all_rate": 0.7333333333333333,
+      "mean_gold_recall": 0.8087747145641883,
+      "average_page_bytes": 3619.1018000518,
+      "average_pairwise_jaccard": 0.028110798689683168,
+      "average_unique_turns": 39.73557084714228
+    }
+  },
+  "gold_used_for_retrieval": false
+}

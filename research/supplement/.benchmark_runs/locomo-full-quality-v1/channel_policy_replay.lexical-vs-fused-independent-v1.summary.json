@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "dataset": "locomo",
+  "track": "kimi-agent-direct-memory-v2c-gate210",
+  "baseline_policy": "unique",
+  "candidate_policy": "unique",
+  "baseline_channels": [
+    "lexical"
+  ],
+  "candidate_channels": [
+    "lexical",
+    "semantic"
+  ],
+  "questions": 210,
+  "search_calls": 961,
+  "primary_result_invariant_violations": 210,
+  "questions_with_marginal_hints": 0,
+  "questions_with_gold_marginal_hint": 0,
+  "questions_with_gold_after_hint_read": 0,
+  "questions_with_incremental_gold": 24,
+  "incremental_gold_turns": 29,
+  "baseline_primary_recall_any": 0.9238095238095239,
+  "candidate_primary_recall_any": 0.9285714285714286,
+  "candidate_union_recall_any": 0.9285714285714286,
+  "baseline_primary_recall_all": 0.7523809523809524,
+  "candidate_primary_recall_all": 0.780952380952381,
+  "candidate_union_recall_all": 0.780952380952381,
+  "marginal_hint_gold_turns": 0,
+  "hint_read_gold_turns": 0,
+  "baseline_mean_response_bytes": 3879.117585848075,
+  "candidate_mean_response_bytes": 4130.667013527575,
+  "candidate_response_byte_ratio": 1.0648470746535788,
+  "gold_used_for_retrieval": false,
+  "primary_result_invariant_expected": false,
+  "primary_result_invariant_passed": false
+}

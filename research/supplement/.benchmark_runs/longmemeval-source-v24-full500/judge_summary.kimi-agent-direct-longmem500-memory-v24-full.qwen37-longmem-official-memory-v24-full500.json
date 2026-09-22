@@ -1,0 +1,46 @@
+{
+  "dataset": "longmemeval-s",
+  "track": "kimi-agent-direct-longmem500-memory-v24-full",
+  "protocol": "longmemeval-s",
+  "judge_tag": "qwen37-longmem-official-memory-v24-full500",
+  "judge_model": "qwen3.7-plus",
+  "library_snapshot_sha256": "8e000ed3f1030d6ec44760e4ed80948a98a11a2065ba40efdfb7b84da9cc1f3a",
+  "runtime_code_sha256": "1edeff2849a9f4fd745d7dd096a0e0a3584aa5c9c3bc01a470b48a9de010fa99",
+  "prompt_source": {
+    "repository": "xiaowu0162/LongMemEval",
+    "mode": "official-compatible-prompt",
+    "judge_note": "cross-judge unless model is gpt-4o-2024-08-06"
+  },
+  "total": 500,
+  "completed": 500,
+  "pending": 0,
+  "errors": 0,
+  "overall": 0.846,
+  "by_type": {
+    "knowledge-update": {
+      "score": 0.9102564102564102,
+      "count": 78
+    },
+    "multi-session": {
+      "score": 0.7443609022556391,
+      "count": 133
+    },
+    "single-session-assistant": {
+      "score": 1.0,
+      "count": 56
+    },
+    "single-session-preference": {
+      "score": 0.5333333333333333,
+      "count": 30
+    },
+    "single-session-user": {
+      "score": 0.9857142857142858,
+      "count": 70
+    },
+    "temporal-reasoning": {
+      "score": 0.8421052631578947,
+      "count": 133
+    }
+  },
+  "average_latency_seconds": 1.063366
+}

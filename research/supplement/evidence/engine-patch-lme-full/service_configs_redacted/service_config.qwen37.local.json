@@ -1,0 +1,25 @@
+{
+  "storage_path": ".benchmark_runs/real-smoke/library",
+  "storage": {
+    "backend": "sqlite",
+    "vector_dim": 384
+  },
+  "llm": {
+    "api_key_env": "***REDACTED***",
+    "model": "qwen3.7-plus",
+    "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "think": false,
+    "answer_extra_body": {
+      "enable_thinking": false
+    },
+    "temperature": 0,
+    "max_tokens": 2048,
+    "context_window_tokens": 32000,
+    "timeout_seconds": 180,
+    "answer_validation_retries": 2
+  },
+  "embedding": {
+    "model": "all-MiniLM-L6-v2",
+    "device": "cpu"
+  }
+}

@@ -1,0 +1,61 @@
+{
+  "overall": {
+    "games": 140,
+    "won": 137,
+    "success_rate": 0.9786,
+    "avg_steps": 16.79
+  },
+  "per_task_type": {
+    "look_at_obj": {
+      "games": 13,
+      "won": 13,
+      "success_rate": 1.0,
+      "avg_steps": 14.69
+    },
+    "pick_and_place": {
+      "games": 35,
+      "won": 35,
+      "success_rate": 1.0,
+      "avg_steps": 14.37
+    },
+    "pick_clean_then_place": {
+      "games": 27,
+      "won": 26,
+      "success_rate": 0.963,
+      "avg_steps": 16.93
+    },
+    "pick_cool_then_place": {
+      "games": 25,
+      "won": 23,
+      "success_rate": 0.92,
+      "avg_steps": 17.6
+    },
+    "pick_heat_then_place": {
+      "games": 16,
+      "won": 16,
+      "success_rate": 1.0,
+      "avg_steps": 15.25
+    },
+    "pick_two_obj": {
+      "games": 24,
+      "won": 24,
+      "success_rate": 1.0,
+      "avg_steps": 21.46
+    }
+  },
+  "avg_steps_won": 16.06,
+  "tokens": {
+    "prompt": 4480823,
+    "completion": 547636,
+    "total": 5028459
+  },
+  "games_completed": 140,
+  "games_error": 0,
+  "track": "alfworld",
+  "split": "eval_in_distribution",
+  "model": "kimi-k3",
+  "max_steps": 50,
+  "workers": 3,
+  "games_registered": 140,
+  "wall_seconds": 2882.0
+}

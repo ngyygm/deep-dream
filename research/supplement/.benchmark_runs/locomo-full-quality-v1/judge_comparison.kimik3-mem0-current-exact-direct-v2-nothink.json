@@ -1,0 +1,44 @@
+{
+  "protocol": "locomo-1540",
+  "judge_model": "kimi-k3",
+  "tracks": {
+    "kimi-agent-direct-qwen37-full-thinking-off": {
+      "dataset": "locomo",
+      "track": "kimi-agent-direct-qwen37-full-thinking-off",
+      "protocol": "locomo-1540",
+      "judge_tag": "kimik3-mem0-current-exact-direct-v2-nothink",
+      "judge_model": "kimi-k3",
+      "library_snapshot_sha256": "",
+      "runtime_code_sha256": "",
+      "prompt_source": {
+        "repository": "mem0ai/memory-benchmarks",
+        "commit": "4b61c5d31b9c668a12b4f5e78064248a02c82d2b",
+        "mode": "unified-no-evidence-exact"
+      },
+      "total": 1540,
+      "completed": 1540,
+      "pending": 0,
+      "errors": 0,
+      "overall": 0.9357142857142857,
+      "by_type": {
+        "1": {
+          "score": 0.9078014184397163,
+          "count": 282
+        },
+        "2": {
+          "score": 0.9470404984423676,
+          "count": 321
+        },
+        "3": {
+          "score": 0.7604166666666666,
+          "count": 96
+        },
+        "4": {
+          "score": 0.9607609988109393,
+          "count": 841
+        }
+      },
+      "average_latency_seconds": 3.3496233766233767
+    }
+  }
+}

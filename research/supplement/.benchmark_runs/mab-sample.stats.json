@@ -1,0 +1,211 @@
+{
+  "dataset": "memoryagentbench",
+  "budget_chars": 8000000,
+  "selection": "TTL 全收 + CR 全收 + AR 每 family 最小 1 个（longmemeval_s 取 2）+ LRU 最小 4 个 infbench + 2 个 detective_qa；超预算先丢多代表 family 中最大 scope，再丢最大 scope",
+  "scopes": [
+    {
+      "scope_id": "mab-ar-000",
+      "competency": "AR",
+      "official_source": "ruler_qa1_197K",
+      "questions": 100,
+      "context_chars": 985698,
+      "context_documents": 9,
+      "context_sha256": "d6d85ecc896724ed1bca17db169dfb947808adcdc0362598c79194acfbd2faa8",
+      "family": "ruler_qa1_197K"
+    },
+    {
+      "scope_id": "mab-ar-005",
+      "competency": "AR",
+      "official_source": "eventqa_full",
+      "questions": 100,
+      "context_chars": 1694961,
+      "context_documents": 15,
+      "context_sha256": "74109788618f5270d7b83af2f0dd0cf8b4a151ed15d39f5e5bb827e2e58f4966",
+      "family": "eventqa_full"
+    },
+    {
+      "scope_id": "mab-ar-010",
+      "competency": "AR",
+      "official_source": "eventqa_65536",
+      "questions": 100,
+      "context_chars": 272813,
+      "context_documents": 3,
+      "context_sha256": "ec65b7cb50d7280b85da1116991a736e46f1181e2cf3dfcbf83cdf1f11a03974",
+      "family": "eventqa_65536"
+    },
+    {
+      "scope_id": "mab-ar-015",
+      "competency": "AR",
+      "official_source": "eventqa_131072",
+      "questions": 100,
+      "context_chars": 548401,
+      "context_documents": 5,
+      "context_sha256": "13f7b62d03ae1368db57715dc7655dc3ad46e7b714966115e517211505722a41",
+      "family": "eventqa_131072"
+    },
+    {
+      "scope_id": "mab-ar-020",
+      "competency": "AR",
+      "official_source": "longmemeval_s*",
+      "questions": 60,
+      "context_chars": 1588305,
+      "context_documents": 14,
+      "context_sha256": "df9c9f3f789da3e2b728eaf66415a448a3a8d8513b58656860ff78077a15366b",
+      "family": "longmemeval_s"
+    },
+    {
+      "scope_id": "mab-cr-000",
+      "competency": "CR",
+      "official_source": "factconsolidation_mh_6k",
+      "questions": 100,
+      "context_chars": 26157,
+      "context_documents": 1,
+      "context_sha256": "e46cb14b53eedd71bf92762974a597d46b001157b6b769c03865dee9641818a1",
+      "family": "factconsolidation_mh"
+    },
+    {
+      "scope_id": "mab-cr-004",
+      "competency": "CR",
+      "official_source": "factconsolidation_sh_6k",
+      "questions": 100,
+      "context_chars": 26157,
+      "context_documents": 1,
+      "context_sha256": "e46cb14b53eedd71bf92762974a597d46b001157b6b769c03865dee9641818a1",
+      "family": "factconsolidation_sh"
+    },
+    {
+      "scope_id": "mab-lru-058",
+      "competency": "LRU",
+      "official_source": "infbench_sum_eng_shots2",
+      "questions": 1,
+      "context_chars": 272368,
+      "context_documents": 3,
+      "context_sha256": "b5ce958a6db779794a0fedfc9e5f2087593af5465654938c65b37df1a5a70eb6",
+      "family": "infbench_sum_eng_shots2"
+    },
+    {
+      "scope_id": "mab-lru-100",
+      "competency": "LRU",
+      "official_source": "detective_qa",
+      "questions": 6,
+      "context_chars": 399861,
+      "context_documents": 4,
+      "context_sha256": "cd66eabd2f070a3893d685ddfadfbd749c5d65115a27afc5fb7296ba5728a1e3",
+      "family": "detective_qa"
+    },
+    {
+      "scope_id": "mab-ttl-002",
+      "competency": "TTL",
+      "official_source": "icl_clinic150_7050shot_balance",
+      "questions": 100,
+      "context_chars": 366252,
+      "context_documents": 4,
+      "context_sha256": "36d1c3fde8d8fb214807824aa6beef6c1059e2187afb68d9f214faec137a7aad",
+      "family": "icl"
+    }
+  ],
+  "dropped_for_budget": [
+    {
+      "scope_id": "mab-ar-018",
+      "context_chars": 1589693,
+      "family": "longmemeval_s"
+    },
+    {
+      "scope_id": "mab-cr-007",
+      "context_chars": 1118123,
+      "family": "factconsolidation_sh"
+    },
+    {
+      "scope_id": "mab-cr-003",
+      "context_chars": 1118123,
+      "family": "factconsolidation_mh"
+    },
+    {
+      "scope_id": "mab-lru-102",
+      "context_chars": 406539,
+      "family": "detective_qa"
+    },
+    {
+      "scope_id": "mab-ttl-001",
+      "context_chars": 404907,
+      "family": "icl"
+    },
+    {
+      "scope_id": "mab-ttl-005",
+      "context_chars": 394453,
+      "family": "icl"
+    },
+    {
+      "scope_id": "mab-ttl-004",
+      "context_chars": 393385,
+      "family": "icl"
+    },
+    {
+      "scope_id": "mab-ttl-003",
+      "context_chars": 369249,
+      "family": "icl"
+    },
+    {
+      "scope_id": "mab-lru-077",
+      "context_chars": 298903,
+      "family": "infbench_sum_eng_shots2"
+    },
+    {
+      "scope_id": "mab-lru-084",
+      "context_chars": 295720,
+      "family": "infbench_sum_eng_shots2"
+    },
+    {
+      "scope_id": "mab-lru-091",
+      "context_chars": 295222,
+      "family": "infbench_sum_eng_shots2"
+    },
+    {
+      "scope_id": "mab-cr-006",
+      "context_chars": 273473,
+      "family": "factconsolidation_sh"
+    },
+    {
+      "scope_id": "mab-cr-002",
+      "context_chars": 273473,
+      "family": "factconsolidation_mh"
+    },
+    {
+      "scope_id": "mab-cr-005",
+      "context_chars": 136565,
+      "family": "factconsolidation_sh"
+    },
+    {
+      "scope_id": "mab-cr-001",
+      "context_chars": 136565,
+      "family": "factconsolidation_mh"
+    },
+    {
+      "scope_id": "mab-ttl-000",
+      "context_chars": 5658996,
+      "family": "recsys_redial_full"
+    },
+    {
+      "scope_id": "mab-ar-001",
+      "context_chars": 1881772,
+      "family": "ruler_qa2_421K"
+    }
+  ],
+  "totals": {
+    "scopes": 10,
+    "questions": 767,
+    "context_chars": 6180973,
+    "families": [
+      "detective_qa",
+      "eventqa_131072",
+      "eventqa_65536",
+      "eventqa_full",
+      "factconsolidation_mh",
+      "factconsolidation_sh",
+      "icl",
+      "infbench_sum_eng_shots2",
+      "longmemeval_s",
+      "ruler_qa1_197K"
+    ]
+  }
+}

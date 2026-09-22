@@ -1,0 +1,189 @@
+{
+  "dataset": "longmemeval-s",
+  "total": 25,
+  "scored": 25,
+  "overall": 0.68,
+  "by_type": {
+    "knowledge-update": {
+      "score": 0.75,
+      "count": 4
+    },
+    "multi-session": {
+      "score": 0.5714285714285714,
+      "count": 7
+    },
+    "single-session-assistant": {
+      "score": 1.0,
+      "count": 2
+    },
+    "single-session-preference": {
+      "score": 0.0,
+      "count": 2
+    },
+    "single-session-user": {
+      "score": 0.75,
+      "count": 4
+    },
+    "temporal-reasoning": {
+      "score": 0.8333333333333334,
+      "count": 6
+    }
+  },
+  "retrieval": {
+    "session_evidence_recall@1": 0.44666666666666666,
+    "session_evidence_recall@10": 0.7666666666666667,
+    "session_evidence_recall@3": 0.6866666666666668,
+    "session_evidence_recall@30": 0.78,
+    "session_evidence_recall@5": 0.7266666666666667,
+    "session_evidence_recall@50": 0.78,
+    "session_ndcg_any@1": 0.72,
+    "session_ndcg_any@10": 0.7144954307204295,
+    "session_ndcg_any@3": 0.6797957734520407,
+    "session_ndcg_any@30": 0.719188217980657,
+    "session_ndcg_any@5": 0.6970228357749764,
+    "session_ndcg_any@50": 0.719188217980657,
+    "session_recall_all@1": 0.2,
+    "session_recall_all@10": 0.64,
+    "session_recall_all@3": 0.52,
+    "session_recall_all@30": 0.68,
+    "session_recall_all@5": 0.56,
+    "session_recall_all@50": 0.68,
+    "session_recall_any@1": 0.72,
+    "session_recall_any@10": 0.88,
+    "session_recall_any@3": 0.84,
+    "session_recall_any@30": 0.88,
+    "session_recall_any@5": 0.88,
+    "session_recall_any@50": 0.88,
+    "turn_evidence_recall@1": 0.2638888888888889,
+    "turn_evidence_recall@10": 0.638888888888889,
+    "turn_evidence_recall@3": 0.3888888888888889,
+    "turn_evidence_recall@30": 0.7013888888888888,
+    "turn_evidence_recall@5": 0.513888888888889,
+    "turn_evidence_recall@50": 0.7013888888888888,
+    "turn_ndcg_any@1": 0.4166666666666667,
+    "turn_ndcg_any@10": 0.4770000732194836,
+    "turn_ndcg_any@3": 0.37311397829159315,
+    "turn_ndcg_any@30": 0.49540993261674254,
+    "turn_ndcg_any@5": 0.4310049982048563,
+    "turn_ndcg_any@50": 0.49540993261674254,
+    "turn_recall_all@1": 0.125,
+    "turn_recall_all@10": 0.5,
+    "turn_recall_all@3": 0.20833333333333334,
+    "turn_recall_all@30": 0.5833333333333334,
+    "turn_recall_all@5": 0.3333333333333333,
+    "turn_recall_all@50": 0.5833333333333334,
+    "turn_recall_any@1": 0.4166666666666667,
+    "turn_recall_any@10": 0.7916666666666666,
+    "turn_recall_any@3": 0.5833333333333334,
+    "turn_recall_any@30": 0.8333333333333334,
+    "turn_recall_any@5": 0.7083333333333334,
+    "turn_recall_any@50": 0.8333333333333334
+  },
+  "runtime": {
+    "completed": 25,
+    "failed": 0,
+    "average_latency_seconds": 3.29768,
+    "median_latency_seconds": 3.052,
+    "p95_latency_seconds": 5.597
+  },
+  "track": "baseline",
+  "variant": null,
+  "failure_attribution": {
+    "retrieval_miss": 3,
+    "answer_reasoning": 5
+  },
+  "run": {
+    "remember_profile": "strong-v1",
+    "max_agent_steps": 8,
+    "answer_top_k": 10,
+    "git_commit": "73d9c5e6996aad48c981068056b34d15388f99f9",
+    "dataset_sha256": "d6f21ea9d60a0d56f34a05b609c79c88a451d2ae03597821ea3d5a9678c3a442",
+    "runtime_policy": {
+      "name": "deep-dream-runtime-policy",
+      "version": "1.0.0",
+      "sha256": "fc73d07e951df1bfead1fd154f8160e7ed817f30323292f520ff8aac63808146"
+    },
+    "skill": {
+      "path": "/Users/admin/Desktop/exa/deep-dream/.claude/skills/deep-dream/SKILL.md",
+      "sha256": "4e889924d072004c418911ef590d488ecee130e5246fda3b7075399fa0db2ebd"
+    },
+    "config": {
+      "llm": {
+        "model": "kimi-k3",
+        "base_url": "http://sz-infer.x2robot.cn/infer/inf-dddgcurffgz3366q/v1",
+        "think": false,
+        "extra_body": {
+          "chat_template_kwargs": {
+            "enable_thinking": false
+          }
+        },
+        "temperature": 0.0,
+        "max_tokens": 16384,
+        "agent_max_tokens": null,
+        "agent_thinking_max_tokens": null,
+        "context_window_tokens": 32000,
+        "agent_think": null,
+        "answer_think": null,
+        "answer_validation_retries": null,
+        "api_key_env": null
+      },
+      "embedding": {
+        "model": "all-MiniLM-L6-v2",
+        "model_path": null,
+        "device": "cpu"
+      },
+      "chunking": {
+        "window_size": 800,
+        "overlap": 100
+      },
+      "pipeline": {
+        "search": {
+          "similarity_threshold": 0.7,
+          "max_similar_entities": 10,
+          "content_snippet_length": 50,
+          "relation_content_snippet_length": 50,
+          "relation_endpoint_jaccard_threshold": 0.9,
+          "relation_endpoint_embedding_threshold": 0.9,
+          "jaccard_search_threshold": null,
+          "embedding_name_search_threshold": null,
+          "embedding_full_search_threshold": null
+        },
+        "alignment": {
+          "max_alignment_candidates": null
+        },
+        "extraction": {
+          "prompt_episode_max_chars": 2000,
+          "entity_refine_rounds": 0,
+          "relation_refine_rounds": 0,
+          "entity_post_enhancement": false
+        },
+        "remember": {
+          "alignment_policy": "conservative",
+          "profile": "strong-v1",
+          "preserve_source_language": false,
+          "max_entities_per_window": 24,
+          "max_relations_per_window": 36,
+          "episode_slice_chars": 800,
+          "family_write_gate_enabled": true,
+          "window_batch_alignment": null,
+          "window_size_chars": 6000,
+          "overlap_chars": 300,
+          "fallback_cooccurrence_relations": false,
+          "mode": "multi_step",
+          "anchor_recall_rounds": 1,
+          "named_entity_recall_rounds": 1,
+          "abstract_recall_rounds": 1,
+          "coverage_gap_rounds": 0,
+          "relation_hint_rounds": 1,
+          "relation_expand_rounds": 0,
+          "relation_write_rounds": 1
+        },
+        "debug": {
+          "distill_data_dir": null
+        }
+      }
+    }
+  },
+  "task_averaged": 0.6507936507936508,
+  "abstention": 1.0
+}

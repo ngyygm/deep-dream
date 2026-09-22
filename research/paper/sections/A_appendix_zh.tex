@@ -3,9 +3,9 @@
 \subsection{工件账本}
 \label{app:ledger}
 
-机器可读账本由发布的账本脚本与重算脚本生成。它记录论文所引每一次运行的源摘要、数据集与逐题 JSONL SHA-256 值，并在论文写作前重新生成、与脚本输出逐字节比对。当前账本覆盖 MemoryAgentBench 各轨道（两代引擎 $\times$ 三条答案路径、commit 455306d 处的官方评分器、一致的 \texttt{entity2id} 指纹）、LongMemEval 整批对话写入后的配对运行与 500 题运行、LoCoMo-1986/1540 及 K3 作答诊断、LoCoMo-Plus-401 \citep{li-etal-2026-locomo}、X7 通道诊断、源扩展诊断、修复后的预算前沿重放、MEME、BigCodeBench \citep{zhuo2024bigcodebench} 与 ALFWorld \citep{shridhar2021alfworld}。每次运行的清单记录数据集与提示词来源、模型标识符、工具观测、证据 ID、延迟、退出状态与代码/运行时哈希；未通过完整性检查的结果与负面结果均予保留而非丢弃。账本生成与重算脚本随发布的补充材料一同提供，因此该链条可端到端重建。
+机器可读账本由发布的账本脚本与重算脚本生成。它记录论文所引每一次运行的源摘要、数据集与逐题 JSONL SHA-256 值，并在投稿冻结时重新生成、与脚本输出逐字节比对。当前账本覆盖 MemoryAgentBench 各轨道（两代引擎 $\times$ 三条答案路径、commit 455306d 处的官方评分器、一致的 \texttt{entity2id} 指纹）、LongMemEval 整批对话写入后的配对运行与 500 题运行、LoCoMo-1986/1540 及 K3 作答诊断、LoCoMo-Plus-401 \citep{li-etal-2026-locomo}、X7 通道诊断、源扩展诊断、修复后的预算前沿重放、MEME、BigCodeBench \citep{zhuo2024bigcodebench} 与 ALFWorld \citep{shridhar2021alfworld}。每次运行的清单记录数据集与提示词来源、模型标识符、工具观测、证据 ID、延迟、退出状态与代码/运行时哈希；未通过完整性检查的结果与负面结果均予保留而非丢弃。账本生成与重算脚本随发布的补充材料一同提供；补充材料对体积过大、无法再分发的输入（原始智能体轨迹、库快照与 LongMemEval-S 数据集文件）逐一钉住 SHA-256，在完整产物树上两个脚本可逐字节再生账本与冻结重算值。
 
-发布的补充材料包含重建每张表所需的机器可读清单、逐题分数、提示词与运行时哈希。论文在每个结果旁报告数据集、模型、评审、子集与完整性状态，使比较保持可审计，同时不暴露机器特定的存储位置。
+发布的补充材料包含论文所引每次运行的机器可读清单（数据集、提示词、模型与运行时来源）、逐题分数与答案、运行时哈希，以及把每个随包文件对照账本核验的自校验脚本。论文在每个结果旁报告数据集、模型、评审、子集与完整性状态，使比较保持可审计，同时不暴露机器特定的存储位置。
 
 \input{figures/figure_architecture_zh}
 \input{figures/figure_alignment_zh}

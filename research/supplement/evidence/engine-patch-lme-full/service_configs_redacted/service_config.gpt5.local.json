@@ -1,0 +1,49 @@
+{
+  "storage_path": ".benchmark_runs/real-smoke/library",
+  "storage": {
+    "backend": "sqlite",
+    "vector_dim": 384
+  },
+  "llm": {
+    "api_key_env": "***REDACTED***",
+    "model": "gpt-5",
+    "judge_model": "gpt-5",
+    "base_url": "https://api.openai.com/v1",
+    "temperature": 0,
+    "judge_max_tokens": 512,
+    "timeout_seconds": 300,
+    "judge_extra_body": {
+      "response_format": {
+        "type": "json_schema",
+        "json_schema": {
+          "name": "locomo_judgment",
+          "strict": true,
+          "schema": {
+            "type": "object",
+            "properties": {
+              "reasoning": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string",
+                "enum": [
+                  "CORRECT",
+                  "WRONG"
+                ]
+              }
+            },
+            "required": [
+              "reasoning",
+              "label"
+            ],
+            "additionalProperties": false
+          }
+        }
+      }
+    }
+  },
+  "embedding": {
+    "model": "all-MiniLM-L6-v2",
+    "device": "cpu"
+  }
+}

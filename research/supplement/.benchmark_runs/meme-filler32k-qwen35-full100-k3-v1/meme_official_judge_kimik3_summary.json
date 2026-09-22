@@ -1,0 +1,69 @@
+{
+  "protocol": "MEME official task-specific U-check",
+  "condition": "filler32k",
+  "judge_model": "kimi-k3",
+  "judge_status": "cross-judge (kimi-k3); not official GPT-4o",
+  "episodes": 100,
+  "before": {
+    "pass": 387,
+    "total": 394,
+    "accuracy": 0.9822335025380711
+  },
+  "after_raw": {
+    "pass": 432,
+    "total": 694,
+    "accuracy": 0.622478386167147
+  },
+  "per_task": {
+    "ER": {
+      "total": 100,
+      "raw_pass": 100,
+      "real_pass": 0,
+      "trivial_pass": 0,
+      "raw_accuracy": 1.0
+    },
+    "Agg": {
+      "total": 100,
+      "raw_pass": 80,
+      "real_pass": 0,
+      "trivial_pass": 0,
+      "raw_accuracy": 0.8
+    },
+    "Tr": {
+      "total": 100,
+      "raw_pass": 97,
+      "real_pass": 0,
+      "trivial_pass": 0,
+      "raw_accuracy": 0.97
+    },
+    "Del": {
+      "total": 100,
+      "raw_pass": 0,
+      "real_pass": 0,
+      "trivial_pass": 0,
+      "raw_accuracy": 0.0,
+      "real_accuracy": 0.0
+    },
+    "Cas": {
+      "total": 164,
+      "raw_pass": 78,
+      "real_pass": 76,
+      "trivial_pass": 2,
+      "raw_accuracy": 0.47560975609756095,
+      "real_accuracy": 0.4634146341463415
+    },
+    "Abs": {
+      "total": 130,
+      "raw_pass": 77,
+      "real_pass": 77,
+      "trivial_pass": 0,
+      "raw_accuracy": 0.5923076923076923,
+      "real_accuracy": 0.5923076923076923
+    }
+  },
+  "usage": {
+    "calls": 988,
+    "input_tokens": 417501,
+    "output_tokens": 143307
+  }
+}

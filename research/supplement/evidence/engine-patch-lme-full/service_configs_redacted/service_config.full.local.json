@@ -1,0 +1,54 @@
+{
+  "host": "127.0.0.1",
+  "port": 16202,
+  "auto_port_fallback": false,
+  "storage_path": ".benchmark_runs/real-smoke/library",
+  "storage": {
+    "backend": "sqlite",
+    "vector_dim": 384
+  },
+  "llm": {
+    "api_key": "***REDACTED***",
+    "model": "qwen3.6-27b-awq",
+    "base_url": "http://219.223.187.56:8000/v1",
+    "think": false,
+    "extra_body": {
+      "chat_template_kwargs": {
+        "enable_thinking": false
+      }
+    },
+    "max_tokens": 2048,
+    "agent_max_tokens": 512,
+    "context_window_tokens": 32000,
+    "max_concurrency": 1,
+    "timeout_seconds": 180
+  },
+  "embedding": {
+    "model": "all-MiniLM-L6-v2",
+    "device": "cpu"
+  },
+  "chunking": {
+    "window_size": 800,
+    "overlap": 100
+  },
+  "pipeline": {
+    "extraction": {
+      "entity_refine_rounds": 0,
+      "relation_refine_rounds": 0,
+      "entity_post_enhancement": false
+    },
+    "remember": {
+      "mode": "multi_step",
+      "anchor_recall_rounds": 1,
+      "named_entity_recall_rounds": 1,
+      "abstract_recall_rounds": 1,
+      "coverage_gap_rounds": 0,
+      "relation_hint_rounds": 1,
+      "relation_expand_rounds": 0,
+      "relation_write_rounds": 1,
+      "entity_write_batch_size": 16,
+      "entity_content_batch_size": 16,
+      "relation_content_batch_size": 24
+    }
+  }
+}

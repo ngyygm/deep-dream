@@ -1,0 +1,90 @@
+{
+  "dataset": "memoryagentbench",
+  "dataset_revision": "7ea066982b140a19337e17e60d45d4076e042faf",
+  "track": "baseline",
+  "sampled": true,
+  "questions": 767,
+  "full_questions": 3671,
+  "scopes": 10,
+  "judge_model": "kimi-k3",
+  "official_scorer_repo": "/Users/admin/Desktop/exa/deep-dream/research/.benchmark_refs/MemoryAgentBench",
+  "official_scorer_commit": "455306dcabc3842526eb83cd4e225e5d486c5c5d",
+  "entity2id_sha256": "63353aca481bc9558b502f91cb98f6fa26438796fdd7e0bc06b5a1532126e8b5",
+  "source_scores": {
+    "detective_qa": {
+      "score": 0.5,
+      "questions": 6,
+      "scopes": 1
+    },
+    "eventqa_131072": {
+      "score": 0.93,
+      "questions": 100,
+      "scopes": 1
+    },
+    "eventqa_65536": {
+      "score": 0.96,
+      "questions": 100,
+      "scopes": 1
+    },
+    "eventqa_full": {
+      "score": 0.82,
+      "questions": 100,
+      "scopes": 1
+    },
+    "factconsolidation_mh_6k": {
+      "score": 0.02,
+      "questions": 100,
+      "scopes": 1
+    },
+    "factconsolidation_sh_6k": {
+      "score": 0.68,
+      "questions": 100,
+      "scopes": 1
+    },
+    "icl_clinic150_7050shot_balance": {
+      "score": 0.04,
+      "questions": 100,
+      "scopes": 1
+    },
+    "infbench_sum_eng_shots2": {
+      "score": 0.0,
+      "questions": 1,
+      "scopes": 1
+    },
+    "longmemeval_s*": {
+      "score": 0.26666666666666666,
+      "questions": 60,
+      "scopes": 1
+    },
+    "ruler_qa1_197K": {
+      "score": 0.54,
+      "questions": 100,
+      "scopes": 1
+    }
+  },
+  "table3": {
+    "AR": {
+      "SH-QA": 0.54,
+      "MH-QA": null,
+      "LME(S*)": 0.26666666666666666,
+      "EventQA": 0.9033333333333333,
+      "Avg": 0.57
+    },
+    "TTL": {
+      "MCC": 0.04,
+      "Recom": null,
+      "Avg": 0.04
+    },
+    "LRU": {
+      "Summ": 0.0,
+      "DetQA": 0.5,
+      "Avg": 0.25
+    },
+    "SF": {
+      "FC-SH": 0.68,
+      "FC-MH": 0.02,
+      "Avg": 0.35000000000000003
+    },
+    "Overall": 0.3025
+  }
+}

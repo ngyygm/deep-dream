@@ -160,24 +160,24 @@
         },
         "failure_taxonomy_v2_pi": {
           "by_domain_count": {
-            "AR": 21,
-            "LRU": 2,
+            "AR": 44,
+            "LRU": 3,
             "SF": 40,
-            "TTL": 54
+            "TTL": 122
           },
           "by_domain_percent": {
-            "AR": 17.9,
-            "LRU": 1.7,
-            "SF": 34.2,
-            "TTL": 46.2
+            "AR": 21.1,
+            "LRU": 1.4,
+            "SF": 19.1,
+            "TTL": 58.4
           },
-          "macro_overall_miss_percent": 34.9,
-          "of_767": 15.3,
+          "macro_overall_miss_percent": 29.0,
+          "of_1074": 19.5,
           "sf_split": {
             "FC-MH": 30,
             "FC-SH": 10
           },
-          "zero_score_questions": 117
+          "zero_score_questions": 209
         },
         "gate_rejections": {
           "lme_v1": {
@@ -195,77 +195,197 @@
             "resubmitted_in_loop": 7
           },
           "mab_v2": {
-            "ended_at_max_steps": 2,
-            "events": 11,
-            "questions": 11,
-            "resubmitted_in_loop": 9
+            "ended_at_max_steps": 3,
+            "events": 14,
+            "questions": 14,
+            "resubmitted_in_loop": 11
           }
         },
         "ladder_deltas": {
           "delta_pi_minus_skill_v2": {
             "ci95": [
-              0.214,
-              0.3049
+              0.2531,
+              0.3687
             ],
-            "point": 0.2443
+            "point": 0.3101
           },
           "delta_skill_minus_base_v2": {
             "ci95": [
-              0.0146,
-              0.1489
+              0.0228,
+              0.1168
             ],
-            "point": 0.0827
+            "point": 0.0667
+          },
+          "domains_v1_x100": {
+            "baseline": {
+              "AR": 57.0,
+              "LRU": 25.0,
+              "SF": 35.0,
+              "TTL": 4.0
+            },
+            "pi": {
+              "AR": 94.0,
+              "LRU": 52.3,
+              "SF": 78.5,
+              "TTL": 43.0
+            },
+            "skill-agent": {
+              "AR": 72.7,
+              "LRU": 39.2,
+              "SF": 35.5,
+              "TTL": 3.0
+            }
+          },
+          "domains_v2_x100": {
+            "baseline": {
+              "AR": 50.3,
+              "LRU": 45.9,
+              "SF": 34.5,
+              "TTL": 2.6
+            },
+            "pi": {
+              "AR": 88.8,
+              "LRU": 62.3,
+              "SF": 80.0,
+              "TTL": 52.9
+            },
+            "skill-agent": {
+              "AR": 63.5,
+              "LRU": 60.4,
+              "SF": 33.5,
+              "TTL": 2.6
+            }
           },
           "overall_ci95_v1_x100": {
             "baseline": [
-              24.1,
-              44.9
+              24.0,
+              45.7
             ],
             "pi": [
-              61.6,
-              80.5
+              61.3,
+              80.1
             ],
             "skill-agent": [
-              30.2,
-              48.5
+              30.4,
+              49.2
             ]
           },
           "overall_ci95_v2_x100": {
             "baseline": [
-              26.5,
-              49.0
+              27.7,
+              41.7
             ],
             "pi": [
-              59.6,
-              80.8
+              63.7,
+              79.6
             ],
             "skill-agent": [
-              35.4,
-              52.4
+              36.4,
+              48.6
             ]
+          },
+          "overall_v1_x100": {
+            "baseline": 30.2,
+            "pi": 66.9,
+            "skill-agent": 37.6
+          },
+          "overall_v2_x100": {
+            "baseline": 33.3,
+            "pi": 71.0,
+            "skill-agent": 40.0
+          },
+          "tasks_v1_x100": {
+            "baseline": {
+              "DetQA": 50.0,
+              "EventQA": 90.3,
+              "FC-MH": 2.0,
+              "FC-SH": 68.0,
+              "LME(S*)": 26.7,
+              "MCC": 4.0,
+              "SH-QA": 54.0,
+              "Summ": 0.0
+            },
+            "pi": {
+              "DetQA": 83.3,
+              "EventQA": 98.0,
+              "FC-MH": 67.0,
+              "FC-SH": 90.0,
+              "LME(S*)": 90.0,
+              "MCC": 43.0,
+              "SH-QA": 94.0,
+              "Summ": 21.2
+            },
+            "skill-agent": {
+              "DetQA": 50.0,
+              "EventQA": 90.7,
+              "FC-MH": 4.0,
+              "FC-SH": 67.0,
+              "LME(S*)": 43.3,
+              "MCC": 3.0,
+              "SH-QA": 84.0,
+              "Summ": 28.4
+            }
+          },
+          "tasks_v2_x100": {
+            "baseline": {
+              "DetQA": 66.7,
+              "EventQA": 89.7,
+              "FC-MH": 3.0,
+              "FC-SH": 66.0,
+              "LME(S*)": 41.7,
+              "MCC": 2.0,
+              "MH-QA": 22.0,
+              "Recom": 3.2,
+              "SH-QA": 48.0,
+              "Summ": 25.0
+            },
+            "pi": {
+              "DetQA": 83.3,
+              "EventQA": 98.0,
+              "FC-MH": 70.0,
+              "FC-SH": 90.0,
+              "LME(S*)": 88.3,
+              "MCC": 46.0,
+              "MH-QA": 77.0,
+              "Recom": 59.8,
+              "SH-QA": 92.0,
+              "Summ": 41.2
+            },
+            "skill-agent": {
+              "DetQA": 83.3,
+              "EventQA": 88.3,
+              "FC-MH": 4.0,
+              "FC-SH": 63.0,
+              "LME(S*)": 51.7,
+              "MCC": 2.0,
+              "MH-QA": 42.0,
+              "Recom": 3.2,
+              "SH-QA": 72.0,
+              "Summ": 37.5
+            }
           }
         },
         "rung_cost_v2": {
           "rung1": {
-            "latency_seconds_mean": 32.6,
-            "latency_seconds_p95": 109.9,
+            "latency_seconds_mean": 31.0,
+            "latency_seconds_p95": 99.3,
             "llm_calls_per_question": 1.0,
-            "questions": 767,
-            "tokens_per_question": 25068.3
+            "questions": 1074,
+            "tokens_per_question": 27504.5
           },
           "rung2": {
-            "latency_seconds_mean": 69.0,
-            "latency_seconds_p95": 189.5,
-            "llm_calls_per_question": 6.12,
-            "questions": 767,
-            "tokens_per_question": 34977.0
+            "latency_seconds_mean": 65.9,
+            "latency_seconds_p95": 172.8,
+            "llm_calls_per_question": 6.5,
+            "questions": 1074,
+            "tokens_per_question": 43166.0
           },
           "rung3": {
-            "latency_seconds_mean": 62.7,
-            "latency_seconds_p95": 211.0,
-            "llm_calls_per_question": 6.58,
-            "questions": 767,
-            "tokens_per_question": 95956.6
+            "latency_seconds_mean": 95.0,
+            "latency_seconds_p95": 451.7,
+            "llm_calls_per_question": 10.16,
+            "questions": 1074,
+            "tokens_per_question": 328610.2
           }
         },
         "x7": {
@@ -302,9 +422,9 @@
         "v1:baseline": 0.3025,
         "v1:pi": 0.6695,
         "v1:skill-agent": 0.3759,
-        "v2:baseline": 0.324,
-        "v2:pi": 0.6511,
-        "v2:skill-agent": 0.4068
+        "v2:baseline": 0.3333,
+        "v2:pi": 0.7101,
+        "v2:skill-agent": 0.4
       },
       "source": "paper/results/recompute_from_logs.py",
       "values_file": "paper/results/recomputed_values.json"
@@ -728,7 +848,7 @@
         "calls_delta_pct": -45.9,
         "docs_in_manifest": {
           "v1": 58,
-          "v2": 46
+          "v2": 118
         },
         "library_dbs": {
           "v1": {
@@ -925,7 +1045,7 @@
         },
         "stats_coverage_docs": {
           "v1": 58,
-          "v2": 46
+          "v2": 118
         },
         "tokens_delta_pct": -18.2
       },
@@ -1434,15 +1554,16 @@
         "v2_baseline": {
           "domains": {
             "AR": {
-              "Avg": 0.5977777777777777,
+              "Avg": 0.5033333333333333,
               "EventQA": 0.8966666666666666,
               "LME(S*)": 0.4166666666666667,
+              "MH-QA": 0.22,
               "SH-QA": 0.48
             },
             "LRU": {
-              "Avg": 0.3333333333333333,
+              "Avg": 0.45851114272166904,
               "DetQA": 0.6666666666666666,
-              "Summ": 0.0
+              "Summ": 0.2503556187766714
             },
             "SF": {
               "Avg": 0.34500000000000003,
@@ -1450,26 +1571,28 @@
               "FC-SH": 0.66
             },
             "TTL": {
-              "Avg": 0.02,
-              "MCC": 0.02
+              "Avg": 0.026250000000000002,
+              "MCC": 0.02,
+              "Recom": 0.0325
             }
           },
           "judge_model": "kimi-k3",
-          "overall": 0.32402777777777775,
-          "questions": 767
+          "overall": 0.3332736190137506,
+          "questions": 1074
         },
         "v2_pi": {
           "domains": {
             "AR": {
-              "Avg": 0.9277777777777777,
+              "Avg": 0.8883333333333333,
               "EventQA": 0.98,
               "LME(S*)": 0.8833333333333333,
+              "MH-QA": 0.77,
               "SH-QA": 0.92
             },
             "LRU": {
-              "Avg": 0.4166666666666667,
+              "Avg": 0.622811364387182,
               "DetQA": 0.8333333333333334,
-              "Summ": 0.0
+              "Summ": 0.4122893954410307
             },
             "SF": {
               "Avg": 0.8,
@@ -1477,26 +1600,28 @@
               "FC-SH": 0.9
             },
             "TTL": {
-              "Avg": 0.46,
-              "MCC": 0.46
+              "Avg": 0.5291666666666667,
+              "MCC": 0.46,
+              "Recom": 0.5983333333333334
             }
           },
           "judge_model": "kimi-k3",
-          "overall": 0.6511111111111111,
-          "questions": 767
+          "overall": 0.7100778410967955,
+          "questions": 1074
         },
         "v2_skill-agent": {
           "domains": {
             "AR": {
-              "Avg": 0.7066666666666667,
+              "Avg": 0.635,
               "EventQA": 0.8833333333333333,
               "LME(S*)": 0.5166666666666667,
+              "MH-QA": 0.42,
               "SH-QA": 0.72
             },
             "LRU": {
-              "Avg": 0.5654269972451791,
+              "Avg": 0.6040036425871521,
               "DetQA": 0.8333333333333334,
-              "Summ": 0.2975206611570248
+              "Summ": 0.37467395184097085
             },
             "SF": {
               "Avg": 0.335,
@@ -1504,13 +1629,14 @@
               "FC-SH": 0.63
             },
             "TTL": {
-              "Avg": 0.02,
-              "MCC": 0.02
+              "Avg": 0.025833333333333333,
+              "MCC": 0.02,
+              "Recom": 0.03166666666666666
             }
           },
           "judge_model": "kimi-k3",
-          "overall": 0.40677341597796146,
-          "questions": 767
+          "overall": 0.3999592439801214,
+          "questions": 1074
         }
       }
     },
@@ -2632,7 +2758,7 @@
     },
     {
       "path": "paper/results/recomputed_values.json",
-      "sha256": "9912c06734a9a17e860e44f02600eda96a9efa51f26bda9c5cea40daf434df95"
+      "sha256": "198a953808425d1e74b5b726a3ffae57449da4a288ffdb24cba9e5238d1685f8"
     },
     {
       "path": ".benchmark_runs/memoryagentbench-kimik3-sample-v1/memoryagentbench_summary.baseline.kimik3-official-v1.sampled.json",
@@ -2648,15 +2774,15 @@
     },
     {
       "path": ".benchmark_runs/memoryagentbench-kimik3-sample-v2/memoryagentbench_summary.baseline.kimik3-official-v1.sampled.json",
-      "sha256": "fcc9dc063f6ff32b3132157bc22867d2e4b0f56e8cb1f765a7323cb0934f09c1"
+      "sha256": "1512015260e2f129aa72b3338a1ca8cc5d09f794ab23588564c441c655ffada2"
     },
     {
       "path": ".benchmark_runs/memoryagentbench-kimik3-sample-v2/memoryagentbench_summary.skill-agent.kimik3-official-v1.sampled.json",
-      "sha256": "a91de7b72c44a9217d7b9efc1737de67d2ff7d8954459c46a55da979ff29ac6a"
+      "sha256": "6c0fab8154456beae4561e6c8536d5ece381ff6397e742fff6fe2973e021dfd1"
     },
     {
       "path": ".benchmark_runs/memoryagentbench-kimik3-sample-v2/memoryagentbench_summary.pi.kimik3-official-v1.sampled.json",
-      "sha256": "788518028be2778b475312ade871dbd9a32dfb5c74dcb11de692d18d73bbfd0c"
+      "sha256": "7fabca0ad366756b9ce0dfe3866dd02a864543539fa73637b235f33a9ce668b8"
     },
     {
       "path": ".benchmark_runs/longmemeval-kimik3-full-v1/summary.baseline.json",
@@ -2696,7 +2822,7 @@
     },
     {
       "path": ".benchmark_runs/memoryagentbench-kimik3-sample-v2/run_manifest.json",
-      "sha256": "ad71159e8d906d80d95a980447e334313c7065b02241bf0ce9256a4a29db0511"
+      "sha256": "798735abc371286ab8117323dc2581c45ebcbbf2afd65ac10c85e35aeac4313a"
     },
     {
       "path": ".benchmark_runs/longmemeval-kimik3-full-v1/run_manifest.json",
@@ -2728,15 +2854,15 @@
     },
     {
       "path": ".benchmark_runs/memoryagentbench-kimik3-sample-v2/memoryagentbench_scores.baseline.kimik3-official-v1.sampled.jsonl",
-      "sha256": "f68115c532a3f351ee1a3401a0551332c564c7201bce237dce489c65ea99d1a6"
+      "sha256": "9e8b13c00901096069b5197ca79ea51831d8c4ac202f6dee6934a5e31d76be99"
     },
     {
       "path": ".benchmark_runs/memoryagentbench-kimik3-sample-v2/memoryagentbench_scores.skill-agent.kimik3-official-v1.sampled.jsonl",
-      "sha256": "ed24a221d7434c1ecfd958626ed7cc9260aab0a00007af2c5f115b516cb9d020"
+      "sha256": "efcb2ba1fb23bbe548af7db04c97698a228f6f8bd4dd1dcffdb2313bdcbdf060"
     },
     {
       "path": ".benchmark_runs/memoryagentbench-kimik3-sample-v2/memoryagentbench_scores.pi.kimik3-official-v1.sampled.jsonl",
-      "sha256": "49093142be38c019abd94bdfeddd76330daf166e065b41ef54bc33ca57bcfcc1"
+      "sha256": "147353e7977983623b7484cfa0b8d51d57e5a6da1a2aecebd124d4aa59592038"
     },
     {
       "path": ".benchmark_runs/locomo-k3-agent-judge-diagnostic-v1/run_manifest.json",

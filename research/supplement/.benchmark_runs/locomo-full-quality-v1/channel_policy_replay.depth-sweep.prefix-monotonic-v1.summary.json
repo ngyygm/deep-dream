@@ -1,0 +1,88 @@
+{
+  "schema_version": 2,
+  "dataset": "locomo-full-quality-v1",
+  "track": "kimi-agent-direct-memory-v2c-gate210",
+  "method": "single-max-run-prefix-slice",
+  "retrieval_profile": "hybrid-v2",
+  "candidate_k": 20,
+  "context_k": 5,
+  "evidence_token_budget": 1600,
+  "neighbor_turns": 1,
+  "embedding_model": "all-MiniLM-L6-v2",
+  "questions": 210,
+  "ks": [
+    1,
+    3,
+    5,
+    10,
+    20
+  ],
+  "per_k": {
+    "1": {
+      "n": 210,
+      "recall_any_mean": 0.2619047619047619,
+      "recall_any_ci_low": 0.20476190476190476,
+      "recall_any_ci_high": 0.3238095238095238,
+      "recall_all_mean": 0.14285714285714285,
+      "recall_all_ci_low": 0.1,
+      "recall_all_ci_high": 0.19047619047619047,
+      "mean_evidence_payload_bytes": 199.1904761904762
+    },
+    "3": {
+      "n": 210,
+      "recall_any_mean": 0.5095238095238095,
+      "recall_any_ci_low": 0.44285714285714284,
+      "recall_any_ci_high": 0.580952380952381,
+      "recall_all_mean": 0.3142857142857143,
+      "recall_all_ci_low": 0.2523809523809524,
+      "recall_all_ci_high": 0.3761904761904762,
+      "mean_evidence_payload_bytes": 575.7
+    },
+    "5": {
+      "n": 210,
+      "recall_any_mean": 0.6047619047619047,
+      "recall_any_ci_low": 0.5380952380952381,
+      "recall_any_ci_high": 0.6714285714285714,
+      "recall_all_mean": 0.4,
+      "recall_all_ci_low": 0.3379761904761907,
+      "recall_all_ci_high": 0.46190476190476193,
+      "mean_evidence_payload_bytes": 942.7095238095238
+    },
+    "10": {
+      "n": 210,
+      "recall_any_mean": 0.7238095238095238,
+      "recall_any_ci_low": 0.6665476190476192,
+      "recall_any_ci_high": 0.7857142857142857,
+      "recall_all_mean": 0.5190476190476191,
+      "recall_all_ci_low": 0.4523809523809524,
+      "recall_all_ci_high": 0.5858333333333328,
+      "mean_evidence_payload_bytes": 1847.1190476190477
+    },
+    "20": {
+      "n": 210,
+      "recall_any_mean": 0.819047619047619,
+      "recall_any_ci_low": 0.7666666666666667,
+      "recall_any_ci_high": 0.8714285714285714,
+      "recall_all_mean": 0.5952380952380952,
+      "recall_all_ci_low": 0.5285714285714286,
+      "recall_all_ci_high": 0.6619047619047619,
+      "mean_evidence_payload_bytes": 3617.3571428571427
+    }
+  },
+  "prefix_monotonic_passed": true,
+  "prefix_monotonic_violations": 0,
+  "primary_result_invariant_passed": true,
+  "primary_result_invariant_violations": 0,
+  "interpretation": "Each k-slice is a prefix of one fixed length-20 fused ranking, so prefix monotonicity holds by construction (0 violations). This is the corrected budget frontier; the invalid depth10-vs20 replay is retained separately as an integrity finding.",
+  "bootstrap_resamples": 2000,
+  "ci_level": 0.95,
+  "gold_used_for_retrieval": false,
+  "offline": true,
+  "elapsed_seconds": 228.25,
+  "baseline_primary_recall_any": 0.7238095238095238,
+  "baseline_primary_recall_all": 0.5190476190476191,
+  "candidate_primary_recall_any": 0.819047619047619,
+  "candidate_primary_recall_all": 0.5952380952380952,
+  "baseline_mean_response_bytes": 1847.1190476190477,
+  "candidate_mean_response_bytes": 3617.3571428571427
+}

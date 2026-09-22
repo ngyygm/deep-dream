@@ -1,0 +1,38 @@
+{
+  "dataset": "locomo",
+  "track": "kimi-agent-direct-k3-agent-full-thinking-off-v1",
+  "protocol": "locomo-1540",
+  "judge_tag": "kimik3-agent-v1-legacy-fingerprint-diagnostic",
+  "judge_model": "kimi-k3",
+  "library_snapshot_sha256": "cf2e76b8d3274309f8f4d847fa4345f190784d6865b9686566b3e893e2bd6b38",
+  "runtime_code_sha256": "",
+  "prompt_source": {
+    "repository": "mem0ai/memory-benchmarks",
+    "commit": "4b61c5d31b9c668a12b4f5e78064248a02c82d2b",
+    "mode": "unified-no-evidence-exact"
+  },
+  "total": 1540,
+  "completed": 1540,
+  "pending": 0,
+  "errors": 0,
+  "overall": 0.951948051948052,
+  "by_type": {
+    "1": {
+      "score": 0.9361702127659575,
+      "count": 282
+    },
+    "2": {
+      "score": 0.9532710280373832,
+      "count": 321
+    },
+    "3": {
+      "score": 0.8020833333333334,
+      "count": 96
+    },
+    "4": {
+      "score": 0.9738406658739596,
+      "count": 841
+    }
+  },
+  "average_latency_seconds": 1.990609090909091
+}

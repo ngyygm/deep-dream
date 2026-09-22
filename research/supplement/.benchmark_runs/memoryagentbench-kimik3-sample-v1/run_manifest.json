@@ -1,0 +1,2713 @@
+{
+  "schema_version": 4,
+  "dataset": "memoryagentbench",
+  "dataset_path": "/Users/admin/Desktop/exa/deep-dream/research/.benchmark_data/memoryagentbench/manifest.json",
+  "dataset_sha256": "98f7bd1774526cc95712ef4227f67167a59ef4ad416834ae451ea37b9ae02b07",
+  "git_commit": "73d9c5e6996aad48c981068056b34d15388f99f9",
+  "created_at": "2026-08-26T01:33:04.510376+00:00",
+  "run_dir": "/Users/admin/Desktop/exa/deep-dream/research/.benchmark_runs/memoryagentbench-kimik3-sample-v1",
+  "answer_top_k": 10,
+  "max_agent_steps": 8,
+  "retrieval_k": [
+    1,
+    3,
+    5,
+    10,
+    30,
+    50
+  ],
+  "limit": null,
+  "question_ids": [],
+  "random_seed": 0,
+  "remember_profile": "strong-v1",
+  "runtime_policy": {
+    "name": "deep-dream-runtime-policy",
+    "version": "1.0.0",
+    "sha256": "fc73d07e951df1bfead1fd154f8160e7ed817f30323292f520ff8aac63808146"
+  },
+  "skill": {
+    "path": "/Users/admin/Desktop/exa/deep-dream/.claude/skills/deep-dream/SKILL.md",
+    "sha256": "4e889924d072004c418911ef590d488ecee130e5246fda3b7075399fa0db2ebd"
+  },
+  "config": {
+    "llm": {
+      "model": "kimi-k3",
+      "base_url": "http://sz-infer.x2robot.cn/infer/inf-dddgcurffgz3366q/v1",
+      "think": false,
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      },
+      "temperature": 0.0,
+      "max_tokens": 16384,
+      "agent_max_tokens": null,
+      "agent_thinking_max_tokens": null,
+      "context_window_tokens": 32000,
+      "agent_think": null,
+      "answer_think": null,
+      "answer_validation_retries": null,
+      "api_key_env": null
+    },
+    "embedding": {
+      "model": "all-MiniLM-L6-v2",
+      "model_path": null,
+      "device": "cpu"
+    },
+    "chunking": {
+      "window_size": 800,
+      "overlap": 100
+    },
+    "pipeline": {
+      "search": {
+        "similarity_threshold": 0.7,
+        "max_similar_entities": 10,
+        "content_snippet_length": 50,
+        "relation_content_snippet_length": 50,
+        "relation_endpoint_jaccard_threshold": 0.9,
+        "relation_endpoint_embedding_threshold": 0.9,
+        "jaccard_search_threshold": null,
+        "embedding_name_search_threshold": null,
+        "embedding_full_search_threshold": null
+      },
+      "alignment": {
+        "max_alignment_candidates": null
+      },
+      "extraction": {
+        "prompt_episode_max_chars": 2000,
+        "entity_refine_rounds": 0,
+        "relation_refine_rounds": 0,
+        "entity_post_enhancement": false
+      },
+      "remember": {
+        "alignment_policy": "conservative",
+        "profile": "strong-v1",
+        "preserve_source_language": false,
+        "max_entities_per_window": 24,
+        "max_relations_per_window": 36,
+        "episode_slice_chars": 800,
+        "family_write_gate_enabled": true,
+        "window_batch_alignment": null,
+        "window_size_chars": 6000,
+        "overlap_chars": 300,
+        "fallback_cooccurrence_relations": false,
+        "mode": "multi_step",
+        "anchor_recall_rounds": 1,
+        "named_entity_recall_rounds": 1,
+        "abstract_recall_rounds": 1,
+        "coverage_gap_rounds": 0,
+        "relation_hint_rounds": 1,
+        "relation_expand_rounds": 0,
+        "relation_write_rounds": 1
+      },
+      "debug": {
+        "distill_data_dir": null
+      }
+    }
+  },
+  "formal_defaults": {
+    "model": "qwen3.6-27b-awq",
+    "thinking": false,
+    "temperature": 0,
+    "answer_top_k": 5,
+    "max_agent_steps": 8
+  },
+  "scopes": {
+    "mab-ar-000": {
+      "library_dir": "libraries/mab-ar-000_677804eb18",
+      "visible_sessions": [
+        "context_0008",
+        "context_0003",
+        "context_0005",
+        "context_0000",
+        "context_0006",
+        "context_0001",
+        "context_0007",
+        "context_0004",
+        "context_0002"
+      ],
+      "documents": {
+        "context_0008": {
+          "document_id": "doc_bench_078bc5b218d58732d521",
+          "status": "active",
+          "total_windows": 6,
+          "complete_windows": 6,
+          "missing_windows": [],
+          "entities": 144,
+          "relations": 147,
+          "latency_seconds": 0.0,
+          "llm_call_stats": {
+            "calls": 139,
+            "prompt_tokens": 170314,
+            "completion_tokens": 271463,
+            "estimated_calls": 0,
+            "by_step": {
+              "02s_onepass_extract": {
+                "calls": 12,
+                "prompt_tokens": 24881,
+                "completion_tokens": 180761
+              },
+              "06_entity_alignment": {
+                "calls": 111,
+                "prompt_tokens": 114986,
+                "completion_tokens": 37498
+              },
+              "07_relation_alignment": {
+                "calls": 2,
+                "prompt_tokens": 649,
+                "completion_tokens": 797
+              },
+              "unlabeled": {
+                "calls": 14,
+                "prompt_tokens": 29798,
+                "completion_tokens": 52407
+              }
+            },
+            "by_model": {
+              "kimi-k3": 139
+            }
+          }
+        },
+        "context_0003": {
+          "document_id": "doc_bench_f2eb549d29f305c84d85",
+          "status": "active",
+          "total_windows": 23,
+          "complete_windows": 23,
+          "missing_windows": [],
+          "entities": 552,
+          "relations": 459,
+          "latency_seconds": 0.0,
+          "llm_call_stats": {
+            "calls": 703,
+            "prompt_tokens": 761659,
+            "completion_tokens": 1041593,
+            "estimated_calls": 0,
+            "by_step": {
+              "02s_onepass_extract": {
+                "calls": 42,
+                "prompt_tokens": 95250,
+                "completion_tokens": 605402
+              },
+              "06_entity_alignment": {
+                "calls": 561,
+                "prompt_tokens": 519153,
+                "completion_tokens": 176458
+              },
+              "07_relation_alignment": {
+                "calls": 29,
+                "prompt_tokens": 9625,
+                "completion_tokens": 12910
+              },
+              "unlabeled": {
+                "calls": 71,
+                "prompt_tokens": 137631,
+                "completion_tokens": 246823
+              }
+            },
+            "by_model": {
+              "kimi-k3": 703
+            }
+          }
+        },
+        "context_0005": {
+          "document_id": "doc_bench_5cfbd72b69ae3ade7056",
+          "status": "active",
+          "total_windows": 23,
+          "complete_windows": 23,
+          "missing_windows": [],
+          "entities": 552,
+          "relations": 506,
+          "latency_seconds": 0.0,
+          "llm_call_stats": {
+            "calls": 738,
+            "prompt_tokens": 752464,
+            "completion_tokens": 986026,
+            "estimated_calls": 0,
+            "by_step": {
+              "02s_onepass_extract": {
+                "calls": 41,
+                "prompt_tokens": 89084,
+                "completion_tokens": 620220
+              },
+              "06_entity_alignment": {
+                "calls": 526,
+                "prompt_tokens": 495480,
+                "completion_tokens": 168577
+              },
+              "07_relation_alignment": {
+                "calls": 14,
+                "prompt_tokens": 4602,
+                "completion_tokens": 5135
+              },
+              "unlabeled": {
+                "calls": 157,
+                "prompt_tokens": 163298,
+                "completion_tokens": 192094
+              }
+            },
+            "by_model": {
+              "kimi-k3": 738
+            }
+          }
+        },
+        "context_0000": {
+          "document_id": "doc_bench_c9e232927d2d0b2de848",
+          "status": "active",
+          "total_windows": 23,
+          "complete_windows": 23,
+          "missing_windows": [],
+          "entities": 552,
+          "relations": 442,
+          "latency_seconds": 0.0,
+          "llm_call_stats": {
+            "calls": 781,
+            "prompt_tokens": 787070,
+            "completion_tokens": 983337,
+            "estimated_calls": 0,
+            "by_step": {
+              "02s_onepass_extract": {
+                "calls": 39,
+                "prompt_tokens": 84793,
+                "completion_tokens": 572593
+              },
+              "06_entity_alignment": {
+                "calls": 545,
+                "prompt_tokens": 500735,
+                "completion_tokens": 182933
+              },
+              "07_relation_alignment": {
+                "calls": 28,
+                "prompt_tokens": 9508,
+                "completion_tokens": 11082
+              },
+              "unlabeled": {
+                "calls": 169,
+                "prompt_tokens": 192034,
+                "completion_tokens": 216729
+              }
+            },
+            "by_model": {
+              "kimi-k3": 781
+            }
+          }
+        },
+        "context_0006": {
+          "document_id": "doc_bench_63f6316ac14e03e7891c",
+          "status": "active",
+          "total_windows": 24,
+          "complete_windows": 24,
+          "missing_windows": [],
+          "entities": 574,
+          "relations": 475,
+          "latency_seconds": 0.0,
+          "llm_call_stats": {
+            "calls": 718,
+            "prompt_tokens": 787680,
+            "completion_tokens": 1053156,
+            "estimated_calls": 0,
+            "by_step": {
+              "02s_onepass_extract": {
+                "calls": 42,
+                "prompt_tokens": 90373,
+                "completion_tokens": 614666
+              },
+              "06_entity_alignment": {
+                "calls": 577,
+                "prompt_tokens": 545235,
+                "completion_tokens": 192551
+              },
+              "07_relation_alignment": {
+                "calls": 19,
+                "prompt_tokens": 6622,
+                "completion_tokens": 10841
+              },
+              "unlabeled": {
+                "calls": 80,
+                "prompt_tokens": 145450,
+                "completion_tokens": 235098
+              }
+            },
+            "by_model": {
+              "kimi-k3": 718
+            }
+          }
+        },
+        "context_0001": {
+          "document_id": "doc_bench_d20b280170845b547553",
+          "status": "active",
+          "total_windows": 24,
+          "complete_windows": 24,
+          "missing_windows": [],
+          "entities": 575,
+          "relations": 495,
+          "latency_seconds": 0.0,
+          "llm_call_stats": {
+            "calls": 784,
+            "prompt_tokens": 807398,
+            "completion_tokens": 1098179,
+            "estimated_calls": 0,
+            "by_step": {
+              "02s_onepass_extract": {
+                "calls": 44,
+                "prompt_tokens": 93247,
+                "completion_tokens": 681145
+              },
+              "06_entity_alignment": {
+                "calls": 545,
+                "prompt_tokens": 528031,
+                "completion_tokens": 171436
+              },
+              "07_relation_alignment": {
+                "calls": 14,
+                "prompt_tokens": 4523,
+                "completion_tokens": 5898
+              },
+              "unlabeled": {
+                "calls": 181,
+                "prompt_tokens": 181597,
+                "completion_tokens": 239700
+              }
+            },
+            "by_model": {
+              "kimi-k3": 784
+            }
+          }
+        },
+        "context_0007": {
+          "document_id": "doc_bench_c950e0aebfb76e5bc4a1",
+          "status": "active",
+          "total_windows": 23,
+          "complete_windows": 23,
+          "missing_windows": [],
+          "entities": 552,
+          "relations": 417,
+          "latency_seconds": 0.0,
+          "llm_call_stats": {
+            "calls": 784,
+            "prompt_tokens": 749609,
+            "completion_tokens": 971282,
+            "estimated_calls": 0,
+            "by_step": {
+              "02s_onepass_extract": {
+                "calls": 37,
+                "prompt_tokens": 78425,
+                "completion_tokens": 548028
+              },
+              "06_entity_alignment": {
+                "calls": 523,
+                "prompt_tokens": 468015,
+                "completion_tokens": 182921
+              },
+              "07_relation_alignment": {
+                "calls": 19,
+                "prompt_tokens": 6284,
+                "completion_tokens": 8454
+              },
+              "unlabeled": {
+                "calls": 205,
+                "prompt_tokens": 196885,
+                "completion_tokens": 231879
+              }
+            },
+            "by_model": {
+              "kimi-k3": 784
+            }
+          }
+        },
+        "context_0004": {
+          "document_id": "doc_bench_d51970ef58779241b15f",
+          "status": "active",
+          "total_windows": 24,
+          "complete_windows": 24,
+          "missing_windows": [],
+          "entities": 574,
+          "relations": 547,
+          "latency_seconds": 0.0,
+          "llm_call_stats": {
+            "calls": 879,
+            "prompt_tokens": 824839,
+            "completion_tokens": 1130326,
+            "estimated_calls": 0,
+            "by_step": {
+              "02s_onepass_extract": {
+                "calls": 45,
+                "prompt_tokens": 102049,
+                "completion_tokens": 679854
+              },
+              "06_entity_alignment": {
+                "calls": 595,
+                "prompt_tokens": 530097,
+                "completion_tokens": 217171
+              },
+              "07_relation_alignment": {
+                "calls": 39,
+                "prompt_tokens": 12759,
+                "completion_tokens": 14756
+              },
+              "unlabeled": {
+                "calls": 200,
+                "prompt_tokens": 179934,
+                "completion_tokens": 218545
+              }
+            },
+            "by_model": {
+              "kimi-k3": 879
+            }
+          }
+        },
+        "context_0002": {
+          "document_id": "doc_bench_732d3b2aa493a824d719",
+          "status": "active",
+          "total_windows": 23,
+          "complete_windows": 23,
+          "missing_windows": [],
+          "entities": 548,
+          "relations": 523,
+          "latency_seconds": 0.0,
+          "llm_call_stats": {
+            "calls": 788,
+            "prompt_tokens": 776163,
+            "completion_tokens": 1095306,
+            "estimated_calls": 0,
+            "by_step": {
+              "02s_onepass_extract": {
+                "calls": 37,
+                "prompt_tokens": 78925,
+                "completion_tokens": 539880
+              },
+              "06_entity_alignment": {
+                "calls": 581,
+                "prompt_tokens": 520781,
+                "completion_tokens": 229863
+              },
+              "07_relation_alignment": {
+                "calls": 27,
+                "prompt_tokens": 9050,
+                "completion_tokens": 13676
+              },
+              "unlabeled": {
+                "calls": 143,
+                "prompt_tokens": 167407,
+                "completion_tokens": 311887
+              }
+            },
+            "by_model": {
+              "kimi-k3": 788
+            }
+          }
+        }
+      },
+      "duplicate_family_report": {
+        "total_entity_families": 3662,
+        "duplicate_names": 9,
+        "duplicate_family_rows": 20,
+        "duplicate_family_rate": 0.0055
+      }
+    },
+    "mab-ar-005": {
+      "library_dir": "libraries/mab-ar-005_5e2d629d51",
+      "visible_sessions": [
+        "context_0014",
+        "context_0011",
+        "context_0010",
+        "context_0004",
+        "context_0002",
+        "context_0003",
+        "context_0005",
+        "context_0007",
+        "context_0008",
+        "context_0006",
+        "context_0001",
+        "context_0013",
+        "context_0000",
+        "context_0012",
+        "context_0009"
+      ],
+      "documents": {
+        "context_0014": {
+          "document_id": "doc_bench_eadb86b1db94ea5bedad",
+          "status": "active",
+          "total_windows": 4,
+          "complete_windows": 4,
+          "missing_windows": [],
+          "entities": 96,
+          "relations": 53,
+          "latency_seconds": 0.0,
+          "llm_call_stats": {
+            "calls": 143,
+            "prompt_tokens": 141370,
+            "completion_tokens": 224945,
+            "estimated_calls": 0,
+            "by_step": {
+              "02s_onepass_extract": {
+                "calls": 6,
+                "prompt_tokens": 13517,
+                "completion_tokens": 103912
+              },
+              "06_entity_alignment": {
+                "calls": 96,
+                "prompt_tokens": 90306,
+                "completion_tokens": 49865
+              },
+              "07_relation_alignment": {
+                "calls": 4,
+                "prompt_tokens": 1303,
+                "completion_tokens": 1285
+              },
+              "unlabeled": {
+                "calls": 37,
+                "prompt_tokens": 36244,
+                "completion_tokens": 69883
+              }
+            },
+            "by_model": {
+              "kimi-k3": 143
+            }
+          }
+        },
+        "context_0011": {
+          "document_id": "doc_bench_f3cf47ada41ed215a1dd",
+          "status": "active",
+          "total_windows": 22,
+          "complete_windows": 22,
+          "missing_windows": [],
+          "entities": 528,
+          "relations": 457,
+          "latency_seconds": 0.0,
+          "llm_call_stats": {
+            "calls": 470,
+            "prompt_tokens": 369693,
+            "completion_tokens": 1051628,
+            "estimated_calls": 0,
+            "by_step": {
+              "02s_onepass_extract": {
+                "calls": 36,
+                "prompt_tokens": 85988,
+                "completion_tokens": 513003
+              },
+              "06_entity_alignment": {
+                "calls": 176,
+                "prompt_tokens": 71708,
+                "completion_tokens": 195329
+              },
+              "07_relation_alignment": {
+                "calls": 56,
+                "prompt_tokens": 21001,
+                "completion_tokens": 44831
+              },
+              "unlabeled": {
+                "calls": 202,
+                "prompt_tokens": 190996,
+                "completion_tokens": 298465
+              }
+            },
+            "by_model": {
+              "kimi-k3": 470
+            }
+          }
+        },
+        "context_0010": {
+          "document_id": "doc_bench_edf0442862b0f2723b6d",
+          "status": "active",
+          "total_windows": 22,
+          "complete_windows": 22,
+          "missing_windows": [],
+          "entities": 521,
+          "relations": 702,
+          "latency_seconds": 0.0,
+          "llm_call_stats": {
+            "calls": 711,
+            "prompt_tokens": 687411,
+            "completion_tokens": 1148419,
+            "estimated_calls": 0,
+            "by_step": {
+              "02s_onepass_extract": {
+                "calls": 43,
+                "prompt_tokens": 107268,
+                "completion_tokens": 585668
+              },
+              "06_entity_alignment": {
+                "calls": 472,
+                "prompt_tokens": 412576,
+                "completion_tokens": 285602
+              },
+              "07_relation_alignment": {
+                "calls": 69,
+                "prompt_tokens": 25032,
+                "completion_tokens": 42968
+              },
+              "unlabeled": {
+                "calls": 127,
+                "prompt_tokens": 142535,
+                "completion_tokens": 234181
+              }
+            },
+            "by_model": {
+              "kimi-k3": 711
+            }
+          }
+        },
+        "context_0004": {
+          "document_id": "doc_bench_e44ee2c7756cb169dce2",
+          "status": "active",
+          "total_windows": 22,
+          "complete_windows": 22,
+          "missing_windows": [],
+          "entities": 527,
+          "relations": 671,
+          "latency_seconds": 0.0,
+          "llm_call_stats": {
+            "calls": 783,
+            "prompt_tokens": 721261,
+            "completion_tokens": 1117941,
+            "estimated_calls": 0,
+            "by_step": {
+              "02s_onepass_extract": {
+                "calls": 37,
+                "prompt_tokens": 88124,
+                "completion_tokens": 548623
+              },
+              "06_entity_alignment": {
+                "calls": 484,
+                "prompt_tokens": 425312,
+                "completion_tokens": 260732
+              },
+              "07_relation_alignment": {
+                "calls": 101,
+                "prompt_tokens": 37125,
+                "completion_tokens": 57643
+              },
+              "unlabeled": {
+                "calls": 161,
+                "prompt_tokens": 170700,
+                "completion_tokens": 250943
+              }
+            },
+            "by_model": {
+              "kimi-k3": 783
+            }
+          }
+        },
+        "context_0002": {
+          "document_id": "doc_bench_a27d612a94c23bd40a89",
+          "status": "active",
+          "total_windows": 22,
+          "complete_windows": 22,
+          "missing_windows": [],
+          "entities": 527,
+          "relations": 626,
+          "latency_seconds": 0.0,
+          "llm_call_stats": {
+            "calls": 754,
+            "prompt_tokens": 706671,
+            "completion_tokens": 1125625,
+            "estimated_calls": 0,
+            "by_step": {
+              "02s_onepass_extract": {
+                "calls": 36,
+                "prompt_tokens": 90797,
+                "completion_tokens": 519349
+              },
+              "06_entity_alignment": {
+                "calls": 485,
+                "prompt_tokens": 409827,
+                "completion_tokens": 277545
+              },
+              "07_relation_alignment": {
+                "calls": 73,
+                "prompt_tokens": 26866,
+                "completion_tokens": 51581
+              },
+              "unlabeled": {
+                "calls": 160,
+                "prompt_tokens": 179181,
+                "completion_tokens": 277150
+              }
+            },
+            "by_model": {
+              "kimi-k3": 754
+            }
+          }
+        },
+        "context_0003": {
+          "document_id": "doc_bench_f3dd4f65580f6fd9eacb",
+          "status": "active",
+          "total_windows": 22,
+          "complete_windows": 22,
+          "missing_windows": [],
+          "entities": 528,
+          "relations": 558,
+          "latency_seconds": 0.0,
+          "llm_call_stats": {
+            "calls": 791,
+            "prompt_tokens": 724815,
+            "completion_tokens": 1164372,
+            "estimated_calls": 0,
+            "by_step": {
+              "02s_onepass_extract": {
+                "calls": 36,
+                "prompt_tokens": 84672,
+                "completion_tokens": 535721
+              },
+              "06_entity_alignment": {
+                "calls": 494,
+                "prompt_tokens": 426020,
+                "completion_tokens": 318083
+              },
+              "07_relation_alignment": {
+                "calls": 75,
+                "prompt_tokens": 27397,
+                "completion_tokens": 38023
+              },
+              "unlabeled": {
+                "calls": 186,
+                "prompt_tokens": 186726,
+                "completion_tokens": 272545
+              }
+            },
+            "by_model": {
+              "kimi-k3": 791
+            }
+          }
+        },
+        "context_0005": {
+          "document_id": "doc_bench_3bec88b687208e0610f9",
+          "status": "active",
+          "total_windows": 22,
+          "complete_windows": 22,
+          "missing_windows": [],
+          "entities": 527,
+          "relations": 599,
+          "latency_seconds": 0.0,
+          "llm_call_stats": {
+            "calls": 735,
+            "prompt_tokens": 683005,
+            "completion_tokens": 1150899,
+            "estimated_calls": 0,
+            "by_step": {
+              "02s_onepass_extract": {
+                "calls": 39,
+                "prompt_tokens": 94634,
+                "completion_tokens": 562164
+              },
+              "06_entity_alignment": {
+                "calls": 472,
+                "prompt_tokens": 405311,
+                "completion_tokens": 276671
+              },
+              "07_relation_alignment": {
+                "calls": 47,
+                "prompt_tokens": 16328,
+                "completion_tokens": 30217
+              },
+              "unlabeled": {
+                "calls": 177,
+                "prompt_tokens": 166732,
+                "completion_tokens": 281847
+              }
+            },
+            "by_model": {
+              "kimi-k3": 735
+            }
+          }
+        },
+        "context_0007": {
+          "document_id": "doc_bench_c3f47f327feb57e35775",
+          "status": "active",
+          "total_windows": 22,
+          "complete_windows": 22,
+          "missing_windows": [],
+          "entities": 527,
+          "relations": 729,
+          "latency_seconds": 0.0,
+          "llm_call_stats": {
+            "calls": 787,
+            "prompt_tokens": 683972,
+            "completion_tokens": 1226618,
+            "estimated_calls": 0,
+            "by_step": {
+              "02s_onepass_extract": {
+                "calls": 40,
+                "prompt_tokens": 97496,
+                "completion_tokens": 555294
+              },
+              "06_entity_alignment": {
+                "calls": 475,
+                "prompt_tokens": 383974,
+                "completion_tokens": 318396
+              },
+              "07_relation_alignment": {
+                "calls": 96,
+                "prompt_tokens": 36693,
+                "completion_tokens": 75845
+              },
+              "unlabeled": {
+                "calls": 176,
+                "prompt_tokens": 165809,
+                "completion_tokens": 277083
+              }
+            },
+            "by_model": {
+              "kimi-k3": 787
+            }
+          }
+        },
+        "context_0008": {
+          "document_id": "doc_bench_8213f4acff88bbe2f3b0",
+          "status": "active",
+          "total_windows": 22,
+          "complete_windows": 22,
+          "missing_windows": [],
+          "entities": 527,
+          "relations": 611,
+          "latency_seconds": 0.0,
+          "llm_call_stats": {
+            "calls": 832,
+            "prompt_tokens": 716262,
+            "completion_tokens": 1166495,
+            "estimated_calls": 0,
+            "by_step": {
+              "02s_onepass_extract": {
+                "calls": 37,
+                "prompt_tokens": 87943,
+                "completion_tokens": 510856
+              },
+              "06_entity_alignment": {
+                "calls": 509,
+                "prompt_tokens": 417915,
+                "completion_tokens": 349338
+              },
+              "07_relation_alignment": {
+                "calls": 95,
+                "prompt_tokens": 34696,
+                "completion_tokens": 50003
+              },
+              "unlabeled": {
+                "calls": 191,
+                "prompt_tokens": 175708,
+                "completion_tokens": 256298
+              }
+            },
+            "by_model": {
+              "kimi-k3": 832
+            }
+          }
+        },
+        "context_0006": {
+          "document_id": "doc_bench_103d3d98d8bd68a457a3",
+          "status": "active",
+          "total_windows": 22,
+          "complete_windows": 22,
+          "missing_windows": [],
+          "entities": 526,
+          "relations": 818,
+          "latency_seconds": 0.0,
+          "llm_call_stats": {
+            "calls": 849,
+            "prompt_tokens": 764003,
+            "completion_tokens": 1245863,
+            "estimated_calls": 0,
+            "by_step": {
+              "02s_onepass_extract": {
+                "calls": 40,
+                "prompt_tokens": 95860,
+                "completion_tokens": 578436
+              },
+              "06_entity_alignment": {
+                "calls": 521,
+                "prompt_tokens": 451747,
+                "completion_tokens": 322358
+              },
+              "07_relation_alignment": {
+                "calls": 114,
+                "prompt_tokens": 45727,
+                "completion_tokens": 95191
+              },
+              "unlabeled": {
+                "calls": 174,
+                "prompt_tokens": 170669,
+                "completion_tokens": 249878
+              }
+            },
+            "by_model": {
+              "kimi-k3": 849
+            }
+          }
+        },
+        "context_0001": {
+          "document_id": "doc_bench_67f5d7166efd94e983f6",
+          "status": "active",
+          "total_windows": 23,
+          "complete_windows": 23,
+          "missing_windows": [],
+          "entities": 551,
+          "relations": 559,
+          "latency_seconds": 0.0,
+          "llm_call_stats": {
+            "calls": 816,
+            "prompt_tokens": 764068,
+            "completion_tokens": 1197656,
+            "estimated_calls": 0,
+            "by_step": {
+              "02s_onepass_extract": {
+                "calls": 39,
+                "prompt_tokens": 92594,
+                "completion_tokens": 579602
+              },
+              "06_entity_alignment": {
+                "calls": 511,
+                "prompt_tokens": 453066,
+                "completion_tokens": 268257
+              },
+              "07_relation_alignment": {
+                "calls": 52,
+                "prompt_tokens": 18761,
+                "completion_tokens": 33675
+              },
+              "unlabeled": {
+                "calls": 214,
+                "prompt_tokens": 199647,
+                "completion_tokens": 316122
+              }
+            },
+            "by_model": {
+              "kimi-k3": 816
+            }
+          }
+        },
+        "context_0013": {
+          "document_id": "doc_bench_376a64f6f3d563783e53",
+          "status": "active",
+          "total_windows": 22,
+          "complete_windows": 22,
+          "missing_windows": [],
+          "entities": 524,
+          "relations": 600,
+          "latency_seconds": 0.0,
+          "llm_call_stats": {
+            "calls": 822,
+            "prompt_tokens": 767273,
+            "completion_tokens": 1159318,
+            "estimated_calls": 0,
+            "by_step": {
+              "02s_onepass_extract": {
+                "calls": 38,
+                "prompt_tokens": 90055,
+                "completion_tokens": 542087
+              },
+              "06_entity_alignment": {
+                "calls": 524,
+                "prompt_tokens": 473756,
+                "completion_tokens": 313445
+              },
+              "07_relation_alignment": {
+                "calls": 65,
+                "prompt_tokens": 24430,
+                "completion_tokens": 37618
+              },
+              "unlabeled": {
+                "calls": 195,
+                "prompt_tokens": 179032,
+                "completion_tokens": 266168
+              }
+            },
+            "by_model": {
+              "kimi-k3": 822
+            }
+          }
+        },
+        "context_0000": {
+          "document_id": "doc_bench_5f563498832b8634495b",
+          "status": "active",
+          "total_windows": 22,
+          "complete_windows": 22,
+          "missing_windows": [],
+          "entities": 525,
+          "relations": 602,
+          "latency_seconds": 0.0,
+          "llm_call_stats": {
+            "calls": 778,
+            "prompt_tokens": 737075,
+            "completion_tokens": 1247269,
+            "estimated_calls": 0,
+            "by_step": {
+              "02s_onepass_extract": {
+                "calls": 43,
+                "prompt_tokens": 102151,
+                "completion_tokens": 640150
+              },
+              "06_entity_alignment": {
+                "calls": 467,
+                "prompt_tokens": 425733,
+                "completion_tokens": 266867
+              },
+              "07_relation_alignment": {
+                "calls": 62,
+                "prompt_tokens": 23084,
+                "completion_tokens": 32290
+              },
+              "unlabeled": {
+                "calls": 206,
+                "prompt_tokens": 186107,
+                "completion_tokens": 307962
+              }
+            },
+            "by_model": {
+              "kimi-k3": 778
+            }
+          }
+        },
+        "context_0012": {
+          "document_id": "doc_bench_08d20d0e01ddfe017419",
+          "status": "active",
+          "total_windows": 22,
+          "complete_windows": 22,
+          "missing_windows": [],
+          "entities": 523,
+          "relations": 694,
+          "latency_seconds": 0.0,
+          "llm_call_stats": {
+            "calls": 810,
+            "prompt_tokens": 701943,
+            "completion_tokens": 1212649,
+            "estimated_calls": 0,
+            "by_step": {
+              "02s_onepass_extract": {
+                "calls": 37,
+                "prompt_tokens": 87052,
+                "completion_tokens": 553455
+              },
+              "06_entity_alignment": {
+                "calls": 526,
+                "prompt_tokens": 434104,
+                "completion_tokens": 334295
+              },
+              "07_relation_alignment": {
+                "calls": 91,
+                "prompt_tokens": 34503,
+                "completion_tokens": 52794
+              },
+              "unlabeled": {
+                "calls": 156,
+                "prompt_tokens": 146284,
+                "completion_tokens": 272105
+              }
+            },
+            "by_model": {
+              "kimi-k3": 810
+            }
+          }
+        },
+        "context_0009": {
+          "document_id": "doc_bench_0855214584222356b2e8",
+          "status": "active",
+          "total_windows": 22,
+          "complete_windows": 22,
+          "missing_windows": [],
+          "entities": 527,
+          "relations": 724,
+          "latency_seconds": 0.0,
+          "llm_call_stats": {
+            "calls": 841,
+            "prompt_tokens": 733645,
+            "completion_tokens": 1292800,
+            "estimated_calls": 0,
+            "by_step": {
+              "02s_onepass_extract": {
+                "calls": 40,
+                "prompt_tokens": 96061,
+                "completion_tokens": 567646
+              },
+              "06_entity_alignment": {
+                "calls": 492,
+                "prompt_tokens": 415325,
+                "completion_tokens": 335436
+              },
+              "07_relation_alignment": {
+                "calls": 95,
+                "prompt_tokens": 36188,
+                "completion_tokens": 56978
+              },
+              "unlabeled": {
+                "calls": 214,
+                "prompt_tokens": 186071,
+                "completion_tokens": 332740
+              }
+            },
+            "by_model": {
+              "kimi-k3": 841
+            }
+          }
+        }
+      },
+      "duplicate_family_report": {
+        "total_entity_families": 4772,
+        "duplicate_names": 23,
+        "duplicate_family_rows": 50,
+        "duplicate_family_rate": 0.0105
+      }
+    },
+    "mab-ar-010": {
+      "library_dir": "libraries/mab-ar-010_296aaf9519",
+      "visible_sessions": [
+        "context_0002",
+        "context_0001",
+        "context_0000"
+      ],
+      "documents": {
+        "context_0002": {
+          "document_id": "doc_bench_26bd3d572ce3c5a1b776",
+          "status": "active",
+          "total_windows": 6,
+          "complete_windows": 6,
+          "missing_windows": [],
+          "entities": 144,
+          "relations": 180,
+          "latency_seconds": 0.0,
+          "llm_call_stats": {
+            "calls": 63,
+            "prompt_tokens": 75902,
+            "completion_tokens": 235426,
+            "estimated_calls": 0,
+            "by_step": {
+              "02s_onepass_extract": {
+                "calls": 11,
+                "prompt_tokens": 26155,
+                "completion_tokens": 151755
+              },
+              "06_entity_alignment": {
+                "calls": 26,
+                "prompt_tokens": 10589,
+                "completion_tokens": 19548
+              },
+              "07_relation_alignment": {
+                "calls": 9,
+                "prompt_tokens": 3005,
+                "completion_tokens": 7245
+              },
+              "unlabeled": {
+                "calls": 17,
+                "prompt_tokens": 36153,
+                "completion_tokens": 56878
+              }
+            },
+            "by_model": {
+              "kimi-k3": 63
+            }
+          }
+        },
+        "context_0001": {
+          "document_id": "doc_bench_aadb67b66dd03debf265",
+          "status": "active",
+          "total_windows": 23,
+          "complete_windows": 23,
+          "missing_windows": [],
+          "entities": 547,
+          "relations": 668,
+          "latency_seconds": 0.0,
+          "llm_call_stats": {
+            "calls": 855,
+            "prompt_tokens": 816904,
+            "completion_tokens": 1214541,
+            "estimated_calls": 0,
+            "by_step": {
+              "02s_onepass_extract": {
+                "calls": 39,
+                "prompt_tokens": 94398,
+                "completion_tokens": 564248
+              },
+              "06_entity_alignment": {
+                "calls": 584,
+                "prompt_tokens": 523828,
+                "completion_tokens": 353357
+              },
+              "07_relation_alignment": {
+                "calls": 69,
+                "prompt_tokens": 24021,
+                "completion_tokens": 32945
+              },
+              "unlabeled": {
+                "calls": 163,
+                "prompt_tokens": 174657,
+                "completion_tokens": 263991
+              }
+            },
+            "by_model": {
+              "kimi-k3": 855
+            }
+          }
+        },
+        "context_0000": {
+          "document_id": "doc_bench_65bed099c0b7a59309b4",
+          "status": "active",
+          "total_windows": 22,
+          "complete_windows": 22,
+          "missing_windows": [],
+          "entities": 523,
+          "relations": 553,
+          "latency_seconds": 0.0,
+          "llm_call_stats": {
+            "calls": 842,
+            "prompt_tokens": 817112,
+            "completion_tokens": 1279753,
+            "estimated_calls": 0,
+            "by_step": {
+              "02s_onepass_extract": {
+                "calls": 36,
+                "prompt_tokens": 85040,
+                "completion_tokens": 565522
+              },
+              "06_entity_alignment": {
+                "calls": 545,
+                "prompt_tokens": 517591,
+                "completion_tokens": 371871
+              },
+              "07_relation_alignment": {
+                "calls": 29,
+                "prompt_tokens": 9872,
+                "completion_tokens": 20502
+              },
+              "unlabeled": {
+                "calls": 232,
+                "prompt_tokens": 204609,
+                "completion_tokens": 321858
+              }
+            },
+            "by_model": {
+              "kimi-k3": 842
+            }
+          }
+        }
+      },
+      "duplicate_family_report": {
+        "total_entity_families": 849,
+        "duplicate_names": 16,
+        "duplicate_family_rows": 43,
+        "duplicate_family_rate": 0.0506
+      }
+    },
+    "mab-ar-015": {
+      "library_dir": "libraries/mab-ar-015_fd52e0b203",
+      "visible_sessions": [
+        "context_0004",
+        "context_0001",
+        "context_0002",
+        "context_0000",
+        "context_0003"
+      ],
+      "documents": {
+        "context_0004": {
+          "document_id": "doc_bench_38e44cfe07e9b388e2c0",
+          "status": "active",
+          "total_windows": 13,
+          "complete_windows": 13,
+          "missing_windows": [],
+          "entities": 312,
+          "relations": 226,
+          "latency_seconds": 0.0,
+          "llm_call_stats": {
+            "calls": 146,
+            "prompt_tokens": 159609,
+            "completion_tokens": 544775,
+            "estimated_calls": 0,
+            "by_step": {
+              "02s_onepass_extract": {
+                "calls": 20,
+                "prompt_tokens": 47436,
+                "completion_tokens": 324331
+              },
+              "06_entity_alignment": {
+                "calls": 73,
+                "prompt_tokens": 28497,
+                "completion_tokens": 67214
+              },
+              "07_relation_alignment": {
+                "calls": 14,
+                "prompt_tokens": 4696,
+                "completion_tokens": 8946
+              },
+              "unlabeled": {
+                "calls": 39,
+                "prompt_tokens": 78980,
+                "completion_tokens": 144284
+              }
+            },
+            "by_model": {
+              "kimi-k3": 146
+            }
+          }
+        },
+        "context_0001": {
+          "document_id": "doc_bench_1f894cfcc549f48cf3c9",
+          "status": "active",
+          "total_windows": 23,
+          "complete_windows": 23,
+          "missing_windows": [],
+          "entities": 551,
+          "relations": 633,
+          "latency_seconds": 0.0,
+          "llm_call_stats": {
+            "calls": 855,
+            "prompt_tokens": 829640,
+            "completion_tokens": 1249457,
+            "estimated_calls": 0,
+            "by_step": {
+              "02s_onepass_extract": {
+                "calls": 43,
+                "prompt_tokens": 102263,
+                "completion_tokens": 633242
+              },
+              "06_entity_alignment": {
+                "calls": 563,
+                "prompt_tokens": 525414,
+                "completion_tokens": 317091
+              },
+              "07_relation_alignment": {
+                "calls": 50,
+                "prompt_tokens": 17849,
+                "completion_tokens": 29428
+              },
+              "unlabeled": {
+                "calls": 199,
+                "prompt_tokens": 184114,
+                "completion_tokens": 269696
+              }
+            },
+            "by_model": {
+              "kimi-k3": 855
+            }
+          }
+        },
+        "context_0002": {
+          "document_id": "doc_bench_1b16fda4fea7c47c334d",
+          "status": "active",
+          "total_windows": 22,
+          "complete_windows": 22,
+          "missing_windows": [],
+          "entities": 527,
+          "relations": 653,
+          "latency_seconds": 0.0,
+          "llm_call_stats": {
+            "calls": 662,
+            "prompt_tokens": 574386,
+            "completion_tokens": 1201420,
+            "estimated_calls": 0,
+            "by_step": {
+              "02s_onepass_extract": {
+                "calls": 38,
+                "prompt_tokens": 92610,
+                "completion_tokens": 565806
+              },
+              "06_entity_alignment": {
+                "calls": 366,
+                "prompt_tokens": 280143,
+                "completion_tokens": 259616
+              },
+              "07_relation_alignment": {
+                "calls": 67,
+                "prompt_tokens": 23099,
+                "completion_tokens": 38253
+              },
+              "unlabeled": {
+                "calls": 191,
+                "prompt_tokens": 178534,
+                "completion_tokens": 337745
+              }
+            },
+            "by_model": {
+              "kimi-k3": 662
+            }
+          }
+        },
+        "context_0000": {
+          "document_id": "doc_bench_1ab0bd136838f4017327",
+          "status": "active",
+          "total_windows": 22,
+          "complete_windows": 22,
+          "missing_windows": [],
+          "entities": 522,
+          "relations": 808,
+          "latency_seconds": 0.0,
+          "llm_call_stats": {
+            "calls": 893,
+            "prompt_tokens": 832621,
+            "completion_tokens": 1214538,
+            "estimated_calls": 0,
+            "by_step": {
+              "02s_onepass_extract": {
+                "calls": 38,
+                "prompt_tokens": 90936,
+                "completion_tokens": 567503
+              },
+              "06_entity_alignment": {
+                "calls": 595,
+                "prompt_tokens": 532194,
+                "completion_tokens": 348475
+              },
+              "07_relation_alignment": {
+                "calls": 69,
+                "prompt_tokens": 26459,
+                "completion_tokens": 44006
+              },
+              "unlabeled": {
+                "calls": 191,
+                "prompt_tokens": 183032,
+                "completion_tokens": 254554
+              }
+            },
+            "by_model": {
+              "kimi-k3": 893
+            }
+          }
+        },
+        "context_0003": {
+          "document_id": "doc_bench_e1ed601f1d322820ae9f",
+          "status": "active",
+          "total_windows": 22,
+          "complete_windows": 22,
+          "missing_windows": [],
+          "entities": 525,
+          "relations": 661,
+          "latency_seconds": 0.0,
+          "llm_call_stats": {
+            "calls": 852,
+            "prompt_tokens": 779679,
+            "completion_tokens": 1272460,
+            "estimated_calls": 0,
+            "by_step": {
+              "02s_onepass_extract": {
+                "calls": 38,
+                "prompt_tokens": 89702,
+                "completion_tokens": 594621
+              },
+              "06_entity_alignment": {
+                "calls": 549,
+                "prompt_tokens": 485030,
+                "completion_tokens": 376068
+              },
+              "07_relation_alignment": {
+                "calls": 63,
+                "prompt_tokens": 21568,
+                "completion_tokens": 38080
+              },
+              "unlabeled": {
+                "calls": 202,
+                "prompt_tokens": 183379,
+                "completion_tokens": 263691
+              }
+            },
+            "by_model": {
+              "kimi-k3": 852
+            }
+          }
+        }
+      },
+      "duplicate_family_report": {
+        "total_entity_families": 1697,
+        "duplicate_names": 14,
+        "duplicate_family_rows": 32,
+        "duplicate_family_rate": 0.0189
+      }
+    },
+    "mab-ar-020": {
+      "library_dir": "libraries/mab-ar-020_70c681beea",
+      "visible_sessions": [
+        "context_0013",
+        "context_0010",
+        "context_0011",
+        "context_0003",
+        "context_0012",
+        "context_0008",
+        "context_0006",
+        "context_0009",
+        "context_0005",
+        "context_0001",
+        "context_0002",
+        "context_0007",
+        "context_0000",
+        "context_0004"
+      ],
+      "documents": {
+        "context_0013": {
+          "document_id": "doc_bench_5a48c9ae1fa9716910b7",
+          "status": "active",
+          "total_windows": 6,
+          "complete_windows": 6,
+          "missing_windows": [],
+          "entities": 144,
+          "relations": 126,
+          "latency_seconds": 0.0,
+          "llm_call_stats": {
+            "calls": 170,
+            "prompt_tokens": 190994,
+            "completion_tokens": 184488,
+            "estimated_calls": 0,
+            "by_step": {
+              "02s_onepass_extract": {
+                "calls": 9,
+                "prompt_tokens": 18826,
+                "completion_tokens": 114681
+              },
+              "06_entity_alignment": {
+                "calls": 136,
+                "prompt_tokens": 139630,
+                "completion_tokens": 30050
+              },
+              "07_relation_alignment": {
+                "calls": 6,
+                "prompt_tokens": 1928,
+                "completion_tokens": 1808
+              },
+              "unlabeled": {
+                "calls": 19,
+                "prompt_tokens": 30610,
+                "completion_tokens": 37949
+              }
+            },
+            "by_model": {
+              "kimi-k3": 170
+            }
+          }
+        },
+        "context_0010": {
+          "document_id": "doc_bench_53e6902b45ec9f8e2153",
+          "status": "active",
+          "total_windows": 24,
+          "complete_windows": 24,
+          "missing_windows": [],
+          "entities": 576,
+          "relations": 364,
+          "latency_seconds": 0.0,
+          "llm_call_stats": {
+            "calls": 336,
+            "prompt_tokens": 279797,
+            "completion_tokens": 672205,
+            "estimated_calls": 0,
+            "by_step": {
+              "02s_onepass_extract": {
+                "calls": 29,
+                "prompt_tokens": 63818,
+                "completion_tokens": 411878
+              },
+              "06_entity_alignment": {
+                "calls": 94,
+                "prompt_tokens": 38089,
+                "completion_tokens": 42609
+              },
+              "07_relation_alignment": {
+                "calls": 13,
+                "prompt_tokens": 4292,
+                "completion_tokens": 4962
+              },
+              "unlabeled": {
+                "calls": 200,
+                "prompt_tokens": 173598,
+                "completion_tokens": 212756
+              }
+            },
+            "by_model": {
+              "kimi-k3": 336
+            }
+          }
+        },
+        "context_0011": {
+          "document_id": "doc_bench_812e64c700225a3f8ac3",
+          "status": "active",
+          "total_windows": 25,
+          "complete_windows": 25,
+          "missing_windows": [],
+          "entities": 600,
+          "relations": 487,
+          "latency_seconds": 0.0,
+          "llm_call_stats": {
+            "calls": 516,
+            "prompt_tokens": 417310,
+            "completion_tokens": 742135,
+            "estimated_calls": 0,
+            "by_step": {
+              "02s_onepass_extract": {
+                "calls": 30,
+                "prompt_tokens": 62690,
+                "completion_tokens": 433400
+              },
+              "06_entity_alignment": {
+                "calls": 222,
+                "prompt_tokens": 155688,
+                "completion_tokens": 81740
+              },
+              "07_relation_alignment": {
+                "calls": 20,
+                "prompt_tokens": 6348,
+                "completion_tokens": 8642
+              },
+              "unlabeled": {
+                "calls": 244,
+                "prompt_tokens": 192584,
+                "completion_tokens": 218353
+              }
+            },
+            "by_model": {
+              "kimi-k3": 516
+            }
+          }
+        },
+        "context_0003": {
+          "document_id": "doc_bench_3a0841f0780502e05a41",
+          "status": "active",
+          "total_windows": 25,
+          "complete_windows": 25,
+          "missing_windows": [],
+          "entities": 600,
+          "relations": 576,
+          "latency_seconds": 0.0,
+          "llm_call_stats": {
+            "calls": 699,
+            "prompt_tokens": 737707,
+            "completion_tokens": 738003,
+            "estimated_calls": 0,
+            "by_step": {
+              "02s_onepass_extract": {
+                "calls": 29,
+                "prompt_tokens": 60887,
+                "completion_tokens": 409058
+              },
+              "06_entity_alignment": {
+                "calls": 583,
+                "prompt_tokens": 560576,
+                "completion_tokens": 172371
+              },
+              "07_relation_alignment": {
+                "calls": 26,
+                "prompt_tokens": 8398,
+                "completion_tokens": 12844
+              },
+              "unlabeled": {
+                "calls": 61,
+                "prompt_tokens": 107846,
+                "completion_tokens": 143730
+              }
+            },
+            "by_model": {
+              "kimi-k3": 699
+            }
+          }
+        },
+        "context_0012": {
+          "document_id": "doc_bench_e7221abbb4e5b3a81a15",
+          "status": "active",
+          "total_windows": 27,
+          "complete_windows": 27,
+          "missing_windows": [],
+          "entities": 648,
+          "relations": 623,
+          "latency_seconds": 0.0,
+          "llm_call_stats": {
+            "calls": 443,
+            "prompt_tokens": 444644,
+            "completion_tokens": 771664,
+            "estimated_calls": 0,
+            "by_step": {
+              "02s_onepass_extract": {
+                "calls": 36,
+                "prompt_tokens": 73396,
+                "completion_tokens": 486129
+              },
+              "06_entity_alignment": {
+                "calls": 303,
+                "prompt_tokens": 233336,
+                "completion_tokens": 112190
+              },
+              "07_relation_alignment": {
+                "calls": 27,
+                "prompt_tokens": 8722,
+                "completion_tokens": 11589
+              },
+              "unlabeled": {
+                "calls": 77,
+                "prompt_tokens": 129190,
+                "completion_tokens": 161756
+              }
+            },
+            "by_model": {
+              "kimi-k3": 443
+            }
+          }
+        },
+        "context_0008": {
+          "document_id": "doc_bench_bf65e91cfc3a576bc591",
+          "status": "active",
+          "total_windows": 23,
+          "complete_windows": 23,
+          "missing_windows": [],
+          "entities": 552,
+          "relations": 376,
+          "latency_seconds": 0.0,
+          "llm_call_stats": {
+            "calls": 506,
+            "prompt_tokens": 478766,
+            "completion_tokens": 739304,
+            "estimated_calls": 0,
+            "by_step": {
+              "02s_onepass_extract": {
+                "calls": 29,
+                "prompt_tokens": 68364,
+                "completion_tokens": 405644
+              },
+              "06_entity_alignment": {
+                "calls": 282,
+                "prompt_tokens": 227879,
+                "completion_tokens": 89304
+              },
+              "07_relation_alignment": {
+                "calls": 19,
+                "prompt_tokens": 6120,
+                "completion_tokens": 9717
+              },
+              "unlabeled": {
+                "calls": 176,
+                "prompt_tokens": 176403,
+                "completion_tokens": 234639
+              }
+            },
+            "by_model": {
+              "kimi-k3": 506
+            }
+          }
+        },
+        "context_0006": {
+          "document_id": "doc_bench_aa9d65ff76e90e7b05b1",
+          "status": "active",
+          "total_windows": 25,
+          "complete_windows": 25,
+          "missing_windows": [],
+          "entities": 600,
+          "relations": 507,
+          "latency_seconds": 0.0,
+          "llm_call_stats": {
+            "calls": 718,
+            "prompt_tokens": 738285,
+            "completion_tokens": 811214,
+            "estimated_calls": 0,
+            "by_step": {
+              "02s_onepass_extract": {
+                "calls": 32,
+                "prompt_tokens": 72483,
+                "completion_tokens": 457699
+              },
+              "06_entity_alignment": {
+                "calls": 578,
+                "prompt_tokens": 530489,
+                "completion_tokens": 187111
+              },
+              "07_relation_alignment": {
+                "calls": 40,
+                "prompt_tokens": 13211,
+                "completion_tokens": 14132
+              },
+              "unlabeled": {
+                "calls": 68,
+                "prompt_tokens": 122102,
+                "completion_tokens": 152272
+              }
+            },
+            "by_model": {
+              "kimi-k3": 718
+            }
+          }
+        },
+        "context_0009": {
+          "document_id": "doc_bench_62c2008262a54cf0272a",
+          "status": "active",
+          "total_windows": 24,
+          "complete_windows": 24,
+          "missing_windows": [],
+          "entities": 576,
+          "relations": 445,
+          "latency_seconds": 0.0,
+          "llm_call_stats": {
+            "calls": 427,
+            "prompt_tokens": 383691,
+            "completion_tokens": 788852,
+            "estimated_calls": 0,
+            "by_step": {
+              "02s_onepass_extract": {
+                "calls": 33,
+                "prompt_tokens": 73392,
+                "completion_tokens": 482554
+              },
+              "06_entity_alignment": {
+                "calls": 211,
+                "prompt_tokens": 141067,
+                "completion_tokens": 92087
+              },
+              "07_relation_alignment": {
+                "calls": 27,
+                "prompt_tokens": 8864,
+                "completion_tokens": 11685
+              },
+              "unlabeled": {
+                "calls": 156,
+                "prompt_tokens": 160368,
+                "completion_tokens": 202526
+              }
+            },
+            "by_model": {
+              "kimi-k3": 427
+            }
+          }
+        },
+        "context_0005": {
+          "document_id": "doc_bench_cda1f5f45ae72d2381a1",
+          "status": "active",
+          "total_windows": 25,
+          "complete_windows": 25,
+          "missing_windows": [],
+          "entities": 600,
+          "relations": 536,
+          "latency_seconds": 0.0,
+          "llm_call_stats": {
+            "calls": 805,
+            "prompt_tokens": 781137,
+            "completion_tokens": 905609,
+            "estimated_calls": 0,
+            "by_step": {
+              "02s_onepass_extract": {
+                "calls": 35,
+                "prompt_tokens": 75669,
+                "completion_tokens": 503555
+              },
+              "06_entity_alignment": {
+                "calls": 568,
+                "prompt_tokens": 530694,
+                "completion_tokens": 179670
+              },
+              "07_relation_alignment": {
+                "calls": 35,
+                "prompt_tokens": 11779,
+                "completion_tokens": 16852
+              },
+              "unlabeled": {
+                "calls": 167,
+                "prompt_tokens": 162995,
+                "completion_tokens": 205532
+              }
+            },
+            "by_model": {
+              "kimi-k3": 805
+            }
+          }
+        },
+        "context_0001": {
+          "document_id": "doc_bench_e4cc913bc2959b178f74",
+          "status": "active",
+          "total_windows": 24,
+          "complete_windows": 24,
+          "missing_windows": [],
+          "entities": 573,
+          "relations": 514,
+          "latency_seconds": 0.0,
+          "llm_call_stats": {
+            "calls": 860,
+            "prompt_tokens": 790351,
+            "completion_tokens": 864373,
+            "estimated_calls": 0,
+            "by_step": {
+              "02s_onepass_extract": {
+                "calls": 29,
+                "prompt_tokens": 60450,
+                "completion_tokens": 429639
+              },
+              "06_entity_alignment": {
+                "calls": 578,
+                "prompt_tokens": 538950,
+                "completion_tokens": 178149
+              },
+              "07_relation_alignment": {
+                "calls": 48,
+                "prompt_tokens": 15619,
+                "completion_tokens": 22617
+              },
+              "unlabeled": {
+                "calls": 205,
+                "prompt_tokens": 175332,
+                "completion_tokens": 233968
+              }
+            },
+            "by_model": {
+              "kimi-k3": 860
+            }
+          }
+        },
+        "context_0002": {
+          "document_id": "doc_bench_0502024fe75f23579870",
+          "status": "active",
+          "total_windows": 25,
+          "complete_windows": 25,
+          "missing_windows": [],
+          "entities": 599,
+          "relations": 503,
+          "latency_seconds": 0.0,
+          "llm_call_stats": {
+            "calls": 840,
+            "prompt_tokens": 741855,
+            "completion_tokens": 820744,
+            "estimated_calls": 0,
+            "by_step": {
+              "02s_onepass_extract": {
+                "calls": 30,
+                "prompt_tokens": 60840,
+                "completion_tokens": 421125
+              },
+              "06_entity_alignment": {
+                "calls": 552,
+                "prompt_tokens": 494981,
+                "completion_tokens": 176377
+              },
+              "07_relation_alignment": {
+                "calls": 38,
+                "prompt_tokens": 12276,
+                "completion_tokens": 19584
+              },
+              "unlabeled": {
+                "calls": 220,
+                "prompt_tokens": 173758,
+                "completion_tokens": 203658
+              }
+            },
+            "by_model": {
+              "kimi-k3": 840
+            }
+          }
+        },
+        "context_0007": {
+          "document_id": "doc_bench_98e0b6c6df3abacafa64",
+          "status": "active",
+          "total_windows": 25,
+          "complete_windows": 25,
+          "missing_windows": [],
+          "entities": 598,
+          "relations": 552,
+          "latency_seconds": 0.0,
+          "llm_call_stats": {
+            "calls": 889,
+            "prompt_tokens": 839428,
+            "completion_tokens": 863570,
+            "estimated_calls": 0,
+            "by_step": {
+              "02s_onepass_extract": {
+                "calls": 33,
+                "prompt_tokens": 70361,
+                "completion_tokens": 463375
+              },
+              "06_entity_alignment": {
+                "calls": 614,
+                "prompt_tokens": 582108,
+                "completion_tokens": 199025
+              },
+              "07_relation_alignment": {
+                "calls": 14,
+                "prompt_tokens": 4657,
+                "completion_tokens": 6325
+              },
+              "unlabeled": {
+                "calls": 228,
+                "prompt_tokens": 182302,
+                "completion_tokens": 194845
+              }
+            },
+            "by_model": {
+              "kimi-k3": 889
+            }
+          }
+        },
+        "context_0004": {
+          "document_id": "doc_bench_b117684db21f393b234d",
+          "status": "active",
+          "total_windows": 25,
+          "complete_windows": 25,
+          "missing_windows": [],
+          "entities": 599,
+          "relations": 782,
+          "latency_seconds": 0.0,
+          "llm_call_stats": {
+            "calls": 961,
+            "prompt_tokens": 813635,
+            "completion_tokens": 964647,
+            "estimated_calls": 0,
+            "by_step": {
+              "02s_onepass_extract": {
+                "calls": 29,
+                "prompt_tokens": 59999,
+                "completion_tokens": 427262
+              },
+              "06_entity_alignment": {
+                "calls": 644,
+                "prompt_tokens": 560170,
+                "completion_tokens": 294220
+              },
+              "07_relation_alignment": {
+                "calls": 63,
+                "prompt_tokens": 20623,
+                "completion_tokens": 30075
+              },
+              "unlabeled": {
+                "calls": 225,
+                "prompt_tokens": 172843,
+                "completion_tokens": 213090
+              }
+            },
+            "by_model": {
+              "kimi-k3": 961
+            }
+          }
+        }
+      },
+      "duplicate_family_report": {
+        "total_entity_families": 6157,
+        "duplicate_names": 56,
+        "duplicate_family_rows": 118,
+        "duplicate_family_rate": 0.0192
+      }
+    },
+    "mab-cr-000": {
+      "library_dir": "libraries/mab-cr-000_7815b7c43e",
+      "visible_sessions": [
+        "context_0000"
+      ],
+      "documents": {
+        "context_0000": {
+          "document_id": "doc_bench_0e5ef1e3b8f93cbdf665",
+          "status": "active",
+          "total_windows": 5,
+          "complete_windows": 5,
+          "missing_windows": [],
+          "entities": 120,
+          "relations": 33,
+          "latency_seconds": 0.0,
+          "llm_call_stats": {
+            "calls": 38,
+            "prompt_tokens": 49167,
+            "completion_tokens": 192753,
+            "estimated_calls": 0,
+            "by_step": {
+              "02s_onepass_extract": {
+                "calls": 9,
+                "prompt_tokens": 22107,
+                "completion_tokens": 143297
+              },
+              "06_entity_alignment": {
+                "calls": 19,
+                "prompt_tokens": 6883,
+                "completion_tokens": 11436
+              },
+              "unlabeled": {
+                "calls": 10,
+                "prompt_tokens": 20177,
+                "completion_tokens": 38020
+              }
+            },
+            "by_model": {
+              "kimi-k3": 38
+            }
+          }
+        }
+      },
+      "duplicate_family_report": {
+        "total_entity_families": 101,
+        "duplicate_names": 0,
+        "duplicate_family_rows": 0,
+        "duplicate_family_rate": 0.0
+      }
+    },
+    "mab-cr-004": {
+      "library_dir": "libraries/mab-cr-004_dcc1d1955a",
+      "visible_sessions": [
+        "context_0000"
+      ],
+      "documents": {
+        "context_0000": {
+          "document_id": "doc_bench_ee08953c36f9ca05dc49",
+          "status": "active",
+          "total_windows": 5,
+          "complete_windows": 5,
+          "missing_windows": [],
+          "entities": 120,
+          "relations": 25,
+          "latency_seconds": 0.0,
+          "llm_call_stats": {
+            "calls": 36,
+            "prompt_tokens": 44319,
+            "completion_tokens": 172253,
+            "estimated_calls": 0,
+            "by_step": {
+              "02s_onepass_extract": {
+                "calls": 7,
+                "prompt_tokens": 15614,
+                "completion_tokens": 119834
+              },
+              "06_entity_alignment": {
+                "calls": 18,
+                "prompt_tokens": 6528,
+                "completion_tokens": 14292
+              },
+              "unlabeled": {
+                "calls": 11,
+                "prompt_tokens": 22177,
+                "completion_tokens": 38127
+              }
+            },
+            "by_model": {
+              "kimi-k3": 36
+            }
+          }
+        }
+      },
+      "duplicate_family_report": {
+        "total_entity_families": 102,
+        "duplicate_names": 0,
+        "duplicate_family_rows": 0,
+        "duplicate_family_rate": 0.0
+      }
+    },
+    "mab-lru-058": {
+      "library_dir": "libraries/mab-lru-058_523fe83cb2",
+      "visible_sessions": [
+        "context_0002",
+        "context_0000",
+        "context_0001"
+      ],
+      "documents": {
+        "context_0002": {
+          "document_id": "doc_bench_65b93548ec64e046fd65",
+          "status": "active",
+          "total_windows": 6,
+          "complete_windows": 6,
+          "missing_windows": [],
+          "entities": 144,
+          "relations": 96,
+          "latency_seconds": 0.0,
+          "llm_call_stats": {
+            "calls": 44,
+            "prompt_tokens": 62951,
+            "completion_tokens": 210744,
+            "estimated_calls": 0,
+            "by_step": {
+              "02s_onepass_extract": {
+                "calls": 10,
+                "prompt_tokens": 23714,
+                "completion_tokens": 145566
+              },
+              "06_entity_alignment": {
+                "calls": 15,
+                "prompt_tokens": 5908,
+                "completion_tokens": 11275
+              },
+              "07_relation_alignment": {
+                "calls": 4,
+                "prompt_tokens": 1318,
+                "completion_tokens": 2449
+              },
+              "unlabeled": {
+                "calls": 15,
+                "prompt_tokens": 32011,
+                "completion_tokens": 51454
+              }
+            },
+            "by_model": {
+              "kimi-k3": 44
+            }
+          }
+        },
+        "context_0000": {
+          "document_id": "doc_bench_3a90b5b5d81929362993",
+          "status": "active",
+          "total_windows": 22,
+          "complete_windows": 22,
+          "missing_windows": [],
+          "entities": 526,
+          "relations": 519,
+          "latency_seconds": 0.0,
+          "llm_call_stats": {
+            "calls": 771,
+            "prompt_tokens": 758533,
+            "completion_tokens": 1160137,
+            "estimated_calls": 0,
+            "by_step": {
+              "02s_onepass_extract": {
+                "calls": 37,
+                "prompt_tokens": 89621,
+                "completion_tokens": 574913
+              },
+              "06_entity_alignment": {
+                "calls": 464,
+                "prompt_tokens": 446822,
+                "completion_tokens": 205570
+              },
+              "07_relation_alignment": {
+                "calls": 43,
+                "prompt_tokens": 14800,
+                "completion_tokens": 20139
+              },
+              "unlabeled": {
+                "calls": 227,
+                "prompt_tokens": 207290,
+                "completion_tokens": 359515
+              }
+            },
+            "by_model": {
+              "kimi-k3": 771
+            }
+          }
+        },
+        "context_0001": {
+          "document_id": "doc_bench_6cf95f32a1a4569dd91f",
+          "status": "active",
+          "total_windows": 23,
+          "complete_windows": 23,
+          "missing_windows": [],
+          "entities": 550,
+          "relations": 525,
+          "latency_seconds": 0.0,
+          "llm_call_stats": {
+            "calls": 822,
+            "prompt_tokens": 836265,
+            "completion_tokens": 1220123,
+            "estimated_calls": 0,
+            "by_step": {
+              "02s_onepass_extract": {
+                "calls": 42,
+                "prompt_tokens": 99527,
+                "completion_tokens": 679539
+              },
+              "06_entity_alignment": {
+                "calls": 557,
+                "prompt_tokens": 543017,
+                "completion_tokens": 251747
+              },
+              "07_relation_alignment": {
+                "calls": 32,
+                "prompt_tokens": 10481,
+                "completion_tokens": 18214
+              },
+              "unlabeled": {
+                "calls": 191,
+                "prompt_tokens": 183240,
+                "completion_tokens": 270623
+              }
+            },
+            "by_model": {
+              "kimi-k3": 822
+            }
+          }
+        }
+      },
+      "duplicate_family_report": {
+        "total_entity_families": 974,
+        "duplicate_names": 6,
+        "duplicate_family_rows": 15,
+        "duplicate_family_rate": 0.0154
+      }
+    },
+    "mab-lru-100": {
+      "library_dir": "libraries/mab-lru-100_984a4573d6",
+      "visible_sessions": [
+        "context_0003",
+        "context_0001",
+        "context_0000",
+        "context_0002"
+      ],
+      "documents": {
+        "context_0003": {
+          "document_id": "doc_bench_353bd888bef052ced66e",
+          "status": "active",
+          "total_windows": 8,
+          "complete_windows": 8,
+          "missing_windows": [],
+          "entities": 190,
+          "relations": 188,
+          "latency_seconds": 0.0,
+          "llm_call_stats": {
+            "calls": 243,
+            "prompt_tokens": 227169,
+            "completion_tokens": 457349,
+            "estimated_calls": 0,
+            "by_step": {
+              "02s_onepass_extract": {
+                "calls": 15,
+                "prompt_tokens": 35221,
+                "completion_tokens": 209263
+              },
+              "06_entity_alignment": {
+                "calls": 152,
+                "prompt_tokens": 128903,
+                "completion_tokens": 90710
+              },
+              "07_relation_alignment": {
+                "calls": 13,
+                "prompt_tokens": 4356,
+                "completion_tokens": 11384
+              },
+              "unlabeled": {
+                "calls": 63,
+                "prompt_tokens": 58689,
+                "completion_tokens": 145992
+              }
+            },
+            "by_model": {
+              "kimi-k3": 243
+            }
+          }
+        },
+        "context_0001": {
+          "document_id": "doc_bench_dc44ebfc9e54eb161d94",
+          "status": "active",
+          "total_windows": 23,
+          "complete_windows": 23,
+          "missing_windows": [],
+          "entities": 552,
+          "relations": 473,
+          "latency_seconds": 0.0,
+          "llm_call_stats": {
+            "calls": 479,
+            "prompt_tokens": 382592,
+            "completion_tokens": 1110056,
+            "estimated_calls": 0,
+            "by_step": {
+              "02s_onepass_extract": {
+                "calls": 41,
+                "prompt_tokens": 98416,
+                "completion_tokens": 640929
+              },
+              "06_entity_alignment": {
+                "calls": 138,
+                "prompt_tokens": 54183,
+                "completion_tokens": 106787
+              },
+              "07_relation_alignment": {
+                "calls": 19,
+                "prompt_tokens": 6428,
+                "completion_tokens": 9210
+              },
+              "unlabeled": {
+                "calls": 281,
+                "prompt_tokens": 223565,
+                "completion_tokens": 353130
+              }
+            },
+            "by_model": {
+              "kimi-k3": 479
+            }
+          }
+        },
+        "context_0000": {
+          "document_id": "doc_bench_bae5f65cc8b2adab5340",
+          "status": "active",
+          "total_windows": 23,
+          "complete_windows": 23,
+          "missing_windows": [],
+          "entities": 543,
+          "relations": 668,
+          "latency_seconds": 0.0,
+          "llm_call_stats": {
+            "calls": 735,
+            "prompt_tokens": 669032,
+            "completion_tokens": 1242123,
+            "estimated_calls": 0,
+            "by_step": {
+              "02s_onepass_extract": {
+                "calls": 39,
+                "prompt_tokens": 92146,
+                "completion_tokens": 595602
+              },
+              "06_entity_alignment": {
+                "calls": 449,
+                "prompt_tokens": 366273,
+                "completion_tokens": 313940
+              },
+              "07_relation_alignment": {
+                "calls": 38,
+                "prompt_tokens": 13449,
+                "completion_tokens": 29653
+              },
+              "unlabeled": {
+                "calls": 209,
+                "prompt_tokens": 197164,
+                "completion_tokens": 302928
+              }
+            },
+            "by_model": {
+              "kimi-k3": 735
+            }
+          }
+        },
+        "context_0002": {
+          "document_id": "doc_bench_dfde23ae25507fbae05f",
+          "status": "active",
+          "total_windows": 23,
+          "complete_windows": 23,
+          "missing_windows": [],
+          "entities": 547,
+          "relations": 601,
+          "latency_seconds": 0.0,
+          "llm_call_stats": {
+            "calls": 904,
+            "prompt_tokens": 841680,
+            "completion_tokens": 1275875,
+            "estimated_calls": 0,
+            "by_step": {
+              "02s_onepass_extract": {
+                "calls": 36,
+                "prompt_tokens": 87542,
+                "completion_tokens": 523711
+              },
+              "06_entity_alignment": {
+                "calls": 601,
+                "prompt_tokens": 541982,
+                "completion_tokens": 383478
+              },
+              "07_relation_alignment": {
+                "calls": 39,
+                "prompt_tokens": 12920,
+                "completion_tokens": 19914
+              },
+              "unlabeled": {
+                "calls": 228,
+                "prompt_tokens": 199236,
+                "completion_tokens": 348772
+              }
+            },
+            "by_model": {
+              "kimi-k3": 904
+            }
+          }
+        }
+      },
+      "duplicate_family_report": {
+        "total_entity_families": 1233,
+        "duplicate_names": 15,
+        "duplicate_family_rows": 32,
+        "duplicate_family_rate": 0.026
+      }
+    },
+    "mab-ttl-002": {
+      "library_dir": "libraries/mab-ttl-002_7483ec3894",
+      "visible_sessions": [
+        "context_0003",
+        "context_0001",
+        "context_0002",
+        "context_0000"
+      ],
+      "documents": {
+        "context_0003": {
+          "document_id": "doc_bench_508aaa84872cdcda085a",
+          "status": "active",
+          "total_windows": 2,
+          "complete_windows": 2,
+          "missing_windows": [],
+          "entities": 48,
+          "relations": 42,
+          "latency_seconds": 0.0,
+          "llm_call_stats": {
+            "calls": 61,
+            "prompt_tokens": 67409,
+            "completion_tokens": 94955,
+            "estimated_calls": 0,
+            "by_step": {
+              "02s_onepass_extract": {
+                "calls": 4,
+                "prompt_tokens": 9761,
+                "completion_tokens": 67503
+              },
+              "06_entity_alignment": {
+                "calls": 50,
+                "prompt_tokens": 49098,
+                "completion_tokens": 18101
+              },
+              "unlabeled": {
+                "calls": 7,
+                "prompt_tokens": 8550,
+                "completion_tokens": 9351
+              }
+            },
+            "by_model": {
+              "kimi-k3": 61
+            }
+          }
+        },
+        "context_0001": {
+          "document_id": "doc_bench_5305fc93d1ca15d84b45",
+          "status": "active",
+          "total_windows": 21,
+          "complete_windows": 21,
+          "missing_windows": [],
+          "entities": 503,
+          "relations": 436,
+          "latency_seconds": 0.0,
+          "llm_call_stats": {
+            "calls": 831,
+            "prompt_tokens": 715701,
+            "completion_tokens": 1322630,
+            "estimated_calls": 0,
+            "by_step": {
+              "02s_onepass_extract": {
+                "calls": 40,
+                "prompt_tokens": 106840,
+                "completion_tokens": 735399
+              },
+              "06_entity_alignment": {
+                "calls": 518,
+                "prompt_tokens": 392071,
+                "completion_tokens": 206651
+              },
+              "07_relation_alignment": {
+                "calls": 41,
+                "prompt_tokens": 13648,
+                "completion_tokens": 20791
+              },
+              "unlabeled": {
+                "calls": 232,
+                "prompt_tokens": 203142,
+                "completion_tokens": 359789
+              }
+            },
+            "by_model": {
+              "kimi-k3": 831
+            }
+          }
+        },
+        "context_0002": {
+          "document_id": "doc_bench_e04f11c532ebbaff6279",
+          "status": "active",
+          "total_windows": 22,
+          "complete_windows": 22,
+          "missing_windows": [],
+          "entities": 527,
+          "relations": 552,
+          "latency_seconds": 0.0,
+          "llm_call_stats": {
+            "calls": 891,
+            "prompt_tokens": 742998,
+            "completion_tokens": 1373750,
+            "estimated_calls": 0,
+            "by_step": {
+              "02s_onepass_extract": {
+                "calls": 43,
+                "prompt_tokens": 112989,
+                "completion_tokens": 795425
+              },
+              "06_entity_alignment": {
+                "calls": 549,
+                "prompt_tokens": 402665,
+                "completion_tokens": 247464
+              },
+              "07_relation_alignment": {
+                "calls": 24,
+                "prompt_tokens": 7944,
+                "completion_tokens": 9749
+              },
+              "unlabeled": {
+                "calls": 275,
+                "prompt_tokens": 219400,
+                "completion_tokens": 321112
+              }
+            },
+            "by_model": {
+              "kimi-k3": 891
+            }
+          }
+        },
+        "context_0000": {
+          "document_id": "doc_bench_b205908751deede4f951",
+          "status": "active",
+          "total_windows": 21,
+          "complete_windows": 21,
+          "missing_windows": [],
+          "entities": 504,
+          "relations": 314,
+          "latency_seconds": 0.0,
+          "llm_call_stats": {
+            "calls": 593,
+            "prompt_tokens": 422380,
+            "completion_tokens": 1318423,
+            "estimated_calls": 0,
+            "by_step": {
+              "02s_onepass_extract": {
+                "calls": 43,
+                "prompt_tokens": 115151,
+                "completion_tokens": 807845
+              },
+              "06_entity_alignment": {
+                "calls": 184,
+                "prompt_tokens": 62235,
+                "completion_tokens": 86008
+              },
+              "07_relation_alignment": {
+                "calls": 23,
+                "prompt_tokens": 7706,
+                "completion_tokens": 11572
+              },
+              "unlabeled": {
+                "calls": 343,
+                "prompt_tokens": 237288,
+                "completion_tokens": 412998
+              }
+            },
+            "by_model": {
+              "kimi-k3": 593
+            }
+          }
+        }
+      },
+      "duplicate_family_report": {
+        "total_entity_families": 879,
+        "duplicate_names": 15,
+        "duplicate_family_rows": 30,
+        "duplicate_family_rate": 0.0341
+      }
+    }
+  },
+  "tracks": [
+    "baseline",
+    "skill-agent",
+    "pi"
+  ],
+  "retrieval_profiles": {},
+  "ingestion_completed_at": "2026-08-27T03:01:27.580822+00:00",
+  "library_integrity": {
+    "visible_session_count": 59,
+    "failed_documents": 0
+  },
+  "llm_usage": {
+    "calls": 37022,
+    "prompt_tokens": 34663312,
+    "completion_tokens": 54593514,
+    "estimated_calls": 0,
+    "by_step": {
+      "02s_onepass_extract": {
+        "calls": 1898,
+        "prompt_tokens": 4409603,
+        "completion_tokens": 28390368
+      },
+      "06_entity_alignment": {
+        "calls": 23648,
+        "prompt_tokens": 20562704,
+        "completion_tokens": 11627229
+      },
+      "07_relation_alignment": {
+        "calls": 2308,
+        "prompt_tokens": 819212,
+        "completion_tokens": 1327803
+      },
+      "unlabeled": {
+        "calls": 9168,
+        "prompt_tokens": 8871793,
+        "completion_tokens": 13248114
+      }
+    },
+    "document_count": 58
+  },
+  "track_variants": {},
+  "answer_profile": "normalized-v1",
+  "eligible_evidence_only": false,
+  "evaluation_completed_at": "2026-08-27T03:07:45.329284+00:00"
+}
