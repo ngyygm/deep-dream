@@ -6,7 +6,6 @@
 \citation{maharana2024locomo,wu2025longmemeval}
 \citation{jung2026meme}
 \citation{hu2025memoryagentbench}
-\citation{packer2023memgpt,xu2025amem,chhikara2025mem0,gutierrez2025hipporag2,markovic2025cognee,wang2025mirix,rasmussen2025zep}
 \@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces Separating addressing from loading. Deep-Dream first locates candidate source text and then lets the agent read, verify, or stop within a budget.}}{2}{figure.caption.1}\protected@file@percent }
 \providecommand*\caption@xref[2]{\@setref\relax\@undefined{#1}}
 \newlabel{fig:motivation}{{1}{2}{Separating addressing from loading. Deep-Dream first locates candidate source text and then lets the agent read, verify, or stop within a budget}{figure.caption.1}{}}
@@ -15,6 +14,7 @@
 \newlabel{sec:related-work}{{2}{2}{Related Work}{section.2}{}}
 \newlabel{sec:related-work@cref}{{[section][2][]2}{[1][2][]2}}
 \@writefile{toc}{\contentsline {paragraph}{Memory benchmarks.}{2}{section*.2}\protected@file@percent }
+\citation{packer2023memgpt,xu2025amem,chhikara2025mem0,gutierrez2025hipporag2,markovic2025cognee,wang2025mirix,rasmussen2025zep}
 \citation{packer2023memgpt}
 \citation{lin2026icam}
 \citation{tishby2000information}
@@ -33,7 +33,7 @@
 \newlabel{sec:deep-dream}{{3}{3}{Deep-Dream}{section.3}{}}
 \newlabel{sec:deep-dream@cref}{{[section][3][]3}{[1][3][]3}}
 \@writefile{toc}{\contentsline {subsection}{\numberline {3.1}Memory model}{3}{subsection.3.1}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {3.2}Ingestion and alignment: two engine generations}{3}{subsection.3.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.2}Ingestion and alignment: two engine generations}{4}{subsection.3.2}\protected@file@percent }
 \@writefile{toc}{\contentsline {subsection}{\numberline {3.3}How answers obtain evidence}{4}{subsection.3.3}\protected@file@percent }
 \newlabel{sec:answer-paths}{{3.3}{4}{How answers obtain evidence}{subsection.3.3}{}}
 \newlabel{sec:answer-paths@cref}{{[subsection][3][3]3.3}{[1][4][]4}}
@@ -42,60 +42,54 @@
 \newlabel{sec:information-view@cref}{{[subsection][4][3]3.4}{[1][4][]4}}
 \newlabel{eq:two-rate-code}{{2}{4}{Progressive disclosure in information-theoretic terms}{equation.3.2}{}}
 \newlabel{eq:two-rate-code@cref}{{[equation][2][]2}{[1][4][]4}}
-\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces MemoryAgentBench results by method and task (official scorer, Kimi-K3 answerer). (a) Overall scores: Base on the frozen paired sample ($n{=}767$), Align+ on the extended sample ($n{=}1074$), with marginal 95\% bootstrap intervals; (b) Align+ domain scores at the extended sample; (c) selected task scores; (d) all 209 residual zero-score items of the extended sample. The two sample definitions are labeled separately.}}{5}{figure.caption.7}\protected@file@percent }
-\newlabel{fig:ladder}{{2}{5}{MemoryAgentBench results by method and task (official scorer, Kimi-K3 answerer). (a) Overall scores: Base on the frozen paired sample ($n{=}767$), Align+ on the extended sample ($n{=}1074$), with marginal 95\% bootstrap intervals; (b) Align+ domain scores at the extended sample; (c) selected task scores; (d) all 209 residual zero-score items of the extended sample. The two sample definitions are labeled separately}{figure.caption.7}{}}
-\newlabel{fig:ladder@cref}{{[figure][2][]2}{[1][5][]5}}
 \newlabel{eq:answer-decomposition}{{3}{5}{Progressive disclosure in information-theoretic terms}{equation.3.3}{}}
-\newlabel{eq:answer-decomposition@cref}{{[equation][3][]3}{[1][4][]5}}
+\newlabel{eq:answer-decomposition@cref}{{[equation][3][]3}{[1][5][]5}}
 \@writefile{toc}{\contentsline {section}{\numberline {4}Experiments}{5}{section.4}\protected@file@percent }
 \newlabel{sec:experiments}{{4}{5}{Experiments}{section.4}{}}
 \newlabel{sec:experiments@cref}{{[section][4][]4}{[1][5][]5}}
 \@writefile{toc}{\contentsline {subsection}{\numberline {4.1}Test setup and task groups}{5}{subsection.4.1}\protected@file@percent }
 \newlabel{sec:setup}{{4.1}{5}{Test setup and task groups}{subsection.4.1}{}}
 \newlabel{sec:setup@cref}{{[subsection][1][4]4.1}{[1][5][]5}}
-\@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces MemoryAgentBench; scores are official component scores $\times 100$. Task rows and the Overall ($n{=}767$) row use the paired sample shared by both engines. $^{\ddagger }$ marks the two task groups added when the Align+ engine was extended in place to $n{=}1074$ (RULER-421K multi-hop QA and the full Redial recommendation corpus); the Base run was frozen at the paired sample, and both task groups exceed the full-context row's strict character budget (\cref  {app:sampling}), so they carry no same-model coverage. The Overall ($n{=}1074$) row is that extended sample; scores from the two samples are never subtracted. Bold/underlined entries are best/second-best within each task and sample, $^{*}$ marks sampled LongMemEval-S, and $^{\dagger }$ marks the singleton $\infty $Bench-Sum row of the paired sample (a second task group enters only the extended sample, so LRU remains directional: $n{=}7$ paired, $14$ extended).}}{6}{table.caption.8}\protected@file@percent }
-\newlabel{tab:main-results}{{1}{6}{MemoryAgentBench; scores are official component scores $\times 100$. Task rows and the Overall ($n{=}767$) row use the paired sample shared by both engines. $^{\ddagger }$ marks the two task groups added when the Align+ engine was extended in place to $n{=}1074$ (RULER-421K multi-hop QA and the full Redial recommendation corpus); the Base run was frozen at the paired sample, and both task groups exceed the full-context row's strict character budget (\cref {app:sampling}), so they carry no same-model coverage. The Overall ($n{=}1074$) row is that extended sample; scores from the two samples are never subtracted. Bold/underlined entries are best/second-best within each task and sample, $^{*}$ marks sampled LongMemEval-S, and $^{\dagger }$ marks the singleton $\infty $Bench-Sum row of the paired sample (a second task group enters only the extended sample, so LRU remains directional: $n{=}7$ paired, $14$ extended)}{table.caption.8}{}}
-\newlabel{tab:main-results@cref}{{[table][1][]1}{[1][6][]6}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {4.2}RQ1: Does step-by-step source reading improve answers?}{6}{subsection.4.2}\protected@file@percent }
-\newlabel{sec:ladder}{{4.2}{6}{RQ1: Does step-by-step source reading improve answers?}{subsection.4.2}{}}
-\newlabel{sec:ladder@cref}{{[subsection][2][4]4.2}{[1][5][]6}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {4.3}RQ2: Does a temporal, versioned state help updates and sessions?}{6}{subsection.4.3}\protected@file@percent }
-\newlabel{sec:temporal-benchmark}{{4.3}{6}{RQ2: Does a temporal, versioned state help updates and sessions?}{subsection.4.3}{}}
-\newlabel{sec:temporal-benchmark@cref}{{[subsection][3][4]4.3}{[1][6][]6}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.2}How to store: accumulating memory without loss}{5}{subsection.4.2}\protected@file@percent }
+\newlabel{sec:temporal-benchmark}{{4.2}{5}{How to store: accumulating memory without loss}{subsection.4.2}{}}
+\newlabel{sec:temporal-benchmark@cref}{{[subsection][2][4]4.2}{[1][5][]5}}
+\newlabel{sec:engine-versions}{{4.2}{5}{How to store: accumulating memory without loss}{subsection.4.2}{}}
+\newlabel{sec:engine-versions@cref}{{[subsection][2][4]4.2}{[1][5][]5}}
+\newlabel{sec:engine-paired}{{4.2}{5}{How to store: accumulating memory without loss}{subsection.4.2}{}}
+\newlabel{sec:engine-paired@cref}{{[subsection][2][4]4.2}{[1][5][]5}}
+\newlabel{sec:deletion-boundary}{{4.2}{5}{How to store: accumulating memory without loss}{subsection.4.2}{}}
+\newlabel{sec:deletion-boundary@cref}{{[subsection][2][4]4.2}{[1][5][]5}}
+\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces MemoryAgentBench results by method and task (official scorer, Kimi-K3 answerer). (a) Overall scores: Base on the frozen paired sample ($n{=}767$), Align+ on the extended sample ($n{=}1074$), with marginal 95\% bootstrap intervals; (b) Align+ domain scores at the extended sample; (c) selected task scores; (d) all 209 residual zero-score items of the extended sample. The two sample definitions are labeled separately.}}{6}{figure.caption.7}\protected@file@percent }
+\newlabel{fig:ladder}{{2}{6}{MemoryAgentBench results by method and task (official scorer, Kimi-K3 answerer). (a) Overall scores: Base on the frozen paired sample ($n{=}767$), Align+ on the extended sample ($n{=}1074$), with marginal 95\% bootstrap intervals; (b) Align+ domain scores at the extended sample; (c) selected task scores; (d) all 209 residual zero-score items of the extended sample. The two sample definitions are labeled separately}{figure.caption.7}{}}
+\newlabel{fig:ladder@cref}{{[figure][2][]2}{[1][5][]6}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.3}How to read: addressing instead of bulk-copying}{6}{subsection.4.3}\protected@file@percent }
+\newlabel{sec:ladder}{{4.3}{6}{How to read: addressing instead of bulk-copying}{subsection.4.3}{}}
+\newlabel{sec:ladder@cref}{{[subsection][3][4]4.3}{[1][6][]6}}
+\newlabel{sec:relational-benchmark}{{4.3}{6}{How to read: addressing instead of bulk-copying}{subsection.4.3}{}}
+\newlabel{sec:relational-benchmark@cref}{{[subsection][3][4]4.3}{[1][6][]6}}
 \citation{hu2025memoryagentbench}
 \citation{chhikara2025mem0}
 \citation{rasmussen2025zep}
 \citation{hu2025memoryagentbench}
 \citation{chhikara2025mem0}
 \citation{rasmussen2025zep}
+\@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces MemoryAgentBench; scores are official component scores $\times 100$. Task rows and the Overall ($n{=}767$) row use the paired sample shared by both engines. $^{\ddagger }$ marks the two task groups added when the Align+ engine was extended in place to $n{=}1074$ (RULER-421K multi-hop QA and the full Redial recommendation corpus); the Base run was frozen at the paired sample, and both task groups exceed the full-context row's strict character budget (\cref  {app:sampling}), so they carry no same-model coverage. The Overall ($n{=}1074$) row is that extended sample; scores from the two samples are never subtracted. Bold/underlined entries are best/second-best within each task and sample, $^{*}$ marks sampled LongMemEval-S, and $^{\dagger }$ marks the singleton $\infty $Bench-Sum row of the paired sample (a second task group enters only the extended sample, so LRU remains directional: $n{=}7$ paired, $14$ extended).}}{7}{table.caption.8}\protected@file@percent }
+\newlabel{tab:main-results}{{1}{7}{MemoryAgentBench; scores are official component scores $\times 100$. Task rows and the Overall ($n{=}767$) row use the paired sample shared by both engines. $^{\ddagger }$ marks the two task groups added when the Align+ engine was extended in place to $n{=}1074$ (RULER-421K multi-hop QA and the full Redial recommendation corpus); the Base run was frozen at the paired sample, and both task groups exceed the full-context row's strict character budget (\cref {app:sampling}), so they carry no same-model coverage. The Overall ($n{=}1074$) row is that extended sample; scores from the two samples are never subtracted. Bold/underlined entries are best/second-best within each task and sample, $^{*}$ marks sampled LongMemEval-S, and $^{\dagger }$ marks the singleton $\infty $Bench-Sum row of the paired sample (a second task group enters only the extended sample, so LRU remains directional: $n{=}7$ paired, $14$ extended)}{table.caption.8}{}}
+\newlabel{tab:main-results@cref}{{[table][1][]1}{[1][6][]7}}
 \@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces Recorded LongMemEval trace (question \texttt  {2b8f3739}): concept tracing exposes four episode pointers across two documents, and a separate semantic hit locates the third sales record. Seven successful calls take 13.96\,s; step 8 reaches the limit after a malformed response, then a separate answerer computes $120+225+(20\times 7.5)=495$.}}{7}{figure.caption.9}\protected@file@percent }
 \newlabel{fig:agent-trace}{{3}{7}{Recorded LongMemEval trace (question \texttt {2b8f3739}): concept tracing exposes four episode pointers across two documents, and a separate semantic hit locates the third sales record. Seven successful calls take 13.96\,s; step 8 reaches the limit after a malformed response, then a separate answerer computes $120+225+(20\times 7.5)=495$}{figure.caption.9}{}}
 \newlabel{fig:agent-trace@cref}{{[figure][3][]3}{[1][6][]7}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {4.4}RQ3: Do concept and relation paths support multi-hop consolidation?}{7}{subsection.4.4}\protected@file@percent }
-\newlabel{sec:relational-benchmark}{{4.4}{7}{RQ3: Do concept and relation paths support multi-hop consolidation?}{subsection.4.4}{}}
-\newlabel{sec:relational-benchmark@cref}{{[subsection][4][4]4.4}{[1][6][]7}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {4.5}RQ4: Does progressive alignment make construction revisable and economical?}{7}{subsection.4.5}\protected@file@percent }
-\newlabel{sec:engine-versions}{{4.5}{7}{RQ4: Does progressive alignment make construction revisable and economical?}{subsection.4.5}{}}
-\newlabel{sec:engine-versions@cref}{{[subsection][5][4]4.5}{[1][7][]7}}
-\newlabel{sec:engine-paired}{{4.5}{7}{RQ4: Does progressive alignment make construction revisable and economical?}{subsection.4.5}{}}
-\newlabel{sec:engine-paired@cref}{{[subsection][5][4]4.5}{[1][7][]7}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {4.6}RQ5: Where does the append-only design fail?}{7}{subsection.4.6}\protected@file@percent }
-\newlabel{sec:deletion-boundary}{{4.6}{7}{RQ5: Where does the append-only design fail?}{subsection.4.6}{}}
-\newlabel{sec:deletion-boundary@cref}{{[subsection][6][4]4.6}{[1][7][]7}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {4.7}Comparison with other systems}{7}{subsection.4.7}\protected@file@percent }
-\newlabel{sec:cross-system}{{4.7}{7}{Comparison with other systems}{subsection.4.7}{}}
-\newlabel{sec:cross-system@cref}{{[subsection][7][4]4.7}{[1][7][]7}}
 \@writefile{lot}{\contentsline {table}{\numberline {2}{\ignorespaces Comparison with published MemoryAgentBench, LoCoMo, and LongMemEval-S results. Each block lists its answerer, judge, subset, and test procedure; published rows are from Hu et al.~\citep  {hu2025memoryagentbench}, Chhikara et al.~\citep  {chhikara2025mem0}, and Rasmussen et al.~\citep  {rasmussen2025zep}. In (b), the weighted column is recomputed from published category means under the 841/282/96/321 counts; cross-block rows use different protocols and are background, not controlled comparisons. Our MAB rows use the Align+ extended sample ($n{=}1074$, 14 task groups; \cref  {app:sampling}); the same-model full-context row is a reference at 614/1{,}074 coverage, rather than a competing system, and its margin over the source-reading agent ($-7.9$ points, 95\% CI $[-11.9,-3.9]$) is analyzed in \cref  {sec:ladder}. LRU has only $n{=}14$ questions, including $n{=}2$ from $\infty $Bench-Sum.}}{8}{table.caption.10}\protected@file@percent }
 \newlabel{tab:main-cross-system}{{2}{8}{Comparison with published MemoryAgentBench, LoCoMo, and LongMemEval-S results. Each block lists its answerer, judge, subset, and test procedure; published rows are from Hu et al.~\citep {hu2025memoryagentbench}, Chhikara et al.~\citep {chhikara2025mem0}, and Rasmussen et al.~\citep {rasmussen2025zep}. In (b), the weighted column is recomputed from published category means under the 841/282/96/321 counts; cross-block rows use different protocols and are background, not controlled comparisons. Our MAB rows use the Align+ extended sample ($n{=}1074$, 14 task groups; \cref {app:sampling}); the same-model full-context row is a reference at 614/1{,}074 coverage, rather than a competing system, and its margin over the source-reading agent ($-7.9$ points, 95\% CI $[-11.9,-3.9]$) is analyzed in \cref {sec:ladder}. LRU has only $n{=}14$ questions, including $n{=}2$ from $\infty $Bench-Sum}{table.caption.10}{}}
 \newlabel{tab:main-cross-system@cref}{{[table][2][]2}{[1][7][]8}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {4.8}Mechanism diagnostics: offline retrieval and online reading}{8}{subsection.4.8}\protected@file@percent }
-\newlabel{sec:external-comparisons}{{4.8}{8}{Mechanism diagnostics: offline retrieval and online reading}{subsection.4.8}{}}
-\newlabel{sec:external-comparisons@cref}{{[subsection][8][4]4.8}{[1][7][]8}}
-\newlabel{sec:provenance-ablation}{{4.8}{8}{Mechanism diagnostics: offline retrieval and online reading}{subsection.4.8}{}}
-\newlabel{sec:provenance-ablation@cref}{{[subsection][8][4]4.8}{[1][7][]8}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {4.9}Where the system still fails}{9}{subsection.4.9}\protected@file@percent }
-\newlabel{sec:negatives}{{4.9}{9}{Where the system still fails}{subsection.4.9}{}}
-\newlabel{sec:negatives@cref}{{[subsection][9][4]4.9}{[1][8][]9}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.4}Comparison with other systems}{8}{subsection.4.4}\protected@file@percent }
+\newlabel{sec:cross-system}{{4.4}{8}{Comparison with other systems}{subsection.4.4}{}}
+\newlabel{sec:cross-system@cref}{{[subsection][4][4]4.4}{[1][7][]8}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.5}Mechanism diagnostics: offline retrieval and online reading}{8}{subsection.4.5}\protected@file@percent }
+\newlabel{sec:external-comparisons}{{4.5}{8}{Mechanism diagnostics: offline retrieval and online reading}{subsection.4.5}{}}
+\newlabel{sec:external-comparisons@cref}{{[subsection][5][4]4.5}{[1][8][]8}}
+\newlabel{sec:provenance-ablation}{{4.5}{8}{Mechanism diagnostics: offline retrieval and online reading}{subsection.4.5}{}}
+\newlabel{sec:provenance-ablation@cref}{{[subsection][5][4]4.5}{[1][8][]8}}
 \@writefile{toc}{\contentsline {section}{\numberline {5}Analysis and Limitations}{9}{section.5}\protected@file@percent }
 \newlabel{sec:analysis}{{5}{9}{Analysis and Limitations}{section.5}{}}
 \newlabel{sec:analysis@cref}{{[section][5][]5}{[1][9][]9}}
@@ -155,8 +149,8 @@
 \@writefile{toc}{\contentsline {subsection}{\numberline {A.3}MemoryAgentBench sampling frame and contamination note}{14}{subsection.A.3}\protected@file@percent }
 \newlabel{app:sampling}{{A.3}{14}{MemoryAgentBench sampling frame and contamination note}{subsection.A.3}{}}
 \newlabel{app:sampling@cref}{{[subappendix][3][2147483647,1]A.3}{[1][14][]14}}
-\@writefile{lot}{\contentsline {table}{\numberline {4}{\ignorespaces Research questions and measurements. Each row tests a distinct prediction of the search--evidence separation; published comparison rows keep their test details so the score differences can be checked.}}{15}{table.caption.17}\protected@file@percent }
-\newlabel{tab:experiment-map}{{4}{15}{Research questions and measurements. Each row tests a distinct prediction of the search--evidence separation; published comparison rows keep their test details so the score differences can be checked}{table.caption.17}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {4}{\ignorespaces Two research questions and their measurements. Each row groups benchmarks by the line they probe, with calibers and disclosed boundaries adjacent.}}{15}{table.caption.17}\protected@file@percent }
+\newlabel{tab:experiment-map}{{4}{15}{Two research questions and their measurements. Each row groups benchmarks by the line they probe, with calibers and disclosed boundaries adjacent}{table.caption.17}{}}
 \newlabel{tab:experiment-map@cref}{{[table][4][2147483647]4}{[1][13][]15}}
 \@writefile{lot}{\contentsline {table}{\numberline {5}{\ignorespaces Three-arm alignment study on 137 LongMemEval-S documents per arm. B1 provides the large efficiency reduction; B2 spends about 3\% more tokens than B1 on final consistency check and is the only arm with substantial non-destructive family redirection, reducing same-name duplicate groups. The quality slice is too small for a quality claim. B1 and B2 use the same saved service configuration; B2 differs through the runtime implementation and alignment switch.}}{15}{table.caption.18}\protected@file@percent }
 \newlabel{tab:alignment-ab}{{5}{15}{Three-arm alignment study on 137 LongMemEval-S documents per arm. B1 provides the large efficiency reduction; B2 spends about 3\% more tokens than B1 on final consistency check and is the only arm with substantial non-destructive family redirection, reducing same-name duplicate groups. The quality slice is too small for a quality claim. B1 and B2 use the same saved service configuration; B2 differs through the runtime implementation and alignment switch}{table.caption.18}{}}

@@ -1,7 +1,7 @@
 \section{Experiments}
 \label{sec:experiments}
 
-The evaluation covers retrieval, temporal access, multi-hop linking, write efficiency, and deletion.
+The evaluation follows the two lines: storing---versioned access, revisable identity, and the deletion boundary---across LongMemEval, matched write runs, and MEME; and reading---addressed loading versus bulk-copying---across MemoryAgentBench and LoCoMo.
 
 \subsection{Test setup and task groups}
 \label{sec:setup}
@@ -13,46 +13,40 @@ MAB reports percentages: 100 means every item in the row is correct and 0 means 
 
 \input{figures/figure_ladder}
 
-\subsection{RQ1: Does step-by-step source reading improve answers?}
+\subsection{How to store: accumulating memory without loss}
+\label{sec:temporal-benchmark}
+\label{sec:engine-versions}
+\label{sec:engine-paired}
+\label{sec:deletion-boundary}
+
+Write-time summarization or fact distillation commits the loss before the question is known; Deep-Dream appends observations and defers identity merges, so earlier and later states stay jointly reachable and construction stays revisable. Three measurements probe this: versioned access, revisable identity, and the deletion boundary. LongMemEval tests whether an earlier observation and a later correction remain jointly accessible. In paired runs that first write the full conversation set, direct retrieval moves from 0.68 to 0.72, the memory-tool path also moves from 0.68 to 0.72, and the source-reading method moves from 0.889 to 0.926. These tracks are small and directional. The independent 500-question LongMemEval-S run used Qwen3.7-plus for cross-judging and obtained 84.60\%; it is listed separately because it used a different test procedure.
+
+The source-reading method is strongest on update and temporal questions, while preference questions remain difficult because they require latent user-state modeling. The result concerns access to changing observations, not all forms of temporal reasoning.
+
+The write side of accumulation is identity: Base commits identity window by window; Align+ defers compatible merges until all windows in the current task group have been processed. In paired ingest artifacts, calls fall from 609 to 329 per MAB document and from 63.8 to 22.0 per LongMemEval document. Same-name duplicate families fall from 340 to 124 on MAB and from 482 to 99 on LongMemEval. MCC and FC-MH each increase by 0.03, but their intervals include zero. Concurrency, convergence, retries, timeouts, and throughput fixes changed together, so this result supports a construction cost/revisability trade-off rather than a component-level causal claim.
+
+MEME marks where append-only stops: deletion accuracy is 0\% on 100 episodes, with cascade and absence real accuracy 46.34\% and 59.23\%. The append-only store preserves prior observations and links, but the query path has no deletion suppression or propagation rule.
+
+\subsection{How to read: addressing instead of bulk-copying}
 \label{sec:ladder}
+\label{sec:relational-benchmark}
 
-Table~\ref{tab:main-results} and Figure~\ref{fig:ladder} compare the three MAB answer methods. On the extended Align+ sample, Overall is 0.333 for direct retrieval, 0.400 for the tool-assisted reading, and 0.710 for the source-reading agent. The paired Base sample gives 0.303, 0.376, and 0.669 for the same methods. The three methods change tools, prompts, and compute together, so this is a comparison of complete systems rather than a one-factor causal test.
+The two common read designs appear as operating points in the ladder below: a fixed retrieval result, and bulk-loading the whole corpus where it fits. Deep-Dream instead lets the agent address the store and load what the question needs. On MemoryAgentBench, Table~\ref{tab:main-results} and Figure~\ref{fig:ladder} compare the three answer methods. On the extended Align+ sample, Overall is 0.333 for direct retrieval, 0.400 for the tool-assisted reading, and 0.710 for the source-reading agent. The paired Base sample gives 0.303, 0.376, and 0.669 for the same methods. The three methods change tools, prompts, and compute together, so this is a comparison of complete systems rather than a one-factor causal test.
 
-The task pattern is more informative than Overall. Source reading raises the paired MCC and FC-MH rows from near-zero retrieval scores to 46 and 70, respectively. On the two extension task groups that exceed the full-context reference's character budget, the source-reading method reaches 77.0 on MH-QA and 59.8 on Recommendation. The same-model full-context reference covers 614 of 1{,}074 questions and scores 78.7 on those covered questions; the source-reading method scores 70.8 on the same set. The reference is a reference under a strict budget, not a universal ceiling, and it has no score on the 460 questions whose document groups exceed that budget.
+The task pattern is more informative than Overall. Source reading raises the paired MCC and FC-MH rows from near-zero retrieval scores to 46 and 70, respectively. On the two extension task groups that exceed the full-context reference's character budget, the source-reading method reaches 77.0 on MH-QA and 59.8 on Recommendation. The same-model full-context reference covers 614 of 1{,}074 questions and scores 78.7 on those covered questions; the source-reading method scores 70.8 on the same set. It has no score on the 460 questions whose document groups exceed that budget. The remaining 29.0\% of errors concentrate in temporal, test-time learning, and fact-consolidation questions.
 
 \input{figures/TABLE_main_results}
 
 \input{figures/figure_agent_trace}
 
-\subsection{RQ2: Does a temporal, versioned state help updates and sessions?}
-\label{sec:temporal-benchmark}
-
-LongMemEval tests whether an earlier observation and a later correction remain jointly accessible. In paired runs that first write the full conversation set, direct retrieval moves from 0.68 to 0.72, the memory-tool path also moves from 0.68 to 0.72, and the source-reading method moves from 0.889 to 0.926. These tracks are small and directional. The independent 500-question LongMemEval-S run used Qwen3.7-plus for cross-judging and obtained 84.60\%; it is listed separately because it used a different test procedure.
-
-The source-reading method is strongest on update and temporal questions, while preference questions remain difficult because they require latent user-state modeling. The result concerns access to changing observations, not all forms of temporal reasoning.
-
-\subsection{RQ3: Do concept and relation paths support multi-hop consolidation?}
-\label{sec:relational-benchmark}
-
-We score LoCoMo-1540 with the binary CORRECT/WRONG rubric of the Mem0 benchmark repository pinned at commit \texttt{4b61c5d}---a 2026 revision whose date, duration, and list-tolerance rules differ from the 2025 paper's Appendix~A---and with Kimi-K3 as both answerer and judge; the same answers score 94.22\% under an independent Qwen3.7-plus cross-judge (agreement 98.51\%). Deep-Dream obtains 95.19\% weighted $J$ (percent judged correct), a single diagnostic run carrying a disclosed legacy-fingerprint caveat rather than a fingerprint-complete formal result. For context, reweighting Mem0's published per-category means under the same 841/282/96/321 question counts gives $\approx$62.14 (its paper's Table~2 reports Overall $J=66.88$), and Zep's reweighted categories give $\approx$56.32; those rows use different answerers, judges, and protocols and are background references, not controlled comparisons.
+LoCoMo extends the same addressing loop to multi-hop questions: we score LoCoMo-1540 with the binary CORRECT/WRONG rubric of the Mem0 benchmark repository pinned at commit \texttt{4b61c5d}---a 2026 revision whose date, duration, and list-tolerance rules differ from the 2025 paper's Appendix~A---and with Kimi-K3 as both answerer and judge; the same answers score 94.22\% under an independent Qwen3.7-plus cross-judge (agreement 98.51\%). Deep-Dream obtains 95.19\% weighted $J$ (percent judged correct), a single diagnostic run with a disclosed legacy-fingerprint caveat. For context, reweighting Mem0's published per-category means under the same 841/282/96/321 question counts gives $\approx$62.14 (its paper's Table~2 reports Overall $J=66.88$), and Zep's reweighted categories give $\approx$56.32; those rows use different answerers, judges, and protocols and are background references, not controlled comparisons.
 
 The category profile is consistent with the intended role of the graph: multi-hop and temporal questions benefit from connecting episodes and retaining update order, while open-domain questions are less dependent on a specific relation path.
-
-\subsection{RQ4: Does progressive alignment make construction revisable and economical?}
-\label{sec:engine-versions}
-\label{sec:engine-paired}
-
-Base commits identity window by window; Align+ defers compatible merges until all windows in the current task group have been processed. In paired ingest artifacts, calls fall from 609 to 329 per MAB document and from 63.8 to 22.0 per LongMemEval document. Same-name duplicate families fall from 340 to 124 on MAB and from 482 to 99 on LongMemEval. MCC and FC-MH each increase by 0.03, but their intervals include zero. Concurrency, convergence, retries, timeouts, and throughput fixes changed together, so this result supports a construction cost/revisability trade-off rather than a component-level causal claim.
-
-\subsection{RQ5: Where does the append-only design fail?}
-\label{sec:deletion-boundary}
-
-MEME exposes the boundary: deletion accuracy is 0\% on 100 episodes, with cascade and absence real accuracy 46.34\% and 59.23\%. The append-only store preserves prior observations and links, but the query path has no deletion suppression or propagation rule; temporal revision and deletion are separate capabilities.
 
 \subsection{Comparison with other systems}
 \label{sec:cross-system}
 
-Table~\ref{tab:main-cross-system} places Deep-Dream beside published MAB, LoCoMo, and LongMemEval-S results, each block stating its answerer, judge, subset, and test procedure. On MAB, the full-context reference and the source-reading method use the same model on their common subset; the MAB pair is a controlled comparison, rows spanning protocols are placed side by side for context, and no cross-protocol difference is claimed.
+Table~\ref{tab:main-cross-system} places Deep-Dream beside published MAB, LoCoMo, and LongMemEval-S results; each block keeps its own answerer, judge, subset, and test procedure, and only the same-model MAB pair is a controlled comparison.
 
 \input{figures/TABLE_main_cross_system}
 
@@ -63,8 +57,3 @@ Table~\ref{tab:main-cross-system} places Deep-Dream beside published MAB, LoCoMo
 This diagnostic asks whether the graph improves ranking before the agent opens text. We replayed the same 210 questions with four index variants: keyword search (BM25) over raw episodes; semantic links added; graph neighbors added; and relation links added. Recall-any@10 asks whether a relevant item appears in the top ten; Recall-all@10 whether all do; MRR@10 and nDCG@10 reward earlier placement. Recall-any@10 is 72.38, 72.38, 71.43, and 72.38 percent across the four variants; every paired difference lies within the $\pm2.4$-point 95\% bootstrap equivalence bound computed from the same replay, and the other metrics show the same pattern.
 
 The replay therefore gives no evidence that graph links alone improve offline recall; online, the graph still chooses document groups, versions, and relation links before the agent opens source text, and the citation check accepts only source IDs returned by a tool call. Figure~\ref{fig:cost} reports the cost of the three answer paths: source reading uses more calls and tokens while producing the strongest answers.
-
-\subsection{Where the system still fails}
-\label{sec:negatives}
-
-The source-reading method still gets 29.0\% of MAB questions wrong, concentrated in temporal/test-time learning and fact consolidation. Direct retrieval and tool-assisted reading tie on the small paired LongMemEval tracks, the LRU estimate rests on 14 questions, and the 210-question replay finds no offline recall change. MEME's 0\% deletion accuracy and the change caused by a single example show that preserving source text does not yet provide deletion or stable estimates for every task.
