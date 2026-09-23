@@ -3,17 +3,15 @@
 \small
 \setlength{\tabcolsep}{2.5pt}
 \renewcommand{\arraystretch}{1.16}
-\begin{tabular*}{\textwidth}{@{\extracolsep{\fill}}p{0.04\textwidth}p{0.25\textwidth}p{0.65\textwidth}@{}}
+\begin{tabular*}{\textwidth}{@{\extracolsep{\fill}}p{0.05\textwidth}p{0.14\textwidth}p{0.46\textwidth}p{0.29\textwidth}@{}}
 \toprule
-\textbf{RQ} & \textbf{记忆能力} & \textbf{基准与可观测预测} \\
+\textbf{主线} & \textbf{能力} & \textbf{基准与观测量} & \textbf{口径与边界} \\
 \midrule
-1 & 逐步读取原文 & MemoryAgentBench 在相同的 767 题上比较直接检索、多次调用只读记忆工具与读取原文并核对引用。当智能体可以持续阅读时，分数应当在事实整合与多次提及任务上拉开最大。 \\
-2 & 时序与多会话访问 & LongMemEval 测试更新与跨会话链接。版本化观测应让较早与较晚的事实都仍然能被找到，而偏好问题仍是潜在用户状态建模的边界。 \\
-3 & 关系整合 & LoCoMo 区分单跳、多跳、时序与开放域问题。当答案需要连接多个会话片段或修订较早数值时，概念族与关系路径应当最关键。 \\
-4 & 可修订构建 & Base/Align+ 配对运行度量重复族、入库调用、token 与任务切片。渐进式对齐预测更低的构建成本与更好的整合，但不要求分数全面上升。 \\
-5 & 删除与缺失边界 & MEME 测试删除、级联与缺失。当前的只增存储应保留溯源，但尚不能保证删除后的抑制。 \\
+存 & 无损积累与可修订身份 & LongMemEval 全量写入配对运行（$n{=}25/25/27$）与 500 题 LME-S 运行检验旧陈述与后来更正是否同时可达；Base/Align+ 配对运行度量同名重复族（MAB 上 340$\to$124、LME 上 482$\to$99）与入库调用（每 MAB 文档 609$\to$329；每 LME 文档 63.8$\to$22.0），MCC/FC-MH 增量的区间包含零。 & MEME：100 个会话片段上删除真实准确率 0\%（694 项事后检查）；级联与缺失真实准确率 46.34/59.23；尚无查询时删除抑制。 \\
+\midrule
+取 & 智能体自主寻址 & MemoryAgentBench 在同一 767/3{,}671 题配对样本（29 个任务组中的 8 个）上比较一次性固定检索、多次只读工具调用与带引用检查的原文读取，并有 Align+ 扩展到 1{,}074 题；LoCoMo-1540 二值 $J$ 区分单跳、多跳、时序与开放域问题。 & 已发表 Mem0/Zep 行使用不同的答题模型、评审与评分规则版本，仅作背景；通道重放是离线等价界（$\pm$2.4 个百分点，95\% bootstrap），不是在线消融。 \\
 \bottomrule
 \end{tabular*}
-\caption{研究问题与测量方式。每一行检验检索——证据分离的一条不同预测；已发表结果保留各自的测试条件，便于检查分数差异。}
+\caption{两个研究问题及其测量。每行把基准按所检验的主线分组，并相邻给出口径与已披露边界。}
 \label{tab:experiment-map}
 \end{table*}

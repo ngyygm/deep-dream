@@ -1,18 +1,18 @@
 # Fdb version 4
-["bibtex main-zh"] 1790152297.50204 "main-zh.aux" "main-zh.bbl" "main-zh" 1790152369.12858 0
+["bibtex main-zh"] 1790155560.50742 "main-zh.aux" "main-zh.bbl" "main-zh" 1790155563.51403 0
   "./iclr2027_conference.bst" 1790082922.31955 26973 af983813ca1a1414954dbceae7baa2a1 ""
   "./references.bib" 1790151475.93416 9739 b8ade9ee8df14ef4088a067a5334395f ""
-  "main-zh.aux" 1790152368.28155 39574 71259ffcf877fd9f4a29319daa92510f "xelatex"
+  "main-zh.aux" 1790155562.61244 38590 51a4e379fbfeb44d3ae3a931737fee9a "xelatex"
   (generated)
   "main-zh.bbl"
   "main-zh.blg"
   (rewritten before read)
-["xdvipdfmx"] 1790152368.71922 "main-zh.xdv" "main-zh.pdf" "main-zh" 1790152369.1358 0
-  "main-zh.xdv" 1790152368.28455 583840 7e46cc38557f6f6814678fd7d6b4d12a "xelatex"
+["xdvipdfmx"] 1790155563.09333 "main-zh.xdv" "main-zh.pdf" "main-zh" 1790155563.52159 0
+  "main-zh.xdv" 1790155562.61544 567320 79e7dc8a24d70b584bd0ba624e45d07e "xelatex"
   (generated)
   "main-zh.pdf"
   (rewritten before read)
-["xelatex"] 1790152366.14253 "main-zh.tex" "main-zh.xdv" "main-zh" 1790152369.12888 0
+["xelatex"] 1790155560.67379 "main-zh.tex" "main-zh.xdv" "main-zh" 1790155563.51434 0
   "/etc/texmf/web2c/texmf.cnf" 1773496204.75543 475 c0e671620eb5563b2130f56340a5fde8 ""
   "/usr/share/texlive/texmf-dist/fonts/map/fontname/texfonts.map" 1577235249 3524 cb3e574dea2d1052e39280babc910dc8 ""
   "/usr/share/texlive/texmf-dist/fonts/tfm/adobe/helvetic/phvb.tfm" 1136768653 2300 14616918391efa49ac8b481a75fbdc1a ""
@@ -151,7 +151,7 @@
   "figures/RECOMPUTED_MACROS.tex" 1790091761.52891 1792 f34b98e753ff471ad20a198114915ef8 ""
   "figures/TABLE_alignment_ab_zh.tex" 1790002491.01181 930 35f423d496f93dafb2cbb850c8f2c9e1 ""
   "figures/TABLE_answer_paths_zh.tex" 1790002103.86316 777 3a6c7db7875a98720455cf8befbd0b28 ""
-  "figures/TABLE_experiment_map_zh.tex" 1790002103.86416 1545 8eabc3201154fa1165c88b56b2ed0053 ""
+  "figures/TABLE_experiment_map_zh.tex" 1790155554.07429 1611 8dce81d1960b10514a4710efb6359b7a ""
   "figures/TABLE_main_cross_system_zh.tex" 1790081769.27646 4029 42fcc5be37a509e739ffd7eb5dcf4883 ""
   "figures/TABLE_main_results_zh.tex" 1790008425.29467 2970 dded44c7f8e20da7078fafdde1430222 ""
   "figures/TABLE_mem0_f1_bleu_appendix_zh.tex" 1789983628.40718 1410 a206dd8cd462b7d6893cb16b8da2173d ""
@@ -176,18 +176,18 @@
   "figures/figure_diagnostics_zh.tex" 1789983281.96117 526 f5c9efaac66b05bcf8f7bfd77475aefc ""
   "figures/figure_ladder_zh.tex" 1790152200.23159 531 a959aec8d07e4dd44da5734bad4aa1d6 ""
   "iclr2027_conference.sty" 1790082922.31955 9025 1b4bb9c2e12c712c56f4eb1232b88dd6 ""
-  "main-zh.aux" 1790152368.28155 39574 71259ffcf877fd9f4a29319daa92510f "xelatex"
-  "main-zh.bbl" 1790152297.66772 10603 594dd98228fb36304f9a44f20f8c9e78 "bibtex main-zh"
-  "main-zh.out" 1790152368.28355 5227 84f797a621cda57d59bf0aa0addcd9fe "xelatex"
+  "main-zh.aux" 1790155562.61244 38590 51a4e379fbfeb44d3ae3a931737fee9a "xelatex"
+  "main-zh.bbl" 1790155560.66241 10603 594dd98228fb36304f9a44f20f8c9e78 "bibtex main-zh"
+  "main-zh.out" 1790155562.61444 4384 a1f01794d59f8df3cd078e34ae556af3 "xelatex"
   "main-zh.tex" 1790083114.08773 3253 613a76f6b1c542aabbf0f8f6ea35e88a ""
   "math_commands.tex" 1788165763.94515 1279 4d3ba70bd33c2b6f137420f63b02098a ""
   "sections/0_abstract_zh.tex" 1790151511.21557 1347 3a224859ddf093d0005abf78a8551e1d ""
-  "sections/1_introduction_zh.tex" 1790151515.03961 6712 a6b94af93bd0b7b2602bad547a0ae1ec ""
+  "sections/1_introduction_zh.tex" 1790155524.52477 6022 7b6eb83b808f6b9163737aabe78fa3ef ""
   "sections/2_related_work_zh.tex" 1790151531.8398 3440 4f11ee2f8ec6be9e4dbf476ea2de5031 ""
-  "sections/3_method_zh.tex" 1790151520.49867 6326 7f842057265821e3954a2ea692b554ec ""
-  "sections/4_experiments_zh.tex" 1790081993.51696 9536 3db8573d6d0fa6555327fa3c1665c304 ""
+  "sections/3_method_zh.tex" 1790155525.30178 6416 655c3fca6eebc37ae5cfc1f2a1229d66 ""
+  "sections/4_experiments_zh.tex" 1790155549.54021 7489 a1a67846607b24a91abed523c0c59f51 ""
   "sections/5_analysis_limitations_zh.tex" 1790151521.96469 3664 169bec7e6988a1bf931d04e31a2e05ea ""
-  "sections/6_conclusion_zh.tex" 1790151523.36571 1272 86ebe1ef48928d817b9b890c90c5e58a ""
+  "sections/6_conclusion_zh.tex" 1790155527.23481 1434 644f07827324968d7a7ef3aea610a694 ""
   "sections/7_ai_assistance_zh.tex" 1790152356.89041 1244 b1004c154c9b372ffefb67cb7b06c870 ""
   "sections/A_appendix_zh.tex" 1790092285.69675 19614 c6143a23a21c833d63787e5c7d34d8cc ""
   (generated)
