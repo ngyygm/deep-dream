@@ -3,14 +3,16 @@
 \providecommand*\HyPL@Entry[1]{}
 \HyPL@Entry{0<</S/D>>}
 \@writefile{toc}{\contentsline {section}{\numberline {1}引言}{1}{section.1}\protected@file@percent }
-\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces 检索与证据分离。固定检索一次性决定读什么；Deep-Dream 先沿概念链接定位候选源文本，再由智能体在预算内读取、验证或停止。}}{1}{figure.caption.1}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces 寻址与加载分离。固定检索一次性决定读什么；Deep-Dream 先沿概念链接定位候选源文本（寻址），再由智能体在预算内读取（加载）、验证或停止。}}{2}{figure.caption.1}\protected@file@percent }
 \providecommand*\caption@xref[2]{\@setref\relax\@undefined{#1}}
-\newlabel{fig:motivation}{{1}{1}{检索与证据分离。固定检索一次性决定读什么；Deep-Dream 先沿概念链接定位候选源文本，再由智能体在预算内读取、验证或停止。}{figure.caption.1}{}}
-\newlabel{fig:motivation@cref}{{[figure][1][]1}{[1][1][]1}}
+\newlabel{fig:motivation}{{1}{2}{寻址与加载分离。固定检索一次性决定读什么；Deep-Dream 先沿概念链接定位候选源文本（寻址），再由智能体在预算内读取（加载）、验证或停止。}{figure.caption.1}{}}
+\newlabel{fig:motivation@cref}{{[figure][1][]1}{[1][1][]2}}
 \citation{maharana2024locomo,wu2025longmemeval}
 \citation{jung2026meme}
 \citation{hu2025memoryagentbench}
 \citation{packer2023memgpt,xu2025amem,chhikara2025mem0,gutierrez2025hipporag2,markovic2025cognee,wang2025mirix,rasmussen2025zep}
+\citation{packer2023memgpt}
+\citation{lin2026icam}
 \citation{tishby2000information}
 \citation{shannon1959coding}
 \citation{ramsauer2021hopfield}
@@ -22,23 +24,24 @@
 \@writefile{toc}{\contentsline {section}{\numberline {2}相关工作}{3}{section.2}\protected@file@percent }
 \@writefile{toc}{\contentsline {paragraph}{记忆基准。}{3}{section*.2}\protected@file@percent }
 \@writefile{toc}{\contentsline {paragraph}{结构化记忆。}{3}{section*.3}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{信息论与联想记忆。}{3}{section*.4}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{检索、长上下文与来源记录。}{3}{section*.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{作为被寻址存储的记忆。}{3}{section*.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{信息论与联想记忆。}{3}{section*.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{检索、长上下文与来源记录。}{3}{section*.6}\protected@file@percent }
 \@writefile{toc}{\contentsline {section}{\numberline {3}Deep-Dream}{3}{section.3}\protected@file@percent }
 \newlabel{sec:deep-dream}{{3}{3}{Deep-Dream}{section.3}{}}
 \newlabel{sec:deep-dream@cref}{{[section][3][]3}{[1][3][]3}}
 \@writefile{toc}{\contentsline {subsection}{\numberline {3.1}记忆模型}{3}{subsection.3.1}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {3.2}入库与对齐：两代引擎}{3}{subsection.3.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.2}入库与对齐：两代引擎}{4}{subsection.3.2}\protected@file@percent }
 \@writefile{toc}{\contentsline {subsection}{\numberline {3.3}三种回答方式与引用检查}{4}{subsection.3.3}\protected@file@percent }
 \newlabel{sec:answer-paths}{{3.3}{4}{三种回答方式与引用检查}{subsection.3.3}{}}
 \newlabel{sec:answer-paths@cref}{{[subsection][3][3]3.3}{[1][4][]4}}
 \@writefile{toc}{\contentsline {subsection}{\numberline {3.4}信息论视角下的渐进披露}{4}{subsection.3.4}\protected@file@percent }
 \newlabel{sec:information-view}{{3.4}{4}{信息论视角下的渐进披露}{subsection.3.4}{}}
 \newlabel{sec:information-view@cref}{{[subsection][4][3]3.4}{[1][4][]4}}
-\newlabel{eq:two-rate-code}{{2}{4}{信息论视角下的渐进披露}{equation.3.2}{}}
-\newlabel{eq:two-rate-code@cref}{{[equation][2][]2}{[1][4][]4}}
+\newlabel{eq:two-rate-code}{{2}{5}{信息论视角下的渐进披露}{equation.3.2}{}}
+\newlabel{eq:two-rate-code@cref}{{[equation][2][]2}{[1][5][]5}}
 \newlabel{eq:answer-decomposition}{{3}{5}{信息论视角下的渐进披露}{equation.3.3}{}}
-\newlabel{eq:answer-decomposition@cref}{{[equation][3][]3}{[1][4][]5}}
+\newlabel{eq:answer-decomposition@cref}{{[equation][3][]3}{[1][5][]5}}
 \@writefile{toc}{\contentsline {section}{\numberline {4}实验}{5}{section.4}\protected@file@percent }
 \newlabel{sec:experiments}{{4}{5}{实验}{section.4}{}}
 \newlabel{sec:experiments@cref}{{[section][4][]4}{[1][5][]5}}
@@ -48,52 +51,52 @@
 \@writefile{toc}{\contentsline {subsection}{\numberline {4.2}RQ1：逐步读取原文能否改进答案？}{5}{subsection.4.2}\protected@file@percent }
 \newlabel{sec:ladder}{{4.2}{5}{RQ1：逐步读取原文能否改进答案？}{subsection.4.2}{}}
 \newlabel{sec:ladder@cref}{{[subsection][2][4]4.2}{[1][5][]5}}
-\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces MemoryAgentBench 的回答方式与任务结果（官方评分器，Kimi-K3 作答）。（a）Overall 分数：Base 取冻结配对样本（$n{=}767$），Align+ 取扩展样本（$n{=}1074$），带边缘 95\% bootstrap 区间；（b）扩展样本上的 Align+ 域分数；（c）所选任务分数；（d）扩展样本全部 209 个残余零分条目。两个样本分别标注。}}{6}{figure.caption.6}\protected@file@percent }
-\newlabel{fig:ladder}{{2}{6}{MemoryAgentBench 的回答方式与任务结果（官方评分器，Kimi-K3 作答）。（a）Overall 分数：Base 取冻结配对样本（$n{=}767$），Align+ 取扩展样本（$n{=}1074$），带边缘 95\% bootstrap 区间；（b）扩展样本上的 Align+ 域分数；（c）所选任务分数；（d）扩展样本全部 209 个残余零分条目。两个样本分别标注。}{figure.caption.6}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces MemoryAgentBench 的回答方式与任务结果（官方评分器，Kimi-K3 作答）。（a）Overall 分数：Base 取冻结配对样本（$n{=}767$），Align+ 取扩展样本（$n{=}1074$），带边缘 95\% bootstrap 区间；（b）扩展样本上的 Align+ 域分数；（c）所选任务分数；（d）扩展样本全部 209 个残余零分条目。两个样本分别标注。}}{6}{figure.caption.7}\protected@file@percent }
+\newlabel{fig:ladder}{{2}{6}{MemoryAgentBench 的回答方式与任务结果（官方评分器，Kimi-K3 作答）。（a）Overall 分数：Base 取冻结配对样本（$n{=}767$），Align+ 取扩展样本（$n{=}1074$），带边缘 95\% bootstrap 区间；（b）扩展样本上的 Align+ 域分数；（c）所选任务分数；（d）扩展样本全部 209 个残余零分条目。两个样本分别标注。}{figure.caption.7}{}}
 \newlabel{fig:ladder@cref}{{[figure][2][]2}{[1][5][]6}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {4.3}RQ2：时序化、版本化状态是否有助于更新与会话？}{6}{subsection.4.3}\protected@file@percent }
-\newlabel{sec:temporal-benchmark}{{4.3}{6}{RQ2：时序化、版本化状态是否有助于更新与会话？}{subsection.4.3}{}}
-\newlabel{sec:temporal-benchmark@cref}{{[subsection][3][4]4.3}{[1][6][]6}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {4.4}RQ3：概念与关系路径能否支撑多跳整合？}{6}{subsection.4.4}\protected@file@percent }
-\newlabel{sec:relational-benchmark}{{4.4}{6}{RQ3：概念与关系路径能否支撑多跳整合？}{subsection.4.4}{}}
-\newlabel{sec:relational-benchmark@cref}{{[subsection][4][4]4.4}{[1][6][]6}}
+\@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces MemoryAgentBench；分数为官方分量分数 $\times 100$。任务行与 Overall（$n{=}767$）行使用两个引擎共享的配对样本。$^{\ddagger }$ 标记 Align+ 引擎原地扩展到 $n{=}1074$ 时新增的两个任务组（RULER-421K 多跳问答与完整 Redial 推荐语料）；Base 运行冻结在配对样本上，且两个任务组都超出完整上下文行的严格字符预算（\cref  {app:sampling}），因此没有同模型覆盖。Overall（$n{=}1074$）行即该扩展样本；两个样本的分数绝不相减。加粗/下划线为各任务与样本内的最佳/次佳，$^{*}$ 标记抽样的 LongMemEval-S，$^{\dagger }$ 标记配对样本的单例 $\infty $Bench-Sum 行（第二个任务组仅进入扩展样本，因此 LRU 仍是方向性的：配对 $n{=}7$、扩展 $14$）。}}{6}{table.caption.8}\protected@file@percent }
+\newlabel{tab:main-results}{{1}{6}{MemoryAgentBench；分数为官方分量分数 $\times 100$。任务行与 Overall（$n{=}767$）行使用两个引擎共享的配对样本。$^{\ddagger }$ 标记 Align+ 引擎原地扩展到 $n{=}1074$ 时新增的两个任务组（RULER-421K 多跳问答与完整 Redial 推荐语料）；Base 运行冻结在配对样本上，且两个任务组都超出完整上下文行的严格字符预算（\cref {app:sampling}），因此没有同模型覆盖。Overall（$n{=}1074$）行即该扩展样本；两个样本的分数绝不相减。加粗/下划线为各任务与样本内的最佳/次佳，$^{*}$ 标记抽样的 LongMemEval-S，$^{\dagger }$ 标记配对样本的单例 $\infty $Bench-Sum 行（第二个任务组仅进入扩展样本，因此 LRU 仍是方向性的：配对 $n{=}7$、扩展 $14$）。}{table.caption.8}{}}
+\newlabel{tab:main-results@cref}{{[table][1][]1}{[1][5][]6}}
 \citation{hu2025memoryagentbench}
 \citation{chhikara2025mem0}
 \citation{rasmussen2025zep}
 \citation{hu2025memoryagentbench}
 \citation{chhikara2025mem0}
 \citation{rasmussen2025zep}
-\@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces MemoryAgentBench；分数为官方分量分数 $\times 100$。任务行与 Overall（$n{=}767$）行使用两个引擎共享的配对样本。$^{\ddagger }$ 标记 Align+ 引擎原地扩展到 $n{=}1074$ 时新增的两个任务组（RULER-421K 多跳问答与完整 Redial 推荐语料）；Base 运行冻结在配对样本上，且两个任务组都超出完整上下文行的严格字符预算（\cref  {app:sampling}），因此没有同模型覆盖。Overall（$n{=}1074$）行即该扩展样本；两个样本的分数绝不相减。加粗/下划线为各任务与样本内的最佳/次佳，$^{*}$ 标记抽样的 LongMemEval-S，$^{\dagger }$ 标记配对样本的单例 $\infty $Bench-Sum 行（第二个任务组仅进入扩展样本，因此 LRU 仍是方向性的：配对 $n{=}7$、扩展 $14$）。}}{7}{table.caption.7}\protected@file@percent }
-\newlabel{tab:main-results}{{1}{7}{MemoryAgentBench；分数为官方分量分数 $\times 100$。任务行与 Overall（$n{=}767$）行使用两个引擎共享的配对样本。$^{\ddagger }$ 标记 Align+ 引擎原地扩展到 $n{=}1074$ 时新增的两个任务组（RULER-421K 多跳问答与完整 Redial 推荐语料）；Base 运行冻结在配对样本上，且两个任务组都超出完整上下文行的严格字符预算（\cref {app:sampling}），因此没有同模型覆盖。Overall（$n{=}1074$）行即该扩展样本；两个样本的分数绝不相减。加粗/下划线为各任务与样本内的最佳/次佳，$^{*}$ 标记抽样的 LongMemEval-S，$^{\dagger }$ 标记配对样本的单例 $\infty $Bench-Sum 行（第二个任务组仅进入扩展样本，因此 LRU 仍是方向性的：配对 $n{=}7$、扩展 $14$）。}{table.caption.7}{}}
-\newlabel{tab:main-results@cref}{{[table][1][]1}{[1][5][]7}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.3}RQ2：时序化、版本化状态是否有助于更新与会话？}{7}{subsection.4.3}\protected@file@percent }
+\newlabel{sec:temporal-benchmark}{{4.3}{7}{RQ2：时序化、版本化状态是否有助于更新与会话？}{subsection.4.3}{}}
+\newlabel{sec:temporal-benchmark@cref}{{[subsection][3][4]4.3}{[1][7][]7}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.4}RQ3：概念与关系路径能否支撑多跳整合？}{7}{subsection.4.4}\protected@file@percent }
+\newlabel{sec:relational-benchmark}{{4.4}{7}{RQ3：概念与关系路径能否支撑多跳整合？}{subsection.4.4}{}}
+\newlabel{sec:relational-benchmark@cref}{{[subsection][4][4]4.4}{[1][7][]7}}
 \@writefile{toc}{\contentsline {subsection}{\numberline {4.5}RQ4：延迟确定身份能否降低写入成本？}{7}{subsection.4.5}\protected@file@percent }
 \newlabel{sec:engine-versions}{{4.5}{7}{RQ4：延迟确定身份能否降低写入成本？}{subsection.4.5}{}}
-\newlabel{sec:engine-versions@cref}{{[subsection][5][4]4.5}{[1][6][]7}}
+\newlabel{sec:engine-versions@cref}{{[subsection][5][4]4.5}{[1][7][]7}}
 \newlabel{sec:engine-paired}{{4.5}{7}{RQ4：延迟确定身份能否降低写入成本？}{subsection.4.5}{}}
-\newlabel{sec:engine-paired@cref}{{[subsection][5][4]4.5}{[1][6][]7}}
+\newlabel{sec:engine-paired@cref}{{[subsection][5][4]4.5}{[1][7][]7}}
 \@writefile{toc}{\contentsline {subsection}{\numberline {4.6}RQ5：只保留历史的设计在哪里失败？}{7}{subsection.4.6}\protected@file@percent }
 \newlabel{sec:deletion-boundary}{{4.6}{7}{RQ5：只保留历史的设计在哪里失败？}{subsection.4.6}{}}
 \newlabel{sec:deletion-boundary@cref}{{[subsection][6][4]4.6}{[1][7][]7}}
 \@writefile{toc}{\contentsline {subsection}{\numberline {4.7}与其他系统的比较}{7}{subsection.4.7}\protected@file@percent }
 \newlabel{sec:cross-system}{{4.7}{7}{与其他系统的比较}{subsection.4.7}{}}
 \newlabel{sec:cross-system@cref}{{[subsection][7][4]4.7}{[1][7][]7}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {4.8}机制诊断：离线检索与在线读取}{7}{subsection.4.8}\protected@file@percent }
-\newlabel{sec:external-comparisons}{{4.8}{7}{机制诊断：离线检索与在线读取}{subsection.4.8}{}}
-\newlabel{sec:external-comparisons@cref}{{[subsection][8][4]4.8}{[1][7][]7}}
-\newlabel{sec:provenance-ablation}{{4.8}{7}{机制诊断：离线检索与在线读取}{subsection.4.8}{}}
-\newlabel{sec:provenance-ablation@cref}{{[subsection][8][4]4.8}{[1][7][]7}}
-\@writefile{lot}{\contentsline {table}{\numberline {2}{\ignorespaces MemoryAgentBench、LoCoMo 与 LongMemEval-S 的与已发表系统的比较结果；已发表行来自 Hu 等~\citep  {hu2025memoryagentbench}、Chhikara 等~\citep  {chhikara2025mem0} 与 Rasmussen 等~\citep  {rasmussen2025zep}。每个分块都列出答题模型、评审、子集与测试流程。（b）块的加权列由已发表分类均值按 841/282/96/321 题量重加权重算；跨块各行使用不同协议，仅作背景参照，不构成受控比较。我们的 MAB 行使用 Align+ 扩展样本（$n{=}1074$、14 个任务组；\cref  {app:sampling}）；同模型完整上下文行是 614/1{,}074 覆盖上的参照行而非竞争系统，其对原文读取的领先（$-7.9$ 个百分点，95\% CI $[-11.9,-3.9]$）在 \cref  {sec:ladder} 中分析。LRU 格是方向性的（$n{=}14$；$\infty $Bench-Sum $n{=}2$）。}}{8}{table.caption.8}\protected@file@percent }
-\newlabel{tab:main-cross-system}{{2}{8}{MemoryAgentBench、LoCoMo 与 LongMemEval-S 的与已发表系统的比较结果；已发表行来自 Hu 等~\citep {hu2025memoryagentbench}、Chhikara 等~\citep {chhikara2025mem0} 与 Rasmussen 等~\citep {rasmussen2025zep}。每个分块都列出答题模型、评审、子集与测试流程。（b）块的加权列由已发表分类均值按 841/282/96/321 题量重加权重算；跨块各行使用不同协议，仅作背景参照，不构成受控比较。我们的 MAB 行使用 Align+ 扩展样本（$n{=}1074$、14 个任务组；\cref {app:sampling}）；同模型完整上下文行是 614/1{,}074 覆盖上的参照行而非竞争系统，其对原文读取的领先（$-7.9$ 个百分点，95\% CI $[-11.9,-3.9]$）在 \cref {sec:ladder} 中分析。LRU 格是方向性的（$n{=}14$；$\infty $Bench-Sum $n{=}2$）。}{table.caption.8}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {2}{\ignorespaces MemoryAgentBench、LoCoMo 与 LongMemEval-S 的与已发表系统的比较结果；已发表行来自 Hu 等~\citep  {hu2025memoryagentbench}、Chhikara 等~\citep  {chhikara2025mem0} 与 Rasmussen 等~\citep  {rasmussen2025zep}。每个分块都列出答题模型、评审、子集与测试流程。（b）块的加权列由已发表分类均值按 841/282/96/321 题量重加权重算；跨块各行使用不同协议，仅作背景参照，不构成受控比较。我们的 MAB 行使用 Align+ 扩展样本（$n{=}1074$、14 个任务组；\cref  {app:sampling}）；同模型完整上下文行是 614/1{,}074 覆盖上的参照行而非竞争系统，其对原文读取的领先（$-7.9$ 个百分点，95\% CI $[-11.9,-3.9]$）在 \cref  {sec:ladder} 中分析。LRU 格是方向性的（$n{=}14$；$\infty $Bench-Sum $n{=}2$）。}}{8}{table.caption.9}\protected@file@percent }
+\newlabel{tab:main-cross-system}{{2}{8}{MemoryAgentBench、LoCoMo 与 LongMemEval-S 的与已发表系统的比较结果；已发表行来自 Hu 等~\citep {hu2025memoryagentbench}、Chhikara 等~\citep {chhikara2025mem0} 与 Rasmussen 等~\citep {rasmussen2025zep}。每个分块都列出答题模型、评审、子集与测试流程。（b）块的加权列由已发表分类均值按 841/282/96/321 题量重加权重算；跨块各行使用不同协议，仅作背景参照，不构成受控比较。我们的 MAB 行使用 Align+ 扩展样本（$n{=}1074$、14 个任务组；\cref {app:sampling}）；同模型完整上下文行是 614/1{,}074 覆盖上的参照行而非竞争系统，其对原文读取的领先（$-7.9$ 个百分点，95\% CI $[-11.9,-3.9]$）在 \cref {sec:ladder} 中分析。LRU 格是方向性的（$n{=}14$；$\infty $Bench-Sum $n{=}2$）。}{table.caption.9}{}}
 \newlabel{tab:main-cross-system@cref}{{[table][2][]2}{[1][7][]8}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {4.9}系统仍然失败的地方}{8}{subsection.4.9}\protected@file@percent }
-\newlabel{sec:negatives}{{4.9}{8}{系统仍然失败的地方}{subsection.4.9}{}}
-\newlabel{sec:negatives@cref}{{[subsection][9][4]4.9}{[1][8][]8}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.8}机制诊断：离线检索与在线读取}{8}{subsection.4.8}\protected@file@percent }
+\newlabel{sec:external-comparisons}{{4.8}{8}{机制诊断：离线检索与在线读取}{subsection.4.8}{}}
+\newlabel{sec:external-comparisons@cref}{{[subsection][8][4]4.8}{[1][8][]8}}
+\newlabel{sec:provenance-ablation}{{4.8}{8}{机制诊断：离线检索与在线读取}{subsection.4.8}{}}
+\newlabel{sec:provenance-ablation@cref}{{[subsection][8][4]4.8}{[1][8][]8}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.9}系统仍然失败的地方}{9}{subsection.4.9}\protected@file@percent }
+\newlabel{sec:negatives}{{4.9}{9}{系统仍然失败的地方}{subsection.4.9}{}}
+\newlabel{sec:negatives@cref}{{[subsection][9][4]4.9}{[1][9][]9}}
 \@writefile{toc}{\contentsline {section}{\numberline {5}分析与局限}{9}{section.5}\protected@file@percent }
 \newlabel{sec:analysis}{{5}{9}{分析与局限}{section.5}{}}
 \newlabel{sec:analysis@cref}{{[section][5][]5}{[1][9][]9}}
-\@writefile{toc}{\contentsline {section}{\numberline {6}结论}{9}{section.6}\protected@file@percent }
-\newlabel{sec:conclusion}{{6}{9}{结论}{section.6}{}}
-\newlabel{sec:conclusion@cref}{{[section][6][]6}{[1][9][]9}}
+\@writefile{toc}{\contentsline {section}{\numberline {6}结论}{10}{section.6}\protected@file@percent }
+\newlabel{sec:conclusion}{{6}{10}{结论}{section.6}{}}
+\newlabel{sec:conclusion@cref}{{[section][6][]6}{[1][9][]10}}
 \bibdata{references}
 \bibcite{chernoff1952measure}{{1}{1952}{{Chernoff}}{{}}}
 \bibcite{chhikara2025mem0}{{2}{2025}{{Chhikara et~al.}}{{Chhikara, Khant, Aryan, Singh, and Yadav}}}
@@ -105,111 +108,112 @@
 \bibcite{jung2026meme}{{8}{2026}{{Jung et~al.}}{{Jung, Rubinstein, Uselis, Yun, and Oh}}}
 \bibcite{lewis2020rag}{{9}{2020}{{Lewis et~al.}}{{Lewis, Perez, Piktus, Petroni, Karpukhin, Goyal, K{\"u}ttler, Lewis, Yih, Rockt{\"a}schel, Riedel, and Kiela}}}
 \bibcite{li-etal-2026-locomo}{{10}{2026}{{Li et~al.}}{{Li, Guo, Zhang, Xu, Huang, Liu, Xu, Xu, and Liu}}}
-\newlabel{sec:ai-assistance}{{6}{10}{AI 使用声明}{section*.9}{}}
-\newlabel{sec:ai-assistance@cref}{{[section][6][]6}{[1][10][]10}}
-\bibcite{liu2024lost}{{11}{2024}{{Liu et~al.}}{{Liu, Lin, Hewitt, Parandekar, Chen, and Liang}}}
-\bibcite{maharana2024locomo}{{12}{2024}{{Maharana et~al.}}{{Maharana, Lee, Tulyakov, Bansal, Barbieri, and Fang}}}
-\bibcite{markovic2025cognee}{{13}{2025}{{Markovic et~al.}}{{Markovic, Obradovic, Hajdu, and Pavlovic}}}
-\bibcite{packer2023memgpt}{{14}{2023}{{Packer et~al.}}{{Packer, Wooders, Lin, Fang, Patil, Stoica, and Gonzalez}}}
-\bibcite{ramsauer2021hopfield}{{15}{2021}{{Ramsauer et~al.}}{{Ramsauer, Sch{\"a}fl, Lehner, Seidl, Widrich, Gruber, Holzleitner, Adler, Kreil, Kopp, Klambauer, Brandstetter, and Hochreiter}}}
-\bibcite{rasmussen2025zep}{{16}{2025}{{Rasmussen et~al.}}{{Rasmussen, Paliychuk, Beauvais, Ryan, and Chalef}}}
-\bibcite{shannon1959coding}{{17}{1959}{{Shannon}}{{}}}
-\bibcite{shridhar2021alfworld}{{18}{2021}{{Shridhar et~al.}}{{Shridhar, Yuan, C{\^o}t{\'e}, Bisk, Trischler, and Hausknecht}}}
-\bibcite{tishby2000information}{{19}{2000}{{Tishby et~al.}}{{Tishby, Pereira, and Bialek}}}
-\bibcite{wang2025mirix}{{20}{2025}{{Wang \& Chen}}{{Wang and Chen}}}
-\bibcite{wu2025longmemeval}{{21}{2025}{{Wu et~al.}}{{Wu, Wang, Yu, Zhang, Chang, and Yu}}}
-\bibcite{xu2025amem}{{22}{2025}{{Xu et~al.}}{{Xu, Liang, Mei, Gao, Tan, and Zhang}}}
-\bibcite{zhuo2024bigcodebench}{{23}{2025}{{Zhuo et~al.}}{{Zhuo, Vu, Chim, Hu, Yu, Widyasari, et~al.}}}
+\newlabel{sec:ai-assistance}{{6}{11}{AI 使用声明}{section*.10}{}}
+\newlabel{sec:ai-assistance@cref}{{[section][6][]6}{[1][11][]11}}
+\bibcite{lin2026icam}{{11}{2026}{{Lin}}{{}}}
+\bibcite{liu2024lost}{{12}{2024}{{Liu et~al.}}{{Liu, Lin, Hewitt, Parandekar, Chen, and Liang}}}
+\bibcite{maharana2024locomo}{{13}{2024}{{Maharana et~al.}}{{Maharana, Lee, Tulyakov, Bansal, Barbieri, and Fang}}}
+\bibcite{markovic2025cognee}{{14}{2025}{{Markovic et~al.}}{{Markovic, Obradovic, Hajdu, and Pavlovic}}}
+\bibcite{packer2023memgpt}{{15}{2023}{{Packer et~al.}}{{Packer, Wooders, Lin, Fang, Patil, Stoica, and Gonzalez}}}
+\bibcite{ramsauer2021hopfield}{{16}{2021}{{Ramsauer et~al.}}{{Ramsauer, Sch{\"a}fl, Lehner, Seidl, Widrich, Gruber, Holzleitner, Adler, Kreil, Kopp, Klambauer, Brandstetter, and Hochreiter}}}
+\bibcite{rasmussen2025zep}{{17}{2025}{{Rasmussen et~al.}}{{Rasmussen, Paliychuk, Beauvais, Ryan, and Chalef}}}
+\bibcite{shannon1959coding}{{18}{1959}{{Shannon}}{{}}}
+\bibcite{shridhar2021alfworld}{{19}{2021}{{Shridhar et~al.}}{{Shridhar, Yuan, C{\^o}t{\'e}, Bisk, Trischler, and Hausknecht}}}
+\bibcite{tishby2000information}{{20}{2000}{{Tishby et~al.}}{{Tishby, Pereira, and Bialek}}}
+\bibcite{wang2025mirix}{{21}{2025}{{Wang \& Chen}}{{Wang and Chen}}}
+\bibcite{wu2025longmemeval}{{22}{2025}{{Wu et~al.}}{{Wu, Wang, Yu, Zhang, Chang, and Yu}}}
+\bibcite{xu2025amem}{{23}{2025}{{Xu et~al.}}{{Xu, Liang, Mei, Gao, Tan, and Zhang}}}
+\bibcite{zhuo2024bigcodebench}{{24}{2025}{{Zhuo et~al.}}{{Zhuo, Vu, Chim, Hu, Yu, Widyasari, et~al.}}}
 \bibstyle{iclr2027_conference}
 \citation{li-etal-2026-locomo}
 \citation{zhuo2024bigcodebench}
 \citation{shridhar2021alfworld}
-\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces Deep-Dream 的文档优先时序概念图谱。多份文档保留各自的会话片段，并通过共享的概念族与关系边连接。选中一个族会暴露其按观测时间排列的版本链，以及每次修订的精确源跨度；不确定的匹配可以先保持分离，等到后续内容与关系上下文到达时再收敛。}}{13}{figure.caption.11}\protected@file@percent }
-\newlabel{fig:architecture}{{3}{13}{Deep-Dream 的文档优先时序概念图谱。多份文档保留各自的会话片段，并通过共享的概念族与关系边连接。选中一个族会暴露其按观测时间排列的版本链，以及每次修订的精确源跨度；不确定的匹配可以先保持分离，等到后续内容与关系上下文到达时再收敛。}{figure.caption.11}{}}
-\newlabel{fig:architecture@cref}{{[figure][3][2147483647]3}{[1][13][]13}}
-\@writefile{lot}{\contentsline {table}{\numberline {3}{\ignorespaces 三种读取方式的差异。三条路径共享冻结库、问题流、Kimi-K3 与官方评分器。}}{13}{table.caption.14}\protected@file@percent }
-\newlabel{tab:answer-path-differences}{{3}{13}{三种读取方式的差异。三条路径共享冻结库、问题流、Kimi-K3 与官方评分器。}{table.caption.14}{}}
-\newlabel{tab:answer-path-differences@cref}{{[table][3][2147483647]3}{[1][13][]13}}
-\@writefile{toc}{\contentsline {section}{\numberline {A}可复现性与审计细节}{13}{appendix.A}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {A.1}工件账本}{13}{subsection.A.1}\protected@file@percent }
-\newlabel{app:ledger}{{A.1}{13}{工件账本}{subsection.A.1}{}}
-\newlabel{app:ledger@cref}{{[subappendix][1][2147483647,1]A.1}{[1][13][]13}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {A.2}版本溯源与对齐 A/B 研究}{13}{subsection.A.2}\protected@file@percent }
-\newlabel{app:alignment-ab}{{A.2}{13}{版本溯源与对齐 A/B 研究}{subsection.A.2}{}}
-\newlabel{app:alignment-ab@cref}{{[subappendix][2][2147483647,1]A.2}{[1][13][]13}}
-\@writefile{lof}{\contentsline {figure}{\numberline {4}{\ignorespaces 同模型完整上下文参照覆盖的 $n{=}614$ 题上的同题对齐（Kimi-K3 作答；官方宏平均评分器）。（a）带边缘 95\% bootstrap 区间的 Overall 分数；原文读取方式低于参照 $7.9$ 个百分点 [95\% CI $-11.9$, $-3.9$]。（b）域画像：参照的领先集中在 TTL，而原文读取方式在 AR、LRU、SF 上与参照持平或反超。}}{14}{figure.caption.12}\protected@file@percent }
-\newlabel{fig:alignment}{{4}{14}{同模型完整上下文参照覆盖的 $n{=}614$ 题上的同题对齐（Kimi-K3 作答；官方宏平均评分器）。（a）带边缘 95\% bootstrap 区间的 Overall 分数；原文读取方式低于参照 $7.9$ 个百分点 [95\% CI $-11.9$, $-3.9$]。（b）域画像：参照的领先集中在 TTL，而原文读取方式在 AR、LRU、SF 上与参照持平或反超。}{figure.caption.12}{}}
-\newlabel{fig:alignment@cref}{{[figure][4][2147483647]4}{[1][13][]14}}
-\@writefile{lof}{\contentsline {figure}{\numberline {5}{\ignorespaces 捆绑的 Base$\to $Align+ 修订的配对构建诊断。（a）入库调用与同名重复实体族在记录在案的 MAB 与 LongMemEval 交集上下降。（b）配对的 MCC 与 FC-MH 切片各上升 3 个百分点；区间保留，因为这是捆绑比较而非组件消融。}}{14}{figure.caption.13}\protected@file@percent }
-\newlabel{fig:alignment-outcomes}{{5}{14}{捆绑的 Base$\to $Align+ 修订的配对构建诊断。（a）入库调用与同名重复实体族在记录在案的 MAB 与 LongMemEval 交集上下降。（b）配对的 MCC 与 FC-MH 切片各上升 3 个百分点；区间保留，因为这是捆绑比较而非组件消融。}{figure.caption.13}{}}
-\newlabel{fig:alignment-outcomes@cref}{{[figure][5][2147483647]5}{[1][13][]14}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {A.3}MemoryAgentBench 抽样框与污染说明}{14}{subsection.A.3}\protected@file@percent }
-\newlabel{app:sampling}{{A.3}{14}{MemoryAgentBench 抽样框与污染说明}{subsection.A.3}{}}
-\newlabel{app:sampling@cref}{{[subappendix][3][2147483647,1]A.3}{[1][14][]14}}
-\@writefile{lof}{\contentsline {figure}{\numberline {6}{\ignorespaces 一条实测 LongMemEval 轨迹（问题 \texttt  {2b8f3739}）：概念追踪暴露出跨两份文档的四个会话片段指针，另一次语义命中定位到第三条销售记录。七次成功调用耗时 13.96\,s；第 8 步在一次格式错误的响应后达到上限，随后一个独立的答题模型算出 $120+225+(20\times 7.5)=495$。}}{15}{figure.caption.15}\protected@file@percent }
-\newlabel{fig:agent-trace}{{6}{15}{一条实测 LongMemEval 轨迹（问题 \texttt {2b8f3739}）：概念追踪暴露出跨两份文档的四个会话片段指针，另一次语义命中定位到第三条销售记录。七次成功调用耗时 13.96\,s；第 8 步在一次格式错误的响应后达到上限，随后一个独立的答题模型算出 $120+225+(20\times 7.5)=495$。}{figure.caption.15}{}}
-\newlabel{fig:agent-trace@cref}{{[figure][6][2147483647]6}{[1][13][]15}}
-\@writefile{lot}{\contentsline {table}{\numberline {4}{\ignorespaces 研究问题与测量方式。每一行检验检索——证据分离的一条不同预测；已发表结果保留各自的测试条件，便于检查分数差异。}}{15}{table.caption.16}\protected@file@percent }
-\newlabel{tab:experiment-map}{{4}{15}{研究问题与测量方式。每一行检验检索——证据分离的一条不同预测；已发表结果保留各自的测试条件，便于检查分数差异。}{table.caption.16}{}}
-\newlabel{tab:experiment-map@cref}{{[table][4][2147483647]4}{[1][13][]15}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {A.4}调整 Overall 的推导}{15}{subsection.A.4}\protected@file@percent }
-\newlabel{app:adjusted-overall}{{A.4}{15}{调整 Overall 的推导}{subsection.A.4}{}}
-\newlabel{app:adjusted-overall@cref}{{[subappendix][4][2147483647,1]A.4}{[1][15][]15}}
-\citation{zhuo2024bigcodebench}
-\citation{shridhar2021alfworld}
-\@writefile{lot}{\contentsline {table}{\numberline {5}{\ignorespaces 每臂 137 份 LongMemEval-S 文档上的三臂对齐研究。B1 提供大幅效率下降；B2 在最后一致性检查上比 B1 多花约 3\% 的 token，是唯一具有实质非破坏性族重定向的臂，降低了同名重复组。质量切片太小，不足以做质量主张。B1 与 B2 使用同一份保存的服务配置；B2 的差别在运行时实现与对齐开关。}}{16}{table.caption.17}\protected@file@percent }
-\newlabel{tab:alignment-ab}{{5}{16}{每臂 137 份 LongMemEval-S 文档上的三臂对齐研究。B1 提供大幅效率下降；B2 在最后一致性检查上比 B1 多花约 3\% 的 token，是唯一具有实质非破坏性族重定向的臂，降低了同名重复组。质量切片太小，不足以做质量主张。B1 与 B2 使用同一份保存的服务配置；B2 的差别在运行时实现与对齐开关。}{table.caption.17}{}}
-\newlabel{tab:alignment-ab@cref}{{[table][5][2147483647]5}{[1][15][]16}}
-\@writefile{lof}{\contentsline {figure}{\numberline {7}{\ignorespaces 冻结产物的运行点诊断（Align+ 引擎；面板 a 覆盖全部 1{,}074 题）。(a) 答案延迟的均值到 p95，标注 token 数与调用数；(b) 配对的 Base$\to $Align+ 入库成本；(c) 有效的固定排序检索预算前沿；(d) $k{=}10$ 处的仅源文档通道重放。}}{16}{figure.caption.18}\protected@file@percent }
-\newlabel{fig:cost}{{7}{16}{冻结产物的运行点诊断（Align+ 引擎；面板 a 覆盖全部 1{,}074 题）。(a) 答案延迟的均值到 p95，标注 token 数与调用数；(b) 配对的 Base$\to $Align+ 入库成本；(c) 有效的固定排序检索预算前沿；(d) $k{=}10$ 处的仅源文档通道重放。}{figure.caption.18}{}}
-\newlabel{fig:cost@cref}{{[figure][7][2147483647]7}{[1][16][]16}}
+\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces Deep-Dream 的文档优先时序概念图谱。多份文档保留各自的会话片段，并通过共享的概念族与关系边连接。选中一个族会暴露其按观测时间排列的版本链，以及每次修订的精确源跨度；不确定的匹配可以先保持分离，等到后续内容与关系上下文到达时再收敛。}}{14}{figure.caption.12}\protected@file@percent }
+\newlabel{fig:architecture}{{3}{14}{Deep-Dream 的文档优先时序概念图谱。多份文档保留各自的会话片段，并通过共享的概念族与关系边连接。选中一个族会暴露其按观测时间排列的版本链，以及每次修订的精确源跨度；不确定的匹配可以先保持分离，等到后续内容与关系上下文到达时再收敛。}{figure.caption.12}{}}
+\newlabel{fig:architecture@cref}{{[figure][3][2147483647]3}{[1][14][]14}}
+\@writefile{lot}{\contentsline {table}{\numberline {3}{\ignorespaces 三种读取方式的差异。三条路径共享冻结库、问题流、Kimi-K3 与官方评分器。}}{14}{table.caption.15}\protected@file@percent }
+\newlabel{tab:answer-path-differences}{{3}{14}{三种读取方式的差异。三条路径共享冻结库、问题流、Kimi-K3 与官方评分器。}{table.caption.15}{}}
+\newlabel{tab:answer-path-differences@cref}{{[table][3][2147483647]3}{[1][14][]14}}
+\@writefile{toc}{\contentsline {section}{\numberline {A}可复现性与审计细节}{14}{appendix.A}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {A.1}工件账本}{14}{subsection.A.1}\protected@file@percent }
+\newlabel{app:ledger}{{A.1}{14}{工件账本}{subsection.A.1}{}}
+\newlabel{app:ledger@cref}{{[subappendix][1][2147483647,1]A.1}{[1][14][]14}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {A.2}版本溯源与对齐 A/B 研究}{14}{subsection.A.2}\protected@file@percent }
+\newlabel{app:alignment-ab}{{A.2}{14}{版本溯源与对齐 A/B 研究}{subsection.A.2}{}}
+\newlabel{app:alignment-ab@cref}{{[subappendix][2][2147483647,1]A.2}{[1][14][]14}}
+\@writefile{lof}{\contentsline {figure}{\numberline {4}{\ignorespaces 同模型完整上下文参照覆盖的 $n{=}614$ 题上的同题对齐（Kimi-K3 作答；官方宏平均评分器）。（a）带边缘 95\% bootstrap 区间的 Overall 分数；原文读取方式低于参照 $7.9$ 个百分点 [95\% CI $-11.9$, $-3.9$]。（b）域画像：参照的领先集中在 TTL，而原文读取方式在 AR、LRU、SF 上与参照持平或反超。}}{15}{figure.caption.13}\protected@file@percent }
+\newlabel{fig:alignment}{{4}{15}{同模型完整上下文参照覆盖的 $n{=}614$ 题上的同题对齐（Kimi-K3 作答；官方宏平均评分器）。（a）带边缘 95\% bootstrap 区间的 Overall 分数；原文读取方式低于参照 $7.9$ 个百分点 [95\% CI $-11.9$, $-3.9$]。（b）域画像：参照的领先集中在 TTL，而原文读取方式在 AR、LRU、SF 上与参照持平或反超。}{figure.caption.13}{}}
+\newlabel{fig:alignment@cref}{{[figure][4][2147483647]4}{[1][14][]15}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5}{\ignorespaces 捆绑的 Base$\to $Align+ 修订的配对构建诊断。（a）入库调用与同名重复实体族在记录在案的 MAB 与 LongMemEval 交集上下降。（b）配对的 MCC 与 FC-MH 切片各上升 3 个百分点；区间保留，因为这是捆绑比较而非组件消融。}}{15}{figure.caption.14}\protected@file@percent }
+\newlabel{fig:alignment-outcomes}{{5}{15}{捆绑的 Base$\to $Align+ 修订的配对构建诊断。（a）入库调用与同名重复实体族在记录在案的 MAB 与 LongMemEval 交集上下降。（b）配对的 MCC 与 FC-MH 切片各上升 3 个百分点；区间保留，因为这是捆绑比较而非组件消融。}{figure.caption.14}{}}
+\newlabel{fig:alignment-outcomes@cref}{{[figure][5][2147483647]5}{[1][14][]15}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {A.3}MemoryAgentBench 抽样框与污染说明}{15}{subsection.A.3}\protected@file@percent }
+\newlabel{app:sampling}{{A.3}{15}{MemoryAgentBench 抽样框与污染说明}{subsection.A.3}{}}
+\newlabel{app:sampling@cref}{{[subappendix][3][2147483647,1]A.3}{[1][15][]15}}
+\@writefile{lof}{\contentsline {figure}{\numberline {6}{\ignorespaces 一条实测 LongMemEval 轨迹（问题 \texttt  {2b8f3739}）：概念追踪暴露出跨两份文档的四个会话片段指针，另一次语义命中定位到第三条销售记录。七次成功调用耗时 13.96\,s；第 8 步在一次格式错误的响应后达到上限，随后一个独立的答题模型算出 $120+225+(20\times 7.5)=495$。}}{16}{figure.caption.16}\protected@file@percent }
+\newlabel{fig:agent-trace}{{6}{16}{一条实测 LongMemEval 轨迹（问题 \texttt {2b8f3739}）：概念追踪暴露出跨两份文档的四个会话片段指针，另一次语义命中定位到第三条销售记录。七次成功调用耗时 13.96\,s；第 8 步在一次格式错误的响应后达到上限，随后一个独立的答题模型算出 $120+225+(20\times 7.5)=495$。}{figure.caption.16}{}}
+\newlabel{fig:agent-trace@cref}{{[figure][6][2147483647]6}{[1][14][]16}}
+\@writefile{lot}{\contentsline {table}{\numberline {4}{\ignorespaces 研究问题与测量方式。每一行检验检索——证据分离的一条不同预测；已发表结果保留各自的测试条件，便于检查分数差异。}}{16}{table.caption.17}\protected@file@percent }
+\newlabel{tab:experiment-map}{{4}{16}{研究问题与测量方式。每一行检验检索——证据分离的一条不同预测；已发表结果保留各自的测试条件，便于检查分数差异。}{table.caption.17}{}}
+\newlabel{tab:experiment-map@cref}{{[table][4][2147483647]4}{[1][14][]16}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {A.4}调整 Overall 的推导}{16}{subsection.A.4}\protected@file@percent }
+\newlabel{app:adjusted-overall}{{A.4}{16}{调整 Overall 的推导}{subsection.A.4}{}}
+\newlabel{app:adjusted-overall@cref}{{[subappendix][4][2147483647,1]A.4}{[1][16][]16}}
 \@writefile{toc}{\contentsline {subsection}{\numberline {A.5}各路径提示词与配置}{16}{subsection.A.5}\protected@file@percent }
 \newlabel{app:configs}{{A.5}{16}{各路径提示词与配置}{subsection.A.5}{}}
-\newlabel{app:configs@cref}{{[subappendix][5][2147483647,1]A.5}{[1][15][]16}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {A.6}附加定量诊断}{16}{subsection.A.6}\protected@file@percent }
-\newlabel{app:additional-diagnostics}{{A.6}{16}{附加定量诊断}{subsection.A.6}{}}
-\newlabel{app:additional-diagnostics@cref}{{[subappendix][6][2147483647,1]A.6}{[1][16][]16}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {A.7}载体参照（BigCodeBench \citep  {zhuo2024bigcodebench}、ALFWorld \citep  {shridhar2021alfworld}）}{16}{subsection.A.7}\protected@file@percent }
-\newlabel{app:carrier-anchors}{{A.7}{16}{载体参照（BigCodeBench \citep {zhuo2024bigcodebench}、ALFWorld \citep {shridhar2021alfworld}）}{subsection.A.7}{}}
-\newlabel{app:carrier-anchors@cref}{{[subappendix][7][2147483647,1]A.7}{[1][16][]16}}
-\@writefile{lof}{\contentsline {figure}{\numberline {8}{\ignorespaces 来自冻结账本的额外定量诊断。（a）配对 Base/Align+ 轨道的 LongMemEval 类型分数；这些方向性样本 $n{=}25/25/27$，以粗略百分比显示。（b）105 个历史错误案例上的源扩展召回对响应载荷；这是开发诊断，不是留出测试。（c）带任务特定分母的 MEME 真实任务准确率，暴露 0\% 的删除边界。}}{17}{figure.caption.19}\protected@file@percent }
-\newlabel{fig:diagnostics}{{8}{17}{来自冻结账本的额外定量诊断。（a）配对 Base/Align+ 轨道的 LongMemEval 类型分数；这些方向性样本 $n{=}25/25/27$，以粗略百分比显示。（b）105 个历史错误案例上的源扩展召回对响应载荷；这是开发诊断，不是留出测试。（c）带任务特定分母的 MEME 真实任务准确率，暴露 0\% 的删除边界。}{figure.caption.19}{}}
-\newlabel{fig:diagnostics@cref}{{[figure][8][2147483647]8}{[1][16][]17}}
-\@writefile{lot}{\contentsline {table}{\numberline {6}{\ignorespaces X7 来源记录消融：210 题检查集上的离线检索重放。臂 1--4 构成干净的通道消融：只有 \texttt  {enabled\_channels} 不同，因此任何召回差异都可归因于该通道集合。臂 5（引用核对智能体，开启检查）与臂 6（未被检索到的证据，放宽检查）复用臂 4 的五通道排序，与臂 4 检索一致；它们的区分列（问答准确率、无支撑答案率、平均证据 token）需要 LLM 智能体运行，尚待完成。引用检查流程已离线验证：开启检查时提交一个未浮现的对话轮会被拒绝；放宽检查时同一提交被接受（\texttt  {plumbing\_ok}=true）。在部署的 MAB 运行中，检查按设计触发：14/1074 questions in the deployed $v2$ skill-agent run had an evidence submission rejected as unsurfaced (9/767 in $v1$); 11 of the 14 resubmitted tool-surfaced evidence inside the loop and the remaining 3 ended at the step cap and were answered from tool-surfaced context; zero rejections on the LME runs{}。Bootstrap 置信区间：2{,}000 次重采样，95\%。}}{17}{table.caption.20}\protected@file@percent }
-\newlabel{tab:provenance-ablation}{{6}{17}{X7 来源记录消融：210 题检查集上的离线检索重放。臂 1--4 构成干净的通道消融：只有 \texttt {enabled\_channels} 不同，因此任何召回差异都可归因于该通道集合。臂 5（引用核对智能体，开启检查）与臂 6（未被检索到的证据，放宽检查）复用臂 4 的五通道排序，与臂 4 检索一致；它们的区分列（问答准确率、无支撑答案率、平均证据 token）需要 LLM 智能体运行，尚待完成。引用检查流程已离线验证：开启检查时提交一个未浮现的对话轮会被拒绝；放宽检查时同一提交被接受（\texttt {plumbing\_ok}=true）。在部署的 MAB 运行中，检查按设计触发：\GateRejectStats {}。Bootstrap 置信区间：2{,}000 次重采样，95\%。}{table.caption.20}{}}
-\newlabel{tab:provenance-ablation@cref}{{[table][6][2147483647]6}{[1][17][]17}}
+\newlabel{app:configs@cref}{{[subappendix][5][2147483647,1]A.5}{[1][16][]16}}
+\citation{zhuo2024bigcodebench}
+\citation{shridhar2021alfworld}
+\@writefile{lot}{\contentsline {table}{\numberline {5}{\ignorespaces 每臂 137 份 LongMemEval-S 文档上的三臂对齐研究。B1 提供大幅效率下降；B2 在最后一致性检查上比 B1 多花约 3\% 的 token，是唯一具有实质非破坏性族重定向的臂，降低了同名重复组。质量切片太小，不足以做质量主张。B1 与 B2 使用同一份保存的服务配置；B2 的差别在运行时实现与对齐开关。}}{17}{table.caption.18}\protected@file@percent }
+\newlabel{tab:alignment-ab}{{5}{17}{每臂 137 份 LongMemEval-S 文档上的三臂对齐研究。B1 提供大幅效率下降；B2 在最后一致性检查上比 B1 多花约 3\% 的 token，是唯一具有实质非破坏性族重定向的臂，降低了同名重复组。质量切片太小，不足以做质量主张。B1 与 B2 使用同一份保存的服务配置；B2 的差别在运行时实现与对齐开关。}{table.caption.18}{}}
+\newlabel{tab:alignment-ab@cref}{{[table][5][2147483647]5}{[1][16][]17}}
+\@writefile{lof}{\contentsline {figure}{\numberline {7}{\ignorespaces 冻结产物的运行点诊断（Align+ 引擎；面板 a 覆盖全部 1{,}074 题）。(a) 答案延迟的均值到 p95，标注 token 数与调用数；(b) 配对的 Base$\to $Align+ 入库成本；(c) 有效的固定排序检索预算前沿；(d) $k{=}10$ 处的仅源文档通道重放。}}{17}{figure.caption.19}\protected@file@percent }
+\newlabel{fig:cost}{{7}{17}{冻结产物的运行点诊断（Align+ 引擎；面板 a 覆盖全部 1{,}074 题）。(a) 答案延迟的均值到 p95，标注 token 数与调用数；(b) 配对的 Base$\to $Align+ 入库成本；(c) 有效的固定排序检索预算前沿；(d) $k{=}10$ 处的仅源文档通道重放。}{figure.caption.19}{}}
+\newlabel{fig:cost@cref}{{[figure][7][2147483647]7}{[1][17][]17}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {A.6}附加定量诊断}{17}{subsection.A.6}\protected@file@percent }
+\newlabel{app:additional-diagnostics}{{A.6}{17}{附加定量诊断}{subsection.A.6}{}}
+\newlabel{app:additional-diagnostics@cref}{{[subappendix][6][2147483647,1]A.6}{[1][17][]17}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {A.7}载体参照（BigCodeBench \citep  {zhuo2024bigcodebench}、ALFWorld \citep  {shridhar2021alfworld}）}{17}{subsection.A.7}\protected@file@percent }
+\newlabel{app:carrier-anchors}{{A.7}{17}{载体参照（BigCodeBench \citep {zhuo2024bigcodebench}、ALFWorld \citep {shridhar2021alfworld}）}{subsection.A.7}{}}
+\newlabel{app:carrier-anchors@cref}{{[subappendix][7][2147483647,1]A.7}{[1][17][]17}}
 \@writefile{toc}{\contentsline {subsection}{\numberline {A.8}MAB 入库清单缺口}{17}{subsection.A.8}\protected@file@percent }
 \newlabel{app:manifest-gaps}{{A.8}{17}{MAB 入库清单缺口}{subsection.A.8}{}}
-\newlabel{app:manifest-gaps@cref}{{[subappendix][8][2147483647,1]A.8}{[1][16][]17}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {A.9}预算前沿}{17}{subsection.A.9}\protected@file@percent }
-\newlabel{app:budget}{{A.9}{17}{预算前沿}{subsection.A.9}{}}
-\newlabel{app:budget@cref}{{[subappendix][9][2147483647,1]A.9}{[1][17][]17}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {A.10}X7 通道消融细节}{17}{subsection.A.10}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {A.11}测试条件说明}{17}{subsection.A.11}\protected@file@percent }
-\@writefile{lot}{\contentsline {table}{\numberline {7}{\ignorespaces 其他基准在各自测试流程下的结果；每行列出答题模型和评审模型。LoCoMo 运行与 Mem0 已发表的 $J$ 有两处明示差异——单次运行对 10 次运行均值$\pm $标准差，以及作答/评审模型——并携带已披露的遗留指纹注意事项；这些条件同时列出，便于复核比较。LME 原文读取轨道多出的两题来自其会话证据规则；比较只在同一测试轨道内进行。}}{18}{table.caption.21}\protected@file@percent }
-\newlabel{tab:protocol-other}{{7}{18}{其他基准在各自测试流程下的结果；每行列出答题模型和评审模型。LoCoMo 运行与 Mem0 已发表的 $J$ 有两处明示差异——单次运行对 10 次运行均值$\pm $标准差，以及作答/评审模型——并携带已披露的遗留指纹注意事项；这些条件同时列出，便于复核比较。LME 原文读取轨道多出的两题来自其会话证据规则；比较只在同一测试轨道内进行。}{table.caption.21}{}}
-\newlabel{tab:protocol-other@cref}{{[table][7][2147483647]7}{[1][18][]18}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {A.12}保留的完整性失败}{18}{subsection.A.12}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {A.13}外部比较协议}{18}{subsection.A.13}\protected@file@percent }
-\newlabel{sec:published-baselines}{{A.13}{18}{外部比较协议}{subsection.A.13}{}}
-\newlabel{sec:published-baselines@cref}{{[subappendix][13][2147483647,1]A.13}{[1][18][]18}}
-\newlabel{app:k3-substitution}{{A.13}{18}{外部比较协议}{table.caption.21}{}}
-\newlabel{app:k3-substitution@cref}{{[subappendix][13][2147483647,1]A.13}{[1][18][]18}}
+\newlabel{app:manifest-gaps@cref}{{[subappendix][8][2147483647,1]A.8}{[1][17][]17}}
+\@writefile{lof}{\contentsline {figure}{\numberline {8}{\ignorespaces 来自冻结账本的额外定量诊断。（a）配对 Base/Align+ 轨道的 LongMemEval 类型分数；这些方向性样本 $n{=}25/25/27$，以粗略百分比显示。（b）105 个历史错误案例上的源扩展召回对响应载荷；这是开发诊断，不是留出测试。（c）带任务特定分母的 MEME 真实任务准确率，暴露 0\% 的删除边界。}}{18}{figure.caption.20}\protected@file@percent }
+\newlabel{fig:diagnostics}{{8}{18}{来自冻结账本的额外定量诊断。（a）配对 Base/Align+ 轨道的 LongMemEval 类型分数；这些方向性样本 $n{=}25/25/27$，以粗略百分比显示。（b）105 个历史错误案例上的源扩展召回对响应载荷；这是开发诊断，不是留出测试。（c）带任务特定分母的 MEME 真实任务准确率，暴露 0\% 的删除边界。}{figure.caption.20}{}}
+\newlabel{fig:diagnostics@cref}{{[figure][8][2147483647]8}{[1][17][]18}}
+\@writefile{lot}{\contentsline {table}{\numberline {6}{\ignorespaces X7 来源记录消融：210 题检查集上的离线检索重放。臂 1--4 构成干净的通道消融：只有 \texttt  {enabled\_channels} 不同，因此任何召回差异都可归因于该通道集合。臂 5（引用核对智能体，开启检查）与臂 6（未被检索到的证据，放宽检查）复用臂 4 的五通道排序，与臂 4 检索一致；它们的区分列（问答准确率、无支撑答案率、平均证据 token）需要 LLM 智能体运行，尚待完成。引用检查流程已离线验证：开启检查时提交一个未浮现的对话轮会被拒绝；放宽检查时同一提交被接受（\texttt  {plumbing\_ok}=true）。在部署的 MAB 运行中，检查按设计触发：14/1074 questions in the deployed $v2$ skill-agent run had an evidence submission rejected as unsurfaced (9/767 in $v1$); 11 of the 14 resubmitted tool-surfaced evidence inside the loop and the remaining 3 ended at the step cap and were answered from tool-surfaced context; zero rejections on the LME runs{}。Bootstrap 置信区间：2{,}000 次重采样，95\%。}}{18}{table.caption.21}\protected@file@percent }
+\newlabel{tab:provenance-ablation}{{6}{18}{X7 来源记录消融：210 题检查集上的离线检索重放。臂 1--4 构成干净的通道消融：只有 \texttt {enabled\_channels} 不同，因此任何召回差异都可归因于该通道集合。臂 5（引用核对智能体，开启检查）与臂 6（未被检索到的证据，放宽检查）复用臂 4 的五通道排序，与臂 4 检索一致；它们的区分列（问答准确率、无支撑答案率、平均证据 token）需要 LLM 智能体运行，尚待完成。引用检查流程已离线验证：开启检查时提交一个未浮现的对话轮会被拒绝；放宽检查时同一提交被接受（\texttt {plumbing\_ok}=true）。在部署的 MAB 运行中，检查按设计触发：\GateRejectStats {}。Bootstrap 置信区间：2{,}000 次重采样，95\%。}{table.caption.21}{}}
+\newlabel{tab:provenance-ablation@cref}{{[table][6][2147483647]6}{[1][18][]18}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {A.9}预算前沿}{18}{subsection.A.9}\protected@file@percent }
+\newlabel{app:budget}{{A.9}{18}{预算前沿}{subsection.A.9}{}}
+\newlabel{app:budget@cref}{{[subappendix][9][2147483647,1]A.9}{[1][18][]18}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {A.10}X7 通道消融细节}{18}{subsection.A.10}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {A.11}测试条件说明}{18}{subsection.A.11}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {7}{\ignorespaces 其他基准在各自测试流程下的结果；每行列出答题模型和评审模型。LoCoMo 运行与 Mem0 已发表的 $J$ 有两处明示差异——单次运行对 10 次运行均值$\pm $标准差，以及作答/评审模型——并携带已披露的遗留指纹注意事项；这些条件同时列出，便于复核比较。LME 原文读取轨道多出的两题来自其会话证据规则；比较只在同一测试轨道内进行。}}{19}{table.caption.22}\protected@file@percent }
+\newlabel{tab:protocol-other}{{7}{19}{其他基准在各自测试流程下的结果；每行列出答题模型和评审模型。LoCoMo 运行与 Mem0 已发表的 $J$ 有两处明示差异——单次运行对 10 次运行均值$\pm $标准差，以及作答/评审模型——并携带已披露的遗留指纹注意事项；这些条件同时列出，便于复核比较。LME 原文读取轨道多出的两题来自其会话证据规则；比较只在同一测试轨道内进行。}{table.caption.22}{}}
+\newlabel{tab:protocol-other@cref}{{[table][7][2147483647]7}{[1][19][]19}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {A.12}保留的完整性失败}{19}{subsection.A.12}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {A.13}外部比较协议}{19}{subsection.A.13}\protected@file@percent }
+\newlabel{sec:published-baselines}{{A.13}{19}{外部比较协议}{subsection.A.13}{}}
+\newlabel{sec:published-baselines@cref}{{[subappendix][13][2147483647,1]A.13}{[1][19][]19}}
+\newlabel{app:k3-substitution}{{A.13}{19}{外部比较协议}{table.caption.22}{}}
+\newlabel{app:k3-substitution@cref}{{[subappendix][13][2147483647,1]A.13}{[1][19][]19}}
 \citation{chernoff1952measure}
 \citation{shannon1959coding}
-\@writefile{toc}{\contentsline {subsection}{\numberline {A.14}架构的信息论读法}{19}{subsection.A.14}\protected@file@percent }
-\newlabel{app:info-theory}{{A.14}{19}{架构的信息论读法}{subsection.A.14}{}}
-\newlabel{app:info-theory@cref}{{[subappendix][14][2147483647,1]A.14}{[1][19][]19}}
-\@writefile{toc}{\contentsline {subsubsection}{\numberline {A.14.1}写入时：渐进式实体对齐}{19}{subsubsection.A.14.1}\protected@file@percent }
-\newlabel{eq:information-growth}{{4}{19}{写入时：渐进式实体对齐}{equation.A.4}{}}
-\newlabel{eq:information-growth@cref}{{[equation][4][2147483647]4}{[1][19][]19}}
-\newlabel{prop:revisability}{{A.1}{19}{可修订性}{theorem.A.1}{}}
-\newlabel{prop:revisability@cref}{{[proposition][1][2147483647,1]A.1}{[1][19][]19}}
-\newlabel{prop:convergence}{{A.2}{19}{汇聚证据下的收敛}{theorem.A.2}{}}
-\newlabel{prop:convergence@cref}{{[proposition][2][2147483647,1]A.2}{[1][19][]19}}
-\@writefile{toc}{\contentsline {subsubsection}{\numberline {A.14.2}读取时：层级检索位置与渐进披露}{19}{subsubsection.A.14.2}\protected@file@percent }
-\newlabel{eq:progressive-disclosure}{{5}{19}{读取时：层级检索位置与渐进披露}{equation.A.5}{}}
-\newlabel{eq:progressive-disclosure@cref}{{[equation][5][2147483647]5}{[1][19][]19}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {A.14}架构的信息论读法}{20}{subsection.A.14}\protected@file@percent }
+\newlabel{app:info-theory}{{A.14}{20}{架构的信息论读法}{subsection.A.14}{}}
+\newlabel{app:info-theory@cref}{{[subappendix][14][2147483647,1]A.14}{[1][19][]20}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {A.14.1}写入时：渐进式实体对齐}{20}{subsubsection.A.14.1}\protected@file@percent }
+\newlabel{eq:information-growth}{{4}{20}{写入时：渐进式实体对齐}{equation.A.4}{}}
+\newlabel{eq:information-growth@cref}{{[equation][4][2147483647]4}{[1][20][]20}}
+\newlabel{prop:revisability}{{A.1}{20}{可修订性}{theorem.A.1}{}}
+\newlabel{prop:revisability@cref}{{[proposition][1][2147483647,1]A.1}{[1][20][]20}}
+\newlabel{prop:convergence}{{A.2}{20}{汇聚证据下的收敛}{theorem.A.2}{}}
+\newlabel{prop:convergence@cref}{{[proposition][2][2147483647,1]A.2}{[1][20][]20}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {A.14.2}读取时：层级检索位置与渐进披露}{20}{subsubsection.A.14.2}\protected@file@percent }
+\newlabel{eq:progressive-disclosure}{{5}{20}{读取时：层级检索位置与渐进披露}{equation.A.5}{}}
+\newlabel{eq:progressive-disclosure@cref}{{[equation][5][2147483647]5}{[1][20][]20}}
 \citation{tishby2000information}
 \citation{chhikara2025mem0}
 \citation{chhikara2025mem0}
@@ -221,26 +225,26 @@
 \citation{rasmussen2025zep}
 \citation{chhikara2025mem0}
 \citation{chhikara2025mem0}
-\@writefile{lot}{\contentsline {table}{\numberline {8}{\ignorespaces LoCoMo 分类别 $J$（二值 CORRECT/WRONG 准确率，LLM 评审）。已发表行逐字复现自 \citet  {chhikara2025mem0}（arXiv:2504.19413，表~1）：Mem0 报告 10 次运行的均值$\pm $标准差，答题与评审均为 GPT-4o-mini（标准差省略，全部 $\le $0.75）。\textbf  {Deep-Dream} 应用固定在仓库提交 \texttt  {4b61c5d} 的二值 $J$ 评分规则——该 2026 修订版评审提示的容差规则异于 2025 年论文的附录 A——以 Kimi-K3 同时作答与评审（单次运行）；$\dagger $ 行用独立的 Qwen3.7-plus 交叉评审评判同一批 K3 答案（交叉评审一致率 98.51\%）。相同的 841/282/96/321 题目群体（共 1{,}540 题，Mem0 兼容子集）。\emph  {注意事项：}K3 作答运行被标记 \texttt  {formal\_claim\_allowed=false}——1{,}529 条历史答案行早于运行时代码指纹（答案未变，sha 76af5772；逐条 JSONL 携带 \texttt  {runtime\_code\_sha256}）；作为诊断性交叉评审结果报告，而非指纹完备的正式结果。确定性的 F1/BLEU-1 因篇幅省略（表~\ref {tab:mem0-f1-bleu}）。加权 $J$（由已发表分类均值按 841/282/96/321 题量重加权）：Mem0 $\approx $62.14，$Mem0^g$ $\approx $61.36；其论文表 2 另报 Overall $J=66.88$（Mem0）与 $68.44$（$Mem0^g$）。Deep-Dream 聚合 $J$：95.19\% / 94.22\%（$\dagger $）。表体为已发表数据的逐字复现，保留英文。}}{20}{table.caption.22}\protected@file@percent }
-\newlabel{tab:mem0-baselines}{{8}{20}{LoCoMo 分类别 $J$（二值 CORRECT/WRONG 准确率，LLM 评审）。已发表行逐字复现自 \citet {chhikara2025mem0}（arXiv:2504.19413，表~1）：Mem0 报告 10 次运行的均值$\pm $标准差，答题与评审均为 GPT-4o-mini（标准差省略，全部 $\le $0.75）。\textbf {Deep-Dream} 应用固定在仓库提交 \texttt {4b61c5d} 的二值 $J$ 评分规则——该 2026 修订版评审提示的容差规则异于 2025 年论文的附录 A——以 Kimi-K3 同时作答与评审（单次运行）；$\dagger $ 行用独立的 Qwen3.7-plus 交叉评审评判同一批 K3 答案（交叉评审一致率 98.51\%）。相同的 841/282/96/321 题目群体（共 1{,}540 题，Mem0 兼容子集）。\emph {注意事项：}K3 作答运行被标记 \texttt {formal\_claim\_allowed=false}——1{,}529 条历史答案行早于运行时代码指纹（答案未变，sha 76af5772；逐条 JSONL 携带 \texttt {runtime\_code\_sha256}）；作为诊断性交叉评审结果报告，而非指纹完备的正式结果。确定性的 F1/BLEU-1 因篇幅省略（表~\ref {tab:mem0-f1-bleu}）。加权 $J$（由已发表分类均值按 841/282/96/321 题量重加权）：Mem0 $\approx $62.14，$Mem0^g$ $\approx $61.36；其论文表 2 另报 Overall $J=66.88$（Mem0）与 $68.44$（$Mem0^g$）。Deep-Dream 聚合 $J$：95.19\% / 94.22\%（$\dagger $）。表体为已发表数据的逐字复现，保留英文。}{table.caption.22}{}}
-\newlabel{tab:mem0-baselines@cref}{{[table][8][2147483647]8}{[1][20][]20}}
-\@writefile{toc}{\contentsline {subsubsection}{\numberline {A.14.3}双速率分解与答案风险}{20}{subsubsection.A.14.3}\protected@file@percent }
-\newlabel{eq:appendix-two-rate}{{6}{20}{双速率分解与答案风险}{equation.A.6}{}}
-\newlabel{eq:appendix-two-rate@cref}{{[equation][6][2147483647]6}{[1][19][]20}}
-\newlabel{eq:appendix-answer-bound}{{7}{20}{双速率分解与答案风险}{equation.A.7}{}}
-\newlabel{eq:appendix-answer-bound@cref}{{[equation][7][2147483647]7}{[1][20][]20}}
-\newlabel{prop:one-sided}{{A.3}{20}{单侧寻址错误}{theorem.A.3}{}}
-\newlabel{prop:one-sided@cref}{{[proposition][3][2147483647,1]A.3}{[1][20][]20}}
-\@writefile{lot}{\contentsline {table}{\numberline {9}{\ignorespaces 已发表的深度记忆检索（DMR）基线，逐字复现自 \citet  {rasmussen2025zep}（arXiv:2501.13956）。DMR 包含 500 段多会话对话（5 个会话、每会话 $\le $12 条消息），每段对话一道单跳事实检索题。Deep-Dream 目前未运行 DMR，因此本表仅作上下文参照。表体保留英文原文。}}{21}{table.caption.23}\protected@file@percent }
-\newlabel{tab:zep-dmr}{{9}{21}{已发表的深度记忆检索（DMR）基线，逐字复现自 \citet {rasmussen2025zep}（arXiv:2501.13956）。DMR 包含 500 段多会话对话（5 个会话、每会话 $\le $12 条消息），每段对话一道单跳事实检索题。Deep-Dream 目前未运行 DMR，因此本表仅作上下文参照。表体保留英文原文。}{table.caption.23}{}}
-\newlabel{tab:zep-dmr@cref}{{[table][9][2147483647]9}{[1][20][]21}}
-\@writefile{lot}{\contentsline {table}{\numberline {10}{\ignorespaces LongMemEval 主要结果。已发表行（GPT-4o-mini / GPT-4o，全上下文 对 Zep）逐字复现自 \citet  {rasmussen2025zep}（arXiv:2501.13956）。\textbf  {Deep-Dream} 行使用 Qwen3.7-plus 同时作答与交叉评审——这是一个不同的协议；其准确率（84.6\%）被放在已发表数字旁边，而非共享榜单。Deep-Dream 的延迟/平均上下文未在已发表协议下测量（---）。六类别分解见表~\ref {tab:zep-longmemeval-cat}。表体保留英文原文。}}{21}{table.caption.24}\protected@file@percent }
-\newlabel{tab:zep-longmemeval}{{10}{21}{LongMemEval 主要结果。已发表行（GPT-4o-mini / GPT-4o，全上下文 对 Zep）逐字复现自 \citet {rasmussen2025zep}（arXiv:2501.13956）。\textbf {Deep-Dream} 行使用 Qwen3.7-plus 同时作答与交叉评审——这是一个不同的协议；其准确率（84.6\%）被放在已发表数字旁边，而非共享榜单。Deep-Dream 的延迟/平均上下文未在已发表协议下测量（---）。六类别分解见表~\ref {tab:zep-longmemeval-cat}。表体保留英文原文。}{table.caption.24}{}}
-\newlabel{tab:zep-longmemeval@cref}{{[table][10][2147483647]10}{[1][20][]21}}
-\@writefile{lot}{\contentsline {table}{\numberline {11}{\ignorespaces LongMemEval 六类别分解（二值准确率，\%）。已发表的全上下文与 Zep 数值逐字复现自 \citet  {rasmussen2025zep}（arXiv:2501.13956）；\textbf  {Deep-Dream (Q.)} 行是 Qwen3.7-plus 作答+交叉评审在相同六个类别上的结果。答题/评审不同，因此这是粒度匹配的上下文参照，不是共享榜单。会话偏好（Sess.\ pref.）是所有系统最难的类别。表体保留英文原文。}}{21}{table.caption.25}\protected@file@percent }
-\newlabel{tab:zep-longmemeval-cat}{{11}{21}{LongMemEval 六类别分解（二值准确率，\%）。已发表的全上下文与 Zep 数值逐字复现自 \citet {rasmussen2025zep}（arXiv:2501.13956）；\textbf {Deep-Dream (Q.)} 行是 Qwen3.7-plus 作答+交叉评审在相同六个类别上的结果。答题/评审不同，因此这是粒度匹配的上下文参照，不是共享榜单。会话偏好（Sess.\ pref.）是所有系统最难的类别。表体保留英文原文。}{table.caption.25}{}}
-\newlabel{tab:zep-longmemeval-cat@cref}{{[table][11][2147483647]11}{[1][20][]21}}
-\@writefile{lot}{\contentsline {table}{\numberline {12}{\ignorespaces Mem0 LoCoMo 确定性指标，逐字复现自 \citet  {chhikara2025mem0}（表~1）。四个类别（单跳/多跳/开放域/时序）上的 F1 / BLEU-1。Deep-Dream 不计算 token 重叠指标（其指标为二值 LLM 评审准确率，表~\ref {tab:mem0-baselines}），因此这里没有 Deep-Dream 列；本表仅为完整性而收录已发表的复现。表体保留英文原文。}}{21}{table.caption.26}\protected@file@percent }
-\newlabel{tab:mem0-f1-bleu}{{12}{21}{Mem0 LoCoMo 确定性指标，逐字复现自 \citet {chhikara2025mem0}（表~1）。四个类别（单跳/多跳/开放域/时序）上的 F1 / BLEU-1。Deep-Dream 不计算 token 重叠指标（其指标为二值 LLM 评审准确率，表~\ref {tab:mem0-baselines}），因此这里没有 Deep-Dream 列；本表仅为完整性而收录已发表的复现。表体保留英文原文。}{table.caption.26}{}}
-\newlabel{tab:mem0-f1-bleu@cref}{{[table][12][2147483647]12}{[1][20][]21}}
-\gdef \@abspage@last{21}
+\@writefile{lot}{\contentsline {table}{\numberline {8}{\ignorespaces LoCoMo 分类别 $J$（二值 CORRECT/WRONG 准确率，LLM 评审）。已发表行逐字复现自 \citet  {chhikara2025mem0}（arXiv:2504.19413，表~1）：Mem0 报告 10 次运行的均值$\pm $标准差，答题与评审均为 GPT-4o-mini（标准差省略，全部 $\le $0.75）。\textbf  {Deep-Dream} 应用固定在仓库提交 \texttt  {4b61c5d} 的二值 $J$ 评分规则——该 2026 修订版评审提示的容差规则异于 2025 年论文的附录 A——以 Kimi-K3 同时作答与评审（单次运行）；$\dagger $ 行用独立的 Qwen3.7-plus 交叉评审评判同一批 K3 答案（交叉评审一致率 98.51\%）。相同的 841/282/96/321 题目群体（共 1{,}540 题，Mem0 兼容子集）。\emph  {注意事项：}K3 作答运行被标记 \texttt  {formal\_claim\_allowed=false}——1{,}529 条历史答案行早于运行时代码指纹（答案未变，sha 76af5772；逐条 JSONL 携带 \texttt  {runtime\_code\_sha256}）；作为诊断性交叉评审结果报告，而非指纹完备的正式结果。确定性的 F1/BLEU-1 因篇幅省略（表~\ref {tab:mem0-f1-bleu}）。加权 $J$（由已发表分类均值按 841/282/96/321 题量重加权）：Mem0 $\approx $62.14，$Mem0^g$ $\approx $61.36；其论文表 2 另报 Overall $J=66.88$（Mem0）与 $68.44$（$Mem0^g$）。Deep-Dream 聚合 $J$：95.19\% / 94.22\%（$\dagger $）。表体为已发表数据的逐字复现，保留英文。}}{21}{table.caption.23}\protected@file@percent }
+\newlabel{tab:mem0-baselines}{{8}{21}{LoCoMo 分类别 $J$（二值 CORRECT/WRONG 准确率，LLM 评审）。已发表行逐字复现自 \citet {chhikara2025mem0}（arXiv:2504.19413，表~1）：Mem0 报告 10 次运行的均值$\pm $标准差，答题与评审均为 GPT-4o-mini（标准差省略，全部 $\le $0.75）。\textbf {Deep-Dream} 应用固定在仓库提交 \texttt {4b61c5d} 的二值 $J$ 评分规则——该 2026 修订版评审提示的容差规则异于 2025 年论文的附录 A——以 Kimi-K3 同时作答与评审（单次运行）；$\dagger $ 行用独立的 Qwen3.7-plus 交叉评审评判同一批 K3 答案（交叉评审一致率 98.51\%）。相同的 841/282/96/321 题目群体（共 1{,}540 题，Mem0 兼容子集）。\emph {注意事项：}K3 作答运行被标记 \texttt {formal\_claim\_allowed=false}——1{,}529 条历史答案行早于运行时代码指纹（答案未变，sha 76af5772；逐条 JSONL 携带 \texttt {runtime\_code\_sha256}）；作为诊断性交叉评审结果报告，而非指纹完备的正式结果。确定性的 F1/BLEU-1 因篇幅省略（表~\ref {tab:mem0-f1-bleu}）。加权 $J$（由已发表分类均值按 841/282/96/321 题量重加权）：Mem0 $\approx $62.14，$Mem0^g$ $\approx $61.36；其论文表 2 另报 Overall $J=66.88$（Mem0）与 $68.44$（$Mem0^g$）。Deep-Dream 聚合 $J$：95.19\% / 94.22\%（$\dagger $）。表体为已发表数据的逐字复现，保留英文。}{table.caption.23}{}}
+\newlabel{tab:mem0-baselines@cref}{{[table][8][2147483647]8}{[1][21][]21}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {A.14.3}双速率分解与答案风险}{21}{subsubsection.A.14.3}\protected@file@percent }
+\newlabel{eq:appendix-two-rate}{{6}{21}{双速率分解与答案风险}{equation.A.6}{}}
+\newlabel{eq:appendix-two-rate@cref}{{[equation][6][2147483647]6}{[1][20][]21}}
+\newlabel{eq:appendix-answer-bound}{{7}{21}{双速率分解与答案风险}{equation.A.7}{}}
+\newlabel{eq:appendix-answer-bound@cref}{{[equation][7][2147483647]7}{[1][21][]21}}
+\newlabel{prop:one-sided}{{A.3}{21}{单侧寻址错误}{theorem.A.3}{}}
+\newlabel{prop:one-sided@cref}{{[proposition][3][2147483647,1]A.3}{[1][21][]21}}
+\@writefile{lot}{\contentsline {table}{\numberline {9}{\ignorespaces 已发表的深度记忆检索（DMR）基线，逐字复现自 \citet  {rasmussen2025zep}（arXiv:2501.13956）。DMR 包含 500 段多会话对话（5 个会话、每会话 $\le $12 条消息），每段对话一道单跳事实检索题。Deep-Dream 目前未运行 DMR，因此本表仅作上下文参照。表体保留英文原文。}}{22}{table.caption.24}\protected@file@percent }
+\newlabel{tab:zep-dmr}{{9}{22}{已发表的深度记忆检索（DMR）基线，逐字复现自 \citet {rasmussen2025zep}（arXiv:2501.13956）。DMR 包含 500 段多会话对话（5 个会话、每会话 $\le $12 条消息），每段对话一道单跳事实检索题。Deep-Dream 目前未运行 DMR，因此本表仅作上下文参照。表体保留英文原文。}{table.caption.24}{}}
+\newlabel{tab:zep-dmr@cref}{{[table][9][2147483647]9}{[1][21][]22}}
+\@writefile{lot}{\contentsline {table}{\numberline {10}{\ignorespaces LongMemEval 主要结果。已发表行（GPT-4o-mini / GPT-4o，全上下文 对 Zep）逐字复现自 \citet  {rasmussen2025zep}（arXiv:2501.13956）。\textbf  {Deep-Dream} 行使用 Qwen3.7-plus 同时作答与交叉评审——这是一个不同的协议；其准确率（84.6\%）被放在已发表数字旁边，而非共享榜单。Deep-Dream 的延迟/平均上下文未在已发表协议下测量（---）。六类别分解见表~\ref {tab:zep-longmemeval-cat}。表体保留英文原文。}}{22}{table.caption.25}\protected@file@percent }
+\newlabel{tab:zep-longmemeval}{{10}{22}{LongMemEval 主要结果。已发表行（GPT-4o-mini / GPT-4o，全上下文 对 Zep）逐字复现自 \citet {rasmussen2025zep}（arXiv:2501.13956）。\textbf {Deep-Dream} 行使用 Qwen3.7-plus 同时作答与交叉评审——这是一个不同的协议；其准确率（84.6\%）被放在已发表数字旁边，而非共享榜单。Deep-Dream 的延迟/平均上下文未在已发表协议下测量（---）。六类别分解见表~\ref {tab:zep-longmemeval-cat}。表体保留英文原文。}{table.caption.25}{}}
+\newlabel{tab:zep-longmemeval@cref}{{[table][10][2147483647]10}{[1][21][]22}}
+\@writefile{lot}{\contentsline {table}{\numberline {11}{\ignorespaces LongMemEval 六类别分解（二值准确率，\%）。已发表的全上下文与 Zep 数值逐字复现自 \citet  {rasmussen2025zep}（arXiv:2501.13956）；\textbf  {Deep-Dream (Q.)} 行是 Qwen3.7-plus 作答+交叉评审在相同六个类别上的结果。答题/评审不同，因此这是粒度匹配的上下文参照，不是共享榜单。会话偏好（Sess.\ pref.）是所有系统最难的类别。表体保留英文原文。}}{22}{table.caption.26}\protected@file@percent }
+\newlabel{tab:zep-longmemeval-cat}{{11}{22}{LongMemEval 六类别分解（二值准确率，\%）。已发表的全上下文与 Zep 数值逐字复现自 \citet {rasmussen2025zep}（arXiv:2501.13956）；\textbf {Deep-Dream (Q.)} 行是 Qwen3.7-plus 作答+交叉评审在相同六个类别上的结果。答题/评审不同，因此这是粒度匹配的上下文参照，不是共享榜单。会话偏好（Sess.\ pref.）是所有系统最难的类别。表体保留英文原文。}{table.caption.26}{}}
+\newlabel{tab:zep-longmemeval-cat@cref}{{[table][11][2147483647]11}{[1][21][]22}}
+\@writefile{lot}{\contentsline {table}{\numberline {12}{\ignorespaces Mem0 LoCoMo 确定性指标，逐字复现自 \citet  {chhikara2025mem0}（表~1）。四个类别（单跳/多跳/开放域/时序）上的 F1 / BLEU-1。Deep-Dream 不计算 token 重叠指标（其指标为二值 LLM 评审准确率，表~\ref {tab:mem0-baselines}），因此这里没有 Deep-Dream 列；本表仅为完整性而收录已发表的复现。表体保留英文原文。}}{22}{table.caption.27}\protected@file@percent }
+\newlabel{tab:mem0-f1-bleu}{{12}{22}{Mem0 LoCoMo 确定性指标，逐字复现自 \citet {chhikara2025mem0}（表~1）。四个类别（单跳/多跳/开放域/时序）上的 F1 / BLEU-1。Deep-Dream 不计算 token 重叠指标（其指标为二值 LLM 评审准确率，表~\ref {tab:mem0-baselines}），因此这里没有 Deep-Dream 列；本表仅为完整性而收录已发表的复现。表体保留英文原文。}{table.caption.27}{}}
+\newlabel{tab:mem0-f1-bleu@cref}{{[table][12][2147483647]12}{[1][21][]22}}
+\gdef \@abspage@last{22}

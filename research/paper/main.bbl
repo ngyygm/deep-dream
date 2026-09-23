@@ -1,4 +1,4 @@
-\begin{thebibliography}{23}
+\begin{thebibliography}{24}
 \providecommand{\natexlab}[1]{#1}
 \providecommand{\url}[1]{\texttt{#1}}
 \expandafter\ifx\csname urlstyle\endcsname\relax
@@ -94,6 +94,13 @@ Yifei Li, Weidong Guo, Lingling Zhang, Rongman Xu, Muye Huang, Hui Liu, Lijiao
   Computational Linguistics.
 \newblock \doi{10.18653/v1/2026.acl-long.1150}.
 \newblock URL \url{https://aclanthology.org/2026.acl-long.1150/}.
+
+\bibitem[Lin(2026)]{lin2026icam}
+Hai Lin.
+\newblock Model-native computing architecture: Envisioning future system
+  architecture through the lens of computer architecture.
+\newblock \emph{arXiv preprint arXiv:2606.00288}, 2026.
+\newblock URL \url{https://arxiv.org/abs/2606.00288}.
 
 \bibitem[Liu et~al.(2024)Liu, Lin, Hewitt, Parandekar, Chen, and
   Liang]{liu2024lost}

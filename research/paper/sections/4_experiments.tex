@@ -47,12 +47,12 @@ Base commits identity window by window; Align+ defers compatible merges until al
 \subsection{RQ5: Where does the append-only design fail?}
 \label{sec:deletion-boundary}
 
-MEME exposes the current boundary. Deletion accuracy is 0\% on 100 episodes; cascade and absence real accuracy are 46.34\% and 59.23\%. The append-only store preserves prior observations and links, but the current query path has no deletion suppression or propagation rule. Temporal revision and deletion are therefore separate capabilities.
+MEME exposes the boundary: deletion accuracy is 0\% on 100 episodes, with cascade and absence real accuracy 46.34\% and 59.23\%. The append-only store preserves prior observations and links, but the query path has no deletion suppression or propagation rule; temporal revision and deletion are separate capabilities.
 
 \subsection{Comparison with other systems}
 \label{sec:cross-system}
 
-Table~\ref{tab:main-cross-system} places Deep-Dream beside published MAB, LoCoMo, and LongMemEval-S results. Each block states its answerer, judge, subset, and test procedure. On MAB, the full-context reference and the source-reading method use the same model on their common subset. The MAB pair is a controlled comparison; rows that span protocols are placed side by side for context, and no cross-protocol difference is claimed.
+Table~\ref{tab:main-cross-system} places Deep-Dream beside published MAB, LoCoMo, and LongMemEval-S results, each block stating its answerer, judge, subset, and test procedure. On MAB, the full-context reference and the source-reading method use the same model on their common subset; the MAB pair is a controlled comparison, rows spanning protocols are placed side by side for context, and no cross-protocol difference is claimed.
 
 \input{figures/TABLE_main_cross_system}
 
@@ -60,11 +60,11 @@ Table~\ref{tab:main-cross-system} places Deep-Dream beside published MAB, LoCoMo
 \label{sec:external-comparisons}
 \label{sec:provenance-ablation}
 
-This diagnostic asks whether the graph improves the ranking before the agent opens source text. We replayed the same 210 questions with four index variants: raw documents plus keyword search (BM25) over episodes; semantic links added; graph neighbors added; and relation links added. Recall-any@10 asks whether at least one relevant item appears in the top ten; Recall-all@10 asks whether all relevant items appear; MRR@10 and nDCG@10 reward relevant items appearing earlier in the ranking. Recall-any@10 is 72.38, 72.38, 71.43, and 72.38 percent across the four variants; every paired difference lies within the $\pm2.4$-point 95\% bootstrap equivalence bound computed from the same replay, and the other metrics show the same pattern.
+This diagnostic asks whether the graph improves ranking before the agent opens text. We replayed the same 210 questions with four index variants: keyword search (BM25) over raw episodes; semantic links added; graph neighbors added; and relation links added. Recall-any@10 asks whether a relevant item appears in the top ten; Recall-all@10 whether all do; MRR@10 and nDCG@10 reward earlier placement. Recall-any@10 is 72.38, 72.38, 71.43, and 72.38 percent across the four variants; every paired difference lies within the $\pm2.4$-point 95\% bootstrap equivalence bound computed from the same replay, and the other metrics show the same pattern.
 
-The offline replay therefore gives no evidence that adding graph links alone improves recall. Online, the graph still chooses document groups, versions, and relation links before the agent opens source text. The citation check accepts only source IDs that the agent actually received from a tool call. Figure~\ref{fig:cost} reports the cost of the three answer paths: source reading uses more calls and tokens while producing the strongest answers.
+The replay therefore gives no evidence that graph links alone improve offline recall; online, the graph still chooses document groups, versions, and relation links before the agent opens source text, and the citation check accepts only source IDs returned by a tool call. Figure~\ref{fig:cost} reports the cost of the three answer paths: source reading uses more calls and tokens while producing the strongest answers.
 
 \subsection{Where the system still fails}
 \label{sec:negatives}
 
-The source-reading method still gets 29.0\% of MAB questions wrong; errors concentrate in temporal/test-time learning and fact consolidation. Direct retrieval and tool-assisted reading tie on the small paired LongMemEval tracks, the LRU estimate is based on only 14 questions, and the 210-question replay finds no measurable change in offline recall. MEME's 0\% deletion accuracy and the change caused by a single example show that preserving source text does not yet provide deletion or stable estimates for every task.
+The source-reading method still gets 29.0\% of MAB questions wrong, concentrated in temporal/test-time learning and fact consolidation. Direct retrieval and tool-assisted reading tie on the small paired LongMemEval tracks, the LRU estimate rests on 14 questions, and the 210-question replay finds no offline recall change. MEME's 0\% deletion accuracy and the change caused by a single example show that preserving source text does not yet provide deletion or stable estimates for every task.

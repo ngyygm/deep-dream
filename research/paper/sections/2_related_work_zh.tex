@@ -6,6 +6,9 @@ LoCoMo 与 LongMemEval 测试长对话、时序更新与多会话推理 \citep{m
 \paragraph{结构化记忆。}
 MemGPT、A-MEM、Mem0、HippoRAG-2、Cognee、MIRIX 和 Zep/Graphiti 通过摘要、笔记或图改进持久性 \citep{packer2023memgpt,xu2025amem,chhikara2025mem0,gutierrez2025hipporag2,markovic2025cognee,wang2025mirix,rasmussen2025zep}。Deep-Dream 同样需要紧凑检索，但把权威边界分开：一个派生节点指向一个源文本跨度；它本身不是答案证据。
 
+\paragraph{作为被寻址存储的记忆。}
+一条系统研究路线用计算机体系结构的透镜审视模型栈：MemGPT 把上下文管理类比为操作系统的换页 \citep{packer2023memgpt}，ICAM 框架则提出上下文预算律——有限窗口叠加注意力衰减，只容得下一个有效工作集 \citep{lin2026icam}。这些刻画管的是类比中“处理器”的一侧。Deep-Dream 补上“存储”的一侧：一个由智能体亲自导航地址空间的持久存储，其中概念族是名字，关系与版本链接是间接寻址，源文本跨度是加载返回的基本单元。这个类比在我们的运行里可以度量：同一模型、同一评分器下，整块装入语料在装得下的 614/1{,}074 题上得 78.7，寻址式读取得 70.8；其余 460 题的语料超出装入预算，只有寻址式读取有分数。
+
 \paragraph{信息论与联想记忆。}
 信息瓶颈形式化了在保留与目标变量相关信息前提下的紧凑表示 \citep{tishby2000information}，率失真理论刻画有损重构的代价 \citep{shannon1959coding}。联想记忆模型解释从部分线索出发的内容能被找到检索 \citep{ramsauer2021hopfield}，概率记录链接则区分误链接与漏链接两类错误 \citep{fellegi1969theory}。我们把这些思想用作记忆接口的分析：图层是压缩的检索索引，精确文本是保留的证据，延迟的实体合并用可容忍的漏链接代价，换取对灾难性误链接污染的规避。
 
