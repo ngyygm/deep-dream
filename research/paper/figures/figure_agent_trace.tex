@@ -1,6 +1,6 @@
 \begin{figure*}[t]
   \centering
   \includegraphics[width=0.88\textwidth]{figures/fig4_agent_trace.pdf}
-  \caption{Recorded LongMemEval trace (question \texttt{2b8f3739}): concept tracing exposes four episode pointers across two documents, and a separate semantic hit locates the third sales record. Seven successful calls take 13.96\,s; step 8 reaches the limit after a malformed response, then a separate answerer computes $120+225+(20\times7.5)=495$.}
+  \caption{Recorded LongMemEval trace (question \texttt{2b8f3739}): concept tracing exposes four episode pointers across two documents, and semantic retrieval locates the third sales record. Seven successful calls read $120$, $225$, and $7.50$; a malformed eighth response reaches the step limit, after which a separate answerer computes $495$. The trace shows graph navigation locating candidates and source spans supplying the arithmetic.}
   \label{fig:agent-trace}
 \end{figure*}

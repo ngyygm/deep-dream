@@ -9,8 +9,11 @@ The released supplementary material contains the machine-readable manifests (dat
 
 \input{figures/figure_architecture}
 \input{figures/figure_alignment}
+Figure~\ref{fig:alignment} compares all four read paths on the same 614 questions. Overall rises from 38.6 for fixed retrieval to 44.6 for tool reading and 70.8 for source reading, while the full-context reference reaches 78.7. The heatmap explains the gap: source reading reaches 95.0 AR and 80.0 SF, close to or above full context, but remains at 46.0 TTL versus 75.0 for full context. The source path therefore recovers most of the retrieval and selective-forgetting signal without loading the entire collection, while update-heavy TTL questions still need stronger temporal handling.
 \input{figures/figure_alignment_outcomes}
+Figure~\ref{fig:alignment-outcomes} separates the bundled Align+ change into its observed effects. Panel (a) shows MAB ingest calls falling from 609 to 329 and LongMemEval calls from 63.8 to 22.0; panel (b) shows duplicate families falling from 340 to 124 and from 482 to 99. Panel (c) records a 3-point increase on both MCC and FC-MH, with the paired 95\% interval spanning $-7$ to $+13$ points. The figure supports a construction-cost and consolidation benefit with compatible sampled quality; because the implementation changes run together, it is not a single-component ablation.
 \input{figures/TABLE_answer_paths}
+The compressed trace appears in Figure~\ref{fig:agent-trace} in the main text. The released artifact retains the complete tool-call JSON, timestamps, and malformed retry for audit.
 \input{figures/TABLE_experiment_map}
 
 \subsection{Version provenance and alignment A/B study}
@@ -45,12 +48,17 @@ All paths use Kimi-K3 as answerer, with their prompts archived verbatim in the r
   \label{fig:cost}
 \end{figure}
 
+Figure~\ref{fig:cost} links answer quality to operating cost. Panel (a) gives mean-to-p95 latency of 31.0--99.3 seconds for fixed retrieval, 65.9--172.8 seconds for tool reading, and 95.0--451.7 seconds for source reading; the source path spends 10.2 calls and 328.6k tokens per question. Panel (b) shows why delayed alignment matters operationally: calls fall 609$\to$329 and 64$\to$22, while tokens fall 1{,}456k$\to$1{,}191k and 139k$\to$112k. Panel (c) gives the budget trade-off directly: increasing $k$ from 1 to 20 raises Recall-any from 26.2\% to 81.9\% and Recall-all from 14.3\% to 59.5\%, while the mean payload grows from 0.2 to 3.6\,kB. Panel (d) is comparatively flat across lexical, semantic, neighbor, and relation channels, showing that the larger gains come from expanding the read path rather than changing one offline channel.
+
 \subsection{Additional quantitative diagnostics}
 \label{app:additional-diagnostics}
 
 The ledger also contains type-level update scores, a controlled source-expansion replay, and the MEME deletion boundary. Figure~\ref{fig:diagnostics} reports these quantities with their sample-size and development-set limits visible.
 
+\clearpage
 \input{figures/figure_diagnostics}
+
+Figure~\ref{fig:diagnostics} gives three checks on the mechanism. Panel (a) shows the clearest LongMemEval change in multi-session access: source reading rises from 85.7\% to 100\% between Base and Align+, while knowledge-update and temporal scores remain at 100\%; this is consistent with better cross-session consolidation rather than a uniform score shift. Panel (b) shows that adding one and two neighbor hops increases Recall-any from 70.5\% to 84.8\% and 89.5\%, and Recall-all from 52.4\% to 65.7\% and 73.3\%, at a payload increase of about 0.4--0.5\,kB. Panel (c) separates task semantics: entity resolution is 100\%, tracking 97\%, aggregation 80\%, absence 59.2\%, cascade 46.3\%, and deletion 0\%. Thus the graph supports locating related evidence, while deletion still requires an explicit suppression operation.
 
 \subsection{Carrier anchors (BigCodeBench \citep{zhuo2024bigcodebench}, ALFWorld \citep{shridhar2021alfworld})}
 \label{app:carrier-anchors}
@@ -93,75 +101,122 @@ The single Deep-Dream $J$ row placed inside Mem0's $J$ column is produced by run
 
 A stricter controlled comparison---freezing the same answer model, judge model, prompt, temperature, evidence budget, dataset revision, and Graphiti/Zep implementation commit---remains the only path to a shared leaderboard, but it is not a submission hard gate now that the published numbers are cited directly.
 
-\subsection{An information-theoretic reading of the architecture}
+\subsection{Formal properties of storage and reading}
 \label{app:info-theory}
 
-This appendix gives the paper's two design commitments a formal shape. Every statement is either a structural property of the architecture (checkable against the schema and code) or a conditional proposition with explicit assumptions; none upgrades the causal wording discipline of \cref{sec:ladder,sec:provenance-ablation}.
+This section makes the storage and reading claims precise. The first result is a structural property of versioned, append-only storage. The second is a conditional statistical statement about delayed alignment. The remaining equations describe the read policy and its answer-risk decomposition.
 
-\subsubsection{Write time: progressive entity alignment}
+\subsubsection{Write time: state updates and progressive alignment}
 
-Let the immutable source stream be $S=D_1,\ldots,D_T$. Each extracted mention produces a feature vector $X_t$ containing name and content embeddings, attributes, and relation-endpoint co-occurrences. Let $Z$ be the latent entity assignment and let $M_t=(F_t,O_t,G_t)$ be the state after $t$ observations: concept families $F_t$, an append-only observation store $O_t$, and a relation graph $G_t$. An observation is never replaced by a summary; it remains linked to its exact source span.
-
+Let $\mathcal D$ be the set of source documents. For $D\in\mathcal D$, let $\mathcal E(D)$ be its Episodes. The $i$th observation is
+\[
+o_i=(D_i,e_i,\tau_i,x_i,\ell_i),
+\qquad e_i\in\mathcal E(D_i),
+\]
+with processing time $\tau_i$, extracted content $x_i$, and immutable source offset $\ell_i$. Let $O_t=\{o_1,\ldots,o_t\}$ and $M_t=(F_t,O_t,G_t)$ be the state after $t$ observations. The abstract write operator used in the proof is
 \begin{equation}
-  \begin{aligned}
-  O_{t+1}&=O_t\cup\{(X_{t+1},\mathrm{span}_{t+1})\},\\
-  I(Z;O_{1:t+1})&=I(Z;O_{1:t})+
-  I(Z;X_{t+1}\mid O_{1:t})\ge I(Z;O_{1:t}).
-  \end{aligned}
-  \label{eq:information-growth}
+\begin{aligned}
+F_{t+1}&=\mathsf{Align}(F_t,x_{t+1}),\\
+O_{t+1}&=O_t\cup\{o_{t+1}\},\\
+G_{t+1}&=\mathsf{Link}(G_t,F_{t+1},o_{t+1}),\\
+M_{t+1}&=(F_{t+1},O_{t+1},G_{t+1}).
+\end{aligned}
+\label{eq:app-state-transition}
 \end{equation}
+The operator $\mathsf{Align}$ may create a candidate family or merge compatible families; $\mathsf{Link}$ adds or redirects pointers. Neither operator changes the source addressed by $\ell_i$. The version chain supplies a projection $\pi_t$ such that $\pi_t(M_{t+1})=M_t$; this is the formal statement that a later state retains the earlier state for audit and revision.
 
-The second identity is a bookkeeping fact for an append-only stream: new observations can add information about identity, while no prior evidence is discarded. It explains why the system need not solve entity linking on the first mention. A low-confidence merge becomes an additional family (over-splitting); later observations can merge families by redirecting pointers while preserving both observation sets. A premature wrong merge is the dangerous error because it contaminates one search entry with two entities' evidence.
-
-\begin{proposition}[Revisability]
+\begin{proposition}[Revisability of delayed alignment]
 \label{prop:revisability}
-In the append-only data model, any coarsening of the current family partition is realizable at a later time by non-destructive merges, with no loss of evidence. If a store instead overwrites an entity with a running summary $\sigma$, then $I(Z;\sigma)\le I(Z;O)$ by the data processing inequality, with strict inequality whenever identity-discriminative detail is discarded.
+Let $\mathcal P_t$ be the partition of $O_t$ induced by the candidate families in $F_t$. For every coarsening $\mathcal P'_t$ of $\mathcal P_t$, there is a non-destructive pointer map that realizes $\mathcal P'_t$ without changing $O_t$ or any source offset.
 \end{proposition}
 
-\begin{proposition}[Convergence under pooled evidence]
+\begin{proof}
+A coarsening assigns each old family $f$ to a new family $m(f)$. Keep every observation $o_i=(D_i,e_i,\tau_i,x_i,\ell_i)$ unchanged and replace each family pointer by $m(f)$. Replace an edge $(f,r,o_i)$ in $G_t$ by $(m(f),r,o_i)$. The observation set and every $\ell_i$ are therefore identical before and after the operation, while observations formerly in different blocks can now be reached through the same family. This realizes $\mathcal P'_t$ without destructive rewriting. A split is also safe: it copies pointers into separate candidate families while leaving $O_t$ unchanged. If a system instead stores only a deterministic summary $\sigma=g(O_t)$, then $Z\to O_t\to\sigma$ is a Markov chain for the latent entity assignment $Z$. The data-processing inequality gives $I(Z;\sigma)\le I(Z;O_t)$; the inequality can be strict when $g$ discards information needed to distinguish two identities.
+\end{proof}
+
+\begin{proposition}[Convergence with pooled evidence]
 \label{prop:convergence}
-Assume features are i.i.d. conditional on entity identity and two distinct entities $e\ne e'$ emit distributions $P_e\ne P_{e'}$ with Chernoff information $C(P_e,P_{e'})>0$. For a same/different-entity test using $k$ pooled observations, the likelihood-ratio error obeys $\Pr[\mathrm{error}]\le\exp[-kC(P_e,P_{e'})]$ \citep{chernoff1952measure}. Hence the probability that a true merge, initially split under weak evidence, remains undetected falls exponentially with corroborating evidence.
+Assume that, conditional on entity identity, $k$ feature observations are independent. Let two entities $e\ne e'$ have distinguishable densities $p_e$ and $p_{e'}$ with Chernoff coefficient below one. Define their Chernoff coefficient and information by
+\[
+\rho_{e,e'}=\inf_{0\le s\le 1}
+\int p_e(x)^s p_{e'}(x)^{1-s}\,dx,
+\qquad
+C_{\mathrm{Ch}}(e,e')=-\log\rho_{e,e'}>0.
+\]
+For the equal-prior likelihood-ratio test of $e$ versus $e'$, the Bayes error after $k$ pooled observations satisfies \citep{chernoff1952measure}
+\begin{equation}
+\Pr[\mathrm{error}]
+\le \frac12\,\rho_{e,e'}^k
+=\frac12\exp\!\left[-kC_{\mathrm{Ch}}(e,e')\right].
+\label{eq:chernoff-bound}
+\end{equation}
 \end{proposition}
 
-The assumptions are idealized: real windows are correlated, extraction noise is heavy-tailed, and same-name different-entity pairs can have small $C$. The prediction is therefore qualitative rather than a measured convergence rate. It matches the implementation's window-batch adjudication and final consistency check, which re-test candidate families with more pooled context. In the paired engine runs, same-name duplicate groups fall 340$\to$124 (MAB) and 482$\to$99 (LME), while ingest calls per document fall 46--65\%; these are the measured reference values, not estimates of $C$. Relation edges serve two roles: endpoint co-occurrence helps distinguish hypotheses at write time, and the resulting graph supplies additional paths at read time.
+\begin{proof}
+For equal priors, the Bayes error is
+\[
+\Pr[\mathrm{error}]
+=\frac12\int \min\!\left\{\prod_{j=1}^{k}p_e(x_j),
+\prod_{j=1}^{k}p_{e'}(x_j)\right\}\,d x_{1:k}.
+\]
+For $0\le s\le1$, $\min\{a,b\}\le a^s b^{1-s}$. Applying this pointwise and using independence gives
+\[
+\Pr[\mathrm{error}]
+\le \frac12\prod_{j=1}^{k}
+\int p_e(x_j)^s p_{e'}(x_j)^{1-s}\,dx_j
+=\frac12\left(\int p_e(x)^s p_{e'}(x)^{1-s}\,dx\right)^k.
+\]
+Taking the infimum over $s$ yields \cref{eq:chernoff-bound}. The bound describes an ideal test; real extraction noise and correlated windows determine how closely an implementation approaches it.
+\end{proof}
+
+Thus, delayed alignment has a clear qualitative prediction: additional observations can make a correct merge easier to recognize, while an early wrong merge can contaminate one address with two histories. The measured duplicate-family counts (340$\to$124 on MAB and 482$\to$99 on LongMemEval) and ingest-call reductions (46--65\%) are system measurements, not estimates of $C_{\mathrm{Ch}}$.
 
 \subsubsection{Read time: hierarchical search and step-by-step reading}
 
-The derived layer is a search index, not an answer reconstruction. Let $A_t(q)$ map a question to concept families and relation neighborhoods, and let $\rho$ be an agent policy that chooses which candidates to open. The resulting source contexts form an adaptive chain
-\begin{equation}
-  C_0(q)\subseteq C_1(q)\subseteq\cdots\subseteq S,\qquad
-  a_{k+1}=\rho\bigl(q,M_t,C_{\le k},u_k\bigr),
-  \label{eq:progressive-disclosure}
-\end{equation}
-where $u_k$ is the agent's current uncertainty. Concept search gives a fast first lookup; family observations and relation edges refine it; the final read returns the exact episode and span. This is why the same representation supports both autonomous exploration and source-reading answers.
+Let $\mathcal S_t$ be the set of immutable source spans reachable from $M_t$. Given question $q$, set $C_0(q)=\varnothing$ and let
+\[
+a_{k+1}=\rho\bigl(q,M_t,C_k(q),u_k\bigr)
+\in\bigl(\mathcal S_t\setminus C_k(q)\bigr)\cup\{\mathsf{stop}\}.
+\]
+For a span action, set $C_{k+1}(q)=C_k(q)\cup\{a_{k+1}\}$; for $\mathsf{stop}$, keep $C_{k+1}=C_k$ and terminate. Induction on $k$ proves $\varnothing=C_0(q)\subseteq C_1(q)\subseteq\cdots\subseteq\mathcal S_t$: the base case is immediate, and the induction step adds either one member of $\mathcal S_t$ or nothing. The equation tracks source-opening actions; index-only lookups update the policy state $u_k$ without changing $C_k$. This is a property of the read protocol; it does not assume that every selected span is relevant.
 
-Define reconstruction distortion as the discrepancy between cited text and the source text it claims to represent, and search loss as failure to place the relevant source span in $C_k$. Since every path resolves candidates to verbatim source spans and the gate accepts only spans surfaced in the current episode, reconstruction distortion is zero by construction; all residual loss is search loss. A summarizing memory fixes a rate--distortion point at write time, whereas $\rho$ chooses the reading budget per query \citep{shannon1959coding}. The agent can stop after a compact concept lookup, or disclose more neighborhoods and source files when uncertainty remains, without changing the authority of the evidence.
+Let $A(q)$ be the compact concept/relation record used to choose candidates, $E_C$ the exact source spans opened from $C$, and $Y$ the answer-relevant fact. The chain rule is
+\begin{align}
+I(Y;A,E_C\mid Q=q)
+&=H(Y\mid Q=q)-H(Y\mid A,E_C,Q=q)\notag\\
+&=\bigl[H(Y\mid Q=q)-H(Y\mid A,Q=q)\bigr]\notag\\
+&\quad+\bigl[H(Y\mid A,Q=q)-H(Y\mid A,E_C,Q=q)\bigr]\notag\\
+&=I(Y;A\mid Q=q)+I(Y;E_C\mid A,Q=q).
+\label{eq:appendix-two-rate}
+\end{align}
+The first bracket is the information used to locate candidates; the second is the additional information obtained by opening source text. If a summary-only system replaces the source collection $S$ by $\widetilde S=f(S)$, then, conditional on $Q$, the Markov chain $Y\to S\to\widetilde S$ gives $I(Y;\widetilde S\mid Q)\le I(Y;S\mid Q)$ by data processing. Deep-Dream keeps $S$ available after the address layer has narrowed the search; it does not claim to maximize either mutual information term.
 
-\subsubsection{Two-rate decomposition and answer risk}
-Let $A(q)$ be the search record emitted by the derived graph index and let $E_C$ be the exact source spans selected by a candidate set $C$. For the answer-relevant variable $Y$, the chain rule gives
-\begin{equation}
-  I(Y;A,E_C\mid Q=q)=I(Y;A\mid Q=q)+I(Y;E_C\mid A,Q=q).
-  \label{eq:appendix-two-rate}
-\end{equation}
-The first term is the information supplied by the compact concept/relation search record; the second is the information obtained by opening source text. A summary-only memory replaces $S$ by a channel output $\widetilde S=f(S)$ and cannot increase $I(Y;\widetilde S\mid Q)$ beyond $I(Y;S\mid Q)$, whereas Deep-Dream leaves the source channel available after finding candidates. This is an information-bottleneck interpretation rather than a claim that the implementation solves the bottleneck variational problem \citep{tishby2000information}.
+For the answer-risk decomposition, let $R_q$ be the event that a relevant source span is in the final opened set $C_K(q)$, and let $V_q=\{\widehat Y=Y\}$ be the event that the answer is correct. The law of total probability gives
+\begin{align}
+\Pr[V_q\mid q]
+&=\Pr[R_q\mid q]\Pr[V_q\mid R_q,q]\notag\\
+&\quad+\Pr[\neg R_q\mid q]\Pr[V_q\mid\neg R_q,q]\notag\\
+&\ge \Pr[R_q\mid q]\Pr[V_q\mid R_q,q].
+\label{eq:appendix-answer-bound}
+\end{align}
+The first factor is affected by concept and relation navigation; the second is affected by reading and judging the opened evidence. This inequality is a bookkeeping decomposition, not an empirical accuracy bound.
 
-For completeness, define $R_q$ as the event that a relevant source span is found and $V_q$ as the event that the verifier answers correctly after reading it. Then
-\begin{equation}
-  \Pr[\widehat Y=Y\mid q]\ge \Pr[R_q\mid q]\Pr[V_q\mid R_q,q].
-  \label{eq:appendix-answer-bound}
-\end{equation}
-The graph index primarily affects whether relevant text is found, while step-by-step source reading affects verification after the text is opened. The citation check prevents a citation to text that was never opened; it does not guarantee semantic relevance. This factorization explains why improvements should be largest on questions requiring several mentions, temporal updates, or fact consolidation, and why a graph-only offline recall change need not predict the full online gain.
-
-The measured operating points are (27.5k tokens, 0.333), (43.2k, 0.400), and (328.6k, 0.710) Overall on Align+ at the extended sample; the Base generation, frozen at the paired sample, replicates the ordering (0.3025/0.3759/0.6695). The FC-MH scores (2--4 versus 67--70) show where adaptive source reading matters most. X7 bounds the derived channels' offline retrieval contribution at $\pm2.4$ points on the development slice; the graph index's online value is document-group selection and link expansion, exercised by the source-reading agent rather than removed by the ablation.
-
-\begin{samepage}
-\begin{proposition}[One-sided search error]
+\begin{proposition}[One-sided effect of an address error]
 \label{prop:one-sided}
-For any graph-index state, an error in $A_t$ can change which spans enter $C_k$ but cannot change the text or source identifier of a span admitted by the citation check. Thus a search error can miss relevant text, but it cannot fabricate a cited passage; the guarantee is that the cited source was opened, not that it entails the answer.
+Assume the citation gate accepts a citation $c$ only when $c$ is returned by the current read path and its offset resolves to the immutable source text. An error in $F_t$ or $G_t$ can change which spans enter $C_K(q)$, but cannot change the text or offset of an accepted citation.
 \end{proposition}
-\end{samepage}
 
-This framing adds mathematical structure without upgrading the causal wording of the ladder: the exponential statement is conditional, duplicate-name counts are a proxy, and the measured ladder remains a systems comparison.
+\begin{proof}
+The gate's acceptance predicate is
+\[
+\mathsf{Accept}(c)=
+\mathbf 1\{c\in C_K(q)\}
+\mathbf 1\{\mathsf{resolve}(c)=\mathrm{source}(D,\ell)\}.
+\]
+The first factor depends on the derived address layer and may be zero for a relevant span. The second factor reads the immutable pair $(D,\ell)$ and is unchanged by edits to $F_t$ or $G_t$. Hence an address error can cause missing evidence, but cannot substitute new text for an accepted source span. The proposition does not guarantee that the accepted span semantically entails the answer.
+\end{proof}
+
+The conditional results above explain the design measurements without turning them into unmeasured causal claims: the Chernoff statement is an idealized prediction, duplicate-family counts are a proxy for consolidation, and the benchmark results remain the empirical test of the complete system.
 
 \input{figures/TABLE_mem0_locomo_baselines}
 \input{figures/TABLE_zep_dmr_baselines}

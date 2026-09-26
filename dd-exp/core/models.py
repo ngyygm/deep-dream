@@ -1,0 +1,101 @@
+"""
+核心数据结构定义
+
+Entity / Relation / Episode / ContentPatch DTO，作为流水线适配对象。
+"""
+from datetime import datetime
+from typing import Optional
+from dataclasses import dataclass
+
+
+@dataclass(slots=True)
+class Episode:
+    """Episode — 知识图谱的一等节点
+
+    每次写入产生一个 Episode，包含当时的记忆上下文和原始文本。
+    抽取出的实体/关系通过 MENTIONS 边连接回 Episode，实现事实溯源。
+    """
+    absolute_id: str
+    content: str  # Markdown格式的完整描述
+    event_time: datetime  # 事件发生时间
+    source_document: str  # 来源文档名称
+    processed_time: Optional[datetime] = None  # 系统处理时间
+    activity_type: Optional[str] = None  # 可选的活动类型，如"阅读小说"、"处理文档"等
+    episode_type: Optional[str] = None  # Episode 类型: "narrative" | "fact" | "conversation"
+    heading_path: Optional[str] = None  # full heading breadcrumb (e.g. "Chapter 1 > Section 2")
+
+
+@dataclass(slots=True)
+class Entity:
+    """实体 - 带版本链"""
+    absolute_id: str  # 主键，版本唯一标识符（DB 列名 id）
+    family_id: str  # 实体的家族ID，同一实体的不同版本具有相同的family_id
+    name: str  # 实体名称
+    content: str  # 实体的自然语言描述
+    event_time: datetime  # 事件发生时间
+    processed_time: datetime  # 系统实际处理时间
+    episode_id: str  # 记录当前更新是基于什么记忆环境下的判断
+    source_document: str  # 来源文档名称
+    entity1_family_id: str = ""  # 第一个实体的家族ID（冗余存储，便于查询）
+    entity2_family_id: str = ""  # 第二个实体的家族ID（冗余存储，便于查询）
+    version_seq: int = 1  # 版本序号，每次跨 Episode 提及递增
+    embedding: Optional[bytes] = None  # Embedding向量（BLOB格式，可选）
+    valid_at: Optional[datetime] = None  # 事实生效时间
+    attributes: Optional[str] = None  # JSON 字符串，结构化属性字典
+    confidence: Optional[float] = None  # 置信度评分 (0.0-1.0)
+    content_format: str = "plain"  # "plain" (旧) | "markdown" (新)
+    community_id: Optional[str] = None  # 社区检测分配的社区ID
+    _pending_patches: list = None  # 内部用：ContentPatch 缓冲，flush 后清空
+    _score: float = 0.0  # search relevance score (BM25/embedding)
+
+
+@dataclass(slots=True)
+class Relation:
+    """关系 - 带版本链的概念边（无向关系）
+
+    关系是无向的，不区分方向，只表示两个实体之间的关联。
+    entity1_absolute_id 和 entity2_absolute_id 只是用来标识关系涉及的两个实体，没有方向性。
+    存储时，实体对按字母顺序排序（entity1 < entity2），确保 (A,B) 和 (B,A) 被视为同一个关系。
+    """
+    absolute_id: str  # 主键，版本唯一标识符（DB 列名 id）
+    family_id: str  # 关系的家族ID，同一关系的不同版本具有相同的family_id
+    entity1_absolute_id: str  # 第一个实体的绝对ID（版本唯一ID，可以通过此ID找到family_id），按字母顺序排序
+    entity2_absolute_id: str  # 第二个实体的绝对ID（版本唯一ID，可以通过此ID找到family_id），按字母顺序排序
+    content: str  # 关系的自然语言描述
+    event_time: datetime  # 事件发生时间
+    processed_time: datetime  # 系统实际处理时间
+    episode_id: str  # 记录当前更新是基于什么记忆环境下的判断
+    source_document: str  # 来源文档名称
+    entity1_family_id: str = ""  # 第一个实体的家族ID（冗余存储，便于查询）
+    entity2_family_id: str = ""  # 第二个实体的家族ID（冗余存储，便于查询）
+    version_seq: int = 1  # 版本序号，每次跨 Episode 提及递增
+    embedding: Optional[bytes] = None  # Embedding向量（BLOB格式，可选）
+    valid_at: Optional[datetime] = None  # 事实生效时间
+    attributes: Optional[str] = None  # JSON 字符串，结构化属性字典
+    confidence: Optional[float] = None  # 置信度评分 (0.0-1.0)
+    provenance: Optional[str] = None  # JSON: [{"episode_id": "...", "confidence": 0.9}, ...]
+    content_format: str = "plain"  # "plain" (旧) | "markdown" (新)
+    evidence_text: Optional[str] = None  # the source text evidence for this relation
+    evidence_start_offset: Optional[int] = None
+    evidence_end_offset: Optional[int] = None
+    evidence_line_start: Optional[int] = None
+    evidence_line_end: Optional[int] = None
+    _pending_patches: list = None  # 内部用：ContentPatch 缓冲，flush 后清空
+    _score: float = 0.0  # search relevance score (BM25/embedding)
+
+
+@dataclass(slots=True)
+class ContentPatch:
+    """Section 级变更记录"""
+    uuid: str
+    target_type: str  # "Entity" | "Relation"
+    target_absolute_id: str  # 哪个版本节点
+    target_family_id: str  # 逻辑 ID
+    section_key: str  # 哪个 section
+    change_type: str  # "added" | "modified" | "unchanged" | "removed" | "restructured"
+    old_hash: str  # 旧 section 内容 hash
+    new_hash: str  # 新 section 内容 hash
+    diff_summary: str  # 变更摘要
+    source_document: str  # 触发来源
+    event_time: datetime
+

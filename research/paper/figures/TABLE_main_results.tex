@@ -8,18 +8,18 @@
  & \multicolumn{2}{c}{Direct retrieval}
  & \multicolumn{2}{c}{Tool-assisted reading}
  & \multicolumn{2}{c}{Source reading}
- & \multicolumn{1}{c}{Align+ gain} \\
+ & \multicolumn{1}{c}{\shortstack{Source$-$Direct\\(Align+)}} \\
 \cmidrule(lr){2-3}\cmidrule(lr){4-5}\cmidrule(lr){6-7}\cmidrule(lr){8-8}
 Task / domain
  & Base & Align+ & Base & Align+ & Base & Align+
- & \shortstack{Align+\\gain} \\
+ & \shortstack{Source$-$Direct\\(Align+)} \\
 \midrule
 \rowcolor{blue!10}
 \multicolumn{8}{@{}l}{\textbf{AR: Accurate Retrieval}} \\
 SH-QA
  & 54.0 & 48.0 & 84.0 & 72.0 & \textbf{94.0} & \underline{92.0} & 44.0 \\
 MH-QA$^{\ddagger}$
- & -- & 22.0 & -- & \underline{42.0} & -- & \textbf{77.0} & -- \\
+ & -- & 22.0 & -- & \underline{42.0} & -- & \textbf{77.0} & 55.0 \\
 LongMemEval-S$^{*}$
  & 26.7 & 41.7 & 43.3 & 51.7 & \textbf{90.0} & \underline{88.3} & 46.6 \\
 EventQA
@@ -30,7 +30,7 @@ EventQA
 MCC, icl\_clinic150
  & 4.0 & 2.0 & 3.0 & 2.0 & \underline{43.0} & \textbf{46.0} & 44.0 \\
 Recom$^{\ddagger}$
- & -- & \underline{3.2} & -- & \underline{3.2} & -- & \textbf{59.8} & -- \\
+ & -- & \underline{3.2} & -- & \underline{3.2} & -- & \textbf{59.8} & 56.6 \\
 \midrule
 \rowcolor{orange!12}
 \multicolumn{8}{@{}l}{\textbf{LRU: Long-range Understanding}} \\
@@ -48,12 +48,12 @@ FC-MH
 \midrule
 \rowcolor{gray!12}
 \textbf{Overall ($n=767$)}
- & 30.3 & 32.4 & 37.6 & 40.7 & \textbf{66.9} & \underline{65.1} & 32.7 \\
+ & 30.2 & 32.4 & 37.6 & 40.7 & \textbf{66.9} & \underline{65.1} & 32.7 \\
 Overall ($n{=}1074$, extended)
- & -- & 33.3 & -- & 40.0 & -- & \textbf{71.0} & -- \\
+ & -- & 33.3 & -- & 40.0 & -- & \textbf{71.0} & 37.7 \\
 \bottomrule
 \end{tabular*}
-\caption{MemoryAgentBench; scores are official component scores $\times100$. Task rows and the Overall ($n{=}767$) row use the paired sample shared by both engines. $^{\ddagger}$ marks the two task groups added when the Align+ engine was extended in place to $n{=}1074$ (RULER-421K multi-hop QA and the full Redial recommendation corpus); the Base run was frozen at the paired sample, and both task groups exceed the full-context row's strict character budget (\cref{app:sampling}), so they carry no same-model coverage. The Overall ($n{=}1074$) row is that extended sample; scores from the two samples are never subtracted. Bold/underlined entries are best/second-best within each task and sample, $^{*}$ marks sampled LongMemEval-S, and $^{\dagger}$ marks the singleton $\infty$Bench-Sum row of the paired sample (a second task group enters only the extended sample, so LRU remains directional: $n{=}7$ paired, $14$ extended).}
+\caption{MemoryAgentBench scores (percent). The last column is Source$-$Direct within Align+; it is reported when both Align+ paths are available. Bold and underlining mark the best and second-best entry within each row.}
 \label{tab:main-results}
 \end{table*}
 

@@ -1,0 +1,828 @@
+"""
+DeepDream 本地文档优先记忆库 API
+
+一个以自然语言为核心的统一记忆图服务。系统只有两个核心职责：
+  - Remember：接收自然语言文本或文档，自动构建概念实体/关系图。
+  - Find：通过语义检索从总图中唤醒相关的局部记忆区域。
+
+单库模式：所有旧 graph_id 输入都会归一为 library。
+
+路由已拆分至 server/routes/ 下的 route 模块，此文件仅作为应用工厂。
+"""
+from __future__ import annotations
+
+import argparse
+import atexit
+import errno
+import hashlib
+import logging
+import mimetypes
+import os
+import signal
+import sys
+import threading
+import time
+from pathlib import Path
+from typing import Any, Dict, Optional
+
+from flask import Flask, abort, jsonify, make_response, redirect, request
+from werkzeug.exceptions import NotFound, RequestEntityTooLarge
+
+# sys.path bootstrap for direct-script execution — core.* imports must follow it
+_project_root = str(Path(__file__).resolve().parent.parent.parent)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
+from core.log import info as _log_info, error as _log_error
+
+from core.server.config import load_config
+from core.server.monitor import LOG_MODE_DETAIL, LOG_MODE_MONITOR, SystemMonitor
+from core.server.registry import GraphRegistry
+from core.server import auth as auth_module
+from core.server.llm_utils import check_llm_available, call_llm_with_backoff
+
+
+logger = logging.getLogger(__name__)
+
+mimetypes.add_type("application/javascript", ".js")
+mimetypes.add_type("application/javascript", ".mjs")
+mimetypes.add_type("text/css", ".css")
+
+_MUTATING_METHODS = frozenset(("POST", "PUT", "DELETE", "PATCH"))
+_MUTATING_JSON_METHODS = frozenset(("POST", "PUT", "PATCH"))
+# Re-export helpers for backward-compatible imports
+from core.server.api_helpers import (  # noqa: F401
+    tcp_bind_probe as _tcp_bind_probe,
+    get_port_pids as _get_port_pids,
+    kill_port_occupants as _kill_port_occupants,
+    resolve_listen_port as _resolve_listen_port,
+    check_storage_writable as _check_storage_writable,
+)
+
+
+def create_app(
+    registry,
+    config: Optional[Dict[str, Any]] = None,
+    system_monitor: Optional[SystemMonitor] = None,
+) -> Flask:
+    static_dir = Path(__file__).resolve().parent / "static"
+    app = Flask(__name__, static_folder=str(static_dir), static_url_path="/static")
+    app.json.ensure_ascii = False
+    app.config["system_monitor"] = system_monitor
+    app.config["registry"] = registry
+    app.config["config"] = config or {}
+    # Bound request parsing before route code or document converters see the
+    # payload.  The remember endpoint accepts up to 10 MiB of text; leave a
+    # small multipart/JSON envelope allowance and make the limit configurable.
+    try:
+        app.config["MAX_CONTENT_LENGTH"] = max(
+            1_048_576, int(app.config["config"].get("max_request_bytes", 12 * 1024 * 1024))
+        )
+    except (TypeError, ValueError):
+        app.config["MAX_CONTENT_LENGTH"] = 12 * 1024 * 1024
+
+    # Build a cache-busting token from the actual static files.  A directory's
+    # mtime does not necessarily change when a file is edited (notably on
+    # macOS and after wheel extraction), which otherwise leaves browsers
+    # running stale JavaScript after a deploy.
+    static_fingerprint = hashlib.sha256()
+    for static_file in sorted(p for p in static_dir.rglob("*") if p.is_file()):
+        try:
+            static_fingerprint.update(str(static_file.relative_to(static_dir)).encode("utf-8"))
+            # Hash bytes, not only mtime/size: deployment tools can preserve
+            # timestamps (or rewrite a file to the same length), which would
+            # otherwise leave clients with stale JavaScript after a release.
+            static_fingerprint.update(static_file.read_bytes())
+        except OSError:
+            continue
+    _static_version = static_fingerprint.hexdigest()[:16]
+
+    # CORS：同源请求不带 Origin；开发时允许 localhost/127.0.0.1 的任意
+    # 端口，避免前端通过 Vite/静态预览端口调用 API 时被悄悄拦截。
+    from urllib.parse import urlsplit
+
+    def _is_allowed_origin(origin: str | None) -> bool:
+        if not origin:
+            return False
+        try:
+            parsed = urlsplit(origin)
+            return parsed.scheme in {"http", "https"} and parsed.hostname in {
+                "localhost", "127.0.0.1", "::1",
+            }
+        except ValueError:
+            return False
+
+    def _is_same_request_origin(origin: str | None) -> bool:
+        if not origin:
+            return False
+        try:
+            supplied = urlsplit(origin)
+            expected = urlsplit(request.host_url)
+            return (
+                supplied.scheme == expected.scheme
+                and supplied.hostname == expected.hostname
+                and supplied.port == expected.port
+            )
+        except ValueError:
+            return False
+
+    @app.after_request
+    def _cors_headers(response):
+        origin = request.environ.get("HTTP_ORIGIN")
+        if _is_allowed_origin(origin):
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Vary"] = "Origin"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Graph-Id, X-API-Key"
+        # Security: Add security headers
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        # Comprehensive CSP policy (relaxed for local/LAN access)
+        csp_directives = [
+            "default-src 'self'",
+            # Inline event handlers remain for legacy page templates; avoid
+            # unsafe-eval so injected content cannot turn strings into code.
+            "script-src 'self' 'unsafe-inline'",
+            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+            "img-src 'self' data: https: blob:",
+            "font-src 'self' data: https://fonts.gstatic.com",
+            "connect-src 'self' http://localhost:* https://localhost:* http://127.0.0.1:* https://127.0.0.1:* ws://localhost:* ws://127.0.0.1:*",
+            "object-src 'none'",
+            "base-uri 'self'",
+            "form-action 'self'",
+            "frame-ancestors 'none'",
+        ]
+        response.headers["Content-Security-Policy"] = "; ".join(csp_directives)
+        response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+        if request.path.startswith("/static/"):
+            if request.path.endswith((".js", ".css", ".woff2", ".woff", ".ttf")):
+                response.headers["Cache-Control"] = "public, max-age=0, must-revalidate"
+            elif request.path.endswith((".html",)):
+                response.headers["Cache-Control"] = "no-cache"
+        elif request.path in ("/", "/index.html"):
+            response.headers["Cache-Control"] = "no-cache, no-store"
+        return response
+
+    @app.before_request
+    def _cors_preflight():
+        origin = request.environ.get("HTTP_ORIGIN")
+        if origin and not _is_same_request_origin(origin):
+            return jsonify({"success": False, "error": "Cross-origin request denied"}), 403
+        if request.method == "OPTIONS":
+            return make_response("", 204)
+
+    @app.before_request
+    def _reject_cross_site_mutations():
+        """CORS is not a CSRF control: reject cross-site writes explicitly."""
+        if request.method not in {"POST", "PUT", "PATCH", "DELETE"}:
+            return None
+        origin = request.environ.get("HTTP_ORIGIN")
+        fetch_site = (request.headers.get("Sec-Fetch-Site") or "").lower()
+        if fetch_site in {"cross-site", "same-site"} or (
+            origin and not _is_same_request_origin(origin)
+        ):
+            return jsonify({"success": False, "error": "Cross-origin mutation denied"}), 403
+        return None
+
+    @app.before_request
+    def _record_start():
+        _now = time.time()
+        request.start_time = _now
+        request._monitor_start = _now
+        # Eagerly validate JSON on POST/PUT/PATCH — before route handlers run
+        if request.method in ("POST", "PUT", "PATCH") and request.content_type and "json" in request.content_type:
+            if request.data and request.get_json(silent=True) is None:
+                from flask import jsonify
+                return jsonify({
+                    "success": False,
+                    "error": "请求体不是有效的 JSON（请检查格式）",
+                    "hint": "Check that the request body is valid JSON. Keys must be quoted, no trailing commas.",
+                    "elapsed_ms": 0,
+                }), 400
+
+    @app.after_request
+    def _track_access(response):
+        monitor = app.config.get("system_monitor")
+        if monitor is not None and hasattr(request, "_monitor_start"):
+            duration_ms = (time.time() - request._monitor_start) * 1000
+            monitor.access_tracker.record(
+                method=request.method,
+                path=request.path,
+                status_code=response.status_code,
+                duration_ms=duration_ms,
+                graph_id=getattr(request, "graph_id", None),
+            )
+            # Auto-log server errors (5xx) to event_log so they appear in system logs
+            if response.status_code >= 500:
+                monitor.event_log.error(
+                    "API",
+                    f"{request.method} {request.path} → {response.status_code}",
+                )
+        return response
+
+    config = config or {}
+
+    # Configure authentication from config
+    auth_config = config.get("auth", {})
+    if not isinstance(auth_config, dict):
+        auth_config = {}
+    else:
+        auth_config = dict(auth_config)
+    _bind_host = str(config.get("host", "127.0.0.1")).strip().lower()
+    _is_loopback_host = _bind_host in {"127.0.0.1", "localhost", "::1"}
+    # A network-facing listener is never anonymous by accident.  Enforce this
+    # before init_auth so even ``auth.enabled=false`` cannot reactivate the
+    # predictable development key on 0.0.0.0/LAN addresses.
+    if not _is_loopback_host:
+        auth_config.update({"enabled": True, "strict_mode": True, "allow_dev_key": False})
+        config["auth"] = auth_config
+
+    # Initialize authentication only after the effective network policy is
+    # known; init_auth decides whether the development fallback key may exist.
+    auth_module.init_auth(config)
+
+    auth_enabled = auth_module._strict_bool(
+        auth_config.get("enabled"), auth_module.authentication_configured(config)
+    )
+    # Once a signing secret is configured, fail closed by default.  Local
+    # installs with no secret remain usable without auth; deployments can
+    # explicitly opt out with auth.strict_mode=false if they truly need that.
+    strict_mode = auth_module._strict_bool(
+        auth_config.get("strict_mode"), bool(auth_module.SECRET_KEY)
+    )
+    # Never expose an authenticated-by-default application on a non-loopback
+    # interface without a real credential source.  Previously this combination
+    # silently granted unauthenticated ``read`` permissions when no secret was
+    # present (even though the dev API key had been disabled).
+    _has_credential_source = bool(
+        auth_module.SECRET_KEY
+        or auth_config.get("api_keys_file")
+        or os.environ.get("DEEPDREAM_API_KEYS_FILE")
+    )
+    if not _is_loopback_host and not _has_credential_source:
+        strict_mode = True
+        logger.error(
+            "Non-loopback host without SECRET_KEY/API-key file: protected APIs are locked; "
+            "configure credentials before exposing this service"
+        )
+
+    # Public endpoints that don't require authentication
+    _PUBLIC_EXACT_ROUTES = frozenset({
+        "/", "/health", "/api", "/api/", "/api/v1/",
+        "/api/v1/routes", "/api/v1/health", "/favicon.ico",
+    })
+    _PUBLIC_PREFIX_ROUTES = ("/static/",)
+
+    def _is_public_route(path: str, method: str = "GET") -> bool:
+        """Check if a path is a public endpoint.
+
+        Do not use ``startswith('/')`` for the root route: every Flask path
+        starts with a slash, which previously made strict authentication a
+        no-op for the entire API.
+        """
+        if path in _PUBLIC_EXACT_ROUTES or any(
+            path.startswith(prefix) for prefix in _PUBLIC_PREFIX_ROUTES
+        ):
+            return True
+        # The dashboard is a client-side SPA.  Its non-API fallback paths
+        # must remain public so a browser can refresh /memory or /settings;
+        # this does not expose any data because all /api/* requests still go
+        # through authentication and authorization.
+        return method.upper() == "GET" and not path.startswith(("/api/", "/health"))
+
+    @app.before_request
+    def _authenticate_request():
+        """Authenticate incoming requests using the auth module."""
+        # Skip authentication if disabled
+        if not auth_enabled:
+            return None
+
+        # Skip authentication for public routes
+        if _is_public_route(request.path, request.method):
+            return None
+
+        # Skip OPTIONS requests for CORS preflight
+        if request.method == "OPTIONS":
+            return None
+
+        # Try API key authentication
+        api_key = request.headers.get("X-API-Key", "")
+        if api_key:
+            is_valid, permissions = auth_module._validate_api_key(api_key)
+            if is_valid:
+                # Store auth info in Flask's g object
+                from flask import g
+                g.authenticated = True
+                g.auth_method = "api_key"
+                # Never put even a prefix of the credential in logs/monitor
+                # records; use a stable non-reversible identifier instead.
+                key_digest = hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:12]
+                g.user_id = f"api_key:{key_digest}"
+                g.permissions = permissions
+                return None
+            else:
+                return jsonify({
+                    "success": False,
+                    "error": "Invalid API key"
+                }), 401
+
+        # Try JWT authentication
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:]
+            is_valid, permissions, payload = auth_module._validate_jwt_token(token)
+            if is_valid:
+                from flask import g
+                g.authenticated = True
+                g.auth_method = "jwt"
+                g.user_id = payload.get("user_id") if payload else None
+                g.permissions = permissions
+                return None
+            else:
+                return jsonify({
+                    "success": False,
+                    "error": "Invalid or expired token"
+                }), 401
+
+        # No authentication provided
+        if strict_mode:
+            return jsonify({
+                "success": False,
+                "error": "Authentication required. Provide X-API-Key or Authorization: Bearer <token> header."
+            }), 401
+
+        # In non-strict mode, allow the request but log a warning
+        logger.warning(f"Unauthenticated request to {request.path} (auth enabled but not enforced)")
+
+        # Set default permissions for unauthenticated requests in dev mode
+        from flask import g
+        g.authenticated = False
+        g.permissions = {"read"}  # Default to read-only access
+        return None
+
+    @app.before_request
+    def _authorize_request():
+        """Enforce the permissions assigned by the authentication hook."""
+        if not auth_enabled or request.method == "OPTIONS" or _is_public_route(request.path, request.method):
+            return None
+        from flask import g
+        required = auth_module.required_permission(request.method, request.path)
+        if required and not auth_module.has_permission(getattr(g, "permissions", set()), required):
+            return jsonify({
+                "success": False,
+                "error": "Permission denied",
+                "required_permission": required,
+            }), 403
+        return None
+
+    # 不需要 graph_id 的路由（白名单）
+    _NO_GRAPH_ID_ROUTES = frozenset([
+        "/", "/api/v1/routes", "/api/v1/health",
+    ])
+    # 系统 API 前缀（不需要 graph_id）
+    _SYSTEM_API_PREFIX = "/api/v1/system/"
+
+    # 简单内存限流（按 IP + graph_id，滑动窗口）
+    from collections import deque as _deque
+    _rate_limit_store: Dict[str, _deque] = {}
+    _rate_limit_lock = threading.Lock()
+    try:
+        _RATE_LIMIT = max(0, min(int(config.get("rate_limit_per_minute", 0)), 100_000))
+    except (TypeError, ValueError):
+        logger.warning("Invalid rate_limit_per_minute; rate limiting disabled")
+        _RATE_LIMIT = 0
+    _RATE_WINDOW = 60.0  # 秒
+
+    @app.before_request
+    def _validate_content_type():
+        """Validate Content-Type for JSON endpoints to prevent CSRF."""
+        # Skip validation for GET/DELETE/OPTIONS and non-JSON endpoints
+        if request.method not in _MUTATING_JSON_METHODS:
+            return
+        # Skip for file upload endpoints
+        if request.path.startswith("/api/v1/remember") and request.content_type and "multipart" in request.content_type:
+            return
+        # For JSON endpoints, require application/json content type.  Plain
+        # HTML forms are deliberately rejected: browsers can submit them to a
+        # loopback service without CORS permission and mutate local data.
+        if request.content_type and not request.content_type.startswith("application/json"):
+            return jsonify({"success": False, "error": "Invalid Content-Type. Use application/json"}), 415
+
+    @app.before_request
+    def _resolve_graph_id():
+        """在请求进入端点前解析 graph_id 并挂到 request.graph_id 上。
+        单库模式下保留 graph_id 兼容解析，但所有请求最终映射到 library。"""
+        path = request.path
+        if path in _NO_GRAPH_ID_ROUTES or path.startswith(_SYSTEM_API_PREFIX):
+            return
+        gid = ""
+        # 1. Header: X-Graph-Id（前端 / MCP 客户端常用）
+        gid = (request.headers.get("X-Graph-Id") or "").strip()
+        if gid:
+            try:
+                GraphRegistry.validate_graph_id(gid)
+            except ValueError as e:
+                return jsonify({"success": False, "error": str(e)}), 400
+            request.graph_id = GraphRegistry.normalize_graph_id(gid)
+            return
+        # 2. Request body (POST/PUT/DELETE/PATCH)
+        if request.method in _MUTATING_METHODS:
+            body = request.get_json(silent=True)
+            if isinstance(body, dict):
+                raw_gid = body.get("graph_id")
+                if raw_gid is not None and not isinstance(raw_gid, str):
+                    return jsonify({"success": False, "error": "graph_id must be a string"}), 400
+                gid = (raw_gid or "").strip()
+        # 3. Form data
+        if not gid:
+            gid = (request.form.get("graph_id") or "").strip()
+        # 4. Query parameter
+        if not gid:
+            gid = (request.args.get("graph_id") or "").strip()
+        # 5. Default
+        if not gid:
+            gid = "library"
+        try:
+            GraphRegistry.validate_graph_id(gid)
+        except ValueError as e:
+            return jsonify({"success": False, "error": str(e)}), 400
+        request.graph_id = GraphRegistry.normalize_graph_id(gid)
+
+    @app.before_request
+    def _rate_limit_check():
+        if _RATE_LIMIT <= 0:
+            return
+        now = time.time()
+        # Rate limit is scoped per (IP, graph_id) to prevent cross-graph interference
+        client_ip = request.remote_addr or "unknown"
+        gid = getattr(request, "graph_id", "library")
+        rate_key = f"{client_ip}|{gid}"
+        with _rate_limit_lock:
+            timestamps = _rate_limit_store.get(rate_key)
+            if timestamps is None:
+                _rate_limit_store[rate_key] = _deque([now], maxlen=_RATE_LIMIT + 10)
+                return
+            # O(1) eviction: expired timestamps are always at the front (arrive in order)
+            cutoff = now - _RATE_WINDOW
+            while timestamps and timestamps[0] <= cutoff:
+                timestamps.popleft()
+            timestamps.append(now)
+            # Periodic stale-key cleanup (~1% of requests when store grows large)
+            if len(_rate_limit_store) > 1000 and (int(now * 1000) % 100 < 1):
+                stale_keys = [k for k, ts in _rate_limit_store.items()
+                              if not ts or ts[-1] < cutoff]
+                for k in stale_keys:
+                    del _rate_limit_store[k]
+            if len(timestamps) > _RATE_LIMIT:
+                return jsonify({"success": False, "error": "请求过于频繁，请稍后再试"}), 429
+
+    # 向后兼容：/api/<path> → /api/v1/<path>（308 永久重定向）
+    # 仅对非 v1/ 开头的路径重定向，避免 /api/v1/xxx → /api/v1/v1/xxx 双重前缀
+    @app.route("/api/<path:subpath>", methods=["GET", "POST", "PUT", "DELETE"])
+    def _api_redirect(subpath):
+        if subpath.startswith("v1/"):
+            # 已含 v1 前缀的路径到达此 catch-all，说明路由不存在，返回 404
+            abort(404)
+        return redirect(f"/api/v1/{subpath}", code=308)
+
+    @app.route("/api")
+    def _api_root_redirect():
+        return redirect("/api/v1/", code=308)
+
+    # ── Register all Route modules ────────────────────────────────────
+    from core.server.routes.system import system_bp
+    from core.server.routes.remember import remember_bp
+    from core.server.routes.concepts import concepts_bp
+    from core.server.routes.documents import documents_bp
+    from core.server.routes.library import library_bp
+
+    app.register_blueprint(system_bp)
+    app.register_blueprint(remember_bp)
+    app.register_blueprint(documents_bp)
+    app.register_blueprint(concepts_bp)
+    app.register_blueprint(library_bp)
+
+    # JSON 404 for API routes (HTML 404 for everything else)
+    @app.errorhandler(404)
+    def _api_not_found(e):
+        if request.path.startswith("/api/"):
+            return jsonify({"success": False, "error": f"Endpoint not found: {request.path}", "elapsed_ms": 0}), 404
+        return e
+
+    @app.errorhandler(RequestEntityTooLarge)
+    def _request_too_large(e):
+        return jsonify({
+            "success": False,
+            "error": "请求体过大",
+            "max_bytes": app.config.get("MAX_CONTENT_LENGTH"),
+        }), 413
+
+    # ── Compact response middleware (?compact=true) ────────────────────
+    from flask import g as _g
+    from core.server.agent_api import (
+        strip_bulky, compact_lists, compact_item, error_hint as _error_hint_fn,
+    )
+
+    @app.before_request
+    def _detect_compact():
+        _g.compact = request.args.get("compact", "").lower() in ("true", "1", "yes")
+
+    @app.after_request
+    def _apply_compact(response):
+        if not getattr(_g, 'compact', False):
+            return response
+        if response.content_type and 'json' not in response.content_type:
+            return response
+        try:
+            data = response.get_json(silent=True)
+            if not isinstance(data, dict):
+                return response
+            # Error responses: add hint
+            if not data.get("success", True) and "error" in data:
+                err_msg = data["error"]
+                hint = _error_hint_fn(err_msg)
+                if hint:
+                    data["hint"] = hint
+                response.set_data(jsonify(data).get_data())
+                return response
+            # Success responses: strip bulky + compact lists
+            inner = data.get("data", data)
+            if isinstance(inner, dict):
+                inner = strip_bulky(inner)
+                inner = compact_lists(inner)
+                # Also compact single-item responses (GET /concepts/<id>)
+                # compact_lists only handles lists, so detect single dicts
+                # that look like concept/relation/version items by their keys.
+                _COMPACT_KEYS = ("family_id", "absolute_id", "name", "role",
+                                  "content", "confidence")
+                if inner.get("family_id") and inner.get("name"):
+                    # This looks like a single concept/relation/version — apply compact
+                    inner = compact_item(inner)
+                if "data" in data:
+                    data["data"] = inner
+                else:
+                    data.update(inner)
+            response.set_data(jsonify(data).get_data())
+        except Exception:
+            pass
+        return response
+
+    # Cleanup shared thread pools on shutdown
+    def _shutdown_pools():
+        from core.server.routes.concepts import _shared_pool as _concept_pool
+
+        _concept_pool.shutdown(wait=False)
+    atexit.register(_shutdown_pools)
+
+    # ── SPA fallback routes (must be last) ─────────────────────────────────
+    _API_PREFIXES = ("/api/", "/health")
+
+    def _render_index():
+        """Serve index.html with cache-busting version injected."""
+        index_path = static_dir / "index.html"
+        html = index_path.read_text(encoding="utf-8")
+        html = html.replace("{{STATIC_VERSION}}", _static_version)
+        resp = make_response(html)
+        resp.headers["Content-Type"] = "text/html; charset=utf-8"
+        resp.headers["Cache-Control"] = "no-cache"
+        return resp
+
+    @app.route("/", methods=["GET"])
+    def serve_index():
+        return _render_index()
+
+    @app.route("/<path:path>", methods=["GET"])
+    def serve_spa(path):
+        # API 路由不拦截
+        if path == "health" or path.startswith("health/") or path == "api" or path.startswith("api/"):
+            return abort(404)
+        # 尝试静态文件
+        try:
+            return app.send_static_file(path)
+        except NotFound:
+            return _render_index()
+
+    return app
+
+
+def _check_llm_available(processor) -> tuple[bool, str | None]:
+    """启动前握手：检查上游 LLM；若启用 alignment 专用通道，再按步骤 6/7 优先级检查对齐端点。"""
+    return check_llm_available(processor)
+
+
+def _call_llm_with_backoff(processor, prompt, timeout=60, max_waits=5, backoff_base_seconds=3):
+    """调用 LLM（指数退避重试）—— 代理到共享模块。"""
+    return call_llm_with_backoff(processor, prompt, timeout=timeout, max_waits=max_waits, backoff_base_seconds=backoff_base_seconds)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="DeepDream 自然语言记忆图 API（Remember + Find）")
+    parser.add_argument("--config", type=str, required=True, help="配置文件路径（如 service_config.json）")
+    parser.add_argument("--host", type=str, default=None, help="覆盖配置中的 host")
+    parser.add_argument("--port", type=int, default=None, help="覆盖配置中的 port")
+    parser.add_argument(
+        "--log-mode",
+        type=str,
+        choices=[LOG_MODE_DETAIL, LOG_MODE_MONITOR],
+        default=None,
+        help="日志模式：detail 输出细节；monitor 固定刷新监控面板",
+    )
+    parser.add_argument(
+        "--monitor-refresh",
+        type=float,
+        default=None,
+        help="monitor 模式下面板刷新周期（秒，默认 1.0）",
+    )
+    parser.add_argument(
+        "--skip-llm-check",
+        action="store_true",
+        help="跳过启动前 LLM 握手（仅适合调试 Find；Remember 仍可能在运行时失败）",
+    )
+    parser.add_argument(
+        "--auto-port",
+        action="store_true",
+        help="若配置端口被占用，自动尝试后续连续端口（最多 +10）",
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="输出更详细的服务日志（不会开启 Flask 调试器或自动重载）",
+    )
+    parser.add_argument("--debug", action="store_true", help="开启 Flask 调试模式")
+    args = parser.parse_args()
+
+    config_path = args.config
+    if not Path(config_path).exists():
+        _log_error("System", f"配置文件不存在: {config_path}")
+        return 1
+
+    config = load_config(config_path)
+    log_mode = args.log_mode if args.log_mode is not None else config.get("log_mode", LOG_MODE_DETAIL)
+    monitor_refresh = args.monitor_refresh if args.monitor_refresh is not None else config.get("monitor_refresh_seconds", 1.0)
+    config["log_mode"] = log_mode
+    config["monitor_refresh_seconds"] = monitor_refresh
+    config["_config_path"] = config_path
+
+    if args.verbose:
+        logging.getLogger().setLevel(logging.DEBUG)
+
+    # 禁用 Flask/werkzeug 的 HTTP access log（控制台太吵）
+    logging.getLogger("werkzeug").setLevel(logging.ERROR)
+
+    # 创建 SystemMonitor（替代 ConsoleReporter）
+    system_monitor = SystemMonitor(config=config, mode=log_mode)
+
+    host = args.host if args.host is not None else config.get("host", "127.0.0.1")
+    port = args.port if args.port is not None else config.get("port", 16200)
+    config["host"] = host
+    config["port"] = port
+    storage_path = config.get("storage_path", "./library")
+    storage_root = Path(storage_path)
+    Path(storage_path).mkdir(parents=True, exist_ok=True)
+    wr_err = _check_storage_writable(storage_root)
+    if wr_err:
+        system_monitor.event_log.error("System", f"错误：{wr_err}")
+        return 1
+
+    registry = GraphRegistry(storage_path, config, system_monitor=system_monitor)
+    system_monitor.set_registry(registry)
+
+    # 启动前对配置的 LLM 做握手，不可用则报错退出（可用 --skip-llm-check 跳过）
+    if args.skip_llm_check:
+        system_monitor.event_log.warn(
+            "System",
+            "已跳过 LLM 握手（--skip-llm-check）。Remember 与 /api/v1/health/llm 可能在运行时失败。",
+        )
+    else:
+        system_monitor.event_log.info(
+            "System",
+            "正在检查配置的 LLM 是否可用（单次最多约 60s；失败将按 3/9/27… 秒退避重试，请稍候）…",
+        )
+        default_processor = registry.get_processor("library")
+        ok_llm, err_msg = _check_llm_available(default_processor)
+        if not ok_llm:
+            system_monitor.event_log.error("System", f"错误：{err_msg}")
+            system_monitor.event_log.error("System", "请检查 service_config 中 llm.api_key / llm.base_url / llm.model 及网络。")
+            system_monitor.event_log.error("System", "若仅需先起服务再排查 LLM，可在启动命令加: --skip-llm-check")
+            return 1
+        system_monitor.event_log.info("System", "LLM 握手成功，模型可用。")
+
+    app = create_app(registry, config, system_monitor=system_monitor)
+
+    auto_fb = bool(args.auto_port or config.get("auto_port_fallback", False))
+    listen_port, port_switched = _resolve_listen_port(host, port, auto_fb)
+    ok_bind, bind_err = _tcp_bind_probe(host, listen_port)
+    if not ok_bind:
+        # Never terminate an arbitrary process that happens to own the port.
+        # ``--auto-port`` already provides a safe opt-in fallback; otherwise
+        # fail with an actionable message and leave the other service alone.
+        system_monitor.event_log.error("System", f"错误：无法在 {host}:{listen_port} 上绑定: {bind_err}")
+        system_monitor.event_log.error("System", f"  配置的端口为 {port}。")
+        if not auto_fb:
+            system_monitor.event_log.error(
+                "System",
+                "  解决：结束占用该端口的进程，或改用 --port <其他端口>，"
+                "或在配置中设置 auto_port_fallback: true 并加 --auto-port。",
+            )
+        else:
+            system_monitor.event_log.error("System", "  已尝试自动换端口但仍失败，请检查系统权限或防火墙设置。")
+        return 1
+    if port_switched:
+        system_monitor.event_log.warn("System", f"注意：端口 {port} 已被占用，已自动改用 {listen_port}。")
+
+    # 启动时触发单一 library 的 queue 创建（会自动注册到 SystemMonitor）
+    registry.get_queue("library")
+
+    dashboard = None
+    if log_mode == LOG_MODE_MONITOR:
+        from core.server.dashboard import DeepDreamDashboard
+        system_monitor.event_log.info("System", "监控面板已启用；任务细节日志已收敛为总览。")
+        dashboard = DeepDreamDashboard(system_monitor, refresh_interval=monitor_refresh)
+        dashboard.start()
+    else:
+        stats = system_monitor.graph_detail("library")
+        entities = stats["storage"]["entities"] if stats else 0
+        relations = stats["storage"]["relations"] if stats else 0
+        caches = stats["storage"]["episodes"] if stats else 0
+        _log_info("System", f"""
+╔══════════════════════════════════════════════════════════╗
+║     DeepDream — 自然语言记忆图 API           ║
+╚══════════════════════════════════════════════════════════╝
+
+  当前本地记忆库 (library):
+    实体: {entities}  关系: {relations}  Episode: {caches}
+
+  服务地址: http://{host}:{listen_port}
+  健康检查: GET  http://{host}:{listen_port}/api/v1/health
+  LLM 健康: GET  http://{host}:{listen_port}/api/v1/health/llm
+  记忆写入: POST http://{host}:{listen_port}/api/v1/remember （JSON 含 text，或 multipart file 上传）
+  任务状态: GET  http://{host}:{listen_port}/api/v1/remember/tasks/<task_id>
+  监控快照: GET  http://{host}:{listen_port}/api/v1/remember/monitor
+  系统总览: GET  http://{host}:{listen_port}/api/v1/system/overview
+  系统日志: GET  http://{host}:{listen_port}/api/v1/system/logs
+  访问统计: GET  http://{host}:{listen_port}/api/v1/system/access-stats
+  语义检索: POST http://{host}:{listen_port}/api/v1/find
+  接口索引: GET  http://{host}:{listen_port}/api/v1/routes
+  概念查询: GET  http://{host}:{listen_port}/api/v1/concepts
+
+  存储基础路径: {storage_path}
+  HTTP 多线程: 处理中 Find 与 Remember 可并行（Flask threaded）
+  单库模式: 旧 graph_id 参数会归一为 library
+  日志模式: {log_mode}
+
+  按 Ctrl+C 停止服务
+""")
+    threaded = bool(config.get("flask_threaded", True))
+
+    # 优雅关闭：捕获 SIGTERM（SIGINT 由 Python 默认 KeyboardInterrupt 处理）
+    dashboard_ref = dashboard if log_mode == LOG_MODE_MONITOR else None
+
+    def _on_signal(signum, frame):
+        system_monitor.event_log.warn("System", f"收到信号 {signum}，正在优雅关闭…")
+        if dashboard_ref is not None:
+            try:
+                dashboard_ref.stop()
+            except Exception as _e:
+                logger.debug("关闭仪表盘失败: %s", _e)
+        # 关闭所有图谱的数据库连接
+        for gid in registry.list_graphs():
+            try:
+                proc = registry.get_processor(gid)
+                if hasattr(proc, 'storage') and hasattr(proc.storage, 'close'):
+                    proc.storage.close()
+            except Exception as _e:
+                logger.debug("关闭 graph %s 存储失败: %s", gid, _e)
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, _on_signal)
+
+    @atexit.register
+    def _cleanup():
+        if dashboard_ref is not None:
+            try:
+                dashboard_ref.stop()
+            except Exception as _e:
+                logger.debug("atexit 关闭仪表盘失败: %s", _e)
+        for gid in registry.list_graphs():
+            try:
+                proc = registry.get_processor(gid)
+                if hasattr(proc, 'storage') and hasattr(proc.storage, 'close'):
+                    proc.storage.close()
+            except Exception as _e:
+                logger.debug("atexit 关闭 graph %s 存储失败: %s", gid, _e)
+
+    try:
+        # Flask's debugger/reloader is unsafe for a service process and makes
+        # detached PID management unreliable.  Keep it explicitly opt-in.
+        app.run(host=host, port=listen_port, debug=args.debug, use_reloader=False, threaded=threaded)
+    except OSError as e:
+        system_monitor.event_log.error("System", f"错误：HTTP 服务启动失败: {e}")
+        if e.errno == errno.EADDRINUSE:
+            system_monitor.event_log.error("System", "  端口在探测后仍被占用（竞态），请重试或更换端口。")
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    import sys
+    sys.exit(main())

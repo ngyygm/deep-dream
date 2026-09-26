@@ -1,0 +1,458 @@
+"""
+Remember 任务进度计算：纯函数和简单辅助函数，不依赖队列类。
+"""
+from __future__ import annotations
+
+import re
+from typing import Any, Dict, Optional
+
+# ---------------------------------------------------------------------------
+# Status / phase frozensets for O(1) membership tests
+# ---------------------------------------------------------------------------
+_TERMINAL_STATUSES = frozenset(("completed", "failed", "cancelled"))
+_DONE_STATUSES = frozenset(("completed", "failed"))
+_MAIN_PHASES = frozenset(("main", "phase_ab"))
+_STEP910 = frozenset(("step9", "step10"))
+
+# ---------------------------------------------------------------------------
+# Compiled regexes
+# ---------------------------------------------------------------------------
+_RE_WINDOW_STEP = re.compile(r"窗口\s*(\d+)/(\d+)\s*·\s*步骤(\d+)/(\d+)")
+_RE_WINDOW_ONLY = re.compile(r"窗口\s*(\d+)/(\d+)")
+_RE_MAIN_1_8_DONE = re.compile(r"步骤\s*1\s*[–-]\s*8\s*/\s*10")
+_RE_EXTRACT_STEP_NUM = re.compile(r"步骤\s*(\d+)")
+_RE_EXTRACT_STEP_FRAC = re.compile(r"\((\d+)/(\d+)\)\s*$")
+
+
+def estimate_chunk_count(text_length: int, window_size: int, overlap: int) -> int:
+    if text_length <= 0:
+        return 1
+    stride = max(1, window_size - overlap)
+    if text_length <= window_size:
+        return 1
+    return 1 + (max(text_length - window_size, 0) + stride - 1) // stride
+
+
+def parse_window_phase_label(phase_label: str) -> Optional[tuple]:
+    m = _RE_WINDOW_STEP.match(phase_label or "")
+    if not m:
+        return None
+    return int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4))
+
+
+def intra_in_window_slice(global_p: float, g_lo: float, g_hi: float) -> float:
+    span = g_hi - g_lo
+    if span <= 1e-15:
+        return 0.0
+    return max(0.0, min(1.0, (global_p - g_lo) / span))
+
+
+def intra_step9_step10(global_p: float, g_lo: float, g_hi: float, chain_id: str) -> float:
+    """步骤9/10 各占单窗的 1/10（与 orchestrator 传入 extraction 的 progress_range 一致），链内 0–1。"""
+    span = g_hi - g_lo
+    if span <= 1e-15:
+        return 0.0
+    if chain_id == "step9":
+        s_lo = g_lo + span * (8.0 / 10.0)
+        s_hi = g_lo + span * (9.0 / 10.0)
+    elif chain_id == "step10":
+        s_lo = g_lo + span * (9.0 / 10.0)
+        s_hi = g_hi
+    else:
+        return intra_in_window_slice(global_p, g_lo, g_hi)
+    ss = s_hi - s_lo
+    if ss <= 1e-15:
+        return 0.0
+    return max(0.0, min(1.0, (global_p - s_lo) / ss))
+
+
+def wf_for_chain(chain_id: str, intra: float) -> float:
+    """单窗内流水线权重：步骤1–8 占 8/10，步骤9 占 1/10，步骤10 占 1/10。"""
+    intra = max(0.0, min(1.0, intra))
+    if chain_id == "phase_ab":
+        return (8.0 / 10.0) * intra
+    if chain_id == "step9":
+        return (8.0 / 10.0) + (1.0 / 10.0) * intra
+    if chain_id == "step10":
+        return (9.0 / 10.0) + (1.0 / 10.0) * intra
+    return (8.0 / 10.0) * intra
+
+
+def wf_win_steps_1_8(global_p: float, g_lo: float, g_hi: float) -> float:
+    """单窗内步骤1–8 占窗口宽度的前 8/10；返回 [0, 8/10] 的窗口内占比（相对整窗 0–1 的片段）。"""
+    span = g_hi - g_lo
+    if span <= 1e-15:
+        return 0.0
+    return max(0.0, min(8.0 / 10.0, (global_p - g_lo) / span))
+
+
+def overall_from_window_wf(win_cur: int, win_tot: int, wf: float) -> float:
+    if win_tot <= 0:
+        return 0.0
+    wf = max(0.0, min(1.0, wf))
+    return max(0.0, min(1.0, (win_cur - 1 + wf) / float(win_tot)))
+
+
+def overall_chain_from_window_intra(win_cur: int, win_tot: int, intra: float) -> float:
+    """链级进度条位置：按窗口累计，当前窗口内按 intra 细分。"""
+    if win_tot <= 0:
+        return 0.0
+    intra = max(0.0, min(1.0, intra))
+    return max(0.0, min(1.0, (win_cur - 1 + intra) / float(win_tot)))
+
+
+def completed_chunk_fraction(done_chunks: int, total_chunks: int) -> float:
+    if total_chunks <= 0:
+        return 0.0
+    done_chunks = max(0, min(int(done_chunks), int(total_chunks)))
+    return done_chunks / float(total_chunks)
+
+
+def _clamp01(value: Any) -> float:
+    try:
+        return max(0.0, min(1.0, float(value or 0.0)))
+    except Exception:
+        return 0.0
+
+
+def _chain_eta_seconds(
+    *,
+    progress: float,
+    started_at: Optional[float],
+    now: float,
+    status: str,
+) -> Optional[float]:
+    """Estimate remaining seconds for one running chain from its own progress.
+
+    This intentionally uses the chain's own first-progress timestamp when
+    available. The remember pipeline overlaps main extraction, step9 and step10,
+    so task-level ETA is the max remaining chain time, not a sum.
+    """
+    if status in _TERMINAL_STATUSES:
+        return 0.0
+    if status == "queued" or not started_at:
+        return None
+    p = _clamp01(progress)
+    if p >= 0.999:
+        return 0.0
+    elapsed = max(0.0, now - float(started_at))
+    if p < 0.02 or elapsed < 5.0:
+        return None
+    return max(0.0, elapsed * (1.0 - p) / p)
+
+
+def _chain_eta_from_chunks(
+    *,
+    done: int,
+    total: int,
+    run_start_done: int,
+    started_at: Optional[float],
+    now: float,
+    status: str,
+) -> Optional[float]:
+    """Estimate ETA from work completed in the current run.
+
+    A resumed task may already have many completed windows. Using total
+    progress would make a fresh resume look artificially fast, so ETA uses only
+    chunks finished after the current resume/start point.
+    """
+    if status in _TERMINAL_STATUSES:
+        return 0.0
+    if status == "queued" or not started_at:
+        return None
+    remaining_total = max(0, int(total) - max(0, int(run_start_done or 0)))
+    if remaining_total <= 0:
+        return 0.0
+    done_this_run = max(0, min(int(done) - max(0, int(run_start_done or 0)), remaining_total))
+    if done_this_run <= 0:
+        return None
+    elapsed = max(0.0, now - float(started_at))
+    if elapsed < 5.0:
+        return None
+    rate = done_this_run / max(elapsed, 1e-6)
+    if rate <= 0:
+        return None
+    return max(0.0, (remaining_total - done_this_run) / rate)
+
+
+def build_progress_detail(task, now: Optional[float] = None) -> Dict[str, Any]:
+    """Build a frontend-friendly progress/ETA payload for remember tasks."""
+    now = float(now or 0.0) or __import__("time").time()
+    total = max(0, int(getattr(task, "total_chunks", 0) or 0))
+    status = str(getattr(task, "status", "") or "")
+    started_at = getattr(task, "started_at", None) or getattr(task, "created_at", None) or now
+    finished_at = getattr(task, "finished_at", None)
+    if status == "paused":
+        end_at = getattr(task, "last_update", None) or finished_at or now
+    else:
+        end_at = finished_at or now
+    elapsed = max(0.0, float(end_at) - float(started_at or end_at))
+    chain_started = getattr(task, "chain_started_at", None) or {}
+    chain_run_start = getattr(task, "chain_run_start_chunks", None) or {}
+
+    def _chain(chain_id: str, label: str, done_attr: str, progress_attr: str, label_attr: str) -> Dict[str, Any]:
+        done = max(0, int(getattr(task, done_attr, 0) or 0))
+        p = _clamp01(getattr(task, progress_attr, 0.0))
+        if total > 0:
+            p = max(p, completed_chunk_fraction(done, total))
+        if status in _TERMINAL_STATUSES and status != "failed":
+            p = 1.0
+        c_started = chain_started.get(chain_id) or started_at
+        eta = _chain_eta_from_chunks(
+            done=done,
+            total=total,
+            run_start_done=int(chain_run_start.get(chain_id) or 0),
+            started_at=c_started,
+            now=now,
+            status=status,
+        )
+        if eta is None:
+            eta = _chain_eta_seconds(progress=p, started_at=c_started, now=now, status=status)
+        return {
+            "id": chain_id,
+            "label": label,
+            "progress": p,
+            "done_chunks": min(done, total) if total else done,
+            "total_chunks": total,
+            "current_label": str(getattr(task, label_attr, "") or ""),
+            "eta_seconds": eta,
+        }
+
+    chains = [
+        _chain("main", "步骤1-8", "main_done_chunks", "main_progress", "main_label"),
+        _chain("step9", "步骤9 实体对齐", "step9_done_chunks", "step9_progress", "step9_label"),
+        _chain("step10", "步骤10 关系对齐", "step10_done_chunks", "step10_progress", "step10_label"),
+    ]
+
+    if status in _TERMINAL_STATUSES:
+        overall = 1.0 if status == "completed" else _clamp01(getattr(task, "progress", 0.0))
+        eta = 0.0
+        confidence = "final"
+    elif status == "queued":
+        overall = _clamp01(getattr(task, "progress", 0.0))
+        eta = None
+        confidence = "queued"
+    else:
+        chain_progresses = [c["progress"] for c in chains]
+        overall = sum(chain_progresses) / len(chain_progresses) if chain_progresses else _clamp01(getattr(task, "progress", 0.0))
+        chain_etas = [c["eta_seconds"] for c in chains if c["eta_seconds"] is not None]
+        eta = max(chain_etas) if chain_etas else _chain_eta_seconds(
+            progress=overall,
+            started_at=started_at,
+            now=now,
+            status=status,
+        )
+        if overall >= 0.30 and elapsed >= 60:
+            confidence = "high"
+        elif overall >= 0.10 and elapsed >= 20:
+            confidence = "medium"
+        elif eta is not None:
+            confidence = "low"
+        else:
+            confidence = "warming_up"
+
+    return {
+        "overall_progress": _clamp01(overall),
+        "eta_seconds": eta,
+        "elapsed_seconds": elapsed,
+        "confidence": confidence,
+        "phase": str(getattr(task, "phase", "") or ""),
+        "phase_label": str(getattr(task, "phase_label", "") or ""),
+        "phase_current": int(getattr(task, "phase_current", 0) or 0),
+        "phase_total": int(getattr(task, "phase_total", 0) or 0),
+        "processed_chunks": int(getattr(task, "processed_chunks", 0) or 0),
+        "total_chunks": total,
+        "chains": chains,
+    }
+
+
+def main_chain_anchor_rank(phase_label: str, tc: int) -> tuple:
+    """主滑窗 1–8 的 UI 锚点优先级：越大越应作为展示锚点（抽取步骤 2–8 / 本窗 1–8 完成 优先于 步骤1 进行中）。
+
+    并行时主线程可能在后序窗跑步骤1，而前序窗已在步骤2–8；此时应用「更靠前」的链上位置为锚点，而非总是跟主线程窗。
+    """
+    pl = (phase_label or "").strip()
+    if not pl:
+        return (-1, 0)
+    if _RE_MAIN_1_8_DONE.search(pl) and ("已完成" in pl or "缓存" in pl):
+        m = _RE_WINDOW_ONLY.search(pl)
+        w = int(m.group(1)) if m else 0
+        if tc > 0:
+            w = max(1, min(w, tc))
+        return (9, w)
+    parsed = parse_window_phase_label(pl)
+    if parsed:
+        win_cur, _wt, step_cur, _st = parsed
+        if tc > 0:
+            win_cur = max(1, min(win_cur, tc))
+        if 2 <= step_cur <= 8:
+            return (step_cur, win_cur)
+        if step_cur != 1:
+            return (min(step_cur, 9), win_cur)
+        if "进行中" in pl:
+            return (0, win_cur)
+        if "完成" in pl:
+            return (1, win_cur)
+        return (0, win_cur)
+    # 抽取步骤 2-8 标签（如 "窗口 1/1 · 步骤2a: 文本锚点召回"）不匹配 _RE_WINDOW_STEP，
+    # 但包含窗口信息和步骤编号，应赋予高于步骤1的优先级。
+    wm = _RE_WINDOW_ONLY.match(pl)
+    if wm:
+        w = max(1, min(int(wm.group(1)), tc))
+        _sm = _RE_EXTRACT_STEP_NUM.search(pl)
+        step_num = int(_sm.group(1)) if _sm else 2
+        step_num = max(2, min(8, step_num))
+        return (step_num, w)
+    return (-1, 0)
+
+
+def remember_callback_ui_fields(
+    task,
+    progress: float,
+    phase_label: str,
+    message: str,
+    chain_id: str,
+) -> Dict[str, Any]:
+    """推导总进度：主滑窗链 main（步骤1–8）、步骤9/10 链各自独立进度（0–1 为链内细粒度）。"""
+    parsed = parse_window_phase_label(phase_label)
+    tc = max(1, int(task.total_chunks or 1))
+    pc = max(0, int(task.processed_chunks or 0))
+    pc_f = pc / float(tc)
+
+    if not parsed:
+        new_o = max(pc_f, max(0.0, min(1.0, float(progress))))
+        pl = phase_label or ""
+        if chain_id in _MAIN_PHASES and _RE_MAIN_1_8_DONE.search(pl) and (
+            "已完成" in pl or "缓存" in pl
+        ):
+            m = _RE_WINDOW_ONLY.search(pl)
+            if m:
+                win_cur = max(1, min(int(m.group(1)), tc))
+                wf_main = 8.0 / 10.0
+                main_global = min(1.0, (win_cur - 1 + wf_main) / float(tc))
+                merged_p = max(new_o, main_global, pc_f)
+                _new_rank = main_chain_anchor_rank(pl, tc)
+                _old_rank = main_chain_anchor_rank(task.main_label or "", tc)
+                _nw, _ow = _new_rank[1], _old_rank[1]
+                if task.main_label and (_nw < _ow or (_nw == _ow and _new_rank < _old_rank)):
+                    return {"progress": merged_p}
+                _pc = (win_cur - 1) * 10 + 8
+                _pt = tc * 10
+                return {
+                    "progress": merged_p,
+                    "phase_label": phase_label,
+                    "message": message,
+                    "phase_current": _pc,
+                    "phase_total": _pt,
+                    "main_progress": main_global,
+                    "main_label": phase_label or message or "",
+                }
+        # 抽取步骤 2–8 的标签不匹配 _RE_WINDOW_STEP（如 "窗口 1/1 · 步骤2a: 文本锚点召回"），
+        # 但仍需更新 main_progress/main_label/phase_current 以避免前端进度条停滞在步骤1。
+        if chain_id in _MAIN_PHASES:
+            wm = _RE_WINDOW_ONLY.match(pl)
+            if wm:
+                win_cur = max(1, min(int(wm.group(1)), tc))
+                g_lo_w = (win_cur - 1) / float(tc)
+                g_hi_w = win_cur / float(tc)
+                wf_main = wf_win_steps_1_8(float(progress), g_lo_w, g_hi_w)
+                main_global = min(1.0, (win_cur - 1 + wf_main) / float(tc))
+                # 从标签中尝试提取步骤编号（如 "步骤2a"、"步骤3.5"）
+                _sm = _RE_EXTRACT_STEP_NUM.search(pl)
+                estimated_step = int(_sm.group(1)) if _sm else 2
+                estimated_step = max(2, min(8, estimated_step))
+                # 尝试提取子步骤分数（如 "实体对齐 (3/5)"）
+                _fm = _RE_EXTRACT_STEP_FRAC.search(pl)
+                if _fm:
+                    _sub_done = int(_fm.group(1))
+                    _sub_total = max(1, int(_fm.group(2)))
+                    estimated_step = max(estimated_step, min(8, estimated_step + int(_sub_done / max(1, _sub_total))))
+                _pc_phase = (win_cur - 1) * 10 + estimated_step
+                _pt_phase = tc * 10
+                _new_rank = main_chain_anchor_rank(pl, tc)
+                _old_rank = main_chain_anchor_rank(task.main_label or "", tc)
+                _nw, _ow = _new_rank[1], _old_rank[1]
+                if task.main_label and (_nw < _ow or (_nw == _ow and _new_rank < _old_rank)):
+                    return {"progress": max(new_o, main_global)}
+                return {
+                    "progress": max(new_o, main_global),
+                    "phase_label": phase_label,
+                    "message": message,
+                    "phase_current": _pc_phase,
+                    "phase_total": _pt_phase,
+                    "main_progress": main_global,
+                    "main_label": phase_label or message or "",
+                }
+        return {
+            "progress": new_o,
+            "phase_label": phase_label,
+            "message": message,
+        }
+
+    # 仅用标签解析「当前第几窗」；分母必须与 task.total_chunks 一致，否则与 orchestrator
+    # 传入的 progress（按 total_chunks 切片的全局坐标）错位，实体/关系条会不按本窗比例显示。
+    win_cur, _win_tot_label, step_cur, _step_tot = parsed
+    win_cur = max(1, min(win_cur, tc))
+    win_tot_eff = tc
+    g_lo = (win_cur - 1) / float(win_tot_eff)
+    g_hi = win_cur / float(win_tot_eff)
+    if chain_id in _STEP910:
+        intra = intra_step9_step10(float(progress), g_lo, g_hi, chain_id)
+    else:
+        intra = intra_in_window_slice(progress, g_lo, g_hi)
+    wf = wf_for_chain(chain_id, intra)
+    new_o = overall_from_window_wf(win_cur, win_tot_eff, wf)
+
+    _pc = (win_cur - 1) * 10 + step_cur
+    _pt = win_tot_eff * 10
+
+    wf_main = wf_win_steps_1_8(float(progress), g_lo, g_hi)
+    main_global = min(1.0, (win_cur - 1 + wf_main) / float(win_tot_eff))
+
+    base: Dict[str, Any] = {
+        "progress": max(pc_f, new_o),
+        "phase_label": phase_label,
+        "message": message,
+        "phase_current": _pc,
+        "phase_total": _pt,
+    }
+
+    # 主滑窗（步骤1–8）：chain main 或历史 phase_ab（锚点优先按窗口号，同窗内按步骤优先级）
+    if chain_id in ("main", "phase_ab"):
+        base["progress"] = max(base["progress"], main_global)
+        _new_rank = main_chain_anchor_rank(phase_label or "", tc)
+        _old_rank = main_chain_anchor_rank(task.main_label or "", tc)
+        merged_p = base["progress"]
+        _nw, _ow = _new_rank[1], _old_rank[1]
+        if task.main_label and (_nw < _ow or (_nw == _ow and _new_rank < _old_rank)):
+            return {"progress": merged_p}
+        base.update(
+            main_progress=main_global,
+            main_label=phase_label or message or "",
+        )
+        return base
+    if chain_id == "step10":
+        step9_global = max(
+            completed_chunk_fraction(task.step9_done_chunks or 0, tc),
+            completed_chunk_fraction(win_cur, tc),
+            float(getattr(task, "step9_progress", 0.0) or 0.0),
+        )
+        step10_global = max(
+            completed_chunk_fraction(task.step10_done_chunks or 0, tc),
+            overall_chain_from_window_intra(win_cur, win_tot_eff, intra),
+        )
+        base.update(
+            step9_progress=step9_global,
+            step10_progress=step10_global,
+            step10_label=phase_label or message or "",
+        )
+        return base
+    # step9：实体链进度按窗口累计；不要把关系链已完成进度清零。
+    base.update(
+        step9_progress=max(
+            completed_chunk_fraction(task.step9_done_chunks or 0, tc),
+            overall_chain_from_window_intra(win_cur, win_tot_eff, intra),
+        ),
+        step9_label=phase_label or message or "",
+    )
+    return base

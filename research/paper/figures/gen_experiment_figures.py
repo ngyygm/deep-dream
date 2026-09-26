@@ -106,11 +106,11 @@ def ladder():
             a.errorbar(v,yy[idx],xerr=[[v-lo],[hi-v]],fmt='o' if j==0 else 'D',
                        ms=3.2,color=PATH_COLORS[idx],mfc='white' if j==0 else PATH_COLORS[idx],
                        elinewidth=.75,capsize=1.8,mew=.7)
-            a.text(v+2,yy[idx]+(.09 if j==0 else -.12),f'{v:.1f}',fontsize=6,va='bottom' if j==0 else 'top')
+            a.text(v+2,yy[idx]+(.09 if j==0 else -.12),f'{v+1e-6:.1f}',fontsize=6,va='bottom' if j==0 else 'top')
     a.set_yticks(y,LABELS); a.set_xlim(0,100); a.set_ylim(-.55,2.65)
     a.set_xticks([0,50,100]); a.set_xlabel('Overall (×100)'); style(a)
-    a.legend(handles=[Line2D([],[],marker='o',ls='',mfc='white',mec=MUTED,label='Base ($n{=}767$)',ms=3),
-                      Line2D([],[],marker='D',ls='',color=MUTED,label='Align+ ($n{=}1074$)',ms=3)],
+    a.legend(handles=[Line2D([],[],marker='o',ls='',mfc='white',mec=MUTED,label='Base (paired $n{=}767$)',ms=3),
+                      Line2D([],[],marker='D',ls='',color=MUTED,label='Align+ (extended $n{=}1074$)',ms=3)],
              loc='upper left',bbox_to_anchor=(-.02,1.13),frameon=False,ncol=2,columnspacing=1)
     title(b,'b','Memory capabilities')
     heatmap(b,[[d['domains_v2_x100'][t][dm] for t in TRACKS] for dm in DOMAINS],

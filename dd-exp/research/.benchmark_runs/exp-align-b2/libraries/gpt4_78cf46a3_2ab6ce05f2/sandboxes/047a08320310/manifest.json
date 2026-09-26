@@ -1,0 +1,1158 @@
+{
+  "scope_id": "047a08320310",
+  "query": "narrator lost phone charger, received new phone case",
+  "mode": "hybrid",
+  "created_at": "2026-08-25T10:20:01.511981+00:00",
+  "stats": {
+    "seed_concepts": 20,
+    "episode_seeds": 0,
+    "episodes_found": 57,
+    "documents_total": 30,
+    "documents_returned": 30,
+    "documents_missing_path": 0
+  },
+  "concepts": [
+    {
+      "family_id": "ent_e7c85e40a7db",
+      "name": "user",
+      "role": "entity",
+      "score": 0.049173
+    },
+    {
+      "family_id": "ent_60825c2c2af0",
+      "name": "Enhanced security",
+      "role": "entity",
+      "score": 0.034615
+    },
+    {
+      "family_id": "ent_468f8a1025df",
+      "name": "portable power bank",
+      "role": "entity",
+      "score": 0.034478
+    },
+    {
+      "family_id": "ent_09774bd11249",
+      "name": "irony",
+      "role": "entity",
+      "score": 0.034348
+    },
+    {
+      "family_id": "ent_f6c76a1bf02b",
+      "name": "record cleaning machine",
+      "role": "entity",
+      "score": 0.034225
+    },
+    {
+      "family_id": "ent_4ae60afa6e0b",
+      "name": "Fitness trackers",
+      "role": "entity",
+      "score": 0.03411
+    },
+    {
+      "family_id": "ent_f1116a90a700",
+      "name": "book recommendations",
+      "role": "entity",
+      "score": 0.034
+    },
+    {
+      "family_id": "ent_483c7ce5e7e4",
+      "name": "vinyl enthusiast",
+      "role": "entity",
+      "score": 0.033896
+    },
+    {
+      "family_id": "ent_f47790b37c56",
+      "name": "keep, donate",
+      "role": "entity",
+      "score": 0.033797
+    },
+    {
+      "family_id": "ent_ce7884f4f52b",
+      "name": "Sunset Over the Ocean",
+      "role": "entity",
+      "score": 0.033704
+    },
+    {
+      "family_id": "ent_9f590faeb462",
+      "name": "social media platforms",
+      "role": "entity",
+      "score": 0.033659
+    },
+    {
+      "family_id": "ent_c80e8412c0e4",
+      "name": "herbs",
+      "role": "entity",
+      "score": 0.033571
+    },
+    {
+      "family_id": "ent_5f755eb72a7f",
+      "name": "The Silent Companions",
+      "role": "entity",
+      "score": 0.033488
+    },
+    {
+      "family_id": "ent_5937d0d98348",
+      "name": "TikTok",
+      "role": "entity",
+      "score": 0.033409
+    },
+    {
+      "family_id": "ent_3c3bf662aaad",
+      "name": "Wukong",
+      "role": "entity",
+      "score": 0.033333
+    },
+    {
+      "family_id": "ent_b785f182264d",
+      "name": "self-care",
+      "role": "entity",
+      "score": 0.033158
+    },
+    {
+      "family_id": "ent_d37f0a0f5963",
+      "name": "Annotation screen",
+      "role": "entity",
+      "score": 0.033093
+    },
+    {
+      "family_id": "ent_caf5e5ed3a22",
+      "name": "Tudor monarchs",
+      "role": "entity",
+      "score": 0.03303
+    },
+    {
+      "family_id": "ent_8d265cab2423",
+      "name": "mental health services",
+      "role": "entity",
+      "score": 0.032913
+    },
+    {
+      "family_id": "ent_7b74fd477edf",
+      "name": "garlic",
+      "role": "entity",
+      "score": 0.032857
+    }
+  ],
+  "symlinked": 30,
+  "files": [
+    {
+      "index": 1,
+      "document_id": "doc_bench_638b73e0e680fcf2bbb6",
+      "title": "b89a3ec3",
+      "path": "content/current/b89a3ec3.md",
+      "target": "/Users/admin/Desktop/exa/dd-exp/research/.benchmark_runs/exp-align-b2/libraries/gpt4_78cf46a3_2ab6ce05f2/content/current/b89a3ec3.md",
+      "target_exists": true,
+      "filename": "01-b89a3ec3.md",
+      "sha256": "7d51dad9e2b5fc0cf7a9ed947412e571a545be08b9d967c6538fb9e61b27af60",
+      "score": 0.26693,
+      "matched_concepts": [
+        "ent_09774bd11249",
+        "ent_5937d0d98348",
+        "ent_e7c85e40a7db"
+      ],
+      "episodes": [
+        {
+          "episode_id": "cache_20230526_115500_2d91130e98cf441c9a8ab73923579505",
+          "name": "b89a3ec3",
+          "start_offset": 0,
+          "end_offset": 5938,
+          "matched": [
+            "ent_e7c85e40a7db"
+          ]
+        },
+        {
+          "episode_id": "cache_20230526_115500_1ebf05d27f354298b352ed0f27c737ac",
+          "name": "b89a3ec3",
+          "start_offset": 5664,
+          "end_offset": 11653,
+          "matched": [
+            "ent_5937d0d98348"
+          ]
+        },
+        {
+          "episode_id": "cache_20230526_115500_fb9026027f57415b926e070ba21d7409",
+          "name": "b89a3ec3",
+          "start_offset": 11457,
+          "end_offset": 17201,
+          "matched": [
+            "ent_09774bd11249",
+            "ent_5937d0d98348"
+          ]
+        },
+        {
+          "episode_id": "cache_20230526_115500_164969e63c514c05b9697f3236be55dd",
+          "name": "b89a3ec3",
+          "start_offset": 16981,
+          "end_offset": 19581,
+          "matched": [
+            "ent_09774bd11249"
+          ]
+        }
+      ]
+    },
+    {
+      "index": 2,
+      "document_id": "doc_bench_2bff9af9d2506ef40f6a",
+      "title": "52b19cba_1",
+      "path": "content/current/52b19cba_1.md",
+      "target": "/Users/admin/Desktop/exa/dd-exp/research/.benchmark_runs/exp-align-b2/libraries/gpt4_78cf46a3_2ab6ce05f2/content/current/52b19cba_1.md",
+      "target_exists": true,
+      "filename": "02-52b19cba_1.md",
+      "sha256": "1679de9c63a1f3d56a730d9970e77f6cba19371d0b6e6f1a70fa60606da2f966",
+      "score": 0.266661,
+      "matched_concepts": [
+        "ent_5f755eb72a7f",
+        "ent_e7c85e40a7db",
+        "ent_f1116a90a700"
+      ],
+      "episodes": [
+        {
+          "episode_id": "cache_20230526_174400_6a43af584b2444008b9194784fd18faf",
+          "name": "52b19cba_1",
+          "start_offset": 0,
+          "end_offset": 5894,
+          "matched": [
+            "ent_5f755eb72a7f",
+            "ent_e7c85e40a7db",
+            "ent_f1116a90a700"
+          ]
+        },
+        {
+          "episode_id": "cache_20230526_174400_6ac1f424f14241fead24d4236097374c",
+          "name": "52b19cba_1",
+          "start_offset": 5626,
+          "end_offset": 10268,
+          "matched": [
+            "ent_5f755eb72a7f"
+          ]
+        }
+      ]
+    },
+    {
+      "index": 3,
+      "document_id": "doc_bench_44a0e3ccd4ab45d4911e",
+      "title": "bca74787",
+      "path": "content/current/bca74787.md",
+      "target": "/Users/admin/Desktop/exa/dd-exp/research/.benchmark_runs/exp-align-b2/libraries/gpt4_78cf46a3_2ab6ce05f2/content/current/bca74787.md",
+      "target_exists": true,
+      "filename": "03-bca74787.md",
+      "sha256": "aebed9c0e05318510e436d4e3ef815bd397aa95cde0b1da852ec54f9f144542d",
+      "score": 0.265601,
+      "matched_concepts": [
+        "ent_7b74fd477edf",
+        "ent_c80e8412c0e4",
+        "ent_e7c85e40a7db"
+      ],
+      "episodes": [
+        {
+          "episode_id": "cache_20230526_125500_0aeb8da9ec79414d95e5608447b812ac",
+          "name": "bca74787",
+          "start_offset": 0,
+          "end_offset": 5446,
+          "matched": [
+            "ent_7b74fd477edf"
+          ]
+        },
+        {
+          "episode_id": "cache_20230526_125500_08e280ce914f4b67b28721c1a100554f",
+          "name": "bca74787",
+          "start_offset": 5190,
+          "end_offset": 11170,
+          "matched": [
+            "ent_7b74fd477edf",
+            "ent_c80e8412c0e4",
+            "ent_e7c85e40a7db"
+          ]
+        },
+        {
+          "episode_id": "cache_20230526_125500_9f2293f5fbd2437ba0da9dbeddf6deae",
+          "name": "bca74787",
+          "start_offset": 10971,
+          "end_offset": 12507,
+          "matched": [
+            "ent_c80e8412c0e4"
+          ]
+        }
+      ]
+    },
+    {
+      "index": 4,
+      "document_id": "doc_bench_74088eb459d0567f3437",
+      "title": "answer_5a78688d_1",
+      "path": "content/current/answer_5a78688d_1.md",
+      "target": "/Users/admin/Desktop/exa/dd-exp/research/.benchmark_runs/exp-align-b2/libraries/gpt4_78cf46a3_2ab6ce05f2/content/current/answer_5a78688d_1.md",
+      "target_exists": true,
+      "filename": "04-answer_5a78688d_1.md",
+      "sha256": "8a35c3affe3c1dcb79f18f4059e06785d88ce3d643dea4f296aba0a3f89932df",
+      "score": 0.183788,
+      "matched_concepts": [
+        "ent_60825c2c2af0",
+        "ent_e7c85e40a7db"
+      ],
+      "episodes": [
+        {
+          "episode_id": "cache_20230526_191100_65233855618f46fa90fe9923f0801d60",
+          "name": "answer_5a78688d_1",
+          "start_offset": 0,
+          "end_offset": 5962,
+          "matched": [
+            "ent_e7c85e40a7db"
+          ]
+        },
+        {
+          "episode_id": "cache_20230526_191100_10c0a54269b24f78b0d317314748adc3",
+          "name": "answer_5a78688d_1",
+          "start_offset": 5708,
+          "end_offset": 11500,
+          "matched": [
+            "ent_60825c2c2af0",
+            "ent_e7c85e40a7db"
+          ]
+        }
+      ]
+    },
+    {
+      "index": 5,
+      "document_id": "doc_bench_8d6398b039e27b8611a9",
+      "title": "answer_5a78688d_2",
+      "path": "content/current/answer_5a78688d_2.md",
+      "target": "/Users/admin/Desktop/exa/dd-exp/research/.benchmark_runs/exp-align-b2/libraries/gpt4_78cf46a3_2ab6ce05f2/content/current/answer_5a78688d_2.md",
+      "target_exists": true,
+      "filename": "05-answer_5a78688d_2.md",
+      "sha256": "98297a6ea5b4811435419086b88521fc6be65aca6fa3fe3006f1c49eea110f55",
+      "score": 0.183651,
+      "matched_concepts": [
+        "ent_468f8a1025df",
+        "ent_e7c85e40a7db"
+      ],
+      "episodes": [
+        {
+          "episode_id": "cache_20230526_182000_336224ffdb67408a84f40d51aef911b4",
+          "name": "answer_5a78688d_2",
+          "start_offset": 0,
+          "end_offset": 5989,
+          "matched": [
+            "ent_468f8a1025df"
+          ]
+        },
+        {
+          "episode_id": "cache_20230526_182000_3f11ca9de851401981f212ca0881df03",
+          "name": "answer_5a78688d_2",
+          "start_offset": 5705,
+          "end_offset": 11440,
+          "matched": [
+            "ent_468f8a1025df",
+            "ent_e7c85e40a7db"
+          ]
+        }
+      ]
+    },
+    {
+      "index": 6,
+      "document_id": "doc_bench_d1048b570638c62c965e",
+      "title": "27099532_2",
+      "path": "content/current/27099532_2.md",
+      "target": "/Users/admin/Desktop/exa/dd-exp/research/.benchmark_runs/exp-align-b2/libraries/gpt4_78cf46a3_2ab6ce05f2/content/current/27099532_2.md",
+      "target_exists": true,
+      "filename": "06-27099532_2.md",
+      "sha256": "c4a8255824e947cdff9413b0f8c419ba9d68a9666bc67acedf337640b9a1a249",
+      "score": 0.183283,
+      "matched_concepts": [
+        "ent_4ae60afa6e0b",
+        "ent_e7c85e40a7db"
+      ],
+      "episodes": [
+        {
+          "episode_id": "cache_20230526_164600_e11b3fa2cc314624920e6bc535c52f7e",
+          "name": "27099532_2",
+          "start_offset": 0,
+          "end_offset": 5745,
+          "matched": [
+            "ent_e7c85e40a7db"
+          ]
+        },
+        {
+          "episode_id": "cache_20230526_164600_c63369bd302d4554b46c0562e5fa35cc",
+          "name": "27099532_2",
+          "start_offset": 5485,
+          "end_offset": 11300,
+          "matched": [
+            "ent_e7c85e40a7db"
+          ]
+        },
+        {
+          "episode_id": "cache_20230526_164600_ce3535a742224aeab7273cc465ba2ff7",
+          "name": "27099532_2",
+          "start_offset": 11085,
+          "end_offset": 15782,
+          "matched": [
+            "ent_4ae60afa6e0b"
+          ]
+        }
+      ]
+    },
+    {
+      "index": 7,
+      "document_id": "doc_bench_7ff228a6b412ba751e6e",
+      "title": "7fd52e1c_2",
+      "path": "content/current/7fd52e1c_2.md",
+      "target": "/Users/admin/Desktop/exa/dd-exp/research/.benchmark_runs/exp-align-b2/libraries/gpt4_78cf46a3_2ab6ce05f2/content/current/7fd52e1c_2.md",
+      "target_exists": true,
+      "filename": "07-7fd52e1c_2.md",
+      "sha256": "1d8591e405864571abe7024fb16ad480501ac30b6f07d0f4ffdb15ed6c976dd6",
+      "score": 0.183173,
+      "matched_concepts": [
+        "ent_e7c85e40a7db",
+        "ent_f1116a90a700"
+      ],
+      "episodes": [
+        {
+          "episode_id": "cache_20230526_204400_4aeb3997e925454e8d3d53a496ff03e7",
+          "name": "7fd52e1c_2",
+          "start_offset": 0,
+          "end_offset": 5476,
+          "matched": [
+            "ent_f1116a90a700"
+          ]
+        },
+        {
+          "episode_id": "cache_20230526_204400_c228dacdd2554b5487edd228907aa9e6",
+          "name": "7fd52e1c_2",
+          "start_offset": 5197,
+          "end_offset": 9023,
+          "matched": [
+            "ent_e7c85e40a7db"
+          ]
+        }
+      ]
+    },
+    {
+      "index": 8,
+      "document_id": "doc_bench_c323b8d40ff5cdcc02e5",
+      "title": "6c3c41df",
+      "path": "content/current/6c3c41df.md",
+      "target": "/Users/admin/Desktop/exa/dd-exp/research/.benchmark_runs/exp-align-b2/libraries/gpt4_78cf46a3_2ab6ce05f2/content/current/6c3c41df.md",
+      "target_exists": true,
+      "filename": "08-6c3c41df.md",
+      "sha256": "821c16a16f1124f394cea714eadfd4e662d125bab1f17b68c4af4590ab22a621",
+      "score": 0.18297,
+      "matched_concepts": [
+        "ent_e7c85e40a7db",
+        "ent_f47790b37c56"
+      ],
+      "episodes": [
+        {
+          "episode_id": "cache_20230526_192600_e62f97f3d1764c29a7835d293578965c",
+          "name": "6c3c41df",
+          "start_offset": 0,
+          "end_offset": 5304,
+          "matched": [
+            "ent_e7c85e40a7db",
+            "ent_f47790b37c56"
+          ]
+        },
+        {
+          "episode_id": "cache_20230526_192600_65c29004fc51416e9c675c1778c51c30",
+          "name": "6c3c41df",
+          "start_offset": 5006,
+          "end_offset": 10965,
+          "matched": [
+            "ent_f47790b37c56"
+          ]
+        }
+      ]
+    },
+    {
+      "index": 9,
+      "document_id": "doc_bench_68ace3175bc77c64aac0",
+      "title": "a8b4bfb3_1",
+      "path": "content/current/a8b4bfb3_1.md",
+      "target": "/Users/admin/Desktop/exa/dd-exp/research/.benchmark_runs/exp-align-b2/libraries/gpt4_78cf46a3_2ab6ce05f2/content/current/a8b4bfb3_1.md",
+      "target_exists": true,
+      "filename": "09-a8b4bfb3_1.md",
+      "sha256": "7d6be6aac26f63307ca9e3df6d355c09590dbadfbc2b54e8f026c1dd16214311",
+      "score": 0.182744,
+      "matched_concepts": [
+        "ent_c80e8412c0e4",
+        "ent_e7c85e40a7db"
+      ],
+      "episodes": [
+        {
+          "episode_id": "cache_20230526_055700_7d8f146928054f928a51e6fafe1ef3f1",
+          "name": "a8b4bfb3_1",
+          "start_offset": 0,
+          "end_offset": 5541,
+          "matched": [
+            "ent_e7c85e40a7db"
+          ]
+        },
+        {
+          "episode_id": "cache_20230526_055700_3b6051314d864e9ebb6567125bcc53f2",
+          "name": "a8b4bfb3_1",
+          "start_offset": 5287,
+          "end_offset": 10581,
+          "matched": [
+            "ent_c80e8412c0e4"
+          ]
+        },
+        {
+          "episode_id": "cache_20230526_055700_1f8266414c7541b38d4fe4d2fb7d0ebb",
+          "name": "a8b4bfb3_1",
+          "start_offset": 10283,
+          "end_offset": 13945,
+          "matched": [
+            "ent_c80e8412c0e4"
+          ]
+        }
+      ]
+    },
+    {
+      "index": 10,
+      "document_id": "doc_bench_779cd4bbcea9fc6102a6",
+      "title": "dbf5ebf8",
+      "path": "content/current/dbf5ebf8.md",
+      "target": "/Users/admin/Desktop/exa/dd-exp/research/.benchmark_runs/exp-align-b2/libraries/gpt4_78cf46a3_2ab6ce05f2/content/current/dbf5ebf8.md",
+      "target_exists": true,
+      "filename": "10-dbf5ebf8.md",
+      "sha256": "477491c686cbd729c176adfbf4e7694bb6f26580c4451898f544a4da376f3128",
+      "score": 0.182331,
+      "matched_concepts": [
+        "ent_b785f182264d",
+        "ent_e7c85e40a7db"
+      ],
+      "episodes": [
+        {
+          "episode_id": "cache_20230526_131600_7c9cd15bf3414a16975a0b79de4b44f7",
+          "name": "dbf5ebf8",
+          "start_offset": 0,
+          "end_offset": 5757,
+          "matched": [
+            "ent_b785f182264d"
+          ]
+        },
+        {
+          "episode_id": "cache_20230526_131600_0e493c732372473f9a5a8188da4e6da4",
+          "name": "dbf5ebf8",
+          "start_offset": 5526,
+          "end_offset": 11207,
+          "matched": [
+            "ent_e7c85e40a7db"
+          ]
+        },
+        {
+          "episode_id": "cache_20230526_131600_79f8359ad9b946f08104052eb150ca55",
+          "name": "dbf5ebf8",
+          "start_offset": 10910,
+          "end_offset": 16166,
+          "matched": [
+            "ent_e7c85e40a7db"
+          ]
+        }
+      ]
+    },
+    {
+      "index": 11,
+      "document_id": "doc_bench_7e71661598ff61a3710d",
+      "title": "b759744c_2",
+      "path": "content/current/b759744c_2.md",
+      "target": "/Users/admin/Desktop/exa/dd-exp/research/.benchmark_runs/exp-align-b2/libraries/gpt4_78cf46a3_2ab6ce05f2/content/current/b759744c_2.md",
+      "target_exists": true,
+      "filename": "11-b759744c_2.md",
+      "sha256": "fc7ee35cc631f4c3750934b9337ca88823afd91a3cf27a3d15a2a0cc0f3d5ad1",
+      "score": 0.18203,
+      "matched_concepts": [
+        "ent_7b74fd477edf",
+        "ent_e7c85e40a7db"
+      ],
+      "episodes": [
+        {
+          "episode_id": "cache_20230526_041000_507c0d46fd144139ab8940b6b70fa101",
+          "name": "b759744c_2",
+          "start_offset": 0,
+          "end_offset": 5065,
+          "matched": [
+            "ent_7b74fd477edf"
+          ]
+        },
+        {
+          "episode_id": "cache_20230526_041000_4d9fb875b40c4873aceac536b1e0dd13",
+          "name": "b759744c_2",
+          "start_offset": 4859,
+          "end_offset": 10373,
+          "matched": [
+            "ent_7b74fd477edf",
+            "ent_e7c85e40a7db"
+          ]
+        },
+        {
+          "episode_id": "cache_20230526_041000_d890cb890ef84816831ad5d02aa68019",
+          "name": "b759744c_2",
+          "start_offset": 10119,
+          "end_offset": 14427,
+          "matched": [
+            "ent_7b74fd477edf"
+          ]
+        }
+      ]
+    },
+    {
+      "index": 12,
+      "document_id": "doc_bench_21cb2b8c8215b249bae8",
+      "title": "42b45f6e_2",
+      "path": "content/current/42b45f6e_2.md",
+      "target": "/Users/admin/Desktop/exa/dd-exp/research/.benchmark_runs/exp-align-b2/libraries/gpt4_78cf46a3_2ab6ce05f2/content/current/42b45f6e_2.md",
+      "target_exists": true,
+      "filename": "12-42b45f6e_2.md",
+      "sha256": "1ac1c1b610f6f9b44874fbe28dc81ac7746683a05d69aff6551a34ffe2542406",
+      "score": 0.168121,
+      "matched_concepts": [
+        "ent_483c7ce5e7e4",
+        "ent_f6c76a1bf02b"
+      ],
+      "episodes": [
+        {
+          "episode_id": "cache_20230526_230300_afec94365b194a9b96f663d98aec89c7",
+          "name": "42b45f6e_2",
+          "start_offset": 0,
+          "end_offset": 5939,
+          "matched": [
+            "ent_f6c76a1bf02b"
+          ]
+        },
+        {
+          "episode_id": "cache_20230526_230300_2374f64ebfd941b7ac35f86194612560",
+          "name": "42b45f6e_2",
+          "start_offset": 5668,
+          "end_offset": 11459,
+          "matched": [
+            "ent_483c7ce5e7e4",
+            "ent_f6c76a1bf02b"
+          ]
+        },
+        {
+          "episode_id": "cache_20230526_230300_d5b1a0a309ce48e5be9cb1beff035d18",
+          "name": "42b45f6e_2",
+          "start_offset": 11228,
+          "end_offset": 15149,
+          "matched": [
+            "ent_483c7ce5e7e4"
+          ]
+        }
+      ]
+    },
+    {
+      "index": 13,
+      "document_id": "doc_bench_dce6d0e805665d3fcfff",
+      "title": "87ce8772",
+      "path": "content/current/87ce8772.md",
+      "target": "/Users/admin/Desktop/exa/dd-exp/research/.benchmark_runs/exp-align-b2/libraries/gpt4_78cf46a3_2ab6ce05f2/content/current/87ce8772.md",
+      "target_exists": true,
+      "filename": "13-87ce8772.md",
+      "sha256": "ef6026007bda89c476e0a92f9c5baf7d4fa489446a9445fb46ea0dd8df52e32e",
+      "score": 0.167068,
+      "matched_concepts": [
+        "ent_5937d0d98348",
+        "ent_9f590faeb462"
+      ],
+      "episodes": [
+        {
+          "episode_id": "cache_20230526_025600_2505213446a74f8cb9067a5ef595326e",
+          "name": "87ce8772",
+          "start_offset": 5426,
+          "end_offset": 10860,
+          "matched": [
+            "ent_5937d0d98348"
+          ]
+        },
+        {
+          "episode_id": "cache_20230526_025600_132cb45e6e6449ef88004544a55faed2",
+          "name": "87ce8772",
+          "start_offset": 10564,
+          "end_offset": 15177,
+          "matched": [
+            "ent_9f590faeb462"
+          ]
+        }
+      ]
+    },
+    {
+      "index": 14,
+      "document_id": "doc_bench_10beb605d5b4f71d3364",
+      "title": "sharegpt_RzNjBHR_35",
+      "path": "content/current/sharegpt_RzNjBHR_35.md",
+      "target": "/Users/admin/Desktop/exa/dd-exp/research/.benchmark_runs/exp-align-b2/libraries/gpt4_78cf46a3_2ab6ce05f2/content/current/sharegpt_RzNjBHR_35.md",
+      "target_exists": true,
+      "filename": "14-sharegpt_RzNjBHR_35.md",
+      "sha256": "24ab695a2bd38416d2ebd78a7814de2f72729b7c1eb7f311c86b71f31e6900fe",
+      "score": 0.099173,
+      "matched_concepts": [
+        "ent_e7c85e40a7db"
+      ],
+      "episodes": [
+        {
+          "episode_id": "cache_20230526_064700_b0e927e65f044f8892a9ef85fc3f9b02",
+          "name": "sharegpt_RzNjBHR_35",
+          "start_offset": 0,
+          "end_offset": 5255,
+          "matched": [
+            "ent_e7c85e40a7db"
+          ]
+        }
+      ]
+    },
+    {
+      "index": 15,
+      "document_id": "doc_bench_38ea553f3efd473dfc0e",
+      "title": "2be0dc0f_2",
+      "path": "content/current/2be0dc0f_2.md",
+      "target": "/Users/admin/Desktop/exa/dd-exp/research/.benchmark_runs/exp-align-b2/libraries/gpt4_78cf46a3_2ab6ce05f2/content/current/2be0dc0f_2.md",
+      "target_exists": true,
+      "filename": "15-2be0dc0f_2.md",
+      "sha256": "809594a7308e81a0b77aa2085fef93107cda738cb29be13bd02ac27242d6fed4",
+      "score": 0.099173,
+      "matched_concepts": [
+        "ent_e7c85e40a7db"
+      ],
+      "episodes": [
+        {
+          "episode_id": "cache_20230526_173900_9be7a2f02b744ffb8587ba5a11bac1db",
+          "name": "2be0dc0f_2",
+          "start_offset": 0,
+          "end_offset": 5371,
+          "matched": [
+            "ent_e7c85e40a7db"
+          ]
+        },
+        {
+          "episode_id": "cache_20230526_173900_1b942a03d26a47529f27db7cbe2d11e8",
+          "name": "2be0dc0f_2",
+          "start_offset": 10488,
+          "end_offset": 11570,
+          "matched": [
+            "ent_e7c85e40a7db"
+          ]
+        }
+      ]
+    },
+    {
+      "index": 16,
+      "document_id": "doc_bench_5653fd351f81ab2fae2e",
+      "title": "ultrachat_260301",
+      "path": "content/current/ultrachat_260301.md",
+      "target": "/Users/admin/Desktop/exa/dd-exp/research/.benchmark_runs/exp-align-b2/libraries/gpt4_78cf46a3_2ab6ce05f2/content/current/ultrachat_260301.md",
+      "target_exists": true,
+      "filename": "16-ultrachat_260301.md",
+      "sha256": "b3a30de00bba332f52fc967b7175f51563e64ffae94f63dc2f581488b297f869",
+      "score": 0.099173,
+      "matched_concepts": [
+        "ent_e7c85e40a7db"
+      ],
+      "episodes": [
+        {
+          "episode_id": "cache_20230526_054400_559cbe9c0a3a4079b564df06bb5f0eb6",
+          "name": "ultrachat_260301",
+          "start_offset": 5647,
+          "end_offset": 8028,
+          "matched": [
+            "ent_e7c85e40a7db"
+          ]
+        }
+      ]
+    },
+    {
+      "index": 17,
+      "document_id": "doc_bench_7229c7a29cd197f99c5d",
+      "title": "1d4d7a91",
+      "path": "content/current/1d4d7a91.md",
+      "target": "/Users/admin/Desktop/exa/dd-exp/research/.benchmark_runs/exp-align-b2/libraries/gpt4_78cf46a3_2ab6ce05f2/content/current/1d4d7a91.md",
+      "target_exists": true,
+      "filename": "17-1d4d7a91.md",
+      "sha256": "249b2bb69c604878a97011132b310859f7a6546e10974899a33262f7994d8dd4",
+      "score": 0.099173,
+      "matched_concepts": [
+        "ent_e7c85e40a7db"
+      ],
+      "episodes": [
+        {
+          "episode_id": "cache_20230526_055500_879eb3f7232f4a84bcaa77dd7f667ab1",
+          "name": "1d4d7a91",
+          "start_offset": 0,
+          "end_offset": 5624,
+          "matched": [
+            "ent_e7c85e40a7db"
+          ]
+        }
+      ]
+    },
+    {
+      "index": 18,
+      "document_id": "doc_bench_7af72619cf7652ecc3c3",
+      "title": "e8e65a1f",
+      "path": "content/current/e8e65a1f.md",
+      "target": "/Users/admin/Desktop/exa/dd-exp/research/.benchmark_runs/exp-align-b2/libraries/gpt4_78cf46a3_2ab6ce05f2/content/current/e8e65a1f.md",
+      "target_exists": true,
+      "filename": "18-e8e65a1f.md",
+      "sha256": "67c1766829266420291d9fc32c129624aaa80376978dad8d87b32ac6436bb63a",
+      "score": 0.099173,
+      "matched_concepts": [
+        "ent_e7c85e40a7db"
+      ],
+      "episodes": [
+        {
+          "episode_id": "cache_20230526_224600_e1c02798ee5141c2b09433c9a9623fec",
+          "name": "e8e65a1f",
+          "start_offset": 0,
+          "end_offset": 5644,
+          "matched": [
+            "ent_e7c85e40a7db"
+          ]
+        }
+      ]
+    },
+    {
+      "index": 19,
+      "document_id": "doc_bench_9415dbbdc1f872fa3df2",
+      "title": "sharegpt_Dhhs3Wu_8",
+      "path": "content/current/sharegpt_Dhhs3Wu_8.md",
+      "target": "/Users/admin/Desktop/exa/dd-exp/research/.benchmark_runs/exp-align-b2/libraries/gpt4_78cf46a3_2ab6ce05f2/content/current/sharegpt_Dhhs3Wu_8.md",
+      "target_exists": true,
+      "filename": "19-sharegpt_Dhhs3Wu_8.md",
+      "sha256": "a5f04557b71763f4bdcbe56073ba851c53a3a5ee26405c95755e4c1c0a7184d7",
+      "score": 0.099173,
+      "matched_concepts": [
+        "ent_e7c85e40a7db"
+      ],
+      "episodes": [
+        {
+          "episode_id": "cache_20230526_005200_34f242b890c94d32bd7362278fe5642d",
+          "name": "sharegpt_Dhhs3Wu_8",
+          "start_offset": 0,
+          "end_offset": 2182,
+          "matched": [
+            "ent_e7c85e40a7db"
+          ]
+        }
+      ]
+    },
+    {
+      "index": 20,
+      "document_id": "doc_bench_b0b27ab55fa1b04bebef",
+      "title": "7746ba1b_3",
+      "path": "content/current/7746ba1b_3.md",
+      "target": "/Users/admin/Desktop/exa/dd-exp/research/.benchmark_runs/exp-align-b2/libraries/gpt4_78cf46a3_2ab6ce05f2/content/current/7746ba1b_3.md",
+      "target_exists": true,
+      "filename": "20-7746ba1b_3.md",
+      "sha256": "d889df98221182b7ebd2a886397519a66f9a2b42f9e33f0bc3537746d69fc94c",
+      "score": 0.099173,
+      "matched_concepts": [
+        "ent_e7c85e40a7db"
+      ],
+      "episodes": [
+        {
+          "episode_id": "cache_20230526_215800_bacc9a9a42fa43e386f6e4baa2c99121",
+          "name": "7746ba1b_3",
+          "start_offset": 0,
+          "end_offset": 5995,
+          "matched": [
+            "ent_e7c85e40a7db"
+          ]
+        },
+        {
+          "episode_id": "cache_20230526_215800_2678243b725347bcb71dea73dd17fc6e",
+          "name": "7746ba1b_3",
+          "start_offset": 11269,
+          "end_offset": 17037,
+          "matched": [
+            "ent_e7c85e40a7db"
+          ]
+        }
+      ]
+    },
+    {
+      "index": 21,
+      "document_id": "doc_bench_c049b148218037f89a9f",
+      "title": "908f1f08",
+      "path": "content/current/908f1f08.md",
+      "target": "/Users/admin/Desktop/exa/dd-exp/research/.benchmark_runs/exp-align-b2/libraries/gpt4_78cf46a3_2ab6ce05f2/content/current/908f1f08.md",
+      "target_exists": true,
+      "filename": "21-908f1f08.md",
+      "sha256": "2c9333015900467ce504b205982c7a03b713769157f101db7978200443f97e73",
+      "score": 0.099173,
+      "matched_concepts": [
+        "ent_e7c85e40a7db"
+      ],
+      "episodes": [
+        {
+          "episode_id": "cache_20230526_081000_9b6eedf470cc4f71927e705f0c2c3d5a",
+          "name": "908f1f08",
+          "start_offset": 0,
+          "end_offset": 5024,
+          "matched": [
+            "ent_e7c85e40a7db"
+          ]
+        },
+        {
+          "episode_id": "cache_20230526_081000_bc3e9a72ddb24435a91731dbf7e98971",
+          "name": "908f1f08",
+          "start_offset": 4838,
+          "end_offset": 10179,
+          "matched": [
+            "ent_e7c85e40a7db"
+          ]
+        }
+      ]
+    },
+    {
+      "index": 22,
+      "document_id": "doc_bench_cbf8ec77445503699681",
+      "title": "sharegpt_Hl88hYR_0",
+      "path": "content/current/sharegpt_Hl88hYR_0.md",
+      "target": "/Users/admin/Desktop/exa/dd-exp/research/.benchmark_runs/exp-align-b2/libraries/gpt4_78cf46a3_2ab6ce05f2/content/current/sharegpt_Hl88hYR_0.md",
+      "target_exists": true,
+      "filename": "22-sharegpt_Hl88hYR_0.md",
+      "sha256": "a5b34b1ec83a73ff73a23d576102c9d61fabeb961558c8efa7e48302236d6d95",
+      "score": 0.099173,
+      "matched_concepts": [
+        "ent_e7c85e40a7db"
+      ],
+      "episodes": [
+        {
+          "episode_id": "cache_20230526_163200_44e1927af966452d8009b9457b55b229",
+          "name": "sharegpt_Hl88hYR_0",
+          "start_offset": 0,
+          "end_offset": 1375,
+          "matched": [
+            "ent_e7c85e40a7db"
+          ]
+        }
+      ]
+    },
+    {
+      "index": 23,
+      "document_id": "doc_bench_fa51da03c658678b5bdc",
+      "title": "672c2bee_1",
+      "path": "content/current/672c2bee_1.md",
+      "target": "/Users/admin/Desktop/exa/dd-exp/research/.benchmark_runs/exp-align-b2/libraries/gpt4_78cf46a3_2ab6ce05f2/content/current/672c2bee_1.md",
+      "target_exists": true,
+      "filename": "23-672c2bee_1.md",
+      "sha256": "2681e4d93174a092922541c6e732c9a3519ad49993f25df30b862953e4435206",
+      "score": 0.099173,
+      "matched_concepts": [
+        "ent_e7c85e40a7db"
+      ],
+      "episodes": [
+        {
+          "episode_id": "cache_20230526_213900_0bab7c0c2e774f26927ef27b03016be9",
+          "name": "672c2bee_1",
+          "start_offset": 0,
+          "end_offset": 5937,
+          "matched": [
+            "ent_e7c85e40a7db"
+          ]
+        }
+      ]
+    },
+    {
+      "index": 24,
+      "document_id": "doc_bench_2d148ecd468ccbc9bdb2",
+      "title": "843b5efa",
+      "path": "content/current/843b5efa.md",
+      "target": "/Users/admin/Desktop/exa/dd-exp/research/.benchmark_runs/exp-align-b2/libraries/gpt4_78cf46a3_2ab6ce05f2/content/current/843b5efa.md",
+      "target_exists": true,
+      "filename": "24-843b5efa.md",
+      "sha256": "b9a3dd0569c5d6a62444f1a3907d469f7b10c0c557bc09e61aa4f5c086bf3422",
+      "score": 0.083797,
+      "matched_concepts": [
+        "ent_f47790b37c56"
+      ],
+      "episodes": [
+        {
+          "episode_id": "cache_20230526_065500_20c1c36feb4c43d288a86647c6b980c7",
+          "name": "843b5efa",
+          "start_offset": 9801,
+          "end_offset": 12251,
+          "matched": [
+            "ent_f47790b37c56"
+          ]
+        }
+      ]
+    },
+    {
+      "index": 25,
+      "document_id": "doc_bench_476feabf16abc1cd8e3c",
+      "title": "5e7e7e35_1",
+      "path": "content/current/5e7e7e35_1.md",
+      "target": "/Users/admin/Desktop/exa/dd-exp/research/.benchmark_runs/exp-align-b2/libraries/gpt4_78cf46a3_2ab6ce05f2/content/current/5e7e7e35_1.md",
+      "target_exists": true,
+      "filename": "25-5e7e7e35_1.md",
+      "sha256": "d8c22ed2ff397f7bebb2aaed42df72e1ab67848ad42c1db8f045459e17dc13a8",
+      "score": 0.083704,
+      "matched_concepts": [
+        "ent_ce7884f4f52b"
+      ],
+      "episodes": [
+        {
+          "episode_id": "cache_20230526_111600_1cf7af2409554638a249271526ebf437",
+          "name": "5e7e7e35_1",
+          "start_offset": 0,
+          "end_offset": 5952,
+          "matched": [
+            "ent_ce7884f4f52b"
+          ]
+        },
+        {
+          "episode_id": "cache_20230526_111600_462370278fc2481d92f91f30dff0a05d",
+          "name": "5e7e7e35_1",
+          "start_offset": 5685,
+          "end_offset": 11410,
+          "matched": [
+            "ent_ce7884f4f52b"
+          ]
+        }
+      ]
+    },
+    {
+      "index": 26,
+      "document_id": "doc_bench_d452908cb7b3147b7a5f",
+      "title": "ultrachat_370708",
+      "path": "content/current/ultrachat_370708.md",
+      "target": "/Users/admin/Desktop/exa/dd-exp/research/.benchmark_runs/exp-align-b2/libraries/gpt4_78cf46a3_2ab6ce05f2/content/current/ultrachat_370708.md",
+      "target_exists": true,
+      "filename": "26-ultrachat_370708.md",
+      "sha256": "13f9f6074651593ad51f0ef67e2b63411579f83483f1fc305c53a394dbdc2ef2",
+      "score": 0.083659,
+      "matched_concepts": [
+        "ent_9f590faeb462"
+      ],
+      "episodes": [
+        {
+          "episode_id": "cache_20230526_010900_ca13cb08308c45a4afd92f1db014185d",
+          "name": "ultrachat_370708",
+          "start_offset": 0,
+          "end_offset": 4329,
+          "matched": [
+            "ent_9f590faeb462"
+          ]
+        }
+      ]
+    },
+    {
+      "index": 27,
+      "document_id": "doc_bench_1499cf8bf931e18f4fda",
+      "title": "sharegpt_ZWqMvoL_593",
+      "path": "content/current/sharegpt_ZWqMvoL_593.md",
+      "target": "/Users/admin/Desktop/exa/dd-exp/research/.benchmark_runs/exp-align-b2/libraries/gpt4_78cf46a3_2ab6ce05f2/content/current/sharegpt_ZWqMvoL_593.md",
+      "target_exists": true,
+      "filename": "27-sharegpt_ZWqMvoL_593.md",
+      "sha256": "f2e74862e22170c1f23a389d40ae8c844f7c870a06e83c7a5381a01d2cb78837",
+      "score": 0.083333,
+      "matched_concepts": [
+        "ent_3c3bf662aaad"
+      ],
+      "episodes": [
+        {
+          "episode_id": "cache_20230526_031800_84b5a83aa8f243599269ee65a2a56031",
+          "name": "sharegpt_ZWqMvoL_593",
+          "start_offset": 0,
+          "end_offset": 5876,
+          "matched": [
+            "ent_3c3bf662aaad"
+          ]
+        },
+        {
+          "episode_id": "cache_20230526_031800_1ef5a07a2e064d209df56be312ed766f",
+          "name": "sharegpt_ZWqMvoL_593",
+          "start_offset": 5582,
+          "end_offset": 9144,
+          "matched": [
+            "ent_3c3bf662aaad"
+          ]
+        }
+      ]
+    },
+    {
+      "index": 28,
+      "document_id": "doc_bench_6fb4c61914953791ec36",
+      "title": "sharegpt_vbNrVtS_137",
+      "path": "content/current/sharegpt_vbNrVtS_137.md",
+      "target": "/Users/admin/Desktop/exa/dd-exp/research/.benchmark_runs/exp-align-b2/libraries/gpt4_78cf46a3_2ab6ce05f2/content/current/sharegpt_vbNrVtS_137.md",
+      "target_exists": true,
+      "filename": "28-sharegpt_vbNrVtS_137.md",
+      "sha256": "ed6fbadf7212c0d64eee9470ff5453714674996941abbd97ea928625153a2be3",
+      "score": 0.083093,
+      "matched_concepts": [
+        "ent_d37f0a0f5963"
+      ],
+      "episodes": [
+        {
+          "episode_id": "cache_20230526_103700_18e7cb221fa3469e996f2df3b187a428",
+          "name": "sharegpt_vbNrVtS_137",
+          "start_offset": 0,
+          "end_offset": 5669,
+          "matched": [
+            "ent_d37f0a0f5963"
+          ]
+        },
+        {
+          "episode_id": "cache_20230526_103700_b4ae83fad9d84a4e8cf3bd6f01237eae",
+          "name": "sharegpt_vbNrVtS_137",
+          "start_offset": 5377,
+          "end_offset": 10789,
+          "matched": [
+            "ent_d37f0a0f5963"
+          ]
+        }
+      ]
+    },
+    {
+      "index": 29,
+      "document_id": "doc_bench_da3bc8bf03fe82b84a0e",
+      "title": "ultrachat_161609",
+      "path": "content/current/ultrachat_161609.md",
+      "target": "/Users/admin/Desktop/exa/dd-exp/research/.benchmark_runs/exp-align-b2/libraries/gpt4_78cf46a3_2ab6ce05f2/content/current/ultrachat_161609.md",
+      "target_exists": true,
+      "filename": "29-ultrachat_161609.md",
+      "sha256": "458142713cd59680f1314cf5294121380d06c4f29d57314bf2fc99bee6dcb696",
+      "score": 0.08303,
+      "matched_concepts": [
+        "ent_caf5e5ed3a22"
+      ],
+      "episodes": [
+        {
+          "episode_id": "cache_20230526_034300_6692a6af1bd14508a4099e45b4b77861",
+          "name": "ultrachat_161609",
+          "start_offset": 5472,
+          "end_offset": 7857,
+          "matched": [
+            "ent_caf5e5ed3a22"
+          ]
+        }
+      ]
+    },
+    {
+      "index": 30,
+      "document_id": "doc_bench_1bda4879ecdecefc776e",
+      "title": "ultrachat_305042",
+      "path": "content/current/ultrachat_305042.md",
+      "target": "/Users/admin/Desktop/exa/dd-exp/research/.benchmark_runs/exp-align-b2/libraries/gpt4_78cf46a3_2ab6ce05f2/content/current/ultrachat_305042.md",
+      "target_exists": true,
+      "filename": "30-ultrachat_305042.md",
+      "sha256": "862a98af888ae52f4dcc0cf4e6b5a6d2e7d98bc2a3335ac3eb9a98911493bb1f",
+      "score": 0.082913,
+      "matched_concepts": [
+        "ent_8d265cab2423"
+      ],
+      "episodes": [
+        {
+          "episode_id": "cache_20230526_112900_d848d7ebc62e48d0a8eb14da612b39ac",
+          "name": "ultrachat_305042",
+          "start_offset": 5563,
+          "end_offset": 6277,
+          "matched": [
+            "ent_8d265cab2423"
+          ]
+        }
+      ]
+    }
+  ]
+}

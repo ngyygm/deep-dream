@@ -1,61 +1,98 @@
 \section{Deep-Dream}
 \label{sec:deep-dream}
 
-\subsection{Memory model}
+\subsection{Memory representation}
 
-Let $D$ be a source document and $e_i$ an episode extracted from one of its spans. The persistent state is
+Let $\mathcal D_t$ be the documents processed by time $t$. For a document $D\in\mathcal D_t$, let $\mathcal E(D)$ be the Episodes obtained from its immutable source spans. For an Episode $e_i\in\mathcal E(D_i)$, define one stored observation as
+\[
+o_i=(D_i,e_i,\tau_i,x_i,\ell_i),
+\]
+where $\tau_i$ is processing time, $x_i$ is the extracted content and attributes, and $\ell_i$ is the exact source offset in $D_i$. The observation store after $t$ writes is $O_t=\{o_1,\ldots,o_t\}$. The persistent state is
 \[
 M_t=(F_t,O_t,G_t),
 \]
-where $F_t$ contains stable concept families, $O_t$ is an append-only store of observations with source spans, and $G_t$ contains relation, neighborhood, and version links. Deep-Dream keeps $D$, episodes, versions, and exact source offsets as authoritative data. An entity family $f$ is a search handle; each observation $o_{f,i}$ records what a source asserted, when it was observed, and where it can be reread. Resolving a family or link is address lookup; opening a span is a load---the graph names where evidence lives, and moving its text into context is a separate act (\cref{sec:answer-paths}). Relations use the same distinction between a derived link and the assertion that supports it. Active and historical observations remain distinguishable, so an update adds a pointer or version rather than overwriting source text.
+where $F_t$ contains concept families and candidate identities, and $G_t$ contains relation, neighborhood, and version pointers. Every observation carries the document and Episode identifiers $(D_i,e_i)$ that recover its source text.
 
-The graph has one state axis: processing/observation time. An event date can remain in the source observation and can be used during retrieval, but it is not a second version clock. This choice keeps version order well-defined while preserving the temporal language that the document actually contains.
+A write step is represented by
+\begin{equation}
+\begin{aligned}
+F_{t+1}&=\mathsf{Align}(F_t,x_{t+1}),\\
+O_{t+1}&=O_t\cup\{o_{t+1}\},\\
+G_{t+1}&=\mathsf{Link}(G_t,F_{t+1},o_{t+1}),\\
+M_{t+1}&=(F_{t+1},O_{t+1},G_{t+1}).
+\end{aligned}
+\label{eq:state-transition}
+\end{equation}
+Here $\mathsf{Align}$ either assigns $x_{t+1}$ to an existing family or keeps a new candidate family; $\mathsf{Link}$ adds or redirects pointers between families, observations, and versions. Neither operation edits the text addressed by $\ell_{t+1}$. Under the representation invariant that version pointers retain the predecessor state, a projection $\pi_t$ can recover $M_t$ from $M_{t+1}$. This is a conditional property of the retained state, not an empirical guarantee that the implementation can recover every historical graph configuration; updates add links without deleting the earlier observation record.
 
-\subsection{Ingestion and alignment: two engine generations}
+This representation separates finding from reading: resolving a family or relation is an index lookup, while opening its source span is a separate load. A relation edge helps the agent find a connected observation, but the assertion supporting it remains in the source text. Processing time $\tau_i$ is the single state axis of the graph; an event date may appear in $x_i$ and help answer a question, but it does not create a second version clock.
 
-\textbf{Base and Align+ differ in when entity identity is committed.} They construct the same kind of graph over the same document representation. Base aligns and consolidates each window as it arrives, without a final reconciliation. Align+ separates evidence capture from identity commitment: windows are ingested concurrently, candidate matches remain open, and compatible families are merged only after all windows in the current task group have been processed. In plain terms, Base is \textquotedblleft decide now\textquotedblright; Align+ is \textquotedblleft record first, decide later with more context\textquotedblright---slow identity decisions at write time.
+\subsection{Writing memory}
 
-The Remember pipeline performs heading-aware chunking, validated entity/relation extraction, conservative family alignment, batch candidate review, and final consistency pass. Over-splitting is recoverable because every observation keeps its source link. Slow identity decisions trade a bounded write-time delay for that recoverability. A later merge redirects compatible pointers; it does not rewrite or delete the observations that motivated the earlier split. A premature wrong merge is more dangerous because it makes two entities share one search entry before their evidence can be separated.
+Writing follows the state transition in \cref{eq:state-transition}: documents are split into Episodes with source offsets; entities and relations are extracted from each Episode; candidate identities are compared with existing concept families; and accepted links are written together with their supporting observations. Every link therefore has a path back to a document span.
 
-\subsection{How answers obtain evidence}
+When the first mention of an entity is ambiguous, Deep-Dream keeps candidate families separate. Later observations and relation neighborhoods can provide enough evidence to merge compatible families or redirect their pointers. The operation changes $F_t$ and $G_t$, not the observations in $O_t$. A temporary split is therefore recoverable, whereas an incorrect early merge can mix two histories under one search handle.
+
+\subsection{Immediate and delayed entity alignment}
+
+The experiments compare two write schedules over the same state representation. \textbf{Immediate alignment (Base)} applies $\mathsf{Align}$ as each window arrives. \textbf{Delayed alignment (Align+)} first appends $o_i$ and candidate links, then resolves compatible families after the surrounding windows have been processed. The difference is the time of the identity decision, not the schema or source record.
+
+Delayed alignment uses more context before making a merge. In our implementation it is bundled with batched or concurrent processing, so the paired measurements in \cref{sec:temporal-benchmark} quantify the deployed bundle rather than delayed alignment in isolation. It can reduce repeated work while preserving the source spans that support each decision.
+
+\subsection{Reading memory}
 \label{sec:answer-paths}
 
-All three methods use the same question stream, frozen libraries, scorer, answerer configuration, and task-group eligibility rule where the protocol permits. They differ only in how they obtain supporting text:
+Let $\mathcal S_t$ be the set of immutable source spans in $M_t$. For a query $q$, the agent starts with $C_0(q)=\varnothing$ and chooses an action
+\[
+a_{k+1}=\rho\bigl(q,M_t,C_k(q),u_k\bigr)
+\in\bigl(\mathcal S_t\setminus C_k(q)\bigr)\cup\{\mathsf{stop}\},
+\]
+where $u_k$ is the agent's current uncertainty. If $a_{k+1}$ is a span, it is opened and
+\[
+C_{k+1}(q)=C_k(q)\cup\{a_{k+1}\};
+\]
+if $a_{k+1}=\mathsf{stop}$, the chain ends. By induction---each non-stop step adds one member of $\mathcal S_t$ to $C_k$---we have $C_k(q)\subseteq\mathcal S_t$ and $C_k(q)\subseteq C_{k+1}(q)$. The equation tracks source-opening actions; lexical, semantic, concept, and relation lookups update $u_k$ without adding a span to $C_k$. This formalizes the source-opening trace; the policy decides when the evidence is sufficient. The information terms below are identities from the chain rule, not estimates of navigation utility or answer quality.
+
+At query time, the agent begins with the cheapest useful cue---lexical, semantic, concept, or relation---opens the corresponding Episode or source span, and expands the search when the evidence is incomplete: a question about one fact may stop after one passage, while an update or multi-document question may follow several relation and version links.
+
+We evaluate three read paths:
 \begin{enumerate}
-    \item \textbf{Direct retrieval.} The system returns one fixed set of lexical, semantic, and graph matches. A separate answerer sees that set once and cannot ask for more.
-    \item \textbf{Tool-assisted reading.} The agent may call read-only search and record tools several times. The resulting records are then given to a separate answerer; this method does not open the original files.
-    \item \textbf{Source reading.} The system selects a relevant document group, the agent opens the original files with ordinary tools, and the answer cites only spans that it actually read.
+    \item \textbf{Fixed retrieval} runs the lexical/semantic/graph retriever once and gives the answerer one ranked list of memory records and retrieved chunks. The list cannot be changed or checked against a source file.
+    \item \textbf{Memory-tool reading} gives the answering agent read-only search, concept, relation, and chunk tools. It may call them repeatedly and use one result to form the next query, but the answerer receives the records returned by those tools.
+    \item \textbf{Source-grounded reading} uses the index to select document groups, opens the original files, reads exact spans, and submits only spans that pass the source gate.
 \end{enumerate}
 
-Because tools, prompts, and compute change together, these are comparisons of complete systems rather than single-component interventions. A separate channel replay changes only the derived search channels.
+The source check verifies that a cited identifier was returned by a tool and still points to the original text. It establishes provenance of the citation; the agent must still decide whether the passage supports the answer.
 
-A citation check runs without an LLM. It accepts a source identifier only when the current question's tools returned it, it belongs to an eligible document group, and the system still has a pointer to the original text. This confirms that the citation came from text the agent opened; it does not guarantee that the text is relevant. The runtime records tool observations, source IDs, latency, exit status, and code/runtime hashes.
-
-Candidate records combine lexical, semantic, concept, relation, and neighborhood channels by reciprocal-rank fusion and resolve to episodes and spans. In the source-reading method, the graph chooses where to read; it does not manufacture the content that is read.
-
-\subsection{Progressive disclosure in information-theoretic terms}
+\subsection{Why this representation preserves useful detail}
 \label{sec:information-view}
 
-\textbf{Write time: information is retained.} Let $X_{1:t}$ be observations extracted from the first $t$ source spans, $Z$ their latent entity assignments, and $M_t=(F_t,O_t,G_t)$ the persistent state. Ingestion adds an observation and may redirect a family, but does not delete one:
+Let $Z$ be a fixed target assignment of observations to entities. The dimension of $Z$ is held fixed as observations arrive. Since $\pi_t(M_{t+1})=M_t$, the newer state contains the previous state together with the new observation and any revised links. Therefore
 \begin{equation}
-  \begin{aligned}
-  O_{t+1}&=O_t\cup\{(X_{t+1},\mathrm{span}_{t+1})\},\\
-  I(Z;O_{1:t+1})&=I(Z;O_{1:t})+
-  I(Z;X_{t+1}\mid O_{1:t})\ge I(Z;O_{1:t}).
-  \end{aligned}
+\begin{aligned}
+H(Z\mid M_t)-H(Z\mid M_{t+1})
+&=I(Z;M_{t+1}\mid M_t)\\
+&\ge 0.
+\end{aligned}
+\label{eq:state-uncertainty}
 \end{equation}
-The equality is bookkeeping for the append-only observation stream, not a measured entropy gain. It explains why first-pass alignment can remain provisional: later evidence may refine the family partition while preserving the source material.
+The first equality holds because $M_t$ is recoverable from $M_{t+1}$---a representation invariant supplied by the retained version links, not by arbitrary graph edges. If the new observation carries no information about $Z$, the difference is zero; when it distinguishes candidate families, the conditional entropy decreases. This is a structural guarantee about retained state, not a measured entropy gain.
 
-\textbf{Read time: navigation plus source text.} For a query $q$, let $A$ be the compact search record returned by concept families and relation paths, $E_C$ the exact spans opened from candidate set $C$, and $Y$ the answer-relevant fact:
+For a query $q$, let $A$ be the compact record used to locate candidates, $E_C$ the source spans opened from candidate set $C$, and $Y$ the answer-relevant fact. The chain rule gives
 \begin{equation}
-  I(Y;A,E_C\mid Q=q)=I(Y;A\mid Q=q)+I(Y;E_C\mid A,Q=q).
-  \label{eq:two-rate-code}
+I(Y;A,E_C\mid Q=q)=I(Y;A\mid Q=q)+I(Y;E_C\mid A,Q=q).
+\label{eq:two-rate-code}
 \end{equation}
-The first term is the information used to find a candidate; the second is the additional fact information obtained by opening source text. A summary-only system replaces the source $S$ by a write-time channel output $f(S)$ and may lose details needed by a later query. Deep-Dream keeps $S$ available for later reading and lets the agent choose how much to read. This is an interpretation of the interface, not a claim that the implementation solves a variational bottleneck objective.
+This is the chain rule. The first term is information used to locate a candidate; the second is the additional information obtained by reading its source. Deep-Dream compresses the search description, not the only copy of the fact.
 
-\textbf{The agent chooses reading depth.} Reading forms a chain $C_0(q)\subseteq C_1(q)\subseteq\cdots\subseteq S$ under policy $a_{k+1}=\rho(q,M_t,C_{\le k},u_k)$, where $u_k$ is current uncertainty. Every cited span belongs to $S$, so the citation check confirms that the cited text was opened; the remaining failure mode is that the relevant text was never found, in which a relevant span never enters $C_k$. If $R_q$ denotes finding the relevant span and $V_q$ denotes successful verification after reading it,
+Let $R_q$ be the event that a relevant source span is in the opened set $C_K(q)$, and let $V_q$ be the event that the produced answer is correct, $V_q=\{\widehat Y=Y\}$. By the law of total probability,
 \begin{equation}
-  \Pr[\widehat Y=Y\mid q]\ge \Pr[R_q\mid q]\,\Pr[V_q\mid R_q,q].
-  \label{eq:answer-decomposition}
+\begin{aligned}
+\Pr[\widehat Y=Y\mid q]
+&=\Pr[R_q\mid q]\Pr[V_q\mid R_q,q]\\
+&\quad+\Pr[\neg R_q\mid q]\Pr[V_q\mid\neg R_q,q]\\
+&\ge \Pr[R_q\mid q]\Pr[V_q\mid R_q,q].
+\end{aligned}
+\label{eq:answer-decomposition}
 \end{equation}
-This factorization predicts that the graph should help locate evidence, while additional source reading should matter most when the answer joins mentions, resolves an update, or checks a conflict.
+Concept and relation links primarily affect the first factor; source reading and citation checking affect the second. The inequality is not a performance estimate or a claim that retrieval is necessary for a correct answer; it only decomposes outcomes according to whether a relevant span was opened.

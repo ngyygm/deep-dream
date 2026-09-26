@@ -1,16 +1,17 @@
 \section{相关工作}
+\label{sec:related-work}
 
-\paragraph{记忆基准。}
-LoCoMo 与 LongMemEval 测试长对话、时序更新与多会话推理 \citep{maharana2024locomo,wu2025longmemeval}。MEME 增加删除、级联与缺失检查 \citep{jung2026meme}。MemoryAgentBench（MAB）在一个官方评分框架内评测检索、测试时学习、长程理解与选择性遗忘 \citep{hu2025memoryagentbench}；我们将其作为主仪器，并让其任务级指标保持可见。
+\paragraph{长期记忆基准。}
+LoCoMo 和 LongMemEval 评估长对话、时序更新和多会话检索 \citep{maharana2024locomo,wu2025longmemeval}。MEME 增加删除、级联影响和缺失事实问题 \citep{jung2026meme}。MemoryAgentBench（MAB）在一个评分框架中同时测试准确检索、时序与测试时学习、长程理解和选择性遗忘 \citep{hu2025memoryagentbench}。这些基准分别覆盖存储和读取的不同部分，因此本文将它们作为互补测试，而不把长期记忆压缩成一个分数。
 
-\paragraph{结构化记忆。}
-MemGPT、A-MEM、Mem0、HippoRAG-2、Cognee、MIRIX 和 Zep/Graphiti 通过摘要、笔记或图改进持久性 \citep{packer2023memgpt,xu2025amem,chhikara2025mem0,gutierrez2025hipporag2,markovic2025cognee,wang2025mirix,rasmussen2025zep}。Deep-Dream 同样需要紧凑检索，但把权威边界分开：一个派生节点指向一个源文本跨度；它本身不是答案证据。
+\paragraph{智能体记忆系统。}
+MemGPT 将上下文管理描述为工作窗口与外部存储之间的分页 \citep{packer2023memgpt}。Model-Native Computing Architecture 进一步把上下文容量、缓存复用和智能体调度放在系统级资源管理框架下讨论 \citep{lin2026icam}。Mem0、Zep/Graphiti、HippoRAG-2、A-MEM、MIRIX 和 Cognee 使用摘要、笔记、图或它们的组合来保存跨会话信息 \citep{chhikara2025mem0,rasmussen2025zep,gutierrez2025hipporag2,xu2025amem,wang2025mirix,markovic2025cognee}。这些系统在“什么被保存为记忆”上各有不同：Deep-Dream 保留源文档，并把概念和关系作为指向源文档的链接，因此图中的派生节点是检索入口，而不是替代事实。
 
-\paragraph{作为被寻址存储的记忆。}
-一条系统研究路线用计算机体系结构的透镜审视模型栈：MemGPT 把上下文管理类比为操作系统的换页 \citep{packer2023memgpt}，ICAM 框架则提出上下文预算律——有限窗口叠加注意力衰减，只容得下一个有效工作集 \citep{lin2026icam}。这些刻画管的是类比中“处理器”的一侧。Deep-Dream 补上“存储”的一侧：一个由智能体亲自导航地址空间的持久存储，其中概念族是名字，关系与版本链接是间接寻址，源文本跨度是加载返回的基本单元。这个类比在我们的运行里可以度量：同一模型、同一评分器下，整块装入语料在装得下的 614/1{,}074 题上得 78.7，寻址式读取得 70.8；其余 460 题的语料超出装入预算，只有寻址式读取有分数。
+\paragraph{时序与版本化知识。}
+时序知识图谱表示不断变化的实体和关系；概率记录链接则区分错误合并与漏匹配 \citep{fellegi1969theory}。Deep-Dream 将这些思想用于智能体记忆：处理时间排列观测和版本，延迟对齐使候选身份在证据充分之前保持可修订，源文本则始终保持不变。事件日期仍然属于观测内容，可以参与检索，但不会另建一套状态时钟。
 
-\paragraph{信息论与联想记忆。}
-信息瓶颈形式化了在保留与目标变量相关信息前提下的紧凑表示 \citep{tishby2000information}，率失真理论刻画有损重构的代价 \citep{shannon1959coding}。联想记忆模型解释从部分线索出发的内容能被找到检索 \citep{ramsauer2021hopfield}，概率记录链接则区分误链接与漏链接两类错误 \citep{fellegi1969theory}。我们把这些思想用作记忆接口的分析：图层是压缩的检索索引，精确文本是保留的证据，延迟的实体合并用可容忍的漏链接代价，换取对灾难性误链接污染的规避。
+\paragraph{压缩、检索与证据。}
+信息瓶颈和率失真理论研究紧凑表示与目标信息之间的取舍 \citep{tishby2000information,shannon1959coding}。联想记忆研究如何从部分线索中检索内容 \citep{ramsauer2021hopfield}，检索增强生成则从外部来源选择生成证据 \citep{lewis2020rag}。长上下文模型在相关片段埋藏于大窗口中时可能丢失信息 \citep{liu2024lost}；归因研究检查回答是否引用了来源 \citep{gao2023alce}。Deep-Dream 将这些思想放入持久化记忆：概念和关系缩小搜索范围，源文本保留原始措辞，智能体决定读取多少内容；第~\cref{sec:information-view} 节给出这一分工的形式化分析。
 
-\paragraph{检索、长上下文与来源记录。}
-检索增强生成负责选择证据 \citep{lewis2020rag}。Agentic 检索则把检索决策暴露给模型：A-RAG 将关键词、语义与分块阅读工具交给一个在开放域多跳语料上的推理模型，并报告在可比或更少检索 token 下随测试时算力扩展的准确率 \citep{du2026arag}；其人工失败分析将实体混淆识别为主导残差错误，而对话与长篇记忆不在其测试设置内。Deep-Dream 共享渐进披露原则，但将其应用于长期记忆而非静态语料：概念与版本链接、只增观测和源跨度权威让后续读取可验证，而不仅是更便宜；实体混淆正是我们的对齐层与延迟合并设计要降低的失败类别。当相关跨度远离注意力窗口两端时，长上下文模型可能丢失信息 \citep{liu2024lost}。归因工作通常在生成之后检查引用 \citep{gao2023alce}；我们的引用检查只确认被引用的原文确实被打开。它并不证明蕴含，我们显式报告这一局限。
+\paragraph{智能体检索。}
+A-RAG 将关键词、语义和片段读取工具交给推理模型，用于多跳检索 \citep{du2026arag}。Deep-Dream 同样允许模型选择下一步读取动作，但面向的是不断变化的个人历史。它进一步需要处理身份修订、版本链接、跨文档 Episode 和基于原文的验证。

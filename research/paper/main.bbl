@@ -1,4 +1,4 @@
-\begin{thebibliography}{24}
+\begin{thebibliography}{27}
 \providecommand{\natexlab}[1]{#1}
 \providecommand{\url}[1]{\texttt{#1}}
 \expandafter\ifx\csname urlstyle\endcsname\relax
@@ -65,12 +65,30 @@ Yuanzhe Hu, Yu~Wang, and Julian McAuley.
 \newblock \emph{arXiv preprint arXiv:2507.05257}, 2025.
 \newblock URL \url{https://arxiv.org/abs/2507.05257}.
 
+\bibitem[Ji et~al.(2026)Ji, Wu, Wang, Xia, Li, Wang, Ding, Zhu, Li, Dai, and
+  Wang]{ji2026infini}
+Suozhao Ji, Baodong Wu, Zehao Wang, Lei Xia, Qingping Li, Ruisong Wang, Wenbo
+  Ding, Zhenhua Zhu, Boxun Li, Guohao Dai, and Yu~Wang.
+\newblock Infini memory: Maintainable topic documents for long-term llm agent
+  memory.
+\newblock \emph{arXiv preprint arXiv:2606.10677}, 2026.
+\newblock URL \url{https://arxiv.org/abs/2606.10677}.
+
 \bibitem[Jung et~al.(2026)Jung, Rubinstein, Uselis, Yun, and Oh]{jung2026meme}
 Seokwon Jung, Alexander Rubinstein, Arnas Uselis, Sangdoo Yun, and Seong~Joon
   Oh.
 \newblock Meme: Multi-entity {\&} evolving memory evaluation.
 \newblock \emph{arXiv preprint arXiv:2605.12477}, 2026.
 \newblock URL \url{https://arxiv.org/abs/2605.12477}.
+
+\bibitem[Latimer et~al.(2025)Latimer, Boschi, Neeser, Bartholomew, Srivastava,
+  Wang, and Ramakrishnan]{latimer2025hindsight}
+Chris Latimer, Nicolo Boschi, Andrew Neeser, Chris Bartholomew, Gaurav
+  Srivastava, Xuan Wang, and Naren Ramakrishnan.
+\newblock Hindsight is 20/20: Building agent memory that retains, recalls, and
+  reflects.
+\newblock \emph{arXiv preprint arXiv:2512.12818}, 2025.
+\newblock URL \url{https://arxiv.org/abs/2512.12818}.
 
 \bibitem[Lewis et~al.(2020)Lewis, Perez, Piktus, Petroni, Karpukhin, Goyal,
   K{\"u}ttler, Lewis, Yih, Rockt{\"a}schel, Riedel, and Kiela]{lewis2020rag}
@@ -95,8 +113,8 @@ Yifei Li, Weidong Guo, Lingling Zhang, Rongman Xu, Muye Huang, Hui Liu, Lijiao
 \newblock \doi{10.18653/v1/2026.acl-long.1150}.
 \newblock URL \url{https://aclanthology.org/2026.acl-long.1150/}.
 
-\bibitem[Lin(2026)]{lin2026icam}
-Hai Lin.
+\bibitem[Lin et~al.(2026)Lin, Pao, Zhan, and Zheng]{lin2026icam}
+Hai Lin, Hoilam Pao, Shaoxiong Zhan, and Hai-Tao Zheng.
 \newblock Model-native computing architecture: Envisioning future system
   architecture through the lens of computer architecture.
 \newblock \emph{arXiv preprint arXiv:2606.00288}, 2026.
@@ -180,6 +198,15 @@ Naftali Tishby, Fernando~C. Pereira, and William Bialek.
 \newblock The information bottleneck method.
 \newblock \emph{arXiv preprint physics/0004057}, 2000.
 \newblock URL \url{https://arxiv.org/abs/physics/0004057}.
+
+\bibitem[Wang et~al.(2026)Wang, Yu, Love, Zhang, Wong, Scargall, and
+  Fan]{wang2026memmachine}
+Shu Wang, Edwin Yu, Oscar Love, Tom Zhang, Tom Wong, Steve Scargall, and
+  Charles Fan.
+\newblock Memmachine: A ground-truth-preserving memory system for personalized
+  ai agents.
+\newblock \emph{arXiv preprint arXiv:2604.04853}, 2026.
+\newblock URL \url{https://arxiv.org/abs/2604.04853}.
 
 \bibitem[Wang \& Chen(2025)Wang and Chen]{wang2025mirix}
 Yu~Wang and Xi~Chen.

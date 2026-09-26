@@ -6,13 +6,13 @@
 \toprule
 \textbf{属性} & \textbf{直接检索} & \textbf{工具辅助读取} & \textbf{原文读取} \\
 \midrule
-源访问 & top-$k$ 跨度 & 派生记录 & 逐字源文件 \\
-工具 & 无 & 记忆工具 & 读取、grep、脚本 \\
-答题模型 & 独立 & 独立 & 带验证的智能体 \\
+源访问 & 一次排序结果 & Episode/会话载荷 & 选中文档原文 \\
+工具 & 无 & 记忆工具 & scope、grep、脚本 \\
+答题模型 & Kimi-K3 & Kimi-K3 & Kimi-K3 \\
 循环 & 无 & 多次只读调用 & 多次读取并核对 \\
 每题成本 & \DirectRetrievalCost & \MemoryToolCost & \SourceGroundedCost \\
 \bottomrule
 \end{tabular}
-\caption{三种读取方式的差异。三条路径共享冻结库、问题流、Kimi-K3 与官方评分器。}
+\caption{三种读取方式的差异。原文读取路径增加确定性的来源检查，确认返回 ID 指向原文位置；最终仍由 Kimi-K3 作答；三条路径共享冻结库、问题流与官方评分器。}
 \label{tab:answer-path-differences}
 \end{table*}

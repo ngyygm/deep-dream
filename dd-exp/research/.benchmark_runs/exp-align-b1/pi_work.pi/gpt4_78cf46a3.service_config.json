@@ -1,0 +1,52 @@
+{
+  "host": "127.0.0.1",
+  "port": 16203,
+  "auto_port_fallback": false,
+  "storage_path": "/Users/admin/Desktop/exa/dd-exp/research/.benchmark_runs/exp-align-b1/libraries/gpt4_78cf46a3_2ab6ce05f2",
+  "storage": {
+    "backend": "sqlite",
+    "vector_dim": 384
+  },
+  "llm": {
+    "api_key": "EMPTY",
+    "model": "kimi-k3",
+    "base_url": "http://sz-infer.x2robot.cn/infer/inf-dddgcurffgz3366q/v1",
+    "think": false,
+    "extra_body": {
+      "chat_template_kwargs": {
+        "enable_thinking": false
+      }
+    },
+    "max_tokens": 16384,
+    "context_window_tokens": 32000,
+    "max_concurrency": 5,
+    "timeout_seconds": 300
+  },
+  "embedding": {
+    "model": "all-MiniLM-L6-v2",
+    "device": "cpu"
+  },
+  "chunking": {
+    "window_size": 800,
+    "overlap": 100
+  },
+  "pipeline": {
+    "extraction": {
+      "entity_refine_rounds": 0,
+      "relation_refine_rounds": 0,
+      "entity_post_enhancement": false
+    },
+    "remember": {
+      "profile": "current",
+      "mode": "multi_step",
+      "anchor_recall_rounds": 1,
+      "named_entity_recall_rounds": 1,
+      "abstract_recall_rounds": 1,
+      "coverage_gap_rounds": 0,
+      "relation_hint_rounds": 1,
+      "relation_expand_rounds": 0,
+      "relation_write_rounds": 1,
+      "window_batch_alignment": true
+    }
+  }
+}

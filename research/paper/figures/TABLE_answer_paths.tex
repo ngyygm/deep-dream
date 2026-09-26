@@ -6,13 +6,13 @@
 \toprule
 \textbf{Property} & \textbf{Direct retrieval} & \textbf{Tool-assisted reading} & \textbf{Source reading} \\
 \midrule
-Source access & top-$k$ spans & derived records & verbatim sources \\
-Tools & none & memory tools & read, grep, script \\
-Answerer & separate & separate & verifying agent \\
+Source access & one ranked payload & episode/session payloads & selected source files \\
+Tools & none & memory tools & scope, grep, script \\
+Answerer & Kimi-K3 & Kimi-K3 & Kimi-K3 \\
 Loop & none & several read-only calls & several read-and-cite calls \\
 Cost / question & \DirectRetrievalCost & \MemoryToolCost & \SourceGroundedCost \\
 \bottomrule
 \end{tabular}
-\caption{Differences between the three reading methods. All three paths share frozen libraries, question stream, Kimi-K3, and the official scorer.}
+\caption{Differences between the three reading methods. The source path adds a deterministic source check that confirms returned IDs resolve to source offsets; the final answerer remains Kimi-K3; all paths share frozen libraries, question stream, and official scorer.}
 \label{tab:answer-path-differences}
 \end{table*}

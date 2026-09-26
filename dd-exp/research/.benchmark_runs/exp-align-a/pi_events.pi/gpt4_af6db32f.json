@@ -1,0 +1,5 @@
+{
+  "exit_code": 0,
+  "stderr_tail": "",
+  "final_text": "Evidence verified in the library (session `answer_184c8f56_1`, timestamp 2023/02/12 (Sun) 06:29): the user said \"today when we watched the Super Bowl,\" so the Super Bowl was watched on February 12, 2023. Question date is 2023/03/01. From Feb 12 to Mar 1 = 17 days (18 if counting inclusively).\n\nANSWER: 17 days"
+}

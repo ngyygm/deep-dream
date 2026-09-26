@@ -1,37 +1,23 @@
 \section{Introduction}
 
-Consider choosing a restaurant for a friend. Months ago, she said, ``I do not eat seafood, and I am cutting back on spicy food for now.'' Last week, she added, ``I am eating spicy food again.'' Recalling only ``dietary restrictions'' loses which preference changed; remembering only the latest message loses the seafood restriction. A useful recollection connects both conversations to the same person, distinguishes what changed from what still applies, and preserves qualifiers such as ``for now'' and ``cutting back.'' Recall here works less like consulting a running summary and more like revisiting each remark as it was made, then deciding which still applies.
+A memory answer has at least three evidential layers: what a document says, how the system links that sentence to an entity, and which passages the agent actually reads. Conflating them makes a plausible answer hard to audit. Suppose a document says, \textquotedblleft Alex approved the contract,\textquotedblright and the collection contains an Alex at a laboratory and another at a vendor. The sentence supports an approval claim, but not an identity assignment. Later organization or relation evidence may change the link. A premature merge can make the wrong history appear authoritative.
 
-An agent faces the same problem across a growing history, and a finite context window turns it into a memory-management problem: the window is a small fast memory, the history is a large store, and each answer needs a working set of exact wording brought into the window. Both familiar extremes fail as they do in computers. A fixed summary compresses before the question is known, committing the loss at write time; rereading the entire history bulk-copies the store and pays for irrelevant context on every query. Computers take a third route---address the store, then load only what is addressed---and so does Deep-Dream: it separates finding relevant memories from reading the evidence needed to answer.
+The same calibration problem occurs with updates. A friend says in January, \textquotedblleft I am avoiding spicy food for now,\textquotedblright and in June, \textquotedblleft I can eat spicy food again.\textquotedblright Both statements are evidence. A current answer should use the later one, while an explanation of the change should inspect both. Retention and interpretation therefore need separate state.
 
-% Figure 1: first-page evidence-path motivation
+Deep-Dream implements this separation as a \emph{document-first temporal concept graph}. Documents, Episodes, and exact source offsets preserve the record. Observations link extracted content to spans; concepts, relations, versions, and candidate families provide revisable access paths. New evidence can redirect a link without rewriting its source. Processing time orders updates, and dates remain observation content. This is an auditable representation, not a guarantee of correct identity resolution or historical-state recovery.
+
+At query time, the agent follows an address, opens its source passage, and decides whether the evidence is sufficient (Figure~\ref{fig:motivation}). It may search again, inspect a relation neighborhood, or compare earlier and later wording. \textbf{The source gate validates provenance, not identity or entailment.} This distinction keeps a source citation from being mistaken for a proof of the answer.
+
 \begin{figure}[h]
   \centering
   \includegraphics[width=0.98\columnwidth]{figures/fig0_motivation.pdf}
-  \caption{Separating addressing from loading. Deep-Dream first locates candidate source text and then lets the agent read, verify, or stop within a budget.}
+  \caption{Storage and reading expose different evidence claims. Revisable addresses guide the search; source passages let the agent audit wording, identity context, and update status.}
   \label{fig:motivation}
 \end{figure}
 
-We define Deep-Dream as a \emph{document-first temporal concept graph for agentic long-term memory}. The definition has three parts.
-
+We evaluate both axes with paired construction runs, MemoryAgentBench read paths, LongMemEval and LoCoMo history tests, and MEME deletion checks. The comparison reports what each protocol establishes: complete paths are not component ablations, duplicate-name counts are proxies, and provenance is not entailment. Our contributions are:
 \begin{itemize}
-    \item \textbf{Documents are the authority.} Original files, episodes, and exact source spans are retained. Concepts and relations point to this material; they do not replace it with a fact that the system is allowed to treat as true.
-    \item \textbf{Observation time is the state axis.} Each processed input adds an observation and, when needed, a new version. Earlier observations can still be found. Event dates may be part of the observed text, but they do not create a second graph state timeline.
-    \item \textbf{The graph is a navigation layer.} Stable concept families, relation edges, and version links form the address space over the store. They answer \textquotedblleft where should the agent look next?\textquotedblright; the source span answers \textquotedblleft what was actually written?\textquotedblright
+    \item \textbf{Calibrated evidence storage.} Source-linked observations remain inspectable while inferred identity links can be revised.
+    \item \textbf{Auditable progressive reading.} The agent can gather additional passages and expose the evidence behind an address.
+    \item \textbf{A two-axis evaluation.} We report quality, coverage, costs, alignment uncertainty, null graph recall, and deletion failure with their protocol boundaries.
 \end{itemize}
-
-The same separation shapes construction and use. At write time, a low-confidence match stays a provisional family instead of forcing an irreversible merge: an early note saying only ``Alex approved the contract'' may belong to a lab Alex or a vendor Alex, so the system keeps both candidates; later notes such as ``Alex from the lab presented with Dr.~Liu'' add organization and relation evidence, and compatible pointers are redirected without editing either source span. We call this \emph{slow identity decisions}: the irreversible merge waits for pooled evidence rather than committing at first mention. An eager merge would make a query about one Alex retrieve the other's contract and project facts. At read time, the agent follows a concept, expands a relation neighborhood, opens an episode, and returns to the source span; a citation check accepts only identifiers returned by the current read path.
-
-The two write implementations differ in when entity identity becomes final: Base (initial) commits each window as it arrives; Align+ (revised) records observations and candidate matches first, then merges compatible identities after the surrounding evidence is processed---the write-side instance of slow identity decisions. Both build the same kind of graph.
-
-These design choices pose two questions. \emph{How to store}: as the history grows and entity states change, can memory accumulate without loss---keeping the exact source wording, keeping earlier and later states jointly reachable through version links, and keeping identity decisions revisable rather than committing irreversible merges at first mention? \emph{How to read}: can what enters the context window be found by address rather than bulk-copied, with the agent itself tracing concepts, relations, and versions across hops, by whatever search means it chooses, loading only the evidence the current question needs?
-
-Four benchmarks probe the two lines. For reading, MemoryAgentBench fixes the questions and memory collection while comparing one fixed retrieval result, repeated read-only tool calls, and direct reading of source files with citation checks, and LoCoMo separates single-hop, multi-hop, temporal, and open-domain questions under a binary $J$ score. For storing, LongMemEval writes complete conversations before testing whether an older statement and a later correction can be found together, and matched runs compare the two write implementations. MEME marks where storing stops: deleted facts, facts linked to deleted items, and facts that were never present.
-
-The paper makes three contributions:
-\begin{itemize}
-    \item \textbf{A store that accumulates without loss.} A document-first memory state $M_t=(F_t,O_t,G_t)$ separates stable concept families, append-only observations, and relation/version links, so earlier and later states stay jointly reachable and identity decisions remain revisable through slow identity decisions.
-    \item \textbf{A read path the agent owns.} An agent controls concept search, relation expansion, source reading, verification, and stopping; the citation check ensures that cited text was actually opened.
-    \item \textbf{An evaluation organized by the two lines.} MAB and LoCoMo probe reading, LongMemEval and matched write runs probe storing, and MEME marks the deletion boundary; strengths and failures are both reported.
-\end{itemize}
-

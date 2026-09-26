@@ -9,9 +9,11 @@
 
 \input{figures/figure_architecture_zh}
 \input{figures/figure_alignment_zh}
+图~\ref{fig:alignment} 在同一批 614 道题上比较四条读取路径。Overall 从固定检索的 38.6 提高到工具读取的 44.6，再提高到原文读取的 70.8；完整上下文参照为 78.7。热力图解释了差距：原文读取的 AR 为 95.0、SF 为 80.0，接近或超过完整上下文，但 TTL 只有 46.0，而完整上下文为 75.0。因此，原文读取在不装入全部语料的情况下恢复了大部分检索和选择性遗忘能力，但更新密集型 TTL 仍需要更强的时序处理。
 \input{figures/figure_alignment_outcomes_zh}
+图~\ref{fig:alignment-outcomes} 将 Align+ 的整体变化拆成可观察的结果。面板 (a) 显示 MAB 入库调用从 609 降至 329，LongMemEval 从 63.8 降至 22.0；面板 (b) 显示重复实体族分别从 340 降至 124、从 482 降至 99。面板 (c) 中 MCC 和 FC-MH 都提高了 3 个百分点，配对 95\% 区间为 $-7$ 到 $+13$ 个百分点。图中支持构建成本和实体整合方面的收益，同时抽样质量保持相近；由于多个实现改动同时生效，它不是单组件消融。
 \input{figures/TABLE_answer_paths_zh}
-\input{figures/figure_agent_trace_zh}
+压缩后的读取轨迹见正文图~\ref{fig:agent-trace}。发布的实验材料保留完整的工具调用 JSON、时间戳和格式错误后的重试记录，便于审计。
 \input{figures/TABLE_experiment_map_zh}
 
 \subsection{版本溯源与对齐 A/B 研究}
@@ -46,12 +48,16 @@
   \label{fig:cost}
 \end{figure}
 
+图~\ref{fig:cost} 将答案质量与运行成本对应起来。面板 (a) 中，固定检索的均值到 p95 延迟为 31.0--99.3 秒，工具读取为 65.9--172.8 秒，原文读取为 95.0--451.7 秒；原文路径每题使用 10.2 次调用和 328.6k token。面板 (b) 说明延迟对齐的运行收益：调用从 609 降至 329、从 64 降至 22，token 从 1,456k 降至 1,191k、从 139k 降至 112k。面板 (c) 直接显示预算取舍：$k$ 从 1 增加到 20 时，Recall-any 从 26.2\% 升至 81.9\%，Recall-all 从 14.3\% 升至 59.5\%，平均载荷从 0.2 增加到 3.6\,kB。面板 (d) 在词法、语义、邻居和关系通道之间基本平坦，说明主要收益来自扩展读取路径，而不是某一个离线通道。
 \subsection{附加定量诊断}
 \label{app:additional-diagnostics}
 
 账本还包含类型级更新分数、一次受控的源扩展重放，以及 MEME 删除边界。图~\ref{fig:diagnostics} 报告这些量，并让样本量与开发集限制保持可见。
 
+\clearpage
 \input{figures/figure_diagnostics_zh}
+
+图~\ref{fig:diagnostics} 提供了三项机制检查。面板 (a) 中最清楚的 LongMemEval 变化出现在多会话访问：原文读取从 Base 的 85.7\% 提高到 Align+ 的 100\%，知识更新和时序分数仍为 100\%；这与跨会话整合改善相符，而不是所有类别一起变化。面板 (b) 中，加入一跳和两跳邻居后，Recall-any 从 70.5\% 提高到 84.8\% 和 89.5\%，Recall-all 从 52.4\% 提高到 65.7\% 和 73.3\%，载荷增加约 0.4--0.5\,kB。面板 (c) 将任务语义分开：实体解析 100\%、跟踪 97\%、聚合 80\%、缺失 59.2\%、级联 46.3\%、删除 0\%。这说明图结构有助于定位相关证据，而删除仍需独立的抑制操作。
 
 \subsection{载体参照（BigCodeBench \citep{zhuo2024bigcodebench}、ALFWorld \citep{shridhar2021alfworld}）}
 \label{app:carrier-anchors}
@@ -94,75 +100,123 @@ Mem0 原论文报告 LoCoMo 类别级 F1、BLEU-1 与一个二值 $J$：GPT-4o-m
 
 更严格的受控比较——冻结相同的答题模型、评审模型、提示词、温度、证据预算、数据集修订版本与 Graphiti/Zep 实现 commit——仍是通向共享榜单的唯一途径；但既然已发表数字被直接引用，它不再是投稿的硬性门槛。
 
-\subsection{架构的信息论读法}
+\subsection{存储与读取的形式化性质}
 \label{app:info-theory}
 
-本附录给论文的两条设计承诺一个形式化表述。每一条陈述要么是架构的结构性质（可对照 schema 与代码检查），要么是带显式假设的条件命题；没有一条提升 \cref{sec:ladder,sec:provenance-ablation} 的因果措辞纪律。
+本节把存储和读取的主张写成可检查的形式。第一个结果是版本化、只增存储的结构性质；第二个是在明确假设下关于延迟对齐的统计命题；其余公式描述读取策略及其答案风险分解。
 
-\subsubsection{写入时：渐进式实体对齐}
+\subsubsection{写入时：状态转移与渐进式对齐}
 
-设不可变源流为 $S=D_1,\ldots,D_T$。每条抽取出的提及产生一个特征向量 $X_t$，包含名称与内容嵌入、属性以及关系端点共现。设 $Z$ 为潜在实体指派，$M_t=(F_t,O_t,G_t)$ 为 $t$ 条观测后的状态：概念族 $F_t$、只增观测库 $O_t$ 与关系图 $G_t$。观测从不被摘要替换；它始终保持与其精确源跨度的链接。
-
+设 $\mathcal D$ 是源文档集合。对 $D\in\mathcal D$，设 $\mathcal E(D)$ 是该文档的 Episode 集合。第 $i$ 条观测写为
+\[
+o_i=(D_i,e_i,\tau_i,x_i,\ell_i),
+\qquad e_i\in\mathcal E(D_i),
+\]
+其中 $\tau_i$ 是处理时间，$x_i$ 是抽取出的内容，$\ell_i$ 是不可修改的原文位置。设 $O_t=\{o_1,\ldots,o_t\}$，$M_t=(F_t,O_t,G_t)$ 是写入 $t$ 条观测后的状态。证明中使用的抽象写入算子为
 \begin{equation}
-  \begin{aligned}
-  O_{t+1}&=O_t\cup\{(X_{t+1},\mathrm{span}_{t+1})\},\\
-  I(Z;O_{1:t+1})&=I(Z;O_{1:t})+
-  I(Z;X_{t+1}\mid O_{1:t})\ge I(Z;O_{1:t}).
-  \end{aligned}
-  \label{eq:information-growth}
+\begin{aligned}
+F_{t+1}&=\mathsf{Align}(F_t,x_{t+1}),\\
+O_{t+1}&=O_t\cup\{o_{t+1}\},\\
+G_{t+1}&=\mathsf{Link}(G_t,F_{t+1},o_{t+1}),\\
+M_{t+1}&=(F_{t+1},O_{t+1},G_{t+1}).
+\end{aligned}
+\label{eq:app-state-transition}
 \end{equation}
+算子 $\mathsf{Align}$ 可以建立候选实体族，也可以合并兼容实体族；$\mathsf{Link}$ 增加或重定向指针。它们都不会改变 $\ell_i$ 所指向的原文。版本链提供投影 $\pi_t$，满足 $\pi_t(M_{t+1})=M_t$；这正是“后来的状态仍然保留早期状态、可用于审计和修订”的形式化表达。
 
-第二个恒等式是只增流的记账事实：新观测可以增加关于身份的信息，而已有证据不会被丢弃。它解释了系统为何不必在首次提及时就解出实体链接。低置信度合并成为一个额外的族（过切分）；之后的观测可以通过重定向指针对族做合并，同时保留两边的观测集。过早的错误合并才是危险的错误，因为它把两个实体的证据污染进同一个检索位置。
-
-\begin{proposition}[可修订性]
+\begin{proposition}[延迟对齐的可修订性]
 \label{prop:revisability}
-在只增数据模型中，当前族划分的任何粗化都可以在之后由非破坏性合并实现，且不损失证据。若一个存储改为用滚动摘要 $\sigma$ 覆写实体，则由数据处理不等式有 $I(Z;\sigma)\le I(Z;O)$，且每当身份可判别的细节被丢弃时不等式严格。
+设 $\mathcal P_t$ 是由 $F_t$ 中候选实体族诱导的 $O_t$ 划分。对 $\mathcal P_t$ 的任意粗化 $\mathcal P'_t$，都存在一个不破坏原文的指针映射，使 $\mathcal P'_t$ 得以实现，同时不改变 $O_t$ 或任何原文位置。
 \end{proposition}
+
+\begin{proof}
+把每个旧实体族 $f$ 映射到新实体族 $m(f)$。保留每条观测 $o_i=(D_i,e_i,\tau_i,x_i,\ell_i)$ 不变，只把实体族指针替换为 $m(f)$。将 $G_t$ 中的边 $(f,r,o_i)$ 替换为 $(m(f),r,o_i)$。因此，观测集合和每个 $\ell_i$ 前后一致，而原来位于不同块中的观测现在可以通过同一个实体族访问。这就实现了 $\mathcal P'_t$，且没有破坏性重写。拆分也同样安全：只需把指针复制到不同的候选族，$O_t$ 仍不变。若系统只保存确定性摘要 $\sigma=g(O_t)$，则对潜在实体身份 $Z$ 有马尔可夫链 $Z\to O_t\to\sigma$。由数据处理不等式，$I(Z;\sigma)\le I(Z;O_t)$；当 $g$ 丢弃了区分两个身份所需的信息时，不等式可能变为严格不等式。
+\end{proof}
 
 \begin{proposition}[汇聚证据下的收敛]
 \label{prop:convergence}
-假设特征在给定实体身份时 i.i.d.，且两个不同实体 $e\ne e'$ 的输出分布 $P_e\ne P_{e'}$ 具有 Chernoff 信息 $C(P_e,P_{e'})>0$。对使用 $k$ 条汇聚观测的同/异实体检验，似然比误差满足 $\Pr[\mathrm{error}]\le\exp[-kC(P_e,P_{e'})]$ \citep{chernoff1952measure}。因此，一个在弱证据下被初始拆分的真实合并未被察觉的概率，随佐证证据指数下降。
+假设在给定实体身份的条件下，$k$ 条特征观测相互独立。设两个不同实体 $e\ne e'$ 的特征密度可区分，且其 Chernoff 系数小于 1。记密度为 $p_e$ 与 $p_{e'}$，其 Chernoff 系数和信息定义为
+\[
+\rho_{e,e'}=\inf_{0\le s\le 1}
+\int p_e(x)^s p_{e'}(x)^{1-s}\,dx,
+\qquad
+C_{\mathrm{Ch}}(e,e')=-\log\rho_{e,e'}>0.
+\]
+对等先验下检验 $e$ 与 $e'$ 的似然比检验，汇聚 $k$ 条观测后的 Bayes 错误满足 \citep{chernoff1952measure}
+\begin{equation}
+\Pr[\mathrm{error}]
+\le \frac12\,\rho_{e,e'}^k
+=\frac12\exp\!\left[-kC_{\mathrm{Ch}}(e,e')\right].
+\label{eq:chernoff-bound}
+\end{equation}
 \end{proposition}
 
-这些假设是理想化的：真实窗口相关、抽取噪声重尾、同名异实体对的 $C$ 可能很小。因此该预测是定性的，而不是一个实测收敛速率。它与实现的批量处理和末尾复查一致——后者用更多汇聚上下文重测候选族。在配对引擎运行中，同名重复组从 340$\to$124（MAB）、482$\to$99（LME），每文档入库调用下降 46--65\%；这些是实测参考值，不是对 $C$ 的估计。关系边承担两个角色：端点共现在写入时帮助区分假设，所得的图在读取时提供额外路径。
+\begin{proof}
+等先验下，Bayes 错误为
+\[
+\Pr[\mathrm{error}]
+=\frac12\int \min\!\left\{\prod_{j=1}^{k}p_e(x_j),
+\prod_{j=1}^{k}p_{e'}(x_j)\right\}\,d x_{1:k}.
+\]
+对 $0\le s\le1$，逐点有 $\min\{a,b\}\le a^s b^{1-s}$。使用独立性可得
+\[
+\Pr[\mathrm{error}]
+\le \frac12\prod_{j=1}^{k}
+\int p_e(x_j)^s p_{e'}(x_j)^{1-s}\,dx_j
+=\frac12\left(\int p_e(x)^s p_{e'}(x)^{1-s}\,dx\right)^k.
+\]
+对 $s$ 取下确界即得到\cref{eq:chernoff-bound}。这个界描述的是理想检验；真实系统距离它有多近，取决于抽取噪声和窗口相关性。
+\end{proof}
 
-\subsubsection{读取时：层级检索位置与渐进披露}
+因此，延迟对齐给出一个清楚的定性预测：更多观测会使正确合并更容易被识别，而过早的错误合并会把两段历史污染到同一个检索入口。实测的重复实体族数量（MAB 为 340$\to$124，LongMemEval 为 482$\to$99）和入库调用下降（46--65\%）是系统测量值，不是 $C_{\mathrm{Ch}}$ 的估计。
 
-派生层是一个检索索引，而不是答案重构。设 $A_t(q)$ 把问题映射到概念族与关系邻域，$\rho$ 为选择打开哪些候选的智能体策略。所得的源上下文构成一条自适应链
-\begin{equation}
-  C_0(q)\subseteq C_1(q)\subseteq\cdots\subseteq S,\qquad
-  a_{k+1}=\rho\bigl(q,M_t,C_{\le k},u_k\bigr),
-  \label{eq:progressive-disclosure}
-\end{equation}
-其中 $u_k$ 是智能体的当前不确定性。概念搜索给出快速的宏观检索线索；族观测与关系边对其精化；最终读取返回确切的会话片段与跨度。这正是同一表示既支持自主探索、又支持读取原文答案的原因。
+\subsubsection{读取时：层级检索与逐步读取}
 
-把重构失真定义为被引用文本与其声称代表的源文本之间的差异，把寻址损失定义为未能把相关源跨度放入 $C_k$。由于每条路径都把候选解析到逐字源跨度、且引用检查只接受当前回合浮现的跨度，重构失真按构造为零；全部残余损失都是寻址损失。摘要式记忆在写入时固定一个率--失真点，而 $\rho$ 逐查询选择阅读预算 \citep{shannon1959coding}。智能体可以在一次紧凑的概念查询后停止，也可以在不确定性仍高时披露更多邻域与源文件，而不改变证据的权威性。
+设 $\mathcal S_t$ 是从 $M_t$ 可访问的不可修改源文本片段集合。给定问题 $q$，令 $C_0(q)=\varnothing$，并令
+\[
+a_{k+1}=\rho\bigl(q,M_t,C_k(q),u_k\bigr)
+\in\bigl(\mathcal S_t\setminus C_k(q)\bigr)\cup\{\mathsf{stop}\}.
+\]
+若动作是读取某个片段，则令 $C_{k+1}(q)=C_k(q)\cup\{a_{k+1}\}$；若动作是 $\mathsf{stop}$，则令 $C_{k+1}=C_k$ 并结束。对 $k$ 做归纳即可证明
+$\varnothing=C_0(q)\subseteq C_1(q)\subseteq\cdots\subseteq\mathcal S_t$：初始情形显然成立，归纳步骤只增加 $\mathcal S_t$ 中的一个成员，或什么也不增加。这个公式只记录打开源文本的动作；索引查询会更新策略状态 $u_k$，但不会改变 $C_k$。这是读取协议的结构性质，并不假设每个选中的片段都与问题相关。
 
-\subsubsection{双速率分解与答案风险}
-设 $A(q)$ 为派生派生图层输出的检索位置，$E_C$ 为候选集 $C$ 选出的精确源跨度。对答案相关变量 $Y$，链式法则给出
-\begin{equation}
-  I(Y;A,E_C\mid Q=q)=I(Y;A\mid Q=q)+I(Y;E_C\mid A,Q=q).
-  \label{eq:appendix-two-rate}
-\end{equation}
-第一项是紧凑概念/关系检索位置提供的信息；第二项是打开源文本才获得的信息。纯摘要记忆把 $S$ 替换为信道输出 $\widetilde S=f(S)$，无法使 $I(Y;\widetilde S\mid Q)$ 超过 $I(Y;S\mid Q)$；Deep-Dream 则在寻址之后仍保持源信道可用。这是一种信息瓶颈解释，而不是“实现解决了该瓶颈变分问题”的主张 \citep{tishby2000information}。
+设 $A(q)$ 是用于选择候选的紧凑概念/关系记录，$E_C$ 是从 $C$ 打开的精确源文本，$Y$ 是与答案有关的事实。链式法则为
+\begin{align}
+I(Y;A,E_C\mid Q=q)
+&=H(Y\mid Q=q)-H(Y\mid A,E_C,Q=q)\notag\\
+&=\bigl[H(Y\mid Q=q)-H(Y\mid A,Q=q)\bigr]\notag\\
+&\quad+\bigl[H(Y\mid A,Q=q)-H(Y\mid A,E_C,Q=q)\bigr]\notag\\
+&=I(Y;A\mid Q=q)+I(Y;E_C\mid A,Q=q).
+\label{eq:appendix-two-rate}
+\end{align}
+第一步是互信息定义；第二步是在表达式中加上并减去 $H(Y\mid A,Q=q)$；最后把两个差值分别识别为两个条件互信息。第一项是定位候选时得到的信息，第二项是打开原文后得到的额外信息。如果摘要系统把源文档集合 $S$ 替换成 $\widetilde S=f(S)$，则在给定 $Q$ 时，马尔可夫链 $Y\to S\to\widetilde S$ 由数据处理不等式给出 $I(Y;\widetilde S\mid Q)\le I(Y;S\mid Q)$。Deep-Dream 在地址层缩小搜索范围后仍保留 $S$；它并不声称已经最大化任一互信息项。
 
-为完整起见，设 $R_q$ 为相关源跨度被寻址这一事件，$V_q$ 为验证者在读取后正确作答这一事件。则
-\begin{equation}
-  \Pr[\widehat Y=Y\mid q]\ge \Pr[R_q\mid q]\Pr[V_q\mid R_q,q].
-  \label{eq:appendix-answer-bound}
-\end{equation}
-派生图层主要影响检索位置召回，逐步读取原文影响条件验证。引用检查在其显式可达性契约下把引用来源错误的概率设为零；语义不相关仍在保证之外。该分解解释了为什么改进应当在需要多次提及、时序更新或事实整合的问题上最大，以及为什么仅图的离线召回变化不必预测完整的在线增益。
+再设 $R_q$ 表示相关源文本位于最终打开集合 $C_K(q)$ 中，$V_q=\{\widehat Y=Y\}$ 表示最终答案正确。由全概率公式，
+\begin{align}
+\Pr[V_q\mid q]
+&=\Pr[R_q\mid q]\Pr[V_q\mid R_q,q]\notag\\
+&\quad+\Pr[\neg R_q\mid q]\Pr[V_q\mid\neg R_q,q]\notag\\
+&\ge \Pr[R_q\mid q]\Pr[V_q\mid R_q,q].
+\label{eq:appendix-answer-bound}
+\end{align}
+第一项受概念和关系导航影响，第二项受原文读取和证据判断影响。这个不等式是记账式分解，不是经验准确率界。
 
-扩展样本上 Align+ 的实测运行点为（27.5k token，0.333）、（43.2k，0.400）与（328.6k，0.710）的 Overall；冻结在配对样本上的 Base 代复现了该次序（0.3025/0.3759/0.6695）。FC-MH 分数（2--4 对 67--70）显示了自适应源阅读在何处最重要。X7 在开发切片上把派生通道的离线检索贡献界定在 $\pm2.4$ 分以内；派生图层的在线价值是文档组选择与链接扩展，由原文读取智能体行使，而不会被该消融移除。
-
-\begin{samepage}
-\begin{proposition}[单侧寻址错误]
+\begin{proposition}[地址错误的单侧影响]
 \label{prop:one-sided}
-对任何派生图层状态，$A_t$ 中的错误可以改变哪些跨度进入 $C_k$，但不能改变被引用检查接纳的跨度的文本或溯源。因此派生图层错误造成的是覆盖缺失，而不是捏造的引用内容；该保证是被引用原文是否被打开，不是语义蕴含。
+假设引用检查器只接受当前读取路径返回的引用 $c$，且其位置能解析到不可修改的原文。则 $F_t$ 或 $G_t$ 中的错误可以改变哪些片段进入 $C_K(q)$，但不能改变已接受引用的文字或位置。
 \end{proposition}
-\end{samepage}
 
-这套表述增加了数学结构，但没有提升阶梯的因果措辞：指数陈述是有条件的，重名计数是代理量，实测的阶梯仍是一个系统比较。
+\begin{proof}
+检查器的接受条件为
+\[
+\mathsf{Accept}(c)=
+\mathbf 1\{c\in C_K(q)\}
+\mathbf 1\{\mathsf{resolve}(c)=\mathrm{source}(D,\ell)\}.
+\]
+第一项依赖派生地址层，可能导致相关片段未被找到；第二项读取不可修改的 $(D,\ell)$，不受 $F_t$ 或 $G_t$ 的编辑影响。因此，地址错误会造成证据缺失，却不能把新的文本替换进已接受的源文本引用中。这个命题不保证被接受的片段在语义上一定蕴含答案。
+\end{proof}
+
+以上条件结果解释了设计测量值，但不把它们包装成未经测量的因果结论：Chernoff 结论是理想化预测，重复实体族数量是整合程度的代理量，最终仍需用基准实验检验完整系统。
 
 \input{figures/TABLE_mem0_locomo_baselines_zh}
 \input{figures/TABLE_zep_dmr_baselines_zh}

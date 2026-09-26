@@ -1,0 +1,96 @@
+"""V1.5 table rows → legacy Entity/Relation/Episode DTO mapping."""
+import json as _json
+from typing import Optional
+
+from core.models import Entity, Episode, Relation
+
+from .helpers import _parse_dt, now_utc
+
+
+def _extract_confidence(extra_json_str: str) -> Optional[float]:
+    """Extract confidence from extra_json string if present."""
+    if not extra_json_str or extra_json_str == "{}":
+        return None
+    try:
+        data = _json.loads(extra_json_str)
+        val = data.get("confidence")
+        return float(val) if val is not None else None
+    except (ValueError, TypeError, KeyError):
+        return None
+
+
+def observation_to_entity(
+    family_row: dict,
+    obs_row: dict,
+    *,
+    embedding_blob: Optional[bytes] = None,
+    version_seq: int = 1,
+) -> Entity:
+    """Map V1.5 entity_families + entity_observations rows → Entity DTO."""
+    now = now_utc()
+    # V1.5 pipeline always creates markdown-formatted content; the schema
+    # has no explicit content_format column, so default to "markdown".
+    return Entity(
+        absolute_id=obs_row["entity_id"],
+        family_id=family_row["entity_family_id"],
+        name=obs_row.get("name") or family_row.get("canonical_name", ""),
+        content=obs_row.get("content") or family_row.get("canonical_content", ""),
+        event_time=_parse_dt(obs_row.get("processed_at")) or now,
+        processed_time=_parse_dt(obs_row.get("processed_at")) or now,
+        episode_id=obs_row.get("episode_id", ""),
+        source_document="",
+        embedding=embedding_blob,
+        version_seq=version_seq,
+        content_format="markdown",
+        confidence=_extract_confidence(obs_row.get("extra_json", "{}")),
+    )
+
+
+def assertion_to_relation(
+    family_row: dict,
+    assert_row: dict,
+    *,
+    subject_entity_id: str = "",
+    object_entity_id: str = "",
+    embedding_blob: Optional[bytes] = None,
+    version_seq: int = 1,
+) -> Relation:
+    """Map V1.5 relation_families + relation_assertions rows → Relation DTO."""
+    now = now_utc()
+    return Relation(
+        absolute_id=assert_row["relation_id"],
+        family_id=family_row["relation_family_id"],
+        entity1_absolute_id=subject_entity_id or assert_row.get("subject_entity_id", ""),
+        entity2_absolute_id=object_entity_id or assert_row.get("object_entity_id", ""),
+        content=assert_row.get("content") or family_row.get("canonical_content", ""),
+        event_time=_parse_dt(assert_row.get("processed_at")) or now,
+        processed_time=_parse_dt(assert_row.get("processed_at")) or now,
+        episode_id=assert_row.get("episode_id", ""),
+        source_document="",
+        entity1_family_id=assert_row.get("subject_entity_family_id", ""),
+        entity2_family_id=assert_row.get("object_entity_family_id", ""),
+        embedding=embedding_blob,
+        version_seq=version_seq,
+        evidence_text=assert_row.get("evidence_text"),
+        evidence_start_offset=assert_row.get("evidence_start_offset"),
+        evidence_end_offset=assert_row.get("evidence_end_offset"),
+        evidence_line_start=assert_row.get("evidence_line_start"),
+        evidence_line_end=assert_row.get("evidence_line_end"),
+        content_format="markdown",
+        confidence=_extract_confidence(assert_row.get("extra_json", "{}")),
+    )
+
+
+def episode_row_to_dto(episode_row: dict) -> Episode:
+    """Map V1.5 episodes row → Episode DTO."""
+    now = now_utc()
+    return Episode(
+        absolute_id=episode_row["episode_id"],
+        content=episode_row.get("memory_text") or episode_row.get("source_text", ""),
+        event_time=_parse_dt(episode_row.get("event_time")) or now,
+        source_document="",
+        processed_time=_parse_dt(episode_row.get("processed_at")) or now,
+        activity_type=episode_row.get("activity_type"),
+        episode_type=episode_row.get("episode_type"),
+        heading_path=episode_row.get("heading_path"),
+    )
