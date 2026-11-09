@@ -1,0 +1,288 @@
+diff --git a/research/benchmark/agentic.py b/research/benchmark/agentic.py
+index 6d4938dc..1ebef119 100644
+--- a/research/benchmark/agentic.py
++++ b/research/benchmark/agentic.py
+@@ -7,7 +7,7 @@ import json
+ import os
+ import re
+ import time
+-from typing import Any
++from typing import Any, Iterable
+ 
+ from research.benchmark import load_runtime_policy
+ from core.cli._helpers import concept_source_evidence, relation_evidence
+@@ -27,6 +27,51 @@ AGENT_TOOLS = {
+     "submit_evidence",
+ }
+ 
++# No-graph online ablation (M-Q3/M-Q4): the "no-graph" toolset keeps only
++# corpus-level retrieval plus source access — iterative RAG over the same
++# lossless document store. Every tool implementation, the retriever, the
++# answerer, and the budgets stay byte-identical to the full skill-agent;
++# only the action space exposed to the agent shrinks.
++GRAPH_TOOLS = frozenset({
++    "explore_memory", "search_concepts", "trace_concept",
++    "expand_neighbors", "relation_evidence",
++})
++AGENT_TOOLSETS: dict[str, frozenset[str]] = {
++    "full": frozenset(AGENT_TOOLS),
++    "no-graph": frozenset(AGENT_TOOLS) - GRAPH_TOOLS,
++}
++
++_TOOL_DOC_LINES: tuple[tuple[str, str], ...] = (
++    ("search_documents", '- search_documents {"query": string, "terms": [string], "limit": 1..20}'),
++    ("explore_memory", '- explore_memory {"query": string, "terms": [string], "limit": 1..20}'),
++    ("search_concepts", '- search_concepts {"query": string, "limit": 1..20}'),
++    ("trace_concept", '- trace_concept {"family_id": string, "limit": 1..20}'),
++    ("expand_neighbors", '- expand_neighbors {"family_id": string, "depth": 1..2, "limit": 1..20}'),
++    ("relation_evidence", '- relation_evidence {"concept_a": string, "concept_b": string, "limit": 1..20}'),
++    ("read_episode", '- read_episode {"episode_id": string}'),
++    ("read_session", '- read_session {"session_id": string}'),
++    ("submit_evidence", '- submit_evidence {"episode_ids": [string], "session_ids": [string], "turn_ids": [string]}'),
++)
++
++
++def toolset_from_config(config: dict[str, Any]) -> frozenset[str]:
++    """Resolve the agent action space from ``llm.agent_toolset`` (default full)."""
++    name = str((config.get("llm") or {}).get("agent_toolset") or "full")
++    if name not in AGENT_TOOLSETS:
++        raise ValueError(
++            f"Unknown agent_toolset: {name!r}; expected one of {sorted(AGENT_TOOLSETS)}")
++    return AGENT_TOOLSETS[name]
++
++
++def tool_prompt(tools: frozenset[str] | set[str] = AGENT_TOOLS) -> str:
++    lines = "\n".join(doc for name, doc in _TOOL_DOC_LINES if name in tools)
++    return (
++        f"Available tools:\n{lines}\n\n"
++        "Return exactly one JSON object and no prose:\n"
++        '{"tool":"tool_name","arguments":{...}}\n'
++        "Do not output an answer. `submit_evidence` ends retrieval and a separate model answers."
++    )
++
+ 
+ def _agent_extra_body(config: dict[str, Any], thinking: bool) -> dict[str, Any] | None:
+     """Apply an Agent-only thinking override without changing the answer model."""
+@@ -74,24 +119,15 @@ def _parse_json_object(text: str) -> dict[str, Any]:
+ class AgentDecisionModel:
+     """OpenAI-compatible JSON action policy; benchmark labels are never shown."""
+ 
+-    TOOL_PROMPT = """Available tools:
+-- search_documents {"query": string, "terms": [string], "limit": 1..20}
+-- explore_memory {"query": string, "terms": [string], "limit": 1..20}
+-- search_concepts {"query": string, "limit": 1..20}
+-- trace_concept {"family_id": string, "limit": 1..20}
+-- expand_neighbors {"family_id": string, "depth": 1..2, "limit": 1..20}
+-- relation_evidence {"concept_a": string, "concept_b": string, "limit": 1..20}
+-- read_episode {"episode_id": string}
+-- read_session {"session_id": string}
+-- submit_evidence {"episode_ids": [string], "session_ids": [string], "turn_ids": [string]}
+-
+-Return exactly one JSON object and no prose:
+-{"tool":"tool_name","arguments":{...}}
+-Do not output an answer. `submit_evidence` ends retrieval and a separate model answers."""
++    # Full-set prompt kept as a class attribute for backward compatibility;
++    # instances build their prompt from the configured toolset instead.
++    TOOL_PROMPT = tool_prompt()
+ 
+     def __init__(self, config: dict[str, Any]):
+         self.config = config.get("llm") or {}
+-        self.system_prompt = load_runtime_policy() + "\n\n" + self.TOOL_PROMPT
++        self.allowed_tools = toolset_from_config(config)
++        self.toolset_name = str(self.config.get("agent_toolset") or "full")
++        self.system_prompt = load_runtime_policy() + "\n\n" + tool_prompt(self.allowed_tools)
+ 
+     def _history(self, trajectory: list[dict[str, Any]]) -> str:
+         rows = [{
+@@ -161,9 +197,11 @@ class AgenticMemoryTools:
+     """Conversation-isolated, source-backed tool surface."""
+ 
+     def __init__(self, storage: Any, retriever: Any, document_to_session: dict[str, str],
+-                 sessions: list[MemorySession]):
++                 sessions: list[MemorySession], *,
++                 allowed_tools: Iterable[str] = AGENT_TOOLS):
+         self.storage = storage
+         self.retriever = retriever
++        self.allowed_tools = frozenset(allowed_tools)
+         self.document_to_session = dict(document_to_session)
+         self.allowed_document_ids = set(document_to_session)
+         self.sessions = {session.session_id: session for session in sessions}
+@@ -313,7 +351,7 @@ class AgenticMemoryTools:
+         return ""
+ 
+     def execute(self, tool: str, arguments: dict[str, Any]) -> Any:
+-        if tool not in AGENT_TOOLS - {"submit_evidence"}:
++        if tool not in self.allowed_tools - {"submit_evidence"}:
+             raise ValueError(f"Unknown or non-executable tool: {tool}")
+         return getattr(self, tool)(arguments)
+ 
+@@ -396,6 +434,9 @@ class AgenticMemoryRunner:
+         self.tools = tools
+         self.policy = policy
+         self.answerer = answerer
++        # Duck-typed test doubles / third-party adapters may not carry the
++        # toolset; fall back to the full action space for those.
++        self.allowed_tools = frozenset(getattr(tools, "allowed_tools", AGENT_TOOLS))
+         self.max_steps = max(1, max_steps)
+         self.answer_top_k = max(1, answer_top_k)
+         # X7 arm #6: when True, the submit_evidence surfaced-set gate is
+@@ -462,7 +503,7 @@ class AgenticMemoryRunner:
+                 arguments = action.get("arguments") or {
+                     key: value for key, value in action.items() if key != "tool"
+                 }
+-                if tool not in AGENT_TOOLS:
++                if tool not in self.allowed_tools:
+                     raise ValueError(f"Unknown tool: {tool}")
+                 if not isinstance(arguments, dict):
+                     raise ValueError("arguments must be an object")
+diff --git a/research/benchmark/runner.py b/research/benchmark/runner.py
+index a4c338cc..f810387e 100644
+--- a/research/benchmark/runner.py
++++ b/research/benchmark/runner.py
+@@ -64,6 +64,7 @@ def _public_config(config: dict[str, Any]) -> dict[str, Any]:
+             "agent_max_tokens", "agent_thinking_max_tokens", "context_window_tokens",
+             "agent_think", "answer_think",
+             "answer_validation_retries", "api_key_env",
++            "agent_toolset",
+         )}
+     public_llm["temperature"] = float(llm.get("temperature", 0) or 0)
+     public_llm["think"] = bool(llm.get("think", False))
+@@ -1213,9 +1214,15 @@ def retrieve_benchmark(
+                 retriever = DeepDreamRetriever(processor.storage, document_to_session, sessions)
+             agents: dict[str, Any] = {}
+             if "skill-agent" in source_tracks:
+-                from .agentic import AgentDecisionModel, AgenticMemoryRunner, AgenticMemoryTools
++                from .agentic import (
++                    AgentDecisionModel, AgenticMemoryRunner, AgenticMemoryTools,
++                    toolset_from_config,
++                )
+                 answerer = AnswerGenerator(config, profile="normalized-v1")
+-                tools = AgenticMemoryTools(processor.storage, retriever, document_to_session, sessions)
++                tools = AgenticMemoryTools(
++                    processor.storage, retriever, document_to_session, sessions,
++                    allowed_tools=toolset_from_config(config),
++                )
+                 agents["skill-agent"] = AgenticMemoryRunner(
+                     tools, AgentDecisionModel(config), answerer,
+                     max_steps=max_agent_steps, answer_top_k=context_k,
+@@ -1297,6 +1304,7 @@ def retrieve_benchmark(
+     ]))
+     retrieval_config = {
+         "profile": retrieval_profile,
++        "agent_toolset": str((config.get("llm") or {}).get("agent_toolset") or "full"),
+         "candidate_k": candidate_k,
+         "context_k": context_k,
+         "evidence_token_budget": evidence_token_budget,
+@@ -1433,8 +1441,14 @@ def evaluate_benchmark(
+                 retriever = DeepDreamRetriever(processor.storage, document_to_session, sessions)
+             agents: dict[str, Any] = {}
+             if "skill-agent" in source_tracks:
+-                from .agentic import AgentDecisionModel, AgenticMemoryRunner, AgenticMemoryTools
+-                tools = AgenticMemoryTools(processor.storage, retriever, document_to_session, sessions)
++                from .agentic import (
++                    AgentDecisionModel, AgenticMemoryRunner, AgenticMemoryTools,
++                    toolset_from_config,
++                )
++                tools = AgenticMemoryTools(
++                    processor.storage, retriever, document_to_session, sessions,
++                    allowed_tools=toolset_from_config(config),
++                )
+                 agents["skill-agent"] = AgenticMemoryRunner(
+                     tools, AgentDecisionModel(config), answerer,
+                     max_steps=max_agent_steps, answer_top_k=answer_top_k,
+diff --git a/research/benchmark/tests/test_benchmark_harness.py b/research/benchmark/tests/test_benchmark_harness.py
+index fd35a1b3..83be54f3 100644
+--- a/research/benchmark/tests/test_benchmark_harness.py
++++ b/research/benchmark/tests/test_benchmark_harness.py
+@@ -4,10 +4,14 @@ from pathlib import Path
+ import pytest
+ 
+ from research.benchmark.agentic import (
++    AGENT_TOOLSETS,
++    AGENT_TOOLS,
+     AgenticMemoryRunner,
+     AgenticMemoryTools,
+     _agent_extra_body,
+     _parse_json_object,
++    tool_prompt,
++    toolset_from_config,
+ )
+ from research.benchmark.datasets import BenchmarkItem, MemorySession, load_locomo, load_longmemeval, parse_timestamp
+ from research.benchmark.metrics import aggregate_records, locomo_f1, retrieval_at_k, token_f1
+@@ -450,6 +454,65 @@ def test_agentic_loop_can_search_jump_read_and_answer():
+     ]
+ 
+ 
++def test_agent_toolsets_and_no_graph_prompt():
++    no_graph = AGENT_TOOLSETS["no-graph"]
++    assert sorted(no_graph) == ["read_episode", "read_session", "search_documents", "submit_evidence"]
++    assert AGENT_TOOLSETS["full"] == frozenset(AGENT_TOOLS)
++    assert toolset_from_config({}) == AGENT_TOOLSETS["full"]
++    assert toolset_from_config({"llm": {"agent_toolset": "no-graph"}}) == no_graph
++    with pytest.raises(ValueError):
++        toolset_from_config({"llm": {"agent_toolset": "bogus"}})
++    prompt = tool_prompt(no_graph)
++    for banned in ("explore_memory", "search_concepts", "trace_concept",
++                   "expand_neighbors", "relation_evidence"):
++        assert banned not in prompt
++    for kept in ("search_documents", "read_episode", "read_session", "submit_evidence"):
++        assert kept in prompt
++
++
++def test_agentic_loop_rejects_graph_tools_in_no_graph_arm():
++    session = MemorySession("s1", "2024-01-01", "[t1] user: Alice lives in Paris", ["t1"])
++    item = BenchmarkItem("locomo", "c1", "q1", "Where does Alice live?", "Paris", "1", "", [session], ["s1"], ["t1"])
++
++    class NoGraphTools:
++        allowed_tools = AGENT_TOOLSETS["no-graph"]
++        sessions = {"s1": session}
++
++        def execute(self, tool, arguments):
++            assert tool == "search_documents", (tool, arguments)
++            return [{"session_id": "s1", "episode_id": "ep1", "turn_ids": ["t1"],
++                     "source_text": session.text}]
++
++        def contexts_for_submission(self, session_ids, episode_ids, turn_ids, *, limit):
++            return ([{"session_id": "s1", "timestamp": session.timestamp, "text": session.text,
++                      "turn_ids": ["t1"], "matched_turn_ids": ["t1"], "evidence": []}], ["t1"])
++
++    class StrayingPolicy:
++        actions = [
++            {"tool": "search_concepts", "arguments": {"query": "Alice"}},   # outside the no-graph set
++            {"tool": "search_documents", "arguments": {"query": "Alice Paris"}},
++            {"tool": "submit_evidence", "arguments": {"session_ids": ["s1"], "episode_ids": ["ep1"], "turn_ids": ["t1"]}},
++        ]
++
++        def decide(self, _item, _trajectory, step):
++            return {"action": self.actions[step - 1], "prompt": f"step {step}", "prompt_tokens": 2,
++                    "completion_tokens": 1, "model": "fake"}
++
++    class SharedAnswerer:
++        def answer(self, _item, contexts):
++            return {"hypothesis": "Paris", "prompt": "answer", "prompt_tokens": 1,
++                    "completion_tokens": 1, "model": "fake"}
++
++    result = AgenticMemoryRunner(NoGraphTools(), StrayingPolicy(), SharedAnswerer(), max_steps=5).run(item)
++    assert result["hypothesis"] == "Paris"
++    assert result["agent_stop_reason"] == "submit_evidence"
++    first = result["trajectory"][0]
++    assert first["error"]["type"] == "ValueError"
++    assert "Unknown tool: search_concepts" in first["error"]["message"]
++    assert first.get("tool") is None  # rejected actions stay uncounted in agent_tool_counts
++    assert result["agent_tool_counts"] == {"search_documents": 1, "submit_evidence": 1}
++
++
+ def test_agentic_loop_bounds_invalid_actions_and_falls_back():
+     item = BenchmarkItem("locomo", "c1", "q1", "Unknown?", "none", "5", "", [], [], [])
+ 
+@@ -825,7 +888,9 @@ def test_mock_end_to_end_run_is_resumable(tmp_path, monkeypatch):
+             return {"action": action, "prompt": f"step {step}", "model": "fake"}
+ 
+     class FakeAgentTools:
+-        def __init__(self, _storage, _retriever, _mapping, sessions):
++        def __init__(self, _storage, _retriever, _mapping, sessions, *,
++                     allowed_tools=frozenset(AGENT_TOOLS)):
++            self.allowed_tools = frozenset(allowed_tools)
+             self.sessions = {session.session_id: session for session in sessions}
+ 
+         def execute(self, tool, _arguments):

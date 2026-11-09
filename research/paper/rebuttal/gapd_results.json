@@ -1,0 +1,236 @@
+{
+ "Base(73d9c5e)": {
+  "mab-ar-000_677804eb18": {
+   "mentions_total": 5046,
+   "resolved_mentions": 221,
+   "ambiguous_or_unmatched": 4825,
+   "true_entities": 101,
+   "fragmented": 2,
+   "fragmented_crossname": 2,
+   "overmerged_families": 0,
+   "overmerged_pairs": 0,
+   "coverage_pct": 4.4,
+   "name_total": {
+    "unambiguous": 101,
+    "ambiguous": 19,
+    "unpooled_entity": 1987,
+    "unpooled_other": 1568
+   },
+   "name_split": {
+    "unambiguous": 2,
+    "ambiguous": 0,
+    "unpooled_entity": 26,
+    "unpooled_other": 9
+   }
+  },
+  "mab-ar-005_5e2d629d51": {
+   "mentions_total": 6263,
+   "resolved_mentions": 172,
+   "ambiguous_or_unmatched": 6091,
+   "true_entities": 69,
+   "fragmented": 6,
+   "fragmented_crossname": 6,
+   "overmerged_families": 0,
+   "overmerged_pairs": 0,
+   "coverage_pct": 2.7,
+   "name_total": {
+    "unambiguous": 69,
+    "ambiguous": 22,
+    "unpooled_entity": 430,
+    "unpooled_other": 4155
+   },
+   "name_split": {
+    "unambiguous": 6,
+    "ambiguous": 6,
+    "unpooled_entity": 18,
+    "unpooled_other": 66
+   }
+  },
+  "mab-ar-010_296aaf9519": {
+   "mentions_total": 1201,
+   "resolved_mentions": 9,
+   "ambiguous_or_unmatched": 1192,
+   "true_entities": 6,
+   "fragmented": 0,
+   "fragmented_crossname": 0,
+   "overmerged_families": 0,
+   "overmerged_pairs": 0,
+   "coverage_pct": 0.7,
+   "name_total": {
+    "unambiguous": 6,
+    "ambiguous": 5,
+    "unpooled_entity": 76,
+    "unpooled_other": 754
+   },
+   "name_split": {
+    "unambiguous": 0,
+    "ambiguous": 1,
+    "unpooled_entity": 3,
+    "unpooled_other": 14
+   }
+  },
+  "mab-ar-015_fd52e0b203": {
+   "mentions_total": 2333,
+   "resolved_mentions": 30,
+   "ambiguous_or_unmatched": 2303,
+   "true_entities": 23,
+   "fragmented": 0,
+   "fragmented_crossname": 0,
+   "overmerged_families": 0,
+   "overmerged_pairs": 0,
+   "coverage_pct": 1.3,
+   "name_total": {
+    "unambiguous": 23,
+    "ambiguous": 8,
+    "unpooled_entity": 168,
+    "unpooled_other": 1482
+   },
+   "name_split": {
+    "unambiguous": 0,
+    "ambiguous": 4,
+    "unpooled_entity": 11,
+    "unpooled_other": 25
+   }
+  },
+  "mab-ar-020_70c681beea": {
+   "mentions_total": 7987,
+   "resolved_mentions": 205,
+   "ambiguous_or_unmatched": 7782,
+   "true_entities": 150,
+   "fragmented": 0,
+   "fragmented_crossname": 0,
+   "overmerged_families": 0,
+   "overmerged_pairs": 0,
+   "coverage_pct": 2.6,
+   "name_total": {
+    "unambiguous": 150,
+    "ambiguous": 26,
+    "unpooled_entity": 2203,
+    "unpooled_other": 3749
+   },
+   "name_split": {
+    "unambiguous": 0,
+    "ambiguous": 0,
+    "unpooled_entity": 44,
+    "unpooled_other": 32
+   }
+  }
+ },
+ "Align+(8fa9651)": {
+  "mab-ar-000_677804eb18": {
+   "mentions_total": 4649,
+   "resolved_mentions": 212,
+   "ambiguous_or_unmatched": 4437,
+   "true_entities": 96,
+   "fragmented": 1,
+   "fragmented_crossname": 1,
+   "overmerged_families": 0,
+   "overmerged_pairs": 0,
+   "coverage_pct": 4.6,
+   "name_total": {
+    "unambiguous": 96,
+    "ambiguous": 14,
+    "unpooled_entity": 1977,
+    "unpooled_other": 1598
+   },
+   "name_split": {
+    "unambiguous": 1,
+    "ambiguous": 0,
+    "unpooled_entity": 5,
+    "unpooled_other": 2
+   }
+  },
+  "mab-ar-005_5e2d629d51": {
+   "mentions_total": 6673,
+   "resolved_mentions": 157,
+   "ambiguous_or_unmatched": 6516,
+   "true_entities": 65,
+   "fragmented": 3,
+   "fragmented_crossname": 3,
+   "overmerged_families": 0,
+   "overmerged_pairs": 0,
+   "coverage_pct": 2.4,
+   "name_total": {
+    "unambiguous": 65,
+    "ambiguous": 20,
+    "unpooled_entity": 435,
+    "unpooled_other": 4003
+   },
+   "name_split": {
+    "unambiguous": 3,
+    "ambiguous": 3,
+    "unpooled_entity": 13,
+    "unpooled_other": 50
+   }
+  },
+  "mab-ar-010_296aaf9519": {
+   "mentions_total": 1016,
+   "resolved_mentions": 17,
+   "ambiguous_or_unmatched": 999,
+   "true_entities": 13,
+   "fragmented": 0,
+   "fragmented_crossname": 0,
+   "overmerged_families": 0,
+   "overmerged_pairs": 0,
+   "coverage_pct": 1.7,
+   "name_total": {
+    "unambiguous": 13,
+    "ambiguous": 4,
+    "unpooled_entity": 88,
+    "unpooled_other": 716
+   },
+   "name_split": {
+    "unambiguous": 0,
+    "ambiguous": 0,
+    "unpooled_entity": 1,
+    "unpooled_other": 3
+   }
+  },
+  "mab-ar-015_fd52e0b203": {
+   "mentions_total": 2210,
+   "resolved_mentions": 29,
+   "ambiguous_or_unmatched": 2181,
+   "true_entities": 23,
+   "fragmented": 0,
+   "fragmented_crossname": 0,
+   "overmerged_families": 0,
+   "overmerged_pairs": 0,
+   "coverage_pct": 1.3,
+   "name_total": {
+    "unambiguous": 23,
+    "ambiguous": 10,
+    "unpooled_entity": 169,
+    "unpooled_other": 1408
+   },
+   "name_split": {
+    "unambiguous": 0,
+    "ambiguous": 1,
+    "unpooled_entity": 3,
+    "unpooled_other": 14
+   }
+  },
+  "mab-ar-020_70c681beea": {
+   "mentions_total": 7419,
+   "resolved_mentions": 186,
+   "ambiguous_or_unmatched": 7233,
+   "true_entities": 133,
+   "fragmented": 1,
+   "fragmented_crossname": 1,
+   "overmerged_families": 0,
+   "overmerged_pairs": 0,
+   "coverage_pct": 2.5,
+   "name_total": {
+    "unambiguous": 133,
+    "ambiguous": 24,
+    "unpooled_entity": 2183,
+    "unpooled_other": 3650
+   },
+   "name_split": {
+    "unambiguous": 1,
+    "ambiguous": 1,
+    "unpooled_entity": 37,
+    "unpooled_other": 19
+   }
+  }
+ }
+}

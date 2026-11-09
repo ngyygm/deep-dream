@@ -1,0 +1,252 @@
+# REBUTTAL_DRAFT_v1 — ICLR 2027 Submission44989 (rich version)
+
+> 严格版见 `PASTE_READY.txt`（按 OpenReview 字符上限裁剪）；本版是完整推理版，
+> 标注 `[CUT IF OVER LIMIT]` 的段落可整段删除。
+> ⏳ = no-graph-v1 跑批数字占位（评测机执行中，见 REBUTTAL_EXPERIMENTS.md）。
+
+---
+
+## 0. Global Comment（发 General Comment，~3000 字符）
+
+We thank all reviewers for careful reading. Three clarifications reframe the paper,
+and each is backed by evidence already shipped with the supplement or produced
+during this discussion period.
+
+**(1) Deep-Dream and distillation-based memories are two ends of one axis, not
+competitors on the same objective.** Mem0/Zep/A-MEM/PlugMem store *extracts*
+(notes, edges, propositions); PlugMem states its premise explicitly —
+"decision-relevant information is concentrated as *abstract knowledge* rather
+than raw experience" — and maximizes information density. Deep-Dream holds the
+opposite premise: at write time one cannot know what will matter later
+(§1), so source spans stay immutable and graph entries are *search handles, not
+replacement facts* — the system "compresses the search description, not the only
+copy of the fact" (§3.5). Appendix Prop. 1 is the formal statement of this
+choice (a data-processing inequality: any summary σ = g(O_t) cannot increase
+I(Z; σ) over the raw record), plus two properties distillation designs do not
+provide: non-destructive merging (wrong identity decisions are reversible) and
+the version projection π_t (any historical graph state is reconstructable).
+
+**(2) Controlled evidence exists wherever control was possible.** The
+same-answerer ladder fixed 33.3 → tool 40.0 → source-grounded 71.0 (full-context
+ceiling 78.7@614k) isolates *what is read* under one K3 answerer; the three-arm
+alignment study runs byte-identical configs (A/B1/B2); and the K3-substitution
+LoCoMo row runs Deep-Dream under Mem0's own scoring protocol (95.19%, dual
+judge). Cross-system rows in Table 2 were always labeled answerer/judge-wise
+("only the same-model MAB pair is a controlled comparison") — we agree
+heterogeneous rows must not be read as controlled, which is why the ladder, the
+three-arm study, and the substitution row exist.
+
+**(3) Two new pieces of evidence from this discussion period.**
+- **Entity merges vs ground-truth labels** (new, offline): on MAB AR libraries
+  (22,830 Base / 21,967 Align+ mentions), we audit family partitions against
+  entity identities asserted only when a mention's name matches exactly one
+  benchmark-shipped DBpedia entity (ambiguous names excluded, never guessed;
+  subset coverage 2.8%). Result: **zero over-merged families in both engine
+  generations**, and fragmentation 2.3% → 1.5% after delayed alignment —
+  the first direct evaluation of merge quality, confirming at mention level the
+  duplicate-family trend (340→124) reported in the paper.
+- **Online no-graph ablation** (running): an otherwise identical agent whose
+  tool menu removes all five graph tools, keeping corpus search + source access
+  on the same frozen libraries — simultaneously the budget-matched iterative-RAG
+  baseline. ⏳ Numbers will be posted in this thread when the run completes.
+
+All prompts, configs, manifests, and runtime-code hashes ship with the
+supplement (App. configs/ledger) and self-verify.
+
+---
+
+## 1. Reply to Reviewer f1J5（~4300 字符）
+
+We thank the reviewer for flagging PlugMem — it should be cited, and we will
+add it in the revision (together with AriGraph, G-Memory, GAM raised by another
+reviewer). We respectfully submit that, once cited, PlugMem *strengthens* our
+positioning rather than weakening it.
+
+**PlugMem and Deep-Dream optimize opposite objectives on one axis.** PlugMem's
+premise is that "decision-relevant information is concentrated as *abstract
+knowledge* rather than raw experience": it distills episodic memory into a
+propositional + prescriptive knowledge graph and maximizes information density,
+targeting task-agnostic pluggability and cross-task transfer. Deep-Dream's
+premise (§1) is that at write time one cannot know which details will matter
+for a later decision, so the store must not pre-compress: source spans remain
+authoritative and immutable, and graph entries are addresses — "search handles,
+not replacement facts" (§3.5). Retention of the raw record is what gives
+Deep-Dream its three formal properties, none of which a distillation pipeline
+provides: (i) Prop. 1's data-processing inequality — any distilled summary
+σ = g(O_t) satisfies I(Z; σ) ≤ I(Z; O_t), i.e. distillation cannot raise the
+recall ceiling and our design deliberately preserves it; (ii) non-destructive
+merging — wrong entity-identity decisions remain reversible (candidate families
+are coarsened, sources never overwritten); (iii) the version projection π_t —
+every historical graph state is reconstructable, not just edge-validity
+windows.
+
+**"More comprehensive" depends on what the memory is for.** PlugMem is
+comprehensive *for its objective* — maximizing decision-relevant density for
+pluggable transfer. Deep-Dream is comprehensive for a different objective —
+evidence fidelity under adversarial/self-contradicting histories: every answer
+cites immutable spans, identity can be re-decided, and past states can be
+audited. The two are complementary designs at opposite ends of the
+compression–fidelity axis; neither subsumes the other. The benchmarks agree:
+PlugMem evaluates on long-horizon dialog QA, multi-hop retrieval, and web
+agents; Deep-Dream on MAB (memory-agent capabilities), LoCoMo, LongMemEval,
+MEME — no dataset overlap.
+
+**On effectiveness comparisons (Q2 of the review):** Table 2's cross-system
+rows are labeled per answerer/judge and were never claimed as controlled; the
+controlled evidence is the same-answerer ladder (fixed 33.3 → tool 40.0 →
+source 71.0, full-context 78.7@614k) and the K3-substitution LoCoMo row where
+Deep-Dream runs under Mem0's own protocol (95.19%, dual judge). We will add
+PlugMem to the related-work axis table in the revision with the delta above.
+
+We believe the missing-citation issue is fully fixable at camera-ready, and
+the axis positioning above shows the contribution remains distinct.
+
+---
+
+## 2. Reply to Reviewer mV1D（~5000 字符）
+
+We thank the reviewer; the four questions map onto (a) where the specs live
+today, (b) new direct evidence, and (c) one new experiment now running.
+
+**Q1 — construction algorithms / matching criteria.** The main text states the
+Align/Link operators abstractly by design; the *executable* specification ships
+with the supplement and is verifiable, not merely described: verbatim prompts,
+the engine config diff between the two frozen generations (including the
+matching thresholds the reviewer asks for: similarity 0.7, max-similar 10,
+relation-endpoint Jaccard/embedding 0.9/0.9), run manifests with git commits
+(73d9c5e / 8fa9651) and runtime-policy sha fc73d07e, and the byte-identical
+configs of the three-arm study (App. configs + ledger). **Commitment:** the
+revision will move Align/Link pseudocode and these thresholds into the main
+text; the material exists and is only a re-layout.
+
+**Q2 — alignment errors vs ground truth (new evidence).** We now audit family
+partitions directly against entity identities on MAB AR libraries
+(22,830/21,967 mentions, Base vs Align+). An identity is asserted only when a
+mention's name matches exactly one benchmark-shipped DBpedia entity (ambiguous
+names like "Victoria" excluded, never guessed; coverage 2.8%): **zero
+over-merged families in both generations**; fragmentation 8/349 (2.3%) →
+5/330 (1.5%) with delayed alignment; among all entity-cased names, split rate
+2.1% → 1.2%. This is the direct evaluation the reviewer asked for, and it
+confirms the paper's duplicate-family proxy (340→124) at mention level. The
+one-sided citation gate (Prop. 4.1) additionally bounds the residual damage:
+an address error can only *miss* evidence, never alter the cited text.
+
+**Q3 — online graph ablation (running).** The paper's X7 offline replay was
+null (equivalence ±2.4) and we stated online navigation "is exercised, not
+ablated." During this discussion period we are running exactly the requested
+arm: same K3 answerer, same frozen libraries, same budgets (8 steps, top-5),
+identical tool implementations — the only change removes all five graph tools
+(explore_memory/search_concepts/trace_concept/expand_neighbors/relation_evidence),
+leaving corpus search + episode/session reads. ⏳ Numbers will be posted when
+complete; we will report overall and per-capability scores with paired
+bootstrap CIs, and commit to reporting a null result as a null result.
+
+**Q4 — would a simpler iterative RAG match at equal budget?** The no-graph arm
+above *is* that baseline: because Deep-Dream stores sources losslessly, corpus
+search over the library is search over the raw corpus, so the arm is an
+iterative RAG agent with the same source access and the same budgets as the
+source-reading path (10.2 calls / 328.6k tokens reported in the cost figure).
+⏳ Same run, same numbers. If it approaches 71.0 we will say so plainly and
+re-weight the contribution toward the write side (alignment/versioning) — but
+note the tool arm (40.0) already shows iterative retrieval over *distilled*
+records loses 31 points to source access, so the open question is specifically
+whether *graph* navigation adds value over corpus search, which Q3's arm
+answers.
+
+**On the retrieval policy (Q1b) and "general tool workflow" (Q4 of the
+review's summary):** the policy ρ is formalized in §3.4 (a_{k+1} = ρ(q, M_t,
+C_k, u_k) ∈ spans ∪ {stop}) with three read paths; its implementation details
+(prompt, stop = submit_evidence, 8-step bound, repeated-action guard,
+surfaced-evidence gate) are in the supplement's verbatim prompt. **Commitment:**
+revision adds the ρ pseudocode to the main text. We concede the narrow point —
+ρ is LLM tool use, not a new retrieval algorithm — the contribution was never
+claimed there; it is the representation and its contracts (finding/reading
+split, source gate, revisable identity), and the controlled ladder they enable
+(33.3 → 40.0 → 71.0), which to our knowledge is the first separation of "what
+is read" from "what is stored" under a fixed answerer.
+
+---
+
+## 3. Reply to Reviewer cB3k（~5000 字符）
+
+We thank the reviewer for the most detailed reading; the praise of our
+disclosure discipline is exactly the standard we hold ourselves to, and we
+answer in that spirit — including conceding where the reviewer is right.
+
+**(1) Novelty vs Zep and missing citations.** AriGraph, G-Memory, GAM are
+missing and will be cited in the revision. On Zep, the delta is concrete and
+mechanical, not presentational: (i) Zep resolves entities into episodes at
+ingest; Deep-Dream retains *candidate* families and coarsens non-destructively
+(Prop. 4.1) — a wrong merge can be split back, sources are never overwritten;
+(ii) Zep's validity intervals are edge attributes; π_t is a *full-state*
+projection — M_t is reconstructable for any t; (iii) the citation gate makes
+address errors one-sided (miss evidence, never substitute text); (iv) graph
+entries are addresses over immutable spans, not facts. **Commitment:** the
+revision collects these into a point-by-point table covering
+Zep/A-MEM/AriGraph/G-Memory/GAM/PlugMem.
+
+**(2) Comparisons.** We agree Table 2's published rows are not controlled —
+the paper says so and labels each row's answerer/judge; we never intended them
+read as controlled. The controlled evidence: same-answerer ladder 33.3 → 40.0
+→ 71.0 (ceiling 78.7@614k); three-arm alignment study with byte-identical
+configs; K3-substitution LoCoMo under Mem0's own protocol (95.19%, dual
+judge). LongMemEval-S rows where Deep-Dream *loses* (84.6 vs MemMachine 93.0,
+Hindsight 91.4) were reported voluntarily. **Commitment:** the revision adds a
+consolidated controlled-evidence table and the two discussion-period results
+below.
+
+**(3) Component isolation — new evidence and honest boundaries.**
+- *Entity merges vs ground truth (new):* on MAB AR (22,830/21,967 mentions),
+  identity asserted only on unambiguous benchmark-entity names (coverage 2.8%,
+  ambiguous names excluded): **zero over-merged families in both engine
+  generations**; fragmentation 2.3% → 1.5% (Base → Align+). Method and counts
+  will be in the revision appendix.
+- *Online graph ablation (running):* same agent, budgets, frozen libraries;
+  only the five graph tools are removed from the menu. This is simultaneously
+  the budget-matched iterative-RAG baseline (same source access, 10.2 calls /
+  328.6k tokens). ⏳ Per-capability results with paired bootstrap CIs will be
+  posted in this thread; a null result will be reported as null.
+- *We concede the remaining gaps deliberately:* version-links and provenance
+  are *not* individually ablated — the 12× token cost of source-grounded
+  reading is real and was reported as a cost figure, not hidden; the X7
+  offline replay was null and the paper says the online path "is exercised,
+  not ablated." These are the honest boundaries of the current evaluation;
+  the no-graph run above directly addresses the largest one.
+
+**(4) Figures.** The reviewer is right; Figures 1 and 3 will be redrawn for
+camera-ready (redesign is already scoped; the supplement's agent-trace figure
+shows the intended final style).
+
+In sum: no methodological flaw was identified (Soundness 3); every criticism
+is a fixable presentation or an evidence gap we are actively closing — four
+citations, pseudocode into the main text, two new controlled results (one
+already in hand, one running), and redrawn figures.
+
+---
+
+## 4. Closing（放各条回复末尾或 General Comment 尾，~600 字符）
+
+Resolved by evidence in hand: merge quality vs ground truth (0 over-merges;
+fragmentation −35% relative), missing citations identified, specs located in
+the shipped supplement. Pending by design: the no-graph online ablation
+running now, reported whatever it shows. Standing concessions: Table 2
+heterogeneity (by construction, labeled), X7 offline null, 12× source-reading
+cost, figure quality. The contribution we ask the committee to weigh: a
+lossless store with revisable addressing whose *read* path can be studied
+in isolation — the 33.3 → 40.0 → 71.0 ladder — rather than another distilled
+memory whose recall ceiling is set at write time.
+
+---
+
+## 附：数字对照速查（内部用，不贴出）
+
+| 主张 | 数字 | 源 |
+|---|---|---|
+| 阶梯 | 33.3 / 40.0 / 71.0 | v2 冻结 scores (paper Table 1) |
+| 上界 | 78.7@614 | full-context anchor |
+| GAP-D | 0/0 过合并; 2.3%→1.5% 碎片化; 覆盖 2.8% | gapd_results.json (2026-11-09) |
+| 代理趋势 | 340→124 duplicate families | paper §4 |
+| LoCoMo 替换 | 95.19% 双 judge | paper Table 2 |
+| 预算 | 10.2 calls / 328.6k tokens | paper cost fig |
+| X7 | null, ±2.4 | paper §4 |
+| 邻跳 | 70.5→84.8→89.5 | paper §4 (与 X7 不同设置, 勿混) |

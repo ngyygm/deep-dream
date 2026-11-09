@@ -4,10 +4,14 @@ from pathlib import Path
 import pytest
 
 from research.benchmark.agentic import (
+    AGENT_TOOLSETS,
+    AGENT_TOOLS,
     AgenticMemoryRunner,
     AgenticMemoryTools,
     _agent_extra_body,
     _parse_json_object,
+    tool_prompt,
+    toolset_from_config,
 )
 from research.benchmark.datasets import BenchmarkItem, MemorySession, load_locomo, load_longmemeval, parse_timestamp
 from research.benchmark.metrics import aggregate_records, locomo_f1, retrieval_at_k, token_f1
@@ -450,6 +454,65 @@ def test_agentic_loop_can_search_jump_read_and_answer():
     ]
 
 
+def test_agent_toolsets_and_no_graph_prompt():
+    no_graph = AGENT_TOOLSETS["no-graph"]
+    assert sorted(no_graph) == ["read_episode", "read_session", "search_documents", "submit_evidence"]
+    assert AGENT_TOOLSETS["full"] == frozenset(AGENT_TOOLS)
+    assert toolset_from_config({}) == AGENT_TOOLSETS["full"]
+    assert toolset_from_config({"llm": {"agent_toolset": "no-graph"}}) == no_graph
+    with pytest.raises(ValueError):
+        toolset_from_config({"llm": {"agent_toolset": "bogus"}})
+    prompt = tool_prompt(no_graph)
+    for banned in ("explore_memory", "search_concepts", "trace_concept",
+                   "expand_neighbors", "relation_evidence"):
+        assert banned not in prompt
+    for kept in ("search_documents", "read_episode", "read_session", "submit_evidence"):
+        assert kept in prompt
+
+
+def test_agentic_loop_rejects_graph_tools_in_no_graph_arm():
+    session = MemorySession("s1", "2024-01-01", "[t1] user: Alice lives in Paris", ["t1"])
+    item = BenchmarkItem("locomo", "c1", "q1", "Where does Alice live?", "Paris", "1", "", [session], ["s1"], ["t1"])
+
+    class NoGraphTools:
+        allowed_tools = AGENT_TOOLSETS["no-graph"]
+        sessions = {"s1": session}
+
+        def execute(self, tool, arguments):
+            assert tool == "search_documents", (tool, arguments)
+            return [{"session_id": "s1", "episode_id": "ep1", "turn_ids": ["t1"],
+                     "source_text": session.text}]
+
+        def contexts_for_submission(self, session_ids, episode_ids, turn_ids, *, limit):
+            return ([{"session_id": "s1", "timestamp": session.timestamp, "text": session.text,
+                      "turn_ids": ["t1"], "matched_turn_ids": ["t1"], "evidence": []}], ["t1"])
+
+    class StrayingPolicy:
+        actions = [
+            {"tool": "search_concepts", "arguments": {"query": "Alice"}},   # outside the no-graph set
+            {"tool": "search_documents", "arguments": {"query": "Alice Paris"}},
+            {"tool": "submit_evidence", "arguments": {"session_ids": ["s1"], "episode_ids": ["ep1"], "turn_ids": ["t1"]}},
+        ]
+
+        def decide(self, _item, _trajectory, step):
+            return {"action": self.actions[step - 1], "prompt": f"step {step}", "prompt_tokens": 2,
+                    "completion_tokens": 1, "model": "fake"}
+
+    class SharedAnswerer:
+        def answer(self, _item, contexts):
+            return {"hypothesis": "Paris", "prompt": "answer", "prompt_tokens": 1,
+                    "completion_tokens": 1, "model": "fake"}
+
+    result = AgenticMemoryRunner(NoGraphTools(), StrayingPolicy(), SharedAnswerer(), max_steps=5).run(item)
+    assert result["hypothesis"] == "Paris"
+    assert result["agent_stop_reason"] == "submit_evidence"
+    first = result["trajectory"][0]
+    assert first["error"]["type"] == "ValueError"
+    assert "Unknown tool: search_concepts" in first["error"]["message"]
+    assert first.get("tool") is None  # rejected actions stay uncounted in agent_tool_counts
+    assert result["agent_tool_counts"] == {"search_documents": 1, "submit_evidence": 1}
+
+
 def test_agentic_loop_bounds_invalid_actions_and_falls_back():
     item = BenchmarkItem("locomo", "c1", "q1", "Unknown?", "none", "5", "", [], [], [])
 
@@ -825,7 +888,9 @@ def test_mock_end_to_end_run_is_resumable(tmp_path, monkeypatch):
             return {"action": action, "prompt": f"step {step}", "model": "fake"}
 
     class FakeAgentTools:
-        def __init__(self, _storage, _retriever, _mapping, sessions):
+        def __init__(self, _storage, _retriever, _mapping, sessions, *,
+                     allowed_tools=frozenset(AGENT_TOOLS)):
+            self.allowed_tools = frozenset(allowed_tools)
             self.sessions = {session.session_id: session for session in sessions}
 
         def execute(self, tool, _arguments):

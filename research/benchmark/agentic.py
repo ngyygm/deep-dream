@@ -7,7 +7,7 @@ import json
 import os
 import re
 import time
-from typing import Any
+from typing import Any, Iterable
 
 from research.benchmark import load_runtime_policy
 from core.cli._helpers import concept_source_evidence, relation_evidence
@@ -26,6 +26,51 @@ AGENT_TOOLS = {
     "read_session",
     "submit_evidence",
 }
+
+# No-graph online ablation (M-Q3/M-Q4): the "no-graph" toolset keeps only
+# corpus-level retrieval plus source access — iterative RAG over the same
+# lossless document store. Every tool implementation, the retriever, the
+# answerer, and the budgets stay byte-identical to the full skill-agent;
+# only the action space exposed to the agent shrinks.
+GRAPH_TOOLS = frozenset({
+    "explore_memory", "search_concepts", "trace_concept",
+    "expand_neighbors", "relation_evidence",
+})
+AGENT_TOOLSETS: dict[str, frozenset[str]] = {
+    "full": frozenset(AGENT_TOOLS),
+    "no-graph": frozenset(AGENT_TOOLS) - GRAPH_TOOLS,
+}
+
+_TOOL_DOC_LINES: tuple[tuple[str, str], ...] = (
+    ("search_documents", '- search_documents {"query": string, "terms": [string], "limit": 1..20}'),
+    ("explore_memory", '- explore_memory {"query": string, "terms": [string], "limit": 1..20}'),
+    ("search_concepts", '- search_concepts {"query": string, "limit": 1..20}'),
+    ("trace_concept", '- trace_concept {"family_id": string, "limit": 1..20}'),
+    ("expand_neighbors", '- expand_neighbors {"family_id": string, "depth": 1..2, "limit": 1..20}'),
+    ("relation_evidence", '- relation_evidence {"concept_a": string, "concept_b": string, "limit": 1..20}'),
+    ("read_episode", '- read_episode {"episode_id": string}'),
+    ("read_session", '- read_session {"session_id": string}'),
+    ("submit_evidence", '- submit_evidence {"episode_ids": [string], "session_ids": [string], "turn_ids": [string]}'),
+)
+
+
+def toolset_from_config(config: dict[str, Any]) -> frozenset[str]:
+    """Resolve the agent action space from ``llm.agent_toolset`` (default full)."""
+    name = str((config.get("llm") or {}).get("agent_toolset") or "full")
+    if name not in AGENT_TOOLSETS:
+        raise ValueError(
+            f"Unknown agent_toolset: {name!r}; expected one of {sorted(AGENT_TOOLSETS)}")
+    return AGENT_TOOLSETS[name]
+
+
+def tool_prompt(tools: frozenset[str] | set[str] = AGENT_TOOLS) -> str:
+    lines = "\n".join(doc for name, doc in _TOOL_DOC_LINES if name in tools)
+    return (
+        f"Available tools:\n{lines}\n\n"
+        "Return exactly one JSON object and no prose:\n"
+        '{"tool":"tool_name","arguments":{...}}\n'
+        "Do not output an answer. `submit_evidence` ends retrieval and a separate model answers."
+    )
 
 
 def _agent_extra_body(config: dict[str, Any], thinking: bool) -> dict[str, Any] | None:
@@ -74,24 +119,15 @@ def _parse_json_object(text: str) -> dict[str, Any]:
 class AgentDecisionModel:
     """OpenAI-compatible JSON action policy; benchmark labels are never shown."""
 
-    TOOL_PROMPT = """Available tools:
-- search_documents {"query": string, "terms": [string], "limit": 1..20}
-- explore_memory {"query": string, "terms": [string], "limit": 1..20}
-- search_concepts {"query": string, "limit": 1..20}
-- trace_concept {"family_id": string, "limit": 1..20}
-- expand_neighbors {"family_id": string, "depth": 1..2, "limit": 1..20}
-- relation_evidence {"concept_a": string, "concept_b": string, "limit": 1..20}
-- read_episode {"episode_id": string}
-- read_session {"session_id": string}
-- submit_evidence {"episode_ids": [string], "session_ids": [string], "turn_ids": [string]}
-
-Return exactly one JSON object and no prose:
-{"tool":"tool_name","arguments":{...}}
-Do not output an answer. `submit_evidence` ends retrieval and a separate model answers."""
+    # Full-set prompt kept as a class attribute for backward compatibility;
+    # instances build their prompt from the configured toolset instead.
+    TOOL_PROMPT = tool_prompt()
 
     def __init__(self, config: dict[str, Any]):
         self.config = config.get("llm") or {}
-        self.system_prompt = load_runtime_policy() + "\n\n" + self.TOOL_PROMPT
+        self.allowed_tools = toolset_from_config(config)
+        self.toolset_name = str(self.config.get("agent_toolset") or "full")
+        self.system_prompt = load_runtime_policy() + "\n\n" + tool_prompt(self.allowed_tools)
 
     def _history(self, trajectory: list[dict[str, Any]]) -> str:
         rows = [{
@@ -161,9 +197,11 @@ class AgenticMemoryTools:
     """Conversation-isolated, source-backed tool surface."""
 
     def __init__(self, storage: Any, retriever: Any, document_to_session: dict[str, str],
-                 sessions: list[MemorySession]):
+                 sessions: list[MemorySession], *,
+                 allowed_tools: Iterable[str] = AGENT_TOOLS):
         self.storage = storage
         self.retriever = retriever
+        self.allowed_tools = frozenset(allowed_tools)
         self.document_to_session = dict(document_to_session)
         self.allowed_document_ids = set(document_to_session)
         self.sessions = {session.session_id: session for session in sessions}
@@ -313,7 +351,7 @@ class AgenticMemoryTools:
         return ""
 
     def execute(self, tool: str, arguments: dict[str, Any]) -> Any:
-        if tool not in AGENT_TOOLS - {"submit_evidence"}:
+        if tool not in self.allowed_tools - {"submit_evidence"}:
             raise ValueError(f"Unknown or non-executable tool: {tool}")
         return getattr(self, tool)(arguments)
 
@@ -396,6 +434,9 @@ class AgenticMemoryRunner:
         self.tools = tools
         self.policy = policy
         self.answerer = answerer
+        # Duck-typed test doubles / third-party adapters may not carry the
+        # toolset; fall back to the full action space for those.
+        self.allowed_tools = frozenset(getattr(tools, "allowed_tools", AGENT_TOOLS))
         self.max_steps = max(1, max_steps)
         self.answer_top_k = max(1, answer_top_k)
         # X7 arm #6: when True, the submit_evidence surfaced-set gate is
@@ -462,7 +503,7 @@ class AgenticMemoryRunner:
                 arguments = action.get("arguments") or {
                     key: value for key, value in action.items() if key != "tool"
                 }
-                if tool not in AGENT_TOOLS:
+                if tool not in self.allowed_tools:
                     raise ValueError(f"Unknown tool: {tool}")
                 if not isinstance(arguments, dict):
                     raise ValueError("arguments must be an object")

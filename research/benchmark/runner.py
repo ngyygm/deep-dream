@@ -64,6 +64,7 @@ def _public_config(config: dict[str, Any]) -> dict[str, Any]:
             "agent_max_tokens", "agent_thinking_max_tokens", "context_window_tokens",
             "agent_think", "answer_think",
             "answer_validation_retries", "api_key_env",
+            "agent_toolset",
         )}
     public_llm["temperature"] = float(llm.get("temperature", 0) or 0)
     public_llm["think"] = bool(llm.get("think", False))
@@ -1213,9 +1214,15 @@ def retrieve_benchmark(
                 retriever = DeepDreamRetriever(processor.storage, document_to_session, sessions)
             agents: dict[str, Any] = {}
             if "skill-agent" in source_tracks:
-                from .agentic import AgentDecisionModel, AgenticMemoryRunner, AgenticMemoryTools
+                from .agentic import (
+                    AgentDecisionModel, AgenticMemoryRunner, AgenticMemoryTools,
+                    toolset_from_config,
+                )
                 answerer = AnswerGenerator(config, profile="normalized-v1")
-                tools = AgenticMemoryTools(processor.storage, retriever, document_to_session, sessions)
+                tools = AgenticMemoryTools(
+                    processor.storage, retriever, document_to_session, sessions,
+                    allowed_tools=toolset_from_config(config),
+                )
                 agents["skill-agent"] = AgenticMemoryRunner(
                     tools, AgentDecisionModel(config), answerer,
                     max_steps=max_agent_steps, answer_top_k=context_k,
@@ -1297,6 +1304,7 @@ def retrieve_benchmark(
     ]))
     retrieval_config = {
         "profile": retrieval_profile,
+        "agent_toolset": str((config.get("llm") or {}).get("agent_toolset") or "full"),
         "candidate_k": candidate_k,
         "context_k": context_k,
         "evidence_token_budget": evidence_token_budget,
@@ -1433,8 +1441,14 @@ def evaluate_benchmark(
                 retriever = DeepDreamRetriever(processor.storage, document_to_session, sessions)
             agents: dict[str, Any] = {}
             if "skill-agent" in source_tracks:
-                from .agentic import AgentDecisionModel, AgenticMemoryRunner, AgenticMemoryTools
-                tools = AgenticMemoryTools(processor.storage, retriever, document_to_session, sessions)
+                from .agentic import (
+                    AgentDecisionModel, AgenticMemoryRunner, AgenticMemoryTools,
+                    toolset_from_config,
+                )
+                tools = AgenticMemoryTools(
+                    processor.storage, retriever, document_to_session, sessions,
+                    allowed_tools=toolset_from_config(config),
+                )
                 agents["skill-agent"] = AgenticMemoryRunner(
                     tools, AgentDecisionModel(config), answerer,
                     max_steps=max_agent_steps, answer_top_k=answer_top_k,
