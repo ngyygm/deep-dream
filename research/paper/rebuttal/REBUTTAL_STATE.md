@@ -16,8 +16,10 @@
 - [x] Phase 3.5: 证据缺口已呈报用户 → **用户决策 (2026-11-09): 仅文字回复; 批准 GAP-D+A+B; 时间>1周** → REBUTTAL_EXPERIMENT_PLAN.md 已落地
 - [x] GAP-D 对齐对账 **完成 (2026-11-09)**: 单射名称匹配法 (v2); 两代引擎 ground-truth 过合并均 0, 碎片化 2.3%→1.5%, 池覆盖 2.8% 如实报告; 见 REBUTTAL_EXPERIMENTS.md + gapd_results.json。v1 块主题法已证伪弃用 (MAB AR 块是文章中段段落, 维基首段摘要 avgJ=0.085)
 - [x] GAP-A/B 代码就绪 **(2026-11-09)**: no-graph 工具集臂合二为一 (agentic.py/runner.py, 测试 41/41); K3 端点本机不可达 (TCP 超时) → 待评测机执行 RUNBOOK_GAP_AB.md (改动包 gapab_harness.patch)
-- [ ] Phase 4: 起草 (可在等 no-graph 跑批期间先行 — GAP-D 数字已冻结可引用; no-graph 数字留占位)
-- [ ] Phase 4: 起草 (规则已确认: text-only official comment; 写作层修复=camera-ready 承诺+指向 supplement)
+- [x] Phase 4: 起草完成 (2026-11-09) — REBUTTAL_DRAFT_v1.md (rich, 5 处 ⏳ 占位标注) +
+  PASTE_READY.txt (严格版 4 块: General 3536 / f1J5 2776 / mV1D 3871 / cB3k 3209 字符, 均 <5000;
+  ⏳ 全部转为 "running… will post in this thread" 事实性措辞) + REVISION_PLAN.md (14 条 checklist,
+  全部 approved_for_rebuttal, 6 条 out-of-scope log)。待 no-graph 数字回填后进 Phase 5。
 - [ ] Phase 5: 安全校验
 - [ ] Phase 6: 压力测试
 - [ ] Phase 7: 定稿双版本
